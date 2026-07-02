@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <h1 align="center">RxyCode</h1>
   <p align="center"><strong>AI-Powered Coding Agent with Verification Layer</strong></p>
   <p align="center">
@@ -156,6 +156,12 @@ pip install -r requirements.txt
 ```bash
 # Set your API key
 export RXYCODE_API_KEY="your-api-key-here"
+
+# Windows (PowerShell)
+$env:RXYCODE_API_KEY="your-api-key-here"
+
+# Windows (CMD)
+set RXYCODE_API_KEY=your-api-key-here
 
 # Or create config file at ~/.rxycode/config.yaml
 ```
@@ -348,6 +354,12 @@ pip install -r requirements.txt
 ```bash
 # 设置 API Key
 export RXYCODE_API_KEY="your-api-key-here"
+
+# Windows (PowerShell)
+$env:RXYCODE_API_KEY="your-api-key-here"
+
+# Windows (CMD)
+set RXYCODE_API_KEY=your-api-key-here
 
 # 或在 ~/.rxycode/config.yaml 中创建配置文件
 ```
