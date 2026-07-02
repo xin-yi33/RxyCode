@@ -1,0 +1,105 @@
+{
+  "mcpServers": {
+    "rxycode-verify": {
+      "command": "python",
+      "args": ["rxycode_verify_mcp.py"],
+      "cwd": ".",
+      "description": "验证层 MCP —— 拦截幻觉性成功，独立核查所有成功声明。解决 P0-1。",
+      "env": {
+        "PYTHONPATH": ".",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "rxycode-shell": {
+      "command": "python",
+      "args": ["rxycode_shell_mcp.py"],
+      "cwd": ".",
+      "description": "执行层 MCP —— 可靠命令执行、Shell 抽象、环境感知。解决 P0-2 和 P0-3。",
+      "env": {
+        "PYTHONPATH": ".",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "codebase-explorer": {
+      "command": "python",
+      "args": ["codebase_explorer_mcp.py"],
+      "cwd": ".",
+      "description": "代码库探测 MCP —— 基于真实文件系统分析项目结构，消除幻觉。解决 P1-2。",
+      "env": {
+        "PYTHONPATH": ".",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    },
+    "task-progress": {
+      "command": "python",
+      "args": ["task_progress_mcp.py"],
+      "cwd": ".",
+      "description": "任务进度 MCP —— 结构化执行事件流，透明可观测。解决 P2-2 和 P2-3。",
+      "env": {
+        "PYTHONPATH": ".",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  },
+  "globalSettings": {
+    "timeout": 30000,
+    "maxRetries": 2
+  },
+  "toolRouting": {
+    "verify_file_exists": "rxycode-verify",
+    "verify_file_content": "rxycode-verify",
+    "verify_file_created": "rxycode-verify",
+    "verify_command_executed": "rxycode-verify",
+    "verify_test_passed": "rxycode-verify",
+    "fact_check_paths": "rxycode-verify",
+    "compute_file_hash": "rxycode-verify",
+    "list_directory_real": "rxycode-verify",
+
+    "detect_environment": "rxycode-shell",
+    "resolve_user_path": "rxycode-shell",
+    "execute_shell": "rxycode-shell",
+    "translate_command": "rxycode-shell",
+    "write_file_safely": "rxycode-shell",
+    "read_file_safely": "rxycode-shell",
+
+    "scan_project_tree": "codebase-explorer",
+    "detect_project_type": "codebase-explorer",
+    "list_real_files": "codebase-explorer",
+    "verify_path_exists": "codebase-explorer",
+    "search_codebase": "codebase-explorer",
+    "get_file_summary": "codebase-explorer",
+
+    "start_task": "task-progress",
+    "update_progress": "task-progress",
+    "log_tool_call": "task-progress",
+    "get_task_status": "task-progress",
+    "get_execution_log": "task-progress",
+    "get_all_tool_calls": "task-progress",
+    "list_active_tasks": "task-progress"
+  },
+  "verificationPolicy": {
+    "description": "验证策略 —— 所有成功声明必须经过验证层确认后才可向用户输出",
+    "rules": [
+      {
+        "trigger": "Agent 声称「已创建文件」",
+        "requiredTool": "verify_file_created",
+        "onFail": "将回复修正为「文件创建失败：[具体原因]」"
+      },
+      {
+        "trigger": "Agent 声称「测试通过」",
+        "requiredTool": "verify_test_passed",
+        "onFail": "将回复修正为「测试未通过：[真实输出]」"
+      },
+      {
+        "trigger": "Agent 声称「命令执行成功」",
+        "requiredTool": "verify_command_executed",
+        "onFail": "将回复修正为「命令执行失败：[exit code + stderr]」"
+      },
+      {
+        "trigger": "Agent 描述项目结构或引用文件路径",
+        "requiredTool": "fact_check_paths",
+        "onFail": "禁止描述不存在的路径，必须先调用 scan_project_tree"
+      }
+    ]
+  }
+}

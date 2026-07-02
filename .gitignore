@@ -1,0 +1,39 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# RxyCode data (contains API keys)
+.rxycode/
+data/
+*.log
+
+# Node
+node_modules/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tmp files
+*.tmp
+*.bak
+stress_test*
+complex_test*
+fibonacci*
