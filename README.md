@@ -151,10 +151,14 @@ cd RxyCode
 pip install -r requirements.txt
 ```
 
-#### Configuration
+#### Configuration (Windows)
 
 ```powershell
+# PowerShell
 $env:RXYCODE_API_KEY="your-api-key-here"
+
+# CMD
+set RXYCODE_API_KEY=your-api-key-here
 ```
 
 Or create config file at `~/.rxycode/config.yaml`
@@ -342,10 +346,14 @@ cd RxyCode
 pip install -r requirements.txt
 ```
 
-#### 配置
+#### 配置 (Windows)
 
 ```powershell
+# PowerShell
 $env:RXYCODE_API_KEY="your-api-key-here"
+
+# CMD
+set RXYCODE_API_KEY=your-api-key-here
 ```
 
 或在 `~/.rxycode/config.yaml` 中创建配置文件
