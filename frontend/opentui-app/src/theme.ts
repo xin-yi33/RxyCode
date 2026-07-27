@@ -1,0 +1,20 @@
+/** Pink RxyCode brand + Catppuccin-adjacent accents (style freeze). */
+export const C = {
+  bg: "#1e1e2e",
+  surface0: "#313244",
+  surface1: "#45475a",
+  overlay2: "#6c7086",
+  subtext: "#a6adc8",
+  text: "#cdd6f4",
+  primary: "#89b4fa",
+  accent: "#f38ba8",
+  mauve: "#cba6f7",
+  green: "#a6e3a1",
+  teal: "#94e2d5",
+  yellow: "#f9e2af",
+  border: "#585b70",
+  borderDim: "#313244",
+  brandLight: "#FFB6C1",
+  brandHot: "#FF69B4",
+  thinking: "#FFD700",
+} as const;

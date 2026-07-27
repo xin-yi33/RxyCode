@@ -2,6 +2,9 @@
  * OpenTUI ScrollBox probe (U2) — style-frozen pink brand not required here.
  * Validates Bun + @opentui can create a renderer with a scrollbox.
  * Run: bun run scripts/opentui-probe.ts
+ *
+ * Preferred dual-entry probe (React 19 isolated package):
+ *   cd frontend/opentui-app && bun run probe
  */
 import { createCliRenderer, Box, Text, ScrollBox } from "@opentui/core"
 

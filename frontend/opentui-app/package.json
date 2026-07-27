@@ -1,0 +1,24 @@
+{
+  "name": "rxycode-opentui",
+  "version": "1.1.0",
+  "description": "RxyCode OpenTUI dual-entry shell (ScrollBox + native textarea)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.tsx",
+    "dev": "bun run src/index.tsx",
+    "probe": "bun run scripts/probe.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "0.4.5",
+    "@opentui/react": "0.4.5",
+    "axios": "^1.7.0",
+    "react": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -78,16 +78,124 @@ def _wait_for_api_ready(port: int, token: str, timeout: float = 30.0) -> bool:
     return False
 
 
-def _launch_ink_tui(model, port):
-    """Launch the TypeScript + Ink TUI."""
-    import subprocess
+def _frontend_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "frontend")
+
+
+def _opentui_app_dir() -> str:
+    return os.path.join(_frontend_dir(), "opentui-app")
+
+
+def _opentui_ready() -> bool:
+    """True when the isolated OpenTUI package looks installable/runnable."""
+    app_dir = _opentui_app_dir()
+    return os.path.exists(os.path.join(app_dir, "package.json")) and os.path.exists(
+        os.path.join(app_dir, "src", "index.tsx")
+    )
+
+
+def _bun_executable():
+    import shutil
+
+    return shutil.which("bun")
+
+
+def _resolve_tui_backend() -> str:
+    """Pick Ink vs OpenTUI.
+
+    Env ``RXYCODE_TUI=ink`` forces Ink; ``RXYCODE_TUI=opentui`` forces OpenTUI
+    (no silent fallback if Bun/app missing). Default: OpenTUI when Bun is on
+    PATH and ``frontend/opentui-app`` is present, else Ink.
+    """
+    preference = (os.environ.get("RXYCODE_TUI") or "").strip().lower()
+    bun = _bun_executable()
+    ready = _opentui_ready()
+
+    if preference == "ink":
+        return "ink"
+    if preference == "opentui":
+        if not bun:
+            raise click.ClickException(
+                "RXYCODE_TUI=opentui requires Bun on PATH, but 'bun' was not found. "
+                "Install Bun (https://bun.sh) or set RXYCODE_TUI=ink."
+            )
+        if not ready:
+            raise click.ClickException(
+                "RXYCODE_TUI=opentui requires frontend/opentui-app (package.json + "
+                "src/index.tsx), but it is missing. Set RXYCODE_TUI=ink to use Ink."
+            )
+        return "opentui"
+    if preference and preference not in ("ink", "opentui", "auto", ""):
+        raise click.ClickException(
+            f"Unknown RXYCODE_TUI={preference!r}. Use 'ink', 'opentui', or unset."
+        )
+    if bun and ready:
+        return "opentui"
+    return "ink"
+
+
+def _start_embedded_api(port: int):
+    """Start the loopback API and return (port, token, env overlays for the TUI)."""
+    import secrets
     import threading
     import time
-    import os
     from .log.logger import get_logger
-    _log = get_logger()
 
-    frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+    _log = get_logger()
+    port = _find_available_port(port)
+    api_token = secrets.token_urlsafe(32)
+    api_error: list[str] = []
+
+    def run_api():
+        # Suppress uvicorn noise only — do not disable the rxycode logger.
+        import logging
+
+        logging.getLogger("uvicorn").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+        try:
+            from .api_server import run_api_server
+
+            run_api_server(port=port, token=api_token)
+        except Exception as e:
+            api_error.append(str(e))
+
+    api_thread = threading.Thread(target=run_api, daemon=True)
+    api_thread.start()
+    _log.info("API server thread started", extra={"port": port})
+
+    api_start = time.time()
+    api_ready = _wait_for_api_ready(port, token=api_token, timeout=30.0)
+    if not api_ready:
+        _log.error("API server timeout", extra={"port": port, "timeout_sec": 30})
+        reason = f" Reason: {api_error[0]}" if api_error else ""
+        raise click.ClickException(
+            f"API server failed to start on port {port} within 30s.{reason}"
+        )
+
+    print(f"RxyCode API ready at http://127.0.0.1:{port}")
+    _log.info(
+        "API server ready",
+        extra={"port": port, "elapsed_sec": f"{time.time() - api_start:.1f}"},
+    )
+
+    env = os.environ.copy()
+    env["RXYCODE_API_PORT"] = str(port)
+    # Point the TUI at the exact IPv4 loopback URL the API binds to, so a
+    # "localhost" -> IPv6 ::1 resolution on the user's machine can't cause
+    # ECONNREFUSED ("error connect").
+    env["RXYCODE_API_URL"] = f"http://127.0.0.1:{port}"
+    env["RXYCODE_API_TOKEN"] = api_token
+    return port, api_token, env
+
+
+def _launch_ink_tui(model, port):
+    """Launch the TypeScript + Ink TUI."""
+    import shutil
+    import subprocess
+    from .log.logger import get_logger
+
+    _log = get_logger()
+    frontend_dir = _frontend_dir()
 
     package_json = os.path.join(frontend_dir, "package.json")
     dist_entry = os.path.join(frontend_dir, "dist", "index.js")
@@ -97,7 +205,6 @@ def _launch_ink_tui(model, port):
             "'npm run build' in the frontend directory."
         )
 
-    import shutil
     node_exe = shutil.which("node")
     if not node_exe:
         raise click.ClickException(
@@ -105,57 +212,14 @@ def _launch_ink_tui(model, port):
             "found on PATH."
         )
 
-    # Find an available port (allows multiple windows)
-    port = _find_available_port(port)
-    # One high-entropy bearer credential per embedded API launch. It is passed
-    # only through process memory/environment and is never placed in a URL or
-    # log record.
-    import secrets
-    api_token = secrets.token_urlsafe(32)
+    port, _api_token, env = _start_embedded_api(port)
+    if model:
+        env["RXYCODE_MODEL"] = str(model)
 
-    # Start API server in background thread
-    api_error: list[str] = []
-
-    def run_api():
-        # 不使用 logging.disable(logging.INFO) — 它会全局禁用所有 INFO 级别日志，
-        # 包括我们的 "rxycode" logger。改为只抑制 uvicorn 的日志。
-        import logging
-        logging.getLogger("uvicorn").setLevel(logging.WARNING)
-        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-        try:
-            from .api_server import run_api_server
-            run_api_server(port=port, token=api_token)
-        except Exception as e:
-            api_error.append(str(e))
-
-    api_thread = threading.Thread(target=run_api, daemon=True)
-    api_thread.start()
-    _log.info("API server thread started", extra={"port": port})
-
-    # Wait for API server to become ready (replaces fixed 3s sleep)
-    api_start = time.time()
-    api_ready = _wait_for_api_ready(port, token=api_token, timeout=30.0)
-
-    if not api_ready:
-        _log.error("API server timeout", extra={"port": port, "timeout_sec": 30})
-        reason = f" Reason: {api_error[0]}" if api_error else ""
-        raise click.ClickException(
-            f"API server failed to start on port {port} within 30s.{reason}"
-        )
-
-    print(f"RxyCode API ready at http://127.0.0.1:{port}")
-    _log.info("API server ready", extra={"port": port, "elapsed_sec": f"{time.time() - api_start:.1f}"})
-
-    # Launch Ink TUI using Popen for proper signal handling
-    env = os.environ.copy()
-    env["RXYCODE_API_PORT"] = str(port)
-    # Point the TUI at the exact IPv4 loopback URL the API binds to, so a
-    # "localhost" -> IPv6 ::1 resolution on the user's machine can't cause
-    # ECONNREFUSED ("error connect").
-    env["RXYCODE_API_URL"] = f"http://127.0.0.1:{port}"
-    env["RXYCODE_API_TOKEN"] = api_token
-
-    _log.info("Launching Ink TUI", extra={"frontend_dir": frontend_dir, "port": port, "node": node_exe})
+    _log.info(
+        "Launching Ink TUI",
+        extra={"frontend_dir": frontend_dir, "port": port, "node": node_exe},
+    )
 
     proc = None
     try:
@@ -165,7 +229,10 @@ def _launch_ink_tui(model, port):
             env=env,
             shell=False,
         )
-        _log.info("Ink TUI started", extra={"pid": proc.pid, "node": node_exe, "entry": dist_entry})
+        _log.info(
+            "Ink TUI started",
+            extra={"pid": proc.pid, "node": node_exe, "entry": dist_entry},
+        )
         returncode = proc.wait()
         _log.info("Ink TUI exited", extra={"returncode": returncode})
         if returncode != 0:
@@ -186,6 +253,80 @@ def _launch_ink_tui(model, port):
         if proc and proc.poll() is None:
             proc.terminate()
             _log.info("Ink TUI terminated in finally")
+
+
+def _launch_opentui_tui(model, port):
+    """Launch the Bun + OpenTUI dual-entry shell (ScrollBox + native textarea)."""
+    import subprocess
+    from .log.logger import get_logger
+
+    _log = get_logger()
+    bun_exe = _bun_executable()
+    if not bun_exe:
+        raise click.ClickException(
+            "Bun is required by the OpenTUI frontend but was not found on PATH."
+        )
+    app_dir = _opentui_app_dir()
+    if not _opentui_ready():
+        raise click.ClickException(
+            "OpenTUI frontend is missing. Expected frontend/opentui-app with "
+            "package.json and src/index.tsx."
+        )
+
+    port, _api_token, env = _start_embedded_api(port)
+    if model:
+        env["RXYCODE_MODEL"] = str(model)
+
+    _log.info(
+        "Launching OpenTUI",
+        extra={"opentui_dir": app_dir, "port": port, "bun": bun_exe},
+    )
+
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [bun_exe, "run", "src/index.tsx"],
+            cwd=app_dir,
+            env=env,
+            shell=False,
+        )
+        _log.info(
+            "OpenTUI started",
+            extra={"pid": proc.pid, "bun": bun_exe, "cwd": app_dir},
+        )
+        returncode = proc.wait()
+        _log.info("OpenTUI exited", extra={"returncode": returncode})
+        if returncode != 0:
+            raise click.ClickException(
+                f"OpenTUI frontend exited with status {returncode}."
+            )
+    except KeyboardInterrupt:
+        if proc:
+            proc.terminate()
+            proc.wait(timeout=5)
+        _log.warn("User interrupted (Ctrl-C)")
+    except click.ClickException:
+        raise
+    except Exception as e:
+        _log.error(f"OpenTUI launch failed: {e}", exc_info=True)
+        raise click.ClickException(f"OpenTUI frontend failed to launch: {e}") from e
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            _log.info("OpenTUI terminated in finally")
+
+
+def _launch_tui(model, port):
+    """Route to OpenTUI or Ink based on RXYCODE_TUI / Bun availability."""
+    from .log.logger import get_logger
+
+    _log = get_logger()
+    backend = _resolve_tui_backend()
+    _log.info("TUI backend selected", extra={"backend": backend})
+    if backend == "opentui":
+        _launch_opentui_tui(model, port)
+    else:
+        _launch_ink_tui(model, port)
 
 
 def _resolve_model_label(model):
@@ -254,8 +395,16 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
             click.echo(f"RxyCode API bearer token: {api_token}", err=True)
             run_api_server(port=api_port, token=api_token)
         else:
-            _log.info("RxyCode started", extra={"mode": "ink", "model": _resolve_model_label(model), "port": api_port})
-            _launch_ink_tui(model, api_port)
+            backend = _resolve_tui_backend()
+            _log.info(
+                "RxyCode started",
+                extra={
+                    "mode": backend,
+                    "model": _resolve_model_label(model),
+                    "port": api_port,
+                },
+            )
+            _launch_tui(model, api_port)
 
         _log.info("RxyCode exited")
         # 确保日志写入磁盘（进程退出前 flush 所有 handlers）

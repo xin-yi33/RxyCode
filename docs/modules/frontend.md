@@ -1,12 +1,13 @@
-# frontend/ - Ink TUI Frontend
+# frontend/ - Ink TUI Frontend (+ OpenTUI dual entry)
 
 ## What Is This Module?
-The terminal user interface built with Ink (React for terminals) and TypeScript. Renders the chat interface, status bar, progress indicators, and input box.
+The terminal user interface. Primary rollback path is Ink (React 18). OpenTUI dual entry lives in `frontend/opentui-app/` (Bun + React 19.2+ + `@opentui/react@0.4.5`) to fix flicker (ScrollBox) and cursor misalignment (native textarea) without upgrading the Ink package to React 19.
 
 ## Architecture
-- Built on Ink 5.x (React renderer for terminals)
+- Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
+- OpenTUI under `frontend/opentui-app/` (React 19.2+) — default when Bun is available
 - Communicates with the Python API server via HTTP/SSE
-- Runs as a separate Node.js process launched by main.py
+- Ink: Node.js process; OpenTUI: `bun run src/index.tsx` — both launched by main.py
 
 ## Key Files
 | File | Purpose |

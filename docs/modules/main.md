@@ -22,6 +22,20 @@ Click options:
 - `--log-level`: Configure runtime logging
 - `--print-logs`: Mirror logs to stderr
 
+## Core: _launch_tui(model, port)
+Routes to OpenTUI or Ink:
+
+| Env | Behavior |
+|-----|----------|
+| `RXYCODE_TUI=ink` | Force Ink |
+| `RXYCODE_TUI=opentui` | Force OpenTUI — **errors** if Bun or `frontend/opentui-app` missing (no silent fallback) |
+| unset / default | Prefer OpenTUI when Bun is on PATH and `frontend/opentui-app` is present; else Ink |
+
+## Core: _launch_opentui_tui(model, port)
+1. Require `bun` on PATH and `frontend/opentui-app/{package.json,src/index.tsx}`.
+2. Start the authenticated loopback API (same token handoff as Ink).
+3. Launch `bun run src/index.tsx` in `frontend/opentui-app` with `RXYCODE_API_*` env vars.
+
 ## Core: _launch_ink_tui(model, port)
 Launch sequence:
 1. Resolve and validate `frontend/package.json` and `frontend/dist/index.js`.
@@ -32,4 +46,4 @@ Launch sequence:
 6. Launch `node frontend/dist/index.js` with the API URL and token in its environment.
 7. Shut down the embedded API server when the frontend exits.
 
-RxyCode has one interactive frontend: Ink. Missing runtime assets, Node.js, API startup failures, and frontend process failures return explicit CLI errors. They do not fall back to another interface.
+Missing runtime assets, Bun/Node.js, API startup failures, and frontend process failures return explicit CLI errors.
