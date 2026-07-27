@@ -1,0 +1,110 @@
+{
+  "W01": {
+    "result": "SKIP",
+    "note": "No TTY cursor evidence"
+  },
+  "W02": {
+    "result": "SKIP",
+    "note": "No scrollbox live session"
+  },
+  "W03": {
+    "result": "PASS",
+    "note": " /thinking before+after agent init; toggle expands/collapses"
+  },
+  "W04": {
+    "result": "PASS",
+    "note": "social multi-round 4 turns, no jargon"
+  },
+  "W04b": {
+    "result": "PARTIAL",
+    "note": "stream progress seen but no final answer / error=[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error."
+  },
+  "W05": {
+    "result": "PASS",
+    "note": " /plan mode_changed; plan-mode chat ok"
+  },
+  "W06": {
+    "result": "PARTIAL",
+    "note": "/build mode_changed; full edit+test pipeline not completed in smoke (see W04b stream)"
+  },
+  "W07": {
+    "result": "PARTIAL",
+    "note": "/compose mode_changed; replan/cache compose loop not fully exercised"
+  },
+  "W08": {
+    "result": "PARTIAL",
+    "note": "dual-track /status+/cache ok; same-question hit retest not run"
+  },
+  "W09": {
+    "result": "SKIP",
+    "note": "N/A: cache_rate=0.0% (<85%); smoke not warm enough"
+  },
+  "W10": {
+    "result": "PARTIAL",
+    "note": "partial memory commands"
+  },
+  "W11": {
+    "result": "SKIP",
+    "note": "RAG search/edit not exercised in API smoke"
+  },
+  "W12": {
+    "result": "SKIP",
+    "note": "Safety WRITE/DANGER approval flow not live"
+  },
+  "W13": {
+    "result": "SKIP",
+    "note": "MCP add/list not exercised"
+  },
+  "W14": {
+    "result": "SKIP",
+    "note": "Skills find/add/remove not exercised"
+  },
+  "W15": {
+    "result": "SKIP",
+    "note": "Web search/fetch not exercised"
+  },
+  "W16": {
+    "result": "PARTIAL",
+    "note": "git status asked via /chat; no commit performed"
+  },
+  "W17": {
+    "result": "SKIP",
+    "note": "Sub-agent parallel not exercised"
+  },
+  "W18": {
+    "result": "SKIP",
+    "note": "Recovery retry path not exercised"
+  },
+  "W19": {
+    "result": "PASS",
+    "note": "queue add/list/remove + schedule list via /command"
+  },
+  "W20": {
+    "result": "PASS",
+    "note": "save-chat + list-chats + load-chat"
+  },
+  "W21": {
+    "result": "SKIP",
+    "note": "Workflow run/status/cancel not exercised"
+  },
+  "W22": {
+    "result": "SKIP",
+    "note": "LSP not exercised"
+  },
+  "W23": {
+    "result": "PASS",
+    "note": "/models + /language toggle"
+  },
+  "W24": {
+    "result": "SKIP",
+    "note": "Esc/cancel mid-stream not driven in this smoke (would need concurrent cancel)"
+  },
+  "W25": {
+    "result": "PARTIAL",
+    "note": "logo matrix automated only; no Win32 screenshot in this run"
+  },
+  "W26": {
+    "result": "SKIP",
+    "note": "No macOS runner"
+  }
+}

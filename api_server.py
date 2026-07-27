@@ -548,7 +548,11 @@ def _do_init():
 
     from .core.agent_v2 import AgentV2 as Agent
     _state["agent"] = Agent()
+    # Preserve /thinking preference toggled during the (slow) agent constructor.
+    prior_proxy = _state.get("tui_proxy")
+    prior_expand = bool(getattr(prior_proxy, "_expand_thinking", False)) if prior_proxy else False
     _state["tui_proxy"] = APIProxyTUI()
+    _state["tui_proxy"].set_thinking_expanded(prior_expand)
 
     from .utils.tui import set_tui, get_tui
     set_tui(_state["tui_proxy"])
@@ -1338,8 +1342,13 @@ async def _execute_command(req: CommandRequest):
         return {"action": "help", "message": help_text}
 
     if c == "/thinking":
-        proxy = _state["tui_proxy"]
-        new_state = not proxy._expand_thinking
+        # Safe before agent init: never block on _init_agent / never AttributeError
+        # when tui_proxy is still None (startup race before first chat).
+        proxy = _state.get("tui_proxy")
+        if proxy is None:
+            proxy = APIProxyTUI()
+            _state["tui_proxy"] = proxy
+        new_state = not bool(getattr(proxy, "_expand_thinking", False))
         proxy.set_thinking_expanded(new_state)
         # Also sync to the global TUI (could be StreamTUI during streaming).
         # StreamTUI.set_thinking_expanded(True) emits a reasoning snapshot SSE

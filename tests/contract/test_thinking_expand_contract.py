@@ -145,6 +145,40 @@ def test_stream_tui_expand_emits_snapshot_directly():
     assert snaps[0]["text"] == "accumulated-only-in-recorder"
 
 
+@pytest.mark.asyncio
+async def test_thinking_toggle_before_agent_init_is_fast(monkeypatch):
+    """ /thinking must succeed quickly when agent/tui_proxy are not initialized. """
+    from RxyCode.RxyCode1_1_0 import api_server
+
+    previous = dict(api_server._state)
+    api_server._state.update({"agent": None, "tui_proxy": None})
+    monkeypatch.setattr(
+        "RxyCode.RxyCode1_1_0.utils.tui.get_tui", lambda: None
+    )
+    try:
+        first = await asyncio.wait_for(
+            api_server._execute_command(
+                api_server.CommandRequest(command="/thinking")
+            ),
+            timeout=1.0,
+        )
+        second = await asyncio.wait_for(
+            api_server._execute_command(
+                api_server.CommandRequest(command="/thinking")
+            ),
+            timeout=1.0,
+        )
+    finally:
+        api_server._state.clear()
+        api_server._state.update(previous)
+
+    assert first["action"] == "thinking_toggled"
+    assert second["action"] == "thinking_toggled"
+    assert first["expanded"] is True
+    assert second["expanded"] is False
+    assert first["expanded"] is not second["expanded"]
+
+
 _SSE_ERROR_TEMPLATES = (
     "[Build incomplete: {detail}]",
     "[evidence failed: Tool {tool} did not complete: {status}]",

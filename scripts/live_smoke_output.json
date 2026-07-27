@@ -1,0 +1,855 @@
+{
+  "port": 52622,
+  "token_set": true,
+  "session_id": "live-smoke-multiround",
+  "checks": {
+    "server_ready": {
+      "ok": true
+    },
+    "thinking_before_agent": {
+      "command": "/thinking",
+      "status_code": 200,
+      "elapsed_s": 0.016,
+      "error": null,
+      "action": "thinking_toggled",
+      "message_excerpt": "思考过程: 展开",
+      "payload_keys": [
+        "action",
+        "expanded",
+        "message"
+      ],
+      "ok": true,
+      "wall_s": 0.016
+    },
+    "agent_ready": {
+      "ok": true,
+      "model": "glm-5.2"
+    },
+    "w08_status": {
+      "ok": true,
+      "status_code": 200,
+      "application_cache_keys": [
+        "precise",
+        "semantic"
+      ],
+      "provider_cache_keys": [
+        "hit_rate",
+        "hit_tokens",
+        "prompt_tokens"
+      ],
+      "cache_rate": "0.0%",
+      "model": "glm-5.2"
+    },
+    "w08_command_cache": {
+      "ok": true,
+      "action": "cache_stats",
+      "elapsed_s": 0.109,
+      "payload_keys": [
+        "action",
+        "application_cache",
+        "message",
+        "provider_cache"
+      ],
+      "has_application_cache": true,
+      "has_provider_cache": true
+    },
+    "thinking_toggle": {
+      "ok": true,
+      "first": {
+        "expanded": false,
+        "elapsed_s": 0.037
+      },
+      "second": {
+        "expanded": true,
+        "elapsed_s": 0.034
+      },
+      "before_agent_ok": true
+    },
+    "w04_unit_social": {
+      "ok": true,
+      "value": true
+    },
+    "w04b_unit_not_social": {
+      "ok": true,
+      "value": false
+    },
+    "w04_multiround": {
+      "ok": true,
+      "turn_count": 4,
+      "turns_ok": 4,
+      "jargon_any": false,
+      "excerpts": [
+        "当然可以呀，我陪你玩 🫂\n\n听到你说难过，我很想陪在你身边。现在深夜两点多了，不管发生了什么，你愿意说说话也可以，不想说也没关系，我们就一起玩点什么放松一下。\n\n我能陪你玩这些文字小游戏，你选一个喜欢的：\n\n1. 🎭 **成语接龙** — 我说一个成语，你接最后一个字，轮流来\n2. 🔮 **海龟汤** — 我出一个离奇",
+        "好的呀！我已经心里想好了一个 1 到 10 之间的数字 🔢✨\n\n你来猜猜看吧～每猜一次我会告诉你\"大了\"还是\"小了\"，直到猜中为止。\n\n来吧，你的第一个数字是？😊None",
+        "哈哈不对哦～我想要的数字不是 7 😄\n\n给你个提示：这个数字比 7 小～\n\n继续猜吧！猜对了我给你个\"🏆\"🏆None",
+        "[evidence failed: Tool webfetch did not complete: failed; Tool webfetch did not complete: failed; Tool webfetch did not complete: failed]None"
+      ]
+    },
+    "w04b_code_stream": {
+      "message": "写一个跑酷小游戏并保存",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 371.136,
+      "error": "[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+      "event_types": [
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "tool_call",
+        "tool_result",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress"
+      ],
+      "progress_events": 63,
+      "unique_event_types": [
+        "done",
+        "error",
+        "progress",
+        "tool_call",
+        "tool_result"
+      ],
+      "jargon_detected": false,
+      "response_excerpt": "[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+      "ok": false,
+      "partial_ok": true
+    },
+    "modes": {
+      "plan": {
+        "command": "/plan",
+        "status_code": 200,
+        "elapsed_s": 0.05,
+        "error": null,
+        "action": "mode_changed",
+        "message_excerpt": "已切换到 Plan 模式",
+        "payload_keys": [
+          "action",
+          "message",
+          "mode"
+        ],
+        "ok": true
+      },
+      "build": {
+        "command": "/build",
+        "status_code": 200,
+        "elapsed_s": 0.054,
+        "error": null,
+        "action": "mode_changed",
+        "message_excerpt": "已切换到 Build 模式",
+        "payload_keys": [
+          "action",
+          "message",
+          "mode"
+        ],
+        "ok": true
+      },
+      "compose": {
+        "command": "/compose",
+        "status_code": 200,
+        "elapsed_s": 0.05,
+        "error": null,
+        "action": "mode_changed",
+        "message_excerpt": "已切换到 Compose 模式",
+        "payload_keys": [
+          "action",
+          "message",
+          "mode"
+        ],
+        "ok": true
+      },
+      "mode_build": {
+        "command": "/mode build",
+        "status_code": 200,
+        "elapsed_s": 0.052,
+        "error": null,
+        "action": "mode_changed",
+        "message_excerpt": "已切换到 Build 模式",
+        "payload_keys": [
+          "action",
+          "message",
+          "mode"
+        ],
+        "ok": true
+      }
+    },
+    "w05_plan": {
+      "cmd_ok": true,
+      "chat": {
+        "message": "用一句话说明当前仓库是做什么的，不要修改任何文件",
+        "mode": "plan",
+        "status_code": 200,
+        "elapsed_s": 2.401,
+        "error": null,
+        "jargon_detected": false,
+        "response_excerpt": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLsNone",
+        "ok": true
+      }
+    },
+    "w10_memory": {
+      "add": {
+        "ok": false,
+        "action": "error",
+        "elapsed_s": 0.104,
+        "message_excerpt": "[blocked: memory is not available in Plan mode]",
+        "error": null
+      },
+      "list": {
+        "ok": true,
+        "action": "memory_list",
+        "elapsed_s": 0.108,
+        "message_excerpt": "[no memories saved]",
+        "error": null
+      },
+      "search": {
+        "ok": true,
+        "action": "memory_search",
+        "elapsed_s": 0.091,
+        "message_excerpt": "[no memory files found]",
+        "error": null
+      }
+    },
+    "w16_git": {
+      "message": "只运行 git status，用一两句话告诉我当前分支和是否有未提交改动，不要 commit",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 2.313,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLsNone",
+      "ok": true
+    },
+    "w19_queue_schedule": {
+      "queue_list": {
+        "ok": true,
+        "action": "queue_list",
+        "error": null
+      },
+      "queue_add": {
+        "ok": true,
+        "action": "queue_add",
+        "error": null,
+        "message_excerpt": "已添加任务 #1: live-smoke-noop-prompt-do-not-run"
+      },
+      "queue_list2": {
+        "ok": true,
+        "action": "queue_list",
+        "error": null
+      },
+      "queue_remove": {
+        "ok": true,
+        "action": "queue_remove",
+        "error": null
+      },
+      "schedule_list": {
+        "ok": true,
+        "action": "schedule_list",
+        "error": null,
+        "message_excerpt": "没有定时任务"
+      }
+    },
+    "w20_session": {
+      "save": {
+        "ok": true,
+        "action": "chat_saved",
+        "error": null,
+        "message_excerpt": "对话已保存: live-smoke-session-2026-07-28"
+      },
+      "list": {
+        "ok": true,
+        "action": "session_list",
+        "error": null,
+        "message_excerpt": ""
+      },
+      "load": {
+        "ok": true,
+        "action": "chat_loaded",
+        "error": null,
+        "message_excerpt": "对话已加载: live-smoke-session-2026-07-28"
+      }
+    },
+    "w23_i18n_models": {
+      "models": {
+        "ok": true,
+        "action": "models",
+        "message_excerpt": "deepseek-v4-flash - deepseek-v4-flash @ https://api.deepseek.com\nglm-5.2 (active) - glm-5.2 @ https://ark.cn-beijing.volces.com/api/coding/v3",
+        "error": null
+      },
+      "language_show": {
+        "ok": true,
+        "action": "language_show",
+        "message_excerpt": "当前语言: zh。用法: /language zh|en",
+        "error": null
+      },
+      "language_en": {
+        "ok": true,
+        "action": "language_switched",
+        "message_excerpt": "Language switched to English",
+        "error": null
+      },
+      "language_zh": {
+        "ok": false,
+        "action": null,
+        "message_excerpt": "",
+        "error": "TimeoutError: timed out"
+      }
+    },
+    "multiround_summary": {
+      "recorded_turns": 7,
+      "llm_available": true,
+      "gte_4_turns": true
+    },
+    "route_log": {
+      "route_social_chat_seen": false,
+      "log_excerpt": "or (attempt 3/4, APIConnectionError); retrying in 2.0s\nLLM transport error (attempt 1/4, APIConnectionError); retrying in 0.5s\nLLM transport error (attempt 2/4, APIConnectionError); retrying in 1.0s\nLLM transport error (attempt 3/4, APIConnectionError); retrying in 2.0s\nLLM transport error (attempt 1/4, APIConnectionError); retrying in 0.5s\nLLM transport error (attempt 2/4, APIConnectionError); retrying in 1.0s\nLLM transport error (attempt 3/4, APIConnectionError); retrying in 2.0s\nLLM transport error (attempt 1/4, APIConnectionError); retrying in 0.5s\nLLM transport error (attempt 2/4, APIConnectionError); retrying in 1.0s\nLLM transport error (attempt 3/4, APIConnectionError); retrying in 2.0s\nbuild pipeline raised APIConnectionError after 371s: APIConnectionError: Connection error.\nChat failed\nINFO:     127.0.0.1:53115 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53117 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53118 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53119 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53120 - \"POST /chat HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53538 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53539 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53540 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:53542 - \"POST /chat HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:64434 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:64435 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:64438 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:64439 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:50832 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:50834 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:50835 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:50836 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:50837 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:52820 - \"POST /command HTTP/1.1\" 200 OK\nINFO:     127.0.0.1:52821 - \"POST /command HTTP/1.1\" 200 OK\n"
+    }
+  },
+  "windows": {
+    "W03": {
+      "result": "PASS",
+      "note": " /thinking before+after agent init; toggle expands/collapses",
+      "evidence": {
+        "ok": true,
+        "first": {
+          "expanded": false,
+          "elapsed_s": 0.037
+        },
+        "second": {
+          "expanded": true,
+          "elapsed_s": 0.034
+        },
+        "before_agent_ok": true
+      }
+    },
+    "W04": {
+      "result": "PASS",
+      "note": "social multi-round 4 turns, no jargon",
+      "evidence": {
+        "ok": true,
+        "turn_count": 4,
+        "turns_ok": 4,
+        "jargon_any": false,
+        "excerpts": [
+          "当然可以呀，我陪你玩 🫂\n\n听到你说难过，我很想陪在你身边。现在深夜两点多了，不管发生了什么，你愿意说说话也可以，不想说也没关系，我们就一起玩点什么放松一下。\n\n我能陪你玩这些文字小游戏，你选一个喜欢的：\n\n1. 🎭 **成语接龙** — 我说一个成语，你接最后一个字，轮流来\n2. 🔮 **海龟汤** — 我出一个离奇",
+          "好的呀！我已经心里想好了一个 1 到 10 之间的数字 🔢✨\n\n你来猜猜看吧～每猜一次我会告诉你\"大了\"还是\"小了\"，直到猜中为止。\n\n来吧，你的第一个数字是？😊None",
+          "哈哈不对哦～我想要的数字不是 7 😄\n\n给你个提示：这个数字比 7 小～\n\n继续猜吧！猜对了我给你个\"🏆\"🏆None",
+          "[evidence failed: Tool webfetch did not complete: failed; Tool webfetch did not complete: failed; Tool webfetch did not complete: failed]None"
+        ]
+      }
+    },
+    "W04b": {
+      "result": "PARTIAL",
+      "note": "stream progress seen but no final answer / error=[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+      "evidence": {
+        "message": "写一个跑酷小游戏并保存",
+        "mode": "build",
+        "status_code": 200,
+        "elapsed_s": 371.136,
+        "error": "[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+        "event_types": [
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "tool_call",
+          "tool_result",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "tool_call",
+          "tool_result",
+          "progress",
+          "tool_call",
+          "tool_result",
+          "tool_call",
+          "tool_result",
+          "tool_call",
+          "tool_result",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress",
+          "progress"
+        ],
+        "progress_events": 63,
+        "unique_event_types": [
+          "done",
+          "error",
+          "progress",
+          "tool_call",
+          "tool_result"
+        ],
+        "jargon_detected": false,
+        "response_excerpt": "[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+        "ok": false,
+        "partial_ok": true
+      }
+    },
+    "W05": {
+      "result": "PASS",
+      "note": " /plan mode_changed; plan-mode chat ok",
+      "evidence": {
+        "cmd_ok": true,
+        "chat": {
+          "message": "用一句话说明当前仓库是做什么的，不要修改任何文件",
+          "mode": "plan",
+          "status_code": 200,
+          "elapsed_s": 2.401,
+          "error": null,
+          "jargon_detected": false,
+          "response_excerpt": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLsNone",
+          "ok": true
+        }
+      }
+    },
+    "W06": {
+      "result": "PARTIAL",
+      "note": "/build mode_changed; full edit+test pipeline not completed in smoke (see W04b stream)",
+      "evidence": {
+        "command": "/build",
+        "status_code": 200,
+        "elapsed_s": 0.054,
+        "error": null,
+        "action": "mode_changed",
+        "message_excerpt": "已切换到 Build 模式",
+        "payload_keys": [
+          "action",
+          "message",
+          "mode"
+        ],
+        "payload": {
+          "action": "mode_changed",
+          "mode": "build",
+          "message": "已切换到 Build 模式"
+        },
+        "ok": true
+      }
+    },
+    "W07": {
+      "result": "PARTIAL",
+      "note": "/compose mode_changed; replan/cache compose loop not fully exercised",
+      "evidence": {
+        "command": "/compose",
+        "status_code": 200,
+        "elapsed_s": 0.05,
+        "error": null,
+        "action": "mode_changed",
+        "message_excerpt": "已切换到 Compose 模式",
+        "payload_keys": [
+          "action",
+          "message",
+          "mode"
+        ],
+        "payload": {
+          "action": "mode_changed",
+          "mode": "compose",
+          "message": "已切换到 Compose 模式"
+        },
+        "ok": true
+      }
+    },
+    "W08": {
+      "result": "PARTIAL",
+      "note": "dual-track /status+/cache ok; same-question hit retest not run",
+      "evidence": {
+        "cache_rate": "0.0%",
+        "status": {
+          "ok": true,
+          "status_code": 200,
+          "application_cache_keys": [
+            "precise",
+            "semantic"
+          ],
+          "provider_cache_keys": [
+            "hit_rate",
+            "hit_tokens",
+            "prompt_tokens"
+          ],
+          "cache_rate": "0.0%",
+          "model": "glm-5.2"
+        }
+      }
+    },
+    "W09": {
+      "result": "SKIP",
+      "note": "N/A: cache_rate=0.0% (<85%); smoke not warm enough",
+      "evidence": null
+    },
+    "W10": {
+      "result": "PARTIAL",
+      "note": "partial memory commands",
+      "evidence": {
+        "add": {
+          "ok": false,
+          "action": "error",
+          "elapsed_s": 0.104,
+          "message_excerpt": "[blocked: memory is not available in Plan mode]",
+          "error": null
+        },
+        "list": {
+          "ok": true,
+          "action": "memory_list",
+          "elapsed_s": 0.108,
+          "message_excerpt": "[no memories saved]",
+          "error": null
+        },
+        "search": {
+          "ok": true,
+          "action": "memory_search",
+          "elapsed_s": 0.091,
+          "message_excerpt": "[no memory files found]",
+          "error": null
+        }
+      }
+    },
+    "W11": {
+      "result": "SKIP",
+      "note": "RAG search/edit not exercised in API smoke",
+      "evidence": null
+    },
+    "W12": {
+      "result": "SKIP",
+      "note": "Safety WRITE/DANGER approval flow not live",
+      "evidence": null
+    },
+    "W13": {
+      "result": "SKIP",
+      "note": "MCP add/list not exercised",
+      "evidence": null
+    },
+    "W14": {
+      "result": "SKIP",
+      "note": "Skills find/add/remove not exercised",
+      "evidence": null
+    },
+    "W15": {
+      "result": "SKIP",
+      "note": "Web search/fetch not exercised",
+      "evidence": null
+    },
+    "W17": {
+      "result": "SKIP",
+      "note": "Sub-agent parallel not exercised",
+      "evidence": null
+    },
+    "W18": {
+      "result": "SKIP",
+      "note": "Recovery retry path not exercised",
+      "evidence": null
+    },
+    "W21": {
+      "result": "SKIP",
+      "note": "Workflow run/status/cancel not exercised",
+      "evidence": null
+    },
+    "W22": {
+      "result": "SKIP",
+      "note": "LSP not exercised",
+      "evidence": null
+    },
+    "W16": {
+      "result": "PARTIAL",
+      "note": "git status asked via /chat; no commit performed",
+      "evidence": {
+        "excerpt": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLsNone"
+      }
+    },
+    "W19": {
+      "result": "PASS",
+      "note": "queue add/list/remove + schedule list via /command",
+      "evidence": {
+        "queue_list": {
+          "ok": true,
+          "action": "queue_list",
+          "error": null
+        },
+        "queue_add": {
+          "ok": true,
+          "action": "queue_add",
+          "error": null,
+          "message_excerpt": "已添加任务 #1: live-smoke-noop-prompt-do-not-run"
+        },
+        "queue_list2": {
+          "ok": true,
+          "action": "queue_list",
+          "error": null
+        },
+        "queue_remove": {
+          "ok": true,
+          "action": "queue_remove",
+          "error": null
+        },
+        "schedule_list": {
+          "ok": true,
+          "action": "schedule_list",
+          "error": null,
+          "message_excerpt": "没有定时任务"
+        }
+      }
+    },
+    "W20": {
+      "result": "PASS",
+      "note": "save-chat + list-chats + load-chat",
+      "evidence": {
+        "save": {
+          "ok": true,
+          "action": "chat_saved",
+          "error": null,
+          "message_excerpt": "对话已保存: live-smoke-session-2026-07-28"
+        },
+        "list": {
+          "ok": true,
+          "action": "session_list",
+          "error": null,
+          "message_excerpt": ""
+        },
+        "load": {
+          "ok": true,
+          "action": "chat_loaded",
+          "error": null,
+          "message_excerpt": "对话已加载: live-smoke-session-2026-07-28"
+        }
+      }
+    },
+    "W23": {
+      "result": "PASS",
+      "note": "/models + /language toggle",
+      "evidence": {
+        "models": {
+          "ok": true,
+          "action": "models",
+          "message_excerpt": "deepseek-v4-flash - deepseek-v4-flash @ https://api.deepseek.com\nglm-5.2 (active) - glm-5.2 @ https://ark.cn-beijing.volces.com/api/coding/v3",
+          "error": null
+        },
+        "language_show": {
+          "ok": true,
+          "action": "language_show",
+          "message_excerpt": "当前语言: zh。用法: /language zh|en",
+          "error": null
+        },
+        "language_en": {
+          "ok": true,
+          "action": "language_switched",
+          "message_excerpt": "Language switched to English",
+          "error": null
+        },
+        "language_zh": {
+          "ok": false,
+          "action": null,
+          "message_excerpt": "",
+          "error": "TimeoutError: timed out"
+        }
+      }
+    },
+    "W24": {
+      "result": "SKIP",
+      "note": "Esc/cancel mid-stream not driven in this smoke (would need concurrent cancel)",
+      "evidence": null
+    },
+    "W01": {
+      "result": "SKIP",
+      "note": "No TTY cursor evidence",
+      "evidence": null
+    },
+    "W02": {
+      "result": "SKIP",
+      "note": "No scrollbox live session",
+      "evidence": null
+    },
+    "W25": {
+      "result": "PARTIAL",
+      "note": "logo matrix automated only; no Win32 screenshot in this run",
+      "evidence": null
+    },
+    "W26": {
+      "result": "SKIP",
+      "note": "No macOS runner",
+      "evidence": null
+    }
+  },
+  "turns": [
+    {
+      "window": "W04",
+      "turn": 1,
+      "message": "我很难过，你能陪我玩游戏吗？",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 8.527,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "当然可以呀，我陪你玩 🫂\n\n听到你说难过，我很想陪在你身边。现在深夜两点多了，不管发生了什么，你愿意说说话也可以，不想说也没关系，我们就一起玩点什么放松一下。\n\n我能陪你玩这些文字小游戏，你选一个喜欢的：\n\n1. 🎭 **成语接龙** — 我说一个成语，你接最后一个字，轮流来\n2. 🔮 **海龟汤** — 我出一个离奇的谜面，你提问来猜真相（只能回答是/否）\n3. 📖 **故事接龙** — 我起个头，我们一人一句编一个故事\n4. 🤔 **20个问题** — 你心里想一个东西，我用是/否问题来猜\n5. 🧩 **猜谜语** — 我出谜语你来猜\n\n或者你有别的想玩的也可以跟我说～\n\n你想玩哪个？😊None",
+      "ok": true
+    },
+    {
+      "window": "W04",
+      "turn": 2,
+      "message": "那我们玩猜数字吧，你先想一个1到10的数",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 8.618,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "好的呀！我已经心里想好了一个 1 到 10 之间的数字 🔢✨\n\n你来猜猜看吧～每猜一次我会告诉你\"大了\"还是\"小了\"，直到猜中为止。\n\n来吧，你的第一个数字是？😊None",
+      "ok": true
+    },
+    {
+      "window": "W04",
+      "turn": 3,
+      "message": "我猜是7，对吗？",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 16.325,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "哈哈不对哦～我想要的数字不是 7 😄\n\n给你个提示：这个数字比 7 小～\n\n继续猜吧！猜对了我给你个\"🏆\"🏆None",
+      "ok": true
+    },
+    {
+      "window": "W04",
+      "turn": 4,
+      "message": "谢谢你陪我，今天就到这里吧",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 23.76,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "[evidence failed: Tool webfetch did not complete: failed; Tool webfetch did not complete: failed; Tool webfetch did not complete: failed]None",
+      "ok": true
+    },
+    {
+      "window": "W04b",
+      "turn": "stream",
+      "message": "写一个跑酷小游戏并保存",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 371.136,
+      "error": "[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+      "event_types": [
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "tool_call",
+        "tool_result",
+        "tool_call",
+        "tool_result",
+        "tool_call",
+        "tool_result",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress",
+        "progress"
+      ],
+      "progress_events": 63,
+      "unique_event_types": [
+        "done",
+        "error",
+        "progress",
+        "tool_call",
+        "tool_result"
+      ],
+      "jargon_detected": false,
+      "response_excerpt": "[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error.",
+      "ok": false,
+      "partial_ok": true
+    },
+    {
+      "window": "W05",
+      "turn": "plan_chat",
+      "message": "用一句话说明当前仓库是做什么的，不要修改任何文件",
+      "mode": "plan",
+      "status_code": 200,
+      "elapsed_s": 2.401,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLsNone",
+      "ok": true
+    },
+    {
+      "window": "W16",
+      "turn": "git_status",
+      "message": "只运行 git status，用一两句话告诉我当前分支和是否有未提交改动，不要 commit",
+      "mode": "build",
+      "status_code": 200,
+      "elapsed_s": 2.313,
+      "error": null,
+      "jargon_detected": false,
+      "response_excerpt": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLsNone",
+      "ok": true
+    }
+  ]
+}
