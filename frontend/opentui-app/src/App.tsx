@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { fetchStatus, sendChatMessage } from "./chatApi.ts";
+import { fetchStatus, sendChatMessage, sendCommand } from "./chatApi.ts";
 import { formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
 import { formatStatusBarText } from "./statusBar.ts";
 import {
@@ -33,6 +33,7 @@ export default function App() {
   const textareaRef = useRef<TextareaRenderable>(null);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const thinkingTogglePendingRef = useRef(false);
   const stickyRef = useRef(sticky);
   stickyRef.current = sticky;
 
@@ -58,6 +59,21 @@ export default function App() {
     }
   }, []);
 
+  const toggleThinking = useCallback(async () => {
+    if (thinkingTogglePendingRef.current) return;
+    thinkingTogglePendingRef.current = true;
+    try {
+      const result = await sendCommand("/thinking");
+      if (result && typeof result.expanded === "boolean") {
+        setThinkingExpanded(result.expanded);
+      } else {
+        setThinkingExpanded((v) => !v);
+      }
+    } finally {
+      thinkingTogglePendingRef.current = false;
+    }
+  }, []);
+
   const submitText = useCallback(
     async (raw: string) => {
       const trimmed = raw.trim();
@@ -78,7 +94,7 @@ export default function App() {
         return;
       }
       if (trimmed === "/thinking") {
-        setThinkingExpanded((v) => !v);
+        await toggleThinking();
         setInputValue("");
         textareaRef.current?.setText("");
         return;
@@ -118,7 +134,7 @@ export default function App() {
       );
       abortRef.current = null;
     },
-    [isStreaming, mode, reengageSticky],
+    [isStreaming, mode, reengageSticky, toggleThinking],
   );
 
   useKeyboard((key) => {
@@ -127,7 +143,7 @@ export default function App() {
       return;
     }
     if (key.ctrl && key.name === "t") {
-      setThinkingExpanded((v) => !v);
+      void toggleThinking();
       return;
     }
     if (key.name === "escape") {

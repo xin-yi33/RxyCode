@@ -1341,15 +1341,15 @@ async def _execute_command(req: CommandRequest):
         proxy = _state["tui_proxy"]
         new_state = not proxy._expand_thinking
         proxy.set_thinking_expanded(new_state)
-        # Also sync to the global TUI (could be StreamTUI during streaming)
+        # Also sync to the global TUI (could be StreamTUI during streaming).
+        # StreamTUI.set_thinking_expanded(True) emits a reasoning snapshot SSE
+        # from the session recorder so mid-run expand can catch up (U3).
         from .utils.tui import get_tui
         current_tui = get_tui()
         if current_tui and current_tui is not proxy:
             set_thinking = getattr(current_tui, "set_thinking_expanded", None)
             if set_thinking:
                 set_thinking(new_state)
-        # Apply the visibility gate to future streaming events only. Replaying
-        # stored reasoning here creates a second, unbounded terminal transcript.
         return {"action": "thinking_toggled", "message": "思考过程: " + ("展开" if new_state else "折叠"), "expanded": new_state}
 
     if c == "/cache":
@@ -2123,7 +2123,22 @@ class StreamTUI:
 
     # no-ops for the rest of the TUI interface
     def set_thinking_expanded(self, expanded):
-        self._expand_thinking = expanded
+        was = bool(getattr(self, "_expand_thinking", False))
+        self._expand_thinking = bool(expanded)
+        # Mid-run expand: push already-accumulated thinking so the client can
+        # show it immediately (U3). Collapse must not replay.
+        if self._expand_thinking and not was:
+            self._emit_thinking_snapshot()
+
+    def _emit_thinking_snapshot(self) -> None:
+        self.flush_stream_buffers()
+        snapshot = ""
+        if self.recorder is not None:
+            snapshot = str(self.recorder.thinking_content or "")
+        if not snapshot:
+            return
+        self._put({"type": "reasoning", "text": snapshot, "snapshot": True})
+
     def get_thinking_expanded(self):
         """Get thinking panel expanded state (always False in stream mode unless set)."""
         return getattr(self, '_expand_thinking', False)

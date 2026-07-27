@@ -3,7 +3,13 @@ import { Text } from 'ink';
 import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../types';
-import { isSendBlocked, resolveFinalContent, settleActiveMessages, useApi } from './useApi';
+import {
+  applyThinkingAccum,
+  isSendBlocked,
+  resolveFinalContent,
+  settleActiveMessages,
+  useApi,
+} from './useApi';
 
 // Bug A: sendMessage must refuse a new turn while a response is streaming.
 describe('isSendBlocked (Bug A: duplicate-send guard)', () => {
@@ -40,6 +46,28 @@ describe('settleActiveMessages', () => {
     expect(settled[1]).toMatchObject({ done: true, live: false });
     expect(settled[2]).toMatchObject({ toolStatus: 'error' });
     expect(settled[3]).toMatchObject({ role: 'user' });
+  });
+});
+
+describe('applyThinkingAccum (U3 progress replace vs reasoning append)', () => {
+  it('replaces status lines so progress does not become a tape', () => {
+    let acc = applyThinkingAccum('', 'Decomposed into 1 sub-tasks', 'replace');
+    acc = applyThinkingAccum(acc, 'Executing tools...', 'replace');
+    acc = applyThinkingAccum(acc, 'Waiting for user answer: pick one', 'replace');
+    expect(acc).toBe('Waiting for user answer: pick one');
+  });
+
+  it('appends reasoning deltas', () => {
+    let acc = applyThinkingAccum('', 'First thought', 'append');
+    acc = applyThinkingAccum(acc, ' continued', 'append');
+    expect(acc).toBe('First thought continued');
+  });
+
+  it('snapshot replace clears prior progress before live reasoning', () => {
+    let acc = applyThinkingAccum('', 'short status', 'replace');
+    acc = applyThinkingAccum(acc, 'full accumulated reasoning snapshot', 'replace');
+    acc = applyThinkingAccum(acc, ' +delta', 'append');
+    expect(acc).toBe('full accumulated reasoning snapshot +delta');
   });
 });
 
@@ -124,6 +152,74 @@ describe('useApi SSE message ordering', () => {
       role: 'assistant',
       content: 'final answer',
       done: true,
+    });
+  });
+
+  it('replaces progress status lines and appends reasoning (U3 tape fix)', async () => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          'data: {"type":"progress","text":"Decomposed into 1 sub-tasks"}\n\n',
+          'data: {"type":"progress","text":"Executing tools..."}\n\n',
+          'data: {"type":"reasoning","text":"think-a"}\n\n',
+          'data: {"type":"reasoning","text":"-b"}\n\n',
+          'data: {"type":"final","text":"ok"}\n\n',
+          'data: {"type":"done","status":"succeeded"}\n\n',
+        ].join('')));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+
+    let latestMessages: ChatMessage[] = [];
+    render(React.createElement(HookHarness, {
+      onState: (messages) => { latestMessages = messages; },
+    }));
+
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.waitFor(() => {
+      const thinking = latestMessages.find(m => m.role === 'thinking');
+      expect(thinking?.content).toContain('think-a-b');
+    });
+    const thinking = latestMessages.find(m => m.role === 'thinking');
+    expect(thinking?.content).not.toContain('Decomposed into 1 sub-tasks');
+    expect(thinking?.content).not.toContain('Executing tools...');
+  });
+
+  it('applies mid-stream reasoning snapshot by replace (U3 expand)', async () => {
+    vi.useFakeTimers();
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          'data: {"type":"progress","text":"Working..."}\n\n',
+          'data: {"type":"reasoning","text":"snapshot-body","snapshot":true}\n\n',
+          'data: {"type":"reasoning","text":" +more"}\n\n',
+          'data: {"type":"final","text":"ok","thinking":"snapshot-body +more"}\n\n',
+          'data: {"type":"done","status":"succeeded"}\n\n',
+        ].join('')));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+
+    let latestMessages: ChatMessage[] = [];
+    render(React.createElement(HookHarness, {
+      onState: (messages) => { latestMessages = messages; },
+    }));
+
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.waitFor(() => {
+      const thinking = latestMessages.find(m => m.role === 'thinking');
+      expect(thinking?.content).toBe('snapshot-body +more');
     });
   });
 });

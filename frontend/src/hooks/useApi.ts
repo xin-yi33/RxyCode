@@ -15,6 +15,15 @@ export function resolveFinalContent(accumulatedTokens: string, finalText?: strin
   return finalText !== undefined ? finalText : accumulatedTokens;
 }
 
+/** U3: reasoning deltas append; progress/step/approval/snapshot replace. */
+export function applyThinkingAccum(
+  acc: string,
+  text: string,
+  mode: 'append' | 'replace',
+): string {
+  return mode === 'replace' ? text : acc + text;
+}
+
 export function settleActiveMessages(
   messages: Message[],
   toolStatus: Extract<ToolStatus, 'error' | 'timeout' | 'cancelled'>,
@@ -82,6 +91,8 @@ interface StreamEvent {
   message_id?: string;
   timestamp?: number;
   session_schema_version?: number;
+  /** Mid-stream /thinking expand: full recorder snapshot (replace, not append). */
+  snapshot?: boolean;
 }
 
 export interface ApprovalInfo {
@@ -258,8 +269,13 @@ export function useApi() {
     // 50ms = near-real-time stream of reasoning tokens (was 800ms which felt
     // like a single dump instead of live thinking like opencode/hermes).
     let reasoningAcc = '';
-    const debouncedUpdateThinking = (text: string, step?: { index: number; total: number }) => {
-      reasoningAcc += text;
+    const debouncedUpdateThinking = (
+      text: string,
+      opts?: { step?: { index: number; total: number }; mode?: 'append' | 'replace' },
+    ) => {
+      const mode = opts?.mode ?? 'append';
+      const step = opts?.step;
+      reasoningAcc = applyThinkingAccum(reasoningAcc, text, mode);
       pendingThinkingRef.current = reasoningAcc;
       if (step) pendingStepRef.current = step;
       if (debounceTimerRef.current) return;
@@ -295,7 +311,9 @@ export function useApi() {
             args: typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args ?? {}),
           };
           setPendingApproval(info);
-          debouncedUpdateThinking(`等待用户确认: ${info.tool} [${info.risk}]`);
+          if (!hasReasoningRef.current) {
+            debouncedUpdateThinking(`等待用户确认: ${info.tool} [${info.risk}]`, { mode: 'replace' });
+          }
           break;
         }
         case 'question_request': {
@@ -306,20 +324,25 @@ export function useApi() {
             options: Array.isArray(ev.options) ? ev.options : [],
           };
           setPendingQuestion(info);
-          debouncedUpdateThinking(`Waiting for user answer: ${info.question}`);
+          if (!hasReasoningRef.current) {
+            debouncedUpdateThinking(`Waiting for user answer: ${info.question}`, { mode: 'replace' });
+          }
           break;
         }
         case 'reasoning': {
           // Live model reasoning (thinking). Mark the thinking panel as live so
           // it renders during streaming, and make it authoritative over progress.
-          // CRITICAL: accumulate text (backend sends delta chunks), don't replace.
+          // CRITICAL: delta chunks append; mid-run snapshot (and first live chunk
+          // after progress status) replace so progress never tapes into reasoning.
           const rt = ev.text || '';
           if (rt.length > 0) {
+            const isFirst = !hasReasoningRef.current;
             hasReasoningRef.current = true;
             queueMsgUpdate(prev => prev.map(m =>
               m.id === thinkingId ? { ...m, live: true } : m
             ));
-            debouncedUpdateThinking(rt);
+            const mode = ev.snapshot || isFirst ? 'replace' : 'append';
+            debouncedUpdateThinking(rt, { mode });
           }
           break;
         }
@@ -331,25 +354,30 @@ export function useApi() {
           // Show all meaningful progress messages (graph node events, step info, etc.)
           // Filter out very long raw model thinking (>150 chars) but show everything else
           if (progressText.length > 0 && progressText.length < 150) {
-            debouncedUpdateThinking(progressText);
+            debouncedUpdateThinking(progressText, { mode: 'replace' });
           } else if (progressText.length >= 150) {
             // For long messages, show first line only
             const firstLine = progressText.split('\n')[0].slice(0, 120);
-            debouncedUpdateThinking(firstLine + '...');
+            debouncedUpdateThinking(firstLine + '...', { mode: 'replace' });
           }
           break;
         }
         case 'plan': {
           if (hasReasoningRef.current) break;
           const steps = (ev.steps || []).map((s: string, i: number) => `${i + 1}. ${s}`).join('\n');
+          reasoningAcc = `Plan (${ev.steps?.length || 0} steps):\n${steps}`;
+          pendingThinkingRef.current = reasoningAcc;
           queueMsgUpdate(prev => prev.map(m =>
-            m.id === thinkingId ? { ...m, content: `Plan (${ev.steps?.length || 0} steps):\n${steps}` } : m
+            m.id === thinkingId ? { ...m, content: reasoningAcc } : m
           ));
           break;
         }
         case 'step': {
           if (hasReasoningRef.current) break;
-          debouncedUpdateThinking(`Step ${ev.index}/${ev.total}: ${ev.text}`, { index: ev.index || 0, total: ev.total || 0 });
+          debouncedUpdateThinking(`Step ${ev.index}/${ev.total}: ${ev.text}`, {
+            step: { index: ev.index || 0, total: ev.total || 0 },
+            mode: 'replace',
+          });
           break;
         }
         case 'tool_call': {

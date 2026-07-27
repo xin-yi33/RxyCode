@@ -15,6 +15,7 @@ interface StreamEvent {
   exitCode?: number;
   duration?: number;
   error?: string;
+  snapshot?: boolean;
 }
 
 export type MessageUpdater = (prev: ChatMessage[]) => ChatMessage[];
@@ -42,6 +43,20 @@ export async function fetchStatus(onStatus: (status: StatusInfo | null) => void)
   }
 }
 
+/** POST /command — same contract as Ink useApi.sendCommand (U3 /thinking gate sync). */
+export async function sendCommand(command: string): Promise<Record<string, unknown> | null> {
+  try {
+    const resp = await axios.post(
+      `${API_BASE}/command`,
+      { command },
+      { headers: authorizationHeaders(), timeout: 15000 },
+    );
+    return (resp.data ?? null) as Record<string, unknown> | null;
+  } catch {
+    return null;
+  }
+}
+
 export async function sendChatMessage(
   content: string,
   mode: Mode,
@@ -62,6 +77,8 @@ export async function sendChatMessage(
   const assistantId = newId("assistant");
   let acc = "";
   let assistantCreated = false;
+  let reasoningAcc = "";
+  let hasReasoning = false;
 
   callbacks.onMessages((prev) => [
     ...prev,
@@ -109,8 +126,29 @@ export async function sendChatMessage(
       (event) => {
         switch (event.type) {
           case "progress":
-            callbacks.onProgress?.(event.message || event.text || "Working...");
+            if (!hasReasoning) {
+              callbacks.onProgress?.(event.message || event.text || "Working...");
+            }
             break;
+          case "reasoning":
+          case "thinking": {
+            const thought = event.thinking || event.text || "";
+            if (!thought) break;
+            if (event.snapshot || !hasReasoning) {
+              reasoningAcc = thought;
+            } else {
+              reasoningAcc += thought;
+            }
+            hasReasoning = true;
+            callbacks.onMessages((prev) =>
+              prev.map((m) =>
+                m.id === thinkingId
+                  ? { ...m, content: reasoningAcc, live: true, done: false }
+                  : m,
+              ),
+            );
+            break;
+          }
           case "token":
             if (event.text) {
               acc += event.text;
@@ -133,18 +171,6 @@ export async function sendChatMessage(
                   prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)),
                 );
               }
-            }
-            break;
-          case "thinking":
-            if (event.thinking || event.text) {
-              const thought = event.thinking || event.text || "";
-              callbacks.onMessages((prev) =>
-                prev.map((m) =>
-                  m.id === thinkingId
-                    ? { ...m, content: thought, live: true, done: false }
-                    : m,
-                ),
-              );
             }
             break;
           case "tool_call":
