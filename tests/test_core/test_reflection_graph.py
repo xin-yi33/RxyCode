@@ -141,7 +141,8 @@ async def test_final_verifier_replaces_optimistic_claim_for_cancelled_work():
 
     assert update["phase"] == "done"
     assert update["final_verification"]["passed"] is False
-    assert update["final_response"].startswith("[Build incomplete:")
+    assert "构建流程未完成" in update["final_response"] or "校验" in update["final_response"]
+    assert "Synthesizer" not in update["final_response"]
     state["_memory"].store_execution.assert_not_awaited()
     state["_memory"].store_plan_experience.assert_not_awaited()
 

@@ -209,7 +209,8 @@ async def test_compiled_graph_resumes_verification_without_replanning(monkeypatc
 
     planner.assert_not_awaited()
     assert result["phase"] == "done"
-    assert result["final_response"].startswith("[Build incomplete:")
+    assert "构建流程未完成" in result["final_response"] or "校验" in result["final_response"]
+    assert "Synthesizer" not in result["final_response"]
 
 
 def test_default_config_has_bounded_graph_tool_and_checkpoint_controls():

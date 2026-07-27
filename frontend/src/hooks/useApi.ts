@@ -4,6 +4,7 @@ import type { Message, StatusInfo, ToolStatus } from '../types.js';
 import { logInfo, logWarn, logError, logDebug } from '../log.js';
 import { API_BASE, authorizationHeaders, safeCommandLabel } from '../apiClient.js';
 import { consumeJsonSseStream } from './sseParser.js';
+import { formatUserFacingStreamError } from '../userFacingErrors.js';
 
 /** Bug A: pure guard used by sendMessage to refuse a new turn while streaming. */
 export function isSendBlocked(currentlyStreaming: boolean): boolean {
@@ -492,7 +493,7 @@ export function useApi() {
           const errType = ev.error_type || ev.kind || 'agent';
           const elapsedSoFar = ((Date.now() - startedAt) / 1000).toFixed(1);
           logError('Stream error received', { message: ev.message, type: errType });
-          addMessage({ role: 'system', content: `Error: ${ev.message}` });
+          addMessage({ role: 'system', content: formatUserFacingStreamError(ev.message) });
           break;
         }
         default:

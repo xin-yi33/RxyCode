@@ -308,7 +308,9 @@ async def test_graph_final_verifier_rejects_manifest_claim_tampering():
     update = await final_verifier_node(state)
 
     assert update["final_verification"]["passed"] is False
-    assert update["final_response"].startswith("[Build incomplete:")
+    assert "构建流程未完成" in update["final_response"] or "校验" in update["final_response"]
+    assert "Synthesizer" not in update["final_response"]
+    assert "manifest" not in update["final_response"].lower()
     memory.store_execution.assert_not_awaited()
     memory.store_plan_experience.assert_not_awaited()
 
@@ -386,6 +388,7 @@ async def test_graph_rejects_unstructured_synthesizer_output_after_repair():
     assert synthesis_update["phase"] == "verifying"
     assert synthesis_update["final_verification"]["synthesis_manifest"] is None
     assert final_update["final_verification"]["passed"] is False
-    assert final_update["final_response"].startswith("[Build incomplete:")
+    assert "构建流程未完成" in final_update["final_response"] or "校验" in final_update["final_response"]
+    assert "Synthesizer" not in final_update["final_response"]
     memory.store_execution.assert_not_awaited()
     memory.store_plan_experience.assert_not_awaited()

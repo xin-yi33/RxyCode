@@ -980,7 +980,10 @@ async def synthesizer_node(state: AgentState) -> dict:
             "synthesis_error": None,
         }
     except StructuredOutputError as exc:
-        final = "[Build incomplete: Synthesizer output was not valid grounded JSON.]"
+        from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
+
+        internal = "[Build incomplete: Synthesizer output was not valid grounded JSON.]"
+        final = to_user_facing_error(internal)
         synthesis_state = {
             "synthesis_manifest": None,
             "synthesis_error": str(exc)[:1000],
@@ -1050,8 +1053,10 @@ async def final_verifier_node(state: AgentState) -> dict:
         **grounding_metrics,
     }
     if issues:
+        from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
+
         detail = "; ".join(verification["issues"][:8])
-        final = f"[Build incomplete: {detail}]"
+        final = to_user_facing_error(f"[Build incomplete: {detail}]")
     else:
         # A pure formatting mismatch (valid, verbatim, fully-cited claims
         # wrapped in extra prose) was repaired by verify_grounded_synthesis
