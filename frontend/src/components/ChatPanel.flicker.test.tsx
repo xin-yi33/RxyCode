@@ -73,7 +73,8 @@ describe('ChatPanel flicker (Static) behavior', () => {
 
     const frame = lastFrame() ?? '';
     expect(frame).toContain('Thought');
-    expect(frame).not.toContain('THINK_DONE');
+    // U3: expanded + done may recall body (OpenCode-like); no longer assert hidden
+    expect(frame).toContain('THINK_DONE');
     expect(frame).toContain('ALPHABETA');
     expect(frame.indexOf('Thought')).toBeLessThan(frame.indexOf('ALPHABETA'));
   });
@@ -139,11 +140,13 @@ describe('ChatPanel flicker (Static) behavior', () => {
     const { lastFrame } = render(<ChatPanel messages={messages} height={20} mode="build" expandThinking={true} />);
     const frame = lastFrame() ?? '';
     const summaryIdx = frame.indexOf('Thought');
+    const doneIdx = frame.indexOf('tick-done');
     const activeIdx = frame.indexOf('tick-active');
-    expect(frame).not.toContain('tick-done');
+    // U3: expanded recall shows done body; still above active thinking
+    expect(doneIdx).toBeGreaterThanOrEqual(0);
     expect(summaryIdx).toBeGreaterThanOrEqual(0);
     expect(activeIdx).toBeGreaterThanOrEqual(0);
-    expect(summaryIdx).toBeLessThan(activeIdx);
+    expect(doneIdx).toBeLessThan(activeIdx);
   });
 
   test('welcome message shows when no messages', () => {
