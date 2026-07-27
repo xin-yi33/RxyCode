@@ -73,6 +73,7 @@ const ThinkingSpinner = React.memo(function ThinkingSpinner({ done }: { done?: b
 // the screen holds on every frame — the root mechanism of 问题4's flicker.
 // Once done, the full content is committed to <Static> and printed exactly once.
 const MAX_STREAMING_THINKING_LINES = 8;
+const MAX_EXPANDED_DONE_THINKING_LINES = 40;
 
 const ThinkingMessage = React.memo(function ThinkingMessage({ content, startTime, elapsed, done, expanded, stepIndex, stepTotal }: {
   content: string; startTime: number; elapsed?: number; done?: boolean; expanded: boolean; stepIndex?: number; stepTotal?: number;
@@ -84,8 +85,22 @@ const ThinkingMessage = React.memo(function ThinkingMessage({ content, startTime
   const showExpand = expanded;
   const stepLabel = stepIndex !== undefined && stepTotal !== undefined ? ` ${stepIndex}/${stepTotal} ` : '';
   const allLines = displayContent.split('\n').filter(l => l.trim());
-  const lines = done ? [] : allLines.slice(-MAX_STREAMING_THINKING_LINES);
-  const clipped = done ? 0 : allLines.length - lines.length;
+  let lines: string[];
+  let clipped: number;
+  if (done) {
+    if (expanded) {
+      lines = allLines.length <= MAX_EXPANDED_DONE_THINKING_LINES
+        ? allLines
+        : allLines.slice(-MAX_EXPANDED_DONE_THINKING_LINES);
+      clipped = allLines.length - lines.length;
+    } else {
+      lines = [];
+      clipped = 0;
+    }
+  } else {
+    lines = allLines.slice(-MAX_STREAMING_THINKING_LINES);
+    clipped = allLines.length - lines.length;
+  }
   return (
     <Box flexDirection="column" paddingLeft={2} minHeight={1} marginTop={0}>
       <Box>

@@ -59,7 +59,7 @@ describe('ChatPanel', () => {
     expect(f).not.toContain('secret step');
   });
 
-  it('commits completed thinking as a summary even when thinking is expanded', () => {
+  it('shows completed thinking content when expandThinking is true (U3 recall)', () => {
     const { lastFrame } = render(
       <ChatPanel {...base} expandThinking messages={[{
         id: 'thinking-complete',
@@ -72,8 +72,8 @@ describe('ChatPanel', () => {
     );
     const f = lastFrame() ?? '';
     expect(f).toContain('Thought');
-    expect(f).not.toContain('private-reasoning-line-1');
-    expect(f).not.toContain('private-reasoning-line-2');
+    expect(f).toContain('private-reasoning-line-1');
+    expect(f).toContain('private-reasoning-line-2');
   });
 
   it('keeps a long streaming assistant response inside a bounded tail preview', () => {
