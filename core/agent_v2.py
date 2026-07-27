@@ -1789,6 +1789,67 @@ class AgentV2:
             except Exception:
                 pass
 
+    def _has_creation_product_intent(self, text: str) -> bool:
+        """True when the user asks to create/build a product (game, app, …)."""
+        import re
+
+        text_stripped = text.strip()
+        text_lower = text_stripped.lower()
+        zh_create = (
+            "写一个", "写个", "编写", "实现", "开发", "创建", "做个", "做一个",
+            "帮我写", "生成一个", "生成个",
+        )
+        zh_products = (
+            "游戏", "代码", "脚本", "程序", "项目", "网站", "爬虫", "机器人", "算法",
+        )
+        if any(c in text_stripped for c in zh_create) and any(
+            p in text_stripped for p in zh_products
+        ):
+            return True
+        if re.search(
+            r"\b(build|create|implement|write|make)\b.*\b(game|app|website|code|script|bot)\b",
+            text_lower,
+        ):
+            return True
+        return False
+
+    def _is_social_chat(self, text: str) -> bool:
+        """Narrow emotional/social chat that must not enter LangGraph.
+
+        Disambiguates 「玩游戏」 (social) from 「写一个游戏」 (code intent).
+        """
+        import re
+
+        text_stripped = text.strip()
+        if not text_stripped or len(text_stripped) > 300:
+            return False
+        text_lower = text_stripped.lower()
+        if re.search(r"https?://", text_stripped):
+            return False
+        if re.search(r"[A-Za-z]:\\|/home/|~/", text_stripped):
+            return False
+        if self._has_creation_product_intent(text_stripped):
+            return False
+
+        social_signals = (
+            "伤心", "难过", "不理我", "陪我", "你好", "您好", "谢谢", "在吗",
+            "倾诉", "安慰", "孤独", "郁闷", "好伤心", "很难过",
+            "how are you", "i'm sad", "im sad", "i am sad", "feel sad",
+            "lonely", "upset",
+        )
+        has_social = any(s in text_stripped for s in social_signals) or any(
+            s in text_lower for s in social_signals if s.isascii()
+        )
+        play_game = any(
+            p in text_stripped
+            for p in ("玩游戏", "陪我玩", "找我玩", "找朋友玩", "一起玩")
+        )
+        if play_game and not self._has_creation_product_intent(text_stripped):
+            return True
+        if has_social and not self._has_creation_product_intent(text_stripped):
+            return True
+        return False
+
     def _is_simple_query(self, text: str) -> bool:
         """Detect queries that can be handled by a single LLM call (fast path).
 
@@ -1833,6 +1894,11 @@ class AgentV2:
         # Long queries (>500 chars) are likely complex
         if len(text_stripped) > 500:
             return False
+
+        # Social/emotional chat (incl. 「玩游戏」) stays on the fast path.
+        # Must run BEFORE the bare 「游戏」 code-intent check.
+        if self._is_social_chat(text_stripped):
+            return True
 
         # Code / game / app generation must go through the tool-capable
         # pipeline (write file + run + test), NOT the no-tool fast-reply
@@ -3258,10 +3324,33 @@ class AgentV2:
                 _logger.warning("download path failed: %s", exc)
 
         # Fast path for simple queries (build AND plan modes) - tool-aware
+        # Social chat must not fall through into LangGraph on tool-path errors.
+        social = self._is_social_chat(user_input)
+        if mode == "compose" and social:
+            try:
+                _logger.info("route=social_chat mode=compose -> fast_tools")
+                return await self._fast_reply_with_tools(user_input)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _logger.warning("social chat compose path failed: %s", exc)
+                return (
+                    "刚才没能完整回复你，我在这儿听着呢。"
+                    "你可以再说一次，或者换个说法。"
+                )
+
         if mode in ("build", "plan") and self._is_simple_query(user_input):
             try:
+                if social:
+                    _logger.info("route=social_chat mode=%s -> fast_tools", mode)
                 return await self._fast_reply_with_tools(user_input)
             except Exception as exc:
+                if social:
+                    _logger.warning("social chat fast path failed (no graph): %s", exc)
+                    return (
+                        "刚才没能完整回复你，我在这儿听着呢。"
+                        "你可以再说一次，或者换个说法。"
+                    )
                 if research_policy.requires_web:
                     return research_failure_message(str(exc))
                 if self._side_effecting_tool_attempted:
