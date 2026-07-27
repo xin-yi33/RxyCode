@@ -2,7 +2,9 @@
 import React from 'react';
 import { test, expect, describe } from 'vitest';
 import { render } from 'ink-testing-library';
-import { WORDMARK, centerLine } from '../src/logo.js';
+import stringWidth from 'string-width';
+import { WORDMARK, WORDMARK_DISPLAY_WIDTH, padToDisplayWidth, centerLine } from '../src/logo.js';
+import { renderWithSize } from '../src/testUtil.js';
 
 describe('logo structure', () => {
   test('logo has 7 lines (7x7 block style)', () => {
@@ -22,12 +24,18 @@ describe('logo structure', () => {
       expect(line).toMatch(/[█]/);
     });
   });
+
+  test('wordmark lines have equal display width when padded', () => {
+    const widths = WORDMARK.map((line) =>
+      stringWidth(padToDisplayWidth(line.replace(/ +$/, ''), WORDMARK_DISPLAY_WIDTH)),
+    );
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0]).toBe(WORDMARK_DISPLAY_WIDTH);
+  });
 });
 
 describe('centerLine', () => {
-  test('centers short text', () => {
-    // centerLine uses Math.floor((width - line.length) / 2)
-    // (10 - 3) / 2 = 3 (floor) -> '   abc'
+  test('centers short text by display width', () => {
     expect(centerLine('abc', 10)).toBe('   abc');
   });
 
@@ -40,10 +48,8 @@ describe('centerLine', () => {
   });
 
   test('centers 61-char logo in 100-col terminal', () => {
-    // centerLine adds leading spaces equal to floor((width - line.length) / 2)
-    // For 61-char logo in 100-col terminal: (100-61)/2 = 19 leading spaces
     const centered = centerLine(WORDMARK[0], 100);
-    expect(centered.length).toBe(80); // 19 + 61
+    expect(stringWidth(centered)).toBe(80); // 19 + 61 display width
     expect(centered.startsWith(' '.repeat(19))).toBe(true);
   });
 });
@@ -58,13 +64,11 @@ describe('Banner component', () => {
     console.log(frame);
     console.log('=== end ===\n');
 
-    // Verify all 7 logo lines are in the frame (after stripping leading spaces)
     WORDMARK.forEach((line, i) => {
       const trimmedLine = line.trimEnd();
       expect(frame, `Logo line ${i} should be in frame`).toContain(trimmedLine);
     });
 
-    // Verify subtitle
     expect(frame).toContain('General-Purpose AI Agent');
     expect(frame).not.toContain('Coding Assistant');
   });
@@ -76,18 +80,47 @@ describe('Banner component', () => {
     const frame = lastFrame();
     const lines = frame.split('\n');
 
-    // Find logo lines (those containing block characters)
     const logoLines = lines.filter(l => l.includes('█'));
     console.log('Logo lines found:', logoLines.length);
     expect(logoLines.length).toBe(7);
 
-    // Each logo line should have same leading whitespace (centering)
     const leadingSpacesList = logoLines.map(line => line.match(/^( *)/)?.[0].length || 0);
     console.log('Leading spaces per line:', leadingSpacesList);
 
-    // All should be 19 (logoWidth=61, termWidth=100, lead=19)
+    const expectedLeading = Math.floor((100 - WORDMARK_DISPLAY_WIDTH) / 2);
     leadingSpacesList.forEach((s, i) => {
-      expect(s, `Line ${i} should have 19 leading spaces`).toBe(19);
+      expect(s, `Line ${i} should have ${expectedLeading} leading spaces`).toBe(expectedLeading);
     });
   });
+
+  test('banner has no ZWJ padding', async () => {
+    const Banner = (await import('../src/components/Banner.js')).default;
+    const { lastFrame } = renderWithSize(React.createElement(Banner), 100, 24);
+    const frame = lastFrame() ?? '';
+    expect(frame).not.toMatch(/\u200D/);
+  });
+});
+
+describe('Banner display width matrix', () => {
+  for (const cols of [80, 100, 120]) {
+    test(`centers logo at ${cols} columns by display width`, async () => {
+      const Banner = (await import('../src/components/Banner.js')).default;
+      const { lastFrame } = renderWithSize(React.createElement(Banner), cols, 24);
+      const frame = lastFrame() ?? '';
+
+      expect(frame).not.toMatch(/\u200D/);
+
+      const logoLines = frame.split('\n').filter((l) => l.includes('█'));
+      expect(logoLines.length).toBe(7);
+
+      const displayWidths = logoLines.map((l) => stringWidth(l));
+      expect(new Set(displayWidths).size).toBe(1);
+
+      const expectedLeading = Math.floor((cols - WORDMARK_DISPLAY_WIDTH) / 2);
+      logoLines.forEach((line, i) => {
+        const leading = line.match(/^( *)/)?.[1]?.length ?? 0;
+        expect(leading, `line ${i} at ${cols} cols`).toBe(expectedLeading);
+      });
+    });
+  }
 });

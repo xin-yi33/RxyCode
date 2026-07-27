@@ -1,27 +1,22 @@
 import React from 'react';
 import { Box, Text, useStdout } from 'ink';
-import { WORDMARK, centerLine } from '../logo.js';
+import { WORDMARK, WORDMARK_DISPLAY_WIDTH, padToDisplayWidth } from '../logo.js';
+
+// Ink/yoga trim trailing ASCII spaces; WORD JOINER is 0-width (not ZWJ) and keeps pad.
+const PAD_GUARD = '\u2060';
 
 export default React.memo(function Banner() {
   const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 80;
 
-  // Logo 实际可见宽度 = 61 字符 (7x7 方块字, 所有行已 ljust 到 61)
-  // Subtitle 视觉宽度 = 30 字符
-  // 用 ZWJ 补齐 logo 每行到 61, 让所有行字符数一致
-  const logoWidth = 61;
-  const logoLeading = Math.floor((termWidth - logoWidth) / 2);
+  const logoLeading = Math.floor((termWidth - WORDMARK_DISPLAY_WIDTH) / 2);
 
   const subtitleWidth = 24;
   const subtitleLeading = Math.floor((termWidth - subtitleWidth) / 2);
 
-  // 把每行 rstrip 后, 用 ZWJ 补齐到 61 (ZWJ 0 宽度, 不影响视觉)
-  const lines: string[] = [];
-  for (let i = 0; i < WORDMARK.length; i++) {
-    const rstrip = WORDMARK[i].replace(/ +$/, '');
-    const padding = logoWidth - rstrip.length;
-    lines.push(rstrip + '\u200D'.repeat(padding));
-  }
+  const lines = WORDMARK.map((line) =>
+    padToDisplayWidth(line.replace(/ +$/, ''), WORDMARK_DISPLAY_WIDTH) + PAD_GUARD,
+  );
 
   return (
     <Box flexDirection="column" alignItems="flex-start" width={termWidth} paddingTop={1} paddingBottom={1}>
