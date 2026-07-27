@@ -11,16 +11,17 @@ class ReadInput(BaseModel):
 
 
 def read_file(filePath: str, offset: int = 1, limit: int = 800) -> str:
+    if any(ch in filePath for ch in ("*", "?", "[")):
+        return (
+            "[error: read 不支持通配符路径；请改用 glob 或 ls 工具定位文件后再 read 具体路径]"
+        )
     p = resolve_session_path(filePath)
     if not p.exists():
         return f"[error: path not found: {filePath}]"
     if p.is_dir():
-        entries = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name))
-        lines = []
-        for e in entries:
-            suffix = "/" if e.is_dir() else ""
-            lines.append(f"{e.name}{suffix}")
-        return "\n".join(lines)
+        return (
+            f"[error: '{filePath}' 是目录，read 仅用于文件；请改用 ls 或 glob]"
+        )
     try:
         with open(p, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
@@ -39,9 +40,10 @@ read_tool = StructuredTool.from_function(
     func=read_file,
     name="read",
     description=(
-        "Read a file or list a directory. Relative paths use the session working directory. "
+        "Read a file (not a directory). Relative paths use the session working directory. "
         "Returns content with line numbers. Reads at most `limit` lines (default 800); "
-        "for larger files, page through with `offset` (e.g. offset=801 for the next chunk)."
+        "for larger files, page through with `offset`. "
+        "Do not pass glob wildcards or directories — use glob/ls instead."
     ),
     args_schema=ReadInput,
 )

@@ -3276,6 +3276,10 @@ class AgentV2:
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
 
+        from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+        ToolOrchestrator.clear_live_dedup()
+
         await self._memory.initialize()
         await self._ensure_session_loaded()
 

@@ -164,7 +164,7 @@ class TestReadFile:
 
 
 class TestReadDirectory:
-    """Tests for directory listing via read_file."""
+    """E5: read rejects directories; callers should use ls/glob."""
 
     def _read(self, path):
         from RxyCode.RxyCode1_1_0.tools.read import read_file
@@ -172,42 +172,39 @@ class TestReadDirectory:
 
     def test_read_empty_directory(self, tmp_path):
         result = self._read(str(tmp_path))
-        assert result == ""
+        assert "error" in result.lower()
+        assert "目录" in result or "ls" in result.lower()
 
     def test_read_directory_with_files(self, tmp_path):
         (tmp_path / "file1.txt").write_text("a", encoding="utf-8")
         (tmp_path / "file2.txt").write_text("b", encoding="utf-8")
         result = self._read(str(tmp_path))
-        assert "file1.txt" in result
-        assert "file2.txt" in result
+        assert "error" in result.lower()
+        assert "ls" in result.lower() or "glob" in result.lower() or "目录" in result
 
     def test_read_directory_with_subdirs(self, tmp_path):
         (tmp_path / "subdir").mkdir()
         (tmp_path / "file.txt").write_text("a", encoding="utf-8")
         result = self._read(str(tmp_path))
-        assert "subdir/" in result
-        assert "file.txt" in result
+        assert "error" in result.lower()
 
     def test_read_directory_sorts_dirs_before_files(self, tmp_path):
         (tmp_path / "z_dir").mkdir()
         (tmp_path / "a_file.txt").write_text("a", encoding="utf-8")
         result = self._read(str(tmp_path))
-        lines = [l for l in result.split("\n") if l.strip()]
-        # sort key is (is_file, name), so dirs come first
-        assert "z_dir/" in lines[0]
-        assert "a_file.txt" in lines[1]
+        assert "error" in result.lower()
 
     def test_read_directory_adds_slash_suffix(self, tmp_path):
         (tmp_path / "mydir").mkdir()
         result = self._read(str(tmp_path))
-        assert "mydir/" in result
+        assert "error" in result.lower()
 
     def test_read_nested_directory(self, tmp_path):
         sub = tmp_path / "parent" / "child"
         sub.mkdir(parents=True)
         (sub / "deep.txt").write_text("deep", encoding="utf-8")
         result = self._read(str(tmp_path / "parent"))
-        assert "child/" in result
+        assert "error" in result.lower()
 
     def test_read_nonexistent_directory(self):
         result = self._read("/nonexistent/dir/path")

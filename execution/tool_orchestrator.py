@@ -47,6 +47,24 @@ _tool_journal_binding: ContextVar[Any | None] = ContextVar(
     "tool_journal_binding",
     default=None,
 )
+_live_tool_dedup: ContextVar[dict[str, str] | None] = ContextVar(
+    "live_tool_dedup",
+    default=None,
+)
+
+
+def _canonical_tool_args(args: Any) -> str:
+    import json
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            return args
+    try:
+        return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return str(args)
 
 
 class ToolOrchestrator:
@@ -78,6 +96,14 @@ class ToolOrchestrator:
         """Inject an AuditLogger (defaults to the shared one on first use)."""
         self._audit_logger = logger
 
+    @staticmethod
+    def clear_live_dedup() -> None:
+        """Reset per-run identical-call cache (call at request start)."""
+        _live_tool_dedup.set({})
+
+    @staticmethod
+    def _dedup_key(name: str, args: Any) -> str:
+        return f"{name.lower()}::{_canonical_tool_args(args)}"
     @staticmethod
     def bind_event_tui(tui: Any | None) -> Token:
         """Bind the request-local consumer for complete tool lifecycle events."""
@@ -666,6 +692,26 @@ class ToolOrchestrator:
             )
 
         try:
+            cache = _live_tool_dedup.get()
+            if cache is None:
+                cache = {}
+                _live_tool_dedup.set(cache)
+            key = self._dedup_key(name, args)
+            if key in cache:
+                skipped = (
+                    f"[重复调用已跳过: {name} 参数与本轮先前调用相同；"
+                    f"上次结果摘要: {str(cache[key])[:200]}]"
+                )
+                if event_started and hasattr(tui, "write_tool_result"):
+                    try:
+                        tui.write_tool_result(
+                            skipped, "success", call_id=resolved_call_id
+                        )
+                    except Exception:
+                        pass
+                finish_span("ok")
+                return skipped
+
             result = await self._execute_tool_gated(
                 name,
                 args,
@@ -673,6 +719,7 @@ class ToolOrchestrator:
                 approval_source=approval_source,
                 mode=mode,
             )
+            cache[key] = str(result)
         except asyncio.CancelledError:
             if trajectory is not None:
                 trajectory.record(
