@@ -36,6 +36,15 @@ PLAN_READONLY_TOOL_NAMES = frozenset({
     "webfetch",
     "datetime",
 })
+# E6: social/emotional chat — dialogue only; no write/edit/bash/shell.
+SOCIAL_CHAT_TOOL_NAMES = frozenset({"datetime"})
+SOCIAL_CHAT_ROLE_INSTRUCTION = (
+    "This is social or emotional chat. Respond warmly in dialogue. "
+    "Do not create markdown files, write code to disk, or run shell commands "
+    "unless the user explicitly asks for a file or runnable artifact. "
+    "If they mention errors from a prior turn, acknowledge and comfort them "
+    "instead of launching tools or a build pipeline."
+)
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
     "edit",
@@ -1834,8 +1843,9 @@ class AgentV2:
         social_signals = (
             "伤心", "难过", "不理我", "陪我", "你好", "您好", "谢谢", "在吗",
             "倾诉", "安慰", "孤独", "郁闷", "好伤心", "很难过",
+            "你却说", "你却报", "怎么又报错", "你说 error", "你说error",
             "how are you", "i'm sad", "im sad", "i am sad", "feel sad",
-            "lonely", "upset",
+            "lonely", "upset", "you said error",
         )
         has_social = any(s in text_stripped for s in social_signals) or any(
             s in text_lower for s in social_signals if s.isascii()
@@ -1849,6 +1859,18 @@ class AgentV2:
         if has_social and not self._has_creation_product_intent(text_stripped):
             return True
         return False
+
+    def _resolve_fast_reply_tool_allowlist(
+        self,
+        user_input: str,
+        allowed_tool_names: frozenset[str] | None,
+    ) -> frozenset[str] | None:
+        """Return tool allowlist for _fast_reply_with_tools (E6 social whitelist)."""
+        if allowed_tool_names is not None:
+            return allowed_tool_names
+        if self._is_social_chat(user_input):
+            return SOCIAL_CHAT_TOOL_NAMES
+        return None
 
     def _is_simple_query(self, text: str) -> bool:
         """Detect queries that can be handled by a single LLM call (fast path).
@@ -2082,6 +2104,14 @@ class AgentV2:
         await self._ensure_session_loaded()
         memory_ctx = self._get_memory_context(user_input)
         from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message
+        allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
+            user_input, allowed_tool_names
+        )
+        if (
+            allowed_tool_names is SOCIAL_CHAT_TOOL_NAMES
+            and not role_instruction.strip()
+        ):
+            role_instruction = SOCIAL_CHAT_ROLE_INSTRUCTION
         system = get_system_prompt()
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
         from RxyCode.RxyCode1_1_0.core.research_policy import (
