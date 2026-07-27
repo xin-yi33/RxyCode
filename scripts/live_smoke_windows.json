@@ -1,11 +1,11 @@
 {
   "W01": {
-    "result": "SKIP",
-    "note": "No TTY cursor evidence"
+    "result": "PARTIAL",
+    "note": "OpenTUI bun:test textarea focus/value path (headless; not interactive TTY)"
   },
   "W02": {
-    "result": "SKIP",
-    "note": "No scrollbox live session"
+    "result": "PARTIAL",
+    "note": "OpenTUI bun:test ScrollBox scrollTop + sticky helpers (headless; not interactive TTY)"
   },
   "W03": {
     "result": "PASS",
@@ -16,8 +16,8 @@
     "note": "social multi-round 4 turns, no jargon"
   },
   "W04b": {
-    "result": "PARTIAL",
-    "note": "stream progress seen but no final answer / error=[Build failed after ~371s] Previously executed tool actions were not repeated. Automatic fallback was skipped to avoid duplicate side effects. Pipeline error: APIConnectionError: Connection error."
+    "result": "PASS",
+    "note": "stream completed in 57.135s with answer"
   },
   "W05": {
     "result": "PASS",
@@ -25,7 +25,7 @@
   },
   "W06": {
     "result": "PARTIAL",
-    "note": "/build mode_changed; full edit+test pipeline not completed in smoke (see W04b stream)"
+    "note": "/build mode_changed; W04b stream PASS but full edit+test gate not separately audited"
   },
   "W07": {
     "result": "PARTIAL",
@@ -40,48 +40,48 @@
     "note": "N/A: cache_rate=0.0% (<85%); smoke not warm enough"
   },
   "W10": {
-    "result": "PARTIAL",
-    "note": "partial memory commands"
+    "result": "PASS",
+    "note": "memory add/list/search via /command"
   },
   "W11": {
-    "result": "SKIP",
-    "note": "RAG search/edit not exercised in API smoke"
+    "result": "PASS",
+    "note": "code_search local + 4-turn RAG chat"
   },
   "W12": {
-    "result": "SKIP",
-    "note": "Safety WRITE/DANGER approval flow not live"
+    "result": "PARTIAL",
+    "note": "safety stream partial (approvals=0, tools=['write', 'bash', 'bash'])"
   },
   "W13": {
-    "result": "SKIP",
-    "note": "MCP add/list not exercised"
+    "result": "PASS",
+    "note": "MCP list/add/list/remove multi-round (4)"
   },
   "W14": {
-    "result": "SKIP",
-    "note": "Skills find/add/remove not exercised"
+    "result": "PASS",
+    "note": "skills list x2 + remove-missing + find-missing command multi-round (4)"
   },
   "W15": {
-    "result": "SKIP",
-    "note": "Web search/fetch not exercised"
+    "result": "PASS",
+    "note": "web tool=['websearch']; followups_ok=4"
   },
   "W16": {
     "result": "PARTIAL",
-    "note": "git status asked via /chat; no commit performed"
+    "note": "git asked; tools=['websearch', 'webfetch', 'webfetch', 'webfetch']; error=[evidence failed: Tool webfetch did not complete: failed; Tool webfetch did not complete: failed; Tool webfetch did not complete: failed]; local run_git(status) ok (chat still did not force git tool)"
   },
   "W17": {
-    "result": "SKIP",
-    "note": "Sub-agent parallel not exercised"
+    "result": "PARTIAL",
+    "note": "parallel intent detected + multi-round file reads (legacy SubAgent path disabled; graph parallel not fully proven)"
   },
   "W18": {
-    "result": "SKIP",
-    "note": "Recovery retry path not exercised"
+    "result": "PARTIAL",
+    "note": "classify_error TRANSIENT ok + live fail-then-recover bash probe"
   },
   "W19": {
     "result": "PASS",
-    "note": "queue add/list/remove + schedule list via /command"
+    "note": "queue add/list/remove + schedule list via /command (repaired)"
   },
   "W20": {
     "result": "PASS",
-    "note": "save-chat + list-chats + load-chat"
+    "note": "save-chat + list-chats + load-chat (repaired)"
   },
   "W21": {
     "result": "SKIP",
@@ -93,11 +93,11 @@
   },
   "W23": {
     "result": "PASS",
-    "note": "/models + /language toggle"
+    "note": "/models + /language toggle (repaired)"
   },
   "W24": {
-    "result": "SKIP",
-    "note": "Esc/cancel mid-stream not driven in this smoke (would need concurrent cancel)"
+    "result": "PARTIAL",
+    "note": "frontend e2e Ctrl+C cancel stream OK; live API concurrent Esc not driven this smoke"
   },
   "W25": {
     "result": "PARTIAL",
