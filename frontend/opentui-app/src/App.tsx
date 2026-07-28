@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { fetchStatus, sendChatMessage, sendCommand } from "./chatApi.ts";
+import { cancelActiveRequest, fetchStatus, sendChatMessage, sendCommand } from "./chatApi.ts";
 import { formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
 import { formatStatusBarText } from "./statusBar.ts";
 import {
@@ -133,6 +133,7 @@ export default function App() {
         controller.signal,
       );
       abortRef.current = null;
+      textareaRef.current?.focus();
     },
     [isStreaming, mode, reengageSticky, toggleThinking],
   );
@@ -146,14 +147,27 @@ export default function App() {
       void toggleThinking();
       return;
     }
+    if (key.name === "return" && !key.shift && !key.meta && !key.ctrl) {
+      const text = textareaRef.current?.plainText ?? inputValue;
+      if (text.trim() && !isStreaming && !text.includes("\n")) {
+        void submitText(text);
+      }
+      return;
+    }
     if (key.name === "escape") {
       if (isStreaming && abortRef.current) {
+        void cancelActiveRequest();
         abortRef.current.abort();
+        abortRef.current = null;
+        setInputValue("");
+        textareaRef.current?.setText("");
+        textareaRef.current?.focus();
       }
       return;
     }
     if (key.name === "pageup" || (key.name === "up" && key.ctrl)) {
       setSticky(onUserScrollUp(stickyRef.current));
+      textareaRef.current?.focus();
       return;
     }
     if (key.name === "pagedown" || (key.name === "down" && key.ctrl)) {
@@ -164,6 +178,7 @@ export default function App() {
       } catch {
         // ignore
       }
+      textareaRef.current?.focus();
     }
   });
 

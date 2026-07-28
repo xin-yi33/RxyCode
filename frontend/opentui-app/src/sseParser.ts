@@ -83,8 +83,8 @@ export async function consumeJsonSseStream<T>(
       } catch (error) {
         throw new Error("Malformed JSON in SSE data event", { cause: error });
       }
-      if (isDone(event)) return;
       onEvent(event);
+      if (isDone(event)) return;
     }
 
     if (done) throw new Error("SSE stream ended before the done event");

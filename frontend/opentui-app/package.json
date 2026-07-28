@@ -8,7 +8,8 @@
     "start": "bun run src/index.tsx",
     "dev": "bun run src/index.tsx",
     "probe": "bun run scripts/probe.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "e2e": "node e2e/run-pty.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.4.5",
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.2.0",
+    "node-pty": "^1.1.0",
     "typescript": "^5.5.0"
   }
 }

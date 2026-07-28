@@ -57,6 +57,18 @@ export async function sendCommand(command: string): Promise<Record<string, unkno
   }
 }
 
+/** POST /cancel — parity with Ink useApi.cancelRequest (Esc under PTY). */
+export async function cancelActiveRequest(): Promise<void> {
+  try {
+    await axios.post(`${API_BASE}/cancel`, undefined, {
+      headers: authorizationHeaders(),
+      timeout: 5000,
+    });
+  } catch {
+    // best-effort; local AbortSignal still stops the client
+  }
+}
+
 export async function sendChatMessage(
   content: string,
   mode: Mode,

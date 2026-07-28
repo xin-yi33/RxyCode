@@ -6,8 +6,8 @@ Branch: `cursor/tui-agent-full-fix` · Full report: `C:\Users\Administrator\Desk
 
 | ID | Result | Note |
 |----|--------|------|
-| W01 | PARTIAL | OpenTUI bun:test textarea focus/value (headless; not interactive TTY) |
-| W02 | PARTIAL | OpenTUI bun:test ScrollBox scrollTop + sticky helpers (headless) |
+| W01 | **PASS** | OpenTUI ConPTY e2e: textarea Enter submit, multi-line input, long line, `?25h` cursor restore |
+| W02 | **PASS** | OpenTUI ConPTY e2e: 80-line SSE flood, resize, PageUp scroll path, no duplicate headers |
 | W03 | **PASS** | `/thinking` before+after agent init; toggle expands/collapses |
 | W04 | **PASS** | `/chat` social multi-round 4 turns, no synthesizer jargon |
 | W04b | **PASS** | `/chat/stream` parkour build completed ~57s with answer |
@@ -29,20 +29,20 @@ Branch: `cursor/tui-agent-full-fix` · Full report: `C:\Users\Administrator\Desk
 | W20 | **PASS** | `/save-chat` + `/list-chats` + `/load-chat` |
 | W21–W22 | SKIP | Workflow / LSP not exercised |
 | W23 | **PASS** | `/models` + `/language` en/zh |
-| W24 | PARTIAL | frontend e2e Ctrl+C cancel OK; live Esc mid-stream not driven |
+| W24 | PARTIAL | OpenTUI PTY Esc→POST `/cancel` PASS; Ink Ctrl+C PASS (prior); live API mid-stream Esc not separately driven |
 | W25 | PARTIAL | logo matrix automated; no Win32 screenshot |
 | W26 | SKIP | No macOS runner |
 
 ## Automation green
 
-- Thinking pre-init regression: `test_thinking_toggle_before_agent_init_is_fast` **PASS** (prior)
-- OpenTUI `bun test src/scrollbox.gate.test.tsx`: scrollTop + sticky + textarea **PASS** → W01/W02 **PARTIAL** only
+- OpenTUI `bun run e2e` (`frontend/opentui-app/e2e/run-pty.mjs`): **14/14 PASS** on Windows ConPTY → W01/W02 **PASS**
+- OpenTUI `bun test src/scrollbox.gate.test.tsx` + unit tests: **10/10 PASS** (headless supplement)
 - Live smoke: `scripts/live_smoke_output.json` · 30 recorded turns · window index: `scripts/live_smoke_windows.json`
-- Ink `frontend/e2e` left as-is (does not drive OpenTUI/bun); OpenTUI gap documented
+- Ink `frontend/e2e` unchanged (Ink path only)
 
 ## Newly covered (this expansion)
 
-W01/W02 SKIP→PARTIAL, W04b PARTIAL→PASS, W10 PARTIAL→PASS, W11–W15 SKIP→PASS (W12 PARTIAL), W16–W18 SKIP/PARTIAL→PARTIAL with evidence, W13/W14 PASS
+W01/W02 PARTIAL→**PASS** (ConPTY), W04b PARTIAL→PASS, W10 PARTIAL→PASS, W11–W15 SKIP→PASS (W12 PARTIAL), W16–W18 SKIP/PARTIAL→PARTIAL with evidence, W13/W14 PASS, OpenTUI Esc `/cancel` parity
 
 ## DONE_WITH_CONCERNS — remaining SKIP
 
