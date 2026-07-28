@@ -2122,6 +2122,7 @@ class AgentV2:
         system = get_system_prompt()
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
         from RxyCode.RxyCode1_1_0.core.research_policy import (
+            ResearchPolicy,
             extract_research_urls,
             get_research_policy,
             is_successful_research_fetch,
@@ -2129,6 +2130,14 @@ class AgentV2:
             research_failure_message,
         )
         research_policy = get_research_policy(user_input)
+        # Explicit git-only / social allowlists must not be forced into web research.
+        if allowed_tool_names is not None and "websearch" not in allowed_tool_names:
+            research_policy = ResearchPolicy(
+                requires_web=False,
+                cache_read_allowed=True,
+                cache_write_allowed=True,
+                citations_required=False,
+            )
 
         # Tool-aware turns may observe or mutate external state, so their answers
         # are never read from or written to the application answer caches.

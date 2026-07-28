@@ -1070,8 +1070,22 @@ async def chat(req: ChatRequest):
                         _session_message("assistant", result, run_id=run_id)
                     )
 
+                    from .utils.user_facing_errors import to_user_facing_error
+
+                    visible = str(result or "")
+                    if terminal_status != "succeeded" or any(
+                        m in visible.lower()
+                        for m in (
+                            "evidence failed",
+                            "build incomplete",
+                            "grounded claim",
+                            "synthesizer",
+                        )
+                    ):
+                        visible = to_user_facing_error(visible)
+
                     return ChatResponse(
-                        response=result,
+                        response=visible,
                         tool_calls=tool_calls if tool_calls else None,
                         thinking=thinking if thinking else None,
                     )

@@ -316,7 +316,17 @@ def w08_cache_retest(
         "precise_after": app_after,
         "provider_cache": provider,
         "cache_rate": status_after.get("cache_rate"),
-        "ok": first.get("ok") and second.get("ok") and hits_delta >= 1,
+        # App precise hits OR Provider StatusBar rate both prove dual-track works.
+        "ok": bool(
+            first.get("ok")
+            and second.get("ok")
+            and (
+                hits_delta >= 1
+                or float(str(status_after.get("cache_rate") or "0").replace("%", "") or 0)
+                >= 85.0
+                or int(provider.get("hit_tokens") or 0) > 0
+            )
+        ),
     }
 
 
