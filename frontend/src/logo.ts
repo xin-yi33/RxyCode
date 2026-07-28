@@ -1,17 +1,15 @@
 import stringWidth from 'string-width';
 
-// RxyCode wordmark — unified 7x7 block letters
-// All letters exactly 7 rows × 7 cols, 2-space gap
-// 'e' row 3 adjusted to fill right edge
-// All lines ljust'd to 61 chars
+// RxyCode wordmark — R X Y C O D E (7x7 block letters, 2-space gap)
+// Note: 6th letter must be D (not H — H has a mid crossbar).
 export const WORDMARK = [
-  '███████  ██   ██  ██   ██   █████    █████   ██   ██   █████ ',
+  '███████  ██   ██  ██   ██   █████    █████   ██████    █████ ',
   '██   ██  ██   ██  ██   ██  ██   ██  ██   ██  ██   ██  ██   ██',
-  '██   ██   ██ ██   ██   ██  ██       ██   ██  ███████  ███████',
+  '██   ██   ██ ██   ██   ██  ██       ██   ██  ██   ██  ███████',
   '███████    ███     ██ ██   ██       ██   ██  ██   ██  ██   ██',
   '██   ██   ██ ██     ███    ██       ██   ██  ██   ██  ██     ',
   '██   ██  ██   ██    ███    ██   ██  ██   ██  ██   ██  ██   ██',
-  '██   ██  ██   ██    ███     █████    █████   ██   ██   █████ ',
+  '██   ██  ██   ██    ███     █████    █████   ██████    █████ ',
 ] as const;
 
 /** Max display width of wordmark lines after trimming trailing spaces. */

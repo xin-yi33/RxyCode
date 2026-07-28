@@ -19,10 +19,12 @@ describe('logo structure', () => {
     expect(widths[0]).toBe(61);
   });
 
-  test('logo uses block characters', () => {
-    WORDMARK.forEach(line => {
-      expect(line).toMatch(/[█]/);
-    });
+  test('sixth glyph is D-shaped (not H mid-bar)', () => {
+    const d = WORDMARK.map((line) => line.slice(45, 52));
+    // H would put a full ███████ on the third row
+    expect(d[2]).not.toBe('███████');
+    expect(d[0].startsWith('██')).toBe(true);
+    expect(d[6].trimEnd().length).toBeGreaterThanOrEqual(6);
   });
 
   test('wordmark lines have equal display width when padded', () => {
