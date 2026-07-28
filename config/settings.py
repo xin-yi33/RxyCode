@@ -88,13 +88,28 @@ def get_output_dir() -> Path:
     return path
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* onto a copy of *base*."""
+    merged = deepcopy(base)
+    for key, value in (override or {}).items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
 def load_config() -> dict:
     path = get_config_path()
     with _CONFIG_LOCK:
+        defaults = _default_config()
         if not path.exists():
-            default = _default_config()
-            save_config(default)
-            return default
+            save_config(defaults)
+            return deepcopy(defaults)
         restrict_file_permissions(path)
         with path.open("r", encoding="utf-8") as stream:
             loaded = yaml.safe_load(stream) or {}
@@ -107,7 +122,7 @@ def load_config() -> dict:
             except BaseException:
                 _delete_credentials(created_references, path)
                 raise
-        return sanitized
+        return _deep_merge(defaults, sanitized)
 
 
 def save_config(cfg: dict):

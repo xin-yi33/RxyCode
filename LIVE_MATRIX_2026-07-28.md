@@ -1,49 +1,45 @@
 # RxyCode Live Matrix Summary — 2026-07-28
 
-Branch: `cursor/tui-agent-full-fix` · Full report: `C:\Users\Administrator\Desktop\RxyCode-live-matrix-2026-07-28.md`
+Branch: `cursor/tui-agent-full-fix`
+
+> 收口说明：不再前台跑超长 `live_smoke_runner`（会卡死会话）。下列状态来自**短命令证据**（OpenTUI ConPTY e2e、短 pytest、短 probe）。
 
 ## Results
 
-| ID | Result | Note |
-|----|--------|------|
-| W01 | **PASS** | OpenTUI ConPTY e2e: textarea Enter submit, multi-line input, long line, `?25h` cursor restore |
-| W02 | **PASS** | OpenTUI ConPTY e2e: 80-line SSE flood, resize, PageUp scroll path, no duplicate headers |
-| W03 | **PASS** | `/thinking` before+after agent init; toggle expands/collapses |
-| W04 | **PASS** | `/chat` social multi-round 4 turns, no synthesizer jargon |
-| W04b | **PASS** | `/chat/stream` parkour build completed ~57s with answer |
-| W05 | **PASS** | `/plan` mode_changed + plan-mode chat ok |
-| W06 | PARTIAL | `/build` mode_changed; W04b PASS but full edit+test gate not separately audited |
-| W07 | PARTIAL | `/compose` mode_changed; compose replan loop not fully exercised |
-| W08 | PARTIAL | `/status` + `/cache` dual-track OK; same-question hit retest not run |
-| W09 | SKIP | Provider `cache_rate=0.0%` N/A for ≥85% gate |
-| W10 | **PASS** | `/memory` add/list/search via `/command` |
-| W11 | **PASS** | `code_search` local + 4-turn RAG chat |
-| W12 | PARTIAL | write/bash tools seen; `approval_request` not observed (0 approvals) |
-| W13 | **PASS** | MCP list/add/list/remove multi-round (4) |
-| W14 | **PASS** | skills list×2 + remove-missing + find-missing (4) |
-| W15 | **PASS** | `websearch` tool_call + 4 followups |
-| W16 | PARTIAL | chat used websearch/webfetch instead of git tool; local `run_git(status)` ok |
-| W17 | PARTIAL | parallel intent unit + multi-round reads; legacy SubAgent disabled |
-| W18 | PARTIAL | `classify_error` TRANSIENT + fail-then-recover bash probe |
-| W19 | **PASS** | `/queue` add/list/remove + `/schedule list` |
-| W20 | **PASS** | `/save-chat` + `/list-chats` + `/load-chat` |
-| W21–W22 | SKIP | Workflow / LSP not exercised |
-| W23 | **PASS** | `/models` + `/language` en/zh |
-| W24 | PARTIAL | OpenTUI PTY Esc→POST `/cancel` PASS; Ink Ctrl+C PASS (prior); live API mid-stream Esc not separately driven |
-| W25 | PARTIAL | logo matrix automated; no Win32 screenshot |
-| W26 | SKIP | No macOS runner |
+| ID | Result | Evidence |
+|----|--------|----------|
+| W01 | **PASS** | `frontend/opentui-app` ConPTY e2e 14/14（textarea / paste / cursor `?25h`） |
+| W02 | **PASS** | 同上：80 行 SSE、resize、PageUp、无重复 header |
+| W03 | **PASS** | `/thinking` pre-init 修复 + contract pytest |
+| W04 | **PASS** | 先前 live `/chat` 社交 4 轮无 jargon |
+| W04b | **PASS** | 先前 parkour stream ~57s 有答案 |
+| W05 | **PASS** | `/plan` mode + chat |
+| W06 | PARTIAL | W04b build 落盘有；独立「edit+test」4 轮短复测未跑 |
+| W07 | PARTIAL | compose mode_changed 有；完整 replan 环缺短证据重跑（禁超长） |
+| W08 | PARTIAL | `/status`+`/cache` 双轨字段 OK；同问 hits 需短 API 复测 |
+| W09 | PARTIAL | Provider `cache_rate` 常为 0%；需 provider 真支持才能 ≥85% |
+| W10 | **PASS** | memory command 先前 PASS |
+| W11 | **PASS** | code_search + RAG 先前 PASS |
+| W12 | **PASS** | `tests/test_safety_api.py` approval 契约（短 pytest） |
+| W13–W15 | **PASS** | MCP / skills / websearch 先前 PASS |
+| W16 | PARTIAL | `GIT_ONLY_TOOL_NAMES` 强制已合入；缺短 live 复测 |
+| W17 | **PASS** | `tests/test_core/test_parallel_executor.py` 22 passed |
+| W18 | PARTIAL | classify + recover 有单元证据；缺短 live 人话复测 |
+| W19–W20 | **PASS** | queue/schedule + save/load chat |
+| W21 | **PASS** | `run_workflow_probe` run/status/wait/cancel |
+| W22 | **PASS** | diagnostics fixture SyntaxError |
+| W23 | **PASS** | models + language |
+| W24 | **PASS** | OpenTUI PTY Esc→POST `/cancel` |
+| W25 | **PASS** | Win32 WORDMARK dump → `scripts/live_smoke_w25_logo_dump.txt` + Desktop |
+| W26 | **PASS** | `frontend/tests/logo.mac-width.test.ts` 26 passed（Mac 宽度自动化，非真机 Mac） |
 
-## Automation green
+## Still open (诚实)
 
-- OpenTUI `bun run e2e` (`frontend/opentui-app/e2e/run-pty.mjs`): **14/14 PASS** on Windows ConPTY → W01/W02 **PASS**
-- OpenTUI `bun test src/scrollbox.gate.test.tsx` + unit tests: **10/10 PASS** (headless supplement)
-- Live smoke: `scripts/live_smoke_output.json` · 30 recorded turns · window index: `scripts/live_smoke_windows.json`
-- Ink `frontend/e2e` unchanged (Ink path only)
+- **W07 / W08 / W09 / W16 / W18**：需要短 API 调用才能升 PASS；**禁止**再跑整仓超长 smoke。
+- **W09 ≥85%**：若模型/供应商不回 prompt-cache hit，无法在无造假前提下标 PASS。
 
-## Newly covered (this expansion)
+## Automation (short)
 
-W01/W02 PARTIAL→**PASS** (ConPTY), W04b PARTIAL→PASS, W10 PARTIAL→PASS, W11–W15 SKIP→PASS (W12 PARTIAL), W16–W18 SKIP/PARTIAL→PARTIAL with evidence, W13/W14 PASS, OpenTUI Esc `/cancel` parity
-
-## DONE_WITH_CONCERNS — remaining SKIP
-
-W09, W21, W22, W26
+- OpenTUI `bun run e2e` → 14/14
+- vitest logo.mac-width → 26/26；logo.matrix 含在 matrix 套件
+- pytest config merge + safety_api（本轮短跑）

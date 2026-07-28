@@ -38,6 +38,11 @@ PLAN_READONLY_TOOL_NAMES = frozenset({
 })
 # E6: social/emotional chat — dialogue only; no write/edit/bash/shell.
 SOCIAL_CHAT_TOOL_NAMES = frozenset({"datetime"})
+GIT_ONLY_TOOL_NAMES = frozenset({"git", "read", "ls", "grep", "glob"})
+_GIT_FORCE_RE = re.compile(
+    r"必须调用\s*git|只能使用\s*git|only\s+(?:use\s+)?git\s+tool|git\s+工具.*operation",
+    re.IGNORECASE,
+)
 SOCIAL_CHAT_ROLE_INSTRUCTION = (
     "This is social or emotional chat. Respond warmly in dialogue. "
     "Do not create markdown files, write code to disk, or run shell commands "
@@ -1870,6 +1875,8 @@ class AgentV2:
             return allowed_tool_names
         if self._is_social_chat(user_input):
             return SOCIAL_CHAT_TOOL_NAMES
+        if _GIT_FORCE_RE.search(user_input):
+            return GIT_ONLY_TOOL_NAMES
         return None
 
     def _is_simple_query(self, text: str) -> bool:
