@@ -14,14 +14,36 @@ import {
 } from "./sticky.ts";
 import { C } from "./theme.ts";
 import { MODE_COLORS, MODES, type ChatMessage, type Mode, type StatusInfo } from "./types.ts";
+import { WORDMARK, WELCOME_LINES, centerPad } from "./brand.ts";
 
 function cycleMode(mode: Mode): Mode {
   const idx = MODES.indexOf(mode);
   return MODES[(idx + 1) % MODES.length];
 }
 
+function WelcomeBanner({ cols }: { cols: number }) {
+  return (
+    <box style={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1, width: "100%" }}>
+      {WORDMARK.map((line, i) => (
+        <text key={`wm-${i}`} fg={i === 0 ? C.brandLight : C.brandHot} attributes={1}>
+          {centerPad(line, cols)}
+        </text>
+      ))}
+      <box style={{ height: 1 }} />
+      <text fg={C.brandLight}>{centerPad("✦ General-Purpose AI Agent ✦", cols)}</text>
+      <box style={{ height: 1 }} />
+      {WELCOME_LINES.map((row, i) => (
+        <text key={`w-${i}`} fg={row.fg}>
+          {row.text}
+        </text>
+      ))}
+    </box>
+  );
+}
+
 export default function App() {
   const { width } = useTerminalDimensions();
+  const cols = width || 80;
   const [mode, setMode] = useState<Mode>("build");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<StatusInfo | null>(null);
@@ -51,11 +73,9 @@ export default function App() {
     setSticky(next);
     try {
       const box = scrollRef.current;
-      if (box) {
-        box.scrollTop = Math.max(0, box.scrollHeight);
-      }
+      if (box) box.scrollTop = Math.max(0, box.scrollHeight);
     } catch {
-      // scrollbox may not be ready
+      // ignore
     }
   }, []);
 
@@ -105,8 +125,7 @@ export default function App() {
           {
             id: `${Date.now()}-sys`,
             role: "system",
-            content:
-              "Commands: /clear /build /plan /compose /thinking /help — Tab cycles mode, Esc cancels, Ctrl+C exits.",
+            content: "Commands: /clear /build /plan /compose /thinking /help",
             timestamp: Date.now(),
           },
         ]);
@@ -195,12 +214,11 @@ export default function App() {
     cacheRate: status?.cache_rate ?? "0.0%",
     mode,
     thinkingExpanded,
-    width: width || 80,
+    width: cols,
   });
 
-  const borderColor = MODE_COLORS[mode];
+  const borderColor = MODE_COLORS[mode] || C.brandHot;
   const stickyEnabled = shouldAutoStick(sticky);
-  // Keep formatHeaderLine referenced for style-freeze parity / tests
   void formatHeaderLine(mode, model, thinkingLive);
 
   return (
@@ -233,9 +251,9 @@ export default function App() {
         stickyStart="bottom"
         flexGrow={1}
         style={{
-          rootOptions: { flexGrow: 1, border: false },
-          viewportOptions: { flexGrow: 1 },
-          contentOptions: { flexGrow: 1 },
+          rootOptions: { flexGrow: 1, border: false, backgroundColor: C.bg },
+          viewportOptions: { flexGrow: 1, backgroundColor: C.bg },
+          contentOptions: { flexGrow: 1, backgroundColor: C.bg },
           scrollbarOptions: {
             showArrows: false,
             trackOptions: {
@@ -246,10 +264,7 @@ export default function App() {
         }}
       >
         {visibleMessages.length === 0 ? (
-          <box style={{ paddingLeft: 1, paddingTop: 1, flexDirection: "column" }}>
-            <text fg={C.brandLight}>General-Purpose AI Agent</text>
-            <text fg={C.overlay2}>Type a message and press Enter. Tab cycles mode.</text>
-          </box>
+          <WelcomeBanner cols={cols} />
         ) : (
           visibleMessages.map((msg) => (
             <box key={msg.id} style={{ width: "100%", paddingLeft: 1, paddingRight: 1 }}>
@@ -273,30 +288,35 @@ export default function App() {
           borderStyle: "rounded",
           paddingLeft: 1,
           paddingRight: 1,
+          backgroundColor: C.bg,
           height: 3,
         }}
       >
-        <box style={{ flexDirection: "row", width: "100%" }}>
-          <text fg={borderColor}>{"> "}</text>
-          <textarea
-            ref={textareaRef}
-            focused={!isStreaming}
-            placeholder={isStreaming ? "Streaming… (Esc to cancel)" : "Message RxyCode…"}
-            initialValue={inputValue}
-            onContentChange={() => {
-              setInputValue(textareaRef.current?.plainText ?? "");
-            }}
-            onSubmit={() => {
-              const text = textareaRef.current?.plainText ?? inputValue;
-              void submitText(text);
-            }}
-            style={{ flexGrow: 1, height: 1 }}
-          />
-          <text fg={C.mauve}>{formatInputHint(isStreaming)}</text>
+        <box style={{ flexDirection: "column", width: "100%" }}>
+          <text fg={borderColor}>
+            {mode} · {formatInputHint(isStreaming)}
+          </text>
+          <box style={{ flexDirection: "row", width: "100%" }}>
+            <text fg={borderColor}>{"> "}</text>
+            <textarea
+              ref={textareaRef}
+              focused={!isStreaming}
+              placeholder={isStreaming ? "处理中… (Esc 终止)" : "输入指令或需求..."}
+              initialValue={inputValue}
+              onContentChange={() => {
+                setInputValue(textareaRef.current?.plainText ?? "");
+              }}
+              onSubmit={() => {
+                const text = textareaRef.current?.plainText ?? inputValue;
+                void submitText(text);
+              }}
+              style={{ flexGrow: 1, height: 1 }}
+            />
+          </box>
         </box>
       </box>
 
-      <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: 1 }}>
+      <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: 1, backgroundColor: C.bg }}>
         <text fg={status ? C.green : C.accent}>{statusText}</text>
       </box>
     </box>

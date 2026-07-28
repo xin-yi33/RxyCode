@@ -1,24 +1,23 @@
-// OpenCode 默认主题 ≈ Catppuccin Mocha
-// 集中配色，所有组件统一引用本文件，避免散落写死 hex。
-// 这是把 RxyCode 前端 UI 换成 opencode 风格的核心依据。
+// Classic RxyCode terminal look (true black + pink brand).
+// Do NOT swap to Catppuccin/OpenCode skins — style freeze.
 export const C = {
-  bg: '#1e1e2e',
-  surface0: '#313244',
-  surface1: '#45475a',
-  surface2: '#585b70',
-  overlay2: '#6c7086',
-  subtext: '#a6adc8',
-  text: '#cdd6f4',
-  primary: '#89b4fa', // 蓝
-  accent: '#f38ba8',  // 粉红
-  mauve: '#cba6f7',
-  green: '#a6e3a1',
+  bg: '#000000',
+  surface0: '#111111',
+  surface1: '#222222',
+  surface2: '#333333',
+  overlay2: '#555555',
+  subtext: '#aaaaaa',
+  text: '#ffffff',
+  primary: '#FF69B4',
+  accent: '#FFB6C1',
+  mauve: '#FF69B4',
+  green: '#00ff7f',
   yellow: '#f9e2af',
   teal: '#94e2d5',
   sky: '#89dceb',
   red: '#f38ba8',
-  border: '#585b70',
-  borderDim: '#313244',
+  border: '#FF69B4',
+  borderDim: '#333333',
 } as const;
 
 export type CatColor = (typeof C)[keyof typeof C];

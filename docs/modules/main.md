@@ -29,7 +29,7 @@ Routes to OpenTUI or Ink:
 |-----|----------|
 | `RXYCODE_TUI=ink` | Force Ink |
 | `RXYCODE_TUI=opentui` | Force OpenTUI — **errors** if Bun or `frontend/opentui-app` missing (no silent fallback) |
-| unset / default | Prefer OpenTUI when Bun is on PATH and `frontend/opentui-app` is present; else Ink |
+| unset / default | **Ink** (classic dark + pink WORDMARK welcome). Set `RXYCODE_TUI=opentui` for ScrollBox path |
 
 ## Core: _launch_opentui_tui(model, port)
 1. Require `bun` on PATH and `frontend/opentui-app/{package.json,src/index.tsx}`.

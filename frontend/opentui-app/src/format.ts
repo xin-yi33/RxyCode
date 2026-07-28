@@ -31,14 +31,14 @@ export function messageFg(role: ChatMessage["role"]): string {
     case "user":
       return "#FFB6C1";
     case "assistant":
-      return "#cdd6f4";
+      return "#ffffff";
     case "thinking":
-      return "#6c7086";
+      return "#888888";
     case "tool":
-      return "#94e2d5";
+      return "#aaaaaa";
     case "system":
       return "#f9e2af";
     default:
-      return "#cdd6f4";
+      return "#ffffff";
   }
 }

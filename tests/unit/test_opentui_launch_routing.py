@@ -29,11 +29,12 @@ def test_resolve_tui_backend_forces_opentui_without_app_errors(monkeypatch):
         main._resolve_tui_backend()
 
 
-def test_resolve_tui_backend_defaults_to_opentui_when_bun_ready(monkeypatch):
+def test_resolve_tui_backend_defaults_to_ink_even_when_bun_ready(monkeypatch):
+    """Classic dark+pink Ink UI is the default; OpenTUI is opt-in."""
     monkeypatch.delenv("RXYCODE_TUI", raising=False)
     monkeypatch.setattr(main, "_bun_executable", lambda: "/fake/bun")
     monkeypatch.setattr(main, "_opentui_ready", lambda: True)
-    assert main._resolve_tui_backend() == "opentui"
+    assert main._resolve_tui_backend() == "ink"
 
 
 def test_resolve_tui_backend_defaults_to_ink_without_bun(monkeypatch):

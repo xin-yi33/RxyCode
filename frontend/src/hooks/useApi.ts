@@ -521,7 +521,7 @@ export function useApi() {
           const errType = ev.error_type || ev.kind || 'agent';
           const elapsedSoFar = ((Date.now() - startedAt) / 1000).toFixed(1);
           logError('Stream error received', { message: ev.message, type: errType });
-          addMessage({ role: 'system', content: formatUserFacingStreamError(ev.message) });
+          addMessage({ role: 'system', content: formatUserFacingStreamError(ev.message || '') });
           break;
         }
         default:

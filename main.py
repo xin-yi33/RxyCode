@@ -104,8 +104,11 @@ def _resolve_tui_backend() -> str:
     """Pick Ink vs OpenTUI.
 
     Env ``RXYCODE_TUI=ink`` forces Ink; ``RXYCODE_TUI=opentui`` forces OpenTUI
-    (no silent fallback if Bun/app missing). Default: OpenTUI when Bun is on
-    PATH and ``frontend/opentui-app`` is present, else Ink.
+    (no silent fallback if Bun/app missing).
+
+    Default is **Ink** — the classic dark + pink WORDMARK welcome UI. OpenTUI
+    remains available via ``RXYCODE_TUI=opentui`` (ScrollBox path) once its
+    visuals match the frozen brand.
     """
     preference = (os.environ.get("RXYCODE_TUI") or "").strip().lower()
     bun = _bun_executable()
@@ -129,8 +132,7 @@ def _resolve_tui_backend() -> str:
         raise click.ClickException(
             f"Unknown RXYCODE_TUI={preference!r}. Use 'ink', 'opentui', or unset."
         )
-    if bun and ready:
-        return "opentui"
+    # Default Ink: preserve classic Banner / welcome / true-black terminal look.
     return "ink"
 
 
