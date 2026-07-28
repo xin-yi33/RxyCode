@@ -3117,9 +3117,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// node_modules/react-reconciler/cjs/react-reconciler.production.min.js
+// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.production.min.js
 var require_react_reconciler_production_min = __commonJS({
-  "node_modules/react-reconciler/cjs/react-reconciler.production.min.js"(exports, module) {
+  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.production.min.js"(exports, module) {
     module.exports = function $$$reconciler($$$hostConfig) {
       var exports2 = {};
       "use strict";
@@ -7866,9 +7866,9 @@ var require_react_reconciler_production_min = __commonJS({
   }
 });
 
-// node_modules/react-reconciler/cjs/react-reconciler.development.js
+// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.development.js
 var require_react_reconciler_development = __commonJS({
-  "node_modules/react-reconciler/cjs/react-reconciler.development.js"(exports, module) {
+  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.development.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV !== "production") {
       module.exports = function $$$reconciler($$$hostConfig) {
@@ -22994,9 +22994,9 @@ var require_react_reconciler_development = __commonJS({
   }
 });
 
-// node_modules/react-reconciler/index.js
+// node_modules/ink/node_modules/react-reconciler/index.js
 var require_react_reconciler = __commonJS({
-  "node_modules/react-reconciler/index.js"(exports, module) {
+  "node_modules/ink/node_modules/react-reconciler/index.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV === "production") {
       module.exports = require_react_reconciler_production_min();
@@ -23006,9 +23006,9 @@ var require_react_reconciler = __commonJS({
   }
 });
 
-// node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js
+// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js
 var require_react_reconciler_constants_production_min = __commonJS({
-  "node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js"(exports) {
+  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js"(exports) {
     "use strict";
     exports.ConcurrentRoot = 1;
     exports.ContinuousEventPriority = 4;
@@ -23019,9 +23019,9 @@ var require_react_reconciler_constants_production_min = __commonJS({
   }
 });
 
-// node_modules/react-reconciler/cjs/react-reconciler-constants.development.js
+// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.development.js
 var require_react_reconciler_constants_development = __commonJS({
-  "node_modules/react-reconciler/cjs/react-reconciler-constants.development.js"(exports) {
+  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.development.js"(exports) {
     "use strict";
     if (process.env.NODE_ENV !== "production") {
       (function() {
@@ -23059,9 +23059,9 @@ var require_react_reconciler_constants_development = __commonJS({
   }
 });
 
-// node_modules/react-reconciler/constants.js
+// node_modules/ink/node_modules/react-reconciler/constants.js
 var require_constants = __commonJS({
-  "node_modules/react-reconciler/constants.js"(exports, module) {
+  "node_modules/ink/node_modules/react-reconciler/constants.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV === "production") {
       module.exports = require_react_reconciler_constants_production_min();
@@ -23080,9 +23080,9 @@ var require_emoji_regex = __commonJS({
   }
 });
 
-// node_modules/ws/lib/constants.js
+// node_modules/ink/node_modules/ws/lib/constants.js
 var require_constants2 = __commonJS({
-  "node_modules/ws/lib/constants.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/constants.js"(exports, module) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -23103,9 +23103,9 @@ var require_constants2 = __commonJS({
   }
 });
 
-// node_modules/ws/lib/buffer-util.js
+// node_modules/ink/node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/ws/lib/buffer-util.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/buffer-util.js"(exports, module) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants2();
     var FastBuffer = Buffer[Symbol.species];
@@ -23178,9 +23178,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/ws/lib/limiter.js
+// node_modules/ink/node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/ws/lib/limiter.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/limiter.js"(exports, module) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -23228,9 +23228,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/ws/lib/permessage-deflate.js
+// node_modules/ink/node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/ws/lib/permessage-deflate.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/permessage-deflate.js"(exports, module) {
     "use strict";
     var zlib2 = __require("zlib");
     var bufferUtil = require_buffer_util();
@@ -23611,9 +23611,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/ws/lib/validation.js
+// node_modules/ink/node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/ws/lib/validation.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/validation.js"(exports, module) {
     "use strict";
     var { isUtf8 } = __require("buffer");
     var { hasBlob } = require_constants2();
@@ -23812,9 +23812,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ws/lib/receiver.js
+// node_modules/ink/node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/ws/lib/receiver.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/receiver.js"(exports, module) {
     "use strict";
     var { Writable } = __require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -24444,9 +24444,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/ws/lib/sender.js
+// node_modules/ink/node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/ws/lib/sender.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/sender.js"(exports, module) {
     "use strict";
     var { Duplex } = __require("stream");
     var { randomFillSync } = __require("crypto");
@@ -24937,9 +24937,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/ws/lib/event-target.js
+// node_modules/ink/node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/ws/lib/event-target.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/event-target.js"(exports, module) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants2();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -25166,9 +25166,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/ws/lib/extension.js
+// node_modules/ink/node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/ws/lib/extension.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/extension.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -25319,9 +25319,9 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket.js
+// node_modules/ink/node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/ws/lib/websocket.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/websocket.js"(exports, module) {
     "use strict";
     var EventEmitter4 = __require("events");
     var https2 = __require("https");
@@ -26215,9 +26215,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/ws/lib/stream.js
+// node_modules/ink/node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/ws/lib/stream.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/stream.js"(exports, module) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = __require("stream");
@@ -26313,9 +26313,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/ws/lib/subprotocol.js
+// node_modules/ink/node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/ws/lib/subprotocol.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/subprotocol.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -26358,9 +26358,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket-server.js
+// node_modules/ink/node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/ws/lib/websocket-server.js"(exports, module) {
+  "node_modules/ink/node_modules/ws/lib/websocket-server.js"(exports, module) {
     "use strict";
     var EventEmitter4 = __require("events");
     var http3 = __require("http");
@@ -26759,10 +26759,10 @@ var require_websocket_server = __commonJS({
   }
 });
 
-// node_modules/ws/wrapper.mjs
+// node_modules/ink/node_modules/ws/wrapper.mjs
 var import_stream, import_extension, import_permessage_deflate, import_receiver, import_sender, import_subprotocol, import_websocket, import_websocket_server, wrapper_default;
 var init_wrapper = __esm({
-  "node_modules/ws/wrapper.mjs"() {
+  "node_modules/ink/node_modules/ws/wrapper.mjs"() {
     import_stream = __toESM(require_stream(), 1);
     import_extension = __toESM(require_extension(), 1);
     import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -53001,10 +53001,10 @@ var require_follow_redirects = __commonJS({
       spread3.path = spread3.search ? spread3.pathname + spread3.search : spread3.pathname;
       return spread3;
     }
-    function removeMatchingHeaders(regex2, headers) {
+    function removeMatchingHeaders(regex3, headers) {
       var lastValue;
       for (var header in headers) {
-        if (regex2.test(header)) {
+        if (regex3.test(header)) {
           lastValue = headers[header];
           delete headers[header];
         }
@@ -53060,8 +53060,8 @@ var require_follow_redirects = __commonJS({
     function isURL(value) {
       return URL2 && value instanceof URL2;
     }
-    function escapeRegex(regex2) {
-      return regex2.replace(/[\]\\/()*+?.$]/g, "\\$&");
+    function escapeRegex(regex3) {
+      return regex3.replace(/[\]\\/()*+?.$]/g, "\\$&");
     }
     module.exports = wrap({ http: http3, https: https2 });
     module.exports.wrap = wrap;
@@ -55018,7 +55018,7 @@ function ansiRegex({ onlyFirst = false } = {}) {
   return new RegExp(pattern, onlyFirst ? void 0 : "g");
 }
 
-// node_modules/strip-ansi/index.js
+// node_modules/string-width/node_modules/strip-ansi/index.js
 var regex = ansiRegex();
 function stripAnsi(string) {
   if (typeof string !== "string") {
@@ -55191,6 +55191,18 @@ var measureText = (text) => {
   return { width, height };
 };
 var measure_text_default = measureText;
+
+// node_modules/wrap-ansi/node_modules/strip-ansi/index.js
+var regex2 = ansiRegex();
+function stripAnsi2(string) {
+  if (typeof string !== "string") {
+    throw new TypeError(`Expected a \`string\`, got \`${typeof string}\``);
+  }
+  if (!string.includes("\x1B") && !string.includes("\x9B")) {
+    return string;
+  }
+  return string.replace(regex2, "");
+}
 
 // node_modules/ansi-styles/index.js
 var ANSI_BACKGROUND_OFFSET = 10;
@@ -55396,7 +55408,7 @@ var wrapWord = (rows, word, columns) => {
   const characters = [...word];
   let isInsideEscape = false;
   let isInsideLinkEscape = false;
-  let visible = stringWidth(stripAnsi(rows.at(-1)));
+  let visible = stringWidth(stripAnsi2(rows.at(-1)));
   for (const [index, character] of characters.entries()) {
     const characterLength = stringWidth(character);
     if (visible + characterLength <= columns) {
@@ -56332,8 +56344,8 @@ function indentString(string, count = 1, options = {}) {
   if (count === 0) {
     return string;
   }
-  const regex2 = includeEmptyLines ? /^/gm : /^(?!\s*$)/gm;
-  return string.replace(regex2, indent.repeat(count));
+  const regex3 = includeEmptyLines ? /^/gm : /^(?!\s*$)/gm;
+  return string.replace(regex3, indent.repeat(count));
 }
 
 // node_modules/ink/build/get-max-width.js
@@ -58720,22 +58732,27 @@ var WORDMARK = [
   "\u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588    \u2588\u2588\u2588    \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588",
   "\u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588    \u2588\u2588\u2588     \u2588\u2588\u2588\u2588\u2588    \u2588\u2588\u2588\u2588\u2588   \u2588\u2588   \u2588\u2588   \u2588\u2588\u2588\u2588\u2588 "
 ];
+var WORDMARK_DISPLAY_WIDTH = Math.max(
+  ...WORDMARK.map((line) => stringWidth(line.replace(/ +$/, "")))
+);
+function padToDisplayWidth(line, targetWidth) {
+  const w = stringWidth(line);
+  if (w >= targetWidth) return line;
+  return line + " ".repeat(targetWidth - w);
+}
 
 // src/components/Banner.tsx
 var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
+var PAD_GUARD = "\u2060";
 var Banner_default = import_react22.default.memo(function Banner() {
   const { stdout } = use_stdout_default();
   const termWidth = stdout?.columns ?? 80;
-  const logoWidth = 61;
-  const logoLeading = Math.floor((termWidth - logoWidth) / 2);
+  const logoLeading = Math.floor((termWidth - WORDMARK_DISPLAY_WIDTH) / 2);
   const subtitleWidth = 24;
   const subtitleLeading = Math.floor((termWidth - subtitleWidth) / 2);
-  const lines = [];
-  for (let i = 0; i < WORDMARK.length; i++) {
-    const rstrip = WORDMARK[i].replace(/ +$/, "");
-    const padding = logoWidth - rstrip.length;
-    lines.push(rstrip + "\u200D".repeat(padding));
-  }
+  const lines = WORDMARK.map(
+    (line) => padToDisplayWidth(line.replace(/ +$/, ""), WORDMARK_DISPLAY_WIDTH) + PAD_GUARD
+  );
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Box_default, { flexDirection: "column", alignItems: "flex-start", width: termWidth, paddingTop: 1, paddingBottom: 1, children: [
     lines.map((line, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: i === 0 ? "#FFB6C1" : "#FF69B4", bold: true, children: " ".repeat(logoLeading) + line }, i)),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Box_default, { marginTop: 1, marginBottom: 1, children: [
@@ -58749,25 +58766,23 @@ var Banner_default = import_react22.default.memo(function Banner() {
 
 // src/theme.ts
 var C = {
-  bg: "#1e1e2e",
-  surface0: "#313244",
-  surface1: "#45475a",
-  surface2: "#585b70",
-  overlay2: "#6c7086",
-  subtext: "#a6adc8",
-  text: "#cdd6f4",
-  primary: "#89b4fa",
-  // 蓝
-  accent: "#f38ba8",
-  // 粉红
-  mauve: "#cba6f7",
-  green: "#a6e3a1",
+  bg: "#000000",
+  surface0: "#111111",
+  surface1: "#222222",
+  surface2: "#333333",
+  overlay2: "#555555",
+  subtext: "#aaaaaa",
+  text: "#ffffff",
+  primary: "#FF69B4",
+  accent: "#FFB6C1",
+  mauve: "#FF69B4",
+  green: "#00ff7f",
   yellow: "#f9e2af",
   teal: "#94e2d5",
   sky: "#89dceb",
   red: "#f38ba8",
-  border: "#585b70",
-  borderDim: "#313244"
+  border: "#FF69B4",
+  borderDim: "#333333"
 };
 
 // src/types.ts
@@ -59717,13 +59732,26 @@ var ThinkingSpinner = import_react24.default.memo(function ThinkingSpinner2({ do
   ] });
 });
 var MAX_STREAMING_THINKING_LINES = 8;
+var MAX_EXPANDED_DONE_THINKING_LINES = 40;
 var ThinkingMessage = import_react24.default.memo(function ThinkingMessage2({ content, startTime, elapsed, done, expanded, stepIndex, stepTotal }) {
   const displayContent = content || "\u601D\u8003\u4E2D...";
   const showExpand = expanded;
   const stepLabel = stepIndex !== void 0 && stepTotal !== void 0 ? ` ${stepIndex}/${stepTotal} ` : "";
   const allLines = displayContent.split("\n").filter((l) => l.trim());
-  const lines = done ? [] : allLines.slice(-MAX_STREAMING_THINKING_LINES);
-  const clipped = done ? 0 : allLines.length - lines.length;
+  let lines;
+  let clipped;
+  if (done) {
+    if (expanded) {
+      lines = allLines.length <= MAX_EXPANDED_DONE_THINKING_LINES ? allLines : allLines.slice(-MAX_EXPANDED_DONE_THINKING_LINES);
+      clipped = allLines.length - lines.length;
+    } else {
+      lines = [];
+      clipped = 0;
+    }
+  } else {
+    lines = allLines.slice(-MAX_STREAMING_THINKING_LINES);
+    clipped = allLines.length - lines.length;
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "column", paddingLeft: 2, minHeight: 1, marginTop: 0, children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { children: [
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ThinkingSpinner, { done }),
@@ -66200,12 +66228,61 @@ async function consumeJsonSseStream(reader, onEvent, isDone) {
   }
 }
 
+// src/userFacingErrors.ts
+var MSG_BUILD_INCOMPLETE = "\u6784\u5EFA\u6D41\u7A0B\u672A\u5B8C\u6210\uFF0C\u90E8\u5206\u6B65\u9AA4\u672A\u901A\u8FC7\u9A8C\u8BC1\u3002\u8BF7\u67E5\u770B\u4EFB\u52A1\u8BE6\u60C5\u540E\u91CD\u8BD5\u3002";
+var MSG_GROUNDING = "\u6700\u7EC8\u56DE\u7B54\u672A\u80FD\u901A\u8FC7\u6821\u9A8C\uFF0C\u5185\u5BB9\u4E0E\u5DF2\u9A8C\u8BC1\u7ED3\u679C\u4E0D\u4E00\u81F4\u3002\u8BF7\u91CD\u8BD5\u6216\u7B80\u5316\u4EFB\u52A1\u3002";
+var MSG_TOOL_INTERRUPTED = "\u5DE5\u5177\u6267\u884C\u4E2D\u65AD\uFF0C\u672A\u80FD\u5B8C\u6210\u6240\u9700\u64CD\u4F5C\u3002\u8BF7\u91CD\u8BD5\u3002";
+var MSG_TIMEOUT = "\u8BF7\u6C42\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002";
+var MSG_CANCELLED = "\u64CD\u4F5C\u5DF2\u53D6\u6D88\u3002";
+var MSG_DEFAULT = "\u5904\u7406\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5\u3002";
+var GROUNDING_MARKERS = [
+  "grounded claim",
+  "claim manifest",
+  "synthesis manifest",
+  "synthesizer",
+  "grounding failed",
+  "verified synthesis",
+  "verbatim source"
+];
+var FORBIDDEN = /synthesizer|claim\s*manifest|grounded\s*claims?/i;
+function toUserFacingError(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return MSG_DEFAULT;
+  const lowered = text.toLowerCase();
+  if (lowered === "cancelled" || lowered.includes("cancellederror") || lowered.includes("cancel") && lowered.startsWith("cancel")) {
+    return MSG_CANCELLED;
+  }
+  if (lowered.includes("timeout") || lowered.includes("timed out")) {
+    return MSG_TIMEOUT;
+  }
+  if (lowered.startsWith("[evidence failed") || lowered.includes("did not complete") && lowered.includes("tool")) {
+    return MSG_TOOL_INTERRUPTED;
+  }
+  if (GROUNDING_MARKERS.some((marker) => lowered.includes(marker))) {
+    return MSG_GROUNDING;
+  }
+  if (lowered.startsWith("[build incomplete")) {
+    return MSG_BUILD_INCOMPLETE;
+  }
+  return MSG_DEFAULT;
+}
+function formatUserFacingStreamError(message) {
+  const friendly = toUserFacingError(message);
+  if (FORBIDDEN.test(friendly)) {
+    return `Error: ${MSG_DEFAULT}`;
+  }
+  return `Error: ${friendly}`;
+}
+
 // src/hooks/useApi.ts
 function isSendBlocked(currentlyStreaming) {
   return currentlyStreaming;
 }
 function resolveFinalContent(accumulatedTokens, finalText) {
   return finalText !== void 0 ? finalText : accumulatedTokens;
+}
+function applyThinkingAccum(acc, text, mode) {
+  return mode === "replace" ? text : acc + text;
 }
 function settleActiveMessages(messages, toolStatus) {
   let changed = false;
@@ -66347,8 +66424,10 @@ function useApi() {
       { id: thinkingId, role: "thinking", content: "Analyzing request...", done: false, live: false, timestamp: startedAt }
     ]);
     let reasoningAcc = "";
-    const debouncedUpdateThinking = (text, step) => {
-      reasoningAcc += text;
+    const debouncedUpdateThinking = (text, opts) => {
+      const mode2 = opts?.mode ?? "append";
+      const step = opts?.step;
+      reasoningAcc = applyThinkingAccum(reasoningAcc, text, mode2);
       pendingThinkingRef.current = reasoningAcc;
       if (step) pendingStepRef.current = step;
       if (debounceTimerRef.current) return;
@@ -66384,7 +66463,9 @@ function useApi() {
             args: typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args ?? {})
           };
           setPendingApproval(info);
-          debouncedUpdateThinking(`\u7B49\u5F85\u7528\u6237\u786E\u8BA4: ${info.tool} [${info.risk}]`);
+          if (!hasReasoningRef.current) {
+            debouncedUpdateThinking(`\u7B49\u5F85\u7528\u6237\u786E\u8BA4: ${info.tool} [${info.risk}]`, { mode: "replace" });
+          }
           break;
         }
         case "question_request": {
@@ -66395,17 +66476,21 @@ function useApi() {
             options: Array.isArray(ev.options) ? ev.options : []
           };
           setPendingQuestion(info);
-          debouncedUpdateThinking(`Waiting for user answer: ${info.question}`);
+          if (!hasReasoningRef.current) {
+            debouncedUpdateThinking(`Waiting for user answer: ${info.question}`, { mode: "replace" });
+          }
           break;
         }
         case "reasoning": {
           const rt = ev.text || "";
           if (rt.length > 0) {
+            const isFirst = !hasReasoningRef.current;
             hasReasoningRef.current = true;
             queueMsgUpdate((prev) => prev.map(
               (m) => m.id === thinkingId ? { ...m, live: true } : m
             ));
-            debouncedUpdateThinking(rt);
+            const mode2 = ev.snapshot || isFirst ? "replace" : "append";
+            debouncedUpdateThinking(rt, { mode: mode2 });
           }
           break;
         }
@@ -66413,25 +66498,30 @@ function useApi() {
           if (hasReasoningRef.current) break;
           const progressText = ev.text || "";
           if (progressText.length > 0 && progressText.length < 150) {
-            debouncedUpdateThinking(progressText);
+            debouncedUpdateThinking(progressText, { mode: "replace" });
           } else if (progressText.length >= 150) {
             const firstLine = progressText.split("\n")[0].slice(0, 120);
-            debouncedUpdateThinking(firstLine + "...");
+            debouncedUpdateThinking(firstLine + "...", { mode: "replace" });
           }
           break;
         }
         case "plan": {
           if (hasReasoningRef.current) break;
           const steps = (ev.steps || []).map((s, i) => `${i + 1}. ${s}`).join("\n");
+          reasoningAcc = `Plan (${ev.steps?.length || 0} steps):
+${steps}`;
+          pendingThinkingRef.current = reasoningAcc;
           queueMsgUpdate((prev) => prev.map(
-            (m) => m.id === thinkingId ? { ...m, content: `Plan (${ev.steps?.length || 0} steps):
-${steps}` } : m
+            (m) => m.id === thinkingId ? { ...m, content: reasoningAcc } : m
           ));
           break;
         }
         case "step": {
           if (hasReasoningRef.current) break;
-          debouncedUpdateThinking(`Step ${ev.index}/${ev.total}: ${ev.text}`, { index: ev.index || 0, total: ev.total || 0 });
+          debouncedUpdateThinking(`Step ${ev.index}/${ev.total}: ${ev.text}`, {
+            step: { index: ev.index || 0, total: ev.total || 0 },
+            mode: "replace"
+          });
           break;
         }
         case "tool_call": {
@@ -66564,7 +66654,7 @@ ${steps}` } : m
           const errType = ev.error_type || ev.kind || "agent";
           const elapsedSoFar = ((Date.now() - startedAt) / 1e3).toFixed(1);
           logError("Stream error received", { message: ev.message, type: errType });
-          addMessage({ role: "system", content: `Error: ${ev.message}` });
+          addMessage({ role: "system", content: formatUserFacingStreamError(ev.message || "") });
           break;
         }
         default:
