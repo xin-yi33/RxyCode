@@ -1,4 +1,4 @@
-/** True-black terminal + classic pink brand (match Ink screenshot). */
+/** True-black + classic pink (match original RxyCode screenshot). */
 export const C = {
   bg: "#000000",
   surface0: "#111111",
@@ -8,8 +8,8 @@ export const C = {
   text: "#ffffff",
   primary: "#FF69B4",
   accent: "#FFB6C1",
-  mauve: "#FF69B4",
-  green: "#00ff7f",
+  mauve: "#cba6f7",
+  green: "#a6e3a1",
   teal: "#94e2d5",
   yellow: "#f9e2af",
   border: "#FF69B4",

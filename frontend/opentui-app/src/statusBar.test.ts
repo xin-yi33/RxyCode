@@ -12,6 +12,7 @@ describe("status bar formatting", () => {
       mode: "build",
       thinkingExpanded: false,
       width: 120,
+      modeColor: "#FF69B4",
     });
     expect(text).toContain("online");
     expect(text).toContain("上下文:1.2k/256k");
@@ -30,6 +31,7 @@ describe("status bar formatting", () => {
       mode: "plan",
       thinkingExpanded: true,
       width: 80,
+      modeColor: "#00ff7f",
     });
     expect(text).toContain("offline");
     expect(text).toContain("思考:开");

@@ -1,5 +1,4 @@
-// Classic RxyCode terminal look (true black + pink brand).
-// Do NOT swap to Catppuccin/OpenCode skins — style freeze.
+// Classic RxyCode look: true black + pink brand (screenshot freeze).
 export const C = {
   bg: '#000000',
   surface0: '#111111',
@@ -10,8 +9,8 @@ export const C = {
   text: '#ffffff',
   primary: '#FF69B4',
   accent: '#FFB6C1',
-  mauve: '#FF69B4',
-  green: '#00ff7f',
+  mauve: '#cba6f7',
+  green: '#a6e3a1',
   yellow: '#f9e2af',
   teal: '#94e2d5',
   sky: '#89dceb',

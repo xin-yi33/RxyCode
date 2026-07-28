@@ -21,7 +21,7 @@ _READY = (True, False)
         ("ink", None, False, "ink"),
         ("ink", "/fake/bun", True, "ink"),
         ("", None, True, "ink"),
-        ("", "/fake/bun", True, "ink"),
+        ("", "/fake/bun", True, "opentui"),
         ("", "/fake/bun", False, "ink"),
         ("opentui", "/fake/bun", True, "opentui"),
     ],

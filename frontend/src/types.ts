@@ -93,9 +93,9 @@ export const AVAILABLE_COMMANDS: Command[] = [
 ];
 
 export const MODE_COLORS: Record<Mode, string> = {
-  build: C.accent,  // #f38ba8 粉红
-  plan: C.green,    // #a6e3a1 绿
-  compose: C.mauve, // #cba6f7 紫
+  build: C.primary, // #FF69B4 hot pink border (classic UI)
+  plan: C.green,
+  compose: C.mauve,
 };
 
 export const MODE_LABELS: Record<Mode, string> = {

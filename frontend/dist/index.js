@@ -58775,8 +58775,8 @@ var C = {
   text: "#ffffff",
   primary: "#FF69B4",
   accent: "#FFB6C1",
-  mauve: "#FF69B4",
-  green: "#00ff7f",
+  mauve: "#cba6f7",
+  green: "#a6e3a1",
   yellow: "#f9e2af",
   teal: "#94e2d5",
   sky: "#89dceb",
@@ -58826,12 +58826,10 @@ var AVAILABLE_COMMANDS = [
   { name: "__exit", description: "\u9000\u51FA", category: "\u7CFB\u7EDF", action: "exit", keywords: "quit exit \u9000\u51FA" }
 ];
 var MODE_COLORS = {
-  build: C.accent,
-  // #f38ba8 粉红
+  build: C.primary,
+  // #FF69B4 hot pink border (classic UI)
   plan: C.green,
-  // #a6e3a1 绿
   compose: C.mauve
-  // #cba6f7 紫
 };
 var MODE_LABELS = {
   build: "Build",

@@ -3,7 +3,7 @@ import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { cancelActiveRequest, fetchStatus, sendChatMessage, sendCommand } from "./chatApi.ts";
 import { formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
-import { formatStatusBarText } from "./statusBar.ts";
+import { buildStatusSegments, formatStatusBarText } from "./statusBar.ts";
 import {
   createStickyState,
   onSendMessage,
@@ -206,7 +206,11 @@ export default function App() {
     return true;
   });
 
-  const statusText = formatStatusBarText({
+  const borderColor = MODE_COLORS[mode] || C.brandHot;
+  const stickyEnabled = shouldAutoStick(sticky);
+  void formatHeaderLine(mode, model, thinkingLive);
+
+  const statusSegments = buildStatusSegments({
     connected: status !== null,
     contextUsedK: status?.context_used_k ?? 0,
     contextMaxK: status?.context_max_k ?? 256,
@@ -215,11 +219,9 @@ export default function App() {
     mode,
     thinkingExpanded,
     width: cols,
+    modeColor: borderColor,
   });
-
-  const borderColor = MODE_COLORS[mode] || C.brandHot;
-  const stickyEnabled = shouldAutoStick(sticky);
-  void formatHeaderLine(mode, model, thinkingLive);
+  void formatStatusBarText;
 
   return (
     <box
@@ -289,19 +291,27 @@ export default function App() {
           paddingLeft: 1,
           paddingRight: 1,
           backgroundColor: C.bg,
-          height: 3,
+          minHeight: 3,
         }}
       >
-        <box style={{ flexDirection: "column", width: "100%" }}>
-          <text fg={borderColor}>
-            {mode} · {formatInputHint(isStreaming)}
-          </text>
+        <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.bg }}>
           <box style={{ flexDirection: "row", width: "100%" }}>
-            <text fg={borderColor}>{"> "}</text>
+            <text fg={borderColor} attributes={1}>
+              {" "}
+              {mode}{" "}
+            </text>
+            <text fg={C.overlay2}>{"· "}</text>
+            <text fg={C.mauve}>{formatInputHint(isStreaming)}</text>
+            {isStreaming ? <text fg={C.yellow}>{" ESC 取消"}</text> : null}
+          </box>
+          <box style={{ flexDirection: "row", width: "100%" }}>
+            <text fg={borderColor} attributes={1}>
+              {"> "}
+            </text>
             <textarea
               ref={textareaRef}
               focused={!isStreaming}
-              placeholder={isStreaming ? "处理中… (Esc 终止)" : "输入指令或需求..."}
+              placeholder={isStreaming ? "处理中..." : "输入指令或需求..."}
               initialValue={inputValue}
               onContentChange={() => {
                 setInputValue(textareaRef.current?.plainText ?? "");
@@ -310,14 +320,23 @@ export default function App() {
                 const text = textareaRef.current?.plainText ?? inputValue;
                 void submitText(text);
               }}
-              style={{ flexGrow: 1, height: 1 }}
+              style={{ flexGrow: 1, height: 1, backgroundColor: C.bg }}
             />
           </box>
         </box>
       </box>
 
       <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: 1, backgroundColor: C.bg }}>
-        <text fg={status ? C.green : C.accent}>{statusText}</text>
+        <text>
+          {statusSegments.map((seg, i) => (
+            <span key={seg.key}>
+              {i > 0 ? <span fg={C.borderDim}>{" │ "}</span> : null}
+              <span fg={seg.fg} attributes={seg.bold ? 1 : 0}>
+                {seg.text}
+              </span>
+            </span>
+          ))}
+        </text>
       </box>
     </box>
   );

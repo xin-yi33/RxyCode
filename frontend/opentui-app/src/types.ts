@@ -28,9 +28,9 @@ export interface StatusInfo {
 }
 
 export const MODE_COLORS: Record<Mode, string> = {
-  build: "#f38ba8",
-  plan: "#a6e3a1",
-  compose: "#cba6f7",
+  build: "#FF69B4",
+  plan: "#00ff7f",
+  compose: "#FFB6C1",
 };
 
 export const MODE_LABELS: Record<Mode, string> = {
