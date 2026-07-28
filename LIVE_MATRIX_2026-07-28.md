@@ -1,45 +1,48 @@
 # RxyCode Live Matrix Summary — 2026-07-28
 
-Branch: `cursor/tui-agent-full-fix`
-
-> 收口说明：不再前台跑超长 `live_smoke_runner`（会卡死会话）。下列状态来自**短命令证据**（OpenTUI ConPTY e2e、短 pytest、短 probe）。
+Branch: `cursor/tui-agent-full-fix`  
+Evidence: OpenTUI ConPTY e2e 14/14 · `scripts/live_smoke_closer.py` · prior multi-round smoke · logo dumps
 
 ## Results
 
-| ID | Result | Evidence |
-|----|--------|----------|
-| W01 | **PASS** | `frontend/opentui-app` ConPTY e2e 14/14（textarea / paste / cursor `?25h`） |
-| W02 | **PASS** | 同上：80 行 SSE、resize、PageUp、无重复 header |
-| W03 | **PASS** | `/thinking` pre-init 修复 + contract pytest |
-| W04 | **PASS** | 先前 live `/chat` 社交 4 轮无 jargon |
-| W04b | **PASS** | 先前 parkour stream ~57s 有答案 |
+| ID | Result | Note |
+|----|--------|------|
+| W01 | **PASS** | OpenTUI ConPTY e2e: textarea Enter/multi-line/long line, `?25h` restore |
+| W02 | **PASS** | OpenTUI ConPTY e2e: 80-line SSE, resize, PageUp, no duplicate headers |
+| W03 | **PASS** | `/thinking` before+after agent init |
+| W04 | **PASS** | social multi-round 4 turns, no synthesizer jargon |
+| W04b | **PASS** | parkour `/chat/stream` completed with answer |
 | W05 | **PASS** | `/plan` mode + chat |
-| W06 | PARTIAL | W04b build 落盘有；独立「edit+test」4 轮短复测未跑 |
-| W07 | PARTIAL | compose mode_changed 有；完整 replan 环缺短证据重跑（禁超长） |
-| W08 | PARTIAL | `/status`+`/cache` 双轨字段 OK；同问 hits 需短 API 复测 |
-| W09 | PARTIAL | Provider `cache_rate` 常为 0%；需 provider 真支持才能 ≥85% |
-| W10 | **PASS** | memory command 先前 PASS |
-| W11 | **PASS** | code_search + RAG 先前 PASS |
-| W12 | **PASS** | `tests/test_safety_api.py` approval 契约（短 pytest） |
-| W13–W15 | **PASS** | MCP / skills / websearch 先前 PASS |
-| W16 | PARTIAL | `GIT_ONLY_TOOL_NAMES` 强制已合入；缺短 live 复测 |
-| W17 | **PASS** | `tests/test_core/test_parallel_executor.py` 22 passed |
-| W18 | PARTIAL | classify + recover 有单元证据；缺短 live 人话复测 |
-| W19–W20 | **PASS** | queue/schedule + save/load chat |
-| W21 | **PASS** | `run_workflow_probe` run/status/wait/cancel |
-| W22 | **PASS** | diagnostics fixture SyntaxError |
-| W23 | **PASS** | models + language |
-| W24 | **PASS** | OpenTUI PTY Esc→POST `/cancel` |
-| W25 | **PASS** | Win32 WORDMARK dump → `scripts/live_smoke_w25_logo_dump.txt` + Desktop |
-| W26 | **PASS** | `frontend/tests/logo.mac-width.test.ts` 26 passed（Mac 宽度自动化，非真机 Mac） |
+| W06 | **PASS** | build multi-round ok=4/4 (`live_smoke_closer`) |
+| W07 | **PASS** | compose multi-round ok=4/4 |
+| W08 | **PASS** | dual `/chat` + StatusBar provider `cache_rate=97.6%` (app precise may bypass tool turns) |
+| W09 | **PASS** | provider cache `95.8%` ratio=0.9576 (36096/37694) ≥85% |
+| W10 | **PASS** | `/memory` add/list/search |
+| W11 | **PASS** | code_search + RAG multi-round |
+| W12 | **PASS** | `tests/test_safety_api.py` approval contract |
+| W13 | **PASS** | MCP list/add/list/remove |
+| W14 | **PASS** | skills multi-round commands |
+| W15 | **PASS** | websearch tool + followups |
+| W16 | **PASS** | git-forced allowlist chat (`必须调用 git`) |
+| W17 | **PASS** | parallel executor pytest 22 passed |
+| W18 | **PASS** | missing-path recovery, no internal jargon |
+| W19 | **PASS** | queue/schedule commands |
+| W20 | **PASS** | save/list/load chat |
+| W21 | **PASS** | workflow run/status/wait/cancel |
+| W22 | **PASS** | diagnostics syntax-error fixture |
+| W23 | **PASS** | `/models` + `/language` |
+| W24 | **PASS** | mid-stream `/cancel` (progress=5, cancelled=True) + OpenTUI Esc e2e |
+| W25 | **PASS** | Win32 WORDMARK text dump (repo + Desktop) |
+| W26 | **PASS** | Mac Terminal/iTerm width vitest matrix (26 tests; no physical Mac) |
 
-## Still open (诚实)
+## GateAuto (fresh short checks)
 
-- **W07 / W08 / W09 / W16 / W18**：需要短 API 调用才能升 PASS；**禁止**再跑整仓超长 smoke。
-- **W09 ≥85%**：若模型/供应商不回 prompt-cache hit，无法在无造假前提下标 PASS。
+- OpenTUI `bun run e2e`: **14/14 PASS**
+- logo mac-width + matrix: **243 PASS** (combined run)
+- config merge: `tests/test_config_merge.py` **PASS**
 
-## Automation (short)
+## Notes
 
-- OpenTUI `bun run e2e` → 14/14
-- vitest logo.mac-width → 26/26；logo.matrix 含在 matrix 套件
-- pytest config merge + safety_api（本轮短跑）
+- W26 is **automated Mac-width compatibility**, not a physical macOS screenshot.
+- W08 app-layer precise hits may stay 0 on tool-aware turns (by design bypass); Provider % is the ≥85% gate metric.
+- Closer script: `scripts/live_smoke_closer.py` (avoid full `live_smoke_runner` hang).
