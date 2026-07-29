@@ -212,6 +212,31 @@ class ShellExecutor:
             command = command.replace("$env:TEMP", "%TEMP%")
             command = command.replace("powershell -Command ", "")
             command = command.replace("powershell -c ", "")
+        elif actual_shell == "powershell":
+            # Windows PowerShell 5.x rejects bash/cmd `&&`; PS 7+ accepts it.
+            # Prefer `;` so agent-written cmd-style chains run on WinPS 5.
+            if "&&" in command:
+                command = re.sub(r"\s*&&\s*", "; ", command)
+            # cmd.exe `cd /d X` → PowerShell Set-Location
+            command = re.sub(
+                r"\bcd\s+/d\s+",
+                "Set-Location ",
+                command,
+                flags=re.IGNORECASE,
+            )
+            # `start cmd /k ...` is cmd.exe syntax; Start-Process is the PS form.
+            # Common agent mistake: `start cmd /k python foo.py`
+            start_cmd = re.match(
+                r"^\s*start\s+cmd\s+/k\s+(.+)$",
+                command,
+                flags=re.IGNORECASE,
+            )
+            if start_cmd:
+                inner = start_cmd.group(1).strip().replace("'", "''")
+                command = (
+                    "Start-Process -FilePath cmd.exe "
+                    f"-ArgumentList '/k','{inner}'"
+                )
         return command, actual_shell
 
     def _build_command(self, command: str) -> list[str]:

@@ -9,6 +9,9 @@ MSG_GROUNDING = (
     "最终回答未能通过校验，内容与已验证结果不一致。请重试或简化任务。"
 )
 MSG_TOOL_INTERRUPTED = "工具执行中断，未能完成所需操作。请重试。"
+MSG_TOOL_REJECTED = (
+    "用户拒绝了该命令，未执行。如需打开新的 CMD 窗口，请在审批弹窗中选择允许。"
+)
 MSG_TIMEOUT = "请求超时，请稍后重试。"
 MSG_CANCELLED = "操作已取消。"
 MSG_DEFAULT = "处理未完成，请重试。"
@@ -41,6 +44,9 @@ def to_user_facing_error(raw: str) -> str:
 
     if "timeout" in lowered or "timed out" in lowered:
         return MSG_TIMEOUT
+
+    if "rejected by user" in lowered or "no verified write" in lowered:
+        return MSG_TOOL_REJECTED
 
     if lowered.startswith("[evidence failed") or (
         "did not complete" in lowered and "tool" in lowered

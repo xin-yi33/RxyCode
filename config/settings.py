@@ -285,6 +285,8 @@ def _default_config() -> dict:
         "safety": {
             "enabled": True,
             "auto_approve": [],
+            # confirm_all | auto_edit | full_auto — see tool_orchestrator gate
+            "permission_mode": "confirm_all",
             "allowed_write_paths": [],
             "dry_run": False,
             "approval_timeout": 120,

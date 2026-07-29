@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import axios from 'axios';
-import type { Message, StatusInfo, ToolStatus } from '../types.js';
+import type { Message, Mode, StatusInfo, ToolStatus } from '../types.js';
 import { logInfo, logWarn, logError, logDebug } from '../log.js';
 import { API_BASE, authorizationHeaders, safeCommandLabel } from '../apiClient.js';
 import { consumeJsonSseStream } from './sseParser.js';
@@ -250,7 +250,7 @@ export function useApi() {
     isStreamingRef.current = true;
     hasReasoningRef.current = false;
     logInfo('Chat request sent', { len: content.length, mode });
-    addMessage({ role: 'user', content });
+    addMessage({ role: 'user', content, mode: mode as Mode });
     setIsStreaming(true);
 
     const thinkingId = `${Date.now()}-thinking`;

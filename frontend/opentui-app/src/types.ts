@@ -7,6 +7,8 @@ export interface ChatMessage {
   role: "user" | "assistant" | "tool" | "system" | "thinking";
   content: string;
   timestamp: number;
+  /** Mode at send time — user frame color must not follow live Tab switches. */
+  mode?: Mode;
   toolName?: string;
   toolStatus?: ToolStatus;
   done?: boolean;
@@ -29,8 +31,8 @@ export interface StatusInfo {
 
 export const MODE_COLORS: Record<Mode, string> = {
   build: "#FF69B4",
-  plan: "#00ff7f",
-  compose: "#FFB6C1",
+  plan: "#a6e3a1",
+  compose: "#cba6f7",
 };
 
 export const MODE_LABELS: Record<Mode, string> = {

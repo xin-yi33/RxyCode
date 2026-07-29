@@ -68,7 +68,14 @@ bash_tool = StructuredTool.from_function(
     description=(
         "Execute a shell command. Auto-detects PowerShell on Windows, "
         "falls back to cmd, uses bash on Unix. Returns stdout and stderr. "
-        "Timeout is in seconds."
+        "Timeout is in seconds. "
+        "On Windows: prefer PowerShell/cmd built-ins (dir, Get-ChildItem). "
+        "Opening a visible new CMD window (e.g. `start cmd`) is a WRITE/DANGER "
+        "action and requires user approval. To run a Python file and capture "
+        "stdout on Windows, use `cmd /c python path\\to\\file.py` (not "
+        "`start cmd`, which cannot return output to the agent). "
+        "For routine work, run commands in the current shell instead of "
+        "launching a new GUI window."
     ),
     args_schema=BashInput,
 )

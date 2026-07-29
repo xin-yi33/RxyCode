@@ -58,6 +58,7 @@ describe('centerLine', () => {
 
 describe('Banner component', () => {
   test('renders all 7 logo lines + subtitle', async () => {
+    process.env.RXYCODE_LOGO_PROFILE = 'unicode';
     const BannerModule = await import('../src/components/Banner.js');
     const Banner = BannerModule.default;
     const { lastFrame } = render(React.createElement(Banner));
@@ -76,6 +77,7 @@ describe('Banner component', () => {
   });
 
   test('banner output is centered in 100-col terminal', async () => {
+    process.env.RXYCODE_LOGO_PROFILE = 'unicode';
     const BannerModule = await import('../src/components/Banner.js');
     const Banner = BannerModule.default;
     const { lastFrame } = render(React.createElement(Banner));
@@ -95,7 +97,19 @@ describe('Banner component', () => {
     });
   });
 
+  test('legacy profile still renders Unicode (no ASCII # fallback)', async () => {
+    process.env.RXYCODE_LOGO_PROFILE = 'legacy';
+    const Banner = (await import('../src/components/Banner.js')).default;
+    const { lastFrame } = renderWithSize(React.createElement(Banner), 100, 24);
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('█');
+    expect(frame).not.toContain('#######');
+    expect(frame).toContain('General-Purpose AI Agent');
+    expect(frame).toContain('✦');
+  });
+
   test('banner has no ZWJ padding', async () => {
+    process.env.RXYCODE_LOGO_PROFILE = 'unicode';
     const Banner = (await import('../src/components/Banner.js')).default;
     const { lastFrame } = renderWithSize(React.createElement(Banner), 100, 24);
     const frame = lastFrame() ?? '';
@@ -106,6 +120,7 @@ describe('Banner component', () => {
 describe('Banner display width matrix', () => {
   for (const cols of [80, 100, 120]) {
     test(`centers logo at ${cols} columns by display width`, async () => {
+      process.env.RXYCODE_LOGO_PROFILE = 'unicode';
       const Banner = (await import('../src/components/Banner.js')).default;
       const { lastFrame } = renderWithSize(React.createElement(Banner), cols, 24);
       const frame = lastFrame() ?? '';

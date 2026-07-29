@@ -33,7 +33,7 @@ export function messageFg(role: ChatMessage["role"]): string {
     case "assistant":
       return "#ffffff";
     case "thinking":
-      return "#888888";
+      return "#555555";
     case "tool":
       return "#aaaaaa";
     case "system":

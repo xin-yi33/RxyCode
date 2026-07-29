@@ -1,4 +1,4 @@
-/** True-black + classic pink (match original RxyCode screenshot). */
+/** True-black + classic Ink pinks (match original RxyCode screenshot). */
 export const C = {
   bg: "#000000",
   surface0: "#111111",

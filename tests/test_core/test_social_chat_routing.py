@@ -9,6 +9,8 @@ from RxyCode.RxyCode1_1_0.core.agent_v2 import (
     CODE_MUTATING_TOOL_NAMES,
     PLAN_READONLY_TOOL_NAMES,
     SOCIAL_CHAT_TOOL_NAMES,
+    SOCIAL_CHAT_ROLE_INSTRUCTION,
+    _PURE_SOCIAL_GREETING_RE,
 )
 
 
@@ -109,3 +111,34 @@ def test_social_core_tools_filter_excludes_write_edit_bash():
     assert "write" not in names
     assert "edit" not in names
     assert "bash" not in names
+
+
+def test_pure_greeting_regex_matches_hello():
+    assert _PURE_SOCIAL_GREETING_RE.match("你好")
+    assert _PURE_SOCIAL_GREETING_RE.match("你好！")
+    assert _PURE_SOCIAL_GREETING_RE.match("hello")
+    assert _PURE_SOCIAL_GREETING_RE.match("Hi")
+    assert not _PURE_SOCIAL_GREETING_RE.match("你好，帮我写个跑酷游戏")
+
+
+def test_social_role_instruction_forbids_prior_task_dump():
+    assert "Do NOT dump prior coding tasks" in SOCIAL_CHAT_ROLE_INSTRUCTION
+    assert "short greetings" in SOCIAL_CHAT_ROLE_INSTRUCTION
+
+
+def test_memory_ctx_for_turn_skips_all_social():
+    agent = _agent()
+    calls: list[str] = []
+
+    def _fake_get(query: str = "", *, include_long_term: bool = True):
+        calls.append(query)
+        return "PARKOUR_CODE_SHOULD_NOT_APPEAR"
+
+    agent._memory = type("M", (), {"get_context_for_prompt": staticmethod(_fake_get)})()
+    # Bind methods that need self
+    AgentV2._get_memory_context = AgentV2._get_memory_context  # type: ignore
+    assert AgentV2._memory_ctx_for_turn(agent, "你好") == ""
+    assert calls == []
+    # Non-social should call through
+    assert "PARKOUR" in AgentV2._memory_ctx_for_turn(agent, "写一个跑酷小游戏")
+    assert calls == ["写一个跑酷小游戏"]

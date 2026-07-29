@@ -174,10 +174,24 @@ class SseApproval(ApprovalBroker):
             except Exception:
                 pass
         try:
-            await asyncio.wait_for(event.wait(), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            return ApprovalDecision.REJECTED
-        else:
+            # Slice the wait so the event loop can keep flushing SSE while we
+            # block on the user's decision (avoids a single long wait_for that
+            # starves interactive prompts on some ASGI write buffers).
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max(0.0, float(self.timeout))
+            while True:
+                if event.is_set():
+                    break
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return ApprovalDecision.REJECTED
+                try:
+                    await asyncio.wait_for(
+                        event.wait(), timeout=min(5.0, remaining)
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    continue
             return self._decisions.get(
                 request.approval_id, ApprovalDecision.REJECTED
             )

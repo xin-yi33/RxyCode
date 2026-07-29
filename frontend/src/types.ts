@@ -26,6 +26,8 @@ export interface Message {
   stepTotal?: number;
   // Thinking panel is currently streaming reasoning -> render even if not done
   live?: boolean;
+  /** Mode at send time — user frame color must not follow live Tab switches. */
+  mode?: Mode;
 }
 
 export interface StatusInfo {

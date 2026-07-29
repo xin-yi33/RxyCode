@@ -1250,6 +1250,72 @@ async def _execute_command(req: CommandRequest):
         else:
             return {"action": "language_switched", "language": lang, "message": "Language switched to English"}
 
+    if c == "/permission":
+        from .config.settings import load_config, save_config
+
+        mode_help = (
+            "confirm_all=任何写/系统指令都要同意；"
+            "auto_edit=写代码免批、系统指令要批；"
+            "full_auto=全部自动同意"
+        )
+        cfg = load_config()
+        safety = cfg.setdefault("safety", {})
+        current = str(safety.get("permission_mode") or "confirm_all").strip().lower()
+        arg = args.strip().lower().replace("-", "_")
+        aliases = {
+            "confirm_all": "confirm_all",
+            "all": "confirm_all",
+            "strict": "confirm_all",
+            "auto_edit": "auto_edit",
+            "edit": "auto_edit",
+            "code": "auto_edit",
+            "full_auto": "full_auto",
+            "auto": "full_auto",
+            "full": "full_auto",
+        }
+        if not arg:
+            return {
+                "action": "permission_show",
+                "permission_mode": current,
+                "message": f"当前权限模式: {current}。{mode_help}。用法: /permission confirm_all|auto_edit|full_auto",
+            }
+        mode = aliases.get(arg)
+        if mode is None:
+            return {
+                "action": "error",
+                "permission_mode": current,
+                "message": f"未知权限模式: {args}。可选: confirm_all, auto_edit, full_auto",
+            }
+        safety["permission_mode"] = mode
+        save_config(cfg)
+        # Keep live agent config in sync when present.
+        agent = _state.get("agent")
+        if agent is not None:
+            try:
+                acfg = getattr(agent, "config", None)
+                if isinstance(acfg, dict):
+                    acfg.setdefault("safety", {})["permission_mode"] = mode
+            except Exception:
+                pass
+        return {
+            "action": "permission_switched",
+            "permission_mode": mode,
+            "message": f"权限模式已切换为 {mode}。{mode_help}",
+        }
+
+    if c == "/settings":
+        return {
+            "action": "settings",
+            "message": "打开设置：权限设置可用 /permission 或 Ctrl+P → 设置",
+            "items": [
+                {
+                    "id": "permission",
+                    "label": "权限设置",
+                    "desc": "三档安全审批：全确认 / 写代码免批 / 全自动",
+                }
+            ],
+        }
+
     if c == "/help":
         help_text = (
             "/help - 帮助\n"
@@ -1268,6 +1334,8 @@ async def _execute_command(req: CommandRequest):
             "/queue - 任务队列管理\n"
             "/schedule - 定时任务管理\n"
             "/language zh|en - 切换界面语言\n"
+            "/permission [confirm_all|auto_edit|full_auto] - 权限模式\n"
+            "/settings - 设置\n"
             "/thinking - 展开/折叠思考过程\n"
             "/cache - 缓存统计\n"
             "/find-skill <name> - \u641c\u7d22\u5e76\u4e0b\u8f7d skill\n"
@@ -2247,10 +2315,17 @@ async def chat_stream(req: ChatRequest):
                 stream_loop = _asyncio.get_running_loop()
                 stream_question_ids: set[str] = set()
 
-                def publish_question(event: dict) -> None:
-                    question_id = str(event.get("question_id", ""))
-                    if question_id:
-                        stream_question_ids.add(question_id)
+                def _publish_to_stream(event: dict) -> None:
+                    """Thread-safe enqueue + flush coalesced TUI buffers first.
+
+                    Approval/question events must leave the process promptly: if
+                    they sit behind an unflushed SSE write buffer, the client
+                    cannot POST /approve before SseApproval's fail-closed timeout.
+                    """
+                    try:
+                        stream_tui.flush_stream_buffers()
+                    except Exception:
+                        pass
                     try:
                         current_loop = _asyncio.get_running_loop()
                     except RuntimeError:
@@ -2259,6 +2334,14 @@ async def chat_stream(req: ChatRequest):
                         queue.put_nowait(event)
                     elif stream_loop.is_running():
                         stream_loop.call_soon_threadsafe(queue.put_nowait, event)
+                    else:
+                        queue.put_nowait(event)
+
+                def publish_question(event: dict) -> None:
+                    question_id = str(event.get("question_id", ""))
+                    if question_id:
+                        stream_question_ids.add(question_id)
+                    _publish_to_stream(event)
 
                 previous_tui = get_tui()
                 previous_tracer = getattr(agent, "_tool_tracer", None)
@@ -2270,7 +2353,7 @@ async def chat_stream(req: ChatRequest):
                 _state["mode"] = req.mode
                 set_tui(stream_tui)
                 if isinstance(broker, SseApproval):
-                    broker.set_event_sink(queue.put_nowait)
+                    broker.set_event_sink(_publish_to_stream)
                 if isinstance(question_broker, SseQuestionBroker):
                     question_broker.set_event_sink(publish_question)
                 try:
@@ -2363,7 +2446,15 @@ async def chat_stream(req: ChatRequest):
         try:
             while True:
                 ev = await queue.get()
-                yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+                payload = f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+                # Pad after interactive prompts so TCP/ASGI write buffers flush
+                # before the approval timeout (urllib/SSE clients otherwise only
+                # see approval_request after the rejected tool_result arrives).
+                if ev.get("type") in ("approval_request", "question_request"):
+                    payload += ": " + ("x" * 4096) + "\n\n"
+                yield payload
+                if ev.get("type") in ("approval_request", "question_request"):
+                    await _asyncio.sleep(0)
                 if ev.get("type") == "done":
                     break
         finally:
@@ -2374,7 +2465,7 @@ async def chat_stream(req: ChatRequest):
             with suppress(_asyncio.CancelledError):
                 await task
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream; charset=utf-8", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(event_gen(), media_type="text/event-stream; charset=utf-8", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
 
 def run_api_server(

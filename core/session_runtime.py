@@ -128,6 +128,38 @@ def resolve_session_path(value: str | os.PathLike[str]) -> Path:
     return workspace_path
 
 
+def _strip_redundant_output_prefix(relative: Path, output_dir: Path) -> Path:
+    """Drop repeated ``output[/date]`` prefixes when ``output_dir`` already includes them.
+
+    Models often pass ``output/2026-07-28/file.html`` while ``get_output_dir()`` is
+    already ``.../output/2026-07-28``. Without stripping, writes land in a nested
+    ``.../output/2026-07-28/output/2026-07-28/file.html`` and evidence checks fail.
+    """
+    parts = list(relative.parts)
+    if not parts:
+        return relative
+
+    out_parts = list(output_dir.parts)
+    # Strip leading "output" (+ optional date matching output_dir.name)
+    while parts and parts[0].lower() == "output":
+        parts = parts[1:]
+        if parts and out_parts and parts[0] == output_dir.name:
+            parts = parts[1:]
+        elif (
+            parts
+            and len(out_parts) >= 2
+            and out_parts[-1] == parts[0]
+            and out_parts[-2].lower() == "output"
+        ):
+            parts = parts[1:]
+
+    # If relative starts with the dated folder name already used by output_dir
+    if parts and parts[0] == output_dir.name and out_parts and out_parts[-1] == output_dir.name:
+        parts = parts[1:]
+
+    return Path(*parts) if parts else Path(".")
+
+
 def resolve_write_path(value: str | os.PathLike[str]) -> Path:
     """Keep existing targets in place and redirect every new file to output."""
     path = Path(value).expanduser()
@@ -152,6 +184,11 @@ def resolve_write_path(value: str | os.PathLike[str]) -> Path:
     try:
         relative = session_path.relative_to(workspace)
     except ValueError:
+        # Also try relative to data/output root when model passed output/...
+        relative = Path(*path.parts) if not path.is_absolute() else Path(session_path.name)
+
+    relative = _strip_redundant_output_prefix(relative, output_dir)
+    if str(relative) in ("", "."):
         relative = Path(session_path.name)
     return (output_dir / relative).resolve()
 

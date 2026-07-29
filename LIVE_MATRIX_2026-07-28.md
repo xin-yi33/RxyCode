@@ -29,8 +29,17 @@ Branch: `cursor/tui-agent-full-fix`
 | W21–W22 | **PASS** | workflow + diagnostics |
 | W23 | **PASS** | models/language |
 | W24 | **PASS** | stream cancel progress=6 |
-| W25 | **PASS** | Win32 logo dump |
-| W26 | **PASS** | Mac width vitest（自动化，非真机 Mac） |
+| W25 | **PASS** | Win32 logo：CMD/legacy conhost → ASCII `#`；WT/modern → Unicode `█`；见 `qa-artifacts/logo-profiles/` |
+| W26 | **PASS** | Mac width vitest + macos Unicode profile 预览（自动化，非真机 Mac） |
+
+### Logo host adaptation（2026-07-28 修订 → OpenCode 同款）
+
+| Policy | Detail |
+|--------|--------|
+| Glyph | **始终 Unicode `█`（U+2588）**，不再降级 ASCII `#` |
+| Cell fill | `█` 格子 **fg=bg=品牌粉**（顶行 `#FFB6C1`，其余 `#FF69B4`），消除字体缝隙 |
+| Field | 非墨水格子与整体 UI 背景保持 **`#000000`** |
+| Evidence | `preview-*-cellfill.png`、`live-live-cmd-unicode.txt`；vitest 23 + bun brand 5 |
 
 ## Hang detection（本轮）
 

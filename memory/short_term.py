@@ -96,15 +96,31 @@ class ShortTermMemory:
             return ""
         
         # Simple keyword matching for relevance scoring
+        import re
+
         query_lower = query.lower()
         query_words = set(query_lower.split())
-        
+        # CJK runs (no spaces): treat 2+ char substrings as tokens
+        for run in re.findall(r"[\u4e00-\u9fff]{2,}", query_lower):
+            query_words.add(run)
+            for i in range(len(run) - 1):
+                query_words.add(run[i : i + 2])
+
         scored_messages = []
         for msg in self._messages:
             content_lower = msg.content.lower()
             # Calculate relevance score based on word overlap
             content_words = set(content_lower.split())
+            for run in re.findall(r"[\u4e00-\u9fff]{2,}", content_lower):
+                content_words.add(run)
+                for i in range(len(run) - 1):
+                    content_words.add(run[i : i + 2])
             overlap = len(query_words.intersection(content_words))
+            # Substring fallback when split tokens miss
+            if overlap == 0:
+                for token in query_words:
+                    if len(token) >= 2 and token in content_lower:
+                        overlap += 1
             # Boost score for recent messages
             recency_boost = 1.0 if isinstance(msg, AIMessage) else 0.5
             score = overlap * recency_boost
@@ -112,6 +128,9 @@ class ShortTermMemory:
         
         # Sort by relevance score (descending) and take top N
         scored_messages.sort(key=lambda x: x[0], reverse=True)
+        # Zero-score history must not pollute unrelated turns (e.g. 你好 after parkour).
+        if not scored_messages or scored_messages[0][0] <= 0:
+            return ""
         relevant = scored_messages[:max_items]
         
         # Sort by original order (timestamp)

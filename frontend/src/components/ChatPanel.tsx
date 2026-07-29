@@ -199,7 +199,7 @@ function renderMessage(msg: Message, mode: Mode, expandThinking: boolean, maxAss
     case 'tool':
       return <ToolMessage key={msg.id} msg={msg} />;
     case 'user':
-      return <UserMessage key={msg.id} content={msg.content} mode={mode} />;
+      return <UserMessage key={msg.id} content={msg.content} mode={msg.mode ?? mode} />;
     case 'assistant':
       return <AssistantMessage key={msg.id} msg={msg} maxPreviewLines={maxAssistantPreviewLines} />;
     case 'system':

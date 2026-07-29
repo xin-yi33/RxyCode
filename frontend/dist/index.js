@@ -1407,7 +1407,7 @@ var require_react_development = __commonJS({
           var dispatcher = resolveDispatcher();
           return dispatcher.useCallback(callback, deps);
         }
-        function useMemo6(create3, deps) {
+        function useMemo7(create3, deps) {
           var dispatcher = resolveDispatcher();
           return dispatcher.useMemo(create3, deps);
         }
@@ -2179,7 +2179,7 @@ var require_react_development = __commonJS({
         exports.useImperativeHandle = useImperativeHandle;
         exports.useInsertionEffect = useInsertionEffect;
         exports.useLayoutEffect = useLayoutEffect2;
-        exports.useMemo = useMemo6;
+        exports.useMemo = useMemo7;
         exports.useReducer = useReducer;
         exports.useRef = useRef10;
         exports.useState = useState13;
@@ -26986,7 +26986,7 @@ var require_backend = __commonJS({
                       value: a
                     });
                   },
-                  useMemo: function useMemo6(a) {
+                  useMemo: function useMemo7(a) {
                     var b = C2();
                     a = null !== b ? b.memoizedState[0] : a();
                     x.push({
@@ -58732,9 +58732,15 @@ var WORDMARK = [
   "\u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588    \u2588\u2588\u2588    \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588",
   "\u2588\u2588   \u2588\u2588  \u2588\u2588   \u2588\u2588    \u2588\u2588\u2588     \u2588\u2588\u2588\u2588\u2588    \u2588\u2588\u2588\u2588\u2588   \u2588\u2588\u2588\u2588\u2588\u2588    \u2588\u2588\u2588\u2588\u2588 "
 ];
-var WORDMARK_DISPLAY_WIDTH = Math.max(
-  ...WORDMARK.map((line) => stringWidth(line.replace(/ +$/, "")))
-);
+var LOGO_INK_TOP = "#FFB6C1";
+var LOGO_INK_BODY = "#FF69B4";
+function logoInkForRow(rowIndex) {
+  return rowIndex === 0 ? LOGO_INK_TOP : LOGO_INK_BODY;
+}
+function getWordmarkDisplayWidth(lines = WORDMARK) {
+  return Math.max(...lines.map((line) => stringWidth(line.replace(/ +$/, ""))));
+}
+var WORDMARK_DISPLAY_WIDTH = getWordmarkDisplayWidth(WORDMARK);
 function padToDisplayWidth(line, targetWidth) {
   const w = stringWidth(line);
   if (w >= targetWidth) return line;
@@ -58744,21 +58750,56 @@ function padToDisplayWidth(line, targetWidth) {
 // src/components/Banner.tsx
 var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 var PAD_GUARD = "\u2060";
+function WordmarkRow({ line, ink, leading }) {
+  const nodes = [];
+  let buf = "";
+  let solid = null;
+  for (const ch of line) {
+    const isSolid = ch === "\u2588";
+    if (solid === null) {
+      solid = isSolid;
+      buf = ch;
+      continue;
+    }
+    if (isSolid === solid) {
+      buf += ch;
+      continue;
+    }
+    nodes.push({ text: buf, solid });
+    buf = ch;
+    solid = isSolid;
+  }
+  if (buf && solid !== null) nodes.push({ text: buf, solid });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Box_default, { flexDirection: "row", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { children: " ".repeat(leading) }),
+    nodes.map(
+      (seg, j) => seg.solid ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: ink, backgroundColor: ink, bold: true, children: seg.text }, j) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { children: seg.text }, j)
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { children: PAD_GUARD })
+  ] });
+}
 var Banner_default = import_react22.default.memo(function Banner() {
   const { stdout } = use_stdout_default();
   const termWidth = stdout?.columns ?? 80;
-  const logoLeading = Math.floor((termWidth - WORDMARK_DISPLAY_WIDTH) / 2);
-  const subtitleWidth = 24;
-  const subtitleLeading = Math.floor((termWidth - subtitleWidth) / 2);
-  const lines = WORDMARK.map(
-    (line) => padToDisplayWidth(line.replace(/ +$/, ""), WORDMARK_DISPLAY_WIDTH) + PAD_GUARD
-  );
+  const displayWidth = (0, import_react22.useMemo)(() => getWordmarkDisplayWidth(WORDMARK), []);
+  const logoLeading = Math.max(0, Math.floor((termWidth - displayWidth) / 2));
+  const subtitleCore = "General-Purpose AI Agent";
+  const subtitle = `\u2726 ${subtitleCore} \u2726`;
+  const subtitleLeading = Math.max(0, Math.floor((termWidth - subtitle.length) / 2));
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Box_default, { flexDirection: "column", alignItems: "flex-start", width: termWidth, paddingTop: 1, paddingBottom: 1, children: [
-    lines.map((line, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: i === 0 ? "#FFB6C1" : "#FF69B4", bold: true, children: " ".repeat(logoLeading) + line }, i)),
+    WORDMARK.map((raw, i) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      WordmarkRow,
+      {
+        ink: logoInkForRow(i),
+        leading: logoLeading,
+        line: padToDisplayWidth(raw.replace(/ +$/, ""), displayWidth)
+      },
+      i
+    )),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(Box_default, { marginTop: 1, marginBottom: 1, children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { children: " ".repeat(subtitleLeading) }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: "#FFB6C1", children: "\u2726 " }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: "#FF69B4", children: "General-Purpose AI Agent" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: "#FF69B4", children: subtitleCore }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Text, { color: "#FFB6C1", children: " \u2726" })
     ] })
   ] });

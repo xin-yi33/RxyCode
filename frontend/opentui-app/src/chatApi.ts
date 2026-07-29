@@ -1,30 +1,23 @@
 import axios from "axios";
 import { API_BASE, authorizationHeaders } from "./apiClient.ts";
+import type { ApprovalDecision, ApprovalInfo } from "./ApprovalDialog.tsx";
 import { consumeJsonSseStream } from "./sseParser.ts";
-import type { ChatMessage, Mode, StatusInfo, ToolStatus } from "./types.ts";
+import {
+  applyStreamEvent,
+  settleActiveMessages,
+  type StreamEvent,
+  type StreamReduceState,
+} from "./streamReducer.ts";
+import type { Mode, StatusInfo } from "./types.ts";
 
-interface StreamEvent {
-  type: string;
-  text?: string;
-  thinking?: string;
-  message?: string;
-  name?: string;
-  args?: string;
-  result?: string;
-  status?: string;
-  exitCode?: number;
-  duration?: number;
-  error?: string;
-  snapshot?: boolean;
-}
-
-export type MessageUpdater = (prev: ChatMessage[]) => ChatMessage[];
+export type MessageUpdater = (prev: import("./types.ts").ChatMessage[]) => import("./types.ts").ChatMessage[];
 
 export interface ChatApiCallbacks {
   onMessages: (updater: MessageUpdater) => void;
   onStreaming: (streaming: boolean) => void;
   onStatus: (status: StatusInfo | null) => void;
   onProgress?: (text: string) => void;
+  onApprovalRequest?: (info: ApprovalInfo | null) => void;
 }
 
 function newId(suffix: string): string {
@@ -69,17 +62,36 @@ export async function cancelActiveRequest(): Promise<void> {
   }
 }
 
+/** POST /approve — safety gate decision (parity with Ink useApi.respondApproval). */
+export async function respondApproval(
+  approvalId: string,
+  decision: ApprovalDecision,
+): Promise<boolean> {
+  if (!approvalId) return false;
+  try {
+    await axios.post(
+      `${API_BASE}/approve`,
+      { approval_id: approvalId, decision },
+      { headers: authorizationHeaders(), timeout: 10000 },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function sendChatMessage(
   content: string,
   mode: Mode,
   callbacks: ChatApiCallbacks,
   signal?: AbortSignal,
 ): Promise<void> {
-  const userMsg: ChatMessage = {
+  const userMsg = {
     id: newId("user"),
-    role: "user",
+    role: "user" as const,
     content,
     timestamp: Date.now(),
+    mode,
   };
   callbacks.onMessages((prev) => [...prev, userMsg]);
   callbacks.onStreaming(true);
@@ -87,22 +99,36 @@ export async function sendChatMessage(
 
   const thinkingId = newId("thinking");
   const assistantId = newId("assistant");
-  let acc = "";
-  let assistantCreated = false;
-  let reasoningAcc = "";
-  let hasReasoning = false;
 
-  callbacks.onMessages((prev) => [
-    ...prev,
-    {
-      id: thinkingId,
-      role: "thinking",
-      content: "…",
-      timestamp: Date.now(),
-      live: true,
-      done: false,
-    },
-  ]);
+  let state: StreamReduceState = {
+    messages: [
+      {
+        id: thinkingId,
+        role: "thinking",
+        content: "…",
+        timestamp: Date.now(),
+        live: true,
+        done: false,
+      },
+    ],
+    thinkingId,
+    assistantId,
+    acc: "",
+    assistantCreated: false,
+    reasoningAcc: "",
+    hasReasoning: false,
+  };
+
+  callbacks.onMessages((prev) => [...prev, ...state.messages]);
+
+  const publish = (next: StreamReduceState) => {
+    state = next;
+    callbacks.onMessages((prev) => {
+      const idx = prev.findIndex((m) => m.id === userMsg.id);
+      if (idx < 0) return [...prev, ...next.messages];
+      return [...prev.slice(0, idx + 1), ...next.messages];
+    });
+  };
 
   try {
     let resp: Response | null = null;
@@ -131,155 +157,55 @@ export async function sendChatMessage(
     }
 
     const reader = resp.body.getReader();
-    let finalText: string | undefined;
 
     await consumeJsonSseStream<StreamEvent>(
       reader,
       (event) => {
-        switch (event.type) {
-          case "progress":
-            if (!hasReasoning) {
-              callbacks.onProgress?.(event.message || event.text || "Working...");
-            }
-            break;
-          case "reasoning":
-          case "thinking": {
-            const thought = event.thinking || event.text || "";
-            if (!thought) break;
-            if (event.snapshot || !hasReasoning) {
-              reasoningAcc = thought;
-            } else {
-              reasoningAcc += thought;
-            }
-            hasReasoning = true;
-            callbacks.onMessages((prev) =>
-              prev.map((m) =>
-                m.id === thinkingId
-                  ? { ...m, content: reasoningAcc, live: true, done: false }
-                  : m,
-              ),
-            );
-            break;
-          }
-          case "token":
-            if (event.text) {
-              acc += event.text;
-              if (!assistantCreated) {
-                assistantCreated = true;
-                callbacks.onMessages((prev) => [
-                  ...prev.map((m) =>
-                    m.id === thinkingId ? { ...m, done: true, live: false, content: m.content === "…" ? "done" : m.content } : m,
-                  ),
-                  {
-                    id: assistantId,
-                    role: "assistant",
-                    content: acc,
-                    timestamp: Date.now(),
-                    done: false,
-                  },
-                ]);
-              } else {
-                callbacks.onMessages((prev) =>
-                  prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)),
-                );
-              }
-            }
-            break;
-          case "tool_call":
-            callbacks.onMessages((prev) => [
-              ...prev,
-              {
-                id: newId("tool"),
-                role: "tool",
-                content: event.args || "",
-                timestamp: Date.now(),
-                toolName: event.name || "tool",
-                toolStatus: "running",
-              },
-            ]);
-            callbacks.onProgress?.(event.name ? `Tool: ${event.name}` : "Running tool...");
-            break;
-          case "tool_result": {
-            const status: ToolStatus =
-              event.status === "error" || event.status === "timeout" || event.status === "cancelled"
-                ? (event.status as ToolStatus)
-                : "success";
-            callbacks.onMessages((prev) => {
-              const idx = [...prev].reverse().findIndex(
-                (m) => m.role === "tool" && m.toolName === (event.name || m.toolName) && m.toolStatus === "running",
-              );
-              if (idx < 0) return prev;
-              const realIdx = prev.length - 1 - idx;
-              const next = [...prev];
-              next[realIdx] = {
-                ...next[realIdx],
-                toolStatus: status,
-                content: event.result || event.error || next[realIdx].content,
-              };
-              return next;
-            });
-            break;
-          }
-          case "final":
-            finalText = event.text ?? event.message ?? acc;
-            break;
-          case "error":
-            callbacks.onMessages((prev) => [
-              ...prev,
-              {
-                id: newId("system"),
-                role: "system",
-                content: event.error || event.message || "Request failed",
-                timestamp: Date.now(),
-              },
-            ]);
-            break;
-          default:
-            break;
+        if (event.type === "progress" && !state.hasReasoning) {
+          callbacks.onProgress?.(event.message || event.text || "Working...");
         }
+        if (event.type === "tool_call") {
+          callbacks.onProgress?.(event.name ? `Tool: ${event.name}` : "Running tool...");
+        }
+        if (event.type === "approval_request") {
+          const args = event.args;
+          callbacks.onApprovalRequest?.({
+            approvalId: String(event.approval_id || ""),
+            tool: String(event.tool || event.name || "unknown"),
+            risk: String(event.risk || "WRITE"),
+            args: typeof args === "string" ? args : JSON.stringify(args ?? {}),
+          });
+        }
+        if (event.type === "tool_result") {
+          callbacks.onApprovalRequest?.(null);
+        }
+        const next = applyStreamEvent(state, event, newId);
+        if (next !== state) publish(next);
       },
       (event) => event.type === "final" || event.type === "done",
     );
 
-    const resolved = finalText !== undefined ? finalText : acc;
-    callbacks.onMessages((prev) => {
-      let next = prev.map((m) => {
-        if (m.id === thinkingId) return { ...m, done: true, live: false };
-        if (m.id === assistantId) return { ...m, content: resolved, done: true };
-        return m;
-      });
-      if (!assistantCreated && resolved) {
-        next = [
-          ...next,
-          {
-            id: assistantId,
-            role: "assistant",
-            content: resolved,
-            timestamp: Date.now(),
-            done: true,
-          },
-        ];
-      }
-      return next;
+    publish({
+      ...state,
+      messages: settleActiveMessages(state.messages),
     });
   } catch (e) {
     if ((e as Error)?.name === "AbortError") {
-      callbacks.onMessages((prev) => [
-        ...prev.map((m) =>
-          m.id === thinkingId || (m.role === "assistant" && m.done !== true)
-            ? { ...m, done: true, live: false }
-            : m,
-        ),
-        {
-          id: newId("system"),
-          role: "system",
-          content: "Cancelled.",
-          timestamp: Date.now(),
-        },
-      ]);
+      publish({
+        ...state,
+        messages: [
+          ...settleActiveMessages(state.messages, "cancelled"),
+          {
+            id: newId("system"),
+            role: "system",
+            content: "Cancelled.",
+            timestamp: Date.now(),
+          },
+        ],
+      });
     } else {
       callbacks.onMessages((prev) => [
-        ...prev,
+        ...settleActiveMessages(prev),
         {
           id: newId("system"),
           role: "system",

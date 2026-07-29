@@ -38,6 +38,23 @@ class TestShellExecutor:
         result = executor.translate_command("ls")
         assert result is not None
 
+    def test_powershell_translates_cmd_chain_and_start(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command(
+            r"cd /d D:\agent-demo\RxyCode\RxyCode1_1_0 && dir"
+        )
+        assert shell == "powershell"
+        assert "&&" not in cmd
+        assert "Set-Location" in cmd
+        assert ";" in cmd
+
+        started, shell2 = executor.translate_command("start cmd /k python hello_rxy.py")
+        assert shell2 == "powershell"
+        assert "Start-Process" in started
+        assert "cmd.exe" in started
+        assert "python hello_rxy.py" in started
+
     def test_translate_complex_command(self):
         executor = self._make_executor()
         result = executor.translate_command("pip install flask")

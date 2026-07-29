@@ -30,7 +30,7 @@ export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
       fg: input.connected ? C.green : C.accent,
       bold: true,
     },
-    { key: "context", text: `上下文:${ctxUsed}k/${ctxMax}k`, fg: C.brandHot },
+    { key: "context", text: `上下文:${ctxUsed}k/${ctxMax}k`, fg: C.primary },
     { key: "cache", text: `缓存:${input.cacheSize}/${input.cacheRate}`, fg: C.teal },
     { key: "mode", text: MODE_LABELS[input.mode], fg: input.modeColor, bold: true },
     {

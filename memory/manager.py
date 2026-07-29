@@ -146,10 +146,14 @@ class MemoryManager:
     def add_interaction(self, user_input: str, ai_response: str):
         """Add a user+assistant interaction to short-term memory.
 
-        If overflow is detected, runs Tier 1/2 compression (sync, no LLM).
+        If overflow is detected, runs Tier 1/2 compression (sync, no LLM)
+        unless ``autoCompact`` is disabled in config.
         """
         self.short_term.add_user_message(user_input)
         self.short_term.add_ai_message(ai_response)
+        cfg = load_config() or {}
+        if not _enabled(cfg.get("autoCompact", True)):
+            return
         if self.short_term.is_overflow(self.threshold):
             self._compress_and_store()
 
@@ -198,22 +202,24 @@ class MemoryManager:
         if new_long_ctx != long_ctx:
             self.long_term.save_session_context(new_long_ctx)
 
-    def get_context_for_prompt(self, query: str = "") -> str:
+    def get_context_for_prompt(self, query: str = "", *, include_long_term: bool = True) -> str:
         """Get context for prompt injection.
         
         FIX-1: Added query parameter for context-aware retrieval.
         If query is provided, returns relevant context instead of all context.
+        include_long_term=False skips archived session context (social turns).
         """
         parts = []
         self._current_query = query
         
         # Long-term memory (always include, but truncate if too long)
-        long_ctx = self.long_term.load_session_context()
-        if long_ctx:
-            # Truncate long-term context to prevent overflow
-            if len(long_ctx) > 2000:
-                long_ctx = long_ctx[:2000] + "..."
-            parts.append(f"[Long-term memory]\n{long_ctx}")
+        if include_long_term:
+            long_ctx = self.long_term.load_session_context()
+            if long_ctx:
+                # Truncate long-term context to prevent overflow
+                if len(long_ctx) > 2000:
+                    long_ctx = long_ctx[:2000] + "..."
+                parts.append(f"[Long-term memory]\n{long_ctx}")
 
         if query:
             experience_ctx = self.get_retrieval_context(query)
@@ -665,8 +671,13 @@ class MemoryManager:
         """Full three-tier compression (may call LLM for Tier 3).
 
         Called from the LangGraph compressor_node when route_next()
-        detects the context is too large.
+        detects the context is too large, and from the tool-loop when
+        context usage crosses ~85%. Honours ``autoCompact`` config.
         """
+        cfg = load_config() or {}
+        if not _enabled(cfg.get("autoCompact", True)):
+            return self.get_context_for_prompt()
+
         messages = self.short_term.get_messages_as_dicts()
         long_ctx = self.long_term.load_session_context()
 

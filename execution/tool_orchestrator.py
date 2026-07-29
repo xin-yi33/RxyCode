@@ -939,6 +939,20 @@ class ToolOrchestrator:
         approval_state = "auto"
         if risk >= RiskLevel.WRITE:
             auto_levels = {str(x).lower() for x in (safety.get("auto_approve") or [])}
+            permission_mode = str(
+                safety.get("permission_mode") or "confirm_all"
+            ).strip().lower()
+            # File-edit tools that auto_edit may skip; shell/system stay gated.
+            _AUTO_EDIT_TOOLS = {
+                "write", "edit", "patch", "format", "apply_patch",
+                "str_replace", "create_file", "write_file",
+            }
+            canonical = self._canonical_name(name)
+            if permission_mode == "full_auto":
+                auto_levels.update({"write", "danger"})
+            elif permission_mode == "auto_edit" and canonical in _AUTO_EDIT_TOOLS:
+                auto_levels.add(risk.name.lower())
+
             if approval_source == "explicit_command":
                 # A literal CLI/API slash command is itself an explicit user
                 # authorization. It still passes policy, dry-run and audit.
@@ -956,7 +970,12 @@ class ToolOrchestrator:
                 req = ApprovalRequest(tool_name=name, args_summary=args, risk=risk)
                 decision = await broker.request_approval(req)
                 if decision == ApprovalDecision.REJECTED:
-                    msg = f"[rejected by user: {name}]"
+                    msg = (
+                        f"[rejected by user: {name}] "
+                        "用户拒绝了该命令，未执行。"
+                        "如需打开新的 CMD 窗口，请在审批弹窗中选择允许；"
+                        "日常命令可直接在当前 shell 中执行。"
+                    )
                     return self._finish(
                         name, args, msg, executed=False, approval="rejected",
                         risk=risk, audit=audit,

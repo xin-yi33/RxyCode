@@ -859,8 +859,14 @@ async def compressor_node(state: AgentState) -> dict:
 
     memory: MemoryManager = state["_memory"]
     session_id = state["session_id"]
-    memory_ctx = await memory.compress_if_needed(session_id)
     cfg = load_config() or {}
+    auto_compact = cfg.get("autoCompact", True)
+    if isinstance(auto_compact, str):
+        auto_compact = auto_compact.strip().casefold() in {"1", "true", "yes", "on"}
+    if auto_compact:
+        memory_ctx = await memory.compress_if_needed(session_id)
+    else:
+        memory_ctx = memory.get_context_for_prompt()
     context_cfg = cfg.get("context", {})
     configured_result_chars = max(
         1000,

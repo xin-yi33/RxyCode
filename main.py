@@ -13,8 +13,44 @@ if sys.platform == "win32":
         pass
     try:
         import ctypes
+        from ctypes import wintypes
+
         ctypes.windll.kernel32.SetConsoleCP(65001)
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+
+        # Enable VT sequences so 24-bit pink / Unicode blocks match modern terminals.
+        _ENABLE_PROCESSED_OUTPUT = 0x0001
+        _ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        _stdout = ctypes.windll.kernel32.GetStdHandle(-11)
+        _mode = wintypes.DWORD()
+        if ctypes.windll.kernel32.GetConsoleMode(_stdout, ctypes.byref(_mode)):
+            ctypes.windll.kernel32.SetConsoleMode(
+                _stdout,
+                _mode.value | _ENABLE_PROCESSED_OUTPUT | _ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+            )
+
+        # Prefer Consolas so U+2588 █ is single-cell (CJK Ambiguous Width
+        # on raster fonts shatters the RXYCODE wordmark in cmd.exe).
+        class _COORD(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class _CONSOLE_FONT_INFOEX(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.ULONG),
+                ("nFont", wintypes.DWORD),
+                ("dwFontSize", _COORD),
+                ("FontFamily", wintypes.UINT),
+                ("FontWeight", wintypes.UINT),
+                ("FaceName", wintypes.WCHAR * 32),
+            ]
+
+        _font = _CONSOLE_FONT_INFOEX()
+        _font.cbSize = ctypes.sizeof(_CONSOLE_FONT_INFOEX)
+        _font.dwFontSize.Y = 16
+        _font.FontFamily = 54  # FF_MODERN | FIXED_PITCH-ish TrueType
+        _font.FontWeight = 400
+        _font.FaceName = "Consolas"
+        ctypes.windll.kernel32.SetCurrentConsoleFontEx(_stdout, False, ctypes.byref(_font))
     except Exception:
         pass
 # Reconfigure std streams to UTF-8 regardless of console vs pipe.

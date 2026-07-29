@@ -169,7 +169,8 @@ async def test_plan_only_exposes_readonly_tools_and_executes_read(monkeypatch):
 
     result = await agent._run_plan_only("inspect notes.txt and make a plan")
 
-    assert result == "plan complete"
+    assert result.startswith("plan complete")
+    assert "切换到 **Build**" in result or "switch to **Build**" in result
     assert bound_names == [["read", "ls"], ["read", "ls"]]
     orchestrated.assert_awaited_once_with(
         "read",
@@ -228,7 +229,8 @@ async def test_plan_only_rejects_unexposed_tool_calls(tool_name, monkeypatch):
 
     result = await agent._run_plan_only("make a plan")
 
-    assert result == "plan complete"
+    assert result.startswith("plan complete")
+    assert "切换到 **Build**" in result or "switch to **Build**" in result
     assert all(tool_name not in names for names in bound_names)
     agent._execute_tool.assert_awaited_once_with(
         tool_name,

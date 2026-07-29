@@ -48,7 +48,16 @@ SOCIAL_CHAT_ROLE_INSTRUCTION = (
     "Do not create markdown files, write code to disk, or run shell commands "
     "unless the user explicitly asks for a file or runnable artifact. "
     "If they mention errors from a prior turn, acknowledge and comfort them "
-    "instead of launching tools or a build pipeline."
+    "instead of launching tools or a build pipeline. "
+    "Do NOT dump prior coding tasks, games, parkour, or large code blocks "
+    "unless the user explicitly asks to continue that work. "
+    "For short greetings (e.g. 你好 / hello), reply with a brief friendly "
+    "greeting only — no code, no file contents, no prior-task recap."
+)
+_PURE_SOCIAL_GREETING_RE = re.compile(
+    r"^(?:你好|您好|hello|hi|hey|在吗|谢谢|thank you|thanks)"
+    r"(?:[!！。.\s]*)$",
+    re.IGNORECASE,
 )
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
@@ -2065,7 +2074,7 @@ class AgentV2:
             self._memory.load_session()
             self._session_loaded = True
 
-    def _get_memory_context(self, query: str) -> str:
+    def _get_memory_context(self, query: str, *, include_long_term: bool = True) -> str:
         """Call query-aware memory while preserving legacy test/plugin adapters."""
         import inspect
 
@@ -2075,7 +2084,16 @@ class AgentV2:
                 return getter()
         except (TypeError, ValueError):
             pass
-        return getter(query)
+        try:
+            return getter(query, include_long_term=include_long_term)
+        except TypeError:
+            return getter(query)
+
+    def _memory_ctx_for_turn(self, user_input: str) -> str:
+        """Social turns must not inject sticky coding/game history into the prompt."""
+        if self._is_social_chat(user_input):
+            return ""
+        return self._get_memory_context(user_input, include_long_term=True)
 
     def _application_cache_namespace(self) -> str:
         """Isolate answer caches by provider endpoint, model, and credential."""
@@ -2109,7 +2127,6 @@ class AgentV2:
         """
         from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
         await self._ensure_session_loaded()
-        memory_ctx = self._get_memory_context(user_input)
         from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message
         allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
             user_input, allowed_tool_names
@@ -2119,6 +2136,8 @@ class AgentV2:
             and not role_instruction.strip()
         ):
             role_instruction = SOCIAL_CHAT_ROLE_INSTRUCTION
+        # Social chat: skip all sticky memory (short + long + RAG).
+        memory_ctx = self._memory_ctx_for_turn(user_input)
         system = get_system_prompt()
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
         from RxyCode.RxyCode1_1_0.core.research_policy import (
@@ -2460,8 +2479,11 @@ class AgentV2:
             _output = _estimate_tokens(answer)
             _ts.update_context(_input + _output, 256000)
 
-            # Auto-compress if context is getting large
-            if _ts.context_used > _ts.context_max * 0.85:
+            # Auto-compress if context is getting large (honours config autoCompact)
+            auto_compact = bool(
+                (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
+            )
+            if auto_compact and _ts.context_used > _ts.context_max * 0.85:
                 try:
                     await self._memory.compress_if_needed(self._session_id)
                     if tui and hasattr(tui, "write_progress"):
@@ -2626,7 +2648,10 @@ class AgentV2:
                 total = sum(_estimate_tokens(getattr(x, "content", "") or "") for x in messages)
 
         # Persist a compressed session for the next turn once we are really full.
-        if total > budget * 1.1 and getattr(self, "_memory", None):
+        auto_compact = bool(
+            (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
+        )
+        if auto_compact and total > budget * 1.1 and getattr(self, "_memory", None):
             try:
                 await self._memory.compress_if_needed(self._session_id)
                 tui = get_tui()
@@ -2642,14 +2667,33 @@ class AgentV2:
             "ordered implementation plan with assumptions, risks, and "
             "verification steps. You may inspect context using the exposed "
             "read-only tools. Never execute commands, write or open files, "
-            "download resources, or claim that a mutating action was performed."
+            "download resources, or claim that a mutating action was performed. "
+            "Do not say you will start implementing after confirmation — "
+            "plan mode cannot execute; the user must switch modes themselves."
         )
-        return await self._fast_reply_with_tools(
+        answer = await self._fast_reply_with_tools(
             user_input,
             allowed_tool_names=PLAN_READONLY_TOOL_NAMES,
             role_instruction=plan_contract,
             mode="plan",
         )
+        # Always append a concrete next-step hint (LLM often omits how-to).
+        locale = str((getattr(self, "_cfg", {}) or {}).get("language") or "zh")
+        if locale.lower().startswith("zh"):
+            hint = (
+                "\n\n---\n"
+                "**下一步**：按 Tab 切换到 **Build** 模式，然后输入「开始」"
+                "（或「按计划执行」）即可开始编写。"
+            )
+        else:
+            hint = (
+                "\n\n---\n"
+                "**Next**: press Tab to switch to **Build** mode, then type "
+                "`start` (or `go ahead`) to begin implementing this plan."
+            )
+        if "切换到 **Build**" in answer or "switch to **Build**" in answer:
+            return answer
+        return (answer or "").rstrip() + hint
 
     async def _fast_reply(self, user_input: str) -> str:
         """Answer simple questions directly without the full pipeline.
@@ -2665,7 +2709,7 @@ class AgentV2:
         """
         from langchain_core.messages import HumanMessage, SystemMessage
         await self._ensure_session_loaded()
-        memory_ctx = self._get_memory_context(user_input)
+        memory_ctx = self._memory_ctx_for_turn(user_input)
         from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message
         system = get_system_prompt()
         user_msg = build_user_message("", user_input, memory_ctx)
@@ -2726,7 +2770,9 @@ class AgentV2:
             full_response_buffer = []
             in_code_block = False
             code_block_buffer = []
+            code_block_chars = 0
             non_code_buffer = []
+            CODE_BLOCK_FLUSH_CHARS = 64
 
             _reasoning_buffer = []
             received_real_usage = False
@@ -2759,12 +2805,16 @@ class AgentV2:
                         if in_code_block:
                             in_code_block = False
                             code_block_content = ''.join(code_block_buffer)
+                            if code_block_content and tui and hasattr(tui, "stream_token"):
+                                tui.stream_token(code_block_content)
                             if tui and hasattr(tui, 'write_progress'):
                                 lines_count = code_block_content.count(chr(10))
                                 tui.write_progress(f'[Code block: {lines_count} lines - saved to response]')
                             code_block_buffer = []
+                            code_block_chars = 0
                         else:
                             in_code_block = True
+                            code_block_chars = 0
                             if non_code_buffer:
                                 text = ''.join(non_code_buffer)
                                 if tui and hasattr(tui, 'stream_token'):
@@ -2773,6 +2823,16 @@ class AgentV2:
 
                     if in_code_block:
                         code_block_buffer.append(token)
+                        code_block_chars += len(token)
+                        # Periodic flush so long code generations do not freeze the TUI.
+                        if (
+                            code_block_chars >= CODE_BLOCK_FLUSH_CHARS
+                            and tui
+                            and hasattr(tui, "stream_token")
+                        ):
+                            tui.stream_token("".join(code_block_buffer))
+                            code_block_buffer = []
+                            code_block_chars = 0
                     else:
                         non_code_buffer.append(token)
                         # Stream every token in real-time
@@ -2783,6 +2843,10 @@ class AgentV2:
                         tui.write_progress(f'Generating... ({len(answer_parts)} chars)')
 
             # Flush remaining buffer
+            if code_block_buffer:
+                text = "".join(code_block_buffer)
+                if tui and hasattr(tui, "stream_token"):
+                    tui.stream_token(text)
             if non_code_buffer:
                 text = ''.join(non_code_buffer)
                 if tui and hasattr(tui, 'stream_token'):

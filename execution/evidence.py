@@ -144,7 +144,17 @@ def build_tool_evidence(
                     decoded = None
 
                 if tool.lower() == "write" and "content" in args:
-                    artifact.valid = decoded == str(args.get("content", ""))
+                    expected = str(args.get("content", ""))
+                    # Normalize BOM + newlines so Windows CRLF / UTF-8 BOM
+                    # writers do not false-fail artifact validation.
+                    def _norm(s: str) -> str:
+                        if s.startswith("\ufeff"):
+                            s = s[1:]
+                        return s.replace("\r\n", "\n").replace("\r", "\n")
+
+                    artifact.valid = (
+                        decoded is not None and _norm(decoded) == _norm(expected)
+                    )
                 elif tool.lower() == "edit" and "newString" in args:
                     replacement = str(args.get("newString", ""))
                     old = str(args.get("oldString", ""))

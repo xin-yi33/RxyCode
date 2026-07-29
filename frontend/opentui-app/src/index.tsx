@@ -12,6 +12,7 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import App from "./App.tsx";
+import { DialogProvider } from "./dialog/DialogHost.tsx";
 
 if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   console.log("RxyCode OpenTUI requires an interactive terminal (TTY).");
@@ -20,8 +21,11 @@ if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
 }
 
 const renderer = await createCliRenderer({
-  exitOnCtrlC: true,
+  // Ctrl+C handled in App (copy selection / cancel stream / exit).
+  exitOnCtrlC: false,
   useAlternateScreen: true,
+  useMouse: true,
+  enableMouseMovement: true,
 });
 
 const root = createRoot(renderer);
@@ -49,4 +53,8 @@ process.once("SIGTERM", () => {
   process.exit(0);
 });
 
-root.render(<App />);
+root.render(
+  <DialogProvider>
+    <App />
+  </DialogProvider>,
+);
