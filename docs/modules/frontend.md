@@ -1,32 +1,44 @@
-# frontend/ - Ink TUI Frontend (+ OpenTUI dual entry)
+# frontend/ - OpenTUI Frontend (default) + Ink fallback
 
 ## What Is This Module?
-The terminal user interface. Primary rollback path is Ink (React 18). OpenTUI dual entry lives in `frontend/opentui-app/` (Bun + React 19.2+ + `@opentui/react@0.4.5`) to fix flicker (ScrollBox) and cursor misalignment (native textarea) without upgrading the Ink package to React 19.
+The terminal user interface. **Default path is OpenTUI** under
+`frontend/opentui-app/` (Bun + React 19.2+ + `@opentui/react@0.4.5`): ScrollBox
+chat, native textarea, alternate screen, mouse selection, and OpenCode-style
+nested dialogs. Ink under `frontend/` (React 18) remains as an optional
+rollback via `RXYCODE_TUI=ink`.
 
 ## Architecture
+- OpenTUI under `frontend/opentui-app/` (React 19.2+) — **default** when Bun is available
 - Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
-- OpenTUI under `frontend/opentui-app/` (React 19.2+) — default when Bun is available
 - Communicates with the Python API server via HTTP/SSE
-- Ink: Node.js process; OpenTUI: `bun run src/index.tsx` — both launched by main.py
+- OpenTUI: `bun run src/index.tsx`; Ink: Node.js process — both launched by `main.py`
 
-## Key Files
+## Key Files (OpenTUI — default)
 | File | Purpose |
 |------|---------|
-| src/App.tsx | Main app component - orchestrates all UI components |
-| src/index.tsx | Entry point - renders App, handles TTY check |
+| opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing |
+| opentui-app/src/index.tsx | OpenTUI entry — CliRenderer alternate screen + lifecycle |
+| opentui-app/src/chatApi.ts | SSE client for /chat/stream |
+| opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs |
+| opentui-app/src/CommandPalette.tsx | Ctrl+P command palette |
+| opentui-app/src/ApprovalDialog.tsx | Tool approval UI |
+| opentui-app/src/Markdown.tsx | Markdown rendering |
+| opentui-app/src/streamReducer.ts | Streaming message state |
+
+## Key Files (Ink — fallback)
+| File | Purpose |
+|------|---------|
+| src/App.tsx | Main Ink app component |
+| src/index.tsx | Ink entry point - renders App, handles TTY check |
 | src/types.ts | TypeScript types: Message, StatusInfo, Mode, Command |
 | src/components/ChatPanel.tsx | Chat message display with Static/dynamic regions |
 | src/components/InputBox.tsx | User input with slash command completion |
 | src/components/StatusBar.tsx | Bottom status bar with token/cache/mode info |
-| src/components/ProgressBanner.tsx | Streaming progress indicator |
-| src/components/ErrorBoundary.tsx | React error boundary |
-| src/components/CommandPalette.tsx | Command palette overlay |
-| src/components/ModeIndicator.tsx | Mode indicator (Plan/Build/Compose) |
 | src/hooks/useApi.ts | API client hook - SSE streaming, message batching |
 | src/apiClient.ts | Loopback API URL and automatic bearer-header helpers |
 | src/hooks/useMode.ts | Mode state management |
 
-## Core Code: ChatPanel.tsx
+## Core Code: ChatPanel.tsx (Ink fallback)
 
 **Flicker Prevention:**
 - Uses `committedIdsRef` and `staticGenerationRef` to split immutable summaries into Static output and keep active messages dynamic

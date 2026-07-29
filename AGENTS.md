@@ -25,17 +25,19 @@
 | [mcp](docs/modules/mcp.md) | mcp/ | MCP integration - connect to external MCP servers |
 | [lsp](docs/modules/lsp.md) | lsp/ | LSP integration - code intelligence (experimental) |
 | [scheduler](docs/modules/scheduler.md) | scheduler/ | Scheduled tasks - cron-like prompt scheduling |
-| [frontend](docs/modules/frontend.md) | frontend/ | Ink TUI - React-based terminal UI with flicker prevention |
+| [frontend](docs/modules/frontend.md) | frontend/opentui-app/ | OpenTUI default TUI (Ink fallback under frontend/) |
 | [tests](docs/modules/tests.md) | tests/ | Test suite - Playwright API tests, vitest unit tests |
 | [api_server](docs/modules/api_server.md) | api_server.py | API server - FastAPI with SSE streaming |
 | [main](docs/modules/main.md) | main.py | CLI entry point - argument parsing, TUI/API launch |
 
 ## Architecture Overview
 
-RxyCode is an AI coding assistant with a Python backend and TypeScript/Ink terminal frontend.
+RxyCode is an AI coding assistant with a Python backend and TypeScript terminal
+frontend. **OpenTUI** (`frontend/opentui-app/`) is the default TUI; Ink
+(`frontend/`) remains an optional fallback via `RXYCODE_TUI=ink`.
 
 **Request Flow:**
-1. User types in Ink TUI (frontend/) or sends HTTP request
+1. User types in OpenTUI (default) or Ink fallback, or sends HTTP request
 2. API server (api_server.py) receives the request
 3. AgentV2 (core/agent_v2.py) routes the request:
    - Simple queries -> _fast_reply() with 2-level cache
@@ -49,7 +51,7 @@ RxyCode is an AI coding assistant with a Python backend and TypeScript/Ink termi
 
 **Key Design Patterns:**
 - UsageTrackingLLM: Wraps all LLM calls to auto-record token usage
-- committedCountRef: Prevents flicker in Ink's Static component
+- OpenTUI ScrollBox + sticky scroll: flicker-resistant chat (Ink Static reserved for fallback)
 - Two-level cache: exact hash + semantic similarity
 - Tiered memory: short-term window + long-term compressed
 - Watchdog timeout: Monitors execution and cancels on inactivity

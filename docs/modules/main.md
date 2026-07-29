@@ -1,11 +1,13 @@
 # main.py - CLI Entry Point
 
 ## What Is This Module?
-The main entry point for RxyCode. It handles CLI argument parsing, launches the Ink frontend, and starts the API server.
+The main entry point for RxyCode. It handles CLI argument parsing, launches the
+**OpenTUI frontend by default** (Ink fallback when requested or Bun is missing),
+and starts the API server.
 
 ## Entry Points
-- `rxycode`: Launch the Ink frontend with an embedded authenticated API server
-- `python -m RxyCode`: Launch the same Ink frontend
+- `rxycode`: Launch the default TUI (OpenTUI when Bun is ready) with an embedded authenticated API server
+- `python -m RxyCode`: Same as above
 - `python -m RxyCode.RxyCode1_1_0`: Versioned module entry point
 - `rxycode --version`: Report the package version without initializing runtime state
 - `rxycode --api`: Start the API server only

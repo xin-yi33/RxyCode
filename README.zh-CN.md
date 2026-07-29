@@ -23,7 +23,7 @@
 
 RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执行"架构。
 它将复杂任务拆解为子任务，通过安全的工具编排器执行，验证结果后综合最终答案——
-全部过程实时流式输出到精美的 Ink 终端界面。
+全部过程实时流式输出到 OpenTUI 终端界面（可用 Ink 回退）。
 
 ### 为什么选择 RxyCode？
 
@@ -31,7 +31,7 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 - **规划与执行** — 分层任务拆解 + 依赖感知的并行执行，而非线性 ReAct 循环
 - **默认安全** — 风险分级、写入白名单、审批对话框、完整审计日志
 - **极速响应** — 三层缓存（精确哈希 + 语义相似 + Provider KV）、50ms token 批处理、简单查询快速路径
-- **精美界面** — Ink/React/TypeScript 前端，流式输出、语法高亮、无闪烁渲染
+- **精美界面** — 默认 OpenTUI/React/TypeScript 前端：流式输出、ScrollBox 聊天、原生输入框、OpenCode 风格面板；Ink 可通过 `RXYCODE_TUI=ink` 回退
 - **30+ 内置工具** — 文件操作、Shell、网页搜索/抓取、Git、RAG、MCP、LSP 等
 
 ## 快速开始
@@ -41,7 +41,8 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 | 要求 | 版本 | 说明 |
 |------|------|------|
 | Python | 3.10+ | 后端运行时 |
-| Node.js | 20+ | Ink 前端运行时 |
+| Bun | 最新 | 默认 OpenTUI 前端运行时 |
+| Node.js | 20+ | 可选 Ink 回退（`RXYCODE_TUI=ink`） |
 | OpenAI 兼容 API 密钥 | — | 任意提供商（OpenAI、DeepSeek 等） |
 
 ### 方式一：一键安装（推荐）
@@ -118,17 +119,17 @@ AgentV2 (core/agent_v2.py)
 ### 流式管道
 
 ```
-后端 (Python)                              前端 (TypeScript/Ink)
-─────────────────                         ──────────────────────────
-_raw_stream()                              useApi.ts
+后端 (Python)                              前端 (TypeScript/OpenTUI)
+─────────────────                         ──────────────────────────────
+_raw_stream()                              chatApi.ts / App.tsx
   │                                          │
   ├── cache_control 注入                     fetch /chat/stream (SSE)
   │                                          │
   ├── OpenAI 异步流                          解析 SSE 事件：
   │   ├── reasoning_content → 推理            ├── progress/reasoning/plan/step
-  │   ├── content token → 流式 token          ├── token → 实时 AssistantMessage (50ms)
-  │   └── tool_calls delta                    ├── tool_call/tool_result → ToolMessage
-  │                                           ├── approval/question → 对话框
+  │   ├── content token → 流式 token          ├── token → 实时助手流式输出
+  │   └── tool_calls delta                    ├── tool_call/tool_result
+  │                                           ├── approval → ApprovalDialog
   └── StreamTUI → asyncio.Queue → SSE         └── final/done → 终态
 ```
 
@@ -149,7 +150,8 @@ _raw_stream()                              useApi.ts
 | `execution/` | 执行器、工具编排器 |
 | `validation/` | 验证器、重规划器 |
 | `synthesis/` | 输出综合器 |
-| `frontend/` | Ink/React 终端 UI（TypeScript），28 文件 / 158 测试 |
+| `frontend/opentui-app/` | **默认** OpenTUI/React 终端 UI（Bun + React 19） |
+| `frontend/` | Ink/React 回退 UI（`RXYCODE_TUI=ink`） |
 | `tools/` | 30+ 内置工具（read, write, edit, bash, grep, web, git 等） |
 | `memory/` | 分层记忆（短期、长期、用户、搜索） |
 | `cache/` | 三层缓存（精确 + 语义 + Provider KV） |
@@ -230,7 +232,7 @@ models:
 | [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | 初版：ReAct + 防幻觉 + MCP 集成 |
 | [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph 重写：规划-执行、24+ 工具、分层记忆 |
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI、SSE 流式、Docker、CI/CD、一键安装 |
-| [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | OpenTUI 设置对齐、Ctrl+C 防误退、Plan 下一步提示、autoCompact |
+| [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | 前端重构：默认 OpenTUI（Ink 回退）、设置面板对齐、Ctrl+C 防误退、Plan 提示、autoCompact |
 
 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 

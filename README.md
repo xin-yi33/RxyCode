@@ -24,7 +24,7 @@
 RxyCode is a general-purpose AI agent built on LangGraph with a hierarchical
 plan-and-execute architecture. It decomposes complex tasks into subtasks,
 executes them with a safe tool orchestrator, validates results, and synthesizes
-a final answer — all streamed live to a beautiful Ink terminal UI.
+a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback available).
 
 ### Why RxyCode?
 
@@ -36,8 +36,9 @@ a final answer — all streamed live to a beautiful Ink terminal UI.
   dialogs, and full audit trail
 - **Blazing fast** — Three-level cache (exact hash + semantic similarity +
   Provider KV), 50 ms token batching, fast-reply path for simple queries
-- **Beautiful TUI** — Ink/React/TypeScript frontend with streaming output,
-  syntax highlighting, and flicker-free rendering
+- **Beautiful TUI** — OpenTUI/React/TypeScript frontend (default) with
+  streaming output, ScrollBox chat, native textarea, and OpenCode-style panels;
+  Ink remains as `RXYCODE_TUI=ink` fallback
 - **30+ tools** — File ops, shell, web search/fetch, git, RAG, MCP, LSP, and more
 
 ## Quick Start
@@ -47,7 +48,8 @@ a final answer — all streamed live to a beautiful Ink terminal UI.
 | Requirement | Version | Notes |
 |-------------|---------|-------|
 | Python | 3.10+ | Backend runtime |
-| Node.js | 20+ | Ink frontend runtime |
+| Bun | latest | Default OpenTUI frontend runtime |
+| Node.js | 20+ | Optional Ink fallback (`RXYCODE_TUI=ink`) |
 | OpenAI-compatible API key | — | Any provider (OpenAI, DeepSeek, etc.) |
 
 ### Option 1: One-command install (recommended)
@@ -125,17 +127,17 @@ AgentV2 (core/agent_v2.py)
 ### Streaming Pipeline
 
 ```
-Backend (Python)                          Frontend (TypeScript/Ink)
-─────────────────                         ──────────────────────────
-_raw_stream()                              useApi.ts
+Backend (Python)                          Frontend (TypeScript/OpenTUI)
+─────────────────                         ──────────────────────────────
+_raw_stream()                              chatApi.ts / App.tsx
   │                                          │
   ├── cache_control injection                fetch /chat/stream (SSE)
   │                                          │
   ├── OpenAI async stream                    parse SSE events:
   │   ├── reasoning_content → reasoning       ├── progress/reasoning/plan/step
-  │   ├── content token → stream_token        ├── token → live AssistantMessage (50ms)
-  │   └── tool_calls delta                    ├── tool_call/tool_result → ToolMessage
-  │                                           ├── approval/question → dialogs
+  │   ├── content token → stream_token        ├── token → live assistant stream
+  │   └── tool_calls delta                    ├── tool_call/tool_result
+  │                                           ├── approval → ApprovalDialog
   └── StreamTUI → asyncio.Queue → SSE         └── final/done → terminal state
 ```
 
@@ -156,7 +158,8 @@ _raw_stream()                              useApi.ts
 | `execution/` | Executor, tool orchestrator |
 | `validation/` | Validator, re-planner |
 | `synthesis/` | Output synthesizer |
-| `frontend/` | Ink/React TUI (TypeScript), 28 files / 158 tests |
+| `frontend/opentui-app/` | **Default** OpenTUI/React TUI (Bun + React 19) |
+| `frontend/` | Ink/React TUI fallback (`RXYCODE_TUI=ink`) |
 | `tools/` | 30+ built-in tools (read, write, edit, bash, grep, web, git, ...) |
 | `memory/` | Tiered memory (short-term, long-term, user, search) |
 | `cache/` | Three-level cache (exact + semantic + Provider KV) |
@@ -237,7 +240,7 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 | [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial release: ReAct + anti-hallucination + MCP |
 | [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, 24+ tools, tiered memory |
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
-| [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | OpenTUI settings parity, safer Ctrl+C, plan next-step hints, autoCompact |
+| [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | Frontend rewrite: OpenTUI default TUI (Ink fallback), settings parity, safer Ctrl+C, plan hints, autoCompact |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 

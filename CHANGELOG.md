@@ -11,22 +11,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Highlights
 
-OpenTUI becomes the primary interactive surface with OpenCode-aligned settings
-dialogs, safer terminal copy/exit behavior, clearer Plan→Build handoff, and
-working `autoCompact` context compression. v1.1.0 remains available via the
-`v1.1.0` git tag and release assets.
+**Frontend rewrite: default TUI moves from Ink to OpenTUI.** The interactive
+terminal UI was rebuilt on Bun + React 19 + `@opentui/react` (`frontend/opentui-app/`),
+with OpenCode-aligned command palette / nested settings, ScrollBox-based
+flicker-resistant chat, native textarea input, safer Ctrl+C, clearer Plan→Build
+handoff, and working `autoCompact`. Ink remains as an optional fallback via
+`RXYCODE_TUI=ink`. v1.1.0 remains available via the `v1.1.0` git tag.
 
 ### Added
 
-- **OpenTUI command palette & nested settings** — Ctrl+P palette with stacked
-  dialogs for Session / Model / AddModel / Settings / Permission / Language /
-  MCP / Skills / Memory / Queue / Schedule / Help / Status
+- **OpenTUI frontend (`frontend/opentui-app/`)** — full chat shell on
+  `@opentui/core` / `@opentui/react`: alternate screen, mouse selection,
+  ScrollBox message list, native textarea, markdown rendering, sticky scroll,
+  streaming reducer, approval dialog, brand/wordmark chrome
+- **Default launch path** — when Bun is available, `main.py` starts OpenTUI
+  instead of Ink (`RXYCODE_TUI=opentui|ink|auto`)
+- **OpenCode-style Ctrl+P command palette** — stacked dialogs for Session /
+  Model / AddModel / Settings / Permission / Language / MCP / Skills / Memory /
+  Queue / Schedule / Help / Status
 - **Dialog host stack** — `replace` / `push` / `pop` / `clear` with single
-  top-of-stack keyboard ownership (OpenCode-like nested panels)
+  top-of-stack keyboard ownership
 - **Plan next-step hint** — after Plan mode finishes, always append how to
   continue: Tab → Build, then type「开始」/ `start`
 - **Safer Ctrl+C** — copy selection → cancel stream → clear input → require a
-  second Ctrl+C within 2s to quit (avoids accidental exit while copying)
+  second Ctrl+C within 2s to quit
 - **`autoCompact` wiring** — config flag now gates short-term overflow
   compression, tool-loop compaction, and LangGraph `compressor` node
 - **OpenTUI e2e helpers** — nested dialog / palette verification scripts
@@ -37,14 +45,15 @@ working `autoCompact` context compression. v1.1.0 remains available via the
 
 ### Changed
 
-- **Default TUI** — OpenTUI path with classic pink brand chrome (Ink remains
-  available)
-- **Status / approval UX** — OpenTUI approval dialog and richer status surfaces
+- **Primary TUI** — OpenTUI is the default interactive UI; Ink is retained as
+  rollback (`RXYCODE_TUI=ink`) rather than the sole frontend
+- **Status / approval UX** — OpenTUI-native approval and status surfaces
 - **User message framing** — historical user frames keep the mode color from
   send time
 
 ### Fixed
 
+- Chat flicker / ScrollBox stability vs Ink Static limitations
 - Nested dialog input under Windows ConPTY (multi-char paste / filter)
 - Accidental process exit on single Ctrl+C when no selection was registered
 - Context compression config that existed but was never read (`autoCompact`)
