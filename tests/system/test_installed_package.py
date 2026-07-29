@@ -224,7 +224,7 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         )
         metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
         assert metadata["Name"] == "rxycode"
-        assert metadata["Version"] == "1.1.0"
+        assert metadata["Version"] == "1.2.0"
         requirements = [
             value.casefold() for value in metadata.get_all("Requires-Dist", [])
         ]
@@ -295,7 +295,7 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         cwd=installed_package.workdir,
         env=installed_package.env,
     )
-    assert "1.1.0" in version.stdout + version.stderr
+    assert "1.2.0" in version.stdout + version.stderr
 
     help_result = _run(
         [str(installed_package.console), "--help"],

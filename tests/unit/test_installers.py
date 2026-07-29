@@ -13,7 +13,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 POWERSHELL_INSTALLER = PROJECT_ROOT / "install.ps1"
 SHELL_INSTALLER = PROJECT_ROOT / "install.sh"
-DEFAULT_SOURCE = "git+https://github.com/xin-yi33/RxyCode.git@v1.1.0"
+DEFAULT_SOURCE = "git+https://github.com/xin-yi33/RxyCode.git@v1.2.0"
 
 
 def _powershell() -> str | None:
@@ -162,7 +162,7 @@ def test_powershell_installer_has_valid_syntax():
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("version", ["1.1.0", "v1.1.0"])
+@pytest.mark.parametrize("version", ["1.2.0", "v1.2.0"])
 def test_powershell_dry_run_uses_version_without_network(tmp_path: Path, version: str):
     powershell = _powershell()
     if powershell is None:

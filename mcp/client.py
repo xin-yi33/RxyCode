@@ -338,7 +338,7 @@ class MCPClient:
                 {
                     "protocolVersion": CURRENT_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "RxyCode", "version": "1.1.0"},
+                    "clientInfo": {"name": "RxyCode", "version": "1.2.0"},
                 },
             )
             result = self._result_or_raise(response, "initialize")

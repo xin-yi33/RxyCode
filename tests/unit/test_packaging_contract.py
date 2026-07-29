@@ -30,7 +30,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.1.0"
+    assert project["version"] == "1.2.0"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"

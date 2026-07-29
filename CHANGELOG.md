@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-07-29
+
+### Highlights
+
+OpenTUI becomes the primary interactive surface with OpenCode-aligned settings
+dialogs, safer terminal copy/exit behavior, clearer Plan→Build handoff, and
+working `autoCompact` context compression. v1.1.0 remains available via the
+`v1.1.0` git tag and release assets.
+
+### Added
+
+- **OpenTUI command palette & nested settings** — Ctrl+P palette with stacked
+  dialogs for Session / Model / AddModel / Settings / Permission / Language /
+  MCP / Skills / Memory / Queue / Schedule / Help / Status
+- **Dialog host stack** — `replace` / `push` / `pop` / `clear` with single
+  top-of-stack keyboard ownership (OpenCode-like nested panels)
+- **Plan next-step hint** — after Plan mode finishes, always append how to
+  continue: Tab → Build, then type「开始」/ `start`
+- **Safer Ctrl+C** — copy selection → cancel stream → clear input → require a
+  second Ctrl+C within 2s to quit (avoids accidental exit while copying)
+- **`autoCompact` wiring** — config flag now gates short-term overflow
+  compression, tool-loop compaction, and LangGraph `compressor` node
+- **OpenTUI e2e helpers** — nested dialog / palette verification scripts
+- **Shell translation hardening** — PowerShell-safe rewriting for `&&`,
+  `cd /d`, and `start cmd /k` style commands
+- **Permission / evidence / short-term memory tests** — additional contract
+  coverage for write paths and routing
+
+### Changed
+
+- **Default TUI** — OpenTUI path with classic pink brand chrome (Ink remains
+  available)
+- **Status / approval UX** — OpenTUI approval dialog and richer status surfaces
+- **User message framing** — historical user frames keep the mode color from
+  send time
+
+### Fixed
+
+- Nested dialog input under Windows ConPTY (multi-char paste / filter)
+- Accidental process exit on single Ctrl+C when no selection was registered
+- Context compression config that existed but was never read (`autoCompact`)
+- Assorted PowerShell shell and write-path nesting edge cases
+
+---
+
 ## [1.1.0] - 2026-07-27
 
 ### Highlights
@@ -161,6 +206,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0
 [1.1.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0
 [1.0.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0
 [0.3.3]: https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3
