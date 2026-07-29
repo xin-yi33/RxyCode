@@ -845,7 +845,7 @@ export default function App() {
       <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: 1 }}>
         <text selectable>
           <span fg={BRAND_LIGHT} attributes={1}>
-            {"  "}RxyCode v1.2.1
+            {"  "}RxyCode v1.2.2
           </span>
           <span fg={BRAND_MUTED}>{" · "}</span>
           <span fg={modeColor} attributes={1}>

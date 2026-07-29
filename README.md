@@ -4,7 +4,7 @@
 
 **Plan-and-Execute AI Coding Agent with Verification & Safe Tool Orchestration**
 
-[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1)
+[![Version](https://img.shields.io/badge/version-1.2.2-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -38,7 +38,8 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
   Provider KV), 50 ms token batching, fast-reply path for simple queries
 - **Beautiful TUI** — OpenTUI/React/TypeScript frontend (default) with
   streaming output, ScrollBox chat, native textarea, and OpenCode-style panels;
-  Ink remains as `RXYCODE_TUI=ink` fallback
+  Bun is auto-installed by the one-command installer when missing; Ink remains
+  as `RXYCODE_TUI=ink` fallback
 - **30+ tools** — File ops, shell, web search/fetch, git, RAG, MCP, LSP, and more
 
 ## Quick Start
@@ -48,7 +49,7 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 | Requirement | Version | Notes |
 |-------------|---------|-------|
 | Python | 3.10+ | Backend runtime |
-| Bun | latest | Default OpenTUI frontend runtime |
+| Bun | latest | Auto-installed by the one-command installer when missing (OpenTUI) |
 | Node.js | 20+ | Optional Ink fallback (`RXYCODE_TUI=ink`) |
 | OpenAI-compatible API key | — | Any provider (OpenAI, DeepSeek, etc.) |
 
@@ -56,30 +57,30 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 
 **Windows PowerShell:**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.1/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.2/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.1/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.2/install.sh | sh
 rxycode
 ```
 
 The installer bootstraps `uv` (if needed), creates an isolated tool
-environment, and installs the pinned `v1.2.1` release. No manual clone
+environment, and installs the pinned `v1.2.2` release. No manual clone
 required. Previous release `v1.1.0` remains available via tag.
 
 ### Option 2: Run once with uv
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.1" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.2" rxycode
 ```
 
 ### Option 3: Permanent install
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.1"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.2"
 rxycode
 ```
 
@@ -242,6 +243,7 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | Frontend rewrite: OpenTUI default TUI (Ink fallback), settings parity, safer Ctrl+C, plan hints, autoCompact |
 | [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | Package fix: ship OpenTUI sources in the installable wheel |
+| [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | Auto-install Bun + OpenTUI deps so default UI works without manual Bun setup |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 

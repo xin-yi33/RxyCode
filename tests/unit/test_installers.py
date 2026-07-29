@@ -13,7 +13,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 POWERSHELL_INSTALLER = PROJECT_ROOT / "install.ps1"
 SHELL_INSTALLER = PROJECT_ROOT / "install.sh"
-DEFAULT_SOURCE = "git+https://github.com/xin-yi33/RxyCode.git@v1.2.1"
+DEFAULT_SOURCE = "git+https://github.com/xin-yi33/RxyCode.git@v1.2.2"
 
 
 def _powershell() -> str | None:
@@ -52,10 +52,12 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
         "RXYCODE_SOURCE",
         "RXYCODE_VERSION",
         "RXYCODE_INSTALL_DRY_RUN",
+        "RXYCODE_SKIP_BUN_INSTALL",
         "UV_INSTALL_DIR",
         "XDG_BIN_HOME",
     ):
         env.pop(key, None)
+    env["RXYCODE_SKIP_BUN_INSTALL"] = "1"
     return env
 
 
@@ -112,6 +114,8 @@ def test_installer_sources_are_pinned_and_do_not_pipe_remote_code():
     assert 'https://github.com/xin-yi33/RxyCode.git' in sh_text
     assert 'https://astral.sh/uv/install.ps1' in ps_text
     assert 'https://astral.sh/uv/install.sh' in sh_text
+    assert 'https://bun.sh/install.ps1' in ps_text
+    assert 'https://bun.sh/install' in sh_text
     assert "Invoke-Expression" not in ps_text
     assert "| iex" not in ps_text.lower()
     assert "curl |" not in sh_text
@@ -162,7 +166,7 @@ def test_powershell_installer_has_valid_syntax():
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("version", ["1.2.1", "v1.2.1"])
+@pytest.mark.parametrize("version", ["1.2.2", "v1.2.2"])
 def test_powershell_dry_run_uses_version_without_network(tmp_path: Path, version: str):
     powershell = _powershell()
     if powershell is None:
@@ -197,6 +201,7 @@ def test_powershell_dry_run_uses_version_without_network(tmp_path: Path, version
     assert DEFAULT_SOURCE in result.stdout
     assert "--force" in result.stdout
     assert "install.ps1" in result.stdout
+    assert "bun.sh/install.ps1" in result.stdout
     assert "RxyCode is installed" not in result.stdout
 
 
@@ -333,13 +338,15 @@ def test_shell_dry_run_does_not_execute_uv(tmp_path: Path):
     env = _base_env(tmp_path)
     env.update(
         {
-            "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            # Keep PATH isolated so a host Bun install is not discovered.
+            "PATH": str(fake_bin),
             "RXYCODE_INSTALL_DRY_RUN": "1",
             "RXYCODE_UV_LOG": str(log_path),
             "RXYCODE_TEST_PYTHON": sys.executable,
             "RXYCODE_FAKE_UV_HELPER": str(helper),
         }
     )
+    env.pop("BUN_INSTALL", None)
     result = subprocess.run(
         [shell, str(SHELL_INSTALLER), "--force"],
         capture_output=True,
@@ -352,6 +359,7 @@ def test_shell_dry_run_does_not_execute_uv(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert DEFAULT_SOURCE in result.stdout
     assert _read_uv_calls(log_path) == []
+    assert "bun.sh/install" in result.stdout
     assert "RxyCode is installed" not in result.stdout
 
 

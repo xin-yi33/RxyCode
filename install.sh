@@ -2,9 +2,10 @@
 
 set -eu
 
-DEFAULT_VERSION="1.2.1"
+DEFAULT_VERSION="1.2.2"
 REPOSITORY="https://github.com/xin-yi33/RxyCode.git"
 UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
+BUN_INSTALLER_URL="https://bun.sh/install"
 MAX_INSTALLER_BYTES=2097152
 
 while [ "$#" -gt 0 ]; do
@@ -82,6 +83,27 @@ find_uv() {
     return 1
 }
 
+find_bun() {
+    if command -v bun >/dev/null 2>&1; then
+        command -v bun
+        return 0
+    fi
+
+    for candidate in \
+        "${BUN_INSTALL:-}/bin/bun" \
+        "${HOME:-}/.bun/bin/bun"
+    do
+        case "$candidate" in
+            /bin/bun) continue ;;
+        esac
+        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 quote_for_display() {
     value=$1
     case "$value" in
@@ -95,7 +117,35 @@ quote_for_display() {
     esac
 }
 
+find_opentui_app_dir() {
+    uv_bin=$1
+    tools_root=$("$uv_bin" tool dir 2>/dev/null | head -n 1 || true)
+    if [ -z "$tools_root" ]; then
+        return 1
+    fi
+    tool_root="$tools_root/rxycode"
+    for python in \
+        "$tool_root/bin/python" \
+        "$tool_root/bin/python3" \
+        "$tool_root/Scripts/python.exe"
+    do
+        if [ -x "$python" ] || [ -f "$python" ]; then
+            app_dir=$(
+                "$python" -c \
+"from pathlib import Path; import RxyCode.RxyCode1_1_0 as m; print(Path(m.__file__).resolve().parent / 'frontend' / 'opentui-app')" \
+                    2>/dev/null || true
+            )
+            if [ -n "$app_dir" ] && [ -f "$app_dir/package.json" ]; then
+                printf '%s\n' "$app_dir"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 uv_bin=$(find_uv || true)
+bun_bin=$(find_bun || true)
 
 if [ "$dry_run" -eq 1 ]; then
     if [ -z "$uv_bin" ]; then
@@ -113,6 +163,14 @@ if [ "$dry_run" -eq 1 ]; then
         quote_for_display "$uv_bin"
         printf '%s\n' " tool update-shell"
     fi
+    if [ -z "$bun_bin" ]; then
+        printf '%s\n' \
+            "[dry-run] download $BUN_INSTALLER_URL to a temporary file and execute it"
+        bun_bin=bun
+    fi
+    printf '%s' "[dry-run] "
+    quote_for_display "$bun_bin"
+    printf '%s\n' " install  # in packaged frontend/opentui-app"
     exit 0
 fi
 
@@ -120,7 +178,7 @@ temp_dir=''
 cleanup() {
     if [ -n "$temp_dir" ] && [ -d "$temp_dir" ]; then
         case "$temp_dir" in
-            "${TMPDIR:-/tmp}"/rxycode-uv.*)
+            "${TMPDIR:-/tmp}"/rxycode-uv.*|"${TMPDIR:-/tmp}"/rxycode-bun.*)
                 rm -rf -- "$temp_dir"
                 ;;
         esac
@@ -191,7 +249,66 @@ if [ "$no_modify_path" -eq 0 ]; then
     fi
 fi
 
+if [ -z "${RXYCODE_SKIP_BUN_INSTALL:-}" ] || [ "${RXYCODE_SKIP_BUN_INSTALL}" != "1" ]; then
+    if [ -z "$bun_bin" ]; then
+        if ! command -v curl >/dev/null 2>&1; then
+            printf '%s\n' \
+                "Warning: curl is required to install Bun; OpenTUI may fall back to Ink." >&2
+        else
+            temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/rxycode-bun.XXXXXXXX")
+            installer_path="$temp_dir/bun-install.sh"
+            printf '%s\n' "Downloading the official Bun installer from $BUN_INSTALLER_URL"
+            curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+                --output "$installer_path" "$BUN_INSTALLER_URL"
+            installer_bytes=$(wc -c < "$installer_path" | tr -d '[:space:]')
+            case "$installer_bytes" in
+                ''|*[!0-9]*)
+                    printf '%s\n' \
+                        "Warning: could not validate the Bun installer size." >&2
+                    ;;
+                *)
+                    if [ "$installer_bytes" -gt 0 ] \
+                        && [ "$installer_bytes" -le "$MAX_INSTALLER_BYTES" ] \
+                        && grep -q 'bun' "$installer_path"
+                    then
+                        if sh "$installer_path"; then
+                            bun_bin=$(find_bun || true)
+                        else
+                            printf '%s\n' \
+                                "Warning: the Bun installer failed; OpenTUI may fall back to Ink." >&2
+                        fi
+                    else
+                        printf '%s\n' \
+                            "Warning: Bun installer looked invalid; OpenTUI may fall back to Ink." >&2
+                    fi
+                    ;;
+            esac
+        fi
+    fi
+
+    if [ -n "$bun_bin" ]; then
+        if opentui_dir=$(find_opentui_app_dir "$uv_bin"); then
+            printf '%s\n' "Installing OpenTUI frontend dependencies with Bun..."
+            if ! (cd "$opentui_dir" && "$bun_bin" install); then
+                printf '%s\n' \
+                    "Warning: bun install failed in $opentui_dir; OpenTUI may not start until fixed." >&2
+            fi
+        else
+            printf '%s\n' \
+                "Warning: could not locate packaged OpenTUI app dir." >&2
+        fi
+    else
+        printf '%s\n' \
+            "Warning: Bun was not found. OpenTUI needs Bun; Ink fallback will be used until Bun is installed." >&2
+    fi
+fi
+
 printf '%s\n' "RxyCode is installed. Run 'rxycode' from a new terminal."
 if [ "$no_modify_path" -eq 1 ]; then
     printf '%s\n' "PATH was not modified; add the uv tool bin directory to PATH manually."
+fi
+if [ -z "${RXYCODE_SKIP_BUN_INSTALL:-}" ] || [ "${RXYCODE_SKIP_BUN_INSTALL}" != "1" ]; then
+    if [ -n "$bun_bin" ]; then
+        printf '%s\n' "OpenTUI uses Bun ($bun_bin). Open a new terminal if 'bun' is not on PATH yet."
+    fi
 fi

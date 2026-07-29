@@ -7,9 +7,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$DefaultVersion = "1.2.1"
+$DefaultVersion = "1.2.2"
 $Repository = "https://github.com/xin-yi33/RxyCode.git"
 $UvInstallerUrl = "https://astral.sh/uv/install.ps1"
+$BunInstallerUrl = "https://bun.sh/install.ps1"
 $MaxInstallerBytes = 2MB
 
 function Get-ProcessEnvironmentValue {
@@ -77,6 +78,134 @@ function Find-UvExecutable {
         }
     }
     return $null
+}
+
+function Find-BunExecutable {
+    $command = Get-Command bun -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $bunInstall = Get-ProcessEnvironmentValue "BUN_INSTALL"
+    $userProfile = Get-ProcessEnvironmentValue "USERPROFILE"
+    $homeDir = Get-ProcessEnvironmentValue "HOME"
+    if (-not [string]::IsNullOrWhiteSpace($bunInstall)) {
+        $candidates.Add((Join-Path $bunInstall "bin\bun.exe"))
+        $candidates.Add((Join-Path $bunInstall "bin\bun"))
+    }
+    foreach ($root in @($userProfile, $homeDir)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidates.Add((Join-Path $root ".bun\bin\bun.exe"))
+        $candidates.Add((Join-Path $root ".bun\bin\bun"))
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    return $null
+}
+
+function Install-Bun {
+    $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $tempRoot = Join-Path $systemTemp ("rxycode-bun-" + [Guid]::NewGuid().ToString("N"))
+    $tempRoot = [IO.Path]::GetFullPath($tempRoot)
+    if (-not $tempRoot.StartsWith($systemTemp, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to create a temporary directory outside the system temp directory."
+    }
+
+    try {
+        New-Item -ItemType Directory -Path $tempRoot -ErrorAction Stop | Out-Null
+        $installerPath = Join-Path $tempRoot "bun-install.ps1"
+        Write-Host "Downloading the official Bun installer from $BunInstallerUrl"
+        Invoke-WebRequest -UseBasicParsing -Uri $BunInstallerUrl -OutFile $installerPath
+
+        $installer = Get-Item -LiteralPath $installerPath
+        if ($installer.Length -le 0 -or $installer.Length -gt $MaxInstallerBytes) {
+            throw "The downloaded Bun installer has an unexpected size."
+        }
+        if (-not (Select-String -LiteralPath $installerPath -SimpleMatch "bun" -Quiet)) {
+            throw "The downloaded file does not look like the Bun installer."
+        }
+
+        $powerShellExecutable = (Get-Process -Id $PID).Path
+        $bootstrapArguments = @("-NoLogo", "-NoProfile")
+        $isWindowsPlatform = (
+            $PSVersionTable.PSEdition -eq "Desktop" -or
+            $env:OS -eq "Windows_NT"
+        )
+        if ($isWindowsPlatform) {
+            $bootstrapArguments += @("-ExecutionPolicy", "Bypass")
+        }
+        $bootstrapArguments += @("-File", $installerPath)
+        & $powerShellExecutable @bootstrapArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "The Bun installer failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        }
+    }
+}
+
+function Get-OpenTuiAppDir {
+    param([Parameter(Mandatory = $true)][string]$UvExecutable)
+
+    $toolsRoot = (& $UvExecutable @("tool", "dir") 2>$null | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($toolsRoot)) {
+        return $null
+    }
+    $toolRoot = Join-Path $toolsRoot.Trim() "rxycode"
+    $pythonCandidates = @(
+        (Join-Path $toolRoot "Scripts\python.exe"),
+        (Join-Path $toolRoot "bin\python"),
+        (Join-Path $toolRoot "bin\python3")
+    )
+    $python = $null
+    foreach ($candidate in $pythonCandidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $python = $candidate
+            break
+        }
+    }
+    if ($null -eq $python) {
+        return $null
+    }
+
+    $code = "from pathlib import Path; import RxyCode.RxyCode1_1_0 as m; print(Path(m.__file__).resolve().parent / 'frontend' / 'opentui-app')"
+    $out = & $python -c $code 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($out)) {
+        return $null
+    }
+    $path = ([string]$out).Trim()
+    if (Test-Path -LiteralPath (Join-Path $path "package.json") -PathType Leaf) {
+        return $path
+    }
+    return $null
+}
+
+function Install-OpenTuiDependencies {
+    param(
+        [Parameter(Mandatory = $true)][string]$BunExecutable,
+        [Parameter(Mandatory = $true)][string]$AppDir
+    )
+
+    Write-Host "Installing OpenTUI frontend dependencies with Bun..."
+    Push-Location -LiteralPath $AppDir
+    try {
+        & $BunExecutable install
+        if ($LASTEXITCODE -ne 0) {
+            throw "bun install failed with exit code $LASTEXITCODE in $AppDir"
+        }
+    }
+    finally {
+        Pop-Location
+    }
 }
 
 function Format-DryRunArgument {
@@ -186,6 +315,12 @@ try {
         if (-not $noModifyPath) {
             Write-Host ("[dry-run] " + (Format-DryRunArgument $uvExecutable) + " tool update-shell")
         }
+        $bunExecutable = Find-BunExecutable
+        if ([string]::IsNullOrWhiteSpace($bunExecutable)) {
+            Write-Host "[dry-run] download $BunInstallerUrl to a temporary file and execute it"
+            $bunExecutable = "bun"
+        }
+        Write-Host ("[dry-run] " + (Format-DryRunArgument $bunExecutable) + " install  # in packaged frontend/opentui-app")
         exit 0
     }
 
@@ -202,9 +337,33 @@ try {
         Invoke-Uv -Executable $uvExecutable -Arguments @("tool", "update-shell")
     }
 
+    $skipBun = Test-EnabledFlag (Get-ProcessEnvironmentValue "RXYCODE_SKIP_BUN_INSTALL")
+    $bunExecutable = Find-BunExecutable
+    if (-not $skipBun) {
+        if ([string]::IsNullOrWhiteSpace($bunExecutable)) {
+            Install-Bun
+            $bunExecutable = Find-BunExecutable
+        }
+        if ([string]::IsNullOrWhiteSpace($bunExecutable)) {
+            Write-Host "Warning: Bun was not found after install. OpenTUI needs Bun; Ink fallback will be used until Bun is on PATH."
+        }
+        else {
+            $opentuiDir = Get-OpenTuiAppDir -UvExecutable $uvExecutable
+            if (-not [string]::IsNullOrWhiteSpace($opentuiDir)) {
+                Install-OpenTuiDependencies -BunExecutable $bunExecutable -AppDir $opentuiDir
+            }
+            else {
+                Write-Host "Warning: could not locate packaged OpenTUI app dir; run 'bun install' there after first launch if needed."
+            }
+        }
+    }
+
     Write-Host "RxyCode is installed. Run 'rxycode' from a new terminal."
     if ($noModifyPath) {
         Write-Host "PATH was not modified; add the uv tool bin directory to PATH manually."
+    }
+    if (-not $skipBun -and -not [string]::IsNullOrWhiteSpace($bunExecutable)) {
+        Write-Host "OpenTUI uses Bun ($bunExecutable). Open a new terminal if 'bun' is not on PATH yet."
     }
 }
 catch {

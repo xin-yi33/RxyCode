@@ -20,7 +20,7 @@ export function formatMessageLine(msg: Message): string {
 }
 
 export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolean): string {
-  const base = `RxyCode v1.2.1 · ${mode} · ${model}`;
+  const base = `RxyCode v1.2.2 · ${mode} · ${model}`;
   return thinkingLive ? `${base} · 思考中` : base;
 }
 

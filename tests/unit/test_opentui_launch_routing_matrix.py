@@ -27,6 +27,7 @@ _READY = (True, False)
     ],
 )
 def test_resolve_tui_backend_matrix(monkeypatch, pref: str, bun, ready, expected: str):
+    monkeypatch.setenv("RXYCODE_SKIP_BUN_INSTALL", "1")
     if pref.strip():
         monkeypatch.setenv("RXYCODE_TUI", pref)
     else:
@@ -42,9 +43,10 @@ def test_resolve_tui_backend_matrix(monkeypatch, pref: str, bun, ready, expected
 )
 def test_opentui_forced_without_bun_errors(monkeypatch, ready: bool):
     monkeypatch.setenv("RXYCODE_TUI", "opentui")
+    monkeypatch.setenv("RXYCODE_SKIP_BUN_INSTALL", "1")
     monkeypatch.setattr(main, "_bun_executable", lambda: None)
     monkeypatch.setattr(main, "_opentui_ready", lambda: ready)
-    with pytest.raises(click.ClickException, match="requires Bun"):
+    with pytest.raises(click.ClickException, match="Bun|opentui-app"):
         main._resolve_tui_backend()
 
 

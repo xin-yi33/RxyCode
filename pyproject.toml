@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode"
-version = "1.2.1"
+version = "1.2.2"
 description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -72,8 +72,6 @@ dependencies = { file = ["requirements.txt"] }
 "RxyCode.RxyCode1_1_0" = [
   "frontend/package.json",
   "frontend/dist/*.js",
-  # OpenTUI is the default TUI; must ship with the installed package or
-  # `_opentui_ready()` fails and users silently fall back to Ink.
   "frontend/opentui-app/package.json",
   "frontend/opentui-app/tsconfig.json",
   "frontend/opentui-app/bun.lock",

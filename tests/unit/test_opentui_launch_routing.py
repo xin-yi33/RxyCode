@@ -15,9 +15,10 @@ def test_resolve_tui_backend_forces_ink(monkeypatch):
 
 def test_resolve_tui_backend_forces_opentui_without_bun_errors(monkeypatch):
     monkeypatch.setenv("RXYCODE_TUI", "opentui")
+    monkeypatch.setenv("RXYCODE_SKIP_BUN_INSTALL", "1")
     monkeypatch.setattr(main, "_bun_executable", lambda: None)
     monkeypatch.setattr(main, "_opentui_ready", lambda: True)
-    with pytest.raises(click.ClickException, match="requires Bun"):
+    with pytest.raises(click.ClickException, match="required by the OpenTUI|requires Bun|Bun"):
         main._resolve_tui_backend()
 
 
@@ -38,6 +39,7 @@ def test_resolve_tui_backend_defaults_to_opentui_when_bun_ready(monkeypatch):
 
 def test_resolve_tui_backend_defaults_to_ink_without_bun(monkeypatch):
     monkeypatch.delenv("RXYCODE_TUI", raising=False)
+    monkeypatch.setenv("RXYCODE_SKIP_BUN_INSTALL", "1")
     monkeypatch.setattr(main, "_bun_executable", lambda: None)
     monkeypatch.setattr(main, "_opentui_ready", lambda: True)
     assert main._resolve_tui_backend() == "ink"

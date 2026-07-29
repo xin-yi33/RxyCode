@@ -1,9 +1,28 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to RxyCode are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [1.2.2] - 2026-07-29
+
+### Added
+
+- **Auto-install Bun** — one-command `install.ps1` / `install.sh` install Bun
+  when missing (official bun.sh installer), then run `bun install` for the
+  packaged OpenTUI app so the default UI can start without a manual Bun setup
+- **Runtime Bun bootstrap** — if Bun is still missing at launch, RxyCode tries
+  the official installer once (disable with `RXYCODE_SKIP_BUN_INSTALL=1`); also
+  discovers `~/.bun/bin` even when PATH is stale, and runs `bun install` on
+  first OpenTUI start when `node_modules` is absent
+
+### Notes
+
+- Prefer installing `@v1.2.2`. Bun remains required for OpenTUI; if install
+  fails, the CLI still falls back to Ink.
 
 ---
 
@@ -20,10 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Prefer installing `@v1.2.1`. Tag `v1.2.0` remains for history but its
+- Prefer installing `@v1.2.1` or newer. Tag `v1.2.0` remains for history but its
   published install path did not bundle OpenTUI sources.
-- Bun is still required on PATH for the default OpenTUI launch; without Bun the
-  CLI falls back to Ink by design.
 
 ---
 
@@ -235,6 +252,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.2]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2
 [1.2.1]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1
 [1.2.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0
 [1.1.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0

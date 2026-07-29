@@ -1,5 +1,5 @@
-"""RxyCode 1.2.1 - LangGraph-based agent."""
+﻿"""RxyCode 1.2.2 - LangGraph-based agent."""
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 __all__ = ["__version__"]

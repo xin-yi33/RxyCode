@@ -131,43 +131,160 @@ def _opentui_ready() -> bool:
 
 
 def _bun_executable():
+    """Locate Bun on PATH or in the default install location (~/.bun/bin)."""
     import shutil
+    from pathlib import Path
 
-    return shutil.which("bun")
+    found = shutil.which("bun")
+    if found:
+        return found
+
+    home = Path.home()
+    bun_install = (os.environ.get("BUN_INSTALL") or "").strip()
+    candidates = []
+    if bun_install:
+        candidates.append(Path(bun_install) / "bin" / "bun")
+        candidates.append(Path(bun_install) / "bin" / "bun.exe")
+    candidates.extend(
+        [
+            home / ".bun" / "bin" / "bun",
+            home / ".bun" / "bin" / "bun.exe",
+        ]
+    )
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _install_bun_runtime() -> str | None:
+    """Best-effort install of Bun via the official installer. Returns bun path."""
+    import shutil
+    import subprocess
+    import tempfile
+    import urllib.request
+    from pathlib import Path
+
+    if (os.environ.get("RXYCODE_SKIP_BUN_INSTALL") or "").strip() == "1":
+        return None
+
+    installer_url = (
+        "https://bun.sh/install.ps1"
+        if os.name == "nt"
+        else "https://bun.sh/install"
+    )
+    try:
+        from .log.logger import get_logger
+
+        get_logger().info("Bun missing; downloading official installer", extra={"url": installer_url})
+    except Exception:
+        pass
+
+    with tempfile.TemporaryDirectory(prefix="rxycode-bun-") as tmp:
+        if os.name == "nt":
+            script = Path(tmp) / "install.ps1"
+            urllib.request.urlretrieve(installer_url, script)
+            ps = shutil.which("powershell") or shutil.which("pwsh")
+            if not ps:
+                return None
+            proc = subprocess.run(
+                [
+                    ps,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                ],
+                check=False,
+            )
+        else:
+            script = Path(tmp) / "install.sh"
+            urllib.request.urlretrieve(installer_url, script)
+            proc = subprocess.run(
+                ["sh", str(script)],
+                check=False,
+            )
+        if proc.returncode != 0:
+            return None
+    return _bun_executable()
+
+
+def _ensure_bun(*, required: bool) -> str | None:
+    """Return a Bun executable, optionally installing it when missing."""
+    found = _bun_executable()
+    if found:
+        return found
+    found = _install_bun_runtime()
+    if found:
+        return found
+    if required:
+        raise click.ClickException(
+            "Bun is required by the OpenTUI frontend but was not found on PATH "
+            "(and auto-install failed). Install Bun from https://bun.sh "
+            "or set RXYCODE_TUI=ink. Set RXYCODE_SKIP_BUN_INSTALL=1 to skip auto-install."
+        )
+    return None
+
+
+def _ensure_opentui_dependencies(app_dir: str, bun_exe: str) -> None:
+    """Run ``bun install`` once when packaged OpenTUI lacks node_modules."""
+    import subprocess
+    from pathlib import Path
+
+    root = Path(app_dir)
+    marker = root / "node_modules" / "@opentui" / "react"
+    if marker.exists():
+        return
+    try:
+        from .log.logger import get_logger
+
+        get_logger().info("Installing OpenTUI dependencies", extra={"cwd": app_dir})
+    except Exception:
+        pass
+    proc = subprocess.run(
+        [bun_exe, "install"],
+        cwd=str(root),
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise click.ClickException(
+            f"bun install failed in {app_dir} (exit {proc.returncode}). "
+            "Install Bun packages manually or set RXYCODE_TUI=ink."
+        )
 
 
 def _resolve_tui_backend() -> str:
     """Pick Ink vs OpenTUI.
 
     Env ``RXYCODE_TUI=ink`` forces Ink; ``RXYCODE_TUI=opentui`` forces OpenTUI
-    (no silent fallback if Bun/app missing).
+    (auto-installs Bun when possible; errors if Bun/app still missing).
 
-    Default: OpenTUI when Bun + ``frontend/opentui-app`` are available (OpenCode /
-    MiMo ScrollBox path), with classic dark+pink visuals. Else Ink.
+    Default: OpenTUI when ``frontend/opentui-app`` is present and Bun is
+    available or can be auto-installed. Else Ink.
     """
     preference = (os.environ.get("RXYCODE_TUI") or "").strip().lower()
-    bun = _bun_executable()
     ready = _opentui_ready()
 
     if preference == "ink":
         return "ink"
     if preference == "opentui":
-        if not bun:
-            raise click.ClickException(
-                "RXYCODE_TUI=opentui requires Bun on PATH, but 'bun' was not found. "
-                "Install Bun (https://bun.sh) or set RXYCODE_TUI=ink."
-            )
         if not ready:
             raise click.ClickException(
                 "RXYCODE_TUI=opentui requires frontend/opentui-app (package.json + "
                 "src/index.tsx), but it is missing. Set RXYCODE_TUI=ink to use Ink."
             )
+        _ensure_bun(required=True)
         return "opentui"
     if preference and preference not in ("ink", "opentui", "auto", ""):
         raise click.ClickException(
             f"Unknown RXYCODE_TUI={preference!r}. Use 'ink', 'opentui', or unset."
         )
-    if bun and ready:
+    if ready and _ensure_bun(required=False):
         return "opentui"
     return "ink"
 
@@ -299,17 +416,14 @@ def _launch_opentui_tui(model, port):
     from .log.logger import get_logger
 
     _log = get_logger()
-    bun_exe = _bun_executable()
-    if not bun_exe:
-        raise click.ClickException(
-            "Bun is required by the OpenTUI frontend but was not found on PATH."
-        )
+    bun_exe = _ensure_bun(required=True)
     app_dir = _opentui_app_dir()
     if not _opentui_ready():
         raise click.ClickException(
             "OpenTUI frontend is missing. Expected frontend/opentui-app with "
             "package.json and src/index.tsx."
         )
+    _ensure_opentui_dependencies(app_dir, bun_exe)
 
     port, _api_token, env = _start_embedded_api(port)
     if model:

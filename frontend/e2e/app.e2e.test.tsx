@@ -87,7 +87,7 @@ const h = vi.hoisted(() => {
   const addMessage = vi.fn((m: any) => { store.messages.push(m); });
   const setMessages = vi.fn((m: any) => { store.messages = m; });
   const reset = () => {
-    store.messages = [{ id: 'welcome', role: 'assistant', content: '欢迎使用 RxyCode v1.2.1。输入需求或 / 命令开始。', timestamp: Date.now() }];
+    store.messages = [{ id: 'welcome', role: 'assistant', content: '欢迎使用 RxyCode v1.2.2。输入需求或 / 命令开始。', timestamp: Date.now() }];
     store.isStreaming = false;
     store.streamingContent = '';
   };
