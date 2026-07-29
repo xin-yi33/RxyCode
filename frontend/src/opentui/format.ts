@@ -1,4 +1,4 @@
-/** Message/header formatting helpers (mirrored from opentui-app for Vitest coverage). */
+﻿/** Message/header formatting helpers (mirrored from opentui-app for Vitest coverage). */
 
 import type { Message, Mode } from '../types.js';
 
@@ -20,7 +20,7 @@ export function formatMessageLine(msg: Message): string {
 }
 
 export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolean): string {
-  const base = `RxyCode v1.2.0 · ${mode} · ${model}`;
+  const base = `RxyCode v1.2.1 · ${mode} · ${model}`;
   return thinkingLive ? `${base} · 思考中` : base;
 }
 

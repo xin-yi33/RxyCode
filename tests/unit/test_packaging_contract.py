@@ -30,7 +30,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.2.0"
+    assert project["version"] == "1.2.1"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -66,12 +66,25 @@ def test_console_and_module_launcher_sources_are_present():
     assert not missing, f"missing package entrypoint sources: {missing}"
 
 
-def test_manifest_includes_the_ink_runtime_and_excludes_node_modules():
+def test_manifest_includes_opentui_and_ink_runtimes_and_excludes_node_modules():
     manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
     assert "recursive-include frontend/dist *.js" in manifest
     assert "include frontend/package.json" in manifest
+    assert "recursive-include frontend/opentui-app/src *" in manifest
+    assert "include frontend/opentui-app/package.json" in manifest
     assert "prune frontend/node_modules" in manifest
+    assert "prune frontend/opentui-app/node_modules" in manifest
+
+
+def test_package_data_ships_opentui_sources():
+    package_data = _pyproject()["tool"]["setuptools"]["package-data"][
+        VERSIONED_PACKAGE
+    ]
+    joined = "\n".join(package_data)
+    assert "frontend/dist/*.js" in joined
+    assert "frontend/opentui-app/package.json" in joined
+    assert "frontend/opentui-app/src/**/*" in joined
 
 
 def test_ci_smokes_the_installed_package_without_namespace_links():

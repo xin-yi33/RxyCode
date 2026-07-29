@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ScrollBoxRenderable, TextareaRenderable, Selection } from "@opentui/core";
 import { decodePasteBytes, stripAnsiSequences } from "@opentui/core";
 import {
@@ -845,7 +845,7 @@ export default function App() {
       <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: 1 }}>
         <text selectable>
           <span fg={BRAND_LIGHT} attributes={1}>
-            {"  "}RxyCode v1.2.0
+            {"  "}RxyCode v1.2.1
           </span>
           <span fg={BRAND_MUTED}>{" · "}</span>
           <span fg={modeColor} attributes={1}>

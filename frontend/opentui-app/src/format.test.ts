@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+﻿import { describe, expect, test } from "bun:test";
 import { formatMessageLine, formatHeaderLine, formatInputHint } from "./format.ts";
 import type { ChatMessage } from "./types.ts";
 
@@ -21,7 +21,7 @@ describe("message formatting", () => {
 
   test("header keeps pink brand fields", () => {
     expect(formatHeaderLine("build", "deepseek-v4-flash", false)).toBe(
-      "RxyCode v1.2.0 · build · deepseek-v4-flash",
+      "RxyCode v1.2.1 · build · deepseek-v4-flash",
     );
     expect(formatHeaderLine("plan", "m", true)).toContain("思考中");
   });

@@ -1,4 +1,4 @@
-import type { ChatMessage, Mode } from "./types.ts";
+﻿import type { ChatMessage, Mode } from "./types.ts";
 
 export function formatMessageLine(msg: ChatMessage): string {
   switch (msg.role) {
@@ -18,7 +18,7 @@ export function formatMessageLine(msg: ChatMessage): string {
 }
 
 export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolean): string {
-  const base = `RxyCode v1.2.0 · ${mode} · ${model}`;
+  const base = `RxyCode v1.2.1 · ${mode} · ${model}`;
   return thinkingLive ? `${base} · 思考中` : base;
 }
 

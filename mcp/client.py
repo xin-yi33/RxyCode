@@ -1,4 +1,4 @@
-"""Production MCP stdio client using newline-delimited JSON-RPC.
+﻿"""Production MCP stdio client using newline-delimited JSON-RPC.
 
 The repository's local ``mcp`` package shadows the official Python SDK, so
 this module implements the small client surface RxyCode needs while following
@@ -338,7 +338,7 @@ class MCPClient:
                 {
                     "protocolVersion": CURRENT_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "RxyCode", "version": "1.2.0"},
+                    "clientInfo": {"name": "RxyCode", "version": "1.2.1"},
                 },
             )
             result = self._result_or_raise(response, "initialize")

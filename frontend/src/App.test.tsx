@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+﻿import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
 import App from './App.js';
 import { MouseProvider, mouseManager } from './mouse.js';
@@ -76,7 +76,7 @@ describe('App integration', () => {
     const { lastFrame, unmount } = renderWide(<MouseProvider value={mouseManager}><App /></MouseProvider>);
     await settle();
     const f = lastFrame() ?? '';
-    expect(f).toContain('RxyCode v1.2.0');
+    expect(f).toContain('RxyCode v1.2.1');
     expect(f).toContain('Ready');
     unmount();
   });

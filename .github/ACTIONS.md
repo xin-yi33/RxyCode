@@ -1,4 +1,4 @@
-# GitHub Actions
+﻿# GitHub Actions
 
 The workflows in this directory make the test and distribution paths exercise
 the installed application instead of a checkout-specific import shim.
@@ -53,7 +53,7 @@ All jobs upload their existing diagnostics even when a test step fails.
 The workflow deliberately does not publish to PyPI. It uses only GitHub-owned
 workflow actions and grants `contents: write` solely to the final release job.
 For a reproducible release, update `pyproject.toml` first and push the matching
-tag, for example `v1.2.0`.
+tag, for example `v1.2.1`.
 
 ## Local distribution check
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState, useRef, useMemo } from 'react';
+﻿import React, { useEffect, useCallback, useState, useRef, useMemo } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import ChatPanel from './components/ChatPanel.js';
 import InputBox from './components/InputBox.js';
@@ -25,7 +25,7 @@ const Header = React.memo(({ mode, model, expandThinking, isStreaming }: { mode:
   const modeColor = MODE_COLORS[mode];
   return (
     <Box paddingX={1} flexShrink={0}>
-        <Text color="#FFB6C1" bold>{"  "}RxyCode v1.2.0</Text>
+        <Text color="#FFB6C1" bold>{"  "}RxyCode v1.2.1</Text>
       <Text color="#555"> {" \u00B7 "} </Text>
       <Text color={modeColor} bold>{mode}</Text>
       <Text color="#555"> {" \u00B7 "} </Text>

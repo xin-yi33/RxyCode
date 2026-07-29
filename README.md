@@ -1,10 +1,10 @@
-<div align="center">
+﻿<div align="center">
 
 # RxyCode
 
 **Plan-and-Execute AI Coding Agent with Verification & Safe Tool Orchestration**
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0)
+[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -56,30 +56,30 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 
 **Windows PowerShell:**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.0/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.1/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.1/install.sh | sh
 rxycode
 ```
 
 The installer bootstraps `uv` (if needed), creates an isolated tool
-environment, and installs the pinned `v1.2.0` release. No manual clone
+environment, and installs the pinned `v1.2.1` release. No manual clone
 required. Previous release `v1.1.0` remains available via tag.
 
 ### Option 2: Run once with uv
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.0" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.1" rxycode
 ```
 
 ### Option 3: Permanent install
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.0"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.1"
 rxycode
 ```
 
@@ -241,6 +241,7 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 | [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, 24+ tools, tiered memory |
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | Frontend rewrite: OpenTUI default TUI (Ink fallback), settings parity, safer Ctrl+C, plan hints, autoCompact |
+| [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | Package fix: ship OpenTUI sources in the installable wheel |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 

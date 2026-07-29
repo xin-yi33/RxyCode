@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] - 2026-07-29
+
+### Fixed
+
+- **Packaging ships OpenTUI** — `pyproject.toml` / `MANIFEST.in` previously only
+  bundled Ink `frontend/dist/*.js`. Installed / one-command installs therefore
+  failed `_opentui_ready()` and silently fell back to Ink, so end users saw a
+  completely different UI than a source checkout. OpenTUI
+  (`frontend/opentui-app/package.json`, `src/**`, lockfile) is now included in
+  the wheel.
+
+### Notes
+
+- Prefer installing `@v1.2.1`. Tag `v1.2.0` remains for history but its
+  published install path did not bundle OpenTUI sources.
+- Bun is still required on PATH for the default OpenTUI launch; without Bun the
+  CLI falls back to Ink by design.
+
+---
+
 ## [1.2.0] - 2026-07-29
 
 ### Highlights
@@ -215,6 +235,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.1]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1
 [1.2.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0
 [1.1.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0
 [1.0.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0

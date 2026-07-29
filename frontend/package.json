@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "rxycode-tui",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "RxyCode Terminal UI built with Ink (React for terminals)",
   "main": "dist/index.js",
   "type": "module",

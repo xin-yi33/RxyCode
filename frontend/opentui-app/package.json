@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "rxycode-opentui",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "RxyCode OpenTUI dual-entry shell (ScrollBox + native textarea)",
   "type": "module",
   "private": true,
