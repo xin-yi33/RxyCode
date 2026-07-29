@@ -33,6 +33,8 @@ export type SettingsDialogCallbacks = {
   setPermissionMode: (mode: string) => void;
   /** Called for palette commands that are not nested-dialog routes (e.g. /clear). */
   onFallbackCommand: (cmd: Command) => void;
+  /** Re-probe models after onboard / add-model dialog completes. */
+  onModelsChanged?: () => void | Promise<void>;
 };
 
 function mapLoadedMessages(raw: unknown[]): ChatMessage[] {
@@ -109,6 +111,7 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
         onDone={(message) => {
           shortMsg(message);
           cbRef.current.fetchStatus();
+          void cbRef.current.onModelsChanged?.();
         }}
       />,
     );

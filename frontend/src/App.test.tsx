@@ -11,6 +11,14 @@ const apiMocks = vi.hoisted(() => ({
   addMessage: vi.fn(),
 }));
 
+const probeMocks = vi.hoisted(() => ({
+  probeModels: vi.fn(),
+}));
+
+vi.mock('./fetchModelsProbe.js', () => ({
+  probeModels: probeMocks.probeModels,
+}));
+
 vi.mock('./hooks/useApi.js', () => ({
   useApi: () => ({
     messages: [],
@@ -44,6 +52,11 @@ const restoredToolOutput = 'begin\n' + 'x'.repeat(1200) + '\nend';
 
 describe('App integration', () => {
   beforeEach(() => {
+    probeMocks.probeModels.mockReset().mockResolvedValue({
+      ok: true,
+      models: [{ id: 'm1', name: 'deepseek' }],
+      active: 'm1',
+    });
     apiMocks.sendCommand.mockReset().mockImplementation(async (command: string) => {
       if (command === '/load-chat sess-1') {
         return {
@@ -78,6 +91,45 @@ describe('App integration', () => {
     const f = lastFrame() ?? '';
     expect(f).toContain('RxyCode v1.2.2');
     expect(f).toContain('Ready');
+    unmount();
+  });
+
+  it('shows no-model hint and auto-opens add-model wizard when models list is empty', async () => {
+    probeMocks.probeModels.mockResolvedValue({ ok: true, models: [], active: '' });
+    const { lastFrame, unmount } = renderWide(<MouseProvider value={mouseManager}><App /></MouseProvider>);
+    await settle();
+    await new Promise((r) => setTimeout(r, 50));
+    const f = lastFrame() ?? '';
+    expect(f).toContain('尚未配置模型');
+    expect(f).toContain('添加模型');
+    expect(f).toContain('[1/4]');
+    unmount();
+  });
+
+  it('does not show no-model hint or auto-open wizard when models exist', async () => {
+    probeMocks.probeModels.mockResolvedValue({
+      ok: true,
+      models: [{ id: 'm1', name: 'deepseek' }],
+      active: 'm1',
+    });
+    const { lastFrame, unmount } = renderWide(<MouseProvider value={mouseManager}><App /></MouseProvider>);
+    await settle();
+    await new Promise((r) => setTimeout(r, 50));
+    const f = lastFrame() ?? '';
+    expect(f).not.toContain('尚未配置模型');
+    expect(f).not.toContain('[1/4]');
+    expect(f).toContain('Ready');
+    unmount();
+  });
+
+  it('does not show no-model hint when models probe fails', async () => {
+    probeMocks.probeModels.mockResolvedValue({ ok: false, models: [], active: '' });
+    const { lastFrame, unmount } = renderWide(<MouseProvider value={mouseManager}><App /></MouseProvider>);
+    await settle();
+    await new Promise((r) => setTimeout(r, 250));
+    const f = lastFrame() ?? '';
+    expect(f).not.toContain('尚未配置模型');
+    expect(f).not.toContain('[1/4]');
     unmount();
   });
 
@@ -272,6 +324,27 @@ describe('App integration', () => {
     expect(apiMocks.addMessage).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining('secure wizard') }),
     );
+    unmount();
+  });
+
+  it('keeps no-model hint when addModel onboarding fails', async () => {
+    probeMocks.probeModels.mockResolvedValue({ ok: true, models: [], active: '' });
+    apiMocks.addModel.mockResolvedValue({ action: 'error', message: 'Invalid API key' });
+
+    const { lastFrame, stdin, unmount } = renderWide(<MouseProvider value={mouseManager}><App /></MouseProvider>);
+    await settle();
+    await new Promise((r) => setTimeout(r, 50));
+    expect((lastFrame() ?? '')).toContain('[1/4]');
+
+    type(stdin, 'gpt-4'); await settle(); stdin.write('\r'); await new Promise((r) => setTimeout(r, 60));
+    type(stdin, 'sk-1234567890abcd'); await settle(); stdin.write('\r'); await new Promise((r) => setTimeout(r, 60));
+    type(stdin, 'https://api.openai.com'); await settle(); stdin.write('\r'); await new Promise((r) => setTimeout(r, 60));
+    type(stdin, 'mygpt'); await settle(); stdin.write('\r'); await new Promise((r) => setTimeout(r, 80));
+
+    const done = lastFrame() ?? '';
+    expect(done).toContain('尚未配置模型');
+    expect(done).not.toContain('[1/4]');
+    expect(apiMocks.addModel).toHaveBeenCalledTimes(1);
     unmount();
   });
 

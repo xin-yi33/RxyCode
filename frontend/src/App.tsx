@@ -18,6 +18,8 @@ import { logInfo, logDebug } from './log.js';
 import { paletteHeight } from './layout.js';
 import { safeCommandLabel } from './apiClient.js';
 import { isChatLoadedResponse, mapLoadedChatMessages } from './chatHistory.js';
+import { decideModelSetup } from './modelSetup.js';
+import { probeModels } from './fetchModelsProbe.js';
 
 type ModalType = null | 'session' | 'model' | 'memory' | 'skill' | 'mcp' | 'queue' | 'schedule';
 
@@ -57,6 +59,8 @@ export default function App({ terminateProcess }: { terminateProcess?: () => voi
   const thinkingTogglePendingRef = useRef(false);
   const [addmodelState, setAddmodelState] = useState<{ step: AddModelStep; data: Record<string, string> } | null>(null);
   const [addmodelError, setAddmodelError] = useState('');
+  const [needsModelSetup, setNeedsModelSetup] = useState(false);
+  const autoOpenedModelSetupRef = useRef(false);
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
   const [clearKey, setClearKey] = useState(0);
 
@@ -80,6 +84,33 @@ export default function App({ terminateProcess }: { terminateProcess?: () => voi
     fetchStatus();
     const iv = setInterval(fetchStatus, 30000);
     return () => { clearInterval(iv); };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < 10 && !cancelled; i++) {
+        const probe = await probeModels();
+        if (cancelled) return;
+        if (!probe.ok) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        const decision = decideModelSetup({
+          fetchOk: true,
+          modelCount: probe.models.length,
+          alreadyAutoOpened: autoOpenedModelSetupRef.current,
+        });
+        setNeedsModelSetup(decision.needsSetup);
+        if (decision.shouldAutoOpen) {
+          autoOpenedModelSetupRef.current = true;
+          setAddmodelState({ step: 'provider_model_id', data: {} });
+          setAddmodelError('');
+        }
+        return;
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -225,6 +256,10 @@ export default function App({ terminateProcess }: { terminateProcess?: () => voi
       nickname,
     });
     if (result?.message) { addMessage({ role: 'system', content: result.message }); }
+    if (result && result.action !== 'error') {
+      const probe = await probeModels();
+      if (probe.ok) setNeedsModelSetup(probe.models.length === 0);
+    }
   }, [addmodelState, setAddmodelState, setAddmodelError, addModel, addMessage]);
 
   const handleCommand = useCallback(async (cmd: string) => {
@@ -390,7 +425,7 @@ export default function App({ terminateProcess }: { terminateProcess?: () => voi
     <MouseProvider value={mouseManager}>
     <Box flexDirection="column" flexGrow={1}>
       <Header mode={mode} model={model} expandThinking={expandThinking} isStreaming={isStreaming} />
-      <ChatPanel key={clearKey} messages={messages} height={chatHeight} mode={mode} expandThinking={expandThinking} />
+      <ChatPanel key={clearKey} messages={messages} height={chatHeight} mode={mode} expandThinking={expandThinking} needsModelSetup={needsModelSetup} />
       {showProgress && (
         <ProgressBanner isStreaming={isStreaming} startedAt={streamStartedAt} stepLabel={progressData?.stepLabel || ''} activity={progressData?.activity || ''} />
       )}

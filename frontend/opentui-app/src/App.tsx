@@ -32,7 +32,7 @@ import {
   type StatusInfo,
 } from "./types.ts";
 import {
-  WELCOME_ROWS,
+  welcomeRowsForSetup,
   SHORTCUTS_HINT,
   WORDMARK,
   BRAND_LIGHT,
@@ -41,6 +41,8 @@ import {
   LOGO_FIELD_BG,
   logoInkForRow,
 } from "./brand.ts";
+import { decideModelSetup } from "./modelSetup.ts";
+import { probeModels } from "./dialog/api.ts";
 import { createScrollAcceleration, SCROLLBAR_TRACK } from "./scroll.ts";
 import { MarkdownView } from "./Markdown.tsx";
 import {
@@ -128,7 +130,8 @@ function BrandLogo({ cols }: { cols: number }) {
   );
 }
 
-function WelcomeBanner({ cols }: { cols: number }) {
+function WelcomeBanner({ cols, needsModelSetup }: { cols: number; needsModelSetup: boolean }) {
+  const welcomeRows = welcomeRowsForSetup(needsModelSetup);
   const subtitlePad = Math.max(0, Math.floor((cols - (SUBTITLE_CORE.length + 4)) / 2));
   return (
     <box style={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1, width: "100%", backgroundColor: C.bg }}>
@@ -147,7 +150,7 @@ function WelcomeBanner({ cols }: { cols: number }) {
         </text>
       </box>
       <box style={{ height: 1, backgroundColor: C.bg }} />
-      {WELCOME_ROWS.map((row, i) => (
+      {welcomeRows.map((row, i) => (
         <text key={`w-${i}`} bg={C.bg} selectable>
           {row.parts.map((part, j) => (
             <span key={j} fg={part.fg} attributes={part.bold ? 1 : 0}>
@@ -342,6 +345,8 @@ export default function App() {
   const [inputValue, setInputValue] = useState("");
   const [paletteIdx, setPaletteIdx] = useState(0);
   const [permissionMode, setPermissionMode] = useState("confirm_all");
+  const [needsModelSetup, setNeedsModelSetup] = useState(false);
+  const autoOpenedModelSetupRef = useRef(false);
   const textareaRef = useRef<TextareaRenderable>(null);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -461,6 +466,10 @@ export default function App() {
     statusLine,
     activeModel: model,
     setPermissionMode,
+    onModelsChanged: async () => {
+      const probe = await probeModels();
+      if (probe.ok) setNeedsModelSetup(probe.models.length === 0);
+    },
     onFallbackCommand: (cmd) => {
       void submitTextRef.current?.(cmd.name);
     },
@@ -470,6 +479,34 @@ export default function App() {
 
   const { dialogOpen, openPalette, openPermission, openSession, openModel, openAddModel, routePaletteCommand } =
     settingsDialogs;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < 10 && !cancelled; i++) {
+        const probe = await probeModels();
+        if (cancelled) return;
+        if (!probe.ok) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        const decision = decideModelSetup({
+          fetchOk: true,
+          modelCount: probe.models.length,
+          alreadyAutoOpened: autoOpenedModelSetupRef.current,
+        });
+        setNeedsModelSetup(decision.needsSetup);
+        if (decision.shouldAutoOpen) {
+          autoOpenedModelSetupRef.current = true;
+          openAddModel();
+        }
+        return;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openAddModel]);
 
   usePaste((event) => {
     // Nested dialogs own paste (focused search input). Do not preventDefault.
@@ -878,7 +915,7 @@ export default function App() {
         }}
       >
         {visibleMessages.length === 0 ? (
-          <WelcomeBanner cols={cols} />
+          <WelcomeBanner cols={cols} needsModelSetup={needsModelSetup} />
         ) : (
           visibleMessages.map((msg) => (
             <ChatLine

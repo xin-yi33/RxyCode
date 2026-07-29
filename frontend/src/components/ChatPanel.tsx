@@ -4,6 +4,7 @@ import { Box, Static, Text } from 'ink';
 import type { Message, Mode, ToolStatus } from '../types.js';
 import { MODE_COLORS } from '../types.js';
 import { C } from '../theme.js';
+import { NO_MODEL_WELCOME_HINT } from '../modelSetup.js';
 import Markdown from './Markdown.js';
 
 const SPINNER_FRAMES = ['\u280B', '\u2819', '\u2839', '\u2838', '\u283C', '\u2834', '\u2826', '\u2827', '\u2807', '\u280F'];
@@ -13,6 +14,7 @@ interface Props {
   height: number;
   mode: Mode;
   expandThinking: boolean;
+  needsModelSetup?: boolean;
 }
 
 export const isFinalized = (m: Message): boolean => {
@@ -33,7 +35,7 @@ function tailLines(content: string, maxLines: number): string {
   return ['... (streaming preview)', ...lines.slice(-(maxLines - 1))].join('\n');
 }
 
-const WelcomeMessage = React.memo(() => {
+const WelcomeMessage = React.memo(({ needsModelSetup }: { needsModelSetup?: boolean }) => {
   return (
     <Box flexDirection="column" paddingTop={0} paddingBottom={0}>
       <Banner />
@@ -46,11 +48,14 @@ const WelcomeMessage = React.memo(() => {
         <Text><Text color="#666">  · </Text><Text color="#FF69B4" bold>研究分析</Text><Text color="#aaa"> - 检索来源、比较方案、整理结论</Text></Text>
         <Text><Text color="#666">  · </Text><Text color="#FF69B4" bold>通用任务</Text><Text color="#aaa"> - 信息整理、计划执行、多步协作</Text></Text>
         <Text color="#888">  有什么我可以帮你的？</Text>
+        {needsModelSetup && (
+          <Text color="#FFB6C1" bold>{'  '}{NO_MODEL_WELCOME_HINT}</Text>
+        )}
         <Text color="#555">  快捷键: Ctrl+P 命令面板 · Ctrl+T 思考展开 · Tab 切换模式 · Esc 终止</Text>
       </Box>
     </Box>
   );
-}, () => true);
+}, (prev, next) => prev.needsModelSetup === next.needsModelSetup);
 
 // Spinner isolated into its own leaf component (gemini-cli paradigm: the
 // animated GeminiRespondingSpinner is a tiny leaf so its interval re-renders
@@ -209,7 +214,7 @@ function renderMessage(msg: Message, mode: Mode, expandThinking: boolean, maxAss
   }
 }
 
-export default React.memo(function ChatPanel({ messages, height, mode, expandThinking }: Props) {
+export default React.memo(function ChatPanel({ messages, height, mode, expandThinking, needsModelSetup }: Props) {
   const showWelcome = messages.length === 0;
   const committedIdsRef = useRef<string[]>([]);
   const staticGenerationRef = useRef(0);
@@ -243,7 +248,7 @@ export default React.memo(function ChatPanel({ messages, height, mode, expandThi
   // non-alt-buffer layout.
   return (
     <Box flexDirection="column" paddingX={1}>
-      {showWelcome && <WelcomeMessage />}
+      {showWelcome && <WelcomeMessage needsModelSetup={needsModelSetup} />}
       <Static key={staticGenerationRef.current} items={finalized}>
         {msg => renderMessage(msg, mode, expandThinking)}
       </Static>

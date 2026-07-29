@@ -1,3 +1,5 @@
+import { NO_MODEL_WELCOME_HINT } from "./modelSetup.ts";
+
 /**
  * Classic RxyCode branding — colors frozen to original Ink screenshot:
  *   LightPink #FFB6C1  ·  HotPink #FF69B4
@@ -98,6 +100,16 @@ export const WELCOME_ROWS: WelcomeRow[] = [
   },
   { parts: [{ text: "  有什么我可以帮你的？", fg: "#888888" }] },
 ];
+
+export function welcomeRowsForSetup(needsSetup: boolean): WelcomeRow[] {
+  if (!needsSetup) return [...WELCOME_ROWS];
+  return [
+    ...WELCOME_ROWS,
+    {
+      parts: [{ text: `  ${NO_MODEL_WELCOME_HINT}`, fg: "#FFB6C1", bold: true }],
+    },
+  ];
+}
 
 export const SHORTCUTS_HINT =
   "  快捷键: Ctrl+P 命令面板 · Ctrl+T 思考展开 · Tab 切换模式 · Esc 终止";

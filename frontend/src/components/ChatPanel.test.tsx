@@ -11,6 +11,12 @@ describe('ChatPanel', () => {
     const f = lastFrame() ?? '';
     expect(f).toContain('RxyCode');
     expect(f).toContain('快捷键');
+    expect(f).not.toContain('尚未配置模型');
+  });
+
+  it('shows no-model hint when needsModelSetup is true', () => {
+    const { lastFrame } = render(<ChatPanel {...base} messages={[]} needsModelSetup />);
+    expect(lastFrame() ?? '').toContain('尚未配置模型');
   });
 
   it('renders a user message', () => {

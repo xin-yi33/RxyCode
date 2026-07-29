@@ -104,8 +104,9 @@ docker compose run --rm tui    # Interactive TUI (needs TTY)
 ### First launch
 
 1. Run `rxycode` — the TUI opens even without a model configured
-2. Type `/addmodel` to add your first model (credential input is masked)
-3. Start chatting! Type your request in natural language
+2. If no models are configured yet, the TUI detects the empty list, shows a welcome hint, and automatically opens the `/addmodel` wizard (credential input is masked)
+3. If one or more models are already configured, there is no extra hint and no auto dialog
+4. Start chatting! Type your request in natural language
 
 ## Architecture
 
