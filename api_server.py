@@ -287,7 +287,7 @@ class ModelOnboardingRequest(BaseModel):
     provider_model_id: str
     nickname: str | None = None
     api_key: SecretStr
-    base_url: str
+    base_url: str | None = None
 
     @field_validator("provider_model_id")
     @classmethod
@@ -312,7 +312,12 @@ class ModelOnboardingRequest(BaseModel):
 
     @field_validator("base_url")
     @classmethod
-    def validate_base_url(cls, value: str) -> str:
+    def validate_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
         from .config.model_manager import normalize_provider_base_url
 
         return normalize_provider_base_url(value, require_https=True)
@@ -914,6 +919,8 @@ async def get_status():
 async def get_models():
     """Return structured model list for the model selection panel."""
     from .config.settings import load_config
+    from .config.model_manager import get_builtin_model_presets
+
     cfg = load_config()
     models = cfg.get("models", {})
     active = cfg.get("active_model", "")
@@ -927,7 +934,11 @@ async def get_models():
             "base_url": mcfg.get("base_url", ""),
             "active": name == active,
         })
-    return {"models": result, "active": active}
+    return {
+        "models": result,
+        "active": active,
+        "presets": list(get_builtin_model_presets().values()),
+    }
 
 
 @app.post("/models/onboard", status_code=201)
@@ -938,13 +949,23 @@ async def onboard_model(req: ModelOnboardingRequest):
         list_models,
         probe_model_connection,
         remove_model,
+        resolve_model_preset,
         set_active_model,
     )
 
     provider_model_id = req.provider_model_id
+    base_url = req.base_url
+    preset = resolve_model_preset(provider_model_id)
+    if preset is not None:
+        if not base_url:
+            base_url = preset["base_url"]
+        if provider_model_id.strip().casefold() in {
+            preset["id"].casefold(),
+            *[alias.casefold() for alias in preset.get("aliases", ())],
+        }:
+            provider_model_id = preset["default_model_name"]
     nickname = req.nickname or provider_model_id
     api_key = req.api_key.get_secret_value().strip()
-    base_url = req.base_url
 
     if nickname in list_models():
         raise HTTPException(status_code=409, detail=f"Model nickname already exists: {nickname}")

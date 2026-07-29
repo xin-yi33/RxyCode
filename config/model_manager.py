@@ -25,6 +25,42 @@ HTTP_CODE_MESSAGES = {
     504: "API 服务器超时。可能速度较慢或无法访问。(HTTP 504 Gateway Timeout)",
 }
 
+_BUILTIN_MODEL_PRESETS = {
+    "volces-ark": {
+        "id": "volces-ark",
+        "name": "Volces Ark",
+        "provider": "volces-ark",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "default_model_name": "doubao-lite-32k",
+        "aliases": ("volces", "volces-ark", "ark", "volcengine"),
+    }
+}
+
+
+def get_builtin_model_presets() -> dict[str, dict]:
+    """Return built-in onboarding presets for providers such as Volces Ark."""
+    return {
+        preset_id: {
+            **preset,
+            "aliases": tuple(preset.get("aliases", ())),
+        }
+        for preset_id, preset in _BUILTIN_MODEL_PRESETS.items()
+    }
+
+
+def resolve_model_preset(model_hint: Optional[str]) -> Optional[dict]:
+    """Resolve a known preset from an alias, nickname, or preset id."""
+    if not model_hint:
+        return None
+    normalized = model_hint.strip().casefold()
+    for preset_id, preset in _BUILTIN_MODEL_PRESETS.items():
+        if normalized in {preset_id.casefold(), *[alias.casefold() for alias in preset.get("aliases", ())]}:
+            return {
+                **preset,
+                "aliases": tuple(preset.get("aliases", ())),
+            }
+    return None
+
 
 def normalize_provider_base_url(
     value: str,
