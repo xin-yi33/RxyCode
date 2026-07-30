@@ -1,0 +1,47 @@
+[
+  {
+    "content": "{\"goal\":\"Create and open a verified calculator artifact\",\"constraints\":[\"Use the write and open_file tools\"],\"output_format\":\"markdown\"}"
+  },
+  {
+    "content": "[{\"title\":\"Write and open verified calculator artifact\",\"description\":\"Write the requested HTML file and open it in the default browser\",\"requirement\":\"The file exists, contains valid HTML, and is opened\",\"tools_hint\":[\"write\",\"open_file\"],\"depends_on_index\":[]}]"
+  },
+  {
+    "content": "[]"
+  },
+  {
+    "content": "",
+    "tool_calls": [
+      {
+        "name": "write",
+        "args": {
+          "filePath": "$artifact_path",
+          "content": "$artifact_content"
+        },
+        "id": "call-write-1",
+        "type": "tool_call"
+      }
+    ]
+  },
+  {
+    "content": "",
+    "tool_calls": [
+      {
+        "name": "open_file",
+        "args": {
+          "filePath": "$artifact_path"
+        },
+        "id": "call-open-1",
+        "type": "tool_call"
+      }
+    ]
+  },
+  {
+    "content": "The calculator artifact was written and is ready for validation."
+  },
+  {
+    "content": "{\"passed\":true,\"completeness_score\":1.0,\"relevance_score\":1.0,\"format_score\":1.0,\"issues\":[],\"suggestion\":\"\"}"
+  },
+  {
+    "content": "$grounded_synthesis"
+  }
+]

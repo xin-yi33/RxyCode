@@ -1,0 +1,10 @@
+# Deterministic backend test and coverage tooling.
+pytest>=8.3,<10
+pytest-asyncio>=0.25,<2
+pytest-cov>=6.0,<8
+pytest-timeout>=2.3,<3
+pytest-xdist>=3.6,<4
+setuptools>=69
+wheel>=0.43,<1
+build>=1.2,<2
+twine>=6.0,<7

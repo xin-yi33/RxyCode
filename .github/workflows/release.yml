@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  build:
+    name: Build and validate distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Verify tag matches project version
+        shell: bash
+        run: |
+          project_version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$tag_version" != "$project_version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $project_version" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend runtime
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-dev.txt
+          python -m build --no-isolation
+          python -m twine check dist/*
+
+      - name: Upload validated distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: rxycode-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke-install:
+    name: Install smoke (${{ matrix.os }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Download validated distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: rxycode-distributions
+          path: dist
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Smoke test installed wheel on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          smoke_env="$RUNNER_TEMP/rxycode-release-smoke"
+          python -m venv --system-site-packages "$smoke_env"
+          "$smoke_env/bin/python" -m pip install --no-deps --force-reinstall dist/*.whl
+          unset PYTHONPATH
+          "$smoke_env/bin/rxycode" --version
+          "$smoke_env/bin/rxycode" --help
+          "$smoke_env/bin/python" -m RxyCode --version
+          set +e
+          output="$(printf '/exit\n' | RXYCODE_DATA_DIR="$RUNNER_TEMP/rxycode-fresh-home" "$smoke_env/bin/rxycode" 2>&1)"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -F "requires an interactive terminal (TTY)" <<<"$output"
+
+      - name: Smoke test installed wheel on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $smokeEnv = Join-Path $env:RUNNER_TEMP "rxycode-release-smoke"
+          python -m venv --system-site-packages $smokeEnv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $smokePython = Join-Path $smokeEnv "Scripts/python.exe"
+          $rxycode = Join-Path $smokeEnv "Scripts/rxycode.exe"
+          $wheel = (Get-ChildItem -LiteralPath dist -Filter *.whl | Select-Object -First 1).FullName
+          if (-not $wheel) { throw "Release artifact does not contain dist/*.whl" }
+          & $smokePython -m pip install --no-deps --force-reinstall $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $env:PYTHONIOENCODING = "utf-8"
+          & $rxycode --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $rxycode --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $smokePython -m RxyCode --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:RXYCODE_DATA_DIR = Join-Path $env:RUNNER_TEMP "rxycode-fresh-home"
+          $output = "/exit" | & $rxycode 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host "=== Non-TTY smoke: exit=$status ==="
+          Write-Host $output
+          Write-Host "=== End non-TTY smoke ==="
+          if ($status -ne 1) { throw "Expected non-TTY exit 1, got $status`n$output" }
+          if ($output -notmatch "requires an interactive terminal \(TTY\)") {
+            throw "Missing non-TTY diagnostic:`n$output"
+          }
+          $LASTEXITCODE = 0
+
+  publish:
+    name: Create GitHub release
+    needs: [build, smoke-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: rxycode-distributions
+          path: dist
+
+      - name: Create release and upload distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

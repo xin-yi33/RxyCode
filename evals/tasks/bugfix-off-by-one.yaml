@@ -1,0 +1,33 @@
+id: bugfix-off-by-one
+category: bugfix
+prompt: |
+  当前目录下有一个 calc.py，其中的 sum_up_to(n) 函数有 off-by-one bug：
+  它应该返回 1+2+...+n 的和，但现在少加了 n。请修复这个 bug，
+  然后运行 python -m pytest test_calc.py -q 确认测试通过。
+setup:
+  files:
+    calc.py: |
+      def sum_up_to(n):
+          """Return 1 + 2 + ... + n."""
+          total = 0
+          for i in range(1, n):  # BUG: should be range(1, n + 1)
+              total += i
+          return total
+    test_calc.py: |
+      from calc import sum_up_to
+
+      def test_sum_up_to_basic():
+          assert sum_up_to(1) == 1
+          assert sum_up_to(4) == 10
+          assert sum_up_to(100) == 5050
+
+      def test_sum_up_to_zero():
+          assert sum_up_to(0) == 0
+checks:
+  - type: file_exists
+    path: calc.py
+  - type: file_contains
+    path: calc.py
+    pattern: "n + 1"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_calc.py -q"

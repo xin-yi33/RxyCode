@@ -1,0 +1,28 @@
+id: refactor-replace-magic-numbers
+category: refactor
+prompt: |
+  当前目录下的 pricing.py 里 discount_price(price, vip) 用了魔法数字 0.9 和 0.95。
+  请把它们提取为模块级常量（如 VIP_DISCOUNT / REGULAR_DISCOUNT），保持行为不变，
+  运行 python -m pytest test_pricing.py -q 确认通过。
+setup:
+  files:
+    pricing.py: |
+      def discount_price(price, vip=False):
+          """VIP gets 10% off, regular customers 5% off."""
+          if vip:
+              return price * 0.9
+          return price * 0.95
+    test_pricing.py: |
+      from pricing import discount_price
+
+      def test_vip():
+          assert abs(discount_price(100, vip=True) - 90.0) < 1e-9
+
+      def test_regular():
+          assert abs(discount_price(100, vip=False) - 95.0) < 1e-9
+checks:
+  - type: file_contains
+    path: pricing.py
+    pattern: "DISCOUNT"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_pricing.py -q"

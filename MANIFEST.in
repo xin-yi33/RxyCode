@@ -1,0 +1,24 @@
+include README.md
+include CHANGELOG.md
+include requirements.txt
+include pyproject.toml
+include install.ps1
+include install.sh
+include frontend/package.json
+recursive-include frontend/dist *.js
+recursive-include frontend/opentui-app/src *
+include frontend/opentui-app/package.json
+include frontend/opentui-app/tsconfig.json
+include frontend/opentui-app/bun.lock
+recursive-include evals/tasks *.yaml
+global-exclude *.py[cod]
+global-exclude *.log
+global-exclude *.key
+global-exclude *.pem
+global-exclude .env
+prune artifacts
+prune data
+prune frontend/node_modules
+prune frontend/opentui-app/node_modules
+prune frontend/opentui-app/e2e
+prune node_modules

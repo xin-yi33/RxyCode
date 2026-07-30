@@ -1,0 +1,48 @@
+id: feature-multi-file-cache
+category: feature
+prompt: |
+  在当前目录下实现一个两文件的小特性：
+  1) cache.py：实现一个 TTLCache 类，支持 set(key, value, ttl)、get(key)
+     （过期返回 None）、以及 expired 条目惰性清理；
+  2) service.py：实现 make_cached_getter(cache, fetcher)，返回一个函数 g(k)：
+     先查 cache，miss 时调用 fetcher(k) 并把结果写入 cache（ttl=60）。
+  测试文件 test_cache.py 已存在，运行 python -m pytest test_cache.py -q 确认通过。
+setup:
+  files:
+    test_cache.py: |
+      import time
+      from cache import TTLCache
+      from service import make_cached_getter
+
+      def test_ttlcache_set_get():
+          c = TTLCache()
+          c.set("a", 1, ttl=60)
+          assert c.get("a") == 1
+          assert c.get("missing") is None
+
+      def test_ttlcache_expiry():
+          c = TTLCache()
+          c.set("a", 1, ttl=0.05)
+          time.sleep(0.1)
+          assert c.get("a") is None
+
+      def test_cached_getter():
+          c = TTLCache()
+          calls = []
+          def fetcher(k):
+              calls.append(k)
+              return k.upper()
+          g = make_cached_getter(c, fetcher)
+          assert g("x") == "X"
+          assert g("x") == "X"
+          assert calls == ["x"]
+checks:
+  - type: file_exists
+    path: cache.py
+  - type: file_exists
+    path: service.py
+  - type: file_contains
+    path: cache.py
+    pattern: "class TTLCache"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_cache.py -q"

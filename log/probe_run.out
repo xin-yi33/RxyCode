@@ -1,0 +1,28 @@
+{
+  "duration_s": 240.9,
+  "event_counts": {
+    "progress": 42,
+    "tool_call": 9,
+    "tool_result": 9,
+    "error": 1,
+    "done": 1
+  },
+  "approvals_auto_sent": 0,
+  "peak_events_per_sec": 5,
+  "tool_calls": [
+    "write",
+    "mcp_filesystem_write_file",
+    "mcp_filesystem_write_file",
+    "write",
+    "mcp_filesystem_write_file",
+    "write",
+    "write",
+    "mcp_filesystem_write_file",
+    "write"
+  ],
+  "truncated_tool_results": 0,
+  "errors": [
+    "[evidence failed: Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\snake.html; Tool write did not complete: failed; Artifact failed format val"
+  ],
+  "final_status": "failed"
+}

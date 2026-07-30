@@ -1,0 +1,15 @@
+id: readcode-validator-threshold
+category: readcode
+prompt: |
+  阅读当前仓库的 validation/validator.py，回答：Validator 对执行结果按哪几个维度打分？
+  每个维度的通过阈值是多少？ValidationResult 中 passed 字段是如何计算的？
+  请给出具体的维度名称和阈值数值。
+checks:
+  - type: output_contains
+    pattern: "completeness"
+  - type: output_contains
+    pattern: "relevance"
+  - type: output_contains
+    pattern: "format"
+  - type: output_contains
+    pattern: "0.7"

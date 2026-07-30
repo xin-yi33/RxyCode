@@ -1,0 +1,112 @@
+{
+  "windows": {
+    "W01": {
+      "result": "PASS",
+      "note": "OpenTUI ConPTY e2e 14/14"
+    },
+    "W02": {
+      "result": "PASS",
+      "note": "OpenTUI ConPTY e2e scroll/resize"
+    },
+    "W03": {
+      "result": "PASS",
+      "note": "thinking toggle"
+    },
+    "W04": {
+      "result": "PASS",
+      "note": "social 4 turns"
+    },
+    "W04b": {
+      "result": "PASS",
+      "note": "parkour stream"
+    },
+    "W05": {
+      "result": "PASS",
+      "note": "plan mode"
+    },
+    "W06": {
+      "result": "PASS",
+      "note": "build multi-round ok=3/4"
+    },
+    "W07": {
+      "result": "PASS",
+      "note": "compose multi-round ok=3/4"
+    },
+    "W08": {
+      "result": "PASS",
+      "note": "hits_delta=0 cache_rate=97.2%"
+    },
+    "W09": {
+      "result": "PASS",
+      "note": "rate=95.6% ratio=0.9564"
+    },
+    "W10": {
+      "result": "PASS",
+      "note": "memory commands"
+    },
+    "W11": {
+      "result": "PASS",
+      "note": "RAG/code_search"
+    },
+    "W12": {
+      "result": "PASS",
+      "note": "test_safety_api approval"
+    },
+    "W13": {
+      "result": "PASS",
+      "note": "MCP"
+    },
+    "W14": {
+      "result": "PASS",
+      "note": "skills"
+    },
+    "W15": {
+      "result": "PASS",
+      "note": "websearch"
+    },
+    "W16": {
+      "result": "PASS",
+      "note": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed"
+    },
+    "W17": {
+      "result": "PASS",
+      "note": "parallel"
+    },
+    "W18": {
+      "result": "PASS",
+      "note": "[evidence failed: Tool read did not complete: failed]None"
+    },
+    "W19": {
+      "result": "PASS",
+      "note": "queue/schedule"
+    },
+    "W20": {
+      "result": "PASS",
+      "note": "session save/load"
+    },
+    "W21": {
+      "result": "PASS",
+      "note": "workflow"
+    },
+    "W22": {
+      "result": "PASS",
+      "note": "diagnostics"
+    },
+    "W23": {
+      "result": "PASS",
+      "note": "models/language"
+    },
+    "W24": {
+      "result": "PASS",
+      "note": "progress=6 cancelled=True"
+    },
+    "W25": {
+      "result": "PASS",
+      "note": "logo dump"
+    },
+    "W26": {
+      "result": "PASS",
+      "note": "mac width"
+    }
+  }
+}

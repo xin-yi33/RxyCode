@@ -1,0 +1,328 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: Run the paid/networked live provider test
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  linux-backend:
+    name: Linux backend layers
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Preserve the established package gate while also measuring all root
+      # entrypoints and first-party packages with a separately calibrated gate.
+      RXYCODE_CORE_COVERAGE_FAIL_UNDER: "67"
+      RXYCODE_PROJECT_COVERAGE_FAIL_UNDER: "60"
+      RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
+      RXYCODE_KEEP_TEST_ARTIFACTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend runtime
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Scan source and fixtures for credentials
+        run: python scripts/scan_secrets.py .
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e . --no-deps
+
+      - name: Build and smoke test the wheel
+        shell: bash
+        run: |
+          python -m build --wheel --no-isolation
+          python -m twine check dist/*.whl
+          smoke_env="$RUNNER_TEMP/rxycode-wheel-smoke"
+          python -m venv --system-site-packages "$smoke_env"
+          "$smoke_env/bin/python" -m pip install --no-deps --force-reinstall dist/*.whl
+          unset PYTHONPATH
+          "$smoke_env/bin/rxycode" --version
+          "$smoke_env/bin/rxycode" --help
+          "$smoke_env/bin/python" -m RxyCode --version
+          set +e
+          output="$(printf '/exit\n' | RXYCODE_DATA_DIR="$RUNNER_TEMP/rxycode-fresh-home" "$smoke_env/bin/rxycode" 2>&1)"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -F "requires an interactive terminal (TTY)" <<<"$output"
+
+      - name: Run deterministic test layers and collect coverage
+        shell: bash
+        run: |
+          mkdir -p artifacts/junit artifacts/coverage-data
+          python -m coverage erase
+          COVERAGE_FILE=artifacts/coverage-data/.coverage.unit \
+            RXYCODE_TEST_RUN_ID=unit python -m pytest tests/unit \
+            -m "unit and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/unit.xml --cov --cov-report=
+          COVERAGE_FILE=artifacts/coverage-data/.coverage.integration \
+            RXYCODE_TEST_RUN_ID=integration python -m pytest tests/integration \
+            -m "integration and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/integration.xml --cov --cov-report=
+          COVERAGE_FILE=artifacts/coverage-data/.coverage.contract \
+            RXYCODE_TEST_RUN_ID=contract python -m pytest tests/contract \
+            -m "contract and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/contract.xml --cov --cov-report=
+          COVERAGE_FILE=artifacts/coverage-data/.coverage.serial \
+            RXYCODE_TEST_RUN_ID=serial python -m pytest tests \
+            -m "serial and not live and not pty" -n 0 \
+            -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/serial.xml --cov --cov-report=
+          COVERAGE_FILE=artifacts/coverage-data/.coverage.regression \
+            RXYCODE_TEST_RUN_ID=regression python -m pytest tests \
+            -m "not unit and not integration and not contract and not system and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/regression.xml \
+            --cov --cov-report=
+          python -m coverage combine --keep artifacts/coverage-data
+          python -m coverage xml -o artifacts/coverage.xml
+          python -m coverage html -d artifacts/htmlcov
+          core_include="cache/*,config/*,core/*,execution/*,history/*,log/*,memory/*,planning/*,recovery/*,synthesis/*,tools/*,utils/*,validation/*"
+          python -m coverage report --include="$core_include" \
+            --fail-under="$RXYCODE_CORE_COVERAGE_FAIL_UNDER"
+          python -m coverage report \
+            --fail-under="$RXYCODE_PROJECT_COVERAGE_FAIL_UNDER"
+
+      - name: Scan generated artifacts for credentials
+        id: scan_generated_artifacts
+        if: always()
+        run: python scripts/scan_secrets.py .
+
+      - name: Upload Linux test reports
+        if: ${{ always() && steps.scan_generated_artifacts.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-backend-test-reports
+          path: |
+            artifacts/junit
+            artifacts/coverage-data
+            artifacts/coverage.xml
+            artifacts/htmlcov
+            artifacts/runtime
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows-contract-system:
+    name: Windows contracts, frontend, and ConPTY
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
+      RXYCODE_KEEP_TEST_ARTIFACTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e . --no-deps
+
+      - name: Build and smoke test the wheel
+        shell: pwsh
+        run: |
+          python -m build --wheel --no-isolation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = (Get-ChildItem -LiteralPath dist -Filter *.whl | Select-Object -First 1).FullName
+          if (-not $wheel) { throw "Wheel build did not produce dist/*.whl" }
+          python -m twine check $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $smokeEnv = Join-Path $env:RUNNER_TEMP "rxycode-wheel-smoke"
+          python -m venv --system-site-packages $smokeEnv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $smokePython = Join-Path $smokeEnv "Scripts/python.exe"
+          $rxycode = Join-Path $smokeEnv "Scripts/rxycode.exe"
+          & $smokePython -m pip install --no-deps --force-reinstall $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $env:PYTHONIOENCODING = "utf-8"
+          & $rxycode --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $rxycode --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $smokePython -m RxyCode --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:RXYCODE_DATA_DIR = Join-Path $env:RUNNER_TEMP "rxycode-fresh-home"
+          $output = "/exit" | & $rxycode 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host "=== Non-TTY smoke: exit=$status ==="
+          Write-Host $output
+          Write-Host "=== End non-TTY smoke ==="
+          if ($status -ne 1) { throw "Expected non-TTY exit 1, got $status`n$output" }
+          if ($output -notmatch "requires an interactive terminal \(TTY\)") {
+            throw "Missing non-TTY diagnostic:`n$output"
+          }
+          $LASTEXITCODE = 0
+
+      - name: Run distribution, contract, and system tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $env:RXYCODE_TEST_RUN_ID = "windows-distribution"
+          python -m pytest tests/unit/test_installers.py tests/unit/test_packaging_contract.py `
+            -m "unit and not live and not pty" -v --tb=short --timeout=180 `
+            --junitxml=artifacts/windows-distribution.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:RXYCODE_TEST_RUN_ID = "windows-contract-system"
+          python -m pytest tests/contract tests/system -m "not live and not pty" -v --tb=short --timeout=180 `
+            --junitxml=artifacts/windows-backend.xml
+
+      - name: Run frontend tests
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          npm test -- --reporter=junit --outputFile=artifacts/vitest.xml
+
+      - name: Run real Windows ConPTY end-to-end test
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          $env:RXYCODE_E2E_BYPASS_TTY = "1"
+          node e2e/run-pty.mjs 2>&1 | Out-File -FilePath artifacts/conpty.log -Encoding utf8
+          Get-Content artifacts/conpty.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Scan generated artifacts for credentials
+        id: scan_generated_artifacts
+        if: always()
+        run: python scripts/scan_secrets.py .
+
+      - name: Upload Windows test reports
+        if: ${{ always() && steps.scan_generated_artifacts.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-contract-system-reports
+          path: |
+            artifacts/windows-distribution.xml
+            artifacts/windows-backend.xml
+            frontend/artifacts/vitest.xml
+            frontend/artifacts/conpty.log
+            artifacts/runtime
+          if-no-files-found: warn
+          retention-days: 14
+
+  live-provider:
+    name: Opt-in live provider
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RXYCODE_RUN_LIVE_TESTS: "1"
+      RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
+      RXYCODE_LIVE_MODEL: ${{ vars.RXYCODE_LIVE_MODEL || 'gpt-4o-mini' }}
+      RXYCODE_LIVE_BASE_URL: ${{ vars.RXYCODE_LIVE_BASE_URL }}
+      RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
+      RXYCODE_TEST_RUN_ID: live
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install -e . --no-deps
+
+      - name: Require live provider credentials
+        run: python scripts/require_live_credentials.py
+
+      - name: Run live tests
+        run: |
+          mkdir -p artifacts
+          python -m pytest tests/live -m live -v --tb=short \
+            --junitxml=artifacts/live.xml
+
+      - name: Scan live diagnostics for credentials
+        id: scan_live_diagnostics
+        if: always()
+        run: python scripts/scan_secrets.py .
+
+      - name: Upload live diagnostics
+        if: ${{ always() && steps.scan_live_diagnostics.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-report
+          path: artifacts/live.xml
+          if-no-files-found: warn
+          retention-days: 7

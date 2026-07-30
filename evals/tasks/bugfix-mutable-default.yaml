@@ -1,0 +1,38 @@
+id: bugfix-mutable-default
+category: bugfix
+prompt: |
+  当前目录下的 cart.py 里 Cart 类使用了可变默认参数 items=[]，
+  导致多个 Cart 实例共享同一个列表。请修复这个经典 bug（用 None 作为默认值，
+  在函数体内初始化），然后运行 python -m pytest test_cart.py -q 确认通过。
+setup:
+  files:
+    cart.py: |
+      class Cart:
+          def __init__(self, items=[]):
+              self.items = items
+
+          def add(self, item):
+              self.items.append(item)
+              return self.items
+    test_cart.py: |
+      from cart import Cart
+
+      def test_carts_are_independent():
+          a = Cart()
+          b = Cart()
+          a.add("apple")
+          assert b.items == []
+          assert a.items == ["apple"]
+
+      def test_add_returns_items():
+          c = Cart(["x"])
+          assert c.add("y") == ["x", "y"]
+checks:
+  - type: file_contains
+    path: cart.py
+    pattern: "None"
+  - type: file_not_contains
+    path: cart.py
+    pattern: "items=[]"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_cart.py -q"

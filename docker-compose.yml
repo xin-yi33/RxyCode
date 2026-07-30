@@ -1,0 +1,56 @@
+# RxyCode Docker Compose - one-command deployment
+#
+# Usage:
+#   docker-compose up          # Start API server
+#   docker-compose run tui     # Start TUI (needs TTY)
+#
+# Config: mount your ~/.rxycode directory to persist settings/sessions/cache
+
+services:
+  api:
+    build: .
+    container_name: rxycode-api
+    volumes:
+      # Persist user config, sessions, cache, memory across container rebuilds
+      - rxycode-data:/root/.rxycode
+      # Optional: mount your project directory for file operations
+      # - ./workspace:/workspace
+    environment:
+      - RXYCODE_API_PORT=8765
+      - RXYCODE_DATA_DIR=/root/.rxycode
+      - RXYCODE_API_TOKEN=${RXYCODE_API_TOKEN:?Set a random 32+ character RXYCODE_API_TOKEN in .env}
+      # Set your API key here or use an .env file
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://127.0.0.1:8765/status', timeout=5); exit(0 if r.status_code==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # TUI mode - requires a real TTY, use: docker-compose run --rm tui
+  tui:
+    build: .
+    container_name: rxycode-tui
+    stdin_open: true
+    tty: true
+    # Share the API container's loopback namespace. The capability token never
+    # crosses a remotely reachable plaintext socket.
+    network_mode: "service:api"
+    volumes:
+      - rxycode-data:/root/.rxycode
+    environment:
+      - RXYCODE_DATA_DIR=/root/.rxycode
+      - RXYCODE_API_URL=http://127.0.0.1:8765
+      - RXYCODE_API_TOKEN=${RXYCODE_API_TOKEN:?Set a random 32+ character RXYCODE_API_TOKEN in .env}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    entrypoint: ["node"]
+    command: ["/app/RxyCode/frontend/dist/index.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  rxycode-data:
+    driver: local

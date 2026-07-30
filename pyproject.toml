@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rxycode"
+version = "1.2.2"
+description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "RxyCode contributors" },
+]
+keywords = ["agent", "coding-assistant", "langgraph", "plan-and-execute"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development",
+]
+dynamic = ["dependencies"]
+
+[project.scripts]
+rxycode = "RxyCode.RxyCode1_1_0.entrypoint:main"
+
+[project.urls]
+Homepage = "https://github.com/xin-yi33/RxyCode"
+Repository = "https://github.com/xin-yi33/RxyCode.git"
+Issues = "https://github.com/xin-yi33/RxyCode/issues"
+Changelog = "https://github.com/xin-yi33/RxyCode/blob/master/CHANGELOG.md"
+
+[tool.setuptools]
+include-package-data = false
+packages = [
+  "RxyCode",
+  "RxyCode.RxyCode1_1_0",
+  "RxyCode.RxyCode1_1_0.cache",
+  "RxyCode.RxyCode1_1_0.config",
+  "RxyCode.RxyCode1_1_0.core",
+  "RxyCode.RxyCode1_1_0.core.prompts",
+  "RxyCode.RxyCode1_1_0.core.safety",
+  "RxyCode.RxyCode1_1_0.evals",
+  "RxyCode.RxyCode1_1_0.execution",
+  "RxyCode.RxyCode1_1_0.history",
+  "RxyCode.RxyCode1_1_0.log",
+  "RxyCode.RxyCode1_1_0.lsp",
+  "RxyCode.RxyCode1_1_0.mcp",
+  "RxyCode.RxyCode1_1_0.memory",
+  "RxyCode.RxyCode1_1_0.planning",
+  "RxyCode.RxyCode1_1_0.rag",
+  "RxyCode.RxyCode1_1_0.recovery",
+  "RxyCode.RxyCode1_1_0.scheduler",
+  "RxyCode.RxyCode1_1_0.synthesis",
+  "RxyCode.RxyCode1_1_0.tools",
+  "RxyCode.RxyCode1_1_0.utils",
+  "RxyCode.RxyCode1_1_0.validation",
+]
+
+[tool.setuptools.package-dir]
+"RxyCode" = "_package_root/RxyCode"
+"RxyCode.RxyCode1_1_0" = "."
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.package-data]
+"RxyCode.RxyCode1_1_0" = [
+  "frontend/package.json",
+  "frontend/dist/*.js",
+  "frontend/opentui-app/package.json",
+  "frontend/opentui-app/tsconfig.json",
+  "frontend/opentui-app/bun.lock",
+  "frontend/opentui-app/src/**/*",
+]
+"RxyCode.RxyCode1_1_0.evals" = ["tasks/*.yaml"]

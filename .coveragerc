@@ -1,0 +1,20 @@
+[run]
+branch = True
+parallel = True
+# Measure every importable first-party Python module, including the root CLI/API
+# entrypoints and the eval, MCP, RAG, scheduler, and LSP packages.
+source = .
+omit =
+    */__pycache__/*
+    */tests/*
+    */frontend/*
+    */superpowers-zh/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+show_missing = True
+skip_covered = True
+precision = 1

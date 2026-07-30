@@ -1,0 +1,29 @@
+id: feature-fizzbuzz
+category: feature
+prompt: |
+  在当前目录下新建 fizzbuzz.py，实现 fizzbuzz(n)：返回 1..n 的列表，
+  3 的倍数替换为 "Fizz"，5 的倍数替换为 "Buzz"，同时是 3 和 5 的倍数替换为 "FizzBuzz"，
+  其余保留整数。实现后运行 python -m pytest test_fizzbuzz.py -q 确认通过
+  （测试文件已存在）。
+setup:
+  files:
+    test_fizzbuzz.py: |
+      from fizzbuzz import fizzbuzz
+
+      def test_fizzbuzz_15():
+          assert fizzbuzz(15) == [
+              1, 2, "Fizz", 4, "Buzz", "Fizz", 7, 8, "Fizz", "Buzz",
+              11, "Fizz", 13, 14, "FizzBuzz",
+          ]
+
+      def test_fizzbuzz_small():
+          assert fizzbuzz(1) == [1]
+          assert fizzbuzz(3) == [1, 2, "Fizz"]
+checks:
+  - type: file_exists
+    path: fizzbuzz.py
+  - type: file_contains
+    path: fizzbuzz.py
+    pattern: "FizzBuzz"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_fizzbuzz.py -q"

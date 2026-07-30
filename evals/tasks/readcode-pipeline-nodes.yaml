@@ -1,0 +1,19 @@
+id: readcode-pipeline-nodes
+category: readcode
+prompt: |
+  阅读当前仓库（RxyCode）的 core/graph.py，回答：LangGraph pipeline 从 START 到 END
+  依次经过哪些节点？请列出节点名称，并说明 executor 节点之后、validator 节点之前/之后
+  的路由逻辑（validator 失败时会路由到哪个节点）。
+checks:
+  - type: output_contains
+    pattern: "goal_planner"
+  - type: output_contains
+    pattern: "decomposer"
+  - type: output_contains
+    pattern: "executor"
+  - type: output_contains
+    pattern: "validator"
+  - type: output_contains
+    pattern: "synthesizer"
+  - type: output_contains
+    pattern: "re_planner"

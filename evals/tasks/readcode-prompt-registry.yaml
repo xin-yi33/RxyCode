@@ -1,0 +1,86 @@
+# Prompt 注册表回归验证
+# 验证 core/prompts/ 注册表系统的完整性：
+# 1. 所有 pipeline 阶段的 role prompt 从 PromptRegistry 获取
+# 2. system prompt 不再硬编码工具列表，而是从 ToolRegistry 动态注入
+# 3. re_planner 使用共享 prompt 基础设施 (get_system_prompt + build_user_message)
+# 4. validator_node 的 memory 变量 bug 已修复
+# 5. locale 可通过 config 配置
+# 6. few-shot 示例正确注入
+# 7. agent_v2.py 内联 prompt 已迁移到注册表
+id: readcode-prompt-registry
+category: readcode
+prompt: |
+  验证 core/prompts/ 注册表系统的完整性回归测试。
+  确保 9 个 pipeline 阶段的 prompt 模板、few-shot 示例、i18n、
+  工具清单单一来源、re_planner 修复、agent_v2 内联 prompt 迁移
+  全部正确工作。
+setup: ""
+checks:
+  # ---- 包结构 ----
+  - type: file_exists
+    path: core/prompts/__init__.py
+  - type: file_exists
+    path: core/prompts/registry.py
+  - type: file_exists
+    path: core/prompts/templates.py
+  - type: file_exists
+    path: core/prompts/few_shot.py
+  - type: file_exists
+    path: core/prompts/i18n.py
+  - type: file_exists
+    path: core/prompts/tool_list.py
+
+  # ---- 阶段注册 ----
+  - type: command_succeeds
+    run: >-
+      python -c "from RxyCode.RxyCode1_1_0.core.prompts import list_stages; stages=set(list_stages()); expected={'goal_planner','decomposer','executor','validator','re_planner','synthesizer','subagent_decompose','compose_plan','compose_build'}; missing=expected-stages; assert not missing, f'Missing stages: {missing}'"
+
+  # ---- XML 标签 ----
+  - type: command_succeeds
+    run: >-
+      python -c "from RxyCode.RxyCode1_1_0.core.prompts import get_role_prompt, list_stages; [((lambda p: (assert '<ROLE>' in p, assert '</ROLE>' in p))(get_role_prompt(s, include_few_shot=False))) for s in list_stages()]"
+
+  # ---- few-shot 覆盖 ----
+  - type: command_succeeds
+    run: >-
+      python -c "from RxyCode.RxyCode1_1_0.core.prompts.few_shot import FEW_SHOT_EXAMPLES; from RxyCode.RxyCode1_1_0.core.prompts import list_stages; missing=[s for s in list_stages() if s not in FEW_SHOT_EXAMPLES or len(FEW_SHOT_EXAMPLES[s])<1]; assert not missing, f'Missing few-shot: {missing}'"
+
+  # ---- i18n ----
+  - type: command_succeeds
+    run: >-
+      python -c "from RxyCode.RxyCode1_1_0.core.prompts.i18n import I18N_TEXTS, SUPPORTED_LOCALES; assert 'zh' in SUPPORTED_LOCALES; assert 'en' in SUPPORTED_LOCALES; assert 'language_requirement' in I18N_TEXTS['zh']; assert 'language_requirement' in I18N_TEXTS['en']"
+
+  # ---- 工具清单单一来源 ----
+  - type: command_succeeds
+    run: >-
+      python -c "import inspect; from RxyCode.RxyCode1_1_0.core.prompts.tool_list import get_tool_descriptions; src=inspect.getsource(get_tool_descriptions); assert 'get_descriptions' in src, 'tool_list should use registry.get_descriptions()'"
+
+  # ---- PromptSpec 版本化 ----
+  - type: command_succeeds
+    run: >-
+      python -c "from RxyCode.RxyCode1_1_0.core.prompts import PromptSpec, get_prompt_version, list_stages; spec=PromptSpec(name='test', version='1.0.0', template='t'); assert spec.version=='1.0.0'; [assert isinstance(get_prompt_version(s), str) and len(get_prompt_version(s))>0 for s in list_stages()]"
+
+  # ---- re_planner 修复 ----
+  - type: command_succeeds
+    run: >-
+      python -c "import inspect; from RxyCode.RxyCode1_1_0.validation import re_planner; src=inspect.getsource(re_planner); assert 'get_system_prompt' in src; assert 'build_user_message' in src; assert 'get_role_prompt' in src; assert '_REPLAN_PROMPT_TEMPLATE' not in src"
+
+  # ---- validator_node memory 修复 ----
+  - type: command_succeeds
+    run: >-
+      python -c "import inspect; from RxyCode.RxyCode1_1_0.core import graph; src=inspect.getsource(graph.validator_node); assert 'state[\"_memory\"]' in src or \"state['_memory']\" in src, 'validator_node should read memory from state'"
+
+  # ---- 无内联 prompt 常量残留 ----
+  - type: command_succeeds
+    run: >-
+      python -c "import inspect; from RxyCode.RxyCode1_1_0.planning import goal_planner, decomposer; from RxyCode.RxyCode1_1_0.execution import executor; from RxyCode.RxyCode1_1_0.validation import validator, re_planner as rp; from RxyCode.RxyCode1_1_0.synthesis import synthesizer; mods=[goal_planner, decomposer, executor, validator, synthesizer]; [assert all(x not in inspect.getsource(m) for x in ['_GOAL_ROLE','_DECOMPOSE_ROLE','_EXECUTOR_ROLE','_VALIDATION_ROLE','_SYNTHESIZE_ROLE']) for m in mods]"
+
+  # ---- agent_v2 内联 prompt 已迁移 ----
+  - type: command_succeeds
+    run: >-
+      python -c "import inspect; from RxyCode.RxyCode1_1_0.core import agent_v2; src=inspect.getsource(agent_v2); assert 'get_role_prompt' in src, 'agent_v2 should use get_role_prompt'; assert 'subagent_decompose' in src, 'agent_v2 should use subagent_decompose template'; assert 'compose_plan' in src, 'agent_v2 should use compose_plan template'; assert 'compose_build' in src, 'agent_v2 should use compose_build template'"
+
+  # ---- 向后兼容 API ----
+  - type: command_succeeds
+    run: >-
+      python -c "from RxyCode.RxyCode1_1_0.core.prompts import UNIFIED_SYSTEM_PROMPT, get_system_prompt, build_user_message, get_role_prompt, list_stages; assert isinstance(UNIFIED_SYSTEM_PROMPT, str); assert get_system_prompt()==UNIFIED_SYSTEM_PROMPT; assert isinstance(build_user_message('role','content'), str); assert isinstance(get_role_prompt('goal_planner'), str); assert len(list_stages())>=9"

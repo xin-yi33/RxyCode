@@ -1,0 +1,27 @@
+id: bugfix-division-zero
+category: bugfix
+prompt: |
+  当前目录下的 stats.py 里 average(nums) 在传入空列表时会抛出 ZeroDivisionError。
+  请修复它：空列表时应返回 0.0，非空时返回平均值。修复后运行
+  python -m pytest test_stats.py -q 确认全部通过。
+setup:
+  files:
+    stats.py: |
+      def average(nums):
+          """Return the arithmetic mean of nums; 0.0 for an empty list."""
+          return sum(nums) / len(nums)
+    test_stats.py: |
+      from stats import average
+
+      def test_average_normal():
+          assert average([1, 2, 3]) == 2.0
+          assert average([10]) == 10.0
+
+      def test_average_empty():
+          assert average([]) == 0.0
+checks:
+  - type: file_contains
+    path: stats.py
+    pattern: "0.0"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_stats.py -q"

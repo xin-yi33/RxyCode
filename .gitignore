@@ -1,0 +1,70 @@
+# --- Secrets & user data ---
+# Data dir was historically inside the repo; never let it (or its API keys)
+# leak into git. New installs write to ~/.rxycode instead.
+data/
+credentials.yaml
+*.key
+*.pem
+.env
+.env.*
+
+# --- IDE / tool data ---
+.codebuddy/
+.cursor/
+.refs/
+.idea/
+.vscode/
+
+# --- Third-party skill packs (not part of RxyCode) ---
+superpowers-zh/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+/dist/
+.eggs/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+/artifacts/
+test-results.xml
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# --- Node / frontend ---
+frontend/node_modules/
+# dist/ is needed for installation — track only the built bundle
+frontend/dist/*
+!frontend/dist/index.js
+node_modules/
+
+# --- Test artifacts ---
+test-results-*.xml
+.pytest-*.xml
+TEST_MILESTONE.md
+
+# --- Logs & runtime artifacts ---
+*.log
+server_debug.log
+test_*.png
+log/*.txt
+log/*.err
+~/
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+
+# --- docs: only keep modules/ and images/ ---
+docs/*
+!docs/modules/
+!docs/images/

@@ -1,0 +1,25 @@
+id: bugfix-dict-keyerror
+category: bugfix
+prompt: |
+  当前目录下的 counter.py 里 count_words(text) 在统计词频时对未出现过的单词直接用
+  counts[word] += 1，会抛 KeyError。请修复（用 dict.get 或 collections.Counter 均可），
+  保持返回普通 dict，然后运行 python -m pytest test_counter.py -q 确认通过。
+setup:
+  files:
+    counter.py: |
+      def count_words(text):
+          """Return a dict of word -> count for whitespace-separated words."""
+          counts = {}
+          for word in text.split():
+              counts[word] += 1
+          return counts
+    test_counter.py: |
+      from counter import count_words
+
+      def test_count_words():
+          assert count_words("a b a") == {"a": 2, "b": 1}
+          assert count_words("") == {}
+          assert count_words("x") == {"x": 1}
+checks:
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_counter.py -q"

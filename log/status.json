@@ -1,0 +1,13 @@
+{
+  "monitor_pid": 9644,
+  "child_pid": 19096,
+  "alive": true,
+  "start_time": "2026-07-15 14:27:17",
+  "uptime_sec": 17332,
+  "bytes_read": 17074,
+  "last_activity": "2026-07-15 14:27:48",
+  "restarts": 0,
+  "raw_log": "D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\log\\rxycode_2026-07-15_14-27-17.raw.log",
+  "clean_log": "D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\log\\rxycode_2026-07-15_14-27-17.clean.log",
+  "events_log": "D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\log\\rxycode_2026-07-15_14-27-17.events.log"
+}

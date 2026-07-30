@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>极简跑酷 - Parkour Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #1a1a2e;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            overflow: hidden;
+        }
+        .canvas-wrapper {
+            background: #0f3460;
+            border-radius: 16px;
+            padding: 8px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+        }
+        canvas {
+            display: block;
+            width: 800px;
+            height: 600px;
+            border-radius: 12px;
+            background: #0f3460;
+            cursor: pointer;
+        }
+        /* 移动端适配 */
+        @media (max-width: 840px) {
+            .canvas-wrapper {
+                padding: 4px;
+                border-radius: 10px;
+            }
+            canvas {
+                width: calc(100vw - 16px);
+                height: calc((100vw - 16px) * 0.75);
+                max-width: 800px;
+                max-height: 600px;
+                border-radius: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="canvas-wrapper">
+        <canvas id="mainCanvas" width="800" height="600">
+            您的浏览器不支持 Canvas，请使用现代浏览器访问。
+        </canvas>
+    </div>
+
+    <script>
+        // ============================================================
+        //  极简跑酷 — 完整游戏
+        //  控制器与动画循环 (requestAnimationFrame + 状态管理)
+        // ============================================================
+
+        // ---------- DOM 引用 ----------
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const W = 800, H = 600;
+
+        // ---------- 常量 ----------
+        const GROUND_Y = 520;           // 地面 y 坐标（站立面）
+        const GRAVITY = 0.65;
+        const JUMP_FORCE = -12;
+
+        // ---------- 游戏状态 ----------
+        let gameState = 'idle';         // 'idle' | 'running' | 'gameover'
+        let score = 0;
+        let highScore = parseInt(localStorage.getItem('parkourHighScore')) || 0;
+
+        // ---------- 速度系统 ----------
+        let baseSpeed = 5;
+        let currentSpeed = baseSpeed;
+        let speedLevel = 0;
+
+        // ---------- 障碍物 ----------
+        let obstacles = [];
+        let frameCounter = 0;
+        let spawnInterval = 80;         // 初始生成间隔（帧数）
+        let minSpawnInterval = 30;
+
+        // ---------- 玩家 ----------
+        const player = {
+            x: 120,
+            y: GROUND_Y,
+            width: 32,
+            height: 48,
+            vy: 0,
+            isJumping: false,
+            isOnGround: true
+        };
+
+        // 用于跳跃动画
+        let jumpPoseLerp = 0; // 0=站立 1=跳跃
+
+        // ============================================================
+        //  更新函数
+        // ============================================================
+
+        // ---------- 玩家更新 ----------
+        function updatePlayer() {
+            // 重力
+            player.vy += GRAVITY;
+            player.y += player.vy;
+
+            // 地面碰撞
+            if (player.y >= GROUND_Y) {
+                player.y = GROUND_Y;
+                player.vy = 0;
+                player.isJumping = false;
+                player.isOnGround = true;
+            } else {
+                player.isOnGround = false;
+            }
+
+            // 跳跃姿态插值
+            if (player.isJumping) {
+                jumpPoseLerp = Math.min(1, jumpPoseLerp + 0.08);
+            } else {
+                jumpPoseLerp = Math.max(0, jumpPoseLerp - 0.06);
+            }
+        }
+
+        // ---------- 跳跃（核心控制器） ----------
+        function jump() {
+            if (gameState === 'idle') {
+                // 空闲状态 → 开始游戏
+                startGame();
+                return;
+            }
+            if (gameState === 'gameover') {
+                // 游戏结束 → 重启
+                restartGame();
+                return;
+            }
+            if (gameState === 'running' && player.isOnGround) {
+                player.vy = JUMP_FORCE;
+                player.isJumping = true;
+                player.isOnGround = false;
+            }
+        }
+
+        // ---------- 开始游戏 ----------
+        function startGame() {
+            gameState = 'running';
+            score = 0;
+            currentSpeed = baseSpeed;
+            speedLevel = 0;
+            spawnInterval = 80;
+            frameCounter = 0;
+            obstacles = [];
+            player.y = GROUND_Y;
+            player.vy = 0;
+            player.isJumping = false;
+            player.isOnGround = true;
+            jumpPoseLerp = 0;
+        }
+
+        // ---------- 重启游戏 ----------
+        function restartGame() {
+            startGame();
+        }
+
+        // ---------- 生成障碍物 ----------
+        function spawnObstacle() {
+            const height = 40 + Math.random() * 40; // 40~80px
+            obstacles.push({
+                x: W + 20,
+                y: GROUND_Y - height,
+                width: 24,
+                height: height,
+                passed: false
+            });
+        }
+
+        // ---------- 更新障碍物 ----------
+        function updateObstacles() {
+            frameCounter++;
+            if (frameCounter >= spawnInterval) {
+                spawnObstacle();
+                frameCounter = 0;
+                // 随速度等级缩短生成间隔
+                const reduction = speedLevel * 5;
+                spawnInterval = Math.max(minSpawnInterval, 80 - reduction);
+            }
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.x -= currentSpeed;
+
+                // 计分：玩家越过障碍物
+                if (!obs.passed && obs.x + obs.width < player.x) {
+                    obs.passed = true;
+                    score++;
+                    // 更新最高分
+                    if (score > highScore) {
+                        highScore = score;
+                        localStorage.setItem('parkourHighScore', highScore);
+                    }
+                    // 每50分提升速度等级
+                    const newLevel = Math.floor(score / 50);
+                    if (newLevel > speedLevel) {
+                        speedLevel = newLevel;
+                        currentSpeed = Math.min(10, baseSpeed + speedLevel * 0.5);
+                    }
+                }
+
+                // 回收越界障碍物
+                if (obs.x + obs.width < -40) {
+                    obstacles.splice(i, 1);
+                }
+            }
+        }
+
+        // ---------- AABB 碰撞检测 ----------
+        function checkCollision(a, b) {
+            return (
+                a.x < b.x + b.width &&
+                a.x + a.width > b.x &&
+                a.y < b.y + b.height &&
+                a.y + a.height > b.y
+            );
+        }
+
+        // ---------- 碰撞处理 ----------
+        function handleCollisions() {
+            for (const obs of obstacles) {
+                if (checkCollision(player, obs)) {
+                    gameState = 'gameover';
+                    return;
+                }
+            }
+        }
+
+        // ============================================================
+        //  绘制函数
+        // ============================================================
+
+        // ---------- 绘制背景 ----------
+        function drawBackground() {
+            // 天空渐变
+            const skyGrad = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+            skyGrad.addColorStop(0, '#0f3460');
+            skyGrad.addColorStop(0.6, '#1a5276');
+            skyGrad.addColorStop(1, '#2c3e50');
+            ctx.fillStyle = skyGrad;
+            ctx.fillRect(0, 0, W, GROUND_Y);
+
+            // 地面
+            const groundGrad = ctx.createLinearGradient(0, GROUND_Y, 0, H);
+            groundGrad.addColorStop(0, '#2d5016');
+            groundGrad.addColorStop(0.3, '#3a7a1a');
+            groundGrad.addColorStop(1, '#2d5016');
+            ctx.fillStyle = groundGrad;
+            ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+
+            // 地面线
+            ctx.fillStyle = '#5a3d1a';
+            ctx.fillRect(0, GROUND_Y, W, 3);
+
+            // 远处山丘（装饰）
+            ctx.fillStyle = 'rgba(20, 60, 30, 0.4)';
+            ctx.beginPath();
+            ctx.moveTo(0, GROUND_Y);
+            for (let x = 0; x <= W; x += 20) {
+                const hillY = GROUND_Y - 30 - Math.sin(x * 0.008) * 25 - Math.sin(x * 0.003) * 40;
+                ctx.lineTo(x, hillY);
+            }
+            ctx.lineTo(W, GROUND_Y);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // ---------- 绘制玩家 ----------
+        function drawPlayer() {
+            const p = player;
+            const legOffset = jumpPoseLerp * 8;
+
+            ctx.save();
+
+            // 身体渐变
+            const bodyGrad = ctx.createLinearGradient(p.x, p.y, p.x + p.width, p.y + p.height);
+            bodyGrad.addColorStop(0, '#4fc3f7');
+            bodyGrad.addColorStop(1, '#0288d1');
+            ctx.fillStyle = bodyGrad;
+            ctx.fillRect(p.x, p.y, p.width, p.height);
+
+            // 边框
+            ctx.strokeStyle = '#01579b';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(p.x, p.y, p.width, p.height);
+
+            // 眼睛（朝右）
+            ctx.fillStyle = '#fff';
+            ctx.beginPath();
+            ctx.arc(p.x + p.width - 10, p.y + 14, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#222';
+            ctx.beginPath();
+            ctx.arc(p.x + p.width - 8, p.y + 14, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 腿（跳跃时抬起）
+            ctx.fillStyle = '#01579b';
+            // 左腿
+            ctx.fillRect(p.x + 4, p.y + p.height, 6, 16 - legOffset);
+            // 右腿
+            ctx.fillRect(p.x + p.width - 10, p.y + p.height, 6, 16 + legOffset);
+
+            // 手臂
+            ctx.fillRect(p.x - 4, p.y + 10 - legOffset * 0.3, 4, 14);
+            ctx.fillRect(p.x + p.width, p.y + 10 + legOffset * 0.3, 4, 14);
+
+            ctx.restore();
+        }
+
+        // ---------- 绘制障碍物 ----------
+        function drawObstacles() {
+            for (const obs of obstacles) {
+                ctx.save();
+
+                // 金色渐变
+                const grad = ctx.createLinearGradient(obs.x, obs.y, obs.x + obs.width, obs.y + obs.height);
+                grad.addColorStop(0, '#f9d423');
+                grad.addColorStop(1, '#e67e22');
+                ctx.fillStyle = grad;
+                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+
+                // 顶部高光线
+                ctx.fillStyle = 'rgba(255, 255, 200, 0.4)';
+                ctx.fillRect(obs.x + 2, obs.y, obs.width - 4, 4);
+
+                // 边框
+                ctx.strokeStyle = '#b55a1a';
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+
+                ctx.restore();
+            }
+        }
+
+        // ---------- 绘制 UI ----------
+        function drawUI() {
+            ctx.save();
+
+            // 分数
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 22px "Segoe UI", Arial, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText('🏃 ' + score, 20, 20);
+
+            // 最高分
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.font = '14px "Segoe UI", Arial, sans-serif';
+            ctx.fillText('🏆 最高: ' + highScore, 20, 50);
+
+            // 速度等级
+            if (speedLevel > 0) {
+                ctx.fillStyle = '#f9d423';
+                ctx.font = '13px "Segoe UI", Arial, sans-serif';
+                ctx.fillText('速度 Lv.' + speedLevel + ' (' + currentSpeed.toFixed(1) + ')', 20, 72);
+            }
+
+            // ---------- 状态覆盖层 ----------
+            if (gameState === 'idle') {
+                // 开始提示
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+                ctx.fillRect(0, 0, W, H);
+
+                ctx.fillStyle = '#4fc3f7';
+                ctx.font = 'bold 44px "Segoe UI", Arial, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('🏃 极简跑酷', W / 2, H / 2 - 50);
+
+                ctx.fillStyle = 'rgba(255,255,255,0.85)';
+                ctx.font = '20px "Segoe UI", Arial, sans-serif';
+                ctx.fillText('按空格或点击开始', W / 2, H / 2 + 20);
+
+                if (highScore > 0) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+                    ctx.font = '16px "Segoe UI", Arial, sans-serif';
+                    ctx.fillText('🏆 最高分: ' + highScore, W / 2, H / 2 + 60);
+                }
+            }
+
+            if (gameState === 'gameover') {
+                // 失败遮罩
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+                ctx.fillRect(0, 0, W, H);
+
+                ctx.fillStyle = '#ff6b6b';
+                ctx.font = 'bold 48px "Segoe UI", Arial, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('💀 游戏结束', W / 2, H / 2 - 50);
+
+                ctx.fillStyle = '#fff';
+                ctx.font = '28px "Segoe UI", Arial, sans-serif';
+                ctx.fillText('得分: ' + score, W / 2, H / 2 + 15);
+
+                if (score >= highScore && score > 0) {
+                    ctx.fillStyle = '#f9d423';
+                    ctx.font = 'bold 22px "Segoe UI", Arial, sans-serif';
+                    ctx.fillText('🎉 新纪录!', W / 2, H / 2 + 60);
+                }
+
+                ctx.fillStyle = 'rgba(255,255,255,0.7)';
+                ctx.font = '18px "Segoe UI", Arial, sans-serif';
+                ctx.fillText('按空格或点击重新开始', W / 2, H / 2 + 105);
+            }
+
+            ctx.restore();
+        }
+
+        // ---------- 主绘制 ----------
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+            drawBackground();
+            drawObstacles();
+            drawPlayer();
+            drawUI();
+        }
+
+        // ============================================================
+        //  游戏循环 — requestAnimationFrame
+        // ============================================================
+
+        function gameLoop(timestamp) {
+            // 只在 running 状态下更新游戏逻辑
+            if (gameState === 'running') {
+                updatePlayer();
+                updateObstacles();
+                handleCollisions();
+            }
+
+            // 每一帧都完整绘制（确保 idle/gameover 状态正确显示）
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ============================================================
+        //  事件绑定 — 控制器
+        // ============================================================
+
+        // ---------- 键盘事件 ----------
+        function onKeyDown(e) {
+            if (e.code === 'Space' || e.key === ' ') {
+                e.preventDefault();
+                jump();
+            }
+        }
+
+        // ---------- 点击/触摸事件 ----------
+        function onPointerDown(e) {
+            e.preventDefault();
+            jump();
+        }
+
+        // ---------- 绑定事件 ----------
+        function bindEvents() {
+            document.addEventListener('keydown', onKeyDown);
+            canvas.addEventListener('click', onPointerDown);
+            canvas.addEventListener('touchstart', onPointerDown, { passive: false });
+        }
+
+        // ============================================================
+        //  启动游戏
+        // ============================================================
+
+        function init() {
+            bindEvents();
+            // 启动动画循环
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 页面加载后初始化
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

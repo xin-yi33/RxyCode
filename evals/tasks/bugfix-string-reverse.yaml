@@ -1,0 +1,24 @@
+id: bugfix-string-reverse
+category: bugfix
+prompt: |
+  当前目录下的 textutil.py 里 reverse_words(sentence) 想要把每个单词翻转但保持单词顺序，
+  例如 "hello world" -> "olleh dlrow"。现在的实现把整个字符串翻转了（变成 "dlrow olleh"）。
+  请修复，然后运行 python -m pytest test_textutil.py -q 确认通过。
+setup:
+  files:
+    textutil.py: |
+      def reverse_words(sentence):
+          """Reverse each word in-place, keeping word order.
+          'hello world' -> 'olleh dlrow'
+          """
+          return sentence[::-1]
+    test_textutil.py: |
+      from textutil import reverse_words
+
+      def test_reverse_words():
+          assert reverse_words("hello world") == "olleh dlrow"
+          assert reverse_words("abc") == "cba"
+          assert reverse_words("") == ""
+checks:
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_textutil.py -q"

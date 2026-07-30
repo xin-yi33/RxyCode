@@ -1,0 +1,29 @@
+id: refactor-list-comprehension
+category: refactor
+prompt: |
+  当前目录下的 filters.py 里 even_squares(nums) 用 for 循环 + append 构建结果列表。
+  请重构为一个列表推导式（list comprehension），保持行为不变，
+  运行 python -m pytest test_filters.py -q 确认通过。
+setup:
+  files:
+    filters.py: |
+      def even_squares(nums):
+          """Return squares of the even numbers in nums."""
+          result = []
+          for n in nums:
+              if n % 2 == 0:
+                  result.append(n * n)
+          return result
+    test_filters.py: |
+      from filters import even_squares
+
+      def test_even_squares():
+          assert even_squares([1, 2, 3, 4]) == [4, 16]
+          assert even_squares([]) == []
+          assert even_squares([2]) == [4]
+checks:
+  - type: file_contains
+    path: filters.py
+    pattern: "for n in nums"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_filters.py -q"

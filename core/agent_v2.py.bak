@@ -1,0 +1,438 @@
+﻿"""Agent v2: drop-in replacement for the old Agent class.
+
+Wraps the LangGraph graph and exposes the same interface:
+  - __init__(model_name=None)
+  - async run(user_input, mode="build") -> str
+  - model_config property
+  - _cancelled flag
+
+This lets main.py and api_server.py switch to the new graph
+by changing a single import line.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from typing import Optional
+
+from .state import TaskStatus
+
+
+def _extract_cache_read(usage: dict) -> int:
+    """Pull provider cache-hit prompt tokens out of a usage dict.
+
+    Handles both LangChain's normalized ``input_token_details.cache_read``
+    and raw provider fields (DeepSeek ``prompt_cache_hit_tokens`` /
+    OpenAI ``prompt_tokens_details.cached_tokens``).
+    """
+    if not usage:
+        return 0
+    details = usage.get("input_token_details") or {}
+    if details.get("cache_read"):
+        return int(details["cache_read"])
+    if usage.get("prompt_cache_hit_tokens"):
+        return int(usage["prompt_cache_hit_tokens"])
+    ptd = usage.get("prompt_tokens_details") or {}
+    if ptd.get("cached_tokens"):
+        return int(ptd["cached_tokens"])
+    return 0
+
+
+def _record_usage(resp) -> None:
+    """Extract token usage from an LLM response and record it in token_stats."""
+    from RxyCode.utils.streaming import token_stats
+    um = getattr(resp, "usage_metadata", None)
+    if um:
+        usage = dict(um)
+        token_stats.add_real_usage(
+            usage.get("input_tokens", 0),
+            usage.get("output_tokens", 0),
+            _extract_cache_read(usage),
+        )
+
+
+class AgentV2:
+    """LangGraph-based agent, drop-in compatible with the old Agent class."""
+
+    def __init__(self, model_name: Optional[str] = None):
+        from RxyCode.config.settings import load_config, get_active_model_config, get_model_config
+
+        self._cfg = load_config()
+
+        # Resolve model config (same logic as old Agent)
+        if model_name and model_name in self._cfg.get("models", {}):
+            self.model_config = get_model_config(model_name, self._cfg)
+        else:
+            self.model_config = get_active_model_config(self._cfg)
+
+        # Build LLM
+        self._llm = self._build_llm()
+
+        # Build memory system (use "latest" to match session storage)
+        from RxyCode.memory.manager import MemoryManager
+        self._memory = MemoryManager(session_id="latest")
+        self._session_loaded = False
+
+        # Build the LangGraph
+        from .graph import build_graph
+        self._graph = build_graph()
+
+        # Compatibility fields (used by main.py / api_server.py)
+        self._cancelled = False
+        self._last_thinking = ""
+        self._thinking_history: list[str] = []
+        self._session_id = "latest"
+
+        # Register tools
+        from RxyCode.execution.tool_orchestrator import ToolOrchestrator
+        self._tool_orchestrator = ToolOrchestrator()
+        self._register_tools()
+
+    def _build_llm(self):
+        """Create a LangChain ChatOpenAI from model_config."""
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=self.model_config.get("model_name", "gpt-4o"),
+            api_key=self.model_config.get("api_key"),
+            base_url=self.model_config.get("base_url"),
+            temperature=self.model_config.get("temperature", 0.7),
+            max_tokens=self.model_config.get("max_tokens", 8192),
+            streaming=True,
+            stream_usage=True,
+        )
+
+    def _register_tools(self):
+        """Register all built-in tools and download tools."""
+        from RxyCode.tools.registry import registry
+
+        # Import and register all built-in tools (same as old agent)
+        try:
+            from RxyCode.tools.read import read_tool
+            from RxyCode.tools.write import write_tool
+            from RxyCode.tools.edit import edit_tool
+            from RxyCode.tools.bash import bash_tool
+            from RxyCode.tools.grep_tool import grep_tool
+            from RxyCode.tools.glob_tool import glob_tool
+            from RxyCode.tools.ls import ls_tool
+            from RxyCode.tools.view import view_tool
+            from RxyCode.tools.webfetch import webfetch_tool
+            from RxyCode.tools.websearch import websearch_tool
+            from RxyCode.tools.git_tool import git_tool
+            from RxyCode.tools.datetime_tool import datetime_tool
+            from RxyCode.tools.history_tool import history_tool
+            from RxyCode.tools.question_tool import question_tool
+            from RxyCode.tools.skill_tool import skill_tool
+            from RxyCode.tools.change_directory import change_directory_tool
+            from RxyCode.tools.diagnostics import diagnostics_tool
+            from RxyCode.tools.format_tool import format_tool
+            from RxyCode.tools.memory_tool import memory_tool
+            from RxyCode.tools.vision import vision_tool
+            from RxyCode.tools.workflow_tool import workflow_tool
+            from RxyCode.tools.task_tool import task_tool
+            from RxyCode.tools.patch import patch_tool
+
+            for t in [
+                read_tool, write_tool, edit_tool, bash_tool,
+                grep_tool, glob_tool, ls_tool, view_tool,
+                webfetch_tool, websearch_tool, git_tool, datetime_tool,
+                history_tool, question_tool, skill_tool,
+                change_directory_tool, diagnostics_tool, format_tool,
+                memory_tool, vision_tool, workflow_tool, task_tool, patch_tool,
+            ]:
+                registry.register(t)
+        except ImportError as e:
+            pass  # some tools may not be available
+
+        # Register download tools for natural language skill/MCP management
+        try:
+            from RxyCode.tools.download_tool import download_skill_tool, download_mcp_tool
+            registry.register(download_skill_tool)
+            registry.register(download_mcp_tool)
+        except ImportError:
+            pass
+
+        # Copy all registered tools to the orchestrator
+        for name in registry.get_names():
+            tool = registry.get(name)
+            if tool:
+                self._tool_orchestrator.register(name, tool)
+    def _is_simple_query(self, text: str) -> bool:
+        """Detect simple Q&A that does not need the full pipeline."""
+        text = text.strip().lower()
+        if len(text) < 80:
+            tool_keywords = [
+                "create", "write", "file", "edit", "delete", "run", "execute",
+                "install", "build", "deploy", "test", "commit", "push", "pull",
+                "search", "find", "grep", "fix", "bug", "error", "refactor",
+                "\u521b\u5efa", "\u5199\u5165", "\u6587\u4ef6", "\u7f16\u8f91", "\u5220\u9664", "\u8fd0\u884c", "\u6267\u884c",
+                "\u5b89\u88c5", "\u6784\u5efa", "\u90e8\u7f72", "\u6d4b\u8bd5", "\u63d0\u4ea4", "\u641c\u7d22", "\u4fee\u590d", "\u91cd\u6784",
+                "save", "\u4fdd\u5b58", "\u5199\u5165\u6587\u4ef6", "\u521b\u5efa\u6587\u4ef6",
+            ]
+            if any(kw in text for kw in tool_keywords):
+                return False
+            return True
+        return False
+
+    def _detect_download_intent(self, text: str) -> tuple[str, str, str] | None:
+        """Detect natural language download intent.
+        Returns (type, name, package) or None.
+        type is 'skill' or 'mcp'.
+        """
+        text_lower = text.lower().strip()
+
+        # Check for package pattern first (most specific)
+        # Like "npx -y @xxx/yyy" or "pip install xxx"
+        m = re.search(r'(npx|pip)\s+(-y\s+)?([@\w/.-]+)', text)
+        if m:
+            command = m.group(1)
+            package = m.group(3)
+            # Extract name from package
+            name = package.split('/')[-1].replace('@', '')
+            # Determine type based on context
+            if 'skill' in text_lower:
+                return ('skill', name, package)
+            else:
+                return ('mcp', name, package)
+
+        # Skill download patterns
+        skill_patterns = [
+            r'(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*',
+            r'(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*',
+            r'(?:下载|安装|添加|获取|load|install|download|add)\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*\s*(?:这个|个)?\s*(?:skill|插件)',
+            r'(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*\s*(?:这个|个)?\s*(?:skill|插件)',
+            r'(?:find-skill|/find-skill|/addskill)\s+([a-zA-Z0-9_-]+)',
+            r'(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*',
+        ]
+
+        for pattern in skill_patterns:
+            m = re.search(pattern, text_lower)
+            if m:
+                name = m.group(1).strip()
+                if name and len(name) > 1:
+                    return ('skill', name, '')
+
+        # MCP download patterns (after package pattern)
+        mcp_patterns = [
+            r'(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*',
+            r'(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*',
+            r'(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`"'"'"']*([a-zA-Z0-9_-]+)[`"'"'"']*',
+        ]
+
+        for pattern in mcp_patterns:
+            m = re.search(pattern, text_lower)
+            if m:
+                name = m.group(1).strip()
+                if name and len(name) > 1:
+                    return ('mcp', name, '')
+
+        return None
+
+    async def _handle_download_intent(self, intent: tuple[str, str, str]) -> str:
+        """Handle download intent directly without going through the full pipeline."""
+        dtype, name, package = intent
+
+        if dtype == 'skill':
+            from RxyCode.tools.skill_manager import find_and_download_skill, list_installed_skills
+            # Check if already installed
+            skills = list_installed_skills()
+            for s in skills:
+                if s["name"].lower() == name.lower():
+                    return f"Skill '{name}' \u5df2\u7ecf\u5b89\u88c5\u5728 {s['path']}"
+
+            ok, msg = find_and_download_skill(name)
+            if ok:
+                return f"\u6210\u529f\u4e0b\u8f7d\u5e76\u5b89\u88c5 skill '{name}': {msg}"
+            else:
+                return f"\u4e0b\u8f7d skill '{name}' \u5931\u8d25: {msg}"
+
+        elif dtype == 'mcp':
+            from RxyCode.tools.mcp_manager import add_mcp_server, list_mcp_servers
+            # Check if already configured
+            servers = list_mcp_servers()
+            for s in servers:
+                if s["name"].lower() == name.lower():
+                    return f"MCP \u670d\u52a1 '{name}' \u5df2\u7ecf\u914d\u7f6e"
+
+            if package:
+                ok, msg = add_mcp_server(name=name, command="npx", args=["-y", package])
+            else:
+                ok, msg = add_mcp_server(name=name, command="npx", args=["-y", name])
+
+            if ok:
+                return f"\u6210\u529f\u6dfb\u52a0 MCP \u670d\u52a1 '{name}'"
+            else:
+                return f"\u6dfb\u52a0 MCP \u670d\u52a1 '{name}' \u5931\u8d25: {msg}"
+
+        return "\u65e0\u6cd5\u8bc6\u522b\u4e0b\u8f7d\u610f\u56fe"
+
+    async def _ensure_session_loaded(self):
+        """Load previous session history into short-term memory (once)."""
+        if not self._session_loaded:
+            self._memory.load_session()
+            self._session_loaded = True
+
+    async def _fast_reply(self, user_input: str) -> str:
+        """Answer simple questions directly without the full pipeline."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        # Ensure we have previous conversation context
+        await self._ensure_session_loaded()
+
+        memory_ctx = self._memory.get_context_for_prompt()
+        system = (
+            "You are RxyCode, a helpful AI coding assistant. "
+            "Answer the user question directly and concisely. "
+            "If it is a math question, give the answer. "
+            "If the user asks a follow-up question, use the conversation context to understand what they refer to. "
+            "If it is a greeting, respond naturally."
+        )
+        if memory_ctx:
+            system += "\n\nConversation context:\n" + memory_ctx
+        messages = [SystemMessage(content=system), HumanMessage(content=user_input)]
+        try:
+            resp = await self._llm.ainvoke(messages)
+            # Record token usage from the LLM response
+            _record_usage(resp)
+            answer = resp.content
+            self._memory.add_interaction(user_input, answer)
+            self._memory.save_session()
+            return answer
+        except Exception as e:
+            return "[error: " + str(e) + "]"
+
+    async def run(self, user_input: str, mode: str = "build") -> str:
+        """Run the agent on user input.
+
+        Fast path: simple questions get answered directly via LLM.
+        Download path: skill/MCP download intents handled directly.
+        Full path: complex tasks go through LangGraph pipeline.
+        """
+        if self._cancelled:
+            self._cancelled = False
+            return "[cancelled]"
+
+        await self._memory.initialize()
+        await self._ensure_session_loaded()
+
+        # Check for download intent first (before fast path)
+        download_intent = self._detect_download_intent(user_input)
+        if download_intent:
+            try:
+                result = await self._handle_download_intent(download_intent)
+                self._memory.add_interaction(user_input, result)
+                self._memory.save_session()
+                return result
+            except Exception as e:
+                # Fall through to full pipeline
+                pass
+
+
+        # Fast tool path for simple file operations
+        file_op = self._detect_file_operation(user_input)
+        if file_op:
+            try:
+                result = await self._handle_file_operation(file_op)
+                self._memory.add_interaction(user_input, result)
+                self._memory.save_session()
+                return result
+            except Exception as e:
+                pass  # fall through to full pipeline
+
+        # Fast path for simple queries
+        if mode == "build" and self._is_simple_query(user_input):
+            try:
+                return await self._fast_reply(user_input)
+            except Exception:
+                pass  # fall through to full pipeline
+
+        try:
+            memory_ctx = self._memory.get_context_for_prompt()
+            initial_state = {
+                "user_input": user_input,
+                "session_id": self._session_id,
+                "task_tree": None,
+                "memory_context": memory_ctx,
+                "conversation_history": [],
+                "current_task_id": None,
+                "execution_results": [],
+                "final_response": None,
+                "phase": "planning",
+                "error": None,
+                "_llm": self._llm,
+                "_memory": self._memory,
+                "_tool_orchestrator": self._tool_orchestrator,
+            }
+
+            result = await self._graph.ainvoke(initial_state)
+            final = result.get("final_response") or "(No response generated.)"
+
+            # Store the interaction and save session
+            self._memory.add_interaction(user_input, final)
+            self._memory.save_session()
+
+            # Update thinking history for TUI compatibility
+            tree = result.get("task_tree")
+            if tree:
+                self._last_thinking = tree.summary()
+                self._thinking_history.append(self._last_thinking)
+
+            return final
+
+        except Exception as e:
+            error_msg = f"[agent error: {e}]"
+            self._thinking_history.append(error_msg)
+            return error_msg
+
+    def _detect_file_operation(self, text: str) -> dict | None:
+        """Detect simple file creation/write operations."""
+        import re
+        text_lower = text.lower().strip()
+        
+        # Pattern: create/write file [path] with content [content]
+        patterns = [
+            r'(?:创建|写入|新建|create|write)\s*(?:一个|a)?\s*(?:文件|file)\s*[：:\s]*([^\s]+)\s*(?:内容|content|with)?\s*[：:\s]*(.*)',
+            r'(?:保存|save)\s*(?:到|to)\s*([^\s]+)\s*(?:内容|content)?\s*[：:\s]*(.*)',
+            r'(?:写|write)\s*([^\s]+)\s*(?:内容|content)?\s*[：:\s]*(.*)',
+        ]
+        
+        for pattern in patterns:
+            m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if m:
+                path = m.group(1).strip()
+                content = m.group(2).strip() if m.group(2) else ""
+                # Validate path looks like a file path
+                if ('\\' in path or '/' in path or '.' in path) and len(path) < 500:
+                    return {"path": path, "content": content}
+        
+        return None
+
+    async def _handle_file_operation(self, op: dict) -> str:
+        """Handle a simple file operation directly."""
+        from RxyCode.tools.write import write_file
+        
+        path = op["path"]
+        content = op["content"]
+        
+        if not content:
+            return f"\u6587\u4ef6\u8def\u5f84\u5df2\u8bc6\u522b: {path}\n\u8bf7\u63d0\u4f9b\u6587\u4ef6\u5185\u5bb9\u3002"
+        
+        result = write_file(path, content)
+        return result
+
+    def _flush_thinking(self, tui=None, force: bool = True):
+        """Compatibility: flush thinking to TUI."""
+        if tui and hasattr(tui, "write_progress") and self._last_thinking:
+            tui.write_progress(self._last_thinking)
+
+
+class SubAgentV2:
+    """Sub-agent for $ prefix commands (compatibility with old SubAgent)."""
+
+    def __init__(self, parent: AgentV2, task: str):
+        self._parent = parent
+        self._task = task
+
+    async def run(self) -> str:
+        return await self._parent.run(self._task)
+

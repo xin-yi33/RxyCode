@@ -1,0 +1,37 @@
+id: refactor-extract-function
+category: refactor
+prompt: |
+  当前目录下的 report.py 里 render_report(rows) 把"计算总计"的逻辑内联在函数里。
+  请做一个小重构：把总计计算抽取为一个独立的 compute_total(rows) 函数，
+  render_report 调用它。保持现有行为不变（见 test_report.py），
+  运行 python -m pytest test_report.py -q 确认通过。
+setup:
+  files:
+    report.py: |
+      def render_report(rows):
+          """rows: list of dicts with 'name' and 'amount'."""
+          total = 0
+          for r in rows:
+              total += r["amount"]
+          lines = [f"{r['name']}: {r['amount']}" for r in rows]
+          lines.append(f"TOTAL: {total}")
+          return "\n".join(lines)
+    test_report.py: |
+      from report import render_report, compute_total
+
+      def test_render_report():
+          rows = [{"name": "a", "amount": 3}, {"name": "b", "amount": 4}]
+          out = render_report(rows)
+          assert "a: 3" in out
+          assert "TOTAL: 7" in out
+
+      def test_compute_total():
+          rows = [{"name": "a", "amount": 3}, {"name": "b", "amount": 4}]
+          assert compute_total(rows) == 7
+          assert compute_total([]) == 0
+checks:
+  - type: file_contains
+    path: report.py
+    pattern: "def compute_total"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_report.py -q"

@@ -1,0 +1,35 @@
+id: feature-json-merge
+category: feature
+prompt: |
+  在当前目录下新建 jsonmerge.py，实现 deep_merge(base, override)：递归合并两个 dict，
+  override 中的值覆盖 base；两边都是 dict 时递归合并，否则 override 胜出。
+  返回新 dict，不修改入参。测试文件已存在，
+  运行 python -m pytest test_jsonmerge.py -q 确认通过。
+setup:
+  files:
+    test_jsonmerge.py: |
+      from jsonmerge import deep_merge
+
+      def test_flat_merge():
+          assert deep_merge({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+          assert deep_merge({"a": 1}, {"a": 9}) == {"a": 9}
+
+      def test_nested_merge():
+          base = {"x": {"p": 1, "q": 2}}
+          over = {"x": {"q": 20, "r": 3}}
+          assert deep_merge(base, over) == {"x": {"p": 1, "q": 20, "r": 3}}
+
+      def test_inputs_not_mutated():
+          base = {"x": {"p": 1}}
+          over = {"x": {"q": 2}}
+          deep_merge(base, over)
+          assert base == {"x": {"p": 1}}
+          assert over == {"x": {"q": 2}}
+checks:
+  - type: file_exists
+    path: jsonmerge.py
+  - type: file_contains
+    path: jsonmerge.py
+    pattern: "def deep_merge"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_jsonmerge.py -q"

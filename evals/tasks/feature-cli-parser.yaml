@@ -1,0 +1,28 @@
+id: feature-cli-parser
+category: feature
+prompt: |
+  在当前目录下新建 cliparse.py，实现 parse_kv_args(argv)：把形如
+  ["--name", "bob", "--age", "30"] 的参数列表解析为 dict
+  {"name": "bob", "age": "30"}；遇到不带值的 flag（如 --verbose）记为 True。
+  测试文件已存在，运行 python -m pytest test_cliparse.py -q 确认通过。
+setup:
+  files:
+    test_cliparse.py: |
+      from cliparse import parse_kv_args
+
+      def test_parse_pairs():
+          assert parse_kv_args(["--name", "bob", "--age", "30"]) == {"name": "bob", "age": "30"}
+
+      def test_parse_flag():
+          assert parse_kv_args(["--verbose"]) == {"verbose": True}
+
+      def test_parse_empty():
+          assert parse_kv_args([]) == {}
+checks:
+  - type: file_exists
+    path: cliparse.py
+  - type: file_contains
+    path: cliparse.py
+    pattern: "def parse_kv_args"
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_cliparse.py -q"

@@ -1,0 +1,32 @@
+id: refactor-simplify-conditional
+category: refactor
+prompt: |
+  当前目录下的 access.py 里 can_edit(user, doc) 有一串冗余的 if/return True/return False。
+  请把它简化为一个布尔表达式（单个 return），保持行为不变，
+  运行 python -m pytest test_access.py -q 确认通过。
+setup:
+  files:
+    access.py: |
+      def can_edit(user, doc):
+          """A user can edit a doc if they own it or they are an admin."""
+          if user.get("is_admin") is True:
+              return True
+          else:
+              if doc.get("owner") == user.get("name"):
+                  return True
+              else:
+                  return False
+    test_access.py: |
+      from access import can_edit
+
+      def test_admin_can_edit():
+          assert can_edit({"name": "x", "is_admin": True}, {"owner": "y"}) is True
+
+      def test_owner_can_edit():
+          assert can_edit({"name": "y", "is_admin": False}, {"owner": "y"}) is True
+
+      def test_other_cannot_edit():
+          assert can_edit({"name": "x", "is_admin": False}, {"owner": "y"}) is False
+checks:
+  - type: command_succeeds
+    run: "python -m pytest {workdir}/test_access.py -q"

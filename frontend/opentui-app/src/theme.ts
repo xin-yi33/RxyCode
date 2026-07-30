@@ -1,0 +1,20 @@
+/** True-black + classic Ink pinks (match original RxyCode screenshot). */
+export const C = {
+  bg: "#000000",
+  surface0: "#111111",
+  surface1: "#222222",
+  overlay2: "#555555",
+  subtext: "#aaaaaa",
+  text: "#ffffff",
+  primary: "#FF69B4",
+  accent: "#FFB6C1",
+  mauve: "#cba6f7",
+  green: "#a6e3a1",
+  teal: "#94e2d5",
+  yellow: "#f9e2af",
+  border: "#FF69B4",
+  borderDim: "#333333",
+  brandLight: "#FFB6C1",
+  brandHot: "#FF69B4",
+  thinking: "#FFD700",
+} as const;

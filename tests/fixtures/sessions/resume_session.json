@@ -1,0 +1,14 @@
+{
+  "name": "resume-unicode-session",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Resume the calculator task"
+    },
+    {
+      "role": "assistant",
+      "content": "Checkpoint saved: \u8ba1\u7b97\u5668 \ud83e\uddee"
+    }
+  ]
+}
+
