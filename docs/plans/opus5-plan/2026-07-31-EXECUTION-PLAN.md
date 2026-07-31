@@ -2333,43 +2333,70 @@ git status --short
 
 ### 11.1 文档清单
 
-四份文档全部位于 `docs/plans/opus5-plan/`，**严格按顺序执行，不要跳**。
+五份文档全部位于 `docs/plans/opus5-plan/`，**严格按顺序执行，不要跳**。
 
 | 顺序 | 文件 | 覆盖内容 | 前置 | 工时 |
 |---|---|---|---|---|
 | **1** | `2026-07-31-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 Desktop | 无 | 20 周 |
-| **2** | `PHASE-A-MODEL-ADAPTATION-LAYER.md` | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | 本文件的 Phase 0 + Phase 1 | 3 周 |
-| **3** | `PHASE-B-MULTI-AGENT-ORCHESTRATION.md` | 多 Agent 编排：清理死代码、拆全局单例、AgentSpec / Runtime / Orchestrator、委派与黑板 | 本文件 Phase 0–2 + Phase A | 6 周 |
-| **4** | `PHASE-C-MULTIMODAL-AGENT-COLLABORATION.md` | 多模态 × 多 Agent：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 0–3 + Phase A + Phase B | 6 周 |
+| **2** | `PHASE-A-MODEL-ADAPTATION-LAYER.md` | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | 本文件 Phase 0 + Phase 1 | 3 周 |
+| **3** | `PHASE-B-MULTI-AGENT-ORCHESTRATION.md` | **多 Agent 专家团**：清理死代码、拆全局单例、AgentSpec / 团长 / SOP 状态机 / 机械验证门 / 成本熔断 / 难度路由 | 本文件 Phase 0–2 + Phase A | 8 周 |
+| **4** | `PHASE-C-MULTI-MODEL-COLLABORATION.md` | **多 Agent × 多模型**：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | 本文件 Phase 0–2 + Phase A + Phase B | 6 周 |
+| **5** | `PHASE-D-MULTIMODAL.md` | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 0–3 + Phase A + B + C | 6 周 |
+| **附** | `PHASE-E-PERSONA-AGENT-INTERFACE.md` | **PersonaAgent 接口预留**（不是施工图）：skill 元数据、蒸馏数据埋点、信任边界 | 无硬前置，§4 六张卡**插进 B/C/D 里顺手做** | 6 天 |
+| **⛔** | `PHASE-F-SKILLFOREST-PERSONA-AGENT.md` | **暂不开发。** SkillForest 论文（EKO / 森林索引 / PCDR / 五级优先级 / SAG / 双通道经验演化）的落地设想与取舍笔记 | 见该文档 §10 的启动条件 | 未排期 |
+
+> **2026-07-31 第 2 版的三处调整**：原 Phase C（多模态）改编号为 **Phase D**；新增 **Phase C（多 Agent × 多模型协作）**；新增 **Phase E**（PersonaAgent 接口预留）。
+> Phase B 从 6 周调整为 8 周——基于 GitHub 深度调研（见 Phase B §2）补入了 SOP 状态机、机械验证门、成本熔断、难度路由四块，这些在第 1 版里缺失。
 
 ### 11.2 依赖关系
 
 ```
 本文件 Phase 0  止血（lint / CI / CORS / 死文件）
       │
-      ├──────────────────────────────┐
-      ▼                              │
-本文件 Phase 1  Harness 说真话        │
-      │                              │
-      ├──────────────┬───────────────┤
-      ▼              ▼               │
-本文件 Phase 2   Phase A 模型适配     │   ← A 与 Phase 2 可并行
- 协议 + Session       │               │
-      │              │               │
-      ├──────────────┘               │
-      ▼                              │
-Phase B 多 Agent 编排                 │
-      │                              │
-      │        本文件 Phase 3 Desktop ┘
-      │              │
-      └──────┬───────┘
-             ▼
-Phase C 多模态 × 多 Agent
+      ├────────────────────────────────────┐
+      ▼                                    │
+本文件 Phase 1  Harness 说真话              │
+      │                                    │
+      ├──────────────┬─────────────────────┤
+      ▼              ▼                     │
+本文件 Phase 2   Phase A 模型适配           │  ← 唯一可双人并行的一段
+ 协议 + Session       │                     │     协作协议见 §11.7
+      │              │                     │
+      └──────┬───────┘                     │
+             ▼                             │
+      Phase B 多 Agent 专家团                │
+             │                             │
+             ▼                             │
+      Phase C 多 Agent × 多模型              │
+             │                             │
+             │      本文件 Phase 3 Desktop ──┘
+             │              │
+             └──────┬───────┘
+                    ▼
+             Phase D 多模态
+
+Phase E 的六张预留卡不在这条链上，按 Phase E §4 的表插进 B/C/D 执行：
+  E1 E5 → Phase B 开始前     E2 → 和 B3 一起
+  E3    → 和 B12 一起        E4 → 和 C11 一起      E6 → Phase B 收尾后
+
+Phase F ⛔ 不在这条链上，也不在排期内。
 ```
 
-**唯一可以并行的**是 Phase A 与本文件的 Phase 2——前者动模型层，后者动协议与 Session 层，接触面很小。其余全部串行。
+### 11.2.1 关于 Phase F（暂不开发）
 
-**每个 Phase 的前置都是硬前置**，各文档的 §0.3 写了具体理由。最常见的误判是"跳过 Phase 2 直接做 Phase B"——那会导致在 `agent_v2.py` 这个 3704 行的 God Object 里手工造一套 ad-hoc 的 Agent 通信机制，半年后推倒重来。
+`PHASE-F-SKILLFOREST-PERSONA-AGENT.md` 是 SkillForest 论文（*PersonaAgent: Executable Skill Lifecycle Management and Structured Reasoning Offloading*，Xin-Yi Ruan）在 RxyCode 的落地设想。
+
+**它不进入开发排期。** 没有任务卡、没有工时、没有验收命令。任何模型接到"做 Phase F"这类指令时，**先回到该文档 §10 核对启动条件**，六条不满足就不要开工。
+
+它现在的作用是两条：
+1. **记录论文的负面实测结果**，避免以后把已经被证伪的方向再走一遍。三条最关键的：森林索引在千级以下技能库不划算；PCDR 的端到端 Shapley 边际贡献是 **0**；AED 自动蒸馏**输给**一个简单的持久化成功轨迹缓存。
+2. **§8 可以脱离 Phase F 独立执行**——论文的评测方法论（2ⁿ 组合 Shapley 消融、配对消融共享原始输出、runtime–scoring 隔离、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness 和 Phase B 的 B14、Phase C 的 C11 都直接适用，**和 PersonaAgent 做不做无关**。
+
+**唯一可以双人并行的**是 Phase A 与本文件的 Phase 2——前者动模型层，后者动协议与 Session 层，接触面很小。**具体的协作协议见 §11.7。** 其余全部串行。
+
+**每个 Phase 的前置都是硬前置**，各文档的 §0.3 写了具体理由。最常见的两处误判：
+- **跳过 Phase 2 直接做 Phase B** —— 会导致在 `agent_v2.py` 这个 3704 行的 God Object 里手工造一套 ad-hoc 的 Agent 通信机制，半年后推倒重来。
+- **Phase B 差不多了就开始 Phase C** —— Phase C 会把 Phase B 所有没测到的隔离问题一次性引爆，而且因为每个角色用不同模型，症状会难懂得多。
 
 ### 11.3 工作流程
 
@@ -2390,7 +2417,8 @@ Phase C 多模态 × 多 Agent
 
    不需要通读全文。任务卡是自包含的。
 
-4. 按任务卡的执行协议走完 7 步（Phase B/C 是 9 步）
+4. 按任务卡的执行协议走完 7 步
+   （Phase B 是 10 步，Phase C 是 12 步，多出来的都是护栏）
 
 5. 一张卡 = 一个 commit。做完再开下一张
 ```
@@ -2400,8 +2428,8 @@ Phase C 多模态 × 多 Agent
 | 模型 | 职责 |
 |---|---|
 | **Composer 2.5** | 主力实现。按任务卡写代码、多文件同步改写、补测试、跑验收 |
-| **Grok** | 外部资料调研。查 provider API 文档、各家 vision 格式差异、其它开源项目的架构取舍。**不直接改代码** |
-| **Sonnet 5** | Diff 审查 + 写文档。重点审 Phase B 的 B2（拆单例）和 Phase C 的 C4（类型拓宽），这两张卡最容易漏改 |
+| **Grok** | 外部资料调研。查 provider API 文档、**各家模型的真实定价**（Phase C 的 C4 必需）、推理痕迹字段名、各家 vision 格式。**不直接改代码** |
+| **Sonnet 5** | Diff 审查 + 写文档。重点审三张最容易漏改的卡：Phase B 的 **B2**（拆单例）、Phase C 的 **C3**（跨模型交接）、Phase D 的 **D4**（类型拓宽） |
 
 推荐回路：**Grok 查资料 → Composer 实现 → Sonnet 5 审查 → Composer 修**。
 
@@ -2413,9 +2441,11 @@ Phase C 多模态 × 多 Agent
 |---|---|---|
 | 1 | **不跑验收命令不许说"完成"** | 每张卡的完成判据都要求贴出真实输出 |
 | 2 | **每张卡做完跑评测基线比对** | `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json` |
-| 3 | **旧路径行为必须逐字节不变** | Phase A 的 MA1、Phase B 的 MB1、Phase C 的 MC1 是同一条规则的三种表述 |
+| 3 | **旧路径行为必须逐字节不变** | Phase A 的 MA1、B 的 MB1、C 的 MC1、D 的 MD1 是同一条规则的四种表述 |
 
-第 2 条依赖本文件 Phase 1 的成果。**这就是为什么 Phase 1 排在所有扩展之前**——没有可信的回归信号，后面三个 Phase 的每一次重构都是盲改。
+第 2 条依赖本文件 Phase 1 的成果。**这就是为什么 Phase 1 排在所有扩展之前**——没有可信的回归信号，后面每一个 Phase 的每一次重构都是盲改。
+
+**从 Phase B 起还多一条**：新增能力**默认关闭**。多 Agent（Phase B）、多模型（Phase C）、蒸馏采集（Phase E）三者的开关默认都是 `False`。理由是 Phase B §2.5 的实测数据——多 Agent 消耗 15 倍 token，而 Anthropic 明确说编码任务本就不是多 Agent 的强项。**能力要有，但不该悄悄替用户花钱。**
 
 ### 11.5 文档本身的维护
 
@@ -2432,4 +2462,123 @@ Phase C 多模态 × 多 Agent
 
 `docs/plans/` 下的 `2026-07-02-rxycode-v2-architecture.md`、`2026-07-27-stabilization-phase0-1.md`、`2026-07-28-execution-progress.md` 作为历史记录保留，其执行状态已在 §2.1 复盘。
 
-**当前唯一权威的计划是 `docs/plans/opus5-plan/` 下的这四份。**
+**当前唯一权威的计划是 `docs/plans/opus5-plan/` 下的这六份（含 Phase E 附录和 Phase F 的未排期设想）。**
+
+---
+
+### 11.7 双人并行协作协议（Phase 2 ‖ Phase A）
+
+> **回答"我做 Phase 2 的时候，另一个人怎么同时做 Phase A"。**
+>
+> 这是整条路线**唯一**能双人并行的一段。别的地方硬并行只会制造合并冲突，节省的时间全赔在解冲突和调试上。
+
+#### 11.7.1 为什么只有这一段能并行
+
+| | Phase 2（协议与核心解耦） | Phase A（模型适配层） |
+|---|---|---|
+| 主要动的目录 | `protocol/`、`core/session.py`、`api_server.py`、`frontend/` | `core/providers/`、`config/model_capabilities.py`、`core/prompts/` |
+| 主要动的性质 | **搬运**：从 `agent_v2.py` 里往外抽 | **新增**：新目录、新文件 |
+| 对 `agent_v2.py` 的改动 | 大量删除与外移 | **只在两处接线** |
+
+**接触面就只有 `agent_v2.py` 的两处**：LLM 构造点（`:687-701` 附近）和 usage 记录点。其余零重叠。
+
+#### 11.7.2 分工与边界
+
+```
+     A 同学 · Phase 2                        B 同学 · Phase A
+     分支 feat/phase2-protocol               分支 feat/phase-a-providers
+     ─────────────────────────               ─────────────────────────
+     protocol/**            独占             core/providers/**       独占
+     core/session.py        独占             config/model_capabilities.py 独占
+     api_server.py          独占             config/model_pricing.py 独占
+     frontend/**            独占             core/prompts/variants/** 独占
+     tests/test_protocol*   独占             tests/test_providers/** 独占
+                                             tests/test_capabilities/** 独占
+
+                      ┌─────────────────────┐
+                      │ core/agent_v2.py    │  ← 唯一的共享面
+                      │ config/settings.py  │  ← 次要共享面
+                      └─────────────────────┘
+                          规则见 11.7.3
+```
+
+**两人各自的 Phase 0/1 前置必须已经在 main 上。** 不要一个人还在做 Phase 0，另一个人就开分支——那不是并行，那是在流沙上盖房子。
+
+#### 11.7.3 共享面的三条规则
+
+| # | 规则 | 怎么做 |
+|---|---|---|
+| **P1** | **`agent_v2.py` 归 A 同学（Phase 2）所有** | Phase 2 要从这个文件里往外搬大量代码，让两个人同时改它必然冲突 |
+| **P2** | **B 同学需要改 `agent_v2.py` 时，写一个"接线请求"给 A 同学，由 A 来改** | 接线请求要写清：改哪一行、改成什么、为什么。通常就 3-5 行 |
+| **P3** | **`config/settings.py` 只允许追加，不允许改动已有行** | 两人都要往里加配置。只追加就是 git 能自动合并的场景 |
+
+**P2 的实际操作**（Phase A 全程大概只需要两次）：
+
+```
+第 1 次 · A2 完成后（provider 层就绪）
+  B → A: "core/providers/ 已经能用了。请把 agent_v2.py:687-701 的
+          LLM 构造改成走 resolve_provider()。我在 core/providers/README.md
+          里写了调用示例。改完我这边的集成测试就能跑。"
+
+第 2 次 · A5 完成后（usage 提取就绪）
+  B → A: "请把 usage 记录点改成走 provider.extract_cache_read()。
+          原因：各家的 usage 字段名不一样，现在的代码只认 OpenAI 格式，
+          DeepSeek 的缓存命中数一直是 0。"
+```
+
+A 同学收到请求后当作自己 Phase 2 的一张小卡来做，正常提交。**B 同学在 A 合并之前，本地用 monkeypatch 跑集成测试**，不要为了自测去改 `agent_v2.py`。
+
+#### 11.7.4 同步节奏
+
+```
+每天    两人各自 rebase main 一次
+        （不是 merge。rebase 让冲突早暴露、历史干净）
+
+每 2 天 15 分钟同步：
+        - 我下一步要碰哪些文件？
+        - 有没有要发的接线请求？
+        - 有没有谁被谁挡住了？
+
+合并点  Phase 2 的 S 卡和 Phase A 的 A 卡各自完成就可以合
+        谁先做完谁先合，后合的负责 rebase
+```
+
+**不要攒着一起合。** 两条分支各自跑两周再合并，是这套并行方案唯一会真正翻车的方式。
+
+#### 11.7.5 合并点与验收
+
+| 时机 | 谁做 | 跑什么 |
+|---|---|---|
+| 每次合并前 | 合并方 | `python -m ruff check .` + `python -m pytest tests -q` |
+| 每次合并后 | 合并方 | `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json` |
+| **两边全部合完** | **两人一起** | 下面这组完整验收 |
+
+```powershell
+cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
+python -m ruff check .
+python -m pytest tests -q --timeout=600
+python -m protocol.schema | Out-File -Encoding utf8 protocol\schema.json
+git diff --exit-code protocol/schema.json          # schema 不该有意外漂移
+cd frontend\protocol-client; bun run generate; cd ..\..
+git diff --exit-code frontend/protocol-client/src/generated/
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**最后一条零回归**才算 Phase 2 ‖ Phase A 真的完成，可以开 Phase B。
+
+#### 11.7.6 Phase B 之后怎么办
+
+**Phase B 及以后不要再双人并行。** 理由：
+
+- Phase B 的 B2（拆三组全局单例）会碰到 `tools/`、`cache/`、`recovery/`、`core/` 四个目录，**几乎和所有东西都有接触面**
+- Phase C 依赖 Phase B 的全部产物，没有可切分的独立子集
+- Phase B §2.5 引用的失败归因研究显示，多 Agent 系统里**协调失败占全部失败的 36.94%**——这条对人也成立，协调成本会吃掉并行收益
+
+**想让第二个人有事做，正确的方式不是并行开发，而是分工到角色**：
+
+| 角色 | 做什么 |
+|---|---|
+| **实现** | 按任务卡串行推进 |
+| **审查 + 调研** | 审每一张卡的 diff（尤其 B2 / C3 / D4）、跑 Grok 的调研 prompt、维护评测基线、写 `docs/modules/*.md` |
+
+Phase B 的 B14 和 Phase C 的 C11 两张评测卡工作量都不小，而且**可以和实现完全解耦**——这是第二个人最有价值的去处。
