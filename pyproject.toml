@@ -78,3 +78,37 @@ dependencies = { file = ["requirements.txt"] }
   "frontend/opentui-app/src/**/*",
 ]
 "RxyCode.RxyCode1_1_0.evals" = ["tasks/*.yaml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+  ".venv",
+  "_package_root",
+  "frontend",
+  "build",
+  "dist",
+  "artifacts",
+]
+
+[tool.ruff.lint]
+# 起步集：只开"几乎不会误报、且能抓真 bug"的规则。
+# 风格类（I 排序、UP 升级语法）等 CI 绿了之后再逐条开，见 §9.5。
+select = [
+  "E9",    # 语法错误 / IO 错误
+  "F",     # pyflakes：未定义名字、未使用 import、f-string 缺占位符
+  "B",     # flake8-bugbear：可变默认参数、循环变量绑定等真 bug
+  "W605",  # 无效转义序列
+]
+ignore = [
+  "B008",  # FastAPI 的 Depends() 默认参数是标准写法
+  "B905",  # zip(strict=) 需要 3.10+，逐步迁移
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F811", "F401"]        # fixture 重定义 / 显式 re-export
+"**/__init__.py" = ["F401"]         # 包级 re-export
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
