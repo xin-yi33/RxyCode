@@ -115,6 +115,8 @@ def add_model(
     model_name: Optional[str] = None,
     max_tokens: int = 8192,
     temperature: float = 0.7,
+    provider_id: Optional[str] = None,
+    provider_name: Optional[str] = None,
 ) -> dict:
     base_url = normalize_provider_base_url(base_url, require_https=True)
     cfg = load_config()
@@ -127,6 +129,10 @@ def add_model(
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    if provider_id:
+        entry["provider_id"] = provider_id
+    if provider_name:
+        entry["provider_name"] = provider_name
     models[name] = entry
     if not cfg.get("active_model"):
         cfg["active_model"] = name
