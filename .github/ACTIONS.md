@@ -56,7 +56,7 @@ All jobs upload their existing diagnostics even when a test step fails.
 The workflow deliberately does not publish to PyPI. It uses only GitHub-owned
 workflow actions and grants `contents: write` solely to the final release job.
 For a reproducible release, update `pyproject.toml` first and push the matching
-tag, for example `v1.2.2`.
+tag, for example `v1.2.3`.
 
 ## Local distribution check
 

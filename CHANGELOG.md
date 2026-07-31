@@ -9,12 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+---
 
-- **Add-model wizard** — discover auth/transport failures return to the API Key
-  step; only providers without a `/models` catalogue fall back to manual model
-  id. Custom URL rejects non-HTTPS before calling discover; Esc on the model
-  list goes back a step instead of closing
+## [1.2.3] - 2026-07-31
+
+### Highlights
+
+**OpenCode-style model onboarding, upgraded.** Ten mainstream provider presets,
+read-only model discovery, preset **multi-select batch onboard** (no per-model
+chat probe), `/model` grouped by provider, and hardened discover failure routing.
 
 ### Added
 
@@ -25,36 +28,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request; returns `{added, skipped, active, message}`
 - **`GET /models` category field** — each model includes `category` from
   `provider_name` for grouped `/model` display
-
 - **Provider connection presets** — `GET /models/presets` returns ten mainstream
   LLM providers as `{id, name, base_url, category}`. Presets are deliberately
-  provider-level only: no preset pins a model id, so the table cannot go stale
-  when a vendor renames or retires a model (closes #5)
+  provider-level only: no preset pins a model id
 - **Model discovery** — `POST /models/discover` calls the provider's
   OpenAI-compatible `GET {base_url}/models` with the supplied key and returns the
-  real catalogue. Read-only: nothing is persisted until `/models/onboard`.
-  Credentials are redacted from every error path and HTTPS is enforced before any
-  request leaves the process
+  real catalogue. Read-only until onboard. Credentials redacted; HTTPS enforced
 - **Real recent-model history** — `set_active_model` records switches in
-  `config.recent_models` (capped, pruned when a model is removed) and
-  `GET /models` returns it as `recent`, so `/model` can show a 最近常用 group
-  backed by actual history
+  `config.recent_models`; `GET /models` returns `recent` for a 最近常用 group
+- **`DialogSelect` multi mode** — space toggles selection; Enter confirms batch
+- **`onboard_models_batch`** — backend helper with `skip_probe=True` for presets
+- **`provider_id` / `provider_name` metadata** on saved models for UI grouping
 
 ### Changed
 
-- **Preset add-model skips nickname** — preset path goes discover → multi-select
-  → batch save; custom URL path still uses single onboard with probe
-- **`/model` groups by provider** — models appear under provider name buckets
-  (最近常用 / DeepSeek / … / 其他 / 操作) instead of a flat list
+- **Preset add-model skips nickname** — preset path: discover → multi-select →
+  batch save; custom URL path still uses single onboard with probe
+- **`/model` groups by provider** — 最近常用 / provider name / 其他 / 操作
+- **`/addmodel` OpenCode connect-provider flow** — shared `DialogSelect` /
+  `DialogPrompt` wizard instead of a numbered menu
 
-- **`/addmodel` follows the OpenCode "connect a provider" flow** — the wizard is
-  now built from the shared `DialogSelect` / `DialogPrompt` components
-  (searchable list, ↑↓ / Enter / Esc, mouse hover row highlight, wheel scrolling,
-  block cursor, category headers) instead of a hand-drawn numbered menu. Flow:
-  pick provider → enter key → discover models → pick model → optional nickname.
-  Providers without a `/models` catalogue fall back to manual model-id entry
-- **`DialogPrompt`** — matches the shared dialog chrome (`borderDim` border,
-  `text` title, `DialogSelect`-style block cursor) and can mask credential input
+### Fixed
+
+- **Discover failure routing** — auth/transport failures return to the API Key
+  step; only `unsupported_catalogue` falls back to manual model id
+- **Custom URL HTTPS guard** — rejects non-HTTPS before calling discover
+- **Esc on model list** — goes back a step instead of closing the wizard
+- **Structured discover errors** — `error_code` in API responses for TUI routing
+
+### Install notes
+
+- **Default one-command install** now pins **`v1.2.3`**.
+- **Exception (this release only):** **`v1.2.2` remains downloadable** from
+  [GitHub Releases](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2).
+  Use `RXYCODE_VERSION=1.2.2` or `@v1.2.2` if you need the previous patch.
+
+---
 
 ## [1.2.2] - 2026-07-30
 
@@ -304,6 +313,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.3]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3
 [1.2.2]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2
 [1.2.1]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1
 [1.2.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0
