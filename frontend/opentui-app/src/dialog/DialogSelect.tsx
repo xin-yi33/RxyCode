@@ -217,18 +217,24 @@ export function DialogSelect<T>({
   onClose,
   maxVisible,
   showSearch = true,
-  footerHint = " ↑↓选择  ↵确认  滚轮滚动  指针定位",
+  footerHint,
+  multi = false,
+  defaultSelectedIds,
+  onConfirm,
 }: {
   title: string;
   options: DialogSelectOption<T>[];
   categoryOrder?: string[];
   placeholder?: string;
   currentId?: string;
-  onSelect: (option: DialogSelectOption<T>) => void;
+  onSelect?: (option: DialogSelectOption<T>) => void;
   onClose: () => void;
   maxVisible?: number;
   showSearch?: boolean;
   footerHint?: string;
+  multi?: boolean;
+  defaultSelectedIds?: string[];
+  onConfirm?: (selectedIds: string[], meta: { highlightedId: string }) => void;
 }) {
   const { height: termRows, width: termCols } = useTerminalDimensions();
   const cols = termCols || 80;
@@ -241,16 +247,33 @@ export function DialogSelect<T>({
   const [filter, setFilter] = useState("");
   const [idx, setIdx] = useState(0);
   const [inputMode, setInputMode] = useState<"keyboard" | "mouse">("keyboard");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const inputModeRef = useRef<"keyboard" | "mouse">("keyboard");
   inputModeRef.current = inputMode;
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const focusRef = useRef<InputRenderable>(null);
   const scrollAccel = useMemo(() => createScrollAcceleration(), []);
+  const resolvedFooterHint =
+    footerHint ?? (multi ? " 空格勾选  ↑↓移动  ↵确认  esc返回" : " ↑↓选择  ↵确认  滚轮滚动  指针定位");
 
   const { flat, rows } = useMemo(
     () => buildSelectRows(options, showSearch ? filter : "", categoryOrder),
     [options, filter, categoryOrder, showSearch],
   );
+
+  const selectableIdsKey = useMemo(
+    () => options.filter((o) => !o.disabled).map((o) => o.id).join("\0"),
+    [options],
+  );
+
+  useEffect(() => {
+    if (!multi) return;
+    const ids =
+      defaultSelectedIds?.length
+        ? defaultSelectedIds
+        : selectableIdsKey.split("\0").filter(Boolean);
+    setSelectedIds(new Set(ids));
+  }, [multi, defaultSelectedIds, selectableIdsKey]);
 
   // Keep a focused input so ConPTY/OpenTUI continues delivering key/paste events
   // after the main App textarea is unmounted while the dialog is open.
@@ -316,7 +339,26 @@ export function DialogSelect<T>({
 
   const confirm = (flatIndex = safeIdx) => {
     const opt = flat[flatIndex];
-    if (opt) onSelect(opt);
+    if (!opt) return;
+    if (multi) {
+      const highlightedId = opt.id;
+      const ids = [...selectedIds];
+      if (ids.length === 0) return;
+      onConfirm?.(ids, { highlightedId });
+      return;
+    }
+    onSelect?.(opt);
+  };
+
+  const toggleSelected = (flatIndex = safeIdx) => {
+    const opt = flat[flatIndex];
+    if (!opt || opt.disabled) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(opt.id)) next.delete(opt.id);
+      else next.add(opt.id);
+      return next;
+    });
   };
 
   const applyFilterText = (text: string) => {
@@ -335,7 +377,12 @@ export function DialogSelect<T>({
   const confirmWithFilter = (nextFilter: string) => {
     const { flat: nextFlat } = buildSelectRows(options, showSearch ? nextFilter : "", categoryOrder);
     const opt = nextFlat[0];
-    if (opt) onSelect(opt);
+    if (!opt) return;
+    if (multi) {
+      onConfirm?.([...selectedIds], { highlightedId: opt.id });
+      return;
+    }
+    onSelect?.(opt);
   };
 
   usePaste((event) => {
@@ -386,6 +433,11 @@ export function DialogSelect<T>({
     if (key.name === "return" || key.name === "linefeed") {
       key.preventDefault?.();
       confirm();
+      return;
+    }
+    if (multi && key.name === "space") {
+      key.preventDefault?.();
+      toggleSelected();
       return;
     }
     if (!showSearch) return;
@@ -529,7 +581,14 @@ export function DialogSelect<T>({
 
           const sel = row.flatIndex === safeIdx;
           const isCurrent = currentId != null && row.option.id === currentId;
-          const prefix = sel ? " ❯ " : isCurrent ? " ● " : "   ";
+          const checked = multi && selectedIds.has(row.option.id);
+          const prefix = multi
+            ? `${sel ? " ❯ " : "   "}${checked ? "✓ " : "  "}`
+            : sel
+              ? " ❯ "
+              : isCurrent
+                ? " ● "
+                : "   ";
           const namePart = padEndWidth(prefix + row.option.title, nameCol);
           const right = row.option.footer || row.option.description || "";
           const descPart = padEndWidth(right, Math.max(0, innerW - nameCol));
@@ -550,6 +609,10 @@ export function DialogSelect<T>({
               onMouseUp={() => {
                 setInputMode("mouse");
                 moveTo(row.flatIndex);
+                if (multi) {
+                  toggleSelected(row.flatIndex);
+                  return;
+                }
                 confirm(row.flatIndex);
               }}
             >
@@ -561,7 +624,7 @@ export function DialogSelect<T>({
       </scrollbox>
 
       <RowShell>
-        <text fg={C.overlay2}>{footerHint}</text>
+        <text fg={C.overlay2}>{resolvedFooterHint}</text>
         <box style={{ flexGrow: 1, height: 1 }} />
         <text fg={C.overlay2}>
           {flat.length ? safeIdx + 1 : 0}/{flat.length}{" "}
