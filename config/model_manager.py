@@ -15,6 +15,13 @@ DISCOVERY_UNSUPPORTED_MESSAGE = (
     "请改用「自定义」手动填写模型 ID。"
 )
 
+# Stable codes for TUI routing. Do not rename without updating DialogAddModel.
+DISCOVER_ERROR_UNSUPPORTED = "unsupported_catalogue"
+DISCOVER_ERROR_AUTH = "auth"
+DISCOVER_ERROR_HTTPS = "https"
+DISCOVER_ERROR_INVALID = "invalid"
+DISCOVER_ERROR_TRANSPORT = "transport"
+
 # Provider connection presets.
 #
 # Deliberately provider-level only: id / name / base_url / category.  A preset
@@ -276,9 +283,19 @@ def discover_provider_models(*, api_key: str, base_url: str) -> dict:
     try:
         base_url = normalize_provider_base_url(base_url, require_https=True)
     except ValueError as exc:
-        return {"success": False, "error": str(exc)}
+        message = str(exc)
+        code = (
+            DISCOVER_ERROR_HTTPS
+            if "https://" in message.casefold() or "must use https" in message.casefold()
+            else DISCOVER_ERROR_INVALID
+        )
+        return {"success": False, "error": message, "error_code": code}
     if not api_key:
-        return {"success": False, "error": "Missing API credential"}
+        return {
+            "success": False,
+            "error": "Missing API credential",
+            "error_code": DISCOVER_ERROR_INVALID,
+        }
 
     def safe_error(value: object) -> str:
         text = str(value)
@@ -300,12 +317,14 @@ def discover_provider_models(*, api_key: str, base_url: str) -> dict:
                         "success": False,
                         "elapsed": elapsed,
                         "error": DISCOVERY_UNSUPPORTED_MESSAGE,
+                        "error_code": DISCOVER_ERROR_UNSUPPORTED,
                     }
                 if not models:
                     return {
                         "success": False,
                         "elapsed": elapsed,
                         "error": DISCOVERY_UNSUPPORTED_MESSAGE,
+                        "error_code": DISCOVER_ERROR_UNSUPPORTED,
                     }
                 return {"success": True, "elapsed": elapsed, "models": models}
             if resp.status_code in {404, 405}:
@@ -313,14 +332,28 @@ def discover_provider_models(*, api_key: str, base_url: str) -> dict:
                     "success": False,
                     "elapsed": elapsed,
                     "error": DISCOVERY_UNSUPPORTED_MESSAGE,
+                    "error_code": DISCOVER_ERROR_UNSUPPORTED,
+                }
+            if resp.status_code in {401, 403}:
+                return {
+                    "success": False,
+                    "elapsed": elapsed,
+                    "error": HTTP_CODE_MESSAGES[resp.status_code],
+                    "error_code": DISCOVER_ERROR_AUTH,
                 }
             friendly = HTTP_CODE_MESSAGES.get(resp.status_code)
             if friendly:
-                return {"success": False, "elapsed": elapsed, "error": friendly}
+                return {
+                    "success": False,
+                    "elapsed": elapsed,
+                    "error": friendly,
+                    "error_code": DISCOVER_ERROR_TRANSPORT,
+                }
             return {
                 "success": False,
                 "elapsed": elapsed,
                 "error": safe_error(f"HTTP {resp.status_code}: {resp.text[:200]}"),
+                "error_code": DISCOVER_ERROR_TRANSPORT,
             }
     except Exception as exc:
         elapsed = round(time.time() - start, 2)
@@ -329,6 +362,7 @@ def discover_provider_models(*, api_key: str, base_url: str) -> dict:
             "success": False,
             "elapsed": elapsed,
             "error": _friendly_transport_error(estr) or estr,
+            "error_code": DISCOVER_ERROR_TRANSPORT,
         }
 
 

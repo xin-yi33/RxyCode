@@ -174,6 +174,7 @@ def test_discovery_reports_authentication_failure(monkeypatch):
     assert result["success"] is False
     assert "401" in result["error"]
     assert "models" not in result
+    assert result["error_code"] == "auth"
 
 
 @pytest.mark.parametrize("status", [404, 405])
@@ -189,6 +190,7 @@ def test_discovery_guides_to_manual_entry_when_catalogue_is_absent(monkeypatch, 
 
     assert result["success"] is False
     assert result["error"] == model_manager.DISCOVERY_UNSUPPORTED_MESSAGE
+    assert result["error_code"] == "unsupported_catalogue"
 
 
 def test_discovery_treats_an_empty_or_unparsable_catalogue_as_unsupported(monkeypatch):
@@ -212,8 +214,10 @@ def test_discovery_treats_an_empty_or_unparsable_catalogue_as_unsupported(monkey
 
     assert empty["success"] is False
     assert empty["error"] == model_manager.DISCOVERY_UNSUPPORTED_MESSAGE
+    assert empty["error_code"] == "unsupported_catalogue"
     assert unparsable["success"] is False
     assert unparsable["error"] == model_manager.DISCOVERY_UNSUPPORTED_MESSAGE
+    assert unparsable["error_code"] == "unsupported_catalogue"
 
 
 def test_discovery_maps_a_timeout_to_an_operator_readable_message(monkeypatch):
@@ -232,6 +236,7 @@ def test_discovery_maps_a_timeout_to_an_operator_readable_message(monkeypatch):
 
     assert result["success"] is False
     assert "超时" in result["error"]
+    assert result["error_code"] == "transport"
 
 
 # ── discovery: credential hygiene ───────────────────────────────────
@@ -255,6 +260,7 @@ def test_discovery_redacts_the_credential_from_provider_echoes(monkeypatch):
     assert result["success"] is False
     assert credential not in result["error"]
     assert "[REDACTED]" in result["error"]
+    assert result["error_code"] == "transport"
 
 
 def test_discovery_redacts_the_credential_from_transport_exceptions(monkeypatch):
@@ -275,6 +281,7 @@ def test_discovery_redacts_the_credential_from_transport_exceptions(monkeypatch)
     assert result["success"] is False
     assert credential not in result["error"]
     assert "[REDACTED]" in result["error"]
+    assert result["error_code"] == "transport"
 
 
 def test_discovery_never_sends_a_credential_over_plaintext_http(monkeypatch):
@@ -291,6 +298,7 @@ def test_discovery_never_sends_a_credential_over_plaintext_http(monkeypatch):
     assert result["success"] is False
     assert "https://" in result["error"]
     assert "fake-opaque-plaintext-discovery-credential" not in result["error"]
+    assert result["error_code"] == "https"
     client.assert_not_called()
 
 
@@ -306,4 +314,5 @@ def test_discovery_requires_a_credential_before_touching_the_network(monkeypatch
     )
 
     assert result["success"] is False
+    assert result["error_code"] == "invalid"
     client.assert_not_called()
