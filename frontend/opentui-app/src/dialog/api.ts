@@ -192,6 +192,61 @@ export async function onboardModel(input: {
   }
 }
 
+export async function onboardModelsBatch(input: {
+  apiKey: string;
+  baseUrl: string;
+  modelIds: string[];
+  providerId?: string;
+  providerName?: string;
+  activeModelId?: string;
+  skipProbe?: boolean;
+}): Promise<{
+  ok: boolean;
+  added: string[];
+  skipped: string[];
+  active: string;
+  message: string;
+  error?: string;
+}> {
+  try {
+    const resp = await axios.post(
+      `${API_BASE}/models/onboard/batch`,
+      {
+        api_key: input.apiKey,
+        base_url: input.baseUrl,
+        model_ids: input.modelIds,
+        provider_id: input.providerId || undefined,
+        provider_name: input.providerName || undefined,
+        active_model_id: input.activeModelId || undefined,
+        skip_probe: input.skipProbe ?? true,
+      },
+      { headers: authorizationHeaders(), timeout: 60000 },
+    );
+    const data = resp.data as {
+      added?: string[];
+      skipped?: string[];
+      active?: string;
+      message?: string;
+    };
+    return {
+      ok: true,
+      added: Array.isArray(data.added) ? data.added : [],
+      skipped: Array.isArray(data.skipped) ? data.skipped : [],
+      active: String(data.active || ""),
+      message: String(data.message || "Models added"),
+    };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      added: [],
+      skipped: [],
+      active: "",
+      message: "",
+      error: errorDetail(err),
+    };
+  }
+}
+
 export { sendCommand };
 
 /** GET /status raw payload (includes provider_cache / application_cache when present). */
