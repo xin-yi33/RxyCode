@@ -63,11 +63,54 @@ export type DiscoveredModel = {
   owned_by?: string;
 };
 
+/** Stable discover failure codes — keep in sync with config.model_manager. */
+export type DiscoverErrorCode =
+  | "unsupported_catalogue"
+  | "auth"
+  | "https"
+  | "invalid"
+  | "transport";
+
+const DISCOVER_ERROR_CODES = new Set<DiscoverErrorCode>([
+  "unsupported_catalogue",
+  "auth",
+  "https",
+  "invalid",
+  "transport",
+]);
+
 function errorDetail(err: unknown): string {
-  if (axios.isAxiosError(err) && typeof err.response?.data?.detail === "string") {
-    return err.response.data.detail;
+  if (axios.isAxiosError(err)) {
+    const detail = err.response?.data?.detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === "string" && message) return message;
+    }
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+function discoveryFailure(err: unknown): {
+  message: string;
+  errorCode: DiscoverErrorCode;
+} {
+  if (axios.isAxiosError(err)) {
+    const detail = err.response?.data?.detail;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const code = String((detail as { error_code?: unknown }).error_code ?? "");
+      const message = String(
+        (detail as { message?: unknown }).message || errorDetail(err),
+      );
+      return {
+        message,
+        errorCode: DISCOVER_ERROR_CODES.has(code as DiscoverErrorCode)
+          ? (code as DiscoverErrorCode)
+          : "transport",
+      };
+    }
+  }
+  return { message: errorDetail(err), errorCode: "transport" };
 }
 
 /** GET /models/presets — provider connection presets (no model ids). */
@@ -95,7 +138,12 @@ export async function fetchProviderPresets(): Promise<{
 export async function discoverModels(input: {
   apiKey: string;
   baseUrl: string;
-}): Promise<{ ok: boolean; models: DiscoveredModel[]; error?: string }> {
+}): Promise<{
+  ok: boolean;
+  models: DiscoveredModel[];
+  error?: string;
+  errorCode?: DiscoverErrorCode;
+}> {
   try {
     const resp = await axios.post(
       `${API_BASE}/models/discover`,
@@ -105,7 +153,13 @@ export async function discoverModels(input: {
     const data = resp.data as { models?: DiscoveredModel[] };
     return { ok: true, models: Array.isArray(data.models) ? data.models : [] };
   } catch (err: unknown) {
-    return { ok: false, models: [], error: errorDetail(err) };
+    const failure = discoveryFailure(err);
+    return {
+      ok: false,
+      models: [],
+      error: failure.message,
+      errorCode: failure.errorCode,
+    };
   }
 }
 
