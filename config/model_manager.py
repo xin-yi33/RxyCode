@@ -146,6 +146,76 @@ def add_model(
     return entry
 
 
+def onboard_models_batch(
+    *,
+    api_key: str,
+    base_url: str,
+    model_ids: list[str],
+    provider_id: Optional[str] = None,
+    provider_name: Optional[str] = None,
+    active_model_id: Optional[str] = None,
+    skip_probe: bool = True,
+) -> dict:
+    """Add multiple provider models in one pass.
+
+    When ``skip_probe`` is True (preset batch path), nothing is chat-probed.
+    Config keys default to each ``provider_model_id``.
+    """
+    if not model_ids:
+        return {
+            "added": [],
+            "skipped": [],
+            "active": None,
+            "message": "No models selected",
+        }
+
+    base_url = normalize_provider_base_url(base_url, require_https=True)
+    added: list[str] = []
+    skipped: list[str] = []
+    known = set(list_models())
+
+    for model_id in model_ids:
+        key = model_id.strip()
+        if not key:
+            continue
+        if key in known:
+            skipped.append(key)
+            continue
+        if not skip_probe:
+            probe = probe_model_connection(
+                api_key=api_key,
+                base_url=base_url,
+                provider_model_id=key,
+            )
+            if not probe.get("success"):
+                skipped.append(key)
+                continue
+        add_model(
+            key,
+            api_key,
+            base_url,
+            model_name=key,
+            provider_id=provider_id,
+            provider_name=provider_name,
+        )
+        added.append(key)
+        known.add(key)
+
+    active: Optional[str] = None
+    if added:
+        active = active_model_id if active_model_id in added else added[0]
+        set_active_model(active)
+
+    count = len(added)
+    message = f"已添加 {count} 个模型，请到 /model 查看"
+    return {
+        "added": added,
+        "skipped": skipped,
+        "active": active,
+        "message": message,
+    }
+
+
 def remove_model(name: str) -> bool:
     cfg = load_config()
     models = cfg.get("models", {})
