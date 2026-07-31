@@ -43,9 +43,11 @@ describe("onboardModelsBatch", () => {
     expect(result.active).toBe("deepseek-chat");
     expect(result.message).toContain("Added");
 
-    const call = axiosPost.mock.calls[0];
-    expect(String(call?.[0])).toContain("/models/onboard/batch");
-    expect(call?.[1]).toEqual({
+    expect(axiosPost.mock.calls.length).toBeGreaterThan(0);
+    const url = String((axiosPost.mock.calls[0] as unknown[])[0]);
+    const payload = (axiosPost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(url).toContain("/models/onboard/batch");
+    expect(payload).toEqual({
       api_key: "sk-batch",
       base_url: "https://api.deepseek.com/v1",
       model_ids: ["deepseek-chat", "deepseek-reasoner"],

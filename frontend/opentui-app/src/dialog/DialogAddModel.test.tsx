@@ -21,7 +21,8 @@ const axiosGet = mock((url: string) => {
   return Promise.resolve({ data: { models: [], active: "", recent: [] } });
 });
 
-const axiosPost = mock((url: string, body?: Record<string, unknown>) => {
+const axiosPost = mock(
+  (url: string, body?: Record<string, unknown>): Promise<{ data: Record<string, unknown> }> => {
   void body;
   if (url.endsWith("/models/discover")) {
     return Promise.resolve({
@@ -206,7 +207,7 @@ describe("DialogAddModel (headless mockInput)", () => {
   });
 
   test("auth discover failure returns to API Key screen, not manual model", async () => {
-    axiosPost.mockImplementationOnce((url: string) => {
+    axiosPost.mockImplementationOnce((url: string, _body?: Record<string, unknown>) => {
       if (String(url).endsWith("/models/discover")) {
         const err = Object.assign(new Error("Request failed"), {
           isAxiosError: true,
@@ -253,7 +254,7 @@ describe("DialogAddModel (headless mockInput)", () => {
   });
 
   test("unsupported_catalogue discover failure opens manual model entry", async () => {
-    axiosPost.mockImplementationOnce((url: string) => {
+    axiosPost.mockImplementationOnce((url: string, _body?: Record<string, unknown>) => {
       if (String(url).endsWith("/models/discover")) {
         const err = Object.assign(new Error("Request failed"), {
           isAxiosError: true,

@@ -9,6 +9,8 @@ export type ModelInfo = {
   provider_model_id?: string;
   base_url?: string;
   active?: boolean;
+  category?: string;
+  provider_name?: string;
 };
 
 export async function probeModels(): Promise<{

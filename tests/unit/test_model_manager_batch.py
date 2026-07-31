@@ -70,7 +70,7 @@ def test_onboard_models_batch_skips_probe_and_adds_multiple(monkeypatch):
 def test_onboard_models_batch_skips_existing_ids(monkeypatch):
     from RxyCode.RxyCode1_1_0.config import model_manager
 
-    state = _in_memory_config(
+    _state = _in_memory_config(
         monkeypatch,
         model_manager,
         {
