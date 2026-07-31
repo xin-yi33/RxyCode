@@ -40,6 +40,12 @@ test-results.xml
 venv/
 env/
 
+# --- 备份 / 临时副本（禁止入库）---
+*.bak
+*.orig
+*.old
+*.rej
+
 # --- Node / frontend ---
 frontend/node_modules/
 # dist/ is needed for installation — track only the built bundle
