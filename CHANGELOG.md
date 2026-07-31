@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Preset batch model onboarding** — after discover on a preset provider, the
+  add-model wizard shows a multi-select list (default all checked) and saves via
+  `POST /models/onboard/batch` with `skip_probe=true` (no per-model chat probe)
+- **`POST /models/onboard/batch`** — add multiple discovered models in one
+  request; returns `{added, skipped, active, message}`
+- **`GET /models` category field** — each model includes `category` from
+  `provider_name` for grouped `/model` display
+
 - **Provider connection presets** — `GET /models/presets` returns ten mainstream
   LLM providers as `{id, name, base_url, category}`. Presets are deliberately
   provider-level only: no preset pins a model id, so the table cannot go stale
@@ -33,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backed by actual history
 
 ### Changed
+
+- **Preset add-model skips nickname** — preset path goes discover → multi-select
+  → batch save; custom URL path still uses single onboard with probe
+- **`/model` groups by provider** — models appear under provider name buckets
+  (最近常用 / DeepSeek / … / 其他 / 操作) instead of a flat list
 
 - **`/addmodel` follows the OpenCode "connect a provider" flow** — the wizard is
   now built from the shared `DialogSelect` / `DialogPrompt` components

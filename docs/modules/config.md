@@ -10,6 +10,11 @@ Manages all RxyCode configuration: model settings, API keys, active model select
 | credential_store.py | Atomic owner-only credential storage; DPAPI protection on Windows |
 | model_manager.py | Model CRUD plus persisted and unsaved connection probes |
 
+`add_model()` accepts optional `provider_id` and `provider_name` metadata for
+grouping in `/model`. `onboard_models_batch()` adds multiple models in one pass;
+when `skip_probe=True` (preset batch path) it never calls
+`probe_model_connection()`.
+
 `model_manager.probe_model_connection()` accepts an API key, base URL, and
 provider model ID directly and performs no persistence. The API onboarding flow
 uses it before `add_model()`, so invalid credentials cannot leave a broken model

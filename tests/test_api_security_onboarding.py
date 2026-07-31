@@ -570,7 +570,7 @@ def test_failed_discovery_reports_400_and_redacts_the_credential(monkeypatch):
     detail = response.json()["detail"]
     assert isinstance(detail, dict)
     assert detail["error_code"] == "transport"
-    assert "Discovery failed" in detail["message"]
+    assert "discovery failed" in detail["message"].lower()
     add.assert_not_called()
 
 
