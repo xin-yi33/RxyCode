@@ -323,6 +323,38 @@ class ModelOnboardingRequest(BaseModel):
         return normalize_provider_base_url(value, require_https=True)
 
 
+class ModelBatchOnboardingRequest(BaseModel):
+  api_key: SecretStr
+  base_url: str
+  model_ids: list[str]
+  provider_id: str | None = None
+  provider_name: str | None = None
+  active_model_id: str | None = None
+  skip_probe: bool = True
+
+  @field_validator("api_key")
+  @classmethod
+  def validate_api_key(cls, value: SecretStr) -> SecretStr:
+    if not value.get_secret_value().strip():
+      raise ValueError("api_key must not be empty")
+    return value
+
+  @field_validator("base_url")
+  @classmethod
+  def validate_base_url(cls, value: str) -> str:
+    from .config.model_manager import normalize_provider_base_url
+
+    return normalize_provider_base_url(value, require_https=True)
+
+  @field_validator("model_ids")
+  @classmethod
+  def validate_model_ids(cls, value: list[str]) -> list[str]:
+    cleaned = [item.strip() for item in value if item and item.strip()]
+    if not cleaned:
+      raise ValueError("model_ids must not be empty")
+    return cleaned
+
+
 class ModelDiscoveryRequest(BaseModel):
     """Credentials for a read-only provider catalogue lookup.
 
@@ -958,6 +990,8 @@ async def get_models():
             "provider_model_id": mcfg.get("model_name", name),
             "base_url": mcfg.get("base_url", ""),
             "active": name == active,
+            "category": mcfg.get("provider_name") or mcfg.get("category") or "其他",
+            "provider_name": mcfg.get("provider_name", ""),
         })
     return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
 
@@ -1067,6 +1101,36 @@ async def onboard_model(req: ModelOnboardingRequest):
             "active": True,
         },
         "probe": {"elapsed": probe.get("elapsed")},
+    }
+
+
+@app.post("/models/onboard/batch", status_code=201)
+async def onboard_models_batch(req: ModelBatchOnboardingRequest):
+    """Add multiple discovered models without per-model chat probes."""
+    from .config.model_manager import onboard_models_batch as batch_onboard
+
+    api_key = req.api_key.get_secret_value().strip()
+    result = await _asyncio.to_thread(
+        batch_onboard,
+        api_key=api_key,
+        base_url=req.base_url,
+        model_ids=req.model_ids,
+        provider_id=req.provider_id,
+        provider_name=req.provider_name,
+        active_model_id=req.active_model_id,
+        skip_probe=req.skip_probe,
+    )
+    if not result.get("added"):
+        raise HTTPException(
+            status_code=400,
+            detail="No models were added; all selected ids may already exist",
+        )
+    return {
+        "action": "models_added",
+        "message": result.get("message", "Models added"),
+        "added": result.get("added", []),
+        "skipped": result.get("skipped", []),
+        "active": result.get("active"),
     }
 
 

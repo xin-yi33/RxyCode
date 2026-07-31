@@ -666,3 +666,120 @@ def test_model_listing_reports_real_switch_history(monkeypatch):
     assert response.status_code == 200
     # stale entries are pruned so the TUI never offers a deleted model
     assert response.json()["recent"] == ["beta", "alpha"]
+
+
+def test_model_listing_includes_category_from_provider_name(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import settings
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    monkeypatch.setattr(
+        settings,
+        "load_config",
+        lambda: {
+            "models": {
+                "deepseek-chat": {
+                    "model_name": "deepseek-chat",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "provider_name": "DeepSeek",
+                },
+                "legacy-model": {
+                    "model_name": "legacy-model",
+                    "base_url": "https://legacy.example/v1",
+                },
+            },
+            "active_model": "deepseek-chat",
+            "recent_models": [],
+        },
+    )
+    token = api_server.configure_api_token("category-listing-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    models = {item["id"]: item for item in response.json()["models"]}
+    assert models["deepseek-chat"]["category"] == "DeepSeek"
+    assert models["legacy-model"]["category"] == "其他"
+
+
+def test_batch_onboarding_adds_models_without_probe(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    probe = MagicMock()
+    batch = MagicMock(
+        return_value={
+            "added": ["deepseek-chat", "deepseek-reasoner"],
+            "skipped": [],
+            "active": "deepseek-chat",
+            "message": "Added 2 models",
+        }
+    )
+    monkeypatch.setattr(model_manager, "probe_model_connection", probe)
+    monkeypatch.setattr(model_manager, "onboard_models_batch", batch)
+    token = api_server.configure_api_token("batch-onboard-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.post(
+            "/models/onboard/batch",
+            json={
+                "api_key": "sk-batch-secret",
+                "base_url": "https://api.deepseek.com/v1",
+                "model_ids": ["deepseek-chat", "deepseek-reasoner"],
+                "provider_id": "deepseek",
+                "provider_name": "DeepSeek",
+                "active_model_id": "deepseek-chat",
+                "skip_probe": True,
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["action"] == "models_added"
+    assert payload["added"] == ["deepseek-chat", "deepseek-reasoner"]
+    assert payload["active"] == "deepseek-chat"
+    assert "sk-batch-secret" not in response.text
+    probe.assert_not_called()
+    batch.assert_called_once_with(
+        api_key="sk-batch-secret",
+        base_url="https://api.deepseek.com/v1",
+        model_ids=["deepseek-chat", "deepseek-reasoner"],
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+        active_model_id="deepseek-chat",
+        skip_probe=True,
+    )
+
+
+def test_batch_onboarding_returns_400_when_nothing_added(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    monkeypatch.setattr(
+        model_manager,
+        "onboard_models_batch",
+        lambda **kwargs: {
+            "added": [],
+            "skipped": ["deepseek-chat"],
+            "active": None,
+            "message": "All models already exist",
+        },
+    )
+    token = api_server.configure_api_token("batch-empty-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.post(
+            "/models/onboard/batch",
+            json={
+                "api_key": "sk-batch-empty",
+                "base_url": "https://api.deepseek.com/v1",
+                "model_ids": ["deepseek-chat"],
+            },
+        )
+
+    assert response.status_code == 400
+    assert "sk-batch-empty" not in response.text
+
