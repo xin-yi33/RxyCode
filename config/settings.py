@@ -29,6 +29,15 @@ LEGACY_USER_DATA_DIR = Path.home() / ".rxycode"
 # one-time migration; new installs never write here.
 LEGACY_DATA_DIR = Path(__file__).parent.parent / "data"
 
+# 允许跨域访问 API 的来源。默认只放行 TUI / Desktop 实际使用的端口。
+# 生产部署可用环境变量 RXYCODE_ALLOWED_ORIGINS 覆盖（逗号分隔）。
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:8765",
+    "http://127.0.0.1:8765",
+    "http://localhost:5173",   # Vite dev server（Desktop 开发用）
+    "http://127.0.0.1:5173",
+)
+
 
 def get_data_dir() -> Path:
     env = os.environ.get("RXYCODE_DATA_DIR")

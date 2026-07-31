@@ -77,14 +77,14 @@ def test_cors_preflight_remains_public(monkeypatch):
         response = client.options(
             "/status",
             headers={
-                "Origin": "http://localhost:3000",
+                "Origin": "http://127.0.0.1:8765",
                 "Access-Control-Request-Method": "GET",
                 "Access-Control-Request-Headers": "authorization",
             },
         )
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:8765"
 
 
 @pytest.mark.parametrize(

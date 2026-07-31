@@ -173,21 +173,26 @@ def _is_loopback_client(host: str | None) -> bool:
     except ValueError:
         return False
 
-# FIX: CORS - allow localhost origins for Ink TUI and development
-_allowed_origins = [
-    "http://localhost:8765",
-    "http://127.0.0.1:8765",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+def _resolve_allowed_origins() -> list[str]:
+    """解析 CORS 白名单：环境变量优先，否则用 settings 默认值。"""
+    import os
+    from config.settings import DEFAULT_ALLOWED_ORIGINS
+
+    raw = os.environ.get("RXYCODE_ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return list(DEFAULT_ALLOWED_ORIGINS)
+
+
+# FIX: CORS - explicit origin allowlist for Ink TUI / OpenTUI / dev servers
+_allowed_origins = _resolve_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?",
+    # 注意：不要加回正则放行 localhost 任意端口。等同于让本机任何网页
+    # 驱动一个有写文件 / 执行 shell 能力的 Agent。
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 # Backend Patterns: Global error handler

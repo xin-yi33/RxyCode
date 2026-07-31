@@ -26,6 +26,9 @@ entry behind. `test_model_connection()` remains the persisted-model wrapper.
 - get_active_model_config() -> dict: Returns config for the currently active model.
 - get_mcp_config() -> dict: Returns MCP servers configuration.
 - get_scheduler_config() -> dict: Returns scheduler configuration.
+- DEFAULT_ALLOWED_ORIGINS: tuple of CORS origins allowed for the local API
+  (`http://127.0.0.1:8765`, Vite `5173`, etc.). Override with env
+  `RXYCODE_ALLOWED_ORIGINS` (comma-separated).
 
 ## Default Config Structure
 - models: dict of model_name -> {api_key_env or api_key_secret, base_url, model_name}
