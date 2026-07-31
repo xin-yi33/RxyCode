@@ -91,6 +91,7 @@ export function DialogAddModel({
   const [presetsLoaded, setPresetsLoaded] = useState(false);
   const [providerName, setProviderName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [urlIsCustom, setUrlIsCustom] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [discovered, setDiscovered] = useState<DiscoveredModel[]>([]);
   const [modelId, setModelId] = useState("");
@@ -109,15 +110,23 @@ export function DialogAddModel({
     setStage("discovering");
     setError("");
     const result = await discoverModels({ apiKey: key, baseUrl: url });
-    if (!result.ok || result.models.length === 0) {
-      // No catalogue (or provider refused): fall back to manual model entry
-      // rather than dead-ending the user.
-      setError(result.error || "该服务商未返回可用模型，请手动输入模型 ID");
+    if (result.ok && result.models.length > 0) {
+      setDiscovered(result.models);
+      setStage("model");
+      return;
+    }
+    const code = result.errorCode ?? (result.ok ? "unsupported_catalogue" : "transport");
+    setError(result.error || "查询模型失败");
+    if (code === "unsupported_catalogue") {
+      setDiscovered([]);
       setStage("manual_model");
       return;
     }
-    setDiscovered(result.models);
-    setStage("model");
+    if (code === "https" && urlIsCustom) {
+      setStage("custom_url");
+      return;
+    }
+    setStage("api_key");
   };
 
   const save = async (nickname: string) => {
@@ -155,6 +164,7 @@ export function DialogAddModel({
             setError("");
             if (opt.value === CUSTOM_ID) {
               setProviderName("自定义");
+              setUrlIsCustom(true);
               setStage("custom_url");
               return;
             }
@@ -162,6 +172,7 @@ export function DialogAddModel({
             if (!preset) return;
             setProviderName(preset.name);
             setBaseUrl(preset.base_url);
+            setUrlIsCustom(false);
             setStage("api_key");
           }}
         />
@@ -180,12 +191,18 @@ export function DialogAddModel({
           hint="携带密钥的连接必须使用 HTTPS"
           onCancel={() => setStage("provider")}
           onSubmit={(text) => {
-            if (!text) {
+            const trimmed = text.trim();
+            if (!trimmed) {
               setError("API URL 不能为空");
               return;
             }
+            if (!/^https:\/\//i.test(trimmed)) {
+              setError("API URL 必须使用 HTTPS");
+              return;
+            }
             setError("");
-            setBaseUrl(text);
+            setBaseUrl(trimmed);
+            setUrlIsCustom(true);
             setStage("api_key");
           }}
         />
@@ -202,7 +219,7 @@ export function DialogAddModel({
           placeholder="sk-…"
           mask
           hint={`回车后向 ${baseUrl} 查询可用模型；密钥仅掩码回显`}
-          onCancel={() => setStage("provider")}
+          onCancel={() => setStage(urlIsCustom ? "custom_url" : "provider")}
           onSubmit={(text) => {
             if (!text) {
               setError("API Key 不能为空");
@@ -229,7 +246,7 @@ export function DialogAddModel({
           options={buildModelOptions(discovered)}
           categoryOrder={["可用模型", "操作"]}
           placeholder="搜索模型"
-          onClose={onClose}
+          onClose={() => setStage("api_key")}
           onSelect={(opt) => {
             setError("");
             if (opt.value === MANUAL_MODEL_ID) {
@@ -252,7 +269,7 @@ export function DialogAddModel({
           title="添加模型 · 模型 ID"
           placeholder="服务商 API 期望的精确模型 ID"
           hint="例如 provider 文档中的 model 字段取值"
-          onCancel={() => setStage(discovered.length > 0 ? "model" : "provider")}
+          onCancel={() => setStage(discovered.length > 0 ? "model" : "api_key")}
           onSubmit={(text) => {
             if (!text) {
               setError("模型 ID 不能为空");

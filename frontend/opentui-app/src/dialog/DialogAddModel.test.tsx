@@ -34,8 +34,14 @@ const axiosPost = mock((url: string, body?: Record<string, unknown>) => {
 });
 
 mock.module("axios", () => ({
-  default: { get: axiosGet, post: axiosPost, isAxiosError: () => false },
-  isAxiosError: () => false,
+  default: {
+    get: axiosGet,
+    post: axiosPost,
+    isAxiosError: (err: unknown) =>
+      Boolean(err && typeof err === "object" && (err as { isAxiosError?: boolean }).isAxiosError),
+  },
+  isAxiosError: (err: unknown) =>
+    Boolean(err && typeof err === "object" && (err as { isAxiosError?: boolean }).isAxiosError),
 }));
 
 const { DialogAddModel, buildProviderOptions, buildModelOptions } = await import(
@@ -158,6 +164,161 @@ describe("DialogAddModel (headless mockInput)", () => {
       expect(discoverCall).toBeDefined();
       // the base URL comes from the backend preset, not a frontend constant
       expect(discoverCall?.[1]?.base_url).toBe("https://api.deepseek.com/v1");
+    } finally {
+      renderer.destroy();
+    }
+  });
+
+  test("auth discover failure returns to API Key screen, not manual model", async () => {
+    axiosPost.mockImplementationOnce((url: string) => {
+      if (String(url).endsWith("/models/discover")) {
+        const err = Object.assign(new Error("Request failed"), {
+          isAxiosError: true,
+          response: {
+            data: {
+              detail: {
+                message: "Model discovery failed: 认证失败",
+                error_code: "auth",
+              },
+            },
+          },
+        });
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ data: { action: "model_added", message: "ok" } });
+    });
+
+    const { mockInput, flush, waitForFrame, renderer } = await testRender(
+      <DialogAddModel onClose={() => {}} onDone={() => {}} />,
+      { width: 80, height: 28 },
+    );
+    try {
+      await flush();
+      await flush();
+      await mockInput.typeText("deepseek");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("API Key"));
+      await mockInput.typeText("sk-bad");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      const keyAgain = await waitForFrame(
+        (frame) => frame.includes("API Key") && frame.includes("认证"),
+      );
+      expect(keyAgain).toContain("API Key");
+      expect(keyAgain).not.toContain("添加模型 · 模型 ID");
+    } finally {
+      renderer.destroy();
+    }
+  });
+
+  test("unsupported_catalogue discover failure opens manual model entry", async () => {
+    axiosPost.mockImplementationOnce((url: string) => {
+      if (String(url).endsWith("/models/discover")) {
+        const err = Object.assign(new Error("Request failed"), {
+          isAxiosError: true,
+          response: {
+            data: {
+              detail: {
+                message: "Model discovery failed: 未提供 OpenAI 兼容的模型目录",
+                error_code: "unsupported_catalogue",
+              },
+            },
+          },
+        });
+        return Promise.reject(err);
+      }
+      return Promise.resolve({ data: { action: "model_added", message: "ok" } });
+    });
+
+    const { mockInput, flush, waitForFrame, renderer } = await testRender(
+      <DialogAddModel onClose={() => {}} onDone={() => {}} />,
+      { width: 80, height: 28 },
+    );
+    try {
+      await flush();
+      await flush();
+      await mockInput.typeText("deepseek");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("API Key"));
+      await mockInput.typeText("sk-ok");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      const manual = await waitForFrame((frame) => frame.includes("模型 ID"));
+      expect(manual).toContain("添加模型 · 模型 ID");
+    } finally {
+      renderer.destroy();
+    }
+  });
+
+  test("custom URL rejects plaintext http before calling discover", async () => {
+    axiosPost.mockClear();
+    const { mockInput, flush, waitForFrame, captureCharFrame, renderer } = await testRender(
+      <DialogAddModel onClose={() => {}} onDone={() => {}} />,
+      { width: 80, height: 28 },
+    );
+    try {
+      await flush();
+      await flush();
+      await mockInput.typeText("自定义");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("API URL"));
+      await mockInput.typeText("http://example.com/v1");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await flush();
+      const frame = captureCharFrame();
+      expect(frame).toContain("HTTPS");
+      const discoverCalls = axiosPost.mock.calls.filter((call) =>
+        String(call[0]).endsWith("/models/discover"),
+      );
+      expect(discoverCalls).toHaveLength(0);
+    } finally {
+      renderer.destroy();
+    }
+  });
+
+  test("model list Escape returns to API Key instead of closing", async () => {
+    let closed = false;
+    const { mockInput, flush, waitForFrame, renderer } = await testRender(
+      <DialogAddModel onClose={() => { closed = true; }} onDone={() => {}} />,
+      { width: 80, height: 28 },
+    );
+    try {
+      await flush();
+      await flush();
+      await mockInput.typeText("deepseek");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("API Key"));
+      await mockInput.typeText("sk-test-key");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("deepseek-chat"));
+      await act(async () => {
+        mockInput.pressEscape();
+      });
+      const keyAgain = await waitForFrame((frame) => frame.includes("API Key"));
+      expect(keyAgain).toContain("API Key");
+      expect(closed).toBe(false);
     } finally {
       renderer.destroy();
     }
