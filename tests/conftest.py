@@ -19,6 +19,24 @@ import pytest
 from langchain_core.messages import AIMessage
 
 
+#: On CI set to "1". Missing required external tools fail instead of skip,
+#: so distribution gates cannot silently report green.
+STRICT_TOOLING = os.environ.get("RXYCODE_STRICT_TOOLING") == "1"
+
+
+def require_tool(name: str, *, reason: str) -> None:
+    """Ensure external tool *name* is available.
+
+    In strict mode a missing tool fails the test; locally it skips.
+    """
+    if shutil.which(name):
+        return
+    message = f"external tool {name!r} not found (needed for: {reason})"
+    if STRICT_TOOLING:
+        pytest.fail(message + " — RXYCODE_STRICT_TOOLING=1 forbids skipping")
+    pytest.skip(message)
+
+
 _ISOLATED_ENV_KEYS = (
     "HOME",
     "USERPROFILE",

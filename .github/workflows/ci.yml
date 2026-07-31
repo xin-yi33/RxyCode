@@ -82,6 +82,7 @@ jobs:
       # entrypoints and first-party packages with a separately calibrated gate.
       RXYCODE_CORE_COVERAGE_FAIL_UNDER: "67"
       RXYCODE_PROJECT_COVERAGE_FAIL_UNDER: "60"
+      RXYCODE_STRICT_TOOLING: "1"
       RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
       RXYCODE_KEEP_TEST_ARTIFACTS: "1"
     steps:

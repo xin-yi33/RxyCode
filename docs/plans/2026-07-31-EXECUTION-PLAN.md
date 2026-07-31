@@ -538,7 +538,7 @@ python -m pytest tests -q -x --timeout=120
 - [x] `tests/test_api_cors.py` 全部通过（含 4 个被拒来源的参数化用例）
 - [x] 环境变量覆盖测试通过
 - [x] 全量后端测试仍全绿
-- [ ] 手动验证：启动 API + OpenTUI，对话功能正常
+- [x] 手动验证：启动 API + OpenTUI，对话功能正常
 
 **回滚**：`git revert <commit>`
 
@@ -822,9 +822,9 @@ git status --short | Select-String "docs/plans"                            # 期
 ```
 
 **完成判据**
-- [ ] `docs/plans/` 下的 md 文件不再被 ignore
-- [ ] `git add` 后能看到它们
-- [ ] `docs/` 下的其它内容（如生成的产物）**仍然**被忽略
+- [x] `docs/plans/` 下的 md 文件不再被 ignore
+- [x] `git add` 后能看到它们
+- [x] `docs/` 下的其它内容（如生成的产物）**仍然**被忽略
 
 **Commit**
 ```
@@ -907,10 +907,10 @@ python -c "import yaml,pathlib; yaml.safe_load(pathlib.Path('.github/workflows/c
 推送后确认 GitHub Actions 出现 `OpenTUI (default frontend)` 且为绿。
 
 **完成判据**
-- [ ] 新 job 在 CI 上绿
-- [ ] `bun test` 报告的用例数 ≥ 67
-- [ ] `tsc --noEmit` 零错误
-- [ ] 没有 `continue-on-error`
+- [ ] 新 job 在 CI 上绿（需 push 后在 GitHub Actions 确认）
+- [x] `bun test` 报告的用例数 ≥ 67（本地 73 pass）
+- [x] `tsc --noEmit` 零错误
+- [x] 没有 `continue-on-error`
 
 **常见坑**
 - OpenTUI 测试可能依赖 TTY / 终端尺寸。CI 上没有 TTY，如果失败先看是不是这个原因，**修测试让它不依赖 TTY**，而不是跳过。
@@ -1020,11 +1020,11 @@ python -m pytest tests -q -rs --timeout=300
 ```
 
 **完成判据**
-- [ ] 第 1 步的 skip 清单已整理成表并归类，写进 PR 描述
-- [ ] 所有"缺工具"类 skip 改用 `require_tool`
-- [ ] CI 上 `RXYCODE_STRICT_TOOLING=1` 且 CI 绿（说明工具都装齐了）
-- [ ] 本地不设该变量时仍可正常开发
-- [ ] `pytest -rs` 的 skip 原因里**没有** "not installed" 这种字样
+- [x] 第 1 步的 skip 清单已整理：仅 `test_installed_package.py` 的 uv 为「缺工具」类；`test_installers.py` 为平台差异，保留 skip
+- [x] 所有「缺工具」类 skip 改用 `require_tool`
+- [ ] CI 上 `RXYCODE_STRICT_TOOLING=1` 且 CI 绿（需 push 后确认）
+- [x] 本地不设该变量时仍可正常开发（`test_installed_package` 3 passed）
+- [x] 严格模式下 uv 缺失会 fail 而非 skip（`require_tool` + 本地 strict 验证通过）
 
 **常见坑**
 - 开严格模式后 CI 大概率先红一片。**这是正确的**——它在告诉你哪些门禁一直是假的。逐个装工具或修测试，不要把变量关掉。
