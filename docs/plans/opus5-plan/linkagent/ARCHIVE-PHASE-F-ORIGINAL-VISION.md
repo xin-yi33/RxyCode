@@ -1,21 +1,55 @@
-# Phase F · SkillForest / PersonaAgent 落地设想
+# 【已归档】Phase F · SkillForest / PersonaAgent 落地设想
 
-> ## ⛔ 状态：暂不开发
+> # ⛔⛔ 这份文档已作废，不要照着它施工 ⛔⛔
 >
-> **这个模块目前不进入开发排期。** 本文档不是施工图,没有任务卡,没有验收命令。
-> 它做两件事:① 把论文的结论翻译成 RxyCode 的工程语言 ② 记录"真要做的时候,先做哪一块、别做哪一块"。
+> **归档日期**：2026-07-31
+> **接替它的**：整个 [`linkagent/`](./README.md) 目录
 >
-> 论文原文:`D:\agent-demo\SkillForest\paper\paper_EN.md`
+> ## 为什么作废
+>
+> **两条原因，任一条都足以让它失效：**
+>
+> **① 项目形态变了。** 当时的设想是"在 RxyCode 里加一个 Phase F"。后来决定**独立成一个新项目 LinkAgent**，RxyCode 本体保持不动。所以这里描述的"挂在 `core/safety/` 上""复用 `tools/skill_manager.py`"之类的落地方式全部不适用。
+>
+> **② 数据源变了，而且结论被推翻。** 本文档基于论文的**旧版本**（`paper_EN.md`，标题还叫 SkillForest）。后来论文重写为 *Individualized Agent*（`paper_CN_rewrite.md`），实验协议和结果都不同。**最关键的两处反转**：
+>
+> | 本文档说 | 新论文实测 |
+> |---|---|
+> | 「**别建森林索引**」——森林路由 Recall@10 掉 13.4pp，<1000 技能时平铺更好 | **情境化检索是端到端贡献最大的模块**（−1.85pp 移除损失）。Recall@5 从 28.06% 拉到 98.42% |
+> | 「**AED 打不过一个简单的成功轨迹缓存**」——62.5% vs 75%，波动 75pp | AED 形成率 78.8%（126/160），held-out 复用 75 个成功；受控套件 48/48 |
+> | 全系统绝对成功率只有 22.7%，「四次里三次失败」 | 完整系统 **77.54%**，比纯 Prompt 高 5.27pp |
+> | Shapley 分解：SAG +0.445 / PCDR 0.000 / 经验演化 −0.014 | 新协议不用 Shapley。三个显著模块是**检索 / 安全门 / 反馈演化** |
+>
+> **准确的当前数字看** [`APPENDIX-B-PAPER-EVIDENCE.md`](./APPENDIX-B-PAPER-EVIDENCE.md)。
+>
+> ## 那它为什么还留着
+>
+> 两点仍然有价值，已经被新文档吸收：
+>
+> - **§8 的评测方法论**（配对消融共享原始输出、runtime–scoring 隔离、失败留在分母、预注册阈值）——这些方法本身是对的，新论文也在用。见 [`L7-EVAL-HARNESS.md`](./L7-EVAL-HARNESS.md)
+> - **§9 的疑虑清单**——其中"绝对成功率太低"已被新数据解决，但"心智成本""生命周期缺自动清理"仍然成立
+>
+> 除此之外，**以下内容全部按历史记录看待，不要当作依据。**
+
+---
+
+<details>
+<summary>以下为原文（2026-07-31 归档前的内容）</summary>
+
+---
+
+# Phase F · SkillForest / PersonaAgent 落地设想（原文）
+
+> 论文原文:`D:\agent-demo\SkillForest\paper\paper_EN.md`（**旧版**）
 > 标题:*PersonaAgent: Executable Skill Lifecycle Management and Structured Reasoning Offloading*
 > 作者:Xin-Yi Ruan
 >
-> **前置**:主计划 Phase 0–3 + Phase A/B/C/D 全部完成,且 [`PHASE-E-PERSONA-AGENT-INTERFACE.md`](./PHASE-E-PERSONA-AGENT-INTERFACE.md) 的六张预留卡已经做掉。
 > **创建**:2026-07-31
 
 ---
 
 > **📌 编号说明**
-> 你说的是"Phase D",但 D 已经被多模态占了([`PHASE-D-MULTIMODAL.md`](./PHASE-D-MULTIMODAL.md)),所以这里用 F。
+> 你说的是"Phase D",但 D 已经被多模态占了([`PHASE-D-MULTIMODAL.md`](../rxycode/PHASE-D-MULTIMODAL.md)),所以这里用 F。
 > 想改成 D 的话跟我说一声,我把多模态挪到别的号。
 
 ---
@@ -397,3 +431,15 @@ Persona = 在某个 domain 下,一组 active EKO 解析出来的 AgentSpec
 **所以 SkillForest 在 RxyCode 的落地不是一个 5 万行的系统,而是四层里的前两层**:一个纯代码的激活前安全闸门,加一套 skill 元数据和生命周期。这两层加起来量级不大,而且都能挂在 RxyCode 已有的模块上(`core/safety/`、`tools/skill_manager.py`)。
 
 后两层等有了真实数据再说。
+
+---
+
+</details>
+
+---
+
+> ## 📌 再说一遍：上面的内容已作废
+>
+> 特别是 §11 这个总结——「森林索引小库不划算」「经验演化输给一个简单缓存」两条都已被新论文的实测推翻。
+>
+> **当前有效的建设顺序在** [`APPENDIX-B-PAPER-EVIDENCE.md §7`](./APPENDIX-B-PAPER-EVIDENCE.md#7-结论linkagent-的建设顺序)。

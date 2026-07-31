@@ -1,6 +1,6 @@
 # Phase A · 模型适配层（Model Adaptation Layer）
 
-> **在整条路线中的位置**：本文件是 [`2026-07-31-EXECUTION-PLAN.md`](./2026-07-31-EXECUTION-PLAN.md) 的**后继扩展**，编号 Phase A。
+> **在整条路线中的位置**：本文件是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的**后继扩展**，编号 Phase A。
 > **前置条件**：主计划的 Phase 0（止血）与 Phase 1（Harness 说真话）**必须已完成**。原因见 §0.3。
 > **后继**：[`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md)
 >
@@ -1514,7 +1514,7 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 
 无输出才删。有输出就**不要删**，记进主计划 §10.4 待办池。
 
-5. 更新主计划 `2026-07-31-EXECUTION-PLAN.md` §3.2 的 Phase 表，把 Phase A 标为完成。
+5. 更新主计划 `00-EXECUTION-PLAN.md` §3.2 的 Phase 表，把 Phase A 标为完成。
 
 **完成判据**
 - [ ] `docs/modules/providers.md` 存在，按它能独立加出一个新 provider

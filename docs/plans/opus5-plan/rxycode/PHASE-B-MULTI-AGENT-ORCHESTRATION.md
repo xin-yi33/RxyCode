@@ -1,6 +1,6 @@
 # Phase B · 多 Agent 专家团编排（Expert Team Orchestration）
 
-> **在整条路线中的位置**：[`2026-07-31-EXECUTION-PLAN.md`](./2026-07-31-EXECUTION-PLAN.md) 的后继扩展，编号 Phase B。
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase B。
 > **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) 全部完成。
 > **后继**：[`PHASE-C-MULTI-MODEL-COLLABORATION.md`](./PHASE-C-MULTI-MODEL-COLLABORATION.md)
 >

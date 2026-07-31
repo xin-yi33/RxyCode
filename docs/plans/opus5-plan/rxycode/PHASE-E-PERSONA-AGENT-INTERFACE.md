@@ -1,6 +1,6 @@
 # Phase E · PersonaAgent 接口预留（Interface Reservation）
 
-> **在整条路线中的位置**：[`2026-07-31-EXECUTION-PLAN.md`](./2026-07-31-EXECUTION-PLAN.md) 之后的**开放式扩展位**，编号 Phase E。
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 之后的**开放式扩展位**，编号 Phase E。
 > **前置条件**：无硬前置。§4 的预留卡**要在 Phase B/C/D 执行过程中顺手做掉**，§5 的实现留到你想清楚再说。
 >
 > **这份文档和 A/B/C/D 不是一类东西。**
@@ -13,16 +13,24 @@
 >
 > ---
 >
-> **📌 2026-07-31 补充：设计已经不是完全空白了**
+> **📌 2026-07-31 更新：PersonaAgent 已经独立成 LinkAgent 项目**
 >
-> [`PHASE-F-SKILLFOREST-PERSONA-AGENT.md`](./PHASE-F-SKILLFOREST-PERSONA-AGENT.md) 记录了 SkillForest 论文的落地设想。**本文档 §4 的六张预留卡全部照做不变**（埋点、元数据、信任边界都是对的），但"埋完点之后干什么"的预期要按论文的实测数据修正两处：
+> 这份文档原来指向一份 `PHASE-F-SKILLFOREST-PERSONA-AGENT.md`，说"设计已经不是完全空白了"。两件事变了：
 >
-> | 本文档原来的假设 | 论文实测 | 修正 |
-> |---|---|---|
-> | E3/E4：采集数据 → 蒸馏是自然路径 | AED 自动蒸馏同域成功率 62.5%，**输给**持久化成功轨迹缓存的 75%，且两次运行波动 75pp | **先做轨迹缓存基线，蒸馏必须以缓存为对照做 A/B**。见 Phase F §5 第 4 层 |
-> | E1：frontmatter 里手填 `priority: 50` | 论文用 `confidence = (2+S)/(4+S+N)` 的 Beta(2,2) 证据更新 + 生命周期迟滞 | 手填 priority 只当**初始值**，真正的排序靠积累的证据。手填的数字会过期，证据不会 |
+> **① PersonaAgent 不再是 RxyCode 的一个 Phase。** 它独立成了 **LinkAgent** 项目（独立仓库，把 RxyCode 当 pip 依赖）。施工文档在 [`../linkagent/`](../linkagent/README.md)，架构见 [`../linkagent/00-OVERVIEW-AND-ARCHITECTURE.md`](../linkagent/00-OVERVIEW-AND-ARCHITECTURE.md)。
 >
-> 这两条**现在不需要改动本文档的任务卡**，等真要动经验演化那一层时再回来看。
+> **② 原来引用的实测数字来自论文旧版，已被推翻。** 论文重写为 *Individualized Agent* 之后，结论变了：
+>
+> | 本文档原来写的 | 新论文实测 |
+> |---|---|
+> | AED 自动蒸馏同域成功率 62.5%，**输给**轨迹缓存的 75%，波动 75pp | AED 形成率 **78.8%**（126/160），**75 个在 held-out 任务中复用成功**；受控套件 48/48 |
+> | 全系统绝对成功率 22.7% | 完整系统 **77.54%**，比纯 Prompt 高 **5.27 pp** |
+>
+> 准确的当前数字见 [`../linkagent/APPENDIX-B-PAPER-EVIDENCE.md`](../linkagent/APPENDIX-B-PAPER-EVIDENCE.md)。
+>
+> **对本文档的影响：§4 的六张预留卡全部照做不变。** 埋点、元数据、信任边界这三件事无论 PersonaAgent 在哪个仓库实现都需要，而且不提前做以后补不回来。
+>
+> 唯一要修正的是 **E1 的 `priority` 字段**：手填的数字只当**初始值**，真正的排序靠积累的证据（新论文的动态综合置信度按验证/执行/用户三类证据加权计算）。手填的数字会过期，证据不会。
 
 ---
 

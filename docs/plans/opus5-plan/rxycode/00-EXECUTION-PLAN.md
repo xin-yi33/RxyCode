@@ -807,7 +807,7 @@ docs/*
 3. 验证生效并入库：
 
 ```powershell
-git check-ignore -v "docs/plans/execution/2026-07-31-EXECUTION-PLAN.md"
+git check-ignore -v "docs/plans/opus5-plan/rxycode/00-EXECUTION-PLAN.md"
 # 期望：无输出（说明不再被忽略）
 
 git add docs/plans/
@@ -817,8 +817,8 @@ git status --short
 **验收命令**
 
 ```powershell
-git check-ignore -v "docs/plans/execution/2026-07-31-EXECUTION-PLAN.md"   # 期望：无输出
-git status --short | Select-String "docs/plans"                            # 期望：有 A 记录
+git check-ignore -v "docs/plans/opus5-plan/rxycode/00-EXECUTION-PLAN.md"   # 期望：无输出
+git status --short | Select-String "docs/plans"                             # 期望：有 A 记录
 ```
 
 **完成判据**
@@ -2333,17 +2333,21 @@ git status --short
 
 ### 11.1 文档清单
 
-五份文档全部位于 `docs/plans/opus5-plan/`，**严格按顺序执行，不要跳**。
+全部位于 `docs/plans/opus5-plan/rxycode/`，**严格按顺序执行，不要跳**。
+
+> **2026-07-31 目录重构**：本目录拆成了 `rxycode/` 和 `linkagent/` 两个子目录，本文件从
+> `2026-07-31-EXECUTION-PLAN.md` 更名为 `00-EXECUTION-PLAN.md`。
+> 干活的纪律统一在 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)，**先读它**。
 
 | 顺序 | 文件 | 覆盖内容 | 前置 | 工时 |
 |---|---|---|---|---|
-| **1** | `2026-07-31-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 Desktop | 无 | 20 周 |
+| **1** | `00-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 Desktop | 无 | 20 周 |
 | **2** | `PHASE-A-MODEL-ADAPTATION-LAYER.md` | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | 本文件 Phase 0 + Phase 1 | 3 周 |
 | **3** | `PHASE-B-MULTI-AGENT-ORCHESTRATION.md` | **多 Agent 专家团**：清理死代码、拆全局单例、AgentSpec / 团长 / SOP 状态机 / 机械验证门 / 成本熔断 / 难度路由 | 本文件 Phase 0–2 + Phase A | 8 周 |
 | **4** | `PHASE-C-MULTI-MODEL-COLLABORATION.md` | **多 Agent × 多模型**：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | 本文件 Phase 0–2 + Phase A + Phase B | 6 周 |
 | **5** | `PHASE-D-MULTIMODAL.md` | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 0–3 + Phase A + B + C | 6 周 |
 | **附** | `PHASE-E-PERSONA-AGENT-INTERFACE.md` | **PersonaAgent 接口预留**（不是施工图）：skill 元数据、蒸馏数据埋点、信任边界 | 无硬前置，§4 六张卡**插进 B/C/D 里顺手做** | 6 天 |
-| **⛔** | `PHASE-F-SKILLFOREST-PERSONA-AGENT.md` | **暂不开发。** SkillForest 论文（EKO / 森林索引 / PCDR / 五级优先级 / SAG / 双通道经验演化）的落地设想与取舍笔记 | 见该文档 §10 的启动条件 | 未排期 |
+| **↗** | ~~`PHASE-F-SKILLFOREST-PERSONA-AGENT.md`~~ | **已移出本路线。** PersonaAgent 独立成 [LinkAgent 项目](../linkagent/README.md)（独立仓库，把 RxyCode 当 pip 依赖）。原文档归档在 [`../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md`](../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md)，**结论已被新版论文推翻，不要照它施工** | — | 不在本路线 |
 
 > **2026-07-31 第 2 版的三处调整**：原 Phase C（多模态）改编号为 **Phase D**；新增 **Phase C（多 Agent × 多模型协作）**；新增 **Phase E**（PersonaAgent 接口预留）。
 > Phase B 从 6 周调整为 8 周——基于 GitHub 深度调研（见 Phase B §2）补入了 SOP 状态机、机械验证门、成本熔断、难度路由四块，这些在第 1 版里缺失。
@@ -2379,18 +2383,20 @@ Phase E 的六张预留卡不在这条链上，按 Phase E §4 的表插进 B/C/
   E1 E5 → Phase B 开始前     E2 → 和 B3 一起
   E3    → 和 B12 一起        E4 → 和 C11 一起      E6 → Phase B 收尾后
 
-Phase F ⛔ 不在这条链上，也不在排期内。
+原 Phase F 已移出本路线，见 §11.2.1。
 ```
 
-### 11.2.1 关于 Phase F（暂不开发）
+### 11.2.1 关于原 Phase F（已移出本路线）
 
-`PHASE-F-SKILLFOREST-PERSONA-AGENT.md` 是 SkillForest 论文（*PersonaAgent: Executable Skill Lifecycle Management and Structured Reasoning Offloading*，Xin-Yi Ruan）在 RxyCode 的落地设想。
+PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成了 **LinkAgent** 项目——独立仓库、独立排期，把 RxyCode 当 `pip` 依赖，**不改 RxyCode 一行代码**。
 
-**它不进入开发排期。** 没有任务卡、没有工时、没有验收命令。任何模型接到"做 Phase F"这类指令时，**先回到该文档 §10 核对启动条件**，六条不满足就不要开工。
+- 施工文档：[`../linkagent/README.md`](../linkagent/README.md)
+- 架构：[`../linkagent/00-OVERVIEW-AND-ARCHITECTURE.md`](../linkagent/00-OVERVIEW-AND-ARCHITECTURE.md)
+- 原 Phase F 文档归档在 [`../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md`](../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md)
 
-它现在的作用是两条：
-1. **记录论文的负面实测结果**，避免以后把已经被证伪的方向再走一遍。三条最关键的：森林索引在千级以下技能库不划算；PCDR 的端到端 Shapley 边际贡献是 **0**；AED 自动蒸馏**输给**一个简单的持久化成功轨迹缓存。
-2. **§8 可以脱离 Phase F 独立执行**——论文的评测方法论（2ⁿ 组合 Shapley 消融、配对消融共享原始输出、runtime–scoring 隔离、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness 和 Phase B 的 B14、Phase C 的 C11 都直接适用，**和 PersonaAgent 做不做无关**。
+> ⚠ **归档文档里的结论已被推翻，不要照它施工。** 它基于论文旧版（SkillForest），后来论文重写为 *Individualized Agent*，实验协议和结果都变了。最关键的反转：原来说"别建森林索引"，新论文里**情境化检索是端到端贡献最大的模块**。准确数字见 [`../linkagent/APPENDIX-B-PAPER-EVIDENCE.md`](../linkagent/APPENDIX-B-PAPER-EVIDENCE.md)。
+
+**对本路线的唯一影响**：论文的评测方法论（配对消融共享原始输出、runtime–scoring 隔离、序列级统计单位、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness、Phase B 的 B14、Phase C 的 C11 都直接适用，**和 PersonaAgent 做不做无关**。这部分可以照搬。
 
 **唯一可以双人并行的**是 Phase A 与本文件的 Phase 2——前者动模型层，后者动协议与 Session 层，接触面很小。**具体的协作协议见 §11.7。** 其余全部串行。
 
@@ -2471,6 +2477,16 @@ Phase F ⛔ 不在这条链上，也不在排期内。
 > **回答"我做 Phase 2 的时候，另一个人怎么同时做 Phase A"。**
 >
 > 这是整条路线**唯一**能双人并行的一段。别的地方硬并行只会制造合并冲突，节省的时间全赔在解冲突和调试上。
+
+> ⚠ **2026-08-01 补充：实际执行是"两个 Composer 窗口"，不是两个人。**
+>
+> 本节的**文件接触面分析仍然完全有效**——它说的是"哪些改动会打架"，那和执行者是人还是 agent 无关。分支策略照用。
+>
+> 但**并行的理由变了**：不再是"两个人时间对齐"，而是"你审 A 的时候 B 在跑"。瓶颈是**你一个人的审查带宽**，不是产出速度。
+>
+> **由此得出一条本节没有的建议**：Phase A 虽然和 Phase 2 文件不冲突、技术上能并行，但**不建议在 P3（抽 Session 层）期间开**。P3 是全项目最容易出错的一张卡，值得你专注审它，别分心。
+>
+> 完整排法见 [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md)。
 
 #### 11.7.1 为什么只有这一段能并行
 

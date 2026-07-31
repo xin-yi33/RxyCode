@@ -1,6 +1,6 @@
 # Phase C · 多 Agent × 多模型协作（Multi-Model Collaboration）
 
-> **在整条路线中的位置**：[`2026-07-31-EXECUTION-PLAN.md`](./2026-07-31-EXECUTION-PLAN.md) 的后继扩展，编号 Phase C。
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase C。
 > **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md) 全部完成。
 > **后继**：[`PHASE-D-MULTIMODAL.md`](./PHASE-D-MULTIMODAL.md)
 >
