@@ -15,6 +15,7 @@ The actual code-generation is the LLM's job (needs a configured model); here
 we supply a known-good runnable parkour game so the write+run half of the
 pipeline is verified deterministically without an external model.
 """
+import os
 import subprocess
 import sys
 import textwrap
@@ -112,6 +113,7 @@ def test_parkour_write_and_run_pipeline(tmp_path):
         encoding="utf-8",
         errors="replace",
         timeout=60,
+        env={**os.environ, "PYTHONUTF8": "1"},
     )
     assert proc.returncode == 0, proc.stderr
     assert "跑酷小游戏结束" in proc.stdout

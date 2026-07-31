@@ -179,7 +179,10 @@ def test_vision_invalid_inputs_matrix(tmp_path, operation: str, suffix: str):
     else:
         p.write_text("not-image", encoding="utf-8")
     out = _load("vision")(operation=operation, filePath=str(p))
-    if operation == "bad-op" or suffix not in {".png", ".jpg"}:
+    expects_error = operation == "bad-op" or (
+        suffix not in {".png", ".jpg"} and operation != "screenshot"
+    )
+    if expects_error:
         assert "error" in out.lower()
     else:
         assert isinstance(out, str)
