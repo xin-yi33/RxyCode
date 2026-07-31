@@ -545,7 +545,11 @@ def test_failed_discovery_reports_400_and_redacts_the_credential(monkeypatch):
 
     monkeypatch.setattr(api_server, "_init_agent", lambda: None)
     discover = MagicMock(
-        return_value={"success": False, "error": "provider rejected opaqueDiscovery123"}
+        return_value={
+            "success": False,
+            "error": "provider rejected opaqueDiscovery123",
+            "error_code": "transport",
+        }
     )
     add = MagicMock()
     monkeypatch.setattr(model_manager, "discover_provider_models", discover)
@@ -563,7 +567,43 @@ def test_failed_discovery_reports_400_and_redacts_the_credential(monkeypatch):
 
     assert response.status_code == 400
     assert "opaqueDiscovery123" not in response.text
+    detail = response.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["error_code"] == "transport"
+    assert "Discovery failed" in detail["message"]
     add.assert_not_called()
+
+
+def test_discover_failure_returns_structured_error_code(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    discover = MagicMock(
+        return_value={
+            "success": False,
+            "error": "认证失败。API Key 可能错误或已过期。(HTTP 401 Unauthorized)",
+            "error_code": "auth",
+            "elapsed": 0.1,
+        }
+    )
+    monkeypatch.setattr(model_manager, "discover_provider_models", discover)
+    token = api_server.configure_api_token("discover-auth-code-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.post(
+            "/models/discover",
+            json={
+                "api_key": "sk-wrong",
+                "base_url": "https://provider.example/v1",
+            },
+        )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["error_code"] == "auth"
+    assert "Discovery failed" in detail["message"] or "认证" in detail["message"]
 
 
 @pytest.mark.parametrize(

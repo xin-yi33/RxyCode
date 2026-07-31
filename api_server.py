@@ -989,7 +989,10 @@ async def discover_models(req: ModelDiscoveryRequest):
         safe_error = _redact_explicit(result.get("error", "Discovery failed"), api_key)
         raise HTTPException(
             status_code=400,
-            detail=f"Model discovery failed: {safe_error}",
+            detail={
+                "message": f"Model discovery failed: {safe_error}",
+                "error_code": result.get("error_code") or "transport",
+            },
         )
     return {
         "models": result.get("models", []),
