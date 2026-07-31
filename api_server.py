@@ -173,8 +173,7 @@ def _is_loopback_client(host: str | None) -> bool:
 
 def _resolve_allowed_origins() -> list[str]:
     """解析 CORS 白名单：环境变量优先，否则用 settings 默认值。"""
-    import os
-    from config.settings import DEFAULT_ALLOWED_ORIGINS
+    from .config.settings import DEFAULT_ALLOWED_ORIGINS
 
     raw = os.environ.get("RXYCODE_ALLOWED_ORIGINS", "").strip()
     if raw:
