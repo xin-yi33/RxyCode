@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
-import { DialogSelect, type DialogSelectOption } from "./DialogSelect.tsx";
-import { fetchModels, sendCommand, type ModelInfo } from "./api.ts";
+import { DialogSelect } from "./DialogSelect.tsx";
+import { fetchModels, sendCommand } from "./api.ts";
+import { buildModelListOptions } from "./DialogModel.options.ts";
+
+export { buildModelListOptions } from "./DialogModel.options.ts";
 
 export function DialogModel({
   onClose,
@@ -11,32 +14,17 @@ export function DialogModel({
   onSwitched: (modelId: string, message: string) => void;
   activeModel?: string;
 }) {
-  const [options, setOptions] = useState<DialogSelectOption<string>[]>([]);
+  const [options, setOptions] = useState<ReturnType<typeof buildModelListOptions>["options"]>([]);
+  const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
   const [current, setCurrent] = useState(activeModel || "");
 
   useEffect(() => {
     void (async () => {
       const { models, active, recent } = await fetchModels();
       setCurrent(active || activeModel || "");
-      // "最近常用" is real switch history from the backend (config.recent_models),
-      // never a hard-coded template list.
-      const recentSet = new Set(recent);
-      const opts: DialogSelectOption<string>[] = models.map((m: ModelInfo) => ({
-        id: m.id,
-        title: m.nickname || m.name || m.id,
-        description: m.provider_model_id || m.name || "",
-        footer: m.active || m.id === active ? "当前" : m.base_url || "",
-        category: recentSet.has(m.id) ? "最近常用" : "模型",
-        value: m.id,
-      }));
-      opts.push({
-        id: "__add__",
-        title: "+ 添加模型",
-        description: "打开添加向导",
-        category: "操作",
-        value: "__add__",
-      });
-      setOptions(opts);
+      const built = buildModelListOptions(models, recent, active);
+      setOptions(built.options);
+      setCategoryOrder(built.categoryOrder);
     })();
   }, [activeModel]);
 
@@ -44,7 +32,7 @@ export function DialogModel({
     <DialogSelect
       title="选择模型"
       options={options}
-      categoryOrder={["最近常用", "模型", "操作"]}
+      categoryOrder={categoryOrder}
       placeholder="搜索模型"
       currentId={current}
       onClose={onClose}
