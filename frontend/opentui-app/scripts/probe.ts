@@ -32,10 +32,12 @@ function buildLines() {
   );
 }
 
+type CliRendererConfig = Parameters<typeof createCliRenderer>[0];
+
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,
   useAlternateScreen: true,
-});
+} as CliRendererConfig);
 
 const scroll = ScrollBox(
   {

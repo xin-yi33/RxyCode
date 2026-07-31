@@ -20,13 +20,15 @@ if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   process.exit(1);
 }
 
+type CliRendererConfig = Parameters<typeof createCliRenderer>[0];
+
 const renderer = await createCliRenderer({
   // Ctrl+C handled in App (copy selection / cancel stream / exit).
   exitOnCtrlC: false,
   useAlternateScreen: true,
   useMouse: true,
   enableMouseMovement: true,
-});
+} as CliRendererConfig);
 
 const root = createRoot(renderer);
 

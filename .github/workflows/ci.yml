@@ -25,6 +25,31 @@ env:
   NODE_VERSION: "22"
 
 jobs:
+  opentui:
+    name: OpenTUI (default frontend)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend/opentui-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run tsc --noEmit
+
+      - name: Unit tests
+        run: bun test
+
   lint:
     name: Lint (ruff)
     if: github.event_name != 'schedule'

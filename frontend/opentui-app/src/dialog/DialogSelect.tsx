@@ -485,7 +485,6 @@ export function DialogSelect<T>({
           left: 0,
           top: 0,
           width: 0,
-          height: 0,
           flexShrink: 0,
           backgroundColor: C.bg,
         }}

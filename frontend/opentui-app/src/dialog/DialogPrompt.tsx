@@ -122,7 +122,7 @@ export function DialogPrompt({
           focused
           onInput={(v) => setDraft(String(v ?? ""))}
           onSubmit={() => onSubmit(draft.trim())}
-          style={{ position: "absolute", width: 0, height: 0, left: 0, top: 0 }}
+          style={{ position: "absolute", width: 0, left: 0, top: 0 }}
         />
       </box>
       {hint ? (
