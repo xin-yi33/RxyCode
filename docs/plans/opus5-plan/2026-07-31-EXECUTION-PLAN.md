@@ -2324,3 +2324,112 @@ git status --short
 - 每个 Phase 结束更新 §3 的实际完成情况
 - 任务卡里的行号会漂移，发现对不上就更新（这是维护的一部分）
 - §10.4 待办池在每个 Phase 开始时评审一次，决定升级为任务卡还是继续搁置
+
+---
+
+## §11 文档映射与工作流程
+
+> 本节是整套计划的**导航图**。任何模型接手工作前，先读这一节确定"我该打开哪个文件"。
+
+### 11.1 文档清单
+
+四份文档全部位于 `docs/plans/opus5-plan/`，**严格按顺序执行，不要跳**。
+
+| 顺序 | 文件 | 覆盖内容 | 前置 | 工时 |
+|---|---|---|---|---|
+| **1** | `2026-07-31-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 Desktop | 无 | 20 周 |
+| **2** | `PHASE-A-MODEL-ADAPTATION-LAYER.md` | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | 本文件的 Phase 0 + Phase 1 | 3 周 |
+| **3** | `PHASE-B-MULTI-AGENT-ORCHESTRATION.md` | 多 Agent 编排：清理死代码、拆全局单例、AgentSpec / Runtime / Orchestrator、委派与黑板 | 本文件 Phase 0–2 + Phase A | 6 周 |
+| **4** | `PHASE-C-MULTIMODAL-AGENT-COLLABORATION.md` | 多模态 × 多 Agent：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 0–3 + Phase A + Phase B | 6 周 |
+
+### 11.2 依赖关系
+
+```
+本文件 Phase 0  止血（lint / CI / CORS / 死文件）
+      │
+      ├──────────────────────────────┐
+      ▼                              │
+本文件 Phase 1  Harness 说真话        │
+      │                              │
+      ├──────────────┬───────────────┤
+      ▼              ▼               │
+本文件 Phase 2   Phase A 模型适配     │   ← A 与 Phase 2 可并行
+ 协议 + Session       │               │
+      │              │               │
+      ├──────────────┘               │
+      ▼                              │
+Phase B 多 Agent 编排                 │
+      │                              │
+      │        本文件 Phase 3 Desktop ┘
+      │              │
+      └──────┬───────┘
+             ▼
+Phase C 多模态 × 多 Agent
+```
+
+**唯一可以并行的**是 Phase A 与本文件的 Phase 2——前者动模型层，后者动协议与 Session 层，接触面很小。其余全部串行。
+
+**每个 Phase 的前置都是硬前置**，各文档的 §0.3 写了具体理由。最常见的误判是"跳过 Phase 2 直接做 Phase B"——那会导致在 `agent_v2.py` 这个 3704 行的 God Object 里手工造一套 ad-hoc 的 Agent 通信机制，半年后推倒重来。
+
+### 11.3 工作流程
+
+**接到任务时的判断顺序：**
+
+```
+1. 任务属于哪个 Phase？
+   → 查 §11.1 的表，打开对应文档
+
+2. 该 Phase 的前置做完了吗？
+   → 跑对应文档 §0.3 的自检命令
+   → 有一条不满足就回到前一个 Phase，不要硬上
+
+3. 打开文档，只读三节：
+   → §0 执行手册（每次都要读，规则在这里）
+   → §1 现状证据（需要引用现状时读）
+   → 你要做的那一张任务卡
+
+   不需要通读全文。任务卡是自包含的。
+
+4. 按任务卡的执行协议走完 7 步（Phase B/C 是 9 步）
+
+5. 一张卡 = 一个 commit。做完再开下一张
+```
+
+**三个模型的分工**（各文档 §0.2 有更细的版本）：
+
+| 模型 | 职责 |
+|---|---|
+| **Composer 2.5** | 主力实现。按任务卡写代码、多文件同步改写、补测试、跑验收 |
+| **Grok** | 外部资料调研。查 provider API 文档、各家 vision 格式差异、其它开源项目的架构取舍。**不直接改代码** |
+| **Sonnet 5** | Diff 审查 + 写文档。重点审 Phase B 的 B2（拆单例）和 Phase C 的 C4（类型拓宽），这两张卡最容易漏改 |
+
+推荐回路：**Grok 查资料 → Composer 实现 → Sonnet 5 审查 → Composer 修**。
+
+### 11.4 贯穿全程的三条铁律
+
+无论在哪个 Phase、哪张任务卡，这三条都成立：
+
+| # | 铁律 | 怎么验证 |
+|---|---|---|
+| 1 | **不跑验收命令不许说"完成"** | 每张卡的完成判据都要求贴出真实输出 |
+| 2 | **每张卡做完跑评测基线比对** | `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json` |
+| 3 | **旧路径行为必须逐字节不变** | Phase A 的 MA1、Phase B 的 MB1、Phase C 的 MC1 是同一条规则的三种表述 |
+
+第 2 条依赖本文件 Phase 1 的成果。**这就是为什么 Phase 1 排在所有扩展之前**——没有可信的回归信号，后面三个 Phase 的每一次重构都是盲改。
+
+### 11.5 文档本身的维护
+
+| 时机 | 动作 |
+|---|---|
+| 每张任务卡完成 | 如果发现文档里的行号/锚点对不上，**顺手更新**（这是维护的一部分，不算范围外改动） |
+| 每个 Phase 完成 | 更新本文件 §3.2 的 Phase 表、对应文档的出口检查结果、相关 `docs/modules/*.md` |
+| 发现范围外问题 | 记进 §10.4 待办池，**不要就地修**（规则 R4） |
+| 需求变化 | 改文档，不要"先改代码回头再说"。这套文档是多个模型之间唯一的共识载体 |
+
+### 11.6 被本套文档取代的旧文档
+
+`docs/plans/execution/` 下的全部文件（`00-master-plan.md`、`01-tech-debt-cleanup.md`、`README.md`、`QUICKSTART.md`、`DAILY-CHECKLIST.md`、`DELIVERY-SUMMARY.md`、`TASK-INDEX.md`、`AI-MODEL-GUIDE.md`、`PROJECT-DELIVERY-FINAL.md`、`TASK-T001-*.md`）**均已作废**，它们派生自 `docs/plans/2026-07-30-comprehensive-review-and-roadmap.md`，该报告的事实层错误见 §2.3。
+
+`docs/plans/` 下的 `2026-07-02-rxycode-v2-architecture.md`、`2026-07-27-stabilization-phase0-1.md`、`2026-07-28-execution-progress.md` 作为历史记录保留，其执行状态已在 §2.1 复盘。
+
+**当前唯一权威的计划是 `docs/plans/opus5-plan/` 下的这四份。**
