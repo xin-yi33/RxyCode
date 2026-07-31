@@ -13,12 +13,18 @@ export function DialogPrompt({
   title,
   placeholder,
   initial = "",
+  mask = false,
+  hint,
   onSubmit,
   onCancel,
 }: {
   title: string;
   placeholder: string;
   initial?: string;
+  /** Echo the draft as asterisks (credentials). */
+  mask?: boolean;
+  /** Optional dim footer line, e.g. an HTTPS reminder. */
+  hint?: string;
   onSubmit: (text: string) => void;
   onCancel: () => void;
 }) {
@@ -78,7 +84,9 @@ export function DialogPrompt({
     }
   });
 
-  const shown = draft || placeholder;
+  // Credentials are never echoed verbatim, not even into the terminal buffer.
+  const echoed = mask ? "*".repeat(draft.length) : draft;
+  const shown = echoed || placeholder;
 
   return (
     <box
@@ -87,7 +95,7 @@ export function DialogPrompt({
         flexDirection: "column",
         width: "100%",
         border: true,
-        borderColor: C.primary,
+        borderColor: C.borderDim,
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
@@ -95,7 +103,7 @@ export function DialogPrompt({
       }}
     >
       <box style={{ flexDirection: "row", width: "100%", height: 1 }}>
-        <text fg={C.primary} attributes={1}>
+        <text fg={C.text} attributes={1}>
           {" "}
           {title}
         </text>
@@ -103,8 +111,8 @@ export function DialogPrompt({
         <text fg={C.overlay2}>esc </text>
       </box>
       <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={C.primary}>{"> "}</text>
-        <text fg={SELECT_FG} bg={draft ? undefined : SELECT_BG}>
+        {/* Block cursor on the first cell — same token as DialogSelect's search row */}
+        <text fg={SELECT_FG} bg={SELECT_BG}>
           {shown.slice(0, 1) || " "}
         </text>
         <text fg={draft ? C.text : C.overlay2}>{shown.slice(1)}</text>
@@ -117,6 +125,14 @@ export function DialogPrompt({
           style={{ position: "absolute", width: 0, height: 0, left: 0, top: 0 }}
         />
       </box>
+      {hint ? (
+        <box style={{ height: 1, width: "100%" }}>
+          <text fg={C.overlay2}>
+            {"  "}
+            {hint}
+          </text>
+        </box>
+      ) : null}
     </box>
   );
 }

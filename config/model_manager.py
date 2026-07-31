@@ -10,6 +10,33 @@ from .credential_store import delete_credential, store_credential
 from .settings import get_config_path, get_model_config, load_config, save_config
 
 
+DISCOVERY_UNSUPPORTED_MESSAGE = (
+    "该服务商未提供 OpenAI 兼容的模型目录（GET /models）。"
+    "请改用「自定义」手动填写模型 ID。"
+)
+
+# Provider connection presets.
+#
+# Deliberately provider-level only: id / name / base_url / category.  A preset
+# must never carry a concrete model id — model ids are discovered from the live
+# provider catalogue (see ``discover_provider_models``) or typed by the user,
+# so this table cannot go stale when a vendor renames or retires a model.
+PROVIDER_PRESETS: tuple[dict, ...] = (
+    {"id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "category": "常用"},
+    {"id": "moonshot", "name": "Moonshot Kimi", "base_url": "https://api.moonshot.cn/v1", "category": "常用"},
+    {"id": "dashscope", "name": "阿里云百炼 / 通义千问", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "category": "常用"},
+    {"id": "volces_ark", "name": "火山方舟 Ark", "base_url": "https://ark.cn-beijing.volces.com/api/v3", "category": "常用"},
+    {"id": "zhipu", "name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "category": "常用"},
+    {"id": "siliconflow", "name": "SiliconFlow 硅基流动", "base_url": "https://api.siliconflow.cn/v1", "category": "常用"},
+    {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "category": "其他"},
+    {"id": "openrouter", "name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "category": "其他"},
+    {"id": "groq", "name": "Groq", "base_url": "https://api.groq.com/openai/v1", "category": "其他"},
+    {"id": "together", "name": "Together AI", "base_url": "https://api.together.xyz/v1", "category": "其他"},
+)
+
+PRESET_FIELDS = ("id", "name", "base_url", "category")
+
+
 HTTP_CODE_MESSAGES = {
     400: "请求无效。请检查 API URL 和 API Key 是否正确。(HTTP 400 Bad Request)",
     401: "认证失败。API Key 可能错误或已过期。(HTTP 401 Unauthorized)",
@@ -52,6 +79,11 @@ def normalize_provider_base_url(
             "base_url must use https:// when an API credential is sent"
         )
     return value
+
+
+def list_provider_presets() -> list[dict]:
+    """Return connection presets (provider + base URL only, never a model id)."""
+    return [{field: preset[field] for field in PRESET_FIELDS} for preset in PROVIDER_PRESETS]
 
 
 def _credential_config(api_key: str) -> dict:
@@ -109,6 +141,11 @@ def remove_model(name: str) -> bool:
     removed = models.pop(name)
     if cfg.get("active_model") == name:
         cfg["active_model"] = next(iter(models), None)
+    previous = cfg.get("recent_models")
+    if isinstance(previous, list):
+        cfg["recent_models"] = [
+            item for item in previous if isinstance(item, str) and item != name
+        ]
     save_config(cfg)
     delete_credential(removed.get("api_key_secret", ""), get_config_path())
     return True
@@ -119,11 +156,45 @@ def list_models() -> dict:
     return cfg.get("models", {})
 
 
+RECENT_MODELS_LIMIT = 5
+
+
+def _touch_recent_models(cfg: dict, name: str) -> list[str]:
+    """Move ``name`` to the front of the real switch history (most recent first)."""
+    history = [item for item in prune_recent_models(cfg) if item != name]
+    history.insert(0, name)
+    cfg["recent_models"] = history[:RECENT_MODELS_LIMIT]
+    return cfg["recent_models"]
+
+
+def prune_recent_models(cfg: dict) -> list[str]:
+    """Read the switch history from a config mapping, newest first.
+
+    Drops malformed entries and models that no longer exist, so a stale name can
+    never be offered as a switch target.
+    """
+    previous = cfg.get("recent_models")
+    if not isinstance(previous, list):
+        return []
+    known = cfg.get("models", {})
+    return [
+        item
+        for item in previous
+        if isinstance(item, str) and item in known
+    ][:RECENT_MODELS_LIMIT]
+
+
+def list_recent_models() -> list[str]:
+    """Return the persisted switch history, newest first, pruned to live models."""
+    return prune_recent_models(load_config())
+
+
 def set_active_model(name: str) -> bool:
     cfg = load_config()
     if name not in cfg.get("models", {}):
         return False
     cfg["active_model"] = name
+    _touch_recent_models(cfg, name)
     save_config(cfg)
     return True
 
@@ -147,6 +218,118 @@ def test_model_connection(name: str) -> dict:
         base_url=model["base_url"],
         provider_model_id=model["model_name"],
     )
+
+
+def _friendly_transport_error(error_text: str) -> Optional[str]:
+    """Map a transport exception string onto an operator-readable message."""
+    if "Name or service not known" in error_text or "getaddrinfo" in error_text:
+        return "无法解析 API 地址。请检查域名是否正确。(DNS 解析失败)"
+    if "Connection refused" in error_text:
+        return "API 服务器拒绝连接。请检查 URL 和端口是否正确。"
+    if "Connection timed out" in error_text or "timeout" in error_text.lower():
+        return "连接超时。API 服务器可能过慢、无法访问，或 URL 不正确。"
+    if "SSLError" in error_text or "ssl" in error_text.lower():
+        return "SSL/TLS 错误。API 服务器可能有无效或自签名证书。"
+    return None
+
+
+def _parse_discovered_models(payload: object) -> list[dict]:
+    """Extract model entries from an OpenAI-compatible ``GET /models`` body."""
+    if isinstance(payload, dict):
+        entries = payload.get("data")
+        if not isinstance(entries, list):
+            entries = payload.get("models")
+    else:
+        entries = payload
+    if not isinstance(entries, list):
+        return []
+
+    models: list[dict] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if isinstance(entry, str):
+            model_id = entry.strip()
+            owned_by = ""
+        elif isinstance(entry, dict):
+            model_id = str(entry.get("id") or entry.get("model") or entry.get("name") or "").strip()
+            owned_by = str(entry.get("owned_by") or "").strip()
+        else:
+            continue
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        model = {"id": model_id}
+        if owned_by:
+            model["owned_by"] = owned_by
+        models.append(model)
+    return models
+
+
+def discover_provider_models(*, api_key: str, base_url: str) -> dict:
+    """List a provider's model catalogue without persisting anything.
+
+    Calls ``GET {base_url}/models`` (the OpenAI-compatible discovery route) so
+    the user never has to know a model id in advance.  Nothing touches disk:
+    this is the read-only counterpart of ``probe_model_connection``.
+    """
+    api_key = api_key.strip()
+    try:
+        base_url = normalize_provider_base_url(base_url, require_https=True)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    if not api_key:
+        return {"success": False, "error": "Missing API credential"}
+
+    def safe_error(value: object) -> str:
+        text = str(value)
+        return text.replace(api_key, "[REDACTED]") if api_key else text
+
+    url = f"{base_url}/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    start = time.time()
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(url, headers=headers)
+            elapsed = round(time.time() - start, 2)
+            if resp.status_code == 200:
+                try:
+                    models = _parse_discovered_models(resp.json())
+                except Exception:
+                    return {
+                        "success": False,
+                        "elapsed": elapsed,
+                        "error": DISCOVERY_UNSUPPORTED_MESSAGE,
+                    }
+                if not models:
+                    return {
+                        "success": False,
+                        "elapsed": elapsed,
+                        "error": DISCOVERY_UNSUPPORTED_MESSAGE,
+                    }
+                return {"success": True, "elapsed": elapsed, "models": models}
+            if resp.status_code in {404, 405}:
+                return {
+                    "success": False,
+                    "elapsed": elapsed,
+                    "error": DISCOVERY_UNSUPPORTED_MESSAGE,
+                }
+            friendly = HTTP_CODE_MESSAGES.get(resp.status_code)
+            if friendly:
+                return {"success": False, "elapsed": elapsed, "error": friendly}
+            return {
+                "success": False,
+                "elapsed": elapsed,
+                "error": safe_error(f"HTTP {resp.status_code}: {resp.text[:200]}"),
+            }
+    except Exception as exc:
+        elapsed = round(time.time() - start, 2)
+        estr = safe_error(exc)
+        return {
+            "success": False,
+            "elapsed": elapsed,
+            "error": _friendly_transport_error(estr) or estr,
+        }
 
 
 def probe_model_connection(
@@ -202,12 +385,8 @@ def probe_model_connection(
     except Exception as e:
         elapsed = round(time.time() - start, 2)
         estr = safe_error(e)
-        if "Name or service not known" in estr or "getaddrinfo" in estr:
-            return {"success": False, "elapsed": elapsed, "error": "无法解析 API 地址。请检查域名是否正确。(DNS 解析失败)"}
-        if "Connection refused" in estr:
-            return {"success": False, "elapsed": elapsed, "error": "API 服务器拒绝连接。请检查 URL 和端口是否正确。"}
-        if "Connection timed out" in estr or "timeout" in estr.lower():
-            return {"success": False, "elapsed": elapsed, "error": "连接超时。API 服务器可能过慢、无法访问，或 URL 不正确。"}
-        if "SSLError" in estr or "ssl" in estr.lower():
-            return {"success": False, "elapsed": elapsed, "error": "SSL/TLS 错误。API 服务器可能有无效或自签名证书。"}
-        return {"success": False, "elapsed": elapsed, "error": estr}
+        return {
+            "success": False,
+            "elapsed": elapsed,
+            "error": _friendly_transport_error(estr) or estr,
+        }

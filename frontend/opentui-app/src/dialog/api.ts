@@ -26,16 +26,86 @@ export async function probeModels(): Promise<{
   }
 }
 
-export async function fetchModels(): Promise<{ models: ModelInfo[]; active: string }> {
+export async function fetchModels(): Promise<{
+  models: ModelInfo[];
+  active: string;
+  recent: string[];
+}> {
   try {
     const resp = await axios.get(`${API_BASE}/models`, {
       timeout: 8000,
       headers: authorizationHeaders(),
     });
-    const data = resp.data as { models?: ModelInfo[]; active?: string };
-    return { models: data.models ?? [], active: data.active ?? "" };
+    const data = resp.data as { models?: ModelInfo[]; active?: string; recent?: string[] };
+    return {
+      models: data.models ?? [],
+      active: data.active ?? "",
+      recent: Array.isArray(data.recent) ? data.recent : [],
+    };
   } catch {
-    return { models: [], active: "" };
+    return { models: [], active: "", recent: [] };
+  }
+}
+
+/**
+ * A connection preset: provider + base URL only.
+ * Model ids are never presets — they come from discoverModels() or user input.
+ */
+export type ProviderPreset = {
+  id: string;
+  name: string;
+  base_url: string;
+  category?: string;
+};
+
+export type DiscoveredModel = {
+  id: string;
+  owned_by?: string;
+};
+
+function errorDetail(err: unknown): string {
+  if (axios.isAxiosError(err) && typeof err.response?.data?.detail === "string") {
+    return err.response.data.detail;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** GET /models/presets — provider connection presets (no model ids). */
+export async function fetchProviderPresets(): Promise<{
+  ok: boolean;
+  presets: ProviderPreset[];
+  error?: string;
+}> {
+  try {
+    const resp = await axios.get(`${API_BASE}/models/presets`, {
+      timeout: 8000,
+      headers: authorizationHeaders(),
+    });
+    const data = resp.data as { presets?: ProviderPreset[] };
+    return { ok: true, presets: Array.isArray(data.presets) ? data.presets : [] };
+  } catch (err: unknown) {
+    return { ok: false, presets: [], error: errorDetail(err) };
+  }
+}
+
+/**
+ * POST /models/discover — ask the provider which models the key can use.
+ * Read-only on the backend: nothing is persisted until onboardModel().
+ */
+export async function discoverModels(input: {
+  apiKey: string;
+  baseUrl: string;
+}): Promise<{ ok: boolean; models: DiscoveredModel[]; error?: string }> {
+  try {
+    const resp = await axios.post(
+      `${API_BASE}/models/discover`,
+      { api_key: input.apiKey, base_url: input.baseUrl },
+      { headers: authorizationHeaders(), timeout: 60000 },
+    );
+    const data = resp.data as { models?: DiscoveredModel[] };
+    return { ok: true, models: Array.isArray(data.models) ? data.models : [] };
+  } catch (err: unknown) {
+    return { ok: false, models: [], error: errorDetail(err) };
   }
 }
 

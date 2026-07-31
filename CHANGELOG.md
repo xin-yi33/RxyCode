@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Provider connection presets** — `GET /models/presets` returns ten mainstream
+  LLM providers as `{id, name, base_url, category}`. Presets are deliberately
+  provider-level only: no preset pins a model id, so the table cannot go stale
+  when a vendor renames or retires a model (closes #5)
+- **Model discovery** — `POST /models/discover` calls the provider's
+  OpenAI-compatible `GET {base_url}/models` with the supplied key and returns the
+  real catalogue. Read-only: nothing is persisted until `/models/onboard`.
+  Credentials are redacted from every error path and HTTPS is enforced before any
+  request leaves the process
+- **Real recent-model history** — `set_active_model` records switches in
+  `config.recent_models` (capped, pruned when a model is removed) and
+  `GET /models` returns it as `recent`, so `/model` can show a 最近常用 group
+  backed by actual history
+
+### Changed
+
+- **`/addmodel` follows the OpenCode "connect a provider" flow** — the wizard is
+  now built from the shared `DialogSelect` / `DialogPrompt` components
+  (searchable list, ↑↓ / Enter / Esc, mouse hover row highlight, wheel scrolling,
+  block cursor, category headers) instead of a hand-drawn numbered menu. Flow:
+  pick provider → enter key → discover models → pick model → optional nickname.
+  Providers without a `/models` catalogue fall back to manual model-id entry
+- **`DialogPrompt`** — matches the shared dialog chrome (`borderDim` border,
+  `text` title, `DialogSelect`-style block cursor) and can mask credential input
+
 ## [1.2.2] - 2026-07-30
 
 ### Added

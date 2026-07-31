@@ -47,7 +47,7 @@ def test_local_reads_and_mutations_require_bearer(monkeypatch):
     monkeypatch.setattr(api_server, "_init_agent", lambda: None)
     token = api_server.configure_api_token("local-test-token")
     with _client(api_server) as client:
-        for path in ("/status", "/models"):
+        for path in ("/status", "/models", "/models/presets"):
             missing = client.get(path)
             assert missing.status_code == 401
             assert missing.headers["www-authenticate"] == "Bearer"
@@ -97,6 +97,7 @@ def test_cors_preflight_remains_public(monkeypatch):
         "/command",
         "/cancel",
         "/models/onboard",
+        "/models/discover",
     ],
 )
 def test_every_non_read_only_route_rejects_a_missing_token(monkeypatch, path):
@@ -476,3 +477,152 @@ def test_help_never_teaches_credential_bearing_model_commands(monkeypatch, comma
     assert "/addmodel" in help_text
     assert "<key>" not in help_text
     assert "密钥不写入命令" in help_text
+
+
+def test_preset_endpoint_exposes_connection_targets_without_model_ids(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    token = api_server.configure_api_token("presets-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.get("/models/presets")
+
+    assert response.status_code == 200
+    presets = response.json()["presets"]
+    assert presets
+    for preset in presets:
+        assert set(preset) == {"id", "name", "base_url", "category"}
+        assert preset["base_url"].startswith("https://")
+    # A preset must not smuggle a model id under any spelling.
+    for forbidden in ("default_model_name", "modelId", "model_name", "provider_model_id"):
+        assert forbidden not in response.text
+
+
+def test_discovery_returns_provider_catalogue_without_persisting(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    discover = MagicMock(
+        return_value={
+            "success": True,
+            "elapsed": 0.2,
+            "models": [{"id": "deepseek-chat", "owned_by": "deepseek"}],
+        }
+    )
+    add = MagicMock()
+    activate = MagicMock()
+    monkeypatch.setattr(model_manager, "discover_provider_models", discover)
+    monkeypatch.setattr(model_manager, "add_model", add)
+    monkeypatch.setattr(model_manager, "set_active_model", activate)
+    token = api_server.configure_api_token("discover-success-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.post(
+            "/models/discover",
+            json={
+                "api_key": "sk-discovery-secret",
+                "base_url": "https://api.deepseek.com/v1/",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["models"] == [{"id": "deepseek-chat", "owned_by": "deepseek"}]
+    assert "sk-discovery-secret" not in response.text
+    discover.assert_called_once_with(
+        api_key="sk-discovery-secret",
+        base_url="https://api.deepseek.com/v1",
+    )
+    add.assert_not_called()
+    activate.assert_not_called()
+
+
+def test_failed_discovery_reports_400_and_redacts_the_credential(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    discover = MagicMock(
+        return_value={"success": False, "error": "provider rejected opaqueDiscovery123"}
+    )
+    add = MagicMock()
+    monkeypatch.setattr(model_manager, "discover_provider_models", discover)
+    monkeypatch.setattr(model_manager, "add_model", add)
+    token = api_server.configure_api_token("discover-failure-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.post(
+            "/models/discover",
+            json={
+                "api_key": "opaqueDiscovery123",
+                "base_url": "https://provider.example/v1",
+            },
+        )
+
+    assert response.status_code == 400
+    assert "opaqueDiscovery123" not in response.text
+    add.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invalid_url",
+    [
+        "http://provider.example/v1",
+        "https://user:password@provider.example/v1",
+        "https://provider.example/v1?token=value",
+    ],
+)
+def test_discovery_rejects_malformed_urls_before_any_request(monkeypatch, invalid_url):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    discover = MagicMock()
+    monkeypatch.setattr(model_manager, "discover_provider_models", discover)
+    token = api_server.configure_api_token("discover-url-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.post(
+            "/models/discover",
+            json={"api_key": "opaque-url-discovery-secret", "base_url": invalid_url},
+        )
+
+    assert response.status_code == 422
+    assert "opaque-url-discovery-secret" not in response.text
+    discover.assert_not_called()
+
+
+def test_discovery_request_has_no_model_id_field(monkeypatch):
+    """Discovery is for users who do not know a model id yet."""
+    from RxyCode.RxyCode1_1_0 import api_server
+
+    assert "provider_model_id" not in api_server.ModelDiscoveryRequest.model_fields
+
+
+def test_model_listing_reports_real_switch_history(monkeypatch):
+    from RxyCode.RxyCode1_1_0 import api_server
+    from RxyCode.RxyCode1_1_0.config import settings
+
+    monkeypatch.setattr(api_server, "_init_agent", lambda: None)
+    monkeypatch.setattr(
+        settings,
+        "load_config",
+        lambda: {
+            "models": {
+                "alpha": {"model_name": "provider/alpha", "base_url": "https://a.example"},
+                "beta": {"model_name": "provider/beta", "base_url": "https://b.example"},
+            },
+            "active_model": "beta",
+            "recent_models": ["beta", "removed-model", "alpha"],
+        },
+    )
+    token = api_server.configure_api_token("recent-history-token")
+
+    with _client(api_server, token=token) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    # stale entries are pruned so the TUI never offers a deleted model
+    assert response.json()["recent"] == ["beta", "alpha"]
