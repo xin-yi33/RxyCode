@@ -20,6 +20,7 @@ import {
   discoverModels,
   fetchProviderPresets,
   onboardModel,
+  onboardModelsBatch,
   type DiscoveredModel,
   type ProviderPreset,
 } from "./api.ts";
@@ -33,6 +34,7 @@ type Stage =
   | "api_key"
   | "discovering"
   | "model"
+  | "model_multi"
   | "manual_model"
   | "nickname"
   | "saving";
@@ -56,6 +58,19 @@ export function buildProviderOptions(
     value: CUSTOM_ID,
   });
   return options;
+}
+
+/** Discovered ids for preset multi-select (no manual row). */
+export function buildMultiModelOptions(
+  models: DiscoveredModel[],
+): DialogSelectOption<string>[] {
+  return models.map((model) => ({
+    id: model.id,
+    title: model.id,
+    description: model.owned_by || "",
+    category: "可用模型",
+    value: model.id,
+  }));
 }
 
 /** Discovered ids become plain options; a manual-entry row stays available. */
@@ -90,6 +105,7 @@ export function DialogAddModel({
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
   const [providerName, setProviderName] = useState("");
+  const [providerId, setProviderId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [urlIsCustom, setUrlIsCustom] = useState(false);
   const [apiKey, setApiKey] = useState("");
@@ -112,7 +128,7 @@ export function DialogAddModel({
     const result = await discoverModels({ apiKey: key, baseUrl: url });
     if (result.ok && result.models.length > 0) {
       setDiscovered(result.models);
-      setStage("model");
+      setStage(urlIsCustom ? "model" : "model_multi");
       return;
     }
     const code = result.errorCode ?? (result.ok ? "unsupported_catalogue" : "transport");
@@ -127,6 +143,31 @@ export function DialogAddModel({
       return;
     }
     setStage("api_key");
+  };
+
+  const saveBatch = async (selectedIds: string[], highlightedId: string) => {
+    setStage("saving");
+    setError("");
+    const activeModelId = selectedIds.includes(highlightedId) ? highlightedId : selectedIds[0];
+    const result = await onboardModelsBatch({
+      apiKey,
+      baseUrl,
+      modelIds: selectedIds,
+      providerId: providerId || undefined,
+      providerName: providerName || undefined,
+      activeModelId,
+      skipProbe: true,
+    });
+    if (!result.ok || result.added.length === 0) {
+      setError(result.error || "批量添加失败");
+      setStage("model_multi");
+      return;
+    }
+    onDone(
+      result.message ||
+        `已添加 ${result.added.length} 个模型，请到 /model 查看`,
+    );
+    onClose();
   };
 
   const save = async (nickname: string) => {
@@ -171,6 +212,7 @@ export function DialogAddModel({
             const preset = presets.find((p) => p.id === opt.value);
             if (!preset) return;
             setProviderName(preset.name);
+            setProviderId(preset.id);
             setBaseUrl(preset.base_url);
             setUrlIsCustom(false);
             setStage("api_key");
@@ -237,6 +279,32 @@ export function DialogAddModel({
     return <DialogLoading text={`正在向 ${providerName} 查询可用模型…`} />;
   }
 
+  if (stage === "model_multi") {
+    const modelIds = discovered.map((m) => m.id);
+    return (
+      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+        {error ? <DialogError text={error} /> : null}
+        <DialogSelect
+          title={`${providerName} · 选择要添加的模型`}
+          options={buildMultiModelOptions(discovered)}
+          categoryOrder={["可用模型"]}
+          placeholder="搜索模型"
+          multi
+          defaultSelectedIds={modelIds}
+          onClose={() => setStage("api_key")}
+          onConfirm={(selectedIds, { highlightedId }) => {
+            setError("");
+            if (selectedIds.length === 0) {
+              setError("请至少选择一个模型");
+              return;
+            }
+            void saveBatch(selectedIds, highlightedId);
+          }}
+        />
+      </box>
+    );
+  }
+
   if (stage === "model") {
     return (
       <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
@@ -285,7 +353,7 @@ export function DialogAddModel({
   }
 
   if (stage === "saving") {
-    return <DialogLoading text="正在探测连接并保存…" />;
+    return <DialogLoading text={urlIsCustom ? "正在探测连接并保存…" : "正在批量保存模型…"} />;
   }
 
   return (

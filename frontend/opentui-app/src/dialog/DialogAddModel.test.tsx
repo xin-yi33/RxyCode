@@ -30,6 +30,17 @@ const axiosPost = mock((url: string, body?: Record<string, unknown>) => {
       },
     });
   }
+  if (url.endsWith("/models/onboard/batch")) {
+    return Promise.resolve({
+      data: {
+        action: "models_added",
+        message: "Added 2 models",
+        added: ["deepseek-chat", "deepseek-reasoner"],
+        skipped: [],
+        active: "deepseek-chat",
+      },
+    });
+  }
   return Promise.resolve({ data: { action: "model_added", message: "ok" } });
 });
 
@@ -44,7 +55,7 @@ mock.module("axios", () => ({
     Boolean(err && typeof err === "object" && (err as { isAxiosError?: boolean }).isAxiosError),
 }));
 
-const { DialogAddModel, buildProviderOptions, buildModelOptions } = await import(
+const { DialogAddModel, buildProviderOptions, buildModelOptions, buildMultiModelOptions } = await import(
   "./DialogAddModel.tsx"
 );
 
@@ -62,6 +73,16 @@ describe("add-model option builders", () => {
 
   test("a custom escape hatch is always offered", () => {
     expect(buildProviderOptions([]).map((o) => o.id)).toEqual(["__custom__"]);
+  });
+
+  test("discovered ids become multi options without manual row", () => {
+    const options = buildMultiModelOptions([
+      { id: "deepseek-chat", owned_by: "deepseek" },
+      { id: "deepseek-reasoner" },
+    ]);
+
+    expect(options.map((o) => o.id)).toEqual(["deepseek-chat", "deepseek-reasoner"]);
+    expect(options[0]!.description).toBe("deepseek");
   });
 
   test("discovered ids become options plus a manual-entry row", () => {
@@ -155,8 +176,23 @@ describe("DialogAddModel (headless mockInput)", () => {
       });
       const modelScreen = await waitForFrame((frame) => frame.includes("deepseek-chat"));
       expect(modelScreen).toContain("deepseek-chat");
-      expect(modelScreen).toContain("deepseek-reasoner");
+      expect(modelScreen).toMatch(/deepseek-reason|2\/2/);
       expect(modelScreen).toContain("搜索模型");
+      expect(modelScreen.match(/✓/g)?.length).toBeGreaterThanOrEqual(1);
+
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("批量保存"));
+
+      const batchCall = axiosPost.mock.calls.find((call) =>
+        String(call[0]).endsWith("/models/onboard/batch"),
+      );
+      expect(batchCall).toBeDefined();
+      expect(batchCall?.[1]?.model_ids).toEqual(["deepseek-chat", "deepseek-reasoner"]);
+      expect(batchCall?.[1]?.skip_probe).toBe(true);
+      expect(batchCall?.[1]?.provider_id).toBe("deepseek");
+      expect(batchCall?.[1]?.provider_name).toBe("DeepSeek");
 
       const discoverCall = axiosPost.mock.calls.find((call) =>
         String(call[0]).endsWith("/models/discover"),
