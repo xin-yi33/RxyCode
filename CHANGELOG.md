@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Add-model wizard** — discover auth/transport failures return to the API Key
+  step; only providers without a `/models` catalogue fall back to manual model
+  id. Custom URL rejects non-HTTPS before calling discover; Esc on the model
+  list goes back a step instead of closing
+
 ### Added
 
 - **Provider connection presets** — `GET /models/presets` returns ten mainstream
