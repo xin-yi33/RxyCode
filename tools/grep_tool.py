@@ -38,7 +38,7 @@ def grep_files(pattern: str, path: str = "", include: str = "") -> str:
             return f"[error: cannot read file: {root}]"
         return "\n".join(results) if results else "[no matches found]"
 
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, _dirnames, filenames in os.walk(root):
         for fname in filenames:
             if include:
                 from fnmatch import fnmatch

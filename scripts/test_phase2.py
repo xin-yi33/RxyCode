@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Phase 2: SSE streaming + LLM tests (simple query, build, plan, multi-turn)."""
 
-import subprocess, sys, os, time, json, socket
+import subprocess, sys, os, time, json
 import urllib.request as ur
 import http.client
 
@@ -93,7 +93,7 @@ proc = subprocess.Popen(
 print(f"  PID={proc.pid}")
 
 ready = False
-for i in range(30):
+for _i in range(30):
     time.sleep(1)
     if proc.poll() is not None:
         out = proc.stdout.read(2048).decode(errors="replace")

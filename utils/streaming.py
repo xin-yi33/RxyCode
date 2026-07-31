@@ -9,15 +9,11 @@ Color system:
   input box left    ->  mode color
 """
 
-import sys
 import os
-import re
-import time
 import threading
 from typing import Optional
 
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.text import Text
 
 from .i18n import i18n
@@ -309,13 +305,13 @@ def print_tool_result(result: str, status: str = "success"):
     preview = result[:200] + "..." if len(result) > 200 else result
     text = Text()
     if status == "error":
-        text.append(f"    ✗ ", style="bold red")
+        text.append("    ✗ ", style="bold red")
         text.append(preview, style="red")
     elif status == "warning":
-        text.append(f"    ⚠ ", style="bold yellow")
+        text.append("    ⚠ ", style="bold yellow")
         text.append(preview, style="yellow")
     else:
-        text.append(f"    ✓ ", style="bold green")
+        text.append("    ✓ ", style="bold green")
         text.append(preview, style="green")
     _safe_print(text)
 
@@ -370,7 +366,7 @@ def print_command_hint():
 def print_chat_history_header(title: str):
     """Print chat history header."""
     text = Text()
-    text.append(f"\n  ", style="dim")
+    text.append("\n  ", style="dim")
     text.append(f"{title}", style="bold cyan")
     text.append("\n", style="dim")
     _safe_print(text)
@@ -399,7 +395,7 @@ def print_chat_list(chats: list[dict]):
         name = chat.get('name', '')
         preview = chat.get('preview', '')[:40]
         text = Text()
-        text.append(f"    · ", style="dim")
+        text.append("    · ", style="dim")
         text.append(f"{name}", style="bright_white")
         if preview:
             text.append(f" ({preview}...)", style="dim")

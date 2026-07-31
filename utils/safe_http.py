@@ -60,7 +60,7 @@ def validate_public_url(url: str) -> tuple[str, str, int, str]:
         literal = ipaddress.ip_address(hostname)
     except ValueError:
         if "." not in hostname:
-            raise UnsafeUrlError("single-label hostnames are not allowed")
+            raise UnsafeUrlError("single-label hostnames are not allowed") from None
     else:
         if not literal.is_global:
             raise UnsafeUrlError(

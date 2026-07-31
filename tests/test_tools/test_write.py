@@ -36,7 +36,7 @@ class TestWriteFile:
     def test_write_overwrite_existing(self, tmp_path):
         f = tmp_path / "existing.txt"
         f.write_text("old content", encoding="utf-8")
-        result = self._write(str(f), "new content")
+        self._write(str(f), "new content")
         assert f.read_text(encoding="utf-8") == "new content"
 
     def test_write_creates_parent_dirs(self, tmp_path):

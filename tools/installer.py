@@ -1,13 +1,10 @@
 """Tool search and installation manager."""
 
-import os
 import sys
 import importlib
 import subprocess
-from pathlib import Path
 from typing import Optional
 
-from ..utils.i18n import i18n
 
 
 # Common tool repositories (package name -> pip install command)
@@ -29,7 +26,6 @@ KNOWN_TOOLS = {
     "black": "black",
     "pylint": "pylint",
     "mypy": "mypy",
-    "requests": "requests",
     "aiohttp": "aiohttp",
     "httpx": "httpx",
     "pydantic": "pydantic",

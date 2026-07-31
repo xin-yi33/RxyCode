@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from live_smoke_gates import (  # noqa: E402
     chat_stream_cancel_probe,
     chat_with_session,
-    evaluate_w09,
     fetch_status,
     run_diagnostics_probe,
     run_logo_dump,
@@ -123,7 +122,7 @@ def main() -> int:
 
         # W06 build multi-round
         turns6 = []
-        for i, msg in enumerate(
+        for _i, msg in enumerate(
             [
                 "用 Python 写一个函数 add(a,b) 返回两数之和，保存到 /tmp 不要真写，只给代码",
                 "给这个 add 写一个断言测试用例",

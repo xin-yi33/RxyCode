@@ -10,7 +10,6 @@ import urllib.request
 import urllib.error
 import os
 import socket
-import threading
 import http.client
 
 # Force UTF-8 on Windows
@@ -113,7 +112,7 @@ def sse_stream(path, data, timeout=TIMEOUT):
 
 # ── 启动 API 服务器 ────────────────────────────────────
 def wait_for_server(proc=None, max_wait=30):
-    for i in range(max_wait):
+    for _i in range(max_wait):
         try:
             with socket.create_connection((HOST, PORT), timeout=1):
                 status, body = http_get("/status")

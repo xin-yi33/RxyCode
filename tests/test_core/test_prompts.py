@@ -295,7 +295,7 @@ class TestPromptSpec:
         from RxyCode.RxyCode1_1_0.core.prompts import PromptSpec
         spec = PromptSpec(name="test", version="1.0.0", template="Hello")
         # frozen dataclass
-        with pytest.raises(Exception):
+        with pytest.raises((AttributeError, TypeError)):
             spec.name = "changed"
 
     def test_prompt_spec_fields(self):

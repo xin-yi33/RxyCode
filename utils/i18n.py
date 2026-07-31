@@ -115,12 +115,7 @@ STRINGS = {
         "cmd_examples": "使用示例",
         "cmd_memory": "管理记忆",
         "cmd_queue": "管理任务队列",
-        "cmd_cache": "缓存统计",
         "cmd_thinking": "切换思考面板显示",
-        "cmd_schedule": "管理定时任务",
-        "cmd_save_chat": "保存当前对话",
-        "cmd_load_chat": "加载已保存的对话",
-        "cmd_list_chats": "列出所有已保存的对话",
     },
     "en": {
         "banner_subtitle": "General-Purpose AI Agent",
@@ -237,10 +232,6 @@ STRINGS = {
         "cmd_queue": "Manage task queue",
         "cmd_cache": "Cache statistics",
         "cmd_thinking": "Toggle thinking panel display",
-        "cmd_schedule": "Manage scheduled tasks",
-        "cmd_save_chat": "Save current chat",
-        "cmd_load_chat": "Load a saved chat",
-        "cmd_list_chats": "List all saved chats",
     }
 }
 

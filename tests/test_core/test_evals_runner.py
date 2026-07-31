@@ -737,7 +737,7 @@ class TestRunSuite:
         monkeypatch.setattr(runner_mod, "RESULTS_DIR", tmp_path)
         tasks = [_readcode_task()]
         mock_llm = _make_mock_llm("goal_planner executor validator")
-        report = asyncio.run(
+        asyncio.run(
             run_suite(tasks, mock_llm, tag="test-run-001")
         )
         result_file = tmp_path / "test-run-001.json"

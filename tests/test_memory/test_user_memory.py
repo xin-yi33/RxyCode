@@ -100,7 +100,7 @@ class TestUserMemory:
     def test_id_continues_after_remove(self, tmp_path, monkeypatch):
         um = self._make(tmp_path, monkeypatch)
         e1 = um.add("a")
-        e2 = um.add("b")
+        um.add("b")
         um.remove(e1["id"])
         e3 = um.add("c")
         assert e3["id"] == 3

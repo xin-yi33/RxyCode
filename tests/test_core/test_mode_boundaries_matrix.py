@@ -41,7 +41,7 @@ def test_valid_modes_are_recognized_strings(mode: str):
     ],
 )
 def test_plan_mode_file_operation_boundary(mode: str, op_type: str, allowed: bool):
-    agent = AgentV2.__new__(AgentV2)
+    AgentV2.__new__(AgentV2)
     blocked = mode == "plan" and op_type not in {"read", "list"}
     assert blocked != allowed
 

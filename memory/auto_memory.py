@@ -247,7 +247,7 @@ class AutoMemory:
         all_facts = list(dict.fromkeys(existing))[-100:]
 
         content = f"# Auto-extracted facts\n\n_Session: {self.session_id}_\n\n"
-        for i, fact in enumerate(all_facts, 1):
+        for _i, fact in enumerate(all_facts, 1):
             content += f"- {fact}\n"
         atomic_write_text(self._facts_file, content)
 
@@ -328,7 +328,7 @@ class AutoMemory:
         all_facts = existing + facts
         all_facts = list(dict.fromkeys(all_facts))[-100:]
         content = f"# Auto-extracted facts\n\n_Session: {self.session_id}_\n\n"
-        for i, fact in enumerate(all_facts, 1):
+        for _i, fact in enumerate(all_facts, 1):
             content += f"- {fact}\n"
         atomic_write_text(self._facts_file, content)
 

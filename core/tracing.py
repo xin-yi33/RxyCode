@@ -15,7 +15,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -295,7 +295,7 @@ def replay(run_id: str) -> None:
     # Summary
     print("-" * 72)
     summary = tracer.summary()
-    print(f"  Per-node stats:")
+    print("  Per-node stats:")
     for node_name, stats in summary.items():
         print(
             f"    {node_name:<18} "
