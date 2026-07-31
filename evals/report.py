@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
-from .runner import SuiteReport, TaskResult, RESULTS_DIR
+from .runner import SuiteReport
 
 #: Directory for baseline snapshots.
 BASELINES_DIR = Path(__file__).parent / "baselines"

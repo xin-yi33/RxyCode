@@ -176,7 +176,7 @@ class TestTokenStats:
 
     def test_multiple_add_real_usage_calls(self):
         stats = self._make_stats()
-        for i in range(10):
+        for _i in range(10):
             stats.add_real_usage(100, 50, 50)
         assert stats.input_tokens == 1000
         assert stats.output_tokens == 500

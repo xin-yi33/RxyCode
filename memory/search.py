@@ -4,7 +4,6 @@ import math
 import re
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
 

@@ -190,7 +190,7 @@ def _capture_screenshot() -> str:
         screenshots = []
         
         # Capture all monitors
-        for idx, monitor in enumerate(monitors[1:], 1):  # skip monitor 0 (all-in-one)
+        for idx, _monitor in enumerate(monitors[1:], 1):  # skip monitor 0 (all-in-one)
             filename = f"screenshot_monitor_{idx}.png"
             filepath = output_dir / filename
             sct.shot(mon=idx, output=str(filepath))

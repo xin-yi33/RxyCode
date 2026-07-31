@@ -134,7 +134,7 @@ def _manage_tasks_locked(
     if operation == "list":
         filt = status or ""
         lines = []
-        for tid, t in tasks.items():
+        for _tid, t in tasks.items():
             if filt and t["status"] != filt:
                 continue
             lines.append(f"{t['id']} [{t['status']}] {t['summary']}")

@@ -1,9 +1,15 @@
 import axios from "axios";
 import { API_BASE, authorizationHeaders } from "../apiClient.ts";
 import { sendCommand } from "../chatApi.ts";
-import { type ModelInfo } from "../../../src/fetchModelsProbe.ts";
 
-export type { ModelInfo };
+export type ModelInfo = {
+  id: string;
+  name: string;
+  nickname?: string;
+  provider_model_id?: string;
+  base_url?: string;
+  active?: boolean;
+};
 
 export async function probeModels(): Promise<{
   ok: boolean;

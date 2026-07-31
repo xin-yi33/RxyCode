@@ -74,3 +74,5 @@ Thumbs.db
 docs/*
 !docs/modules/
 !docs/images/
+!docs/plans/
+!docs/plans/**

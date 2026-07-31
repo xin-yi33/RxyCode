@@ -76,7 +76,7 @@ def process_file(filepath):
     original = content
     total_replacements = 0
 
-    for old, new, desc in REPLACEMENTS:
+    for old, new, _desc in REPLACEMENTS:
         count = content.count(old)
         if count > 0:
             content = content.replace(old, new)

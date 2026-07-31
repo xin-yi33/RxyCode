@@ -20,7 +20,6 @@ Tier 3 — Incremental LLM summary (fallback, calls LLM)
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 
 class ContextCompressor:

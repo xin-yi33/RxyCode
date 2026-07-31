@@ -78,7 +78,7 @@ def normalize_provider_base_url(
             "base_url must not contain credentials, query parameters, or fragments"
         )
     try:
-        parsed.port
+        _ = parsed.port
     except ValueError as exc:
         raise ValueError("base_url contains an invalid port") from exc
     if require_https and parsed.scheme.casefold() != "https":

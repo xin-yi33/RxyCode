@@ -251,9 +251,11 @@ class HookRegistry:
         callback: Callable[[HookContext], Any],
         context: HookContext,
     ) -> None:
-        if inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
-            getattr(callback, "__call__", None)
-        ):
+        is_async = inspect.iscoroutinefunction(callback)
+        if not is_async and callable(callback):
+            underlying = type(callback).__call__
+            is_async = inspect.iscoroutinefunction(underlying)
+        if is_async:
             result = callback(context)
         else:
             # Threads cannot be forcibly stopped, but dispatching off-loop lets

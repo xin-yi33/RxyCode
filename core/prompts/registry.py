@@ -19,7 +19,7 @@ Usage::
 from __future__ import annotations
 
 import string
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .i18n import get_locale, t

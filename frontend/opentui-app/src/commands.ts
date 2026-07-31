@@ -11,6 +11,8 @@ export interface Command {
   category?: string;
   action?: string;
   keywords?: string;
+  /** True when handled locally without hitting the API (see commandRouter). */
+  local?: boolean;
 }
 
 export const AVAILABLE_COMMANDS: Command[] = [

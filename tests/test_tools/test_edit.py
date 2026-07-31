@@ -25,7 +25,7 @@ class TestEditFile:
 
     def test_replace_multiline(self, tmp_path):
         f = self._setup_file(tmp_path, "line1\nline2\nline3")
-        result = self._edit(str(f), "line2", "replaced")
+        self._edit(str(f), "line2", "replaced")
         assert "replaced" in f.read_text(encoding="utf-8")
 
     def test_file_not_found(self, tmp_path):
@@ -50,7 +50,7 @@ class TestEditFile:
 
     def test_replace_all(self, tmp_path):
         f = self._setup_file(tmp_path, "a a a")
-        result = self._edit(str(f), "a", "b", replaceAll=True)
+        self._edit(str(f), "a", "b", replaceAll=True)
         assert f.read_text(encoding="utf-8") == "b b b"
 
     def test_replace_all_no_matches(self, tmp_path):

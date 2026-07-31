@@ -1,8 +1,6 @@
 ﻿"""RxyCode API Server - FastAPI backend for the Ink TUI."""
 
 import sys
-import io
-import asyncio
 import concurrent.futures
 import hmac
 import ipaddress
@@ -175,8 +173,7 @@ def _is_loopback_client(host: str | None) -> bool:
 
 def _resolve_allowed_origins() -> list[str]:
     """解析 CORS 白名单：环境变量优先，否则用 settings 默认值。"""
-    import os
-    from config.settings import DEFAULT_ALLOWED_ORIGINS
+    from .config.settings import DEFAULT_ALLOWED_ORIGINS
 
     raw = os.environ.get("RXYCODE_ALLOWED_ORIGINS", "").strip()
     if raw:
@@ -617,7 +614,7 @@ def _do_init():
     _state["tui_proxy"] = APIProxyTUI()
     _state["tui_proxy"].set_thinking_expanded(prior_expand)
 
-    from .utils.tui import set_tui, get_tui
+    from .utils.tui import set_tui
     set_tui(_state["tui_proxy"])
 
     model_name = _state["agent"].model_config.get("model_name", "unknown")
@@ -1140,7 +1137,7 @@ async def chat(req: ChatRequest):
         try:
             _init_agent()
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Agent not initialized: {e}")
+            raise HTTPException(status_code=500, detail=f"Agent not initialized: {e}") from e
 
     # Validate empty message
     if not req.message or not req.message.strip():
@@ -2389,7 +2386,7 @@ async def chat_stream(req: ChatRequest):
         try:
             _init_agent()
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Agent not initialized: {e}")
+            raise HTTPException(status_code=500, detail=f"Agent not initialized: {e}") from e
 
     # Validate empty message
     if not req.message or not req.message.strip():

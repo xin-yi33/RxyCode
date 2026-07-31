@@ -115,7 +115,7 @@ class LLMCircuitBreaker:
             # CircuitBreakerError from threshold crossing should surface as
             # the original error for the caller's current attempt.
             if "exc" in captured and exc is not captured["exc"]:
-                raise captured["exc"]
+                raise captured["exc"] from exc
             raise
 
 

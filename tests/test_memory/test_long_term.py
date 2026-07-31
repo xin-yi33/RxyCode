@@ -97,8 +97,8 @@ class TestLongTermMemory:
         assert "latest" in sessions
 
     def test_list_sessions_multiple(self, tmp_path, monkeypatch):
-        ltm1 = self._make(tmp_path, monkeypatch, session_id="session1")
-        ltm2 = self._make(tmp_path, monkeypatch, session_id="session2")
+        self._make(tmp_path, monkeypatch, session_id="session1")
+        self._make(tmp_path, monkeypatch, session_id="session2")
         ltm3 = self._make(tmp_path, monkeypatch)
         sessions = ltm3.list_sessions()
         assert "session1" in sessions

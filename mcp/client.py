@@ -826,8 +826,8 @@ class MCPClient:
         if structured is not None:
             try:
                 parts.append(json.dumps(structured, ensure_ascii=False, sort_keys=True))
-            except (TypeError, ValueError):
-                raise MCPError("MCP structuredContent is not JSON serializable")
+            except (TypeError, ValueError) as exc:
+                raise MCPError("MCP structuredContent is not JSON serializable") from exc
         if not parts:
             parts.append("[MCP tool completed with no content]")
         return _bounded_text("\n".join(parts), self.max_output_chars)

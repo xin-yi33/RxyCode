@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Phase 1: Non-LLM tests (health, commands, memory, frontend)."""
 
-import subprocess, sys, os, time, json, socket
+import subprocess, sys, os, time, json
 import urllib.request as ur
 
 if sys.platform == "win32":
@@ -54,7 +54,7 @@ print(f"  PID={proc.pid}")
 
 # Wait for ready
 ready = False
-for i in range(30):
+for _i in range(30):
     time.sleep(1)
     if proc.poll() is not None:
         out = proc.stdout.read(2048).decode(errors="replace")

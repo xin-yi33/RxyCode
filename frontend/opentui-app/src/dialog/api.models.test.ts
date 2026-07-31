@@ -1,6 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 
-const axiosGet = mock(() => Promise.resolve({ data: { models: [], active: "" } }));
+type ModelsPayload = { models: { id: string; name: string }[]; active: string };
+
+const axiosGet = mock(
+  (): Promise<{ data: ModelsPayload }> =>
+    Promise.resolve({ data: { models: [], active: "" } }),
+);
 
 mock.module("axios", () => ({
   default: { get: axiosGet },

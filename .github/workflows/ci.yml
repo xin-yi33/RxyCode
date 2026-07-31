@@ -25,16 +25,64 @@ env:
   NODE_VERSION: "22"
 
 jobs:
+  opentui:
+    name: OpenTUI (default frontend)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend/opentui-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run tsc --noEmit
+
+      - name: Unit tests
+        run: bun test
+
+  lint:
+    name: Lint (ruff)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install ruff
+        run: python -m pip install -r requirements-dev.txt
+      - name: ruff check
+        run: python -m ruff check . --output-format=github
+
   linux-backend:
-    name: Linux backend layers
+    name: Linux backend layers (py${{ matrix.python-version }})
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     env:
       # Preserve the established package gate while also measuring all root
       # entrypoints and first-party packages with a separately calibrated gate.
       RXYCODE_CORE_COVERAGE_FAIL_UNDER: "67"
       RXYCODE_PROJECT_COVERAGE_FAIL_UNDER: "60"
+      RXYCODE_STRICT_TOOLING: "1"
       RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
       RXYCODE_KEEP_TEST_ARTIFACTS: "1"
     steps:
@@ -43,7 +91,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             requirements.txt
@@ -71,6 +119,9 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
 
+      - name: Install uv (required by distribution gate)
+        run: python -m pip install uv
+
       - name: Build and smoke test the wheel
         shell: bash
         run: |
@@ -90,7 +141,34 @@ jobs:
           test "$status" -eq 1
           grep -F "requires an interactive terminal (TTY)" <<<"$output"
 
+      - name: Run deterministic test layers
+        if: matrix.python-version == '3.11'
+        shell: bash
+        run: |
+          mkdir -p artifacts/junit
+          RXYCODE_TEST_RUN_ID=unit python -m pytest tests/unit \
+            -m "unit and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/unit.xml
+          RXYCODE_TEST_RUN_ID=integration python -m pytest tests/integration \
+            -m "integration and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/integration.xml
+          RXYCODE_TEST_RUN_ID=contract python -m pytest tests/contract \
+            -m "contract and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/contract.xml
+          RXYCODE_TEST_RUN_ID=serial python -m pytest tests \
+            -m "serial and not live and not pty" -n 0 \
+            -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/serial.xml
+          RXYCODE_TEST_RUN_ID=regression python -m pytest tests \
+            -m "not unit and not integration and not contract and not system and not serial and not live and not pty" \
+            -n 2 --dist loadscope -v --tb=short --timeout=180 \
+            --junitxml=artifacts/junit/regression.xml
+
       - name: Run deterministic test layers and collect coverage
+        if: matrix.python-version == '3.12'
         shell: bash
         run: |
           mkdir -p artifacts/junit artifacts/coverage-data
@@ -136,7 +214,7 @@ jobs:
         run: python scripts/scan_secrets.py .
 
       - name: Upload Linux test reports
-        if: ${{ always() && steps.scan_generated_artifacts.outcome == 'success' }}
+        if: ${{ always() && steps.scan_generated_artifacts.outcome == 'success' && matrix.python-version == '3.12' }}
         uses: actions/upload-artifact@v4
         with:
           name: linux-backend-test-reports

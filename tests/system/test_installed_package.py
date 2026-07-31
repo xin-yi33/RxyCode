@@ -13,6 +13,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from tests.conftest import require_tool
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VERSIONED_ROOT = PurePosixPath("RxyCode/RxyCode1_1_0")
@@ -68,9 +70,9 @@ def _venv_executable(venv: Path, name: str) -> Path:
 
 @pytest.fixture(scope="module")
 def installed_package(tmp_path_factory: pytest.TempPathFactory) -> InstalledPackage:
+    require_tool("uv", reason="installed-package system test wheel build")
     uv = shutil.which("uv")
-    if uv is None:
-        pytest.skip("uv is required for the installed-package system test")
+    assert uv is not None
 
     root = tmp_path_factory.mktemp("installed-rxycode")
     wheel_dir = root / "wheel"
