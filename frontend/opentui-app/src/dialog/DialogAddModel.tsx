@@ -1,63 +1,82 @@
 /**
- * OpenTUI Add-model wizard — port of Ink AddModelWizard (4 steps → POST /models/onboard).
+ * OpenTUI Add-model flow — OpenCode "Connect a provider" shape.
+ *
+ * provider (DialogSelect) → key (DialogPrompt) → discover → model (DialogSelect)
+ * → optional nickname → POST /models/onboard
+ *
+ * Every screen is DialogSelect or DialogPrompt, so search / ↑↓ / hover / wheel /
+ * block cursor / category headers / chrome all come from the shared components
+ * instead of being hand-drawn here.
+ *
+ * Model ids are never hard-coded: presets carry provider + base URL only, and
+ * ids come from POST /models/discover or from the user's own input.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { useKeyboard } from "@opentui/react";
-import type { InputRenderable } from "@opentui/core";
-import { C } from "../theme.ts";
-import { SELECT_BG, SELECT_FG } from "./colors.ts";
-import { onboardModel } from "./api.ts";
-import { textFromKeyEvent } from "./DialogSelect.tsx";
+import { useEffect, useState } from "react";
+import { DialogSelect, type DialogSelectOption } from "./DialogSelect.tsx";
+import { DialogPrompt } from "./DialogPrompt.tsx";
+import { DialogError, DialogLoading } from "./DialogStates.tsx";
+import {
+  discoverModels,
+  fetchProviderPresets,
+  onboardModel,
+  type DiscoveredModel,
+  type ProviderPreset,
+} from "./api.ts";
 
-type Step = "provider_model_id" | "api_key" | "api_url" | "nickname";
+const CUSTOM_ID = "__custom__";
+const MANUAL_MODEL_ID = "__manual_model__";
 
-const STEPS: Step[] = ["provider_model_id", "api_key", "api_url", "nickname"];
+type Stage =
+  | "provider"
+  | "custom_url"
+  | "api_key"
+  | "discovering"
+  | "model"
+  | "manual_model"
+  | "nickname"
+  | "saving";
 
-const META: Record<
-  Step,
-  { title: string; placeholder: string; hint: string; field: keyof Data; label: string }
-> = {
-  provider_model_id: {
-    title: "[1/4] Provider model ID",
-    placeholder: "e.g. deepseek-chat",
-    hint: "Provider API 期望的精确模型 ID",
-    field: "providerModelId",
-    label: "Provider ID",
-  },
-  api_key: {
-    title: "[2/4] API Key",
-    placeholder: "sk-...",
-    hint: "密钥本地仅回显掩码",
-    field: "apiKey",
-    label: "Key",
-  },
-  api_url: {
-    title: "[3/4] API URL",
-    placeholder: "https://api.deepseek.com",
-    hint: "携带密钥的连接必须使用 HTTPS",
-    field: "apiUrl",
-    label: "URL",
-  },
-  nickname: {
-    title: "[4/4] 昵称（可选）",
-    placeholder: "留空则等于模型名",
-    hint: "回车跳过",
-    field: "nickname",
-    label: "昵称",
-  },
-};
+/** Build the provider list: backend presets, grouped, plus a custom escape hatch. */
+export function buildProviderOptions(
+  presets: ProviderPreset[],
+): DialogSelectOption<string>[] {
+  const options: DialogSelectOption<string>[] = presets.map((preset) => ({
+    id: preset.id,
+    title: preset.name,
+    description: preset.base_url,
+    category: preset.category || "其他",
+    value: preset.id,
+  }));
+  options.push({
+    id: CUSTOM_ID,
+    title: "自定义服务商",
+    description: "手动填写 API URL 与模型 ID",
+    category: "其他",
+    value: CUSTOM_ID,
+  });
+  return options;
+}
 
-type Data = {
-  providerModelId: string;
-  apiKey: string;
-  apiUrl: string;
-  nickname: string;
-};
-
-function mask(step: Step, v: string): string {
-  if (step === "api_key") return v.length > 8 ? `${v.slice(0, 4)}...${v.slice(-4)}` : "****";
-  return v;
+/** Discovered ids become plain options; a manual-entry row stays available. */
+export function buildModelOptions(
+  models: DiscoveredModel[],
+): DialogSelectOption<string>[] {
+  const options: DialogSelectOption<string>[] = models.map((model) => ({
+    id: model.id,
+    title: model.id,
+    description: model.owned_by || "",
+    category: "可用模型",
+    value: model.id,
+  }));
+  options.push({
+    id: MANUAL_MODEL_ID,
+    title: "手动输入模型 ID",
+    description: "目录里没有想要的模型时使用",
+    category: "操作",
+    value: MANUAL_MODEL_ID,
+  });
+  return options;
 }
 
 export function DialogAddModel({
@@ -67,182 +86,201 @@ export function DialogAddModel({
   onClose: () => void;
   onDone: (message: string) => void;
 }) {
-  const [stepIdx, setStepIdx] = useState(0);
-  const [data, setData] = useState<Data>({
-    providerModelId: "",
-    apiKey: "",
-    apiUrl: "",
-    nickname: "",
-  });
-  const [draft, setDraft] = useState("");
+  const [stage, setStage] = useState<Stage>("provider");
+  const [presets, setPresets] = useState<ProviderPreset[]>([]);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
+  const [providerName, setProviderName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [discovered, setDiscovered] = useState<DiscoveredModel[]>([]);
+  const [modelId, setModelId] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const focusRef = useRef<InputRenderable>(null);
-
-  const step = STEPS[stepIdx]!;
-  const meta = META[step];
 
   useEffect(() => {
-    try {
-      focusRef.current?.focus();
-      if (focusRef.current) focusRef.current.value = "";
-    } catch {
-      // ignore
-    }
-  }, [stepIdx]);
+    void (async () => {
+      const result = await fetchProviderPresets();
+      setPresets(result.presets);
+      setPresetsLoaded(true);
+      if (!result.ok) setError(result.error || "无法加载服务商预设");
+    })();
+  }, []);
 
-  const commitStep = async (text: string) => {
-    const nextData = { ...data, [meta.field]: text.trim() };
-    setData(nextData);
-    setDraft("");
+  const runDiscovery = async (key: string, url: string) => {
+    setStage("discovering");
     setError("");
-
-    if (stepIdx < STEPS.length - 1) {
-      setStepIdx((i) => i + 1);
+    const result = await discoverModels({ apiKey: key, baseUrl: url });
+    if (!result.ok || result.models.length === 0) {
+      // No catalogue (or provider refused): fall back to manual model entry
+      // rather than dead-ending the user.
+      setError(result.error || "该服务商未返回可用模型，请手动输入模型 ID");
+      setStage("manual_model");
       return;
     }
+    setDiscovered(result.models);
+    setStage("model");
+  };
 
-    setBusy(true);
+  const save = async (nickname: string) => {
+    setStage("saving");
+    setError("");
     const result = await onboardModel({
-      providerModelId: nextData.providerModelId,
-      apiKey: nextData.apiKey,
-      baseUrl: nextData.apiUrl,
-      nickname: nextData.nickname || undefined,
+      providerModelId: modelId,
+      apiKey,
+      baseUrl,
+      nickname: nickname || undefined,
     });
-    setBusy(false);
     if (result.action === "error" || result.detail) {
       setError(String(result.message || result.detail || "添加失败"));
+      setStage("nickname");
       return;
     }
-    onDone(String(result.message || `模型已添加: ${nextData.nickname || nextData.providerModelId}`));
+    onDone(String(result.message || `模型已添加: ${nickname || modelId}`));
     onClose();
   };
 
-  useKeyboard((key) => {
-    if (busy) return;
-    if (key.name === "escape") {
-      key.preventDefault?.();
-      onClose();
-      return;
+  if (stage === "provider") {
+    if (!presetsLoaded) {
+      return <DialogLoading text="加载服务商预设…" />;
     }
-    if (key.name === "return" || key.name === "linefeed") {
-      key.preventDefault?.();
-      void commitStep(draft);
-      return;
-    }
-    if (key.name === "backspace" || key.name === "delete") {
-      key.preventDefault?.();
-      setDraft((d) => {
-        const next = d.slice(0, -1);
-        try {
-          if (focusRef.current) focusRef.current.value = next;
-        } catch {
-          // ignore
-        }
-        return next;
-      });
-      return;
-    }
-    const parsed = textFromKeyEvent(key);
-    if (!parsed) return;
-    if (parsed.text) {
-      key.preventDefault?.();
-      setDraft((d) => {
-        const next = d + parsed.text;
-        try {
-          if (focusRef.current) focusRef.current.value = next;
-        } catch {
-          // ignore
-        }
-        return next;
-      });
-    }
-    if (parsed.submit) {
-      key.preventDefault?.();
-      void commitStep(draft + (parsed.text || ""));
-    }
-  });
-
-  const collected = STEPS.slice(0, stepIdx).map((s) => ({
-    step: s,
-    value: data[META[s].field],
-  }));
-
-  const shown = step === "api_key" ? "*".repeat(draft.length) : draft;
-
-  return (
-    <box
-      style={{
-        flexShrink: 0,
-        flexDirection: "column",
-        width: "100%",
-        border: true,
-        borderColor: C.primary,
-        borderStyle: "rounded",
-        paddingLeft: 1,
-        paddingRight: 1,
-        backgroundColor: C.bg,
-      }}
-    >
-      <box style={{ flexDirection: "row", width: "100%", height: 1 }}>
-        <text fg={C.primary} attributes={1}>
-          {" 添加模型"}
-        </text>
-        <box style={{ flexGrow: 1, height: 1 }} />
-        <text fg={C.overlay2}>esc </text>
-      </box>
-      {collected.map((c) => (
-        <box key={c.step} style={{ height: 1, width: "100%" }}>
-          <text fg={C.green}>
-            {"  ✓ "}
-            {META[c.step].label}: {mask(c.step, c.value)}
-          </text>
-        </box>
-      ))}
-      {error ? (
-        <box style={{ height: 1, width: "100%" }}>
-          <text fg={C.yellow}>{"  ⚠ "}{error}</text>
-        </box>
-      ) : null}
-      <box style={{ height: 1, width: "100%" }}>
-        <text fg={C.yellow} attributes={1}>
-          {"  "}
-          {meta.title}
-        </text>
-      </box>
-      <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={C.primary}>{"> "}</text>
-        <text fg={SELECT_FG} bg={draft ? undefined : SELECT_BG}>
-          {(shown || meta.placeholder).slice(0, 1) || " "}
-        </text>
-        <text fg={draft ? C.text : C.overlay2}>
-          {shown ? shown.slice(1) : meta.placeholder.slice(1)}
-        </text>
-        <box style={{ flexGrow: 1, height: 1 }} />
-        <input
-          ref={focusRef}
-          focused
-          onInput={(v) => setDraft(String(v ?? ""))}
-          onSubmit={() => {
-            if (!busy) void commitStep(draft);
-          }}
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            width: 0,
-            height: 0,
-            flexShrink: 0,
-            backgroundColor: C.bg,
+    return (
+      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+        {error ? <DialogError text={error} /> : null}
+        <DialogSelect
+          title="添加模型"
+          options={buildProviderOptions(presets)}
+          categoryOrder={["常用", "其他"]}
+          placeholder="搜索服务商"
+          onClose={onClose}
+          onSelect={(opt) => {
+            setError("");
+            if (opt.value === CUSTOM_ID) {
+              setProviderName("自定义");
+              setStage("custom_url");
+              return;
+            }
+            const preset = presets.find((p) => p.id === opt.value);
+            if (!preset) return;
+            setProviderName(preset.name);
+            setBaseUrl(preset.base_url);
+            setStage("api_key");
           }}
         />
       </box>
-      <box style={{ height: 1, width: "100%" }}>
-        <text fg={C.overlay2}>
-          {"  "}
-          {busy ? "探测连接中…" : meta.hint}
-        </text>
+    );
+  }
+
+  if (stage === "custom_url") {
+    return (
+      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+        {error ? <DialogError text={error} /> : null}
+        <DialogPrompt
+          title="添加模型 · API URL"
+          placeholder="https://api.example.com/v1"
+          initial={baseUrl}
+          hint="携带密钥的连接必须使用 HTTPS"
+          onCancel={() => setStage("provider")}
+          onSubmit={(text) => {
+            if (!text) {
+              setError("API URL 不能为空");
+              return;
+            }
+            setError("");
+            setBaseUrl(text);
+            setStage("api_key");
+          }}
+        />
       </box>
+    );
+  }
+
+  if (stage === "api_key") {
+    return (
+      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+        {error ? <DialogError text={error} /> : null}
+        <DialogPrompt
+          title={`添加模型 · ${providerName} API Key`}
+          placeholder="sk-…"
+          mask
+          hint={`回车后向 ${baseUrl} 查询可用模型；密钥仅掩码回显`}
+          onCancel={() => setStage("provider")}
+          onSubmit={(text) => {
+            if (!text) {
+              setError("API Key 不能为空");
+              return;
+            }
+            setApiKey(text);
+            void runDiscovery(text, baseUrl);
+          }}
+        />
+      </box>
+    );
+  }
+
+  if (stage === "discovering") {
+    return <DialogLoading text={`正在向 ${providerName} 查询可用模型…`} />;
+  }
+
+  if (stage === "model") {
+    return (
+      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+        {error ? <DialogError text={error} /> : null}
+        <DialogSelect
+          title={`${providerName} · 选择模型`}
+          options={buildModelOptions(discovered)}
+          categoryOrder={["可用模型", "操作"]}
+          placeholder="搜索模型"
+          onClose={onClose}
+          onSelect={(opt) => {
+            setError("");
+            if (opt.value === MANUAL_MODEL_ID) {
+              setStage("manual_model");
+              return;
+            }
+            setModelId(opt.value);
+            setStage("nickname");
+          }}
+        />
+      </box>
+    );
+  }
+
+  if (stage === "manual_model") {
+    return (
+      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+        {error ? <DialogError text={error} /> : null}
+        <DialogPrompt
+          title="添加模型 · 模型 ID"
+          placeholder="服务商 API 期望的精确模型 ID"
+          hint="例如 provider 文档中的 model 字段取值"
+          onCancel={() => setStage(discovered.length > 0 ? "model" : "provider")}
+          onSubmit={(text) => {
+            if (!text) {
+              setError("模型 ID 不能为空");
+              return;
+            }
+            setError("");
+            setModelId(text);
+            setStage("nickname");
+          }}
+        />
+      </box>
+    );
+  }
+
+  if (stage === "saving") {
+    return <DialogLoading text="正在探测连接并保存…" />;
+  }
+
+  return (
+    <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
+      {error ? <DialogError text={error} /> : null}
+      <DialogPrompt
+        title="添加模型 · 昵称（可选）"
+        placeholder={modelId}
+        hint="回车跳过则使用模型 ID；保存前会先探测连接"
+        onCancel={() => setStage(discovered.length > 0 ? "model" : "manual_model")}
+        onSubmit={(text) => void save(text)}
+      />
     </box>
   );
 }

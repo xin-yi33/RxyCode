@@ -16,14 +16,17 @@ export function DialogModel({
 
   useEffect(() => {
     void (async () => {
-      const { models, active } = await fetchModels();
+      const { models, active, recent } = await fetchModels();
       setCurrent(active || activeModel || "");
+      // "最近常用" is real switch history from the backend (config.recent_models),
+      // never a hard-coded template list.
+      const recentSet = new Set(recent);
       const opts: DialogSelectOption<string>[] = models.map((m: ModelInfo) => ({
         id: m.id,
         title: m.nickname || m.name || m.id,
         description: m.provider_model_id || m.name || "",
         footer: m.active || m.id === active ? "当前" : m.base_url || "",
-        category: "模型",
+        category: recentSet.has(m.id) ? "最近常用" : "模型",
         value: m.id,
       }));
       opts.push({
@@ -41,7 +44,7 @@ export function DialogModel({
     <DialogSelect
       title="选择模型"
       options={options}
-      categoryOrder={["模型", "操作"]}
+      categoryOrder={["最近常用", "模型", "操作"]}
       placeholder="搜索模型"
       currentId={current}
       onClose={onClose}

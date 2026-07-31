@@ -317,6 +317,32 @@ class ModelOnboardingRequest(BaseModel):
 
         return normalize_provider_base_url(value, require_https=True)
 
+
+class ModelDiscoveryRequest(BaseModel):
+    """Credentials for a read-only provider catalogue lookup.
+
+    Deliberately has no ``provider_model_id``: discovery exists precisely for
+    the case where the user does not know a model id yet.
+    """
+
+    api_key: SecretStr
+    base_url: str
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("api_key must not be empty")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        from .config.model_manager import normalize_provider_base_url
+
+        return normalize_provider_base_url(value, require_https=True)
+
+
 class LogEntry(BaseModel):
     level: str = "INFO"
     message: str
@@ -914,6 +940,7 @@ async def get_status():
 async def get_models():
     """Return structured model list for the model selection panel."""
     from .config.settings import load_config
+    from .config.model_manager import prune_recent_models
     cfg = load_config()
     models = cfg.get("models", {})
     active = cfg.get("active_model", "")
@@ -927,7 +954,43 @@ async def get_models():
             "base_url": mcfg.get("base_url", ""),
             "active": name == active,
         })
-    return {"models": result, "active": active}
+    return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
+
+
+@app.get("/models/presets")
+async def get_model_presets():
+    """Connection presets for the add-model flow: provider + base URL only.
+
+    No preset carries a model id — the TUI must discover ids from the live
+    provider catalogue (``POST /models/discover``) or take user input.
+    """
+    from .config.model_manager import list_provider_presets
+
+    return {"presets": list_provider_presets()}
+
+
+@app.post("/models/discover")
+async def discover_models(req: ModelDiscoveryRequest):
+    """List a provider's models with the supplied credential; never persists."""
+    from .config.model_manager import discover_provider_models
+
+    api_key = req.api_key.get_secret_value().strip()
+    result = await _asyncio.to_thread(
+        discover_provider_models,
+        api_key=api_key,
+        base_url=req.base_url,
+    )
+    if not result.get("success"):
+        safe_error = _redact_explicit(result.get("error", "Discovery failed"), api_key)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model discovery failed: {safe_error}",
+        )
+    return {
+        "models": result.get("models", []),
+        "base_url": req.base_url,
+        "probe": {"elapsed": result.get("elapsed")},
+    }
 
 
 @app.post("/models/onboard", status_code=201)
