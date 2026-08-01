@@ -87,3 +87,6 @@ evals/results/
 # --- Accidental eval / OS pollution in repo root ---
 Microsoft/
 screenshot_monitor_*.png
+
+# --- Git worktree admin dirs (git worktree add .worktrees/...) ---
+.worktrees/
