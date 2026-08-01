@@ -406,7 +406,7 @@ jobs:
           RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
           RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
           RXYCODE_EVAL_MODEL: deepseek-v4-flash
-          RXYCODE_EVAL_BASE_URL: https://api.deepseek.com
+          RXYCODE_EVAL_BASE_URL: https://opencode.ai/zen/go/v1
         run: |
           if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
             echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping eval suite."
