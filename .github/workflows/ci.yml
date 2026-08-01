@@ -409,7 +409,7 @@ jobs:
           RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
           RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
           RXYCODE_EVAL_MODEL: ${{ vars.RXYCODE_EVAL_MODEL || 'deepseek-v4-flash' }}
-          RXYCODE_EVAL_BASE_URL: ${{ vars.RXYCODE_EVAL_BASE_URL || 'https://api.deepseek.com' }}
+          RXYCODE_EVAL_BASE_URL: "${{ vars.RXYCODE_EVAL_BASE_URL || 'https://api.deepseek.com' }}"
         run: python scripts/prepare_eval_ci_config.py
 
       - name: Run eval suite against baseline
