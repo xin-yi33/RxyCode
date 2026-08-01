@@ -341,18 +341,20 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
 
-      - name: Skip live tests (no credentials)
-        if: secrets.RXYCODE_LIVE_API_KEY == ''
-        run: |
-          echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping live provider tests."
-
       - name: Require live provider credentials
-        if: secrets.RXYCODE_LIVE_API_KEY != ''
-        run: python scripts/require_live_credentials.py
+        run: |
+          if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
+            echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping live provider tests."
+            exit 0
+          fi
+          python scripts/require_live_credentials.py
 
       - name: Run live tests
-        if: secrets.RXYCODE_LIVE_API_KEY != ''
         run: |
+          if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
+            echo "Live provider tests skipped (no credentials)."
+            exit 0
+          fi
           mkdir -p artifacts
           python -m pytest tests/live -m live -v --tb=short \
             --junitxml=artifacts/live.xml
@@ -398,22 +400,24 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
 
-      - name: Skip eval suite (no credentials)
-        if: secrets.RXYCODE_LIVE_API_KEY == ''
-        run: |
-          echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping eval suite."
-
       - name: Prepare eval model config
-        if: secrets.RXYCODE_LIVE_API_KEY != ''
+        id: prepare_eval_config
         env:
           RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
           RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
-          RXYCODE_EVAL_MODEL: ${{ vars.RXYCODE_EVAL_MODEL || 'deepseek-v4-flash' }}
-          RXYCODE_EVAL_BASE_URL: "${{ vars.RXYCODE_EVAL_BASE_URL || 'https://api.deepseek.com' }}"
-        run: python scripts/prepare_eval_ci_config.py
+          RXYCODE_EVAL_MODEL: deepseek-v4-flash
+          RXYCODE_EVAL_BASE_URL: https://api.deepseek.com
+        run: |
+          if [ -z "${RXYCODE_LIVE_API_KEY}" ]; then
+            echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping eval suite."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python scripts/prepare_eval_ci_config.py
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Run eval suite against baseline
-        if: secrets.RXYCODE_LIVE_API_KEY != ''
+        if: steps.prepare_eval_config.outputs.skip != 'true'
         env:
           RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
           OPENAI_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
