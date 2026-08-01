@@ -9,3 +9,4 @@ wheel>=0.43,<1
 build>=1.2,<2
 twine>=6.0,<7
 ruff>=0.8,<1
+pyyaml>=6.0
