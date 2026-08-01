@@ -368,10 +368,9 @@ jobs:
     name: Evals vs baseline
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_live)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     env:
       RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
-      RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
     steps:
       - uses: actions/checkout@v4
 
@@ -389,20 +388,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
-
-      - name: Prepare eval model config
-        env:
-          RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
-        run: |
-          mkdir -p "$RXYCODE_DATA_DIR"
-          cat > "$RXYCODE_DATA_DIR/config.yaml" <<EOF
-          active_model: deepseek-v4-flash
-          models:
-            deepseek-v4-flash:
-              model_name: deepseek-v4-flash
-              api_key: "$RXYCODE_LIVE_API_KEY"
-              base_url: https://api.deepseek.com
-          EOF
 
       - name: Run eval suite against baseline
         env:
