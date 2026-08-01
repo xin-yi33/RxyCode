@@ -1,0 +1,240 @@
+{
+  "results": [
+    {
+      "task_id": "bugfix-dict-keyerror",
+      "category": "bugfix",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "bugfix-division-zero",
+      "category": "bugfix",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "bugfix-mutable-default",
+      "category": "bugfix",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "bugfix-off-by-one",
+      "category": "bugfix",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "bugfix-string-reverse",
+      "category": "bugfix",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "feature-cli-parser",
+      "category": "feature",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "feature-fizzbuzz",
+      "category": "feature",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "feature-json-merge",
+      "category": "feature",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "feature-multi-file-cache",
+      "category": "feature",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "readcode-pipeline-nodes",
+      "category": "readcode",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "readcode-safety-levels",
+      "category": "readcode",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "readcode-usage-tracking",
+      "category": "readcode",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "readcode-validator-threshold",
+      "category": "readcode",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "refactor-extract-function",
+      "category": "refactor",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "refactor-list-comprehension",
+      "category": "refactor",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "refactor-replace-magic-numbers",
+      "category": "refactor",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    },
+    {
+      "task_id": "refactor-simplify-conditional",
+      "category": "refactor",
+      "passed": false,
+      "duration_s": 0.0,
+      "token_usage": {},
+      "judge_score": null,
+      "error": "initial baseline placeholder",
+      "agent_answer": "",
+      "check_details": [],
+      "tools_used": []
+    }
+  ],
+  "summary": {
+    "pass_rate": 0.0,
+    "mean_judge_score": 0.0,
+    "total_tokens": 0,
+    "total_duration_s": 0.0,
+    "total_tasks": 17,
+    "passed": 0,
+    "failed": 17,
+    "by_category": {
+      "bugfix": {
+        "total": 5,
+        "passed": 0,
+        "pass_rate": 0.0
+      },
+      "feature": {
+        "total": 4,
+        "passed": 0,
+        "pass_rate": 0.0
+      },
+      "readcode": {
+        "total": 4,
+        "passed": 0,
+        "pass_rate": 0.0
+      },
+      "refactor": {
+        "total": 4,
+        "passed": 0,
+        "pass_rate": 0.0
+      }
+    }
+  },
+  "backend": "agent"
+}
