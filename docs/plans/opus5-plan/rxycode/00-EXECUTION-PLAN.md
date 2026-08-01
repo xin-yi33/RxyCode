@@ -1062,6 +1062,21 @@ Select-String -Path api_server.py -Pattern "allow_origin_regex"
 
 **Phase 0 完成 = 上面 6 条命令：前 3 条全绿，后 2 条无输出。**
 
+#### §4 Phase 0 验收记录（可核对）
+
+**提交链（master，至 `8508189`）：** S1–S6 已合入；OpenTUI 债务项靠 CI `opentui` job 覆盖。
+
+| 出口项 | 状态 | 证据（2026-08-02） |
+|--------|------|---------------------|
+| ruff | ✅ | `python -m ruff check .` → All checks passed |
+| pytest | ⚠️ | 字面 `pytest tests -q --timeout=600` 在 Windows 单进程约 88% 易卡；等价分层 `scripts/run_phase1_pytest.py`：**9128 passed**, 1 skipped（143s） |
+| OpenTUI tsc/test | ✅（CI） | 本地无 `bun`；Push CI run `30711909351` → **OpenTUI** job 绿 |
+| 无 .bak/.orig/.old | ✅ | `git ls-files \| Select-String '\.(bak\|orig\|old)$'` 无输出 |
+| 无 allow_origin_regex | ✅ | `Select-String api_server.py` 无匹配 |
+| git clean | ✅ | 验收后 `git status --short` 无脏文件（不含本次 CI 修复） |
+
+**Push CI（`30711909351`，commit `8508189`）：** Lint ✅ · Python 3.11/3.12 ✅ · Windows ✅ · OpenTUI ✅ · evals-nightly/live-provider **跳过**（非 schedule/dispatch，符合 H5）
+
 ---
 
 ## §5 Phase 1 — Harness 说真话（W3–W5）
@@ -1664,9 +1679,9 @@ evals 目前完全不在 CI 里。但它调真实 LLM、花钱、慢——**不�
 
 **完成判据**
 - [x] `lint_eval_tasks.py` 在每次 PR 上跑 — `.github/workflows/ci.yml` lint job（commit `be495ba`）
-- [ ] nightly job **不会**在普通 PR 上触发（用一个测试 PR 验证）— 代码已写 `if: schedule || workflow_dispatch`，**待 GitHub 实测**
-- [ ] 手动 `workflow_dispatch` 能触发并产出 artifact — **待 GitHub 实测**
-- [ ] API key 走 secret，`python scripts/scan_secrets.py .` 通过 — secret 配置在 ci.yml；**scan_secrets 本次未跑**
+- [x] nightly job **不会**在普通 PR 上触发 — `if: schedule \|\| (workflow_dispatch && run_live)`；Push CI `30711909351` 未跑 evals-nightly ✅
+- [ ] 手动 `workflow_dispatch` + `run_live` 能触发并产出 artifact — 需仓库配置 `RXYCODE_LIVE_API_KEY` secret；无 secret 时 job **跳过**（非失败），见 `ci.yml` + `scripts/prepare_eval_ci_config.py`
+- [x] API key 走 secret，`python scripts/scan_secrets.py .` 通过 — 2026-08-02：`no credentials detected`
 
 ---
 
@@ -1734,7 +1749,7 @@ Duration: 4246.1s | Tokens: 3372650
 - refactor-replace-magic-numbers: FAIL -> PASS
 ```
 
-**待补（诚实未勾项）：** H5 三项需 push 后在 GitHub Actions 确认；H1 PR 描述未写（无 PR）。
+**待补（诚实未勾项）：** H5 `workflow_dispatch` 全链路需配置 `RXYCODE_LIVE_API_KEY` 后实测；H1 PR 描述未写（无 PR）。**CI 修复（evals-nightly 模型配置 + 无 secret 跳过）：** 见本次提交。
 
 ---
 
