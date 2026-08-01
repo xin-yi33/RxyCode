@@ -621,7 +621,7 @@ class UsageTrackingLLM:
                 except StopAsyncIteration:
                     return None, ait
                 return first, ait
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - narrowed by _is_transport_retryable
                 last_exc = exc
                 if attempt >= max_retries or not _is_transport_retryable(exc):
                     raise

@@ -312,6 +312,7 @@ Phase A 的优化对象是"模型"，而模型的字段、参数、定价、缓�
    usage 里命中/未命中的字段名是什么？什么操作会让缓存前缀失效（改历史/插消息/截断/切模型/切 key）？
 5. thinking / reasoning 输出：字段名（在 delta 上还是 message 上）？开关参数（如 thinking.enabled、
    reasoning_effort）？effort 档位与默认值？哪些采样参数（temperature/top_p/presence_penalty/...）被拒绝？
+   **本问结论决定 `supports_reasoning` 与 `thinking_default_on`：适配（支持）则默认打开，不适配则保持 False。**
 6. 官方 tokenizer：有没有 tiktoken 兼容 encoding？没有的话官方推荐什么替代？
 7. 定价：input / output / cached input（缓存命中价）/ 缓存写入价？单价生效日期（as_of）？
 8. 延迟特性：官方公布的 TTFT / 吞吐 / 限流（RPM / TPM）？有没有"加速档"（如 fast mode / UltraSpeed）？
@@ -1622,6 +1623,7 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 > - 沿用 MA4：不引入任何新的第三方 SDK，全部走 OpenAI 兼容端点
 > - 沿用 MA5：不碰 `core/config.py` 的 `LLMConfig`（A11 处理）
 > - **`agent_v2.py` 的改动走主计划 §11.7 的接线请求协议**（`00-EXECUTION-PLAN.md:2560-2582` 共享面三规则 P1/P2/P3，示例见 :2568-2580）：Phase A 窗口要改 `agent_v2.py` 时写 3–5 行"接线请求"由 Phase 2 窗口执行，不得直接改。A19/A20/A21 涉及 `agent_v2.py` 的步骤全部按此执行
+> - **thinking 适配判断（2026-08-01 补充，全卡统一规则）**：每个 provider 卡按 §7 对应批第 5 问做判断——**适配（支持 thinking）→ `supports_reasoning=True` 且 `thinking_default_on=True`（默认打开）**；不适配/兼容端点不可控 → 保持 `False`（零注入）。`thinking_default_on` 全局默认 `False`（未适配前行为与现状一致）。前端 thinking 面板（`/thinking`、`_flush_thinking`）只是**展示**思维链，与模型 thinking 模式无关——面板开着模型没开=空转，模型开着面板关着=思维链不展示但仍在消耗 token
 > - **排期立场**：A0 是纯文档卡，**不受 Phase 2 窗口排期限制**，可随时开工（`ENGINEERING-TIMELINE.md:191` 建议 Phase A 推后的对象是代码卡，不适用于零代码的 A0）；A12–A22 中需要 `agent_v2.py` 改动的卡，按接线请求插入 Phase 2 的 P3（Session）合并之后（`00-EXECUTION-PLAN.md:2520`）
 > - **分工不变**：Grok 在 A0 里的调研与自审是 `MODEL-ASSIGNMENT.md:76` 原"查资料"角色的正式化，仍不写任何代码；第三方审计由用户指定的执行会话模型担任，不属于任何 Phase 的写代码分工
 
@@ -1692,6 +1694,16 @@ class ModelPricing:
     #: 例如 {"fast": "minimal", "balanced": "medium", "deep": "high"}。
     #: A21 的延迟旋钮与 fast path 用它；为空表示该模型不支持档位控制。
     effort_presets: dict[str, str] = field(default_factory=dict)
+
+    #: 该模型是否**默认开启 thinking（推理）模式**（API 层行为）。
+    #: True = 确认支持后默认打开（§7 各批第 5 问结论）；False = 不主动发
+    #: thinking 参数（保持现状行为）。
+    #: ⚠️ 与前端"thinking 面板"无关：面板只是**展示** reasoning_content
+    #: 思维链（_flush_thinking / write_reasoning 的显示层），模型开不开
+    #: thinking 是 **API 层**的行为，由本字段 + llm_kwargs 决定。面板开着
+    #: 而模型没开 thinking = 面板空转；面板关着而模型开了 = 思维链不展示
+    #: 但仍在消耗 token。二者不互相绑定。
+    thinking_default_on: bool = False
 ```
 
 3. 重写 `core/providers/openai.py`。**DC1 关键设计**：`capabilities()` 只在 `matches()` 命中时才返回显式能力；未命中时返回与旧行为一致的 `DEFAULT_CAPABILITIES`（兜底路径的 model_config 可能是任何值，不能因此改变未知模型的行为）：
@@ -1757,6 +1769,7 @@ class OpenAIProvider(BaseProvider):
             caps = replace(
                 caps,
                 supports_reasoning=True,
+                thinking_default_on=True,   # o 系列适配 thinking，默认开启
                 accepts_temperature=False,
             )
         return caps.merged_with_overrides(model_config)
@@ -1935,7 +1948,7 @@ class KimiProvider(BaseProvider):
             usage_fields=_KIMI_USAGE,
             pricing=_KIMI_PRICING,
             prompt_variant="kimi",
-            # TODO(grok→§7.3): 下列数值以报告为准
+            # TODO(grok→§7.3) 第 5 问: thinking 适配判断（适配 → supports_reasoning=True + thinking_default_on=True，默认打开）
             # tokenizer="chars:2.0",
             # context_window=128_000,
         )
@@ -2044,7 +2057,7 @@ class GLMProvider(BaseProvider):
             usage_fields=_GLM_USAGE,
             pricing=_GLM_PRICING,
             prompt_variant="glm",
-            # TODO(grok→§7.4): 下列数值以报告为准
+            # TODO(grok→§7.4) 第 5 问: thinking 适配判断（适配 → supports_reasoning=True + thinking_default_on=True，默认打开）
             # tokenizer="chars:2.0",
             # context_window=128_000,
         )
@@ -2148,7 +2161,7 @@ class MiniMaxProvider(BaseProvider):
             usage_fields=_MINIMAX_USAGE,
             pricing=_MINIMAX_PRICING,
             prompt_variant="minimax",
-            # TODO(grok→§7.5): 下列数值以报告为准
+            # TODO(grok→§7.5) 第 5 问: thinking 适配判断（适配 → supports_reasoning=True + thinking_default_on=True，默认打开）
             # tokenizer="chars:2.0",
             # context_window=200_000,
         )
@@ -2256,7 +2269,7 @@ class MIMOProvider(BaseProvider):
             usage_fields=_MIMO_USAGE,
             pricing=_MIMO_PRICING,
             prompt_variant="mimo",
-            # TODO(grok→§7.6): 下列数值以报告为准
+            # TODO(grok→§7.6) 第 5 问: thinking 适配判断（适配 → supports_reasoning=True + thinking_default_on=True，默认打开）
             # tokenizer="chars:2.0",
             # context_window=128_000,
         )
@@ -2364,7 +2377,7 @@ class QwenProvider(BaseProvider):
             usage_fields=_QWEN_USAGE,
             pricing=_QWEN_PRICING,
             prompt_variant="qwen",
-            # TODO(grok→§7.7): 下列数值以报告为准
+            # TODO(grok→§7.7) 第 5 问: thinking 适配判断（qwen3 系 enable_thinking → supports_reasoning=True + thinking_default_on=True，默认打开）
             # tokenizer="tiktoken:qwen2" 或 "chars:2.0"
             # context_window=128_000,
         )
@@ -2471,6 +2484,8 @@ class AnthropicProvider(BaseProvider):
             prompt_variant="claude",
             supports_prompt_cache=False,  # 兼容端点无法透传 cache_control 时保持关闭，
             # 由 A19 按 §7.8 的真实端点行为决定是否打开
+            # thinking_default_on 保持 False：兼容端点无法控制 thinking block，
+            # 若 §7.8 确认兼容端点可透传 thinking 参数再置 True（默认打开）
             # TODO(grok→§7.8): 下列数值以报告为准
             # context_window=200_000,
         )
@@ -2671,8 +2686,25 @@ feat(model): per-model token governance knobs (defaults unchanged)
 **背景**
 延迟是 agent 体验的胜负手。每个模型族可用的"速度旋钮"不同：DeepSeek v4 的 `reasoning_effort`（low/high/max，默认 high）、OpenAI 的 `reasoning_effort`、MiMo 的 UltraSpeed 档、Anthropic 的 thinking budget。本卡把它们统一成 `effort_presets`（fast / balanced / deep 三档），并让 fast path 默认走 `fast` 档、复杂任务走 `balanced`/`deep`。**本卡只定义旋钮与默认映射，行为默认不变**（balanced = 现状）。
 
+**前端 thinking 面板与模型 thinking 模式是两回事（2026-08-01 补充，重要区分）**
+
+| 维度 | 前端 thinking 面板 | 模型 thinking 模式 |
+|---|---|---|
+| 是什么 | **展示层**：显示模型的思维链（`reasoning_content`） | **API 层行为**：模型是否真的产出思维链 |
+| 谁控制 | `/thinking` 命令、`_flush_thinking`/`write_reasoning` | `ModelCapabilities.supports_reasoning` + `thinking_default_on` + `llm_kwargs` |
+| 面板开着、模型没开 | 面板空转（无内容可显示） | — |
+| 模型开着、面板关着 | — | 思维链不展示，**但仍在消耗 token**（推理 token 计费） |
+
+**二者不互相绑定。** 面板开关不影响模型是否思考；模型思考与否由能力字段决定。
+
+**thinking 适配判断规则（默认打开）**：每个 provider 卡（A12–A18）按 §7 对应批**第 5 问**结论做判断：
+
+- **适配（支持 thinking）** → `supports_reasoning=True` **且** `thinking_default_on=True`（默认打开）
+- **不适配 / 兼容端点不可控**（如 Anthropic 兼容端点的 thinking block 不透传）→ 两者保持 `False`，零注入
+- `effort_presets` 的档位只调 effort 力度，**不关 thinking**：fast 档 = 低 effort 的 thinking（仍开着）；要彻底关闭走显式配置（`thinking_default_on=False` 或用户配置），那是"减法"开关
+
 **涉及文件**
-- `config/model_capabilities.py`（`effort_presets` 已在 A12 追加，本卡消费）
+- `config/model_capabilities.py`（`effort_presets` 已在 A12 追加、`thinking_default_on` 已在 A12 追加，本卡消费）
 - `core/agent_v2.py`（fast path 构造 LLM 时按档位传参，走接线请求）
 - 新建 `tests/test_providers/test_effort_presets.py`
 
@@ -2691,7 +2723,31 @@ feat(model): per-model token governance knobs (defaults unchanged)
         )
 ```
 
-3. `AgentV2` 增加档位选择逻辑（接线请求，改 `_build_llm_from_config` 与 fast path 入口）：
+3. **thinking 默认开启的接线**（2026-08-01 补充）：`llm_kwargs` 组装 thinking 参数——**适配 thinking 的模型默认打开**。通用实现可放 `core/providers/base.py`（各 provider 覆写传输位置）：
+
+```python
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        """按能力组装 thinking / effort 参数。
+
+        判断规则（§7 第 5 问结论）：
+          - supports_reasoning=False → 不支持 thinking，零注入
+          - supports_reasoning=True 且 thinking_default_on=True → 默认打开
+            （thinking enabled + 按档位设 effort；fast 档 = 低 effort 的
+            thinking，仍是开着的；彻底关闭走显式配置 thinking_default_on=False）
+        """
+        kwargs = super().llm_kwargs(model_config, caps)
+        if not (caps.supports_reasoning and caps.thinking_default_on):
+            return kwargs
+        body = kwargs.setdefault("extra_body", {})
+        body["thinking"] = {"type": "enabled"}   # TODO(grok→§7.X): 传输位置以报告为准
+        effort = str(model_config.get("effort") or "balanced")
+        preset = caps.effort_presets.get(effort) or caps.effort_presets.get("balanced")
+        if preset:
+            body["reasoning_effort"] = preset
+        return kwargs
+```
+
+4. `AgentV2` 增加档位选择逻辑（接线请求，改 `_build_llm_from_config` 与 fast path 入口）：
 
 ```python
     def _effort_for(self, mode: str, text: str) -> str:
@@ -2707,7 +2763,7 @@ feat(model): per-model token governance knobs (defaults unchanged)
 ```
 
    调用点：`_build_llm_from_config` 里 `model_config.setdefault("effort", self._effort_for(...))`（A12 的 `llm_kwargs` 已消费 `effort` 键）。
-4. `tests/test_providers/test_effort_presets.py`：断言默认 balanced 与现状一致；fast path 落到 fast 档；不支持的模型族 `effort_presets` 为空时**不得**注入任何额外参数。
+5. `tests/test_providers/test_effort_presets.py`：断言默认 balanced 与现状一致；fast path 落到 fast 档；不支持的模型族 `effort_presets` 为空时**不得**注入任何额外参数；`thinking_default_on=True` 的模型默认带 thinking 参数、`False` 零注入。
 
 **验收命令**
 
@@ -2722,6 +2778,8 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 - [ ] fast path 显式走 fast 档且对不支持的模型零注入
 - [ ] 每族 `effort_presets` 与 §7 报告一致
 - [ ] deep 档仅显式配置触发
+- [ ] **thinking 适配判断完成**：适配模型 `thinking_default_on=True`（默认打开）且 `llm_kwargs` 带 thinking 参数；不适配模型保持 `False`、零注入
+- [ ] `thinking_default_on` 默认 `False`，未适配前行为与现状完全一致
 
 **回滚**：`git revert <commit>`
 
@@ -2774,6 +2832,7 @@ A3 写于 DeepSeek chat/reasoner（V3/R1）时代；2026 年 7 月起官方模�
             compaction_threshold=int(_V4_CONTEXT * 0.9),
             usage_fields=_DEEPSEEK_USAGE,
             supports_reasoning=True,              # v4 默认 thinking 开启
+            thinking_default_on=True,             # 适配 thinking → 默认打开（官方 API 默认即开）
             accepts_temperature=False,            # thinking 模式下采样参数无效
             supports_function_calling=True,       # TODO(grok→§7.1): v4 全系 tools 支持
             structured_output="function_calling",
@@ -2788,7 +2847,7 @@ A3 写于 DeepSeek chat/reasoner（V3/R1）时代；2026 年 7 月起官方模�
         return caps.merged_with_overrides(model_config)
 ```
 
-3. **thinking 开关接线**（A8 已有 `_apply_cache_control` 模式可参照）：在 `llm_kwargs` 里按档位放 `extra_body["thinking"] = {"type": "enabled" if caps.supports_reasoning else "disabled"}` 与 `extra_body["reasoning_effort"]`（传输位置以 §7.1 为准）。
+3. **thinking 开关接线**（A8 已有 `_apply_cache_control` 模式可参照）：按 **A21 的通用 `llm_kwargs`** 实现——`supports_reasoning=True 且 thinking_default_on=True` 时默认发 `thinking: enabled` + 档位 `reasoning_effort`（传输位置以 §7.1 为准）。**不要**用"enabled if supports_reasoning else disabled"一刀切：thinking_default_on=False 时是"不发参数"（零注入），不是"发 disabled"。
 4. **reasoning_content 回传纪律**：记录到 A19 的缓存纪律文档（`docs/modules/providers.md` 新增一节"DeepSeek v4 会话续接"）：带 tools 的轮次必须把 assistant 消息的 `reasoning_content` 一并回传（`_to_openai_messages` 保留该字段），否则 400。
 5. `tests/test_providers/test_deepseek_v4.py`：v4-flash/v4-pro 命中、thinking 默认开、采样参数被删、effort 档位映射、tools+reasoning_content 回传契约（用 `_to_openai_messages` 的 fixture 断言字段保留）。
 
