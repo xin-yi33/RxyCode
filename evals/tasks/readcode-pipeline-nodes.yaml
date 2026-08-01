@@ -17,3 +17,5 @@ checks:
     pattern: "synthesizer"
   - type: output_contains
     pattern: "re_planner"
+  - type: tool_used
+    tool: read

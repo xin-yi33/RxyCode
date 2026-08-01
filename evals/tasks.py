@@ -50,6 +50,8 @@ CHECK_TYPES = (
     "file_not_contains",
     "command_succeeds",
     "output_contains",
+    "tool_used",
+    "tool_not_used",
 )
 
 #: Checks that need a filesystem workdir to be meaningful.
@@ -72,6 +74,7 @@ class Check:
     path: Optional[str] = None
     pattern: Optional[str] = None
     run: Optional[str] = None
+    tool: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict, *, task_id: str) -> "Check":
@@ -90,11 +93,14 @@ class Check:
                 raise TaskSchemaError(f"task {task_id}: check {ctype} requires 'pattern'")
         if ctype == "command_succeeds" and not data.get("run"):
             raise TaskSchemaError(f"task {task_id}: check command_succeeds requires 'run'")
+        if ctype in ("tool_used", "tool_not_used") and not data.get("tool"):
+            raise TaskSchemaError(f"task {task_id}: check {ctype} requires 'tool'")
         return cls(
             type=ctype,
             path=data.get("path"),
             pattern=data.get("pattern"),
             run=data.get("run"),
+            tool=data.get("tool"),
         )
 
 

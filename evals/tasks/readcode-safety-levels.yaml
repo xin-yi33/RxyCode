@@ -12,3 +12,5 @@ checks:
     pattern: "DANGER"
   - type: output_contains
     pattern: "classify_bash_command"
+  - type: tool_used
+    tool: read

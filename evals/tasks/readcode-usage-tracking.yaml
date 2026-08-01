@@ -15,3 +15,5 @@ checks:
     pattern: "_record_usage"
   - type: output_contains
     pattern: "bind_tools"
+  - type: tool_used
+    tool: read
