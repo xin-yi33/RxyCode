@@ -312,9 +312,8 @@ jobs:
   live-provider:
     name: Opt-in live provider
     if: >-
-      (github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live)) &&
-      secrets.RXYCODE_LIVE_API_KEY != ''
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_live)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -342,10 +341,17 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
 
+      - name: Skip live tests (no credentials)
+        if: secrets.RXYCODE_LIVE_API_KEY == ''
+        run: |
+          echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping live provider tests."
+
       - name: Require live provider credentials
+        if: secrets.RXYCODE_LIVE_API_KEY != ''
         run: python scripts/require_live_credentials.py
 
       - name: Run live tests
+        if: secrets.RXYCODE_LIVE_API_KEY != ''
         run: |
           mkdir -p artifacts
           python -m pytest tests/live -m live -v --tb=short \
@@ -368,9 +374,8 @@ jobs:
   evals-nightly:
     name: Evals vs baseline
     if: >-
-      (github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_live)) &&
-      secrets.RXYCODE_LIVE_API_KEY != ''
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_live)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -393,7 +398,13 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
 
+      - name: Skip eval suite (no credentials)
+        if: secrets.RXYCODE_LIVE_API_KEY == ''
+        run: |
+          echo "::warning::RXYCODE_LIVE_API_KEY is not configured; skipping eval suite."
+
       - name: Prepare eval model config
+        if: secrets.RXYCODE_LIVE_API_KEY != ''
         env:
           RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
           RXYCODE_LIVE_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
@@ -402,6 +413,7 @@ jobs:
         run: python scripts/prepare_eval_ci_config.py
 
       - name: Run eval suite against baseline
+        if: secrets.RXYCODE_LIVE_API_KEY != ''
         env:
           RXYCODE_DATA_DIR: ${{ runner.temp }}/rxycode-eval-home
           OPENAI_API_KEY: ${{ secrets.RXYCODE_LIVE_API_KEY }}
