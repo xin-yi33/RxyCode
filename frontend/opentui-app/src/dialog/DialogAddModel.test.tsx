@@ -167,10 +167,10 @@ describe("DialogAddModel (headless mockInput)", () => {
 
       await mockInput.typeText("sk-test-key");
       await flush();
-      const masked = captureCharFrame();
-      // the credential is never echoed verbatim
-      expect(masked).not.toContain("sk-test-key");
-      expect(masked).toContain("*");
+      const keyFrame = captureCharFrame();
+      // plaintext echo so the caret tracks typing (mask removed by design)
+      expect(keyFrame).toContain("sk-test-key");
+      expect(keyFrame).not.toMatch(/\*{3,}/);
 
       await act(async () => {
         mockInput.pressEnter();
@@ -324,6 +324,53 @@ describe("DialogAddModel (headless mockInput)", () => {
         String(call[0]).endsWith("/models/discover"),
       );
       expect(discoverCalls).toHaveLength(0);
+    } finally {
+      renderer.destroy();
+    }
+  });
+
+  test("custom HTTPS discover uses multi-select batch (not nickname)", async () => {
+    axiosPost.mockClear();
+    const { mockInput, flush, waitForFrame, renderer } = await testRender(
+      <DialogAddModel onClose={() => {}} onDone={() => {}} />,
+      { width: 80, height: 28 },
+    );
+    try {
+      await flush();
+      await flush();
+      await mockInput.typeText("自定义");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("API URL"));
+      await mockInput.typeText("https://api.deepseek.com/v1");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("API Key"));
+      await mockInput.typeText("sk-custom");
+      await flush();
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      const multi = await waitForFrame((frame) => frame.includes("deepseek-chat"));
+      expect(multi).toMatch(/✓/);
+      expect(multi).not.toContain("昵称");
+
+      await act(async () => {
+        mockInput.pressEnter();
+      });
+      await waitForFrame((frame) => frame.includes("批量保存"));
+
+      const batchCall = axiosPost.mock.calls.find((call) =>
+        String(call[0]).endsWith("/models/onboard/batch"),
+      );
+      expect(batchCall).toBeDefined();
+      expect(batchCall?.[1]?.skip_probe).toBe(true);
+      expect(batchCall?.[1]?.provider_id).toBe("deepseek");
+      expect(batchCall?.[1]?.provider_name).toBe("DeepSeek");
     } finally {
       renderer.destroy();
     }

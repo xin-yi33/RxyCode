@@ -1,30 +1,54 @@
 import { type DialogSelectOption } from "./DialogSelect.tsx";
 import { type ModelInfo } from "./api.ts";
 
+/**
+ * OpenCode-style /model list:
+ * - Every model stays under its provider group (DeepSeek / OpenCode Go / 其他…)
+ * - Recent switches are *also* listed under 最近常用 (duplicates, same value id)
+ * - Display title = nickname || vendor model id (not namespaced config key)
+ */
 export function buildModelListOptions(
   models: ModelInfo[],
   recent: string[],
   active: string,
 ): { options: DialogSelectOption<string>[]; categoryOrder: string[] } {
-  const recentSet = new Set(recent);
+  const recentIds = recent;
   const providerNames = new Set<string>();
+  const opts: DialogSelectOption<string>[] = [];
 
-  const opts: DialogSelectOption<string>[] = models.map((m) => {
-    const category = recentSet.has(m.id)
-      ? "最近常用"
-      : m.category || m.provider_name || "其他";
-    if (category !== "最近常用" && category !== "其他") {
-      providerNames.add(category);
+  for (const m of models) {
+    const provider =
+      m.category || m.provider_name || "其他";
+    if (provider !== "其他") {
+      providerNames.add(provider);
     }
-    return {
+    const title = m.nickname || m.provider_model_id || m.name || m.id;
+    const description = m.provider_model_id || m.name || "";
+    const footer = m.active || m.id === active ? "当前" : m.base_url || "";
+
+    opts.push({
       id: m.id,
-      title: m.nickname || m.name || m.id,
+      title,
+      description,
+      footer,
+      category: provider,
+      value: m.id,
+    });
+  }
+
+  // Duplicate recent models at top (OpenCode-like quick access), same switch id.
+  for (const recentId of recentIds) {
+    const m = models.find((item) => item.id === recentId);
+    if (!m) continue;
+    opts.unshift({
+      id: `recent:${m.id}`,
+      title: m.nickname || m.provider_model_id || m.name || m.id,
       description: m.provider_model_id || m.name || "",
       footer: m.active || m.id === active ? "当前" : m.base_url || "",
-      category,
+      category: "最近常用",
       value: m.id,
-    };
-  });
+    });
+  }
 
   opts.push({
     id: "__add__",

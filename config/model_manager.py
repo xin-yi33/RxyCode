@@ -36,6 +36,7 @@ PROVIDER_PRESETS: tuple[dict, ...] = (
     {"id": "zhipu", "name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4", "category": "常用"},
     {"id": "siliconflow", "name": "SiliconFlow 硅基流动", "base_url": "https://api.siliconflow.cn/v1", "category": "常用"},
     {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "category": "其他"},
+    {"id": "opencode-go", "name": "OpenCode Go", "base_url": "https://opencode.ai/zen/go/v1", "category": "其他"},
     {"id": "openrouter", "name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "category": "其他"},
     {"id": "groq", "name": "Groq", "base_url": "https://api.groq.com/openai/v1", "category": "其他"},
     {"id": "together", "name": "Together AI", "base_url": "https://api.together.xyz/v1", "category": "其他"},
@@ -91,6 +92,34 @@ def normalize_provider_base_url(
 def list_provider_presets() -> list[dict]:
     """Return connection presets (provider + base URL only, never a model id)."""
     return [{field: preset[field] for field in PRESET_FIELDS} for preset in PROVIDER_PRESETS]
+
+
+def infer_provider_group(base_url: str) -> dict:
+    """Map a base URL to a provider group via preset host match, else 其他."""
+    try:
+        normalized = normalize_provider_base_url(base_url, require_https=False)
+    except ValueError:
+        return {"id": "custom", "name": "其他"}
+    host = (urlsplit(normalized).hostname or "").casefold()
+    for preset in PROVIDER_PRESETS:
+        preset_host = (urlsplit(preset["base_url"]).hostname or "").casefold()
+        if host and preset_host and (
+            host == preset_host or host.endswith("." + preset_host) or preset_host.endswith("." + host)
+        ):
+            return {"id": preset["id"], "name": preset["name"]}
+        # Also match when custom URL shares the registered host core.
+        if host and preset_host and preset_host in host:
+            return {"id": preset["id"], "name": preset["name"]}
+    return {"id": "custom", "name": "其他"}
+
+
+def local_model_key(model_id: str, provider_id: Optional[str] = None) -> str:
+    """Config key: provider_id/model_id so the same vendor id can live in two groups."""
+    mid = model_id.strip()
+    pid = (provider_id or "").strip()
+    if pid:
+        return f"{pid}/{mid}"
+    return mid
 
 
 def _credential_config(api_key: str) -> dict:
@@ -174,10 +203,17 @@ def onboard_models_batch(
     skipped: list[str] = []
     known = set(list_models())
 
+    # Resolve provider group from URL when caller omitted it (custom / other path).
+    if not provider_id or not provider_name:
+        inferred = infer_provider_group(base_url)
+        provider_id = provider_id or inferred["id"]
+        provider_name = provider_name or inferred["name"]
+
     for model_id in model_ids:
-        key = model_id.strip()
-        if not key:
+        mid = model_id.strip()
+        if not mid:
             continue
+        key = local_model_key(mid, provider_id)
         if key in known:
             skipped.append(key)
             continue
@@ -185,7 +221,7 @@ def onboard_models_batch(
             probe = probe_model_connection(
                 api_key=api_key,
                 base_url=base_url,
-                provider_model_id=key,
+                provider_model_id=mid,
             )
             if not probe.get("success"):
                 skipped.append(key)
@@ -194,7 +230,7 @@ def onboard_models_batch(
             key,
             api_key,
             base_url,
-            model_name=key,
+            model_name=mid,
             provider_id=provider_id,
             provider_name=provider_name,
         )
@@ -203,7 +239,12 @@ def onboard_models_batch(
 
     active: Optional[str] = None
     if added:
-        active = active_model_id if active_model_id in added else added[0]
+        # active_model_id may be a raw vendor id or an already-namespaced key.
+        candidates = []
+        if active_model_id:
+            candidates.append(active_model_id.strip())
+            candidates.append(local_model_key(active_model_id.strip(), provider_id))
+        active = next((c for c in candidates if c in added), added[0])
         set_active_model(active)
 
     count = len(added)

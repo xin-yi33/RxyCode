@@ -4,7 +4,9 @@
 > **仓库**：待建，`D:\agent-demo\LinkAgent`（独立 repo）
 > **来源**：SkillForest 研究代码 + *Individualized Agent* 论文
 >
-> **干活之前先读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)
+> **干活之前先读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)  
+> 全部卡（L0–L8、L10、L9-1~L9-8）由 **Composer 主写** → [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)  
+> 前端卡（L9-4~L9-7）内标注的「多模态环节」委托 Grok 辅助 → [`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)
 
 ---
 
@@ -12,7 +14,7 @@
 
 **RxyCode 负责把活干了，LinkAgent 负责记住这个用户怎么干活、并在下次可靠地用上。**
 
-**硬约束：RxyCode 一行都不改。** LinkAgent 通过 `pip install rxycode` 依赖它。任何一张卡如果需要改 RxyCode 源码，按 Playbook 规则 C7 停下来报告。
+**硬约束：RxyCode 一行都不改。** LinkAgent 通过 `pip install rxycode` 依赖它。任何一张卡如果需要改 RxyCode 源码，按 Playbook 规则 C8 停下来报告。
 
 ---
 
@@ -173,9 +175,9 @@ RxyCode 默认注册了 `skill(name)`（`core/agent_v2.py:1499,1519`）。它在
 | RxyCode 做 Phase A/B/C/D/E | 无关 |
 | LinkAgent 做 L0/L1 | 完全不碰 RxyCode，随时可做 |
 
-**双窗口并行的实际排法在** [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md)。摘要：**L0 + L1 从第一天就能和 RxyCode Phase 0 同时跑**（不同仓库，零冲突）；L2 等 Phase 2 那道门；之后 L2→L3→L4→L5→L6 是主链，L7、L8、L10 是穿插做的旁链。
+**双窗口并行的实际排法在** [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md)。摘要：**Composer 主写全部（L0–L8、L10、L9-1~L9-8 / RxyCode Phase 3），Grok 只做前端卡标注的多模态环节（视觉验收）**；早期 Grok 经常空闲——正常，别让它写代码。L2 等 Phase 2；L9-4 等 Phase 3。
 
-**两个真冲突点**：`eko/engine.py`（L3-3 与 L8-4）和 `tools/eko_tools.py`（L5-6 与 L10-3），各自必须串行。
+**两个真冲突点（都是 Composer 主写时自己的排期问题）**：`eko/engine.py`（L3-3 与 L8-4）和 `tools/eko_tools.py`（L5-6 与 L10-3），各自必须串行。
 
 > ⚠ 如果 Phase 3 延期，**不要自己另起一个壳赶进度**。造出第二套桌面代码等于放弃了"基于 RxyCode desktop"这个决定的全部好处。
 

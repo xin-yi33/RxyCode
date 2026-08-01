@@ -244,6 +244,14 @@ setup_field: ''
 
 ### 3.1 人员
 
+> **2026-08-01 补充**：本表的 A/B/C 是早期"三人分工"的遗留，卡 meta 里至今保留。分模型后它是历史记号，**不决定谁干活**——决定权在卡上的 `owner: backend / frontend`（权威见 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)）。对应关系：
+
+| 旧代号 | 旧角色 | 新体系里的承担者 |
+|---|---|---|
+| **A** | 后端 / 核心架构（Tech Lead） | Composer 2.5（主写全部） |
+| **B** | 前端 / TUI / Desktop | Composer 主写前端；**Grok 4.5 只辅助卡内标注的多模态环节** |
+| **C** | QA / CI（可选第 3 人） | 你（人）+ Sonnet 5（diff 预审） |
+
 | 代号 | 角色 | 投入 | 主要负责 |
 |---|---|---|---|
 | **A** | 后端 / 核心架构（Tech Lead） | 100% | Phase 0 后端项、Phase 1 harness、Phase 2 协议与核心解耦 |
@@ -1746,6 +1754,32 @@ Codex 的做法是：**核心不知道 UI 存在**，所有客户端通过一份
 - **`api_server.py` 的现有 HTTP 接口必须保持向后兼容**，OpenTUI 在 P5 之前一直用它
 - **不要在 Phase 2 里改 Agent 的行为**。这是纯粹的接口重构，H4 的评测基线分数应当**保持不变**——这就是我们先做 Phase 1 的原因
 
+### 6.0.1 阻塞超时治理（横切纪律）
+
+> **来源**：2026-08-01 全量验收实测——`mss` 截屏在锁屏/断开会话下**无限阻塞**，Windows 线程超时打断不了原生调用（`pytest --timeout` 直接失效，测试卡死 4 分钟+）。同类风险遍布生产：bash 子进程、LLM 调用、webfetch、审批弹窗、asyncio 里的同步调用。
+>
+> **原则**：**"永不阻塞"是设计目标，超时只是最后防线；进程边界是唯一的物理保证。**
+
+| # | 机制 | 落地要求 | Phase 2 的落地点 |
+|---|---|---|---|
+| **T1** | **进程隔离** | 一切不可控调用（bash、截屏、第三方 SDK）放进独立进程/worker，主进程只做 `wait(timeout)`，超时 kill 子进程 | P4 appserver 进程模型；`tools/vision_capture.py` 已按此落地（2026-08-01） |
+| **T2** | **显式超时** | 所有外部调用必须带超时：网络（connect/read/write）、子进程（`asyncio.wait_for(proc.communicate(), ...)`）、LLM（`wait_for(agent.run(), ...)`）；原生调用（文件/系统 API）交给 T1 包裹 | P1 把超时字段写进协议契约；P3 Session 层做统一超时入口 |
+| **T3** | **事件循环纪律** | event loop 内禁止同步阻塞调用（sync I/O、requests、mss、`time.sleep`）；一律 `asyncio.to_thread` + 超时或进程池 | P3 Session 层 Review 必查项：任何新增 `await` 前的同步 I/O 一律打回 |
+| **T4** | **看门狗兜底** | 运行时心跳 + 无响应 N 秒自动重启/降级；业务侧"已提交 / 执行中 / 失败"三态，客户端不无限等 | P4 appserver 心跳 + job 状态机；测试侧 `scripts/eval_watchdog.py` 总时长兜底 |
+
+**工具超时纪律**（硬约束，和 §7.3 的 DC1–DC5 同级，违反即打回）：
+
+- **bash 工具**：所有命令必须包超时；交互式程序（`tail -f`、REPL、git 需要凭证时挂起）要检测并拒绝，或给 PTY 输入超时
+- **vision `screenshot`**：必须走子进程 + 超时 + 会话预检（锁屏/无交互桌面**明确报错**，不抓屏）；`RXYCODE_DISABLE_SCREEN_CAPTURE=1` 可全局禁用
+- **webfetch / websearch / LLM 调用**：connect/read 超时必设；无超时的外部调用在 Code Review 直接打回
+- **审批 / question 工具**：等用户输入必须有过期时间或取消路径，不能无限挂起
+
+**合并前验收锚点**：
+
+1. `git diff` 里新增的外部调用（网络 / 子进程 / 原生 API）全部带超时或已进程隔离
+2. appserver 每个任务都有三态（`submitted / running / failed`），客户端轮询有上限
+3. 锁屏/禁用场景不挂起：`RXYCODE_DISABLE_SCREEN_CAPTURE=1` 下 `vision screenshot` 返回明确错误（测试已覆盖）
+
 ### P1 · 定义协议层
 
 `P0` / **A** / 2 周（W6–W7）/ 依赖 Phase 1 完成
@@ -1900,7 +1934,7 @@ python -m ruff check protocol
 
 ### P2 · 生成 TypeScript 类型并建立 TS 客户端
 
-`P0` / **B** / 3 周（W6–W8）/ 依赖 P1 的 schema 定型
+`P0` / **B** / 3 周（W6–W8）/ 依赖 P1 的 schema 定型 · **owner: frontend（Composer 主写；多模态环节 Grok 辅助）**
 
 **操作步骤**
 
@@ -2019,7 +2053,7 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 ### P5 · OpenTUI 迁到协议客户端
 
-`P0` / **B** / 2 周（W9–W10）/ 依赖 P4
+`P0` / **B** / 2 周（W9–W10）/ 依赖 P4 · **owner: frontend（Composer 主写；多模态环节 Grok 辅助）**
 
 **操作步骤**
 
@@ -2096,6 +2130,8 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 
 ## §7 Phase 3 — Desktop 应用（W13–W20）
 
+> **owner: frontend → Composer 主写，Grok 辅助多模态环节。** D1–D8 全部由 Composer 执行，纪律见 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)；D3/D4/D5 的「多模态环节」（视觉验收：起 dev server 截屏核对渲染）按卡内标注委托 Grok（[`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)）。Composer 主写，Grok 不做卡本体；若 appserver 缺契约，Composer 顺手补后端卡。
+
 ### 7.1 技术选型
 
 **先说结论：核心决策不是 Electron 还是 Tauri，而是"客户端必须是瘦的"。** 因为 Phase 2 已经把协议和 TS 客户端做好了，桌面壳只负责渲染，换壳的成本被压到很低。
@@ -2116,16 +2152,18 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 
 ### 7.2 任务卡
 
-| ID | 内容 | 负责 | 工时 | 依赖 |
-|---|---|---|---|---|
-| **D1** | Electron + Vite + React 脚手架；打通 `python -m appserver` 子进程 | B | 3d | P4 |
-| **D2** | 主窗口：会话列表 + 对话区 + 输入区；接 `protocol-client` | B | 8d | D1, P2 |
-| **D3** | 流式渲染（`event/message_delta`）+ 工具调用卡片（`tool_begin`/`tool_end`）+ 中断 | B | 8d | D2 |
-| **D4** | 审批 UI（`approval/request` 模态框），含 "always allow" 持久化 | B | 5d | D3 |
-| **D5** | 设置页：模型 / API Key / 工作区；复用后端 `config/model_manager.py` | B | 6d | D2 |
-| **D6** | 打包：Windows / macOS / Linux，含内嵌 Python 运行时 | B | 6d | D5 |
-| **D7** | 自动更新 + 崩溃上报 | B | 4d | D6 |
-| **D8** | Desktop 进 CI：typecheck + 单测 + 三平台构建产物 | C | 4d | D6 |
+| ID | 内容 | 负责 | owner | 工时 | 依赖 |
+|---|---|---|---|---|---|
+| **D1** | Electron + Vite + React 脚手架；打通 `python -m appserver` 子进程 | B | **frontend / Composer 主写** | 3d | P4 |
+| **D2** | 主窗口：会话列表 + 对话区 + 输入区；接 `protocol-client` | B | **frontend / Composer 主写** | 8d | D1, P2 |
+| **D3** | 流式渲染（`event/message_delta`）+ 工具调用卡片（`tool_begin`/`tool_end`）+ 中断 | B | **frontend / Composer 主写 · Grok 视觉验收** | 8d | D2 |
+| **D4** | 审批 UI（`approval/request` 模态框），含 "always allow" 持久化 | B | **frontend / Composer 主写 · Grok 视觉验收** | 5d | D3 |
+| **D5** | 设置页：模型 / API Key / 工作区；复用后端 `config/model_manager.py` | B | **frontend / Composer 主写 · Grok 视觉验收** | 6d | D2 |
+| **D6** | 打包：Windows / macOS / Linux，含内嵌 Python 运行时 | B | **frontend / Composer 主写** | 6d | D5 |
+| **D7** | 自动更新 + 崩溃上报 | B | **frontend / Composer 主写** | 4d | D6 |
+| **D8** | Desktop 进 CI：typecheck + 单测 + 三平台构建产物 | C | **frontend / Composer 主写** | 4d | D6 |
+
+> 卡内「多模态环节」（D3 流式渲染核对、D4 审批弹层、D5 设置页截图）委托 Grok，交付物回 Composer 收口（见 COMPOSER §4）。
 
 ### 7.3 Desktop 的硬性约束
 
@@ -2337,7 +2375,7 @@ git status --short
 
 > **2026-07-31 目录重构**：本目录拆成了 `rxycode/` 和 `linkagent/` 两个子目录，本文件从
 > `2026-07-31-EXECUTION-PLAN.md` 更名为 `00-EXECUTION-PLAN.md`。
-> 干活的纪律统一在 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)，**先读它**。
+> 模型分工在 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)：Composer 主写全部，Grok 辅助前端多模态。主写纪律 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)，辅助纪律 [`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)。
 
 | 顺序 | 文件 | 覆盖内容 | 前置 | 工时 |
 |---|---|---|---|---|
@@ -2363,8 +2401,8 @@ git status --short
       │                                    │
       ├──────────────┬─────────────────────┤
       ▼              ▼                     │
-本文件 Phase 2   Phase A 模型适配           │  ← 唯一可双人并行的一段
- 协议 + Session       │                     │     协作协议见 §11.7
+ 本文件 Phase 2   Phase A 模型适配           │  ← 分模型后并行对变了：
+ 协议 + Session       │                     │     见 §11.7（Composer 主写 ‖ Grok 辅助多模态）
       │              │                     │
       └──────┬───────┘                     │
              ▼                             │
@@ -2398,7 +2436,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 **对本路线的唯一影响**：论文的评测方法论（配对消融共享原始输出、runtime–scoring 隔离、序列级统计单位、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness、Phase B 的 B14、Phase C 的 C11 都直接适用，**和 PersonaAgent 做不做无关**。这部分可以照搬。
 
-**唯一可以双人并行的**是 Phase A 与本文件的 Phase 2——前者动模型层，后者动协议与 Session 层，接触面很小。**具体的协作协议见 §11.7。** 其余全部串行。
+**分模型后的并行结构见 §11.7**：Phase 2 期间没有真正的第二主链——Composer 主写 P1–P8，Grok 只做卡内标注的多模态环节；Phase A 排到 Phase 2 合并之后。其余全部串行。
 
 **每个 Phase 的前置都是硬前置**，各文档的 §0.3 写了具体理由。最常见的两处误判：
 - **跳过 Phase 2 直接做 Phase B** —— 会导致在 `agent_v2.py` 这个 3704 行的 God Object 里手工造一套 ad-hoc 的 Agent 通信机制，半年后推倒重来。
@@ -2429,15 +2467,15 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 5. 一张卡 = 一个 commit。做完再开下一张
 ```
 
-**三个模型的分工**（各文档 §0.2 有更细的版本）：
+**三个模型的分工**（权威见 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；各文档 §0.2 应与它对齐）：
 
 | 模型 | 职责 |
 |---|---|
-| **Composer 2.5** | 主力实现。按任务卡写代码、多文件同步改写、补测试、跑验收 |
-| **Grok** | 外部资料调研。查 provider API 文档、**各家模型的真实定价**（Phase C 的 C4 必需）、推理痕迹字段名、各家 vision 格式。**不直接改代码** |
-| **Sonnet 5** | Diff 审查 + 写文档。重点审三张最容易漏改的卡：Phase B 的 **B2**（拆单例）、Phase C 的 **C3**（跨模型交接）、Phase D 的 **D4**（类型拓宽） |
+| **Composer 2.5** | **主写全部**。Python / 协议 schema / appserver / 评测 + Electron / React / TS UI / 协议客户端（Phase 3 全部、Phase 2 的 `protocol-client`）；按任务卡实现、补测试、跑验收 |
+| **Grok 4.5** | **前端辅助（多模态）**。只做前端卡里标注的「多模态环节」：视觉验收（截屏核对渲染）、图片类 UI（粘贴/预览）、对照设计稿。空闲时仍可查外部资料（定价、vision 格式等），查到的落进文档 |
+| **Sonnet 5** | Diff 预审（可选）。重点：Phase B 的 **B2**、Phase C 的 **C3**、Phase D 的 **D4**、Phase 3 的壳分叉 |
 
-推荐回路：**Grok 查资料 → Composer 实现 → Sonnet 5 审查 → Composer 修**。
+推荐回路：**Composer 写卡 → 卡内「多模态环节」委托 Grok →（可选）Sonnet 预审 → 你合并**。
 
 ### 11.4 贯穿全程的三条铁律
 
@@ -2472,21 +2510,16 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 ---
 
-### 11.7 双人并行协作协议（Phase 2 ‖ Phase A）
+### 11.7 并行协作协议（Composer 主写 + Grok 辅助多模态）
 
-> **回答"我做 Phase 2 的时候，另一个人怎么同时做 Phase A"。**
+> **回答"Composer 做 Phase 2 的时候，Grok 窗口能同时做什么"。**
 >
-> 这是整条路线**唯一**能双人并行的一段。别的地方硬并行只会制造合并冲突，节省的时间全赔在解冲突和调试上。
-
-> ⚠ **2026-08-01 补充：实际执行是"两个 Composer 窗口"，不是两个人。**
+> ⚠ **2026-08-01 补充（主写/辅助定位恢复后，本节要这样读）**：
 >
-> 本节的**文件接触面分析仍然完全有效**——它说的是"哪些改动会打架"，那和执行者是人还是 agent 无关。分支策略照用。
->
-> 但**并行的理由变了**：不再是"两个人时间对齐"，而是"你审 A 的时候 B 在跑"。瓶颈是**你一个人的审查带宽**，不是产出速度。
->
-> **由此得出一条本节没有的建议**：Phase A 虽然和 Phase 2 文件不冲突、技术上能并行，但**不建议在 P3（抽 Session 层）期间开**。P3 是全项目最容易出错的一张卡，值得你专注审它，别分心。
->
-> 完整排法见 [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md)。
+> 1. **没有第二条主链。** Phase 2 期间 Composer 主写 P1–P8 全部；Grok 只做卡内标注的「多模态环节」（若有）——见 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md) §3。不是"后端归 Composer、前端归 Grok"。
+> 2. **Phase A 排到 Phase 2 合并之后**（见 [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md) 阶段 2 的提示）。它跑的时候是 **Composer 的活**：要么等 Phase 2 收尾用同一个窗口，要么开第二个 Composer 会话（此时 Grok 窗口做前端多模态环节）。
+> 3. 下面 11.7.1~11.7.5 的**文件接触面分析仍然完全有效**——它说的是"哪些改动会打架"，和执行者是谁无关。**但 Phase 2 泳道里没有 Grok 的独立泳道**：`frontend/` 也归 Composer，Grok 只在委托环节介入，产出并入 Composer 分支，见 11.7.2 的修订。
+> 4. 瓶颈是**你一个人的审查带宽**，不是产出速度。P3（抽 Session 层）期间**不建议开任何并行后端卡**，值得你专注审它。
 
 #### 11.7.1 为什么只有这一段能并行
 
@@ -2498,56 +2531,60 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 **接触面就只有 `agent_v2.py` 的两处**：LLM 构造点（`:687-701` 附近）和 usage 记录点。其余零重叠。
 
+> 这里说的"并行"是**双 Composer 会话**（或 Composer + Grok 辅助环节）。默认配置（单 Composer + Grok 辅助）不需要它——Grok 只做被委托的多模态环节，无独立分支。
+
 #### 11.7.2 分工与边界
 
 ```
-     A 同学 · Phase 2                        B 同学 · Phase A
-     分支 feat/phase2-protocol               分支 feat/phase-a-providers
-     ─────────────────────────               ─────────────────────────
-     protocol/**            独占             core/providers/**       独占
-     core/session.py        独占             config/model_capabilities.py 独占
-     api_server.py          独占             config/model_pricing.py 独占
-     frontend/**            独占             core/prompts/variants/** 独占
-     tests/test_protocol*   独占             tests/test_providers/** 独占
-                                             tests/test_capabilities/** 独占
+     Composer · Phase 2（主写全部）           Grok · 辅助（无独立泳道）
+     分支 feat/phase2-protocol                 只做卡内标注的多模态环节
+     ─────────────────────────                  ─────────────────────────
+     protocol/**            独占                产出并入 Composer 分支
+     core/session.py        独占                （视觉验收截图、图片 UI 片段等）
+     api_server.py          独占
+     core/agent_v2.py       独占
+     frontend/**            独占
+     tests/test_protocol*   独占
 
-                      ┌─────────────────────┐
-                      │ core/agent_v2.py    │  ← 唯一的共享面
-                      │ config/settings.py  │  ← 次要共享面
-                      └─────────────────────┘
-                          规则见 11.7.3
+                       ┌─────────────────────┐
+                       │ protocol/schema.json │  ← 唯一的交接面
+                       │ config/settings.py   │  ← 次要共享面（只允许追加）
+                       └─────────────────────┘
+                           规则见 11.7.3
 ```
 
-**两人各自的 Phase 0/1 前置必须已经在 main 上。** 不要一个人还在做 Phase 0，另一个人就开分支——那不是并行，那是在流沙上盖房子。
+**Phase A 此时不并行**（排在 Phase 2 合并之后，见 11.7 补充第 2 条）。上表是 Composer 主写 + Grok 辅助，不是两个主链窗口。
+
+**前置要求**：Phase 0/1 必须已经在 main 上。不要一个窗口还在做 Phase 0，另一个就开分支——那不是并行，那是在流沙上盖房子。
 
 #### 11.7.3 共享面的三条规则
 
 | # | 规则 | 怎么做 |
 |---|---|---|
-| **P1** | **`agent_v2.py` 归 A 同学（Phase 2）所有** | Phase 2 要从这个文件里往外搬大量代码，让两个人同时改它必然冲突 |
-| **P2** | **B 同学需要改 `agent_v2.py` 时，写一个"接线请求"给 A 同学，由 A 来改** | 接线请求要写清：改哪一行、改成什么、为什么。通常就 3-5 行 |
-| **P3** | **`config/settings.py` 只允许追加，不允许改动已有行** | 两人都要往里加配置。只追加就是 git 能自动合并的场景 |
+| **P1** | **`agent_v2.py` 归 Phase 2 后端窗口（Composer）所有** | Phase 2 要从这个文件里往外搬大量代码，任何并行窗口同时改它必然冲突 |
+| **P2** | **另一个后端会话（Phase A 若并行）需要改 `agent_v2.py` 时，写一个"接线请求"给 Phase 2 窗口，由它来改** | 接线请求要写清：改哪一行、改成什么、为什么。通常就 3-5 行 |
+| **P3** | **`config/settings.py` 只允许追加，不允许改动已有行** | 两边都要往里加配置。只追加就是 git 能自动合并的场景 |
 
-**P2 的实际操作**（Phase A 全程大概只需要两次）：
+**P2 的实际操作**（Phase A 若并行，全程大概只需要两次）：
 
 ```
 第 1 次 · A2 完成后（provider 层就绪）
-  B → A: "core/providers/ 已经能用了。请把 agent_v2.py:687-701 的
+  Phase A 窗口 → Phase 2 窗口: "core/providers/ 已经能用了。请把 agent_v2.py:687-701 的
           LLM 构造改成走 resolve_provider()。我在 core/providers/README.md
           里写了调用示例。改完我这边的集成测试就能跑。"
 
 第 2 次 · A5 完成后（usage 提取就绪）
-  B → A: "请把 usage 记录点改成走 provider.extract_cache_read()。
+  Phase A 窗口 → Phase 2 窗口: "请把 usage 记录点改成走 provider.extract_cache_read()。
           原因：各家的 usage 字段名不一样，现在的代码只认 OpenAI 格式，
           DeepSeek 的缓存命中数一直是 0。"
 ```
 
-A 同学收到请求后当作自己 Phase 2 的一张小卡来做，正常提交。**B 同学在 A 合并之前，本地用 monkeypatch 跑集成测试**，不要为了自测去改 `agent_v2.py`。
+Phase 2 窗口收到请求后把它当作 Phase 2 的一张小卡来做，正常提交。**Phase A 窗口在它合并之前，本地用 monkeypatch 跑集成测试**，不要为了自测去改 `agent_v2.py`。
 
-#### 11.7.4 同步节奏
+#### 11.7.4 同步节奏（仅当存在两个并行主链会话时适用）
 
 ```
-每天    两人各自 rebase main 一次
+每天    每个窗口各自 rebase main 一次
         （不是 merge。rebase 让冲突早暴露、历史干净）
 
 每 2 天 15 分钟同步：
@@ -2555,11 +2592,13 @@ A 同学收到请求后当作自己 Phase 2 的一张小卡来做，正常提交
         - 有没有要发的接线请求？
         - 有没有谁被谁挡住了？
 
-合并点  Phase 2 的 S 卡和 Phase A 的 A 卡各自完成就可以合
+合并点  各分支的卡各自完成就可以合
         谁先做完谁先合，后合的负责 rebase
 ```
 
 **不要攒着一起合。** 两条分支各自跑两周再合并，是这套并行方案唯一会真正翻车的方式。
+
+> 默认配置下（Composer 主写 + Grok 辅助）没有这个节奏：Grok 无独立分支，产出走委托-收口，不需要每日同步。
 
 #### 11.7.5 合并点与验收
 
@@ -2567,7 +2606,7 @@ A 同学收到请求后当作自己 Phase 2 的一张小卡来做，正常提交
 |---|---|---|
 | 每次合并前 | 合并方 | `python -m ruff check .` + `python -m pytest tests -q` |
 | 每次合并后 | 合并方 | `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json` |
-| **两边全部合完** | **两人一起** | 下面这组完整验收 |
+| **两边全部合完** | **两边一起** | 下面这组完整验收 |
 
 ```powershell
 cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
@@ -2584,17 +2623,18 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 #### 11.7.6 Phase B 之后怎么办
 
-**Phase B 及以后不要再双人并行。** 理由：
+**Phase B 及以后不要再并行开发后端。** 理由：
 
 - Phase B 的 B2（拆三组全局单例）会碰到 `tools/`、`cache/`、`recovery/`、`core/` 四个目录，**几乎和所有东西都有接触面**
 - Phase C 依赖 Phase B 的全部产物，没有可切分的独立子集
 - Phase B §2.5 引用的失败归因研究显示，多 Agent 系统里**协调失败占全部失败的 36.94%**——这条对人也成立，协调成本会吃掉并行收益
 
-**想让第二个人有事做，正确的方式不是并行开发，而是分工到角色**：
+**想让第二个窗口有事做，正确的方式不是并行开发，而是分工到角色**：
 
-| 角色 | 做什么 |
-|---|---|
-| **实现** | 按任务卡串行推进 |
-| **审查 + 调研** | 审每一张卡的 diff（尤其 B2 / C3 / D4）、跑 Grok 的调研 prompt、维护评测基线、写 `docs/modules/*.md` |
+| 角色 | 谁 | 做什么 |
+|---|---|---|
+| **实现** | Composer | 按任务卡串行推进（后端 + 前端） |
+| **辅助（多模态）** | Grok | 前端卡内标注的多模态环节：视觉验收（截屏核对）、图片类 UI、对照设计稿 |
+| **审查 + 调研** | Sonnet 5（diff 预审）+ Grok（查资料/调研） | 审每一张卡的 diff（尤其 B2 / C3 / D4）、跑调研 prompt、维护评测基线、写 `docs/modules/*.md` |
 
-Phase B 的 B14 和 Phase C 的 C11 两张评测卡工作量都不小，而且**可以和实现完全解耦**——这是第二个人最有价值的去处。
+Phase B 的 B14 和 Phase C 的 C11 两张评测卡工作量都不小，而且**可以和实现完全解耦**——这是第二个窗口（或 Grok 空闲时）最有价值的去处。

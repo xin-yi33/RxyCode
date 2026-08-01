@@ -5,7 +5,7 @@
 > **工时**：6 天
 > **卡数**：5 张（L3-1 ~ L3-5）
 >
-> **干活前读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) §2。**一次只做一张卡。**
+> **干活前读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；本文件卡多为 **owner: backend** → [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)。**一次只做一张卡。**
 
 ---
 

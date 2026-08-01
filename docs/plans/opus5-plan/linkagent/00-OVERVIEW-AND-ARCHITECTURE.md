@@ -1,6 +1,6 @@
 # LinkAgent · 定位、架构与复用边界
 
-> **读这份文档之前**：先读 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)（干活的纪律）。
+> **读这份文档之前**：先读 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；主写纪律（全部卡归 Composer）[`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)，多模态环节辅助纪律 [`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)。
 > **这份文档不含任务卡**，它回答"我们到底要建什么、为什么这么建"。任务卡在 `L0`–`L7`。
 >
 > **创建**：2026-07-31
@@ -49,7 +49,7 @@ RxyCode 负责"把活干了"，LinkAgent 负责"记住这个用户怎么干活�
 
 **硬约束：RxyCode 不因为 LinkAgent 改动一行。**
 
-LinkAgent 通过 `pip install rxycode` 依赖它，用它公开的扩展缝接入。任何一张卡如果需要改 RxyCode 源码，按 Playbook 规则 C7 **停下来报告**。
+LinkAgent 通过 `pip install rxycode` 依赖它，用它公开的扩展缝接入。任何一张卡如果需要改 RxyCode 源码，按 Playbook 规则 C8 **停下来报告**。
 
 ---
 

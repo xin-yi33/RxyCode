@@ -5,7 +5,7 @@
 > **工时**：6 天
 > **卡数**：6 张（L2-1 ~ L2-6）
 >
-> **干活前读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) §2。**一次只做一张卡。**
+> **干活前读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；本文件卡多为 **owner: backend** → [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)。**一次只做一张卡。**
 
 ---
 
@@ -28,7 +28,7 @@ L2 建三座桥：
 
 ### ⚠ 核心约束：RxyCode 一行都不许改
 
-任何一张卡如果发现"必须改 RxyCode 才能做"，按 Playbook 规则 C7 **停下来报告**。
+任何一张卡如果发现"必须改 RxyCode 才能做"，按 Playbook 规则 C8 **停下来报告**。
 
 不要 fork、不要打补丁文件、不要在 site-packages 里改。
 

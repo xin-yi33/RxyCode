@@ -148,26 +148,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts/junit
-          RXYCODE_TEST_RUN_ID=unit python -m pytest tests/unit \
-            -m "unit and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/unit.xml
-          RXYCODE_TEST_RUN_ID=integration python -m pytest tests/integration \
-            -m "integration and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/integration.xml
-          RXYCODE_TEST_RUN_ID=contract python -m pytest tests/contract \
-            -m "contract and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/contract.xml
-          RXYCODE_TEST_RUN_ID=serial python -m pytest tests \
-            -m "serial and not live and not pty" -n 0 \
-            -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/serial.xml
-          RXYCODE_TEST_RUN_ID=regression python -m pytest tests \
-            -m "not unit and not integration and not contract and not system and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/regression.xml
+          python scripts/run_phase1_pytest.py --verbose --junit-dir artifacts/junit
 
       - name: Run deterministic test layers and collect coverage
         if: matrix.python-version == '3.12'
@@ -175,32 +156,8 @@ jobs:
         run: |
           mkdir -p artifacts/junit artifacts/coverage-data
           python -m coverage erase
-          COVERAGE_FILE=artifacts/coverage-data/.coverage.unit \
-            RXYCODE_TEST_RUN_ID=unit python -m pytest tests/unit \
-            -m "unit and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/unit.xml --cov --cov-report=
-          COVERAGE_FILE=artifacts/coverage-data/.coverage.integration \
-            RXYCODE_TEST_RUN_ID=integration python -m pytest tests/integration \
-            -m "integration and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/integration.xml --cov --cov-report=
-          COVERAGE_FILE=artifacts/coverage-data/.coverage.contract \
-            RXYCODE_TEST_RUN_ID=contract python -m pytest tests/contract \
-            -m "contract and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/contract.xml --cov --cov-report=
-          COVERAGE_FILE=artifacts/coverage-data/.coverage.serial \
-            RXYCODE_TEST_RUN_ID=serial python -m pytest tests \
-            -m "serial and not live and not pty" -n 0 \
-            -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/serial.xml --cov --cov-report=
-          COVERAGE_FILE=artifacts/coverage-data/.coverage.regression \
-            RXYCODE_TEST_RUN_ID=regression python -m pytest tests \
-            -m "not unit and not integration and not contract and not system and not serial and not live and not pty" \
-            -n 2 --dist loadscope -v --tb=short --timeout=180 \
-            --junitxml=artifacts/junit/regression.xml \
-            --cov --cov-report=
+          python scripts/run_phase1_pytest.py --verbose \
+            --junit-dir artifacts/junit --coverage-data-dir artifacts/coverage-data
           python -m coverage combine --keep artifacts/coverage-data
           python -m coverage xml -o artifacts/coverage.xml
           python -m coverage html -d artifacts/htmlcov

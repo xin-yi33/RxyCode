@@ -55,11 +55,21 @@ def test_ci_uses_isolated_coverage_files_and_failure_artifact_root():
     workflow = (project_root / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
+    # Layer definitions live in the runner script (single source of truth);
+    # ci.yml must invoke it rather than inlining the same pytest commands.
+    runner = (project_root / "scripts" / "run_phase1_pytest.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert workflow.count("COVERAGE_FILE=artifacts/coverage-data/") == 5
+    assert "run_phase1_pytest.py" in workflow
+    assert "--coverage-data-dir artifacts/coverage-data" in workflow
+    # Per-layer marker filters and isolated coverage files are defined once.
+    assert '"serial and not live and not pty"' in runner
+    assert '"-n", "0"' in runner
+    assert '"COVERAGE_FILE"' in runner
+    assert '".coverage.{name}"' in runner
     assert "--cov-append" not in workflow
     assert "coverage combine --keep artifacts/coverage-data" in workflow
-    assert '-m "serial and not live and not pty" -n 0' in workflow
     assert "RXYCODE_TEST_ROOT:" in workflow
     assert "artifacts/runtime" in workflow
     assert "Require live provider credentials" in workflow

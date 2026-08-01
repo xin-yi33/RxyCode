@@ -6,7 +6,7 @@
 > **工时**：8 天
 > **卡数**：6 张（L5-1 ~ L5-6）
 >
-> **干活前读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) §2。**一次只做一张卡。**
+> **干活前读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；本文件卡多为 **owner: backend** → [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)。**一次只做一张卡。**
 
 ---
 
@@ -42,7 +42,7 @@ w/o Feedback Evolution
 > python -m pytest tests/eko/test_cross_domain_regression.py -v
 > ```
 >
-> 跨域泄漏必须是 **0 组**。不是 0 就**停下来**（Playbook 规则 C7）。
+> 跨域泄漏必须是 **0 组**。不是 0 就**停下来**（Playbook 规则 C8）。
 
 ---
 

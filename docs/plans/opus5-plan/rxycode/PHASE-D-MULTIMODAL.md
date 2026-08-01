@@ -7,7 +7,7 @@
 >
 > **一句话目标**：让图像能端到端流过系统（用户 → Agent → 模型 → 记忆 → 前端），并让多 Agent 编排能利用视觉能力（例如"截图审查员"角色看 UI 截图找问题）。
 >
-> **执行模型**：Composer 2.5 为主力，Grok / Sonnet 5 辅助。分工见 §0.2。
+> **执行模型**：管道类型拓宽与预览 UI **Composer 主写**；预览/粘贴图片 UI 卡的**多模态环节**委托 Grok 辅助。权威见 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)。
 > **基线日期**：2026-07-31（编号自 Phase C 调整为 Phase D）　**预计工时**：6 周（1 名后端 + 1 名前端）
 >
 > ---
@@ -59,8 +59,8 @@
 
 | 模型 | 干什么 | 不要干什么 |
 |---|---|---|
-| **Composer 2.5** | 按任务卡实现。Phase D 大量是**机械的类型拓宽**（`str` → `str \| list[ContentBlock]`），跨十几个文件，这正是它擅长的 | 决定缓存键策略（D5 有真实的设计权衡，已在文档里定好，照做即可） |
-| **Grok** | 查各家 vision API 的差异：图像尺寸/格式限制、base64 vs URL、token 计费方式、Anthropic 与 OpenAI 的 content block 格式差异 | 直接改代码 |
+| **Composer 2.5** | **主写全部**：类型拓宽、AttachmentStore、缓存键（按文档已定决策）、预览/粘贴图片 UI 卡本体 | 自行改缓存策略 |
+| **Grok 4.5** | 查各家 vision API 的差异（图像尺寸/格式限制、base64 vs URL、token 计费、content block 格式）；预览/粘贴图片 UI 卡的**多模态环节**（视觉验收：贴图、预览、清除的自测） | 改管道 Python / 写卡本体（那是 Composer 的） |
 | **Sonnet 5** | 审查 D3 的 diff（类型拓宽最容易漏改）、写文档（D12） | 长任务连续实现 |
 
 ### 0.3 为什么 Desktop（主计划 Phase 3）是硬前置

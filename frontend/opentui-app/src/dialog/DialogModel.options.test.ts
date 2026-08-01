@@ -1,21 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { buildModelListOptions } from "./DialogModel.options.ts";
+import { inferProviderFromUrl } from "./providerGroup.ts";
 
 describe("buildModelListOptions", () => {
-  test("groups models by provider category with recent first", () => {
+  test("keeps models under provider groups; recent are duplicates at top", () => {
     const { options, categoryOrder } = buildModelListOptions(
       [
         {
-          id: "deepseek-chat",
+          id: "deepseek/deepseek-chat",
           name: "deepseek-chat",
+          nickname: "deepseek-chat",
           category: "DeepSeek",
+          provider_name: "DeepSeek",
           provider_model_id: "deepseek-chat",
         },
         {
-          id: "gpt-4o",
-          name: "gpt-4o",
-          category: "OpenAI",
-          provider_model_id: "gpt-4o",
+          id: "opencode-go/deepseek-v4-flash",
+          name: "deepseek-v4-flash",
+          nickname: "deepseek-v4-flash",
+          category: "OpenCode Go",
+          provider_name: "OpenCode Go",
+          provider_model_id: "deepseek-v4-flash",
         },
         {
           id: "legacy-model",
@@ -23,15 +28,42 @@ describe("buildModelListOptions", () => {
           provider_model_id: "legacy-model",
         },
       ],
-      ["gpt-4o"],
-      "deepseek-chat",
+      ["deepseek/deepseek-chat"],
+      "deepseek/deepseek-chat",
     );
 
-    const byId = Object.fromEntries(options.map((o) => [o.id, o]));
-    expect(byId["gpt-4o"]?.category).toBe("最近常用");
-    expect(byId["deepseek-chat"]?.category).toBe("DeepSeek");
-    expect(byId["legacy-model"]?.category).toBe("其他");
-    expect(categoryOrder).toEqual(["最近常用", "DeepSeek", "其他", "操作"]);
+    const recent = options.filter((o) => o.category === "最近常用");
+    const deepseek = options.filter((o) => o.category === "DeepSeek");
+    const go = options.filter((o) => o.category === "OpenCode Go");
+    const other = options.filter((o) => o.category === "其他");
+
+    expect(recent.map((o) => o.value)).toEqual(["deepseek/deepseek-chat"]);
+    expect(deepseek.map((o) => o.title)).toEqual(["deepseek-chat"]);
+    expect(go.map((o) => o.title)).toEqual(["deepseek-v4-flash"]);
+    expect(other.map((o) => o.title)).toEqual(["legacy-model"]);
+    expect(categoryOrder).toEqual([
+      "最近常用",
+      "DeepSeek",
+      "OpenCode Go",
+      "其他",
+      "操作",
+    ]);
     expect(options.at(-1)?.id).toBe("__add__");
+  });
+});
+
+describe("inferProviderFromUrl", () => {
+  test("maps known hosts to preset names", () => {
+    expect(inferProviderFromUrl("https://api.deepseek.com/v1")).toEqual({
+      id: "deepseek",
+      name: "DeepSeek",
+    });
+  });
+
+  test("falls back to 其他 for unknown hosts", () => {
+    expect(inferProviderFromUrl("https://weird.example/v1")).toEqual({
+      id: "custom",
+      name: "其他",
+    });
   });
 });

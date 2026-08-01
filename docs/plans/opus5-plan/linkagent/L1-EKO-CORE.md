@@ -5,7 +5,7 @@
 > **工时**：5 天
 > **卡数**：6 张（L1-1 ~ L1-6）
 >
-> **干活前读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) §2。**一次只做一张卡。**
+> **干活前读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；本文件卡多为 **owner: backend** → [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)。**一次只做一张卡。**
 
 ---
 
@@ -445,7 +445,7 @@ belongs to L4.
 
 `eko_engine.py` 是 888 行的核心，依赖前面全部四张卡。
 
-**这是 L1 里最大的一张卡。** 如果做到一半发现方向不对，按 Playbook C7 停下来。
+**这是 L1 里最大的一张卡。** 如果做到一半发现方向不对，按 Playbook C8 停下来。
 
 **涉及文件**
 

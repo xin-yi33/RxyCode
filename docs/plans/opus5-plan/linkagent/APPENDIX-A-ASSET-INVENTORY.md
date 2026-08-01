@@ -8,7 +8,7 @@
 > - `D:\agent-demo\RxyCode\RxyCode1_1_0` —— Agent 执行底座（pip 依赖，不改）
 >
 > **核对日期**：2026-07-31。行数为实测值。
-> **提醒**：行号会漂移，定位一律用 Grep 锚点（见 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) 规则 C3）。
+> **提醒**：行号会漂移，定位一律用 Grep 锚点（[`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) C3；Grok 辅助多模态环节时另见 [`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md) G6）。
 
 ---
 

@@ -317,11 +317,33 @@ class TestVisionInput:
 
 
 class TestRunVision:
-    def test_screenshot_no_mss(self):
+    def test_screenshot_no_mss(self, monkeypatch):
         from RxyCode.RxyCode1_1_0.tools.vision import run_vision
+        # Deterministic: forbid real capture (mss would need an interactive
+        # desktop and can block forever on a locked session).
+        monkeypatch.setenv("RXYCODE_DISABLE_SCREEN_CAPTURE", "1")
         result = run_vision("screenshot")
-        # Will error if mss not installed, or return screenshot info
-        assert isinstance(result, str)
+        assert "error" in result.lower()
+        assert "disabled" in result.lower()
+
+    def test_screenshot_capture_path_guarded(self, monkeypatch):
+        """The real-capture path must go through the subprocess worker."""
+        import subprocess
+
+        from RxyCode.RxyCode1_1_0.tools import vision as vision_mod
+
+        fake_proc = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Captured 1 screenshot(s):\n  Monitor 1: 1920x1080px, 12KB -> x",
+            stderr="",
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: fake_proc)
+        monkeypatch.setattr(
+            vision_mod, "_interactive_desktop_available", lambda: True
+        )
+        out = vision_mod._capture_screenshot()
+        assert "Captured 1 screenshot(s)" in out
+        assert "Monitor 1" in out
 
     def test_describe_no_filepath(self):
         from RxyCode.RxyCode1_1_0.tools.vision import run_vision

@@ -170,7 +170,7 @@ def test_websearch_query_matrix(query: str):
 
 @pytest.mark.parametrize(
     ("operation", "suffix"),
-    itertools.product(("describe", "ocr", "screenshot", "bad-op"), (".png", ".jpg", ".txt", ".exe")),
+    itertools.product(("describe", "ocr", "bad-op"), (".png", ".jpg", ".txt", ".exe")),
 )
 def test_vision_invalid_inputs_matrix(tmp_path, operation: str, suffix: str):
     p = tmp_path / f"img{suffix}"
@@ -179,13 +179,43 @@ def test_vision_invalid_inputs_matrix(tmp_path, operation: str, suffix: str):
     else:
         p.write_text("not-image", encoding="utf-8")
     out = _load("vision")(operation=operation, filePath=str(p))
-    expects_error = operation == "bad-op" or (
-        suffix not in {".png", ".jpg"} and operation != "screenshot"
-    )
+    # `screenshot` is deliberately absent from this matrix: it ignores
+    # filePath and would trigger a real screen capture (which can block on
+    # a locked session).  It is covered by test_vision_screenshot_is_guarded.
+    expects_error = operation == "bad-op" or suffix not in {".png", ".jpg"}
     if expects_error:
         assert "error" in out.lower()
     else:
         assert isinstance(out, str)
+
+
+def test_vision_screenshot_is_guarded(monkeypatch):
+    """screenshot must never hit the real screen from an invalid-input test."""
+    import importlib
+
+    mod = importlib.import_module("RxyCode.RxyCode1_1_0.tools.vision")
+    calls: list[str] = []
+
+    def fake_capture() -> str:
+        calls.append("capture")
+        return "[captured 0 screenshot(s)]"
+
+    monkeypatch.setattr(mod, "_capture_screenshot", fake_capture)
+    out = mod.run_vision(operation="screenshot")
+    assert calls == ["capture"]
+    assert isinstance(out, str)
+    assert "error" not in out.lower()
+
+
+def test_vision_screenshot_disable_guard(monkeypatch):
+    """RXYCODE_DISABLE_SCREEN_CAPTURE=1 forbids capture without touching mss."""
+    import importlib
+
+    monkeypatch.setenv("RXYCODE_DISABLE_SCREEN_CAPTURE", "1")
+    mod = importlib.import_module("RxyCode.RxyCode1_1_0.tools.vision")
+    out = mod.run_vision(operation="screenshot")
+    assert "error" in out.lower()
+    assert "disabled" in out.lower()
 
 
 @pytest.mark.parametrize("questions", ([], [{"question": "q?", "options": []}]))

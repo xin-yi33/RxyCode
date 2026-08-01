@@ -5,8 +5,7 @@
 > **工时**：2 天
 > **卡数**：5 张（L0-1 ~ L0-5）
 >
-> **干活前读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) §2 的七条硬规则。
-> **一次只做一张卡。**
+> **干活前读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；本文件卡多为 **owner: backend** → [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)。**一次只做一张卡。**
 
 ---
 
@@ -301,7 +300,7 @@ python -m pip install -e "D:\agent-demo\RxyCode\RxyCode1_1_0"
 python -c "from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2; print('rxycode ok')"
 ```
 
-> ⚠ 如果这一步失败，**停下来报告**（Playbook 规则 C7）。不要试图绕过或改 RxyCode。
+> ⚠ 如果这一步失败，**停下来报告**（Playbook 规则 C8）。不要试图绕过或改 RxyCode。
 
 2. `src/linkagent/bridge/_require.py`：
 

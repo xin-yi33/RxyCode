@@ -6,7 +6,7 @@
 >
 > **一句话目标**：让 RxyCode 能针对不同模型（DeepSeek / Claude / GPT / Qwen / 本地模型）做差异化优化，而不是把所有模型都当成 "OpenAI 兼容 + 全局常量"。
 >
-> **执行模型**：Composer 2.5 为主力，Grok / Sonnet 5 辅助。分工见 §0.2。
+> **执行模型**：本 Phase **全是后端** → **Composer 2.5**。Grok 不写本 Phase 代码（可查资料）。权威见 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)。
 > **基线日期**：2026-07-31　**预计工时**：3 周（1 名后端）
 
 ---
@@ -55,8 +55,8 @@
 
 | 模型 | 适合干什么 | 不要让它干什么 |
 |---|---|---|
-| **Composer 2.5** | 按任务卡实现代码、多文件同步改写、补测试、跑验收 | 独立做架构选型、决定要不要偏离本文档 |
-| **Grok** | 查 DeepSeek / Anthropic / Qwen 的**最新 API 文档**，确认字段名和参数（A6/A8 需要）、给 provider 差异清单 | 直接改代码（它没有本仓库的完整上下文） |
+| **Composer 2.5** | **主写全部（本 Phase 是后端）**。按任务卡写代码、补测试、跑验收 | 独立做架构选型 |
+| **Grok 4.5** | 查 DeepSeek / Anthropic / Qwen 的**最新 API 文档**，确认字段名和参数（A6/A8 需要）、给 provider 差异清单；**不写本 Phase 代码** | 改 Python 核心 |
 | **Sonnet 5** | 审查 Composer 写完的 diff、检查是否漏改、写文档（A11） | 长任务连续实现（会丢上下文） |
 
 **推荐流程**：Grok 查资料 → Composer 实现 → Sonnet 5 审查 → Composer 修。
@@ -272,6 +272,113 @@ tests/
 ---
 
 ## §3 任务卡
+
+> **2026-08-01 扩展说明（纯加法）**：本阶段新增 A0（Grok 模型调研开局卡）与 A12–A22（新增模型族 provider + 三维度优化卡）。原有 A1–A11 与 §0–§6 的内容一律不改，唯一例外是原散落在 A3/A4/§5 内的"Grok 查资料"段落已统一收敛为 A0 的指针（Grok 调研功能提取为独立任务卡，这是用户授权的唯一改动点）。
+
+### A0 · Grok 模型调研开局卡（硬前置：先调研、再优化）
+
+`P0` / 4h（每批约 0.5h 调研 + 0.5h 汇报 + 审计等待）/ 依赖：无。**Phase A 一切依赖调研数值的任务卡的硬前置。**
+
+**背景**
+Phase A 的优化对象是"模型"，而模型的字段、参数、定价、缓存机制随版本快速变化（例：DeepSeek 已从 deepseek-chat/reasoner 演进到 deepseek-v4-flash/pro，thinking 成为总开关，temperature 在 thinking 模式下失效）。原计划把调研散在各卡内（旧 A3/A4 的"先让 Grok 查资料"段落），导致三个问题：
+
+1. 调研不可复用——每张卡重新查一遍，且旧调研随模型换代立即过时
+2. 没有审计门——调研结果的对错无人校验，占位数值可能被当成真相用
+3. 覆盖面不全——OpenAI / Kimi / GLM / MiniMax / MIMO / Qwen / Anthropic 等前端推荐模型族没有统一调研
+
+本卡把"Grok 调研"抽成独立任务卡：**分批调研 → 按模型分区写入 §7 → 每批审计 → 全部通过审计才允许开始任何依赖调研数值的优化卡**。
+
+**调研模型清单（8 批，逐批串行。禁止合并批次，禁止一次性调研全部模型）**
+
+| 批 | 模型族 | 调研锚点（官方） |
+|---|---|---|
+| 批 1 | DeepSeek v4 全系（flash / pro，含 thinking 模式） | https://api-docs.deepseek.com/ |
+| 批 2 | OpenAI（GPT-5.x 全系，含 prompt caching / reasoning_effort / 断点） | https://platform.openai.com/docs/ |
+| 批 3 | Kimi / Moonshot | https://platform.moonshot.cn/ |
+| 批 4 | GLM / 智谱（含火山方舟 Ark 上的 glm） | https://open.bigmodel.cn/ + https://console.volcengine.com/ark/ |
+| 批 5 | MiniMax（M2.x 系列） | https://platform.minimaxi.com/ |
+| 批 6 | MIMO（小米；含 UltraSpeed / KV Cache Sharing） | https://mimo.xiaomi.com/ |
+| 批 7 | Qwen（通义千问 / DashScope） | https://help.aliyun.com/zh/model-studio/ |
+| 批 8 | Anthropic（Claude；含 thinking / prompt caching） | https://docs.anthropic.com/ |
+
+**统一调研问题模板（每批同 9 问；每条必须附官方文档原文引用 + URL，禁止无出处的数值）**
+
+```
+查 <厂商> 官方 API 文档，回答：
+1. 各主力模型的型号清单与当前版本号（含最近更新日期）
+2. 各型号的 context window（token）
+3. 是否兼容 OpenAI /chat/completions？兼容端点下 tools / function calling 可用吗？
+4. prompt cache 机制：自动还是显式（cache_control / 断点）？最小缓存块多大？TTL 多长？
+   usage 里命中/未命中的字段名是什么？什么操作会让缓存前缀失效（改历史/插消息/截断/切模型/切 key）？
+5. thinking / reasoning 输出：字段名（在 delta 上还是 message 上）？开关参数（如 thinking.enabled、
+   reasoning_effort）？effort 档位与默认值？哪些采样参数（temperature/top_p/presence_penalty/...）被拒绝？
+6. 官方 tokenizer：有没有 tiktoken 兼容 encoding？没有的话官方推荐什么替代？
+7. 定价：input / output / cached input（缓存命中价）/ 缓存写入价？单价生效日期（as_of）？
+8. 延迟特性：官方公布的 TTFT / 吞吐 / 限流（RPM / TPM）？有没有"加速档"（如 fast mode / UltraSpeed）？
+9. 会话续接注意事项：thinking 内容是否必须回传（带 tools 时 DeepSeek 会 400）？工具调用后的缓存行为？
+每条给文档原文引用和 URL。
+```
+
+**汇报格式（写入本文件 §7）**
+每批调研结果写入 §7 对应分区（§7.1–§7.8），每区固定结构：
+
+1. **调研记录表**：批次 / 调研日期 / 调研模型（Grok 4.5）/ 来源 URL 清单
+2. **九问结论**（逐问，附原文引用）
+3. **"对 RxyCode 的含义"**：映射到 `ModelCapabilities` / `UsageFieldMap` / `ModelPricing` 字段的具体建议值（A12–A22 等卡直接照抄，不得另找数据源）
+
+**每批审计门（硬停止点）**
+
+1. 该批汇报写入 §7 后**立即审计；不通过不得进入下一批**
+2. 审计方 = ① **Grok 4.5**（调研模型自审）+ ② **第三方非编码模型**（执行会话的 opencode 模型，当前为 `deepseek-v4-flash`；由用户触发暂停后进行审计）
+3. 每份审计记录写入 §7.9 审计记录表，**必须包含三要素：审计模型名称 / 审计时间 / 审计结果（通过或不通过 + 问题清单）**。三要素缺一的记录视为不存在
+4. 审计不通过 → 回该批重调研、重汇报、重审，直到两份审计都通过才允许下一批
+5. 对应批审计通过后，该模型族的优化卡才允许开工（如批 1 通过 → A3/A22 可以填数值）；**8 批全部通过审计之前，禁止开始任何整体接线（A6）与跨模型优化卡（A7–A11、A19–A21）**
+
+**与其它文档中 Grok 调研的关系（2026-08-01 跨文档 review 补充）**
+
+1. **Phase C C4 的定价调研并入本卡**：`PHASE-C.md:601-619` 的 "Grok 的调研 prompt"（各家定价、缓存按写入/读取分别计价、推理 token 单独计价）与本卡 9 问模板的**第 7 问（定价）**重叠。执行规则：C4 所需的定价数据由本卡批 1–8 的第 7 问结论提供，**Phase C 不再单独做定价调研**；C4 中心表（`config/model_pricing.py`）直接引用 §7 各分区的定价结论（含 `as_of` 与来源 URL）。
+2. **清单外模型族（如 xAI Grok）**：C4 调研清单含 xAI，而本卡 8 批未列。需要时按**批 9+** 追加，用同一 9 问模板、同一审计门（Grok 自审 + 第三方审计），通过后才允许对应优化卡开工。
+3. **旧型号引用的取代**：本卡 §7 报告发布后，`PHASE-C.md:610`（DeepSeek chat/reasoner）等旧型号引用一律以 §7 为准，不在其它文档里另行维护型号清单。
+
+**涉及文件**
+- 本文件 §7（新增，调研汇报与审计记录区）
+- 代码零改动
+
+**验收命令**（每批执行一次；全部完成后执行最终检查）
+
+```powershell
+# 每批：确认该批分区存在且含调研记录表 + 九问结论 + URL
+Select-String -Path docs\plans\opus5-plan\rxycode\PHASE-A-MODEL-ADAPTATION-LAYER.md -Pattern "^### §7\.[1-8] " 
+# 期望：已有批次的分区出现
+# 每批：确认 §7.9 有该批的两条审计记录（含审计模型/审计时间/审计结果）
+Select-String -Path docs\plans\opus5-plan\rxycode\PHASE-A-MODEL-ADAPTATION-LAYER.md -Pattern "\| 批 [0-9] \| §7\.[0-9] " 
+# 期望：每行含审计模型 / 审计时间 / 审计结果，且时间与结果非空
+```
+
+**完成判据**
+- [ ] 8 批全部调研完成；§7.1–§7.8 每区含：调研记录表 / 九问结论 / 对 RxyCode 的含义 / 来源 URL
+- [ ] §7.9 共 16 条审计记录（8 批 × 2 审计方），每条含审计模型名称 / 审计时间 / 审计结果，且全部通过
+- [ ] 代码零改动
+- [ ] 所有 `# TODO(grok→§7.X)` 注释指向的分区均已通过审计（代码注释是位置标记，数值填充在对应优化卡做）
+
+**回滚**：本卡只动文档。删除 §7 新增区（及 §3 的 A0 卡）即完整回滚。
+
+**常见坑**
+- 禁止把 8 批合成一次调研"赶进度"——调研质量随批量增大急剧下降，这是本卡分批的唯一原因
+- 审计三要素缺一不可：没写审计模型名、没写时间、没写结果的审计记录视为不存在
+- 数值类结论必须有 URL 可溯源；给不出 URL 的数值一律标 `待核实`，不允许直接填进代码
+- 模型换代后（如 DeepSeek 再出新版），对应分区要重新调研重审，不能拿旧分区数据填新卡
+
+**Commit**
+```
+docs(model): add A0 grok model-research gate with per-batch audit
+
+Research is split into 8 per-model-family batches, reported in §7, and
+each batch must pass a dual audit (grok self-audit + third-party audit)
+before any optimization card may start.
+```
+
+---
 
 ### A1 · 定义 ModelCapabilities
 
@@ -795,20 +902,7 @@ wired into agent_v2 — that lands in A7.
 **背景**
 DeepSeek 是当前最需要特化的目标：它用 `prompt_cache_hit_tokens` 而非 OpenAI 的嵌套字段（`agent_v2.py:163-200` 已经在盲试这个），R1 系列会产出 `reasoning_content` 且**不接受 temperature**，上下文窗口也不是 256k。
 
-**⚠️ 动手前先让 Grok 查资料。** 本卡的具体数值（context window、是否支持 function calling、参数限制）**必须以 DeepSeek 官方文档的当前状态为准**，不要照抄下面代码里的占位值。给 Grok 的提问模板：
-
-```
-查 DeepSeek 官方 API 文档（platform.deepseek.com/api-docs），回答：
-1. deepseek-chat 和 deepseek-reasoner 各自的 context window 是多少 token？
-2. deepseek-reasoner 是否支持 tools / function calling？
-3. deepseek-reasoner 是否接受 temperature / top_p / presence_penalty？传了会怎样？
-4. reasoning 内容在流式响应里的字段名是什么？在 delta 上还是 message 上？
-5. 前缀缓存命中的 token 数在 usage 的哪个字段？
-6. 官方推荐的 tokenizer 是什么？有没有 tiktoken 兼容的 encoding？
-每条都给出文档原文引用和 URL。
-```
-
-拿到答案后，把下面代码里标了 `# TODO(grok)` 的常量替换掉，**并把 Grok 给的 URL 写进注释**。
+**⚠️ 调研已由 A0 统一负责（2026-08-01 起）。** 本卡所需的全部数值（context window、function calling、reasoning、缓存字段、tokenizer）**以 A0 批 1 的调研报告（§7.1）为准**；§7.1 未通过 A0 审计门之前，本卡不得开始。下面代码里标了 `# TODO(grok)` 的常量即位置标记，用 §7.1 的结论替换，**并把来源 URL 写进注释**（新卡的标记写作 `# TODO(grok→§7.X)`，二者同义）。若 §7.1 报告与下文旧占位值不一致，一律以 §7.1 为准（下文旧占位值仅作结构示意，DeepSeek 已迭代到 v4 系，见 A22）。
 
 **涉及文件**
 - 新建 `core/providers/deepseek.py`
@@ -999,19 +1093,7 @@ blind-probing two field names in agent_v2._extract_cache_read.
 `P1` / 6h / 依赖 A2
 
 **背景**
-补齐另外两个常用族。做法与 A3 完全一致，**先让 Grok 查文档拿准确数值**。
-
-**Grok 提问模板**
-
-```
-分别查 Anthropic Claude 与阿里 DashScope/Qwen 的官方 API 文档，回答：
-1. 各主力模型的 context window
-2. 是否支持 OpenAI 兼容端点？兼容端点下 function calling 可用吗？
-3. prompt 缓存（prompt caching）怎么开启？usage 里命中数字段名是什么？
-4. 是否有 reasoning/thinking 输出？字段名？
-5. 官方 tokenizer，以及是否有 tiktoken 兼容 encoding
-每条给文档原文和 URL。
-```
+补齐另外两个常用族。做法与 A3 完全一致，**数值以 A0 的调研报告为准（2026-08-01 起）**：Anthropic 看 §7.8，Qwen 看 §7.7；对应批未通过 A0 审计门之前，本卡不得开始。注意本卡只完成基础骨架，完整实现由 A17（Qwen）与 A18（Anthropic）补全。
 
 **操作步骤**
 
@@ -1464,6 +1546,8 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 **背景**
 Phase A 的价值必须能被度量。主计划 H2 已经建立了 `--backend agent|raw-llm` 的对比框架，现在加一个模型维度。
 
+> **2026-08-01 补充**：矩阵的模型列以 **§7 调研报告的型号清单为准**（例：DeepSeek 列用 v4-flash/v4-pro 而非已过时的 deepseek-chat/reasoner；新增 OpenAI/Kimi/GLM/MiniMax/MIMO/Qwen/Anthropic 列，对应 A12–A18）。`--models` 只测 §7 已通过审计的型号。
+
 **操作步骤**
 
 1. `evals/cli.py` 加 `--models <id1,id2,...>`，对每个模型跑一遍全量。
@@ -1516,10 +1600,1222 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 
 5. 更新主计划 `00-EXECUTION-PLAN.md` §3.2 的 Phase 表，把 Phase A 标为完成。
 
+6. **同步更新文档映射表（2026-08-01 扩展新增）**：2026-08-01 扩展后，主计划与 README 的 Phase A 行已过时，本卡一并更新：
+   - `00-EXECUTION-PLAN.md:2383`：模型清单由"（DeepSeek / Claude / Qwen）"改为含新增族（OpenAI / Kimi / GLM / MiniMax / MIMO / Qwen / Anthropic / DeepSeek v4），工时由"3 周"改为扩展后的实际值
+   - `rxycode/README.md:54`：同上（模型清单 + 工时）
+   - 排期说明：A0 为纯文档卡不受排期影响，代码卡实际执行按接线请求插入（见新增卡一览铁律）
+
 **完成判据**
 - [ ] `docs/modules/providers.md` 存在，按它能独立加出一个新 provider
 - [ ] 三份既有模块文档已更新
 - [ ] `core/config.py` 死代码已删或已记入待办池（二选一，说明理由）
+- [ ] `00-EXECUTION-PLAN.md:2383` 与 `rxycode/README.md:54` 的 Phase A 行已同步（2026-08-01 扩展）
+
+---
+
+### 新增卡一览（2026-08-01 扩展，全部纯加法）
+
+> 以下 A12–A22 是本次扩展新增的任务卡。共同铁律：
+> - **数值唯一来源是 A0 的调研报告（§7.X）**。每张卡开工前必须"精准找到自己对应的分区"读完，对应批未通过审计不得开工
+> - 代码里用 `# TODO(grok→§7.X)` 标注"待调研数据填充"的位置；调研审计通过后按分区结论填充并补 URL
+> - 沿用 MA2：每张卡做完跑一次 evals 基线比对，零回归
+> - 沿用 MA4：不引入任何新的第三方 SDK，全部走 OpenAI 兼容端点
+> - 沿用 MA5：不碰 `core/config.py` 的 `LLMConfig`（A11 处理）
+> - **`agent_v2.py` 的改动走主计划 §11.7 的接线请求协议**（`00-EXECUTION-PLAN.md:2560-2582` 共享面三规则 P1/P2/P3，示例见 :2568-2580）：Phase A 窗口要改 `agent_v2.py` 时写 3–5 行"接线请求"由 Phase 2 窗口执行，不得直接改。A19/A20/A21 涉及 `agent_v2.py` 的步骤全部按此执行
+> - **排期立场**：A0 是纯文档卡，**不受 Phase 2 窗口排期限制**，可随时开工（`ENGINEERING-TIMELINE.md:191` 建议 Phase A 推后的对象是代码卡，不适用于零代码的 A0）；A12–A22 中需要 `agent_v2.py` 改动的卡，按接线请求插入 Phase 2 的 P3（Session）合并之后（`00-EXECUTION-PLAN.md:2520`）
+> - **分工不变**：Grok 在 A0 里的调研与自审是 `MODEL-ASSIGNMENT.md:76` 原"查资料"角色的正式化，仍不写任何代码；第三方审计由用户指定的执行会话模型担任，不属于任何 Phase 的写代码分工
+
+| 卡 | 内容 | 依赖 | 对应 A0 批 |
+|---|---|---|---|
+| A12 | OpenAIProvider 显式优化（不再只是兜底）+ `ModelPricing` 数据结构 | A1 | 批 2 |
+| A13 | KimiProvider | A2 | 批 3 |
+| A14 | GLMProvider（bigmodel.cn + 火山 Ark 双入口） | A2 | 批 4 |
+| A15 | MiniMaxProvider | A2 | 批 5 |
+| A16 | MIMOProvider（小米） | A2 | 批 6 |
+| A17 | QwenProvider 补全 | A2 | 批 7 |
+| A18 | AnthropicProvider 补全（thinking / 断点） | A2 | 批 8 |
+| A19 | per-model 缓存参数卡 | A8 + A12–A18 全部 | 全部 |
+| A20 | per-model token 治理卡 | A5 A7 + A12–A18 | 全部 |
+| A21 | per-model 延迟旋钮卡 | A6 A8 + A12–A18 | 全部 |
+| A22 | DeepSeek v4 补全（v4-flash/pro 时代重写 A3 的旧假设） | A3 + 批 1 | 批 1 |
+
+---
+
+### A12 · OpenAIProvider 显式优化（不再只是兜底）
+
+`P0` / 8h / 依赖 A1、**A0 批 2 审计通过**（§7.2）
+
+**背景**
+A2 的 `OpenAIProvider` 只是兜底——零覆写，未识别模型落到它上面行为不变（DC1）。但 OpenAI 官方有明确的机制值得显式声明：prompt caching（自动、前缀 ≥1024 token）、`reasoning_effort`（none/minimal/low/medium/high/xhigh）、o 系列推理模型。本卡把这些落成显式能力，同时**保持 DC1：未匹配 openai 的未知模型仍拿到与改造前逐字节一致的默认能力**。
+
+**与现有定价机制的关系（2026-08-01 review 补充）**：`utils/streaming.py` 的 `billing_amount`（:105-124）已从 `config.yaml` 的 `pricing` 段（`{model: {input: $/M, output: $/M}}`）读价。本卡的 `ModelPricing` 是 **provider 侧声明**的默认价（带 `as_of`/来源 URL），两者并存且优先级不同：**config 用户定价 > ModelPricing > 无**。本卡只在 `ModelCapabilities` 上挂载默认值，**不得修改 `billing_amount` 的现有行为**；两者的统一归 Phase C 的 `CostAccountant`（C4）。
+
+**与 Phase C C4 的契约（2026-08-01 跨文档 review 补充，冲突调和）**：C4（`PHASE-C.md:529-543`）也会给 `ModelCapabilities` 加 `ModelPricing`，且其 `input_per_mtok`/`output_per_mtok` 是**必填**字段、定价存 `config/model_pricing.py` 中心表。本卡与其的调和规则：
+
+1. **字段对齐**：本卡的 `ModelPricing` 是 C4 定义的**超集**（C4 无 `source_url`，本卡多此字段），其余字段名逐一相同
+2. **必填 vs Optional 的语义**：C4 的必填 `float` 指**中心表条目内**的字段；本卡的 `None` 指"该模型尚未有官方定价"。Phase C 的 `CostAccountant.record` 读 `caps.pricing.input_per_mtok` 时必须处理 `None`（这正是 C4 测试 `test_missing_pricing_does_not_silently_count_as_zero` 的载体）——**不得把 None 静默当 0**
+3. **优先级**：C4 中心表（`config/model_pricing.py`，用户维护）> 本卡 capabilities 上的 `ModelPricing` > 无
+4. **数据流**：A0 批 1–8 的第 7 问（定价）结论即 C4 中心表与各 provider 默认价的共同数据源，Phase C 不再单独做定价调研（见 A0 与 C4 调研的关系）
+
+**涉及文件**
+- 新建 `tests/test_providers/test_openai_provider.py`（现有 `test_registry.py` 已有兜底测试，本卡扩之）
+- 修改 `config/model_capabilities.py`（追加 `ModelPricing`，**只追加不改现有字段**）
+- 修改 `core/providers/openai.py`、`core/providers/__init__.py`（注册）
+
+**操作步骤**
+
+1. `config/model_capabilities.py` 追加 `ModelPricing`（为 Phase C `CostAccountant` 预留；缺失价格不得静默当 0）：
+
+```python
+@dataclass(frozen=True)
+class ModelPricing:
+    """每百万 token 单价（美元）。Phase C 的 CostAccountant 用它做成本核算。
+
+    字段来源必须是 A0 调研报告（§7.X）里带 URL 的官方定价页。
+    任何字段为 None 时调用方必须显式处理（保守高估或警告），不得静默当 0。
+    """
+
+    input_per_mtok: float | None = None
+    output_per_mtok: float | None = None
+    cached_input_per_mtok: float | None = None
+    as_of: str = ""
+    source_url: str = ""
+```
+
+2. `ModelCapabilities` 追加两个字段（只追加，默认值保持现状行为）：
+
+```python
+    #: 定价（Phase C 用）。默认空对象 = "未知"，不改变任何现有行为。
+    pricing: ModelPricing = field(default_factory=ModelPricing)
+
+    #: 推理力度档位映射：fast / balanced / deep → 厂商参数。
+    #: 例如 {"fast": "minimal", "balanced": "medium", "deep": "high"}。
+    #: A21 的延迟旋钮与 fast path 用它；为空表示该模型不支持档位控制。
+    effort_presets: dict[str, str] = field(default_factory=dict)
+```
+
+3. 重写 `core/providers/openai.py`。**DC1 关键设计**：`capabilities()` 只在 `matches()` 命中时才返回显式能力；未命中时返回与旧行为一致的 `DEFAULT_CAPABILITIES`（兜底路径的 model_config 可能是任何值，不能因此改变未知模型的行为）：
+
+```python
+"""OpenAI provider —— 兜底 + 显式优化。
+
+DC1 保持方式：本类同时承担"兜底"与"显式 OpenAI"两个角色。
+  - 作为兜底（注册表全部落空时选用）：capabilities() 在 matches() 未命中时
+    返回 DEFAULT_CAPABILITIES，与 Phase A 之前的硬编码行为逐字节一致。
+  - 显式命中（base_url 含 openai.com，或模型名以 gpt-/o1/o3/o4 开头）：
+    应用 §7.2 调研报告的显式能力声明。
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.2): 用 A0 批 2 报告的定价替换，并填 source_url
+_OPENAI_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.2 调研报告的官方定价页 URL
+)
+
+
+class OpenAIProvider(BaseProvider):
+    name = "openai"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        return "openai.com" in url or name.startswith(("gpt-", "o1-", "o3-", "o4-"))
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        base_url = str(model_config.get("base_url") or "")
+        model_name = str(model_config.get("model_name") or "")
+        if not self.matches(base_url, model_name):
+            # DC1：兜底路径，行为与改造前完全一致。
+            return DEFAULT_CAPABILITIES.merged_with_overrides(model_config)
+        name = model_name.lower()
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            pricing=_OPENAI_PRICING,
+            effort_presets={
+                "fast": "low",
+                "balanced": "medium",
+                "deep": "high",
+            },
+        )
+        if name.startswith(("o1-", "o3-", "o4-")):
+            # TODO(grok→§7.2): o 系列是否拒绝 temperature / 是否支持 tools，以报告为准
+            caps = replace(
+                caps,
+                supports_reasoning=True,
+                accepts_temperature=False,
+            )
+        return caps.merged_with_overrides(model_config)
+
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        kwargs = super().llm_kwargs(model_config, caps)
+        if caps.supports_reasoning:
+            kwargs.pop("temperature", None)
+        if caps.effort_presets:
+            effort = str(model_config.get("effort") or "balanced")
+            preset = caps.effort_presets.get(effort, "medium")
+            # TODO(grok→§7.2): reasoning_effort 的传输位置（顶层参数 vs extra_body）以报告为准
+            kwargs.setdefault("extra_body", {})["reasoning_effort"] = preset
+        return kwargs
+```
+
+4. 注册进 `core/providers/__init__.py`：
+
+```python
+from core.providers.openai import OpenAIProvider
+
+_PROVIDERS: list[BaseProvider] = [
+    # A3 起逐个填入：DeepSeekProvider(), AnthropicProvider(), QwenProvider(),
+    # A12 起：OpenAIProvider()（显式命中 openai 时才启用显式能力）
+]
+```
+
+> 注意：注册表落空时仍然选 `_FALLBACK = OpenAIProvider()` 这个**单例**；`_PROVIDERS` 里再放一个 `OpenAIProvider()` 用于 `matches()` 显式命中。两个实例行为一致（无状态），不会冲突。
+
+5. `tests/test_providers/test_openai_provider.py`：
+
+```python
+"""OpenAIProvider 显式优化测试：DC1 保持 + 显式能力。"""
+import pytest
+
+from config.model_capabilities import DEFAULT_CAPABILITIES
+from core import providers
+from core.providers.openai import OpenAIProvider
+
+
+def test_explicit_openai_url_is_matched():
+    p = providers.resolve({"base_url": "https://api.openai.com/v1",
+                           "model_name": "gpt-5.2"})
+    assert isinstance(p, OpenAIProvider)
+
+
+def test_relay_with_gpt_name_is_matched():
+    p = providers.resolve({"base_url": "https://relay.example/v1",
+                           "model_name": "gpt-5.2"})
+    assert isinstance(p, OpenAIProvider)
+
+
+def test_fallback_path_keeps_legacy_defaults():
+    # DC1：未知模型仍拿到与改造前逐字节一致的能力
+    caps = providers.resolve(
+        {"base_url": "https://relay.example/v1", "model_name": "mystery-1"}
+    ).capabilities({"base_url": "https://relay.example/v1", "model_name": "mystery-1"})
+    assert caps == DEFAULT_CAPABILITIES
+
+
+def test_matched_gpt_gets_explicit_caps():
+    caps = providers.resolve({"base_url": "https://api.openai.com/v1",
+                              "model_name": "gpt-5.2"}).capabilities(
+        {"base_url": "https://api.openai.com/v1", "model_name": "gpt-5.2"})
+    assert caps.pricing.source_url  # 调研报告 URL 已填
+    assert caps.effort_presets.get("fast")
+
+
+def test_reasoning_model_drops_temperature():
+    p = providers.resolve({"base_url": "https://api.openai.com/v1",
+                           "model_name": "o4-mini"})
+    caps = p.capabilities({"base_url": "https://api.openai.com/v1",
+                           "model_name": "o4-mini"})
+    kwargs = p.llm_kwargs({"base_url": "https://api.openai.com/v1",
+                           "model_name": "o4-mini"}, caps)
+    assert "temperature" not in kwargs
+```
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers config/model_capabilities.py tests/test_providers
+python -m pytest tests -q -x --timeout=300
+```
+
+**完成判据**
+- [ ] `ModelPricing` 追加完成，`DEFAULT_CAPABILITIES` 逐字节不变（跑 A1 的既有测试）
+- [ ] DC1 测试 `test_fallback_path_keeps_legacy_defaults` 通过（未匹配模型 == DEFAULT_CAPABILITIES）
+- [ ] §7.2 审计通过后 `_OPENAI_PRICING` 已填值且 `source_url` 有 URL
+- [ ] 所有 `# TODO(grok→§7.2)` 已按报告填充
+- [ ] 未接线到 `agent_v2.py`（接线仍属 A6）
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- 最容易犯的错：`capabilities()` 不分路径直接返回显式能力——那会违反 DC1，让所有未知模型（如中转站的 mystery 模型）的行为改变。**必须先用 `matches()` 把关**
+- `_PROVIDERS` 与 `_FALLBACK` 是两个实例，别只注册一半
+- `extra_body` 里放 `reasoning_effort` 前，先确认目标端点是否接受（§7.2 问第 5 问）
+
+**Commit**
+```
+feat(model): explicit OpenAIProvider with pricing and effort presets
+
+OpenAI was pure fallback; now matched openai endpoints get explicit
+capabilities from §7.2 (pricing, effort_presets, o-series reasoning).
+DC1 preserved: unmatched models still get byte-identical defaults.
+```
+
+---
+
+### A13 · KimiProvider
+
+`P0` / 8h / 依赖 A2、**A0 批 3 审计通过**（§7.3）
+
+**背景**
+Kimi / Moonshot 是前端预设的常用族之一（`config/model_manager.py:33`、`frontend/.../providerGroup.ts` 的 `moonshot` 分组）。其模型（如 Kimi K2 系列）的 context 计量、缓存字段、reasoning 行为与 OpenAI 不同，需要显式 provider。
+
+**涉及文件**
+- 新建 `core/providers/kimi.py`
+- 修改 `core/providers/__init__.py`（注册）
+- 新建 `tests/test_providers/test_kimi_provider.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.3 分区（"精准找到自己的位置"），确认九问结论；未通过审计不得开工。
+2. `core/providers/kimi.py`：
+
+```python
+"""Kimi / Moonshot provider。
+
+与 OpenAI 默认行为的差异以 A0 批 3 调研报告（§7.3）为准：
+  - 部分型号 context 以字符计量（K2 系列），tokenizer 用 chars: 估算
+  - usage / 缓存命中字段以 §7.3 为准
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+    UsageFieldMap,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.3): 用 A0 批 3 报告替换下列常量并补 URL
+_KIMI_USAGE = UsageFieldMap(
+    cache_read_flat=("prompt_cache_hit_tokens",),
+    cache_read_nested=(),
+    reasoning=(),
+)
+_KIMI_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.3 官方定价页 URL
+)
+
+
+class KimiProvider(BaseProvider):
+    name = "kimi"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        return "moonshot" in url or "kimi" in name
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            usage_fields=_KIMI_USAGE,
+            pricing=_KIMI_PRICING,
+            prompt_variant="kimi",
+            # TODO(grok→§7.3): 下列数值以报告为准
+            # tokenizer="chars:2.0",
+            # context_window=128_000,
+        )
+        return caps.merged_with_overrides(model_config)
+```
+
+3. 注册进 `_PROVIDERS`（顺序：`[DeepSeekProvider(), KimiProvider(), ...]`）。
+4. 测试至少覆盖：URL/模型名匹配的正反例、capabilities 关键字段、用户覆盖赢默认、usage 字段提取（参考 `test_deepseek_provider.py` 结构，至少 5 个测试）。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+python -m pytest tests/test_providers/test_registry.py -q
+```
+
+**完成判据**
+- [ ] `core/providers/kimi.py` + 测试文件存在，≥5 个测试全绿
+- [ ] 所有 `# TODO(grok→§7.3)` 已按报告填充并补 URL（§7.3 审计通过后）
+- [ ] `test_registry.py` 兜底测试仍绿（matches 不写太宽，不抢走其他模型）
+- [ ] 未接线
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- `matches()` 里 `"moonshot" in url` 会命中 `api.moonshot.ai` 与 `api.moonshot.cn`，注意不要写成 `endswith("moonshot.com")` 之类把 `.cn` 漏掉
+- 若 §7.3 显示某型号 context 按字符计量，`context_window` 仍填 token 值（估算用途），并把 `tokenizer` 设成对应 chars 比例
+
+**Commit**
+```
+feat(model): add KimiProvider with moonshot usage fields
+```
+
+---
+
+### A14 · GLMProvider（bigmodel.cn + 火山方舟 Ark 双入口）
+
+`P1` / 8h / 依赖 A2、**A0 批 4 审计通过**（§7.4）
+
+**背景**
+GLM 有两个入口都要支持：智谱官方 `open.bigmodel.cn` 与火山方舟 `volces.com/ark`（现网 smoke 数据里 `glm-5.2 @ https://ark.cn-beijing.volces.com/api/coding/v3` 是真实用法，见 `scripts/live_smoke_output.json`）。Ark 上还托管其他模型（如豆包），所以 Ark 入口必须**同时要求模型名含 glm**，否则会抢走豆包。
+
+**涉及文件**
+- 新建 `core/providers/glm.py`
+- 修改 `core/providers/__init__.py`（注册）
+- 新建 `tests/test_providers/test_glm_provider.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.4 分区，确认九问结论；未通过审计不得开工。
+2. `core/providers/glm.py`：
+
+```python
+"""GLM / 智谱 provider（含火山方舟 Ark 双入口）。
+
+识别规则：
+  - bigmodel.cn / zhipu → 命中（智谱官方）
+  - volces.com（Ark）+ 模型名含 glm → 命中（Ark 也托管其他模型，必须双条件）
+  - 模型名以 glm- 开头（任意中转站）→ 命中
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+    UsageFieldMap,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.4): 用 A0 批 4 报告替换下列常量并补 URL
+_GLM_USAGE = UsageFieldMap(
+    cache_read_flat=("prompt_cache_hit_tokens",),
+    cache_read_nested=(),
+    reasoning=("reasoning_content",),
+)
+_GLM_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.4 官方定价页 URL
+)
+
+
+class GLMProvider(BaseProvider):
+    name = "glm"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        if "bigmodel" in url or "zhipu" in url:
+            return True
+        if "volces.com" in url:
+            return "glm" in name  # Ark 双条件：模型名必须含 glm
+        return name.startswith("glm-")
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            usage_fields=_GLM_USAGE,
+            pricing=_GLM_PRICING,
+            prompt_variant="glm",
+            # TODO(grok→§7.4): 下列数值以报告为准
+            # tokenizer="chars:2.0",
+            # context_window=128_000,
+        )
+        return caps.merged_with_overrides(model_config)
+```
+
+3. 注册进 `_PROVIDERS`。
+4. 测试至少覆盖：bigmodel.cn 命中、Ark+glm 命中、**Ark+豆包不命中**（关键反例）、glm- 前缀模型名命中、GLM-4 系列能力字段。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+python -m pytest tests/test_providers/test_registry.py -q
+```
+
+**完成判据**
+- [ ] `core/providers/glm.py` + 测试全绿，含 Ark+豆包反例测试
+- [ ] `# TODO(grok→§7.4)` 已按报告填充并补 URL
+- [ ] 兜底测试仍绿
+- [ ] 未接线
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- **Ark 必须双条件**（`"volces.com" in url and "glm" in name`）。只按 URL 匹配会把 Ark 上的豆包等模型抢成 GLM，这是注册表最常见的误伤
+- GLM 的 reasoning 内容字段名（glm-4.5/glm-5 系）以 §7.4 为准，不要沿用 DeepSeek 的 `reasoning_content` 假设
+
+**Commit**
+```
+feat(model): add GLMProvider with bigmodel and volces ark entries
+```
+
+---
+
+### A15 · MiniMaxProvider
+
+`P1` / 8h / 依赖 A2、**A0 批 5 审计通过**（§7.5）
+
+**背景**
+MiniMax（M2.x 系列，如 M2.1）是前端推荐模型清单之外、但社区常用的编码模型族。其端点 `platform.minimaxi.com` / `api.minimax.chat` 为 OpenAI 兼容，M2 系列带 thinking 模式。需要显式 provider。
+
+**涉及文件**
+- 新建 `core/providers/minimax.py`
+- 修改 `core/providers/__init__.py`（注册）
+- 新建 `tests/test_providers/test_minimax_provider.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.5 分区；未通过审计不得开工。
+2. `core/providers/minimax.py`：
+
+```python
+"""MiniMax provider（M2.x 系列）。
+
+差异以 A0 批 5 调研报告（§7.5）为准：
+  - M2 系列的 thinking 开关 / effort 参数名与默认值以报告为准
+  - usage / 缓存命中字段以报告为准
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+    UsageFieldMap,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.5): 用 A0 批 5 报告替换下列常量并补 URL
+_MINIMAX_USAGE = UsageFieldMap(
+    cache_read_flat=(),
+    cache_read_nested=(("prompt_tokens_details", "cached_tokens"),),
+    reasoning=(),
+)
+_MINIMAX_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.5 官方定价页 URL
+)
+
+
+class MiniMaxProvider(BaseProvider):
+    name = "minimax"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        return "minimax" in url or "minimaxi" in url or "minimax" in name
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            usage_fields=_MINIMAX_USAGE,
+            pricing=_MINIMAX_PRICING,
+            prompt_variant="minimax",
+            # TODO(grok→§7.5): 下列数值以报告为准
+            # tokenizer="chars:2.0",
+            # context_window=200_000,
+        )
+        return caps.merged_with_overrides(model_config)
+
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        kwargs = super().llm_kwargs(model_config, caps)
+        # TODO(grok→§7.5): M2.x 的 thinking 开关（若需要透传）以报告为准
+        return kwargs
+```
+
+3. 注册进 `_PROVIDERS`。
+4. 测试至少覆盖：匹配正反例、能力字段、用户覆盖、usage 提取。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+```
+
+**完成判据**
+- [ ] `core/providers/minimax.py` + 测试全绿
+- [ ] `# TODO(grok→§7.5)` 已按报告填充并补 URL
+- [ ] 兜底测试仍绿；未接线
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- MiniMax 的缓存命中字段名（嵌套还是平铺）各版本可能不同，一律以 §7.5 为准，不要照抄本卡的占位假设
+
+**Commit**
+```
+feat(model): add MiniMaxProvider for M2 series
+```
+
+---
+
+### A16 · MIMOProvider（小米）
+
+`P1` / 8h / 依赖 A2、**A0 批 6 审计通过**（§7.6）
+
+**背景**
+小米 MiMo 是新增的目标模型族。官方主页 `https://mimo.xiaomi.com/`（2026-08-01 核实）包含：模型家族 MiMo-V2.5-Pro / V2.5 / V2-Flash / V2-Pro / V2-Omni、API Access 开发者入口、以及与本项目三大优化主题直接相关的公开线索：**HySparse（KV Cache Sharing 论文）**、**MiMo-V2.5-Pro-UltraSpeed（1T 参数模型 1000 TPS）**、**Full-Pipeline Inference Optimization（Hybrid SWA）**。真实端点、兼容性、缓存命中字段、UltraSpeed 调用方式**全部以 A0 批 6 调研报告（§7.6）为准**，本卡只建骨架。
+
+**涉及文件**
+- 新建 `core/providers/mimo.py`
+- 修改 `core/providers/__init__.py`（注册）
+- 新建 `tests/test_providers/test_mimo_provider.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.6 分区（端点、OpenAI 兼容性、字段）；未通过审计不得开工。
+2. `core/providers/mimo.py`：
+
+```python
+"""MIMO（小米 MiMo）provider。
+
+端点与全部字段以 A0 批 6 调研报告（§7.6）为准。
+已知公开线索（2026-08-01，mimo.xiaomi.com）：
+  - MiMo-V2.5-Pro-UltraSpeed：1T 参数模型生成速度 1000 TPS（加速档位）
+  - HySparse：KV Cache Sharing（缓存主题）
+  - Hybrid SWA 推理优化（上下文窗口主题）
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+    UsageFieldMap,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.6): 用 A0 批 6 报告替换下列常量并补 URL
+_MIMO_USAGE = UsageFieldMap(
+    cache_read_flat=(),
+    cache_read_nested=(),
+    reasoning=(),
+)
+_MIMO_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.6 官方定价页 URL
+)
+
+
+class MIMOProvider(BaseProvider):
+    name = "mimo"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        return "mimo" in url or name.startswith(("mimo-", "mimo_v"))
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            usage_fields=_MIMO_USAGE,
+            pricing=_MIMO_PRICING,
+            prompt_variant="mimo",
+            # TODO(grok→§7.6): 下列数值以报告为准
+            # tokenizer="chars:2.0",
+            # context_window=128_000,
+        )
+        return caps.merged_with_overrides(model_config)
+
+    def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
+        kwargs = super().llm_kwargs(model_config, caps)
+        # TODO(grok→§7.6): UltraSpeed 加速档的调用参数（若有）以报告为准
+        return kwargs
+```
+
+3. 注册进 `_PROVIDERS`。
+4. 测试至少覆盖：匹配正反例、能力字段、用户覆盖、usage 提取。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+```
+
+**完成判据**
+- [ ] `core/providers/mimo.py` + 测试全绿
+- [ ] `# TODO(grok→§7.6)` 已按报告填充并补 URL（含真实 API 端点）
+- [ ] 兜底测试仍绿；未接线
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- 端点未证实前**禁止**凭猜测填 base_url——`matches()` 与 `llm_kwargs` 里的端点依赖 §7.6，审计通过前保持 TODO 状态
+- `"mimo" in url` 可能误伤（如第三方网关路径里含 mimo 字样），反例测试要覆盖
+
+**Commit**
+```
+feat(model): add MIMOProvider for Xiaomi MiMo family
+```
+
+---
+
+### A17 · QwenProvider 补全
+
+`P1` / 6h / 依赖 A2、**A0 批 7 审计通过**（§7.7）
+
+**背景**
+A4 只给了 Qwen 的骨架方向（"分词器差异最大，`tokenizer` 用 `chars:` 估算；DashScope 兼容端点的 function calling 支持情况需确认"），没有完整实现。本卡把它补全：DashScope 端点识别、qwen 系列的 thinking 开关（qwen3 系）、官方 qwen-tokenizer 是否存在、usage/缓存字段，全部以 §7.7 为准。
+
+**涉及文件**
+- 新建 `core/providers/qwen.py`（A4 若已建则在其基础上补全）
+- 修改 `core/providers/__init__.py`（注册）
+- 新建 `tests/test_providers/test_qwen_provider.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.7 分区；未通过审计不得开工。
+2. `core/providers/qwen.py`：
+
+```python
+"""Qwen / 通义千问 provider（DashScope）。
+
+差异以 A0 批 7 调研报告（§7.7）为准：
+  - qwen3 系的 thinking 开关与默认值以报告为准
+  - 官方 tokenizer：有 qwen-tokenizer / tiktoken 兼容 encoding 则用，否则 chars: 估算
+  - DashScope 兼容端点（dashscope.aliyuncs.com）的 function calling 支持以报告为准
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+    UsageFieldMap,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.7): 用 A0 批 7 报告替换下列常量并补 URL
+_QWEN_USAGE = UsageFieldMap(
+    cache_read_flat=(),
+    cache_read_nested=(("prompt_tokens_details", "cached_tokens"),),
+    reasoning=(),
+)
+_QWEN_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.7 官方定价页 URL
+)
+
+
+class QwenProvider(BaseProvider):
+    name = "qwen"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        return "dashscope" in url or "aliyuncs" in url or "qwen" in name
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            usage_fields=_QWEN_USAGE,
+            pricing=_QWEN_PRICING,
+            prompt_variant="qwen",
+            # TODO(grok→§7.7): 下列数值以报告为准
+            # tokenizer="tiktoken:qwen2" 或 "chars:2.0"
+            # context_window=128_000,
+        )
+        return caps.merged_with_overrides(model_config)
+```
+
+3. 注册进 `_PROVIDERS`。
+4. 测试至少覆盖：dashscope/aliyuncs 命中、qwen 模型名命中、反例、能力字段、usage 提取。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+```
+
+**完成判据**
+- [ ] `core/providers/qwen.py` 完整实现（非 A4 的骨架注释），测试全绿
+- [ ] `# TODO(grok→§7.7)` 已按报告填充并补 URL
+- [ ] 兜底测试仍绿；未接线
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- DashScope 兼容端点与百炼（Model Studio）的 base_url 不同，以 §7.7 为准
+- qwen3 系 thinking 开关（enable_thinking / chat_template_kwargs）若在 OpenAI 兼容端点不生效，在 `llm_kwargs` 里别硬塞，写明降级方式
+
+**Commit**
+```
+feat(model): complete QwenProvider with dashscope specifics
+```
+
+---
+
+### A18 · AnthropicProvider 补全
+
+`P1` / 6h / 依赖 A2、**A0 批 8 审计通过**（§7.8）
+
+**背景**
+A4 只给了 Anthropic 的方向（"`prompt_variant="claude"`；prompt 缓存的 `cache_control` 语义与 OpenAI 不同，需要在 `supports_prompt_cache` 上体现"）。本卡补全：Claude 的 thinking block 语义、prompt caching 断点（最多 4 个断点、最小 1024 token 块、TTL 5 分钟/1h）、reasoning 内容剥离（Phase C 的 strip 环节会用）、以及 OpenAI 兼容端点下的能力边界（MA4 禁止引入 anthropic SDK，原生端点的完整断点支持标注为受限）。
+
+**涉及文件**
+- 新建 `core/providers/anthropic.py`（A4 若已建则补全）
+- 修改 `core/providers/__init__.py`（注册）
+- 新建 `tests/test_providers/test_anthropic_provider.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.8 分区；未通过审计不得开工。
+2. `core/providers/anthropic.py`：
+
+```python
+"""Anthropic Claude provider（OpenAI 兼容端点路径）。
+
+限制说明：本项目走 OpenAI 兼容端点（MA4 禁止引入 anthropic SDK），因此
+cache_control 断点与 thinking block 的原生语义在兼容端点上可能不完整
+透传；capabilities 按兼容端点能生效的部分声明，原生端点能力标注为
+"受限（原生 SDK 接入前不承诺）"，由 A19 的缓存卡按真实端点行为处理。
+
+差异以 A0 批 8 调研报告（§7.8）为准。
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    ModelCapabilities,
+    ModelPricing,
+    UsageFieldMap,
+)
+from core.providers.base import BaseProvider
+
+# TODO(grok→§7.8): 用 A0 批 8 报告替换下列常量并补 URL
+_CLAUDE_USAGE = UsageFieldMap(
+    cache_read_flat=(),
+    cache_read_nested=(),
+    reasoning=(),
+)
+_CLAUDE_PRICING = ModelPricing(
+    input_per_mtok=None,
+    output_per_mtok=None,
+    cached_input_per_mtok=None,
+    as_of="",
+    source_url="",  # ← §7.8 官方定价页 URL
+)
+
+
+class AnthropicProvider(BaseProvider):
+    name = "anthropic"
+
+    def matches(self, base_url: str, model_name: str) -> bool:
+        url = base_url.lower()
+        name = model_name.lower()
+        return "anthropic" in url or name.startswith("claude-")
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            usage_fields=_CLAUDE_USAGE,
+            pricing=_CLAUDE_PRICING,
+            prompt_variant="claude",
+            supports_prompt_cache=False,  # 兼容端点无法透传 cache_control 时保持关闭，
+            # 由 A19 按 §7.8 的真实端点行为决定是否打开
+            # TODO(grok→§7.8): 下列数值以报告为准
+            # context_window=200_000,
+        )
+        return caps.merged_with_overrides(model_config)
+```
+
+3. 注册进 `_PROVIDERS`。
+4. 测试至少覆盖：anthropic URL/claude- 模型名命中、反例、`supports_prompt_cache` 当前为 False（兼容端点保守默认）、能力字段。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+```
+
+**完成判据**
+- [ ] `core/providers/anthropic.py` 完整实现，测试全绿
+- [ ] `# TODO(grok→§7.8)` 已按报告填充并补 URL
+- [ ] 兼容端点的能力边界（尤其 `supports_prompt_cache`）在 PR 描述里说明
+- [ ] 兜底测试仍绿；未接线
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- 兼容端点与原生端点的能力差很多（thinking block、cache_control 断点、tool_use 格式）。**不要把原生端点文档里的字段直接填进兼容路径**——这是 A18 最常踩的坑
+- `matches()` 里 `"anthropic" in url` 会命中中转站路径含 anthropic 的 URL，属预期行为（该模型族确实来自 Anthropic）
+
+**Commit**
+```
+feat(model): complete AnthropicProvider with compat-endpoint boundaries
+```
+
+---
+
+### A19 · per-model 缓存参数
+
+`P1` / 8h / 依赖 A8 + A12–A18 全部、**A0 全部 8 批审计通过**
+
+**背景**
+缓存命中率是 agent 成本的胜负手（参考 Cherry Studio 在 DeepSeek 上的 99.5%+ 命中率——那是"前缀字节级稳定"纪律的副产品，不是显式优化）。本卡把 per-model 缓存参数落成能力字段：最小缓存块、TTL、断点布局（Anthropic 系）、命中字段读取、命中率监控接入。动态内容（工具结果、检索、状态）一律尾部追加的**消息纪律**属于消息链改造（Phase 2 Session / EF 范围），本卡只负责"每个模型该打什么缓存参数"。
+
+**与现有缓存代码的边界（2026-08-01 review 补充）**：`config/settings.py` 的 `cache` 段有 `enabled/prompt_prefix_cache/ttl`（:220-224），其中 `enabled` 与 `ttl` 目前是**无人读取的死配置**（仅 `prompt_prefix_cache` 被 `agent_v2.py:405` 读取）；本卡的 `cache_ttl_s` 是 `ModelCapabilities` 上的 **provider 侧缓存 TTL**，与 settings 的 `cache.ttl` 命名空间不同、语义不同，**不得混用**（死配置清理归主计划 §9/待办池）。`utils/streaming.py` 的 `token_stats`（:50-51、:62-78、:85-96）已采集 `prompt_tokens / cache_hit_tokens / cache_hit_rate`，本卡步骤 5 是**扩展**现有记录，不新建计数器。
+
+**涉及文件**
+- `config/model_capabilities.py`（追加字段，只追加）
+- `core/providers/base.py`（追加 `cache_params()` 辅助）
+- 新建 `tests/test_providers/test_cache_params.py`
+
+**操作步骤**
+
+1. 开工前：重读 §7.1–§7.8 的**第 4 问（prompt cache 机制）**，按模型族汇总成一张"缓存参数表"，写进 PR 描述。
+2. `ModelCapabilities` 追加：
+
+```python
+    #: 该模型族 prompt cache 的最小可缓存前缀（token）。Anthropic 系有明确
+    #: 下限（如 1024/4096），OpenAI/DeepSeek 自动缓存无此要求 → None。
+    cache_min_block_tokens: int | None = None
+
+    #: 缓存 TTL（秒）。None = 不适用（自动缓存 / 未知）。
+    cache_ttl_s: int | None = None
+
+    #: 断点布局（Anthropic 系显式 cache_control 用，最多 4 个）。
+    #: 取值按"静态在前、动态在后"排序，只允许打在恒定内容末尾：
+    #:   ["tools", "system", "session_static", "tail"]
+    #: 空列表 = 不用显式断点。A8 的 _apply_cache_control 读取它。
+    cache_breakpoints: tuple[str, ...] = ()
+```
+
+3. `core/providers/base.py` 追加辅助（供 `_apply_cache_control` 与 A19 测试使用）：
+
+```python
+    def cache_params(self, caps: ModelCapabilities) -> dict:
+        """该模型族的缓存参数包，供消息链注入与命中率监控使用。
+
+        返回键固定为：min_block_tokens / ttl_s / breakpoints / hit_field_flat /
+        hit_field_nested。默认值 = "不适用"，各 provider 按 §7.X 覆写。
+        """
+        return {
+            "min_block_tokens": caps.cache_min_block_tokens,
+            "ttl_s": caps.cache_ttl_s,
+            "breakpoints": list(caps.cache_breakpoints),
+            "hit_field_flat": list(caps.usage_fields.cache_read_flat),
+            "hit_field_nested": list(caps.usage_fields.cache_read_nested),
+        }
+```
+
+4. 各 provider 的 `capabilities()` 按对应 §7 分区填充三个新字段（示例，DeepSeek）：
+
+```python
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            cache_min_block_tokens=None,   # DeepSeek 自动缓存，无下限要求
+            cache_ttl_s=None,              # 官方未承诺固定 TTL
+            # TODO(grok→§7.1): 以上两值以报告第 4 问为准
+        )
+```
+
+5. 命中率监控接入（只读不写，接 `utils/streaming.py` 已有的 `token_stats.cache_hit_rate` 与 `_extract_cache_read`）：在 `_record_usage` 的 span 记录里，于 `token_usage` 现有字段（prompt/completion/total，见 `core/tracing.py` 的 NodeSpan）**追加 `cache_read` 字段**落盘（tracing 是 JSONL，字段可扩展），确保命中率可被 evals/trajectory 观测——**本卡不新增 UI**。
+6. `tests/test_providers/test_cache_params.py`：断言每族 `cache_params()` 的字段与 §7 报告一致（反例：乱序断点、打在动态块上的断点应被拒绝——校验器放在 base.py）。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers config/model_capabilities.py
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+- [ ] 三个新字段追加，默认值全部为"不适用"（None / 空元组），既有行为零变化
+- [ ] 8 族 `cache_params()` 与 §7 报告逐条一致，PR 描述附缓存参数汇总表
+- [ ] 断点布局校验器拒绝非法断点（>4 个 / 含动态块）
+- [ ] evals 零回归
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- 断点只能打在恒定内容末尾（Anthropic 官方明确警告：打在每轮变化的块上 = 永不命中）。校验器必须挡住
+- DeepSeek/OpenAI 是自动缓存，`cache_min_block_tokens=None` 是正确的——不要照抄 Anthropic 的 1024 规则
+
+**Commit**
+```
+feat(model): per-model cache parameters with breakpoint validation
+```
+
+---
+
+### A20 · per-model token 治理
+
+`P1` / 8h / 依赖 A5 A7 + A12–A18 全部、**A0 全部 8 批审计通过**
+
+**背景**
+每任务 20–30 万 token 的消耗大头是：全量工具描述、全量 few-shot、记忆注入、工具输出。本卡给每个模型族声明 token 治理参数（输出上限、few-shot 策略、工具发送策略、记忆预算），由调用方（A9 的 prompt 变体机制 + fast path 工具组包）消费。**本卡只建参数与消费点，默认值全部保持现状行为**（"全量"）。
+
+**涉及文件**
+- `config/model_capabilities.py`（追加字段，只追加）
+- `core/agent_v2.py`（`_get_core_tools` 附近与 `llm_kwargs` 消费点，走接线请求）
+- 新建 `tests/test_providers/test_token_governance.py`
+
+**操作步骤**
+
+1. 开工前：重读 §7.1–§7.8 第 6/7 问（tokenizer、定价），按模型族汇总 token 参数表。
+2. `ModelCapabilities` 追加：
+
+```python
+    #: 单次请求输出上限（token）。None = 沿用 llm_kwargs 的 max_tokens 默认 8192。
+    max_output_tokens: int | None = None
+
+    #: few-shot 注入策略。None = 现状（全量注入，A9 前的行为）。
+    #:   "full" 全量 / "first2" 只留前 2 条 / "none" 不注入
+    few_shot_policy: str | None = None
+
+    #: 工具描述发送策略。None = 现状（全量发送）。
+    #:   "full" 全量 / "subset" 按任务子集（由调用方决定子集，会话内固定）
+    tool_send_policy: str | None = None
+
+    #: 工具输出截断阈值（token）。None = 现状（不截断）。
+    tool_output_token_limit: int | None = None
+```
+
+3. 消费点（接线请求，参考 A6 的用法）：`_get_core_tools` 组包时按 `tool_send_policy`；`_raw_stream` 的 `payload["max_tokens"]` 用 `max_output_tokens` 覆盖；`planning/structured_output.py` 与 fast path 的工具结果记录按 `tool_output_token_limit` 截断（截断位置保留头尾，参考 `memory/compressor.py` 的 `_middle_truncate`）。
+4. few-shot 消费点：A9 的 prompt 变体机制里按 `few_shot_policy` 选择注入量（`core/prompts/registry.py` 的 `get_role_prompt(..., include_few_shot=...)` 已有关口）。
+5. `tests/test_providers/test_token_governance.py`：断言默认值全为 None（现状零变化）；每个 provider 的取值与 §7 一致；消费点测试（fake provider 设定值后行为正确）。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m pytest tests -q -x --timeout=600
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+- [ ] 四个新字段默认全为 None，现状行为零变化
+- [ ] 消费点全部走接线请求，改动最小化（PR 描述列出每个改动点）
+- [ ] 与 §7 报告的 tokenizer/定价结论一致
+- [ ] evals 零回归
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- `tool_output_token_limit` 截断时**不要**改 ToolMessage 对象本身（会破坏 tool_call_id 契约），截断的是注入上下文的文本副本——参考 A7 里 `_maybe_compress_context` 的现有做法
+- `few_shot_policy` 改动直接影响 evals 分数；每调一族必须单独跑基线比对
+
+**Commit**
+```
+feat(model): per-model token governance knobs (defaults unchanged)
+```
+
+---
+
+### A21 · per-model 延迟旋钮
+
+`P1` / 8h / 依赖 A6 A8 + A12–A18 全部、**A0 全部 8 批审计通过**
+
+**背景**
+延迟是 agent 体验的胜负手。每个模型族可用的"速度旋钮"不同：DeepSeek v4 的 `reasoning_effort`（low/high/max，默认 high）、OpenAI 的 `reasoning_effort`、MiMo 的 UltraSpeed 档、Anthropic 的 thinking budget。本卡把它们统一成 `effort_presets`（fast / balanced / deep 三档），并让 fast path 默认走 `fast` 档、复杂任务走 `balanced`/`deep`。**本卡只定义旋钮与默认映射，行为默认不变**（balanced = 现状）。
+
+**涉及文件**
+- `config/model_capabilities.py`（`effort_presets` 已在 A12 追加，本卡消费）
+- `core/agent_v2.py`（fast path 构造 LLM 时按档位传参，走接线请求）
+- 新建 `tests/test_providers/test_effort_presets.py`
+
+**操作步骤**
+
+1. 开工前：重读 §7.1–§7.8 第 5/8 问（thinking 参数、延迟特性），按模型族汇总"旋钮表"。
+2. 各 provider 的 `capabilities()` 按报告填充 `effort_presets`，例如：
+
+```python
+        # DeepSeek v4（以 §7.1 为准）：thinking 总开关 + effort 档位
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            effort_presets={"fast": "low", "balanced": "high", "deep": "max"},
+            # TODO(grok→§7.1): 档位取值与传输位置以报告为准
+        )
+```
+
+3. `AgentV2` 增加档位选择逻辑（接线请求，改 `_build_llm_from_config` 与 fast path 入口）：
+
+```python
+    def _effort_for(self, mode: str, text: str) -> str:
+        """按任务性质选推理档位：fast path 用 fast，其余用 balanced。
+
+        deep 档只由显式配置（effort=deep）触发，不自动使用——贵且慢。
+        """
+        if mode == "plan":
+            return "balanced"
+        if mode == "build" and self._is_simple_query(text):
+            return "fast"
+        return "balanced"
+```
+
+   调用点：`_build_llm_from_config` 里 `model_config.setdefault("effort", self._effort_for(...))`（A12 的 `llm_kwargs` 已消费 `effort` 键）。
+4. `tests/test_providers/test_effort_presets.py`：断言默认 balanced 与现状一致；fast path 落到 fast 档；不支持的模型族 `effort_presets` 为空时**不得**注入任何额外参数。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m pytest tests -q -x --timeout=600
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+- [ ] 默认档位 = balanced（= 现状行为），evals 零回归
+- [ ] fast path 显式走 fast 档且对不支持的模型零注入
+- [ ] 每族 `effort_presets` 与 §7 报告一致
+- [ ] deep 档仅显式配置触发
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- thinking 模式下 temperature 等采样参数会被拒绝（DeepSeek v4 官方行为）——切档位时 `llm_kwargs` 必须同步删采样参数，否则 400
+- `effort_presets` 为空（不支持档位的模型）时**禁止**往 `extra_body` 里塞任何参数——透传无效参数可能触发端点报错
+
+**Commit**
+```
+feat(model): per-model latency knobs via effort presets
+```
+
+---
+
+### A22 · DeepSeek v4 补全
+
+`P1` / 6h / 依赖 A3、**A0 批 1 审计通过**（§7.1）
+
+**背景**
+A3 写于 DeepSeek chat/reasoner（V3/R1）时代；2026 年 7 月起官方模型已是 **deepseek-v4-flash / deepseek-v4-pro**（官方文档 2026-08-01 核实），行为模型变了：
+- thinking 是**总开关**（`{"thinking": {"type": "enabled/disabled"}}`），**默认开启、默认 effort=high**，不再是"R1 专用"
+- `reasoning_effort: low/high/max`（官方映射表：flash 的 low/high/max 原样映射、xhigh→high；pro 的 low→high、xhigh→high；官方称 2026-08 初将更新 pro 的映射——**以 §7.1 复核为准**）
+- thinking 模式下 temperature / top_p / presence_penalty / frequency_penalty **全部无效**（不报错但被忽略）
+- 带 tools 时必须把上一轮 `reasoning_content` 完整回传，否则 **400 错误**
+- 缓存命中字段 `prompt_cache_hit_tokens`（平铺）不变；命中 0.1x 计费
+
+本卡把 A3 的旧假设按 §7.1 重写（不修改 A3 卡本身，作为补全卡独立存在）。
+
+**涉及文件**
+- 修改 `core/providers/deepseek.py`（A3 已建，本卡覆盖其旧分支）
+- 新建 `tests/test_providers/test_deepseek_v4.py`
+
+**操作步骤**
+
+1. 开工前：读 §7.1 分区，确认 v4-flash/pro 的全部数值；未通过审计不得开工。
+2. 重写 `core/providers/deepseek.py` 的识别与能力逻辑（以 §7.1 为准，下为结构示例）：
+
+```python
+    def matches(self, base_url: str, model_name: str) -> bool:
+        return "deepseek" in base_url.lower() or "deepseek" in model_name.lower()
+
+    def capabilities(self, model_config: dict) -> ModelCapabilities:
+        model_name = str(model_config.get("model_name") or "").lower()
+        is_v4_flash = "flash" in model_name
+        is_v4_pro = "pro" in model_name
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider=self.name,
+            context_window=_V4_CONTEXT,          # TODO(grok→§7.1)
+            compaction_threshold=int(_V4_CONTEXT * 0.9),
+            usage_fields=_DEEPSEEK_USAGE,
+            supports_reasoning=True,              # v4 默认 thinking 开启
+            accepts_temperature=False,            # thinking 模式下采样参数无效
+            supports_function_calling=True,       # TODO(grok→§7.1): v4 全系 tools 支持
+            structured_output="function_calling",
+            prompt_variant=("deepseek-v4-flash" if is_v4_flash
+                            else "deepseek-v4-pro" if is_v4_pro else "deepseek"),
+            effort_presets={
+                "fast": "low",
+                "balanced": "high",   # 官方默认档
+                "deep": "max",
+            },
+        )
+        return caps.merged_with_overrides(model_config)
+```
+
+3. **thinking 开关接线**（A8 已有 `_apply_cache_control` 模式可参照）：在 `llm_kwargs` 里按档位放 `extra_body["thinking"] = {"type": "enabled" if caps.supports_reasoning else "disabled"}` 与 `extra_body["reasoning_effort"]`（传输位置以 §7.1 为准）。
+4. **reasoning_content 回传纪律**：记录到 A19 的缓存纪律文档（`docs/modules/providers.md` 新增一节"DeepSeek v4 会话续接"）：带 tools 的轮次必须把 assistant 消息的 `reasoning_content` 一并回传（`_to_openai_messages` 保留该字段），否则 400。
+5. `tests/test_providers/test_deepseek_v4.py`：v4-flash/v4-pro 命中、thinking 默认开、采样参数被删、effort 档位映射、tools+reasoning_content 回传契约（用 `_to_openai_messages` 的 fixture 断言字段保留）。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers -q
+python -m ruff check core/providers tests/test_providers
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+- [ ] `# TODO(grok→§7.1)` 全部按报告填充并补 URL
+- [ ] v4 识别/能力/effort/thinking 开关与 §7.1 逐条一致
+- [ ] tools + reasoning_content 回传契约有测试
+- [ ] 旧型号（deepseek-chat/reasoner）行为若 §7.1 未覆盖，保持 A3 原逻辑不回归
+
+**回滚**：`git revert <commit>`
+
+**常见坑**
+- v4 的 `accepts_temperature=False` 是 thinking 模式行为；若 §7.1 确认 `thinking: disabled` 时采样参数可用，`llm_kwargs` 要按开关动态决定，不能一刀切
+- 400 错误的排查顺序：先看是否漏回传 `reasoning_content`（DeepSeek 官方明确：带 tools 的请求不回传必 400）
+
+**Commit**
+```
+feat(model): adapt DeepSeekProvider to v4 flash/pro era
+```
 
 ---
 
@@ -1547,18 +2843,15 @@ Select-String -Path core\agent_v2.py,utils\streaming.py -Pattern "256000"
 
 > Phase A 之后，接一个新模型族的标准流程。**这一节是长期使用的，不是一次性任务。**
 
-**第 1 步 · 查资料**（交给 Grok）
+**第 1 步 · 查资料**（交给 Grok，由 A0 统一执行，2026-08-01 起）
 
-```
-查 <厂商> 官方 API 文档，回答：
-1. 各主力模型的 context window
-2. 是否兼容 OpenAI /chat/completions？兼容端点下 tools 可用吗？
-3. prompt 缓存怎么开？usage 里命中数字段名？
-4. 是否有 reasoning/thinking 输出？字段名？在 delta 还是 message 上？
-5. 是否拒绝 temperature / top_p 等采样参数？
-6. 官方 tokenizer，有无 tiktoken 兼容 encoding？
-每条给文档原文和 URL。
-```
+调研不再在卡内临时进行，统一由 **A0** 承担（分批调研 + 每批审计 + §7 分区汇报）。新增模型族时：
+
+1. 在 A0 的调研清单里追加一批（或复用已有批次），按 A0 的 9 问模板调研
+2. 结果写入 §7 新分区，通过 A0 的审计门（Grok 自审 + 第三方非编码模型审计，§7.9 留档）
+3. 通过审计后，再按下面第 2–7 步写 provider
+
+本手册第 2–7 步与调研解耦，可参照任意已通过的 provider 卡执行。
 
 **第 2 步 · 写 provider**
 
@@ -1606,3 +2899,77 @@ Phase A 为后面两个 Phase 预留了这些接缝，**实现时不要破坏它
 | Provider 无状态单例（约束 DC2） | Phase B 多 Agent | 多个 Agent 会并发调用同一个 provider 实例，**不要在 provider 里存任何 per-request 状态** |
 | `ModelCapabilities.prompt_variant` | Phase B 角色化 Agent | 不同角色的 Agent 可能用不同模型，变体机制要能按 agent 解析 |
 | `AgentState._capabilities` | Phase B | 多 Agent 下每个 agent 的 capabilities 不同，state 注入要按 agent 隔离 |
+
+> **2026-08-01 扩展追加的接缝**（新增字段，消费方与约束）：
+
+| 预留（新增） | 给谁用 | 约束 |
+|---|---|---|
+| `ModelPricing`（A12） | **Phase C C4 成本核算** | 本卡定义是 C4（`PHASE-C.md:529-543`）的超集；C4 中心表优先级更高；`None` 必须显式处理（缺失不静默当 0，对齐 C4 判据） |
+| `effort_presets`（A12/A21） | Phase B B10 难度路由、Phase C C11 评测矩阵 | 路由与评测可按 fast/balanced/deep 档位横向比较延迟与质量；空 dict = 不支持档位，禁止注入任何参数 |
+| `cache_min_block_tokens` / `cache_ttl_s` / `cache_breakpoints`（A19） | Phase C C4 缓存定价、Phase 2 Session 消息链 | 断点布局只打在恒定内容末尾（≤4 个）；TTL 是 provider 侧语义，与 settings `cache.ttl`（死配置）无关 |
+| `max_output_tokens` / `few_shot_policy` / `tool_send_policy` / `tool_output_token_limit`（A20） | Phase 2 Session 消息链、Phase B 角色化 Agent | 默认 `None` = 现状（全量）行为，任何消费方不得假定非 None |
+| A0 调研报告（§7） | Phase C C4 定价表、A12–A22 全部数值、Phase D D4 图像 token 公式 | 数值唯一来源；对应批未通过审计不得使用 |
+
+---
+
+## §7 Grok 模型调研报告（A0 产物）
+
+> **本章节由 A0 卡（2026-08-01 扩展）负责填充，按模型族分区。**
+> 每个分区的数据是 A12–A22 等优化卡的**数值唯一来源**；对应分区未通过 §7.9 的审计之前，相关优化卡不得开工（A0 审计门）。
+> 分区固定结构：① 调研记录表（批次/日期/调研模型/来源 URL）② 九问结论 ③ "对 RxyCode 的含义"（映射到 `ModelCapabilities` / `UsageFieldMap` / `ModelPricing` 字段的具体建议值）。
+
+### §7.1 DeepSeek（A0 批 1）
+
+> 状态：**待调研**。审计通过前，A3/A22 不得填充数值。
+
+### §7.2 OpenAI（A0 批 2）
+
+> 状态：**待调研**。审计通过前，A12 不得填充数值。
+
+### §7.3 Kimi / Moonshot（A0 批 3）
+
+> 状态：**待调研**。审计通过前，A13 不得填充数值。
+
+### §7.4 GLM / 智谱（A0 批 4）
+
+> 状态：**待调研**。审计通过前，A14 不得填充数值。
+
+### §7.5 MiniMax（A0 批 5）
+
+> 状态：**待调研**。审计通过前，A15 不得填充数值。
+
+### §7.6 MIMO / 小米（A0 批 6）
+
+> 状态：**待调研**。审计通过前，A16 不得填充数值。
+
+### §7.7 Qwen（A0 批 7）
+
+> 状态：**待调研**。审计通过前，A17 不得填充数值。
+
+### §7.8 Anthropic（A0 批 8）
+
+> 状态：**待调研**。审计通过前，A18 不得填充数值。
+
+### §7.9 审计记录表（A0 每批审计写入）
+
+> 审计三要素：**审计模型名称 / 审计时间 / 审计结果（通过或不通过 + 问题清单）**。三要素缺一的记录视为不存在。
+> 审计方：① Grok 4.5（调研模型自审）② 第三方非编码模型（执行会话的 opencode 模型，当前 `deepseek-v4-flash`，由用户触发暂停后进行）。
+
+| 批次 | 分区 | 审计模型 | 审计时间 | 审计结果 | 问题清单与处置 |
+|---|---|---|---|---|---|
+| 批 1 | §7.1 | Grok 4.5 | | 待审计 | |
+| 批 1 | §7.1 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 2 | §7.2 | Grok 4.5 | | 待审计 | |
+| 批 2 | §7.2 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 3 | §7.3 | Grok 4.5 | | 待审计 | |
+| 批 3 | §7.3 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 4 | §7.4 | Grok 4.5 | | 待审计 | |
+| 批 4 | §7.4 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 5 | §7.5 | Grok 4.5 | | 待审计 | |
+| 批 5 | §7.5 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 6 | §7.6 | Grok 4.5 | | 待审计 | |
+| 批 6 | §7.6 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 7 | §7.7 | Grok 4.5 | | 待审计 | |
+| 批 7 | §7.7 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 8 | §7.8 | Grok 4.5 | | 待审计 | |
+| 批 8 | §7.8 | opencode（deepseek-v4-flash） | | 待审计 | |

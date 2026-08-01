@@ -12,8 +12,11 @@ Manages all RxyCode configuration: model settings, API keys, active model select
 
 `add_model()` accepts optional `provider_id` and `provider_name` metadata for
 grouping in `/model`. `onboard_models_batch()` adds multiple models in one pass;
-when `skip_probe=True` (preset batch path) it never calls
-`probe_model_connection()`.
+when `skip_probe=True` (preset/custom discover path) it never calls
+`probe_model_connection()`. Config keys are namespaced as
+`{provider_id}/{model_id}` so the same vendor model id can exist under two
+groups (e.g. DeepSeek vs OpenCode Go). `infer_provider_group(base_url)` maps a
+URL host to a preset name, else ``其他``.
 
 `model_manager.probe_model_connection()` accepts an API key, base URL, and
 provider model ID directly and performs no persistence. The API onboarding flow

@@ -1,12 +1,12 @@
 # L9 · Desktop 应用（基于 RxyCode Desktop）
 
-> **前置（后端侧 L9-1 ~ L9-3）**：LinkAgent [`L3`](./L3-RETRIEVAL-AND-SCOPE.md) 完成 + **RxyCode Phase 2 落地**（`protocol/` 与 `appserver/` 存在）
-> **前置（前端侧 L9-4 ~ L9-8）**：**RxyCode Phase 3 落地**（有 Electron 壳可以 fork），排期约 2026-12-18
+> **前置（后端侧 L9-1 ~ L9-2 · Composer）**：LinkAgent [`L3`](./L3-RETRIEVAL-AND-SCOPE.md) 完成 + **RxyCode Phase 2 落地**（`protocol/` 与 `appserver/` 存在）
+> **前置（前端侧 L9-3 ~ L9-8 · Composer 主写）**：L9-1 schema 已合并；L9-4 起还要 **RxyCode Phase 3 落地**（有 Electron 壳可以 fork）
 > **产出**：一个能装、能跑、能看见自己经验层的桌面应用
 > **工时**：17 天
 > **卡数**：8 张（L9-1 ~ L9-8）
 >
-> **干活前读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) §2。**一次只做一张卡。**
+> **干活前读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)；L9-1/L9-2 与 L9-3~L9-8 全部由 **Composer 主写**（[`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)）；L9-4~L9-7 卡内标注的「多模态环节」（视觉验收）委托 Grok（[`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)）。**一次只做一张卡。**
 > **接口字段的权威定义在** [`APPENDIX-C-INTERFACE-CONTRACTS.md`](./APPENDIX-C-INTERFACE-CONTRACTS.md)，这份文档不重复。
 
 ---
@@ -86,8 +86,8 @@
 
 | LinkAgent 卡 | 等 RxyCode 的什么 | RxyCode 排期 |
 |---|---|---|
-| L9-1 ~ L9-3（后端 + 类型） | **Phase 2**：`protocol/`、`appserver/`、`frontend/protocol-client/` | W9–W12，约 2026-10-23 |
-| L9-4 ~ L9-8（Electron 壳与视图） | **Phase 3**：D1–D6 的 Electron 壳、对话区、审批、设置、打包 | W13–W20，约 2026-12-18 |
+| L9-1 ~ L9-3（后端 + 类型，均 Composer） | **Phase 2**：`protocol/`、`appserver/`、`frontend/protocol-client/` | W9–W12，约 2026-10-23 |
+| L9-4 ~ L9-8（Electron 壳与视图 · Composer 主写） | **Phase 3**：D1–D6 的 Electron 壳、对话区、审批、设置、打包 | W13–W20，约 2026-12-18 |
 
 **建议排法**：L9-1 ~ L9-3 跟在 L3 后面做（那时 Phase 2 已经落地），前端侧等到 12 月。中间这段时间投 [`L4`](./L4-SAFETY-GATE.md)、[`L5`](./L5-EVIDENCE-AND-EVOLUTION.md)、[`L7`](./L7-EVAL-HARNESS.md)、[`L8`](./L8-PRESET-EKO-PACK.md)——**它们一个都不依赖桌面端**。
 
@@ -129,7 +129,7 @@
 
 ### L9-1 · 协议扩展与 schema 合并契约
 
-`P0` / 2 天 / 依赖：L3 全部 + RxyCode Phase 2
+`P0` / 2 天 / **owner: backend (Composer)** / 依赖：L3 全部 + RxyCode Phase 2
 
 **背景**
 
@@ -206,7 +206,7 @@ python -m ruff check src/linkagent/protocol
 
 ### L9-2 · LinkAgent appserver
 
-`P0` / 2.5 天 / 依赖：L9-1、L2-6
+`P0` / 2.5 天 / **owner: backend (Composer)** / 依赖：L9-1、L2-6
 
 **背景**
 
@@ -278,7 +278,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 ### L9-3 · TypeScript 类型生成与传输客户端
 
-`P0` / 1.5 天 / 依赖：L9-1
+`P0` / 1.5 天 / **owner: frontend（Composer 主写）** / 依赖：L9-1
 
 **背景**
 
@@ -317,7 +317,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 ### L9-4 · fork RxyCode Desktop 壳
 
-`P0` / 2 天 / 依赖：L9-3 + **RxyCode Phase 3 的 D1–D5**
+`P0` / 2 天 / **owner: frontend（Composer 主写 · Grok 视觉验收）** / 依赖：L9-3 + **RxyCode Phase 3 的 D1–D5**
 
 **背景**
 
@@ -358,7 +358,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 ### L9-5 · EKO 森林只读视图
 
-`P0` / 3 天 / 依赖：L9-4、L8-4
+`P0` / 3 天 / **owner: frontend（Composer 主写 · Grok 视觉验收）** / 依赖：L9-4、L8-4
 
 **背景**
 
@@ -413,7 +413,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 ### L9-6 · 检索解释面板
 
-`P1` / 2 天 / 依赖：L9-5、L3-5
+`P1` / 2 天 / **owner: frontend（Composer 主写 · Grok 视觉验收）** / 依赖：L9-5、L3-5
 
 **背景**
 
@@ -456,7 +456,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 ### L9-7 · 设置扩展
 
-`P1` / 2 天 / 依赖：L9-4、L5 全部、L8-4
+`P1` / 2 天 / **owner: frontend（Composer 主写 · Grok 视觉验收）** / 依赖：L9-4、L5 全部、L8-4
 
 **背景**
 
@@ -504,7 +504,7 @@ RxyCode 的设置页（D5）已经有模型和工作区。LinkAgent 在它上面
 
 ### L9-8 · 打包与分发
 
-`P2` / 2 天 / 依赖：L9-1 ~ L9-7
+`P2` / 2 天 / **owner: frontend（Composer 主写）** / 依赖：L9-1 ~ L9-7
 
 **背景**
 

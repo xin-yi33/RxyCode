@@ -980,15 +980,25 @@ async def get_models():
     active = cfg.get("active_model", "")
     result = []
     for name, mcfg in models.items():
+        vendor_id = mcfg.get("model_name", name)
+        # Display alias defaults to vendor model id (not the namespaced config key).
+        display = mcfg.get("nickname") or vendor_id
+        provider_name = mcfg.get("provider_name") or mcfg.get("category") or ""
+        if not provider_name:
+            from .config.model_manager import infer_provider_group
+
+            provider_name = infer_provider_group(mcfg.get("base_url", "")).get(
+                "name", "其他"
+            )
         result.append({
             "id": name,
-            "name": mcfg.get("model_name", name),
-            "nickname": name,
-            "provider_model_id": mcfg.get("model_name", name),
+            "name": vendor_id,
+            "nickname": display,
+            "provider_model_id": vendor_id,
             "base_url": mcfg.get("base_url", ""),
             "active": name == active,
-            "category": mcfg.get("provider_name") or mcfg.get("category") or "其他",
-            "provider_name": mcfg.get("provider_name", ""),
+            "category": provider_name or "其他",
+            "provider_name": provider_name or "",
         })
     return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
 

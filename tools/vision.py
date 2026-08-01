@@ -177,34 +177,93 @@ def _ocr_image(file_path: str) -> str:
     return "\n".join(results)
 
 
-def _capture_screenshot() -> str:
-    """Capture a screenshot and return info about it."""
+def _interactive_desktop_available() -> bool:
+    """Return False when Windows is on the lock/secure desktop.
+
+    ``mss`` capture blocks forever on a locked or disconnected session
+    (Win32 GetDC/BitBlt never returns), and in-process timeouts cannot
+    interrupt native calls.  This cheap precheck gives an instant, clear
+    error instead of waiting for the capture timeout.
+    """
+    if os.name != "nt":
+        return True
     try:
-        import mss
-    except ImportError:
-        return "[error: mss not installed. Install with: pip install mss pillow]"
-    
-    with mss.mss() as sct:
-        monitors = sct.monitors
-        output_dir = current_working_directory()
-        screenshots = []
-        
-        # Capture all monitors
-        for idx, _monitor in enumerate(monitors[1:], 1):  # skip monitor 0 (all-in-one)
-            filename = f"screenshot_monitor_{idx}.png"
-            filepath = output_dir / filename
-            sct.shot(mon=idx, output=str(filepath))
-            
-            from PIL import Image
-            with Image.open(filepath) as img:
-                w, h = img.size
-            size_kb = os.path.getsize(filepath) / 1024
-            screenshots.append(f"  Monitor {idx}: {w}x{h}px, {size_kb:.0f}KB -> {filepath}")
-        
-        result = [f"Captured {len(screenshots)} screenshot(s):"]
-        result.extend(screenshots)
-        result.append(f"\nSaved to: {output_dir}")
-        return "\n".join(result)
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        # DESKTOP_READOBJECTS = 0x0001
+        desktop = user32.OpenInputDesktop(0, False, 0x0001)
+        if not desktop:
+            return False
+        user32.CloseDesktop(desktop)
+        return True
+    except Exception:
+        # Never fail the capture path because the precheck itself failed.
+        return True
+
+
+def _capture_screenshot() -> str:
+    """Capture a screenshot and return info about it.
+
+    The actual capture runs in a subprocess with a hard timeout: native
+    capture calls can block forever on a locked/RDP-disconnected session,
+    and in-process timeout threads cannot interrupt them.  The OS can kill
+    the worker process, so the agent itself never hangs.
+
+    Set ``RXYCODE_DISABLE_SCREEN_CAPTURE=1`` to forbid capture entirely
+    (used by tests and headless deployments).
+    """
+    if os.environ.get("RXYCODE_DISABLE_SCREEN_CAPTURE"):
+        return (
+            "[error: screen capture disabled via "
+            "RXYCODE_DISABLE_SCREEN_CAPTURE]"
+        )
+
+    if not _interactive_desktop_available():
+        return (
+            "[error: no interactive desktop available (locked screen or "
+            "disconnected session) - screen capture would block]"
+        )
+
+    import subprocess
+    import sys
+
+    timeout_s = float(os.environ.get("RXYCODE_SCREEN_CAPTURE_TIMEOUT", "5"))
+    output_dir = current_working_directory()
+    # Prefer the installed-package path; fall back to the repo-root layout
+    # (``python -m tools.vision_capture``) when running from a checkout.
+    candidates = (
+        [sys.executable, "-m", "RxyCode.RxyCode1_1_0.tools.vision_capture",
+         str(output_dir)],
+        [sys.executable, "-m", "tools.vision_capture", str(output_dir)],
+    )
+    try:
+        proc = subprocess.run(
+            candidates[0],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        if proc.returncode and "No module named" in proc.stderr:
+            proc = subprocess.run(
+                candidates[1],
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+    except subprocess.TimeoutExpired:
+        return (
+            f"[error: screen capture timed out after {timeout_s:.0f}s "
+            "(session locked or display unavailable)]"
+        )
+    except FileNotFoundError:
+        return "[error: python interpreter not found for capture worker]"
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or "unknown error").strip()[:300]
+        return f"[error: screen capture failed (exit {proc.returncode}): {detail}]"
+
+    return proc.stdout.strip()
 
 
 vision_tool = StructuredTool(

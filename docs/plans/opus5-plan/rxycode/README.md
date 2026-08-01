@@ -4,7 +4,8 @@
 > **仓库**：`D:\agent-demo\RxyCode\RxyCode1_1_0`
 > **目标形态**：headless 核心 + 类型化协议 + 多个薄客户端（Codex App Server 式）
 >
-> **干活之前先读** [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)
+> **干活之前先读** [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)  
+> 全部卡由 **Composer 主写**（后端 + 前端）→ [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) · 前端卡内标注的「多模态环节」委托 Grok → [`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)
 
 ---
 

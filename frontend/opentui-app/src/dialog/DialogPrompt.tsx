@@ -1,5 +1,8 @@
 /**
  * Single-line prompt layer for dialog wizards (push on stack).
+ *
+ * Cursor is shown at the end of the draft (not locked to the first cell).
+ * Credential fields use plaintext echo so the caret tracks typing correctly.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -21,17 +24,19 @@ export function DialogPrompt({
   title: string;
   placeholder: string;
   initial?: string;
-  /** Echo the draft as asterisks (credentials). */
+  /** Legacy prop — credentials are shown in plaintext for correct caret UX. */
   mask?: boolean;
   /** Optional dim footer line, e.g. an HTTPS reminder. */
   hint?: string;
   onSubmit: (text: string) => void;
   onCancel: () => void;
 }) {
+  void mask;
   const [draft, setDraft] = useState(initial);
   const focusRef = useRef<InputRenderable>(null);
 
   useEffect(() => {
+    setDraft(initial);
     try {
       focusRef.current?.focus();
       if (focusRef.current) focusRef.current.value = initial;
@@ -84,9 +89,8 @@ export function DialogPrompt({
     }
   });
 
-  // Credentials are never echoed verbatim, not even into the terminal buffer.
-  const echoed = mask ? "*".repeat(draft.length) : draft;
-  const shown = echoed || placeholder;
+  const shown = draft || placeholder;
+  const isPlaceholder = !draft;
 
   return (
     <box
@@ -111,11 +115,11 @@ export function DialogPrompt({
         <text fg={C.overlay2}>esc </text>
       </box>
       <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        {/* Block cursor on the first cell — same token as DialogSelect's search row */}
+        <text fg={isPlaceholder ? C.overlay2 : C.text}> {shown}</text>
+        {/* Block cursor after the text so it tracks typing */}
         <text fg={SELECT_FG} bg={SELECT_BG}>
-          {shown.slice(0, 1) || " "}
+          {" "}
         </text>
-        <text fg={draft ? C.text : C.overlay2}>{shown.slice(1)}</text>
         <box style={{ flexGrow: 1, height: 1 }} />
         <input
           ref={focusRef}

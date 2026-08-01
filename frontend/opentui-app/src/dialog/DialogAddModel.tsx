@@ -1,15 +1,8 @@
 /**
  * OpenTUI Add-model flow — OpenCode "Connect a provider" shape.
  *
- * provider (DialogSelect) → key (DialogPrompt) → discover → model (DialogSelect)
- * → optional nickname → POST /models/onboard
- *
- * Every screen is DialogSelect or DialogPrompt, so search / ↑↓ / hover / wheel /
- * block cursor / category headers / chrome all come from the shared components
- * instead of being hand-drawn here.
- *
- * Model ids are never hard-coded: presets carry provider + base URL only, and
- * ids come from POST /models/discover or from the user's own input.
+ * provider → (custom URL?) → api_key → discover → multi-select batch onboard
+ * Highlighted model becomes the active model after save.
  */
 
 import { useEffect, useState } from "react";
@@ -24,6 +17,7 @@ import {
   type DiscoveredModel,
   type ProviderPreset,
 } from "./api.ts";
+import { inferProviderFromUrl } from "./providerGroup.ts";
 
 const CUSTOM_ID = "__custom__";
 const MANUAL_MODEL_ID = "__manual_model__";
@@ -33,7 +27,6 @@ type Stage =
   | "custom_url"
   | "api_key"
   | "discovering"
-  | "model"
   | "model_multi"
   | "manual_model"
   | "nickname"
@@ -53,14 +46,14 @@ export function buildProviderOptions(
   options.push({
     id: CUSTOM_ID,
     title: "自定义服务商",
-    description: "手动填写 API URL 与模型 ID",
+    description: "手动填写 API URL；discover 后批量入库",
     category: "其他",
     value: CUSTOM_ID,
   });
   return options;
 }
 
-/** Discovered ids for preset multi-select (no manual row). */
+/** Discovered ids for multi-select (no nickname step). */
 export function buildMultiModelOptions(
   models: DiscoveredModel[],
 ): DialogSelectOption<string>[] {
@@ -73,17 +66,11 @@ export function buildMultiModelOptions(
   }));
 }
 
-/** Discovered ids become plain options; a manual-entry row stays available. */
+/** Kept for manual-fallback catalogue when discover returns unsupported. */
 export function buildModelOptions(
   models: DiscoveredModel[],
 ): DialogSelectOption<string>[] {
-  const options: DialogSelectOption<string>[] = models.map((model) => ({
-    id: model.id,
-    title: model.id,
-    description: model.owned_by || "",
-    category: "可用模型",
-    value: model.id,
-  }));
+  const options = buildMultiModelOptions(models);
   options.push({
     id: MANUAL_MODEL_ID,
     title: "手动输入模型 ID",
@@ -109,6 +96,7 @@ export function DialogAddModel({
   const [baseUrl, setBaseUrl] = useState("");
   const [urlIsCustom, setUrlIsCustom] = useState(false);
   const [apiKey, setApiKey] = useState("");
+  const [keyPromptEpoch, setKeyPromptEpoch] = useState(0);
   const [discovered, setDiscovered] = useState<DiscoveredModel[]>([]);
   const [modelId, setModelId] = useState("");
   const [error, setError] = useState("");
@@ -122,13 +110,20 @@ export function DialogAddModel({
     })();
   }, []);
 
+  const openApiKeyStage = () => {
+    setApiKey("");
+    setKeyPromptEpoch((n) => n + 1);
+    setStage("api_key");
+  };
+
   const runDiscovery = async (key: string, url: string) => {
     setStage("discovering");
     setError("");
     const result = await discoverModels({ apiKey: key, baseUrl: url });
     if (result.ok && result.models.length > 0) {
       setDiscovered(result.models);
-      setStage(urlIsCustom ? "model" : "model_multi");
+      // Preset and custom both batch-onboard after discover.
+      setStage("model_multi");
       return;
     }
     const code = result.errorCode ?? (result.ok ? "unsupported_catalogue" : "transport");
@@ -142,19 +137,30 @@ export function DialogAddModel({
       setStage("custom_url");
       return;
     }
-    setStage("api_key");
+    openApiKeyStage();
   };
 
   const saveBatch = async (selectedIds: string[], highlightedId: string) => {
     setStage("saving");
     setError("");
-    const activeModelId = selectedIds.includes(highlightedId) ? highlightedId : selectedIds[0];
+    let pid = providerId;
+    let pname = providerName;
+    if (urlIsCustom || !pid || !pname || pname === "自定义") {
+      const inferred = inferProviderFromUrl(baseUrl);
+      pid = pid && pid !== "custom" && !urlIsCustom ? pid : inferred.id;
+      pname = !urlIsCustom && providerName && providerName !== "自定义"
+        ? providerName
+        : inferred.name;
+    }
+    const activeModelId = selectedIds.includes(highlightedId)
+      ? highlightedId
+      : selectedIds[0];
     const result = await onboardModelsBatch({
       apiKey,
       baseUrl,
       modelIds: selectedIds,
-      providerId: providerId || undefined,
-      providerName: providerName || undefined,
+      providerId: pid || undefined,
+      providerName: pname || undefined,
       activeModelId,
       skipProbe: true,
     });
@@ -163,9 +169,10 @@ export function DialogAddModel({
       setStage("model_multi");
       return;
     }
+    const active = result.active || activeModelId;
     onDone(
       result.message ||
-        `已添加 ${result.added.length} 个模型，请到 /model 查看`,
+        `已添加 ${result.added.length} 个模型，当前: ${active}`,
     );
     onClose();
   };
@@ -177,7 +184,7 @@ export function DialogAddModel({
       providerModelId: modelId,
       apiKey,
       baseUrl,
-      nickname: nickname || undefined,
+      nickname: nickname || modelId,
     });
     if (result.action === "error" || result.detail) {
       setError(String(result.message || result.detail || "添加失败"));
@@ -203,8 +210,11 @@ export function DialogAddModel({
           onClose={onClose}
           onSelect={(opt) => {
             setError("");
+            setApiKey("");
             if (opt.value === CUSTOM_ID) {
               setProviderName("自定义");
+              setProviderId("custom");
+              setBaseUrl("");
               setUrlIsCustom(true);
               setStage("custom_url");
               return;
@@ -215,7 +225,7 @@ export function DialogAddModel({
             setProviderId(preset.id);
             setBaseUrl(preset.base_url);
             setUrlIsCustom(false);
-            setStage("api_key");
+            openApiKeyStage();
           }}
         />
       </box>
@@ -227,9 +237,10 @@ export function DialogAddModel({
       <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
         {error ? <DialogError text={error} /> : null}
         <DialogPrompt
+          key="custom-url"
           title="添加模型 · API URL"
           placeholder="https://api.example.com/v1"
-          initial={baseUrl}
+          initial=""
           hint="携带密钥的连接必须使用 HTTPS"
           onCancel={() => setStage("provider")}
           onSubmit={(text) => {
@@ -244,8 +255,11 @@ export function DialogAddModel({
             }
             setError("");
             setBaseUrl(trimmed);
+            const inferred = inferProviderFromUrl(trimmed);
+            setProviderId(inferred.id);
+            setProviderName(inferred.name);
             setUrlIsCustom(true);
-            setStage("api_key");
+            openApiKeyStage();
           }}
         />
       </box>
@@ -257,10 +271,11 @@ export function DialogAddModel({
       <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
         {error ? <DialogError text={error} /> : null}
         <DialogPrompt
+          key={`api-key-${keyPromptEpoch}-${providerId}`}
           title={`添加模型 · ${providerName} API Key`}
           placeholder="sk-…"
-          mask
-          hint={`回车后向 ${baseUrl} 查询可用模型；密钥仅掩码回显`}
+          initial=""
+          hint={`回车后向 ${baseUrl} 查询可用模型并批量入库`}
           onCancel={() => setStage(urlIsCustom ? "custom_url" : "provider")}
           onSubmit={(text) => {
             if (!text) {
@@ -291,38 +306,15 @@ export function DialogAddModel({
           placeholder="搜索模型"
           multi
           defaultSelectedIds={modelIds}
-          onClose={() => setStage("api_key")}
+          onClose={() => openApiKeyStage()}
           onConfirm={(selectedIds, { highlightedId }) => {
             setError("");
             if (selectedIds.length === 0) {
               setError("请至少选择一个模型");
               return;
             }
+            // Highlighted row becomes the active (/model) selection after batch.
             void saveBatch(selectedIds, highlightedId);
-          }}
-        />
-      </box>
-    );
-  }
-
-  if (stage === "model") {
-    return (
-      <box style={{ flexShrink: 0, flexDirection: "column", width: "100%" }}>
-        {error ? <DialogError text={error} /> : null}
-        <DialogSelect
-          title={`${providerName} · 选择模型`}
-          options={buildModelOptions(discovered)}
-          categoryOrder={["可用模型", "操作"]}
-          placeholder="搜索模型"
-          onClose={() => setStage("api_key")}
-          onSelect={(opt) => {
-            setError("");
-            if (opt.value === MANUAL_MODEL_ID) {
-              setStage("manual_model");
-              return;
-            }
-            setModelId(opt.value);
-            setStage("nickname");
           }}
         />
       </box>
@@ -336,8 +328,9 @@ export function DialogAddModel({
         <DialogPrompt
           title="添加模型 · 模型 ID"
           placeholder="服务商 API 期望的精确模型 ID"
+          initial=""
           hint="例如 provider 文档中的 model 字段取值"
-          onCancel={() => setStage(discovered.length > 0 ? "model" : "api_key")}
+          onCancel={() => openApiKeyStage()}
           onSubmit={(text) => {
             if (!text) {
               setError("模型 ID 不能为空");
@@ -353,7 +346,7 @@ export function DialogAddModel({
   }
 
   if (stage === "saving") {
-    return <DialogLoading text={urlIsCustom ? "正在探测连接并保存…" : "正在批量保存模型…"} />;
+    return <DialogLoading text="正在批量保存模型…" />;
   }
 
   return (
@@ -362,9 +355,10 @@ export function DialogAddModel({
       <DialogPrompt
         title="添加模型 · 昵称（可选）"
         placeholder={modelId}
+        initial=""
         hint="回车跳过则使用模型 ID；保存前会先探测连接"
-        onCancel={() => setStage(discovered.length > 0 ? "model" : "manual_model")}
-        onSubmit={(text) => void save(text)}
+        onCancel={() => setStage("manual_model")}
+        onSubmit={(text) => void save(text || modelId)}
       />
     </box>
   );

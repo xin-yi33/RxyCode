@@ -2,17 +2,19 @@
 
 > **这里有两个独立的项目。** 别把它们的文档混着读。
 >
-> **更新**：2026-08-01（新增 L10 EKO ↔ Skill 双向映射；森林改为三层 tier）
+> **更新**：2026-08-01（**Composer 主写全部 · Grok 辅助前端多模态**；新增 L10；森林三层 tier）
 
 ---
 
 ## 先读这个
 
-不管你要做哪个项目的哪张卡，**先读** [`COMPOSER-2.5-PLAYBOOK.md`](./COMPOSER-2.5-PLAYBOOK.md)。
+1. **[`MODEL-ASSIGNMENT.md`](./MODEL-ASSIGNMENT.md)** —— **谁主写、谁辅助**（权威）
+2. 按角色读纪律：
+   - 主写（后端 + 前端都归它）→ [`COMPOSER-2.5-PLAYBOOK.md`](./COMPOSER-2.5-PLAYBOOK.md)
+   - 辅助（前端多模态环节）→ [`GROK-FRONTEND-PLAYBOOK.md`](./GROK-FRONTEND-PLAYBOOK.md)
+3. **排期与双开** → [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md)
 
-它规定了怎么干活：一次一张卡、用 Grep 锚点定位、只碰白名单文件、不做设计决策、卡住就停下来问。所有施工文档都默认你已经读过它。
-
-**想知道"下一张做哪个卡、另一个窗口能同时跑什么"** → [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md)。它把两个项目的 90 张卡排成双窗口并行的顺序，标出了每道门、每个文件冲突点和决策点。
+**一句话分工：Composer 主写全部代码（Python / schema / appserver / Electron / React / TS UI）；Grok 只在写前端用到多模态（视觉）时才辅助。**
 
 ---
 
@@ -56,8 +58,10 @@
 ```
 docs/plans/opus5-plan/
 ├── README.md                        ← 你在这里
-├── COMPOSER-2.5-PLAYBOOK.md         ← 干活的纪律,先读这个
-├── ENGINEERING-TIMELINE.md          ← 双窗口并行的执行顺序、门与冲突表
+├── MODEL-ASSIGNMENT.md              ← 模型分工权威（Composer 主写全部 / Grok 辅助前端多模态）
+├── COMPOSER-2.5-PLAYBOOK.md         ← 主写纪律（后端 + 前端）
+├── GROK-FRONTEND-PLAYBOOK.md        ← 辅助纪律（前端多模态环节）
+├── ENGINEERING-TIMELINE.md          ← 双窗口并行顺序、门与冲突表
 │
 ├── rxycode/                         ← RxyCode 的施工文档
 │   ├── README.md                       路线索引与排期
@@ -94,7 +98,9 @@ docs/plans/opus5-plan/
 
 | 你要做的事 | 去哪 |
 |---|---|
-| 干活之前先搞清纪律 | [`COMPOSER-2.5-PLAYBOOK.md`](./COMPOSER-2.5-PLAYBOOK.md) |
+| 干活之前先搞清谁主写、谁辅助 | [`MODEL-ASSIGNMENT.md`](./MODEL-ASSIGNMENT.md) |
+| 主写纪律（后端卡 + 前端卡） | [`COMPOSER-2.5-PLAYBOOK.md`](./COMPOSER-2.5-PLAYBOOK.md) |
+| 辅助纪律（前端多模态环节） | [`GROK-FRONTEND-PLAYBOOK.md`](./GROK-FRONTEND-PLAYBOOK.md) |
 | **搞清下一张做什么、两个窗口怎么不打架** | [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md) |
 | RxyCode 的任何开发 | [`rxycode/README.md`](./rxycode/README.md) |
 | LinkAgent 的任何开发 | [`linkagent/README.md`](./linkagent/README.md) |
@@ -108,7 +114,7 @@ docs/plans/opus5-plan/
 
 ## 两条路线能并行吗
 
-> **完整的周级排期与两人分工在** [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md)**。下面只讲耦合点。**
+> **完整的周级排期与双窗口分工在** [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md)**。下面只讲耦合点。**
 
 **可以，而且推荐并行。** 两个仓库、两套代码，物理隔离。
 

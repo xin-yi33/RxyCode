@@ -11,8 +11,8 @@ import {
 import { cancelActiveRequest, fetchStatus, respondApproval, sendChatMessage, sendCommand } from "./chatApi.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
-import { filterCommands, AVAILABLE_COMMANDS, type Command } from "./commands.ts";
-import { formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
+import { filterCommands, resolveSlashSubmit, AVAILABLE_COMMANDS, type Command } from "./commands.ts";
+import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
 import { buildStatusSegments, formatStatusBarText } from "./statusBar.ts";
 import {
   createStickyState,
@@ -776,6 +776,20 @@ export default function App() {
       void fetchStatus(setStatus);
       return;
     }
+    if (
+      slashSuggestions.length > 0 &&
+      (key.name === "up" || key.name === "down") &&
+      !key.ctrl &&
+      !key.meta
+    ) {
+      key.preventDefault();
+      setPaletteIdx((prev) => {
+        const n = slashSuggestions.length;
+        if (key.name === "up") return (prev - 1 + n) % n;
+        return (prev + 1) % n;
+      });
+      return;
+    }
     if (key.ctrl && (key.name === "c" || key.name === "C")) {
       // OpenCode parity: copy → cancel → clear input → double Ctrl+C to quit.
       // Never exit on a single Ctrl+C (Windows users press it to copy).
@@ -821,7 +835,8 @@ export default function App() {
       const text = textareaRef.current?.plainText ?? inputValue;
       if (text.trim() && !isStreaming && !text.includes("\n")) {
         key.preventDefault();
-        void submitText(text);
+        const resolved = resolveSlashSubmit(text, slashSuggestions, paletteIdx);
+        void submitText(resolved);
       }
       return;
     }
@@ -882,7 +897,7 @@ export default function App() {
       <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: 1 }}>
         <text selectable>
           <span fg={BRAND_LIGHT} attributes={1}>
-            {"  "}RxyCode v1.2.2
+            {"  "}RxyCode v{APP_VERSION}
           </span>
           <span fg={BRAND_MUTED}>{" · "}</span>
           <span fg={modeColor} attributes={1}>
@@ -949,7 +964,7 @@ export default function App() {
           }}
         >
           <text fg={C.yellow} attributes={1}>
-            {"  命令建议 (Tab 补全)"}
+            {"  命令建议 (↑↓ 选择 · 回车执行 · Tab 补全)"}
           </text>
           {slashSuggestions.map((cmd, i) => (
             <box
@@ -1038,7 +1053,7 @@ export default function App() {
                   }}
                   onSubmit={() => {
                     const text = textareaRef.current?.plainText ?? inputValue;
-                    void submitText(text);
+                    void submitText(resolveSlashSubmit(text, slashSuggestions, paletteIdx));
                   }}
                   style={{ flexGrow: 1, height: Math.max(inputHeight, numInputLines(inputValue, inputWrapW)), backgroundColor: C.bg }}
                 />
@@ -1056,7 +1071,7 @@ export default function App() {
                 }}
                 onSubmit={() => {
                   const text = textareaRef.current?.plainText ?? inputValue;
-                  void submitText(text);
+                  void submitText(resolveSlashSubmit(text, slashSuggestions, paletteIdx));
                 }}
                 style={{ flexGrow: 1, height: inputHeight, backgroundColor: C.bg }}
               />

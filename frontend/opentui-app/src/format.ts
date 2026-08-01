@@ -17,8 +17,10 @@ export function formatMessageLine(msg: ChatMessage): string {
   }
 }
 
+export const APP_VERSION = "1.2.3";
+
 export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolean): string {
-  const base = `RxyCode v1.2.3 · ${mode} · ${model}`;
+  const base = `RxyCode v${APP_VERSION} · ${mode} · ${model}`;
   return thinkingLive ? `${base} · 思考中` : base;
 }
 

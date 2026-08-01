@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
-import { filterCommands, isSlashCommand } from "./commands.ts";
+import { filterCommands, isSlashCommand, resolveSlashSubmit } from "./commands.ts";
 
 describe("classifyInput", () => {
   test("hello is chat", () => {
@@ -39,6 +39,39 @@ describe("filterCommands", () => {
   test("/mo matches model commands", () => {
     const names = filterCommands("/mo").map((c) => c.name);
     expect(names.some((n) => n.includes("model"))).toBe(true);
+  });
+});
+
+describe("resolveSlashSubmit", () => {
+  test("Enter on partial prefix runs highlighted suggestion", () => {
+    const suggestions = filterCommands("/addmo");
+    expect(suggestions.some((c) => c.name === "/addmodel")).toBe(true);
+    const idx = suggestions.findIndex((c) => c.name === "/addmodel");
+    expect(resolveSlashSubmit("/addmo", suggestions, idx)).toBe("/addmodel");
+  });
+
+  test("Enter uses currently highlighted item among /addm matches", () => {
+    const suggestions = filterCommands("/addm");
+    const idx = suggestions.findIndex((c) => c.name === "/addmodel");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(resolveSlashSubmit("/addm", suggestions, idx)).toBe("/addmodel");
+  });
+
+  test("preserves args after expanding prefix", () => {
+    const suggestions = filterCommands("/mo");
+    const model = suggestions.find((c) => c.name === "/model");
+    expect(model).toBeDefined();
+    const idx = suggestions.indexOf(model!);
+    expect(resolveSlashSubmit("/mo glm-5", suggestions, idx)).toBe("/model glm-5");
+  });
+
+  test("exact command name is not rewritten to a longer sibling", () => {
+    const suggestions = filterCommands("/model");
+    expect(resolveSlashSubmit("/model", suggestions, 0)).toBe("/model");
+  });
+
+  test("non-slash text is unchanged", () => {
+    expect(resolveSlashSubmit("hello", filterCommands("/a"), 0)).toBe("hello");
   });
 });
 

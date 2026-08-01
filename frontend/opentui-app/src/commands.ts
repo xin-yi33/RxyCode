@@ -81,3 +81,32 @@ export function filterCommands(query: string, limit = 8): Command[] {
   scored.sort((a, b) => b.score - a.score || a.cmd.name.localeCompare(b.cmd.name));
   return scored.slice(0, limit).map((x) => x.cmd);
 }
+
+/**
+ * Expand a partial slash token to the highlighted suggestion on Enter.
+ * e.g. "/addm" + highlight "/addmodel" → "/addmodel"
+ * Exact command names are left alone; trailing args are preserved.
+ */
+export function resolveSlashSubmit(
+  raw: string,
+  suggestions: Command[],
+  selectedIdx = 0,
+): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("/") || suggestions.length === 0) return raw;
+
+  const firstSpace = trimmed.search(/\s/);
+  const typedName = (firstSpace < 0 ? trimmed : trimmed.slice(0, firstSpace)).toLowerCase();
+  const args = firstSpace < 0 ? "" : trimmed.slice(firstSpace).trim();
+
+  const exact = AVAILABLE_COMMANDS.find((c) => c.name.toLowerCase() === typedName);
+  if (exact) {
+    return args ? `${exact.name} ${args}` : exact.name;
+  }
+
+  const idx = Math.min(Math.max(0, selectedIdx), suggestions.length - 1);
+  const highlighted = suggestions[idx];
+  if (!highlighted) return raw;
+  if (!highlighted.name.toLowerCase().startsWith(typedName)) return raw;
+  return args ? `${highlighted.name} ${args}` : highlighted.name;
+}
