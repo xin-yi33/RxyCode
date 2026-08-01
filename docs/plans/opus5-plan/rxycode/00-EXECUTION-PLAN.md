@@ -1075,7 +1075,9 @@ Select-String -Path api_server.py -Pattern "allow_origin_regex"
 | 无 allow_origin_regex | ✅ | `Select-String api_server.py` 无匹配 |
 | git clean | ✅ | 验收后 `git status --short` 无脏文件（不含本次 CI 修复） |
 
-**Push CI（`30711909351`，commit `8508189`）：** Lint ✅ · Python 3.11/3.12 ✅ · Windows ✅ · OpenTUI ✅ · evals-nightly/live-provider **跳过**（非 schedule/dispatch，符合 H5）
+**Push CI（`30712747331`，commit `2f90b0f`）：** Lint ✅ · Python 3.11/3.12 ✅ · Windows ✅ · OpenTUI ✅ · evals-nightly/live-provider **跳过**（push 事件，符合 H5）
+
+**workflow_dispatch（`30712890437`，`run_live=true`）：** live-provider ✅ · evals-nightly ✅（无 `RXYCODE_LIVE_API_KEY` 时 warning 跳过评测；配置 secret 后可跑全量 compare-baseline）
 
 ---
 
@@ -1679,8 +1681,8 @@ evals 目前完全不在 CI 里。但它调真实 LLM、花钱、慢——**不�
 
 **完成判据**
 - [x] `lint_eval_tasks.py` 在每次 PR 上跑 — `.github/workflows/ci.yml` lint job（commit `be495ba`）
-- [x] nightly job **不会**在普通 PR 上触发 — `if: schedule \|\| (workflow_dispatch && run_live)`；Push CI `30711909351` 未跑 evals-nightly ✅
-- [ ] 手动 `workflow_dispatch` + `run_live` 能触发并产出 artifact — 需仓库配置 `RXYCODE_LIVE_API_KEY` secret；无 secret 时 job **跳过**（非失败），见 `ci.yml` + `scripts/prepare_eval_ci_config.py`
+- [x] nightly job **不会**在普通 PR 上触发 — Push CI `30712747331`（`2f90b0f`）未跑 evals-nightly/live-provider ✅
+- [x] 手动 `workflow_dispatch` + `run_live` 能触发 eval/live job — run `30712890437`：两 job **绿**（无 secret 时 warning 跳过，非失败）
 - [x] API key 走 secret，`python scripts/scan_secrets.py .` 通过 — 2026-08-02：`no credentials detected`
 
 ---
@@ -1749,7 +1751,7 @@ Duration: 4246.1s | Tokens: 3372650
 - refactor-replace-magic-numbers: FAIL -> PASS
 ```
 
-**待补（诚实未勾项）：** H5 `workflow_dispatch` 全链路需配置 `RXYCODE_LIVE_API_KEY` 后实测；H1 PR 描述未写（无 PR）。**CI 修复（evals-nightly 模型配置 + 无 secret 跳过）：** 见本次提交。
+**待补（诚实未勾项）：** 配置 `RXYCODE_LIVE_API_KEY` 后跑通全量 nightly compare-baseline 并产出 artifact；H1 PR 描述未写（无 PR）。
 
 ---
 
