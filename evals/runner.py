@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from .tasks import EvalTask, load_tasks, load_task, TASKS_DIR, TaskSchemaError
 from .judge import judge_task, JudgeScore
+from .backends import EvalBackend, RawLLMBackend, build_backend
 
 #: Directory for persisted run results.
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -56,6 +57,7 @@ class TaskResult:
     # Extra fields (not in the minimal spec) used by judge / debugging.
     agent_answer: str = ""
     check_details: list[dict] = field(default_factory=list)
+    tools_used: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +70,7 @@ class TaskResult:
             "error": self.error,
             "agent_answer": self.agent_answer[:2000],
             "check_details": self.check_details,
+            "tools_used": self.tools_used,
         }
 
 
@@ -77,6 +80,7 @@ class SuiteReport:
 
     results: list[TaskResult] = field(default_factory=list)
     summary: dict = field(default_factory=dict)
+    backend: str = "agent"
 
     def compute_summary(self) -> dict:
         total = len(self.results)
@@ -140,6 +144,7 @@ class SuiteReport:
         return {
             "results": [r.to_dict() for r in self.results],
             "summary": self.compute_summary(),
+            "backend": self.backend,
         }
 
 
@@ -235,9 +240,11 @@ def _run_single_check(
     *,
     workdir: Optional[Path],
     agent_answer: str,
+    tools_used: Optional[list[str]] = None,
 ) -> tuple[bool, str]:
     """Execute one check.  Returns ``(passed, message)``."""
     ct = check.type
+    used = tools_used or []
 
     if ct == "file_exists":
         if not workdir:
@@ -290,6 +297,18 @@ def _run_single_check(
         ok = (check.pattern or "") in (agent_answer or "")
         return ok, "" if ok else f"pattern {check.pattern!r} not in agent answer"
 
+    if ct == "tool_used":
+        tool = (check.tool or "").casefold()
+        normalized = [t.casefold() for t in used]
+        ok = tool in normalized
+        return ok, "" if ok else f"tool {check.tool!r} was not used (used: {used})"
+
+    if ct == "tool_not_used":
+        tool = (check.tool or "").casefold()
+        normalized = [t.casefold() for t in used]
+        ok = tool not in normalized
+        return ok, "" if ok else f"tool {check.tool!r} was used but should not have been"
+
     return False, f"unknown check type: {ct}"
 
 
@@ -298,12 +317,18 @@ def run_checks(
     *,
     workdir: Optional[Path] = None,
     agent_answer: str = "",
+    tools_used: Optional[list[str]] = None,
 ) -> tuple[bool, list[dict]]:
     """Run all checks for *task*.  Returns ``(all_passed, details)``."""
     details: list[dict] = []
     all_passed = True
     for check in task.checks:
-        ok, msg = _run_single_check(check, workdir=workdir, agent_answer=agent_answer)
+        ok, msg = _run_single_check(
+            check,
+            workdir=workdir,
+            agent_answer=agent_answer,
+            tools_used=tools_used,
+        )
         details.append({"type": check.type, "passed": ok, "message": msg})
         if not ok:
             all_passed = False
@@ -382,23 +407,22 @@ def _extract_token_usage(llm, response) -> dict:
 
 async def run_task(
     task: EvalTask,
-    llm,
+    backend: EvalBackend,
     workdir: Optional[Path] = None,
 ) -> TaskResult:
-    """Run a single eval task against *llm*.
+    """Run a single eval task against *backend*.
 
     Steps:
     1. Build the prompt (include existing-file context for workdir tasks).
-    2. Call ``llm.ainvoke()``.
-    3. Extract code blocks from the response and write them to *workdir*.
+    2. Call the backend (AgentV2 pipeline or raw LLM).
+    3. For raw-llm only: extract code blocks and write them to *workdir*.
     4. Run all checks.
     5. Return a :class:`TaskResult`.
     """
-    from langchain_core.messages import HumanMessage
-
     start = time.monotonic()
     error = ""
     agent_answer = ""
+    tools_used: list[str] = []
     token_usage: dict[str, int] = {"input": 0, "output": 0, "total": 0}
     check_details: list[dict] = []
 
@@ -411,12 +435,19 @@ async def run_task(
             )
             prompt = f"{task.prompt}\n\nExisting files in your workdir:\n{file_ctx}"
 
-        resp = await llm.ainvoke([HumanMessage(content=prompt)])
-        agent_answer = getattr(resp, "content", "") or ""
-        token_usage = _extract_token_usage(llm, resp)
+        result = await backend.run(prompt, workdir)
+        agent_answer = result.answer
+        token_usage = result.token_usage
+        tools_used = list(result.tools_used)
+        if result.error:
+            error = result.error
 
-        # Apply code blocks to workdir.
-        if task.needs_workdir and workdir:
+        if (
+            isinstance(backend, RawLLMBackend)
+            and task.needs_workdir
+            and workdir
+            and not error
+        ):
             apply_code_blocks(agent_answer, workdir)
 
     except Exception as e:
@@ -429,7 +460,10 @@ async def run_task(
     if not error:
         checks_workdir = workdir if task.needs_workdir else None
         passed, check_details = run_checks(
-            task, workdir=checks_workdir, agent_answer=agent_answer,
+            task,
+            workdir=checks_workdir,
+            agent_answer=agent_answer,
+            tools_used=tools_used,
         )
         if not passed:
             failed_msgs = [
@@ -449,23 +483,23 @@ async def run_task(
         error=error,
         agent_answer=agent_answer,
         check_details=check_details,
+        tools_used=tools_used,
     )
 
 
 async def run_suite(
     tasks: list[EvalTask],
-    llm,
+    backend: EvalBackend,
+    *,
     judge_llm=None,
     tag: Optional[str] = None,
+    backend_name: str = "agent",
+    max_tasks: Optional[int] = None,
 ) -> SuiteReport:
-    """Run the full eval suite **serially** (to avoid API rate limits).
-
-    For each task:
-    1. Create a workdir if needed.
-    2. Call :func:`run_task`.
-    3. If *judge_llm* is provided, call :func:`judge_task` and attach the score.
-    """
-    report = SuiteReport()
+    """Run the full eval suite **serially** (to avoid API rate limits)."""
+    report = SuiteReport(backend=backend_name)
+    if max_tasks is not None and max_tasks > 0:
+        tasks = tasks[:max_tasks]
 
     with tempfile.TemporaryDirectory(prefix="rxycode-eval-") as tmpdir:
         base = Path(tmpdir)
@@ -481,7 +515,7 @@ async def run_suite(
             if task.needs_workdir:
                 workdir = setup_workdir(task, base)
 
-            result = await run_task(task, llm, workdir)
+            result = await run_task(task, backend, workdir)
 
             # LLM-as-judge scoring.
             if judge_llm is not None:
@@ -582,27 +616,39 @@ def _load_tasks_resilient(
 # ---------------------------------------------------------------------------
 
 
-def _build_llm():
-    """Build a ChatOpenAI LLM from env / config for the CLI runner."""
+def _build_llm(model_name: Optional[str] = None):
+    """Build a ChatOpenAI LLM from project config for the CLI runner."""
     from langchain_openai import ChatOpenAI
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY not set")
+    from RxyCode.RxyCode1_1_0.config.settings import (
+        get_active_model_config,
+        get_model_config,
+        load_config,
+    )
 
-    model = os.environ.get("EVAL_MODEL", "gpt-4o")
-    base_url = os.environ.get("EVAL_BASE_URL", None)
+    cfg = load_config()
+    if model_name and model_name in cfg.get("models", {}):
+        model_config = get_model_config(model_name, cfg)
+    else:
+        model_config = get_active_model_config(cfg)
+
+    api_key = model_config.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise ValueError(
+            "No API key configured. Set api_key in config.yaml or OPENAI_API_KEY."
+        )
 
     kwargs: dict[str, Any] = {
-        "model": model,
+        "model": model_config.get("model_name", "gpt-4o"),
         "api_key": api_key,
-        "temperature": 0.0,
+        "temperature": float(model_config.get("temperature", 0.0) or 0.0),
         "max_retries": 3,
     }
+    base_url = model_config.get("base_url")
     if base_url:
         kwargs["base_url"] = base_url
 
-    return ChatOpenAI(**kwargs)
+    return ChatOpenAI(**kwargs), model_config.get("model_name", "unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -610,11 +656,41 @@ def _build_llm():
 # ---------------------------------------------------------------------------
 
 
+def compare_baseline_pass_rate(current: SuiteReport, baseline_path: Path) -> tuple[str, bool]:
+    """Return markdown diff and whether pass rate regressed."""
+    from .report import diff_baseline
+
+    name = baseline_path.stem
+    # Temporarily save/load via report helpers when path is under baselines dir.
+    baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
+    base_rate = baseline_data.get("summary", {}).get("pass_rate", 0.0)
+    cur_rate = current.compute_summary().get("pass_rate", 0.0)
+    regressed = cur_rate < base_rate
+
+    if baseline_path.parent.name == "baselines" and name:
+        diff_text = diff_baseline(current, name)
+    else:
+        diff_text = (
+            f"# Baseline Diff: {baseline_path.name}\n\n"
+            f"Baseline pass rate: {base_rate:.1%}\n"
+            f"Current pass rate: {cur_rate:.1%}\n"
+            f"Delta: {cur_rate - base_rate:+.1%}\n"
+        )
+    return diff_text, regressed
+
+
 def main() -> int:
     """CLI entry point: ``python -m evals.run``."""
     parser = argparse.ArgumentParser(
         prog="python -m evals.run",
         description="Run RxyCode evaluation suite against eval tasks.",
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="run",
+        choices=["run"],
+        help="Subcommand (only 'run' is supported)",
     )
     parser.add_argument(
         "--tag", type=str, default=None,
@@ -635,6 +711,41 @@ def main() -> int:
     parser.add_argument(
         "--dry", action="store_true",
         help="Dry run: validate task setup without calling LLM",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["agent", "raw-llm"],
+        default="agent",
+        help=(
+            "agent  : full AgentV2 pipeline (default)\n"
+            "raw-llm: direct LLM baseline"
+        ),
+    )
+    parser.add_argument(
+        "--max-tasks",
+        type=int,
+        default=None,
+        help="Run at most N tasks (useful for smoke tests)",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Save results as evals/baselines/{NAME}.json",
+    )
+    parser.add_argument(
+        "--compare-baseline",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Compare against a baseline JSON; exit non-zero on pass-rate regression",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Override model name from config.yaml",
     )
     args = parser.parse_args()
 
@@ -667,30 +778,50 @@ def main() -> int:
             )
         return 0
 
-    # Build LLM.
+    llm = None
+    model_label = args.model or "active"
     try:
-        llm = _build_llm()
+        if args.backend == "raw-llm" or args.judge:
+            llm, model_label = _build_llm(model_name=args.model)
     except Exception as e:
         print(f"Error building LLM: {e}", file=sys.stderr)
         print(
-            "Hint: set OPENAI_API_KEY or configure evals in config.yaml",
+            "Hint: configure models in config.yaml or set OPENAI_API_KEY",
             file=sys.stderr,
         )
+        return 1
+
+    try:
+        backend = build_backend(
+            args.backend,
+            llm=llm,
+            model_name=args.model,
+        )
+    except Exception as e:
+        print(f"Error building backend: {e}", file=sys.stderr)
         return 1
 
     judge_llm = None
     if args.judge:
         try:
-            judge_llm = _build_llm()
+            judge_llm, _ = _build_llm(model_name=args.model)
         except Exception as e:
             print(f"Warning: could not build judge LLM: {e}", file=sys.stderr)
 
-    # Run suite.
-    report = asyncio.run(run_suite(tasks, llm, judge_llm=judge_llm, tag=args.tag))
+    report = asyncio.run(
+        run_suite(
+            tasks,
+            backend,
+            judge_llm=judge_llm,
+            tag=args.tag,
+            backend_name=args.backend,
+            max_tasks=args.max_tasks,
+        )
+    )
 
-    # Print summary.
     s = report.summary
     print(f"\n{'=' * 60}")
+    print(f"Backend: {args.backend} | Model: {model_label}")
     print(
         f"Eval suite complete: {s['passed']}/{s['total_tasks']} passed "
         f"({s['pass_rate']:.1%})"
@@ -709,7 +840,26 @@ def main() -> int:
     if args.tag:
         print(f"\nResults saved to: {RESULTS_DIR / f'{args.tag}.json'}")
 
-    return 0 if s["failed"] == 0 else 1
+    if args.save_baseline:
+        from .report import save_baseline
+
+        path = save_baseline(report, args.save_baseline)
+        print(f"\nBaseline saved to: {path}")
+
+    exit_code = 0 if s["failed"] == 0 else 1
+
+    if args.compare_baseline:
+        baseline_path = Path(args.compare_baseline)
+        if not baseline_path.is_file():
+            print(f"Baseline not found: {baseline_path}", file=sys.stderr)
+            return 1
+        diff_text, regressed = compare_baseline_pass_rate(report, baseline_path)
+        print(f"\n{diff_text}")
+        if regressed:
+            print("\nPass rate regressed vs baseline.", file=sys.stderr)
+            exit_code = 2
+
+    return exit_code
 
 
 if __name__ == "__main__":

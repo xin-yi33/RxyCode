@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
+from RxyCode.RxyCode1_1_0.evals.backends import RawLLMBackend
 from RxyCode.RxyCode1_1_0.evals.runner import (
     TaskResult,
     SuiteReport,
@@ -66,6 +67,10 @@ def _make_mock_llm(response_text: str, usage_metadata=None):
         mock_resp.usage_metadata = usage_metadata
     mock_llm.ainvoke = AsyncMock(return_value=mock_resp)
     return mock_llm
+
+
+def _raw_backend(mock_llm):
+    return RawLLMBackend(mock_llm)
 
 
 def _make_mock_judge_llm(score_json: str):
@@ -433,6 +438,39 @@ class TestRunChecks:
         passed, _ = run_checks(task, workdir=None, agent_answer="Nothing relevant here.")
         assert passed is False
 
+    def test_tool_used_pass(self):
+        task = EvalTask(
+            id="t", category="readcode", prompt="x",
+            checks=[Check(type="tool_used", tool="read")],
+        )
+        passed, _ = run_checks(task, tools_used=["read", "grep"])
+        assert passed is True
+
+    def test_tool_used_fail(self):
+        task = EvalTask(
+            id="t", category="readcode", prompt="x",
+            checks=[Check(type="tool_used", tool="read")],
+        )
+        passed, details = run_checks(task, tools_used=[])
+        assert passed is False
+        assert "read" in details[0]["message"]
+
+    def test_tool_not_used_pass(self):
+        task = EvalTask(
+            id="t", category="readcode", prompt="x",
+            checks=[Check(type="tool_not_used", tool="bash")],
+        )
+        passed, _ = run_checks(task, tools_used=["read"])
+        assert passed is True
+
+    def test_tool_not_used_fail(self):
+        task = EvalTask(
+            id="t", category="readcode", prompt="x",
+            checks=[Check(type="tool_not_used", tool="bash")],
+        )
+        passed, _ = run_checks(task, tools_used=["bash"])
+        assert passed is False
+
     def test_command_succeeds_pass(self, tmp_path):
         (tmp_path / "hello.py").write_text("print('hello')")
         task = EvalTask(
@@ -572,7 +610,7 @@ class TestRunTask:
         mock_llm = _make_mock_llm(
             "The pipeline has goal_planner, decomposer, executor, validator nodes."
         )
-        result = asyncio.run(run_task(task, mock_llm, workdir=None))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=None))
         assert result.passed is True
         assert result.error == ""
         assert "goal_planner" in result.agent_answer
@@ -581,7 +619,7 @@ class TestRunTask:
         """A readcode task whose mock answer is missing required keywords."""
         task = _readcode_task()
         mock_llm = _make_mock_llm("I don't know the answer.")
-        result = asyncio.run(run_task(task, mock_llm, workdir=None))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=None))
         assert result.passed is False
         assert result.error != ""
 
@@ -598,7 +636,7 @@ class TestRunTask:
             "    return total\n"
             "```\n"
         )
-        result = asyncio.run(run_task(task, mock_llm, workdir=wd))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=wd))
         assert result.passed is True
         # The code block should have been written to the workdir.
         content = (wd / "calc.py").read_text()
@@ -617,14 +655,14 @@ class TestRunTask:
             "    return total\n"
             "```\n"
         )
-        result = asyncio.run(run_task(task, mock_llm, workdir=wd))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=wd))
         assert result.passed is False
         assert "n + 1" not in (wd / "calc.py").read_text()
 
     def test_task_records_duration(self):
         task = _readcode_task()
         mock_llm = _make_mock_llm("goal_planner executor validator")
-        result = asyncio.run(run_task(task, mock_llm, workdir=None))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=None))
         assert result.duration_s >= 0.0
 
     def test_task_records_token_usage(self):
@@ -633,7 +671,7 @@ class TestRunTask:
             "goal_planner executor validator",
             usage_metadata={"input_tokens": 50, "output_tokens": 30},
         )
-        result = asyncio.run(run_task(task, mock_llm, workdir=None))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=None))
         assert result.token_usage["input"] == 50
         assert result.token_usage["output"] == 30
         assert result.token_usage["total"] == 80
@@ -642,7 +680,7 @@ class TestRunTask:
         task = _readcode_task()
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(side_effect=RuntimeError("API down"))
-        result = asyncio.run(run_task(task, mock_llm, workdir=None))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=None))
         assert result.passed is False
         assert "RuntimeError" in result.error
         assert "API down" in result.error
@@ -650,7 +688,7 @@ class TestRunTask:
     def test_task_check_details_populated(self):
         task = _readcode_task()
         mock_llm = _make_mock_llm("goal_planner executor validator")
-        result = asyncio.run(run_task(task, mock_llm, workdir=None))
+        result = asyncio.run(run_task(task, _raw_backend(mock_llm), workdir=None))
         assert len(result.check_details) == 3
         for d in result.check_details:
             assert d["passed"] is True
@@ -699,7 +737,7 @@ class TestRunSuite:
 
         mock_llm.ainvoke = mock_ainvoke
 
-        report = asyncio.run(run_suite(tasks, mock_llm))
+        report = asyncio.run(run_suite(tasks, _raw_backend(mock_llm)))
         assert len(report.results) == 2
         assert report.results[0].task_id == "test-readcode-pipeline"
         assert report.results[1].task_id == "test-bugfix-offbyone"
@@ -709,7 +747,7 @@ class TestRunSuite:
     def test_summary_computed(self):
         tasks = [_readcode_task()]
         mock_llm = _make_mock_llm("goal_planner executor validator")
-        report = asyncio.run(run_suite(tasks, mock_llm))
+        report = asyncio.run(run_suite(tasks, _raw_backend(mock_llm)))
         s = report.summary
         assert s["total_tasks"] == 1
         assert s["passed"] == 1
@@ -725,7 +763,7 @@ class TestRunSuite:
         mock_judge = _make_mock_judge_llm(judge_json)
 
         report = asyncio.run(
-            run_suite(tasks, mock_llm, judge_llm=mock_judge)
+            run_suite(tasks, _raw_backend(mock_llm), judge_llm=mock_judge)
         )
         r = report.results[0]
         assert r.judge_score is not None
@@ -738,7 +776,7 @@ class TestRunSuite:
         tasks = [_readcode_task()]
         mock_llm = _make_mock_llm("goal_planner executor validator")
         asyncio.run(
-            run_suite(tasks, mock_llm, tag="test-run-001")
+            run_suite(tasks, _raw_backend(mock_llm), tag="test-run-001")
         )
         result_file = tmp_path / "test-run-001.json"
         assert result_file.is_file()
@@ -747,7 +785,7 @@ class TestRunSuite:
         assert saved["results"][0]["task_id"] == "test-readcode-pipeline"
 
     def test_empty_tasks_list(self):
-        report = asyncio.run(run_suite([], MagicMock()))
+        report = asyncio.run(run_suite([], _raw_backend(MagicMock())))
         s = report.summary
         assert s["total_tasks"] == 0
         assert s["pass_rate"] == 0.0
@@ -760,7 +798,7 @@ class TestRunSuite:
         mock_judge.ainvoke = AsyncMock(side_effect=RuntimeError("judge down"))
 
         report = asyncio.run(
-            run_suite(tasks, mock_llm, judge_llm=mock_judge)
+            run_suite(tasks, _raw_backend(mock_llm), judge_llm=mock_judge)
         )
         r = report.results[0]
         assert r.judge_score is not None
@@ -780,7 +818,7 @@ class TestRunSuite:
         )
         mock_llm = _make_mock_llm(bugfix_answer)
 
-        report = asyncio.run(run_suite([task], mock_llm))
+        report = asyncio.run(run_suite([task], _raw_backend(mock_llm)))
         assert report.results[0].passed is True
 
 
