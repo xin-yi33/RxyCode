@@ -656,6 +656,73 @@ def _build_llm(model_name: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 
+def _summary_row(label: str, report: SuiteReport) -> dict[str, str]:
+    s = report.compute_summary()
+    total = max(s.get("total_tasks", 0), 1)
+    return {
+        "backend": label,
+        "pass_rate": f"{s['pass_rate']:.0%} ({s['passed']}/{s['total_tasks']})",
+        "avg_tokens": f"{s['total_tokens'] // total:,}",
+        "avg_duration": f"{s['total_duration_s'] / total:.1f}s",
+    }
+
+
+def format_backend_comparison_table(
+    agent_report: SuiteReport,
+    raw_report: SuiteReport,
+) -> str:
+    """Render the H2 dual-backend scorecard from two suite reports."""
+    rows = [
+        _summary_row("raw-llm", raw_report),
+        _summary_row("agent", agent_report),
+    ]
+    agent_rate = agent_report.compute_summary().get("pass_rate", 0.0)
+    raw_rate = raw_report.compute_summary().get("pass_rate", 0.0)
+    delta_pp = (agent_rate - raw_rate) * 100
+
+    lines = [
+        "Backend comparison (agent vs raw-llm):",
+        "",
+        f"{'Backend':<12} {'Pass rate':<18} {'Avg tokens':<12} {'Avg duration':<12}",
+        f"{'-' * 12} {'-' * 18} {'-' * 12} {'-' * 12}",
+    ]
+    for row in rows:
+        lines.append(
+            f"{row['backend']:<12} {row['pass_rate']:<18} "
+            f"{row['avg_tokens']:<12} {row['avg_duration']:<12}"
+        )
+    sign = "+" if delta_pp >= 0 else ""
+    lines.append("")
+    lines.append(
+        f"Delta: agent {sign}{delta_pp:.0f}pp vs raw-llm "
+        f"(RxyCode incremental value over bare model)"
+    )
+    return "\n".join(lines)
+
+
+def load_report_from_baseline(path: Path) -> SuiteReport:
+    """Rebuild a SuiteReport from a saved baseline JSON file."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    report = SuiteReport(backend=str(data.get("backend", "")))
+    for item in data.get("results", []):
+        report.results.append(
+            TaskResult(
+                task_id=item["task_id"],
+                category=item.get("category", ""),
+                passed=bool(item.get("passed")),
+                duration_s=float(item.get("duration_s", 0.0) or 0.0),
+                token_usage=dict(item.get("token_usage") or {}),
+                judge_score=item.get("judge_score"),
+                error=str(item.get("error") or ""),
+                agent_answer=str(item.get("agent_answer") or ""),
+                check_details=list(item.get("check_details") or []),
+                tools_used=list(item.get("tools_used") or []),
+            )
+        )
+    report.compute_summary()
+    return report
+
+
 def compare_baseline_pass_rate(current: SuiteReport, baseline_path: Path) -> tuple[str, bool]:
     """Return markdown diff and whether pass rate regressed."""
     from .report import diff_baseline
@@ -709,7 +776,9 @@ def main() -> int:
         help="Enable LLM-as-judge scoring (uses the same model unless EVAL_JUDGE_MODEL is set)",
     )
     parser.add_argument(
-        "--dry", action="store_true",
+        "--dry", "--dry-run",
+        action="store_true",
+        dest="dry",
         help="Dry run: validate task setup without calling LLM",
     )
     parser.add_argument(
@@ -740,6 +809,14 @@ def main() -> int:
         default=None,
         metavar="PATH",
         help="Compare against a baseline JSON; exit non-zero on pass-rate regression",
+    )
+    parser.add_argument(
+        "--compare-backends",
+        action="store_true",
+        help=(
+            "After the run, print agent vs raw-llm table using "
+            "evals/baselines/latest-agent.json and latest-raw-llm.json"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -858,6 +935,28 @@ def main() -> int:
         if regressed:
             print("\nPass rate regressed vs baseline.", file=sys.stderr)
             exit_code = 2
+
+    if args.compare_backends:
+        from .report import BASELINES_DIR
+
+        agent_path = BASELINES_DIR / "latest-agent.json"
+        raw_path = BASELINES_DIR / "latest-raw-llm.json"
+        missing = [p for p in (agent_path, raw_path) if not p.is_file()]
+        if missing:
+            print(
+                "Cannot compare backends; missing baseline(s): "
+                + ", ".join(str(p) for p in missing),
+                file=sys.stderr,
+            )
+            exit_code = 1
+        else:
+            agent_baseline = load_report_from_baseline(agent_path)
+            raw_baseline = load_report_from_baseline(raw_path)
+            if args.backend == "agent":
+                agent_baseline = report
+            else:
+                raw_baseline = report
+            print(f"\n{format_backend_comparison_table(agent_baseline, raw_baseline)}")
 
     return exit_code
 

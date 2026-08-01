@@ -76,3 +76,14 @@ docs/*
 !docs/images/
 !docs/plans/
 !docs/plans/**
+
+# --- 计划目录里的压缩包 / 零散笔记（不入库）---
+docs/plans/opus5-plan.rar
+tmp-*.txt
+
+# --- Eval run artifacts (baselines in evals/baselines/ stay tracked) ---
+evals/results/
+
+# --- Accidental eval / OS pollution in repo root ---
+Microsoft/
+screenshot_monitor_*.png

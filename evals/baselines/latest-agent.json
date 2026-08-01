@@ -3,226 +3,631 @@
     {
       "task_id": "bugfix-dict-keyerror",
       "category": "bugfix",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 345.484,
+      "token_usage": {
+        "input": 249065,
+        "output": 13070,
+        "total": 262135
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_counter.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\counter.py]",
+      "check_details": [
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "bugfix-division-zero",
       "category": "bugfix",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 305.387,
+      "token_usage": {
+        "input": 273423,
+        "output": 16755,
+        "total": 290178
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool read did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\stats.py; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_stats.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool read did not complete: failed; Tool bash did not complete: failed; Tool read did not complete: failed]",
+      "check_details": [
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "write",
+        "bash"
+      ]
     },
     {
       "task_id": "bugfix-mutable-default",
       "category": "bugfix",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 206.065,
+      "token_usage": {
+        "input": 191882,
+        "output": 14238,
+        "total": 206120
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool read did not complete: failed; Tool read did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed]",
+      "check_details": [
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_not_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "bugfix-off-by-one",
       "category": "bugfix",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 205.473,
+      "token_usage": {
+        "input": 113201,
+        "output": 19013,
+        "total": 132214
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed]",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "bugfix-string-reverse",
       "category": "bugfix",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 304.937,
+      "token_usage": {
+        "input": 245222,
+        "output": 25714,
+        "total": 270936
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "one or more checks failed",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\textutil.py; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_textutil.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\bugfix-string-reverse\\textutil.py; Tool bash did not complete: failed; Tool bash did not complete: failed]",
+      "check_details": [
+        {
+          "type": "command_succeeds",
+          "passed": false,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "feature-cli-parser",
       "category": "feature",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 213.49,
+      "token_usage": {
+        "input": 106854,
+        "output": 20941,
+        "total": 127795
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "file not found: cliparse.py; file not found: cliparse.py",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\cliparse.py; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_cliparse.py]",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": false,
+          "message": "file not found: cliparse.py"
+        },
+        {
+          "type": "file_contains",
+          "passed": false,
+          "message": "file not found: cliparse.py"
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "write",
+        "bash"
+      ]
     },
     {
       "task_id": "feature-fizzbuzz",
       "category": "feature",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 326.867,
+      "token_usage": {
+        "input": 306186,
+        "output": 24171,
+        "total": 330357
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool read did not complete: failed; Tool read did not complete: failed; Tool vision did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_fizzbuzz.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\fizzbuzz.py]",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "vision",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "feature-json-merge",
       "category": "feature",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 422.397,
+      "token_usage": {
+        "input": 371586,
+        "output": 32431,
+        "total": 404017
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool read did not complete: failed; Tool read did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_jsonmerge.py; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\jsonmerge.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: C:\\Users\\Administrator\\.rxycode\\output\\2026-08-01\\jsonmerge.py]",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "skill",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "feature-multi-file-cache",
       "category": "feature",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 350.13,
+      "token_usage": {
+        "input": 454306,
+        "output": 30257,
+        "total": 484563
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "file not found: cache.py; file not found: service.py; file not found: cache.py",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\cache.py]",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": false,
+          "message": "file not found: cache.py"
+        },
+        {
+          "type": "file_exists",
+          "passed": false,
+          "message": "file not found: service.py"
+        },
+        {
+          "type": "file_contains",
+          "passed": false,
+          "message": "file not found: cache.py"
+        },
+        {
+          "type": "command_succeeds",
+          "passed": false,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "readcode-pipeline-nodes",
       "category": "readcode",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 5.072,
+      "token_usage": {
+        "input": 0,
+        "output": 0,
+        "total": 0
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "pattern 'goal_planner' not in agent answer; pattern 'decomposer' not in agent answer; pattern 'executor' not in agent answer; pattern 'validator' not in agent answer; pattern 'synthesizer' not in agent answer; pattern 're_planner' not in agent answer; tool 'read' was not used (used: ['websearch', 'webfetch'])",
+      "agent_answer": "[evidence failed: Tool webfetch did not complete: failed; Tool webfetch did not complete: failed; Tool webfetch did not complete: failed]",
+      "check_details": [
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'goal_planner' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'decomposer' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'executor' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'validator' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'synthesizer' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 're_planner' not in agent answer"
+        },
+        {
+          "type": "tool_used",
+          "passed": false,
+          "message": "tool 'read' was not used (used: ['websearch', 'webfetch'])"
+        }
+      ],
+      "tools_used": [
+        "websearch",
+        "webfetch"
+      ]
     },
     {
       "task_id": "readcode-safety-levels",
       "category": "readcode",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 1.881,
+      "token_usage": {
+        "input": 0,
+        "output": 0,
+        "total": 0
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "pattern 'READ' not in agent answer; pattern 'WRITE' not in agent answer; pattern 'DANGER' not in agent answer; pattern 'classify_bash_command' not in agent answer; tool 'read' was not used (used: ['websearch'])",
+      "agent_answer": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLs",
+      "check_details": [
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'READ' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'WRITE' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'DANGER' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'classify_bash_command' not in agent answer"
+        },
+        {
+          "type": "tool_used",
+          "passed": false,
+          "message": "tool 'read' was not used (used: ['websearch'])"
+        }
+      ],
+      "tools_used": [
+        "websearch"
+      ]
     },
     {
       "task_id": "readcode-usage-tracking",
       "category": "readcode",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 1.858,
+      "token_usage": {
+        "input": 0,
+        "output": 0,
+        "total": 0
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "pattern 'UsageTrackingLLM' not in agent answer; pattern 'ainvoke' not in agent answer; pattern 'astream' not in agent answer; pattern '_record_usage' not in agent answer; pattern 'bind_tools' not in agent answer; tool 'read' was not used (used: ['websearch'])",
+      "agent_answer": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLs",
+      "check_details": [
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'UsageTrackingLLM' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'ainvoke' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'astream' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern '_record_usage' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'bind_tools' not in agent answer"
+        },
+        {
+          "type": "tool_used",
+          "passed": false,
+          "message": "tool 'read' was not used (used: ['websearch'])"
+        }
+      ],
+      "tools_used": [
+        "websearch"
+      ]
     },
     {
       "task_id": "readcode-validator-threshold",
       "category": "readcode",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 1.867,
+      "token_usage": {
+        "input": 0,
+        "output": 0,
+        "total": 0
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "pattern 'completeness' not in agent answer; pattern 'relevance' not in agent answer; pattern '0.7' not in agent answer",
+      "agent_answer": "I could not verify the requested current information from external sources, so I will not guess or present stale knowledge as current. Detail: web search failed or returned no public result URLs",
+      "check_details": [
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'completeness' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern 'relevance' not in agent answer"
+        },
+        {
+          "type": "output_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "output_contains",
+          "passed": false,
+          "message": "pattern '0.7' not in agent answer"
+        }
+      ],
+      "tools_used": [
+        "websearch"
+      ]
     },
     {
       "task_id": "refactor-extract-function",
       "category": "refactor",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 334.53,
+      "token_usage": {
+        "input": 387435,
+        "output": 27673,
+        "total": 415108
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_report.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\report.py]",
+      "check_details": [
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "refactor-list-comprehension",
       "category": "refactor",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 292.087,
+      "token_usage": {
+        "input": 303797,
+        "output": 19961,
+        "total": 323758
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_filters.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\filters.py; Tool bash did not complete: failed]",
+      "check_details": [
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "refactor-replace-magic-numbers",
       "category": "refactor",
       "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "duration_s": 934.148,
+      "token_usage": {
+        "input": 332421,
+        "output": 23888,
+        "total": 356309
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "pattern 'DISCOUNT' not in pricing.py",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\pricing.py; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_pricing.py]",
+      "check_details": [
+        {
+          "type": "file_contains",
+          "passed": false,
+          "message": "pattern 'DISCOUNT' not in pricing.py"
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "bash",
+        "write"
+      ]
     },
     {
       "task_id": "refactor-simplify-conditional",
       "category": "refactor",
-      "passed": false,
-      "duration_s": 0.0,
-      "token_usage": {},
+      "passed": true,
+      "duration_s": 359.258,
+      "token_usage": {
+        "input": 338095,
+        "output": 21112,
+        "total": 359207
+      },
       "judge_score": null,
-      "error": "initial baseline placeholder",
-      "agent_answer": "",
-      "check_details": [],
-      "tools_used": []
+      "error": "",
+      "agent_answer": "[evidence failed: Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Expected artifact does not exist: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\test_access.py; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool bash did not complete: failed; Tool write did not complete: failed; Artifact failed format validation: D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\access.py; Tool bash did not complete: failed; Tool bash did not complete: failed]",
+      "check_details": [
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "tools_used": [
+        "read",
+        "bash",
+        "write"
+      ]
     }
   ],
   "summary": {
-    "pass_rate": 0.0,
+    "pass_rate": 0.5294117647058824,
     "mean_judge_score": 0.0,
-    "total_tokens": 0,
-    "total_duration_s": 0.0,
+    "total_tokens": 3962697,
+    "total_duration_s": 4610.931,
     "total_tasks": 17,
-    "passed": 0,
-    "failed": 17,
+    "passed": 9,
+    "failed": 8,
     "by_category": {
       "bugfix": {
         "total": 5,
-        "passed": 0,
-        "pass_rate": 0.0
+        "passed": 4,
+        "pass_rate": 0.8
       },
       "feature": {
         "total": 4,
-        "passed": 0,
-        "pass_rate": 0.0
+        "passed": 2,
+        "pass_rate": 0.5
       },
       "readcode": {
         "total": 4,
@@ -231,8 +636,8 @@
       },
       "refactor": {
         "total": 4,
-        "passed": 0,
-        "pass_rate": 0.0
+        "passed": 3,
+        "pass_rate": 0.75
       }
     }
   },

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Iterator, Optional, Protocol, runtime_checkable
 
 
 @dataclass
@@ -58,18 +59,72 @@ def _extract_agent_tools(agent) -> list[str]:
     return tools
 
 
-def _extract_agent_token_usage(agent) -> dict[str, int]:
-    usage: dict[str, int] = {"input": 0, "output": 0, "total": 0}
-    llm = getattr(agent, "_llm", None)
-    ts = getattr(llm, "token_stats", None) if llm is not None else None
-    if ts is not None:
-        try:
-            usage["input"] = int(getattr(ts, "input_tokens", 0) or 0)
-            usage["output"] = int(getattr(ts, "output_tokens", 0) or 0)
-            usage["total"] = usage["input"] + usage["output"]
-        except (TypeError, ValueError):
-            pass
+def _extract_agent_token_usage(
+    *,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> dict[str, int]:
+    """Return per-run token usage from a global token_stats delta."""
+    usage = {
+        "input": max(0, int(input_tokens or 0)),
+        "output": max(0, int(output_tokens or 0)),
+    }
+    usage["total"] = usage["input"] + usage["output"]
     return usage
+
+
+@contextmanager
+def _headless_eval_runtime() -> Iterator[None]:
+    """Headless eval: inject full_auto safety and an auto-approval broker.
+
+    Agent graph nodes call ``load_config()`` directly (not ``agent._cfg``), so
+    eval runs must patch config loading and register a broker for any tools
+    that still require explicit approval.
+    """
+    from RxyCode.RxyCode1_1_0.config import settings as settings_module
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        ApprovalDecision,
+        ApprovalRequest,
+        get_approval_broker,
+        set_approval_broker,
+    )
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+
+    class _EvalAutoApprovalBroker:
+        async def request_approval(
+            self, request: ApprovalRequest
+        ) -> ApprovalDecision:
+            return ApprovalDecision.APPROVED
+
+        def is_level_always_allowed(self, level: RiskLevel) -> bool:
+            return False
+
+    real_load_config = settings_module.load_config
+
+    def _eval_load_config():
+        cfg = dict(real_load_config() or {})
+        safety = dict(cfg.get("safety") or {})
+        safety["enabled"] = True
+        safety["permission_mode"] = "full_auto"
+        safety["auto_approve"] = sorted(
+            {
+                *(str(x).lower() for x in (safety.get("auto_approve") or [])),
+                "read",
+                "write",
+                "danger",
+            }
+        )
+        cfg["safety"] = safety
+        return cfg
+
+    prev_broker = get_approval_broker()
+    settings_module.load_config = _eval_load_config  # type: ignore[method-assign]
+    set_approval_broker(_EvalAutoApprovalBroker())
+    try:
+        yield
+    finally:
+        settings_module.load_config = real_load_config  # type: ignore[method-assign]
+        set_approval_broker(prev_broker)
 
 
 class AgentBackend:
@@ -86,23 +141,37 @@ class AgentBackend:
             set_working_directory,
         )
 
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
         session_id = f"eval-{uuid.uuid4().hex[:12]}"
         agent = self._make_agent(session_id=session_id)
         session_token = bind_session(session_id)
+        token_start = (token_stats.input_tokens, token_stats.output_tokens)
         try:
-            if workdir is not None:
-                set_working_directory(workdir)
-            result = await agent.run(prompt, mode="build")
+            with _headless_eval_runtime():
+                if workdir is not None:
+                    set_working_directory(workdir)
+                result = await agent.run(prompt, mode="build")
             answer = result if isinstance(result, str) else str(result or "")
+            input_tokens = token_stats.input_tokens - token_start[0]
+            output_tokens = token_stats.output_tokens - token_start[1]
             return BackendResult(
                 answer=answer,
-                token_usage=_extract_agent_token_usage(agent),
+                token_usage=_extract_agent_token_usage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
                 tools_used=_extract_agent_tools(agent),
             )
         except Exception as exc:
+            input_tokens = token_stats.input_tokens - token_start[0]
+            output_tokens = token_stats.output_tokens - token_start[1]
             return BackendResult(
                 answer="",
-                token_usage=_extract_agent_token_usage(agent),
+                token_usage=_extract_agent_token_usage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
                 tools_used=_extract_agent_tools(agent),
                 error=f"{type(exc).__name__}: {exc}",
             )
