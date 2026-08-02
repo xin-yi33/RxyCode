@@ -6,6 +6,7 @@ The terminal user interface. **Default path is OpenTUI** under
 chat, native textarea, alternate screen, mouse selection, and OpenCode-style
 nested dialogs. Ink under `frontend/` (React 18) remains as an optional
 rollback via `RXYCODE_TUI=ink`.
+`frontend/protocol-client/` is the shared **@rxycode/protocol-client** package: JSON-RPC 2.0 line protocol over stdio for OpenTUI and Desktop (types generated from `protocol/schema.json` via `bun run generate`).
 
 ## Architecture
 - OpenTUI under `frontend/opentui-app/` (React 19.2+) — **default** when Bun is available

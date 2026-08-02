@@ -2021,10 +2021,10 @@ frontend/protocol-client/
 4. 加一个"生成物是最新的"CI 检查：重新生成后 `git diff --exit-code`，有差异就失败。
 
 **完成判据**
-- [ ] `bun run generate` 能从 `schema.json` 产出类型
-- [ ] 客户端能处理双向请求
-- [ ] 有单元测试（mock 一个 stdio 管道）
-- [ ] CI 检查生成物新鲜度
+- [x] `bun run generate` 能从 `schema.json` 产出类型
+- [x] 客户端能处理双向请求
+- [x] 有单元测试（mock 一个 stdio 管道）
+- [x] CI 检查生成物新鲜度
 
 ---
 

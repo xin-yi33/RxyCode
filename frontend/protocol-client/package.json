@@ -1,0 +1,16 @@
+{
+  "name": "@rxycode/protocol-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "json2ts -i ../../protocol/schema.json -o src/generated/types.ts --bannerComment \"/* Auto-generated. Edit protocol/schema.json then run: bun run generate */\"",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.5.0"
+  }
+}
