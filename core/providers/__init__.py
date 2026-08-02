@@ -10,15 +10,19 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from core.providers.anthropic import AnthropicProvider
 from core.providers.base import BaseProvider
 from core.providers.deepseek import DeepSeekProvider
 from core.providers.openai import OpenAIProvider
+from core.providers.qwen import QwenProvider
 
 _FALLBACK = OpenAIProvider()
 
 #: 注册顺序即匹配优先级。越具体的越靠前。
 _PROVIDERS: list[BaseProvider] = [
     DeepSeekProvider(),
+    AnthropicProvider(),
+    QwenProvider(),
 ]
 
 _BY_NAME: dict[str, BaseProvider] = {p.name: p for p in _PROVIDERS}
