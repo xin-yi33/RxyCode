@@ -118,6 +118,20 @@ def _frontend_dir() -> str:
     return os.path.join(os.path.dirname(__file__), "frontend")
 
 
+def _repo_root() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_transport() -> str:
+    """OpenTUI backend transport: http (default) or stdio (appserver JSON-RPC)."""
+    raw = (os.environ.get("RXYCODE_TRANSPORT") or "http").strip().lower()
+    if raw in ("http", "stdio"):
+        return raw
+    raise click.ClickException(
+        f"Unknown RXYCODE_TRANSPORT={raw!r}. Use 'http' or 'stdio'."
+    )
+
+
 def _opentui_app_dir() -> str:
     return os.path.join(_frontend_dir(), "opentui-app")
 
@@ -425,13 +439,23 @@ def _launch_opentui_tui(model, port):
         )
     _ensure_opentui_dependencies(app_dir, bun_exe)
 
+    transport = _resolve_transport()
     port, _api_token, env = _start_embedded_api(port)
+    env["RXYCODE_TRANSPORT"] = transport
+    env["RXYCODE_PROJECT_ROOT"] = _repo_root()
+    env["RXYCODE_APPSERVER_PYTHON"] = sys.executable
+    env["RXYCODE_WORKSPACE_ROOT"] = os.getcwd()
     if model:
         env["RXYCODE_MODEL"] = str(model)
 
     _log.info(
         "Launching OpenTUI",
-        extra={"opentui_dir": app_dir, "port": port, "bun": bun_exe},
+        extra={
+            "opentui_dir": app_dir,
+            "port": port,
+            "bun": bun_exe,
+            "transport": transport,
+        },
     )
 
     proc = None

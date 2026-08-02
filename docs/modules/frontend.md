@@ -11,7 +11,10 @@ rollback via `RXYCODE_TUI=ink`.
 ## Architecture
 - OpenTUI under `frontend/opentui-app/` (React 19.2+) — **default** when Bun is available
 - Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
-- Communicates with the Python API server via HTTP/SSE
+- **Chat transport** (P5): `RXYCODE_TRANSPORT=http|stdio` (default `http`)
+  - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`)
+  - `stdio`: spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
+- Settings dialogs (models, MCP, memory) still use HTTP API in both modes
 - OpenTUI: `bun run src/index.tsx`; Ink: Node.js process — both launched by `main.py`
 
 ## Key Files (OpenTUI — default)
@@ -19,7 +22,8 @@ rollback via `RXYCODE_TUI=ink`.
 |------|---------|
 | opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing |
 | opentui-app/src/index.tsx | OpenTUI entry — CliRenderer alternate screen + lifecycle |
-| opentui-app/src/chatApi.ts | SSE client for /chat/stream |
+| opentui-app/src/chatApi.ts | Transport facade — delegates to `transport/` (http or stdio) |
+| opentui-app/src/transport/ | P5 transport layer: `httpTransport`, `stdioTransport`, notify mapper |
 | opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs |
 | opentui-app/src/CommandPalette.tsx | Ctrl+P command palette |
 | opentui-app/src/ApprovalDialog.tsx | Tool approval UI |
@@ -95,6 +99,16 @@ rollback via `RXYCODE_TUI=ink`.
 - Tab: Cycle mode (Plan/Build/Compose)
 - Esc: Cancel current operation
 - Enter: Submit input
+
+## Environment (OpenTUI)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `RXYCODE_TRANSPORT` | `http` | `http` = SSE via embedded API; `stdio` = `python -m appserver` subprocess |
+| `RXYCODE_PROJECT_ROOT` | set by `main.py` | Repo root for appserver `PYTHONPATH` (stdio mode) |
+| `RXYCODE_APPSERVER_PYTHON` | set by `main.py` | Python executable for appserver subprocess |
+| `RXYCODE_WORKSPACE_ROOT` | cwd at launch | `session/new` workspace (stdio mode) |
+| `RXYCODE_API_URL` / `RXYCODE_API_TOKEN` | set by `main.py` | HTTP settings + fallback chat when `transport=http` |
 
 ## Build
 - TypeScript compiler: npx tsc

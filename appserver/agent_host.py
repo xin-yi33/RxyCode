@@ -188,6 +188,7 @@ class AgentHost:
         run_id: str,
         timeout: float,
         emit: EmitFn,
+        mode: str = "build",
     ) -> dict[str, Any]:
         self._emit = emit
         import asyncio
@@ -199,7 +200,7 @@ class AgentHost:
                 "session_id": self.session_id,
                 "text": text,
                 "run_id": run_id,
-                "mode": "build",
+                "mode": mode,
             },
             timeout=timeout,
         )

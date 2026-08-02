@@ -243,6 +243,7 @@ class AppServer:
         request_id: Any,
         job_id: str,
         timeout_seconds: float | None,
+        mode: str = "build",
     ) -> None:
         record = self._sessions.get(session_id)
         if record is None:
@@ -279,6 +280,7 @@ class AppServer:
                         run_id=run_id,
                         timeout=wall_timeout,
                         emit=emit_message,
+                        mode=mode,
                     )
 
                 try:
@@ -381,12 +383,14 @@ class AppServer:
                 return
 
         job_id = uuid.uuid4().hex[:12]
+        mode = str(params.get("mode", "build"))
         await self._run_prompt(
             session_id=session_id,
             text=text,
             request_id=request_id,
             job_id=job_id,
             timeout_seconds=timeout_seconds,
+            mode=mode,
         )
 
     async def _handle_interrupt(self, params: dict[str, Any], request_id: Any) -> None:

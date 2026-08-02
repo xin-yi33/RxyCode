@@ -50,6 +50,14 @@ jobs:
       - name: Unit tests
         run: bun test
 
+      - name: Unit tests (stdio transport)
+        run: bun test src/transport
+        env:
+          RXYCODE_TRANSPORT: stdio
+          RXYCODE_APPSERVER_STUB: "1"
+          RXYCODE_PROJECT_ROOT: ${{ github.workspace }}
+          RXYCODE_APPSERVER_PYTHON: python3
+
 
   protocol-client:
     name: Protocol client

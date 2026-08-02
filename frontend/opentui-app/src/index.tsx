@@ -13,6 +13,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import App from "./App.tsx";
 import { DialogProvider } from "./dialog/DialogHost.tsx";
+import { getChatTransport } from "./transport/index.ts";
 
 if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   console.log("RxyCode OpenTUI requires an interactive terminal (TTY).");
@@ -33,6 +34,11 @@ const renderer = await createCliRenderer({
 const root = createRoot(renderer);
 
 const cleanup = () => {
+  try {
+    void getChatTransport().shutdown?.();
+  } catch {
+    // ignore
+  }
   try {
     root.unmount();
   } catch {

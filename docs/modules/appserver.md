@@ -89,4 +89,4 @@ python -m ruff check appserver
 ## Dependencies
 
 - **Uses**: `core/session.py`, `core/safety/approval.py`, `protocol/*`
-- **Consumers (future)**: OpenTUI stdio transport (P5), Desktop shell (Phase 3)
+- **Consumers**: OpenTUI stdio transport (P5), Desktop shell (Phase 3)

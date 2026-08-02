@@ -13,7 +13,10 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": false,
     "resolveJsonModule": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "paths": {
+      "@rxycode/protocol-client": ["../protocol-client/src/index.ts"]
+    }
   },
   "include": ["src/**/*", "scripts/**/*"]
 }
