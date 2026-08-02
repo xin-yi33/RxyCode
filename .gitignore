@@ -1,12 +1,23 @@
 # --- Secrets & user data ---
-# Data dir was historically inside the repo; never let it (or its API keys)
-# leak into git. New installs write to ~/.rxycode instead.
+# Real config/API keys live in ~/.RxyCode or ~/.rxycode — never in this repo.
+# (Git cannot ignore paths outside the repo; these rules catch accidental copies.)
 data/
 credentials.yaml
+**/credentials.yaml
+.RxyCode/
+.rxycode/
+# Local config copies (canonical config is only under the user home dirs above)
+config.yaml
+config.local.yaml
+**/config.local.yaml
 *.key
 *.pem
 .env
 .env.*
+.env.local
+# Live-test / CI secret injection files (never commit real keys)
+**/live_credentials.*
+**/rxycode_gh_secret.txt
 
 # --- IDE / tool data ---
 .codebuddy/
