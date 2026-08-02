@@ -616,6 +616,24 @@ def _load_tasks_resilient(
 # ---------------------------------------------------------------------------
 
 
+def _eval_llm_kwargs(model_config: dict, caps, provider_kwargs: dict) -> dict:
+    """Eval harness 沿用 Phase 1 前的最小 ChatOpenAI 参数集（DC1 零变化）。
+
+    provider.llm_kwargs 面向 agent_v2 生产路径（streaming / stream_usage /
+    max_tokens / temperature 默认 0.7）。evals CLI 在 A6 之前只有 model、
+    api_key、base_url、max_retries，且 temperature 默认 0.0。
+    """
+    kwargs = dict(provider_kwargs)
+    kwargs.pop("streaming", None)
+    kwargs.pop("stream_usage", None)
+    kwargs.pop("max_tokens", None)
+    if caps.accepts_temperature:
+        kwargs["temperature"] = float(model_config.get("temperature", 0.0) or 0.0)
+    else:
+        kwargs.pop("temperature", None)
+    return kwargs
+
+
 def _build_llm(model_name: Optional[str] = None):
     """Build a ChatOpenAI LLM from project config for the CLI runner."""
     from langchain_openai import ChatOpenAI
@@ -645,7 +663,13 @@ def _build_llm(model_name: Optional[str] = None):
 
     provider = providers.resolve(resolved_config)
     caps = provider.capabilities(resolved_config)
-    llm = ChatOpenAI(**provider.llm_kwargs(resolved_config, caps))
+    llm = ChatOpenAI(
+        **_eval_llm_kwargs(
+            resolved_config,
+            caps,
+            provider.llm_kwargs(resolved_config, caps),
+        )
+    )
 
     return llm, model_config.get("model_name", "unknown")
 

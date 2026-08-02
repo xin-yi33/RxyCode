@@ -989,3 +989,52 @@ class TestBaseline:
         assert "Summary Changes" in diff
         assert "Pass Rate" in diff
         assert "Delta" in diff
+
+
+class TestEvalLlmKwargs:
+    def test_preserves_pre_a6_minimal_profile(self):
+        from config.model_capabilities import DEFAULT_CAPABILITIES
+        from RxyCode.RxyCode1_1_0.evals.runner import _eval_llm_kwargs
+
+        model_config = {"model_name": "gpt-4o", "api_key": "k"}
+        provider_kwargs = {
+            "model": "gpt-4o",
+            "api_key": "k",
+            "max_tokens": 8192,
+            "max_retries": 3,
+            "streaming": True,
+            "stream_usage": True,
+            "temperature": 0.7,
+        }
+        kwargs = _eval_llm_kwargs(model_config, DEFAULT_CAPABILITIES, provider_kwargs)
+        assert kwargs == {
+            "model": "gpt-4o",
+            "api_key": "k",
+            "max_retries": 3,
+            "temperature": 0.0,
+        }
+        assert "streaming" not in kwargs
+        assert "stream_usage" not in kwargs
+        assert "max_tokens" not in kwargs
+
+    def test_reasoner_drops_temperature(self):
+        from dataclasses import replace
+
+        from config.model_capabilities import DEFAULT_CAPABILITIES
+        from RxyCode.RxyCode1_1_0.evals.runner import _eval_llm_kwargs
+
+        caps = replace(DEFAULT_CAPABILITIES, accepts_temperature=False)
+        provider_kwargs = {
+            "model": "deepseek-reasoner",
+            "api_key": "k",
+            "max_retries": 3,
+            "streaming": True,
+            "stream_usage": True,
+        }
+        kwargs = _eval_llm_kwargs(
+            {"model_name": "deepseek-reasoner", "temperature": 0.9},
+            caps,
+            provider_kwargs,
+        )
+        assert "temperature" not in kwargs
+        assert "streaming" not in kwargs
