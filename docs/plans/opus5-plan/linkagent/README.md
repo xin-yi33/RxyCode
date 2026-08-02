@@ -171,15 +171,16 @@ RxyCode 默认注册了 `skill(name)`（`core/agent_v2.py:1499,1519`）。它在
 |---|---|
 | RxyCode 做 Phase 0/1 | 无关，随便并行 |
 | RxyCode 做 **Phase 2**（协议 + 核心重构，约 2026-10-23） | ⚠ 会改 `AgentV2` 的对外形态。**LinkAgent 的 L2 与 L9-1~L9-3 等它落地**，否则要返工 |
-| RxyCode 做 **Phase 3**（Electron Desktop，约 2026-12-18） | ⚠ **LinkAgent 的 L9-4~L9-8 fork 它的壳**，必须等 |
-| RxyCode 做 Phase A/B/C/D/E | 无关 |
+| RxyCode 做 **Phase 3**（Electron 基础壳） | 提供完整 Desktop 的技术前置，但不等于可直接交付的工作台 |
+| RxyCode 做 **Phase C**（完整 Desktop） | ⚠ **LinkAgent 的 L9-4~L9-8 基于它的稳定壳和扩展契约 fork**，必须等 |
+| RxyCode 做 Phase A/B/D/E/F | 无关；需要对应高级能力时按 capability 兼容 |
 | LinkAgent 做 L0/L1 | 完全不碰 RxyCode，随时可做 |
 
-**双窗口并行的实际排法在** [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md)。摘要：**Composer 主写全部（L0–L8、L10、L9-1~L9-8 / RxyCode Phase 3），Grok 只做前端卡标注的多模态环节（视觉验收）**；早期 Grok 经常空闲——正常，别让它写代码。L2 等 Phase 2；L9-4 等 Phase 3。
+**双窗口并行的实际排法在** [`../ENGINEERING-TIMELINE.md`](../ENGINEERING-TIMELINE.md)。摘要：**Composer 主写全部（L0–L8、L10、L9-1~L9-8 / RxyCode Phase C），Grok 只做前端卡标注的多模态环节（视觉验收）**；早期 Grok 经常空闲——正常，别让它写代码。L2 等 Phase 2；L9-4 等 Phase C。
 
 **两个真冲突点（都是 Composer 主写时自己的排期问题）**：`eko/engine.py`（L3-3 与 L8-4）和 `tools/eko_tools.py`（L5-6 与 L10-3），各自必须串行。
 
-> ⚠ 如果 Phase 3 延期，**不要自己另起一个壳赶进度**。造出第二套桌面代码等于放弃了"基于 RxyCode desktop"这个决定的全部好处。
+> ⚠ 如果 Phase C 延期，**不要自己另起一套完整桌面工作台赶进度**。造出第二套项目、会话、审批和 diff 基础设施等于放弃了"基于 RxyCode Desktop"这个决定的全部好处。
 
 ---
 

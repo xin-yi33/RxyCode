@@ -1,8 +1,8 @@
-# Phase C · 多 Agent × 多模型协作（Multi-Model Collaboration）
+# Phase D · 多 Agent × 多模型协作（Multi-Model Collaboration）
 
-> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase C。
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase D。
 > **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md) 全部完成。
-> **后继**：[`PHASE-D-MULTIMODAL.md`](./PHASE-D-MULTIMODAL.md)
+> **后继**：[`PHASE-E-MULTIMODAL.md`](./PHASE-E-MULTIMODAL.md)
 >
 > **一句话目标**：让专家团的每个角色跑在**不同的模型**上——Opus 做架构、Grok 写代码、GPT 做审计——由一个独立的 master 模型监测全局、中转消息、在跨模型分歧时仲裁。
 >
@@ -10,7 +10,7 @@
 > **创建**：2026-07-31
 > **预计工时**：6 周（1 名后端 + 0.5 名前端）
 >
-> ⚠️ **Phase C 单独看几乎没有新架构**。它把 Phase A 的模型适配层和 Phase B 的专家团接起来。**真正的难点不是"让不同模型跑起来"，而是"让一个模型的产出对另一个模型有用"**（§2.2）和"成本核算"（§2.3）。
+> ⚠️ **Phase D 单独看几乎没有新架构**。它把 Phase A 的模型适配层和 Phase B 的专家团接起来。**真正的难点不是"让不同模型跑起来"，而是"让一个模型的产出对另一个模型有用"**（§2.2）和"成本核算"（§2.3）。
 
 ---
 
@@ -22,10 +22,10 @@
 | [§1 前置盘点](#1-前置盘点phase-ab-给了什么) | Phase A/B 已经给了什么，还缺什么 |
 | [§2 三个真问题](#2-三个真问题) | 跨模型交接、成本核算、失败归因 |
 | [§3 目标架构](#3-目标架构) | master 模型、模型绑定、pair-program |
-| [§4 任务卡 C1–C12](#4-任务卡) | 逐个执行 |
+| [§4 任务卡 D1–D12](#4-任务卡) | 逐个执行 |
 | [§5 出口检查](#5-phase-c-出口检查) | 怎么算做完 |
 | [§6 扩展手册](#6-扩展手册) | 加模型组合、调切换点 |
-| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase D/E 的预留 |
+| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase E/F 的预留 |
 
 ---
 
@@ -36,10 +36,10 @@
 Phase B 的 10 步基础上，加两条：
 
 ```
-11. COST      跑成本核算测试（C4 之后每张卡都要跑）
+11. COST      跑成本核算测试（D4 之后每张卡都要跑）
               python -m pytest tests/test_agents/test_cost_accounting.py -q
 
-12. HANDOFF   跑跨模型交接测试（C3 之后每张卡都要跑）
+12. HANDOFF   跑跨模型交接测试（D3 之后每张卡都要跑）
               python -m pytest tests/test_agents/test_handoff.py -q
 ```
 
@@ -48,8 +48,8 @@ Phase B 的 10 步基础上，加两条：
 | 模型 | 干什么 | 不要干什么 |
 |---|---|---|
 | **Composer 2.5** | **主写全部**：编排路由、master、交接协议；设置页多模型 UI 也由它主写 | 自己编造定价数字 |
-| **Grok 4.5** | **查每个模型的真实定价**（C4 必需）、查各家 API 的并发限制、查跨模型 prompt 兼容性；被委托的设置页 UI **多模态环节**（视觉验收）时写前端 | 改编排 Python / 写没有多模态环节的卡本体 |
-| **Sonnet 5** | 审 C3（跨模型交接）的 diff——这是最容易出微妙 bug 的一张。写文档（C12） | 长任务连续实现 |
+| **Grok 4.5** | **查每个模型的真实定价**（D4 必需）、查各家 API 的并发限制、查跨模型 prompt 兼容性；被委托的设置页 UI **多模态环节**（视觉验收）时写前端 | 改编排 Python / 写没有多模态环节的卡本体 |
+| **Sonnet 5** | 审 D3（跨模型交接）的 diff——这是最容易出微妙 bug 的一张。写文档（D12） | 长任务连续实现 |
 
 ### 0.3 前置自检
 
@@ -62,7 +62,7 @@ python -m pytest tests/test_agents -q                                   # 全绿
 python -m evals.cli run --backend agent --mode team --compare-baseline evals\baselines\latest-team.json
 ```
 
-**最危险的误判是"Phase B 差不多了就开始 C"。** Phase C 会同时暴露 Phase B 所有没测到的隔离问题——只不过这次每个角色用不同模型，症状会更难懂。
+**最危险的误判是"Phase B 差不多了就开始 C"。** Phase D 会同时暴露 Phase B 所有没测到的隔离问题——只不过这次每个角色用不同模型，症状会更难懂。
 
 ### 0.4 硬性规则
 
@@ -97,27 +97,27 @@ python -m evals.cli run --backend agent --mode team --compare-baseline evals\bas
 | `ExecutionMode.TEAM_MULTI_MODEL`（占位） | Phase B | `core/agents/router.py` |
 | `ModelRole` + `ModelRouter`（旧的角色→模型映射） | 既有 | `core/governance.py:370-374`、`:409-487` |
 
-### 1.2 Phase C 要补的
+### 1.2 Phase D 要补的
 
 | 缺口 | 落在哪张卡 |
 |---|---|
-| `AgentSpec.model` 真正生效，每个 runtime 用自己的模型 | C1 |
-| master 模型独立配置，与业务角色分离 | C2 |
-| 跨模型交接：结构化产出 + 上下文转译 | C3 |
-| 成本核算：按美元而非 token | C4 |
-| 跨模型审计：强制审计模型 ≠ 编码模型 | C5 |
-| 模型切换点：architect 在方案里声明 | C6 |
-| pair-program：driver + navigator | C7 |
-| 失败归因仲裁：master 判"架构错还是实现错" | C8 |
-| 并发限制：不同 provider 的 rate limit 各不相同 | C9 |
-| Settings / CLI 每角色选模型 | C10 |
-| 模型组合评测矩阵 | C11 |
+| `AgentSpec.model` 真正生效，每个 runtime 用自己的模型 | D1 |
+| master 模型独立配置，与业务角色分离 | D2 |
+| 跨模型交接：结构化产出 + 上下文转译 | D3 |
+| 成本核算：按美元而非 token | D4 |
+| 跨模型审计：强制审计模型 ≠ 编码模型 | D5 |
+| 模型切换点：architect 在方案里声明 | D6 |
+| pair-program：driver + navigator | D7 |
+| 失败归因仲裁：master 判"架构错还是实现错" | D8 |
+| 并发限制：不同 provider 的 rate limit 各不相同 | D9 |
+| Settings / CLI 每角色选模型 | D10 |
+| 模型组合评测矩阵 | D11 |
 
 ---
 
 ## §2 三个真问题
 
-> Phase C 的架构本身很浅。**真正会让你踩坑的是这三件事**，每一件都对应一张重点任务卡。
+> Phase D 的架构本身很浅。**真正会让你踩坑的是这三件事**，每一件都对应一张重点任务卡。
 
 ### 2.1 你的设想与开源现状的对照
 
@@ -139,11 +139,11 @@ roles:
 > driver：pair-programming 工作流中负责实现的那一半，快模型，写代码、跑测试、响应 navigator 的反馈。
 > navigator：负责审查的那一半，强模型，盯着共享 worktree 的滚动 diff，在实现漂移时打断 driver 并给出修正意见，**自己不编辑文件**。
 
-**结论：你的设想在业界有对应实现，不需要发明新范式。Phase C 是工程活，不是研究活。**
+**结论：你的设想在业界有对应实现，不需要发明新范式。Phase D 是工程活，不是研究活。**
 
 ### 2.2 真问题一：跨模型交接
 
-**这是 Phase C 最大的技术难点，也最容易被低估。**
+**这是 Phase D 最大的技术难点，也最容易被低估。**
 
 同一个模型内部，上一轮的输出和这一轮的输入是同构的——同样的对话格式、同样的推理风格、同样的隐含约定。**跨模型时这些全都不成立**：
 
@@ -157,7 +157,7 @@ roles:
 
 **解法（MC2）：跨模型交接只传结构化产出，不传原始对话历史。**
 
-这正好是 MetaGPT 的做法——*"agents communicate via structured documents and diagrams published to a shared message pool"*，而不是自由对话。Phase B 的黑板（`blackboard.py`）已经是这个形状，Phase C 只需要**强制**它。
+这正好是 MetaGPT 的做法——*"agents communicate via structured documents and diagrams published to a shared message pool"*，而不是自由对话。Phase B 的黑板（`blackboard.py`）已经是这个形状，Phase D 只需要**强制**它。
 
 具体地：
 
@@ -165,7 +165,7 @@ roles:
 Phase B（同模型）：
   architect 产出 → 黑板 → coder 读黑板 + 可能还带一些上下文
 
-Phase C（跨模型）：
+Phase D（跨模型）：
   architect 产出 → 【交接转译】→ 黑板 → coder 只能读黑板
                       ↑
               目标模型窗口装不下时在这里压缩
@@ -183,7 +183,7 @@ Phase B 的预算是 token 数。**跨模型时 token 数几乎没有意义**，
 | 主力编码模型（Sonnet / Grok 级） | 中 |
 | 国产高性价比模型（DeepSeek / Qwen 级） | 低 |
 
-> **具体数字由 Grok 在 C4 查证后填入**，不要在文档里写死过期价格。C4 的 Grok prompt 见任务卡。
+> **具体数字由 Grok 在 D4 查证后填入**，不要在文档里写死过期价格。D4 的 Grok prompt 见任务卡。
 
 一个"500k token 预算"在全 Opus 的团队和全 DeepSeek 的团队之间，实际花费可能差 20 倍。
 
@@ -201,9 +201,9 @@ Phase B 的 `ConsultRequest` 给了通道，`software_dev.yaml` 的 auditor 也�
 
 **这时候需要仲裁，而仲裁正是你说的 master 的职责。**
 
-Phase B 的 Coordinator 只做机械的中转。Phase C 要给它一个**独立的模型**和一项**仲裁职责**：当审计员和架构师对同一个问题的归因不一致时，master 读双方陈述 + 方案原文 + 实际 diff，做出裁决，然后把任务打回给正确的角色。
+Phase B 的 Coordinator 只做机械的中转。Phase D 要给它一个**独立的模型**和一项**仲裁职责**：当审计员和架构师对同一个问题的归因不一致时，master 读双方陈述 + 方案原文 + 实际 diff，做出裁决，然后把任务打回给正确的角色。
 
-**这是 Phase C 里唯一新增的 LLM 决策点。** 和 Phase B 的 DB4 一样，它必须是显式标注、进 trace 的。
+**这是 Phase D 里唯一新增的 LLM 决策点。** 和 Phase B 的 DB4 一样，它必须是显式标注、进 trace 的。
 
 ---
 
@@ -220,10 +220,10 @@ ModeRouter → TEAM_MULTI_MODEL
 │  模型：settings.agents.master_model（用户自选，独立于所有业务角色） │
 │                                                                    │
 │  Phase B 的四项职责：建团 / 派活 / 中转 / 收口                      │
-│  Phase C 新增：                                                    │
-│    ⑤ 交接转译   跨模型时压缩、剥离推理痕迹、规范化格式（C3）        │
-│    ⑥ 成本守门   按美元核算，接近上限时降级或停止（C4）              │
-│    ⑦ 归因仲裁   审计员与架构师归因冲突时裁决（C8）                  │
+│  Phase D 新增：                                                    │
+│    ⑤ 交接转译   跨模型时压缩、剥离推理痕迹、规范化格式（D3）        │
+│    ⑥ 成本守门   按美元核算，接近上限时降级或停止（D4）              │
+│    ⑦ 归因仲裁   审计员与架构师归因冲突时裁决（D8）                  │
 │                                                                    │
 │  它自己不写代码、不产出业务成果（MC7）                              │
 └───┬────────────────────────────────────────────────────────────┬─┘
@@ -270,18 +270,18 @@ ModeRouter → TEAM_MULTI_MODEL
 
 ```
 core/agents/
-  handoff.py                 # C3 跨模型交接转译
-  cost.py                    # C4 成本核算（BudgetGuard 的成本维度）
-  arbiter.py                 # C8 归因仲裁
-  pairing.py                 # C7 driver/navigator
+  handoff.py                 # D3 跨模型交接转译
+  cost.py                    # D4 成本核算（BudgetGuard 的成本维度）
+  arbiter.py                 # D8 归因仲裁
+  pairing.py                 # D7 driver/navigator
   teams/
-    software_dev_multi.yaml  # C10 多模型版软件开发专家团
+    software_dev_multi.yaml  # D10 多模型版软件开发专家团
 config/
-  model_pricing.py           # C4 定价表
+  model_pricing.py           # D4 定价表
 tests/test_agents/
   test_multi_model.py
-  test_handoff.py            # C3 之后每张卡都跑
-  test_cost_accounting.py    # C4 之后每张卡都跑
+  test_handoff.py            # D3 之后每张卡都跑
+  test_cost_accounting.py    # D4 之后每张卡都跑
   test_arbiter.py
   test_pairing.py
 ```
@@ -290,7 +290,7 @@ tests/test_agents/
 
 ## §4 任务卡
 
-### C1 · 让 `AgentSpec.model` 真正生效
+### D1 · 让 `AgentSpec.model` 真正生效
 
 `P0` / 4d / 依赖 Phase A + Phase B
 
@@ -331,7 +331,7 @@ Select-String -Path core\*.py,core\agents\*.py,memory\*.py -Pattern "context_win
   ForEach-Object { "$($_.Path -replace '.*RxyCode1_1_0\\',''):$($_.LineNumber): $($_.Line.Trim())" }
 ```
 
-**每一处都要确认它用的是当前角色的能力，不是全局默认。** 这是 Phase C 最容易漏的地方——症状是"小窗口模型的角色莫名其妙超上下文"。
+**每一处都要确认它用的是当前角色的能力，不是全局默认。** 这是 Phase D 最容易漏的地方——症状是"小窗口模型的角色莫名其妙超上下文"。
 
 3. `validate_team` 加校验：`spec.model` 不为 `None` 时，该模型必须在配置里存在。**配错模型名要在加载时就报错**，不能等到跑到那个阶段才炸。
 
@@ -366,9 +366,9 @@ feat(agents): bind per-role models through the Phase A provider layer
 
 ---
 
-### C2 · master 模型独立配置
+### D2 · master 模型独立配置
 
-`P0` / 3d / 依赖 C1
+`P0` / 3d / 依赖 D1
 
 **背景**
 你要的"master model 进行整个业务的监测"。它必须能独立选型——master 需要的是判断力和长上下文，与写代码的模型要求不同。
@@ -377,7 +377,7 @@ feat(agents): bind per-role models through the Phase A provider layer
 
 1. `TeamSpec` 加 `master_model: str | None = None`（`None` = 用会话默认）。
 
-2. `Coordinator` 用 master 模型构造自己的 LLM，**且它的工具集依然是空的**（Phase B 的约束，Phase C 不放松）。
+2. `Coordinator` 用 master 模型构造自己的 LLM，**且它的工具集依然是空的**（Phase B 的约束，Phase D 不放松）。
 
 3. **加一条显式校验（MC7）**：
 
@@ -405,12 +405,12 @@ def _assert_master_produces_nothing(coordinator: Coordinator) -> None:
 
 ---
 
-### C3 · 跨模型交接转译
+### D3 · 跨模型交接转译
 
-`P0` / 1.5 周 / 依赖 C1 C2
+`P0` / 1.5 周 / 依赖 D1 D2
 
 **背景**
-§2.2 的解法。**这是 Phase C 技术含量最高的一张卡，让 Sonnet 5 重点审。**
+§2.2 的解法。**这是 Phase D 技术含量最高的一张卡，让 Sonnet 5 重点审。**
 
 **操作步骤**
 
@@ -454,7 +454,7 @@ class HandoffTranslator:
 
 **具体字段名让 Grok 查**（见下方 prompt）。
 
-3. **步骤 2 · shape**——按 `target_caps.prompt_variant` 规范化。保守起见，**第一版统一转成 markdown**（所有模型都能处理），不做 per-model 精细适配。等 C11 的评测显示某个组合有问题再优化。
+3. **步骤 2 · shape**——按 `target_caps.prompt_variant` 规范化。保守起见，**第一版统一转成 markdown**（所有模型都能处理），不做 per-model 精细适配。等 D11 的评测显示某个组合有问题再优化。
 
 4. **步骤 3 · fit**——用 `target_caps.tokenizer` 计数（Phase A 已有），超过 `target_caps.compaction_threshold` 的一定比例时压缩。**压缩要保留结构**：
 
@@ -475,7 +475,7 @@ class HandoffTranslator:
 
 5. **`Coordinator` 在跨模型派发时调用它**。同模型时（`source_caps is target_caps`）**直接跳过**，保证 DC1。
 
-6. `tests/test_agents/test_handoff.py`（**C3 之后每张卡都跑**）：
+6. `tests/test_agents/test_handoff.py`（**D3 之后每张卡都跑**）：
 
 ```python
 def test_same_model_handoff_is_a_no_op():                    # DC1 关键
@@ -517,9 +517,9 @@ def test_members_cannot_read_other_models_raw_history():     # MC2
 
 ---
 
-### C4 · 成本核算
+### D4 · 成本核算
 
-`P0` / 1 周 / 依赖 C1
+`P0` / 1 周 / 依赖 D1
 
 **背景**
 §2.3。Phase B 的 token 预算跨模型时几乎没有意义。
@@ -586,7 +586,7 @@ class CostAccountant:
         """
 ```
 
-6. `tests/test_agents/test_cost_accounting.py`（**C4 之后每张卡都跑**）：
+6. `tests/test_agents/test_cost_accounting.py`（**D4 之后每张卡都跑**）：
 
 ```python
 def test_cost_is_computed_from_provider_specific_usage_fields():
@@ -628,9 +628,9 @@ def test_stale_pricing_emits_a_warning():
 
 ---
 
-### C5 · 强制跨模型审计
+### D5 · 强制跨模型审计
 
-`P0` / 3d / 依赖 C1
+`P0` / 3d / 依赖 D1
 
 **背景**
 MC3。抄 karajan-code：审查结论要来自**一个不同的 AI**。同一个模型审自己写的代码，会系统性地漏掉同一类错误。
@@ -665,9 +665,9 @@ def _check_auditor_uses_a_different_model(team: TeamSpec) -> None:
 
 ---
 
-### C6 · 模型切换点由架构师声明
+### D6 · 模型切换点由架构师声明
 
-`P1` / 1 周 / 依赖 C1 C3
+`P1` / 1 周 / 依赖 D1 D3
 
 **背景**
 你的原话：
@@ -700,7 +700,7 @@ class ModelSwitchPoint(BaseModel):
 
 2. 架构师用 function calling / structured output 产出（Phase A 的 `structured_output` 能力位在这里派上用场）。**架构师模型不支持结构化输出时，退回到"不切换"并警告**，不要用正则从自然语言里抠。
 
-3. `Coordinator` 在派发前应用切换点：给对应角色临时换模型，**换模型时必须走 C3 的交接转译**（因为源和目标 capabilities 变了）。
+3. `Coordinator` 在派发前应用切换点：给对应角色临时换模型，**换模型时必须走 D3 的交接转译**（因为源和目标 capabilities 变了）。
 
 4. **校验**：切换点里的 `role` 必须在团队里、`model` 必须在配置里、`from_task_index` 必须在范围内。任何一条不满足就**忽略该切换点并警告**，不要让整个流程失败。
 
@@ -715,9 +715,9 @@ class ModelSwitchPoint(BaseModel):
 
 ---
 
-### C7 · pair-program：driver + navigator
+### D7 · pair-program：driver + navigator
 
-`P1` / 1 周 / 依赖 C1 C3
+`P1` / 1 周 / 依赖 D1 D3
 
 **背景**
 你的原话：
@@ -762,7 +762,7 @@ navigator 是强模型，盯着滚动 diff，在实现漂移时打断并给出�
 
 4. **MC6 的强制校验**：navigator 的工具集含任何写工具（`write_file` / `edit_file` / `run_shell` 等）时，**加载团队就报错**。
 
-5. **成本上必须是可选的**：C4 的降级策略第一步就是跳过 navigator。
+5. **成本上必须是可选的**：D4 的降级策略第一步就是跳过 navigator。
 
 6. 测试：navigator 有写工具时被拒、按编辑次数触发、navigator 的意见进入 driver 下一轮、navigator 不产生文件改动、降级时被跳过。
 
@@ -775,9 +775,9 @@ navigator 是强模型，盯着滚动 diff，在实现漂移时打断并给出�
 
 ---
 
-### C8 · 归因仲裁
+### D8 · 归因仲裁
 
-`P1` / 1 周 / 依赖 C2 C3
+`P1` / 1 周 / 依赖 D2 D3
 
 **背景**
 §2.4。审计员说"方案问题"，架构师说"是实现没按方案来"——**master 裁决**。这是你说的 master 传话人职责的最高形态。
@@ -804,7 +804,7 @@ master 拿到四份材料：
   IMPL_ISSUE   → 打回 implement 阶段，coder 按原方案重做
   NOT_AN_ISSUE → 驳回该条发现，继续流程
 
-这是 Phase C 唯一新增的 LLM 决策点。它必须进 trace（和 Phase B 的 DB4
+这是 Phase D 唯一新增的 LLM 决策点。它必须进 trace（和 Phase B 的 DB4
 同一条规则）。
 """
 ```
@@ -825,9 +825,9 @@ master 拿到四份材料：
 
 ---
 
-### C9 · 并发与限流
+### D9 · 并发与限流
 
-`P1` / 5d / 依赖 C1
+`P1` / 5d / 依赖 D1
 
 **背景**
 不同 provider 的 rate limit 各不相同。多模型团队会同时打几家 API，**一家被限流不该拖垮全队**。
@@ -846,9 +846,9 @@ master 拿到四份材料：
 
 ---
 
-### C10 · Settings 与 CLI 适配
+### D10 · Settings 与 CLI 适配
 
-`P1` / 1 周 / 依赖 C1–C8，依赖主计划 Phase 2
+`P1` / 1 周 / 依赖 D1–D8，依赖主计划 Phase 2
 
 **背景**
 你的原话：
@@ -866,7 +866,7 @@ master 拿到四份材料：
     难度判断模型  [不使用 ▾]
     成本预算      [$1.00]
 
-    [ ] 启用多模型协作                            ← Phase C，默认关
+    [ ] 启用多模型协作                            ← Phase D，默认关
         └─ 打开后才显示：
            Master 模型   [___________ ▾]   ← 调度、中转、仲裁
            架构师        [___________ ▾]
@@ -879,7 +879,7 @@ master 拿到四份材料：
            ⚠ 审计员与编码员不能是同一个模型
 ```
 
-2. **实时预估成本**（用 C4 的定价表 + 历史平均 token 用量）。这是让用户对多模型的代价有直观感受的最有效手段。
+2. **实时预估成本**（用 D4 的定价表 + 历史平均 token 用量）。这是让用户对多模型的代价有直观感受的最有效手段。
 
 3. **配置校验即时反馈**：审计员 = 编码员时当场标红，不等到运行时。
 
@@ -911,9 +911,9 @@ master 拿到四份材料：
 
 ---
 
-### C11 · 模型组合评测矩阵
+### D11 · 模型组合评测矩阵
 
-`P1` / 1 周 / 依赖 C1–C9
+`P1` / 1 周 / 依赖 D1–D9
 
 **背景**
 **这张卡回答一个价值上万元的问题：哪个模型组合最划算？**
@@ -961,16 +961,16 @@ cheap-audit        ??%       $?.??       ??.?s         ?.?         ?.?
 
 ---
 
-### C12 · 文档
+### D12 · 文档
 
-`P1` / 5d / 依赖 C1–C11
+`P1` / 5d / 依赖 D1–D11
 
 1. 新建 `docs/modules/multi_model.md`：
    - §2 的三个真问题及解法
    - 七条设计约束（§3.2）
    - 跨模型交接的三步（strip / shape / fit）
    - 成本核算与降级策略
-   - **C11 的评测矩阵和推荐配置**
+   - **D11 的评测矩阵和推荐配置**
    - **明确写"什么时候不该用多模型"**
 2. 更新 `docs/modules/agents.md`（多模型章节）、`config.md`（定价表维护）、`frontend.md`（三层 settings）。
 3. 更新 `AGENTS.md`。
@@ -978,7 +978,7 @@ cheap-audit        ??%       $?.??       ??.?s         ?.?         ?.?
 
 ---
 
-## §5 Phase C 出口检查
+## §5 Phase D 出口检查
 
 ```powershell
 cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
@@ -990,7 +990,7 @@ python -m evals.cli run --backend agent --mode team  --compare-baseline evals\ba
 python -m evals.cli run --backend agent --mode team_multi --save-baseline
 ```
 
-**Phase C 完成的定义：**
+**Phase D 完成的定义：**
 - 前 5 条全绿，**solo 和 team 两条基线都零回归**（DC1）
 - 每角色不同模型能端到端跑通
 - master 模型独立配置，且不产出业务成果
@@ -1000,7 +1000,7 @@ python -m evals.cli run --backend agent --mode team_multi --save-baseline
 - 架构师声明的切换点能生效
 - pair-program 可用且 navigator 不写文件
 - 归因仲裁只在有分歧时触发
-- **C11 的矩阵已产出，推荐配置和负面结论都写进了文档**
+- **D11 的矩阵已产出，推荐配置和负面结论都写进了文档**
 
 ---
 
@@ -1016,14 +1016,14 @@ python -m evals.cli run --backend agent --mode team_multi --save-baseline
 python -c "from pathlib import Path; from core.agents.spec import load_team; load_team(Path('core/agents/teams/<新组合>.yaml')); print('ok')"
 ```
 
-4. 跑评测并加进 C11 的矩阵
+4. 跑评测并加进 D11 的矩阵
 5. **边际成本算不过账就不要留在默认配置里**
 
 ### 6.2 更新定价
 
 1. 改 `config/model_pricing.py`，**同时更新 `as_of`**
 2. 跑 `python -m pytest tests/test_agents/test_cost_accounting.py -q`
-3. 重跑 C11 矩阵——定价变了，最优组合可能也变了
+3. 重跑 D11 矩阵——定价变了，最优组合可能也变了
 
 ### 6.3 调整交接转译
 
@@ -1037,10 +1037,10 @@ python -c "from pathlib import Path; from core.agents.spec import load_team; loa
 
 | 预留 | 给谁 | 约束 |
 |---|---|---|
-| `HandoffTranslator` 的输入类型 | **Phase D** 多模态 | 现在是 `str`，Phase D 会拓宽成 content block。**不要在别处假设它一定是纯文本** |
-| `AgentSpec.extra` | **Phase D / E** | Phase D 放 `requires_vision`；Phase E 放 `persona_id` 和 `skills` |
-| `ModelCapabilities.supports_vision`（Phase A 已有） | **Phase D** | Phase D 的视觉角色靠它做能力校验 |
-| `CostAccountant` | **Phase D** | 图像 token 计费方式与文本不同，Phase D 要扩展 |
-| `ModelSwitchPoint` | **Phase E** | Persona 会需要"按 persona 切模型"，复用这个结构 |
-| 定价表 `as_of` 机制 | **Phase E** | 蒸馏需要对比"教师模型成本 vs 学生模型成本"，直接用这张表 |
-| `Blackboard` 的结构化产出 | **Phase E** | 蒸馏的训练数据来源就是黑板上的高质量产出 —— 见 `PHASE-E-PERSONA-AGENT-INTERFACE.md` §3.2 |
+| `HandoffTranslator` 的输入类型 | **Phase E** 多模态 | 现在是 `str`，Phase E 会拓宽成 content block。**不要在别处假设它一定是纯文本** |
+| `AgentSpec.extra` | **Phase E / E** | Phase E 放 `requires_vision`；Phase F 放 `persona_id` 和 `skills` |
+| `ModelCapabilities.supports_vision`（Phase A 已有） | **Phase E** | Phase E 的视觉角色靠它做能力校验 |
+| `CostAccountant` | **Phase E** | 图像 token 计费方式与文本不同，Phase E 要扩展 |
+| `ModelSwitchPoint` | **Phase F** | Persona 会需要"按 persona 切模型"，复用这个结构 |
+| 定价表 `as_of` 机制 | **Phase F** | 蒸馏需要对比"教师模型成本 vs 学生模型成本"，直接用这张表 |
+| `Blackboard` 的结构化产出 | **Phase F** | 蒸馏的训练数据来源就是黑板上的高质量产出 —— 见 `PHASE-F-PERSONA-AGENT-INTERFACE.md` §3.2 |

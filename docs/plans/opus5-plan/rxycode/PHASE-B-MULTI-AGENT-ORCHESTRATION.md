@@ -2,7 +2,7 @@
 
 > **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase B。
 > **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) 全部完成。
-> **后继**：[`PHASE-C-MULTI-MODEL-COLLABORATION.md`](./PHASE-C-MULTI-MODEL-COLLABORATION.md)
+> **后继**：[`PHASE-C-RXYCODE-DESKTOP.md`](./PHASE-C-RXYCODE-DESKTOP.md)
 >
 > **一句话目标**：把"一个 Agent 干所有事"变成"一个团长带一支专家团"——团长不干活只调度，成员各有角色、工具集、记忆域，所有跨成员通信经团长中转，全程有 SOP 约束、有机械验证门、有成本熔断。
 >
@@ -25,7 +25,7 @@
 | [§4 任务卡 B1–B15](#4-任务卡) | 逐个执行 |
 | [§5 出口检查](#5-phase-b-出口检查) | 怎么算做完 |
 | [§6 扩展手册](#6-扩展手册) | 加角色、加专家团、加 SOP |
-| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase C/D/E 的预留 |
+| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase C/D/E/F 的预留 |
 
 ---
 
@@ -258,7 +258,7 @@ roles:
 
 **决策 4：审计结论绑定 diff 哈希。** 抄 karajan。审计通过的是"这一份具体的 diff"，coder 改完之后旧的通过结论自动失效。这防止"审计通过 → 又偷偷改了 → 直接提交"。
 
-**atmux 的 pair-program 角色**对应你说的"grok 和 composer 共同写代码"：driver（快模型写代码、跑测试）+ navigator（强模型盯着共享 worktree 的滚动 diff，发现实现漂移就打断，**自己不编辑文件**）。这个模式留到 Phase C 实现。
+**atmux 的 pair-program 角色**对应你说的"grok 和 composer 共同写代码"：driver（快模型写代码、跑测试）+ navigator（强模型盯着共享 worktree 的滚动 diff，发现实现漂移就打断，**自己不编辑文件**）。这个模式留到 Phase D 实现。
 
 ### 2.5 必须正视的负面数据
 
@@ -301,12 +301,12 @@ Anthropic 公开了他们多 Agent 研究系统的真实数据：
 | CrewAI | `Agent(role, goal, backstory)` + `Task(expected_output)` 的角色抽象形状 | B3 |
 | MetaGPT | SOP 编码进流程；**结构化文档通信而非自由对话**；角色 profile（name/goal/constraints） | B3 B5 |
 | WorkBuddy 专家团 | 团长不干活只调度；建团/派活/中转/收口四步；**所有跨成员流量经团长**；任务预检做能力匹配 | B6 B7 |
-| AgentMux | 确定性状态机 SOP；per-role provider/model 配置；"agents don't freelance" | B5、Phase C |
+| AgentMux | 确定性状态机 SOP；per-role provider/model 配置；"agents don't freelance" | B5、Phase D |
 | karajan-code | 确定性检查先于 AI 审查；**审计结论绑定 diff sha256** | B8 |
 | local-ai-agent-orchestrator | coder 与 reviewer 之间的机械验证（文件存在、AST 可解析） | B8 |
 | Anthropic | 15x 成本事实；熔断与预算上限；三条"单 Agent 也能用"的模式 | B9 B14 |
 | LangGraph | supervisor 拓扑、checkpointing、条件边 | B5 B6 |
-| atmux | pair-program 的 driver/navigator | Phase C |
+| atmux | pair-program 的 driver/navigator | Phase D |
 | CodeBuddy Agent Teams | **反面参考**：成员直连，我们不采纳 | §2.3 |
 
 ---
@@ -333,7 +333,7 @@ Anthropic 公开了他们多 Agent 研究系统的真实数据：
     ▼           ▼                    ▼
   SOLO        TEAM              TEAM_MULTI_MODEL
  现有单Agent   专家团（本 Phase）    专家团 + 每角色不同模型
- 路径不变                          （Phase C）
+ 路径不变                          （Phase D）
                 │
                 ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -682,7 +682,7 @@ class AgentSpec(BaseModel):
     constraints: list[str] = Field(default_factory=list)
 
     #: 使用的模型 id。None = 跟随会话默认模型。
-    #: Phase B 阶段全部留 None（同模型）；Phase C 才按角色配不同模型。
+    #: Phase B 阶段全部留 None（同模型）；Phase D 才按角色配不同模型。
     model: str | None = None
 
     #: 允许的工具名。None = 全部工具；[] = 无工具（纯推理角色）。
@@ -707,10 +707,10 @@ class AgentSpec(BaseModel):
     may_consult: list[str] = Field(default_factory=list)
 
     #: 扩展字段。按命名空间约定使用，避免不同 Phase 的扩展互相踩：
-    #:   pair.*      Phase C  结对编程
-    #:   vision.*    Phase D  视觉能力
-    #:   persona.*   Phase E  人格
-    #: 详见 PHASE-E-PERSONA-AGENT-INTERFACE.md 的 E2。
+    #:   pair.*      Phase D  结对编程
+    #:   vision.*    Phase E  视觉能力
+    #:   persona.*   Phase F  人格
+    #: 详见 PHASE-F-PERSONA-AGENT-INTERFACE.md 的 F2。
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -916,7 +916,7 @@ git diff --exit-code frontend/protocol-client/src/generated/
 - [ ] 类型已进 `schema.json`，TS 类型已重新生成并提交
 - [ ] 10 类校验错误都有测试
 - [ ] 环检测覆盖自环、二元环、三元环
-- [ ] `extra` 的命名空间约定已写进注释（Phase E 的 E2）
+- [ ] `extra` 的命名空间约定已写进注释（Phase F 的 F2）
 
 ---
 
@@ -1369,7 +1369,7 @@ def test_partial_result_tells_the_user_it_was_truncated():
 class ExecutionMode(str, Enum):
     SOLO = "solo"                      # 现有单 Agent 路径，行为不变
     TEAM = "team"                      # 专家团，同一个模型
-    TEAM_MULTI_MODEL = "team_multi"    # 专家团 + 每角色不同模型（Phase C）
+    TEAM_MULTI_MODEL = "team_multi"    # 专家团 + 每角色不同模型（Phase D）
 
 
 @dataclass
@@ -1404,7 +1404,7 @@ class RoutingDecision:
 |---|---|
 | `/solo <任务>` | 强制单 Agent |
 | `/team <任务>` | 强制专家团 |
-| `/team-multi <任务>` | 强制专家团 + 多模型（Phase C 之后可用） |
+| `/team-multi <任务>` | 强制专家团 + 多模型（Phase D 之后可用） |
 | `/why-mode` | 打印上一次路由决策的依据 |
 
 5. **默认关闭多 Agent**（DB7）：`settings.agents.enabled` 默认 `False`。关闭时 `ModeRouter` 恒返回 SOLO，**连第 2 级都不跑**（零开销）。
@@ -1596,14 +1596,14 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
 
 4. `AgentEvent` 推给前端，CLI 和 Desktop 都能显示当前角色和阶段。
 
-5. **同时做 Phase E 的 E3**（蒸馏数据埋点）。E3 要往 span 里加一组可选的原始 IO 记录，和这一卡改的是同一处代码——分两次改是浪费。见 `PHASE-E-PERSONA-AGENT-INTERFACE.md` §4 的 E3。
+5. **同时做 Phase F 的 F3**（蒸馏数据埋点）。F3 要往 span 里加一组可选的原始 IO 记录，和这一卡改的是同一处代码——分两次改是浪费。见 `PHASE-F-PERSONA-AGENT-INTERFACE.md` §4 的 F3。
 
 **完成判据**
 - [ ] replay 能还原完整委派树，含咨询和验证
 - [ ] 预算消耗在树顶可见
 - [ ] 路由决策依据可见
 - [ ] 前端能显示当前角色
-- [ ] Phase E 的 E3 一并完成
+- [ ] Phase F 的 F3 一并完成
 
 ---
 
@@ -1628,7 +1628,7 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
        难度判断模型  [不使用 ▾]                 ← 你要的"判难度的模型用户自选"
        token 预算    [500000]
        时长上限      [1800] 秒
-       [ ] 启用多模型协作（每角色不同模型）      ← Phase C 才可用，现在置灰
+       [ ] 启用多模型协作（每角色不同模型）      ← Phase D 才可用，现在置灰
 ```
 
 **关闭时整块隐藏**，用户看不到任何多 Agent 相关配置。
@@ -1709,7 +1709,7 @@ auto            ??%        ??,???        ??.?s        $?.??         ?.?
    - 四道成本闸门
    - **B14 的评测结论，明确写"什么时候不该用多 Agent"**
    - 加角色 / 加专家团 / 加 SOP 的步骤（照抄 §6）
-   - **Phase E 的 E6 要求的"程序化构造 AgentSpec"一节**
+   - **Phase F 的 F6 要求的"程序化构造 AgentSpec"一节**
 2. 更新 `docs/modules/core.md`、`tools.md`（per-agent 注册表）、`cache.md`（agent namespace）、`memory.md`（memory_scope）、`recovery.md`（breaker key）、`frontend.md`（settings 分层）。
 3. 更新 `AGENTS.md` 架构图。
 4. 更新主计划的 Phase 表。
@@ -1736,7 +1736,7 @@ Select-String -Path *.py,core\*.py,tools\*.py -Pattern "_run_with_subagents|SubA
 - 三级难度路由可用，用户能覆盖，默认关闭
 - **B14 的评测矩阵已产出，结论（含负面结论）写进了文档**
 - `docs/modules/agents.md` 可独立指导加新角色和新专家团
-- **Phase E 的 E1 / E2 / E3 / E5 / E6 五张预留卡已完成**（见 `PHASE-E-PERSONA-AGENT-INTERFACE.md` §4）
+- **Phase F 的 F1 / F2 / F3 / F5 / F6 五张预留卡已完成**（见 `PHASE-F-PERSONA-AGENT-INTERFACE.md` §4）
 
 ---
 
@@ -1783,11 +1783,11 @@ python -m evals.cli run --backend agent --mode team --save-baseline
 
 | 预留 | 给谁 | 约束 |
 |---|---|---|
-| `AgentSpec.model` | **Phase C** 多模型协作 | Phase B 全部留 `None`（同模型）。Phase C 才按角色配不同模型 |
-| `ExecutionMode.TEAM_MULTI_MODEL` | **Phase C** | 枚举值先占上，Phase B 阶段路由到它会明确报错 |
-| `AgentSpec.extra` 的命名空间约定 | **Phase C / D / E** | `pair.*` / `vision.*` / `persona.*`，见 Phase E 的 E2 |
-| Provider 无状态单例（Phase A 的 DC2） | **Phase C** | 多个 runtime 会并发调用同一 provider 实例 |
-| `Blackboard` 条目的 value 是 `str` | **Phase D** 多模态 | Phase D 会拓宽成 content block，**现在不要在别处假设它一定是纯文本** |
-| `AgentSpec.tools` 的作用域机制 | **Phase E** PersonaAgent | Persona 可能需要**运行时**替换工具集而不只是构造时。**如果你倾向要这个能力，在 B4 就把 `_build_scoped_registry` 设计成可运行时替换的，成本几乎为零**；Phase B 做完再改要动 `AgentRuntime` 核心。见 Phase E §6.1 |
-| `TeamSpec` 的 YAML 加载路径 | **Phase E** | 除了内置的 `core/agents/teams/`，还要扫用户级目录 `~/.rxycode/teams/` |
-| `VerdictRecord` + 机械验证结果 | **Phase E** 蒸馏 | 这两个是蒸馏质量标注的来源（Phase E 的 E4）。**不要把它们做成只在内存里存在的临时对象** |
+| `AgentSpec.model` | **Phase D** 多模型协作 | Phase B 全部留 `None`（同模型）。Phase D 才按角色配不同模型 |
+| `ExecutionMode.TEAM_MULTI_MODEL` | **Phase D** | 枚举值先占上，Phase B 阶段路由到它会明确报错 |
+| `AgentSpec.extra` 的命名空间约定 | **Phase D / E / F** | `pair.*` / `vision.*` / `persona.*`，见 Phase F 的 F2 |
+| Provider 无状态单例（Phase A 的 DC2） | **Phase D** | 多个 runtime 会并发调用同一 provider 实例 |
+| `Blackboard` 条目的 value 是 `str` | **Phase E** 多模态 | Phase E 会拓宽成 content block，**现在不要在别处假设它一定是纯文本** |
+| `AgentSpec.tools` 的作用域机制 | **Phase F** PersonaAgent | Persona 可能需要**运行时**替换工具集而不只是构造时。**如果你倾向要这个能力，在 B4 就把 `_build_scoped_registry` 设计成可运行时替换的，成本几乎为零**；Phase B 做完再改要动 `AgentRuntime` 核心。见 Phase F §6.1 |
+| `TeamSpec` 的 YAML 加载路径 | **Phase F** | 除了内置的 `core/agents/teams/`，还要扫用户级目录 `~/.rxycode/teams/` |
+| `VerdictRecord` + 机械验证结果 | **Phase F** 蒸馏 | 这两个是蒸馏质量标注的来源（Phase F 的 F4）。**不要把它们做成只在内存里存在的临时对象** |

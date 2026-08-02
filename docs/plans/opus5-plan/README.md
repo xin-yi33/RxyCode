@@ -45,7 +45,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**两处排期硬依赖**：LinkAgent 的 L2 与 L9-1~L9-3 等 RxyCode **Phase 2**（协议，约 10-23）；L9-4~L9-8 等 **Phase 3**（Electron 壳，约 12-18）。
+**两处排期硬依赖**：LinkAgent 的 L2 与 L9-1~L9-3 等 RxyCode **Phase 2**（协议）；L9-4~L9-8 等 **Phase C**（完整 Desktop 壳、扩展契约和基础工作台）。主计划 **Phase 3** 只是 Phase C 的基础壳前置。
 
 **关键约束：RxyCode 本体不因为 LinkAgent 而改动一行。**
 
@@ -68,9 +68,10 @@ docs/plans/opus5-plan/
 │   ├── 00-EXECUTION-PLAN.md            主计划 Phase 0–3
 │   ├── PHASE-A-MODEL-ADAPTATION-LAYER.md
 │   ├── PHASE-B-MULTI-AGENT-ORCHESTRATION.md
-│   ├── PHASE-C-MULTI-MODEL-COLLABORATION.md
-│   ├── PHASE-D-MULTIMODAL.md
-│   └── PHASE-E-PERSONA-AGENT-INTERFACE.md
+│   ├── PHASE-C-RXYCODE-DESKTOP.md     ← 完整桌面端工作台
+│   ├── PHASE-D-MULTI-MODEL-COLLABORATION.md
+│   ├── PHASE-E-MULTIMODAL.md
+│   └── PHASE-F-PERSONA-AGENT-INTERFACE.md
 │
 └── linkagent/                       ← LinkAgent 的施工文档
     ├── README.md                       路线索引与排期
@@ -124,11 +125,12 @@ docs/plans/opus5-plan/
 |---|---|
 | RxyCode 做 Phase 0/1（止血、评测） | 与 LinkAgent 完全无关，随便并行 |
 | RxyCode 做 Phase 2（协议 + Session 重构） | ⚠ 会改 `AgentV2` 的对外形态，LinkAgent 的 L2 桥接层要跟着调整。**LinkAgent 的 L2 与 L9-1~L9-3 等 Phase 2 落地**，否则要返工 |
-| RxyCode 做 **Phase 3**（Electron Desktop） | ⚠ **LinkAgent 的桌面端 fork 它的壳**（L9-4~L9-8），必须等。约 2026-12-18 |
-| RxyCode 做 Phase A/B/C/D/E | LinkAgent 只要不用这些新能力就不受影响 |
+| RxyCode 做 **Phase 3**（Electron 壳） | 只提供 Desktop 的基础壳、协议接入和最小交互；不等于完整桌面工作台 |
+| RxyCode 做 **Phase C**（完整 Desktop） | ⚠ **LinkAgent 的 L9-4~L9-8 应基于 Phase C 的扩展契约和稳定壳 fork**，否则会重复实现项目、Thread、审批和 diff 基础设施 |
+| RxyCode 做 Phase A/B/D/E/F | LinkAgent 只要不用这些新能力就不受影响；涉及多模型/多模态时以 capability 兼容为准 |
 | LinkAgent 做 L0/L1（建仓、EKO 核心） | 完全不碰 RxyCode，随时可做 |
 
-**最省事的排法**：LinkAgent 先做 L0 + L1（纯自己的代码，零依赖），这段时间 RxyCode 推进 Phase 0–2；协议稳定后做 L2→L3；等 Phase 3 的那段空档投给 L4/L5/L7/L8，12 月再做桌面前端。
+**最省事的排法**：LinkAgent 先做 L0 + L1（纯自己的代码，零依赖），这段时间 RxyCode 推进 Phase 0–2 和 Phase A/B；协议稳定后做 L2→L3；等 RxyCode Phase C 的 Desktop 扩展契约冻结后，再做 L9 桌面前端。L4/L5/L7/L8 可在等待窗口并行推进。
 
 ---
 

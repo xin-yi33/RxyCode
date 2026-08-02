@@ -1,7 +1,7 @@
 # L9 · Desktop 应用（基于 RxyCode Desktop）
 
 > **前置（后端侧 L9-1 ~ L9-2 · Composer）**：LinkAgent [`L3`](./L3-RETRIEVAL-AND-SCOPE.md) 完成 + **RxyCode Phase 2 落地**（`protocol/` 与 `appserver/` 存在）
-> **前置（前端侧 L9-3 ~ L9-8 · Composer 主写）**：L9-1 schema 已合并；L9-4 起还要 **RxyCode Phase 3 落地**（有 Electron 壳可以 fork）
+> **前置（前端侧 L9-3 ~ L9-8 · Composer 主写）**：L9-1 schema 已合并；L9-4 起还要 **RxyCode Phase C 落地**（完整 Desktop 壳、扩展契约和基础工作台可以 fork）。主计划 Phase 3 只是它的基础壳前置。
 > **产出**：一个能装、能跑、能看见自己经验层的桌面应用
 > **工时**：17 天
 > **卡数**：8 张（L9-1 ~ L9-8）

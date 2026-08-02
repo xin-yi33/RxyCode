@@ -69,7 +69,7 @@
 | # | 依赖 | 违反的后果 |
 |---|---|---|
 | ① | **LinkAgent L2 ← RxyCode Phase 2** | Phase 2 改 `AgentV2` 对外形态，桥接层要跟着改 |
-| ② | **LinkAgent L9-4~L9-8 ← RxyCode Phase 3** | 桌面端 fork Phase 3 的 Electron 壳，没壳可 fork |
+| ② | **LinkAgent L9-4~L9-8 ← RxyCode Phase C** | Desktop 基础壳来自主计划 Phase 3，但完整项目/Thread/审批/diff/worktree 工作台和扩展契约必须等 Phase C |
 | ③ | **LinkAgent L5 ← L3 完成并验证** | 论文实测：作用域没修就开反馈演化，DeepSeek 上是**净负收益 −2.69 pp**。做反了会变差，不是"最好先做" |
 | ④ | **一切 ← RxyCode Phase 1** | 没有可信评测，你无法判断 agent 的产出有没有搞坏东西 |
 
@@ -111,9 +111,9 @@
   Composer ── RxyCode Phase 0/1/2 → LinkAgent L0–L8，串行推进
   Grok     ── 空闲 / 查资料 / 等 schema 合并后再做被委托的视觉环节
 
-常见配置 B（Phase 3 / L9 前端阶段，辅助收益最大）
-  Composer ── 主写 RxyCode Phase 3 Desktop（D1–D8）或 LinkAgent L9
-  Grok     ── 并行做 D3/D4/D5、L9-4/L9-5 等卡的视觉验收、截图对比、换肤对照
+常见配置 B（Phase 3 / Phase C / L9 前端阶段，辅助收益最大）
+  Composer ── 主写 RxyCode Phase 3 基础壳、Phase C 完整 Desktop（C1–C16）或 LinkAgent L9
+  Grok     ── 并行做 C6/C9/C10/C15、L9-4/L9-5 等卡的视觉验收、截图对比、换肤对照
 ```
 
 **Grok 空闲不是问题。** 为了填满窗口让它改 Python 或接管前端卡本体 = 破坏 [`MODEL-ASSIGNMENT`](./MODEL-ASSIGNMENT.md) 的分工。
@@ -198,7 +198,7 @@ Phase 2 是 **RxyCode Phase 3 和 LinkAgent L2/L9 共同的地基**，优先级�
 
 ### 阶段 3 · 辅助收益最大（Composer 主写 Desktop + LinkAgent，Grok 做视觉环节）
 
-**这是分模型设计的主场**：Composer 主写 RxyCode Phase 3 Desktop（D1–D8 全部），Grok 在 D3/D4/D5 等 UI 卡的多模态环节并行辅助；LinkAgent 后端链由 Composer 在间隙穿插。
+**这是分模型设计的主场**：Composer 主写 RxyCode Phase 3 基础壳和 Phase C 完整 Desktop（C1–C16 全部），Grok 在 C6/C9/C10/C15 等 UI 卡的多模态环节并行辅助；LinkAgent 后端链由 Composer 在间隙穿插。
 
 | Composer（主写） | Grok（辅助） |
 |---|---|
@@ -248,7 +248,7 @@ L2→L3→L4→L5 是串行的。L7 和 L8 是旁链，**穿插在等待和审�
 |---|---|
 | **经验层有显著收益** | 做 L9 桌面端。这时 Phase 3 已完成，壳现成 |
 | **无显著收益，但某个模块有** | 只留那个模块，砍掉其余；**不做 L9**，先把有效的部分做扎实 |
-| **完全无收益** | **停 LinkAgent。** Composer 回 RxyCode Phase A → Phase B；Grok 空闲或辅助 Phase D 的图片类 UI |
+| **完全无收益** | **停 LinkAgent。** Composer 回 RxyCode Phase A → Phase B；Grok 空闲或辅助 Phase E 的图片类 UI |
 
 **必须真的准备好接受第三种结果。** 论文的 +5.27 pp 是在 100 条受控序列、两个特定模型、沙箱工具上测的，LinkAgent 的任务分布、工具、执行路径全都不同，而且**主动改了作用域机制**。[`APPENDIX-B`](./linkagent/APPENDIX-B-PAPER-EVIDENCE.md)：只能测，不能推。
 
@@ -309,7 +309,7 @@ agent 重做一张卡的成本 ≈ 一次执行 + 一次审查，比人重做低
 | 原建议 | 现在怎么看 |
 |---|---|
 | "LinkAgent L2 等 RxyCode Phase 2，否则接受一次返工" | **仍然建议等**，理由是怕你审两遍。Composer 空闲时可提前做 L2——契约测试会报警 |
-| "L9-4 等 Phase 3" | **必须等**——没有壳就没有可 fork 的东西 |
+| "L9-4 等 Phase C" | **必须等**——没有完整 Desktop 壳、扩展契约和基础工作台就不应重复造一套 |
 | "L5 等 L3" | **必须等**，语义约束，做反了效果是负的 |
 | "Grok 空闲时写点代码" | **永远不行**——Grok 只做多模态环节，跨界比返工更贵（审查边界崩了） |
 
@@ -369,6 +369,6 @@ agent 重做一张卡的成本 ≈ 一次执行 + 一次审查，比人重做低
 
 > ⚠ **L10-4 不是"门"，是"欠债"。** 必须早于 L7 首次基线，否则基线测出来的治理有效性不可信。
 
-**推迟到决策点之后再谈的**：RxyCode Phase B（多 Agent）、Phase C（多模型）、Phase D（多模态）。
+**推迟到决策点之后再谈的**：RxyCode Phase B（多 Agent）、Phase D（多模型）、Phase E（多模态）、Phase F（PersonaAgent）。RxyCode Phase C Desktop 是主工作台路线，不应和这些高级能力一起无限后推。
 
 > 推迟 Phase B 是有依据的：[`PHASE-B`](./rxycode/PHASE-B-MULTI-AGENT-ORCHESTRATION.md) §2.5 —— 多 Agent 消耗 15 倍 token，编码任务不是多 Agent 强项。

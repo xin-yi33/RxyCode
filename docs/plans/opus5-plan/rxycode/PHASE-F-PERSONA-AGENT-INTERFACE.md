@@ -1,11 +1,11 @@
-# Phase E · PersonaAgent 接口预留（Interface Reservation）
+# Phase F · PersonaAgent 接口预留（Interface Reservation）
 
-> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 之后的**开放式扩展位**，编号 Phase E。
-> **前置条件**：无硬前置。§4 的预留卡**要在 Phase B/C/D 执行过程中顺手做掉**，§5 的实现留到你想清楚再说。
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 之后的**开放式扩展位**，编号 Phase F。
+> **前置条件**：无硬前置。§4 的预留卡**要在 Phase B/C/D/E 执行过程中顺手做掉**，§5 的实现留到你想清楚再说。
 >
-> **这份文档和 A/B/C/D 不是一类东西。**
+> **这份文档和 A/B/C/D/E 不是一类东西。**
 >
-> A/B/C/D 是"照着做就能做完"的施工图。**Phase E 是一张地基预留图**——它不告诉你 PersonaAgent 怎么建，只保证你以后想建的时候，不用把已经盖好的楼拆掉。
+> A/B/C/D/E 是"照着做就能做完"的施工图。**Phase F 是一张地基预留图**——它不告诉你 PersonaAgent 怎么建，只保证你以后想建的时候，不用把已经盖好的楼拆掉。
 >
 > **创建**：2026-07-31
 > **§4 预留卡工时**：合计约 6 天，分散在 Phase B/C/D 里做
@@ -30,7 +30,7 @@
 >
 > **对本文档的影响：§4 的六张预留卡全部照做不变。** 埋点、元数据、信任边界这三件事无论 PersonaAgent 在哪个仓库实现都需要，而且不提前做以后补不回来。
 >
-> 唯一要修正的是 **E1 的 `priority` 字段**：手填的数字只当**初始值**，真正的排序靠积累的证据（新论文的动态综合置信度按验证/执行/用户三类证据加权计算）。手填的数字会过期，证据不会。
+> 唯一要修正的是 **F1 的 `priority` 字段**：手填的数字只当**初始值**，真正的排序靠积累的证据（新论文的动态综合置信度按验证/执行/用户三类证据加权计算）。手填的数字会过期，证据不会。
 
 ---
 
@@ -41,7 +41,7 @@
 | [§1 这份文档要解决什么](#1-这份文档要解决什么) | 为什么现在只留接口不实现 |
 | [§2 现状盘点](#2-现状盘点skill-系统已经有什么) | 已有的 skill 系统，附 file:line |
 | [§3 两条能力线的接口面](#3-两条能力线的接口面) | Skill Management / 对话蒸馏 |
-| [§4 预留卡 E1–E6](#4-预留卡现在就要做的) | **现在就要做的**，不做以后补不回来 |
+| [§4 预留卡 F1–F6](#4-预留卡现在就要做的) | **现在就要做的**，不做以后补不回来 |
 | [§5 以后再说的](#5-以后再说的不要现在做) | 明确列出不要现在做的 |
 | [§6 你需要决定的事](#6-你需要决定的事) | 设计未定的点，回头填 |
 
@@ -69,7 +69,7 @@ Skill 系统可以随时重构——代码在那儿，改就是了。但**蒸馏
 
 如果 Phase B/C 跑了三个月才想起来要埋点，**这三个月最有价值的数据（真实任务 × 真实模型 × 真实质量标注）就永久没有了**，只能从头再跑一遍花真金白银去补。
 
-**E3 和 E4 是这份文档里唯二"不做就真的亏钱"的卡。**
+**F3 和 F4 是这份文档里唯二"不做就真的亏钱"的卡。**
 
 ---
 
@@ -101,7 +101,7 @@ RxyCode **已经有一套能用的 skill 系统**。做 PersonaAgent 不是从�
 | **无使用记录** | 加载了什么、效果如何，全部没记 | **蒸馏没有数据源** |
 | **⚠ 信任面很大** | 从任意 GitHub 仓库下载文本，直接进 prompt | Persona 是常驻的，一个恶意 skill 会**长期**影响 Agent 行为 |
 
-最后一条要单独说：`skill_manager.py:220-245` 会用 GitHub 搜索 API 找任意仓库，`_download_skill_async` 把找到的 markdown 直接落盘，`load_skill` 把它整个塞进 prompt。**文件层面的安全做得很好，但内容层面完全没有信任边界。** 现在影响范围是"这一次调用"，做成 Persona 之后就是"这个人格的每一次调用"。E5 处理这个。
+最后一条要单独说：`skill_manager.py:220-245` 会用 GitHub 搜索 API 找任意仓库，`_download_skill_async` 把找到的 markdown 直接落盘，`load_skill` 把它整个塞进 prompt。**文件层面的安全做得很好，但内容层面完全没有信任边界。** 现在影响范围是"这一次调用"，做成 Persona 之后就是"这个人格的每一次调用"。F5 处理这个。
 
 ---
 
@@ -125,7 +125,7 @@ Persona = 身份（我是谁）
 
 ```
 Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  ──►  Phase B 的 AgentRuntime
-（用户写的）        （E1 提供）           （E6 提供的接口）      （已有，不用改）
+（用户写的）        （F1 提供）           （F6 提供的接口）      （已有，不用改）
 ```
 
 **这个洞察决定了 §4 的所有预留卡**：我们不需要为 Persona 预留一个新的运行时，只需要保证 `AgentSpec` 能被程序化地构造，且 skill 有足够的元数据可供构造。
@@ -150,9 +150,9 @@ Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  
 | 蒸馏需要的 | 已有的来源 |
 |---|---|
 | 输入 / 输出 | Phase B 的 `Blackboard`（结构化产出，比原始对话干净得多） |
-| 模型标识 | Phase C 的 per-role model binding |
-| **质量信号（最难的一环）** | Phase B 的机械验证门 + `VerdictRecord`；Phase C 的 `ArbitrationRecord` |
-| 成本对比（教师 vs 学生） | Phase C 的 `CostAccountant` + 定价表 |
+| 模型标识 | Phase D 的 per-role model binding |
+| **质量信号（最难的一环）** | Phase B 的机械验证门 + `VerdictRecord`；Phase D 的 `ArbitrationRecord` |
+| 成本对比（教师 vs 学生） | Phase D 的 `CostAccountant` + 定价表 |
 | 效果验证 | 主计划 Phase 1 的 evals harness |
 
 **质量信号这一条特别值钱。** 一般项目做蒸馏最头疼的是"怎么知道这条样本好不好"，通常只能靠人工标注或者再花钱让大模型打分。而 Phase B 的流水线**天然会产生客观标注**：
@@ -165,7 +165,7 @@ Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  
     = 这是一条金标准样本
 ```
 
-**这是免费的高质量标注，前提是 E3/E4 把它记下来。** 不记，它就随着进程结束消失了。
+**这是免费的高质量标注，前提是 F3/F4 把它记下来。** 不记，它就随着进程结束消失了。
 
 ---
 
@@ -175,16 +175,16 @@ Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  
 
 | 卡 | 什么时候做 | 工时 | 不做的代价 |
 |---|---|---|---|
-| E1 | Phase B 开始前 | 1d | skill 永远没有元数据，后面全部悬空 |
-| E2 | Phase B 的 B3 一起 | 0.5d | 协议 schema 要改，TS 类型要重生成，破坏兼容 |
-| E3 | Phase B 的 B12 一起 | 1.5d | **蒸馏数据永久丢失** |
-| E4 | Phase C 的 C11 一起 | 1.5d | **质量标注永久丢失** |
-| E5 | Phase B 开始前 | 1d | Persona 上线后再补，等于承认之前有洞 |
-| E6 | Phase B 全部做完后 | 0.5d | 无（这张只是写文档） |
+| F1 | Phase B 开始前 | 1d | skill 永远没有元数据，后面全部悬空 |
+| F2 | Phase B 的 B3 一起 | 0.5d | 协议 schema 要改，TS 类型要重生成，破坏兼容 |
+| F3 | Phase B 的 B12 一起 | 1.5d | **蒸馏数据永久丢失** |
+| F4 | Phase D 的 D11 一起 | 1.5d | **质量标注永久丢失** |
+| F5 | Phase B 开始前 | 1d | Persona 上线后再补，等于承认之前有洞 |
+| F6 | Phase B 全部做完后 | 0.5d | 无（这张只是写文档） |
 
 ---
 
-### E1 · Skill 元数据 frontmatter
+### F1 · Skill 元数据 frontmatter
 
 `P1` / 1d / **Phase B 开始前做**
 
@@ -261,7 +261,7 @@ def list_skill_metadata() -> list[SkillMetadata]:
 
 ---
 
-### E2 · 协议里预留 persona 命名空间
+### F2 · 协议里预留 persona 命名空间
 
 `P1` / 0.5d / **和 Phase B 的 B3 一起做**
 
@@ -277,9 +277,9 @@ Phase B 的 `AgentSpec` 会进 `protocol/schema.json` 并生成 TypeScript 类�
 ```python
     #: 扩展字段。按命名空间约定使用，避免不同 Phase 的扩展互相踩：
     #:
-    #:   pair.*      Phase C  结对编程（pair.with / pair.role）
-    #:   vision.*    Phase D  视觉能力（vision.required）
-    #:   persona.*   Phase E  人格（persona.id / persona.skills / persona.source）
+    #:   pair.*      Phase D  结对编程（pair.with / pair.role）
+    #:   vision.*    Phase E  视觉能力（vision.required）
+    #:   persona.*   Phase F  人格（persona.id / persona.skills / persona.source）
     #:
     #: 用 extra 而不是加一等字段，是为了不让还没定型的功能污染协议 schema。
     #: 某个命名空间稳定之后，再提升为一等字段并同步生成 TS 类型。
@@ -301,7 +301,7 @@ def test_extra_namespaces_survive_roundtrip():
 
 ---
 
-### E3 · 蒸馏数据采集埋点
+### F3 · 蒸馏数据采集埋点
 
 `P0` / 1.5d / **和 Phase B 的 B12（trace）一起做**
 
@@ -332,7 +332,7 @@ class LlmCallRecord:
     stage: str
     model: str
     provider: str
-    #: 发给模型的完整消息（脱敏后，见 E5）
+    #: 发给模型的完整消息（脱敏后，见 F5）
     messages: list[dict] | None = None
     #: 模型的完整响应
     response: str | None = None
@@ -340,7 +340,7 @@ class LlmCallRecord:
     output_tokens: int = 0
     cost_usd: float = 0.0
     duration_s: float = 0.0
-    #: 质量信号由 E4 回填，采集时先留空
+    #: 质量信号由 F4 回填，采集时先留空
     quality: "QualitySignal | None" = None
 ```
 
@@ -369,11 +369,11 @@ def _record_safely(record: LlmCallRecord) -> None:
 
 ---
 
-### E4 · 质量信号回填
+### F4 · 质量信号回填
 
-`P0` / 1.5d / **和 Phase C 的 C11（评测矩阵）一起做**
+`P0` / 1.5d / **和 Phase D 的 D11（评测矩阵）一起做**
 
-> ⚠ 与 E3 同等重要。E3 采集了数据但没有标注，**没有标注的数据对蒸馏几乎没用**。
+> ⚠ 与 F3 同等重要。F3 采集了数据但没有标注，**没有标注的数据对蒸馏几乎没用**。
 
 **背景**
 §3.2 的核心洞察：Phase B 的流水线天然产生客观质量标注，不用人工标、不用大模型打分。
@@ -398,7 +398,7 @@ class QualitySignal:
     audit_passed: bool | None
     #: 这个阶段被打回了几次（0 = 一次做对）
     retry_count: int
-    #: Phase C 的归因仲裁次数（>0 说明这次协作有摩擦）
+    #: Phase D 的归因仲裁次数（>0 说明这次协作有摩擦）
     arbitration_count: int
     #: 整个任务最终成功了吗
     task_succeeded: bool
@@ -437,7 +437,7 @@ python -m core.distillation export --since 2026-08-01 --gold-only --out dataset.
 
 ---
 
-### E5 · Skill 信任边界
+### F5 · Skill 信任边界
 
 `P1` / 1d / **Phase B 开始前做**
 
@@ -489,7 +489,7 @@ class SkillProvenance:
 
 ---
 
-### E6 · 写下 AgentSpec 的构造契约
+### F6 · 写下 AgentSpec 的构造契约
 
 `P2` / 0.5d / **Phase B 全部做完后**
 
@@ -549,15 +549,15 @@ def test_agent_spec_can_be_built_without_any_file():
 | 不要现在做 | 为什么可以推迟 |
 |---|---|
 | Persona 的定义格式（YAML? 对话式生成?） | 纯新增文件格式，不影响任何已有代码 |
-| Persona 的自动激活逻辑 | 需要先有 E1 的元数据和一批真实 skill 才知道怎么设计 |
+| Persona 的自动激活逻辑 | 需要先有 F1 的元数据和一批真实 skill 才知道怎么设计 |
 | 多 skill 冲突消解 | 等真的装了 5 个 skill 打架了再说，现在设计是空想 |
 | Skill 市场 / 分享机制 | 纯产品功能 |
 | **蒸馏训练本身** | 这是完全不同的工程（数据清洗、训练框架、模型托管），不该在这个仓库里 |
 | 学生模型托管 / 推理服务 | 同上。Phase A 的 provider 层已经能接任意 OpenAI 兼容端点，学生模型训好了直接配上去就行 |
 | Persona 的 UI | 等有了才做 |
-| skill 版本管理 / 依赖解析 | E5 的 `content_sha256` 已经够用一阵子了 |
+| skill 版本管理 / 依赖解析 | F5 的 `content_sha256` 已经够用一阵子了 |
 
-**特别提醒蒸馏那两条**：训练一个模型和跑一个 Agent 是两个工种，混在一个仓库里会让两边都难维护。**这个项目该做的是"产出高质量数据集"和"验证学生模型效果"，训练本身放到别处。** E3/E4 的导出脚本 + 主计划 Phase 1 的 evals 就是这两件事的全部。
+**特别提醒蒸馏那两条**：训练一个模型和跑一个 Agent 是两个工种，混在一个仓库里会让两边都难维护。**这个项目该做的是"产出高质量数据集"和"验证学生模型效果"，训练本身放到别处。** F3/F4 的导出脚本 + 主计划 Phase 1 的 evals 就是这两件事的全部。
 
 ---
 
@@ -582,11 +582,11 @@ def test_agent_spec_can_be_built_without_any_file():
 |---|---|
 | 蒸馏目标是什么？**降成本**还是**做专属模型**？ | 降成本 = 学生模型模仿教师在**本项目场景**的行为；专属模型 = 学习**你的**代码风格和偏好。两者的数据筛选策略完全不同 |
 | 蒸馏哪一个角色？ | 架构师（贵、调用少）和编码员（便宜、调用多）的经济账完全不一样。**大概率编码员更值得蒸** |
-| 数据里的代码要脱敏吗？ | 影响 E3 的采集实现。如果要，脱敏逻辑得在写盘之前 |
+| 数据里的代码要脱敏吗？ | 影响 F3 的采集实现。如果要，脱敏逻辑得在写盘之前 |
 | 学生模型怎么接进来？ | Phase A 的 provider 层已经能接任意 OpenAI 兼容端点，**这条基本不用担心** |
-| 金标准样本比例够吗？ | **E4 会给你这个数字。** 如果金标准比例低于 10%，蒸馏大概率不可行，得先想办法提高流水线的一次通过率 |
+| 金标准样本比例够吗？ | **F4 会给你这个数字。** 如果金标准比例低于 10%，蒸馏大概率不可行，得先想办法提高流水线的一次通过率 |
 
-**最后一条是决定性的，而且 E4 做完就有答案。** 建议做完 E4 之后先看这个数字，再决定要不要继续往蒸馏方向投入。
+**最后一条是决定性的，而且 F4 做完就有答案。** 建议做完 F4 之后先看这个数字，再决定要不要继续往蒸馏方向投入。
 
 ---
 
@@ -594,4 +594,4 @@ def test_agent_spec_can_be_built_without_any_file():
 
 **现在就做 §4 的六张卡，六天，分散在 Phase B/C/D 里。其余全部推迟。**
 
-六张卡里，**E3 和 E4 是不做就真的亏钱的**——它们采集的数据只在真实任务跑的时候产生，补不回来。其余四张（E1/E2/E5/E6）是"现在做几乎不要钱，以后做要拆楼"。
+六张卡里，**F3 和 F4 是不做就真的亏钱的**——它们采集的数据只在真实任务跑的时候产生，补不回来。其余四张（F1/F2/F5/F6）是"现在做几乎不要钱，以后做要拆楼"。

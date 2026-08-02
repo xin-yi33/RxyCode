@@ -2435,12 +2435,13 @@ git status --short
 | **1** | `00-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 Desktop | 无 | 20 周 |
 | **2** | `PHASE-A-MODEL-ADAPTATION-LAYER.md` | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | 本文件 Phase 0 + Phase 1 | 3 周 |
 | **3** | `PHASE-B-MULTI-AGENT-ORCHESTRATION.md` | **多 Agent 专家团**：清理死代码、拆全局单例、AgentSpec / 团长 / SOP 状态机 / 机械验证门 / 成本熔断 / 难度路由 | 本文件 Phase 0–2 + Phase A | 8 周 |
-| **4** | `PHASE-C-MULTI-MODEL-COLLABORATION.md` | **多 Agent × 多模型**：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | 本文件 Phase 0–2 + Phase A + Phase B | 6 周 |
-| **5** | `PHASE-D-MULTIMODAL.md` | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 0–3 + Phase A + B + C | 6 周 |
-| **附** | `PHASE-E-PERSONA-AGENT-INTERFACE.md` | **PersonaAgent 接口预留**（不是施工图）：skill 元数据、蒸馏数据埋点、信任边界 | 无硬前置，§4 六张卡**插进 B/C/D 里顺手做** | 6 天 |
+| **4** | `PHASE-C-RXYCODE-DESKTOP.md` | **完整 Desktop 工作台**：项目、workspace、Thread、工具执行、审批、diff/review、文件预览、worktree、恢复、扩展契约、打包发布 | 本文件 Phase 0–3 + Phase A/B 公共契约 | 12–16 周 |
+| **5** | `PHASE-D-MULTI-MODEL-COLLABORATION.md` | **多 Agent × 多模型**：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | 本文件 Phase 0–2 + Phase A + Phase B；Desktop 交互接入依赖 Phase C | 6 周 |
+| **6** | `PHASE-E-MULTIMODAL.md` | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 0–3 + Phase A + B + C + D | 6 周 |
+| **附** | `PHASE-F-PERSONA-AGENT-INTERFACE.md` | **PersonaAgent 接口预留**（不是施工图）：skill 元数据、蒸馏数据埋点、信任边界 | 无硬前置，§4 六张卡**插进 B/C/D/E 里顺手做** | 6 天 |
 | **↗** | ~~`PHASE-F-SKILLFOREST-PERSONA-AGENT.md`~~ | **已移出本路线。** PersonaAgent 独立成 [LinkAgent 项目](../linkagent/README.md)（独立仓库，把 RxyCode 当 pip 依赖）。原文档归档在 [`../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md`](../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md)，**结论已被新版论文推翻，不要照它施工** | — | 不在本路线 |
 
-> **2026-07-31 第 2 版的三处调整**：原 Phase C（多模态）改编号为 **Phase D**；新增 **Phase C（多 Agent × 多模型协作）**；新增 **Phase E**（PersonaAgent 接口预留）。
+> **2026-08-02 第 3 版调整**：新增 **Phase C（RxyCode Desktop 完整工作台）**；原多 Agent × 多模型协作顺延为 **Phase D**；原多模态顺延为 **Phase E**；PersonaAgent 接口预留顺延为 **Phase F**。主计划 Phase 3 保留为 Desktop 基础壳，不与本 Phase C 混淆。
 > Phase B 从 6 周调整为 8 周——基于 GitHub 深度调研（见 Phase B §2）补入了 SOP 状态机、机械验证门、成本熔断、难度路由四块，这些在第 1 版里缺失。
 
 ### 11.2 依赖关系
@@ -2459,20 +2460,20 @@ git status --short
       │              │                     │
       └──────┬───────┘                     │
              ▼                             │
-      Phase B 多 Agent 专家团                │
-             │                             │
-             ▼                             │
-      Phase C 多 Agent × 多模型              │
-             │                             │
-             │      本文件 Phase 3 Desktop ──┘
-             │              │
-             └──────┬───────┘
-                    ▼
-             Phase D 多模态
+       Phase B 多 Agent 专家团                │
+              │                             │
+              ▼                             │
+       Phase C RxyCode Desktop                │
+              │                             │
+              ▼                             │
+       Phase D 多 Agent × 多模型              │
+              │                             │
+              ▼                             │
+       Phase E 多模态                         │
 
-Phase E 的六张预留卡不在这条链上，按 Phase E §4 的表插进 B/C/D 执行：
-  E1 E5 → Phase B 开始前     E2 → 和 B3 一起
-  E3    → 和 B12 一起        E4 → 和 C11 一起      E6 → Phase B 收尾后
+Phase F 的六张预留卡不在这条链上，按 Phase F §4 的表插进 B/C/D/E 执行：
+  F1 F5 → Phase B 开始前     F2 → 和 B3 一起
+  F3    → 和 B12 一起        F4 → 和 D11 一起      F6 → Phase B 收尾后
 
 原 Phase F 已移出本路线，见 §11.2.1。
 ```
@@ -2487,13 +2488,13 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 > ⚠ **归档文档里的结论已被推翻，不要照它施工。** 它基于论文旧版（SkillForest），后来论文重写为 *Individualized Agent*，实验协议和结果都变了。最关键的反转：原来说"别建森林索引"，新论文里**情境化检索是端到端贡献最大的模块**。准确数字见 [`../linkagent/APPENDIX-B-PAPER-EVIDENCE.md`](../linkagent/APPENDIX-B-PAPER-EVIDENCE.md)。
 
-**对本路线的唯一影响**：论文的评测方法论（配对消融共享原始输出、runtime–scoring 隔离、序列级统计单位、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness、Phase B 的 B14、Phase C 的 C11 都直接适用，**和 PersonaAgent 做不做无关**。这部分可以照搬。
+**对本路线的唯一影响**：论文的评测方法论（配对消融共享原始输出、runtime–scoring 隔离、序列级统计单位、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness、Phase B 的 B14、Phase D 的 D11 都直接适用，**和 PersonaAgent 做不做无关**。这部分可以照搬。
 
 **分模型后的并行结构见 §11.7**：Phase 2 期间没有真正的第二主链——Composer 主写 P1–P8，Grok 只做卡内标注的多模态环节；Phase A 排到 Phase 2 合并之后。其余全部串行。
 
 **每个 Phase 的前置都是硬前置**，各文档的 §0.3 写了具体理由。最常见的两处误判：
 - **跳过 Phase 2 直接做 Phase B** —— 会导致在 `agent_v2.py` 这个 3704 行的 God Object 里手工造一套 ad-hoc 的 Agent 通信机制，半年后推倒重来。
-- **Phase B 差不多了就开始 Phase C** —— Phase C 会把 Phase B 所有没测到的隔离问题一次性引爆，而且因为每个角色用不同模型，症状会难懂得多。
+- **Phase B 差不多了就开始 Phase D** —— Phase D 会把 Phase B 所有没测到的隔离问题一次性引爆，而且因为每个角色用不同模型，症状会难懂得多。Phase C Desktop 可以先接收稳定的公共契约，但不能绕过 Phase B 的隔离边界。
 
 ### 11.3 工作流程
 
@@ -2515,7 +2516,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
    不需要通读全文。任务卡是自包含的。
 
 4. 按任务卡的执行协议走完 7 步
-   （Phase B 是 10 步，Phase C 是 12 步，多出来的都是护栏）
+   （Phase B 是 10 步；Phase C 使用自己的 7 步固定回路并拆成 16 张卡；Phase D 的多模型卡另有专属护栏）
 
 5. 一张卡 = 一个 commit。做完再开下一张
 ```
@@ -2526,7 +2527,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 |---|---|
 | **Composer 2.5** | **主写全部**。Python / 协议 schema / appserver / 评测 + Electron / React / TS UI / 协议客户端（Phase 3 全部、Phase 2 的 `protocol-client`）；按任务卡实现、补测试、跑验收 |
 | **Grok 4.5** | **前端辅助（多模态）**。只做前端卡里标注的「多模态环节」：视觉验收（截屏核对渲染）、图片类 UI（粘贴/预览）、对照设计稿。空闲时仍可查外部资料（定价、vision 格式等），查到的落进文档 |
-| **Sonnet 5** | Diff 预审（可选）。重点：Phase B 的 **B2**、Phase C 的 **C3**、Phase D 的 **D4**、Phase 3 的壳分叉 |
+| **Sonnet 5** | Diff 预审（可选）。重点：Phase B 的 **B2**、Phase C 的 **C3/C8/C9**、Phase D 的 **D4**、Phase 3 的壳分叉 |
 
 推荐回路：**Composer 写卡 → 卡内「多模态环节」委托 Grok →（可选）Sonnet 预审 → 你合并**。
 
@@ -2538,11 +2539,11 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 |---|---|---|
 | 1 | **不跑验收命令不许说"完成"** | 每张卡的完成判据都要求贴出真实输出 |
 | 2 | **每张卡做完跑评测基线比对** | `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json` |
-| 3 | **旧路径行为必须逐字节不变** | Phase A 的 MA1、B 的 MB1、C 的 MC1、D 的 MD1 是同一条规则的四种表述 |
+| 3 | **旧路径行为必须逐字节不变** | Phase A 的 MA1、B 的 MB1、Phase C 的 DC-A1、Phase D 的 MD1 是同一条零回归原则的不同表述 |
 
 第 2 条依赖本文件 Phase 1 的成果。**这就是为什么 Phase 1 排在所有扩展之前**——没有可信的回归信号，后面每一个 Phase 的每一次重构都是盲改。
 
-**从 Phase B 起还多一条**：新增能力**默认关闭**。多 Agent（Phase B）、多模型（Phase C）、蒸馏采集（Phase E）三者的开关默认都是 `False`。理由是 Phase B §2.5 的实测数据——多 Agent 消耗 15 倍 token，而 Anthropic 明确说编码任务本就不是多 Agent 的强项。**能力要有，但不该悄悄替用户花钱。**
+**从 Phase B 起还多一条**：新增能力**默认关闭**。多 Agent（Phase B）、多模型（Phase D）、蒸馏采集（Phase F）三者的开关默认都是 `False`。RxyCode Desktop 的基础壳、会话、审查和权限是主工作台，不得被高级协作开关阻塞；Desktop 对高级能力只按 capability 显示。理由是 Phase B §2.5 的实测数据——多 Agent 消耗 15 倍 token，而 Anthropic 明确说编码任务本就不是多 Agent 的强项。**能力要有，但不该悄悄替用户花钱。**
 
 ### 11.5 文档本身的维护
 
@@ -2559,7 +2560,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 `docs/plans/` 下的 `2026-07-02-rxycode-v2-architecture.md`、`2026-07-27-stabilization-phase0-1.md`、`2026-07-28-execution-progress.md` 作为历史记录保留，其执行状态已在 §2.1 复盘。
 
-**当前唯一权威的计划是 `docs/plans/opus5-plan/` 下的这六份（含 Phase E 附录和 Phase F 的未排期设想）。**
+**当前唯一权威的计划是 `docs/plans/opus5-plan/` 下的这七份 RxyCode 施工文档（含 Phase F 接口预留；LinkAgent 施工文档另见 `linkagent/`）。**
 
 ---
 
@@ -2679,7 +2680,7 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 **Phase B 及以后不要再并行开发后端。** 理由：
 
 - Phase B 的 B2（拆三组全局单例）会碰到 `tools/`、`cache/`、`recovery/`、`core/` 四个目录，**几乎和所有东西都有接触面**
-- Phase C 依赖 Phase B 的全部产物，没有可切分的独立子集
+- Phase C 依赖 Phase B 的公共隔离、状态和验证契约，没有可绕过这些契约的独立子集；Desktop 的 UI 卡可以按 C 卡拆分，但不能提前造第二套执行核心
 - Phase B §2.5 引用的失败归因研究显示，多 Agent 系统里**协调失败占全部失败的 36.94%**——这条对人也成立，协调成本会吃掉并行收益
 
 **想让第二个窗口有事做，正确的方式不是并行开发，而是分工到角色**：
@@ -2690,4 +2691,4 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 | **辅助（多模态）** | Grok | 前端卡内标注的多模态环节：视觉验收（截屏核对）、图片类 UI、对照设计稿 |
 | **审查 + 调研** | Sonnet 5（diff 预审）+ Grok（查资料/调研） | 审每一张卡的 diff（尤其 B2 / C3 / D4）、跑调研 prompt、维护评测基线、写 `docs/modules/*.md` |
 
-Phase B 的 B14 和 Phase C 的 C11 两张评测卡工作量都不小，而且**可以和实现完全解耦**——这是第二个窗口（或 Grok 空闲时）最有价值的去处。
+Phase B 的 B14 和 Phase D 的 D11 两张评测卡工作量都不小，而且**可以和实现完全解耦**——这是第二个窗口（或 Grok 空闲时）最有价值的去处。
