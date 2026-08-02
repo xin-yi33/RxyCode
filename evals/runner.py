@@ -22,7 +22,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from .tasks import EvalTask, load_tasks, load_task, TASKS_DIR, TaskSchemaError
 from .judge import judge_task, JudgeScore
@@ -620,6 +620,7 @@ def _build_llm(model_name: Optional[str] = None):
     """Build a ChatOpenAI LLM from project config for the CLI runner."""
     from langchain_openai import ChatOpenAI
 
+    from core import providers
     from RxyCode.RxyCode1_1_0.config.settings import (
         get_active_model_config,
         get_model_config,
@@ -638,17 +639,15 @@ def _build_llm(model_name: Optional[str] = None):
             "No API key configured. Set api_key in config.yaml or OPENAI_API_KEY."
         )
 
-    kwargs: dict[str, Any] = {
-        "model": model_config.get("model_name", "gpt-4o"),
-        "api_key": api_key,
-        "temperature": float(model_config.get("temperature", 0.0) or 0.0),
-        "max_retries": 3,
-    }
-    base_url = model_config.get("base_url")
-    if base_url:
-        kwargs["base_url"] = base_url
+    resolved_config = dict(model_config)
+    if not resolved_config.get("api_key"):
+        resolved_config["api_key"] = api_key
 
-    return ChatOpenAI(**kwargs), model_config.get("model_name", "unknown")
+    provider = providers.resolve(resolved_config)
+    caps = provider.capabilities(resolved_config)
+    llm = ChatOpenAI(**provider.llm_kwargs(resolved_config, caps))
+
+    return llm, model_config.get("model_name", "unknown")
 
 
 # ---------------------------------------------------------------------------

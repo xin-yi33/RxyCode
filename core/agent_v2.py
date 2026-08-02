@@ -683,6 +683,10 @@ class AgentV2:
         # Build LLM
         self._configure_rate_limiter()
         self._llm = self._build_llm()
+        from core import providers
+
+        self._provider = providers.resolve(self.model_config)
+        self._capabilities = self._provider.capabilities(self.model_config)
 
         from .governance import ModelRouter
 
@@ -957,6 +961,10 @@ class AgentV2:
             pass
         self.model_config = model_config
         self._llm = self._build_llm_from_config(model_config)
+        from core import providers
+
+        self._provider = providers.resolve(model_config)
+        self._capabilities = self._provider.capabilities(model_config)
         self._model_router.register(
             "default",
             self._llm,
@@ -1170,6 +1178,11 @@ class AgentV2:
 
     @staticmethod
     def _provider_name(model_config: dict) -> str:
+        """从 base_url 猜 provider 名。
+
+        已被 core.providers.resolve() 取代，仅为向后兼容保留。
+        新代码请用 self._provider.name。
+        """
         from urllib.parse import urlsplit
 
         explicit = str(model_config.get("provider") or "").strip()
@@ -1205,21 +1218,23 @@ class AgentV2:
         )
 
     def _build_llm_from_config(self, model_config: dict):
+        """按 provider 策略构造 LLM。
+
+        provider 的默认实现（OpenAIProvider）复刻了改造前的参数，因此未识别
+        的模型行为不变。差异化只发生在显式声明了差异的 provider 上。
+        """
         from langchain_openai import ChatOpenAI
-        raw_llm = ChatOpenAI(
-            model=model_config.get("model_name", "gpt-4o"),
-            api_key=model_config.get("api_key"),
-            base_url=model_config.get("base_url"),
-            temperature=model_config.get("temperature", 0.7),
-            max_tokens=model_config.get("max_tokens", 8192),
-            max_retries=3,
-            streaming=True,
-            stream_usage=True,
-        )
+
+        from core import providers
+
+        provider = providers.resolve(model_config)
+        caps = provider.capabilities(model_config)
+        raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
+
         return UsageTrackingLLM(
             raw_llm,
             rate_limiter=self._rate_limiter,
-            rate_provider=self._provider_name(model_config),
+            rate_provider=provider.name,
             rate_model=str(model_config.get("model_name") or "unknown"),
             rate_timeout=self._rate_limit_timeout,
             reserved_output_tokens=self._rate_reserved_output_tokens,
