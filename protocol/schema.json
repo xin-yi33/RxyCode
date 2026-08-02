@@ -5,6 +5,7 @@
   "protocol_version": "1.0.0",
   "$defs": {
     "InitializeRequest": {
+      "description": "JSON-RPC handshake on connect (future ``python -m appserver``).\n\n``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;\n``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;\n``capabilities`` is an optional client feature manifest (unused in HTTP mode).",
       "properties": {
         "method": {
           "const": "initialize",
@@ -47,6 +48,7 @@
       "type": "object"
     },
     "NewSessionRequest": {
+      "description": "Bind a workspace and chat namespace (maps ``_activate_session`` in api_server.py).\n\n``workspace_root`` is the repo root passed to AgentV2 tools (today ``Path.cwd()``);\n``model`` optionally overrides the default from ``config/settings.py``.",
       "properties": {
         "method": {
           "const": "session/new",
@@ -78,6 +80,7 @@
       "type": "object"
     },
     "PromptRequest": {
+      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.",
       "properties": {
         "method": {
           "const": "session/prompt",
@@ -115,6 +118,7 @@
       "type": "object"
     },
     "InterruptRequest": {
+      "description": "Cancel the in-flight run (maps ``POST /cancel`` + ``Session.interrupt`` in api_server.py).\n\n``session_id`` matches the active ``ChatRequest.session_id`` namespace.",
       "properties": {
         "method": {
           "const": "session/interrupt",
@@ -134,6 +138,7 @@
       "type": "object"
     },
     "ShutdownRequest": {
+      "description": "Graceful appserver shutdown (future ``appserver`` lifespan teardown).\n\n``reason`` is logged on stderr only; HTTP ``api_server`` mode ignores this today.",
       "properties": {
         "method": {
           "const": "shutdown",
@@ -747,6 +752,7 @@
       "type": "object"
     },
     "QuestionOption": {
+      "description": "One choice row in ``QuestionRequest.options`` (``core/question.py`` ``QuestionOption.to_event``).",
       "properties": {
         "label": {
           "title": "Label",
@@ -855,6 +861,98 @@
       ],
       "title": "QuestionResponse",
       "type": "object"
+    },
+    "ClientRequest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/InitializeRequest"
+        },
+        {
+          "$ref": "#/$defs/NewSessionRequest"
+        },
+        {
+          "$ref": "#/$defs/PromptRequest"
+        },
+        {
+          "$ref": "#/$defs/InterruptRequest"
+        },
+        {
+          "$ref": "#/$defs/ShutdownRequest"
+        }
+      ]
+    },
+    "ProtocolNotification": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MessageDelta"
+        },
+        {
+          "$ref": "#/$defs/ProgressUpdate"
+        },
+        {
+          "$ref": "#/$defs/ReasoningSnapshot"
+        },
+        {
+          "$ref": "#/$defs/PlanUpdate"
+        },
+        {
+          "$ref": "#/$defs/StepProgress"
+        },
+        {
+          "$ref": "#/$defs/TaskStarted"
+        },
+        {
+          "$ref": "#/$defs/ToolBegin"
+        },
+        {
+          "$ref": "#/$defs/ToolEnd"
+        },
+        {
+          "$ref": "#/$defs/TaskComplete"
+        },
+        {
+          "$ref": "#/$defs/TokenUsage"
+        },
+        {
+          "$ref": "#/$defs/FinalAnswer"
+        },
+        {
+          "$ref": "#/$defs/ErrorNotification"
+        },
+        {
+          "$ref": "#/$defs/RunComplete"
+        },
+        {
+          "$ref": "#/$defs/JobStatusUpdate"
+        }
+      ]
+    },
+    "ServerRequestMessage": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ApprovalRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalResponse"
+        },
+        {
+          "$ref": "#/$defs/QuestionRequest"
+        },
+        {
+          "$ref": "#/$defs/QuestionResponse"
+        }
+      ]
     }
-  }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ClientRequest"
+    },
+    {
+      "$ref": "#/$defs/ProtocolNotification"
+    },
+    {
+      "$ref": "#/$defs/ServerRequestMessage"
+    }
+  ]
 }

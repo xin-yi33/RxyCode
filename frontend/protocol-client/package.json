@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "json2ts -i ../../protocol/schema.json -o src/generated/types.ts --bannerComment \"/* Auto-generated. Edit protocol/schema.json then run: bun run generate */\"",
+    "generate": "json2ts -i ../../protocol/schema.json -o src/generated/types.ts --unreachableDefinitions --bannerComment \"/* Auto-generated. Edit protocol/schema.json then run: bun run generate */\"",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

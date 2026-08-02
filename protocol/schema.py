@@ -28,12 +28,28 @@ def export_schema() -> dict[str, Any]:
         name = model.__name__
         defs[name] = {key: value for key, value in schema.items() if key != "$defs"}
 
+    client_refs = [{"$ref": f"#/$defs/{model.__name__}"} for model in CLIENT_REQUEST_MODELS]
+    notification_refs = [
+        {"$ref": f"#/$defs/{model.__name__}"} for model in NOTIFICATION_MODELS
+    ]
+    server_refs = [
+        {"$ref": f"#/$defs/{model.__name__}"} for model in SERVER_REQUEST_MODELS
+    ]
+    defs["ClientRequest"] = {"oneOf": client_refs}
+    defs["ProtocolNotification"] = {"oneOf": notification_refs}
+    defs["ServerRequestMessage"] = {"oneOf": server_refs}
+
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://rxycode.dev/protocol/schema.json",
         "title": "RxyCode Protocol",
         "protocol_version": PROTOCOL_VERSION,
         "$defs": defs,
+        "oneOf": [
+            {"$ref": "#/$defs/ClientRequest"},
+            {"$ref": "#/$defs/ProtocolNotification"},
+            {"$ref": "#/$defs/ServerRequestMessage"},
+        ],
     }
 
 
