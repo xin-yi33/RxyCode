@@ -2097,10 +2097,10 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 5. 加集成测试：起子进程、发请求、断言响应
 
 **完成判据**
-- [ ] `python -m appserver` 能跑通完整一轮对话
-- [ ] 审批流程双向可用
-- [ ] **stdout 上没有任何非协议输出**（这是最容易踩的坑，专门写个测试）
-- [ ] 有子进程集成测试
+- [x] `python -m appserver` 能跑通完整一轮对话（`tests/test_appserver/test_stdio_integration.py::test_appserver_full_conversation_round_trip`）
+- [x] 审批流程双向可用（`test_appserver_approval_bidirectional` + `test_jsonrpc_approval_round_trip`）
+- [x] **stdout 上没有任何非协议输出**（`test_appserver_stdout_only_jsonrpc`）
+- [x] 有子进程集成测试（`tests/test_appserver/test_stdio_integration.py`）
 
 ---
 

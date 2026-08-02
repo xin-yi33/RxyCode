@@ -681,6 +681,36 @@
       "title": "JobStatusUpdate",
       "type": "object"
     },
+    "ServerHeartbeat": {
+      "description": "Periodic appserver liveness signal (T4 watchdog).",
+      "properties": {
+        "method": {
+          "const": "event/server_heartbeat",
+          "default": "event/server_heartbeat",
+          "title": "Method",
+          "type": "string"
+        },
+        "uptime_seconds": {
+          "title": "Uptime Seconds",
+          "type": "number"
+        },
+        "active_jobs": {
+          "title": "Active Jobs",
+          "type": "integer"
+        },
+        "degraded": {
+          "title": "Degraded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "uptime_seconds",
+        "active_jobs",
+        "degraded"
+      ],
+      "title": "ServerHeartbeat",
+      "type": "object"
+    },
     "ApprovalRequest": {
       "description": "Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.",
       "properties": {
@@ -924,6 +954,9 @@
         },
         {
           "$ref": "#/$defs/JobStatusUpdate"
+        },
+        {
+          "$ref": "#/$defs/ServerHeartbeat"
         }
       ]
     },

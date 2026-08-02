@@ -8,6 +8,7 @@
 |--------|----------|---------|
 | [core](docs/modules/core.md) | core/ | Agent brain - AgentV2, LangGraph pipeline, prompts, state |
 | [protocol](docs/modules/protocol.md) | protocol/ | Typed JSON-RPC protocol - pydantic models, JSON Schema, TS codegen |
+| [appserver](docs/modules/appserver.md) | appserver/ | Stdio JSON-RPC server - headless core transport for OpenTUI/Desktop |
 | [config](docs/modules/config.md) | config/ | Configuration management - models, API keys, preferences |
 | [cache](docs/modules/cache.md) | cache/ | Two-level caching - precise hash + semantic similarity |
 | [memory](docs/modules/memory.md) | memory/ | Tiered memory - short-term, long-term, user memory, chat storage |

@@ -141,6 +141,16 @@ class JobStatusUpdate(BaseModel):
     state: JobState
 
 
+
+class ServerHeartbeat(BaseModel):
+    """Periodic appserver liveness signal (T4 watchdog)."""
+
+    method: Literal["event/server_heartbeat"] = "event/server_heartbeat"
+    uptime_seconds: float
+    active_jobs: int
+    degraded: bool
+
+
 NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     MessageDelta,
     ProgressUpdate,
@@ -156,4 +166,5 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     ErrorNotification,
     RunComplete,
     JobStatusUpdate,
+    ServerHeartbeat,
 )
