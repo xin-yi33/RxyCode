@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
-from protocol.types import JsonObject
+from .types import JsonObject
 
 
 class InitializeRequest(BaseModel):

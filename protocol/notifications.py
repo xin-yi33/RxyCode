@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from protocol.types import JobState, JsonObject, RunStatus
+from .types import JobState, JsonObject, RunStatus
 
 
 class MessageDelta(BaseModel):

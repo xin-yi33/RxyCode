@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from protocol.types import ApprovalDecisionName, JsonObject, RiskLevelName
+from .types import ApprovalDecisionName, JsonObject, RiskLevelName
 
 
 class ApprovalRequest(BaseModel):

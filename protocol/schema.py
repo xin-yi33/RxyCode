@@ -6,10 +6,10 @@ import json
 import sys
 from typing import Any
 
-from protocol.notifications import NOTIFICATION_MODELS
-from protocol.requests import CLIENT_REQUEST_MODELS
-from protocol.server_requests import SERVER_REQUEST_MODELS
-from protocol.version import PROTOCOL_VERSION
+from .notifications import NOTIFICATION_MODELS
+from .requests import CLIENT_REQUEST_MODELS
+from .server_requests import SERVER_REQUEST_MODELS
+from .version import PROTOCOL_VERSION
 
 
 def export_schema() -> dict[str, Any]:

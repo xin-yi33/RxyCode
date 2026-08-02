@@ -8,7 +8,10 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
+try:
+    from ..protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
+except ImportError:  # repo-root pytest/dev imports (top-level core + protocol)
+    from protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
 
 
 EmitCallback = Callable[[BaseModel], None]
