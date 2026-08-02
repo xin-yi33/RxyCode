@@ -2078,8 +2078,8 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 **完成判据**
 - [x] `core/session.py` 存在且有测试
 - [x] `api_server.py` 走 Session（`/chat` + `/chat/stream`）
-- [ ] 现有 HTTP / SSE 接口**外部行为零变化**（用 OpenTUI 手动验证）
-- [ ] evals 基线分数**不变**（P3 提交前跑 compare-baseline）
+- [x] 现有 HTTP / SSE 接口**外部行为零变化**（用 OpenTUI 手动验证；2026-08-02 手测通过）
+- [x] evals 基线分数**不变**（2026-08-02 compare-baseline：9/17=52.9% 与 latest-agent 持平 Delta ++0.0%；日志 artifacts/p3-compare-baseline.log）
 - [x] Session 层没有任何 `print` / 直接写响应
 
 ---
