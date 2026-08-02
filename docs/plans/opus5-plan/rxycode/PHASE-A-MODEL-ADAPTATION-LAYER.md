@@ -1272,11 +1272,11 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 - [x] `UsageTrackingLLM` 原 5 参数全保留：`raw_llm`, `rate_limiter`, `rate_provider`, `rate_model`, `rate_timeout`, `reserved_output_tokens`
 - [x] 删掉临时文件 `a6-*.txt`
 - [x] **R9 单卡 commit**：`86f5d18` — `refactor(model): route LLM construction through the provider layer`（`d4a1ab0` 为同 patch-id 重复提交，以 `86f5d18` 为准）
-- [x] evals DC1 修复 commit：`<!-- A6_EVALS_FIX -->` — `fix(evals): restore pre-A6 ChatOpenAI kwargs in runner`
+- [x] evals DC1 修复 commit：`c7be8e4` — `fix(evals): restore pre-A6 ChatOpenAI kwargs in runner`
 - [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=600` → **9890 passed**, 3 skipped（`artifacts/a6-full-regression.log`）
 
 > **A6 关账备注（2026-08-03）**
-> - **Commit**：`86f5d18`（`core/agent_v2.py`、`evals/runner.py`）；evals DC1 覆盖见 `<!-- A6_EVALS_FIX -->`
+> - **Commit**：`86f5d18`（`core/agent_v2.py`、`evals/runner.py`）；evals DC1 覆盖见 `c7be8e4`
 > - **基线补录**：改前未单独存 `a6-before.txt`；以 A5 关账全量 **9890 passed** 为 before 对照
 > - **全量验收**：隔离工作树后约 6m19s，9890 passed / 3 skipped / exit 0
 > - **evals 行为**：A6 初版 evals 误用 agent 生产 kwargs（temperature 0.7 / streaming）；`_eval_llm_kwargs` 恢复 temperature 默认 0.0 且无 streaming/stream_usage/max_tokens
