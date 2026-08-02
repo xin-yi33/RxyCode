@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.4] - 2026-08-02
+
+### Highlights
+
+Add-model UX polish (provider grouping, OpenCode Go preset, Enter-to-run slash
+suggestions), Phase 1 evaluation harness closure, and the Phase 2 typed
+agent↔frontend protocol with a TypeScript JSON-RPC client.
+
+### Added
+
+- **Slash Enter expansion** — typing a prefix like `/addm` and pressing Enter
+  runs the highlighted suggestion (↑↓ to choose; Tab still completes)
+- **URL-based provider grouping** — custom endpoints infer provider group;
+  `/model` lists by preset name / inferred URL group / 其他
+- **OpenCode Go preset** — provider preset for `https://opencode.ai/zen/go/v1`
+- **Phase 1 eval harness** — real AgentV2 pipeline tasks, tool_used checks,
+  baselines, nightly eval vs baseline CI, headless approval path
+- **Phase 2 protocol** — frozen JSON schema + TypeScript JSON-RPC client and CI
+  gate (`protocol/`, frontend client)
+
+### Changed
+
+- **Custom Other add-model** — clears stale API key; custom path uses multi
+  batch onboard like presets; default nickname = model id
+- **Batch activate** — confirming add-model activates the highlighted selection
+- **Install pins** — one-command installers default to **`v1.2.4`**
+- **Release downloads** — only the latest release publishes wheel/sdist assets;
+  older releases keep notes but no installable downloads
+
+### Fixed
+
+- Dialog prompt plaintext cursor for API key entry
+- CI secret/env handling for nightly eval and live lanes
+- Packaging / installer contract tests aligned to 1.2.4
+
+### Install notes
+
+- **Default one-command install** pins **`v1.2.4`**.
+- Older release pages remain for history; **downloadable assets are removed**
+  from prior releases (including v1.2.3 / v1.2.2).
+
+---
+
 ## [1.2.3] - 2026-07-31
 
 ### Highlights
@@ -313,6 +356,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.4]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4
 [1.2.3]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3
 [1.2.2]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2
 [1.2.1]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1

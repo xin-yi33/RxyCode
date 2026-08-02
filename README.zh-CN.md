@@ -4,7 +4,7 @@
 
 **规划-执行型 AI 编程助手，带验证层与安全工具编排**
 
-[![Version](https://img.shields.io/badge/version-1.2.3-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3)
+[![Version](https://img.shields.io/badge/version-1.2.4-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -49,33 +49,32 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 
 **Windows PowerShell：**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.3/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.4/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux：**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.4/install.sh | sh
 rxycode
 ```
 
-安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.3`** 版本。
+安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.4`** 版本。
 无需手动 clone 仓库。
 
-**上一版仍可下载（v1.2.3 特例）：** [`v1.2.2`](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2)
-仍保留在 GitHub Releases。可用 `RXYCODE_VERSION=1.2.2` 或
-`git+https://github.com/xin-yi33/RxyCode.git@v1.2.2` 安装。更早的 `v1.1.0` 等 tag 亦可用。
+**下载说明：** 仅最新版（**`v1.2.4`**）提供可安装的 wheel/sdist。更早的
+GitHub Release 仍保留说明文字，但**不开放**安装包下载。
 
 ### 方式二：一次性运行
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.3" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4" rxycode
 ```
 
 ### 方式三：永久安装
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.3"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4"
 rxycode
 ```
 
@@ -239,8 +238,9 @@ models:
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI、SSE 流式、Docker、CI/CD、一键安装 |
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | 前端重构：默认 OpenTUI（Ink 回退）、设置面板对齐、Ctrl+C 防误退、Plan 提示、autoCompact |
 | [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | 打包修复：安装包内包含 OpenTUI 源码 |
-| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | OpenCode 式添加模型：预设、discover、预设多选批量入库、`/model` 按服务商分组 |
 | [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | 自动安装 Bun 与 OpenTUI 依赖；无模型时欢迎提示并自动打开 /addmodel |
+| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | OpenCode 式添加模型：预设、discover、预设多选批量入库、`/model` 按服务商分组 |
+| [v1.2.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4) | 2026-08 | 添加模型体验打磨 + 斜杠回车执行；Phase 1 评测 harness；Phase 2 协议层与 TS 客户端 |
 
 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 

@@ -4,7 +4,7 @@
 
 **Plan-and-Execute AI Coding Agent with Verification & Safe Tool Orchestration**
 
-[![Version](https://img.shields.io/badge/version-1.2.3-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3)
+[![Version](https://img.shields.io/badge/version-1.2.4-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -57,35 +57,34 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 
 **Windows PowerShell:**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.3/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.4/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.4/install.sh | sh
 rxycode
 ```
 
 The installer bootstraps `uv` (if needed), creates an isolated tool
-environment, and installs the pinned **`v1.2.3`** release. No manual clone
+environment, and installs the pinned **`v1.2.4`** release. No manual clone
 required.
 
-**Previous release still available (exception for v1.2.3):** [`v1.2.2`](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2)
-remains on GitHub Releases. Install it with
-`RXYCODE_VERSION=1.2.2` or `git+https://github.com/xin-yi33/RxyCode.git@v1.2.2`.
-Older tags such as `v1.1.0` also remain available.
+**Downloads:** only the latest release (**`v1.2.4`**) publishes installable
+wheel/sdist assets. Older GitHub Releases keep release notes but **do not**
+offer binary downloads.
 
 ### Option 2: Run once with uv
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.3" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4" rxycode
 ```
 
 ### Option 3: Permanent install
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.3"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4"
 rxycode
 ```
 
@@ -249,8 +248,9 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 | [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE streaming, Docker, CI/CD, one-command installers |
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | Frontend rewrite: OpenTUI default TUI (Ink fallback), settings parity, safer Ctrl+C, plan hints, autoCompact |
 | [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | Package fix: ship OpenTUI sources in the installable wheel |
-| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | OpenCode add-model: presets, discover, preset multi-select batch onboard, `/model` provider groups |
 | [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | Auto-install Bun + OpenTUI deps; empty-model welcome hint + auto `/addmodel` |
+| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | OpenCode add-model: presets, discover, preset multi-select batch onboard, `/model` provider groups |
+| [v1.2.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4) | 2026-08 | Add-model polish + slash Enter; Phase 1 eval harness; Phase 2 typed protocol + TS client |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 
