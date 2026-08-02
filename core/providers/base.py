@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from config.model_capabilities import DEFAULT_CAPABILITIES, ModelCapabilities
+try:
+    from ...config.model_capabilities import (
+        DEFAULT_CAPABILITIES,
+        ModelCapabilities,
+    )
+except ImportError:  # pragma: no cover - repo-root layout (tests)
+    from config.model_capabilities import DEFAULT_CAPABILITIES, ModelCapabilities
 
 
 class BaseProvider:

@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from core.providers.anthropic import AnthropicProvider
-from core.providers.base import BaseProvider
-from core.providers.deepseek import DeepSeekProvider
-from core.providers.openai import OpenAIProvider
-from core.providers.qwen import QwenProvider
+from .anthropic import AnthropicProvider
+from .base import BaseProvider
+from .deepseek import DeepSeekProvider
+from .openai import OpenAIProvider
+from .qwen import QwenProvider
 
 _FALLBACK = OpenAIProvider()
 

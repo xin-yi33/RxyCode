@@ -683,7 +683,7 @@ class AgentV2:
         # Build LLM
         self._configure_rate_limiter()
         self._llm = self._build_llm()
-        from core import providers
+        from . import providers
 
         self._provider = providers.resolve(self.model_config)
         self._capabilities = self._provider.capabilities(self.model_config)
@@ -961,7 +961,7 @@ class AgentV2:
             pass
         self.model_config = model_config
         self._llm = self._build_llm_from_config(model_config)
-        from core import providers
+        from . import providers
 
         self._provider = providers.resolve(model_config)
         self._capabilities = self._provider.capabilities(model_config)
@@ -1225,7 +1225,7 @@ class AgentV2:
         """
         from langchain_openai import ChatOpenAI
 
-        from core import providers
+        from . import providers
 
         provider = providers.resolve(model_config)
         caps = provider.capabilities(model_config)

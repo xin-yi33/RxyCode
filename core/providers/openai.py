@@ -4,7 +4,7 @@
 行为，这保证了改造的零回归性。
 """
 
-from core.providers.base import BaseProvider
+from .base import BaseProvider
 
 
 class OpenAIProvider(BaseProvider):

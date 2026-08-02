@@ -1338,7 +1338,20 @@ async def _execute_command(req: CommandRequest):
         cfg = load_config()
         if args in cfg.get("models", {}):
             set_active_model(args)
+            if not _state["agent"]:
+                try:
+                    _init_agent()
+                except Exception as e:
+                    return {
+                        "action": "error",
+                        "message": f"Model set to {args}, but agent failed to init: {e}",
+                    }
             active_agent = _state["agent"]
+            if active_agent is None:
+                return {
+                    "action": "error",
+                    "message": f"Model set to {args}, but agent is not available",
+                }
             switcher = getattr(type(active_agent), "switch_model", None)
             if callable(switcher):
                 active_agent._cfg = load_config()

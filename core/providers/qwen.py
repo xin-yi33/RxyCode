@@ -20,12 +20,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from config.model_capabilities import (
-    DEFAULT_CAPABILITIES,
-    ModelCapabilities,
-    UsageFieldMap,
-)
-from core.providers.base import BaseProvider
+try:
+    from ...config.model_capabilities import (
+        DEFAULT_CAPABILITIES,
+        ModelCapabilities,
+        UsageFieldMap,
+    )
+except ImportError:  # pragma: no cover - repo-root layout (tests)
+    from config.model_capabilities import (
+        DEFAULT_CAPABILITIES,
+        ModelCapabilities,
+        UsageFieldMap,
+    )
+from .base import BaseProvider
 
 _QWEN_USAGE = UsageFieldMap(
     cache_read_flat=(),

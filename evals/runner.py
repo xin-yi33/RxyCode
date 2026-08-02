@@ -638,7 +638,7 @@ def _build_llm(model_name: Optional[str] = None):
     """Build a ChatOpenAI LLM from project config for the CLI runner."""
     from langchain_openai import ChatOpenAI
 
-    from core import providers
+    from RxyCode.RxyCode1_1_0.core import providers
     from RxyCode.RxyCode1_1_0.config.settings import (
         get_active_model_config,
         get_model_config,
