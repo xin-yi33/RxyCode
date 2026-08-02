@@ -341,9 +341,9 @@ Phase A 的优化对象是"模型"，而模型的字段、参数、定价、缓�
 
 **与其它文档中 Grok 调研的关系（2026-08-01 跨文档 review 补充）**
 
-1. **Phase C C4 的定价调研并入本卡**：`PHASE-C.md:601-619` 的 "Grok 的调研 prompt"（各家定价、缓存按写入/读取分别计价、推理 token 单独计价）与本卡 9 问模板的**第 7 问（定价）**重叠。执行规则：C4 所需的定价数据由本卡批 1–8 的第 7 问结论提供，**Phase C 不再单独做定价调研**；C4 中心表（`config/model_pricing.py`）直接引用 §7 各分区的定价结论（含 `as_of` 与来源 URL）。
-2. **清单外模型族（如 xAI Grok）**：C4 调研清单含 xAI，而本卡 8 批未列。需要时按**批 9+** 追加，用同一 9 问模板、同一审计门（Grok 自审 + DeepSeek + GPT-5.6-Luna 双验证），通过后才允许对应优化卡开工。
-3. **旧型号引用的取代**：本卡 §7 报告发布后，`PHASE-C.md:610`（DeepSeek chat/reasoner）等旧型号引用一律以 §7 为准，不在其它文档里另行维护型号清单。
+1. **Phase D D4 的定价调研并入本卡**：`PHASE-D-MULTI-MODEL-COLLABORATION.md:601-619` 的 "Grok 的调研 prompt"（各家定价、缓存按写入/读取分别计价、推理 token 单独计价）与本卡 9 问模板的**第 7 问（定价）**重叠。执行规则：D4 所需的定价数据由本卡批 1–8 的第 7 问结论提供，**Phase D 不再单独做定价调研**；D4 中心表（`config/model_pricing.py`）直接引用 §7 各分区的定价结论（含 `as_of` 与来源 URL）。
+2. **清单外模型族（如 xAI Grok）**：D4 调研清单含 xAI，而本卡 8 批未列。需要时按**批 9+** 追加，用同一 9 问模板、同一审计门（Grok 自审 + DeepSeek + GPT-5.6-Luna 双验证），通过后才允许对应优化卡开工。
+3. **旧型号引用的取代**：本卡 §7 报告发布后，`PHASE-D-MULTI-MODEL-COLLABORATION.md:610`（DeepSeek chat/reasoner）等旧型号引用一律以 §7 为准，不在其它文档里另行维护型号清单。
 
 **涉及文件**
 - 本文件 §7（新增，调研汇报与审计记录区）
@@ -482,7 +482,7 @@ class ModelCapabilities:
     #: 推理型模型通常不接受 temperature / top_p，传了会 400。
     accepts_temperature: bool = True
 
-    #: 是否支持多模态图像输入。Phase C 会用到；Phase A 只是把字段先占上。
+    #: 是否支持多模态图像输入。Phase E 会用到；Phase A 只是把字段先占上。
     supports_vision: bool = False
 
     #: 是否支持 prompt 前缀缓存（cache_control）。
@@ -915,12 +915,12 @@ wired into agent_v2 — that lands in A7.
 
 ### A3 · DeepSeekProvider
 
-`P0` / 6h / 依赖 A2
+`P0` / 6h / 依赖 A2 · **状态：关账（2026-08-02）**
 
 **背景**
-DeepSeek 是当前最需要特化的目标：它用 `prompt_cache_hit_tokens` 而非 OpenAI 的嵌套字段（`agent_v2.py:163-200` 已经在盲试这个），R1 系列会产出 `reasoning_content` 且**不接受 temperature**，上下文窗口也不是 256k。
+DeepSeek 是当前最需要特化的目标：它用 `prompt_cache_hit_tokens` 而非 OpenAI 的嵌套字段（`agent_v2.py:163-200` 已经在盲试这个），V4 系默认 thinking enabled 时 `reasoning_content` 在 message/delta 上且 **temperature 等采样参数无效（不报错）**，上下文窗口为 **1M**（非全局 256k）。
 
-**⚠️ 调研已由 A0 统一负责（2026-08-01 起）。** 本卡所需的全部数值（context window、function calling、reasoning、缓存字段、tokenizer）**以 A0 批 1 的调研报告（§7.1）为准**；§7.1 未通过 A0 审计门之前，本卡不得开始。下面代码里标了 `# TODO(grok)` 的常量即位置标记，用 §7.1 的结论替换，**并把来源 URL 写进注释**（新卡的标记写作 `# TODO(grok→§7.X)`，二者同义）。若 §7.1 报告与下文旧占位值不一致，一律以 §7.1 为准（下文旧占位值仅作结构示意，DeepSeek 已迭代到 v4 系，见 A22）。
+**⚠️ 数值以 A0 批 1 调研报告（§7.1）为准**；§7.1 已通过三方审计（2026-08-02）。下文操作步骤为 **§7.1 落地后的最终实现**（非 2026-07 旧占位）。
 
 **涉及文件**
 - 新建 `core/providers/deepseek.py`
@@ -929,76 +929,36 @@ DeepSeek 是当前最需要特化的目标：它用 `prompt_cache_hit_tokens` �
 
 **操作步骤**
 
-1. `core/providers/deepseek.py`：
+1. `core/providers/deepseek.py`（§7.1 数值；无 `TODO(grok)`）：
 
 ```python
-"""DeepSeek provider。
+"""DeepSeek provider.
 
 与 OpenAI 默认行为的差异：
-  - 前缀缓存命中数在顶层 usage.prompt_cache_hit_tokens（OpenAI 是嵌套在
-    prompt_tokens_details.cached_tokens 里）
-  - deepseek-reasoner 产出 reasoning_content，且不接受采样参数
-  - 上下文窗口远小于我们原先硬编码的 256k
+  - 前缀缓存命中数在顶层 usage.prompt_cache_hit_tokens
+  - V4 系默认 thinking enabled；thinking 模式下 temperature 无效
+  - 上下文窗口 1M（非全局默认 256k）
 
-数值来源：<把 Grok 查到的官方文档 URL 写在这里>
+数值来源（A0 §7.1，2026-08-02 三方审计通过）：
+  - https://api-docs.deepseek.com/
+  - https://api-docs.deepseek.com/quick_start/pricing
+  - https://api-docs.deepseek.com/guides/thinking_mode
+  - https://api-docs.deepseek.com/guides/kv_cache
+  - https://api-docs.deepseek.com/api/create-chat-completion/
+  - https://api-docs.deepseek.com/quick_start/token_usage
 """
 
-from __future__ import annotations
+_CONTEXT_WINDOW = 1_048_576      # §7.1
+_COMPACTION_THRESHOLD = 943_718  # ≈90%
 
-from dataclasses import replace
-
-from config.model_capabilities import (
-    DEFAULT_CAPABILITIES,
-    ModelCapabilities,
-    UsageFieldMap,
-)
-from core.providers.base import BaseProvider
-
-_DEEPSEEK_USAGE = UsageFieldMap(
-    cache_read_flat=("prompt_cache_hit_tokens",),
-    cache_read_nested=(),          # DeepSeek 不用嵌套形式
-    reasoning=("reasoning_content",),
-)
-
-# TODO(grok): 用官方文档核实下列数值后替换，并在上面的 docstring 里补 URL
-_CHAT_CONTEXT = 128_000
-_REASONER_CONTEXT = 128_000
-
-
-class DeepSeekProvider(BaseProvider):
-    name = "deepseek"
-
-    def matches(self, base_url: str, model_name: str) -> bool:
-        return "deepseek" in base_url.lower() or "deepseek" in model_name.lower()
-
-    def capabilities(self, model_config: dict) -> ModelCapabilities:
-        model_name = str(model_config.get("model_name") or "").lower()
-        is_reasoner = "reasoner" in model_name or model_name.endswith("-r1")
-
-        context = _REASONER_CONTEXT if is_reasoner else _CHAT_CONTEXT
-        caps = replace(
-            DEFAULT_CAPABILITIES,
-            provider=self.name,
-            context_window=context,
-            # 留 10% 余量给输出，与 OpenAI 侧 232000/256000 的比例一致
-            compaction_threshold=int(context * 0.9),
-            usage_fields=_DEEPSEEK_USAGE,
-            supports_reasoning=is_reasoner,
-            # TODO(grok): 核实 reasoner 是否真的拒绝 temperature
-            accepts_temperature=not is_reasoner,
-            # TODO(grok): 核实 reasoner 是否支持 tools
-            supports_function_calling=not is_reasoner,
-            structured_output=("json_in_text" if is_reasoner
-                               else "function_calling"),
-            prompt_variant=("deepseek-reasoner" if is_reasoner else "deepseek"),
-            # DeepSeek 分词器与 GPT 不同，官方无 tiktoken encoding；
-            # 用字符比估算，中文场景约 1.6 字符/token。
-            tokenizer="chars:1.6",
-        )
-        return caps.merged_with_overrides(model_config)
+# thinking 默认：deepseek-chat=False；v4/reasoner=True
+# supports_function_calling=True（含 thinking，§7.1）
+# tokenizer="chars:2.0"（启发式估算）
 ```
 
-2. 在 `core/providers/__init__.py` 的 `_PROVIDERS` 里注册（**放在列表最前面**，因为它比兜底更具体）：
+（完整实现见仓库 `core/providers/deepseek.py`。）
+
+2. 在 `core/providers/__init__.py` 的 `_PROVIDERS` 里注册（**放在列表最前面**）：
 
 ```python
 from core.providers.deepseek import DeepSeekProvider
@@ -1008,89 +968,40 @@ _PROVIDERS: list[BaseProvider] = [
 ]
 ```
 
-3. `tests/test_providers/test_deepseek_provider.py`：
+3. `tests/test_providers/test_deepseek_provider.py`（§7.1 口径：reasoner 仍支持 tools）：
 
 ```python
-"""DeepSeek provider 行为测试。"""
-import pytest
-
-from core import providers
-from core.providers.deepseek import DeepSeekProvider
-
-
-@pytest.mark.parametrize("cfg", [
-    {"base_url": "https://api.deepseek.com/v1", "model_name": "deepseek-chat"},
-    {"base_url": "https://relay.example/v1", "model_name": "deepseek-reasoner"},
-    {"base_url": "https://api.DeepSeek.com", "model_name": "x"},
-])
-def test_matches_by_url_or_model_name(cfg):
-    assert isinstance(providers.resolve(cfg), DeepSeekProvider)
-
-
-def test_chat_model_keeps_sampling_and_tools():
-    caps = providers.resolve(
-        {"base_url": "https://api.deepseek.com/v1", "model_name": "deepseek-chat"}
-    ).capabilities({"model_name": "deepseek-chat"})
-    assert caps.accepts_temperature is True
+def test_reasoner_drops_sampling_keeps_tools():
+    """§7.1: thinking 模式忽略 temperature，仍支持 tools."""
     assert caps.supports_function_calling is True
-    assert caps.supports_reasoning is False
     assert caps.structured_output == "function_calling"
 
-
-def test_reasoner_drops_sampling_and_downgrades_structured_output():
-    caps = providers.resolve(
-        {"base_url": "https://api.deepseek.com/v1",
-         "model_name": "deepseek-reasoner"}
-    ).capabilities({"model_name": "deepseek-reasoner"})
-    assert caps.supports_reasoning is True
-    assert caps.accepts_temperature is False
-    assert caps.structured_output == "json_in_text"
-
-
-def test_reasoner_llm_kwargs_omit_temperature():
-    p = providers.resolve({"model_name": "deepseek-reasoner"})
-    caps = p.capabilities({"model_name": "deepseek-reasoner"})
-    kwargs = p.llm_kwargs({"model_name": "deepseek-reasoner"}, caps)
-    assert "temperature" not in kwargs
-
-
-def test_cache_read_uses_flat_field_only():
-    p = providers.resolve({"model_name": "deepseek-chat"})
-    caps = p.capabilities({"model_name": "deepseek-chat"})
-    assert p.extract_cache_read({"prompt_cache_hit_tokens": 42}, caps) == 42
-    # DeepSeek 不用嵌套形式，即使出现也不该被误读
-    assert p.extract_cache_read(
-        {"prompt_tokens_details": {"cached_tokens": 99}}, caps
-    ) == 0
-
-
-def test_user_override_beats_provider_default():
-    p = providers.resolve({"model_name": "deepseek-chat"})
-    caps = p.capabilities({"model_name": "deepseek-chat", "context_window": 32_000})
-    assert caps.context_window == 32_000
-
-
 def test_context_window_is_not_the_global_256k():
-    caps = providers.resolve({"model_name": "deepseek-chat"}).capabilities(
-        {"model_name": "deepseek-chat"}
-    )
-    assert caps.context_window != 256_000, (
-        "DeepSeek must not inherit the legacy global 256k window"
-    )
+    assert caps.context_window == 1_048_576
 ```
+
+（完整 7 项测试见仓库 `tests/test_providers/test_deepseek_provider.py`。）
 
 **验收命令**
 
 ```powershell
 python -m pytest tests/test_providers -q
 python -m ruff check core/providers tests/test_providers
+python -m pytest tests -q -x --timeout=300
 ```
 
 **完成判据**
-- [ ] 所有 `TODO(grok)` 已用官方文档数值替换，且 docstring 里有 URL
-- [ ] 7 个测试全绿
-- [ ] `providers.resolve()` 对非 DeepSeek 配置仍返回 `OpenAIProvider`（注册新 provider 不能误伤兜底）
-- [ ] 仍未接线到 `agent_v2.py`
+- [x] 所有数值来自 §7.1 官方文档，docstring 含 URL（2026-08-02）
+- [x] 7 个测试全绿（`pytest tests/test_providers` → 23 passed）
+- [x] `providers.resolve()` 对非 DeepSeek 配置仍返回 `OpenAIProvider`（`test_registry.py` 兜底仍绿）
+- [x] 仍未接线到 `agent_v2.py`
+- [x] **R9 单卡 commit**：`72e3d7a` — `feat(model): add DeepSeekProvider with reasoner-aware capabilities`
+- [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=300` → **9843 passed**, 3 skipped（`artifacts/a3-full-regression.log`）
+
+> **A3 关账备注（2026-08-02）**
+> - **Commit**：`72e3d7a`（`core/providers/deepseek.py`、`core/providers/__init__.py`、`tests/test_providers/test_deepseek_provider.py`）
+> - **全量验收**：隔离工作树后约 6m23s，9843 passed / 3 skipped / exit 0
+> - **§7.1 差异说明**：`deepseek-reasoner` 保留 `supports_function_calling=True`；context 1M 非旧卡 128k
 
 **常见坑**
 - `matches()` 用了子串匹配 `"deepseek" in base_url`。如果用户接的是中转站（base_url 里没有 deepseek 字样但模型名是 `deepseek-chat`），靠 model_name 那一半兜住。这是**故意的双条件**，不要改成 `and`。
@@ -1667,14 +1578,14 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 **背景**
 A2 的 `OpenAIProvider` 只是兜底——零覆写，未识别模型落到它上面行为不变（DC1）。但 OpenAI 官方有明确的机制值得显式声明：prompt caching（自动、前缀 ≥1024 token）、`reasoning_effort`（none/minimal/low/medium/high/xhigh）、o 系列推理模型。本卡把这些落成显式能力，同时**保持 DC1：未匹配 openai 的未知模型仍拿到与改造前逐字节一致的默认能力**。
 
-**与现有定价机制的关系（2026-08-01 review 补充）**：`utils/streaming.py` 的 `billing_amount`（:105-124）已从 `config.yaml` 的 `pricing` 段（`{model: {input: $/M, output: $/M}}`）读价。本卡的 `ModelPricing` 是 **provider 侧声明**的默认价（带 `as_of`/来源 URL），两者并存且优先级不同：**config 用户定价 > ModelPricing > 无**。本卡只在 `ModelCapabilities` 上挂载默认值，**不得修改 `billing_amount` 的现有行为**；两者的统一归 Phase C 的 `CostAccountant`（C4）。
+**与现有定价机制的关系（2026-08-01 review 补充）**：`utils/streaming.py` 的 `billing_amount`（:105-124）已从 `config.yaml` 的 `pricing` 段（`{model: {input: $/M, output: $/M}}`）读价。本卡的 `ModelPricing` 是 **provider 侧声明**的默认价（带 `as_of`/来源 URL），两者并存且优先级不同：**config 用户定价 > ModelPricing > 无**。本卡只在 `ModelCapabilities` 上挂载默认值，**不得修改 `billing_amount` 的现有行为**；两者的统一归 Phase D 的 `CostAccountant`（D4）。
 
-**与 Phase C C4 的契约（2026-08-01 跨文档 review 补充，冲突调和）**：C4（`PHASE-C.md:529-543`）也会给 `ModelCapabilities` 加 `ModelPricing`，且其 `input_per_mtok`/`output_per_mtok` 是**必填**字段、定价存 `config/model_pricing.py` 中心表。本卡与其的调和规则：
+**与 Phase D D4 的契约（2026-08-01 跨文档 review 补充，冲突调和）**：D4（`PHASE-D-MULTI-MODEL-COLLABORATION.md:529-543`）也会给 `ModelCapabilities` 加 `ModelPricing`，且其 `input_per_mtok`/`output_per_mtok` 是**必填**字段、定价存 `config/model_pricing.py` 中心表。本卡与其的调和规则：
 
-1. **字段对齐**：本卡的 `ModelPricing` 是 C4 定义的**超集**（C4 无 `source_url`，本卡多此字段），其余字段名逐一相同
-2. **必填 vs Optional 的语义**：C4 的必填 `float` 指**中心表条目内**的字段；本卡的 `None` 指"该模型尚未有官方定价"。Phase C 的 `CostAccountant.record` 读 `caps.pricing.input_per_mtok` 时必须处理 `None`（这正是 C4 测试 `test_missing_pricing_does_not_silently_count_as_zero` 的载体）——**不得把 None 静默当 0**
-3. **优先级**：C4 中心表（`config/model_pricing.py`，用户维护）> 本卡 capabilities 上的 `ModelPricing` > 无
-4. **数据流**：A0 批 1–8 的第 7 问（定价）结论即 C4 中心表与各 provider 默认价的共同数据源，Phase C 不再单独做定价调研（见 A0 与 C4 调研的关系）
+1. **字段对齐**：本卡的 `ModelPricing` 是 D4 定义的**超集**（D4 无 `source_url`，本卡多此字段），其余字段名逐一相同
+2. **必填 vs Optional 的语义**：D4 的必填 `float` 指**中心表条目内**的字段；本卡的 `None` 指"该模型尚未有官方定价"。Phase D 的 `CostAccountant.record` 读 `caps.pricing.input_per_mtok` 时必须处理 `None`（这正是 D4 测试 `test_missing_pricing_does_not_silently_count_as_zero` 的载体）——**不得把 None 静默当 0**
+3. **优先级**：D4 中心表（`config/model_pricing.py`，用户维护）> 本卡 capabilities 上的 `ModelPricing` > 无
+4. **数据流**：A0 批 1–8 的第 7 问（定价）结论即 D4 中心表与各 provider 默认价的共同数据源，Phase D 不再单独做定价调研（见 A0 与 D4 调研的关系）
 
 **涉及文件**
 - 新建 `tests/test_providers/test_openai_provider.py`（现有 `test_registry.py` 已有兜底测试，本卡扩之）
@@ -1683,12 +1594,12 @@ A2 的 `OpenAIProvider` 只是兜底——零覆写，未识别模型落到它�
 
 **操作步骤**
 
-1. `config/model_capabilities.py` 追加 `ModelPricing`（为 Phase C `CostAccountant` 预留；缺失价格不得静默当 0）：
+1. `config/model_capabilities.py` 追加 `ModelPricing`（为 Phase D `CostAccountant` 预留；缺失价格不得静默当 0）：
 
 ```python
 @dataclass(frozen=True)
 class ModelPricing:
-    """每百万 token 单价（美元）。Phase C 的 CostAccountant 用它做成本核算。
+    """每百万 token 单价（美元）。Phase D 的 CostAccountant 用它做成本核算。
 
     字段来源必须是 A0 调研报告（§7.X）里带 URL 的官方定价页。
     任何字段为 None 时调用方必须显式处理（保守高估或警告），不得静默当 0。
@@ -1704,7 +1615,7 @@ class ModelPricing:
 2. `ModelCapabilities` 追加两个字段（只追加，默认值保持现状行为）：
 
 ```python
-    #: 定价（Phase C 用）。默认空对象 = "未知"，不改变任何现有行为。
+    #: 定价（Phase D 用）。默认空对象 = "未知"，不改变任何现有行为。
     pricing: ModelPricing = field(default_factory=ModelPricing)
 
     #: 推理力度档位映射：fast / balanced / deep → 厂商参数。
@@ -2434,7 +2345,7 @@ feat(model): complete QwenProvider with dashscope specifics
 `P1` / 6h / 依赖 A2、**A0 批 8 审计通过**（§7.8）
 
 **背景**
-A4 只给了 Anthropic 的方向（"`prompt_variant="claude"`；prompt 缓存的 `cache_control` 语义与 OpenAI 不同，需要在 `supports_prompt_cache` 上体现"）。本卡补全：Claude 的 thinking block 语义、prompt caching 断点（最多 4 个断点、最小 1024 token 块、TTL 5 分钟/1h）、reasoning 内容剥离（Phase C 的 strip 环节会用）、以及 OpenAI 兼容端点下的能力边界（MA4 禁止引入 anthropic SDK，原生端点的完整断点支持标注为受限）。
+A4 只给了 Anthropic 的方向（"`prompt_variant="claude"`；prompt 缓存的 `cache_control` 语义与 OpenAI 不同，需要在 `supports_prompt_cache` 上体现"）。本卡补全：Claude 的 thinking block 语义、prompt caching 断点（最多 4 个断点、最小 1024 token 块、TTL 5 分钟/1h）、reasoning 内容剥离（Phase D 的 strip 环节会用）、以及 OpenAI 兼容端点下的能力边界（MA4 禁止引入 anthropic SDK，原生端点的完整断点支持标注为受限）。
 
 **涉及文件**
 - 新建 `core/providers/anthropic.py`（A4 若已建则补全）
@@ -2971,7 +2882,7 @@ Phase A 为后面两个 Phase 预留了这些接缝，**实现时不要破坏它
 
 | 预留 | 给谁用 | 约束 |
 |---|---|---|
-| `ModelCapabilities.supports_vision` | Phase C 多模态 | Phase A 只占字段不实现，Phase C 填逻辑 |
+| `ModelCapabilities.supports_vision` | Phase E 多模态 | Phase A 只占字段不实现，Phase E 填逻辑 |
 | Provider 无状态单例（约束 DC2） | Phase B 多 Agent | 多个 Agent 会并发调用同一个 provider 实例，**不要在 provider 里存任何 per-request 状态** |
 | `ModelCapabilities.prompt_variant` | Phase B 角色化 Agent | 不同角色的 Agent 可能用不同模型，变体机制要能按 agent 解析 |
 | `AgentState._capabilities` | Phase B | 多 Agent 下每个 agent 的 capabilities 不同，state 注入要按 agent 隔离 |
@@ -2980,11 +2891,11 @@ Phase A 为后面两个 Phase 预留了这些接缝，**实现时不要破坏它
 
 | 预留（新增） | 给谁用 | 约束 |
 |---|---|---|
-| `ModelPricing`（A12） | **Phase C C4 成本核算** | 本卡定义是 C4（`PHASE-C.md:529-543`）的超集；C4 中心表优先级更高；`None` 必须显式处理（缺失不静默当 0，对齐 C4 判据） |
-| `effort_presets`（A12/A21） | Phase B B10 难度路由、Phase C C11 评测矩阵 | 路由与评测可按 fast/balanced/deep 档位横向比较延迟与质量；空 dict = 不支持档位，禁止注入任何参数 |
-| `cache_min_block_tokens` / `cache_ttl_s` / `cache_breakpoints`（A19） | Phase C C4 缓存定价、Phase 2 Session 消息链 | 断点布局只打在恒定内容末尾（≤4 个）；TTL 是 provider 侧语义，与 settings `cache.ttl`（死配置）无关 |
+| `ModelPricing`（A12） | **Phase D D4 成本核算** | 本卡定义是 D4（`PHASE-D-MULTI-MODEL-COLLABORATION.md:529-543`）的超集；D4 中心表优先级更高；`None` 必须显式处理（缺失不静默当 0，对齐 D4 判据） |
+| `effort_presets`（A12/A21） | Phase B B10 难度路由、Phase D D11 评测矩阵 | 路由与评测可按 fast/balanced/deep 档位横向比较延迟与质量；空 dict = 不支持档位，禁止注入任何参数 |
+| `cache_min_block_tokens` / `cache_ttl_s` / `cache_breakpoints`（A19） | Phase D D4 缓存定价、Phase 2 Session 消息链 | 断点布局只打在恒定内容末尾（≤4 个）；TTL 是 provider 侧语义，与 settings `cache.ttl`（死配置）无关 |
 | `max_output_tokens` / `few_shot_policy` / `tool_send_policy` / `tool_output_token_limit`（A20） | Phase 2 Session 消息链、Phase B 角色化 Agent | 默认 `None` = 现状（全量）行为，任何消费方不得假定非 None |
-| A0 调研报告（§7） | Phase C C4 定价表、A12–A22 全部数值、Phase D D4 图像 token 公式 | 数值唯一来源；对应批未通过审计不得使用 |
+| A0 调研报告（§7） | Phase D D4 定价表、A12–A22 全部数值、Phase E E4 图像 token 公式 | 数值唯一来源；对应批未通过审计不得使用 |
 
 ---
 
@@ -4733,7 +4644,7 @@ cached_input_per_mtok = 0.50
 | 批 1 | §7.1 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 13:50 | **通过（复审 rev2）** | **收回我第一轮 P1 主张**：重新抓取官方 thinking_mode 页（2026-08-02），映射表 12 格序列为 low\|low\|high、high\|high\|high、**xhigh\|high\|max**、max\|max\|max——pro 的 xhigh 官方确为 max，第一轮"xhigh→high"系我误读三列表格，Grok 的"驳回"成立，rev2 的 pro: low→high、high→high、xhigh→max、max→max 正确。P2 已改为 `chars:2.0` 且注明"A5 可落地、勿写 hf:"，符合 TokenizerSpec（tiktoken:/chars:），落地无缺口。P3 已补 S13+S9 引用（Flash 更新 2026-07-31、Pro 首发 2026-04-24 且 07-31 未更新、旧 id 2026-07-24 15:59 UTC 停用并过渡路由 v4-flash non-thinking/thinking），与我可核验信息一致。Luna rev2 唯一遗留（Q6 措辞"无 tiktoken encoding"vs"未找到"）属表述精度问题，我独立复核：S8 官方页面确实未给出 tiktoken encoding 名，仅提供离线 zip 与近似比例，`chars:2.0` 已明确标注为启发式估算而非官方数值——建议接受该措辞修订，不构成事实冲突。S4（API 参考页）的 128 工具上限/tool_choice/reasoning_tokens/medium、xhigh 别名未被本审计直接抓取复核，以 S4 引用为准（备注不阻塞）。 |
 | 批 1 | §7.1 | GPT-5.6-Luna | 2026-08-02 15:29 | **通过** | 问题清单：无。复审确认 rev3 已将 Q6 改为“未找到官方 tiktoken encoding”，并明确 `chars:2.0` 仅为 RxyCode 启发式估算、非官方 tokenizer 数值；Q1–Q9 其余数值、字段名和行为声明均与当前 DeepSeek 官方文档一致。重点核验：thinking 默认 enabled、effort 映射、Chat Completions/Responses usage 字段、自动缓存及工具链 `reasoning_content` 回传规则均通过。来源：https://api-docs.deepseek.com/quick_start/token_usage；https://api-docs.deepseek.com/guides/thinking_mode；https://api-docs.deepseek.com/guides/kv_cache；https://api-docs.deepseek.com/api/create-chat-completion/；https://api-docs.deepseek.com/guides/responses_api |
 | 批 2 | §7.2 | Grok 4.5 | 2026-08-02 | **通过（自审·rev2）** | rev2 修正后 DeepSeek + Luna 均通过；批 2 三方全过。 |
-| 批 2 | §7.2 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 14:10 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。逐条抓取官方页核验：O1 型号页三档（sol 别名 gpt-5.6、cutoff 2026-02-16、context 1.05M、output 128K）✓；O2 型号页 max input 922,000、>272K 整单 2x/1.5x、Tier1 500 RPM/500,000 TPM、Cache writes 1.25x ✓；O5 定价页 Standard 三档（sol $5/$0.50/$6.25/$30、terra $2/$0.20/$2.50/$12、luna $0.20/$0.02/$0.25/$1.20）、Long context 列、Fast mode（2026-07-30 由 Priority 更名，service_tier fast/priority，sol $10/$1/$12.50/$60）✓；O6 prompt-caching 页 1024 严格下限、TTL 仅 30m、隐式断点在最新 user/tool 消息且不回退最长前缀（cached_tokens 可为 0）、显式断点 + prompt_cache_key（5.6 必须设 key 才用可靠匹配）、4 写槽/50 读断点、cache_write_tokens 1.25x、prompt_cache_retention 对 5.6 弃用、组织间不共享缓存 ✓；O7 reasoning 指南 effort 档位 none/low/medium/high/xhigh/max（型号子集不同）、省略 effort 默认 medium（standard 与 pro 皆然）、原始 reasoning 不暴露（encrypted_content/stateless、summary 摘要）、usage.output_tokens_details.reasoning_tokens、GPT-5.6 默认 reasoning.context=all_turns、函数调用回传 reasoning items 建议、pro 模式独立于 effort ✓。temperature 拒绝声明标"未找到"属诚实处理 ✓。③ 含义段与官方 usage 示例字段路径（prompt_tokens_details.cached_tokens / cache_write_tokens / completion_tokens_details.reasoning_tokens）逐字一致 ✓。非阻塞备注（2 条）：① O8（migrate-to-responses）与 O10（token-counting）两页未直接抓取，Q3 的 reasoning_effort 顶层参数位置、Q6 的 tiktoken 不准确性表述、Q9 的 reasoning:none 无 tool calling 细则以引用为准，建议 Grok 自审抽检原文；② ③ 中 cache_write_nested / reasoning_nested 字段名超出 A1 的 UsageFieldMap 现有结构（仅 cache_read_flat/cache_read_nested/reasoning），A12/A19 落地时需扩展 UsageFieldMap 增加 cache_write 路径（供 Phase C 缓存写入计费）或明确仅消费命中字段。 |
+| 批 2 | §7.2 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 14:10 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。逐条抓取官方页核验：O1 型号页三档（sol 别名 gpt-5.6、cutoff 2026-02-16、context 1.05M、output 128K）✓；O2 型号页 max input 922,000、>272K 整单 2x/1.5x、Tier1 500 RPM/500,000 TPM、Cache writes 1.25x ✓；O5 定价页 Standard 三档（sol $5/$0.50/$6.25/$30、terra $2/$0.20/$2.50/$12、luna $0.20/$0.02/$0.25/$1.20）、Long context 列、Fast mode（2026-07-30 由 Priority 更名，service_tier fast/priority，sol $10/$1/$12.50/$60）✓；O6 prompt-caching 页 1024 严格下限、TTL 仅 30m、隐式断点在最新 user/tool 消息且不回退最长前缀（cached_tokens 可为 0）、显式断点 + prompt_cache_key（5.6 必须设 key 才用可靠匹配）、4 写槽/50 读断点、cache_write_tokens 1.25x、prompt_cache_retention 对 5.6 弃用、组织间不共享缓存 ✓；O7 reasoning 指南 effort 档位 none/low/medium/high/xhigh/max（型号子集不同）、省略 effort 默认 medium（standard 与 pro 皆然）、原始 reasoning 不暴露（encrypted_content/stateless、summary 摘要）、usage.output_tokens_details.reasoning_tokens、GPT-5.6 默认 reasoning.context=all_turns、函数调用回传 reasoning items 建议、pro 模式独立于 effort ✓。temperature 拒绝声明标"未找到"属诚实处理 ✓。③ 含义段与官方 usage 示例字段路径（prompt_tokens_details.cached_tokens / cache_write_tokens / completion_tokens_details.reasoning_tokens）逐字一致 ✓。非阻塞备注（2 条）：① O8（migrate-to-responses）与 O10（token-counting）两页未直接抓取，Q3 的 reasoning_effort 顶层参数位置、Q6 的 tiktoken 不准确性表述、Q9 的 reasoning:none 无 tool calling 细则以引用为准，建议 Grok 自审抽检原文；② ③ 中 cache_write_nested / reasoning_nested 字段名超出 A1 的 UsageFieldMap 现有结构（仅 cache_read_flat/cache_read_nested/reasoning），A12/A19 落地时需扩展 UsageFieldMap 增加 cache_write 路径（供 Phase D 缓存写入计费）或明确仅消费命中字段。 |
 | 批 2 | §7.2 | GPT-5.6-Luna | 2026-08-02 15:50 | **通过** | 问题清单：无。复审确认 rev2 已补充分列的 GPT-5.6 发布日（2026-07-09）与最近 Changelog 更新日（2026-07-30）；已将旧型号 retention 按型号区分（GPT-5.5 / GPT-5.5-pro 仅 24h，in_memory 仅适用于明确支持的型号）；已将截断缓存影响改为“未找到”。Q1–Q9 其它数值、字段名和行为声明均与当前 OpenAI 官方文档一致。重点核验：prompt_cache_breakpoint / prompt_cache_options / prompt_cache_key、cached_tokens / cache_write_tokens、reasoning_effort 默认 medium、Chat Completions 与 Responses 差异均通过。来源：https://developers.openai.com/api/docs/changelog；https://developers.openai.com/api/docs/guides/prompt-caching；https://developers.openai.com/api/docs/guides/reasoning；https://developers.openai.com/api/docs/guides/token-counting |
 | 批 3 | §7.3 | Grok 4.5 | 2026-08-02 | **通过（自审·rev2）** | rev2 修正后 DeepSeek + Luna 均通过；批 3 三方全过。 |
 | 批 3 | §7.3 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 14:40 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。直接抓取 platform.kimi.com 官方页核验：M7 Context Caching（自动启用、无缓存 ID/TTL 管理、prompt>256 才缓存否则丢弃、固定上下文放 messages 最前、长文本首 Token 平均降至 5s 内）✓；M9 reasoning_effort（K3 始终推理、顶层 low/high/max 默认 max、K2.x 迁移移除 thinking、多轮/工具调用原样回传完整 assistant）✓；M8 思考模型（k3 始终推理+Preserved Thinking 始终开、k2.7-code 始终思考+keep 恒为 all 且传 disabled 报错、k2.6 type enabled 默认/disabled + keep null 默认/"all"、k2.5 不支持 Preserved Thinking、reasoning_content 计入 token、max_tokens>=16000 建议、temperature 不可修改勿显式传入）✓；M2 模型列表（kimi-k3 2.8T 参数原生视觉 100 万上下文、k2.7-code/-highspeed 256k 且 highspeed 180 tok/s 短上下文 260、k2.6 256k、moonshot-v1 8k/32k/128k 输入+输出合计、k2.5/moonshot-v1 新用户停开 8 月 31 日全平台下线、kimi-k2 系列 2026-05-25 下线）✓；M5 Chat+OpenAPI（usage.cached_tokens 顶层字段（非 prompt_cache_hit_tokens）、prompt_cache_key 可选（Coding Agent 用稳定 session/task id、Kimi Code Plan 必填）、tool_choice auto/none/required、K3 动态工具 system message 无 content、max_completion_tokens K3 默认 131072 最大 1048576 超窗 invalid_request_error、image_url/video_url 多模态、response_format json_object/json_schema）✓；M3 模型参数参考（temperature/top_p/n/presence/frequency 固定值逐条一致：k3 与 k2.7 固定 1.0/0.95/1/0/0、k2.6 思考 1.0 非思考 0.6、改值报错建议不显式传入；**切换 reasoning_effort 破坏前缀缓存命中、会话开始前定档**——报告 Q4/Q5 引用正确；tool_choice 仅 k3 支持 required，k2.6/k2.7 传入报错）✓。非阻塞备注（2 条）：① Q7 定价卡片（¥20/¥2/¥100、¥6.50/¥1.30/¥27、¥6.50/¥1.10/¥27）依赖 M1 首页 JS 渲染，静态抓取无法复核，报告已标注"落地前人工打开 M13 复核"——保持该标注，A13 填值前人工确认；② ③ 中 reasoning=() 处理正确（Kimi 的 reasoning_content 在 message 级而非 usage 嵌套，与 A8 的 _extract_reasoning 走 delta/message 一致）；A13 落地时注意 tool_choice required 需按模型分支（k3 支持、k2.6/k2.7 不支持）。 |
