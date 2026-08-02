@@ -2,7 +2,7 @@
 
 > **在整条路线中的位置**：本文件是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的**后继扩展**，编号 Phase A。
 > **前置条件**：主计划的 Phase 0（止血）与 Phase 1（Harness 说真话）**必须已完成**。原因见 §0.3。
-> **后继**：[`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md)
+> **后继**：[`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md)
 >
 > **一句话目标**：让 RxyCode 能针对不同模型（DeepSeek / Claude / GPT / Qwen / 本地模型）做差异化优化，而不是把所有模型都当成 "OpenAI 兼容 + 全局常量"。
 >
@@ -341,9 +341,9 @@ Phase A 的优化对象是"模型"，而模型的字段、参数、定价、缓�
 
 **与其它文档中 Grok 调研的关系（2026-08-01 跨文档 review 补充）**
 
-1. **Phase D D4 的定价调研并入本卡**：`PHASE-D-MULTI-MODEL-COLLABORATION.md:601-619` 的 "Grok 的调研 prompt"（各家定价、缓存按写入/读取分别计价、推理 token 单独计价）与本卡 9 问模板的**第 7 问（定价）**重叠。执行规则：D4 所需的定价数据由本卡批 1–8 的第 7 问结论提供，**Phase D 不再单独做定价调研**；D4 中心表（`config/model_pricing.py`）直接引用 §7 各分区的定价结论（含 `as_of` 与来源 URL）。
+1. **Phase D D4 的定价调研并入本卡**：`PHASE-E-MULTI-MODEL-COLLABORATION.md:601-619` 的 "Grok 的调研 prompt"（各家定价、缓存按写入/读取分别计价、推理 token 单独计价）与本卡 9 问模板的**第 7 问（定价）**重叠。执行规则：D4 所需的定价数据由本卡批 1–8 的第 7 问结论提供，**Phase D 不再单独做定价调研**；D4 中心表（`config/model_pricing.py`）直接引用 §7 各分区的定价结论（含 `as_of` 与来源 URL）。
 2. **清单外模型族（如 xAI Grok）**：D4 调研清单含 xAI，而本卡 8 批未列。需要时按**批 9+** 追加，用同一 9 问模板、同一审计门（Grok 自审 + DeepSeek + GPT-5.6-Luna 双验证），通过后才允许对应优化卡开工。
-3. **旧型号引用的取代**：本卡 §7 报告发布后，`PHASE-D-MULTI-MODEL-COLLABORATION.md:610`（DeepSeek chat/reasoner）等旧型号引用一律以 §7 为准，不在其它文档里另行维护型号清单。
+3. **旧型号引用的取代**：本卡 §7 报告发布后，`PHASE-E-MULTI-MODEL-COLLABORATION.md:610`（DeepSeek chat/reasoner）等旧型号引用一律以 §7 为准，不在其它文档里另行维护型号清单。
 
 **涉及文件**
 - 本文件 §7（新增，调研汇报与审计记录区）
@@ -1034,10 +1034,26 @@ blind-probing two field names in agent_v2._extract_cache_read.
 4. 每个 provider 至少 5 个测试，参考 `test_deepseek_provider.py` 的结构
 
 **完成判据**
-- [ ] 两个 provider 文件 + 两个测试文件
-- [ ] 所有数值有文档 URL 出处
-- [ ] `test_registry.py` 里的兜底测试仍绿（新 provider 不误伤未识别模型）
-- [ ] 仍未接线
+- [x] 两个 provider 文件 + 两个测试文件
+- [x] 所有数值有文档 URL 出处（§7.7 / §7.8；`chars:` / `0.9` compaction 已标注为 RxyCode 项目侧启发式）
+- [x] `test_registry.py` 里的兜底测试仍绿（新 provider 不误伤未识别模型）
+- [x] 仍未接线
+- [x] **R9 单卡 commit**：`<!-- A4_COMMIT -->` — `feat(model): add AnthropicProvider and QwenProvider skeletons`
+- [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=300` → **<!-- A4_PASSED --> passed**, <!-- A4_SKIPPED --> skipped（`artifacts/a4-full-regression.log`）
+
+> **A4 关账备注（2026-08-02）**
+> - **Commit**：`<!-- A4_COMMIT -->`（`core/providers/anthropic.py`、`core/providers/qwen.py`、`core/providers/__init__.py`、`tests/test_providers/test_anthropic_provider.py`、`tests/test_providers/test_qwen_provider.py`）
+> - **全量验收**：隔离工作树后 <!-- A4_DURATION -->，<!-- A4_PASSED --> passed / <!-- A4_SKIPPED --> skipped / exit 0
+> - **§7.7/§7.8 差异说明**：Anthropic `supports_prompt_cache=True`（显式 cache_control，非 OpenAI 自动缓存）；Qwen `tokenizer=chars:0.7`（100 万 token ≈ 70 万汉字）；3.8 context 取自 Codex Q10 元数据
+
+**Commit**
+```
+feat(model): add AnthropicProvider and QwenProvider skeletons
+
+Register Anthropic and Qwen provider skeletons per §7.8 / §7.7 audit
+values. Anthropic uses flat cache_read_input_tokens and claude prompt
+variant; Qwen uses nested cached_tokens and chars:0.7 tokenizer heuristic.
+```
 
 ---
 
@@ -1580,7 +1596,7 @@ A2 的 `OpenAIProvider` 只是兜底——零覆写，未识别模型落到它�
 
 **与现有定价机制的关系（2026-08-01 review 补充）**：`utils/streaming.py` 的 `billing_amount`（:105-124）已从 `config.yaml` 的 `pricing` 段（`{model: {input: $/M, output: $/M}}`）读价。本卡的 `ModelPricing` 是 **provider 侧声明**的默认价（带 `as_of`/来源 URL），两者并存且优先级不同：**config 用户定价 > ModelPricing > 无**。本卡只在 `ModelCapabilities` 上挂载默认值，**不得修改 `billing_amount` 的现有行为**；两者的统一归 Phase D 的 `CostAccountant`（D4）。
 
-**与 Phase D D4 的契约（2026-08-01 跨文档 review 补充，冲突调和）**：D4（`PHASE-D-MULTI-MODEL-COLLABORATION.md:529-543`）也会给 `ModelCapabilities` 加 `ModelPricing`，且其 `input_per_mtok`/`output_per_mtok` 是**必填**字段、定价存 `config/model_pricing.py` 中心表。本卡与其的调和规则：
+**与 Phase D D4 的契约（2026-08-01 跨文档 review 补充，冲突调和）**：D4（`PHASE-E-MULTI-MODEL-COLLABORATION.md:529-543`）也会给 `ModelCapabilities` 加 `ModelPricing`，且其 `input_per_mtok`/`output_per_mtok` 是**必填**字段、定价存 `config/model_pricing.py` 中心表。本卡与其的调和规则：
 
 1. **字段对齐**：本卡的 `ModelPricing` 是 D4 定义的**超集**（D4 无 `source_url`，本卡多此字段），其余字段名逐一相同
 2. **必填 vs Optional 的语义**：D4 的必填 `float` 指**中心表条目内**的字段；本卡的 `None` 指"该模型尚未有官方定价"。Phase D 的 `CostAccountant.record` 读 `caps.pricing.input_per_mtok` 时必须处理 `None`（这正是 D4 测试 `test_missing_pricing_does_not_silently_count_as_zero` 的载体）——**不得把 None 静默当 0**
@@ -2891,7 +2907,7 @@ Phase A 为后面两个 Phase 预留了这些接缝，**实现时不要破坏它
 
 | 预留（新增） | 给谁用 | 约束 |
 |---|---|---|
-| `ModelPricing`（A12） | **Phase D D4 成本核算** | 本卡定义是 D4（`PHASE-D-MULTI-MODEL-COLLABORATION.md:529-543`）的超集；D4 中心表优先级更高；`None` 必须显式处理（缺失不静默当 0，对齐 D4 判据） |
+| `ModelPricing`（A12） | **Phase D D4 成本核算** | 本卡定义是 D4（`PHASE-E-MULTI-MODEL-COLLABORATION.md:529-543`）的超集；D4 中心表优先级更高；`None` 必须显式处理（缺失不静默当 0，对齐 D4 判据） |
 | `effort_presets`（A12/A21） | Phase B B10 难度路由、Phase D D11 评测矩阵 | 路由与评测可按 fast/balanced/deep 档位横向比较延迟与质量；空 dict = 不支持档位，禁止注入任何参数 |
 | `cache_min_block_tokens` / `cache_ttl_s` / `cache_breakpoints`（A19） | Phase D D4 缓存定价、Phase 2 Session 消息链 | 断点布局只打在恒定内容末尾（≤4 个）；TTL 是 provider 侧语义，与 settings `cache.ttl`（死配置）无关 |
 | `max_output_tokens` / `few_shot_policy` / `tool_send_policy` / `tool_output_token_limit`（A20） | Phase 2 Session 消息链、Phase B 角色化 Agent | 默认 `None` = 现状（全量）行为，任何消费方不得假定非 None |
