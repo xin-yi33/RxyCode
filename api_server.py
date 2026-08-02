@@ -1186,10 +1186,11 @@ async def chat(req: ChatRequest):
                     thinking_cursor = _thinking_cursor(agent)
                     from .core.session import Session
 
+                    session_notifications: list = []
                     session = Session(
                         session_id=req.session_id,
                         workspace_root=Path.cwd(),
-                        emit=lambda _notification: None,
+                        emit=session_notifications.append,
                     )
                     prompt_result = await session.prompt(
                         agent,

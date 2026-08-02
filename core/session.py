@@ -52,7 +52,12 @@ def thinking_since(agent: Any, cursor: tuple[tuple[str, ...], str]) -> str:
 
 
 def notification_to_sse_event(notification: BaseModel) -> dict[str, Any] | None:
-    """Map protocol notifications to legacy HTTP SSE event dicts."""
+    """Map protocol notifications to legacy HTTP SSE event dicts.
+
+    P3 strangler scope: only terminal ``final`` / ``error`` events are converted
+    here. Mid-run events (token, tool_call, approval_request, ...) still flow
+    through ``StreamTUI`` until P4/P5 migrate the full emit path.
+    """
     if isinstance(notification, FinalAnswer):
         event: dict[str, Any] = {
             "type": "final",
