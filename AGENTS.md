@@ -7,6 +7,7 @@
 | Module | Location | Purpose |
 |--------|----------|---------|
 | [core](docs/modules/core.md) | core/ | Agent brain - AgentV2, LangGraph pipeline, prompts, state |
+| [protocol](docs/modules/protocol.md) | protocol/ | Typed JSON-RPC protocol - pydantic models, JSON Schema, TS codegen |
 | [config](docs/modules/config.md) | config/ | Configuration management - models, API keys, preferences |
 | [cache](docs/modules/cache.md) | cache/ | Two-level caching - precise hash + semantic similarity |
 | [memory](docs/modules/memory.md) | memory/ | Tiered memory - short-term, long-term, user memory, chat storage |

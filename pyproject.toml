@@ -44,6 +44,7 @@ packages = [
   "RxyCode.RxyCode1_1_0.core",
   "RxyCode.RxyCode1_1_0.core.prompts",
   "RxyCode.RxyCode1_1_0.core.safety",
+  "RxyCode.RxyCode1_1_0.protocol",
   "RxyCode.RxyCode1_1_0.evals",
   "RxyCode.RxyCode1_1_0.execution",
   "RxyCode.RxyCode1_1_0.history",

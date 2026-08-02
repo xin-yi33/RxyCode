@@ -1,0 +1,860 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rxycode.dev/protocol/schema.json",
+  "title": "RxyCode Protocol",
+  "protocol_version": "1.0.0",
+  "$defs": {
+    "InitializeRequest": {
+      "properties": {
+        "method": {
+          "const": "initialize",
+          "default": "initialize",
+          "title": "Method",
+          "type": "string"
+        },
+        "client_name": {
+          "title": "Client Name",
+          "type": "string"
+        },
+        "client_version": {
+          "title": "Client Version",
+          "type": "string"
+        },
+        "protocol_version": {
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capabilities"
+        }
+      },
+      "required": [
+        "client_name",
+        "client_version",
+        "protocol_version"
+      ],
+      "title": "InitializeRequest",
+      "type": "object"
+    },
+    "NewSessionRequest": {
+      "properties": {
+        "method": {
+          "const": "session/new",
+          "default": "session/new",
+          "title": "Method",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        }
+      },
+      "required": [
+        "workspace_root"
+      ],
+      "title": "NewSessionRequest",
+      "type": "object"
+    },
+    "PromptRequest": {
+      "properties": {
+        "method": {
+          "const": "session/prompt",
+          "default": "session/prompt",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional wall-clock limit for this prompt (maps execution.tool_timeout_seconds semantics).",
+          "title": "Timeout Seconds"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "PromptRequest",
+      "type": "object"
+    },
+    "InterruptRequest": {
+      "properties": {
+        "method": {
+          "const": "session/interrupt",
+          "default": "session/interrupt",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "InterruptRequest",
+      "type": "object"
+    },
+    "ShutdownRequest": {
+      "properties": {
+        "method": {
+          "const": "shutdown",
+          "default": "shutdown",
+          "title": "Method",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "ShutdownRequest",
+      "type": "object"
+    },
+    "MessageDelta": {
+      "description": "SSE ``type: token`` via ``StreamTUI._buffer(\"token\")`` / flush (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/message_delta",
+          "default": "event/message_delta",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "MessageDelta",
+      "type": "object"
+    },
+    "ProgressUpdate": {
+      "description": "SSE ``type: progress`` from ``StreamTUI.write_progress`` (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/progress",
+          "default": "event/progress",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "ProgressUpdate",
+      "type": "object"
+    },
+    "ReasoningSnapshot": {
+      "description": "SSE ``type: reasoning`` with ``snapshot: true`` from ``StreamTUI._emit_thinking_snapshot`` (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/reasoning_snapshot",
+          "default": "event/reasoning_snapshot",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "snapshot": {
+          "default": true,
+          "title": "Snapshot",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "ReasoningSnapshot",
+      "type": "object"
+    },
+    "PlanUpdate": {
+      "description": "SSE ``type: plan`` from ``StreamTUI.write_plan`` (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/plan",
+          "default": "event/plan",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "session_id",
+        "steps"
+      ],
+      "title": "PlanUpdate",
+      "type": "object"
+    },
+    "StepProgress": {
+      "description": "SSE ``type: step`` from ``StreamTUI.write_step`` (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/step",
+          "default": "event/step",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "index",
+        "total",
+        "text"
+      ],
+      "title": "StepProgress",
+      "type": "object"
+    },
+    "TaskStarted": {
+      "description": "Structured task boundary for LangGraph runs (future emit from chat worker).",
+      "properties": {
+        "method": {
+          "const": "event/task_started",
+          "default": "event/task_started",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id",
+        "title"
+      ],
+      "title": "TaskStarted",
+      "type": "object"
+    },
+    "ToolBegin": {
+      "description": "SSE ``type: tool_call`` from ``StreamTUI.write_tool_call`` (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/tool_begin",
+          "default": "event/tool_begin",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        }
+      },
+      "required": [
+        "session_id",
+        "call_id",
+        "tool_name"
+      ],
+      "title": "ToolBegin",
+      "type": "object"
+    },
+    "ToolEnd": {
+      "description": "SSE ``type: tool_result`` from ``StreamTUI.write_tool_result`` (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/tool_end",
+          "default": "event/tool_end",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "session_id",
+        "call_id",
+        "ok",
+        "summary"
+      ],
+      "title": "ToolEnd",
+      "type": "object"
+    },
+    "TaskComplete": {
+      "description": "Structured task completion paired with ``TaskStarted``.",
+      "properties": {
+        "method": {
+          "const": "event/task_complete",
+          "default": "event/task_complete",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id",
+        "ok"
+      ],
+      "title": "TaskComplete",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "description": "Token deltas from chat ``final`` SSE payload fields (api_server.py queue).",
+      "properties": {
+        "method": {
+          "const": "event/token_usage",
+          "default": "event/token_usage",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "input_tokens": {
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "TokenUsage",
+      "type": "object"
+    },
+    "FinalAnswer": {
+      "description": "SSE ``type: final`` payload in ``/chat/stream`` worker (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/final",
+          "default": "event/final",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "session_schema_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Schema Version"
+        }
+      },
+      "required": [
+        "session_id",
+        "run_id",
+        "text"
+      ],
+      "title": "FinalAnswer",
+      "type": "object"
+    },
+    "ErrorNotification": {
+      "description": "SSE ``type: error`` from ``StreamTUI.write_error`` and chat worker (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/error",
+          "default": "event/error",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "enum": [
+                "succeeded",
+                "failed",
+                "cancelled",
+                "timed_out"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "session_id",
+        "message"
+      ],
+      "title": "ErrorNotification",
+      "type": "object"
+    },
+    "RunComplete": {
+      "description": "SSE ``type: done`` from chat stream teardown (api_server.py).",
+      "properties": {
+        "method": {
+          "const": "event/done",
+          "default": "event/done",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled",
+            "timed_out"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "run_id",
+        "status"
+      ],
+      "title": "RunComplete",
+      "type": "object"
+    },
+    "JobStatusUpdate": {
+      "description": "Background job state for watchdog / appserver (submitted|running|failed).",
+      "properties": {
+        "method": {
+          "const": "event/job_status",
+          "default": "event/job_status",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "submitted",
+            "running",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "job_id",
+        "state"
+      ],
+      "title": "JobStatusUpdate",
+      "type": "object"
+    },
+    "ApprovalRequest": {
+      "description": "Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.",
+      "properties": {
+        "method": {
+          "const": "approval/request",
+          "default": "approval/request",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "risk_level": {
+          "enum": [
+            "READ",
+            "WRITE",
+            "DANGER"
+          ],
+          "title": "Risk Level",
+          "type": "string"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "risk_level",
+        "action"
+      ],
+      "title": "ApprovalRequest",
+      "type": "object"
+    },
+    "ApprovalResponse": {
+      "description": "Reply consumed by ``POST /approve`` (api_server.py) / ``SseApproval``.",
+      "properties": {
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "approved",
+            "rejected",
+            "allow_once",
+            "always_allow_level"
+          ],
+          "title": "Decision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "decision"
+      ],
+      "title": "ApprovalResponse",
+      "type": "object"
+    },
+    "QuestionOption": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "title": "QuestionOption",
+      "type": "object"
+    },
+    "QuestionRequest": {
+      "description": "Maps ``QuestionRequest.to_event()`` in core/question.py.",
+      "properties": {
+        "method": {
+          "const": "question/request",
+          "default": "question/request",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "question_id": {
+          "title": "Question Id",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "header": {
+          "default": "",
+          "title": "Header",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "input_type": {
+          "default": "text",
+          "enum": [
+            "choice",
+            "text"
+          ],
+          "title": "Input Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "question_id",
+        "question"
+      ],
+      "title": "QuestionRequest",
+      "type": "object"
+    },
+    "QuestionResponse": {
+      "description": "Answer payload resolved by ``SseQuestionBroker.resolve`` (core/question.py).",
+      "properties": {
+        "question_id": {
+          "title": "Question Id",
+          "type": "string"
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answer"
+        },
+        "cancelled": {
+          "default": false,
+          "title": "Cancelled",
+          "type": "boolean"
+        },
+        "timed_out": {
+          "default": false,
+          "title": "Timed Out",
+          "type": "boolean"
+        },
+        "unavailable": {
+          "default": false,
+          "title": "Unavailable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "question_id"
+      ],
+      "title": "QuestionResponse",
+      "type": "object"
+    }
+  }
+}

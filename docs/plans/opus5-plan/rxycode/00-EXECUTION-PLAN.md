@@ -1978,10 +1978,10 @@ python -m ruff check protocol
 ```
 
 **完成判据**
-- [ ] `protocol/` 下所有模型有 docstring 说明字段来源
-- [ ] `schema.json` 已生成并提交
-- [ ] 冻结测试能捕获协议变更（故意改一个字段验证测试会红）
-- [ ] 第 3 步的 SSE 事件盘点结果写进 PR 描述，逐条对应
+- [x] `protocol/` 下所有模型有 docstring 说明字段来源
+- [x] `schema.json` 已生成并提交
+- [x] 冻结测试能捕获协议变更（`test_schema_freeze_detects_field_changes`）
+- [x] 第 3 步的 SSE 事件盘点结果写入 `docs/modules/protocol.md`
 
 ---
 
