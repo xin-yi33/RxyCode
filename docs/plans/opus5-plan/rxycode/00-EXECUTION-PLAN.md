@@ -2076,11 +2076,11 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 分数下降就是回归，立刻停下来。
 
 **完成判据**
-- [ ] `core/session.py` 存在且有测试
-- [ ] `api_server.py` 走 Session
+- [x] `core/session.py` 存在且有测试
+- [x] `api_server.py` 走 Session（`/chat` + `/chat/stream`）
 - [ ] 现有 HTTP / SSE 接口**外部行为零变化**（用 OpenTUI 手动验证）
-- [ ] evals 基线分数**不变**
-- [ ] Session 层没有任何 `print` / 直接写响应
+- [ ] evals 基线分数**不变**（P3 提交前跑 compare-baseline）
+- [x] Session 层没有任何 `print` / 直接写响应
 
 ---
 

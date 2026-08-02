@@ -5,6 +5,15 @@ The core module is the brain of RxyCode. It contains the main agent logic, the L
 
 ## Architecture
 
+### Session layer (Phase 2)
+
+| File | Purpose |
+|------|---------|
+| session.py | Headless `Session` facade over AgentV2; terminal events via `emit()` protocol models |
+
+`Session` is the strangler entry point for `api_server.py` and future `appserver/`.
+It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to legacy event dicts.
+
 ### Key Files
 | File | Purpose |
 |------|---------|

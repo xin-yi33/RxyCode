@@ -1184,11 +1184,25 @@ async def chat(req: ChatRequest):
                 try:
                     agent._tool_tracer = Tracer(run_id=run_id)
                     thinking_cursor = _thinking_cursor(agent)
-                    result = await agent.run(req.message, mode=req.mode)
-                    terminal_status, _detail = classify_agent_result(result)
+                    from .core.session import Session
+
+                    session = Session(
+                        session_id=req.session_id,
+                        workspace_root=Path.cwd(),
+                        emit=lambda _notification: None,
+                    )
+                    prompt_result = await session.prompt(
+                        agent,
+                        req.message,
+                        mode=req.mode,
+                        run_id=run_id,
+                    )
+                    terminal_status = prompt_result.status
+                    _detail = prompt_result.detail
+                    result = prompt_result.answer
                     _output, tool_calls = proxy.get_and_clear()
 
-                    thinking = _thinking_since(agent, thinking_cursor)
+                    thinking = prompt_result.thinking or _thinking_since(agent, thinking_cursor)
                     if thinking:
                         history.append(
                             _session_message(
@@ -2009,9 +2023,14 @@ async def cancel_active_run():
         pass
     agent = _state.get("agent")
     if not cancelled and agent is not None:
-        cancel = getattr(agent, "cancel", None)
-        if callable(cancel):
-            cancelled = bool(cancel())
+        from .core.session import Session
+
+        session = Session(
+            session_id=str(_state.get("active_session_id") or "latest"),
+            workspace_root=Path.cwd(),
+            emit=lambda _notification: None,
+        )
+        cancelled = session.interrupt(agent) or cancelled
     return {
         "action": "cancelling" if cancelled else "idle",
         "cancelled": cancelled,
@@ -2501,36 +2520,40 @@ async def chat_stream(req: ChatRequest):
                 try:
                     agent._stream_mode = True
                     agent._tool_tracer = tracer
+                    from .core.session import Session, notification_to_sse_event
+
+                    def _emit_protocol(notification) -> None:
+                        event = notification_to_sse_event(notification)
+                        if event is not None:
+                            _publish_to_stream(event)
+
+                    session = Session(
+                        session_id=req.session_id,
+                        workspace_root=Path.cwd(),
+                        emit=_emit_protocol,
+                        session_schema_version=CHAT_SCHEMA_VERSION,
+                    )
                     log_chat_request(_logger, req.mode, req.message, run_id=run_id)
-                    from .utils.streaming import token_stats as _ts
-                    previous_input = _ts.input_tokens
-                    previous_output = _ts.output_tokens
-                    thinking_cursor = _thinking_cursor(agent)
-                    answer = await agent.run(req.message, mode=req.mode)
-                    status, detail = classify_agent_result(answer)
-                    delta_input = _ts.input_tokens - previous_input
-                    delta_output = _ts.output_tokens - previous_output
-                    thinking = (
-                        recorder.thinking_content
-                        or _thinking_since(agent, thinking_cursor)
+                    result = await session.prompt(
+                        agent,
+                        req.message,
+                        mode=req.mode,
+                        run_id=run_id,
                     )
                     stream_tui.flush_stream_buffers()
+                    status = result.status
+                    detail = result.detail
+                    thinking = recorder.thinking_content or result.thinking
                     if status == "succeeded":
-                        recorder.finish_success(answer, thinking)
-                        log_chat_completed(_logger, req.mode, answer, run_id=run_id, status=status)
-                        queue.put_nowait({
-                            "type": "final",
-                            "run_id": run_id,
-                            "text": answer,
-                            "thinking": thinking,
-                            "input_tokens": delta_input,
-                            "output_tokens": delta_output,
-                            "session_schema_version": CHAT_SCHEMA_VERSION,
-                        })
+                        recorder.finish_success(result.answer, thinking)
+                        log_chat_completed(
+                            _logger, req.mode, result.answer, run_id=run_id, status=status
+                        )
                     else:
                         recorder.finish_error(detail)
-                        log_chat_error(_logger, req.mode, detail, run_id=run_id, status=status)
-                        queue.put_nowait({"type": "error", "run_id": run_id, "status": status, "message": detail})
+                        log_chat_error(
+                            _logger, req.mode, detail, run_id=run_id, status=status
+                        )
                 except _asyncio.CancelledError:
                     status = "cancelled"
                     recorder.finish_cancelled()
