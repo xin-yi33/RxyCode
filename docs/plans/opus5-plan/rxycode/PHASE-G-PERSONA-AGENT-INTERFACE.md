@@ -1,21 +1,21 @@
-# Phase F · PersonaAgent 接口预留（Interface Reservation）
+# Phase G · PersonaAgent 接口预留（Interface Reservation）
 
-> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 之后的**开放式扩展位**，编号 Phase F。
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 之后的**开放式扩展位**，编号 Phase G。
 > **前置条件**：无硬前置。§4 的预留卡**要在 Phase B/C/D/E 执行过程中顺手做掉**，§5 的实现留到你想清楚再说。
 >
-> **这份文档和 A/B/C/D/E 不是一类东西。**
+> **这份文档和 A/B/C/D/E/F 不是一类东西。**
 >
-> A/B/C/D/E 是"照着做就能做完"的施工图。**Phase F 是一张地基预留图**——它不告诉你 PersonaAgent 怎么建，只保证你以后想建的时候，不用把已经盖好的楼拆掉。
+> A/B/C/D/E/F 是"照着做就能做完"的施工图。**Phase G 是一张地基预留图**——它不告诉你 PersonaAgent 怎么建，只保证你以后想建的时候，不用把已经盖好的楼拆掉。
 >
 > **创建**：2026-07-31
-> **§4 预留卡工时**：合计约 6 天，分散在 Phase B/C/D 里做
+> **§4 预留卡工时**：合计约 6 天，分散在 Phase B/C/D/E 里做
 > **§5 实现工时**：未估算（设计未定）
 >
 > ---
 >
 > **📌 2026-07-31 更新：PersonaAgent 已经独立成 LinkAgent 项目**
 >
-> 这份文档原来指向一份 `PHASE-F-SKILLFOREST-PERSONA-AGENT.md`，说"设计已经不是完全空白了"。两件事变了：
+> 这份文档原来指向一份 `PHASE-G-SKILLFOREST-PERSONA-AGENT.md`，说"设计已经不是完全空白了"。两件事变了：
 >
 > **① PersonaAgent 不再是 RxyCode 的一个 Phase。** 它独立成了 **LinkAgent** 项目（独立仓库，把 RxyCode 当 pip 依赖）。施工文档在 [`../linkagent/`](../linkagent/README.md)，架构见 [`../linkagent/00-OVERVIEW-AND-ARCHITECTURE.md`](../linkagent/00-OVERVIEW-AND-ARCHITECTURE.md)。
 >
@@ -30,7 +30,7 @@
 >
 > **对本文档的影响：§4 的六张预留卡全部照做不变。** 埋点、元数据、信任边界这三件事无论 PersonaAgent 在哪个仓库实现都需要，而且不提前做以后补不回来。
 >
-> 唯一要修正的是 **F1 的 `priority` 字段**：手填的数字只当**初始值**，真正的排序靠积累的证据（新论文的动态综合置信度按验证/执行/用户三类证据加权计算）。手填的数字会过期，证据不会。
+> 唯一要修正的是 **G1 的 `priority` 字段**：手填的数字只当**初始值**，真正的排序靠积累的证据（新论文的动态综合置信度按验证/执行/用户三类证据加权计算）。手填的数字会过期，证据不会。
 
 ---
 
@@ -41,7 +41,7 @@
 | [§1 这份文档要解决什么](#1-这份文档要解决什么) | 为什么现在只留接口不实现 |
 | [§2 现状盘点](#2-现状盘点skill-系统已经有什么) | 已有的 skill 系统，附 file:line |
 | [§3 两条能力线的接口面](#3-两条能力线的接口面) | Skill Management / 对话蒸馏 |
-| [§4 预留卡 F1–F6](#4-预留卡现在就要做的) | **现在就要做的**，不做以后补不回来 |
+| [§4 预留卡 G1–G6](#4-预留卡现在就要做的) | **现在就要做的**，不做以后补不回来 |
 | [§5 以后再说的](#5-以后再说的不要现在做) | 明确列出不要现在做的 |
 | [§6 你需要决定的事](#6-你需要决定的事) | 设计未定的点，回头填 |
 
@@ -57,7 +57,7 @@
 
 判断标准就一条：
 
-> **这件事如果不在 Phase B/C/D 里顺手做掉，以后要做就得改动大量已经稳定的代码，或者永久丢失数据。**
+> **这件事如果不在 Phase B/C/D/E 里顺手做掉，以后要做就得改动大量已经稳定的代码，或者永久丢失数据。**
 
 按这条标准筛完，只剩 6 张卡（§4），合计约 6 天。**其余全部推迟**（§5）。
 
@@ -67,9 +67,9 @@
 
 Skill 系统可以随时重构——代码在那儿，改就是了。但**蒸馏需要的训练数据只能在多 Agent 跑的时候产生**：哪个模型、给了什么输入、产出了什么、这次产出到底好不好。
 
-如果 Phase B/C 跑了三个月才想起来要埋点，**这三个月最有价值的数据（真实任务 × 真实模型 × 真实质量标注）就永久没有了**，只能从头再跑一遍花真金白银去补。
+如果 Phase C 跑了三个月才想起来要埋点，**这三个月最有价值的数据（真实任务 × 真实模型 × 真实质量标注）就永久没有了**，只能从头再跑一遍花真金白银去补。
 
-**F3 和 F4 是这份文档里唯二"不做就真的亏钱"的卡。**
+**G3 和 G4 是这份文档里唯二"不做就真的亏钱"的卡。**
 
 ---
 
@@ -97,11 +97,11 @@ RxyCode **已经有一套能用的 skill 系统**。做 PersonaAgent 不是从�
 | **无工具绑定** | skill 说不了"我需要哪些工具" | Persona 的核心之一就是"这个人格该有什么本事" |
 | **无模型绑定** | skill 说不了"我该用什么模型" | 同上 |
 | **无组合规则** | 装了 5 个 skill，谁优先？冲突了听谁的？ | Persona 通常是多个 skill 的组合 |
-| **与 AgentSpec 无关系** | Phase B 的 `AgentSpec` 完全不知道 skill 存在 | 多 Agent 下"给这个角色装这个 skill"做不到 |
+| **与 AgentSpec 无关系** | Phase C 的 `AgentSpec` 完全不知道 skill 存在 | 多 Agent 下"给这个角色装这个 skill"做不到 |
 | **无使用记录** | 加载了什么、效果如何，全部没记 | **蒸馏没有数据源** |
 | **⚠ 信任面很大** | 从任意 GitHub 仓库下载文本，直接进 prompt | Persona 是常驻的，一个恶意 skill 会**长期**影响 Agent 行为 |
 
-最后一条要单独说：`skill_manager.py:220-245` 会用 GitHub 搜索 API 找任意仓库，`_download_skill_async` 把找到的 markdown 直接落盘，`load_skill` 把它整个塞进 prompt。**文件层面的安全做得很好，但内容层面完全没有信任边界。** 现在影响范围是"这一次调用"，做成 Persona 之后就是"这个人格的每一次调用"。F5 处理这个。
+最后一条要单独说：`skill_manager.py:220-245` 会用 GitHub 搜索 API 找任意仓库，`_download_skill_async` 把找到的 markdown 直接落盘，`load_skill` 把它整个塞进 prompt。**文件层面的安全做得很好，但内容层面完全没有信任边界。** 现在影响范围是"这一次调用"，做成 Persona 之后就是"这个人格的每一次调用"。G5 处理这个。
 
 ---
 
@@ -119,13 +119,13 @@ Persona = 身份（我是谁）
         + 记忆域（我记得什么）
 ```
 
-**看一眼就会发现：后三项 Phase B 的 `AgentSpec` 已经有了**（`tools` / `model` / `memory_scope`）。
+**看一眼就会发现：后三项 Phase C 的 `AgentSpec` 已经有了**（`tools` / `model` / `memory_scope`）。
 
 所以 PersonaAgent 大概率**不是一个新系统，而是 `AgentSpec` 的一种生成方式**：
 
 ```
-Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  ──►  Phase B 的 AgentRuntime
-（用户写的）        （F1 提供）           （F6 提供的接口）      （已有，不用改）
+Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  ──►  Phase C 的 AgentRuntime
+（用户写的）        （G1 提供）           （G6 提供的接口）      （已有，不用改）
 ```
 
 **这个洞察决定了 §4 的所有预留卡**：我们不需要为 Persona 预留一个新的运行时，只需要保证 `AgentSpec` 能被程序化地构造，且 skill 有足够的元数据可供构造。
@@ -137,7 +137,7 @@ Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  
 ```
 ① 采集   在多 Agent 跑真实任务时，记录 (输入, 输出, 模型, 质量信号)
                                                       ↑
-                                    Phase B/C 已经在产生这个信号，见下表
+                                     Phase C 已经在产生这个信号，见下表
 ② 筛选   只留高质量样本
 ③ 训练   微调或蒸馏出学生模型（离线，不在本项目内）
 ④ 验证   用 evals 证明学生 ≈ 教师，且更便宜
@@ -149,13 +149,13 @@ Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  
 
 | 蒸馏需要的 | 已有的来源 |
 |---|---|
-| 输入 / 输出 | Phase B 的 `Blackboard`（结构化产出，比原始对话干净得多） |
-| 模型标识 | Phase D 的 per-role model binding |
-| **质量信号（最难的一环）** | Phase B 的机械验证门 + `VerdictRecord`；Phase D 的 `ArbitrationRecord` |
-| 成本对比（教师 vs 学生） | Phase D 的 `CostAccountant` + 定价表 |
+| 输入 / 输出 | Phase C 的 `Blackboard`（结构化产出，比原始对话干净得多） |
+| 模型标识 | Phase E 的 per-role model binding |
+| **质量信号（最难的一环）** | Phase C 的机械验证门 + `VerdictRecord`；Phase E 的 `ArbitrationRecord` |
+| 成本对比（教师 vs 学生） | Phase E 的 `CostAccountant` + 定价表 |
 | 效果验证 | 主计划 Phase 1 的 evals harness |
 
-**质量信号这一条特别值钱。** 一般项目做蒸馏最头疼的是"怎么知道这条样本好不好"，通常只能靠人工标注或者再花钱让大模型打分。而 Phase B 的流水线**天然会产生客观标注**：
+**质量信号这一条特别值钱。** 一般项目做蒸馏最头疼的是"怎么知道这条样本好不好"，通常只能靠人工标注或者再花钱让大模型打分。而 Phase C 的流水线**天然会产生客观标注**：
 
 ```
 机械验证通过（能编译、测试过、lint 干净）
@@ -165,26 +165,26 @@ Persona 定义  ──►  解析 skill 元数据  ──►  生成 AgentSpec  
     = 这是一条金标准样本
 ```
 
-**这是免费的高质量标注，前提是 F3/F4 把它记下来。** 不记，它就随着进程结束消失了。
+**这是免费的高质量标注，前提是 G3/G4 把它记下来。** 不记，它就随着进程结束消失了。
 
 ---
 
 ## §4 预留卡（现在就要做的）
 
-> 六张卡，合计约 6 天。**不要一次做完**——按依赖插进 Phase B/C/D 的执行流程里。
+> 六张卡，合计约 6 天。**不要一次做完**——按依赖插进 Phase B/C/D/E 的执行流程里。
 
 | 卡 | 什么时候做 | 工时 | 不做的代价 |
 |---|---|---|---|
-| F1 | Phase B 开始前 | 1d | skill 永远没有元数据，后面全部悬空 |
-| F2 | Phase B 的 B3 一起 | 0.5d | 协议 schema 要改，TS 类型要重生成，破坏兼容 |
-| F3 | Phase B 的 B12 一起 | 1.5d | **蒸馏数据永久丢失** |
-| F4 | Phase D 的 D11 一起 | 1.5d | **质量标注永久丢失** |
-| F5 | Phase B 开始前 | 1d | Persona 上线后再补，等于承认之前有洞 |
-| F6 | Phase B 全部做完后 | 0.5d | 无（这张只是写文档） |
+| G1 | Phase B 开始前 | 1d | skill 永远没有元数据，后面全部悬空 |
+| G2 | Phase C 的 C3 一起 | 0.5d | 协议 schema 要改，TS 类型要重生成，破坏兼容 |
+| G3 | Phase C 的 C12 一起 | 1.5d | **蒸馏数据永久丢失** |
+| G4 | Phase E 的 E11 一起 | 1.5d | **质量标注永久丢失** |
+| G5 | Phase B 开始前 | 1d | Persona 上线后再补，等于承认之前有洞 |
+| G6 | Phase C 全部做完后 | 0.5d | 无（这张只是写文档） |
 
 ---
 
-### F1 · Skill 元数据 frontmatter
+### G1 · Skill 元数据 frontmatter
 
 `P1` / 1d / **Phase B 开始前做**
 
@@ -261,32 +261,32 @@ def list_skill_metadata() -> list[SkillMetadata]:
 
 ---
 
-### F2 · 协议里预留 persona 命名空间
+### G2 · 协议里预留 persona 命名空间
 
-`P1` / 0.5d / **和 Phase B 的 B3 一起做**
+`P1` / 0.5d / **和 Phase C 的 C3 一起做**
 
 **背景**
-Phase B 的 `AgentSpec` 会进 `protocol/schema.json` 并生成 TypeScript 类型。**协议一旦稳定下来，加字段就要考虑向后兼容和前端同步。**
+Phase C 的 `AgentSpec` 会进 `protocol/schema.json` 并生成 TypeScript 类型。**协议一旦稳定下来，加字段就要考虑向后兼容和前端同步。**
 
 现在约定好一个扩展命名空间，以后加 persona 相关信息就不需要动 schema。
 
 **操作步骤**
 
-1. Phase B 的 `AgentSpec.extra`（B3 已有）**加一段命名空间约定的注释**：
+1. Phase C 的 `AgentSpec.extra`（C3 已有）**加一段命名空间约定的注释**：
 
 ```python
     #: 扩展字段。按命名空间约定使用，避免不同 Phase 的扩展互相踩：
     #:
-    #:   pair.*      Phase D  结对编程（pair.with / pair.role）
-    #:   vision.*    Phase E  视觉能力（vision.required）
-    #:   persona.*   Phase F  人格（persona.id / persona.skills / persona.source）
+    #:   pair.*      Phase E  结对编程（pair.with / pair.role）
+    #:   vision.*    Phase F  视觉能力（vision.required）
+    #:   persona.*   Phase G  人格（persona.id / persona.skills / persona.source）
     #:
     #: 用 extra 而不是加一等字段，是为了不让还没定型的功能污染协议 schema。
     #: 某个命名空间稳定之后，再提升为一等字段并同步生成 TS 类型。
     extra: dict[str, Any] = Field(default_factory=dict)
 ```
 
-2. `docs/modules/agents.md`（B15 会创建）里写清这个约定。
+2. `docs/modules/agents.md`（C15 会创建）里写清这个约定。
 
 3. 加一个测试，确认 `extra` 里的未知 key 能往返序列化不丢失：
 
@@ -301,20 +301,20 @@ def test_extra_namespaces_survive_roundtrip():
 
 ---
 
-### F3 · 蒸馏数据采集埋点
+### G3 · 蒸馏数据采集埋点
 
-`P0` / 1.5d / **和 Phase B 的 B12（trace）一起做**
+`P0` / 1.5d / **和 Phase C 的 C12（trace）一起做**
 
 > ⚠ **这是这份文档里最重要的一张卡。** 不做的代价不是"以后多花点时间"，是**数据永久丢失**。
 
 **背景**
-§3.2 说了，蒸馏需要 `(输入, 输出, 模型, 质量信号)` 四元组。Phase B 跑起来之后，每一次真实任务都在产生这些数据——**但如果不落盘，它就随着进程结束消失了**。
+§3.2 说了，蒸馏需要 `(输入, 输出, 模型, 质量信号)` 四元组。Phase C 跑起来之后，每一次真实任务都在产生这些数据——**但如果不落盘，它就随着进程结束消失了**。
 
 三个月后想做蒸馏，只能重新花钱跑一遍来补数据。
 
 **操作步骤**
 
-1. Phase B 的 `core/tracing.py` span 里，除了 B12 要求的 `role` / `stage` / `delegation_depth` / `tokens`，**再加一组可选的原始 IO**：
+1. Phase C 的 `core/tracing.py` span 里，除了 C12 要求的 `role` / `stage` / `delegation_depth` / `tokens`，**再加一组可选的原始 IO**：
 
 ```python
 @dataclass
@@ -332,7 +332,7 @@ class LlmCallRecord:
     stage: str
     model: str
     provider: str
-    #: 发给模型的完整消息（脱敏后，见 F5）
+    #: 发给模型的完整消息（脱敏后，见 G5）
     messages: list[dict] | None = None
     #: 模型的完整响应
     response: str | None = None
@@ -340,7 +340,7 @@ class LlmCallRecord:
     output_tokens: int = 0
     cost_usd: float = 0.0
     duration_s: float = 0.0
-    #: 质量信号由 F4 回填，采集时先留空
+    #: 质量信号由 G4 回填，采集时先留空
     quality: "QualitySignal | None" = None
 ```
 
@@ -369,14 +369,14 @@ def _record_safely(record: LlmCallRecord) -> None:
 
 ---
 
-### F4 · 质量信号回填
+### G4 · 质量信号回填
 
-`P0` / 1.5d / **和 Phase D 的 D11（评测矩阵）一起做**
+`P0` / 1.5d / **和 Phase E 的 E11（评测矩阵）一起做**
 
-> ⚠ 与 F3 同等重要。F3 采集了数据但没有标注，**没有标注的数据对蒸馏几乎没用**。
+> ⚠ 与 G3 同等重要。G3 采集了数据但没有标注，**没有标注的数据对蒸馏几乎没用**。
 
 **背景**
-§3.2 的核心洞察：Phase B 的流水线天然产生客观质量标注，不用人工标、不用大模型打分。
+§3.2 的核心洞察：Phase C 的流水线天然产生客观质量标注，不用人工标、不用大模型打分。
 
 **操作步骤**
 
@@ -387,18 +387,18 @@ def _record_safely(record: LlmCallRecord) -> None:
 class QualitySignal:
     """一条样本的客观质量标注。
 
-    这些信号全部来自 Phase B/C 已有的流水线产物，不需要额外的人工标注或
+    这些信号全部来自 Phase C 已有的流水线产物，不需要额外的人工标注或
     LLM 打分——这是 RxyCode 相比一般项目做蒸馏的最大优势。
 
     金标准 = 机械验证全过 + 审计通过 + 零打回 + 零仲裁。
     """
-    #: Phase B 机械验证门的结果（哪些检查过了、哪些挂了）
+    #: Phase C 机械验证门的结果（哪些检查过了、哪些挂了）
     mechanical_checks: dict[str, bool]
-    #: Phase B 的审计结论
+    #: Phase C 的审计结论
     audit_passed: bool | None
     #: 这个阶段被打回了几次（0 = 一次做对）
     retry_count: int
-    #: Phase D 的归因仲裁次数（>0 说明这次协作有摩擦）
+    #: Phase E 的归因仲裁次数（>0 说明这次协作有摩擦）
     arbitration_count: int
     #: 整个任务最终成功了吗
     task_succeeded: bool
@@ -433,11 +433,11 @@ python -m core.distillation export --since 2026-08-01 --gold-only --out dataset.
 - [ ] `is_gold` 的五个条件都有测试
 - [ ] 回填在任务结束时发生，信号完整
 - [ ] 导出脚本可用，`--gold-only` 筛选正确
-- [ ] **跑一次 C11 的评测矩阵，看看金标准样本的实际比例是多少**（这个数字决定蒸馏可行不可行，写进文档）
+- [ ] **跑一次 E11 的评测矩阵，看看金标准样本的实际比例是多少**（这个数字决定蒸馏可行不可行，写进文档）
 
 ---
 
-### F5 · Skill 信任边界
+### G5 · Skill 信任边界
 
 `P1` / 1d / **Phase B 开始前做**
 
@@ -489,12 +489,12 @@ class SkillProvenance:
 
 ---
 
-### F6 · 写下 AgentSpec 的构造契约
+### G6 · 写下 AgentSpec 的构造契约
 
-`P2` / 0.5d / **Phase B 全部做完后**
+`P2` / 0.5d / **Phase C 全部做完后**
 
 **背景**
-§3.1 的结论：PersonaAgent 大概率就是"`AgentSpec` 的一种生成方式"。这张卡只做一件事：**把 `AgentSpec` 可以被程序化构造这件事写下来并测一下**，确保 Phase B 的实现没有偷偷依赖"spec 只能从 YAML 加载"。
+§3.1 的结论：PersonaAgent 大概率就是"`AgentSpec` 的一种生成方式"。这张卡只做一件事：**把 `AgentSpec` 可以被程序化构造这件事写下来并测一下**，确保 Phase C 的实现没有偷偷依赖"spec 只能从 YAML 加载"。
 
 **这是一张纯文档 + 一个测试的卡，别做多了。**
 
@@ -523,7 +523,7 @@ def test_agent_spec_can_be_built_without_any_file():
     """AgentSpec 的构造和校验不得依赖文件系统。
 
     这是给 PersonaAgent 预留的：persona 会在运行时程序化生成 spec，
-    不经过 YAML。如果 Phase B 的实现偷偷依赖了文件加载路径，这个测试
+    不经过 YAML。如果 Phase C 的实现偷偷依赖了文件加载路径，这个测试
     会红。
     """
     spec = AgentSpec(role="ad_hoc", display_name="临时", goal="测试",
@@ -533,7 +533,7 @@ def test_agent_spec_can_be_built_without_any_file():
     validate_team(team)     # 不读任何文件
 ```
 
-3. 确认 `~/.rxycode/teams/` 这个用户级团队目录**存在且被扫描**（Phase B 的 §7 已经预留了这条）。
+3. 确认 `~/.rxycode/teams/` 这个用户级团队目录**存在且被扫描**（Phase C 的 §7 已经预留了这条）。
 
 **完成判据**
 - [ ] 文档写清三种等价的构造来源
@@ -549,15 +549,15 @@ def test_agent_spec_can_be_built_without_any_file():
 | 不要现在做 | 为什么可以推迟 |
 |---|---|
 | Persona 的定义格式（YAML? 对话式生成?） | 纯新增文件格式，不影响任何已有代码 |
-| Persona 的自动激活逻辑 | 需要先有 F1 的元数据和一批真实 skill 才知道怎么设计 |
+| Persona 的自动激活逻辑 | 需要先有 G1 的元数据和一批真实 skill 才知道怎么设计 |
 | 多 skill 冲突消解 | 等真的装了 5 个 skill 打架了再说，现在设计是空想 |
 | Skill 市场 / 分享机制 | 纯产品功能 |
 | **蒸馏训练本身** | 这是完全不同的工程（数据清洗、训练框架、模型托管），不该在这个仓库里 |
 | 学生模型托管 / 推理服务 | 同上。Phase A 的 provider 层已经能接任意 OpenAI 兼容端点，学生模型训好了直接配上去就行 |
 | Persona 的 UI | 等有了才做 |
-| skill 版本管理 / 依赖解析 | F5 的 `content_sha256` 已经够用一阵子了 |
+| skill 版本管理 / 依赖解析 | G5 的 `content_sha256` 已经够用一阵子了 |
 
-**特别提醒蒸馏那两条**：训练一个模型和跑一个 Agent 是两个工种，混在一个仓库里会让两边都难维护。**这个项目该做的是"产出高质量数据集"和"验证学生模型效果"，训练本身放到别处。** F3/F4 的导出脚本 + 主计划 Phase 1 的 evals 就是这两件事的全部。
+**特别提醒蒸馏那两条**：训练一个模型和跑一个 Agent 是两个工种，混在一个仓库里会让两边都难维护。**这个项目该做的是"产出高质量数据集"和"验证学生模型效果"，训练本身放到别处。** G3/G4 的导出脚本 + 主计划 Phase 1 的 evals 就是这两件事的全部。
 
 ---
 
@@ -570,11 +570,11 @@ def test_agent_spec_can_be_built_without_any_file():
 | 问题 | 影响什么 |
 |---|---|
 | Persona 是**替换** AgentSpec 还是**修饰** AgentSpec？ | 替换 = persona 定义完整角色；修饰 = 在现有角色上叠加。**修饰更容易做，但表达力弱** |
-| 一个会话能同时有多个 Persona 吗？ | 影响 Phase B 的团队模型。如果能，那"专家团 + 每个成员一个 persona"就是自然的形态 |
-| Persona 能改变可用工具集吗？ | 能的话，Phase B 的 `AgentRuntime._build_scoped_registry` 要支持**运行时替换**，而不只是构造时确定。**这一条如果要，最好在 Phase B 就想清楚** |
-| Persona 之间怎么切换？显式命令还是自动？ | 自动切换需要一个判断模型，和 Phase B 的 `ModeRouter` 是同一类问题，可以复用 |
+| 一个会话能同时有多个 Persona 吗？ | 影响 Phase C 的团队模型。如果能，那"专家团 + 每个成员一个 persona"就是自然的形态 |
+| Persona 能改变可用工具集吗？ | 能的话，Phase C 的 `AgentRuntime._build_scoped_registry` 要支持**运行时替换**，而不只是构造时确定。**这一条如果要，最好在 Phase C 就想清楚** |
+| Persona 之间怎么切换？显式命令还是自动？ | 自动切换需要一个判断模型，和 Phase C 的 `ModeRouter` 是同一类问题，可以复用 |
 
-**第三条是唯一可能反向影响 Phase B 设计的**。如果你倾向"Persona 要能改工具集"，在做 B4 的时候就把 `_build_scoped_registry` 设计成可运行时替换的，成本几乎为零；等 Phase B 做完再改，就要动 `AgentRuntime` 的核心。
+**第三条是唯一可能反向影响 Phase C 设计的**。如果你倾向"Persona 要能改工具集"，在做 C4 的时候就把 `_build_scoped_registry` 设计成可运行时替换的，成本几乎为零；等 Phase C 做完再改，就要动 `AgentRuntime` 的核心。
 
 ### 6.2 关于蒸馏
 
@@ -582,16 +582,16 @@ def test_agent_spec_can_be_built_without_any_file():
 |---|---|
 | 蒸馏目标是什么？**降成本**还是**做专属模型**？ | 降成本 = 学生模型模仿教师在**本项目场景**的行为；专属模型 = 学习**你的**代码风格和偏好。两者的数据筛选策略完全不同 |
 | 蒸馏哪一个角色？ | 架构师（贵、调用少）和编码员（便宜、调用多）的经济账完全不一样。**大概率编码员更值得蒸** |
-| 数据里的代码要脱敏吗？ | 影响 F3 的采集实现。如果要，脱敏逻辑得在写盘之前 |
+| 数据里的代码要脱敏吗？ | 影响 G3 的采集实现。如果要，脱敏逻辑得在写盘之前 |
 | 学生模型怎么接进来？ | Phase A 的 provider 层已经能接任意 OpenAI 兼容端点，**这条基本不用担心** |
-| 金标准样本比例够吗？ | **F4 会给你这个数字。** 如果金标准比例低于 10%，蒸馏大概率不可行，得先想办法提高流水线的一次通过率 |
+| 金标准样本比例够吗？ | **G4 会给你这个数字。** 如果金标准比例低于 10%，蒸馏大概率不可行，得先想办法提高流水线的一次通过率 |
 
-**最后一条是决定性的，而且 F4 做完就有答案。** 建议做完 F4 之后先看这个数字，再决定要不要继续往蒸馏方向投入。
+**最后一条是决定性的，而且 G4 做完就有答案。** 建议做完 G4 之后先看这个数字，再决定要不要继续往蒸馏方向投入。
 
 ---
 
 ## §7 一句话总结
 
-**现在就做 §4 的六张卡，六天，分散在 Phase B/C/D 里。其余全部推迟。**
+**现在就做 §4 的六张卡，六天，分散在 Phase B/C/D/E 里。其余全部推迟。**
 
-六张卡里，**F3 和 F4 是不做就真的亏钱的**——它们采集的数据只在真实任务跑的时候产生，补不回来。其余四张（F1/F2/F5/F6）是"现在做几乎不要钱，以后做要拆楼"。
+六张卡里，**G3 和 G4 是不做就真的亏钱的**——它们采集的数据只在真实任务跑的时候产生，补不回来。其余四张（G1/G2/G5/G6）是"现在做几乎不要钱，以后做要拆楼"。

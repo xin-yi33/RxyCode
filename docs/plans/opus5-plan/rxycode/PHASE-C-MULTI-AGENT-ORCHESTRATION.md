@@ -1,8 +1,8 @@
-# Phase B · 多 Agent 专家团编排（Expert Team Orchestration）
+# Phase C · 多 Agent 专家团编排（Expert Team Orchestration）
 
-> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase B。
-> **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) 全部完成。
-> **后继**：[`PHASE-C-RXYCODE-DESKTOP.md`](./PHASE-C-RXYCODE-DESKTOP.md)
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase C。
+> **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) 全部完成。Phase B 的 Child Session、隔离 Runtime、TaskResult、权限、预算和事件契约是本 Phase 的底层依赖。
+> **后继**：[`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md)
 >
 > **一句话目标**：把"一个 Agent 干所有事"变成"一个团长带一支专家团"——团长不干活只调度，成员各有角色、工具集、记忆域，所有跨成员通信经团长中转，全程有 SOP 约束、有机械验证门、有成本熔断。
 >
@@ -22,10 +22,10 @@
 | [§1 现状真相](#1-现状真相实测证据) | 现在的"子代理"到底是什么 |
 | [§2 调研：抄谁、抄什么](#2-调研抄谁抄什么) | **本次重写的核心依据**，GitHub 实测数据 + 各框架取舍 |
 | [§3 目标架构](#3-目标架构) | 专家团、团长、SOP 状态机、难度路由 |
-| [§4 任务卡 B1–B15](#4-任务卡) | 逐个执行 |
-| [§5 出口检查](#5-phase-b-出口检查) | 怎么算做完 |
+| [§4 任务卡 C1–C15](#4-任务卡) | 逐个执行 |
+| [§5 出口检查](#5-phase-c-出口检查) | 怎么算做完 |
 | [§6 扩展手册](#6-扩展手册) | 加角色、加专家团、加 SOP |
-| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase C/D/E/F 的预留 |
+| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase D/E/F/G 的预留 |
 
 ---
 
@@ -33,16 +33,16 @@
 
 ### 0.1 执行协议
 
-与 Phase A 相同的 7 步（LOCATE → READ → WRITE → LINT → TEST → CHECK → COMMIT），加 Phase B 专属的三条：
+与 Phase A 相同的 7 步（LOCATE → READ → WRITE → LINT → TEST → CHECK → COMMIT），加 Phase C 专属的三条：
 
 ```
-8.  ISOLATE   跑隔离性测试（B2 之后每张卡都要跑）
+8.  ISOLATE   跑隔离性测试（C2 之后每张卡都要跑）
               python -m pytest tests/test_agents/test_isolation.py -q
 
 9.  BASELINE  跑评测基线比对，单 Agent 路径分数不许掉
               python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
 
-10. BUDGET    跑成本护栏测试（B9 之后每张卡都要跑）
+10. BUDGET    跑成本护栏测试（C9 之后每张卡都要跑）
               python -m pytest tests/test_agents/test_budget_guard.py -q
 ```
 
@@ -54,9 +54,9 @@
 
 | 模型 | 干什么 | 不要干什么 |
 |---|---|---|
-| **Composer 2.5** | **主写全部**。B2 拆单例、B4 运行时、B7 邮箱等；设置页/开关 UI 也由它主写 | 偏离 §3.2 |
+| **Composer 2.5** | **主写全部**。C2 拆单例、C4 运行时、C7 邮箱等；设置页/开关 UI 也由它主写 | 偏离 §3.2 |
 | **Grok 4.5** | 读 §2 列出的开源项目源码，回答具体实现问题（例如"AgentMux 的状态机文件协议长什么样"）；查资料。仅当被委托设置页/开关 UI 的**多模态环节**（视觉验收）时写代码 | 改编排核心 Python；写没有多模态环节的卡本体——那是 Composer 的 |
-| **Sonnet 5** | 重点审 B2（拆单例）和 B7（消息中转）的 diff，这两张最容易漏改。写文档（B15） | 长任务连续实现 |
+| **Sonnet 5** | 重点审 C2（拆单例）和 C7（消息中转）的 diff，这两张最容易漏改。写文档（C15） | 长任务连续实现 |
 
 ### 0.3 前置自检
 
@@ -74,14 +74,14 @@ Test-Path core\providers\__init__.py                # Phase A → True
 
 | # | 规则 | 依据 |
 |---|---|---|
-| MB1 | **单 Agent 路径行为逐字节不变。** 多 Agent 是新增能力，默认关闭 | Anthropic：编码任务本就不太适合多 Agent（§2.5） |
-| MB2 | **拆单例时一行业务逻辑都不改** | 否则 diff 无法 review |
-| MB3 | **所有跨成员通信必须经团长中转**，成员之间不得直连 | WorkBuddy 与 AgentMux 的一致做法（§2.3） |
-| MB4 | **SOP 阶段转移用确定性状态机，不用 LLM 自由路由** | CrewAI hierarchical 的 LLM 路由 20% 会做出无法调试的决策（§2.2） |
-| MB5 | **LLM 审计之前必须先过机械验证门** | karajan / local-ai-agent-orchestrator 的做法，省钱且更可靠（§2.4） |
-| MB6 | **成员不得再创建子团队**，委派深度硬上限 3 层 | Anthropic：递归 spawn 能让成本再翻 10 倍（§2.5） |
-| MB7 | **每次运行有 token 预算、时长上限、委派次数上限，超了就停** | 同上 |
-| MB8 | 一张卡一个 commit，可独立 revert | 风险控制 |
+| MC1 | **单 Agent 路径行为逐字节不变。** 多 Agent 是新增能力，默认关闭 | Anthropic：编码任务本就不太适合多 Agent（§2.5） |
+| MC2 | **拆单例时一行业务逻辑都不改** | 否则 diff 无法 review |
+| MC3 | **所有跨成员通信必须经团长中转**，成员之间不得直连 | WorkBuddy 与 AgentMux 的一致做法（§2.3） |
+| MC4 | **SOP 阶段转移用确定性状态机，不用 LLM 自由路由** | CrewAI hierarchical 的 LLM 路由 20% 会做出无法调试的决策（§2.2） |
+| MC5 | **LLM 审计之前必须先过机械验证门** | karajan / local-ai-agent-orchestrator 的做法，省钱且更可靠（§2.4） |
+| MC6 | **成员不得再创建子团队**，委派深度硬上限 3 层 | Anthropic：递归 spawn 能让成本再翻 10 倍（§2.5） |
+| MC7 | **每次运行有 token 预算、时长上限、委派次数上限，超了就停** | 同上 |
+| MC8 | 一张卡一个 commit，可独立 revert | 风险控制 |
 
 ---
 
@@ -148,7 +148,7 @@ Compose 模式（`agent_v2.py:2911-3006`）也是同一个 Agent 的两个顺序
 
 ### 1.5 可复用的半成品
 
-| 现有能力 | 位置 | 在 Phase B 的角色 |
+| 现有能力 | 位置 | 在 Phase C 的角色 |
 |---|---|---|
 | `ModelRole` + `ModelRouter` | `core/governance.py:370-374`、`:409-487` | "不同角色不同模型"已有 60% |
 | `PromptRegistry` 的 stage 维度 | `core/prompts/registry.py` | 角色 prompt 直接复用这套注册机制 |
@@ -224,7 +224,7 @@ foreach ($r in $repos) { $d = Invoke-RestMethod "https://api.github.com/repos/$r
 
 理由：可追溯（每条消息都有经手记录）、可限流（团长是唯一收费站）、可 trace（委派树是真的树而不是图）、防死锁（成员之间无环等待）。
 
-**你要的"coder 发现问题找 architect 沟通"照样能实现**——只是走团长转发。语义完全一样，但多了管控点。这在 §4 的 B7 里叫 `ConsultRequest`。
+**你要的"coder 发现问题找 architect 沟通"照样能实现**——只是走团长转发。语义完全一样，但多了管控点。这在 §4 的 C7 里叫 `ConsultRequest`。
 
 ### 2.4 多模型协作——AgentMux 是最贴近你设想的实现
 
@@ -258,11 +258,11 @@ roles:
 
 **决策 4：审计结论绑定 diff 哈希。** 抄 karajan。审计通过的是"这一份具体的 diff"，coder 改完之后旧的通过结论自动失效。这防止"审计通过 → 又偷偷改了 → 直接提交"。
 
-**atmux 的 pair-program 角色**对应你说的"grok 和 composer 共同写代码"：driver（快模型写代码、跑测试）+ navigator（强模型盯着共享 worktree 的滚动 diff，发现实现漂移就打断，**自己不编辑文件**）。这个模式留到 Phase D 实现。
+**atmux 的 pair-program 角色**对应你说的"grok 和 composer 共同写代码"：driver（快模型写代码、跑测试）+ navigator（强模型盯着共享 worktree 的滚动 diff，发现实现漂移就打断，**自己不编辑文件**）。这个模式留到 Phase E 实现。
 
 ### 2.5 必须正视的负面数据
 
-**这一节决定了 Phase B 的默认配置。**
+**这一节决定了 Phase C 的默认配置。**
 
 Anthropic 公开了他们多 Agent 研究系统的真实数据：
 
@@ -281,7 +281,7 @@ Anthropic 公开了他们多 Agent 研究系统的真实数据：
 
 > "The published architecture has no circuit breakers or per-run caps... a subagent that recursively spawns more subagents, or a tool that returns oversized results, can multiply a single query's cost by another 10x or more."
 
-**Anthropic 自己都没做熔断。我们必须做**（规则 MB6/MB7，任务卡 B9）。
+**Anthropic 自己都没做熔断。我们必须做**（规则 MC6/MC7，任务卡 C9）。
 
 还有一项失败归因研究：跨 AutoGen / CrewAI / LangGraph 的失败分类中，**协调失败占全部失败的 36.94%**。也就是说，你新加的这一层协调逻辑，本身就是最大的失败来源。
 
@@ -298,15 +298,15 @@ Anthropic 公开了他们多 Agent 研究系统的真实数据：
 
 | 来源 | 抄什么 | 落在哪张卡 |
 |---|---|---|
-| CrewAI | `Agent(role, goal, backstory)` + `Task(expected_output)` 的角色抽象形状 | B3 |
-| MetaGPT | SOP 编码进流程；**结构化文档通信而非自由对话**；角色 profile（name/goal/constraints） | B3 B5 |
-| WorkBuddy 专家团 | 团长不干活只调度；建团/派活/中转/收口四步；**所有跨成员流量经团长**；任务预检做能力匹配 | B6 B7 |
-| AgentMux | 确定性状态机 SOP；per-role provider/model 配置；"agents don't freelance" | B5、Phase D |
-| karajan-code | 确定性检查先于 AI 审查；**审计结论绑定 diff sha256** | B8 |
-| local-ai-agent-orchestrator | coder 与 reviewer 之间的机械验证（文件存在、AST 可解析） | B8 |
-| Anthropic | 15x 成本事实；熔断与预算上限；三条"单 Agent 也能用"的模式 | B9 B14 |
-| LangGraph | supervisor 拓扑、checkpointing、条件边 | B5 B6 |
-| atmux | pair-program 的 driver/navigator | Phase D |
+| CrewAI | `Agent(role, goal, backstory)` + `Task(expected_output)` 的角色抽象形状 | C3 |
+| MetaGPT | SOP 编码进流程；**结构化文档通信而非自由对话**；角色 profile（name/goal/constraints） | C3 C5 |
+| WorkBuddy 专家团 | 团长不干活只调度；建团/派活/中转/收口四步；**所有跨成员流量经团长**；任务预检做能力匹配 | C6 C7 |
+| AgentMux | 确定性状态机 SOP；per-role provider/model 配置；"agents don't freelance" | C5、Phase E |
+| karajan-code | 确定性检查先于 AI 审查；**审计结论绑定 diff sha256** | C8 |
+| local-ai-agent-orchestrator | coder 与 reviewer 之间的机械验证（文件存在、AST 可解析） | C8 |
+| Anthropic | 15x 成本事实；熔断与预算上限；三条"单 Agent 也能用"的模式 | C9 C14 |
+| LangGraph | supervisor 拓扑、checkpointing、条件边 | C5 C6 |
+| atmux | pair-program 的 driver/navigator | Phase E |
 | CodeBuddy Agent Teams | **反面参考**：成员直连，我们不采纳 | §2.3 |
 
 ---
@@ -333,7 +333,7 @@ Anthropic 公开了他们多 Agent 研究系统的真实数据：
     ▼           ▼                    ▼
   SOLO        TEAM              TEAM_MULTI_MODEL
  现有单Agent   专家团（本 Phase）    专家团 + 每角色不同模型
- 路径不变                          （Phase D）
+ 路径不变                          （Phase E）
                 │
                 ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -381,13 +381,13 @@ AgentRuntime   AgentRuntime   AgentRuntime   AgentRuntime
 
 | # | 约束 | 依据 |
 |---|---|---|
-| DB1 | **单 Agent 是"只有一个成员的团"**，不是另一条代码路径 | 两条路径必然漂移 |
-| DB2 | **成员之间不得直连**，所有通信经 Coordinator | §2.3 WorkBuddy / AgentMux |
-| DB3 | **每个 AgentRuntime 独立持有** memory namespace、cache namespace、circuit breaker、tool registry | §1.3 的三组单例是反面教材 |
-| DB4 | **SOP 阶段转移由确定性状态机决定**，LLM 只在明确标注的决策点介入 | §2.2 CrewAI 的 20% 无法调试 |
-| DB5 | **LLM 审计前必须过机械验证门**，审计结论绑定 diff sha256 | §2.4 karajan |
-| DB6 | **成员不得创建子团队**，委派深度 ≤ 3，且每次运行有 token / 时长 / 次数三重上限 | §2.5 Anthropic |
-| DB7 | **多 Agent 默认关闭** | §2.5，编码任务本就不是多 Agent 的强项 |
+| DC1 | **单 Agent 是"只有一个成员的团"**，不是另一条代码路径 | 两条路径必然漂移 |
+| DC2 | **成员之间不得直连**，所有通信经 Coordinator | §2.3 WorkBuddy / AgentMux |
+| DC3 | **每个 AgentRuntime 独立持有** memory namespace、cache namespace、circuit breaker、tool registry | §1.3 的三组单例是反面教材 |
+| DC4 | **SOP 阶段转移由确定性状态机决定**，LLM 只在明确标注的决策点介入 | §2.2 CrewAI 的 20% 无法调试 |
+| DC5 | **LLM 审计前必须过机械验证门**，审计结论绑定 diff sha256 | §2.4 karajan |
+| DC6 | **成员不得创建子团队**，委派深度 ≤ 3，且每次运行有 token / 时长 / 次数三重上限 | §2.5 Anthropic |
+| DC7 | **多 Agent 默认关闭** | §2.5，编码任务本就不是多 Agent 的强项 |
 
 ### 3.3 文件布局（**不要改**）
 
@@ -395,10 +395,13 @@ AgentRuntime   AgentRuntime   AgentRuntime   AgentRuntime
 protocol/
   agents.py                    # AgentSpec / TeamSpec / 各类消息
 core/
+  subagents/                    # Phase B 的唯一 ChildRuntime / Task / 权限 / 事件实现
+    __init__.py
+    runtime.py                  # 导出 ChildRuntime facade（本 Phase 不复制）
   agents/
     __init__.py
     spec.py                    # AgentSpec / TeamSpec 解析与静态校验
-    runtime.py                 # AgentRuntime（隔离运行时）
+    runtime.py                 # AgentRuntime 角色适配器（委托 Phase B ChildRuntime）
     coordinator.py             # Coordinator（团长）
     sop.py                     # SopMachine（确定性状态机）
     mailbox.py                 # 定向消息
@@ -413,12 +416,12 @@ tests/
   test_agents/
     __init__.py
     test_spec.py
-    test_isolation.py          # B2 之后每张卡都跑
+    test_isolation.py          # C2 之后每张卡都跑
     test_coordinator.py
     test_sop.py
     test_mailbox.py
     test_verifier.py
-    test_budget_guard.py       # B9 之后每张卡都跑
+    test_budget_guard.py       # C9 之后每张卡都跑
     test_router.py
     test_e2e_team.py
 ```
@@ -427,7 +430,7 @@ tests/
 
 ## §4 任务卡
 
-### B1 · 清理多 Agent 死代码
+### C1 · 清理多 Agent 死代码
 
 `P0` / 4h / 无依赖（可与 Phase A 并行）
 
@@ -459,7 +462,7 @@ Select-String -Path *.py,core\*.py,tools\*.py,execution\*.py,tests\*.py,api_serv
         TaskTree 叶节点并行。真正的多 Agent 编排见 core/agents/。
 
         这是关键词路由（主计划 P6 要消除的 25 处之一），对非中英文输入无效。
-        Phase B 的 ModeRouter（B10）会取代它，届时本方法删除。
+        Phase C 的 ModeRouter（C10）会取代它，届时本方法删除。
         """
 ```
 
@@ -469,7 +472,7 @@ Select-String -Path *.py,core\*.py,tools\*.py,execution\*.py,tests\*.py,api_serv
 
 ```python
 # 状态：已定义、已注册，生产代码尚未调用。实际任务分解走 decomposer 模板。
-# Phase B 的 Coordinator（B6）会真正用上它做团队级任务拆分。
+# Phase C 的 Coordinator（C6）会真正用上它做团队级任务拆分。
 ```
 
 5. 修正 `docs/modules/core.md`（约 `:36`、`:43`）和 `AGENTS.md` 里 "Multi-task -> Sub-agent delegation" 的描述，改成实际行为：单 Agent + 图内任务并行。
@@ -501,12 +504,12 @@ multi-agent support existed.
 
 ---
 
-### B2 · 拆掉三组全局单例
+### C2 · 拆掉三组全局单例
 
-`P0` / 2 周 / 依赖 B1、主计划 Phase 2
+`P0` / 2 周 / 依赖 C1、主计划 Phase 2
 
 **背景**
-§1.3 的三组进程级单例是多 Agent 的真正障碍。**纯粹的"全局变量 → 依赖注入"，一行业务逻辑都不改**（MB2）。
+§1.3 的三组进程级单例是多 Agent 的真正障碍。**纯粹的"全局变量 → 依赖注入"，一行业务逻辑都不改**（MC2）。
 
 **拆成 3 个 commit，每组一个，让 Sonnet 5 逐个审查。**
 
@@ -525,7 +528,7 @@ Select-String -Path *.py,core\*.py,tools\*.py,execution\*.py,api_server.py,tests
 #: 进程级默认注册表。
 #:
 #: 历史上这是唯一的注册表，所有工具都注册到这里，因此无法给不同 Agent 配
-#: 不同工具集。Phase B 引入 per-agent 注册表；本实例保留为默认值，供单
+#: 不同工具集。Phase C 引入 per-agent 注册表；本实例保留为默认值，供单
 #: Agent 路径和未显式传注册表的调用方使用。
 #:
 #: 新代码请通过依赖注入接收 ToolRegistry，不要直接 import 这个全局。
@@ -535,7 +538,7 @@ default_registry = ToolRegistry()
 registry = default_registry
 ```
 
-3. `ToolOrchestrator.__init__` 接受 `tool_registry: ToolRegistry | None = None`，内部全部改用 `self._registry`。`AgentV2` 这一步先传 `None`（走默认），B4 才真正用上 per-agent 注册表。
+3. `ToolOrchestrator.__init__` 接受 `tool_registry: ToolRegistry | None = None`，内部全部改用 `self._registry`。`AgentV2` 这一步先传 `None`（走默认），C4 才真正用上 per-agent 注册表。
 
 #### 第 2 组：两级缓存
 
@@ -586,7 +589,7 @@ def reset_all_breakers() -> None:
 
 #### 隔离测试
 
-7. 新建 `tests/test_agents/test_isolation.py`（**Phase B 的安全网，之后每张卡都要跑**）：
+7. 新建 `tests/test_agents/test_isolation.py`（**Phase C 的安全网，之后每张卡都要跑**）：
 
 ```python
 """Agent 间状态隔离测试。
@@ -635,9 +638,9 @@ refactor(recovery): key circuit breakers instead of one per process
 
 ---
 
-### B3 · AgentSpec 与 TeamSpec
+### C3 · AgentSpec 与 TeamSpec
 
-`P0` / 1 周 / 依赖 B2、主计划 Phase 2
+`P0` / 1 周 / 依赖 C2、主计划 Phase 2
 
 **背景**
 定义"一个角色是什么"和"一支专家团是什么"。角色抽象的形状抄 CrewAI（role / goal / backstory），profile 字段抄 MetaGPT（name / profile / goal / constraints）。纯数据结构 + 校验，风险低。
@@ -657,7 +660,7 @@ Desktop 都需要展示"现在是哪个角色在工作"、"谁委派给了谁"�
 
 角色抽象的形状参考 CrewAI（role/goal/backstory），profile 字段参考 MetaGPT
 （name/profile/goal/constraints）。调研见
-docs/plans/opus5-plan/PHASE-B-MULTI-AGENT-ORCHESTRATION.md §2。
+docs/plans/opus5-plan/rxycode/PHASE-C-MULTI-AGENT-ORCHESTRATION.md §2。
 """
 
 from __future__ import annotations
@@ -682,7 +685,7 @@ class AgentSpec(BaseModel):
     constraints: list[str] = Field(default_factory=list)
 
     #: 使用的模型 id。None = 跟随会话默认模型。
-    #: Phase B 阶段全部留 None（同模型）；Phase D 才按角色配不同模型。
+    #: Phase C 阶段全部留 None（同模型）；Phase E 才按角色配不同模型。
     model: str | None = None
 
     #: 允许的工具名。None = 全部工具；[] = 无工具（纯推理角色）。
@@ -707,17 +710,17 @@ class AgentSpec(BaseModel):
     may_consult: list[str] = Field(default_factory=list)
 
     #: 扩展字段。按命名空间约定使用，避免不同 Phase 的扩展互相踩：
-    #:   pair.*      Phase D  结对编程
-    #:   vision.*    Phase E  视觉能力
-    #:   persona.*   Phase F  人格
-    #: 详见 PHASE-F-PERSONA-AGENT-INTERFACE.md 的 F2。
+    #:   pair.*      Phase E  结对编程
+    #:   vision.*    Phase F  视觉能力
+    #:   persona.*   Phase G  人格
+    #: 详见 PHASE-G-PERSONA-AGENT-INTERFACE.md 的 G2。
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class SopStage(BaseModel):
     """SOP 的一个阶段。
 
-    确定性状态机的一个节点（决策 DB4）。阶段转移由 next_on_success /
+    确定性状态机的一个节点（决策 DC4）。阶段转移由 next_on_success /
     next_on_failure 静态决定，不由 LLM 现场发挥。
     """
 
@@ -730,7 +733,7 @@ class SopStage(BaseModel):
     context_keys: list[str] = Field(default_factory=list)
     #: 产出写进黑板的哪个 key
     output_key: str
-    #: 进入下一阶段前要跑哪些机械检查（B8）
+    #: 进入下一阶段前要跑哪些机械检查（C8）
     verify_before_next: list[str] = Field(default_factory=list)
     #: 机械检查通过后是否还要 LLM 审计
     audit_after_verify: bool = False
@@ -755,7 +758,7 @@ class TeamSpec(BaseModel):
     stages: list[SopStage]
     #: 起始阶段名
     entry_stage: str
-    #: 整个团队单次运行的总 token 预算（决策 DB6）
+    #: 整个团队单次运行的总 token 预算（决策 DC6）
     total_token_budget: int = 500_000
     #: 整个团队单次运行的墙钟上限（秒）
     total_timeout_s: float = 1800.0
@@ -798,7 +801,7 @@ class ConsultRequest(BaseModel):
     """成员 → 团长 → 另一个成员：咨询。
 
     这是你说的"coder 发现问题去找 architect 沟通"。它**不是**成员直连——
-    团长会校验 may_consult、记录、计入预算，再转发（决策 DB2）。
+    团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
     """
 
     method: Literal["agents/consult"] = "agents/consult"
@@ -916,25 +919,25 @@ git diff --exit-code frontend/protocol-client/src/generated/
 - [ ] 类型已进 `schema.json`，TS 类型已重新生成并提交
 - [ ] 10 类校验错误都有测试
 - [ ] 环检测覆盖自环、二元环、三元环
-- [ ] `extra` 的命名空间约定已写进注释（Phase F 的 F2）
+- [ ] `extra` 的命名空间约定已写进注释（Phase G 的 G2）
 
 ---
 
-### B4 · AgentRuntime：隔离运行时
+### C4 · AgentRuntime：隔离运行时
 
-`P0` / 1.5 周 / 依赖 B2 B3
+`P0` / 1.5 周 / 依赖 C2 C3
 
 **背景**
-把 Spec 变成能跑的东西。B2 拆出来的三组可注入资源在这里真正用起来（约束 DB3）。
+把 Spec 变成能跑的角色适配器。C2 拆出来的三组可注入资源在这里真正用起来，但**隔离生命周期必须由 Phase B 提供**（约束 DC3）；本卡不能复制 B5。
 
 **操作步骤**
 
 1. `core/agents/runtime.py`：
 
 ```python
-"""AgentRuntime：一个角色的运行实例。
+"""AgentRuntime：Phase B ChildRuntime 的专家角色适配器。
 
-每个 runtime 独立持有：
+每个角色通过 Phase B 的 ChildSession/ChildRuntime 获得：
   - ToolRegistry   只含 spec.tools 声明的工具
   - cache namespace
   - circuit breaker key
@@ -942,23 +945,22 @@ git diff --exit-code frontend/protocol-client/src/generated/
   - LLM（按 spec.model 解析，走 Phase A 的 provider 层）
 
 约束（§3.2）：
-  DB2 —— runtime 之间不持有对方引用，只通过 Coordinator 通信
-  DB3 —— 默认全隔离，共享必须显式声明
+  DC2 —— runtime 之间不持有对方引用，只通过 Coordinator 通信
+  DC3 —— 默认全隔离，共享必须显式声明
 """
 
 class AgentRuntime:
     def __init__(self, spec: AgentSpec, *, session: "Session", ...):
         self._spec = spec
-        self._namespace = f"agent:{spec.role}"
-        self._registry = self._build_scoped_registry(spec.tools)
-        self._cache_namespace = self._namespace
-        self._breaker_key = self._namespace
-        self._memory_namespace = (
-            f"{session.id}:{spec.role}" if spec.memory_scope == "private"
-            else session.id
+        self._child = ChildRuntime.create(
+            agent_id=spec.role,
+            parent_session_id=session.id,
+            definition=_definition_from_agent_spec(spec),
         )
-        if not spec.mechanical:
-            self._llm, self._provider, self._capabilities = self._build_llm(spec)
+
+    async def run(self, task: TaskRequest) -> TaskResult:
+        """只通过 Phase B ChildRuntime 执行，不持有 Primary 的可变状态。"""
+        return await self._child.run(task)
 
     @staticmethod
     def _build_scoped_registry(tool_names: list[str] | None) -> ToolRegistry:
@@ -968,14 +970,15 @@ class AgentRuntime:
         []    → 空注册表（纯推理角色）
         [...] → 只放声明的工具
 
-        声明了不存在的工具名必须**抛异常**，不能静默忽略——静默忽略的后果
+        角色 adapter 可以提供工具声明转换，但最终 registry 必须由 Phase B
+        的 PermissionPolicy/WorkspaceScope 再次裁剪。声明了不存在的工具名必须**抛异常**，不能静默忽略——静默忽略的后果
         是"这个 agent 莫名其妙不会写文件"，极难排查。
         """
 ```
 
-2. `mechanical=True` 的角色（verifier）**不构造 LLM**。这是 B8 的基础。
+2. `mechanical=True` 的角色（verifier）**不构造 LLM**。这是 C8 的基础。
 
-3. 让 `Session` 能持有多个 runtime。**单 Agent = 只有一个 role="default" 的 runtime**（DB1）。
+3. 让 `Session` 能持有多个 runtime。**单 Agent = 只有一个 role="default" 的 runtime**（DC1）。
 
 4. `tests/test_agents/test_isolation.py` 扩充：
 
@@ -992,20 +995,20 @@ def test_single_agent_path_is_byte_identical():
 ```
 
 **完成判据**
-- [ ] 9 个隔离测试全绿
-- [ ] 单 Agent 路径 evals 零回归（DB1 的验证）
+- [ ] Phase B 的 ChildRuntime 隔离测试仍全绿，C4 只增加角色映射测试
+- [ ] 单 Agent 路径 evals 零回归（DC1 的验证）
 - [ ] spec 里的错误工具名在构造时报错
 - [ ] `mechanical` 角色确实没有 LLM
-- [ ] Sonnet 5 确认 runtime 之间无交叉引用
+- [ ] Sonnet 5 确认角色 adapter 没有重新创建第二套 runtime、权限或 session 生命周期
 
 ---
 
-### B5 · SOP 状态机
+### C5 · SOP 状态机
 
-`P0` / 1 周 / 依赖 B3
+`P0` / 1 周 / 依赖 C3
 
 **背景**
-抄 AgentMux 的确定性状态机（决策 DB4）。**阶段转移是静态的，不是 LLM 现想的**——这是与 CrewAI hierarchical 最大的区别，也是可调试性的来源。
+抄 AgentMux 的确定性状态机（决策 DC4）。**阶段转移是静态的，不是 LLM 现想的**——这是与 CrewAI hierarchical 最大的区别，也是可调试性的来源。
 
 **操作步骤**
 
@@ -1017,7 +1020,7 @@ def test_single_agent_path_is_byte_identical():
 阶段转移完全由 TeamSpec.stages 里声明的 next_on_success / next_on_failure
 决定，不由 LLM 决定。这是刻意的：调研显示基于 LLM 的动态路由「80% 时候很
 漂亮，另外 20% 做出莫名其妙的决策，而且因为推理隐含在响应里而极难调试」
-（见 PHASE-B §2.2）。
+（见 PHASE-C §2.2）。
 
 LLM 只在一个地方介入：某阶段失败且 next_on_failure 有多个候选时，由团长
 决策打回给谁。这个决策点是显式标注的，会进 trace。
@@ -1055,9 +1058,9 @@ class SopMachine:
 
 ---
 
-### B6 · Coordinator（团长）
+### C6 · Coordinator（团长）
 
-`P0` / 1.5 周 / 依赖 B4 B5
+`P0` / 1.5 周 / 依赖 C4 C5
 
 **背景**
 抄 WorkBuddy 主理人的四项职责：建团、派活、中转、收口。**团长不干活**——它没有业务工具，只有协调工具。
@@ -1069,10 +1072,10 @@ class SopMachine:
 ```python
 """Coordinator：专家团团长。
 
-职责（抄腾讯 WorkBuddy 专家团主理人，见 PHASE-B §2.3）：
-  ① 建团   只有团长能建团，成员不得创建子团队（DB6）
+职责（抄腾讯 WorkBuddy 专家团主理人，见 PHASE-C §2.3）：
+  ① 建团   只有团长能建团，成员不得创建子团队（DC6）
   ② 派活   按 SOP 阶段下发自包含任务
-  ③ 中转   所有跨成员消息必经此处（DB2）
+  ③ 中转   所有跨成员消息必经此处（DC2）
   ④ 收口   汇总产出，决定是否进入下一阶段
 
 团长自己**不写代码、不调业务工具**。它的工具集是空的，只能调协调动作。
@@ -1088,14 +1091,14 @@ class Coordinator:
 
         sop = SopMachine(team)
         while (stage := sop.current_stage()) is not None:
-            self._budget.check()               # 超预算直接抛，见 B9
+            self._budget.check()               # 超预算直接抛，见 C9
 
             # 任务预检：能力匹配（抄 WorkBuddy 的"任务预检"）
             self._precheck(stage)
 
             result = await self._dispatch(stage)
 
-            # 机械验证门先跑（DB5），过不了不花审计的 token
+            # 机械验证门先跑（DC5），过不了不花审计的 token
             if stage.verify_before_next:
                 verdict = self._verifier.run(stage, result)
                 if not verdict.passed:
@@ -1127,12 +1130,12 @@ class Coordinator:
 
 ---
 
-### B7 · 邮箱与黑板（消息中转）
+### C7 · 邮箱与黑板（消息中转）
 
-`P0` / 1 周 / 依赖 B6
+`P0` / 1 周 / 依赖 C6
 
 **背景**
-实现 DB2：所有跨成员通信经团长。这是你要的"coder 找 architect 沟通"的落地方式。
+实现 DC2：所有跨成员通信经团长。这是你要的"coder 找 architect 沟通"的落地方式。
 
 **操作步骤**
 
@@ -1141,7 +1144,7 @@ class Coordinator:
 ```python
 """成员邮箱。
 
-所有消息都经团长中转（DB2，抄 WorkBuddy「所有跨成员的信息流必须经主理人
+所有消息都经团长中转（DC2，抄 WorkBuddy「所有跨成员的信息流必须经主理人
 中转」）。刻意做成 append-only 且记录 relayed_by，理由是可追溯——多 Agent
 系统最难调试的问题是"这个错误判断是谁传出去的"。
 
@@ -1183,12 +1186,12 @@ coder 在实现时发现架构有问题
 
 ---
 
-### B8 · 机械验证门
+### C8 · 机械验证门
 
-`P0` / 1 周 / 依赖 B4 B6
+`P0` / 1 周 / 依赖 C4 C6
 
 **背景**
-决策 DB5。抄 karajan-code 的 *"deterministic first, then cross-AI review"* 和 local-ai-agent-orchestrator 的 mechanical verification。
+决策 DC5。抄 karajan-code 的 *"deterministic first, then cross-AI review"* 和 local-ai-agent-orchestrator 的 mechanical verification。
 
 **这一卡直接回答你说的"gpt 审计 grok 是否真的干完了"**：先用确定性检查回答"干完了没有"，过不了直接打回，**不花审计模型一分钱**；过了再让审计模型看"干得对不对"。
 
@@ -1238,7 +1241,7 @@ def subject_hash(stage_output: str, diff: str) -> str:
 
 `Coordinator` 在进入下一阶段前校验：当前产出的 hash 是否有匹配的 `VerdictRecord(passed=True)`。没有就不许过。
 
-4. `SopStage.verify_before_next` 和 `audit_after_verify`（B3 已定义）在这里真正生效。
+4. `SopStage.verify_before_next` 和 `audit_after_verify`（C3 已定义）在这里真正生效。
 
 5. `tests/test_agents/test_verifier.py` 覆盖每一种检查的通过与失败，外加：
 
@@ -1267,9 +1270,9 @@ def test_stale_verdict_is_rejected_after_output_changes():
 
 ---
 
-### B9 · 成本熔断与失控保护
+### C9 · 成本熔断与失控保护
 
-`P0` / 5d / 依赖 B6
+`P0` / 5d / 依赖 C6
 
 **背景**
 Anthropic 实测多 Agent 消耗 **15 倍 token**，并明确承认*"已发布的架构没有熔断器或单次运行上限……一个递归 spawn 更多子代理的子代理，或者一个返回超大结果的工具，能让单次查询的成本再翻 10 倍以上。"*
@@ -1311,13 +1314,13 @@ class BudgetGuard:
             )
 ```
 
-2. **第四道闸门在 Coordinator 里**：拒绝成员创建子团队（DB6）。这是防递归 spawn 的唯一手段。
+2. **第四道闸门在 Coordinator 里**：拒绝成员创建子团队（DC6）。这是防递归 spawn 的唯一手段。
 
 3. **超预算不是崩溃，是优雅降级**：停止后续阶段，把黑板上已有的产出综合成一个部分答案返回给用户，并**明确告知"因为超出预算而提前停止，已完成 X/Y 个阶段"**。
 
 4. 预算要能在 settings 里配，也要能按单次请求覆盖。
 
-5. `tests/test_agents/test_budget_guard.py`（**B9 之后每张卡都要跑**）：
+5. `tests/test_agents/test_budget_guard.py`（**C9 之后每张卡都要跑**）：
 
 ```python
 def test_token_budget_stops_the_team():
@@ -1336,9 +1339,9 @@ def test_partial_result_tells_the_user_it_was_truncated():
 
 ---
 
-### B10 · 难度路由（ModeRouter）
+### C10 · 难度路由（ModeRouter）
 
-`P0` / 1 周 / 依赖 B6 B9
+`P0` / 1 周 / 依赖 C6 C9
 
 **背景**
 你的设想：**一个模型判断任务难度 → 选择单 Agent / 多 Agent / 多 Agent+多模型**。
@@ -1359,7 +1362,7 @@ def test_partial_result_tells_the_user_it_was_truncated():
   第 3 级 LLM 判难度        可选，模型由用户在 settings 里指定
 
 为什么不是纯 LLM 判断：调研显示基于 LLM 的路由会增加延迟、成本和不确定性
-（见 PHASE-B §2.2）。大部分请求用确定性信号就能判准，把 LLM 留给真正含糊
+（见 PHASE-C §2.2）。大部分请求用确定性信号就能判准，把 LLM 留给真正含糊
 的那一小部分。
 
 为什么保留 LLM 那一级：确定性信号看不出"这个需求有多难"，只能看出"它涉及
@@ -1369,7 +1372,7 @@ def test_partial_result_tells_the_user_it_was_truncated():
 class ExecutionMode(str, Enum):
     SOLO = "solo"                      # 现有单 Agent 路径，行为不变
     TEAM = "team"                      # 专家团，同一个模型
-    TEAM_MULTI_MODEL = "team_multi"    # 专家团 + 每角色不同模型（Phase D）
+    TEAM_MULTI_MODEL = "team_multi"    # 专家团 + 每角色不同模型（Phase E）
 
 
 @dataclass
@@ -1404,12 +1407,12 @@ class RoutingDecision:
 |---|---|
 | `/solo <任务>` | 强制单 Agent |
 | `/team <任务>` | 强制专家团 |
-| `/team-multi <任务>` | 强制专家团 + 多模型（Phase D 之后可用） |
+| `/team-multi <任务>` | 强制专家团 + 多模型（Phase E 之后可用） |
 | `/why-mode` | 打印上一次路由决策的依据 |
 
-5. **默认关闭多 Agent**（DB7）：`settings.agents.enabled` 默认 `False`。关闭时 `ModeRouter` 恒返回 SOLO，**连第 2 级都不跑**（零开销）。
+5. **默认关闭多 Agent**（DC7）：`settings.agents.enabled` 默认 `False`。关闭时 `ModeRouter` 恒返回 SOLO，**连第 2 级都不跑**（零开销）。
 
-6. B1 里改名保留的 `_should_request_parallel_execution` 在这一卡**删除**，由 ModeRouter 取代。
+6. C1 里改名保留的 `_should_request_parallel_execution` 在这一卡**删除**，由 ModeRouter 取代。
 
 **完成判据**
 - [ ] 三级路由都有测试，含"第 3 级失败退回第 2 级"
@@ -1420,9 +1423,9 @@ class RoutingDecision:
 
 ---
 
-### B11 · 内置专家团：软件开发 SOP
+### C11 · 内置专家团：软件开发 SOP
 
-`P1` / 1 周 / 依赖 B4–B10
+`P1` / 1 周 / 依赖 C4–C10
 
 **背景**
 把前面的抽象验证一遍。**如果这支团配不出来，说明 AgentSpec / SopStage 的设计有问题。**
@@ -1536,7 +1539,7 @@ total_timeout_s: 1800
 max_delegations: 20
 ```
 
-2. 在 `core/prompts/templates.py` 加 `agent_architect` / `agent_coder` / `agent_auditor` 三个 stage 模板。**这时才真正用上 B1 保留的 `SUBAGENT_DECOMPOSE_TEMPLATE`**——architect 用它拆任务。
+2. 在 `core/prompts/templates.py` 加 `agent_architect` / `agent_coder` / `agent_auditor` 三个 stage 模板。**这时才真正用上 C1 保留的 `SUBAGENT_DECOMPOSE_TEMPLATE`**——architect 用它拆任务。
 
 3. **核对工具名**：
 
@@ -1544,7 +1547,7 @@ max_delegations: 20
 python -c "from tools.registry import default_registry; print(sorted(default_registry.list_names()))"
 ```
 
-YAML 里每个名字都要在这个列表里，否则 B4 的构造校验会报错（这是**期望**行为）。
+YAML 里每个名字都要在这个列表里，否则 C4 的构造校验会报错（这是**期望**行为）。
 
 4. `tests/test_agents/test_e2e_team.py`：用 mock LLM 跑完整流水线，覆盖：
    - 一次通过（plan → implement → audit → done）
@@ -1555,7 +1558,7 @@ YAML 里每个名字都要在这个列表里，否则 B4 的构造校验会报�
    - 超预算时的部分结果
 
 **完成判据**
-- [ ] 专家团能加载且通过 B3 的静态校验
+- [ ] 专家团能加载且通过 C3 的静态校验
 - [ ] 三个 prompt stage 存在
 - [ ] YAML 里的工具名全部有效
 - [ ] 6 个端到端场景测试通过
@@ -1563,9 +1566,9 @@ YAML 里每个名字都要在这个列表里，否则 B4 的构造校验会报�
 
 ---
 
-### B12 · 观测：委派树与 trace
+### C12 · 观测：委派树与 trace
 
-`P1` / 5d / 依赖 B6 B7
+`P1` / 5d / 依赖 C6 C7
 
 **背景**
 调研显示协调失败占多 Agent 全部失败的 **36.94%**。观测不是锦上添花，是排查协调失败的唯一手段。
@@ -1596,20 +1599,20 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
 
 4. `AgentEvent` 推给前端，CLI 和 Desktop 都能显示当前角色和阶段。
 
-5. **同时做 Phase F 的 F3**（蒸馏数据埋点）。F3 要往 span 里加一组可选的原始 IO 记录，和这一卡改的是同一处代码——分两次改是浪费。见 `PHASE-F-PERSONA-AGENT-INTERFACE.md` §4 的 F3。
+5. **同时做 Phase G 的 G3**（蒸馏数据埋点）。G3 要往 span 里加一组可选的原始 IO 记录，和这一卡改的是同一处代码——分两次改是浪费。见 `PHASE-G-PERSONA-AGENT-INTERFACE.md` §4 的 G3。
 
 **完成判据**
 - [ ] replay 能还原完整委派树，含咨询和验证
 - [ ] 预算消耗在树顶可见
 - [ ] 路由决策依据可见
 - [ ] 前端能显示当前角色
-- [ ] Phase F 的 F3 一并完成
+- [ ] Phase G 的 G3 一并完成
 
 ---
 
-### B13 · 客户端适配
+### C13 · 客户端适配
 
-`P1` / 1 周 / 依赖 B10 B12，依赖主计划 Phase 2
+`P1` / 1 周 / 依赖 C10 C12，依赖主计划 Phase 2
 
 **背景**
 你要求"无论 Desktop 前端还是 CLI 都要做适配"，以及"settings 里有开关，打开才需要填那么多"。
@@ -1628,13 +1631,13 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
        难度判断模型  [不使用 ▾]                 ← 你要的"判难度的模型用户自选"
        token 预算    [500000]
        时长上限      [1800] 秒
-       [ ] 启用多模型协作（每角色不同模型）      ← Phase D 才可用，现在置灰
+       [ ] 启用多模型协作（每角色不同模型）      ← Phase E 才可用，现在置灰
 ```
 
 **关闭时整块隐藏**，用户看不到任何多 Agent 相关配置。
 
 2. **CLI（OpenTUI）**：
-   - 四个斜杠命令（B10）
+   - 四个斜杠命令（C10）
    - 运行时状态行显示 `[architect] 正在制定方案... 12.3s · 4.2k tok`
    - 阶段切换时打一行分隔
    - `/why-mode` 打印路由依据
@@ -1642,7 +1645,7 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
 
 3. **Desktop**（如果主计划 Phase 3 已完成）：
    - 侧栏显示团队成员和当前阶段
-   - 委派树可视化（B12 的 replay 输出的图形版）
+   - 委派树可视化（C12 的 replay 输出的图形版）
    - 预算进度条，接近上限时变色
 
 4. **协议**：`AgentEvent` 和 `RoutingDecision` 进 `protocol/`，重新生成 TS 类型。
@@ -1656,9 +1659,9 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
 
 ---
 
-### B14 · 评测：诚实面对 15 倍成本
+### C14 · 评测：诚实面对 15 倍成本
 
-`P1` / 1 周 / 依赖 B11，依赖主计划 Phase 1
+`P1` / 1 周 / 依赖 C11，依赖主计划 Phase 1
 
 **背景**
 Anthropic 说多 Agent 15 倍 token，且**编码任务本就不是多 Agent 的强项**。我们必须自己测出来到底值不值。
@@ -1678,25 +1681,25 @@ auto            ??%        ??,???        ??.?s        $?.??         ?.?
                               说明团队没真正跑起来，检查配置
 ```
 
-4. **按任务类型分组看**。多 Agent 大概率在简单任务上更差更贵，在跨模块重构上才有优势。找出**分界线在哪**——这个分界线就是 B10 第 2 级启发式的阈值依据。
+4. **按任务类型分组看**。多 Agent 大概率在简单任务上更差更贵，在跨模块重构上才有优势。找出**分界线在哪**——这个分界线就是 C10 第 2 级启发式的阈值依据。
 
 5. **诚实写结论。** 如果测下来多 Agent 在多数编码任务上不划算：
    - 写进 `docs/modules/agents.md`
    - 把默认保持关闭
-   - 把 B10 的启发式阈值调高
+   - 把 C10 的启发式阈值调高
    - **这不是失败，这是你省下的钱**
 
 **完成判据**
 - [ ] 三方矩阵已产出并提交
 - [ ] 按任务类型分组的分析已完成
-- [ ] 分界线写进 B10 的启发式阈值
+- [ ] 分界线写进 C10 的启发式阈值
 - [ ] 结论（含负面结论）写进文档
 
 ---
 
-### B15 · 文档
+### C15 · 文档
 
-`P1` / 5d / 依赖 B1–B14
+`P1` / 5d / 依赖 C1–C14
 
 **操作步骤**
 
@@ -1707,16 +1710,16 @@ auto            ??%        ??,???        ??.?s        $?.??         ?.?
    - 团长的四项职责与唯一的 LLM 决策点
    - 机械验证门的 8 种检查
    - 四道成本闸门
-   - **B14 的评测结论，明确写"什么时候不该用多 Agent"**
+   - **C14 的评测结论，明确写"什么时候不该用多 Agent"**
    - 加角色 / 加专家团 / 加 SOP 的步骤（照抄 §6）
-   - **Phase F 的 F6 要求的"程序化构造 AgentSpec"一节**
+   - **Phase G 的 G6 要求的"程序化构造 AgentSpec"一节**
 2. 更新 `docs/modules/core.md`、`tools.md`（per-agent 注册表）、`cache.md`（agent namespace）、`memory.md`（memory_scope）、`recovery.md`（breaker key）、`frontend.md`（settings 分层）。
 3. 更新 `AGENTS.md` 架构图。
 4. 更新主计划的 Phase 表。
 
 ---
 
-## §5 Phase B 出口检查
+## §5 Phase C 出口检查
 
 ```powershell
 cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
@@ -1728,15 +1731,15 @@ python -m evals.cli run --backend agent --mode team --save-baseline
 Select-String -Path *.py,core\*.py,tools\*.py -Pattern "_run_with_subagents|SubAgentV2|agent_tool|_should_use_subagents" -Recurse
 ```
 
-**Phase B 完成的定义：**
+**Phase C 完成的定义：**
 - 前 5 条全绿，**`--mode solo` 零回归**
 - 最后一条无输出（死代码已清）
 - 软件开发专家团端到端跑得通，含咨询、机械验证打回、审计打回
 - 四道成本闸门都能触发且优雅降级
 - 三级难度路由可用，用户能覆盖，默认关闭
-- **B14 的评测矩阵已产出，结论（含负面结论）写进了文档**
+- **C14 的评测矩阵已产出，结论（含负面结论）写进了文档**
 - `docs/modules/agents.md` 可独立指导加新角色和新专家团
-- **Phase F 的 F1 / F2 / F3 / F5 / F6 五张预留卡已完成**（见 `PHASE-F-PERSONA-AGENT-INTERFACE.md` §4）
+- **Phase G 的 G1 / G2 / G3 / G5 / G6 五张预留卡已完成**（见 `PHASE-G-PERSONA-AGENT-INTERFACE.md` §4）
 
 ---
 
@@ -1768,7 +1771,7 @@ Select-String -Path *.py,core\*.py,tools\*.py -Pattern "_run_with_subagents|SubA
 
 ### 6.4 调整难度路由阈值
 
-阈值来自 B14 的评测数据，不要拍脑袋改。改之前重跑：
+阈值来自 C14 的评测数据，不要拍脑袋改。改之前重跑：
 
 ```powershell
 python -m evals.cli run --backend agent --mode solo --save-baseline
@@ -1783,11 +1786,11 @@ python -m evals.cli run --backend agent --mode team --save-baseline
 
 | 预留 | 给谁 | 约束 |
 |---|---|---|
-| `AgentSpec.model` | **Phase D** 多模型协作 | Phase B 全部留 `None`（同模型）。Phase D 才按角色配不同模型 |
-| `ExecutionMode.TEAM_MULTI_MODEL` | **Phase D** | 枚举值先占上，Phase B 阶段路由到它会明确报错 |
-| `AgentSpec.extra` 的命名空间约定 | **Phase D / E / F** | `pair.*` / `vision.*` / `persona.*`，见 Phase F 的 F2 |
-| Provider 无状态单例（Phase A 的 DC2） | **Phase D** | 多个 runtime 会并发调用同一 provider 实例 |
-| `Blackboard` 条目的 value 是 `str` | **Phase E** 多模态 | Phase E 会拓宽成 content block，**现在不要在别处假设它一定是纯文本** |
-| `AgentSpec.tools` 的作用域机制 | **Phase F** PersonaAgent | Persona 可能需要**运行时**替换工具集而不只是构造时。**如果你倾向要这个能力，在 B4 就把 `_build_scoped_registry` 设计成可运行时替换的，成本几乎为零**；Phase B 做完再改要动 `AgentRuntime` 核心。见 Phase F §6.1 |
-| `TeamSpec` 的 YAML 加载路径 | **Phase F** | 除了内置的 `core/agents/teams/`，还要扫用户级目录 `~/.rxycode/teams/` |
-| `VerdictRecord` + 机械验证结果 | **Phase F** 蒸馏 | 这两个是蒸馏质量标注的来源（Phase F 的 F4）。**不要把它们做成只在内存里存在的临时对象** |
+| `AgentSpec.model` | **Phase E** 多模型协作 | Phase C 全部留 `None`（同模型）。Phase E 才按角色配不同模型 |
+| `ExecutionMode.TEAM_MULTI_MODEL` | **Phase E** | 枚举值先占上，Phase C 阶段路由到它会明确报错 |
+| `AgentSpec.extra` 的命名空间约定 | **Phase E/F/G** | `pair.*` / `vision.*` / `persona.*`，见 Phase G 的 G2 |
+| Provider 无状态单例（Phase A 的 DD2） | **Phase E** | 多个 runtime 会并发调用同一 provider 实例 |
+| `Blackboard` 条目的 value 是 `str` | **Phase F** 多模态 | Phase F 会拓宽成 content block，**现在不要在别处假设它一定是纯文本** |
+| `AgentSpec.tools` 的作用域机制 | **Phase G** PersonaAgent | Persona 可能需要**运行时**替换工具集而不只是构造时。**如果你倾向要这个能力，在 C4 就把 `_build_scoped_registry` 设计成可运行时替换的，成本几乎为零**；Phase C 做完再改要动 `AgentRuntime` 核心。见 Phase G §6.1 |
+| `TeamSpec` 的 YAML 加载路径 | **Phase G** | 除了内置的 `core/agents/teams/`，还要扫用户级目录 `~/.rxycode/teams/` |
+| `VerdictRecord` + 机械验证结果 | **Phase G** 蒸馏 | 这两个是蒸馏质量标注的来源（Phase G 的 G4）。**不要把它们做成只在内存里存在的临时对象** |

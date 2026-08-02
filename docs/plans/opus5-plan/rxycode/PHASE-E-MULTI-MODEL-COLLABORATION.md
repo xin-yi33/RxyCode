@@ -1,8 +1,8 @@
-# Phase D · 多 Agent × 多模型协作（Multi-Model Collaboration）
+# Phase E · 多 Agent × 多模型协作（Multi-Model Collaboration）
 
-> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase D。
-> **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md) 全部完成。
-> **后继**：[`PHASE-E-MULTIMODAL.md`](./PHASE-E-MULTIMODAL.md)
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase E。
+> **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 全部完成；设置页和 Desktop 交互接入还依赖 [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) 的稳定契约。
+> **后继**：[`PHASE-F-MULTIMODAL.md`](./PHASE-F-MULTIMODAL.md)
 >
 > **一句话目标**：让专家团的每个角色跑在**不同的模型**上——Opus 做架构、Grok 写代码、GPT 做审计——由一个独立的 master 模型监测全局、中转消息、在跨模型分歧时仲裁。
 >
@@ -10,7 +10,7 @@
 > **创建**：2026-07-31
 > **预计工时**：6 周（1 名后端 + 0.5 名前端）
 >
-> ⚠️ **Phase D 单独看几乎没有新架构**。它把 Phase A 的模型适配层和 Phase B 的专家团接起来。**真正的难点不是"让不同模型跑起来"，而是"让一个模型的产出对另一个模型有用"**（§2.2）和"成本核算"（§2.3）。
+> ⚠️ **Phase E 单独看几乎没有新架构**。它把 Phase A 的模型适配层和 Phase C 的专家团接起来。**真正的难点不是"让不同模型跑起来"，而是"让一个模型的产出对另一个模型有用"**（§2.2）和"成本核算"（§2.3）。
 
 ---
 
@@ -19,13 +19,13 @@
 | 章节 | 内容 |
 |---|---|
 | [§0 执行手册](#0-执行手册必读) | 执行协议、模型分工、硬性规则 |
-| [§1 前置盘点](#1-前置盘点phase-ab-给了什么) | Phase A/B 已经给了什么，还缺什么 |
+| [§1 前置盘点](#1-前置盘点phase-abc-给了什么) | Phase A/B/C 已经给了什么，还缺什么 |
 | [§2 三个真问题](#2-三个真问题) | 跨模型交接、成本核算、失败归因 |
 | [§3 目标架构](#3-目标架构) | master 模型、模型绑定、pair-program |
-| [§4 任务卡 D1–D12](#4-任务卡) | 逐个执行 |
-| [§5 出口检查](#5-phase-c-出口检查) | 怎么算做完 |
+| [§4 任务卡 E1–E12](#4-任务卡) | 逐个执行 |
+| [§5 出口检查](#5-phase-e-出口检查) | 怎么算做完 |
 | [§6 扩展手册](#6-扩展手册) | 加模型组合、调切换点 |
-| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase E/F 的预留 |
+| [§7 与后续 Phase 的接口](#7-与后续-phase-的接口) | Phase F/G 的预留 |
 
 ---
 
@@ -33,13 +33,13 @@
 
 ### 0.1 执行协议
 
-Phase B 的 10 步基础上，加两条：
+Phase C 的 10 步基础上，加两条：
 
 ```
-11. COST      跑成本核算测试（D4 之后每张卡都要跑）
+11. COST      跑成本核算测试（E4 之后每张卡都要跑）
               python -m pytest tests/test_agents/test_cost_accounting.py -q
 
-12. HANDOFF   跑跨模型交接测试（D3 之后每张卡都要跑）
+12. HANDOFF   跑跨模型交接测试（E3 之后每张卡都要跑）
               python -m pytest tests/test_agents/test_handoff.py -q
 ```
 
@@ -48,38 +48,38 @@ Phase B 的 10 步基础上，加两条：
 | 模型 | 干什么 | 不要干什么 |
 |---|---|---|
 | **Composer 2.5** | **主写全部**：编排路由、master、交接协议；设置页多模型 UI 也由它主写 | 自己编造定价数字 |
-| **Grok 4.5** | **查每个模型的真实定价**（D4 必需）、查各家 API 的并发限制、查跨模型 prompt 兼容性；被委托的设置页 UI **多模态环节**（视觉验收）时写前端 | 改编排 Python / 写没有多模态环节的卡本体 |
-| **Sonnet 5** | 审 D3（跨模型交接）的 diff——这是最容易出微妙 bug 的一张。写文档（D12） | 长任务连续实现 |
+| **Grok 4.5** | **查每个模型的真实定价**（E4 必需）、查各家 API 的并发限制、查跨模型 prompt 兼容性；被委托的设置页 UI **多模态环节**（视觉验收）时写前端 | 改编排 Python / 写没有多模态环节的卡本体 |
+| **Sonnet 5** | 审 E3（跨模型交接）的 diff——这是最容易出微妙 bug 的一张。写文档（E12） | 长任务连续实现 |
 
 ### 0.3 前置自检
 
 ```powershell
 cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
 Test-Path core\providers\__init__.py, config\model_capabilities.py      # Phase A → True True
-Test-Path core\agents\coordinator.py, core\agents\budget.py             # Phase B → True True
-Test-Path core\agents\teams\software_dev.yaml                           # Phase B → True
+Test-Path core\agents\coordinator.py, core\agents\budget.py             # Phase C → True True
+Test-Path core\agents\teams\software_dev.yaml                           # Phase C → True
 python -m pytest tests/test_agents -q                                   # 全绿
 python -m evals.cli run --backend agent --mode team --compare-baseline evals\baselines\latest-team.json
 ```
 
-**最危险的误判是"Phase B 差不多了就开始 C"。** Phase D 会同时暴露 Phase B 所有没测到的隔离问题——只不过这次每个角色用不同模型，症状会更难懂。
+**最危险的误判是"Phase C 差不多了就开始 Phase E"。** Phase E 会同时暴露 Phase B/C 所有没测到的隔离问题——只不过这次每个角色用不同模型，症状会更难懂。
 
 ### 0.4 硬性规则
 
 | # | 规则 | 依据 |
 |---|---|---|
-| MC1 | **所有角色 `model=None` 时，行为与 Phase B 逐字节相同** | 回归保护 |
-| MC2 | **跨模型交接只传结构化产出，不传原始对话历史** | §2.2 |
-| MC3 | **审计角色的模型必须与被审角色不同**，配成一样要报错 | karajan-code 的 cross-AI review |
-| MC4 | **预算按成本（美元）核算，token 只是中间量** | §2.3，Opus 与 Grok 单价差一个数量级 |
-| MC5 | **模型切换点由 architect 在方案里显式声明**，coder 不得自行切换 | 你的原始要求 |
-| MC6 | **pair-program 的 navigator 不得编辑文件** | atmux 的做法 |
-| MC7 | **master 模型不参与业务产出**，只调度、中转、仲裁 | Phase B 的 DB2 延续 |
-| MC8 | 一张卡一个 commit，可独立 revert | 风险控制 |
+| MD1 | **所有角色 `model=None` 时，行为与 Phase C 逐字节相同** | 回归保护 |
+| MD2 | **跨模型交接只传结构化产出，不传原始对话历史** | §2.2 |
+| MD3 | **审计角色的模型必须与被审角色不同**，配成一样要报错 | karajan-code 的 cross-AI review |
+| MD4 | **预算按成本（美元）核算，token 只是中间量** | §2.3，Opus 与 Grok 单价差一个数量级 |
+| MD5 | **模型切换点由 architect 在方案里显式声明**，coder 不得自行切换 | 你的原始要求 |
+| MD6 | **pair-program 的 navigator 不得编辑文件** | atmux 的做法 |
+| MD7 | **master 模型不参与业务产出**，只调度、中转、仲裁 | Phase C 的 DC2 延续 |
+| MD8 | 一张卡一个 commit，可独立 revert | 风险控制 |
 
 ---
 
-## §1 前置盘点：Phase A/B 给了什么
+## §1 前置盘点：Phase A/B/C 给了什么
 
 ### 1.1 已经有的
 
@@ -88,40 +88,41 @@ python -m evals.cli run --backend agent --mode team --compare-baseline evals\bas
 | Provider 策略层（DeepSeek / Claude / Qwen / OpenAI） | Phase A | `core/providers/` |
 | `ModelCapabilities`（上下文窗口、tokenizer、能力位） | Phase A | `config/model_capabilities.py` |
 | per-model prompt variant | Phase A | `core/prompts/` |
-| `AgentSpec.model` 字段 | Phase B | `protocol/agents.py`（**Phase B 里全是 `None`**） |
-| `AgentRuntime` 隔离运行时 | Phase B | `core/agents/runtime.py` |
-| Coordinator 团长（建团/派活/中转/收口） | Phase B | `core/agents/coordinator.py` |
-| `ConsultRequest` 跨角色咨询 | Phase B | `core/agents/mailbox.py` |
-| 机械验证门 | Phase B | `core/agents/verifier.py` |
-| `BudgetGuard`（token / 时长 / 次数） | Phase B | `core/agents/budget.py` |
-| `ExecutionMode.TEAM_MULTI_MODEL`（占位） | Phase B | `core/agents/router.py` |
+| `AgentSpec.model` 字段 | Phase C | `protocol/agents.py`（**Phase C 里全是 `None`**） |
+| `ChildRuntime` 隔离运行时 | Phase B | `core/subagents/runtime.py` |
+| `AgentRuntime` 角色适配器 | Phase C | `core/agents/runtime.py`（委托 Phase B） |
+| Coordinator 团长（建团/派活/中转/收口） | Phase C | `core/agents/coordinator.py` |
+| `ConsultRequest` 跨角色咨询 | Phase C | `core/agents/mailbox.py` |
+| 机械验证门 | Phase C | `core/agents/verifier.py` |
+| `BudgetGuard`（token / 时长 / 次数） | Phase C | `core/agents/budget.py` |
+| `ExecutionMode.TEAM_MULTI_MODEL`（占位） | Phase C | `core/agents/router.py` |
 | `ModelRole` + `ModelRouter`（旧的角色→模型映射） | 既有 | `core/governance.py:370-374`、`:409-487` |
 
-### 1.2 Phase D 要补的
+### 1.2 Phase E 要补的
 
 | 缺口 | 落在哪张卡 |
 |---|---|
-| `AgentSpec.model` 真正生效，每个 runtime 用自己的模型 | D1 |
-| master 模型独立配置，与业务角色分离 | D2 |
-| 跨模型交接：结构化产出 + 上下文转译 | D3 |
-| 成本核算：按美元而非 token | D4 |
-| 跨模型审计：强制审计模型 ≠ 编码模型 | D5 |
-| 模型切换点：architect 在方案里声明 | D6 |
-| pair-program：driver + navigator | D7 |
-| 失败归因仲裁：master 判"架构错还是实现错" | D8 |
-| 并发限制：不同 provider 的 rate limit 各不相同 | D9 |
-| Settings / CLI 每角色选模型 | D10 |
-| 模型组合评测矩阵 | D11 |
+| `AgentSpec.model` 真正生效，每个 runtime 用自己的模型 | E1 |
+| master 模型独立配置，与业务角色分离 | E2 |
+| 跨模型交接：结构化产出 + 上下文转译 | E3 |
+| 成本核算：按美元而非 token | E4 |
+| 跨模型审计：强制审计模型 ≠ 编码模型 | E5 |
+| 模型切换点：architect 在方案里声明 | E6 |
+| pair-program：driver + navigator | E7 |
+| 失败归因仲裁：master 判"架构错还是实现错" | E8 |
+| 并发限制：不同 provider 的 rate limit 各不相同 | E9 |
+| Settings / CLI 每角色选模型 | E10 |
+| 模型组合评测矩阵 | E11 |
 
 ---
 
 ## §2 三个真问题
 
-> Phase D 的架构本身很浅。**真正会让你踩坑的是这三件事**，每一件都对应一张重点任务卡。
+> Phase E 的架构本身很浅。**真正会让你踩坑的是这三件事**，每一件都对应一张重点任务卡。
 
 ### 2.1 你的设想与开源现状的对照
 
-你描述的方案，AgentMux（Phase B §2.4 已引用）的配置文件几乎一模一样：
+你描述的方案，AgentMux（Phase C §2.4 已引用）的配置文件几乎一模一样：
 
 ```yaml
 roles:
@@ -139,11 +140,11 @@ roles:
 > driver：pair-programming 工作流中负责实现的那一半，快模型，写代码、跑测试、响应 navigator 的反馈。
 > navigator：负责审查的那一半，强模型，盯着共享 worktree 的滚动 diff，在实现漂移时打断 driver 并给出修正意见，**自己不编辑文件**。
 
-**结论：你的设想在业界有对应实现，不需要发明新范式。Phase D 是工程活，不是研究活。**
+**结论：你的设想在业界有对应实现，不需要发明新范式。Phase E 是工程活，不是研究活。**
 
 ### 2.2 真问题一：跨模型交接
 
-**这是 Phase D 最大的技术难点，也最容易被低估。**
+**这是 Phase E 最大的技术难点，也最容易被低估。**
 
 同一个模型内部，上一轮的输出和这一轮的输入是同构的——同样的对话格式、同样的推理风格、同样的隐含约定。**跨模型时这些全都不成立**：
 
@@ -155,17 +156,17 @@ roles:
 | 上下文窗口差一个数量级 | Opus 写的 30k token 方案，塞不进小窗口模型 |
 | 隐含约定不同 | "按上面说的做"这种指代，换个模型就断了 |
 
-**解法（MC2）：跨模型交接只传结构化产出，不传原始对话历史。**
+**解法（MD2）：跨模型交接只传结构化产出，不传原始对话历史。**
 
-这正好是 MetaGPT 的做法——*"agents communicate via structured documents and diagrams published to a shared message pool"*，而不是自由对话。Phase B 的黑板（`blackboard.py`）已经是这个形状，Phase D 只需要**强制**它。
+这正好是 MetaGPT 的做法——*"agents communicate via structured documents and diagrams published to a shared message pool"*，而不是自由对话。Phase C 的黑板（`blackboard.py`）已经是这个形状，Phase E 只需要**强制**它。
 
 具体地：
 
 ```
-Phase B（同模型）：
+Phase C（同模型）：
   architect 产出 → 黑板 → coder 读黑板 + 可能还带一些上下文
 
-Phase D（跨模型）：
+Phase E（跨模型）：
   architect 产出 → 【交接转译】→ 黑板 → coder 只能读黑板
                       ↑
               目标模型窗口装不下时在这里压缩
@@ -175,7 +176,7 @@ Phase D（跨模型）：
 
 ### 2.3 真问题二：成本核算
 
-Phase B 的预算是 token 数。**跨模型时 token 数几乎没有意义**，因为单价差一个数量级以上：
+Phase C 的预算是 token 数。**跨模型时 token 数几乎没有意义**，因为单价差一个数量级以上：
 
 | | 相对单价量级 |
 |---|---|
@@ -183,11 +184,11 @@ Phase B 的预算是 token 数。**跨模型时 token 数几乎没有意义**，
 | 主力编码模型（Sonnet / Grok 级） | 中 |
 | 国产高性价比模型（DeepSeek / Qwen 级） | 低 |
 
-> **具体数字由 Grok 在 D4 查证后填入**，不要在文档里写死过期价格。D4 的 Grok prompt 见任务卡。
+> **具体数字由 Grok 在 E4 查证后填入**，不要在文档里写死过期价格。E4 的 Grok prompt 见任务卡。
 
 一个"500k token 预算"在全 Opus 的团队和全 DeepSeek 的团队之间，实际花费可能差 20 倍。
 
-**解法（MC4）：预算按美元核算。** `ModelCapabilities` 加定价字段，每次 LLM 调用换算成成本累加，`BudgetGuard` 检查的是成本。
+**解法（MD4）：预算按美元核算。** `ModelCapabilities` 加定价字段，每次 LLM 调用换算成成本累加，`BudgetGuard` 检查的是成本。
 
 这还带来一个附加价值：**你可以做"便宜模型先试，失败了才升级"的策略**——这是多模型协作真正省钱的地方，而不只是"用不同模型"。
 
@@ -197,13 +198,13 @@ Phase B 的预算是 token 数。**跨模型时 token 数几乎没有意义**，
 
 > 当我测试或者审计的时候发现问题，我 gpt 就要和架构和代码编写沟通问题，看看是架构出了问题还是代码编写出了问题。
 
-Phase B 的 `ConsultRequest` 给了通道，`software_dev.yaml` 的 auditor 也被要求把每条发现标注「方案问题」或「实现问题」。**但审计员的判断可能是错的**——它说"方案问题"，架构师说"不，是你实现的时候没按方案来"。
+Phase C 的 `ConsultRequest` 给了通道，`software_dev.yaml` 的 auditor 也被要求把每条发现标注「方案问题」或「实现问题」。**但审计员的判断可能是错的**——它说"方案问题"，架构师说"不，是你实现的时候没按方案来"。
 
 **这时候需要仲裁，而仲裁正是你说的 master 的职责。**
 
-Phase B 的 Coordinator 只做机械的中转。Phase D 要给它一个**独立的模型**和一项**仲裁职责**：当审计员和架构师对同一个问题的归因不一致时，master 读双方陈述 + 方案原文 + 实际 diff，做出裁决，然后把任务打回给正确的角色。
+Phase C 的 Coordinator 只做机械的中转。Phase E 要给它一个**独立的模型**和一项**仲裁职责**：当审计员和架构师对同一个问题的归因不一致时，master 读双方陈述 + 方案原文 + 实际 diff，做出裁决，然后把任务打回给正确的角色。
 
-**这是 Phase D 里唯一新增的 LLM 决策点。** 和 Phase B 的 DB4 一样，它必须是显式标注、进 trace 的。
+**这是 Phase E 里唯一新增的 LLM 决策点。** 和 Phase C 的 DC4 一样，它必须是显式标注、进 trace 的。
 
 ---
 
@@ -219,13 +220,13 @@ ModeRouter → TEAM_MULTI_MODEL
 │ Coordinator「团长 / master」                                       │
 │  模型：settings.agents.master_model（用户自选，独立于所有业务角色） │
 │                                                                    │
-│  Phase B 的四项职责：建团 / 派活 / 中转 / 收口                      │
-│  Phase D 新增：                                                    │
-│    ⑤ 交接转译   跨模型时压缩、剥离推理痕迹、规范化格式（D3）        │
-│    ⑥ 成本守门   按美元核算，接近上限时降级或停止（D4）              │
-│    ⑦ 归因仲裁   审计员与架构师归因冲突时裁决（D8）                  │
+│  Phase C 的四项职责：建团 / 派活 / 中转 / 收口                      │
+│  Phase E 新增：                                                    │
+│    ⑤ 交接转译   跨模型时压缩、剥离推理痕迹、规范化格式（E3）        │
+│    ⑥ 成本守门   按美元核算，接近上限时降级或停止（E4）              │
+│    ⑦ 归因仲裁   审计员与架构师归因冲突时裁决（E8）                  │
 │                                                                    │
-│  它自己不写代码、不产出业务成果（MC7）                              │
+│  它自己不写代码、不产出业务成果（MD7）                              │
 └───┬────────────────────────────────────────────────────────────┬─┘
     │                                                             │
     ▼                                                             ▼
@@ -239,7 +240,7 @@ ModeRouter → TEAM_MULTI_MODEL
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ Blackboard「唯一的跨模型通道」                                     │
-│  跨模型时，成员**只能**读黑板，读不到别人的对话历史（MC2）          │
+│  跨模型时，成员**只能**读黑板，读不到别人的对话历史（MD2）          │
 └───┬──────────────────────────────────────────────────────────────┘
     │
     ├────────────┬──────────────┬─────────────┬─────────────┐
@@ -249,39 +250,39 @@ ModeRouter → TEAM_MULTI_MODEL
  只读工具      全部工具       只读工具       纯确定性       只读工具
                   ↑              │
                   └── pair-program ──┘
-                  driver 写 · navigator 盯 diff 不写（MC6）
+                  driver 写 · navigator 盯 diff 不写（MD6）
 
-              审计模型必须 ≠ 编码模型（MC3）
+              审计模型必须 ≠ 编码模型（MD3）
 ```
 
 ### 3.2 七条不可违反的设计约束
 
 | # | 约束 | 依据 |
 |---|---|---|
-| DC1 | 全 `model=None` 时行为与 Phase B 逐字节相同 | 回归保护 |
-| DC2 | **跨模型交接只走黑板的结构化产出**，成员读不到别的模型的对话历史 | §2.2 |
-| DC3 | **审计模型 ≠ 被审模型**，配置阶段就校验 | karajan-code |
-| DC4 | **预算按美元**，`ModelCapabilities` 必须带定价 | §2.3 |
-| DC5 | **模型切换点由 architect 在方案里声明**，落在 `plan` 的结构化字段里，不是自然语言 | 你的要求 + 可校验 |
-| DC6 | **navigator 不得持有写工具**，构造时校验 | atmux |
-| DC7 | **master 不产出业务成果**，只调度/中转/仲裁 | Phase B DB2 延续 |
+| DD1 | 全 `model=None` 时行为与 Phase C 逐字节相同 | 回归保护 |
+| DD2 | **跨模型交接只走黑板的结构化产出**，成员读不到别的模型的对话历史 | §2.2 |
+| DD3 | **审计模型 ≠ 被审模型**，配置阶段就校验 | karajan-code |
+| DD4 | **预算按美元**，`ModelCapabilities` 必须带定价 | §2.3 |
+| DD5 | **模型切换点由 architect 在方案里声明**，落在 `plan` 的结构化字段里，不是自然语言 | 你的要求 + 可校验 |
+| DD6 | **navigator 不得持有写工具**，构造时校验 | atmux |
+| DD7 | **master 不产出业务成果**，只调度/中转/仲裁 | Phase C DC2 延续 |
 
 ### 3.3 文件布局（**不要改**）
 
 ```
 core/agents/
-  handoff.py                 # D3 跨模型交接转译
-  cost.py                    # D4 成本核算（BudgetGuard 的成本维度）
-  arbiter.py                 # D8 归因仲裁
-  pairing.py                 # D7 driver/navigator
+  handoff.py                 # E3 跨模型交接转译
+  cost.py                    # E4 成本核算（BudgetGuard 的成本维度）
+  arbiter.py                 # E8 归因仲裁
+  pairing.py                 # E7 driver/navigator
   teams/
-    software_dev_multi.yaml  # D10 多模型版软件开发专家团
+    software_dev_multi.yaml  # E10 多模型版软件开发专家团
 config/
-  model_pricing.py           # D4 定价表
+  model_pricing.py           # E4 定价表
 tests/test_agents/
   test_multi_model.py
-  test_handoff.py            # D3 之后每张卡都跑
-  test_cost_accounting.py    # D4 之后每张卡都跑
+  test_handoff.py            # E3 之后每张卡都跑
+  test_cost_accounting.py    # E4 之后每张卡都跑
   test_arbiter.py
   test_pairing.py
 ```
@@ -290,12 +291,12 @@ tests/test_agents/
 
 ## §4 任务卡
 
-### D1 · 让 `AgentSpec.model` 真正生效
+### E1 · 让 `AgentSpec.model` 真正生效
 
-`P0` / 4d / 依赖 Phase A + Phase B
+`P0` / 4d / 依赖 Phase A + Phase C
 
 **背景**
-Phase B 已经有 `AgentSpec.model` 字段，但全是 `None`。这张卡让它接上 Phase A 的 provider 层。**改动很小，但它是后面所有卡的地基。**
+Phase C 已经有 `AgentSpec.model` 字段，但全是 `None`。这张卡让它接上 Phase A 的 provider 层。**改动很小，但它是后面所有卡的地基。**
 
 **涉及文件**
 - 改 `core/agents/runtime.py`、`core/agents/spec.py`
@@ -309,7 +310,7 @@ Phase B 已经有 `AgentSpec.model` 字段，但全是 `None`。这张卡让它�
     def _build_llm(self, spec: AgentSpec):
         """按角色解析模型。
 
-        spec.model is None → 用会话默认模型，行为与 Phase B 完全一致（DC1）。
+        spec.model is None → 用会话默认模型，行为与 Phase C 完全一致（DD1）。
         否则走 Phase A 的 provider 层解析，每个角色拿到自己的 llm /
         provider / capabilities 三元组。
 
@@ -331,14 +332,14 @@ Select-String -Path core\*.py,core\agents\*.py,memory\*.py -Pattern "context_win
   ForEach-Object { "$($_.Path -replace '.*RxyCode1_1_0\\',''):$($_.LineNumber): $($_.Line.Trim())" }
 ```
 
-**每一处都要确认它用的是当前角色的能力，不是全局默认。** 这是 Phase D 最容易漏的地方——症状是"小窗口模型的角色莫名其妙超上下文"。
+**每一处都要确认它用的是当前角色的能力，不是全局默认。** 这是 Phase E 最容易漏的地方——症状是"小窗口模型的角色莫名其妙超上下文"。
 
 3. `validate_team` 加校验：`spec.model` 不为 `None` 时，该模型必须在配置里存在。**配错模型名要在加载时就报错**，不能等到跑到那个阶段才炸。
 
 4. `tests/test_agents/test_multi_model.py`：
 
 ```python
-def test_all_none_models_behave_identically_to_phase_b():   # DC1
+def test_all_none_models_behave_identically_to_phase_b():   # DD1
 def test_each_runtime_gets_its_own_llm():
 def test_each_runtime_gets_its_own_capabilities():
 def test_unknown_model_name_fails_at_team_load_time():
@@ -354,7 +355,7 @@ python -m evals.cli run --backend agent --mode team --compare-baseline evals\bas
 ```
 
 **完成判据**
-- [ ] 全 `None` 时 evals 零回归（DC1）
+- [ ] 全 `None` 时 evals 零回归（DD1）
 - [ ] 每个 runtime 有独立的 llm 和 capabilities
 - [ ] 第 2 步的 grep 清单逐条核对完，贴进 PR
 - [ ] 错误模型名在加载时报错
@@ -366,9 +367,9 @@ feat(agents): bind per-role models through the Phase A provider layer
 
 ---
 
-### D2 · master 模型独立配置
+### E2 · master 模型独立配置
 
-`P0` / 3d / 依赖 D1
+`P0` / 3d / 依赖 E1
 
 **背景**
 你要的"master model 进行整个业务的监测"。它必须能独立选型——master 需要的是判断力和长上下文，与写代码的模型要求不同。
@@ -377,9 +378,9 @@ feat(agents): bind per-role models through the Phase A provider layer
 
 1. `TeamSpec` 加 `master_model: str | None = None`（`None` = 用会话默认）。
 
-2. `Coordinator` 用 master 模型构造自己的 LLM，**且它的工具集依然是空的**（Phase B 的约束，Phase D 不放松）。
+2. `Coordinator` 用 master 模型构造自己的 LLM，**且它的工具集依然是空的**（Phase C 的约束，Phase E 不放松）。
 
-3. **加一条显式校验（MC7）**：
+3. **加一条显式校验（MD7）**：
 
 ```python
 def _assert_master_produces_nothing(coordinator: Coordinator) -> None:
@@ -405,12 +406,12 @@ def _assert_master_produces_nothing(coordinator: Coordinator) -> None:
 
 ---
 
-### D3 · 跨模型交接转译
+### E3 · 跨模型交接转译
 
-`P0` / 1.5 周 / 依赖 D1 D2
+`P0` / 1.5 周 / 依赖 E1 E2
 
 **背景**
-§2.2 的解法。**这是 Phase D 技术含量最高的一张卡，让 Sonnet 5 重点审。**
+§2.2 的解法。**这是 Phase E 技术含量最高的一张卡，让 Sonnet 5 重点审。**
 
 **操作步骤**
 
@@ -424,7 +425,7 @@ def _assert_master_produces_nothing(coordinator: Coordinator) -> None:
 指代会断掉。
 
 解法参考 MetaGPT：agents 通过发布到共享消息池的**结构化文档**通信，而不是
-自由对话。Phase B 的黑板已经是这个形状，这里强制它并补上转译。
+自由对话。Phase C 的黑板已经是这个形状，这里强制它并补上转译。
 
 三个步骤，按顺序：
   1. strip   剥离源模型特有的推理痕迹（thinking block、reasoning content）
@@ -454,7 +455,7 @@ class HandoffTranslator:
 
 **具体字段名让 Grok 查**（见下方 prompt）。
 
-3. **步骤 2 · shape**——按 `target_caps.prompt_variant` 规范化。保守起见，**第一版统一转成 markdown**（所有模型都能处理），不做 per-model 精细适配。等 D11 的评测显示某个组合有问题再优化。
+3. **步骤 2 · shape**——按 `target_caps.prompt_variant` 规范化。保守起见，**第一版统一转成 markdown**（所有模型都能处理），不做 per-model 精细适配。等 E11 的评测显示某个组合有问题再优化。
 
 4. **步骤 3 · fit**——用 `target_caps.tokenizer` 计数（Phase A 已有），超过 `target_caps.compaction_threshold` 的一定比例时压缩。**压缩要保留结构**：
 
@@ -473,12 +474,12 @@ class HandoffTranslator:
         """
 ```
 
-5. **`Coordinator` 在跨模型派发时调用它**。同模型时（`source_caps is target_caps`）**直接跳过**，保证 DC1。
+5. **`Coordinator` 在跨模型派发时调用它**。同模型时（`source_caps is target_caps`）**直接跳过**，保证 DD1。
 
-6. `tests/test_agents/test_handoff.py`（**D3 之后每张卡都跑**）：
+6. `tests/test_agents/test_handoff.py`（**E3 之后每张卡都跑**）：
 
 ```python
-def test_same_model_handoff_is_a_no_op():                    # DC1 关键
+def test_same_model_handoff_is_a_no_op():                    # DD1 关键
 def test_anthropic_thinking_blocks_are_stripped():
 def test_deepseek_reasoning_content_is_stripped():
 def test_output_is_markdown_regardless_of_source_format():
@@ -486,7 +487,7 @@ def test_fit_respects_target_context_window():
 def test_fit_never_drops_the_file_list():                    # 最关键
 def test_fit_never_drops_acceptance_criteria():              # 最关键
 def test_translation_is_recorded_in_trace():
-def test_members_cannot_read_other_models_raw_history():     # MC2
+def test_members_cannot_read_other_models_raw_history():     # MD2
 ```
 
 **Grok 的调研 prompt**
@@ -508,21 +509,21 @@ def test_members_cannot_read_other_models_raw_history():     # MC2
 ```
 
 **完成判据**
-- [ ] 同模型交接是 no-op（DC1 关键）
+- [ ] 同模型交接是 no-op（DD1 关键）
 - [ ] 三家的推理痕迹都能剥离，字段名有 Grok 的文档出处
 - [ ] 压缩绝不丢文件清单和验收标准（两个专门的测试）
-- [ ] 成员读不到别的模型的对话历史（MC2 的测试）
+- [ ] 成员读不到别的模型的对话历史（MD2 的测试）
 - [ ] 转译进 trace
 - [ ] Sonnet 5 审过 diff
 
 ---
 
-### D4 · 成本核算
+### E4 · 成本核算
 
-`P0` / 1 周 / 依赖 D1
+`P0` / 1 周 / 依赖 E1
 
 **背景**
-§2.3。Phase B 的 token 预算跨模型时几乎没有意义。
+§2.3。Phase C 的 token 预算跨模型时几乎没有意义。
 
 **操作步骤**
 
@@ -549,7 +550,7 @@ class ModelPricing:
 ```python
 """成本核算。
 
-Phase B 的 BudgetGuard 按 token 计数。跨模型时 token 数没有可比性——顶级
+Phase C 的 BudgetGuard 按 token 计数。跨模型时 token 数没有可比性——顶级
 推理模型和高性价比模型的单价能差一个数量级，同样 500k token 的预算实际花费
 可能差 20 倍。
 
@@ -586,7 +587,7 @@ class CostAccountant:
         """
 ```
 
-6. `tests/test_agents/test_cost_accounting.py`（**D4 之后每张卡都跑**）：
+6. `tests/test_agents/test_cost_accounting.py`（**E4 之后每张卡都跑**）：
 
 ```python
 def test_cost_is_computed_from_provider_specific_usage_fields():
@@ -628,12 +629,12 @@ def test_stale_pricing_emits_a_warning():
 
 ---
 
-### D5 · 强制跨模型审计
+### E5 · 强制跨模型审计
 
-`P0` / 3d / 依赖 D1
+`P0` / 3d / 依赖 E1
 
 **背景**
-MC3。抄 karajan-code：审查结论要来自**一个不同的 AI**。同一个模型审自己写的代码，会系统性地漏掉同一类错误。
+MD3。抄 karajan-code：审查结论要来自**一个不同的 AI**。同一个模型审自己写的代码，会系统性地漏掉同一类错误。
 
 **操作步骤**
 
@@ -647,34 +648,34 @@ def _check_auditor_uses_a_different_model(team: TeamSpec) -> None:
     来自不同的 AI。同模型自审会系统性地漏掉同一类错误——它看不出自己的
     盲区，因为那正是盲区的定义。
 
-    只在多模型模式下强制。Phase B 的同模型专家团豁免（那时候审计的价值主要
+    只在多模型模式下强制。Phase C 的同模型专家团豁免（那时候审计的价值主要
     来自不同的 prompt 和不同的上下文，而不是不同的模型）。
     """
 ```
 
 2. 审计阶段和被审阶段的模型解析到同一个 `(provider, model)` 时，**加载团队就报错**，错误信息要明确说清怎么改。
 
-3. Phase B 的 `VerdictRecord` 加 `auditor_model: str`，让审计结论可追溯到具体模型。
+3. Phase C 的 `VerdictRecord` 加 `auditor_model: str`，让审计结论可追溯到具体模型。
 
-4. 测试：同模型配置被拒、不同模型通过、同模型但 Phase B 模式不拒、`VerdictRecord` 带模型名。
+4. 测试：同模型配置被拒、不同模型通过、同模型但 Phase C 模式不拒、`VerdictRecord` 带模型名。
 
 **完成判据**
 - [ ] 同模型审计在加载时被拒，错误信息可操作
-- [ ] Phase B 同模型模式不受影响
+- [ ] Phase C 同模型模式不受影响
 - [ ] `VerdictRecord` 记录审计模型
 
 ---
 
-### D6 · 模型切换点由架构师声明
+### E6 · 模型切换点由架构师声明
 
-`P1` / 1 周 / 依赖 D1 D3
+`P1` / 1 周 / 依赖 E1 E3
 
 **背景**
 你的原话：
 
 > 我 opus5 中就要写清楚到哪个地方就要切换模型进行代码编写。
 
-MC5。关键设计选择：**切换点必须是结构化字段，不能是自然语言**。写在自然语言里就只能靠正则去猜，而且没法校验。
+MD5。关键设计选择：**切换点必须是结构化字段，不能是自然语言**。写在自然语言里就只能靠正则去猜，而且没法校验。
 
 **操作步骤**
 
@@ -700,7 +701,7 @@ class ModelSwitchPoint(BaseModel):
 
 2. 架构师用 function calling / structured output 产出（Phase A 的 `structured_output` 能力位在这里派上用场）。**架构师模型不支持结构化输出时，退回到"不切换"并警告**，不要用正则从自然语言里抠。
 
-3. `Coordinator` 在派发前应用切换点：给对应角色临时换模型，**换模型时必须走 D3 的交接转译**（因为源和目标 capabilities 变了）。
+3. `Coordinator` 在派发前应用切换点：给对应角色临时换模型，**换模型时必须走 E3 的交接转译**（因为源和目标 capabilities 变了）。
 
 4. **校验**：切换点里的 `role` 必须在团队里、`model` 必须在配置里、`from_task_index` 必须在范围内。任何一条不满足就**忽略该切换点并警告**，不要让整个流程失败。
 
@@ -715,9 +716,9 @@ class ModelSwitchPoint(BaseModel):
 
 ---
 
-### D7 · pair-program：driver + navigator
+### E7 · pair-program：driver + navigator
 
-`P1` / 1 周 / 依赖 D1 D3
+`P1` / 1 周 / 依赖 E1 E3
 
 **背景**
 你的原话：
@@ -728,7 +729,7 @@ class ModelSwitchPoint(BaseModel):
 
 **操作步骤**
 
-1. `AgentSpec.extra` 用 Phase B 预留的字段：
+1. `AgentSpec.extra` 用 Phase C 预留的字段：
 
 ```yaml
   - role: coder
@@ -738,7 +739,7 @@ class ModelSwitchPoint(BaseModel):
 
   - role: navigator
     model: <强模型>
-    tools: [read_file, grep, list_dir]     # 只读，MC6 会校验
+    tools: [read_file, grep, list_dir]     # 只读，MD6 会校验
     extra:
       pair_role: navigator
       review_every_n_edits: 3
@@ -751,7 +752,7 @@ class ModelSwitchPoint(BaseModel):
 
 抄 atmux 的 pair-program 团队角色：driver 是快模型，写代码、跑测试；
 navigator 是强模型，盯着滚动 diff，在实现漂移时打断并给出修正意见，
-**自己不编辑文件**（MC6）。
+**自己不编辑文件**（MD6）。
 
 打断不是抢占——driver 的当前工具调用会跑完，navigator 的意见作为下一轮
 的输入注入。真正的抢占式打断在我们的执行模型里做不了，也没必要。
@@ -760,9 +761,9 @@ navigator 是强模型，盯着滚动 diff，在实现漂移时打断并给出�
 
 3. **触发时机**：每 N 次文件编辑之后，或者机械验证失败之后。**不要每次工具调用都触发**——navigator 用的是贵模型，频繁触发会让成本失控。
 
-4. **MC6 的强制校验**：navigator 的工具集含任何写工具（`write_file` / `edit_file` / `run_shell` 等）时，**加载团队就报错**。
+4. **MD6 的强制校验**：navigator 的工具集含任何写工具（`write_file` / `edit_file` / `run_shell` 等）时，**加载团队就报错**。
 
-5. **成本上必须是可选的**：D4 的降级策略第一步就是跳过 navigator。
+5. **成本上必须是可选的**：E4 的降级策略第一步就是跳过 navigator。
 
 6. 测试：navigator 有写工具时被拒、按编辑次数触发、navigator 的意见进入 driver 下一轮、navigator 不产生文件改动、降级时被跳过。
 
@@ -775,9 +776,9 @@ navigator 是强模型，盯着滚动 diff，在实现漂移时打断并给出�
 
 ---
 
-### D8 · 归因仲裁
+### E8 · 归因仲裁
 
-`P1` / 1 周 / 依赖 D2 D3
+`P1` / 1 周 / 依赖 E2 E3
 
 **背景**
 §2.4。审计员说"方案问题"，架构师说"是实现没按方案来"——**master 裁决**。这是你说的 master 传话人职责的最高形态。
@@ -804,7 +805,7 @@ master 拿到四份材料：
   IMPL_ISSUE   → 打回 implement 阶段，coder 按原方案重做
   NOT_AN_ISSUE → 驳回该条发现，继续流程
 
-这是 Phase D 唯一新增的 LLM 决策点。它必须进 trace（和 Phase B 的 DB4
+这是 Phase E 唯一新增的 LLM 决策点。它必须进 trace（和 Phase C 的 DC4
 同一条规则）。
 """
 ```
@@ -825,9 +826,9 @@ master 拿到四份材料：
 
 ---
 
-### D9 · 并发与限流
+### E9 · 并发与限流
 
-`P1` / 5d / 依赖 D1
+`P1` / 5d / 依赖 E1
 
 **背景**
 不同 provider 的 rate limit 各不相同。多模型团队会同时打几家 API，**一家被限流不该拖垮全队**。
@@ -836,7 +837,7 @@ master 拿到四份材料：
 
 1. **per-provider 并发信号量**，不是全局一个。配置在 provider 层（Phase A）。
 2. **per-provider 重试策略**：各家的 429 响应头和建议退避时间不同（让 Grok 查 `Retry-After` / `x-ratelimit-*` 的具体形式）。
-3. Phase B 的 breaker key 已经按 agent 分了，**这里再按 provider 分一层**——同一个 provider 的多个角色应该共享熔断状态（因为限流是 provider 级的），但不同 provider 之间不连坐。
+3. Phase C 的 breaker key 已经按 agent 分了，**这里再按 provider 分一层**——同一个 provider 的多个角色应该共享熔断状态（因为限流是 provider 级的），但不同 provider 之间不连坐。
 4. 一家 provider 熔断时，Coordinator 的处理：该角色的阶段失败 → 走 SOP 的 `next_on_failure` → 如果配了降级模型就换，没配就报明确的错。
 
 **完成判据**
@@ -846,9 +847,9 @@ master 拿到四份材料：
 
 ---
 
-### D10 · Settings 与 CLI 适配
+### E10 · Settings 与 CLI 适配
 
-`P1` / 1 周 / 依赖 D1–D8，依赖主计划 Phase 2
+`P1` / 1 周 / 依赖 E1–E8，依赖主计划 Phase 2
 
 **背景**
 你的原话：
@@ -857,16 +858,16 @@ master 拿到四份材料：
 
 **操作步骤**
 
-1. **Settings 三层折叠**（Phase B 的两层再加一层）：
+1. **Settings 三层折叠**（Phase C 的两层再加一层）：
 
 ```
-[ ] 启用多 Agent 专家团                          ← Phase B，默认关
+[ ] 启用多 Agent 专家团                          ← Phase C，默认关
     专家团        [软件开发 ▾]
     路由模式      (•) 自动判断
     难度判断模型  [不使用 ▾]
     成本预算      [$1.00]
 
-    [ ] 启用多模型协作                            ← Phase D，默认关
+    [ ] 启用多模型协作                            ← Phase E，默认关
         └─ 打开后才显示：
            Master 模型   [___________ ▾]   ← 调度、中转、仲裁
            架构师        [___________ ▾]
@@ -879,7 +880,7 @@ master 拿到四份材料：
            ⚠ 审计员与编码员不能是同一个模型
 ```
 
-2. **实时预估成本**（用 D4 的定价表 + 历史平均 token 用量）。这是让用户对多模型的代价有直观感受的最有效手段。
+2. **实时预估成本**（用 E4 的定价表 + 历史平均 token 用量）。这是让用户对多模型的代价有直观感受的最有效手段。
 
 3. **配置校验即时反馈**：审计员 = 编码员时当场标红，不等到运行时。
 
@@ -911,9 +912,9 @@ master 拿到四份材料：
 
 ---
 
-### D11 · 模型组合评测矩阵
+### E11 · 模型组合评测矩阵
 
-`P1` / 1 周 / 依赖 D1–D9
+`P1` / 1 周 / 依赖 E1–E9
 
 **背景**
 **这张卡回答一个价值上万元的问题：哪个模型组合最划算？**
@@ -961,16 +962,16 @@ cheap-audit        ??%       $?.??       ??.?s         ?.?         ?.?
 
 ---
 
-### D12 · 文档
+### E12 · 文档
 
-`P1` / 5d / 依赖 D1–D11
+`P1` / 5d / 依赖 E1–E11
 
 1. 新建 `docs/modules/multi_model.md`：
    - §2 的三个真问题及解法
    - 七条设计约束（§3.2）
    - 跨模型交接的三步（strip / shape / fit）
    - 成本核算与降级策略
-   - **D11 的评测矩阵和推荐配置**
+   - **E11 的评测矩阵和推荐配置**
    - **明确写"什么时候不该用多模型"**
 2. 更新 `docs/modules/agents.md`（多模型章节）、`config.md`（定价表维护）、`frontend.md`（三层 settings）。
 3. 更新 `AGENTS.md`。
@@ -978,7 +979,7 @@ cheap-audit        ??%       $?.??       ??.?s         ?.?         ?.?
 
 ---
 
-## §5 Phase D 出口检查
+## §5 Phase E 出口检查
 
 ```powershell
 cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
@@ -990,8 +991,8 @@ python -m evals.cli run --backend agent --mode team  --compare-baseline evals\ba
 python -m evals.cli run --backend agent --mode team_multi --save-baseline
 ```
 
-**Phase D 完成的定义：**
-- 前 5 条全绿，**solo 和 team 两条基线都零回归**（DC1）
+**Phase E 完成的定义：**
+- 前 5 条全绿，**solo 和 team 两条基线都零回归**（DD1）
 - 每角色不同模型能端到端跑通
 - master 模型独立配置，且不产出业务成果
 - 跨模型交接不丢文件清单和验收标准
@@ -1000,7 +1001,7 @@ python -m evals.cli run --backend agent --mode team_multi --save-baseline
 - 架构师声明的切换点能生效
 - pair-program 可用且 navigator 不写文件
 - 归因仲裁只在有分歧时触发
-- **D11 的矩阵已产出，推荐配置和负面结论都写进了文档**
+- **E11 的矩阵已产出，推荐配置和负面结论都写进了文档**
 
 ---
 
@@ -1016,14 +1017,14 @@ python -m evals.cli run --backend agent --mode team_multi --save-baseline
 python -c "from pathlib import Path; from core.agents.spec import load_team; load_team(Path('core/agents/teams/<新组合>.yaml')); print('ok')"
 ```
 
-4. 跑评测并加进 D11 的矩阵
+4. 跑评测并加进 E11 的矩阵
 5. **边际成本算不过账就不要留在默认配置里**
 
 ### 6.2 更新定价
 
 1. 改 `config/model_pricing.py`，**同时更新 `as_of`**
 2. 跑 `python -m pytest tests/test_agents/test_cost_accounting.py -q`
-3. 重跑 D11 矩阵——定价变了，最优组合可能也变了
+3. 重跑 E11 矩阵——定价变了，最优组合可能也变了
 
 ### 6.3 调整交接转译
 
@@ -1037,10 +1038,10 @@ python -c "from pathlib import Path; from core.agents.spec import load_team; loa
 
 | 预留 | 给谁 | 约束 |
 |---|---|---|
-| `HandoffTranslator` 的输入类型 | **Phase E** 多模态 | 现在是 `str`，Phase E 会拓宽成 content block。**不要在别处假设它一定是纯文本** |
-| `AgentSpec.extra` | **Phase E / E** | Phase E 放 `requires_vision`；Phase F 放 `persona_id` 和 `skills` |
-| `ModelCapabilities.supports_vision`（Phase A 已有） | **Phase E** | Phase E 的视觉角色靠它做能力校验 |
-| `CostAccountant` | **Phase E** | 图像 token 计费方式与文本不同，Phase E 要扩展 |
-| `ModelSwitchPoint` | **Phase F** | Persona 会需要"按 persona 切模型"，复用这个结构 |
-| 定价表 `as_of` 机制 | **Phase F** | 蒸馏需要对比"教师模型成本 vs 学生模型成本"，直接用这张表 |
-| `Blackboard` 的结构化产出 | **Phase F** | 蒸馏的训练数据来源就是黑板上的高质量产出 —— 见 `PHASE-F-PERSONA-AGENT-INTERFACE.md` §3.2 |
+| `HandoffTranslator` 的输入类型 | **Phase F** 多模态 | 现在是 `str`，Phase F 会拓宽成 content block。**不要在别处假设它一定是纯文本** |
+| `AgentSpec.extra` | **Phase F / E** | Phase F 放 `requires_vision`；Phase G 放 `persona_id` 和 `skills` |
+| `ModelCapabilities.supports_vision`（Phase A 已有） | **Phase F** | Phase F 的视觉角色靠它做能力校验 |
+| `CostAccountant` | **Phase F** | 图像 token 计费方式与文本不同，Phase F 要扩展 |
+| `ModelSwitchPoint` | **Phase G** | Persona 会需要"按 persona 切模型"，复用这个结构 |
+| 定价表 `as_of` 机制 | **Phase G** | 蒸馏需要对比"教师模型成本 vs 学生模型成本"，直接用这张表 |
+| `Blackboard` 的结构化产出 | **Phase G** | 蒸馏的训练数据来源就是黑板上的高质量产出 —— 见 `PHASE-G-PERSONA-AGENT-INTERFACE.md` §3.2 |

@@ -1,26 +1,26 @@
-# Phase E · 多模态 × 多 Agent 协作（Multimodal Agent Collaboration）
+# Phase F · 多模态 × 多 Agent 协作（Multimodal Agent Collaboration）
 
-> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase E，是核心路线的**最后一段**。
-> **前置条件**：主计划 Phase 0/1/2/**3** + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md) + [`PHASE-C-RXYCODE-DESKTOP.md`](./PHASE-C-RXYCODE-DESKTOP.md) + [`PHASE-D-MULTI-MODEL-COLLABORATION.md`](./PHASE-D-MULTI-MODEL-COLLABORATION.md) **全部完成**。
-> **后继**：[`PHASE-F-PERSONA-AGENT-INTERFACE.md`](./PHASE-F-PERSONA-AGENT-INTERFACE.md)（接口预留，非必做）
+> **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase F，是核心路线的**最后一段**。
+> **前置条件**：主计划 Phase 0/1/2/**3** + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) + [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) + [`PHASE-E-MULTI-MODEL-COLLABORATION.md`](./PHASE-E-MULTI-MODEL-COLLABORATION.md) **全部完成**。
+> **后继**：[`PHASE-G-PERSONA-AGENT-INTERFACE.md`](./PHASE-G-PERSONA-AGENT-INTERFACE.md)（接口预留，非必做）
 > **注意 Phase 3（Desktop）也是硬前置**，理由见 §0.3——终端里没法看图。
 >
 > **一句话目标**：让图像能端到端流过系统（用户 → Agent → 模型 → 记忆 → 前端），并让多 Agent 编排能利用视觉能力（例如"截图审查员"角色看 UI 截图找问题）。
 >
 > **执行模型**：管道类型拓宽与预览 UI **Composer 主写**；预览/粘贴图片 UI 卡的**多模态环节**委托 Grok 辅助。权威见 [`../MODEL-ASSIGNMENT.md`](../MODEL-ASSIGNMENT.md)。
-> **基线日期**：2026-07-31（编号自 Phase D 调整为 Phase E）　**预计工时**：6 周（1 名后端 + 1 名前端）
+> **基线日期**：2026-07-31（编号自 Phase E 调整为 Phase F）　**预计工时**：6 周（1 名后端 + 1 名前端）
 >
 > ---
 >
-> **📌 Phase D 交接给本文档的三个约束**（来自 `PHASE-D-MULTI-MODEL-COLLABORATION.md` §7）
+> **📌 Phase E 交接给本文档的三个约束**（来自 `PHASE-E-MULTI-MODEL-COLLABORATION.md` §7）
 >
 > | 交接项 | 本文档要做的事 |
 > |---|---|
-> | `HandoffTranslator` 的输入类型现在是 `str` | E4 拓宽类型时**必须同时拓宽它**，否则跨模型交接会把图像变成 `repr` 文本 |
+> | `HandoffTranslator` 的输入类型现在是 `str` | F4 拓宽类型时**必须同时拓宽它**，否则跨模型交接会把图像变成 `repr` 文本 |
 > | `ModelCapabilities.supports_vision`（Phase A 已有） | 视觉角色的能力校验直接用它，不要另造一套 |
 > | `CostAccountant` 只算文本 token | 图像 token 的计费方式与文本不同，D 阶段要扩展它（各家算法不同，让 Grok 查） |
 >
-> **另外：Phase D 的 `AgentSpec.extra` 已预留 `requires_vision`**，视觉角色直接用这个 key，不要新增字段。
+> **另外：Phase E 的 `AgentSpec.extra` 已预留 `requires_vision`**，视觉角色直接用这个 key，不要新增字段。
 
 ---
 
@@ -31,7 +31,7 @@
 | [§0 执行手册](#0-执行手册必读) | 执行协议、分工、为什么 Desktop 是硬前置 |
 | [§1 现状真相](#1-现状真相实测证据) | 全链路都是 `str`，附 file:line |
 | [§2 目标架构](#2-目标架构) | ContentBlock 贯穿全链路 |
-| [§3 任务卡 E1–E12](#3-任务卡) | 逐个执行 |
+| [§3 任务卡 F1–F12](#3-任务卡) | 逐个执行 |
 | [§4 出口检查](#4-phase-c-出口检查) | 怎么算做完 |
 | [§5 扩展手册](#5-扩展手册加一种新的-content-block) | 以后加音频/视频怎么做 |
 
@@ -41,16 +41,16 @@
 
 ### 0.1 执行协议
 
-与 Phase A/B 相同的 7 步（LOCATE → READ → WRITE → LINT → TEST → CHECK → COMMIT），加 Phase E 专属的两条：
+与前置 Phase A/B/C 相同的 7 步（LOCATE → READ → WRITE → LINT → TEST → CHECK → COMMIT），加 Phase F 专属的两条：
 
 ```
 8. TEXT-PATH  每张卡做完，验证纯文本路径完全没变：
               python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
-              （Phase E 的所有改动对纯文本输入必须是零影响的）
+              （Phase F 的所有改动对纯文本输入必须是零影响的）
 
 9. ROUNDTRIP  每张卡做完，跑往返保真测试：
               python -m pytest tests/test_multimodal/test_roundtrip.py -q
-              （E2 建立之后每张卡都要跑）
+              （F2 建立之后每张卡都要跑）
 ```
 
 **为什么要往返保真测试**：多模态改造最典型的 bug 是"某一层偷偷把 content block 变成了字符串"。这种 bug 不会报错，只会让图像**静默消失**——模型收到的是 `[{'type': 'image_url', ...}]` 的 Python repr 文本。往返测试就是抓这个的。
@@ -61,13 +61,13 @@
 |---|---|---|
 | **Composer 2.5** | **主写全部**：类型拓宽、AttachmentStore、缓存键（按文档已定决策）、预览/粘贴图片 UI 卡本体 | 自行改缓存策略 |
 | **Grok 4.5** | 查各家 vision API 的差异（图像尺寸/格式限制、base64 vs URL、token 计费、content block 格式）；预览/粘贴图片 UI 卡的**多模态环节**（视觉验收：贴图、预览、清除的自测） | 改管道 Python / 写卡本体（那是 Composer 的） |
-| **Sonnet 5** | 审查 E3 的 diff（类型拓宽最容易漏改）、写文档（E12） | 长任务连续实现 |
+| **Sonnet 5** | 审查 F3 的 diff（类型拓宽最容易漏改）、写文档（F12） | 长任务连续实现 |
 
 ### 0.3 为什么 Desktop（主计划 Phase 3）是硬前置
 
 **终端里没法看图。** 我实测确认过：`frontend/opentui-app/` 全目录搜 `sixel`、`kitty`、`iterm`、`graphics` 均**无结果**；粘贴处理（`App.tsx:511-516`）只处理文本字节。
 
-即使你在后端把多模态全打通，OpenTUI 用户也只能看到 `[图片]` 占位符——既不能贴图进去，也不能看模型指的是图里哪一块。**多模态的价值 90% 在交互界面上**，没有 Desktop，Phase E 做完了也没人用得上。
+即使你在后端把多模态全打通，OpenTUI 用户也只能看到 `[图片]` 占位符——既不能贴图进去，也不能看模型指的是图里哪一块。**多模态的价值 90% 在交互界面上**，没有 Desktop，Phase F 做完了也没人用得上。
 
 其余前置的理由：
 
@@ -75,8 +75,8 @@
 |---|---|
 | 主计划 Phase 2 | Content block 必须在 `protocol/` 里定义一次，各客户端自动生成类型。否则你要在 API/Agent/memory/cache/SSE/前端六个地方各定义一遍，格式必然漂移 |
 | **Phase A** | `ModelCapabilities.supports_vision` 字段是 Phase A 占的坑。没有它，你无法在运行前判断当前模型能不能吃图，只能等 API 报错 |
-| **Phase B** | Phase E 的最终目标是"多模态 × 多 Agent"。没有 AgentRuntime，你没有地方挂"这个角色需要 vision 能力"这个约束 |
-| **Phase C** | 图片输入、预览、附件和视觉结果需要一个真正能呈现它们的 Desktop 工作台；本 Phase 只拓宽协议和能力，不重新造桌面壳 |
+| **Phase C** | Phase F 的最终目标是"多模态 × 多 Agent"。没有 AgentRuntime，你没有地方挂"这个角色需要 vision 能力"这个约束 |
+| **Phase D** | 图片输入、预览、附件和视觉结果需要一个真正能呈现它们的 Desktop 工作台；本 Phase 只拓宽协议和能力，不重新造桌面壳 |
 
 **自检命令**：
 
@@ -93,12 +93,12 @@ python -c "from config.model_capabilities import ModelCapabilities; print(ModelC
 
 | # | 规则 | 原因 |
 |---|---|---|
-| MC1 | **纯文本路径必须逐字节不变。** Phase E 的每一处类型拓宽都是"加一个分支"，不是"改现有分支" | 零回归 |
-| MC2 | **绝不把图像 base64 塞进任何日志、trace、错误信息。** 一张图能有几 MB，会瞬间撑爆日志和 SSE | 已有 SSE 截断（`api_server.py:2153`）但那是 4096 字符，不够 |
-| MC3 | **图像存磁盘，链路里传引用。** 不要让 base64 在内存里被复制五次 | 内存与性能 |
-| MC4 | **语义缓存对多模态请求直接跳过，不要试图"给图片算相似度"** | 见 E5 的理由 |
-| MC5 | **模型不支持 vision 时必须明确报错**，不能静默丢弃图像 | 静默丢弃 = 用户以为模型看了图，实际没有 |
-| MC6 | 一次一张卡，一张卡一个 commit |
+| MD1 | **纯文本路径必须逐字节不变。** Phase F 的每一处类型拓宽都是"加一个分支"，不是"改现有分支" | 零回归 |
+| MD2 | **绝不把图像 base64 塞进任何日志、trace、错误信息。** 一张图能有几 MB，会瞬间撑爆日志和 SSE | 已有 SSE 截断（`api_server.py:2153`）但那是 4096 字符，不够 |
+| MD3 | **图像存磁盘，链路里传引用。** 不要让 base64 在内存里被复制五次 | 内存与性能 |
+| MD4 | **语义缓存对多模态请求直接跳过，不要试图"给图片算相似度"** | 见 F5 的理由 |
+| MD5 | **模型不支持 vision 时必须明确报错**，不能静默丢弃图像 | 静默丢弃 = 用户以为模型看了图，实际没有 |
+| MD6 | 一次一张卡，一张卡一个 commit |
 
 ---
 
@@ -138,7 +138,7 @@ def run_vision(operation: str = "describe", filePath: str = "", prompt: str = ""
 
 实际行为：`describe` 返回 PIL 读出的**元数据**（尺寸、格式）+ 可选 Tesseract OCR 文本（`:86-128`）；`screenshot` 用 mss 截屏存成 PNG 并返回**文件路径**（`:180-207`）。`prompt` 参数在 schema 里声明了（`:50-52`）但**实现中完全没用**。
 
-**它从不把图像送给 LLM。** 而 `docs/modules/tools.md:28` 却写着它用 "multimodal LLM"——文档与实现不符，E10 要修。
+**它从不把图像送给 LLM。** 而 `docs/modules/tools.md:28` 却写着它用 "multimodal LLM"——文档与实现不符，F10 要修。
 
 ### 1.3 MCP 的图像会被丢弃
 
@@ -190,7 +190,7 @@ cache_key = json.dumps([user_input, memory_fingerprint], ...)
 cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
 ```
 
-语义缓存（`cache/semantic_cache.py:137`、`:68-74`、`:120-123`）用 `SequenceMatcher` 做文本相似度。**给图像算文本相似度是没有意义的**，这是 E5 要处理的核心设计问题。
+语义缓存（`cache/semantic_cache.py:137`、`:68-74`、`:120-123`）用 `SequenceMatcher` 做文本相似度。**给图像算文本相似度是没有意义的**，这是 F5 要处理的核心设计问题。
 
 ### 1.7 传输与前端
 
@@ -218,7 +218,7 @@ cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
 | 工具返回类型 | 拓宽 | 中 |
 | 附件存储与引用 | 新增 | 中 |
 | Desktop UI | 新增 | 中 |
-| 多 Agent 视觉角色 | 新增 | 低（Phase B 已铺好） |
+| 多 Agent 视觉角色 | 新增 | 低（Phase C 已铺好） |
 
 ---
 
@@ -257,16 +257,16 @@ cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
 └───────────────────────────────────────────────┘
 ```
 
-**为什么用引用**：一张 2MB 的图，base64 后 2.7MB。如果它在 `Session` → `AgentRuntime` → `memory` → `cache key` → `SSE` 里各存一份，一次对话就能吃掉几十 MB，而且会污染日志和 trace（违反 MC2）。传 `attachment_id` 则全程只有 64 个字符。
+**为什么用引用**：一张 2MB 的图，base64 后 2.7MB。如果它在 `Session` → `AgentRuntime` → `memory` → `cache key` → `SSE` 里各存一份，一次对话就能吃掉几十 MB，而且会污染日志和 trace（违反 MD2）。传 `attachment_id` 则全程只有 64 个字符。
 
 ### 2.2 四条不可违反的设计约束
 
 | # | 约束 | 原因 |
 |---|---|---|
-| DCC1 | **`ContentBlock` 在 `protocol/` 里定义一次**，其余各层引用它，不许各自定义 | 六处定义必然漂移 |
-| DCC2 | **base64 只在 `_to_openai_messages` 这一层出现**，其它任何地方都只传 `attachment_id` | MC2 MC3 |
-| DCC3 | **纯文本输入必须走与 Phase E 之前逐字节相同的代码路径**。类型拓宽用"加分支"实现，不改现有分支 | MC1，零回归 |
-| DCC4 | **附件有生命周期**：按 session 归属，会话删除时级联删除，且有磁盘配额 | 不然 `~/.rxycode/attachments/` 会无限增长 |
+| DCD1 | **`ContentBlock` 在 `protocol/` 里定义一次**，其余各层引用它，不许各自定义 | 六处定义必然漂移 |
+| DCD2 | **base64 只在 `_to_openai_messages` 这一层出现**，其它任何地方都只传 `attachment_id` | MD2 MD3 |
+| DCD3 | **纯文本输入必须走与 Phase F 之前逐字节相同的代码路径**。类型拓宽用"加分支"实现，不改现有分支 | MD1，零回归 |
+| DCD4 | **附件有生命周期**：按 session 归属，会话删除时级联删除，且有磁盘配额 | 不然 `~/.rxycode/attachments/` 会无限增长 |
 
 ### 2.3 文件布局（**不要改**）
 
@@ -285,7 +285,7 @@ tests/
   test_multimodal/
     __init__.py
     test_content_blocks.py
-    test_roundtrip.py          # 往返保真 —— E2 之后每张卡都要跑
+    test_roundtrip.py          # 往返保真 —— F2 之后每张卡都要跑
     test_attachment_store.py
     test_cache_keys.py
     test_provider_rendering.py
@@ -295,12 +295,12 @@ tests/
 
 ## §3 任务卡
 
-### E1 · 定义 ContentBlock
+### F1 · 定义 ContentBlock
 
 `P0` / 4h / 依赖主计划 Phase 2
 
 **背景**
-全链路类型拓宽的地基。必须先有一个**唯一**的定义（约束 DCC1）。
+全链路类型拓宽的地基。必须先有一个**唯一**的定义（约束 DCD1）。
 
 **涉及文件**
 - 新建 `protocol/content.py`
@@ -319,7 +319,7 @@ AgentV2.run(user_input)、HumanMessage(content)、memory 持久化、SSE），
 所以图像根本无处安放。本模块引入内容块，让同一条消息能同时携带文本和
 图像引用。
 
-关键设计（见 PHASE-D 文档 §2.1）：图像在链路里只以 attachment_id 传递，
+关键设计（见 PHASE-E 文档 §2.1）：图像在链路里只以 attachment_id 传递，
 base64 只在 core/providers 渲染成 API 载荷的那一刻才出现。
 """
 
@@ -352,7 +352,7 @@ class ImageBlock(BaseModel):
 
 
 #: 消息内容块的判别联合。
-#: 加新类型（音频/视频/文件）的完整流程见 PHASE-D 文档 §5。
+#: 加新类型（音频/视频/文件）的完整流程见 PHASE-E 文档 §5。
 ContentBlock = Annotated[
     Union[TextBlock, ImageBlock],
     Field(discriminator="type"),
@@ -361,7 +361,7 @@ ContentBlock = Annotated[
 #: 消息内容：纯字符串（历史格式，仍然合法）或内容块列表。
 #:
 #: 保留 str 分支不是为了兼容旧数据，而是因为**绝大多数消息就是纯文本**，
-#: 让它们继续走原路径能保证零回归（约束 DCC3）。
+#: 让它们继续走原路径能保证零回归（约束 DCD3）。
 MessageContent = Union[str, list[ContentBlock]]
 
 
@@ -380,7 +380,7 @@ def to_plain_text(content: MessageContent) -> str:
     """把内容降级成纯文本。
 
     用于：不支持 vision 的模型、日志、缓存键的文本部分。
-    图像块渲染成 alt_text 或占位符，**绝不**渲染成 base64（规则 MC2）。
+    图像块渲染成 alt_text 或占位符，**绝不**渲染成 base64（规则 MD2）。
     """
     if isinstance(content, str):
         return content
@@ -431,12 +431,12 @@ memory, cache keys, traces or SSE.
 
 ---
 
-### E2 · 附件存储
+### F2 · 附件存储
 
-`P0` / 1 周 / 依赖 E1
+`P0` / 1 周 / 依赖 F1
 
 **背景**
-实现 §2.1 的内容寻址存储。这一卡是纯新增，风险低，但**配额和清理必须一起做**（约束 DCC4），否则磁盘会被吃光。
+实现 §2.1 的内容寻址存储。这一卡是纯新增，风险低，但**配额和清理必须一起做**（约束 DCD4），否则磁盘会被吃光。
 
 **涉及文件**
 - 新建 `core/attachments/__init__.py`、`store.py`、`quota.py`
@@ -453,7 +453,7 @@ memory, cache keys, traces or SSE.
 按 sha256 存到 ~/.rxycode/attachments/<前2位>/<完整hash>.<ext>，同一张图
 重复上传不会占两份空间。
 
-生命周期（约束 DCC4）：附件按 session 归属；会话删除时级联删除；总容量
+生命周期（约束 DCD4）：附件按 session 归属；会话删除时级联删除；总容量
 超过配额时按 LRU 淘汰未被任何活跃会话引用的附件。
 """
 
@@ -470,7 +470,7 @@ class AttachmentStore:
     def get_bytes(self, attachment_id: str) -> bytes:
         """读出附件内容。
 
-        只应该被 core/providers 的渲染层调用（约束 DCC2）。
+        只应该被 core/providers 的渲染层调用（约束 DCD2）。
         其它地方需要附件请用 get_path 或 get_metadata。
         """
 
@@ -488,16 +488,16 @@ class AttachmentStore:
 
 3. `core/attachments/quota.py`：总容量上限（默认 2 GB）、LRU 淘汰、`rxycode attachments gc` 命令。
 
-4. `tests/test_multimodal/test_roundtrip.py` —— **这个文件是 Phase E 的安全网**，后面每张卡都要跑：
+4. `tests/test_multimodal/test_roundtrip.py` —— **这个文件是 Phase F 的安全网**，后面每张卡都要跑：
 
 ```python
 """多模态往返保真测试。
 
-Phase E 最典型的 bug 是"某一层偷偷把 content block 变成了字符串"——不报
+Phase F 最典型的 bug 是"某一层偷偷把 content block 变成了字符串"——不报
 错，图像只是静默消失，模型收到的是一段 Python repr。这个文件在每一层的
 边界上验证保真性。
 
-E2 之后每张 Phase E 任务卡做完都要跑这个文件。
+F2 之后每张 Phase F 任务卡做完都要跑这个文件。
 """
 
 def test_attachment_roundtrip_preserves_bytes():
@@ -538,12 +538,12 @@ python -m pytest tests -q --timeout=600
 
 ---
 
-### E3 · API 与 Session 层拓宽
+### F3 · API 与 Session 层拓宽
 
-`P0` / 1 周 / 依赖 E2，依赖主计划 Phase 2
+`P0` / 1 周 / 依赖 F2，依赖主计划 Phase 2
 
 **背景**
-第一次修改现有代码。从这一卡开始有回归风险，所以 MC1（纯文本零变化）要格外小心。
+第一次修改现有代码。从这一卡开始有回归风险，所以 MD1（纯文本零变化）要格外小心。
 
 **涉及文件（用 Grep 定位，不要信行号）**
 
@@ -557,7 +557,7 @@ python -m pytest tests -q --timeout=600
 
 **操作步骤**
 
-1. `ChatRequest.message` 改为 `MessageContent`。**pydantic 会自动接受两种形态**——旧客户端发字符串照样工作，这就是 DCC3 的实现方式。
+1. `ChatRequest.message` 改为 `MessageContent`。**pydantic 会自动接受两种形态**——旧客户端发字符串照样工作，这就是 DCD3 的实现方式。
 
 2. `_session_message`（锚点 `def _session_message`）：
 
@@ -599,13 +599,13 @@ async def upload_attachment(
 MAX_JSON_BODY_BYTES = 4 * 1024 * 1024
 ```
 
-5. **SSE 侧要防 base64 泄漏**（规则 MC2）。现有截断是 4096 字符（`:2153-2154`），但那是工具结果。检查所有往 SSE 写内容的地方，确保 content block 是以 `to_plain_text()` 的形式出现的。
+5. **SSE 侧要防 base64 泄漏**（规则 MD2）。现有截断是 4096 字符（`:2153-2154`），但那是工具结果。检查所有往 SSE 写内容的地方，确保 content block 是以 `to_plain_text()` 的形式出现的。
 
 6. 往返测试加：
 
 ```python
 def test_text_only_request_produces_identical_session_message():
-    """纯文本请求的持久化结果与 Phase E 之前逐字节相同。"""
+    """纯文本请求的持久化结果与 Phase F 之前逐字节相同。"""
 
 def test_multimodal_request_survives_session_persistence():
     """含图像的消息存进 session 再读出来，attachment_id 还在。"""
@@ -632,12 +632,12 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 ---
 
-### E4 · Agent 链路与记忆层拓宽
+### F4 · Agent 链路与记忆层拓宽
 
-`P0` / 1.5 周 / 依赖 E3
+`P0` / 1.5 周 / 依赖 F3
 
 **背景**
-这是 Phase E 最容易漏改的一卡——要动十几处。**强烈建议让 Sonnet 5 审查 diff。**
+这是 Phase F 最容易漏改的一卡——要动十几处。**强烈建议让 Sonnet 5 审查 diff。**
 
 **涉及文件（每处用 Grep 定位）**
 
@@ -661,11 +661,11 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
             elif role == "human":
                 content = getattr(m, "content", "") or ""
                 if isinstance(content, str):
-                    # 原路径，逐字节不变（约束 DCC3）
+                    # 原路径，逐字节不变（约束 DCD3）
                     out.append({"role": "user", "content": content})
                 else:
                     # 多模态：交给 provider 渲染，因为 OpenAI 和 Anthropic 的
-                    # 图像块格式不同。base64 只在这一层出现（约束 DCC2）。
+                    # 图像块格式不同。base64 只在这一层出现（约束 DCD2）。
                     out.append({
                         "role": "user",
                         "content": self._provider.render_content_blocks(
@@ -686,7 +686,7 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
         不同（source.type = "base64"），由 AnthropicProvider 覆写。
 
         模型不支持 vision 时降级为纯文本并**明确记录**——不能静默丢图
-        （规则 MC5），调用方应该在更早的地方就拦住。
+        （规则 MD5），调用方应该在更早的地方就拦住。
         """
         if not caps.supports_vision:
             raise UnsupportedModalityError(
@@ -744,12 +744,12 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 ---
 
-### E5 · 缓存键策略
+### F5 · 缓存键策略
 
-`P0` / 5d / 依赖 E4
+`P0` / 5d / 依赖 F4
 
 **背景**
-**这是 Phase E 唯一有真实设计权衡的一卡。** 现有精确缓存是文本 SHA256（`cache/precise_cache.py:93-99`），语义缓存是 `SequenceMatcher` 文本相似度（`semantic_cache.py:68-74`）。图像进来之后两者都失效。
+**这是 Phase F 唯一有真实设计权衡的一卡。** 现有精确缓存是文本 SHA256（`cache/precise_cache.py:93-99`），语义缓存是 `SequenceMatcher` 文本相似度（`semantic_cache.py:68-74`）。图像进来之后两者都失效。
 
 **决策已经做好了，照做即可**（Composer 2.5 不要在这里自己发挥）：
 
@@ -766,7 +766,7 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
         from protocol.content import is_multimodal
 
         if isinstance(user_input, str):
-            # 原路径，键与 Phase E 之前完全一致（约束 DCC3）
+            # 原路径，键与 Phase F 之前完全一致（约束 DCD3）
             cache_key = json.dumps([user_input, memory_fingerprint], ...)
         else:
             # attachment_id 是内容 sha256，所以"同图同问"能正确命中。
@@ -792,7 +792,7 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 ```python
 def test_text_only_cache_key_is_unchanged():
-    """纯文本的缓存键与 Phase E 之前逐字符相同。"""
+    """纯文本的缓存键与 Phase F 之前逐字符相同。"""
 
 def test_same_image_same_question_hits_precise_cache():
 def test_same_question_different_image_misses():
@@ -809,9 +809,9 @@ def test_semantic_cache_still_used_for_text_only():
 
 ---
 
-### E6 · 工具层与 MCP
+### F6 · 工具层与 MCP
 
-`P1` / 1 周 / 依赖 E4
+`P1` / 1 周 / 依赖 F4
 
 **背景**
 让工具能产出图像（截图、图表），让 MCP 的图像不再被丢弃（`mcp/client.py:811-816`）。
@@ -845,7 +845,7 @@ class ToolResult:
                                          mime_type=item.get("mimeType", "image/png")))
 ```
 
-4. **音频暂不处理**。`mcp/client.py:815` 的 audio 分支保持占位符，加注释说明"Phase E 只做图像，音频见 §5 扩展手册"。
+4. **音频暂不处理**。`mcp/client.py:815` 的 audio 分支保持占位符，加注释说明"Phase F 只做图像，音频见 §5 扩展手册"。
 
 5. `_clean_tool_output` 的 30000 字符上限（`:265-268`）只作用于 text 部分，附件不受此限。
 
@@ -857,9 +857,9 @@ class ToolResult:
 
 ---
 
-### E7 · 重写 vision 工具
+### F7 · 重写 vision 工具
 
-`P1` / 5d / 依赖 E4 E6
+`P1` / 5d / 依赖 F4 F6
 
 **背景**
 `tools/vision.py` 现在做的是 OCR + 元数据 + 截图落盘，返回字符串，**从不把图像送给 LLM**（§1.2）。而 `docs/modules/tools.md:28` 宣称它用 "multimodal LLM"。这一卡把实现和文档对齐。
@@ -874,7 +874,7 @@ class ToolResult:
 
 4. `screenshot` 操作改为把截图存进 AttachmentStore 并返回 `ImageBlock`，而不是返回文件路径字符串。
 
-5. **模型不支持 vision 时**（`caps.supports_vision == False`）：`describe` 自动降级到 `ocr` + 元数据，并在返回文本里**明确说明"当前模型不支持看图，以下是 OCR 结果"**。这不违反 MC5——MC5 禁止的是静默丢弃，明确告知的降级是可以的。
+5. **模型不支持 vision 时**（`caps.supports_vision == False`）：`describe` 自动降级到 `ocr` + 元数据，并在返回文本里**明确说明"当前模型不支持看图，以下是 OCR 结果"**。这不违反 MD5——MD5 禁止的是静默丢弃，明确告知的降级是可以的。
 
 6. 修正 `docs/modules/tools.md:28`。
 
@@ -886,9 +886,9 @@ class ToolResult:
 
 ---
 
-### E8 · Desktop 附件 UI
+### F8 · Desktop 附件 UI
 
-`P0` / 1.5 周 / 依赖 E3，**依赖主计划 Phase 3**
+`P0` / 1.5 周 / 依赖 F3，**依赖主计划 Phase 3**
 
 **背景**
 多模态的价值 90% 在界面上（§0.3）。
@@ -915,16 +915,16 @@ class ToolResult:
 
 ---
 
-### E9 · 视觉 Agent 角色
+### F9 · 视觉 Agent 角色
 
-`P1` / 1 周 / 依赖 E7 E8、Phase B
+`P1` / 1 周 / 依赖 F7 F8、Phase C
 
 **背景**
-这是 Phase E 的题眼——**多模态 × 多 Agent**。前面所有卡都是铺路，这一卡才是"共同协作"。
+这是 Phase F 的题眼——**多模态 × 多 Agent**。前面所有卡都是铺路，这一卡才是"共同协作"。
 
 **操作步骤**
 
-1. `AgentSpec` 加字段（用 Phase B 预留的 `extra`，或直接加正式字段）：
+1. `AgentSpec` 加字段（用 Phase C 预留的 `extra`，或直接加正式字段）：
 
 ```python
     #: 该角色是否需要 vision 能力。
@@ -957,7 +957,7 @@ class ToolResult:
     timeout_s: 300
 ```
 
-4. **黑板要能放图像引用**。Phase B 的 `BlackboardEntry.value: str` 需要拓宽成 `MessageContent`（Phase B §6 已经预告了这一点）。
+4. **黑板要能放图像引用**。Phase C 的 `BlackboardEntry.value: str` 需要拓宽成 `MessageContent`（Phase C §6 已经预告了这一点）。
 
 5. **委派时的图像传递**。`DelegateRequest.task: str` 也要拓宽——architect 委派给 ui_reviewer 时要能把截图带过去。
 
@@ -981,9 +981,9 @@ coder 改完 UI 代码
 
 ---
 
-### E10 · 多模态评测
+### F10 · 多模态评测
 
-`P1` / 5d / 依赖 E9，依赖主计划 Phase 1
+`P1` / 5d / 依赖 F9，依赖主计划 Phase 1
 
 **操作步骤**
 
@@ -1000,14 +1000,14 @@ coder 改完 UI 代码
 
 ---
 
-### E11 · 配额、清理与运维
+### F11 · 配额、清理与运维
 
-`P1` / 4d / 依赖 E2 E8
+`P1` / 4d / 依赖 F2 F8
 
 **操作步骤**
 
 1. `rxycode attachments gc` 命令：清理孤儿附件，打印回收空间。
-2. 会话删除时级联 `release_session`（约束 DCC4）。
+2. 会话删除时级联 `release_session`（约束 DCD4）。
 3. 启动时检查附件目录总大小，超配额时告警。
 4. 附件目录**必须在 `.gitignore` 里**（它在 `~/.rxycode/` 下，本来就不在仓库，但要确认没人把它配到仓库内）。
 5. **安全**：`GET /attachments/<id>` 要校验请求方对该 session 有权限，不能凭 id 就能拉任意附件。id 是 sha256 不易猜，但这不是访问控制。
@@ -1019,18 +1019,18 @@ coder 改完 UI 代码
 
 ---
 
-### E12 · 文档
+### F12 · 文档
 
-`P1` / 5d / 依赖 E1–E11
+`P1` / 5d / 依赖 F1–F11
 
 **操作步骤**
 
 1. 新建 `docs/modules/multimodal.md`：
    - 四条设计约束（§2.2）及理由
    - 为什么用引用而非内联
-   - **为什么语义缓存对多模态直接跳过**（E5 的决策记录，这是最容易被后人"优化"掉的决定，必须写清理由）
+   - **为什么语义缓存对多模态直接跳过**（F5 的决策记录，这是最容易被后人"优化"掉的决定，必须写清理由）
    - 加一种新 content block 的完整步骤（§5）
-   - E10 的评测结论，包括什么时候不该用 vision
+   - F10 的评测结论，包括什么时候不该用 vision
 2. 新建 `docs/modules/attachments.md`：存储布局、配额、GC、安全模型。
 3. 更新：`docs/modules/tools.md`（vision 工具改了、工具返回类型拓宽了）、`docs/modules/cache.md`（多模态键策略）、`docs/modules/memory.md`（content block 持久化）、`docs/modules/agents.md`（`requires_vision`）、`docs/modules/frontend.md`（OpenTUI 不做终端图像的决定及理由）、`docs/modules/api_server.md`（`/attachments` 端点、body 限制）。
 4. 更新 `AGENTS.md` 架构图。
@@ -1038,7 +1038,7 @@ coder 改完 UI 代码
 
 ---
 
-## §4 Phase E 出口检查
+## §4 Phase F 出口检查
 
 ```powershell
 cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
@@ -1051,7 +1051,7 @@ python -m evals.cli run --backend agent --agents multi --modality vision --save-
 cd desktop; npm run typecheck; npm test; cd ..
 ```
 
-**Phase E 完成的定义：**
+**Phase F 完成的定义：**
 - 全部命令绿，**纯文本路径零回归且耗时无明显增加**
 - 往返保真测试全绿（没有任何一层把 content block 烧成字符串）
 - Desktop 能拖图、贴图、看缩略图，错误态齐全
@@ -1063,11 +1063,11 @@ cd desktop; npm run typecheck; npm test; cd ..
 
 ## §5 扩展手册：加一种新的 Content Block
 
-> Phase E 之后加音频、视频、PDF 的标准流程。
+> Phase F 之后加音频、视频、PDF 的标准流程。
 
 **第 1 步 · 先问值不值得**
 
-回答：这个模态能解决什么现有方式解决不了的问题？如果"转成文本再处理"效果差不多且便宜十倍，就不要加。E10 的评测方法可以用来验证。
+回答：这个模态能解决什么现有方式解决不了的问题？如果"转成文本再处理"效果差不多且便宜十倍，就不要加。F10 的评测方法可以用来验证。
 
 **第 2 步 · 定义 block**
 
@@ -1105,7 +1105,7 @@ Desktop 的输入与展示。不支持时的置灰与提示。
 
 ## §6 整条路线到此结束
 
-Phase E 完成后，RxyCode 的形态是：
+Phase F 完成后，RxyCode 的形态是：
 
 ```
 headless 核心（Session + 类型化协议）

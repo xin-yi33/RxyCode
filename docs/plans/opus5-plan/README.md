@@ -67,11 +67,12 @@ docs/plans/opus5-plan/
 │   ├── README.md                       路线索引与排期
 │   ├── 00-EXECUTION-PLAN.md            主计划 Phase 0–3
 │   ├── PHASE-A-MODEL-ADAPTATION-LAYER.md
-│   ├── PHASE-B-MULTI-AGENT-ORCHESTRATION.md
-│   ├── PHASE-C-RXYCODE-DESKTOP.md     ← 完整桌面端工作台
-│   ├── PHASE-D-MULTI-MODEL-COLLABORATION.md
-│   ├── PHASE-E-MULTIMODAL.md
-│   └── PHASE-F-PERSONA-AGENT-INTERFACE.md
+│   ├── PHASE-B-ISOLATED-SUBAGENT.md       ← 隔离式子代理
+│   ├── PHASE-C-MULTI-AGENT-ORCHESTRATION.md
+│   ├── PHASE-D-RXYCODE-DESKTOP.md         ← 完整桌面端工作台
+│   ├── PHASE-E-MULTI-MODEL-COLLABORATION.md
+│   ├── PHASE-F-MULTIMODAL.md
+│   └── PHASE-G-PERSONA-AGENT-INTERFACE.md
 │
 └── linkagent/                       ← LinkAgent 的施工文档
     ├── README.md                       路线索引与排期

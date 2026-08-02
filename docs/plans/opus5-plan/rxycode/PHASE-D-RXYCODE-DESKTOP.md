@@ -1,16 +1,16 @@
-# Phase C · RxyCode Desktop 完整桌面端（Coding Workspace）
+# Phase D · RxyCode Desktop 完整桌面端（Coding Workspace）
 
-> **在整条路线中的位置**：这是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase C；它把主计划 Phase 3 已经搭好的 Electron 壳、`appserver` 和协议客户端，补成一个可长期使用的 RxyCode Desktop 工作台。
+> **在整条路线中的位置**：这是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase D；它把主计划 Phase 3 规划的 Electron 壳、`appserver` 和协议客户端，补成一个可长期使用的 RxyCode Desktop 工作台。Phase 3 产物是否已经落地必须以工作区实测为准，不能由本文档的计划描述代替。
 >
 > **产品名称**：RxyCode Desktop。本文借鉴成熟 coding agent 的交互与协议边界，但不复刻任何第三方品牌、私有实现或视觉资产。
 >
-> **前置条件**：主计划 Phase 0/1/2/3 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md) 的公共契约已冻结。Phase A/B 的全部高级能力不是单 Agent Desktop 启动的硬依赖；它们通过 capability 握手和 feature flag 接入，不能把 Desktop 绑死在某一个后续 Phase 上。
+> **前置条件**：主计划 Phase 0/1/2/3 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 的公共契约已冻结。Phase B/C 的高级能力不是单 Agent Desktop 启动的硬依赖；它们通过 capability 握手和 feature flag 接入，不能把 Desktop 绑死在某一个后续 Phase 上。
 >
-> **后继**：原来的多模型协作文档顺延为 [`PHASE-D-MULTI-MODEL-COLLABORATION.md`](./PHASE-D-MULTI-MODEL-COLLABORATION.md)；多模态顺延为 [`PHASE-E-MULTIMODAL.md`](./PHASE-E-MULTIMODAL.md)；PersonaAgent 预留顺延为 [`PHASE-F-PERSONA-AGENT-INTERFACE.md`](./PHASE-F-PERSONA-AGENT-INTERFACE.md)。
+> **后继**：原来的多模型协作文档顺延为 [`PHASE-E-MULTI-MODEL-COLLABORATION.md`](./PHASE-E-MULTI-MODEL-COLLABORATION.md)；多模态顺延为 [`PHASE-F-MULTIMODAL.md`](./PHASE-F-MULTIMODAL.md)；PersonaAgent 预留顺延为 [`PHASE-G-PERSONA-AGENT-INTERFACE.md`](./PHASE-G-PERSONA-AGENT-INTERFACE.md)。
 >
 > **一句话目标**：让用户可以在一个本地桌面工作台里，管理项目和会话，观察 Agent 的每个执行步骤，审查文件变更，控制权限，恢复中断任务，并在不复制后端业务逻辑的前提下继续扩展 LinkAgent 等薄客户端。
 >
-> **基线日期**：2026-08-02　**预计工时**：12–16 周（以卡计，不把人的日历估计当作 agent 速度承诺）　**任务卡**：C1–C16
+> **基线日期**：2026-08-02　**预计工时**：12–16 周（以卡计，不把人的日历估计当作 agent 速度承诺）　**任务卡**：D1–D16
 
 ---
 
@@ -19,12 +19,12 @@
 | 章节 | 内容 |
 |---|---|
 | [§0 执行手册](#0-执行手册必须先读) | 谁写、怎么写、什么不许做 |
-| [§1 为什么需要新的 Phase C](#1-为什么需要新的-phase-c) | 对主计划 Phase 3 的审计结论 |
+| [§1 为什么需要新的 Phase D](#1-为什么需要新的-phase-d) | 对主计划 Phase 3 的审计结论 |
 | [§2 产品定义](#2-产品定义) | RxyCode Desktop 应该让用户看到什么 |
 | [§3 总体架构](#3-总体架构) | Desktop、协议、appserver、Session 的边界 |
 | [§4 交互模型](#4-交互模型) | Project、Thread、Turn、Item、Review |
 | [§5 协议与状态契约](#5-协议与状态契约) | 事件、请求、恢复、版本兼容 |
-| [§6 任务卡](#6-任务卡) | C1–C16 的具体施工顺序 |
+| [§6 任务卡](#6-任务卡) | D1–D16 的具体施工顺序 |
 | [§7 安全与隐私](#7-安全与隐私) | 权限、密钥、日志、崩溃数据 |
 | [§8 测试与视觉验收](#8-测试与视觉验收) | 机械测试、E2E、Grok 的辅助边界 |
 | [§9 LinkAgent 扩展契约](#9-linkagent-扩展契约) | 为后续桌面套壳和扩展保留稳定缝隙 |
@@ -37,7 +37,7 @@
 
 ### 0.1 这份文档解决什么问题
 
-主计划 Phase 3 已经定义了一个最小 Desktop 壳：Electron + React、启动 `python -m appserver`、显示会话、流式输出、工具卡片、审批和设置。
+主计划 Phase 3 计划定义了一个最小 Desktop 壳：Electron + React、启动 `python -m appserver`、显示会话、流式输出、工具卡片、审批和设置。当前开工前必须实际检查 `frontend/desktop-app/`、`frontend/protocol-client/` 和 `appserver/` 是否存在并能启动；不存在时不得把计划中的壳当成已交付产物。
 
 这足够验证“桌面客户端能不能接上 Agent”，但不够支撑长期编码工作。用户真正需要的是一个工作台：知道自己在哪个项目、当前有哪些会话、Agent 改了哪些文件、哪些动作有风险、任务是否还在后台运行、出了问题如何恢复，以及审查意见如何回到下一轮 Agent。
 
@@ -49,7 +49,7 @@
 |---|---|---|
 | **Composer 2.5** | **主写全部代码**：Electron、React、TypeScript、协议客户端、appserver 补充契约、测试、打包、CI、前后端联调 | 不得把 Desktop 本体交给 Grok；不得以“前端”名义绕过协议直接 import Python |
 | **Grok 4.5** | 仅做卡内标注的**多模态辅助环节**：启动 dev server、截屏核对、视觉回归、图片/文件预览验收、设计稿对照 | 不写 Python；不改协议主契约；不独立实现没有多模态环节的前端卡；不单独提交 Desktop 主链 |
-| **Sonnet 5（可选）** | 对 C2、C5、C7、C8、C10、C15 的 diff 做预审，重点找状态遗漏、权限旁路和进程泄漏 | 不代替 Composer 实现；不作为完成标准 |
+| **Sonnet 5（可选）** | 对 D2、D5、D7、D8、D10、D15 的 diff 做预审，重点找状态遗漏、权限旁路和进程泄漏 | 不代替 Composer 实现；不作为完成标准 |
 | **人** | 决定产品取舍、审批默认值、是否接受审查结果、最终合并 | 不用“截图看着像”替代测试和协议验收 |
 
 **主写纪律**：本 Phase 所有卡的实现者默认是 Composer。Grok 只接收卡内明确写出的“视觉辅助环节”，产出回到 Composer 分支收口。
@@ -120,15 +120,15 @@ LOCATE → READ → WRITE → TYPECHECK/LINT → UNIT TEST → E2E/手工验收 
 
 ---
 
-## §1 为什么需要新的 Phase C
+## §1 为什么需要新的 Phase D
 
 ### 1.1 对主计划 Phase 3 的审计结论
 
-主计划 Phase 3 的 D1–D8 能够形成一个**基础 Desktop 壳**，结论如下：
+主计划 Phase 3 的 D1–D8 在设计上能够形成一个**基础 Desktop 壳**，但本表只描述设计覆盖，不代表工作区已经实现；实现状态必须由 D1 的实测门确认。
 
 | 审计项 | 结论 | 说明 |
 |---|---|---|
-| Electron + React 能否启动 | 可以 | D1 定义了脚手架和 `python -m appserver` 子进程 |
+| Electron + React 能否启动 | 需实测 | D1 定义了脚手架和 `python -m appserver` 子进程，但当前是否存在必须由 D1 检查 |
 | 能否聊天和流式输出 | 可以 | D2/D3 覆盖会话、消息 delta 和中断 |
 | 能否展示工具调用 | 基础可以 | 只有 `tool_begin`/`tool_end`，复杂进度和错误状态未定义 |
 | 能否审批危险动作 | 基础可以 | D4 有模态框，但作用域、过期、撤销和审计记录不够明确 |
@@ -143,7 +143,7 @@ LOCATE → READ → WRITE → TYPECHECK/LINT → UNIT TEST → E2E/手工验收 
 
 > **验证 Electron 壳 + appserver + 协议客户端能够工作。**
 
-本 Phase C 的定位是：
+本 Phase D 的定位是：
 
 > **把这个壳补成可用于真实编码工作的 RxyCode Desktop 工作台。**
 
@@ -684,28 +684,30 @@ vision
 
 ## §6 任务卡
 
-### C1 · Desktop 基线与包边界冻结
+### D1 · Desktop 基线与包边界冻结
 
-**目标**：确认 Phase 3 的 Electron 壳、`protocol-client` 和 appserver 能作为本 Phase 的稳定基线，不重复重写已有实现。
+**目标**：确认 Phase 3 的 Electron 壳、`protocol-client` 和 appserver 能作为本 Phase 的稳定基线；若壳尚未落地，必须先完成最小启动基线或明确阻塞，不得伪造“已有壳”。
 
 **内容**：
 
-1. 记录现有 Desktop 启动方式、Node/Bun/Python 版本和构建命令。
-2. 确认 Desktop 包的入口、renderer、main process 和 protocol-client 的边界。
-3. 确认 OpenTUI 与 Desktop 是否共享生成的 TypeScript types。
-4. 添加 capability/version handshake 的测试占位。
-5. 输出一份“可复用 / 需要补齐 / 禁止重写”的文件清单。
+1. 先检查 `frontend/desktop-app/`、`frontend/protocol-client/`、`appserver/`、package manifest 和启动脚本；每个缺失项都记录绝对路径和阻塞原因。
+2. 若 Electron 壳存在，记录 Desktop 启动方式、Node/Bun/Python 版本和构建命令；若不存在，按 Phase 3 的最小边界创建可启动壳，或输出 `BLOCKED_PREREQUISITE`，不得继续把后续卡标为可验收。
+3. 确认 Desktop 包的入口、renderer、main process 和 protocol-client 的边界。
+4. 确认 OpenTUI 与 Desktop 是否共享生成的 TypeScript types。
+5. 添加 capability/version handshake 的测试占位。
+6. 输出一份“可复用 / 需要补齐 / 禁止重写”的文件清单。
 
 **验收**：
 
 - 干净环境能启动 Desktop 与 appserver；
+- 如果前置壳不存在，验收结果必须是带缺失清单的 `BLOCKED_PREREQUISITE`，不能报告通过；
 - stdout 只有协议数据，日志只在 stderr 或受控日志文件；
 - 现有 TUI 测试不因 Desktop 基线整理而回归；
 - 没有在 renderer 里新增 Python 或 HTTP 直连。
 
-**禁止**：借 C1 重新整理整个 `frontend/`；没有证据的目录重命名属于独立卡。
+**禁止**：借 D1 重新整理整个 `frontend/`；没有证据的目录重命名属于独立卡。
 
-### C2 · Protocol handshake、能力发现与错误模型
+### D2 · Protocol handshake、能力发现与错误模型
 
 **目标**：让 Desktop 能知道“当前 appserver 支持什么”，并能把版本错误、能力缺失和服务器错误变成可理解的 UI 状态。
 
@@ -729,7 +731,7 @@ vision
 - 每个错误都有机器可断言的 code；
 - UI 能区分可重试、需用户处理和不可恢复错误。
 
-### C3 · Desktop Host 与 appserver 进程监督
+### D3 · Desktop Host 与 appserver 进程监督
 
 **目标**：解决启动、关闭、崩溃、重启、孤儿进程和多窗口生命周期。
 
@@ -752,7 +754,7 @@ vision
 - Windows/macOS/Linux 至少各有进程回收测试或明确平台差异；
 - 连续启动和退出 20 次不产生孤儿进程。
 
-### C4 · Project / Workspace 管理
+### D4 · Project / Workspace 管理
 
 **目标**：让用户知道 Agent 当前在哪个项目、哪个目录、哪个分支和哪个权限范围里工作。
 
@@ -774,7 +776,7 @@ vision
 - workspace 改变时 UI 和 appserver 都收到新的上下文；
 - 路径信息不会被错误展示到另一个项目的 Thread。
 
-### C5 · Thread / Turn / Item 会话中心
+### D5 · Thread / Turn / Item 会话中心
 
 **目标**：把“聊天窗口”提升为可恢复、可分叉、可审查的工作历史。
 
@@ -782,6 +784,8 @@ vision
 
 - Thread 新建、恢复、重命名、归档、删除、分叉；
 - 按项目、workspace、状态和更新时间筛选；
+- 在 Thread 下展示 parent/child session tree：Child 的 Agent、触发方式、状态、耗时、预算、权限摘要和失败原因可展开查看；
+- 支持从 Parent 跳转 Child、从 Child 返回 Parent，并按 Child 子树筛选事件；
 - Turn 开始、追加输入、steer、中断、重试；
 - Item 持久化和分页；
 - 会话标题自动生成但允许用户修改；
@@ -792,11 +796,14 @@ vision
 
 - 重启应用后 Thread 列表和历史一致；
 - 分叉 Thread 不会修改父 Thread；
+- Parent/Child session tree 与后端事件中的 `parent_session_id`、`root_session_id` 一致，不因刷新或重启丢失；
+- Child 的工具调用、审批、预算和终态只归属于对应 Child，不混入 Parent 的普通消息；
+- 从 Parent 进入 Child 再返回 Parent 后，当前选择和事件 cursor 可恢复；
 - 重试不会重复写入已经完成的 Item；
 - 归档 Thread 不出现在默认 active 列表，但仍可恢复；
 - 删除行为有明确确认和后端审计记录。
 
-### C6 · 对话时间线与流式 Item 渲染
+### D6 · 对话时间线与流式 Item 渲染
 
 **目标**：让用户能在一条可读时间线上理解 Agent 做了什么。
 
@@ -821,7 +828,7 @@ vision
 - 流式中断不会丢失已收到的内容；
 - 工具失败不被渲染成“成功完成”。
 
-### C7 · Tool、Command、Background Task 工作台
+### D7 · Tool、Command、Background Task 工作台
 
 **目标**：把 Agent 的工具执行从一行状态文字升级成可观察、可控制的执行记录。
 
@@ -840,7 +847,7 @@ vision
 
 **安全要求**：环境变量、API Key、Authorization header 和敏感路径必须在 UI 和日志中脱敏。
 
-### C8 · Permission Center 与审批流
+### D8 · Permission Center 与审批流
 
 **目标**：让审批既安全又可理解，且不会因为 UI 约定被绕过。
 
@@ -875,7 +882,7 @@ full_access（明确危险，默认不可选）
 - UI 无审批按钮时，后端仍然拒绝未授权动作；
 - 所有审批结果有 `approval_id` 并进入 trace。
 
-### C9 · Git Diff 与 Review 工作台
+### D9 · Git Diff 与 Review 工作台
 
 **目标**：让“审计”成为 Desktop 的一等能力，而不是把命令输出塞进聊天窗口。
 
@@ -902,7 +909,7 @@ full_access（明确危险，默认不可选）
 
 **视觉辅助环节**：Grok 只负责 diff 对齐、长行换行、折叠、深色主题、错误和空状态的视觉验收；审查语义和 hash 绑定由 Composer 主写并测试。
 
-### C10 · 文件树、预览与外部编辑器
+### D10 · 文件树、预览与外部编辑器
 
 **目标**：让用户从 Agent 的变更直接进入文件上下文，而不必每次手工定位。
 
@@ -917,9 +924,9 @@ full_access（明确危险，默认不可选）
 - 不在 Desktop 内偷偷写文件，写入必须来自 Agent 工具或明确用户动作；
 - 路径遍历和 workspace 外文件访问检查。
 
-**依赖**：图片预览可以先作为能力项；未来 Phase E 的多模态能力可以复用同一 preview item，不得重新定义另一套文件对象。
+**依赖**：图片预览可以先作为能力项；未来 Phase F 的多模态能力可以复用同一 preview item，不得重新定义另一套文件对象。
 
-### C11 · Git Branch / Worktree 与执行环境
+### D11 · Git Branch / Worktree 与执行环境
 
 **目标**：支持多个独立工作上下文，降低并行任务互相覆盖的风险。
 
@@ -931,7 +938,7 @@ full_access（明确危险，默认不可选）
 - 从当前 Thread handoff 到另一个 worktree；
 - worktree 被其他进程删除、分支冲突和路径不可用时给出恢复入口；
 - 禁止两个 Thread 默认共享同一个正在修改的目录，除非用户明确确认；
-- 不在 C11 自动提交用户代码；
+- 不在 D11 自动提交用户代码；
 - commit、revert、clean 等破坏性动作必须经过权限中心。
 
 **验收**：
@@ -941,7 +948,7 @@ full_access（明确危险，默认不可选）
 - 关闭 worktree 前显示未提交变更；
 - worktree 创建失败不会留下半成品入口。
 
-### C12 · Settings、模型目录与安全存储
+### D12 · Settings、模型目录与安全存储
 
 **目标**：把模型、Provider、推理档位、权限、终端和项目偏好放到有作用域的设置系统里。
 
@@ -975,7 +982,7 @@ thread/turn explicit override
 - Desktop 与 CLI 对同一配置层级的解释一致；
 - 模型 capability 未声明时，UI 不显示不支持的输入或工具选项。
 
-### C13 · Skills、MCP、浏览器与可插拔能力面板
+### D13 · Skills、MCP、浏览器与可插拔能力面板
 
 **目标**：让外部能力以可发现、可审批、可审计的方式进入 Desktop，而不是散落在 UI 按钮里。
 
@@ -997,7 +1004,7 @@ thread/turn explicit override
 - Skill/MCP 失败不会让主 Thread 永久卡住；
 - 外部工具的返回数据可以收起、复制和定位来源。
 
-### C14 · Notifications、长任务与恢复体验
+### D14 · Notifications、长任务与恢复体验
 
 **目标**：让用户离开当前 Thread 后，仍然知道 Agent 是否完成、失败或等待审批。
 
@@ -1014,7 +1021,7 @@ thread/turn explicit override
 - 用户可关闭通知类型；
 - Desktop 重启后恢复未完成 Thread 的真实状态。
 
-### C15 · 视觉系统、可访问性和交互一致性
+### D15 · 视觉系统、可访问性和交互一致性
 
 **目标**：让 RxyCode Desktop 具备稳定而可扩展的视觉基础，而不是每张卡各写一套颜色和 loading。
 
@@ -1040,7 +1047,7 @@ thread/turn explicit override
 
 Composer 负责最终组件 API、状态覆盖测试和无障碍语义。
 
-### C16 · 打包、更新、崩溃上报与发布门禁
+### D16 · 打包、更新、崩溃上报与发布门禁
 
 **目标**：让用户安装的是可诊断、可升级、可回滚的 RxyCode Desktop，而不是开发机上的临时 Electron 文件夹。
 
@@ -1152,10 +1159,12 @@ created_at / expires_at
 8. 文件再次修改，旧 Review 进入 stale。
 9. Thread 中断后恢复。
 10. appserver 崩溃后重启并补读历史。
-11. 两个 worktree 的 Thread 不互相串目录。
-12. Key 不出现在日志、transcript 或 crash payload。
-13. Git 非仓库项目仍能聊天，但不显示伪造的 Git review。
-14. 未声明 capability 时相应面板进入禁用/说明态。
+11. Parent 启动 Child，Child tree 显示 Agent、触发方式、状态、预算和权限摘要。
+12. 从 Parent 跳转 Child，Child 的工具/审批/结果可审查，再返回 Parent 且 cursor 不丢失。
+13. 两个 worktree 的 Thread 不互相串目录。
+14. Key 不出现在日志、transcript 或 crash payload。
+15. Git 非仓库项目仍能聊天，但不显示伪造的 Git review。
+16. 未声明 capability 时相应面板进入禁用/说明态。
 
 ### 8.3 视觉验收清单
 
@@ -1335,9 +1344,9 @@ LinkAgent extension contract test
 
 | 能力 | 本 Phase 处理 | 后续归属 |
 |---|---|---|
-| 图片输入和多模态 Item | file preview/capability 预留，纯文本路径零回归 | Phase E |
-| 多模型专家团 UI | capability 和 Thread/Item 可显示，默认不展开高级控制 | Phase D |
-| PersonaAgent | extension manifest 和 settings section 预留 | Phase F |
+| 图片输入和多模态 Item | file preview/capability 预留，纯文本路径零回归 | Phase F |
+| 多模型专家团 UI | capability 和 Thread/Item 可显示，默认不展开高级控制 | Phase E |
+| PersonaAgent | extension manifest 和 settings section 预留 | Phase G |
 | 远程 appserver | transport 抽象和 version handshake 预留 | 后续独立 Phase |
 | 云端任务/团队协作 | 不做实现 | 独立产品路线 |
 | 浏览器 Computer Use | 面板和审批入口可插拔 | 后续能力包 |
@@ -1349,7 +1358,7 @@ LinkAgent extension contract test
 
 ## 附录 A · 卡片完成记录模板
 
-每张 C 卡完成时在 commit 或 PR 描述中复制：
+每张 D 卡完成时在 commit 或 PR 描述中复制：
 
 ```text
 Card: C__
@@ -1389,16 +1398,16 @@ Rollback:
 
 ## 附录 B · 与主计划 Phase 3 的关系
 
-不要把本文的 C 卡重新塞回主计划 D1–D8。两者关系是：
+不要把本文的 D 卡重新塞回主计划 D1–D8。两者关系是：
 
 ```text
 主计划 Phase 3 D1–D8
   = Electron 壳、基础协议接入、最小聊天/审批/设置、可打包
 
-Phase C C1–C16
+Phase D D1–D16
   = 完整项目/会话工作台、执行可观测性、权限中心、diff/review、worktree、恢复、扩展和发布质量
 ```
 
-如果主计划 Phase 3 的某个 D 卡尚未完成，Phase C 可以做协议和 UX 设计，但不能通过临时 HTTP 或 mock 逻辑绕过前置产物直接合并到主链。
+如果主计划 Phase 3 的某个 D 卡尚未完成，Phase D 可以做协议和 UX 设计，但不能通过临时 HTTP 或 mock 逻辑绕过前置产物直接合并到主链。
 
-如果 Phase C 的某张卡需要修改主计划 Phase 3 已完成的协议，必须先更新 protocol/schema 和契约测试，再更新 Desktop；不得在 UI 里私自兼容两个互相矛盾的字段语义。
+如果 Phase D 的某张卡需要修改主计划 Phase 3 已完成的协议，必须先更新 protocol/schema 和契约测试，再更新 Desktop；不得在 UI 里私自兼容两个互相矛盾的字段语义。

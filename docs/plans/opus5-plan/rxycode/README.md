@@ -29,21 +29,22 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 ## 路线全景
 
 ```
-Phase 0 止血 ──► Phase 1 Harness ──► Phase 2 协议与核心 ──► Phase 3 Desktop
+Phase 0 止血 ──► Phase 1 Harness ──► Phase 2 协议与核心 ──► Phase 3 Desktop 基础壳
   W1–W2            W3–W5               W6–W12                W13–W20
                                           │
-                                          ├──► Phase A 模型适配   ← 唯一可与 Phase 2 并行
-                                          │
-                                           └──► Phase B 多 Agent
-                                                    │
-                                                    └──► Phase C 完整 Desktop
-                                                             │
-                                                             └──► Phase D 多模型协作
-                                                                      │
-                                                                      └──► Phase E 多模态
-                                                                          （还需 Phase 3 硬前置）
+                                          └──► Phase A 模型适配
+                                                   │
+                                                   └──► Phase B 隔离式子代理
+                                                            │
+                                                            └──► Phase C 专家团编排
+                                                                     │
+                                                                     └──► Phase D RxyCode Desktop 完整工作台
+                                                                              │
+                                                                              └──► Phase E 多模型协作
+                                                                                       │
+                                                                                       └──► Phase F 多模态
 
-Phase F 的六张预留卡不在主链上，插进 B/C/D/E 里顺手做
+Phase G 的六张预留卡不在主链上，插进 B/C/D/E 里顺手做
 ```
 
 ---
@@ -54,11 +55,12 @@ Phase F 的六张预留卡不在主链上，插进 B/C/D/E 里顺手做
 |---|---|---|---|---|
 | **1** | [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) | **主计划**。Phase 0 止血 / Phase 1 评测 / Phase 2 协议与核心解耦 / Phase 3 Desktop。含事实基线、历史复盘、排期、维护手册 | — | 20 周 |
 | **2** | [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | Phase 0 + 1 | 3 周 |
-| **3** | [`PHASE-B-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-B-MULTI-AGENT-ORCHESTRATION.md) | 多 Agent 专家团：清理死代码、拆全局单例、AgentSpec / 团长 / SOP 状态机 / 机械验证门 / 成本熔断 / 难度路由 | Phase 0–2 + A | 8 周 |
-| **4** | [`PHASE-C-RXYCODE-DESKTOP.md`](./PHASE-C-RXYCODE-DESKTOP.md) | **完整 Desktop 工作台**：项目、workspace、Thread、工具执行、审批、diff/review、文件预览、worktree、恢复、扩展契约、打包发布 | 主计划 Phase 0–3 + A/B 公共契约 | 12–16 周 |
-| **5** | [`PHASE-D-MULTI-MODEL-COLLABORATION.md`](./PHASE-D-MULTI-MODEL-COLLABORATION.md) | 多 Agent × 多模型：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | Phase 0–2 + A + B；Desktop 交互接入依赖 Phase C | 6 周 |
-| **6** | [`PHASE-E-MULTIMODAL.md`](./PHASE-E-MULTIMODAL.md) | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | Phase 0–3 + A + B + C + D | 6 周 |
-| **附** | [`PHASE-F-PERSONA-AGENT-INTERFACE.md`](./PHASE-F-PERSONA-AGENT-INTERFACE.md) | PersonaAgent 接口预留（**不是施工图**）：skill 元数据、蒸馏数据埋点、信任边界。六张卡插进 B/C/D/E 里做 | 无硬前置 | 6 天 |
+| **3** | [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) | **隔离式子代理**：Primary/Subagent、Child Session、独立上下文、权限、预算、Task、`@`、事件和恢复 | Phase 0–3 + A | 8–12 周 |
+| **4** | [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) | 多 Agent 专家团：Coordinator、AgentSpec / SOP 状态机 / 机械验证门 / 成本熔断 / 难度路由；复用 Phase B Runtime | Phase 0–3 + A + B | 8 周 |
+| **5** | [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) | **完整 Desktop 工作台**：项目、workspace、Thread、工具执行、审批、diff/review、文件预览、worktree、恢复、扩展契约、打包发布 | 主计划 Phase 0–3 + A + B + C 公共契约 | 12–16 周 |
+| **6** | [`PHASE-E-MULTI-MODEL-COLLABORATION.md`](./PHASE-E-MULTI-MODEL-COLLABORATION.md) | 多 Agent × 多模型：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | Phase A + B + C；Desktop 交互接入依赖 D | 6 周 |
+| **7** | [`PHASE-F-MULTIMODAL.md`](./PHASE-F-MULTIMODAL.md) | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 主计划 Phase 3 + A + B + C + D + E | 6 周 |
+| **附** | [`PHASE-G-PERSONA-AGENT-INTERFACE.md`](./PHASE-G-PERSONA-AGENT-INTERFACE.md) | PersonaAgent 接口预留（**不是施工图**）：skill 元数据、蒸馏数据埋点、信任边界。六张卡插进 B/C/D/E 里做 | 无硬前置 | 6 天 |
 
 ---
 
@@ -98,14 +100,14 @@ Kubernetes / Helm / 多租户、Telegram / Discord Bot、Skills 自动创建、�
 
 ## 与 LinkAgent 的关系
 
-**RxyCode 不因为 LinkAgent 改动任何一行。** LinkAgent 通过 `pip install rxycode` 依赖本项目，桌面端应基于本项目 Phase C 的稳定 Desktop 壳和扩展契约 fork；Phase 3 只提供壳的基础前置。
+**RxyCode 不因为 LinkAgent 改动任何一行。** LinkAgent 通过 `pip install rxycode` 依赖本项目，桌面端应基于本项目 Phase D 的稳定 Desktop 壳和扩展契约 fork；Phase 3 只提供壳的基础前置。
 
 **这不需要 RxyCode 做任何额外工作，但有三处值得知道**：
 
 | Phase | LinkAgent 怎么用它 | 对本项目的要求 |
 |---|---|---|
 | **Phase 2** | 桥接层依赖 `AgentV2` 的公开方法；appserver 复用 `protocol/` 的 pydantic 模型 | 改公开签名或协议模型时，**在 PR 描述里提一句**。LinkAgent 有超集契约测试会发现，但提前说能省一次排查 |
-| **Phase C** | fork 完整 Desktop 壳，钉住扩展契约和 commit | **DC-A1/DC-A3（协议边界与 capability）值钱得多了**——它同时决定 LinkAgent 的 rebase 成本 |
+| **Phase D** | fork 完整 Desktop 壳，钉住扩展契约和 commit | **DC-A1/DC-A3（协议边界与 capability）值钱得多了**——它同时决定 LinkAgent 的 rebase 成本 |
 | **Phase 2 的 `protocol-client`** | 优先作为 npm 依赖使用；拿不到就 vendor 传输层 | 如果顺手能发布到 npm，LinkAgent 那边会省一点事。**不发布也不影响** |
 
 除此之外，两条路线互不干涉。**不要为了 LinkAgent 的方便去改 RxyCode 的设计**——那正是把它们拆成两个项目要避免的事。

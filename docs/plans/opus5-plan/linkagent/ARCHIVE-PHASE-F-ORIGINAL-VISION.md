@@ -49,7 +49,7 @@
 ---
 
 > **📌 编号说明**
-> 你说的是"Phase D",但原规划中的多模态文档现已顺延为 [`PHASE-E-MULTIMODAL.md`](../rxycode/PHASE-E-MULTIMODAL.md)，本归档文件仍保留历史编号 F。
+> 你说的是"Phase D",但原规划中的多模态文档现已顺延为 [`PHASE-F-MULTIMODAL.md`](../rxycode/PHASE-F-MULTIMODAL.md)，本归档文件仍保留历史编号 F。
 > 想改成 D 的话跟我说一声,我把多模态挪到别的号。
 
 ---

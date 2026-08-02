@@ -369,6 +369,6 @@ agent 重做一张卡的成本 ≈ 一次执行 + 一次审查，比人重做低
 
 > ⚠ **L10-4 不是"门"，是"欠债"。** 必须早于 L7 首次基线，否则基线测出来的治理有效性不可信。
 
-**推迟到决策点之后再谈的**：RxyCode Phase B（多 Agent）、Phase D（多模型）、Phase E（多模态）、Phase F（PersonaAgent）。RxyCode Phase C Desktop 是主工作台路线，不应和这些高级能力一起无限后推。
+**推迟到决策点之后再谈的**：RxyCode Phase C（多 Agent）、Phase E（多模型）、Phase F（多模态）、Phase G（PersonaAgent）。RxyCode Phase D Desktop 是主工作台路线，不应和这些高级能力一起无限后推。
 
-> 推迟 Phase B 是有依据的：[`PHASE-B`](./rxycode/PHASE-B-MULTI-AGENT-ORCHESTRATION.md) §2.5 —— 多 Agent 消耗 15 倍 token，编码任务不是多 Agent 强项。
+> 推迟 Phase C 是有依据的：[`PHASE-C`](./rxycode/PHASE-C-MULTI-AGENT-ORCHESTRATION.md) §2.5 —— 多 Agent 消耗 15 倍 token，编码任务不是多 Agent 强项。
