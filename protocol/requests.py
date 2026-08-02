@@ -10,6 +10,13 @@ from .types import JsonObject
 
 
 class InitializeRequest(BaseModel):
+    """JSON-RPC handshake on connect (future ``python -m appserver``).
+
+    ``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;
+    ``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;
+    ``capabilities`` is an optional client feature manifest (unused in HTTP mode).
+    """
+
     method: Literal["initialize"] = "initialize"
     client_name: str
     client_version: str
@@ -18,12 +25,25 @@ class InitializeRequest(BaseModel):
 
 
 class NewSessionRequest(BaseModel):
+    """Bind a workspace and chat namespace (maps ``_activate_session`` in api_server.py).
+
+    ``workspace_root`` is the repo root passed to AgentV2 tools (today ``Path.cwd()``);
+    ``model`` optionally overrides the default from ``config/settings.py``.
+    """
+
     method: Literal["session/new"] = "session/new"
     workspace_root: str
     model: str | None = None
 
 
 class PromptRequest(BaseModel):
+    """One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).
+
+    ``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is
+    ``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout
+    semantics when appserver enforces wall-clock limits.
+    """
+
     method: Literal["session/prompt"] = "session/prompt"
     session_id: str
     text: str
@@ -34,11 +54,21 @@ class PromptRequest(BaseModel):
 
 
 class InterruptRequest(BaseModel):
+    """Cancel the in-flight run (maps ``POST /cancel`` + ``Session.interrupt`` in api_server.py).
+
+    ``session_id`` matches the active ``ChatRequest.session_id`` namespace.
+    """
+
     method: Literal["session/interrupt"] = "session/interrupt"
     session_id: str
 
 
 class ShutdownRequest(BaseModel):
+    """Graceful appserver shutdown (future ``appserver`` lifespan teardown).
+
+    ``reason`` is logged on stderr only; HTTP ``api_server`` mode ignores this today.
+    """
+
     method: Literal["shutdown"] = "shutdown"
     reason: str | None = None
 

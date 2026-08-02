@@ -28,6 +28,8 @@ class ApprovalResponse(BaseModel):
 
 
 class QuestionOption(BaseModel):
+    """One choice row in ``QuestionRequest.options`` (``core/question.py`` ``QuestionOption.to_event``)."""
+
     label: str
     value: str
 
