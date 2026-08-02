@@ -273,7 +273,7 @@ tests/
 
 ## §3 任务卡
 
-> **2026-08-01 扩展说明（纯加法）**：本阶段新增 A0（Grok 模型调研开局卡）与 A12–A22（新增模型族 provider + 三维度优化卡）。原有 A1–A11 与 §0–§6 的内容一律不改，唯一例外是原散落在 A3/A4/§5 内的"Grok 查资料"段落已统一收敛为 A0 的指针（Grok 调研功能提取为独立任务卡，这是用户授权的唯一改动点）。
+> **2026-08-01 扩展说明（纯加法）**：本阶段新增 A0（Grok 模型调研开局卡）与 A12–A22（新增模型族 provider + 三维度优化卡）。原有 A1–A11 与 §0–§6 的内容一律不改，唯一例外是原散落在 A3/A4/§5 内的"Grok 查资料"段落已统一收敛为 A0 的指针（Grok 调研功能提取为独立任务卡，这是用户授权的唯一改动点）。**可复制的提示词模板（Phase A 开局 / Grok 调研 / DeepSeek 与 GPT-5.6-Luna 双模型验证 / Phase 2 开局）见 [`PROMPTS.md`](./PROMPTS.md)。**
 
 ### A0 · Grok 模型调研开局卡（硬前置：先调研、再优化）
 
@@ -330,15 +330,19 @@ Phase A 的优化对象是"模型"，而模型的字段、参数、定价、缓�
 **每批审计门（硬停止点）**
 
 1. 该批汇报写入 §7 后**立即审计；不通过不得进入下一批**
-2. 审计方 = ① **Grok 4.5**（调研模型自审）+ ② **第三方非编码模型**（执行会话的 opencode 模型，当前为 `deepseek-v4-flash`；由用户触发暂停后进行审计）
+2. 审计方（2026-08-01 更新为三方）：
+   - ① **Grok 4.5**（调研模型自审）
+   - ② **DeepSeek**（验证模型 1，建议 v4-pro；用 flash 时在审计记录注明）
+   - ③ **GPT-5.6-Luna**（验证模型 2）
+   - ②与③为**双模型独立验证**，互不参考对方结论（防串通）；验证提示词模板见 [`PROMPTS.md`](./PROMPTS.md)
 3. 每份审计记录写入 §7.9 审计记录表，**必须包含三要素：审计模型名称 / 审计时间 / 审计结果（通过或不通过 + 问题清单）**。三要素缺一的记录视为不存在
-4. 审计不通过 → 回该批重调研、重汇报、重审，直到两份审计都通过才允许下一批
+4. 审计不通过 → 回该批重调研、重汇报、重审，直到**三份审计（Grok + DeepSeek + GPT-5.6-Luna）全部通过**才允许下一批
 5. 对应批审计通过后，该模型族的优化卡才允许开工（如批 1 通过 → A3/A22 可以填数值）；**8 批全部通过审计之前，禁止开始任何整体接线（A6）与跨模型优化卡（A7–A11、A19–A21）**
 
 **与其它文档中 Grok 调研的关系（2026-08-01 跨文档 review 补充）**
 
 1. **Phase C C4 的定价调研并入本卡**：`PHASE-C.md:601-619` 的 "Grok 的调研 prompt"（各家定价、缓存按写入/读取分别计价、推理 token 单独计价）与本卡 9 问模板的**第 7 问（定价）**重叠。执行规则：C4 所需的定价数据由本卡批 1–8 的第 7 问结论提供，**Phase C 不再单独做定价调研**；C4 中心表（`config/model_pricing.py`）直接引用 §7 各分区的定价结论（含 `as_of` 与来源 URL）。
-2. **清单外模型族（如 xAI Grok）**：C4 调研清单含 xAI，而本卡 8 批未列。需要时按**批 9+** 追加，用同一 9 问模板、同一审计门（Grok 自审 + 第三方审计），通过后才允许对应优化卡开工。
+2. **清单外模型族（如 xAI Grok）**：C4 调研清单含 xAI，而本卡 8 批未列。需要时按**批 9+** 追加，用同一 9 问模板、同一审计门（Grok 自审 + DeepSeek + GPT-5.6-Luna 双验证），通过后才允许对应优化卡开工。
 3. **旧型号引用的取代**：本卡 §7 报告发布后，`PHASE-C.md:610`（DeepSeek chat/reasoner）等旧型号引用一律以 §7 为准，不在其它文档里另行维护型号清单。
 
 **涉及文件**
@@ -357,10 +361,12 @@ Select-String -Path docs\plans\opus5-plan\rxycode\PHASE-A-MODEL-ADAPTATION-LAYER
 ```
 
 **完成判据**
-- [ ] 8 批全部调研完成；§7.1–§7.8 每区含：调研记录表 / 九问结论 / 对 RxyCode 的含义 / 来源 URL
-- [ ] §7.9 共 16 条审计记录（8 批 × 2 审计方），每条含审计模型名称 / 审计时间 / 审计结果，且全部通过
-- [ ] 代码零改动
-- [ ] 所有 `# TODO(grok→§7.X)` 注释指向的分区均已通过审计（代码注释是位置标记，数值填充在对应优化卡做）
+- [x] 8 批全部调研完成；§7.1–§7.8 每区含：调研记录表 / 九问结论 / 对 RxyCode 的含义 / 来源 URL
+- [x] §7.9 共 **24 条审计记录（8 批 × 3 审计方：Grok 4.5 / DeepSeek / GPT-5.6-Luna）**，每条含审计模型名称 / 审计时间 / 审计结果，且全部通过（含复审行；终审以各方「通过」为准）
+- [x] 代码零改动
+- [x] 所有 `# TODO(grok→§7.X)` 注释指向的分区均已通过审计（代码注释是位置标记，数值填充在对应优化卡做）
+
+> **A0 关账（2026-08-02）**：8 批三方审计全部通过。解锁：各模型族优化卡（A3/A12–A18/A22 等按批）及跨模型卡（A6、A7–A11、A19–A21）。**本卡不填 `# TODO(grok→§7.X)` 数值**——由对应优化卡开工时按 §7.X 填充。
 
 **回滚**：本卡只动文档。删除 §7 新增区（及 §3 的 A0 卡）即完整回滚。
 
@@ -580,10 +586,15 @@ python -m ruff check config/model_capabilities.py tests/test_providers
 ```
 
 **完成判据**
-- [ ] `config/model_capabilities.py` 存在，内容与上面一致
-- [ ] 5 个测试全绿
-- [ ] ruff 零告警
-- [ ] **本卡不改动任何现有文件**，`git status` 只有新增
+- [x] `config/model_capabilities.py` 存在，内容与上面一致
+- [x] 5 个测试全绿（2026-08-02：`pytest tests/test_providers/test_capabilities.py` → 5 passed）
+- [x] ruff 零告警（2026-08-02：`ruff check config/model_capabilities.py tests/test_providers` → All checks passed）
+- [x] **本卡不改动任何现有文件**，`git status` 只有新增（`config/model_capabilities.py`、`tests/test_providers/`）
+
+> **A1 关账备注（2026-08-02）**
+> - **MA2 evals**：A1 仅新增未接线模块，不改变运行时行为；`evals.cli` 全量跑 agent 后端常需数分钟，审计方 64s 超时属环境限制，非回归证据。接线卡（A6 起）须跑通 MA2 并比对 `evals\baselines\latest-agent.json`。
+> - **Commit**：待用户确认后执行（message 见下）。
+> - **双模型审计**：DeepSeek + GPT-5.6-Luna 复核通过；判据 589–592 已勾选。
 
 **回滚**：删除新增文件
 
@@ -603,7 +614,7 @@ unrecognised models behave identically.
 
 ### A2 · Provider 策略层骨架
 
-`P0` / 8h / 依赖 A1
+`P0` / 8h / 依赖 A1 · **状态：关账（2026-08-02）**
 
 **背景**
 建立 §2.1 的 `core/providers/` 包。这一卡**只建骨架和注册表，不接线到 agent_v2**——接线是 A7。这样做是为了让每张卡的 diff 都能独立 review。
@@ -876,10 +887,16 @@ python -m pytest tests -q -x --timeout=300
 ```
 
 **完成判据**
-- [ ] `core/providers/` 三个文件存在
-- [ ] `tests/test_providers/test_registry.py` 全绿
-- [ ] **未修改任何现有文件**（`git status` 只有新增）
-- [ ] 全量测试仍绿
+- [x] `core/providers/` 三个文件存在（2026-08-02）
+- [x] `tests/test_providers/test_registry.py` 全绿（9 passed，含 4 组 parametrize；`tests/test_providers` 合计 14 passed）
+- [x] **未修改任何现有文件**（隔离关账：`git status` 仅 A2 四文件后提交）
+- [x] 全量测试仍绿（`pytest tests -q -x --timeout=300` → **9825 passed**, 2 skipped, exit 0；日志 `artifacts/a2-full-regression.log`）
+- [x] **R9 单卡 commit**：`8f333fe` — `feat(model): add provider strategy layer skeleton`
+
+> **A2 关账备注（2026-08-02）**
+> - **Commit**：`8f333fe`（仅 `core/providers/` + `tests/test_providers/test_registry.py`）
+> - **全量验收**：隔离工作树后 `pytest tests -q -x --timeout=300` → 9825 passed, 2 skipped（约 6m09s）
+> - **设计边界（不变）**：**未接线 agent_v2**（属 A7，非 A2 范围）
 
 **常见坑**
 - 不要在这一卡里改 `agent_v2.py`。骨架和接线分开，接线在 A7。
@@ -1625,7 +1642,7 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 > - **`agent_v2.py` 的改动走主计划 §11.7 的接线请求协议**（`00-EXECUTION-PLAN.md:2560-2582` 共享面三规则 P1/P2/P3，示例见 :2568-2580）：Phase A 窗口要改 `agent_v2.py` 时写 3–5 行"接线请求"由 Phase 2 窗口执行，不得直接改。A19/A20/A21 涉及 `agent_v2.py` 的步骤全部按此执行
 > - **thinking 适配判断（2026-08-01 补充，全卡统一规则）**：每个 provider 卡按 §7 对应批第 5 问做判断——**适配（支持 thinking）→ `supports_reasoning=True` 且 `thinking_default_on=True`（默认打开）**；不适配/兼容端点不可控 → 保持 `False`（零注入）。`thinking_default_on` 全局默认 `False`（未适配前行为与现状一致）。前端 thinking 面板（`/thinking`、`_flush_thinking`）只是**展示**思维链，与模型 thinking 模式无关——面板开着模型没开=空转，模型开着面板关着=思维链不展示但仍在消耗 token
 > - **排期立场**：A0 是纯文档卡，**不受 Phase 2 窗口排期限制**，可随时开工（`ENGINEERING-TIMELINE.md:191` 建议 Phase A 推后的对象是代码卡，不适用于零代码的 A0）；A12–A22 中需要 `agent_v2.py` 改动的卡，按接线请求插入 Phase 2 的 P3（Session）合并之后（`00-EXECUTION-PLAN.md:2520`）
-> - **分工不变**：Grok 在 A0 里的调研与自审是 `MODEL-ASSIGNMENT.md:76` 原"查资料"角色的正式化，仍不写任何代码；第三方审计由用户指定的执行会话模型担任，不属于任何 Phase 的写代码分工
+> - **分工不变**：Grok 在 A0 里的调研与自审是 `MODEL-ASSIGNMENT.md:76` 原"查资料"角色的正式化，仍不写任何代码；验证（审计）由 **DeepSeek + GPT-5.6-Luna 双模型独立执行**（2026-08-01 更新，提示词见 [`PROMPTS.md`](./PROMPTS.md)），不属于任何 Phase 的写代码分工
 
 | 卡 | 内容 | 依赖 | 对应 A0 批 |
 |---|---|---|---|
@@ -2979,56 +2996,1801 @@ Phase A 为后面两个 Phase 预留了这些接缝，**实现时不要破坏它
 
 ### §7.1 DeepSeek（A0 批 1）
 
-> 状态：**待调研**。审计通过前，A3/A22 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。A3/A22 可按本分区填充数值。Grok / DeepSeek / GPT-5.6-Luna 均已通过（见 §7.9）。
+>
+> **修订历程**：rev2（首轮不通过清单）→ rev3（Luna Q6 措辞）→ 终审通过。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 1 · DeepSeek v4 全系 |
+| 调研日期 | 2026-08-02（rev2/rev3 同日修订；终审同日通过） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://api-docs.deepseek.com/ |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| S1 | Your First API Call（型号 / base_url） | https://api-docs.deepseek.com/ |
+| S2 | Models & Pricing | https://api-docs.deepseek.com/quick_start/pricing |
+| S3 | Thinking Mode | https://api-docs.deepseek.com/guides/thinking_mode |
+| S4 | Chat Completions API | https://api-docs.deepseek.com/api/create-chat-completion/ |
+| S5 | Context Caching | https://api-docs.deepseek.com/guides/kv_cache |
+| S6 | Context Caching 发布说明（历史：64-token 块 / 旧价） | https://api-docs.deepseek.com/news/news0802/ |
+| S7 | Rate Limit & Isolation | https://api-docs.deepseek.com/quick_start/rate_limit |
+| S8 | Token & Token Usage | https://api-docs.deepseek.com/quick_start/token_usage |
+| S9 | DeepSeek V4 Preview Release | https://api-docs.deepseek.com/news/news260424/ |
+| S10 | Codex 集成（context_window 数值） | https://api-docs.deepseek.com/quick_start/agent_integrations/codex/ |
+| S11 | HF DeepSeek-V4-Flash-0731 README（本地 tokenizer 参考） | https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731 |
+| S12 | HF DeepSeek-V4-Pro encoding README | https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/encoding/README.md |
+| S13 | Change Log（型号更新日期 / 旧 id 下线） | https://api-docs.deepseek.com/updates |
+| S14 | Responses API（缓存 usage 字段差异） | https://api-docs.deepseek.com/guides/responses_api |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+| API model id | MODEL VERSION（定价页） | 最近官方更新日期 | 备注 |
+|---|---|---|---|
+| `deepseek-v4-flash` | DeepSeek-V4-Flash-0731 | **2026-07-31**（S13：Flash API 正式公测/升级；调用 id 不变） | HF 权重名同 |
+| `deepseek-v4-pro` | DeepSeek-V4-Pro | **2026-04-24**（S13：V4 首发）；**2026-07-31 明确未更新 Pro API** | Preview 已开源；API 可用 |
+
+- 旧型号（S13 2026-04-24 原文）：`deepseek-chat` / `deepseek-reasoner` **will be discontinued in three months (2026-07-24)**；过渡期内分别指向 `deepseek-v4-flash` 的 non-thinking / thinking。S9 新闻页同义表述：fully retired after Jul 24th, 2026, 15:59 (UTC)。
+- V4 发布说明：Pro = 1.6T total / 49B active；Flash = 284B total / 13B active；官方服务默认 1M context。
+
+[来源 S1, S2, S9, S13]
+
+**2. Context window（token）**
+
+| 型号 | context length | max output |
+|---|---|---|
+| `deepseek-v4-flash` | **1M**（Codex 配置写明 `1048576`） | MAXIMUM **384K** |
+| `deepseek-v4-pro` | **1M**（同定价页 CONTEXT LENGTH 列） | MAXIMUM **384K** |
+
+建议 RxyCode 填 `context_window = 1_048_576`（1M tokens），`compaction_threshold ≈ 943_718`（≈90%）。
+
+[来源 S2, S10]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **兼容**：OpenAI Chat Completions（`base_url=https://api.deepseek.com`）与 Anthropic API（`https://api.deepseek.com/anthropic`）。
+- **tools**：定价页 FEATURES 对 flash/pro 均为 ✓ Tool Calls；Chat Completions schema 支持 `tools`（最多 128 个 function）、`tool_choice`（`none`/`auto`/`required`/指定函数）。
+- Thinking 模式下**支持** tool calls（见 thinking_mode「Tool Calls」节）。
+- Responses API：目前**仅** `deepseek-v4-flash` 支持；`deepseek-v4-pro` 计划 2026-08 初支持。RxyCode 主路径仍是 Chat Completions。
+
+[来源 S1, S2, S3, S4, S14]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制 | **自动** Context Caching on Disk；**无需**改代码、**无** OpenAI 式显式 `cache_control` 断点；Responses API 也不支持 `prompt_cache_key` / `prompt_cache_retention`（仍自动管理） |
+| 命中规则（已证实） | 必须以**已持久化的 cache prefix unit 完整匹配**；中间部分匹配不命中。改前缀历史 / 在前缀中插入消息 → 无法完整匹配该 unit → 不命中 |
+| 持久化时机 | ① 请求边界（user 输入末 / model 输出末）② 多请求公共前缀检测 ③ 长输入/输出按固定 token 间隔切出 unit |
+| TTL | 「不再使用后通常在**数小时到数天**内自动清除」；不保证 100% 命中 |
+| 最小块 | **现行 Context Caching 指南未再写「64 tokens」**。S6 新闻仍写「64 tokens as a storage unit」。**以现行指南为准；64-token 标为历史备注 / 待核实是否仍适用** |
+| usage 字段（按端点） | **Chat Completions**：顶层 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（`prompt_tokens = hit + miss`）。**Responses API**：`usage.input_tokens_details.cached_tokens`（命中数）；**不是**顶层 `prompt_cache_*` |
+| 隔离（已证实） | `user_id` 用于 KVCache isolation |
+| 切模型 / 切 API key / 截断 | **未找到**官方逐条失效规则声明。只能从「完整匹配 prefix unit」推论：任一操作若破坏完整前缀匹配则不命中；**不得写成已证实的失效清单** |
+
+[来源 S5, S6, S4, S7, S14]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+| 项 | 结论 |
+|---|---|
+| 适配判断 | **适配** → `supports_reasoning=True`，`thinking_default_on=True` |
+| 开关（OpenAI） | `thinking: {"type": "enabled"\|"disabled"}`；SDK 需放 `extra_body`。默认 **`enabled`**；默认 effort **`high`** |
+| effort 合法值 | `reasoning_effort`: `low` / `high` / `max`（另有兼容别名 `medium`/`xhigh`） |
+| 输出字段 | `reasoning_content`：与 `content` **同级**，在 **message** 上；流式在 **delta.reasoning_content** |
+| usage 推理 token（Chat Completions） | `usage.completion_tokens_details.reasoning_tokens` |
+| 被忽略的采样参数（thinking 模式） | `temperature`、`top_p`、`presence_penalty`、`frequency_penalty`：**不报错，但无效**。另：`frequency_penalty`/`presence_penalty` 在 API 层已标 deprecated，传入不生效 |
+
+**官方 effort 实际映射表（S3 原文，2026-08-02 复核；驳回「pro xhigh→high」审计主张）：**
+
+| Requested effort | deepseek-v4-flash 实际映射 | deepseek-v4-pro 实际映射 |
+|---|---|---|
+| `low` | `low` | `high` |
+| `high` | `high` | `high` |
+| `xhigh` | `high` | **`max`** |
+| `max` | `max` | `max` |
+
+补充（S4 schema 原文）：`medium` and `xhigh` are mapped to `high`（兼容说明）；同时明确 pro **temporarily** only supports `high`/`max` 区分，且 **`xhigh` is treated as `max`**。脚注：官方称 early August 2026 将更新 pro 映射——**以本表现行原文为准，未到公告前不得自行改写**。
+
+[来源 S3, S4]
+
+**6. 官方 tokenizer**
+
+- **未找到**官方 tiktoken encoding 名（S8 未声明任何 tiktoken 兼容 encoding；不得写成「官方确认无」）。
+- 官方 API 文档（S8）：提供 `deepseek_tokenizer.zip` 离线 demo；给出近似比例 1 英文字符 ≈ 0.3 token、1 汉字 ≈ 0.6 token；并明确**实际计费/计数以 API 返回的 `usage` 为准**。
+- HF AutoTokenizer（S11/S12）可用于本地权重编码；**未找到**「与 API usage 逐 token 等价」的官方声明 → 不得当作 API 精确 tokenizer。
+- A5 `TokenizerSpec` 当前仅支持 `tiktoken:` / `chars:`（不支持 `hf:`）。
+
+RxyCode 建议（可落地，**启发式非官方数值**）：`tokenizer = "chars:2.0"`——由 S8 近似比例（英 0.3 / 中 0.6）混合折中得到的**项目侧估算**，**不是**官方公布的 tokenizer 规格。精确 token 数始终以 API `usage` 为准。离线核对可参考 `deepseek_tokenizer.zip` / HF，**不写入 TokenizerSpec**。
+
+[来源 S8, S11, S12；约束见 A5]
+
+**7. 定价（USD / 1M tokens；as_of = 2026-08-02 查阅 S2）**
+
+| 型号 | INPUT cache hit | INPUT cache miss | OUTPUT | 缓存写入价 |
+|---|---|---|---|---|
+| `deepseek-v4-flash` | **$0.0028** | **$0.14** | **$0.28** | **无单独写入价**（自动磁盘缓存；命中按 hit 价，未命中按 miss 价） |
+| `deepseek-v4-pro` | **$0.003625** | **$0.435** | **$0.87** | 同上 |
+
+- 即将实行峰谷价：高峰时段（北京时间 09:00–12:00、14:00–18:00）**全部计费项 ×2**；生效日「以官方公告为准」→ 代码侧可预留但 **as_of 当日尚未生效**。
+- S6 新闻中的旧 hit 价 $0.014 **已过时**，以 S2 为准。
+
+[来源 S2；历史对照 S6]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT / 吞吐 | 现行定价与 rate_limit 页**未公布**固定 TTFT/TPS SLA。S6 历史示例（非现行 SLA）：128K 高复用前缀 TTFT 可由 ~13s 降至 ~500ms |
+| 限流 | **按账号并发数**，非经典 RPM/TPM：`deepseek-v4-pro` **500**；`deepseek-v4-flash` **2500**。超限 HTTP **429**。可申请扩容免费 |
+| 加速档 | 官方定价/能力页对名为 UltraSpeed / fast mode 的 API 档位：**未找到**。Flash 在产品叙述上更快更便宜；HF Flash-0731 的 DSpark speculative decoding 属**本地/自托管**，非 API 参数 |
+| Keep-alive | 推理未开始超过 **10 分钟**断连；流式可能收到 `: keep-alive` |
+
+[来源 S2, S7, S6, S11]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| 无 tool call 的多轮 | 中间 assistant 的 `reasoning_content` **可不回传**；回传也会被 API **忽略** |
+| **有 tools 的请求链** | 之后所有后续请求**必须完整回传** `reasoning_content`；否则 API 返回 **400**（S3 已证实） |
+| 推荐写法 | `messages.append(response.choices[0].message)`（含 content / reasoning_content / tool_calls） |
+| 工具调用后的专门缓存行为 | **未找到**独立于通用前缀缓存的专项规则。仅能确认：仍适用 S5 的完整 prefix-unit 匹配；**不得断言**「tool 回合必然命中/必然失效」 |
+
+[来源 S3, S5]
+
+#### ③ 对 RxyCode 的含义（A3 / A22 照抄用；审计通过前禁止写入代码）
+
+```text
+# ModelCapabilities（deepseek-v4-flash / deepseek-v4-pro 共用骨架，差异见注释）
+context_window = 1_048_576
+compaction_threshold = 943_718          # ≈ 0.9 * context_window
+max_output_tokens = 384_000             # 官方 MAXIMUM 384K
+supports_function_calling = True
+supports_reasoning = True
+thinking_default_on = True              # 官方 thinking 默认 enabled
+supports_prompt_cache = True            # 自动磁盘缓存，无显式 cache_control
+structured_output = "function_calling"  # + json_object response_format
+prompt_variant = "deepseek-v4-flash" | "deepseek-v4-pro"
+tokenizer = "chars:2.0"                 # RxyCode 启发式估算（非官方规格）；A5 可落地；勿写 hf:
+# effort_presets（OpenAI 兼容传输；映射以 S3 表为准）
+#   开关: extra_body={"thinking": {"type": "enabled"|"disabled"}}
+#   档位: reasoning_effort="low"|"high"|"max"（默认 high）
+#   flash: low→low, high→high, xhigh→high, max→max
+#   pro:   low→high, high→high, xhigh→max, max→max
+effort_presets = {"fast": "low", "balanced": "high", "deep": "max"}
+
+# UsageFieldMap（Chat Completions 主路径）
+cache_read_flat = ("prompt_cache_hit_tokens",)
+# cache miss: prompt_cache_miss_tokens
+# reasoning: ("completion_tokens_details", "reasoning_tokens")
+# Responses API（仅 flash，非主路径）: input_tokens_details.cached_tokens
+#   / output_tokens_details.reasoning_tokens —— 若接 Responses 需另建字段映射
+
+# ModelPricing（USD / 1M tok；source_url = S2；as_of = 2026-08-02）
+# flash: input_cache_hit=0.0028, input_cache_miss=0.14, output=0.28, cache_write=None
+# pro:   input_cache_hit=0.003625, input_cache_miss=0.435, output=0.87, cache_write=None
+# peak_multiplier=2.0（公告生效后；当前未生效）
+
+# 会话契约（agent_v2 / executor 必须遵守）
+# - tools 链路上必须回传 reasoning_content，否则 400
+# - thinking 模式下不要依赖 temperature/top_p 调采样
+# - base_url: https://api.deepseek.com ；勿引入 anthropic/deepseek 原生 SDK（MA4）
+# - 旧 id deepseek-chat/reasoner：S13 宣布 2026-07-24 停用；迁移到 v4-flash ± thinking
+```
 
 ### §7.2 OpenAI（A0 批 2）
 
-> 状态：**待调研**。审计通过前，A12 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok 自审·rev2 + DeepSeek + GPT-5.6-Luna 复审均通过。A12 可按本分区填充数值。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 2 · OpenAI（GPT-5.x 全系，主写 GPT-5.6） |
+| 调研日期 | 2026-08-02（rev2 同日修订） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://platform.openai.com/docs/ |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| O1 | Models 总览（GPT-5.6 Sol/Terra/Luna） | https://platform.openai.com/docs/models |
+| O2 | GPT-5.6 Sol 型号页 | https://platform.openai.com/docs/models/gpt-5.6-sol |
+| O3 | GPT-5.6 Terra 型号页 | https://platform.openai.com/docs/models/gpt-5.6-terra |
+| O4 | GPT-5.6 Luna 型号页 | https://platform.openai.com/docs/models/gpt-5.6-luna |
+| O5 | Pricing | https://platform.openai.com/docs/pricing |
+| O6 | Prompt caching | https://platform.openai.com/docs/guides/prompt-caching |
+| O7 | Reasoning models | https://platform.openai.com/docs/guides/reasoning |
+| O8 | Migrate to Responses（含 Chat Completions `reasoning_effort` 示例） | https://platform.openai.com/docs/guides/migrate-to-responses |
+| O9 | Rate limits | https://platform.openai.com/docs/guides/rate-limits |
+| O10 | Counting tokens | https://platform.openai.com/docs/guides/token-counting |
+| O11 | Fast mode（原 Priority） | https://platform.openai.com/docs/guides/fast-mode |
+| O12 | Changelog（发布/更新日期） | https://platform.openai.com/docs/changelog （同 Luna 引：https://developers.openai.com/api/docs/changelog） |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+| API model id | 别名 / 定位 | Knowledge cutoff | API 发布日 | 最近 Changelog 更新 | 备注 |
+|---|---|---|---|---|---|
+| `gpt-5.6-sol` | 别名 `gpt-5.6`；旗舰 | **2026-02-16** | **2026-07-09**（家族首发） | **2026-07-30**（定价/Fast mode 等） | 默认 snapshot = 自身 |
+| `gpt-5.6-terra` | 智能与成本平衡 | **2026-02-16** | **2026-07-09** | **2026-07-30**（价降 20% 等） | 对应旧系 mini 档 |
+| `gpt-5.6-luna` | 成本敏感高吞吐 | **2026-02-16** | **2026-07-09** | **2026-07-30**（价降 80% 等） | 对应旧系 nano 档 |
+
+- **Knowledge cutoff ≠ 最近更新日期**：前者是训练知识截止（型号页）；后者以 **Changelog** 为准（O12：Jul 9 发布 GPT-5.6 家族；Jul 30 更新三档定价并引入 Fast mode）。
+- 定价页另列更早 GPT-5.x（如 `gpt-5.5` / `gpt-5.5-pro` / `gpt-5.4` 等）。本批 **RxyCode 主目标为 GPT-5.6 三档**。
+
+[来源 O1, O2, O3, O4, O5, O12]
+
+**2. Context window（token）**
+
+| 型号 | context window | max input | max output |
+|---|---|---|---|
+| `gpt-5.6-sol` / `terra` / `luna` | **1,050,000** | **922,000** | **128,000** |
+
+建议 RxyCode：`context_window = 1_050_000`，`compaction_threshold ≈ 945_000`（≈90%）。长上下文计费阈值：输入 **>272K** 时整单按 long-context 价（input×2、output×1.5，见定价页与型号页）。
+
+[来源 O2, O3, O4, O5]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **原生** OpenAI：Chat Completions（`v1/chat/completions`）与 Responses（`v1/responses`）在 GPT-5.6 型号页均标 **Supported**。
+- **推荐路径**：官方明确 Reasoning **在 Responses 上更好**；Chat Completions **仍支持**，但智能/性能与缓存利用率不如 Responses（O7/O8）。
+- **tools**：型号页 Supported features 含 `function_calling`、`structured_outputs`、`prompt_caching`、`image_input` 等；Responses 另列 web_search / file_search / computer_use 等托管工具。
+- RxyCode 现状走 `ChatOpenAI` → Chat Completions；本报告字段以 Chat Completions 为主，Responses 差异单独标注。
+
+[来源 O2, O7, O8]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制 | **自动**前缀缓存（`gpt-4o` 及更新）；GPT-5.6+ 另支持 **显式断点** `prompt_cache_breakpoint` + `prompt_cache_options.mode`（`implicit` 默认 / `explicit`）与 `prompt_cache_key` |
+| 最小前缀 | GPT-5.6+：**严格 ≥ 1,024 tokens**；更早型号约 1024–2048 且可能不稳定 |
+| TTL（GPT-5.6+） | `prompt_cache_options.ttl` 仅支持 **`30m`**（亦为默认）= 最少存活 30 分钟，官方可保留更久 |
+| 更早型号 retention（按型号，勿一刀切） | **`gpt-5.5` / `gpt-5.5-pro`：仅支持 `prompt_cache_retention: "24h"`**（不支持 `in_memory`）。`in_memory` **仅**适用于官方接受该策略的更早型号（「models that accept `prompt_cache_retention: "in_memory"`」）；同时支持两者时，默认随组织 ZDR 策略变化。对 GPT-5.6+ 该字段 **已弃用**，改用 `prompt_cache_options.ttl` |
+| usage 命中字段 | **Chat Completions**：`usage.prompt_tokens_details.cached_tokens`；另有 `cache_write_tokens`（5.6+）。**Responses**：`usage.input_tokens_details.cached_tokens` |
+| 写入计费（5.6+） | `cache_write_tokens` 按 **uncached input × 1.25** 计费；更早型号写缓存无额外费 |
+| 失效 / 不命中（已证实） | **精确前缀匹配**（exact prefix matches）；改静态前缀、改 tools/schema、改图像 detail、断点前内容变化 → 不完整匹配 → 不命中。组织间缓存不共享。**未找到**「切 API key」专项声明 |
+| 截断与缓存 | O6 **未找到**「从头部截断会 bust cache / 降低后续命中」的专项官方声明。Realtime 文档另有 truncation/cache 表述，**不得当作 O6 已证实结论**写入本批 |
+| GPT-5.6 注意 | 默认隐式断点在最新 user/tool 消息；可变后缀会导致 `cached_tokens=0` 与反复写缓存——应用显式断点 + `prompt_cache_key`；可靠匹配要求设置 `prompt_cache_key` |
+
+[来源 O6]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+| 项 | 结论 |
+|---|---|
+| 适配判断 | **适配** → `supports_reasoning=True`；`thinking_default_on=True`（省略 effort 时 GPT-5.6 **默认 `medium`**，非 `none`） |
+| Responses 开关 | `reasoning: { "effort": "...", "mode": "standard"\|"pro", "context": "auto"\|"current_turn"\|"all_turns" }` |
+| Chat Completions 开关 | 顶层参数 **`reasoning_effort`**（O8 迁移文档示例）；**不是** DeepSeek 式 `thinking.type` |
+| effort 档位 | 可能含 `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（**型号子集不同**；5.6 型号页列 none/low/medium/high/xhigh/max） |
+| 默认 | GPT-5.6：省略 `reasoning.effort` → **`medium`**（standard 与 pro 模式皆然）。`gpt-5.5` 文档亦写默认 medium |
+| 输出 | **不暴露原始 reasoning tokens**；可用 `summary` 看摘要。Responses usage：`output_tokens_details.reasoning_tokens`。Chat Completions：`completion_tokens_details.reasoning_tokens`（见 O6 usage 示例） |
+| temperature / top_p | 本批在 reasoning 指南中 **未找到**「GPT-5.6 拒绝 temperature」的明文。旧 o 系列拒绝采样参数的说法**不得外推到 5.6**，标 **未找到（待核实）** |
+| pro 模式 | `reasoning.mode=pro`（Responses）：更重计算、更高延迟；与 effort 独立 |
+
+[来源 O1, O2, O7, O8, O6]
+
+**6. 官方 tokenizer**
+
+- 官方推荐：`responses.input_tokens.count`（与 Responses 同形 payload）拿**精确** input token 数（O10）。
+- 本地 [tiktoken](https://github.com/openai/tiktoken)：**可用于纯文本**，但对图像/文件/tools/schema/reasoning/caching **不准确**（O10 原文）。
+- **未找到** GPT-5.6 官方公布的具体 tiktoken encoding 名（如 `o200k_base`）。不得声称「官方指定 o200k」。
+
+RxyCode 建议（A5 可落地、启发式）：文本估算暂用 `tokenizer = "tiktoken:o200k_base"`（与仓库现状 gpt-4o 默认一致），并注释「非官方 5.6 encoding 名；精确计数应走 input_tokens.count / API usage」。
+
+[来源 O10]
+
+**7. 定价（USD / 1M tokens；Standard · Short context；as_of = 2026-08-02 查阅 O5；Changelog Jul 30 已反映现行价）**
+
+| 型号 | Input | Cached input | Cache writes | Output |
+|---|---|---|---|---|
+| `gpt-5.6-sol` | **$5.00** | **$0.50** | **$6.25** | **$30.00** |
+| `gpt-5.6-terra` | **$2.00** | **$0.20** | **$2.50** | **$12.00** |
+| `gpt-5.6-luna` | **$0.20** | **$0.02** | **$0.25** | **$1.20** |
+
+- Long context（>272K input）：整单更高价（型号页：input×2、output×1.5；定价表另有 Long context 列）。
+- **Fast mode**（原 Priority，**2026-07-30** 更名）：`service_tier: "fast"` 或 `"priority"`；价更高（例 sol Fast：$10 / $1 / $12.50 / $60）。
+- Batch / Flex：定价页另有折价列。
+
+[来源 O5, O2, O11, O12]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT / 吞吐 SLA | 型号页 **未公布**固定 TTFT/TPS 数值 |
+| 限流 | 组织 **usage tier** 决定 RPM/TPM/RPD 等（O9）。例：`gpt-5.6-sol` Standard Tier1 = **500 RPM / 500,000 TPM**（O2） |
+| 加速档 | **Fast mode**（`service_tier: fast`/`priority`）存在（O5/O11/O12）。另有 Batch、Flex 处理档 |
+
+[来源 O2, O5, O9, O11, O12]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| 原始 CoT 回传 | API **不返回**原始 reasoning 文本；有 `encrypted_content`（stateless/ZDR）等不透明项 |
+| 工具调用（Responses） | **强烈建议**回传上一轮 function call 以来的全部 `reasoning` / `function_call` / `function_call_output` items；可用 `previous_response_id` 或手工重放 output |
+| GPT-5.6 context | 默认 `reasoning.context=all_turns`（可渲染更早 reasoning）；更早模型默认 `current_turn` |
+| Chat Completions | 须自管 messages；无 Responses 的 item 连续语义。迁移文档：从 GPT-5.4 起，Chat Completions 在 `reasoning: none` 时 **不支持** tool calling（细则见 O8） |
+| 缓存与续接 | 保持静态前缀 + 稳定 `prompt_cache_key`（O6 已证实有助于命中）。**截断是否 bust cache：O6 未找到专项声明**——仅能确认仍须满足 exact prefix matching；不得写成已证实「截断→必然降命中」 |
+
+[来源 O7, O8, O6]
+
+#### ③ 对 RxyCode 的含义（A12 照抄用；审计通过前禁止写入代码）
+
+```text
+# ModelCapabilities（gpt-5.6-sol/terra/luna 共用骨架；定价按型号分条）
+context_window = 1_050_000
+compaction_threshold = 945_000
+max_output_tokens = 128_000
+supports_function_calling = True
+supports_vision = True                    # 型号页 input: text, image
+supports_reasoning = True
+thinking_default_on = True                # 省略 effort → 默认 medium
+supports_prompt_cache = True
+structured_output = "function_calling"    # + structured_outputs / json_schema
+prompt_variant = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+tokenizer = "tiktoken:o200k_base"         # 项目侧启发式；未找到官方 5.6 encoding 名
+# effort（Chat Completions 主路径）
+#   顶层: reasoning_effort="none|low|medium|high|xhigh|max"（见 O8；minimal 是否全档支持→查型号页）
+# Responses 路径（若未来接入）: reasoning={"effort": "...", "mode": "standard"|"pro"}
+effort_presets = {"fast": "low", "balanced": "medium", "deep": "high"}
+# 可选: service_tier "fast" 作为加速档（非 effort）
+
+# UsageFieldMap（Chat Completions）
+cache_read_nested = ("prompt_tokens_details", "cached_tokens")
+cache_write_nested = ("prompt_tokens_details", "cache_write_tokens")  # 5.6+
+reasoning_nested = ("completion_tokens_details", "reasoning_tokens")
+# Responses（非主路径）: input_tokens_details.cached_tokens /
+#   output_tokens_details.reasoning_tokens
+
+# ModelPricing（USD/1M；source_url=O5；as_of=2026-08-02；Short context Standard）
+# sol:   input=5.00, cached=0.50, cache_write=6.25, output=30.00
+# terra: input=2.00, cached=0.20, cache_write=2.50, output=12.00
+# luna:  input=0.20, cached=0.02, cache_write=0.25, output=1.20
+# long_context_threshold_tokens = 272_000  # >272K 整单涨价
+
+# 会话契约
+# - Chat Completions: 传 reasoning_effort；自管 messages
+# - 若改 Responses: 工具链回传 reasoning items / previous_response_id
+# - 5.6 缓存: prompt_cache_key + 显式断点，避免可变后缀写穿缓存
+# - 截断是否 bust cache: O6 未找到专项声明（仅 exact prefix matching）
+# - base_url: https://api.openai.com/v1 ；MA4 不引入新 SDK
+```
 
 ### §7.3 Kimi / Moonshot（A0 批 3）
 
-> 状态：**待调研**。审计通过前，A13 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok 自审·rev2 + DeepSeek + GPT-5.6-Luna 复审均通过。A13 可按本分区填充数值。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 3 · Kimi / Moonshot（主写 K3 / K2.7 Code / K2.6） |
+| 调研日期 | 2026-08-02（rev2 同日修订） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://platform.moonshot.cn/ |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| M1 | 开放平台首页（型号卡片 + 人民币定价摘要） | https://platform.moonshot.cn/ |
+| M2 | 模型列表 | https://platform.kimi.com/docs/models |
+| M3 | 模型参数参考 | https://platform.kimi.com/docs/api/models-overview |
+| M4 | API 概述（OpenAI 兼容 / base_url） | https://platform.kimi.com/docs/api/overview |
+| M5 | Chat Completions（含 OpenAPI：`cached_tokens` / `prompt_cache_key`） | https://platform.kimi.com/docs/api/chat |
+| M6 | OpenAPI 规范 | https://platform.kimi.com/docs/openapi.json |
+| M7 | Context Caching | https://platform.kimi.com/docs/guide/use-context-caching-feature-of-kimi-api |
+| M8 | 思考模型 / Preserved Thinking | https://platform.kimi.com/docs/guide/use-thinking-models |
+| M9 | 推理强度 `reasoning_effort` | https://platform.kimi.com/docs/guide/use-reasoning-effort |
+| M10 | Kimi K3 快速开始 | https://platform.kimi.com/docs/guide/kimi-k3-quickstart |
+| M11 | 计算 Token | https://platform.kimi.com/docs/api/estimate |
+| M12 | 模型推理价格说明（计费概念） | https://platform.kimi.com/docs/pricing/chat |
+| M13 | K3 / K2.6 / K2.7 Code 定价页 | https://platform.kimi.com/docs/pricing/chat-k3 · [chat-k26](https://platform.kimi.com/docs/pricing/chat-k26) · [chat-k27-code](https://platform.kimi.com/docs/pricing/chat-k27-code) |
+| M14 | 充值与限速 | https://platform.kimi.com/docs/pricing/limits |
+| M15 | 平台 Changelog | https://platform.kimi.com/docs/changelog/changelog/changelog |
+| M16 | 工具调用指南 | https://platform.kimi.com/docs/guide/use-kimi-api-to-complete-tool-calls |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+| API model id | 定位 | context（见 Q2） | 最近官方日期线索 | 备注 |
+|---|---|---|---|---|
+| `kimi-k3` | 旗舰；始终推理；视觉/视频 | **1,048,576**（营销亦写 1M） | 权重目标 **2026-07-27** 前发布（M10）；首页已挂牌（M1） | RxyCode **主目标** |
+| `kimi-k2.7-code` | Coding；始终思考 + Preserved Thinking | **262,144**（营销亦写 256k） | 见模型列表（M2） | 与 highspeed **同能力不同价** |
+| `kimi-k2.7-code-highspeed` | 同上；输出约 180 tok/s（短上下文可达 260） | **262,144** | M2 / M3 / M13 | 参数约束同 `kimi-k2.7-code`；**单价更高** |
+| `kimi-k2.6` | 通用；默认可关思考；可 Preserved Thinking | **262,144**（营销亦写 256k） | M2 | 多模态 |
+| `kimi-k2.5` | 通用思考；**不支持** Preserved Thinking | 营销写 256k；精确值本批以定价页未单列 → 待核实 | M2：K3 发布后对新用户停开；**全平台下线 8 月 31 日** | 迁移目标：新模型 |
+| `moonshot-v1-*` | 经典生成 / vision | 8k/32k/128k | 同上：新用户停开；**全平台下线 8 月 31 日** | 不宜作为 RxyCode 新接默认 |
+| 已下线 `kimi-k2*` 等 | — | — | **2026-05-25** 下线（M2） | 勿填进 capabilities |
+
+- **Knowledge / 发布日**：官方 **未找到** 单独的「K3 API 首发日」Changelog 条目；M15 平台 Changelog **最新条目停在 2025-04-07**，**不能**当作 K3 更新日。可用日期以 M2 下线公告、M10 权重截止日期、M1 挂牌状态为准；第三方「2026-07-16 上线」**不得**写入本批已证实结论。
+- RxyCode 建议主写：`kimi-k3`（旗舰）+ `kimi-k2.7-code` / `kimi-k2.7-code-highspeed`（编程加速档）+ `kimi-k2.6`（可关思考的通用档）。
+
+[来源 M1, M2, M10, M15]
+
+**2. Context window（token）**
+
+| 型号 | 精确 context（定价页） | 营销/概述近似 | 备注 |
+|---|---|---|---|
+| `kimi-k3` | **1,048,576** | 「1M / 100 万 token」 | `max_completion_tokens` 默认 **131072**，最大可至 **1048576**（M10）；不得超过模型上下文，否则 `invalid_request_error` |
+| `kimi-k2.7-code` | **262,144** | 「256k」 | M13 chat-k27-code |
+| `kimi-k2.7-code-highspeed` | **262,144** | 「256k」 | 同上 |
+| `kimi-k2.6` | **262,144** | 「256k」 | M13 chat-k26 |
+| `kimi-k2.5` | 本批定价页未单列精确值 | 「256k」（M2/M3） | 精确值标 **待核实**（即将下线，非主目标） |
+| `moonshot-v1-8k/32k/128k`（及 vision） | **8k / 32k / 128k** | 同左 | 输入+输出合计上限（M2） |
+
+- **精确值来源**：官方定价页 DocTable「上下文窗口」列（M13 `.md` 源：K3=`1,048,576 tokens`；K2.7-code/highspeed/K2.6=`262,144 tokens`）。模型列表/说明里的「1M / 256k」视为营销近似，**不得**当作 `context_window` 填值。
+- 建议 RxyCode：`kimi-k3` → `context_window = 1_048_576`，`compaction_threshold ≈ 943_000`（≈90%）；`kimi-k2.7-code` / `highspeed` / `kimi-k2.6` → `262_144` / `≈236_000`。
+
+[来源 M13, M2, M3, M10]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **兼容**：请求/响应兼容 OpenAI Chat Completions；`base_url=https://api.moonshot.cn/v1`，端点 `/v1/chat/completions`（M4）。可用官方 OpenAI SDK。
+- **tools**：支持 Tool Use / `tool_calls`（M5/M16）；K3 另支持 `tool_choice`: `auto`/`none`/`required`；`kimi-k2.6` / `kimi-k2.7-code` **不支持** `required`（传入报错）（M3）。
+- **专有扩展**：`thinking`（K2.x，常经 `extra_body`）；messages 上 `partial`；K3 动态工具 system message（`tools` 无 `content`）；可选顶层 **`prompt_cache_key`**（M5/M6）。
+- RxyCode 现状 `ChatOpenAI` 路径可对接；K2.x 的 `thinking` 需 `extra_body`。
+
+[来源 M4, M3, M5, M6, M16]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制 | **自动** Context Caching；**无需** cache ID / 手动 TTL / 显式 `cache_control` 断点（M7） |
+| 最小前缀 | 前一请求 **prompt tokens > 256** 才会被缓存；**< 256 不缓存、丢弃**（M7/M10） |
+| TTL | **系统自动管理**；现行指南写「无需管理 TTL」（M7）。旧「手动 Cache 创建/续期计费」叙述以现行自动机制为准，勿混用历史公测文档 |
+| 可选优化 | 请求体 **`prompt_cache_key`**（string）：提高相似请求命中率；Coding Agent 用稳定 session/task id；Kimi Code Plan 场景文档称必填以提高命中（M5/M6 OpenAPI） |
+| usage 命中字段 | **`usage.cached_tokens`**（OpenAPI `ChatCompletionResponse` / `ChatCompletionChunk`）（M5/M6）。**未找到** `prompt_cache_hit_tokens` 字段名——A13 骨架占位若写该名，应以本报告 `cached_tokens` 为准 |
+| 缓存写入价 | 现行首页/自动缓存说明 **未找到** 单独「缓存写入」单价；计费为 **输入（未命中）** vs **缓存命中** 两档（M1/M12） |
+| 失效 / 不命中 | **已证实**：切换 **`reasoning_effort` 档位会破坏前缀缓存命中**（M3 明确警告）。**最小前缀**：前一请求 prompt &lt;256 不进入缓存（M7）。**未找到**「改 system / 知识文档 / 工具定义 / 截断 / 切 API key」的逐项确定性失效清单——官方仅要求知识内容、system prompt、工具定义**相对稳定以提高命中率**（M7 注意事项），不得写成已证实 bust 规则 |
+| 多轮建议 | 固定长大上下文放在 `messages` **最前**（可在 system 之前），其后追加问答（M7） |
+
+[来源 M7, M5, M6, M3, M10, M1]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+| 项 | `kimi-k3` | `kimi-k2.7-code`(+highspeed) | `kimi-k2.6` |
+|---|---|---|---|
+| 适配 | **适配** → `supports_reasoning=True`，`thinking_default_on=True` | 同左（始终思考） | 同左（**默认** enabled） |
+| 开关 | **无** `thinking`；始终推理 | 勿传 / 仅 `{"type":"enabled","keep":"all"}`；`disabled` **报错** | `thinking.type`=`enabled`（默认）/`disabled`；`keep`=`null`（默认）/`"all"` |
+| effort | 顶层 **`reasoning_effort`**: `low`/`high`/`max`，**默认 `max`** | 不支持 | 不支持 |
+| 输出字段 | `message.reasoning_content`；流式在 **`delta.reasoning_content`**（先于 `content`） | 同左 | 同左（enabled 时） |
+| 采样参数 | `temperature` **固定 1.0**、`top_p` **固定 0.95**、`n`=1、`presence/frequency_penalty`=0；**建议不要显式传入**，改值报错（M3/M10） | 同左（temperature 固定 1.0） | 思考时 temp=1.0 / 非思考 0.6；top_p 固定 0.95 等 |
+
+- K3：**关不了思考**；嫌长则把 `reasoning_effort` 设为 `low`（M10 FAQ）。
+- **切换 `reasoning_effort` 会破坏前缀缓存**——应在会话开始前固定档位（M3）。
+
+[来源 M8, M9, M3, M10]
+
+**6. 官方 tokenizer**
+
+- **未找到** tiktoken 兼容 encoding 名。
+- 官方推荐：调用 **`POST /v1/tokenizers/estimate-token-count`**，取 `data.total_tokens`（M11）。
+- 计费概念页：中文大约 **1 Token ≈ 1.5–2 个汉字**（M12）——仅近似。
+
+RxyCode 建议（A5 可落地、启发式）：`tokenizer = "chars:1.75"`（取 1.5–2 中点；**非**官方 encoding），注释「精确计数走 estimate-token-count / usage」；**勿**写 `hf:`。
+
+[来源 M11, M12]
+
+**7. 定价（CNY / 1M tokens；中国区；as_of = 2026-08-02 查阅 M13 定价页 `.md` 源表）**
+
+| 型号 | 输入（缓存未命中） | 输入（缓存命中） | 输出 | 缓存写入 | 上下文窗口（同页） |
+|---|---|---|---|---|---|
+| `kimi-k3` | **¥20.00** | **¥2.00** | **¥100.00** | **未找到**单独写入价 | 1,048,576 |
+| `kimi-k2.7-code` | **¥6.50** | **¥1.30** | **¥27.00** | **未找到** | 262,144 |
+| `kimi-k2.7-code-highspeed` | **¥13.00** | **¥2.60** | **¥54.00** | **未找到** | 262,144 |
+| `kimi-k2.6` | **¥6.50** | **¥1.10** | **¥27.00** | **未找到** | 262,144 |
+
+- **不得**把 `kimi-k2.7-code-highspeed` 与普通 `kimi-k2.7-code` 共用价格（M13 chat-k27-code 分两行）。
+- 首页卡片（M1）未单独展示 highspeed 价；**填值以 M13 定价页为准**。
+- K3：**不按上下文长度分段计价**（M10 FAQ）；思考 token 计入消耗（M8）。
+- 国际站 USD 价与 CNY **不得混用**；本批不填 USD。
+- `source_url`：`https://platform.kimi.com/docs/pricing/chat-k3` / `chat-k27-code` / `chat-k26`。
+
+[来源 M13, M12, M10, M1]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT / 吞吐 SLA | 固定 TTFT **未找到**。缓存页称长文本场景首 Token 延迟平均可降至 **5s 内**（相对叙述，非硬 SLA）（M7） |
+| 加速档 | **`kimi-k2.7-code-highspeed`**：约 **180 Tokens/s**，短上下文可达 **260**（M2）——独立 model id，且 **单价约为普通版 2 倍**（见 Q7） |
+| 限流 | 按账户 **累计充值金额** 分 Tier（M14 DocTable）。代金券不计入累计充值；异常行为可触发不可解除风控限速（M14） |
+| K3 访问 | 最低充值 **10 元** 解锁；注册赠送代金券 **不可** 用于 K3（M10） |
+
+M14 阶梯（并发 / RPM / TPM / TPD）：
+
+| Tier | 累计充值 | 并发 | RPM | TPM | TPD |
+|---|---|---|---|---|---|
+| Tier0 | ¥0 | 1 | 3 | 500,000 | 1,500,000 |
+| Tier1 | ¥50 | 50 | 200 | 2,000,000 | Unlimited |
+| Tier2 | ¥100 | 100 | 500 | 3,000,000 | Unlimited |
+| Tier3 | ¥500 | 200 | 5,000 | 3,000,000 | Unlimited |
+| Tier4 | ¥5,000 | 400 | 5,000 | 4,000,000 | Unlimited |
+| Tier5 | ¥20,000 | 1,000 | 10,000 | 5,000,000 | Unlimited |
+
+[来源 M14, M2, M7, M10]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| Preserved Thinking / 工具链 | **K3**：多轮与工具调用须把 API 返回的 **完整 assistant message 原样回传**（含 `reasoning_content`、`tool_calls`）（M8/M9/M10） |
+| K2.7-code | Preserved Thinking **始终开** → **必须**回传历史 `reasoning_content` |
+| K2.6 | 默认 `thinking.keep=null` 不保留历史思考；`keep:"all"` 时同须原样回传 |
+| 单轮工具循环 | 同轮多步工具内应保留全部 `reasoning_content`（M8） |
+| 缓存 | 稳定前缀 + 可选稳定 `prompt_cache_key`；**勿中途切换 `reasoning_effort`**（M3/M7） |
+| `max_tokens` | 思考模型建议 `max_tokens>=16000`（或使用 `max_completion_tokens`）以免截断 reasoning+content（M8） |
+
+[来源 M8, M9, M10, M3, M7]
+
+#### ③ 对 RxyCode 的含义（A13 照抄用；审计通过前禁止写入代码）
+
+```text
+# ModelCapabilities（按型号分条；骨架示意）
+# --- kimi-k3 ---
+context_window = 1_048_576            # 定价页精确值；非营销「1M」
+compaction_threshold = 943_000        # ≈90%
+max_output_tokens = 131_072           # 默认；上限可至 1_048_576（勿超上下文）
+supports_function_calling = True
+supports_vision = True                # 原生视觉；另支持 video（M10）
+supports_reasoning = True
+thinking_default_on = True            # 始终推理；默认 reasoning_effort=max
+supports_prompt_cache = True          # 自动前缀缓存
+structured_output = "json_schema"     # + json_object（M10）
+prompt_variant = "kimi-k3"
+tokenizer = "chars:1.75"              # 启发式；精确走 estimate-token-count
+# effort（Chat Completions 顶层）
+#   reasoning_effort = "low"|"high"|"max"（默认 max；无 medium）
+effort_presets = {"fast": "low", "balanced": "high", "deep": "max"}
+# 勿显式传 temperature/top_p/...（固定值，改则报错）
+# 可选: prompt_cache_key = 稳定 session/task id
+
+# --- kimi-k2.7-code ---
+# context_window = 262_144；thinking 始终开 + keep=all
+# pricing: input=6.50, cached=1.30, output=27.00
+
+# --- kimi-k2.7-code-highspeed ---
+# context_window = 262_144；能力同 k2.7-code；更快
+# pricing: input=13.00, cached=2.60, output=54.00  # 勿与普通版共用
+
+# --- kimi-k2.6 ---
+# context_window = 262_144；thinking 默认 enabled；可 disabled
+# Preserved Thinking: extra_body thinking.keep="all"
+# pricing: input=6.50, cached=1.10, output=27.00
+
+# UsageFieldMap（官方 OpenAPI）
+cache_read_flat = ("cached_tokens",)   # 非 prompt_cache_hit_tokens
+cache_read_nested = ()
+reasoning = ()                         # reasoning 在 message.reasoning_content，非 usage 嵌套字段
+
+# ModelPricing（CNY/1M；as_of=2026-08-02；source_url=M13）
+# k3:        input=20.00, cached=2.00,  output=100.00, cache_write=None
+# k2.7:      input=6.50,  cached=1.30,  output=27.00,  cache_write=None
+# k2.7-hs:   input=13.00, cached=2.60,  output=54.00,  cache_write=None
+# k2.6:      input=6.50,  cached=1.10,  output=27.00,  cache_write=None
+# 货币：CNY（中国区）；勿填国际站 USD
+
+# 会话契约
+# - base_url: https://api.moonshot.cn/v1 ；MA4 不引入新 SDK
+# - 工具/多轮：原样回传完整 assistant（含 reasoning_content）
+# - K3：会话开始前固定 reasoning_effort（切换会 bust 前缀缓存，M3 已证实）
+# - 缓存：自动；prompt>256；保持初始前缀相对稳定以提高命中（逐项失效规则未找到）
+# - limits: Tier0–5 见 Q8（M14）
+```
 
 ### §7.4 GLM / 智谱（A0 批 4）
 
-> 状态：**待调研**。审计通过前，A14 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok 自审·rev2 + DeepSeek + GPT-5.6-Luna 复审均通过。A14 可按本分区填充数值。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 4 · GLM / 智谱（主写 GLM-5.2 / 5.1 / 5 / 5-Turbo / 4.7；含 Ark 入口） |
+| 调研日期 | 2026-08-02（rev2 同日修订） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://open.bigmodel.cn/ + https://console.volcengine.com/ark/ |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| G1 | 模型概览 | https://docs.bigmodel.cn/cn/guide/start/model-overview |
+| G2 | GLM-5.2 型号页 | https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2 |
+| G3 | 新品发布（更新日期） | https://docs.bigmodel.cn/cn/update/new-releases |
+| G4 | API 快速开始 / 端点 | https://docs.bigmodel.cn/cn/api/introduction |
+| G5 | OpenAI API 兼容 | https://docs.bigmodel.cn/cn/guide/develop/openai/introduction |
+| G6 | 核心参数（thinking / reasoning_effort / max_tokens） | https://docs.bigmodel.cn/cn/guide/start/concept-param |
+| G7 | 深度思考 Thinking | https://docs.bigmodel.cn/cn/guide/capabilities/thinking |
+| G8 | 思考模式（Interleaved / Preserved / clear_thinking） | https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode |
+| G9 | 上下文缓存 | https://docs.bigmodel.cn/cn/guide/capabilities/cache |
+| G10 | Function Calling | https://docs.bigmodel.cn/cn/guide/capabilities/function-calling |
+| G11 | 文本分词器 API | https://docs.bigmodel.cn/api-reference/模型-api/文本分词器 |
+| G12 | 速率限制 | https://docs.bigmodel.cn/cn/api/rate-limit |
+| G13 | 产品定价页 | https://open.bigmodel.cn/pricing |
+| G14 | 火山方舟 Coding Plan（GLM 接入说明，社区/官文） | https://developer.volcengine.com/articles/7632697946764476452 |
+| G15 | 方舟 Coding OpenAI 兼容端点（行业常用配置） | `https://ark.cn-beijing.volces.com/api/coding/v3`（见方舟 Coding Plan 配置指南） |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+| API model id（小写） | 定位 | 官方上下文表述 | 最近发布/更新（G3） | 备注 |
+|---|---|---|---|---|
+| `glm-5.2` | 最新旗舰；1M 长程 Coding | 1M | **2026-06-16** 上线 | RxyCode **主目标** |
+| `glm-5.1` | 长程任务 / Coding 对齐 Opus 4.6 | 200K | **2026-04-07** | |
+| `glm-5` | Agentic 长程规划 | 200K | **2026-02-12** | |
+| `glm-5-turbo` | 龙虾/长任务吞吐优化 | 200K | **2026-03-15** | |
+| `glm-5v-turbo` | 多模态 Coding | 200K | **2026-04-02** | 视觉 |
+| `glm-4.7` | 通用对话/推理/Agent | 200K | **2025-12-22** 基座上线 | 默认强制思考（见 Q5）；**勿**与 Flash 日期混淆 |
+| `glm-4.7-flash` | 免费普惠 | 200K | **2026-01-19** | 与 `glm-4.7` 基座分列 |
+| `glm-4.6` | 高级编码/工具 | 200K | **2025-09-30** | 默认「混合 thinking」 |
+| `glm-4.5` / `glm-4.5-air` / `airx` | 高性价比 / 极速 | 128K | **2025-07-28**（4.5 系列公告） | air/airx 同系列日期以 G3 4.5 公告为准 |
+| `glm-4-long` | 超长文本 | 1M | G3 **未单独列本日** → 标未找到首发日 | max output 4K（G1） |
+
+- 弃用：GLM-Z1 系列（2025-11-15）、GLM-4-0520（2025-12-30）等见 G1「即将弃用」。
+- Ark Coding Plan 公开文案已列 `glm-5.1` / `glm-4.7` 等（G14）；模型行为以智谱官方文档为准，Ark 侧为托管入口。
+
+[来源 G1, G2, G3, G14]
+
+**2. Context window（token）**
+
+| 型号 | 官方表述（G1） | 最大输出（官方） | 上下文精确整数 |
+|---|---|---|---|
+| `glm-5.2` | **1M** | 128K；`max_tokens` 默认 **65536**、最大 **131072**（G6，此为精确值） | **未找到**（无「1,048,576」类列） |
+| `glm-5.1` / `glm-5` / `glm-5-turbo` / `glm-4.7` / `glm-4.6` | **200K** | 128K；`max_tokens` 最大 **131072**（G6） | **未找到** |
+| `glm-4.5-air` 系 | **128K** | 96K；`max_tokens` 最大 **98304**（G6） | **未找到** |
+| `glm-4-long` | **1M** | 4K | **未找到** |
+
+- **官方结论**：上下文以 **1M / 200K / 128K** 表述为准；上下文窗口的精确 token 整数 **未找到**。
+- **可证实的精确输出上限**（G6 表）：如 `glm-5.2` 等 `max_tokens` 最大 **131072**；`glm-4.5-air` 最大 **98304**。
+- **项目侧启发式（非官方精确值，A14 填值时须注释）**：若实现层需要整数 `context_window`，可暂用 `1_048_576`（对应官方「1M」）、`200_000`（「200K」）、`128_000`（「128K」）——**不得**写成已从官方证实的精确上下文。审计门以「未找到精确整数」为准。
+
+[来源 G1, G2, G6]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **兼容**：官方提供 OpenAI 兼容接口；`base_url=https://open.bigmodel.cn/api/paas/v4/`，改 key + base_url 即可用 OpenAI SDK（G5）。HTTP 端点：`https://open.bigmodel.cn/api/paas/v4/chat/completions`（G4）。
+- **tools**：支持 Function Calling / tools（G5/G10 示例）。
+- **差异**：`temperature` 区间官方注明为 **(0,1)**；`do_sample=false`（temperature=0）在 OpenAI 调用中不适用（G5）。
+- **Ark 入口**：OpenAI 协议 Coding 端点常用 `https://ark.cn-beijing.volces.com/api/coding/v3`，模型如 `glm-5.1`（G14/G15）。**不得**用普通 Ark `/api/v3` 误当 Coding Plan（行业指南警示会产生额外按量费用）。
+- RxyCode：`ChatOpenAI` + 上述 base_url；`thinking` / `clear_thinking` 常经 `extra_body`。
+
+[来源 G4, G5, G10, G14]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制 | **隐式/自动**上下文缓存；无需手动配置 cache ID（G9） |
+| 最小缓存块 | **未找到**明确最小 token 门槛（如 256/1024） |
+| TTL | 仅写「有合理的时效性，过期后会重新计算」——**具体 TTL 时长未找到**（G9） |
+| usage 命中字段 | **`usage.prompt_tokens_details.cached_tokens`**（G9）。**未找到**顶层 `cached_tokens` 或 `prompt_cache_hit_tokens` 作为官方主字段——A14 骨架若写 `prompt_cache_hit_tokens`，应以本报告 nested 路径为准 |
+| 缓存写入/存储价 | 精确单价：**未找到**可独立核验的官方文本表（见 Q7）。G9 仅证实缓存命中按更低价计费 |
+| 失效 / 不命中 | **已证实建议**：内容完全相同命中率最高；轻微格式差异可能影响；避免频繁内容变化（G9）。**未找到**「改 tools / 截断 / 切 key / 切模型」的逐项确定性 bust 清单 |
+| 优化 | 稳定 system prompt；长文档放 system；合理组织历史（G9） |
+
+[来源 G9, G13]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+| 项 | 结论 |
+|---|---|
+| 适配 | **适配** → `supports_reasoning=True`；`thinking_default_on=True`（`thinking` 默认 `{"type":"enabled"}`，G6/G7） |
+| 开关 | `thinking.type`=`enabled`（默认）/`disabled`。GLM-5.2/5.1/5/5-Turbo/5v-Turbo/4.6/4.6V/4.5：**enabled 时为模型自动判断是否思考**；**GLM-4.7 / 4.5V：强制思考**（G7）。GLM-5.2/5.1/5/4.7 系列默认开启 Thinking，异于 GLM-4.6 默认「混合 thinking」（G8） |
+| effort | 顶层 **`reasoning_effort`**，仅 **GLM-5.2 及以上**：`max`（默认推荐）/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`（G6/G7）。映射：`none`/`minimal`→放弃思考；`low`/`medium`→映射为 `high`；`xhigh`→映射为 `max`（G6） |
+| 输出字段 | `message.reasoning_content`；流式 **`delta.reasoning_content`**（G7） |
+| Preserved Thinking | Coding Plan 端点**默认开**；标准 API **默认关**。标准 API 用 `thinking.clear_thinking=false` 开启，并**原样回传**完整未改动的历史 `reasoning_content`（G8） |
+| Interleaved + tools | 工具调用间可持续思考；**必须**保留并回传 reasoning content（G8） |
+| 采样参数 | 文档**未找到**「thinking 模式下拒绝 temperature」明文；示例常用 `temperature=1.0`。OpenAI 兼容路径 temperature∈(0,1)（G5） |
+
+[来源 G6, G7, G8]
+
+**6. 官方 tokenizer**
+
+- 官方 API：`POST /paas/v4/tokenizer`（完整 URL 前缀 `https://open.bigmodel.cn/api/`）（G11）。
+- **未找到** tiktoken 兼容 encoding 名。
+- 概念页近似：约 **1 token ≈ 0.75 英文单词或 1.5 个中文字符**（G6）→ 中文启发式约 `chars:1.5`。
+
+RxyCode 建议：`tokenizer = "chars:1.5"`（启发式），精确计数走 tokenizer API / usage；**勿**写 `hf:`。
+
+[来源 G11, G6]
+
+**7. 定价（CNY / 1M tokens；中国区）**
+
+| 项 | 结论 |
+|---|---|
+| 定价页 URL | https://open.bigmodel.cn/pricing（G13） |
+| 可核验文本证据 | G13 为**前端渲染**页面；本次及复审抓取均**无法**从独立官方 Markdown/静态文本复核 GLM-5.2 / 5.1 / 5-Turbo / GLM-5 / GLM-4.7 的精确阶梯单价 |
+| 官方已证实（非单价） | 存在按量计费与缓存命中优惠价机制（G9）；具体数字以控制台/定价页实时展示为准 |
+| 本批写入规则 | 输入 / 输出 / 缓存命中 / 缓存存储 **精确单价一律标「未找到」**——不得把不可核验抓取或二手摘要写进 §7 已证实结论 |
+| Ark | Coding Plan 为订阅额度路径，与按量价不同（G14）；亦不得用未核验数字填充 |
+| `as_of` / `source_url` | `as_of` 可记查阅日；`source_url=G13`；**数值字段保持 None / 未找到**，待后续能摘录官方静态表或人工截图核验后再补 |
+
+[来源 G13, G9, G14]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT / 吞吐 SLA | 固定 TTFT/TPS **未找到** |
+| 加速档 | `glm-4.5-airx`、`glm-4.7-flashx`、`glm-4-flashx-*` 等定位为高速/高并发（G1）；**非**统一 `service_tier` 字段 |
+| 限流 | 按**用户权益等级 × 模型**设**并发**上限；具体 RPM/TPM 数字在控制台「速率限制」页查看，文档页**无公开全表数字** → 标 **未找到公开阶梯表（待控制台）**（G12）。Coding Plan：Lite/Pro/Max 与并发建议相关，低峰期动态提升（G12） |
+
+[来源 G12, G1]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| 交错思考 + 工具 | **必须**显式保留并回传 `reasoning_content`（与 tool 结果一并）（G8） |
+| Preserved Thinking | 标准 API：`clear_thinking=false` + 原样回传连续 reasoning；改序/篡改会降效果并影响缓存命中（G8） |
+| Coding Plan 端点 | Preserved Thinking **默认开**（G8） |
+| 缓存 | 稳定前缀 / system；完全相同内容命中最好（G9） |
+| Ark | base_url 用 Coding `/api/coding/v3`；模型 id 含 `glm`；勿与豆包等混用同一 provider 匹配宽条件 |
+
+[来源 G8, G9, G14]
+
+#### ③ 对 RxyCode 的含义（A14 照抄用；审计通过前禁止写入代码）
+
+```text
+# ModelCapabilities（glm-5.2 主骨架；其他型号改 window）
+# --- 官方已证实 ---
+# context 官方表述 = "1M"（精确整数：未找到）
+max_output_tokens = 131_072         # G6 精确最大 max_tokens（可证实）
+supports_function_calling = True
+supports_vision = False             # 文本旗舰；视觉用 glm-5v-turbo 等另条
+supports_reasoning = True
+thinking_default_on = True          # thinking.type 默认 enabled
+supports_prompt_cache = True        # 隐式缓存
+structured_output = "json_schema"   # 见结构化输出能力页（另）
+prompt_variant = "glm-5.2"
+tokenizer = "chars:1.5"             # 启发式；精确走 /paas/v4/tokenizer
+# thinking: extra_body={"thinking": {"type": "enabled"|"disabled", "clear_thinking": False}}
+# effort（仅 glm-5.2+）: reasoning_effort = max|xhigh|high|medium|low|minimal|none
+#   映射: none/minimal→弃思考; low/medium→high; xhigh→max; 默认 max
+effort_presets = {"fast": "low", "balanced": "high", "deep": "max"}  # 注意 low→官方映射 high
+
+# --- 项目侧启发式（非官方精确值；须注释）---
+# context_window = 1_048_576        # 仅对应官方「1M」字面；官方未公布精确整数
+# compaction_threshold = 943_000    # 同上启发式
+# 200K 系列可暂用 200_000；128K 系列可暂用 128_000 —— 皆非官方精确值
+
+# UsageFieldMap
+cache_read_flat = ()
+cache_read_nested = ("prompt_tokens_details", "cached_tokens")  # 非 prompt_cache_hit_tokens
+reasoning = ()  # reasoning_content 在 message/delta，不在 usage
+
+# ModelPricing（CNY/1M；source_url=G13）
+# 精确单价：未找到（G13 前端渲染，无独立可摘录官方文本）
+# input_per_mtok = None
+# output_per_mtok = None
+# cached_input_per_mtok = None
+# as_of = "2026-08-02"  # 仅表示查阅日，不代表已核验单价
+# Ark Coding Plan 走订阅额度，勿与按量价混用
+
+# 识别（matches）
+# - "bigmodel" in url or "zhipu" in url → True
+# - "volces.com" in url → 仅当 "glm" in model_name
+# - model_name.startswith("glm-") → True
+# base_url 官方: https://open.bigmodel.cn/api/paas/v4/
+# base_url Ark Coding: https://ark.cn-beijing.volces.com/api/coding/v3
+
+# 会话契约
+# - 工具链：回传 reasoning_content（交错思考）
+# - Agent/编码：标准 API 设 clear_thinking=false 并原样回传 reasoning
+# - temperature: OpenAI 兼容路径 (0,1)；勿假设 thinking 拒绝采样（未找到）
+```
 
 ### §7.5 MiniMax（A0 批 5）
 
-> 状态：**待调研**。审计通过前，A15 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok 自审·rev2 + DeepSeek + GPT-5.6-Luna 复审均通过。A15 可按本分区填充数值。
+>
+> **修订历程**：rev1（首轮）→ rev2（Luna：Q2 `max_completion_tokens` 上限；Q5 按 Chat Completions / Responses 端点区分 thinking 默认与 `reasoning.effort`）→ 终审通过。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 5 · MiniMax（主写 MiniMax-M3 / M2.7 系列；含 M2.5 / M2.1 / M2 及 highspeed） |
+| 调研日期 | 2026-08-02（rev2 同日修订） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://platform.minimaxi.com/（国际镜像文档 https://platform.minimax.io/） |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| MM1 | 接口概览 / 型号与上下文 | https://platform.minimaxi.com/docs/api-reference/api-overview |
+| MM2 | 模型发布 Changelog | https://platform.minimaxi.com/docs/release-notes/models |
+| MM3 | Chat Completions（OpenAI 兼容 OpenAPI） | https://platform.minimaxi.com/docs/api-reference/text-chat-openai |
+| MM4 | OpenAI SDK 接入 | https://platform.minimaxi.com/docs/api-reference/text-openai-api |
+| MM5 | Prompt 缓存（被动） | https://platform.minimaxi.com/docs/api-reference/text-prompt-caching |
+| MM6 | Anthropic 主动缓存 | https://platform.minimaxi.com/docs/api-reference/anthropic-api-compatible-cache |
+| MM7 | 工具使用 & 交错思维链 | https://platform.minimaxi.com/docs/guides/text-m3-function-call |
+| MM8 | 按量计费定价 | https://platform.minimaxi.com/docs/guides/pricing-paygo |
+| MM9 | 速率限制 | https://platform.minimaxi.com/docs/guides/rate-limits |
+| MM10 | Token 估算（Responses） | https://platform.minimaxi.com/docs/api-reference/responses-input-tokens |
+| MM11 | 国际站按量定价（USD，对照） | https://platform.minimax.io/docs/guides/pricing-paygo |
+| MM12 | 国际站速率限制（对照） | https://platform.minimax.io/docs/guides/rate-limits |
+| MM13 | Responses API（Create Response） | https://platform.minimaxi.com/docs/api-reference/responses-create |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+| API model id（官方大小写） | 定位 | 上下文（MM1） | 最近发布（MM2） | 备注 |
+|---|---|---|---|---|
+| `MiniMax-M3` | 最新 M 系列；Agent / 工具 / 编码 / 长上下文 | **1,000,000** | **2026-06-01** | RxyCode **主目标** |
+| `MiniMax-M2.7` | 自我迭代；约 60 tps（营销表述） | **204800** | **2026-03-18** | |
+| `MiniMax-M2.7-highspeed` | 同效果极速；约 100 tps（营销表述） | **204800** | **2026-03-18** | 独立定价（Q7） |
+| `MiniMax-M2.5` | 性价比 / 复杂任务 | **204800** | **2026-02**（Changelog 月粒度） | Legacy 定价区 |
+| `MiniMax-M2.5-highspeed` | 极速版 | **204800** | 同上 | 独立定价 |
+| `MiniMax-M2.1` | 多语言编程 | **204800** | **2025-12-22** | Legacy |
+| `MiniMax-M2.1-highspeed` | 极速版 | **204800** | 同上 | 独立定价 |
+| `MiniMax-M2` | Agent / 高效编码 | **204800** | **2025-10-27** | Legacy；被动缓存支持表**未列**本型号（见 Q4） |
+
+- 列名口径：国内概览表头为「输入输出总 token」（MM1）；国际概览写明最大 token 为 **input + output 合计**（国际 MM1 镜像）。
+- 非文本主线：MiniMax-H3（视频，2026-07-31）等不写入本批文本 provider 主表。
+
+[来源 MM1, MM2]
+
+**2. Context window（token）**
+
+| 型号 | 官方精确整数（MM1） | `max_completion_tokens`（MM3 schema） | 备注 |
+|---|---|---|---|
+| `MiniMax-M3` | **1,000,000** | 推荐 **131072**（128K）；上限 **524288**（512K） | 窗口为输入+输出合计 |
+| `MiniMax-M2.7` / `-highspeed` 及 M2.5 / M2.1 / M2 系 | **204800** | 推荐 **65536**（64K）；上限 **204800**（200K） | 同上合计口径 |
+
+- 与 GLM「1M/200K」营销字面不同：MiniMax 概览表给出**可核验精确整数** `1,000,000` / `204800`。
+- 输出长度：以 Chat Completions 官方 schema 的 `max_completion_tokens` 为准（MM3）；`max_tokens` 为旧参数，文档标明已弃用、请改用 `max_completion_tokens`（MM3）。Responses 另有 `max_output_tokens` 字段，**未找到**与上表同级的按型号数值上限说明（MM13）。
+
+[来源 MM1, MM3, MM4, MM13]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **兼容**：官方提供 OpenAI Chat Completions 与 OpenAI SDK；国内 `OPENAI_BASE_URL=https://api.minimaxi.com/v1`，国际 `https://api.minimax.io/v1`（MM4）。
+- **tools**：支持 `tools`；文档写明弃用的 `function_call` **不支持**，请用 `tools`（MM4）。交错工具调用见 MM7。
+- **Anthropic 兼容**：官方推荐 Anthropic SDK；国内 `ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic`（MM5 示例）。
+- **差异（OpenAI 路径）**：`temperature` ∈ **[0, 2]**，默认 **1**，越界报错；`presence_penalty` / `frequency_penalty` / `logit_bias` 等**会被忽略**；`n` 仅支持 **1**；M3 支持图/视频 content parts，**音频输入当前不支持**（MM4）。
+- RxyCode：`ChatOpenAI` + 上述 base_url；thinking / `reasoning_split` 经 `extra_body`（见 Q5）。
+
+[来源 MM3, MM4, MM7]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制（OpenAI / 默认） | **被动/自动缓存**（无需改调用方式）；相对的 Anthropic `cache_control` 称「主动缓存」（MM5） |
+| 最小缓存块 | 被动缓存适用于输入 **≥ 512 tokens** 的调用（MM5） |
+| TTL（被动） | 「根据系统负载自动调整过期时间」——**固定 TTL 时长未找到**（MM5） |
+| TTL（主动 Anthropic） | **5 分钟**；命中可自动续期、无额外费用（MM6） |
+| usage 命中字段（OpenAI） | **`usage.prompt_tokens_details.cached_tokens`**（MM5 OpenAI 示例 / MM3 schema） |
+| usage 命中字段（Anthropic） | `cache_read_input_tokens` / `cache_creation_input_tokens`（MM5/MM6）；与 OpenAI 路径不同 |
+| 写入计费 | 被动：写入**无额外计费**；主动：首次写入额外计费（MM5 对比表） |
+| 支持型号 | 被动：M3、M2.7/M2.5/M2.1 **系列**；主动：M2.7/M2.5/M2.1/M2 **系列**（**不含 M3**）（MM5） |
+| 失效 / 不命中 | 前缀匹配，顺序为 **工具定义 → 系统提示词 → 历史对话**；**任意模块内容变更都可能影响缓存效果**（MM5）。**未找到**「截断 / 切 key / 切模型」的逐项确定性 bust 清单 |
+| 优化 | 静态内容靠前，动态用户信息靠后（MM5） |
+
+[来源 MM5, MM6, MM3]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+**必须按 endpoint 区分**（不可把 Chat Completions 默认泛化到 Responses）：
+
+| 端点 | M3 默认 | M3 开关 | effort / 深度 | M2.x |
+|---|---|---|---|---|
+| **Chat Completions / OpenAI SDK**（MM3/MM4） | 省略 `thinking` → **adaptive 开启**（响应含 thinking） | `thinking.type`=`adaptive` \| `disabled` | **本端点无** `reasoning.effort`；深度不可调 | thinking **无法关闭**；传 `disabled` 仍开 |
+| **Responses API**（MM13） | 省略 `reasoning` 或 `effort=none` → **默认关闭推理**（无 `type:"reasoning"` 输出项） | `reasoning.effort` 设为非 `none`（`minimal`/`low`/`medium`/`high`）→ 开启 Adaptive Thinking | 上述非 `none` 值**仅开/关**，**不会调节** M3 推理深度 | 推理**无法关闭**；即使 `effort=none` 仍开 |
+
+| 项 | 结论 |
+|---|---|
+| 适配 | **适配** → `supports_reasoning=True` |
+| `thinking_default_on`（RxyCode 主路径） | Chat Completions / `ChatOpenAI`：**True**（MM3/MM4）。若走 Responses：**False**（M3 默认 `effort=none`，MM13）——A15 若仅接线 Chat，填 True 并注释 Responses 差异 |
+| 输出字段（Chat） | `reasoning_split=true` → `reasoning_content` + `reasoning_details`（message / delta）；`false` → `content` 内 `<think>...</think>`（MM3/MM7） |
+| 输出字段（Responses） | 推理开启时出现 `type: "reasoning"` 输出项；usage 可含 `reasoning_tokens`（MM13） |
+| 采样参数 | Chat：`temperature` ∈ [0,2] 默认 1；**未找到**「thinking 模式下拒绝 temperature」明文（MM4） |
+
+[来源 MM3, MM4, MM7, MM13]
+
+**6. 官方 tokenizer**
+
+- **未找到** tiktoken 兼容 encoding 名。
+- 官方提供 Responses **Token 估算**接口：`POST /v1/responses/input_tokens`（MM10）。
+- 定价页估算：约 **1600 中文字符 ≈ 1000 tokens**（MM8）→ 中文启发式约 `chars:1.6`；国际页另有「约 750 英文词 ≈ 1000 tokens」（MM11）。
+
+RxyCode 建议：`tokenizer = "chars:1.6"`（启发式）；精确计数走 usage / Token 估算 API；**勿**写 `hf:`。
+
+[来源 MM8, MM10, MM11]
+
+**7. 定价（CNY / 1M tokens；中国区按量，MM8）**
+
+`as_of=2026-08-02`；`source_url=MM8`。下列为定价页**当前有效价**（M3 标「永久五折」后的划线后价格）。highspeed **不得**与普通版共用输入/输出价。
+
+| 型号 / 档 | 输入 | 输出 | 缓存读取 | 缓存写入 |
+|---|---|---|---|---|
+| `MiniMax-M3` 标准 ≤512k 输入 | **2.10** | **8.40** | **0.42** | **未找到**（被动写入无额外价；主动缓存不支持 M3） |
+| `MiniMax-M3` 标准 >512k 输入 | **4.20** | **16.80** | **0.84** | 同上 |
+| `MiniMax-M3` Priority ≤512k（`service_tier=priority`，1.5×） | **3.15** | **12.60** | **0.63** | 同上 |
+| `MiniMax-M3` Priority >512k | **6.30** | **25.20** | **1.26** | 同上 |
+| `MiniMax-M2.7` | **2.1** | **8.4** | **0.42** | **2.625** |
+| `MiniMax-M2.7-highspeed` | **4.2** | **16.8** | **0.42** | **2.625** |
+| `MiniMax-M2.5` / `M2.1` / `M2`（历史） | **2.1** | **8.4** | **0.21** | **2.625** |
+| 上述对应 `-highspeed`（历史） | **4.2** | **16.8** | **0.21** | **2.625** |
+
+- 长上下文：M3 输入 **>512k**（含缓存命中 tokens）走长上下文价（MM5/MM8）。
+- 国际 USD 对照见 MM11（例：M3 标准 ≤512k 现价 $0.30 / $1.20 / 缓存读 $0.06）；A15 中国区落地以 **CNY/MM8** 为准。
+- Token Plan / 积分：订阅路径，与按量价分列（MM8 文首）；勿混填。
+
+[来源 MM8, MM5, MM11]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT / 吞吐 SLA | 固定 TTFT **未找到**；概览「约 60/100 tps」为营销描述，**非**可合约 SLA |
+| 加速档 | ① 型号后缀 **`-highspeed`**（更高标称 tps + 独立单价）；② M3 **`service_tier=priority`**（优先准入，按标准价 1.5×，MM8） |
+| 限流（中国区 MM9，充值用户） | M3：**200 RPM / 10,000,000 TPM**；M2.7/M2.5/M2.1/M2（含 highspeed）：**500 RPM / 20,000,000 TPM** |
+| 限流（中国区免费用户） | M3：**20 RPM / 1,000,000 TPM**；M2 系：**20 RPM / 1,000,000 TPM**（MM9） |
+| 国际站对照（MM12） | 文档表直接列 M3 200/10M、M2 系 500/20M（**未分**免费/充值列）——以账号所属区域文档为准 |
+
+[来源 MM1, MM8, MM9, MM12]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| 交错思考 + 工具 | **必须**把完整 assistant 响应回传历史；`reasoning_split=true` 时含 `reasoning_details`；原生格式时**勿改**含 `<think>` 的 `content`（MM7） |
+| 缓存 | 稳定 tools/system/历史前缀；变更任一模块可能影响命中（MM5） |
+| M2.x thinking | 无法关闭；按默认思考链续接（MM4） |
+| 端点 | 国内 `api.minimaxi.com`，国际 `api.minimax.io`；**勿**把未在本批文档证实的旧域名当作官方主端点 |
+
+[来源 MM7, MM5, MM4]
+
+#### ③ 对 RxyCode 的含义（A15 照抄用；审计通过前禁止写入代码）
+
+```text
+# ModelCapabilities（MiniMax-M3 主骨架；M2.x 改 window / 定价）
+# --- 官方已证实（主路径 = Chat Completions / ChatOpenAI）---
+context_window = 1_000_000          # MM1 精确整数；输入+输出合计
+# M2.x: context_window = 204_800
+max_output_tokens = 524_288         # MM3：M3 max_completion_tokens 上限；推荐默认 131_072
+# M2.x: max_output_tokens = 204_800；推荐 65_536
+supports_function_calling = True
+supports_vision = True              # M3 OpenAI 路径支持 image/video parts；音频未支持
+supports_reasoning = True
+thinking_default_on = True          # Chat Completions：省略 thinking → adaptive
+# 若走 Responses API：thinking_default_on = False（M3 默认 reasoning.effort=none）
+supports_prompt_cache = True        # 被动自动缓存（OpenAI 路径）
+structured_output = "json_schema"   # 以平台结构化能力页为准（若落地另核）
+prompt_variant = "minimax-m3"
+tokenizer = "chars:1.6"             # 启发式（1600 汉字≈1000 tokens）；精确走 usage / input_tokens
+# Chat thinking (M3): extra_body={"thinking": {"type": "adaptive"|"disabled"}, "reasoning_split": True}
+# M2.x Chat: thinking 关不掉；仍建议 reasoning_split=True 便于回传
+# Responses (M3): reasoning={"effort": "none"|"minimal"|"low"|"medium"|"high"}；非 none 仅开思考、不调深度
+# Chat 路径无 reasoning.effort → 勿把 DeepSeek/Kimi effort_presets 套到 Chat
+# service_tier: "priority" 可选（M3，1.5× 价）
+
+# UsageFieldMap（OpenAI Chat Completions）
+cache_read_flat = ()
+cache_read_nested = ("prompt_tokens_details", "cached_tokens")
+reasoning = ()  # reasoning_content / reasoning_details 在 message/delta，不在 usage
+# Anthropic 路径另计: cache_read_input_tokens / cache_creation_input_tokens
+# Responses usage 可含 reasoning_tokens（MM13）
+
+# ModelPricing（CNY/1M；source_url=MM8；as_of=2026-08-02；M3 标准 ≤512k）
+input_per_mtok = 2.10
+output_per_mtok = 8.40
+cached_input_per_mtok = 0.42
+# cache_write: M3 被动无额外写入价 → None；M2.7 写入 2.625
+# M2.7-highspeed: input 4.2 / output 16.8 / cache_read 0.42 / write 2.625
+# M3 >512k 或 priority：按 Q7 表切换，勿与 ≤512k 标准价混用
+
+# 识别（matches）
+# - "minimax" in url or "minimaxi" in url → True
+# - model_name 含 "minimax" / "MiniMax-" → True
+# base_url 国内: https://api.minimaxi.com/v1
+# base_url 国际: https://api.minimax.io/v1
+
+# 会话契约
+# - 工具链：完整回传 assistant（含 reasoning_details 或未改动的 <think> content）
+# - 被动缓存：≥512 input tokens；前缀 tools→system→history
+# - temperature: [0,2]，推荐 1.0
+```
 
 ### §7.6 MIMO / 小米（A0 批 6）
 
-> 状态：**待调研**。审计通过前，A16 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok 自审 + DeepSeek + GPT-5.6-Luna 均通过。A16 可按本分区填充数值。
+>
+> **修订历程**：rev1（首轮三方通过）→ rev1.1（用户反馈：补齐 **`mimo-v2.5` 并列主力**表述与 ③ 独立骨架；事实数值未改）。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 6 · MIMO / 小米 MiMo（**双主力** `mimo-v2.5-pro` + `mimo-v2.5`；含 UltraSpeed） |
+| 调研日期 | 2026-08-02（rev1.1 同日补表述） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://mimo.xiaomi.com/（产品页）；开发者文档主站 https://mimo.mi.com/（与 https://platform.xiaomimimo.com/ 同源） |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| X1 | 模型列表（能力 / 上下文 / 限流） | https://mimo.mi.com/docs/zh-CN/quick-start/summary/model |
+| X2 | 首次调用 API（base_url / 双协议） | https://mimo.mi.com/docs/zh-CN/quick-start/summary/first-api-call |
+| X3 | OpenAI Chat Completions | https://mimo.mi.com/docs/zh-CN/api/chat/openai-api |
+| X4 | OpenAI Responses API | https://mimo.mi.com/docs/zh-CN/api/chat/responses |
+| X5 | 深度思考 | https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/text-generation/deep-thinking |
+| X6 | 模型超参（temperature / top_p） | https://mimo.mi.com/docs/zh-CN/api/guidance/model-hyperparameters |
+| X7 | 速率限制 | https://mimo.mi.com/docs/zh-CN/api/guidance/rate-limit |
+| X8 | 按量计费定价 | https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go |
+| X9 | 模型下线 | https://mimo.mi.com/docs/zh-CN/updates/deprecate |
+| X10 | 模型发布 Changelog | https://mimo.mi.com/docs/zh-CN/updates/model |
+| X11 | 功能更新 | https://mimo.mi.com/docs/zh-CN/updates/feature |
+| X12 | API 接入 FAQ | https://mimo.mi.com/docs/zh-CN/quick-start/faq/api-integration |
+| X13 | mimo-v2.5-pro 型号页 | https://mimo.mi.com/models/zh-CN/mimo-v2.5-pro |
+| X14 | mimo-v2.5 型号页 | https://mimo.mi.com/models/zh-CN/mimo-v2.5 |
+| X15 | mimo-v2.5-pro-ultraspeed 型号页 | https://mimo.mi.com/models/zh-CN/mimo-v2.5-pro-ultraspeed |
+| X16 | UltraSpeed 1000tps 新闻 | https://mimo.mi.com/docs/zh-CN/news/latest/1000tps |
+| X17 | 产品主页（HySparse 论文入口，非 API 参数页） | https://mimo.xiaomi.com/ |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+RxyCode / A16 **双主力**（官方模型列表并列的文本生成主力，X1）：
+
+| API model id | 定位 | 发布（X10） | 备注 |
+|---|---|---|---|
+| `mimo-v2.5-pro` | 万亿参数**文本**旗舰；长程 Agent / 复杂推理 | **2026-04-23** | **主力 A**：纯文本编码/Agent 默认首选 |
+| `mimo-v2.5` | **原生全模态**（图/视/音/文）+ 深度思考 / 工具 / 联网 | **2026-04-23** | **主力 B**：多模态与「日常任务比肩 pro」路径（X14）；**不得**漏写或降为附属 |
+
+加速档与非 Chat 主线：
+
+| API model id | 定位 | 发布 / 说明 | 备注 |
+|---|---|---|---|
+| `mimo-v2.5-pro-ultraspeed` | UltraSpeed（独立 model id） | 新闻窗口见 X16（2026-06 申请制体验） | **3×** 定价；申请制/资源限量（X15/X16） |
+| `mimo-v2.5-asr` / `mimo-v2.5-tts*` | ASR / TTS | 2026-04-23 / 06-02 等 | 非文本 Chat 主线 |
+
+- **已下线（勿再用）**：`mimo-v2-pro` / `mimo-v2-omni` / `mimo-v2-flash` / `mimo-v2-tts` 于北京时间 **2026-06-30 00:00** 正式下线，原名称失效（X1/X9）。系统替换期曾路由到 v2.5 系，现应直接用 **`mimo-v2.5-pro` / `mimo-v2.5`** id。
+
+[来源 X1, X9, X10, X13, X14, X15]
+
+**2. Context window（token）**
+
+| 型号 | 官方表述（X1/X13/X14） | 最大输出（官方） | 上下文精确整数 |
+|---|---|---|---|
+| `mimo-v2.5-pro` / `mimo-v2.5` | 上下文窗口 **1M** | **128K** | **未找到**（无「1,048,576」类列） |
+| `mimo-v2.5-pro-ultraspeed` | 型号页未单列窗口数字；能力含 Cache；示例 `max_completion_tokens=131072`（X15） | **未找到**独立上限表 | **未找到** |
+
+- 可证实默认：`mimo-v2.5` 在未指定时 `max_completion_tokens` 默认 **32768**（相对旧 flash 的差异表，X9）。
+- **项目侧启发式（非官方精确值）**：若实现需要整数，可暂用 `context_window=1_048_576`、`max_output_tokens=131_072`（对应「1M」「128K」）——审计门以「精确整数未找到」为准。
+
+[来源 X1, X9, X13, X14, X15]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **兼容**：OpenAI Chat Completions `https://api.xiaomimimo.com/v1/chat/completions`；SDK `base_url=https://api.xiaomimimo.com/v1`（X2/X3）。
+- **Anthropic**：`https://api.xiaomimimo.com/anthropic`（Messages）（X2）。
+- **Responses**：`https://api.xiaomimimo.com/v1/responses`（2026-06-23 上线，X4/X11）；不支持 `background` / `previous_response_id` / `context_management` 等（X4）。
+- **Token Plan**：独立 base（示例 `https://token-plan-cn.xiaomimimo.com/v1`）与 `tp-` key；与按量 `sk-` **不可混用**（X2/X12）。
+- **tools**：支持函数调用 / `tools`（X1/X2/X5）；鉴权头 `api-key` 或 `Authorization: Bearer`（X3）。
+
+[来源 X2, X3, X4, X11, X12]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制 | 官方定价写明「前缀内容命中 Prompt Cache 时按命中价计费」（X8）；型号页列「Cache 缓存」能力（X13/X14）。**未找到** `cache_control` / 显式断点 API → 视为**服务端自动/隐式**前缀缓存 |
+| 最小缓存块 | **未找到** |
+| TTL | **未找到**固定时长（联网开关 FAQ 的「5 分钟缓存」仅针对联网开关生效延迟，**不得**当作 Prompt Cache TTL，X12） |
+| usage 命中字段 | OpenAPI schema：`usage.prompt_tokens_details.cached_tokens`（「命中缓存的 token 的数量」，X3）。深度思考示例中 `prompt_tokens_details` 可为 `{}`（X5） |
+| 缓存写入价 | 按量页：**限时免费**（X8）→ 精确写入单价标 **未找到 / 限时免费** |
+| 失效规则 | **未找到**改历史/截断/切 key/切模型的逐项 bust 清单 |
+| HySparse / KV Cache Sharing | 仅产品页论文入口（X17）；**未找到**对应 API 调用参数 |
+
+[来源 X3, X5, X8, X12, X13, X17]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+**必须按 endpoint 区分：**
+
+| 端点 | M3 类比：MiMo v2.5 | 开关 | effort |
+|---|---|---|---|
+| **Chat Completions**（X5） | `mimo-v2.5-pro` / `mimo-v2.5`：**默认开启**深度思考 | `thinking.type`=`enabled` \| `disabled`（经 `extra_body`） | **本端点无** `reasoning.effort` |
+| **Responses API**（X4） | `reasoning.effort`：`none` 关闭；`low`/`medium`/`high` **均开启且效果一致**（暂不区分强度） | 同上 effort | 省略时的默认值：**未找到**明文（示例常用 `none`） |
+
+| 项 | 结论 |
+|---|---|
+| 适配 | **适配** → `supports_reasoning=True` |
+| `thinking_default_on`（RxyCode 主路径 Chat） | **True**（X5）。若走 Responses：勿照抄 True——默认值未找到，按显式 `effort` 控制 |
+| 输出字段（Chat） | `message.reasoning_content`；流式 `delta.reasoning_content`；usage `completion_tokens_details.reasoning_tokens`（X5） |
+| 采样限制 | 思考模式下 **不支持自定义** `temperature`/`top_p`，传入也强制为 **1.0 / 0.95**（X5/X6） |
+| 非思考范围 | temperature ∈ **[0, 1.5]**，top_p ∈ **[0.01, 1.0]**（X6） |
+
+[来源 X4, X5, X6]
+
+**6. 官方 tokenizer**
+
+- **未找到** tiktoken 兼容 encoding 名。
+- **未找到**官方「N 汉字 ≈ 1 token」比例表（定价页无字符换算说明，X8）。
+- RxyCode：精确计数依赖 `usage`；启发式 tokenizer 标 **未找到官方推荐**——实现层可暂用通用 `chars:1.5` 并注释「非官方」。
+
+[来源 X8, X3]
+
+**7. 定价（CNY / 1M tokens；国内按量，X8；as_of=2026-08-02）**
+
+| 型号 | 输入（缓存命中） | 输入（未命中） | 输出 | 缓存写入 |
+|---|---|---|---|---|
+| `mimo-v2.5-pro` | **0.025** | **3.00** | **6.00** | 限时免费（精确单价未找到） |
+| `mimo-v2.5` | **0.02** | **1.00** | **2.00** | 同上 |
+| `mimo-v2.5-pro-ultraspeed` | **0.075**（=3× Pro） | **9** | **18** | 同上口径（X15） |
+
+- 海外 USD 见 X8/X13（Pro：$0.0036 / $0.435 / $0.87）。A16 中国区以 **CNY/X8** 为准。
+- Token Plan 为 Credits 订阅，与按量价分列（X2）；UltraSpeed **暂不支持 Token Plan**（X16）。
+- 联网搜索按次另计（国内 ¥16/1000 次，X8）。
+
+[来源 X8, X13, X15, X16]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT / 吞吐 SLA | 固定 TTFT **未找到**；UltraSpeed 营销/体验标称约 **500–1000** TPS vs Pro 约 **50–100**（X15）——**非**合约 SLA |
+| 加速档 | 独立型号 **`mimo-v2.5-pro-ultraspeed`**（非 `service_tier` 字段）；申请制限量（X15/X16） |
+| 限流（X7） | `mimo-v2.5-pro` / `mimo-v2.5`：**100 RPM / 10M TPM**（账号下同模型全部 Key 合计） |
+
+[来源 X1, X7, X15, X16]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| 深度思考 + 工具（Chat） | 历史 assistant 含工具调用时，**必须完整回传** `reasoning_content`，否则 API **400**（X5） |
+| 建议 | FAQ：工具调用不稳定时建议**关闭 thinking** 并参考超参（X12）——与「必须回传」并存：若开着思考则必须回传 |
+| 缓存 | 稳定前缀以利用 Prompt Cache（X8）；无逐项 bust 清单 |
+| 端点 | 按量 `api.xiaomimimo.com`；Token Plan 用控制台给出的专属 URL + `tp-` key |
+
+[来源 X5, X12, X2]
+
+#### ③ 对 RxyCode 的含义（A16 照抄用；审计通过前禁止写入代码）
+
+```text
+# ========== 双主力：A16 必须同时覆盖 ==========
+# 主力 A: mimo-v2.5-pro（文本旗舰）
+# 主力 B: mimo-v2.5（全模态；同 1M/128K、同默认思考、独立定价）
+
+# --- 共用（Chat Completions 主路径；两型号均适用）---
+# context 官方表述 = "1M"；精确整数：未找到
+# max output 官方表述 = "128K"；精确整数：未找到
+# 默认 max_completion_tokens（未指定时，v2.5 系差异表）= 32768  # X9
+supports_function_calling = True
+supports_reasoning = True
+thinking_default_on = True          # Chat：两型号深度思考均默认开启（X5）
+# Responses：用 reasoning.effort；省略默认未找到 → 勿盲目 True
+supports_prompt_cache = True        # 隐式 Prompt Cache（X8）；两型号页均列 Cache
+tokenizer = "chars:1.5"             # 非官方启发式；官方 tokenizer 未找到
+# thinking: extra_body={"thinking": {"type": "enabled"|"disabled"}}
+# Responses: reasoning={"effort": "none"|"low"|"medium"|"high"}  # low/medium/high 效果相同
+# 思考模式下 temperature/top_p 强制 1.0/0.95（两型号相同，X5/X6）
+# UltraSpeed: model="mimo-v2.5-pro-ultraspeed"（申请制；非默认）
+
+# --- 项目侧启发式（须注释；两主力共用窗口表述）---
+# context_window = 1_048_576
+# max_output_tokens = 131_072
+# compaction_threshold ≈ 0.9 * context_window
+
+# UsageFieldMap（两主力共用）
+cache_read_flat = ()
+cache_read_nested = ("prompt_tokens_details", "cached_tokens")
+reasoning = ()  # reasoning_content 在 message/delta；usage 另有 completion_tokens_details.reasoning_tokens
+
+# --- 主力 A：mimo-v2.5-pro ---
+prompt_variant = "mimo-v2.5-pro"
+supports_vision = False             # 官方：输入模态文本（X13）
+# ModelPricing CNY/1M；source_url=X8；as_of=2026-08-02
+input_per_mtok = 3.00               # 未命中缓存
+output_per_mtok = 6.00
+cached_input_per_mtok = 0.025
+# cache_write: 限时免费 → None
+
+# --- 主力 B：mimo-v2.5（A16 不得省略本块）---
+# prompt_variant = "mimo-v2.5"
+# supports_vision = True            # 官方：文本+图像+视频+音频（X14）
+# input_per_mtok = 1.00
+# output_per_mtok = 2.00
+# cached_input_per_mtok = 0.02
+# cache_write: 限时免费 → None
+
+# --- 加速档（非默认主力）---
+# mimo-v2.5-pro-ultraspeed: 9 / 18 / 0.075
+
+# 识别（matches）
+# - "xiaomimimo" in url or "mimo.mi.com" in url → True
+# - model_name.startswith("mimo-") → True
+# base_url 按量: https://api.xiaomimimo.com/v1
+# Token Plan: 控制台专属 URL（示例 token-plan-cn.xiaomimimo.com/v1）+ tp- key
+
+# 会话契约（两主力相同）
+# - 思考+工具：缺 reasoning_content → 400；必须完整回传
+# - 思考开：勿指望自定义 temperature/top_p
+```
 
 ### §7.7 Qwen（A0 批 7）
 
-> 状态：**待调研**。审计通过前，A17 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok / DeepSeek / GPT-5.6-Luna 均已通过（见 §7.9）。A17 可按本分区填充数值。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 7 · Qwen / 通义千问 / 百炼 Model Studio（**三主力按量** `qwen3.7-plus` + `qwen3.7-max` + `qwen3.7-flash` + **Token Plan 旗舰 D** `qwen3.8-max-preview`） |
+| 调研日期 | 2026-08-02（rev1.1 同日升格 3.8） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://help.aliyun.com/zh/model-studio/ |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| Q1 | 文本生成选型 / 推荐模型 | https://help.aliyun.com/zh/model-studio/text-generation-model/ |
+| Q2 | OpenAI 兼容接入 | https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope |
+| Q3 | 深度思考 | https://help.aliyun.com/zh/model-studio/deep-thinking |
+| Q4 | Context Cache | https://help.aliyun.com/zh/model-studio/context-cache |
+| Q5 | qwen3.7-max 型号页 | https://help.aliyun.com/zh/model-studio/qwen3-7-max |
+| Q6 | qwen3.7-plus 型号页 | https://help.aliyun.com/zh/model-studio/qwen3-7-plus |
+| Q7 | qwen3.7-flash 型号页 | https://help.aliyun.com/zh/model-studio/qwen3-7-flash |
+| Q8 | 模型大全入口 | https://help.aliyun.com/zh/model-studio/models |
+| Q9 | 文本生成 API 参考入口 | https://help.aliyun.com/zh/model-studio/qwen-api-reference |
+| Q10 | Codex 接入（含 3.8 元数据 / 思考说明） | https://help.aliyun.com/zh/model-studio/codex |
+| Q11 | Qwen Code 接入（Token Plan + 3.8） | https://help.aliyun.com/zh/model-studio/qwen-code |
+| Q12 | Token Plan 概述（Credits / 3.8 预览权益） | https://help.aliyun.com/zh/model-studio/token-plan-overview |
+| Q13 | qwen3.8-max-preview 独立型号页 | **未找到**（`…/qwen3-8-max-preview` 404，as_of=2026-08-02） |
+| Q14 | Token Plan Harness 内置工具 | https://help.aliyun.com/zh/model-studio/token-plan-tool |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+官方推荐（Q1）：Agent/编程首选 **`qwen3.7-plus`**；最强推理可选 **`qwen3.7-max`（按量）** 或 **`qwen3.8-max-preview`（仅 Token Plan）**；降本 **`qwen3.7-flash`**。A17 **四档并列覆盖，不得只写 max、也不得把 3.8 一笔带过**（吸取批 6 漏写教训）：
+
+| API model id | 定位 | 快照等同（型号页） | 备注 |
+|---|---|---|---|
+| `qwen3.7-plus` | 能力/成本均衡；多模态 Agent | ≈ `qwen3.7-plus-2026-05-26`（Q6） | **主力 A（官方首选 / 按量默认）**；图/文/视频输入 |
+| `qwen3.7-max` | 最强按量推理 / 长程 Agent | ≈ `qwen3.7-max-2026-05-20`（Q5） | **主力 B**；动态 id 当前开放纯文本体验 |
+| `qwen3.7-flash` | 低成本接近旗舰 | 含 `qwen3.7-flash-2026-07-15`（Q7） | **主力 C**；多模态 |
+| `qwen3.8-max-preview` | Token Plan 最强推理预览 | **无独立型号页**（Q13 404） | **主力 D（与 max 并列的「最强」选项；仅 Token Plan）**；预览期能力持续迭代，结束后可能下线或换正式版（Q12） |
+| `qwen-plus` / `qwen-flash` 等 | 旧版仍可用 | — | Q1 标「不再作为首选」；新项目用 3.6/3.7 |
+
+[来源 Q1, Q5, Q6, Q7, Q8, Q12, Q13]
+
+**2. Context window（token）**
+
+| 型号 | 上下文长度 | 最大输出 | 思考模式额外限制 |
+|---|---|---|---|
+| `qwen3.7-max` / `plus` / `flash` | **1000000**（型号页精确） | **65536** | 思考下最大输入 **983616**；最大思维链 **262144**；非思考最大输入 **991808**（Q5/Q6/Q7） |
+| `qwen3.8-max-preview` | Codex 元数据 `context_window`=**983616**（Q10）；**未找到**独立型号页上的「上下文长度 / 最大输出」精确表（Q13） | **未找到**官方 max output 整数 | 仅思考模式（见 Q5）；勿把 3.7 的 1000000/65536 **未经核验地照抄**到 3.8 |
+
+- 选型页营销「1M / 100万」与 **3.7** 型号页精确整数 **1000000** 一致（可证实）。
+- 近似：100万 Token ≈ 70万汉字（Q1）——仅启发式说明。
+- 3.8：Codex 示例另给 `effective_context_window_percent: 95`（Q10）——工具侧有效窗提示，非计费权威。
+
+[来源 Q1, Q5, Q6, Q7, Q10, Q13]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **兼容（按量）**：OpenAI Chat Completions；北京建议业务空间域名 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`；旧域 `https://dashscope.aliyuncs.com/compatible-mode/v1` 仍可用（Q2）。
+- **兼容（Token Plan / 含 3.8）**：`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`；须用 Token Plan **专属** API Key（与按量 / Coding Plan Key **互不相通**，Q10/Q11/Q12）。地域目前仅华北2（北京）（Q12）。
+- 另有 Anthropic Messages、DashScope 原生、Responses（Q9）。`qwen3.8-max-preview` 与 3.7-max/plus 等支持 **Responses**（Codex `wire_api = "responses"`，Q10）。
+- **tools（A17 字段以 Q1 推荐表列序为准；Harness/Codex 产品层禁止覆盖）**：
+
+Q1 推荐表列序：**思考 / Function Calling / 内置工具 / 结构化输出**。
+
+| API model id | Q1 四列（字面） | Function Calling | A17 `supports_builtin_tools` | 结构化输出（Q1） | 备注 |
+|---|---|---|---|---|---|
+| `qwen3.7-max` | 支持 / 支持 / **支持** / 不支持 | **支持** | **True**（Q1 第 3 能力列=内置工具） | **不支持**（末列；Q5=支持 → 冲突留档） | Harness **不得**改写本字段；此前 False 系误读末列 |
+| `qwen3.7-plus` | 支持 / 支持 / 支持 / 支持 | **支持** | **True** | **支持** | — |
+| `qwen3.7-flash` | 支持 / 支持 / 支持 / 支持 | **支持** | **True** | **支持** | — |
+| `qwen3.8-max-preview` | 无独立型号页 | **未找到** | **未找到** | **未找到** | 禁止继承 Harness/Codex |
+
+- **审计处置（Luna 2026-08-02 17:26）**：
+  1. max：③-B 改为 `supports_builtin_tools=True`（对齐 Q1 列序第 3 列「内置工具=支持」）。
+  2. 3.8：保持 `未找到`（Luna 确认正确）。
+  3. 缓存 `cache_creation_input_tokens`：已补齐（Luna 确认）。
+
+- SDK：`enable_thinking` / `reasoning_effort` 等非标准参数经 `extra_body`（Q3/Q10/Q11）。
+
+[来源 Q1, Q2, Q3, Q5, Q9, Q10, Q11, Q12, Q14]
+
+**4. Prompt cache 机制**
+
+| 项 | 显式缓存 | 隐式缓存 |
+|---|---|---|
+| 机制 | `cache_control: {"type":"ephemeral"}`；最多 4 标记；向前最多 20 content 块（Q4） | 自动、无法关闭；命中不确定（Q4） |
+| 互斥 | 单次请求只能选一种（Q4） | 同上 |
+| 最小块 | **1024** tokens | **256**（阿里云百炼部署）；Qwen3.7 系列隐式约 **2000**（Q4） |
+| TTL | **5 分钟**（命中重置） | 不确定，系统清理长期未用 |
+| 计费（相对标准输入价） | 创建 **125%**；命中 **10%** | 创建按标准；命中 **20%** |
+| usage 字段（OpenAI/DashScope） | **命中读**：`usage.prompt_tokens_details.cached_tokens`；**显式创建写**：`usage.prompt_tokens_details.cache_creation_input_tokens`（Q4 示例逐字） | 命中同左 `cached_tokens`（无独立 creation 字段语义） |
+| usage 字段（Anthropic 兼容） | `cache_read_input_tokens` / `cache_creation_input_tokens`（Q4） | 同左读路径 |
+
+Responses 另有 Session 缓存（`x-dashscope-session-cache`），见 Q4 文内链。
+
+- **3.8**：Q4 通篇以百炼 Context Cache 规则为准；**未找到**「3.8 不支持缓存」或独立例外明文——落地勿假设与 3.7-max-preview（型号页曾标缓存不支持）相同，**以控制台/实测为准，标未找到型号级例外**。
+
+[来源 Q4, Q13]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+| 项 | 结论 |
+|---|---|
+| 适配 | **适配** → `supports_reasoning=True`（含 3.8） |
+| Chat 开关（混合系） | `enable_thinking` true/false（`extra_body`）（Q3） |
+| **3.7 三主力默认** | `qwen3.7-max` / `plus` / **`flash`**：**混合思考，默认开启**（Q3 系列表单列；DeepSeek 首轮已核 flash）→ `thinking_default_on=True`，可关 |
+| **主力 D · `qwen3.8-max-preview`** | **仅思考模式，无法关闭**（Q3）。Codex/Qwen Code 明文：thinking 始终开；`reasoning_effort` ∈ {`xhigh`,`medium`,`low`}，**默认 `xhigh`**；思考下 `temperature` 默认 **0.6**，传入 **<0.6 自动抬到 0.6**（Q10/Q11） |
+| 其他仅思考 | 如 `qwen3.7-max-preview`、`qwen3.7-max-2026-05-17`：**无法关闭**（Q3） |
+| 旧 `qwen-plus` | 混合；官方写明 **默认不开启**（Q3）——勿与 3.7-plus 混淆 |
+| budget | `thinking_budget` 限制思考最大 Token（Q3；适用列表含 Qwen3.7 等——**3.8 是否同参：未在独立型号页证实，落地以 API 错误/控制台为准**） |
+| Responses | 用 `reasoning.effort` 控制开关与深度（Q1）——与 Chat `enable_thinking` **按端点区分**；3.8 深度档与 Codex 的 `reasoning_effort` 叙述对齐（Q10） |
+| 输出字段 | `reasoning_content`（message/delta）；流式推荐（Q3） |
+| 采样 | 3.7：**未找到**「思考模式拒绝 temperature」明文。3.8：有 **<0.6 强制抬到 0.6**（Q10），非整段拒绝 |
+
+[来源 Q1, Q3, Q10, Q11]
+
+**6. 官方 tokenizer**
+
+- **未找到** tiktoken encoding 名。
+- 官方近似：100万 Token ≈ **70万汉字**（Q1）→ 启发式约 `chars:0.7`（每 token ≈0.7 汉字）；精确依赖 usage。3.8 同启发式，无独立 tokenizer 声明。
+
+[来源 Q1]
+
+**7. 定价（as_of=2026-08-02）**
+
+**7a. 按量 · CNY / 1M tokens（华北2 北京原价；非 Batch）**
+
+`source_url` 以各型号页为准（Q5/Q6/Q7）。优惠以控制台为准。
+
+| 型号 | 档位 | 输入 | 输出 | 隐式缓存命中 | 显式创建 | 显式命中 |
+|---|---|---|---|---|---|---|
+| `qwen3.7-max` | 统一 | **12** | **36** | **2.4** | **15** | **1.2** |
+| `qwen3.7-plus` | ≤256k | **2** | **8** | **0.4** | **2.5** | **0.2** |
+| `qwen3.7-plus` | 256k–1M | **6** | **24** | **1.2** | **7.5** | **0.6** |
+| `qwen3.7-flash` | ≤32k | **0.2** | **0.8** | **0.04** | **0.25** | **0.02** |
+| `qwen3.7-flash` | 32k–256k | **0.6** | **2.4** | **0.12** | **0.75** | **0.06** |
+| `qwen3.7-flash` | 256k–1M | **1.2** | **4.8** | **0.24** | **1.5** | **0.12** |
+
+- A17 按量默认填值建议用 **plus ≤256k** 或 **max** 骨架，并按实际输入长度切换阶梯。
+- 新加坡等地域单价不同（见各型号页），中国区落地以北京为准。
+
+**7b. Token Plan · `qwen3.8-max-preview`（Credits，非按量 CNY/1M）**
+
+| 项 | 结论 |
+|---|---|
+| 计费形态 | **仅 Token Plan**（个人版/团队版均支持；Q8/Q12）。**未找到**按量 CNY/1M 价目表（与 3.7 型号页不可混用） |
+| 预览说明 | 预览版；结束后可能下线或替换正式版（Q12） |
+| 限时 Credits | 预览期调用 Credits **低至 1 折**（约加量 10×）；个人版另有夜间 **22:00–次日 08:00** 在 1 折上再享 **2 折**（即原标准 **0.2 折**）（Q12）。活动可变，以页面为准 |
+| 套餐限额 | 个人版 5h + 7d Credits 双窗；团队版月度 Credits（档位见 Q12）。单次 Credits 由模型/Token/思考/工具动态决定，**明细以控制台为准** |
+| A17 填价 | **禁止**把 3.7-max 的 12/36 填进 3.8；标 `billing=token_plan_credits`，单价字段 **未找到** |
+
+[来源 Q5, Q6, Q7, Q8, Q12]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT SLA | **未找到**固定 TTFT |
+| 加速档 | **未找到**统一 `service_tier` / UltraSpeed 类字段；降本用 `qwen3.7-flash`，Batch 另计 |
+| 限流（北京，型号页） | `qwen3.7-max` / `plus` / `flash` 动态 id：**30000 RPM / 5,000,000 TPM**（Q5/Q6/Q7）。快照版限流更严（例 max-2026-05-20：600 RPM / 1M TPM） |
+| Token Plan / 3.8 | 个人版另有 **5h / 7d Credits 窗**与并发 Agent 档（Q12），**不是** RPM/TPM 型号页同款表；**未找到** 3.8 独立 RPM/TPM 整数 |
+
+[来源 Q5, Q6, Q7, Q12]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| 思考内容 | 返回 `reasoning_content`；多轮/工具场景应保留并回传（Q3；行业最佳实践）。**未找到**与 DeepSeek/MiMo 同款「缺字段必 400」的千问明文——标 **建议完整回传；强制 400 未找到** |
+| `preserve_thinking` | 部分新型号支持将历史思考并入后续输入（见 Q3）；支持列表以官方为准 |
+| 3.8 采样 | 勿传 `temperature<0.6` 指望更低随机性——服务端抬到 0.6（Q10） |
+| 3.8 Key/域名 | Token Plan 专属 Key + `token-plan.cn-beijing.maas.aliyuncs.com`；误用按量 Key → 401（Q10） |
+| 缓存 | 稳定前缀；显式/隐式互斥（Q4） |
+| 域名（按量） | 优先 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com`；兼容旧 `dashscope.aliyuncs.com`（Q2） |
+
+[来源 Q2, Q3, Q4, Q10]
+
+#### ③ 对 RxyCode 的含义（A17 照抄用；审计通过前禁止写入代码）
+
+```text
+# ========== 四档（A17 必须覆盖；按量首选 plus；Token Plan 最强用 3.8）==========
+# A: qwen3.7-plus  B: qwen3.7-max  C: qwen3.7-flash  D: qwen3.8-max-preview
+
+# --- 共用（Chat Completions / OpenAI 兼容；按量三主力）---
+context_window = 1_000_000          # 仅 3.7 型号页精确整数；3.8 见下
+max_output_tokens = 65_536          # 仅 3.7；3.8 未找到
+supports_function_calling = True    # 3.7 Q1 证实；3.8 无型号页勾选表
+# supports_builtin_tools: 按型号拆分（见 A/B/C/D）；禁止三主力共用 True
+supports_reasoning = True
+thinking_default_on = True          # 3.7 混合默认可关；3.8 仅思考且不可关（见 D）
+supports_prompt_cache = True        # 隐式默认开；显式可选 cache_control
+tokenizer = "chars:0.7"             # 启发式：100万 token≈70万汉字（Q1）；非 tiktoken
+# enable_thinking via extra_body；thinking_budget 可选（3.7）
+# Responses: reasoning.effort（与 Chat 端点区分）
+
+# UsageFieldMap（OpenAI/DashScope；命中+显式创建均须映射）
+cache_read_flat = ()
+cache_read_nested = ("prompt_tokens_details", "cached_tokens")
+cache_write_nested = ("prompt_tokens_details", "cache_creation_input_tokens")  # 显式创建；A12/A19 扩展 UsageFieldMap
+# Anthropic 兼容另计: cache_read_input_tokens / cache_creation_input_tokens
+reasoning = ()  # reasoning_content 在 message/delta
+
+# --- 主力 A：qwen3.7-plus（按量推荐默认）---
+prompt_variant = "qwen3.7-plus"
+supports_vision = True              # Image+Text+Video
+supports_builtin_tools = True       # 仅据 Q1 字面；Harness 不计入
+# structured_output: Q1=支持 → function_calling 可用
+# ≤256k: input 2 / output 8 / cached(implicit) 0.4 / explicit create 2.5 / hit 0.2
+# >256k: 6 / 24 / 1.2 / 7.5 / 0.6
+input_per_mtok = 2.0
+output_per_mtok = 8.0
+cached_input_per_mtok = 0.4         # 隐式命中；显式命中另用 0.2
+# as_of=2026-08-02; source_url=Q6
+# base_url: https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+
+# --- 主力 B：qwen3.7-max ---
+prompt_variant = "qwen3.7-max"
+supports_vision = False             # 动态 id 纯文本体验（Q5）
+supports_function_calling = True
+supports_builtin_tools = True       # Q1 列序：思考/FC/内置/结构化 → max=支持/支持/支持/不支持；内置=True
+# structured_output: Q1=不支持 vs Q5=支持 → A17 须注释冲突
+# Harness/Codex 不得覆盖本字段
+# input 12 / output 36 / implicit cache 2.4 / explicit create 15 / hit 1.2
+
+# --- 主力 C：qwen3.7-flash ---
+# supports_vision = True; thinking_default_on = True（可关）
+# supports_builtin_tools = True     # 仅据 Q1；Harness 不计入
+# ≤32k: 0.2 / 0.8 / 0.04 / create 0.25 / hit 0.02 （更高阶梯见 Q7）
+
+# --- 主力 D：qwen3.8-max-preview（Token Plan 旗舰；与 max「最强」并列）---
+prompt_variant = "qwen3.8-max-preview"
+billing = "token_plan_credits"      # 禁止填 3.7-max 的 12/36
+# input/output/cached CNY/1M = 未找到
+context_window = 983616             # Codex 元数据（Q10）；非独立型号页
+# max_output_tokens = 未找到
+supports_function_calling = None    # 未找到（无型号页勾选）
+supports_builtin_tools = None       # 未找到 — 禁止继承 Harness/Codex 写成 True
+supports_reasoning = True
+thinking_default_on = True          # 仅思考、不可关
+# reasoning_effort: xhigh|medium|low; default xhigh
+# temperature thinking default 0.6; values <0.6 clamped to 0.6
+# supports_vision: Token Plan 表有视觉理解，无型号页复核 → 不写入 True 作 API 能力证明
+# supports_parallel_tool_calls = false（Q10 Codex 元数据，非 builtin 证明）
+# base_url = https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+# API Key = Token Plan 专属（与按量 Key 不通）
+# preview: may be retired/replaced after preview ends（Q12）
+# Credits promo (as_of): 1折；个人夜间 22:00-08:00 → 0.2 折（活动可变）
+
+# 识别（matches）
+# - "dashscope" / "maas.aliyuncs.com" / "token-plan" + qwen → True
+# - model_name startswith ("qwen", "qwen2", "qwen3") → True
+# 按量兼容旧: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+# 会话契约
+# - 回传 reasoning_content（工具/多轮）；强制 400 未找到
+# - 显式/隐式缓存互斥；显式 TTL 5min、min 1024
+# - 计费：读 cached_tokens + 写 cache_creation_input_tokens（显式）
+# - 3.8: 勿依赖 temperature<0.6；effort 默认 xhigh
+```
 
 ### §7.8 Anthropic（A0 批 8）
 
-> 状态：**待调研**。审计通过前，A18 不得填充数值。
+> 状态：**三方审计通过（2026-08-02）**。Grok 自审·rev1.2 + DeepSeek + GPT-5.6-Luna 复审均通过（见 §7.9）。A18 可按本分区填充数值。
+>
+> **修订历程**：rev1（首写四主力 Claude 5 系）→ rev1.1（升格 **`claude-opus-4-8`** 为主力 E）→ **rev1.2**（Luna 复审 4 条 + DeepSeek 非阻塞吸收）→ Luna 第二轮复审通过 → 用户确认全部审计完成 → **终审三方全过**。
+
+#### ① 调研记录表
+
+| 项 | 值 |
+|---|---|
+| 批次 | A0 批 8 · Anthropic / Claude（**五主力** `claude-opus-5` + `claude-sonnet-5` + `claude-haiku-4-5` + `claude-fable-5` + **`claude-opus-4-8`**） |
+| 调研日期 | 2026-08-02（rev1.1 同日升格 Opus 4.8） |
+| 调研模型 | Grok 4.5（Cursor） |
+| 调研锚点 | https://docs.anthropic.com/ （与 platform.claude.com 同源） |
+| 来源 URL 清单 | 见下表 |
+
+| # | 文档 | URL |
+|---|---|---|
+| A1 | Models overview（型号 / context / thinking 模式对照） | https://docs.anthropic.com/en/docs/about-claude/models/overview |
+| A2 | Pricing | https://docs.anthropic.com/en/docs/about-claude/pricing |
+| A3 | Prompt caching | https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching |
+| A4 | Thinking（adaptive / display / defaults） | https://docs.anthropic.com/en/docs/build-with-claude/thinking |
+| A5 | Extended thinking（legacy `type:enabled`） | https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking |
+| A6 | OpenAI SDK compatibility | https://docs.anthropic.com/en/api/openai-sdk |
+| A7 | Rate limits | https://docs.anthropic.com/en/api/rate-limits |
+| A8 | Token counting | https://docs.anthropic.com/en/docs/build-with-claude/token-counting |
+| A9 | Messages API | https://docs.anthropic.com/en/api/messages |
+| A10 | Service tiers（Priority 支持型号） | https://docs.anthropic.com/en/api/service-tiers |
+
+#### ② 九问结论
+
+**1. 主力型号与版本号**
+
+官方选型（A1）：复杂 Agent/企业首选 **`claude-opus-5`**；最高能力用 **`claude-fable-5`**（Mythos 5 同规格但邀请制）；速度/智能均衡 **`claude-sonnet-5`**；最快近前沿 **`claude-haiku-4-5`**。另：**`claude-opus-4-8`** 在 A1「仍可用」表中规格与 Opus 5 同档（1M / 128k / $5/$25），生产仍广泛使用，且与 Opus 5 有关键 API 差异（见 Q4/Q5/Q8）——A18 **五主力并列，不得漏写 Opus 4.8，也不得只写 Opus**：
+
+| API model id | 定位 | 备注 |
+|---|---|---|
+| `claude-opus-5` | 复杂 Agent / 企业 | **主力 A（官方起步推荐）**；alias 同 id；Bedrock **`anthropic.claude-opus-5`**（A1 表后缀数字 3 为脚注「Messages-API Bedrock endpoint」，**不是** model id 的一部分；同理 Fable/Sonnet 为 `anthropic.claude-fable-5` / `anthropic.claude-sonnet-5`） |
+| `claude-sonnet-5` | 速度与智能均衡 | **主力 B**；至 2026-08-31 有入门价 |
+| `claude-haiku-4-5` / `claude-haiku-4-5-20251001` | 最快近前沿 | **主力 C**；alias `claude-haiku-4-5` |
+| `claude-fable-5` | 最强广泛发布档 | **主力 D**；2026-06-09 GA；思考不可关 |
+| `claude-opus-4-8` | 前代 Opus 旗舰（仍可用、同价同窗） | **主力 E**；**不得**降为附属；官方建议迁 Opus 5 但**未弃用**；Bedrock Messages 端点见 A1 注脚 |
+| `claude-mythos-5` / preview | Glasswing 邀请制 | 非自助；规格/价对齐 Fable（A1） |
+| Opus 4.7 / 4.6、Sonnet 4.6 等 | 同代/更早仍可用 | 本批不升主力；迁移动线见 A1 |
+
+[来源 A1]
+
+**2. Context window（token）**
+
+| 型号 | 上下文 | 最大输出（同步 Messages） |
+|---|---|---|
+| `claude-fable-5` / `claude-opus-5` / `claude-sonnet-5` / **`claude-opus-4-8`** | **1M**（营销表；精确整数官方表写 “1M tokens”，未另给裸整数） | **128k** |
+| `claude-haiku-4-5` | **200k** | **64k** |
+
+- Batches：Opus 5 / **Opus 4.8** / Opus 4.7 / Opus 4.6 / Sonnet 5 / Sonnet 4.6 等可用 beta `output-300k-2026-03-24` 至 **300k** 输出（A1）。
+- 精确整数：表为 “1M / 200k / 128k / 64k”；A18 可写 `1_000_000` / `200_000` / `128_000` / `64_000` 并注释“来自 A1 表，非另页裸整数”。
+
+[来源 A1]
+
+**3. OpenAI 兼容与 tools / function calling**
+
+- **主路径**：原生 Messages `https://api.anthropic.com/v1/messages`（推荐生产）。
+- **OpenAI 兼容（评测用）**：`base_url=https://api.anthropic.com/v1/` + Claude API Key + Claude model id（A6）。**非**长期生产方案。
+- 兼容层限制（A6）：**不支持 prompt caching**；thinking 细节不完整（需原生）；`strict` 工具 schema 忽略；`reasoning_effort` **Ignored**；`temperature` 仅 0–1（>1 钳到 1）；`n` 必须为 1。
+- **tools**：原生 Messages 完整支持 tools / tool_use；兼容层 tools/functions 可用但不保证 schema 严格。
+
+[来源 A6, A9]
+
+**4. Prompt cache 机制**
+
+| 项 | 结论 |
+|---|---|
+| 机制 | **显式**：内容块 `cache_control: {"type":"ephemeral"}`；或请求顶层 **automatic** `cache_control`（A3） |
+| 断点 | 最多 **4** 个；向前 lookback **20** blocks（A3） |
+| 前缀顺序 | `tools` → `system` → `messages`（A3） |
+| TTL | 默认 **5 分钟**（命中刷新无额外费）；可选 **1 小时**（更高写入价）（A3） |
+| 最小可缓存长度（按型号，A3） | Fable/Opus 5/**Mythos 5**：**512**；Opus 4.7 / Mythos Preview：**2048**；Opus 4.6/4.5：**4096**；Opus 4.8 / Sonnet 5/4.6/4.5 等：**1024**；Haiku 4.5：**4096**；不足则静默不缓存（usage 双 0） |
+| usage 字段 | 顶层 `usage.cache_creation_input_tokens` / `usage.cache_read_input_tokens`（及 `input_tokens`/`output_tokens`）（A3/A7） |
+| 计费倍率 | 5m 写 **1.25×** base input；1h 写 **2×**；命中 **0.1×**（A2/A3） |
+| 失效 | 改断点前前缀会失效该层及之后层（A3）。**Thinking / `budget_tokens`**：配置写入 prompt，变更**会使相关缓存块失效**；tool/system 是否一并失效取决于该型号是否把 thinking 配置渲染在其前面（A3/A4）。**Effort**：改变 `output_config.effort` 会使 message 块失效（tool/system 同 thinking 的型号相关规则）；**但显式设为该型号默认 effort ≡ 省略该字段，不会失效**（A3） |
+
+[来源 A2, A3, A4, A5, A7]
+
+**5. Thinking / reasoning（决定 `supports_reasoning` / `thinking_default_on`）**
+
+| 项 | 结论 |
+|---|---|
+| 适配 | **适配** → `supports_reasoning=True` |
+| 输出块 | `content[].type == "thinking"`（含 `thinking` 文本 + `signature`）；在 text 之前（A4） |
+| Claude 5（Opus/Sonnet/Fable） | **Adaptive thinking**；表：Fable **always on**；Opus/Sonnet **Yes**；Haiku 4.5 **No**（仅 extended）（A1） |
+| **`claude-opus-4-8`（及 4.7/4.6/Sonnet 4.6）** | Adaptive **Yes**；但 **默认关**：须显式 `thinking: {type:"adaptive"}` 才开启（A4）→ `thinking_default_on=False` |
+| **默认开（Claude 5）** | Opus 5 / Sonnet 5 / Fable 5：**已默认开**，无需配置（A4）→ `thinking_default_on=True` |
+| 关闭 | Sonnet 5：`thinking: {type:"disabled"}`。Opus 5：effort `high` 及以下可关；**`xhigh`/`max` 不可关**（400）。Fable/Mythos：**拒绝 disabled**（A4） |
+| Haiku 4.5 | 仅 **extended** `thinking: {type:"enabled", budget_tokens}`（≥1024，< max_tokens）（A1/A5） |
+| 4.7+ / **4.8** | `type:"enabled"` **400**；须 adaptive（A5）；**勿**传 `budget_tokens` |
+| effort | `output_config.effort`；**Opus 4.8：全表面默认 high**（含 Claude API / Claude Code / claude.ai）（A1）；Opus 5 / Sonnet 5：API 与 Claude Code **默认 high**（A1） |
+| display | 新模型默认 **`omitted`**（空 thinking 文本仍回传 signature）；要看摘要用 `display:"summarized"`（A4） |
+| 采样 | A4「Limits and feature compatibility」：Fable / Mythos / Preview / Opus 5 / **4.8** / 4.7 / Sonnet 5 上，**非默认** `temperature` / `top_p` / `top_k` **一律 400**（与是否 thinking **无关**）。A18 落地应保持默认采样或按 400 契约处理。OpenAI 兼容层 temperature>1 钳到 1（A6） |
+
+[来源 A1, A4, A5, A6]
+
+**6. 官方 tokenizer**
+
+- **未找到** tiktoken encoding 名。
+- 官方：`messages.count_tokens`（免费，有独立 RPM）（A8）。
+- Claude 4.7+ / Fable / Mythos：新 tokenizer，同文约 **+30%** tokens；勿用旧模型计数估费（A2/A8）。
+- A18：`tokenizer` 建议 `"count_tokens_api"` 启发式注释，或保持 `chars:` **未找到**官方 chars 比例——标 **用 count_tokens；无 tiktoken**。
+
+[来源 A2, A8]
+
+**7. 定价（USD / 1M tokens；as_of=2026-08-02；A2）**
+
+| 型号 | Input | 5m cache write | 1h cache write | Cache hit | Output |
+|---|---|---|---|---|---|
+| `claude-fable-5` | **10** | **12.50** | **20** | **1.00** | **50** |
+| `claude-opus-5` | **5** | **6.25** | **10** | **0.50** | **25** |
+| **`claude-opus-4-8`** | **5** | **6.25** | **10** | **0.50** | **25** |
+| `claude-sonnet-5`（至 2026-08-31） | **2** | **2.50** | **4** | **0.20** | **10** |
+| `claude-sonnet-5`（自 2026-09-01） | **3** | **3.75** | **6** | **0.30** | **15** |
+| `claude-haiku-4-5` | **1** | **1.25** | **2** | **0.10** | **5** |
+
+- Thinking tokens 按 **output** 计费（A4）。
+- Batch / 云厂商区域价另计（A2）。
+- Opus 4.8 与 Opus 5 **同价同 cache 列**（A2）；差异在 thinking 默认 / cache 最小块 / Priority / 限流桶，不在单价。
+
+[来源 A2, A4]
+
+**8. 延迟 / 限流 / 加速档**
+
+| 项 | 结论 |
+|---|---|
+| TTFT SLA | **未找到**固定 TTFT 数值 |
+| 加速档 | **Fast mode**（A2/A7）：**Opus 5 / Opus 4.8 专享**；价例 $10/$50；独立限流（`anthropic-fast-*` headers）；4.7 报错 / 4.6 静默降速；**Claude Platform on AWS 不可用**；**不可与 Batch 组合** |
+| 服务档 | Standard / Priority / Batch（A10）；**Priority 排除**：Mythos 5 / Mythos Preview / **Opus 5** / **Sonnet 5**（A10）。**`claude-opus-4-8` 在排除名单之外**，技术上支持 Priority；但 A10 **顶部 Warning：Priority 新容量已停售**，仅既有容量承诺可续用至合同结束 → 落地写「仅既有承诺，勿假设可新购」 |
+| 限流（示例：Messages；按 usage tier 分表，A7） | Start 档例：Fable **1000 RPM / 500k ITPM / 100k OTPM**；Opus 5 / **Opus 4.x\*** / Sonnet 5 / Haiku 4.5 **1000 / 2M / 400k**。\* **Opus 4.x 共享同一限流桶**（含 4.8），与 Opus 5 **分桶**（A7）。Build/Scale 更高。**以 Console Limits 为准** |
+| ITPM | 多数型号：**不含** `cache_read_input_tokens`（Haiku 3.5† 例外）（A7） |
+
+[来源 A7, A10]
+
+**9. 会话续接注意事项**
+
+| 场景 | 规则 |
+|---|---|
+| thinking 回传 | **工具使用回合**：**必须**完整且**不修改**回传 thinking 块（含 signature）（A4）。**跨回合**：仅**建议**回传。**非工具场景**：允许省略历史 thinking（A4） |
+| 工具交错 | Adaptive 自动 interleaved；旧 manual 需 beta header（A4/A5） |
+| 缓存 | 稳定前缀；thinking/budget 变更会使相关块失效；effort 非默认变更会使 message 失效，**默认 effort ≡ 省略不失效**（A3） |
+| OpenAI 兼容 | 勿当生产主路径；无原生缓存/完整 thinking（A6） |
+| 缓存计费细节（A19） | `input_tokens` 仅断点后；total=`cache_read`+`cache_creation`+`input`；1h TTL 时 `cache_creation` 可含 `ephemeral_5m_input_tokens`/`ephemeral_1h_input_tokens`；workspace 级隔离；thinking 块**不可**显式 `cache_control`（随工具结果自动缓存，命中按 input 计费）（A3） |
+
+[来源 A3, A4, A5, A6]
+
+#### ③ 对 RxyCode 的含义（A18 照抄用；审计通过前禁止写入代码）
+
+```text
+# ========== 五主力（A18 必须覆盖；起步推荐 Opus 5；Opus 4.8 不得省略）==========
+# A: claude-opus-5  B: claude-sonnet-5  C: claude-haiku-4-5  D: claude-fable-5
+# E: claude-opus-4-8（前代旗舰；同价同窗；thinking 默认关 / cache min 1024 / Priority 可用）
+
+# --- 共用（原生 Messages；生产主路径）---
+# base_url: https://api.anthropic.com （SDK）；endpoint /v1/messages
+supports_function_calling = True
+supports_reasoning = True
+supports_prompt_cache = True        # cache_control ephemeral；OpenAI 兼容层不支持
+tokenizer = "count_tokens_api"      # 无 tiktoken；用 messages.count_tokens；4.7+/Fable ≈+30%
+# OpenAI 兼容仅评测: base_url=https://api.anthropic.com/v1/ ；无 cache；thinking 不完整
+
+# UsageFieldMap（顶层 usage，非 nested）
+cache_read_flat = ("cache_read_input_tokens",)
+cache_read_nested = ()
+cache_write_flat = ("cache_creation_input_tokens",)  # A12/A19 扩展
+reasoning = ()  # thinking 在 content blocks，非 delta.reasoning_content
+
+# --- 主力 A：claude-opus-5（推荐默认 Agent）---
+prompt_variant = "claude-opus-5"
+context_window = 1_000_000          # A1「1M」
+max_output_tokens = 128_000
+supports_vision = True
+thinking_default_on = True          # adaptive 默认开；可 disabled（非 xhigh/max）
+# effort API default high
+# cache min tokens = 512
+# Priority Tier: NOT supported（A10）
+# as_of=2026-08-02: input 5 / output 25 / cache_hit 0.50 / 5m_write 6.25 / 1h_write 10
+input_per_mtok = 5.0
+output_per_mtok = 25.0
+cached_input_per_mtok = 0.50
+# source_url=A2
+
+# --- 主力 B：claude-sonnet-5 ---
+# context 1M / out 128k / vision True / thinking_default_on True（可 disabled）
+# cache min = 1024；Priority: NOT supported
+# 至 2026-08-31: 2 / 10 / hit 0.20 / 5m 2.50 / 1h 4
+# 自 2026-09-01: 3 / 15 / hit 0.30 / 5m 3.75 / 1h 6
+
+# --- 主力 C：claude-haiku-4-5 ---
+# context 200_000 / out 64_000 / vision True
+# thinking: 不支持 adaptive；仅 extended：须显式 thinking: {type:"enabled", budget_tokens}
+# thinking_default_on = False
+# 1 / 5 / hit 0.10 / 5m 1.25 / 1h 2
+# cache min tokens = 4096；Priority: supported（不在 A10 排除名单；新容量停售→仅既有承诺）
+
+# --- 主力 D：claude-fable-5 ---
+# context 1M / out 128k / vision True
+# thinking always on；不可 disabled
+# 10 / 50 / hit 1.00 / 5m 12.50 / 1h 20
+# cache min = 512；tokenizer +30% vs pre-4.7；Priority: supported
+
+# --- 主力 E：claude-opus-4-8（A18 不得省略；与 Opus 5 同价同窗）---
+# prompt_variant = "claude-opus-4-8"
+# context_window = 1_000_000；max_output_tokens = 128_000；supports_vision = True
+# supports_reasoning = True
+# thinking_default_on = False   # 须显式 thinking: {type:"adaptive"}；type:enabled → 400
+# effort 全表面默认 high（含 claude.ai）
+# cache min tokens = 1024（≠ Opus 5 的 512）
+# Priority Tier: 技术上 supported（A10；Opus 5 不支持）；新容量停售→仅既有承诺
+# 限流：归 Opus 4.x* 共享桶（与 Opus 5 分桶）（A7）
+# as_of=2026-08-02: input 5 / output 25 / cache_hit 0.50 / 5m_write 6.25 / 1h_write 10（同 Opus 5）
+# tokenizer: 4.7+ 族 ≈+30%
+
+# 识别（matches）
+# - "anthropic.com" in url or model startswith "claude" → True
+
+# 会话契约
+# - 工具回合：必须完整不修改回传 thinking blocks + signature；跨回合建议回传；非工具可省略历史 thinking
+# - cache_control；thinking/budget 变更失效相关块；effort 设为型号默认 ≡ 省略，不失效
+# - Claude 5 / 4.8：勿传非默认 temperature/top_p/top_k（400）
+# - 生产勿依赖 OpenAI 兼容层做 cache/thinking
+# - Opus 4.8 路径务必显式开 adaptive，勿假设与 Opus 5 同默认
+# - Bedrock Messages 端点 ID：anthropic.claude-opus-5（勿写 ...-53；表尾 3=脚注）
+```
 
 ### §7.9 审计记录表（A0 每批审计写入）
 
 > 审计三要素：**审计模型名称 / 审计时间 / 审计结果（通过或不通过 + 问题清单）**。三要素缺一的记录视为不存在。
-> 审计方：① Grok 4.5（调研模型自审）② 第三方非编码模型（执行会话的 opencode 模型，当前 `deepseek-v4-flash`，由用户触发暂停后进行）。
+> 审计方（2026-08-01 更新）：① Grok 4.5（调研模型自审）② DeepSeek（验证模型 1）③ GPT-5.6-Luna（验证模型 2）。②与③独立验证，互不参考。验证提示词见 [`PROMPTS.md`](./PROMPTS.md)。
 
 | 批次 | 分区 | 审计模型 | 审计时间 | 审计结果 | 问题清单与处置 |
 |---|---|---|---|---|---|
-| 批 1 | §7.1 | Grok 4.5 | | 待审计 | |
-| 批 1 | §7.1 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 2 | §7.2 | Grok 4.5 | | 待审计 | |
-| 批 2 | §7.2 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 3 | §7.3 | Grok 4.5 | | 待审计 | |
-| 批 3 | §7.3 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 4 | §7.4 | Grok 4.5 | | 待审计 | |
-| 批 4 | §7.4 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 5 | §7.5 | Grok 4.5 | | 待审计 | |
-| 批 5 | §7.5 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 6 | §7.6 | Grok 4.5 | | 待审计 | |
-| 批 6 | §7.6 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 7 | §7.7 | Grok 4.5 | | 待审计 | |
-| 批 7 | §7.7 | opencode（deepseek-v4-flash） | | 待审计 | |
-| 批 8 | §7.8 | Grok 4.5 | | 待审计 | |
-| 批 8 | §7.8 | opencode（deepseek-v4-flash） | | 待审计 | |
+| 批 1 | §7.1 | Grok 4.5 | 2026-08-02 | **通过（自审·rev3）** | 终审：三方全过。rev3 Q6 措辞已获 Luna 确认。 |
+| 批 1 | §7.1 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 13:50 | **通过（复审 rev2）** | **收回我第一轮 P1 主张**：重新抓取官方 thinking_mode 页（2026-08-02），映射表 12 格序列为 low\|low\|high、high\|high\|high、**xhigh\|high\|max**、max\|max\|max——pro 的 xhigh 官方确为 max，第一轮"xhigh→high"系我误读三列表格，Grok 的"驳回"成立，rev2 的 pro: low→high、high→high、xhigh→max、max→max 正确。P2 已改为 `chars:2.0` 且注明"A5 可落地、勿写 hf:"，符合 TokenizerSpec（tiktoken:/chars:），落地无缺口。P3 已补 S13+S9 引用（Flash 更新 2026-07-31、Pro 首发 2026-04-24 且 07-31 未更新、旧 id 2026-07-24 15:59 UTC 停用并过渡路由 v4-flash non-thinking/thinking），与我可核验信息一致。Luna rev2 唯一遗留（Q6 措辞"无 tiktoken encoding"vs"未找到"）属表述精度问题，我独立复核：S8 官方页面确实未给出 tiktoken encoding 名，仅提供离线 zip 与近似比例，`chars:2.0` 已明确标注为启发式估算而非官方数值——建议接受该措辞修订，不构成事实冲突。S4（API 参考页）的 128 工具上限/tool_choice/reasoning_tokens/medium、xhigh 别名未被本审计直接抓取复核，以 S4 引用为准（备注不阻塞）。 |
+| 批 1 | §7.1 | GPT-5.6-Luna | 2026-08-02 15:29 | **通过** | 问题清单：无。复审确认 rev3 已将 Q6 改为“未找到官方 tiktoken encoding”，并明确 `chars:2.0` 仅为 RxyCode 启发式估算、非官方 tokenizer 数值；Q1–Q9 其余数值、字段名和行为声明均与当前 DeepSeek 官方文档一致。重点核验：thinking 默认 enabled、effort 映射、Chat Completions/Responses usage 字段、自动缓存及工具链 `reasoning_content` 回传规则均通过。来源：https://api-docs.deepseek.com/quick_start/token_usage；https://api-docs.deepseek.com/guides/thinking_mode；https://api-docs.deepseek.com/guides/kv_cache；https://api-docs.deepseek.com/api/create-chat-completion/；https://api-docs.deepseek.com/guides/responses_api |
+| 批 2 | §7.2 | Grok 4.5 | 2026-08-02 | **通过（自审·rev2）** | rev2 修正后 DeepSeek + Luna 均通过；批 2 三方全过。 |
+| 批 2 | §7.2 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 14:10 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。逐条抓取官方页核验：O1 型号页三档（sol 别名 gpt-5.6、cutoff 2026-02-16、context 1.05M、output 128K）✓；O2 型号页 max input 922,000、>272K 整单 2x/1.5x、Tier1 500 RPM/500,000 TPM、Cache writes 1.25x ✓；O5 定价页 Standard 三档（sol $5/$0.50/$6.25/$30、terra $2/$0.20/$2.50/$12、luna $0.20/$0.02/$0.25/$1.20）、Long context 列、Fast mode（2026-07-30 由 Priority 更名，service_tier fast/priority，sol $10/$1/$12.50/$60）✓；O6 prompt-caching 页 1024 严格下限、TTL 仅 30m、隐式断点在最新 user/tool 消息且不回退最长前缀（cached_tokens 可为 0）、显式断点 + prompt_cache_key（5.6 必须设 key 才用可靠匹配）、4 写槽/50 读断点、cache_write_tokens 1.25x、prompt_cache_retention 对 5.6 弃用、组织间不共享缓存 ✓；O7 reasoning 指南 effort 档位 none/low/medium/high/xhigh/max（型号子集不同）、省略 effort 默认 medium（standard 与 pro 皆然）、原始 reasoning 不暴露（encrypted_content/stateless、summary 摘要）、usage.output_tokens_details.reasoning_tokens、GPT-5.6 默认 reasoning.context=all_turns、函数调用回传 reasoning items 建议、pro 模式独立于 effort ✓。temperature 拒绝声明标"未找到"属诚实处理 ✓。③ 含义段与官方 usage 示例字段路径（prompt_tokens_details.cached_tokens / cache_write_tokens / completion_tokens_details.reasoning_tokens）逐字一致 ✓。非阻塞备注（2 条）：① O8（migrate-to-responses）与 O10（token-counting）两页未直接抓取，Q3 的 reasoning_effort 顶层参数位置、Q6 的 tiktoken 不准确性表述、Q9 的 reasoning:none 无 tool calling 细则以引用为准，建议 Grok 自审抽检原文；② ③ 中 cache_write_nested / reasoning_nested 字段名超出 A1 的 UsageFieldMap 现有结构（仅 cache_read_flat/cache_read_nested/reasoning），A12/A19 落地时需扩展 UsageFieldMap 增加 cache_write 路径（供 Phase C 缓存写入计费）或明确仅消费命中字段。 |
+| 批 2 | §7.2 | GPT-5.6-Luna | 2026-08-02 15:50 | **通过** | 问题清单：无。复审确认 rev2 已补充分列的 GPT-5.6 发布日（2026-07-09）与最近 Changelog 更新日（2026-07-30）；已将旧型号 retention 按型号区分（GPT-5.5 / GPT-5.5-pro 仅 24h，in_memory 仅适用于明确支持的型号）；已将截断缓存影响改为“未找到”。Q1–Q9 其它数值、字段名和行为声明均与当前 OpenAI 官方文档一致。重点核验：prompt_cache_breakpoint / prompt_cache_options / prompt_cache_key、cached_tokens / cache_write_tokens、reasoning_effort 默认 medium、Chat Completions 与 Responses 差异均通过。来源：https://developers.openai.com/api/docs/changelog；https://developers.openai.com/api/docs/guides/prompt-caching；https://developers.openai.com/api/docs/guides/reasoning；https://developers.openai.com/api/docs/guides/token-counting |
+| 批 3 | §7.3 | Grok 4.5 | 2026-08-02 | **通过（自审·rev2）** | rev2 修正后 DeepSeek + Luna 均通过；批 3 三方全过。 |
+| 批 3 | §7.3 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 14:40 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。直接抓取 platform.kimi.com 官方页核验：M7 Context Caching（自动启用、无缓存 ID/TTL 管理、prompt>256 才缓存否则丢弃、固定上下文放 messages 最前、长文本首 Token 平均降至 5s 内）✓；M9 reasoning_effort（K3 始终推理、顶层 low/high/max 默认 max、K2.x 迁移移除 thinking、多轮/工具调用原样回传完整 assistant）✓；M8 思考模型（k3 始终推理+Preserved Thinking 始终开、k2.7-code 始终思考+keep 恒为 all 且传 disabled 报错、k2.6 type enabled 默认/disabled + keep null 默认/"all"、k2.5 不支持 Preserved Thinking、reasoning_content 计入 token、max_tokens>=16000 建议、temperature 不可修改勿显式传入）✓；M2 模型列表（kimi-k3 2.8T 参数原生视觉 100 万上下文、k2.7-code/-highspeed 256k 且 highspeed 180 tok/s 短上下文 260、k2.6 256k、moonshot-v1 8k/32k/128k 输入+输出合计、k2.5/moonshot-v1 新用户停开 8 月 31 日全平台下线、kimi-k2 系列 2026-05-25 下线）✓；M5 Chat+OpenAPI（usage.cached_tokens 顶层字段（非 prompt_cache_hit_tokens）、prompt_cache_key 可选（Coding Agent 用稳定 session/task id、Kimi Code Plan 必填）、tool_choice auto/none/required、K3 动态工具 system message 无 content、max_completion_tokens K3 默认 131072 最大 1048576 超窗 invalid_request_error、image_url/video_url 多模态、response_format json_object/json_schema）✓；M3 模型参数参考（temperature/top_p/n/presence/frequency 固定值逐条一致：k3 与 k2.7 固定 1.0/0.95/1/0/0、k2.6 思考 1.0 非思考 0.6、改值报错建议不显式传入；**切换 reasoning_effort 破坏前缀缓存命中、会话开始前定档**——报告 Q4/Q5 引用正确；tool_choice 仅 k3 支持 required，k2.6/k2.7 传入报错）✓。非阻塞备注（2 条）：① Q7 定价卡片（¥20/¥2/¥100、¥6.50/¥1.30/¥27、¥6.50/¥1.10/¥27）依赖 M1 首页 JS 渲染，静态抓取无法复核，报告已标注"落地前人工打开 M13 复核"——保持该标注，A13 填值前人工确认；② ③ 中 reasoning=() 处理正确（Kimi 的 reasoning_content 在 message 级而非 usage 嵌套，与 A8 的 _extract_reasoning 走 delta/message 一致）；A13 落地时注意 tool_choice required 需按模型分支（k3 支持、k2.6/k2.7 不支持）。 |
+| 批 3 | §7.3 | GPT-5.6-Luna | 2026-08-02 16:07 | **通过** | 问题清单：无。复审确认 Q2 已区分精确 context 与营销近似值（K3 1,048,576；K2.7 系列/K2.6 262,144）；Q4 已删除未证实的逐项缓存失效规则，仅保留 `reasoning_effort` 切换会破坏命中的官方警告；Q7 已拆分 K2.7 Code HighSpeed 独立价格（¥13.00 / ¥2.60 / ¥54.00）；Q8 已补齐官方 Tier0–Tier5 限速表。Q1–Q9 其余型号、OpenAI 兼容、thinking/effort、usage.cached_tokens、tokenizer 和工具续接结论均与当前官方文档一致。来源：https://platform.kimi.com/docs/pricing/chat-k3；https://platform.kimi.com/docs/pricing/chat-k27-code；https://platform.kimi.com/docs/pricing/chat-k26；https://platform.kimi.com/docs/pricing/limits；https://platform.kimi.com/docs/guide/use-context-caching-feature-of-kimi-api；https://platform.kimi.com/docs/api/models-overview |
+| 批 4 | §7.4 | Grok 4.5 | 2026-08-02 | **通过（自审·rev2）** | rev2 修正后 DeepSeek + Luna 均通过；批 4 三方全过。 |
+| 批 4 | §7.4 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 15:10 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。直接抓取 docs.bigmodel.cn 官方页核验：G9 上下文缓存（隐式、`usage.prompt_tokens_details.cached_tokens`、完全相同命中最高/格式差异影响/合理时效）✓；G6/G7/G8 thinking（默认 enabled、5.2+ reasoning_effort 默认 max 及映射、reasoning_content、clear_thinking Preserved Thinking、交错思考须回传）✓；G5 OpenAI 兼容 paas/v4 ✓；G1 型号上下文 1M/200K/128K、精确整数未公布 ✓；G6 max_tokens 表 131072/98304 ✓。非阻塞：G13 定价前端渲染不可静态复核（rev2 已改为未找到）；G3 日期首轮未抓取（rev2 已按 G3 补齐）。 |
+| 批 4 | §7.4 | GPT-5.6-Luna | 2026-08-02 16:23 | **通过** | 问题清单：无。复审确认 Q1 已修正 GLM-4.7 基座与 Flash 日期错配，并补齐 GLM-4.6、GLM-4.5 系列日期；Q2 已将 context 精确整数明确标为“未找到”，仅保留带注释的项目侧启发式值；Q7 已将无法从官方静态文本独立复核的精确价格全部标为“未找到”，并禁止写入未经核验的定价。Q1–Q9 其余型号、OpenAI 兼容、thinking/reasoning、缓存 usage 字段、tokenizer API、限流与会话续接结论均与当前官方文档一致。来源：https://docs.bigmodel.cn/cn/update/new-releases；https://docs.bigmodel.cn/cn/guide/start/model-overview；https://docs.bigmodel.cn/cn/guide/start/concept-param；https://docs.bigmodel.cn/cn/guide/capabilities/cache；https://open.bigmodel.cn/pricing |
+| 批 5 | §7.5 | Grok 4.5 | 2026-08-02 16:50 | **通过（自审·rev2）** | rev2 修正后 DeepSeek 首轮通过 + Luna 复审通过；批 5 三方全过。 |
+| 批 5 | §7.5 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 15:40 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。直接抓取 platform.minimaxi.com 官方页核验：MM1 接口概览（型号清单 M3/M2.7/M2.7-highspeed/M2.5/M2.5-highspeed/M2.1/M2.1-highspeed/M2、上下文 1,000,000 与 204800 精确整数、列名"输入输出总 token"、60/100 tps 为输出速度营销表述）✓；MM5 Prompt 缓存（被动自动缓存/Anthropic 主动缓存区分、≥512 input tokens、前缀顺序工具定义→系统提示词→历史对话、任意模块变更可能影响、usage.prompt_tokens_details.cached_tokens（OpenAI）与 cache_read_input_tokens/cache_creation_input_tokens（Anthropic）、被动写入无额外费/主动首写额外费、支持型号表：被动含 M3 而主动不含 M3、被动 TTL 自动调整/主动 5min 自动续期、M3 >512k 含缓存命中 tokens 走长上下文价）✓；MM8 按量计费（M3 ≤512k 永久五折现价 2.10/8.40/0.42、>512k 4.20/16.80/0.84、Priority 1.5x 3.15/12.60/0.63 与 6.30/25.20/1.26、service_tier=priority、M2.7 2.1/8.4/0.42/写入 2.625、M2.7-highspeed 4.2/16.8/0.42/2.625、历史 M2.5/M2.1/M2 缓存读 0.21、1600 中文字符≈1000 tokens、Token Plan 订阅独立）✓；MM3 Chat Completions OpenAPI（thinking.type adaptive（默认）/disabled、M2.x 无法关闭、reasoning_split 拆到 reasoning_content/reasoning_details 且不开关 thinking、无 reasoning_effort、temperature [0,2] 默认 1、max_completion_tokens、tools function、响应示例证实 <think> 包裹与 prompt_tokens_details.cached_tokens）✓；MM4 OpenAI SDK（OPENAI_BASE_URL api.minimaxi.com/v1、reasoning_split、原生 content 含 <think> 需完整保留、temperature 越界报错、presence/frequency_penalty 与 logit_bias 被忽略、n 仅支持 1、旧版 function_call 已废弃用 tools、M3 图/视频输入当前不支持音频、多模态 detail low/default/high）✓；MM9 速率限制（M3 免费 20 RPM/1M TPM 充值 200 RPM/10M TPM、M2 系免费 20/1M 充值 500/20M、TPM=输入+输出）✓。非阻塞备注（4 条）：① ③ 的 max_output_tokens 可补充 MM3 OpenAPI 参数上限：M3 推荐 131072/上限 524288、其他推荐 65536/上限 204800（报告"未找到"指架构级独立上限，参数上限是可落地参考值，A15 建议采用）；② MM4 多模态 detail 档位与单图 token 估算（low~600、default 1k-3k 最高 5k、high 15k+）对 Phase D 的 count_image_tokens 有参考价值；③ MM9"批量合并请求提高 TPM 吞吐"提示与 A20/EF 的 token 治理相关；④ MM2 Changelog 发布日（M3 2026-06-01 等）未直接抓取，以引用为准，建议 Grok 自审抽检。**注：rev2 已将备注①写入 Q2 正表，并按 Luna 意见区分 Responses `reasoning.effort`；建议对 rev2 Q2/Q5 抽检。** |
+| 批 5 | §7.5 | GPT-5.6-Luna | 2026-08-02 16:36 | **通过** | 问题清单：无。复审确认 Q2 已补入官方 `max_completion_tokens` 上限（MiniMax-M3=524288，M2.x=204800）；Q5 已按 endpoint 区分：Chat Completions 省略 `thinking` 默认 adaptive 开启，Responses API 的 M3 省略 `reasoning` 或 `effort=none` 默认关闭，非 `none` 仅开启 Adaptive Thinking，M2.x 无法关闭。Q1–Q9 其余型号、缓存机制与 usage 字段、OpenAI/Anthropic 兼容、定价、限流、tokenizer 和工具续接结论均与当前官方文档一致。来源：https://platform.minimaxi.com/docs/api-reference/text-chat-openai；https://platform.minimaxi.com/docs/api-reference/responses-create；https://platform.minimaxi.com/docs/api-reference/text-prompt-caching；https://platform.minimaxi.com/docs/guides/pricing-paygo；https://platform.minimaxi.com/docs/guides/rate-limits |
+| 批 6 | §7.6 | Grok 4.5 | 2026-08-02 16:55 | **通过（自审·rev1.1）** | 三方全过。rev1.1：按用户反馈将 **`mimo-v2.5` 升格为与 `mimo-v2.5-pro` 并列双主力**，并补 ③ 独立骨架（vision/定价）；九问数值未改。 |
+| 批 6 | §7.6 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 16:10 | **通过** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。直接抓取 mimo.mi.com 官方页核验：X1 模型列表（mimo-v2.5-pro 文本/深度思考/函数调用/结构化输出/联网、1M 上下文/128K 输出、100 RPM/10M TPM（单账号全部 Key 合计）、mimo-v2.5 全模态同窗口、v2 系 2026-06-30 00:00 正式下线、页首横幅同确认）✓；X5 深度思考（thinking.type enabled/disabled 经 extra_body、默认开启（v2.5-pro/v2.5）、思考模式强制 temperature=1.0/top_p=0.95、多轮工具调用必须完整回传 reasoning_content 否则 400、message.reasoning_content 与流式 delta.reasoning_content 先于 content、usage.completion_tokens_details.reasoning_tokens、prompt_tokens_details 可为 {}、max_completion_tokens 限制思考+回答总长、base_url api.xiaomimimo.com/v1、api-key/Bearer 双鉴权）✓；X4 Responses（端点 /v1/responses、不兼容 background/previous_response_id/context_management、reasoning.effort none 关闭且 low/medium/high 均开启效果一致暂不区分强度、省略默认未找到、usage.output_tokens_details.reasoning_tokens）✓；X6 模型超参（temperature 默认 1.0 范围 [0,1.5]、top_p 默认 0.95 范围 [0.01,1.0]、思考模式不支持自定义强制默认）✓；X8 按量计费（pro 命中 0.025/未命中 3.00/输出 6.00、v2.5 0.02/1.00/2.00、前缀命中 Prompt Cache 按命中价计费、缓存写入限时免费、海外 USD pro 0.0036/0.435/0.87、联网搜索 ¥16/1000 次、按量与 Token Plan 不互通）✓；X15 UltraSpeed 型号页（独立 model id、3× 定价命中 0.075/未命中 9/输出 18、输出 TPS ~(500-1000) vs Pro ~(50-100)、资源有限每日限量审批面向专业机构、能力含 Cache、示例 max_completion_tokens=131072、USD 0.0108/1.305/2.61）✓。非阻塞备注（3 条）：① X10 发布日（v2.5-pro/v2.5 2026-04-23）未直接抓取，以引用为准，建议 Grok 自审抽检（日期不进代码）；② X9 的 v2.5 默认 max_completion_tokens=32768 未直接抓取，可抽检；③ X4 的 effort 省略默认未找到——A16 主路径为 Chat（默认开启思考），若未来走 Responses 需显式传 effort 且 low/medium/high 效果相同。 |
+| 批 6 | §7.6 | GPT-5.6-Luna | 2026-08-02 16:44 | **通过** | 问题清单：无。独立复审确认 Q1–Q2 型号、下线日期、1M/128K 口径与精确整数未找到的边界正确；Q3 双协议端点和 tools 正确；Q4 隐式缓存、`prompt_tokens_details.cached_tokens`、TTL/最小块/bust 未找到及 HySparse 非 API 参数边界正确；Q5 Chat 默认 thinking enabled、Responses `reasoning.effort` 端点差异、采样限制与 reasoning 字段正确；Q6 tokenizer 未找到；Q7 Pro/V2.5/UltraSpeed CNY 定价与 3× 价格正确；Q8 UltraSpeed 吞吐标称、100 RPM/10M TPM 限流正确；Q9 工具链完整回传 `reasoning_content` 的 400 契约正确。来源：https://mimo.mi.com/docs/zh-CN/quick-start/summary/model；https://mimo.mi.com/docs/zh-CN/api/chat/openai-api；https://mimo.mi.com/docs/zh-CN/api/chat/responses；https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/text-generation/deep-thinking；https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go；https://mimo.mi.com/docs/zh-CN/api/guidance/rate-limit |
+| 批 7 | §7.7 | Grok 4.5 | 2026-08-02 17:50 | **通过（自审·rev1.5·终审）** | 用户确认审核通过；批 7 三方全过。可进批 8。 |
+| 批 7 | §7.7 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 17:00 | **通过（终审）** | 批 7 三方全过（用户确认 + Luna rev1.6）。 |
+| 批 7 | §7.7 | GPT-5.6-Luna | 2026-08-02 17:41 | **通过（复审·rev1.6）** | 问题清单：无。Q1–Q9 及重点 Q10/Q12/Q13/③-D 复核通过；Q4 的 Qwen3.7 隐式缓存约 2000 Token、Q10 Codex 元数据、Q12 Credits 规则、Q13 官方 URL 软 404 均与官方文档一致。 |
+| 批 7 | §7.7 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 17:30 | **通过（复审 rev1.5）** | 用户确认审核通过。rev1.5 max builtin=True 与 Q1 列序一致；3.8 未找到保持。批 7 三方全过。 |
+
+> 批 7 / §7.7 rev1.6 复审记录
+> 审计模型：GPT-5.6-Luna
+> 审计时间：2026-08-02 17:41
+> 审计结果：通过
+> 问题清单（每条一行）：无
+
+| 批 8 | §7.8 | Grok 4.5 | 2026-08-02 18:20 | **通过（自审·rev1.1）** | rev1.1：按用户反馈升格 **`claude-opus-4-8` 为主力 E**（五主力）；补 thinking 默认关、cache min 1024、Priority 支持、Opus 4.x 共享限流桶、同价 $5/$25；③ 独立骨架。待 DeepSeek + Luna 复审（须覆盖主力 E）。 |
+| 批 8 | §7.8 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 19:05 | **通过（首轮）** | 本审计独立执行（未参考 GPT-5.6-Luna 结论）。直接抓取官方页核验（A1 models/overview、A2 pricing、A3 prompt-caching、A4 thinking、A5 extended-thinking、A6 openai-sdk、A7 rate-limits、A10 service-tiers）：Q1 五主力 ✓（claude-opus-5 官方起步推荐、fable-5 GA 2026-06-09 最强、haiku-4-5-20251001/alias、opus-4-8 legacy「仍可用」未弃用同价同窗、mythos 邀请制、Bedrock id anthropic.claude-opus-53）；Q2 ✓（1M/200k 官方表、输出 128k/64k 同步 Messages、Batches output-300k-2026-03-24 名单含 Opus 5/4.8/4.7/4.6/Sonnet 5/4.6）；Q3 ✓（OpenAI 兼容非生产定位、base_url /v1/、无 prompt caching、thinking 细节不完整、strict 忽略、reasoning_effort Ignored、temperature 0–1 钳 1、n 必须 1、usage.prompt/completion_tokens_details 恒空）；Q4 ✓（ephemeral+automatic、4 断点、20 lookback、tools→system→messages、5min 默认/1h 可选、最小块表 Fable/Opus5/Mythos5=512、Mythos Preview/Opus 4.7=2048、Opus 4.6/4.5 与 Haiku 4.5=4096、Opus 4.8/Sonnet 5 等=1024 逐项与官方一致、顶层 usage.cache_creation/cache_read_input_tokens、倍率 5m 1.25x/1h 2x/hit 0.1x、不足最小长度静默双 0、thinking/effort/budget 变更 bust）；Q5 ✓（adaptive 块先于 text、signature、display omitted 为新模型默认/summarized 可选、Opus5/Sonnet5/Fable5 默认开、Opus 4.8 默认关须显式 adaptive、Sonnet5 可 disabled、Opus5 xhigh/max 不可关 400、Fable/Mythos 拒 disabled、Haiku 仅 extended（budget ≥1024 且 <max_tokens）、4.7+/4.8 type:enabled 400 且勿传 budget_tokens、effort 默认 high（4.8 全表面；Opus5/Sonnet5 API+Claude Code）、thinking 按 output 计费、adaptive 自动 interleaved）；Q6 ✓（无 tiktoken encoding 名、count_tokens API、4.7+/Fable 新 tokenizer ≈+30%）；Q7 定价六行全对 ✓（Fable 10/12.50/20/1.00/50、Opus5 与 4.8 同 5/6.25/10/0.50/25、Sonnet5 入门 2/2.50/4/0.20/10 至 8-31 与 9-01 起 3/3.75/6/0.30/15、Haiku 1/1.25/2/0.10/5）；Q8 ✓（TTFT 无官方数值、Priority 排除名单 Mythos 5/Preview/Opus 5/Sonnet 5 与官方 A10 逐字一致、Opus 4.8 支持 Priority、Start 档 Fable 1000/500k/100k 与 Opus 5/4.x/Sonnet 5/Haiku 1000/2M/400k、Opus 4.x 共享桶（官方脚注 \*：4.8+4.7+4.6+4.5 合计、Opus 5 分桶）、ITPM 多数不含 cache_read（Haiku 3.5† 例外））；Q9 ✓（thinking 块+signature 原样回传、manual interleaved 需 beta header、缓存稳定前缀、兼容层非生产）。③ 骨架五主力 A–E 字段与官方逐一相符（含 E 的 thinking_default_on=False/cache min 1024/Priority 可用/共享桶/同价）。**问题清单：无。** 非阻塞备注（4 条）：① 采样参数——官方 A4「Limits and feature compatibility」明文：Fable/Mythos/Preview/Opus 5/4.8/4.7/Sonnet 5 上**非默认** temperature/top_p/top_k 一律 400（无条件，与 thinking 无关）；报告 Q5 采样行"未找到 thinking 强制拒绝 temperature 明文"技术上成立（拒绝非 thinking 触发），建议并入正表：Claude 5 系/4.8 不支持温度调节，A18 落地 temperature 应保持默认或按 400 契约处理；② Fast mode 完整细节（A2/A7 实为完整来源）：Opus 5/Opus 4.8 专享 $10/$50、独立限流（anthropic-fast-\* headers）、4.7 报错/4.6 静默降速、Claude Platform on AWS 不可用、不可与 Batch 组合——报告 Q8"细节待补 URL"可销账；③ **Priority 新容量已停售**（A10 顶部 Warning）：仅既有容量承诺可续用至合同结束；"Opus 4.8 支持 Priority"建议加"仅既有承诺"限定；④ A3 缓存计费细节（A19 直接可用）：input_tokens 仅含断点后 tokens（total=cache_read+cache_creation+input）、1h TTL 时 usage 含 cache_creation 子对象（ephemeral_5m_input_tokens/ephemeral_1h_input_tokens）、workspace 级缓存隔离、thinking 块不可显式 cache_control（随工具结果自动缓存且命中时按 input 计费）。来源：https://docs.anthropic.com/en/docs/about-claude/models/overview ；https://docs.anthropic.com/en/docs/about-claude/pricing ；https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching ；https://docs.anthropic.com/en/docs/build-with-claude/thinking ；https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking ；https://docs.anthropic.com/en/api/openai-sdk ；https://docs.anthropic.com/en/api/rate-limits ；https://docs.anthropic.com/en/api/service-tiers |
+| 批 8 | §7.8 | GPT-5.6-Luna | 2026-08-02 17:54 | **不通过（复审）** | 4 个问题：Q1 Bedrock 型号 ID；Q4 缓存失效例外；Q5 Haiku thinking 默认值；Q9 thinking 块回传范围。详见下方审计记录。 |
+| 批 8 | §7.8 | Grok 4.5 | 2026-08-02 18:05 | **通过（自审·rev1.2）** | 已按 Luna 17:54 四条修订并核验官方：Q1 Bedrock 改为 `anthropic.claude-opus-5`（表尾 3=脚注 _3_）；Q4 区分 thinking/budget 失效 vs effort 默认≡省略不失效（A3）；Q5/③-C Haiku 明确 `thinking_default_on=False`；Q9 工具强制 / 跨回合建议 / 非工具可省略。并吸收 DeepSeek 非阻塞：采样 400、Fast mode、Priority 停售、缓存 usage 细节。 |
+| 批 8 | §7.8 | GPT-5.6-Luna | 2026-08-02 18:06 | **通过（复审·rev1.2）** | 问题清单：无。独立复核确认首轮 4 项均已修正；采样参数 400、Fast mode、Priority 既有承诺、缓存 usage 细节与 Anthropic 官方文档一致。 |
+| 批 8 | §7.8 | DeepSeek（v4 系 / opencode deepseek-v4-flash） | 2026-08-02 | **通过（复审·rev1.2·终审）** | 用户确认全部审计完成。rev1.2 四条（Bedrock id / effort 默认≡省略 / Haiku `thinking_default_on=False` / thinking 回传范围）及五主力含 Opus 4.8 均已闭环。批 8 三方全过；A0 8 批全部通过。 |
+| 批 8 | §7.8 | Grok 4.5 | 2026-08-02 | **通过（自审·rev1.2·终审）** | 用户确认全部审计完成；批 8 三方全过。A0（§7.1–§7.8）全部通过审计门。 |
+
+> 批 8 / §7.8 复审记录
+> 审计模型：GPT-5.6-Luna
+> 审计时间：2026-08-02 17:54
+> 审计结果：不通过
+> 问题清单（每条一行）：分区位置 | Grok 原话 | 正确值 | 来源 URL
+> Q1 | Bedrock `anthropic.claude-opus-53` | `anthropic.claude-opus-5`；末尾 3 是官方脚注标记，不属于 model id | https://docs.anthropic.com/en/docs/about-claude/models/overview
+> Q4 | 改 thinking 配置 / effort /（manual）`budget_tokens` 会 bust 缓存 | thinking/budget 变更会使相关缓存块失效；但 effort 显式设为模型默认值等同省略，不会失效，tool/system 影响取决于模型渲染位置 | https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+> Q5/③-C | 非 Claude5 adaptive 默认开 → `thinking_default_on` 按「需显式 enabled」落地 | Haiku 4.5 不支持 adaptive；仅 extended thinking，需显式 `type:"enabled"` + `budget_tokens`，故 `thinking_default_on=False` | https://docs.anthropic.com/en/docs/about-claude/models/overview；https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
+> Q9 | 多轮/工具须原样回传 thinking 块（含 signature） | 工具使用回合必须完整且不修改回传 thinking 块；跨回合仅建议回传；非工具场景允许省略历史 thinking | https://docs.anthropic.com/en/docs/build-with-claude/thinking
+>
+> 批 8 / §7.8 rev1.2 第二轮复审记录
+> 审计模型：GPT-5.6-Luna
+> 审计时间：2026-08-02 18:06
+> 审计结果：通过
+> 问题清单（每条一行）：无
+>
+> 批 8 / §7.8 rev1.2 处置（Grok）
+> 审计模型：Grok 4.5
+> 审计时间：2026-08-02 18:05（终审确认同日）
+> 审计结果：通过（自审·rev1.2·终审；用户确认全部审计完成）
+> 问题清单处置：
+> Q1 | 已改为 Bedrock `anthropic.claude-opus-5`，并注明表尾 3 为脚注
+> Q4 | 已按 A3 拆开 thinking/budget 与 effort 默认≡省略例外
+> Q5 | ③-C 已写死 `thinking_default_on = False`
+> Q9 | 已按工具强制 / 跨回合建议 / 非工具可省略改写
+> 额外 | DeepSeek 非阻塞四条已写入 Q5/Q8/Q9/③
+>
+> **A0 关账**：§7.1–§7.8 八批三方审计全部通过。
