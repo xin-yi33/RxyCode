@@ -172,11 +172,55 @@ def test_infer_provider_group_from_url():
     assert unknown["name"] == "其他"
 
 
-def test_provider_presets_include_opencode_go_under_other():
+def test_onboard_models_batch_allows_same_id_on_different_endpoint(monkeypatch):
+    """Legacy bare key on OpenCode must not block DeepSeek official namespaced add."""
     from RxyCode.RxyCode1_1_0.config import model_manager
 
-    presets = {p["id"]: p for p in model_manager.list_provider_presets()}
-    go = presets["opencode-go"]
-    assert go["name"] == "OpenCode Go"
-    assert go["base_url"] == "https://opencode.ai/zen/go/v1"
-    assert go["category"] == "其他"
+    state = _in_memory_config(
+        monkeypatch,
+        model_manager,
+        {
+            "models": {
+                "deepseek-v4-flash": {
+                    "base_url": "https://opencode.ai/zen/go/v1",
+                    "model_name": "deepseek-v4-flash",
+                }
+            }
+        },
+    )
+
+    result = model_manager.onboard_models_batch(
+        api_key="sk-official",
+        base_url="https://api.deepseek.com/v1",
+        model_ids=["deepseek-v4-flash", "deepseek-chat"],
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+        active_model_id="deepseek-v4-flash",
+        skip_probe=True,
+    )
+
+    assert "deepseek/deepseek-v4-flash" in result["added"]
+    assert "deepseek/deepseek-chat" in result["added"]
+    assert "deepseek-v4-flash" in state["cfg"]["models"]
+    assert "deepseek/deepseek-v4-flash" in state["cfg"]["models"]
+
+
+def test_ensure_models_provider_metadata_stamps_from_url(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = _in_memory_config(
+        monkeypatch,
+        model_manager,
+        {
+            "models": {
+                "deepseek-v4-flash": {
+                    "base_url": "https://opencode.ai/zen/go/v1",
+                    "model_name": "deepseek-v4-flash",
+                }
+            }
+        },
+    )
+    model_manager.ensure_models_provider_metadata()
+    entry = state["cfg"]["models"]["deepseek-v4-flash"]
+    assert entry["provider_id"] == "opencode-go"
+    assert entry["provider_name"] == "OpenCode Go"

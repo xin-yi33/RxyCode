@@ -1,7 +1,7 @@
 # Phase E · 多 Agent × 多模型协作（Multi-Model Collaboration）
 
 > **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase E。
-> **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 全部完成；设置页和 Desktop 交互接入还依赖 [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) 的稳定契约。
+> **前置条件**：主计划 Phase 0/1/2/3 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 全部完成；Phase 3 的模型目录/解析摘要是多模型预算和成本核算的唯一来源；设置页和 Desktop 交互接入还依赖 [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) 的稳定契约。
 > **后继**：[`PHASE-F-MULTIMODAL.md`](./PHASE-F-MULTIMODAL.md)
 >
 > **一句话目标**：让专家团的每个角色跑在**不同的模型**上——Opus 做架构、Grok 写代码、GPT 做审计——由一个独立的 master 模型监测全局、中转消息、在跨模型分歧时仲裁。
@@ -19,7 +19,7 @@
 | 章节 | 内容 |
 |---|---|
 | [§0 执行手册](#0-执行手册必读) | 执行协议、模型分工、硬性规则 |
-| [§1 前置盘点](#1-前置盘点phase-abc-给了什么) | Phase A/B/C 已经给了什么，还缺什么 |
+| [§1 前置盘点](#1-前置盘点phase-3abc-给了什么) | Phase 3/A/B/C 已经给了什么，还缺什么 |
 | [§2 三个真问题](#2-三个真问题) | 跨模型交接、成本核算、失败归因 |
 | [§3 目标架构](#3-目标架构) | master 模型、模型绑定、pair-program |
 | [§4 任务卡 E1–E12](#4-任务卡) | 逐个执行 |
@@ -79,12 +79,13 @@ python -m evals.cli run --backend agent --mode team --compare-baseline evals\bas
 
 ---
 
-## §1 前置盘点：Phase A/B/C 给了什么
+## §1 前置盘点：Phase 3/A/B/C 给了什么
 
 ### 1.1 已经有的
 
 | 能力 | 来自 | 位置 |
 |---|---|---|
+| `ModelCatalog` / `OutputLimitResolver`（按真实 `model_id` 解析上限和来源） | Phase 3 | `config/model_catalog.py`、`config/model_limits.py` |
 | Provider 策略层（DeepSeek / Claude / Qwen / OpenAI） | Phase A | `core/providers/` |
 | `ModelCapabilities`（上下文窗口、tokenizer、能力位） | Phase A | `config/model_capabilities.py` |
 | per-model prompt variant | Phase A | `core/prompts/` |
@@ -898,7 +899,7 @@ master 拿到四份材料：
 [coder · grok] 正在实现... 45.2s · $0.18/$1.00
 ```
 
-5. **Desktop**（主计划 Phase 3 完成后）：委派树上每个节点标注模型和成本；成本饼图按角色分。
+5. **Desktop**（主计划 Phase 4 完成后）：委派树上每个节点标注模型和成本；成本饼图按角色分，并消费 Phase 3 的模型上限摘要。
 
 6. 协议：`ModelSwitchPoint`、`CostBreakdown`、`ArbitrationRecord` 进 `protocol/`，重新生成 TS 类型。
 

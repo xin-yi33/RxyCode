@@ -423,11 +423,11 @@ LinkAgent 是一个**独立的桌面应用**，而这个应用**建在 RxyCode �
                     RxyCode
 ```
 
-### 技术选型（跟随 RxyCode Phase 3，不重新讨论）
+### 技术选型（跟随 RxyCode Phase 4，不重新讨论）
 
 | 选择 | 理由 |
 |---|---|
-| **Electron** 而非 Tauri | RxyCode Phase 3 选了 Electron（团队没有 Rust 经验）。既然基于它做就得跟 |
+| **Electron** 而非 Tauri | RxyCode Phase 4 选了 Electron（团队没有 Rust 经验）。既然基于它做就得跟 |
 | **JSON-RPC over stdio** 而非本地 HTTP | RxyCode 的协议就是 stdio。而且**没有端口就没有攻击面**——不需要绑 loopback、随机端口、会话令牌那一整套 |
 | **协议类型从合并 schema 重新生成** | 类型只能有一个真源。手抄必然漂移 |
 | **Electron 壳与 UI 组件 fork，钉住 commit** | LinkAgent 一定会分叉（多两个视图）。硬撑着共用只会两边都别扭 |
@@ -437,11 +437,13 @@ LinkAgent 是一个**独立的桌面应用**，而这个应用**建在 RxyCode �
 | LinkAgent | 等 RxyCode | 约在 |
 |---|---|---|
 | L9-1 ~ L9-3（协议 + appserver + 类型） | **Phase 2**（`protocol/`、`appserver/`） | 2026-10-23 |
-| L9-4 ~ L9-8（Electron 壳与视图） | **Phase 3**（D1–D6） | 2026-12-18 |
+| L9-6 ~ L9-7（模型/成本摘要和设置显示） | **Phase 3**（ModelCatalog、resolver 和摘要协议） | W13–W15 |
+| L9-4 ~ L9-8（Electron 壳与视图） | **主计划 Phase 4**（基础 Electron 壳、协议接入和最小交互） | W16–W23 |
+| L9-4 ~ L9-8（Electron 壳与视图） | **Phase D**（完整 Desktop D1–D16） | Phase D 完成后 |
 
 **这段等待期投给 L4/L5/L7/L8**——它们一个都不依赖桌面端。
 
-> 如果 RxyCode Phase 3 延期，**不要自己另起一个壳赶进度**。造出第二套桌面代码等于放弃了"基于 RxyCode desktop"的全部好处。
+> 如果 RxyCode Phase 4 延期，**不要自己另起一个壳赶进度**。造出第二套桌面代码等于放弃了"基于 RxyCode desktop"的全部好处。
 
 ### CLI 的定位
 

@@ -1,5 +1,6 @@
 import type { ApprovalDecision, ApprovalInfo } from "./ApprovalDialog.tsx";
 import { getChatTransport } from "./transport/index.ts";
+import type { CommandResult } from "./transport/httpAdmin.ts";
 import type { ChatApiCallbacks, MessageUpdater } from "./transport/types.ts";
 import type { Mode, StatusInfo } from "./types.ts";
 
@@ -9,7 +10,7 @@ export async function fetchStatus(onStatus: (status: StatusInfo | null) => void)
   return getChatTransport().fetchStatus(onStatus);
 }
 
-export async function sendCommand(command: string): Promise<Record<string, unknown> | null> {
+export async function sendCommand(command: string): Promise<CommandResult> {
   return getChatTransport().sendCommand(command);
 }
 

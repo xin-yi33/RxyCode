@@ -40,7 +40,7 @@ CLI 仍然要建、要好用——它比 UI 早很多可用，跑评测、查经
 | 机器可读输出（`--json`） | 花哨的终端渲染 |
 | 稳定的退出码 | 对 EKO 的写命令（见 [`L5-6`](./L5-EVIDENCE-AND-EVOLUTION.md)） |
 
-桌面端建在 **RxyCode Phase C 的完整 Desktop 壳和扩展契约**之上（fork）；主计划 Phase 3 只提供基础 Electron 壳，`desktop/` 目录到 [`L9-4`](./L9-DESKTOP-APP.md) 才建，**L0 不用管它**。
+桌面端建在 **RxyCode Phase D 的完整 Desktop 壳和扩展契约**之上（fork）；主计划 Phase 4 提供基础 Electron 壳，Phase 3 提供模型输出上限摘要，`desktop/` 目录到 [`L9-4`](./L9-DESKTOP-APP.md) 才建，**L0 不用管它**。
 
 ---
 

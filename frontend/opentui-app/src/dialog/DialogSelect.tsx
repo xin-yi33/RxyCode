@@ -33,6 +33,18 @@ export function shouldApplyMouseHover(inputMode: "keyboard" | "mouse"): boolean 
   return inputMode === "mouse";
 }
 
+/** Search row: block cursor after typed text (not locked on first cell). */
+export function formatSearchFieldDisplay(
+  filter: string,
+  placeholder: string,
+): { text: string; isPlaceholder: boolean } {
+  const isPlaceholder = filter.length === 0;
+  return {
+    text: isPlaceholder ? placeholder : filter,
+    isPlaceholder,
+  };
+}
+
 const NAV_KEY_NAMES = new Set([
   "up",
   "down",
@@ -248,8 +260,6 @@ export function DialogSelect<T>({
   const [idx, setIdx] = useState(0);
   const [inputMode, setInputMode] = useState<"keyboard" | "mouse">("keyboard");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const inputModeRef = useRef<"keyboard" | "mouse">("keyboard");
-  inputModeRef.current = inputMode;
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const focusRef = useRef<InputRenderable>(null);
   const scrollAccel = useMemo(() => createScrollAcceleration(), []);
@@ -483,7 +493,7 @@ export function DialogSelect<T>({
     Math.max(14, ...flat.map((o) => stringWidth(o.title) + 4), 14),
   );
 
-  const searchShown = filter.length > 0 ? filter : placeholder;
+  const searchField = formatSearchFieldDisplay(filter, placeholder);
   const listHeight = Math.min(mv, Math.max(rows.length, 1));
 
   return (
@@ -512,35 +522,19 @@ export function DialogSelect<T>({
 
       {showSearch ? (
         <RowShell>
-          <text fg={SELECT_FG} bg={SELECT_BG}>
-            {searchShown.slice(0, 1) || " "}
+          <text fg={searchField.isPlaceholder ? C.overlay2 : C.text}>
+            {" "}
+            {searchField.text}
           </text>
-          <text fg={filter.length > 0 ? C.text : C.overlay2}>{searchShown.slice(1)}</text>
+          <text fg={SELECT_FG} bg={SELECT_BG}>
+            {" "}
+          </text>
           <box style={{ flexGrow: 1, height: 1 }} />
           <text fg={C.overlay2}>
             {flat.length}/{options.length}{" "}
           </text>
         </RowShell>
       ) : null}
-      {/* Off-layout focus sink: keeps ConPTY/key delivery alive; must not paint glyphs */}
-      <input
-        ref={focusRef}
-        focused
-        onInput={(v) => {
-          if (!showSearch) return;
-          setInputMode("keyboard");
-          setFilter(String(v ?? ""));
-        }}
-        onSubmit={() => confirm()}
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          width: 0,
-          flexShrink: 0,
-          backgroundColor: C.bg,
-        }}
-      />
 
       <scrollbox
         ref={scrollRef}
@@ -596,23 +590,24 @@ export function DialogSelect<T>({
             <RowShell
               key={row.key}
               bg={sel ? SELECT_BG : C.bg}
-              onMouseMove={() => setInputMode("mouse")}
               onMouseOver={() => {
-                if (!shouldApplyMouseHover(inputModeRef.current)) return;
+                setInputMode("mouse");
                 moveTo(row.flatIndex);
               }}
               onMouseDown={() => {
                 setInputMode("mouse");
                 moveTo(row.flatIndex);
+                // scrollbox often swallows mouseup; confirm on mousedown for single-select.
+                if (!multi) {
+                  confirm(row.flatIndex);
+                }
               }}
               onMouseUp={() => {
                 setInputMode("mouse");
                 moveTo(row.flatIndex);
                 if (multi) {
                   toggleSelected(row.flatIndex);
-                  return;
                 }
-                confirm(row.flatIndex);
               }}
             >
               <text fg={sel ? SELECT_FG : C.text}>{namePart}</text>
@@ -629,6 +624,25 @@ export function DialogSelect<T>({
           {flat.length ? safeIdx + 1 : 0}/{flat.length}{" "}
         </text>
       </RowShell>
+      {/* Focus sink last: keeps ConPTY keys without overlaying the list for mouse hits */}
+      <input
+        ref={focusRef}
+        focused
+        value={filter}
+        onInput={(v) => {
+          if (!showSearch) return;
+          setInputMode("keyboard");
+          setFilter(String(v ?? ""));
+        }}
+        onSubmit={() => confirm()}
+        style={{
+          position: "absolute",
+          left: -10000,
+          top: 0,
+          opacity: 0,
+          flexShrink: 0,
+        }}
+      />
     </box>
   );
 }

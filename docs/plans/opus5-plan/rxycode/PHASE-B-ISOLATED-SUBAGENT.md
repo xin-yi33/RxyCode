@@ -1,7 +1,7 @@
 # Phase B · 隔离式子代理（OpenCode-style Subagent Runtime）
 
 > **在整条路线中的位置**：本文件是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后续扩展，编号为新的 Phase B。它位于 Phase A 之后，先提供真正的 Child Session / Subagent Runtime，再由 Phase C 组装专家团，由 Phase D 提供完整 Desktop 工作台，由 Phase E 接入多模型协作。
-> **前置条件**：主计划 Phase 0/1/2 与 [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) 全部完成；Phase A 的模型能力、Provider 适配和结构化输出契约必须稳定。
+> **前置条件**：主计划 Phase 0/1/2/3 与 [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) 全部完成；Phase 3 的模型输出上限 resolver/摘要和 Phase A 的模型能力、Provider 适配、结构化输出契约必须稳定。
 > **后继**：[`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 只能在本 Phase 的 Child Session、权限、预算和结果协议之上实现 Coordinator 与专家团；[`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) 消费本 Phase 的子会话事件和能力声明。
 >
 > **一句话目标**：把“主 Agent 里再调用一个函数”的伪子代理，变成拥有独立会话、独立上下文、独立工具/权限、独立预算和独立生命周期的真实 Child Agent；Primary 只能通过结构化任务和结构化结果与它交互。
@@ -210,9 +210,9 @@ OpenCode 文档公开了 JSON 配置与 Markdown Agent 文件两种定义方式�
 | `steps` | 否 | 单次 Child 的 agentic iteration 上限 |
 | `permission` | 是 | 工具级 `allow` / `ask` / `deny` 规则 |
 | `hidden` | 否 | 是否从 `@` 列表隐藏；不影响 Task Tool 显式调用 |
-| `permission.task` | 否 | 按目标 Agent id 允许或拒绝该 Agent 继续启动哪些 Subagent；唯一公开的 task 权限入口 |
+| `permission.task` | 否 | 按目标 Agent id 控制模型/Command 通过 Task Tool 启动哪些 Subagent；唯一公开的 Task 权限入口。用户直接 `@` 不由它拦截 |
 | `task_permission` | 内部 | 从 `permission.task` 编译出的规范化策略对象；不是第二个用户配置来源 |
-| `subagent_depth` | 否 | 子代理递归深度上限；RxyCode 默认 0，较 OpenCode 默认 1 更严格 |
+| `subagent_depth` | 否 | 与 OpenCode 兼容的全局嵌套上限：`0` 禁止所有 Subagent，`1` 允许 Primary→Child，`2` 允许再嵌套一层；默认 `1`。运行时另有内部 `remaining_child_depth` 快照 |
 | `workspace_scope` | 否 | `read_only` / `leased_write` / `isolated_worktree` |
 
 **配置来源唯一性**：JSON/Markdown 只允许在 `permission.task` 写 task 权限。顶层 `task_permission` 不属于公开 schema；如果解析器同时发现两处配置，必须以结构化配置错误拒绝，而不是猜测优先级或合并。Python `AgentDefinition.task_permission` 只表示归一化后的内部快照。
@@ -222,7 +222,7 @@ OpenCode 文档公开了 JSON 配置与 Markdown Agent 文件两种定义方式�
 OpenCode 官方权限文档采用 `allow`、`ask`、`deny` 三态，并支持按工具输入的 glob/pattern 匹配。RxyCode 必须保留以下性质：
 
 1. Agent 级规则覆盖全局默认规则，但不能绕过系统硬拒绝。
-2. 同一工具多条规则按确定顺序匹配，规则优先级写进测试，不依赖字典遍历顺序。
+2. 同一工具多条规则按配置顺序匹配，**最后一条匹配规则生效**；规则必须保留顺序，不能依赖字典遍历顺序。
 3. `task` 权限按目标 Agent id 匹配，不得用“允许 task”代表允许任意递归。
 4. `external_directory` 单独控制工作区外路径，不能从 `read` 或 `edit` 自动推断。
 5. `ask` 必须生成可追踪的审批请求，审批决定绑定 `session_id`、`tool_call_id`、路径和规则版本。
@@ -258,7 +258,7 @@ OpenCode 文档描述了进入 Child、循环 Child、返回 Parent 的导航体
 
 ### 2.6 借鉴边界
 
-OpenCode 官方文档公开的是行为和配置，不是完整内部 runtime 实现。本 Phase 只借鉴：Primary/Subagent 二分、`@`、Task、Markdown/JSON Agent 定义、权限三态、task permission、child navigation、steps/depth 限制。RxyCode 的 Session、协议、审计、workspace lease 必须按本项目现有 Phase 2/Phase A 约束实现。
+OpenCode 官方文档公开的是行为和配置，不是完整内部 runtime 实现。本 Phase 只借鉴：Primary/Subagent 二分、`@`、Task、Markdown/JSON Agent 定义、权限三态、task permission、child navigation、steps/depth 限制。RxyCode 的 Session、协议、审计、workspace lease 必须按本项目现有 Phase 2/Phase 3/Phase A 约束实现。
 
 ---
 
@@ -300,7 +300,8 @@ class AgentDefinition:
     permission: PermissionSpec
     task_permission: TaskPermissionSpec  # normalized from permission.task; not public input
     hidden: bool = False
-    subagent_depth: int = 0
+    # OpenCode-compatible global depth: 0=disable all, 1=Primary->Child.
+    subagent_depth: int = 1
     workspace_scope: Literal["read_only", "leased_write", "isolated_worktree"] = "read_only"
     extra: Mapping[str, object] = field(default_factory=dict)
 
@@ -313,9 +314,19 @@ class TaskRequest:
     context: ContextEnvelope
     trigger: Literal["automatic", "mention", "command", "team"]
     output_schema: str | None
+    # These are caller proposals/upper bounds, never effective authority.
+    requested_budget: BudgetSpec | None
+    requested_workspace: WorkspaceScope | None
+
+@dataclass(frozen=True)
+class EffectiveTaskPolicy:
+    """Server-derived policy snapshot persisted with the Child Session."""
+    task_permission: TaskPermissionSpec
+    subagent_depth: int
+    remaining_child_depth: int
     budget: BudgetSpec
     workspace: WorkspaceScope
-    allow_child_tasks: bool = False
+    permission: PermissionSpec
 
 @dataclass(frozen=True)
 class TaskResult:
@@ -414,7 +425,7 @@ TERMINATED
     "external_directory": "deny"
   },
   "hidden": false,
-  "subagent_depth": 0,
+  "subagent_depth": 1,
   "workspace_scope": "read_only"
 }
 ```
@@ -476,7 +487,8 @@ JSON、Markdown 和未来用户级目录的定义，最终都必须进入同一�
 
 - autocomplete 只展示 `mode in {subagent, all}` 且 `hidden=false` 的 Agent；
 - 被隐藏的 Agent 仍可由 Task Tool 显式调用；
-- 不存在、模式不匹配或权限不允许时，返回结构化错误，不创建半残 Child；
+- 用户直接 `@` 是显式委派，不受 `permission.task` 的模型派发规则限制；但仍必须通过系统硬拒绝、Agent mode、`subagent_depth`、workspace scope 和 capability `subagents.mention` 检查；
+- 不存在、模式不匹配、硬拒绝或 capability 不允许时，返回结构化错误，不创建半残 Child；
 - mention 的显示名称不是 id，事件中永远记录稳定 `agent_id`。
 
 ### 4.4 Task Tool 自动触发
@@ -500,9 +512,10 @@ Primary 的模型可以提出 Task Tool 调用，但执行层不能信任模型�
 
 1. 校验 `agent_id`、Agent mode 和规范化后的 `permission.task`；
 2. 从 Primary 的允许上下文引用构造 `ContextEnvelope`；
-3. 由服务端计算 budget、workspace scope 和实际 permission；
-4. 创建 Child Session 并发出 `child_session/created`；
-5. 只把 `TaskResult` 摘要回传给 Primary。
+3. 由服务端计算 `EffectiveTaskPolicy`：对请求的 budget/workspace 做上限裁剪，不接受模型传入的权限放宽；
+4. 从全局 `subagent_depth` 和当前 session depth 计算 `remaining_child_depth`；
+5. 创建 Child Session 并发出 `child_session/created`，同时持久化 policy snapshot；
+6. 只把 `TaskResult` 摘要回传给 Primary。
 
 ### 4.5 Command 的 `subtask=true`
 
@@ -511,14 +524,15 @@ Primary 的模型可以提出 Task Tool 调用，但执行层不能信任模型�
   "id": "review-diff",
   "description": "对当前 diff 做只读审查",
   "subtask": true,
-  "agent": "reviewer",
-  "permission": {
-    "task": "deny"
-  }
+  "agent": "reviewer"
 }
 ```
 
 `subtask=true` 不是 UI 标签，而是运行时硬契约：命令执行必须走 `TaskRequest`，不能在 Primary 的消息循环内展开为普通 prompt。Command 结果仍以 Child Session 显示，便于 Desktop 审计和恢复。
+
+`subtask=true` 可以把 `agent` 配置为 `primary` 或 `all` 的 Agent；运行时仍创建独立 Child，不把该 Agent 当作当前 Primary 的普通 prompt 展开。Command 自己不声明 `permission.task`，权限只从 Agent 定义和服务端 policy 计算得到。
+
+**入口名称冻结**：`agent/invoke` 是用户 `@` 的 JSON-RPC 方法；`task/start` 是 Desktop/CLI 显式启动 Child 的 JSON-RPC 方法；`task` 只作为模型可调用的 Task Tool 名称。三者都进入同一个 `ChildSessionManager`，不能各自实现一套生命周期。
 
 ### 4.6 ContextEnvelope：默认不复制完整 history
 
@@ -548,9 +562,34 @@ Context 构造器必须拒绝：
 
 ## §5 任务卡 B1–B14
 
+### 5.0 卡级验收命令矩阵
+
+Composer 执行每张卡时，必须把下面的命令复制到对应卡片的 `验收命令` 区域，并把真实输出写回卡片；命令所指向的测试目录允许在本卡内新建，但在测试尚未建立前不得把“目录不存在”描述成通过。B1 和 B14 还必须执行全链路基线/评测命令。若仓库实际测试入口不同，必须在卡片中记录替代命令、原因和等价覆盖范围。
+
+这里的 `owner: backend/frontend` 表示文件和责任边界，不表示换成其他模型主导实现；本 Phase 的实际编码、协议取舍、冲突解决、测试收口和提交由 Composer 2.5 负责。Grok 4.5 只在卡片明确的 Desktop/OpenTUI 视觉或前端辅助范围内工作，Sonnet 5 只做可选的独立预审；任何辅助产出都必须由 Composer 转成可验证的代码、测试或文档结论后才算完成。
+
+| 卡片 | 最低验收命令 |
+|---|---|
+| B1 | `rg -n "subagent|SubAgent|TaskTree|_run_with_subagents|run_agent" core tools appserver protocol tests; python -m evals.cli run --backend agent --compare-baseline evals\\baselines\\latest-agent.json` |
+| B2 | `python -m pytest tests/test_subagents/test_definitions.py -q` |
+| B3 | `python -m pytest tests/test_subagents/test_modes.py -q` |
+| B4 | `python -m pytest tests/test_subagents/test_sessions.py -q` |
+| B5 | `python -m pytest tests/test_subagents/test_runtime_isolation.py -q` |
+| B6 | `python -m pytest tests/test_subagents/test_context.py -q` |
+| B7 | `python -m pytest tests/test_subagents/test_task_dispatch.py -q` |
+| B8 | `python -m pytest tests/test_subagents/test_mention.py -q` |
+| B9 | `python -m pytest tests/test_subagents/test_permissions.py -q` |
+| B10 | `python -m pytest tests/test_subagents/test_workspace.py -q` |
+| B11 | `python -m pytest tests/test_subagents/test_budget.py -q` |
+| B12 | `python -m pytest tests/test_subagents/test_events.py -q` |
+| B13 | `python -m pytest tests/test_subagents/test_migration.py -q` |
+| B14 | `python -m pytest tests/test_subagents -q; python -m evals.cli run --backend agent --compare-baseline evals\\baselines\\latest-agent.json` |
+
 ### B1 · 现状基线、遗留边界和零回归门
 
 `P0` / 4–6h / 无依赖 / **owner: backend**
+
+**验收命令**：`rg -n "subagent|SubAgent|TaskTree|_run_with_subagents|run_agent" core tools appserver protocol tests; python -m evals.cli run --backend agent --compare-baseline evals\\baselines\\latest-agent.json`
 
 **目标**：确认当前伪子代理的真实调用链，建立删除/适配清单，不在旧路径上叠加第二套逻辑。
 
@@ -573,6 +612,8 @@ Context 构造器必须拒绝：
 ### B2 · AgentDefinition 与配置加载器
 
 `P0` / 8–12h / 依赖 B1 / **owner: backend**
+
+**验收命令**：`python -m pytest tests/test_subagents/test_definitions.py -q; python -m ruff check core/subagents protocol tests/test_subagents`
 
 **目标**：把 JSON、Markdown 和内置定义归一化为单一不可变 `AgentDefinition`，先做静态校验，再允许运行时加载。
 
@@ -604,14 +645,16 @@ python -m ruff check core/subagents protocol tests/test_subagents
 
 `P0` / 6–8h / 依赖 B2 / **owner: backend**
 
+**验收命令**：`python -m pytest tests/test_subagents/test_modes.py -q`
+
 **目标**：建立 Primary、Subagent、All 三种模式，确保默认 Agent 仍是 Primary，默认子代理不能继续派生子代理。
 
 **操作步骤**
 
 1. 给当前会话增加 `session_mode` 和 `agent_id`。
 2. 只允许 `primary/all` 作为用户主入口。
-3. 只允许 `subagent/all` 作为 Task 或 `@` 目标。
-4. 默认 `subagent_depth=0`、`permission.task=deny`；内部 `task_permission` 由该字段归一化生成。
+3. 只允许 `subagent/all` 作为普通 Task 或 `@` 目标；`subtask=true` 是明确例外，可把 `primary/all` Agent 强制放入 Child。
+4. 默认 `subagent_depth=1`、`permission.task=deny`，并关闭自动多 Agent feature flag；这样保持 OpenCode 的深度语义，同时默认不会产生额外调用。内部 `task_permission` 由该字段归一化生成。
 5. 在 capability 中报告 `subagents.task`、`subagents.mention`、`subagents.child_tasks` 是否可用。
 
 **完成判据**
@@ -625,6 +668,8 @@ python -m ruff check core/subagents protocol tests/test_subagents
 ### B4 · Child Session 生命周期
 
 `P0` / 10–14h / 依赖 B2、B3 / **owner: backend**
+
+**验收命令**：`python -m pytest tests/test_subagents/test_sessions.py -q`
 
 **目标**：实现独立的 parent/child session 树、终态和恢复基础。
 
@@ -647,6 +692,8 @@ python -m ruff check core/subagents protocol tests/test_subagents
 ### B5 · 隔离式 AgentRuntime
 
 `P0` / 14–18h / 依赖 B4 / **owner: backend**
+
+**验收命令**：`python -m pytest tests/test_subagents/test_runtime_isolation.py -q`
 
 **目标**：把 AgentDefinition 编译成运行实例，彻底隔离可变资源。
 
@@ -679,6 +726,8 @@ AgentRuntime
 
 `P0` / 10–14h / 依赖 B5 / **owner: backend**
 
+**验收命令**：`python -m pytest tests/test_subagents/test_context.py -q`
+
 **目标**：让 Child 得到“完成任务所需的最小上下文”，而不是 Primary 的完整隐私 history。
 
 **必须支持**：文件引用、消息摘要引用、结构化 artifact 引用、附件引用、sha256 校验、secret 脱敏和最大 token 限制。
@@ -695,6 +744,8 @@ AgentRuntime
 
 `P0` / 10–14h / 依赖 B4–B6 / **owner: backend**
 
+**验收命令**：`python -m pytest tests/test_subagents/test_task_dispatch.py -q`
+
 **目标**：提供唯一的自动派发入口，支持 `agent_id`、prompt、context refs、output schema、budget 和 workspace scope。
 
 **执行顺序必须固定**：解析参数 → 校验 AgentDefinition → 校验 `permission.task` 规范化结果 → 构造 ContextEnvelope → 计算 budget/scope → 创建 Child → 发事件 → 执行 → 回传 TaskResult。
@@ -710,6 +761,8 @@ AgentRuntime
 ### B8 · `@` 触发与 CLI/OpenTUI/Desktop 共用入口
 
 `P1` / 8–12h / 依赖 B3、B7 / **owner: frontend**
+
+**验收命令**：`python -m pytest tests/test_subagents/test_mention.py -q`
 
 **目标**：实现 OpenCode 风格的显式 `@agent`，但解析、权限和创建仍由后端统一负责。
 
@@ -731,6 +784,8 @@ AgentRuntime
 
 `P0` / 12–16h / 依赖 B2、B5、B7 / **owner: backend**
 
+**验收命令**：`python -m pytest tests/test_subagents/test_permissions.py -q`
+
 **目标**：实现 allow/ask/deny、工具输入 pattern、Agent 覆盖和递归 task 权限。
 
 **验收重点**
@@ -746,6 +801,8 @@ AgentRuntime
 ### B10 · WorkspaceScope、写租约和并发冲突
 
 `P0` / 12–16h / 依赖 B6、B9 / **owner: backend**
+
+**验收命令**：`python -m pytest tests/test_subagents/test_workspace.py -q`
 
 **目标**：让并行 Child 的读写边界可判断、可阻塞、可恢复。
 
@@ -770,13 +827,17 @@ isolated_worktree  在独立 worktree 写，结果以 artifact/diff 回传
 
 `P0` / 10–14h / 依赖 B5、B9、B10 / **owner: backend**
 
+**验收命令**：`python -m pytest tests/test_subagents/test_budget.py -q`
+
 **目标**：建立多 Agent 的成本和失控保护，默认不让子代理无限递归或无限消耗。
 
 预算至少包含：token、步骤数、墙钟时间、并发 Child 数和总 task 数。预算必须在创建时冻结上限，在每次模型调用和工具调用时扣减，在终态写入 usage。
 
 **完成判据**
 
-- [ ] `subagent_depth=0` 的 Child 不能创建子 Child；
+- [ ] `subagent_depth=0` 时 Primary 也不能创建 Child；
+- [ ] `subagent_depth=1` 时 Primary 可以创建 Child，但 Child 不能创建子 Child；
+- [ ] `subagent_depth=2` 时只允许一层 Child→Child，超过后以结构化 depth 错误终止；
 - [ ] depth、steps、token、time、concurrency 任一达到上限都能进入可解释终态；
 - [ ] cancel token 能终止模型等待、工具等待和子 Child；
 - [ ] Parent 取消不留下 orphan process、orphan lease 或 orphan task；
@@ -786,6 +847,8 @@ isolated_worktree  在独立 worktree 写，结果以 artifact/diff 回传
 ### B12 · ChildSessionEvent、持久化和恢复
 
 `P1` / 10–14h / 依赖 B4、B7、B11 / **owner: backend**
+
+**验收命令**：`python -m pytest tests/test_subagents/test_events.py -q`
 
 **目标**：让 CLI、Desktop 和未来 LinkAgent 能实时观察、补读和恢复 Child。
 
@@ -821,9 +884,13 @@ child_session/recovered
 
 `P1` / 8–12h / 依赖 B2、B7、B9 / **owner: backend + frontend**
 
+**验收命令**：`python -m pytest tests/test_subagents/test_migration.py -q`
+
 **目标**：提供可演示、可测试、默认安全的内置 Agent，而不是只留下抽象接口。
 
-**迁移硬约束**：当前 `tools/agent_tool.py` 是旧的直接 `AgentV2` 兼容入口，当前 `tools/task_tool.py` 是任务清单/状态工具；二者都不能被静默改造成新的隔离子代理派发器。新的 LangChain/工具注册适配器使用 `tools/subagent_task_tool.py`，核心派发逻辑仍归 `core/subagents/manager.py`，对外工具名可以是 `task`，但模块名必须保持可区分。
+**迁移硬约束**：当前 `tools/agent_tool.py` 是旧的直接 `AgentV2` 兼容入口，当前 `tools/task_tool.py` 是任务清单/状态工具；二者都不能被静默改造成新的隔离子代理派发器。新的 LangChain/工具注册适配器使用 `tools/subagent_task_tool.py`，核心派发逻辑仍归 `core/subagents/manager.py`。
+
+**公开工具名冻结**：隔离子代理派发器的唯一模型工具名是 `task`；任务清单工具的公开名迁移为 `task_manage`，Python 模块和 `task_tool` 兼容符号可以暂时保留。旧兼容模式只能注册二者之一：旧模式注册任务清单 `task` 且关闭子代理 Task，启用新模式注册子代理 `task` 和任务清单 `task_manage`，禁止两个注册表同时出现同名 `task`。
 
 **操作步骤**
 
@@ -863,6 +930,8 @@ child_session/recovered
 ### B14 · 全链路评测、迁移门和 Phase B 出口
 
 `P0` / 16–24h / 依赖 B1–B13 / **owner: backend + frontend**
+
+**验收命令**：`python -m pytest tests/test_subagents -q; python -m evals.cli run --backend agent --compare-baseline evals\\baselines\\latest-agent.json`
 
 **目标**：证明“真的隔离”“真的可用”“真的可以被后续 Desktop 和专家团消费”，并对多 Agent 的成本保持诚实。
 
@@ -1101,14 +1170,14 @@ permission:
   task: deny
   external_directory: deny
 workspace_scope: read_only
-subagent_depth: 0
+subagent_depth: 1
 ```
 
 ### A.2 Task 调用
 
 ```json
 {
-  "method": "task",
+  "method": "task/start",
   "params": {
     "agent_id": "explore",
     "prompt": "找出 protocol/ 中所有事件定义，并指出客户端消费者。",
@@ -1117,8 +1186,8 @@ subagent_depth: 0
         {"kind": "directory", "path": "protocol", "mode": "read_only"}
       ]
     },
-    "budget": {"max_steps": 12, "max_tokens": 8000},
-    "workspace": {"mode": "read_only"}
+    "requested_budget": {"max_steps": 12, "max_tokens": 8000},
+    "requested_workspace": {"mode": "read_only"}
   }
 }
 ```

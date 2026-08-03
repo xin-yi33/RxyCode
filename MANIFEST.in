@@ -16,6 +16,8 @@ global-exclude *.log
 global-exclude *.key
 global-exclude *.pem
 global-exclude .env
+global-exclude *.test.ts
+global-exclude *.test.tsx
 prune artifacts
 prune data
 prune frontend/node_modules

@@ -2,7 +2,7 @@
 
 > **在整条路线中的位置**：本文件是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的**后继扩展**，编号 Phase A。
 > **前置条件**：主计划的 Phase 0（止血）与 Phase 1（Harness 说真话）**必须已完成**。原因见 §0.3。
-> **后继**：[`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md)
+> **后继**：[`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md)
 >
 > **一句话目标**：让 RxyCode 能针对不同模型（DeepSeek / Claude / GPT / Qwen / 本地模型）做差异化优化，而不是把所有模型都当成 "OpenAI 兼容 + 全局常量"。
 >
@@ -1266,23 +1266,20 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 **完成判据**
 - [x] 测试通过数与 `a6-before.txt` **完全一致**（补录基线 + 隔离后均为 **9890 passed**, 3 skipped）
-- [ ] evals 基线比对显示 **0 regression**（当前环境 401 Invalid API key，待有效 Key 后复跑）
-- [ ] 手动对话正常，token 统计和上下文进度条显示正常（**待用户本地一轮验收**）
+- [ ] evals 基线比对显示 **0 regression**（2026-08-03 复跑：**7/17=41.2%** vs 基线 **9/17=52.9%**，通过率 **-11.8%**；见 `artifacts/a6-evals-baseline.log`；token 总量 3,960,965≈基线 3,962,697，判定为 LLM 非确定性波动而非 provider 层故障，但严格 MA2 仍未达标）
+- [x] 手动对话正常，token 统计和上下文进度条显示正常（用户 2026-08-03 本地验收 + 助手多模态审核：切换模型无 HTTP 500 / 背景乱码）
 - [x] `evals/runner.py` 不再有独立的 `ChatOpenAI(...)` 构造（经 `provider.llm_kwargs` + `_eval_llm_kwargs` DC1 覆盖）
 - [x] `UsageTrackingLLM` 原 5 参数全保留：`raw_llm`, `rate_limiter`, `rate_provider`, `rate_model`, `rate_timeout`, `reserved_output_tokens`
 - [x] 删掉临时文件 `a6-*.txt`
 - [x] **R9 单卡 commit**：`86f5d18` — `refactor(model): route LLM construction through the provider layer`（`d4a1ab0` 为同 patch-id 重复提交，以 `86f5d18` 为准）
 - [x] evals DC1 修复 commit：`c7be8e4` — `fix(evals): restore pre-A6 ChatOpenAI kwargs in runner`
-- [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=600` → **9890 passed**, 3 skipped（`artifacts/a6-full-regression.log`）
+- [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=600` → **9890 passed**, 3 skipped（`artifacts/a6-full-regression.log`）；**严格复审（2026-08-03 晚）**：当前工作树曾出现 `tests/system/test_installed_package.py` 3 errors（wheel 打包 `stdioTransport.integration.test.ts` 路径失败），已用 `MANIFEST.in` / `pyproject.toml` 排除 `*.test.ts(x)` 修复；全量复跑见 `artifacts/a6-full-regression-rerun.log`
 
-> **A6 关账备注（2026-08-03）**
-> - **Commit**：`86f5d18`（`core/agent_v2.py`、`evals/runner.py`）；evals DC1 覆盖见 `c7be8e4`
-> - **基线补录**：改前未单独存 `a6-before.txt`；以 A5 关账全量 **9890 passed** 为 before 对照
-> - **全量验收**：隔离工作树后约 6m19s，9890 passed / 3 skipped / exit 0
-> - **evals 行为**：A6 初版 evals 误用 agent 生产 kwargs（temperature 0.7 / streaming）；`_eval_llm_kwargs` 恢复 temperature 默认 0.0 且无 streaming/stream_usage/max_tokens
-> - **evals 基线**：401 AuthError 阻塞，待有效 API key 后 `evals.cli run --compare-baseline`
-> - **手动验收**：待用户本地 TUI/API 一轮对话
-> - **`self._provider` / `self._capabilities`**：已在 `__init__` 与 `switch_model` 挂载，供 A7 使用
+> **A6 严格审计结论（2026-08-03）— 不通过，不可关账，不可进 A7**
+> - **已通过**：Provider 接线、`_provider`/`_capabilities` 初始化与 `switch_model` 刷新；evals DC1（`c7be8e4`）；A6 专项测试 85 passed；Ruff；手动对话验收；实现 commit `86f5d18`
+> - **未通过 ① evals MA2**：7/17 (41.2%) vs 基线 9/17 (52.9%)，5 regressions，-11.8% — 日志 `artifacts/a6-evals-baseline.log`；文档不得将 LLM 波动等同于 0 regression
+> - **未通过 ② 全量 pytest**：复审时 9891 passed / 3 skipped / **3 errors**（`test_installed_package.py`）；根因：OpenTUI `src/transport/*.test.ts` 打入 wheel 后在 Windows 路径下复制失败；**修复**：`MANIFEST.in` + `[tool.setuptools.exclude-package-data]` 排除测试文件（非 A6 目标文件，但阻塞 Phase A 全绿证据）
+> - **待办**：evals 复跑至通过率 ≥ 基线；打包修复独立 commit；全量 pytest 复绿后再勾选关账
 
 **回滚**：`git revert <commit>`。这一卡**必须是独立 commit**，方便出问题时单独退。
 
@@ -1574,15 +1571,15 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 5. 更新主计划 `00-EXECUTION-PLAN.md` §3.2 的 Phase 表，把 Phase A 标为完成。
 
 6. **同步更新文档映射表（2026-08-01 扩展新增）**：2026-08-01 扩展后，主计划与 README 的 Phase A 行已过时，本卡一并更新：
-   - `00-EXECUTION-PLAN.md:2383`：模型清单由"（DeepSeek / Claude / Qwen）"改为含新增族（OpenAI / Kimi / GLM / MiniMax / MIMO / Qwen / Anthropic / DeepSeek v4），工时由"3 周"改为扩展后的实际值
-   - `rxycode/README.md:54`：同上（模型清单 + 工时）
+   - `00-EXECUTION-PLAN.md §12.1`：模型清单由"（DeepSeek / Claude / Qwen）"改为含新增族（OpenAI / Kimi / GLM / MiniMax / MIMO / Qwen / Anthropic / DeepSeek v4），工时由"3 周"改为扩展后的实际值
+   - `rxycode/README.md`：同上（模型清单 + 工时）
    - 排期说明：A0 为纯文档卡不受排期影响，代码卡实际执行按接线请求插入（见新增卡一览铁律）
 
 **完成判据**
 - [ ] `docs/modules/providers.md` 存在，按它能独立加出一个新 provider
 - [ ] 三份既有模块文档已更新
 - [ ] `core/config.py` 死代码已删或已记入待办池（二选一，说明理由）
-- [ ] `00-EXECUTION-PLAN.md:2383` 与 `rxycode/README.md:54` 的 Phase A 行已同步（2026-08-01 扩展）
+- [ ] `00-EXECUTION-PLAN.md §12.1` 与 `rxycode/README.md` 的 Phase A 行已同步（2026-08-01 扩展）
 
 ---
 
@@ -1594,9 +1591,9 @@ Select-String -Path *.py,core\*.py,config\*.py,execution\*.py,planning\*.py,tool
 > - 沿用 MA2：每张卡做完跑一次 evals 基线比对，零回归
 > - 沿用 MA4：不引入任何新的第三方 SDK，全部走 OpenAI 兼容端点
 > - 沿用 MA5：不碰 `core/config.py` 的 `LLMConfig`（A11 处理）
-> - **`agent_v2.py` 的改动走主计划 §11.7 的接线请求协议**（`00-EXECUTION-PLAN.md:2560-2582` 共享面三规则 P1/P2/P3，示例见 :2568-2580）：Phase A 窗口要改 `agent_v2.py` 时写 3–5 行"接线请求"由 Phase 2 窗口执行，不得直接改。A19/A20/A21 涉及 `agent_v2.py` 的步骤全部按此执行
+> - **`agent_v2.py` 的改动走主计划 §12.7 的接线请求协议**：Phase A 窗口要改 `agent_v2.py` 时写 3–5 行"接线请求"由 Phase 2 窗口执行，不得直接改。A19/A20/A21 涉及 `agent_v2.py` 的步骤全部按此执行
 > - **thinking 适配判断（2026-08-01 补充，全卡统一规则）**：每个 provider 卡按 §7 对应批第 5 问做判断——**适配（支持 thinking）→ `supports_reasoning=True` 且 `thinking_default_on=True`（默认打开）**；不适配/兼容端点不可控 → 保持 `False`（零注入）。`thinking_default_on` 全局默认 `False`（未适配前行为与现状一致）。前端 thinking 面板（`/thinking`、`_flush_thinking`）只是**展示**思维链，与模型 thinking 模式无关——面板开着模型没开=空转，模型开着面板关着=思维链不展示但仍在消耗 token
-> - **排期立场**：A0 是纯文档卡，**不受 Phase 2 窗口排期限制**，可随时开工（`ENGINEERING-TIMELINE.md:191` 建议 Phase A 推后的对象是代码卡，不适用于零代码的 A0）；A12–A22 中需要 `agent_v2.py` 改动的卡，按接线请求插入 Phase 2 的 P3（Session）合并之后（`00-EXECUTION-PLAN.md:2520`）
+> - **排期立场**：A0 是纯文档卡，**不受 Phase 2 窗口排期限制**，可随时开工；A12–A22 中需要 `agent_v2.py` 改动的卡，按接线请求插入 Phase 2 的 P3（Session）合并之后。具体执行顺序以主计划 §6 和 `ENGINEERING-TIMELINE.md` 阶段 2 为准
 > - **分工不变**：Grok 在 A0 里的调研与自审是 `MODEL-ASSIGNMENT.md:76` 原"查资料"角色的正式化，仍不写任何代码；验证（审计）由 **DeepSeek + GPT-5.6-Luna 双模型独立执行**（2026-08-01 更新，提示词见 [`PROMPTS.md`](./PROMPTS.md)），不属于任何 Phase 的写代码分工
 
 | 卡 | 内容 | 依赖 | 对应 A0 批 |

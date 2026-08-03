@@ -5,13 +5,13 @@
 > **模型分工权威**：[`MODEL-ASSIGNMENT.md`](./MODEL-ASSIGNMENT.md)。  
 > **它不替代施工文档。** 做什么看 [`rxycode/`](./rxycode/README.md) 和 [`linkagent/`](./linkagent/README.md)；主写纪律看 [`COMPOSER-2.5-PLAYBOOK.md`](./COMPOSER-2.5-PLAYBOOK.md)，辅助纪律看 [`GROK-FRONTEND-PLAYBOOK.md`](./GROK-FRONTEND-PLAYBOOK.md)。**这里只管顺序、并行度和冲突。**
 >
-> **创建**：2026-08-01 · **修订**：2026-08-01（恢复主写定位：Composer 全栈，Grok 辅助前端多模态）
+> **创建**：2026-08-01 · **修订**：2026-08-03（主计划新增 Phase 3 模型输出上限，Desktop 顺延为 Phase 4；Composer 全栈，Grok 辅助前端多模态）
 
 ---
 
 ## §0 结论先说
 
-**总量是 90 张卡**（RxyCode 30 + LinkAgent 60，不含 RxyCode Phase A/B/C/D）。
+**总量是 98 张卡**（RxyCode 主计划 38 + LinkAgent 60，不含 RxyCode Phase A/B/C/D）。
 
 **分工定死了**：**Composer 主写全部代码**（后端 + 前端），**Grok 只辅助前端的多模态环节**（写前端要"看"的时候才用到）。不是两个同质窗口抢同一类活，也不是前后端各管一半。
 
@@ -41,12 +41,13 @@
 | RxyCode Phase 0 | 8 | — |
 | RxyCode Phase 1 | 6 | H3（修坏任务） |
 | RxyCode Phase 2 | 8 | **P3（抽 Session 层）** |
-| RxyCode Phase 3 | 8 | D2、D3 |
+| RxyCode Phase 3 模型输出上限 | 8 | M3、M4 |
+| RxyCode Phase 4 Desktop | 8 | D2、D3 |
 | LinkAgent L0–L9 | 54 | **L5-3（AED 蒸馏）**、L9-5 |
 | LinkAgent L10（横切） | 6 | — |
-| **合计** | **90** | 6 张 |
+| **合计** | **98** | 8 张 |
 
-> **L10 不是一个阶段，是横切的六张卡**，分散插在 L1~L5 之间，见 [`L10 §3`](./linkagent/L10-SKILL-INTEROP.md) 的排期表。其中 **L10-4 是止血卡**（RxyCode 默认注册的 `skill` 工具能绕过全部治理），排期见 §4 阶段 3。
+> **L10 不是一个阶段，是横切的六张卡**，分散插在 L1~L5 之间，见 [`L10 §3`](./linkagent/L10-SKILL-INTEROP.md) 的排期表。其中 **L10-4 是止血卡**（RxyCode 默认注册的 `skill` 工具能绕过全部治理），排期见 §4 阶段 4。
 
 **施工文档里写的"工时"（如 L5 = 8.5 天）是人的工时，现在只能当作"这张卡有多复杂"的相对指标读，不要当日历用。**
 
@@ -54,7 +55,7 @@
 
 单卡从开工到合并的时间 ≈ **agent 执行 + 你审查 + 修一轮**。前者几分钟到几十分钟，后者取决于卡的大小和你的熟悉程度。
 
-**跟踪进度用"已合并卡数 / 90"，不要用日期。** 跑完前 10 张卡之后你会有自己的速率，那时候再推算完成时间才有意义。
+**跟踪进度用"已合并卡数 / 98"，不要用日期。** 跑完前 10 张卡之后你会有自己的速率，那时候再推算完成时间才有意义。
 
 ---
 
@@ -69,7 +70,7 @@
 | # | 依赖 | 违反的后果 |
 |---|---|---|
 | ① | **LinkAgent L2 ← RxyCode Phase 2** | Phase 2 改 `AgentV2` 对外形态，桥接层要跟着改 |
-| ② | **LinkAgent L9-4~L9-8 ← RxyCode Phase C** | Desktop 基础壳来自主计划 Phase 3，但完整项目/Thread/审批/diff/worktree 工作台和扩展契约必须等 Phase C |
+| ② | **LinkAgent L9-4~L9-8 ← RxyCode Phase D** | Desktop 基础壳来自主计划 Phase 4；模型/成本摘要消费 Phase 3；完整项目/Thread/审批/diff/worktree 工作台和扩展契约必须等 Phase D |
 | ③ | **LinkAgent L5 ← L3 完成并验证** | 论文实测：作用域没修就开反馈演化，DeepSeek 上是**净负收益 −2.69 pp**。做反了会变差，不是"最好先做" |
 | ④ | **一切 ← RxyCode Phase 1** | 没有可信评测，你无法判断 agent 的产出有没有搞坏东西 |
 
@@ -111,9 +112,9 @@
   Composer ── RxyCode Phase 0/1/2 → LinkAgent L0–L8，串行推进
   Grok     ── 空闲 / 查资料 / 等 schema 合并后再做被委托的视觉环节
 
-常见配置 B（Phase 3 / Phase C / L9 前端阶段，辅助收益最大）
-  Composer ── 主写 RxyCode Phase 3 基础壳、Phase C 完整 Desktop（C1–C16）或 LinkAgent L9
-  Grok     ── 并行做 C6/C9/C10/C15、L9-4/L9-5 等卡的视觉验收、截图对比、换肤对照
+常见配置 B（Phase 3 / Phase 4 / Phase C / L9 前端阶段，辅助收益最大）
+  Composer ── 主写 RxyCode Phase 3 模型上限、Phase 4 基础壳、Phase D 完整 Desktop（D1–D16）或 LinkAgent L9
+  Grok     ── 并行做 D6/D9/D10/D15、L9-4/L9-5 等卡的视觉验收、截图对比、换肤对照
 ```
 
 **Grok 空闲不是问题。** 为了填满窗口让它改 Python 或接管前端卡本体 = 破坏 [`MODEL-ASSIGNMENT`](./MODEL-ASSIGNMENT.md) 的分工。
@@ -170,7 +171,7 @@ Composer 与 Grok 同时在一个仓库干活时（例如 RxyCode Phase 2：Comp
 
 ### 阶段 2 · 协议（第一次出现辅助环节）
 
-Phase 2 是 **RxyCode Phase 3 和 LinkAgent L2/L9 共同的地基**，优先级最高。
+Phase 2 是 **RxyCode Phase 3/4 和 LinkAgent L2/L9 共同的地基**，优先级最高。
 
 | Composer（主写） | Grok（辅助） |
 |---|---|
@@ -196,13 +197,25 @@ Phase 2 是 **RxyCode Phase 3 和 LinkAgent L2/L9 共同的地基**，优先级�
 
 ---
 
-### 阶段 3 · 辅助收益最大（Composer 主写 Desktop + LinkAgent，Grok 做视觉环节）
+### 阶段 3 · 模型输出上限自适应（Composer 主写，Grok 不介入代码）
 
-**这是分模型设计的主场**：Composer 主写 RxyCode Phase 3 基础壳和 Phase C 完整 Desktop（C1–C16 全部），Grok 在 C6/C9/C10/C15 等 UI 卡的多模态环节并行辅助；LinkAgent 后端链由 Composer 在间隙穿插。
+**这一阶段把当前配置里的统一 `8192` 替换为按真实 `model_id` 解析的共享契约。** Composer 独做 M1–M8；Grok 不接管后端，也没有可以独立并行的多模态环节。它最多在需要时核对模型列表/设置页显示，结果回传 Composer 收口。
 
 | Composer（主写） | Grok（辅助） |
 |---|---|
-| **RxyCode Phase 3（8 张）主写**：D1 脚手架 → D2 主窗口 → D3 流式 + 工具卡片 → D4 审批 UI → D5 设置页 → D6 打包 / D7 更新 / D8 CI | **D3/D4/D5 的视觉验收**：起 dev server 截屏核对（正常/空/加载/错误态）、布局对齐、审批弹层样式 |
+| **M1–M8**：盘点固定值 → 冻结 ModelCatalog / OutputLimitResolution → 按 Provider + model ID 解析 → 接入 Provider → 兼容旧配置 → 摘要与诊断 → 回归与发布门 | 空闲 / 查资料；若已有前端模型选择器，只做卡内标注的视觉核对 |
+
+**阶段 3 出口**：新增模型默认为 `auto`；精确 `model_id` 能命中目录；未知模型走可配置的高位兜底；Provider、CLI、OpenTUI 和后续 Desktop 只消费同一个 resolver/摘要协议；旧正整数配置保持显式覆盖。
+
+---
+
+### 阶段 4 · 辅助收益最大（Composer 主写 Desktop + LinkAgent，Grok 做视觉环节）
+
+**这是分模型设计的主场**：Composer 主写 RxyCode Phase 4 基础壳和 Phase D 完整 Desktop（D1–D16 全部），Grok 在 D6/D9/D10/D15 等 UI 卡的多模态环节并行辅助；LinkAgent 后端链由 Composer 在间隙穿插。
+
+| Composer（主写） | Grok（辅助） |
+|---|---|
+| **RxyCode Phase 4（8 张）主写**：D1 脚手架 → D2 主窗口 → D3 流式 + 工具卡片 → D4 审批 UI → D5 设置页 → D6 打包 / D7 更新 / D8 CI | **D3/D4/D5 的视觉验收**：起 dev server 截屏核对（正常/空/加载/错误态）、布局对齐、审批弹层样式 |
 | 穿插 **LinkAgent**：L2 桥接（6 张）→ L3 检索+硬门（5 张）→ **L10-4 止血**（L4 后）→ L5 证据演化（6 张，⚠ 必须 L3 验证）→ L6 依赖组合（4 张，默认关闭） | 换肤/图标类环节（若有）对照截图 |
 | 旁链：L7 评测（5 张）· L8-1/L8-4/L8-5 预置包 · L10-3/L10-6（L5 后） | 空闲时查资料 |
 
@@ -246,7 +259,7 @@ L2→L3→L4→L5 是串行的。L7 和 L8 是旁链，**穿插在等待和审�
 
 | L7-5 的结论 | 接下来 |
 |---|---|
-| **经验层有显著收益** | 做 L9 桌面端。这时 Phase 3 已完成，壳现成 |
+| **经验层有显著收益** | 做 L9 桌面端。这时 Phase 4 已完成，壳现成 |
 | **无显著收益，但某个模块有** | 只留那个模块，砍掉其余；**不做 L9**，先把有效的部分做扎实 |
 | **完全无收益** | **停 LinkAgent。** Composer 回 RxyCode Phase A → Phase B；Grok 空闲或辅助 Phase E 的图片类 UI |
 
@@ -256,7 +269,7 @@ L2→L3→L4→L5 是串行的。L7 和 L8 是旁链，**穿插在等待和审�
 
 ---
 
-### 阶段 4 · LinkAgent 桌面（仅在决策点通过时）
+### 阶段 5 · LinkAgent 桌面（仅在决策点通过时）
 
 | Composer（主写） | Grok（辅助） |
 |---|---|
@@ -309,7 +322,7 @@ agent 重做一张卡的成本 ≈ 一次执行 + 一次审查，比人重做低
 | 原建议 | 现在怎么看 |
 |---|---|
 | "LinkAgent L2 等 RxyCode Phase 2，否则接受一次返工" | **仍然建议等**，理由是怕你审两遍。Composer 空闲时可提前做 L2——契约测试会报警 |
-| "L9-4 等 Phase C" | **必须等**——没有完整 Desktop 壳、扩展契约和基础工作台就不应重复造一套 |
+| "L9-4 等 Phase D" | **必须等**——没有完整 Desktop 壳、扩展契约和基础工作台就不应重复造一套 |
 | "L5 等 L3" | **必须等**，语义约束，做反了效果是负的 |
 | "Grok 空闲时写点代码" | **永远不行**——Grok 只做多模态环节，跨界比返工更贵（审查边界崩了） |
 
@@ -348,10 +361,12 @@ agent 重做一张卡的成本 ≈ 一次执行 + 一次审查，比人重做低
            🚪 评测说真话
 阶段 2   Composer: Phase2 Python/schema + P2/P5 本体  ‖  Grok: P2/P5 的视觉环节
            🚪 协议落地（schema 合并后前端类型才开工）
-阶段 3   Composer: Phase3 Desktop D1–D8 + LinkAgent L2→L6 主写
+阶段 3   Composer: Phase3 模型输出上限 M1–M8 主写
+         Grok: 空闲 / 必要时核对模型列表摘要
+阶段 4   Composer: Phase4 Desktop D1–D8 + LinkAgent L2→L6 主写
          Grok: D3/D4/D5 视觉验收（截屏核对）
            ★ 决策点：L7 首次基线
-阶段 4   Composer: L9-1~L9-8 主写 → Phase A      ‖  Grok: L9-4/L9-5 视觉验收
+阶段 5   Composer: L9-1~L9-8 主写 → Phase A      ‖  Grok: L9-4/L9-5 视觉验收
                                            → LinkAgent Desktop
 ```
 
@@ -359,7 +374,8 @@ agent 重做一张卡的成本 ≈ 一次执行 + 一次审查，比人重做低
 |---|---|
 | RxyCode Phase 1 出口 | 后面每张卡的基线比对 |
 | RxyCode Phase 2 出口（含 schema） | LinkAgent L2、L9-1；前端类型生成 |
-| RxyCode Phase 3 出口 | LinkAgent L9-4 |
+| RxyCode Phase 3 模型上限出口 | Phase 4 D5 和后续客户端消费统一摘要 |
+| RxyCode Phase 4 Desktop 出口 | LinkAgent L9-4 |
 | LinkAgent L3 跨域回归 = 0 | LinkAgent L5、L7、L8-1 |
 | LinkAgent L3-3 合并 | LinkAgent L8-4（同一个文件） |
 | LinkAgent L5-6 合并 | LinkAgent L10-3（同一个文件） |

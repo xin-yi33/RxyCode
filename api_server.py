@@ -974,8 +974,14 @@ async def get_status():
 async def get_models():
     """Return structured model list for the model selection panel."""
     from .config.settings import load_config
-    from .config.model_manager import prune_recent_models
-    cfg = load_config()
+    from .config.model_manager import (
+        ensure_models_provider_metadata,
+        infer_provider_group,
+        prune_recent_models,
+    )
+
+    # Use settings.load_config so tests can monkeypatch it; stamp in-memory only.
+    cfg = ensure_models_provider_metadata(load_config(), persist=False)
     models = cfg.get("models", {})
     active = cfg.get("active_model", "")
     result = []
@@ -983,13 +989,16 @@ async def get_models():
         vendor_id = mcfg.get("model_name", name)
         # Display alias defaults to vendor model id (not the namespaced config key).
         display = mcfg.get("nickname") or vendor_id
-        provider_name = mcfg.get("provider_name") or mcfg.get("category") or ""
-        if not provider_name:
-            from .config.model_manager import infer_provider_group
-
-            provider_name = infer_provider_group(mcfg.get("base_url", "")).get(
-                "name", "其他"
-            )
+        # Grouping is driven by endpoint host so the same vendor id from DeepSeek
+        # vs OpenCode Go never collapses into one /model section.
+        inferred = infer_provider_group(mcfg.get("base_url", ""))
+        provider_name = (
+            inferred.get("name")
+            or mcfg.get("provider_name")
+            or mcfg.get("category")
+            or "其他"
+        )
+        provider_id = inferred.get("id") or mcfg.get("provider_id") or ""
         result.append({
             "id": name,
             "name": vendor_id,
@@ -999,6 +1008,7 @@ async def get_models():
             "active": name == active,
             "category": provider_name or "其他",
             "provider_name": provider_name or "",
+            "provider_id": provider_id or "",
         })
     return {"models": result, "active": active, "recent": prune_recent_models(cfg)}
 
@@ -1048,8 +1058,10 @@ async def onboard_model(req: ModelOnboardingRequest):
     from .config.model_manager import (
         add_model,
         list_models,
+        local_model_key,
         probe_model_connection,
         remove_model,
+        resolve_provider_meta,
         set_active_model,
     )
 
@@ -1057,9 +1069,14 @@ async def onboard_model(req: ModelOnboardingRequest):
     nickname = req.nickname or provider_model_id
     api_key = req.api_key.get_secret_value().strip()
     base_url = req.base_url
+    meta = resolve_provider_meta(base_url)
+    config_key = local_model_key(provider_model_id, meta["id"])
 
-    if nickname in list_models():
-        raise HTTPException(status_code=409, detail=f"Model nickname already exists: {nickname}")
+    if config_key in list_models():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Model already exists: {config_key}",
+        )
 
     probe = await _asyncio.to_thread(
         probe_model_connection,
@@ -1078,18 +1095,21 @@ async def onboard_model(req: ModelOnboardingRequest):
 
     try:
         add_model(
-            nickname,
+            config_key,
             api_key,
             base_url,
             model_name=provider_model_id,
+            provider_id=meta["id"],
+            provider_name=meta["name"],
+            nickname=nickname if nickname != provider_model_id else None,
         )
-        if not set_active_model(nickname):
+        if not set_active_model(config_key):
             raise RuntimeError("saved model could not be activated")
     except Exception as exc:
         # The preflight is deliberately persistence-free. If the subsequent
         # write is only partly successful, roll it back before reporting.
         try:
-            remove_model(nickname)
+            remove_model(config_key)
         except Exception:
             pass
         raise HTTPException(
@@ -1101,9 +1121,11 @@ async def onboard_model(req: ModelOnboardingRequest):
         "action": "model_added",
         "message": f"Model '{nickname}' added and connection tested successfully",
         "model": {
-            "id": nickname,
+            "id": config_key,
             "nickname": nickname,
             "provider_model_id": provider_model_id,
+            "provider_id": meta["id"],
+            "provider_name": meta["name"],
             "base_url": base_url,
             "active": True,
         },

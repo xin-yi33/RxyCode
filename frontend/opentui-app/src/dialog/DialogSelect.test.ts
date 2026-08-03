@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildSelectRows,
+  formatSearchFieldDisplay,
   shouldApplyMouseHover,
   textFromKeyEvent,
   type DialogSelectOption,
@@ -30,6 +31,19 @@ describe("textFromKeyEvent", () => {
   });
   test("arrows ignored", () => {
     expect(textFromKeyEvent({ name: "down", raw: "\x1b[B" })).toBeNull();
+  });
+});
+
+describe("formatSearchFieldDisplay", () => {
+  test("cursor follows end of typed filter (not first char)", () => {
+    expect(formatSearchFieldDisplay("", "搜索模型")).toEqual({
+      text: "搜索模型",
+      isPlaceholder: true,
+    });
+    expect(formatSearchFieldDisplay("glm", "搜索模型")).toEqual({
+      text: "glm",
+      isPlaceholder: false,
+    });
   });
 });
 

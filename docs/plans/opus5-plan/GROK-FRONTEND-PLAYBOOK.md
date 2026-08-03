@@ -222,7 +222,7 @@ npx vitest run                  # 单测过了吗？
 | 项目 | 多模态环节 |
 |---|---|
 | RxyCode Phase 2 | P2/P5 协议客户端与 OpenTUI 接线的视觉验收（若有） |
-| RxyCode Phase 3 | D3 流式渲染 / D4 审批弹层 / D5 设置页的渲染截图核对；D1 壳换肤对照截图 |
+| RxyCode Phase 4 | D3 流式渲染 / D4 审批弹层 / D5 设置页的渲染截图核对；D1 壳换肤对照截图 |
 | LinkAgent L9 | L9-4 壳 fork 后品牌换肤、L9-5 森林树视图、L9-6 检索解释面板的视觉验收 |
 
 完整表 → [`MODEL-ASSIGNMENT.md`](./MODEL-ASSIGNMENT.md) §2。并行顺序 → [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md)。

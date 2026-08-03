@@ -1,6 +1,6 @@
 # 模型分工（权威）
 
-> **创建**：2026-08-01 · **更新**：2026-08-01  
+> **创建**：2026-08-01 · **更新**：2026-08-03
 > **一句话**：**Composer 主写全部代码，Grok 辅助前端（只在写前端用到多模态时才介入）。**  
 > 冲突时以本文为准，覆盖各 Phase / L 文档里旧的表述（含「Composer 唯一写代码」「Composer/Grok 前后端分治」）。
 
@@ -36,7 +36,8 @@
 | `src/linkagent/**/*.py` · `tests/**/*.py` · `pyproject.toml` | LinkAgent |
 | `src/linkagent/protocol/` · `src/linkagent/appserver/` | LinkAgent L9-1 / L9-2 |
 | `frontend/` · `frontend/opentui-app/` · `frontend/protocol-client/` | RxyCode |
-| `desktop/`（Electron 壳、Vite、React、打包脚本） | RxyCode Phase 3 · LinkAgent L9 |
+| `frontend/desktop-app/`（RxyCode Electron 壳、Vite、React、打包脚本） | RxyCode Phase 4 / Phase D |
+| `desktop/`（LinkAgent fork 后的 Electron 应用） | LinkAgent L9；从 `frontend/desktop-app/` 的 Phase D 产物派生 |
 | `*.tsx` · `*.ts`（业务 UI，不含由 schema 生成的类型源） | 两边 |
 | 施工文档里标注 `owner: backend` / `owner: frontend` 的卡 | 两边 |
 
@@ -45,7 +46,7 @@
 | 介入场景 | 例子 |
 |---|---|
 | 视觉验收 | 渲染截图核对（布局/空态/加载态/错误态）、改动前后截图对比、UI 截图找视觉 bug |
-| 图片类 UI | 图片粘贴/预览/附件选择器的实现与验收（Phase E 相关） |
+| 图片类 UI | 图片粘贴/预览/附件选择器的实现与验收（Phase F 相关） |
 | 以图片为输入的任务 | 照着设计稿/竞品截图实现 UI、图标/素材核对 |
 | 查外部资料 | 各家 vision API 差异、前端库官方文档（空闲时） |
 
@@ -72,10 +73,11 @@
 |---|---|---|
 | Phase 0 止血 / Phase 1 评测 | **全部** | 空闲 / 查资料 |
 | Phase 2 协议 | **P1–P8 全部**（含 P2 协议客户端、P5 OpenTUI 迁移） | P2/P5 里的视觉验收等多模态环节（若有） |
-| Phase 3 Desktop | **D1–D8 全部** | D3/D4/D5 等 UI 卡的渲染截图核对（视觉验收） |
-| Phase C Desktop | **C1–C16 全部** | C6/C9/C10/C15 等卡的视觉验收和图片/预览环节 |
-| Phase A / B / D / F | **全部**（后端架构或接口预留） | — |
-| Phase E 多模态 | **全部** | 图片粘贴、附件、视觉 UI 等卡的多模态环节 |
+| Phase 3 模型输出上限 | **M1–M8 全部** | 无；必要时核对模型列表/设置摘要 |
+| Phase 4 Desktop | **D1–D8 全部** | D3/D4/D5 等 UI 卡的渲染截图核对（视觉验收） |
+| Phase D 完整 Desktop | **D1–D16 全部** | D6/D9/D10/D15 等卡的视觉验收和图片/预览环节 |
+| Phase A / B / C / E / G | **全部**（后端架构或接口预留） | — |
+| Phase F 多模态 | **全部** | 图片粘贴、附件、视觉 UI 等卡的多模态环节 |
 
 ### LinkAgent
 
@@ -96,7 +98,7 @@
 ```
 
 - **早期（几乎都是后端卡）**：Grok 窗口做外部资料调研，或空着——**不要为了填满窗口让 Grok 碰后端**。
-- **Phase 3 / L9 前端阶段**：Composer 写前端卡，卡里标了「多模态环节」的，把那一环节交给 Grok 并行做（视觉验收、截图对比）；Grok 产出回传 Composer 收口。
+- **Phase 4 / L9 前端阶段**：Composer 写前端卡，卡里标了「多模态环节」的，把那一环节交给 Grok 并行做（视觉验收、截图对比）；Grok 产出回传 Composer 收口。
 - **同仓并行**：仍用 git worktree；前端卡本体是 Composer 的分支，Grok 辅助产出并入该分支，不另开前端分支。
 
 详细顺序与门禁 → [`ENGINEERING-TIMELINE.md`](./ENGINEERING-TIMELINE.md)。
@@ -108,7 +110,7 @@
 1. 这张卡是 `owner: backend` 还是 `owner: frontend`？没标 → 看 §2 表。
 2. 前端卡：卡里有没有「多模态环节」标注？有 → 那一段是 Grok 的活；没有 → 整卡 Composer 独做。
 3. 读对应 playbook（后端/前端主写都读 Composer；要委托 Grok 的环节读 Grok 手册 §2）。
-4. 涉及交接点？先确认上游产物已合并（schema / Phase 3 壳）。
+4. 涉及交接点？先确认上游产物已合并（schema / Phase 4 壳 / Phase 3 模型上限摘要）。
 5. 一次一张卡，一个 commit。
 
 ---

@@ -1,7 +1,7 @@
 # L9 · Desktop 应用（基于 RxyCode Desktop）
 
 > **前置（后端侧 L9-1 ~ L9-2 · Composer）**：LinkAgent [`L3`](./L3-RETRIEVAL-AND-SCOPE.md) 完成 + **RxyCode Phase 2 落地**（`protocol/` 与 `appserver/` 存在）
-> **前置（前端侧 L9-3 ~ L9-8 · Composer 主写）**：L9-1 schema 已合并；L9-4 起还要 **RxyCode Phase C 落地**（完整 Desktop 壳、扩展契约和基础工作台可以 fork）。主计划 Phase 3 只是它的基础壳前置。
+> **前置（前端侧 L9-3 ~ L9-8 · Composer 主写）**：L9-1 schema 已合并；L9-4 起还要 **RxyCode Phase D 落地**（完整 Desktop 壳、扩展契约和基础工作台可以 fork）。主计划 Phase 4 提供基础壳，Phase 3 提供模型输出上限摘要；二者都不是 Phase D 完整工作台的替代品。
 > **产出**：一个能装、能跑、能看见自己经验层的桌面应用
 > **工时**：17 天
 > **卡数**：8 张（L9-1 ~ L9-8）
@@ -55,11 +55,11 @@
 
 ## §1 我上一版设计错了两处，这里改过来
 
-上一版 L9 是在不知道 RxyCode Phase 3 细节的情况下写的，有两个决定要推翻：
+上一版 L9 是在不知道 RxyCode Phase 4 细节的情况下写的，有两个决定要推翻：
 
 | 上一版 | 现在 | 为什么 |
 |---|---|---|
-| Tauri 2 | **Electron** | RxyCode Phase 3 选了 Electron（团队没有 Rust 经验）。既然要基于它做，就得跟 |
+| Tauri 2 | **Electron** | RxyCode Phase 4 选了 Electron（团队没有 Rust 经验）。既然要基于它做，就得跟 |
 | 本地 HTTP + SSE + 会话令牌 | **JSON-RPC over stdio** | RxyCode 的协议就是 stdio。跟着它反而**更安全**——见下 |
 
 ### stdio 顺带解决了一整类安全问题
@@ -87,11 +87,13 @@
 | LinkAgent 卡 | 等 RxyCode 的什么 | RxyCode 排期 |
 |---|---|---|
 | L9-1 ~ L9-3（后端 + 类型，均 Composer） | **Phase 2**：`protocol/`、`appserver/`、`frontend/protocol-client/` | W9–W12，约 2026-10-23 |
-| L9-4 ~ L9-8（Electron 壳与视图 · Composer 主写） | **Phase 3**：D1–D6 的 Electron 壳、对话区、审批、设置、打包 | W13–W20，约 2026-12-18 |
+| L9-6 ~ L9-7（模型/成本摘要和设置显示） | **Phase 3**：ModelCatalog、resolver 和摘要协议 | W13–W15 |
+| L9-4 ~ L9-8（Electron 壳与视图 · Composer 主写） | **主计划 Phase 4**：基础 Electron 壳、协议接入和最小交互 | W16–W23 |
+| L9-4 ~ L9-8（Electron 壳与视图 · Composer 主写） | **Phase D**：D1–D16 的完整 Desktop 壳、对话区、审批、设置、diff/review、worktree 和打包 | Phase D 完成后 |
 
 **建议排法**：L9-1 ~ L9-3 跟在 L3 后面做（那时 Phase 2 已经落地），前端侧等到 12 月。中间这段时间投 [`L4`](./L4-SAFETY-GATE.md)、[`L5`](./L5-EVIDENCE-AND-EVOLUTION.md)、[`L7`](./L7-EVAL-HARNESS.md)、[`L8`](./L8-PRESET-EKO-PACK.md)——**它们一个都不依赖桌面端**。
 
-> ⚠ 如果 RxyCode Phase 3 延期，**不要自己另起一个壳去赶进度**。宁可晚，也别造出第二套桌面代码——那等于放弃了"基于 RxyCode desktop"这个决定的全部好处。
+> ⚠ 如果 RxyCode Phase 4 延期，**不要自己另起一个壳去赶进度**。宁可晚，也别造出第二套桌面代码——那等于放弃了"基于 RxyCode desktop"这个决定的全部好处。Phase 3 的模型上限摘要也只能等待或降级为只读显示，不能在 LinkAgent 内复制 resolver。
 
 ---
 
@@ -317,7 +319,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 ### L9-4 · fork RxyCode Desktop 壳
 
-`P0` / 2 天 / **owner: frontend（Composer 主写 · Grok 视觉验收）** / 依赖：L9-3 + **RxyCode Phase 3 的 D1–D5**
+`P0` / 2 天 / **owner: frontend（Composer 主写 · Grok 视觉验收）** / 依赖：L9-3 + **RxyCode Phase D 的 Desktop 基线契约**
 
 **背景**
 
@@ -327,7 +329,7 @@ LinkAgent 的七步 turn,turn 内部才调 RxyCode。所以这里实现的是「
 
 | 文件 | 说明 |
 |---|---|
-| `desktop/` | 从 RxyCode `frontend/desktop/`（Phase 3 产物）复制 |
+| `desktop/` | 从 RxyCode `frontend/desktop-app/`（Phase D 产物）复制 |
 | `desktop/FORK-POINT.md` | **必须写**：fork 自哪个 commit、改了哪些文件、怎么 rebase |
 | `desktop/src/platform/` | 子进程改指 `linkagent.appserver` |
 

@@ -77,9 +77,16 @@ dependencies = { file = ["requirements.txt"] }
   "frontend/opentui-app/package.json",
   "frontend/opentui-app/tsconfig.json",
   "frontend/opentui-app/bun.lock",
-  "frontend/opentui-app/src/**/*",
+  "frontend/opentui-app/src/**/*.ts",
+  "frontend/opentui-app/src/**/*.tsx",
 ]
 "RxyCode.RxyCode1_1_0.evals" = ["tasks/*.yaml"]
+
+[tool.setuptools.exclude-package-data]
+"RxyCode.RxyCode1_1_0" = [
+  "frontend/opentui-app/src/**/*.test.ts",
+  "frontend/opentui-app/src/**/*.test.tsx",
+]
 
 [tool.ruff]
 line-length = 100

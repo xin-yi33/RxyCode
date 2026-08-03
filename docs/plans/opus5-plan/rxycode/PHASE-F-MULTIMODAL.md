@@ -1,9 +1,9 @@
 # Phase F · 多模态 × 多 Agent 协作（Multimodal Agent Collaboration）
 
 > **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase F，是核心路线的**最后一段**。
-> **前置条件**：主计划 Phase 0/1/2/**3** + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) + [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) + [`PHASE-E-MULTI-MODEL-COLLABORATION.md`](./PHASE-E-MULTI-MODEL-COLLABORATION.md) **全部完成**。
+> **前置条件**：主计划 Phase 0/1/2/3/**4** + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) + [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) + [`PHASE-E-MULTI-MODEL-COLLABORATION.md`](./PHASE-E-MULTI-MODEL-COLLABORATION.md) **全部完成**。
 > **后继**：[`PHASE-G-PERSONA-AGENT-INTERFACE.md`](./PHASE-G-PERSONA-AGENT-INTERFACE.md)（接口预留，非必做）
-> **注意 Phase 3（Desktop）也是硬前置**，理由见 §0.3——终端里没法看图。
+> **注意主计划 Phase 4（Desktop）也是硬前置**，理由见 §0.3——终端里没法看图；Phase 3 的模型输出上限契约也必须已冻结，避免附件/视觉模型请求各自猜预算。
 >
 > **一句话目标**：让图像能端到端流过系统（用户 → Agent → 模型 → 记忆 → 前端），并让多 Agent 编排能利用视觉能力（例如"截图审查员"角色看 UI 截图找问题）。
 >
@@ -63,7 +63,7 @@
 | **Grok 4.5** | 查各家 vision API 的差异（图像尺寸/格式限制、base64 vs URL、token 计费、content block 格式）；预览/粘贴图片 UI 卡的**多模态环节**（视觉验收：贴图、预览、清除的自测） | 改管道 Python / 写卡本体（那是 Composer 的） |
 | **Sonnet 5** | 审查 F3 的 diff（类型拓宽最容易漏改）、写文档（F12） | 长任务连续实现 |
 
-### 0.3 为什么 Desktop（主计划 Phase 3）是硬前置
+### 0.3 为什么 Desktop（主计划 Phase 4）是硬前置
 
 **终端里没法看图。** 我实测确认过：`frontend/opentui-app/` 全目录搜 `sixel`、`kitty`、`iterm`、`graphics` 均**无结果**；粘贴处理（`App.tsx:511-516`）只处理文本字节。
 
@@ -85,7 +85,7 @@ cd "D:\agent-demo\RxyCode\RxyCode1_1_0"
 python -m ruff check .
 Test-Path protocol\schema.json, core\providers\__init__.py, core\agents\runtime.py
 # 三个都要 True
-Test-Path desktop\package.json          # Phase 3 的 Desktop 应用
+Test-Path frontend\desktop-app\package.json  # 主计划 Phase 4 的 Desktop 应用
 python -c "from config.model_capabilities import ModelCapabilities; print(ModelCapabilities().supports_vision)"
 ```
 
@@ -888,7 +888,7 @@ class ToolResult:
 
 ### F8 · Desktop 附件 UI
 
-`P0` / 1.5 周 / 依赖 F3，**依赖主计划 Phase 3**
+`P0` / 1.5 周 / 依赖 F3，**依赖主计划 Phase 4**（并复用 Phase 3 的模型上限摘要）
 
 **背景**
 多模态的价值 90% 在界面上（§0.3）。
@@ -1118,5 +1118,5 @@ headless 核心（Session + 类型化协议）
 **后续的候选方向**（不在本路线内，需要重新评估优先级）：
 - IDE 扩展（协议做好后成本很低）
 - 音频/视频模态（按 §5 流程）
-- Tauri 迁移（包体积优化，主计划 §7.1 已说明这是可逆决定）
+- Tauri 迁移（包体积优化，主计划 §8.1 已说明这是可逆决定）
 - Skills 自动创建（主计划 §3.4 明确移除的项，若团队扩张可重新评估）

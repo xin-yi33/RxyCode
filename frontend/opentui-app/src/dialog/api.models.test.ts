@@ -14,9 +14,13 @@ mock.module("axios", () => ({
 const { probeModels } = await import("./api.ts");
 
 describe("probeModels", () => {
-  test("network failure returns ok:false", async () => {
+  test("network failure returns ok:false with error", async () => {
     axiosGet.mockImplementationOnce(() => Promise.reject(new Error("ECONNREFUSED")));
-    expect(await probeModels()).toEqual({ ok: false, models: [], active: "" });
+    const result = await probeModels();
+    expect(result.ok).toBe(false);
+    expect(result.models).toEqual([]);
+    expect(result.active).toBe("");
+    expect(result.error).toBeTruthy();
   });
 
   test("empty models list returns ok:true", async () => {

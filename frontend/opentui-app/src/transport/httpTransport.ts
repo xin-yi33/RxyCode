@@ -9,6 +9,13 @@ import {
   type StreamReduceState,
 } from "../streamReducer.ts";
 import type { Mode, StatusInfo } from "../types.ts";
+import {
+  httpCancelActiveRequest,
+  httpFetchStatus,
+  httpRespondApproval,
+  httpSendCommand,
+  type CommandResult,
+} from "./httpAdmin.ts";
 import type { ChatApiCallbacks, ChatTransport } from "./types.ts";
 
 function newId(suffix: string): string {
@@ -19,53 +26,19 @@ export const httpTransport: ChatTransport = {
   kind: "http",
 
   async fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
-    try {
-      const resp = await axios.get(`${API_BASE}/status`, {
-        timeout: 5000,
-        headers: authorizationHeaders(),
-      });
-      onStatus(resp.data as StatusInfo);
-    } catch {
-      onStatus(null);
-    }
+    return httpFetchStatus(onStatus);
   },
 
-  async sendCommand(command: string): Promise<Record<string, unknown> | null> {
-    try {
-      const resp = await axios.post(
-        `${API_BASE}/command`,
-        { command },
-        { headers: authorizationHeaders(), timeout: 15000 },
-      );
-      return (resp.data ?? null) as Record<string, unknown> | null;
-    } catch {
-      return null;
-    }
+  async sendCommand(command: string): Promise<CommandResult> {
+    return httpSendCommand(command);
   },
 
   async cancelActiveRequest(): Promise<void> {
-    try {
-      await axios.post(`${API_BASE}/cancel`, undefined, {
-        headers: authorizationHeaders(),
-        timeout: 5000,
-      });
-    } catch {
-      // best-effort
-    }
+    return httpCancelActiveRequest();
   },
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
-    if (!approvalId) return false;
-    try {
-      await axios.post(
-        `${API_BASE}/approve`,
-        { approval_id: approvalId, decision },
-        { headers: authorizationHeaders(), timeout: 10000 },
-      );
-      return true;
-    } catch {
-      return false;
-    }
+    return httpRespondApproval(approvalId, decision);
   },
 
   async sendChatMessage(

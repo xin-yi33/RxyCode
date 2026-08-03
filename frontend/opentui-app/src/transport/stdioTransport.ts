@@ -8,11 +8,29 @@ import {
   type StreamReduceState,
 } from "../streamReducer.ts";
 import type { Mode, StatusInfo } from "../types.ts";
+import {
+  httpFetchStatus,
+  httpSendCommand,
+  type CommandResult,
+} from "./httpAdmin.ts";
 import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
 import type { ChatApiCallbacks, ChatTransport } from "./types.ts";
 
+const DEFAULT_INIT_TIMEOUT_MS = 10_000;
+const DEFAULT_SESSION_TIMEOUT_MS = 10_000;
+
 function newId(suffix: string): string {
-  return `${Date.now()}-${suffix}-${Math.random().toString(36).slice(2, 7)}`;
+  return `${Date.now()}-${suffix}-${Math.random().toString().slice(2, 7)}`;
+}
+
+function initTimeoutMs(): number {
+  const raw = Number(process.env.RXYCODE_APPSERVER_INIT_TIMEOUT_MS ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_INIT_TIMEOUT_MS;
+}
+
+function sessionTimeoutMs(): number {
+  const raw = Number(process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SESSION_TIMEOUT_MS;
 }
 
 type PromptResult = {
@@ -23,6 +41,13 @@ type PromptResult = {
   input_tokens?: number;
   output_tokens?: number;
 };
+
+let pythonCmdOverride: string[] | null = null;
+
+/** Test hook: override appserver spawn command. */
+export function __setPythonCmdForTests(cmd: string[] | null): void {
+  pythonCmdOverride = cmd;
+}
 
 class StdioAppserverSession {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
@@ -42,6 +67,7 @@ class StdioAppserverSession {
   }
 
   private pythonCmd(): string[] {
+    if (pythonCmdOverride) return pythonCmdOverride;
     const exe = process.env.RXYCODE_APPSERVER_PYTHON ?? "python";
     return [exe, "-m", "appserver"];
   }
@@ -50,14 +76,45 @@ class StdioAppserverSession {
     return process.env.RXYCODE_WORKSPACE_ROOT ?? this.projectRoot();
   }
 
+  private resetSession(reason?: Error): void {
+    if (this.client) {
+      this.client.rejectAllPending(
+        reason ?? new Error("appserver session reset"),
+      );
+    }
+    try {
+      this.proc?.kill();
+    } catch {
+      // ignore
+    }
+    this.proc = null;
+    this.client = null;
+    this.sessionId = null;
+    this.ready = null;
+  }
+
   async ensureReady(): Promise<ProtocolClient> {
     if (this.ready) {
-      await this.ready;
+      try {
+        await this.ready;
+      } catch (err) {
+        this.resetSession(err instanceof Error ? err : new Error(String(err)));
+        throw err;
+      }
       if (this.client) return this.client;
     }
+
     this.ready = this.start();
-    await this.ready;
-    if (!this.client) throw new Error("appserver stdio client failed to start");
+    try {
+      await this.ready;
+    } catch (err) {
+      this.resetSession(err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    }
+
+    if (!this.client) {
+      throw new Error("appserver stdio client failed to start");
+    }
     return this.client;
   }
 
@@ -124,9 +181,6 @@ class StdioAppserverSession {
       return { request_id: requestId, decision };
     };
 
-    // Drain appserver stderr without writing to the TTY: OpenTUI owns the
-    // alternate screen; any process.stderr.write paints over the input row
-    // (looks like "garbled" log text). Optional file sink for debugging.
     void (async () => {
       const stderr = this.proc?.stderr;
       if (!stderr) return;
@@ -156,7 +210,11 @@ class StdioAppserverSession {
       try {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            client.rejectAllPending(new Error("appserver stdout closed"));
+            this.resetSession(new Error("appserver stdout closed"));
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
           let newline = buffer.indexOf("\n");
           while (newline >= 0) {
@@ -170,18 +228,35 @@ class StdioAppserverSession {
           await client.handleLine(buffer);
         }
       } catch {
-        // subprocess closed
+        client.rejectAllPending(new Error("appserver stdout reader failed"));
+        this.resetSession(new Error("appserver stdout reader failed"));
       }
     })();
 
-    await client.request("initialize", {
-      client_name: "opentui",
-      client_version: "1.2.4",
-      protocol_version: "1.0.0",
-    });
-    const session = (await client.request<{ session_id: string }>("session/new", {
-      workspace_root: this.workspaceRoot(),
-    })) as { session_id: string };
+    void (async () => {
+      const proc = this.proc;
+      if (!proc) return;
+      const exitCode = await proc.exited;
+      client.rejectAllPending(new Error(`appserver exited (${exitCode})`));
+      if (this.proc === proc) {
+        this.resetSession(new Error(`appserver exited (${exitCode})`));
+      }
+    })();
+
+    await client.requestWithTimeout(
+      "initialize",
+      {
+        client_name: "opentui",
+        client_version: "1.2.4",
+        protocol_version: "1.0.0",
+      },
+      initTimeoutMs(),
+    );
+    const session = (await client.requestWithTimeout<{ session_id: string }>(
+      "session/new",
+      { workspace_root: this.workspaceRoot() },
+      sessionTimeoutMs(),
+    )) as { session_id: string };
     this.sessionId = session.session_id;
   }
 
@@ -195,28 +270,13 @@ class StdioAppserverSession {
 
   async interrupt(): Promise<void> {
     if (!this.sessionId) return;
-    const client = await this.ensureReady();
     try {
+      const client = await this.ensureReady();
       await client.request("session/interrupt", { session_id: this.sessionId });
     } catch {
       // best-effort
     }
     this.activePromptAbort?.abort();
-  }
-
-  async sendCommand(command: string): Promise<Record<string, unknown> | null> {
-    const client = await this.ensureReady();
-    if (!this.sessionId) return null;
-    try {
-      const result = (await client.request<PromptResult>("session/prompt", {
-        session_id: this.sessionId,
-        text: command,
-        timeout_seconds: 120,
-      })) as PromptResult;
-      return { text: result.text ?? "", status: result.status ?? "succeeded" };
-    } catch {
-      return null;
-    }
   }
 
   async sendChatMessage(
@@ -225,9 +285,6 @@ class StdioAppserverSession {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
-    const client = await this.ensureReady();
-    if (!this.sessionId) throw new Error("appserver session not ready");
-
     const userMsg = {
       id: newId("user"),
       role: "user" as const,
@@ -239,133 +296,166 @@ class StdioAppserverSession {
     callbacks.onStreaming(true);
     callbacks.onProgress?.("Connecting...");
 
-    const thinkingId = newId("thinking");
-    const assistantId = newId("assistant");
-
-    let state: StreamReduceState = {
-      messages: [
-        {
-          id: thinkingId,
-          role: "thinking",
-          content: "…",
-          timestamp: Date.now(),
-          live: true,
-          done: false,
-        },
-      ],
-      thinkingId,
-      assistantId,
-      acc: "",
-      assistantCreated: false,
-      reasoningAcc: "",
-      hasReasoning: false,
-    };
-
-    callbacks.onMessages((prev) => [...prev, ...state.messages]);
-
-    const publish = (next: StreamReduceState) => {
-      state = next;
-      callbacks.onMessages((prev) => {
-        const idx = prev.findIndex((m) => m.id === userMsg.id);
-        if (idx < 0) return [...prev, ...next.messages];
-        return [...prev.slice(0, idx + 1), ...next.messages];
-      });
-    };
-
-    const priorOnNotification = client.onNotification;
-    client.onNotification = (method, params) => {
-      priorOnNotification?.(method, params);
-      const event = notifyToStreamEvent(method, params);
-      if (!event) return;
-      if (event.type === "progress" && !state.hasReasoning) {
-        callbacks.onProgress?.(event.message || event.text || "Working...");
-      }
-      if (event.type === "tool_call") {
-        callbacks.onProgress?.(
-          event.name ? `Tool: ${event.name}` : "Running tool...",
-        );
-      }
-      if (event.type === "tool_result") {
-        callbacks.onApprovalRequest?.(null);
-      }
-      const next = applyStreamEvent(state, event, newId);
-      if (next !== state) publish(next);
-    };
-
-    this.activeCallbacks = callbacks;
-    const abort = new AbortController();
-    this.activePromptAbort = abort;
-    const onAbort = () => void this.interrupt();
-    signal?.addEventListener("abort", onAbort);
-    abort.signal.addEventListener("abort", onAbort);
-
     try {
-      const result = (await client.request<PromptResult>("session/prompt", {
-        session_id: this.sessionId,
-        text: content,
-        mode,
-        timeout_seconds: 600,
-      })) as PromptResult;
-
-      if (result.text) {
-        const finalEvent = applyStreamEvent(
-          state,
-          { type: "final", text: result.text },
-          newId,
-        );
-        publish(finalEvent);
+      const client = await this.ensureReady();
+      if (!this.sessionId) {
+        throw new Error("appserver session not ready");
       }
+      callbacks.onProgress?.("");
 
-      publish({
-        ...state,
-        messages: settleActiveMessages(state.messages),
-      });
+      const thinkingId = newId("thinking");
+      const assistantId = newId("assistant");
 
-      this.lastStatus = {
-        input_tokens: result.input_tokens,
-        output_tokens: result.output_tokens,
-        mode,
+      let state: StreamReduceState = {
+        messages: [
+          {
+            id: thinkingId,
+            role: "thinking",
+            content: "…",
+            timestamp: Date.now(),
+            live: true,
+            done: false,
+          },
+        ],
+        thinkingId,
+        assistantId,
+        acc: "",
+        assistantCreated: false,
+        reasoningAcc: "",
+        hasReasoning: false,
       };
-    } catch (e) {
-      if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
+
+      callbacks.onMessages((prev) => [...prev, ...state.messages]);
+
+      const publish = (next: StreamReduceState) => {
+        state = next;
+        callbacks.onMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === userMsg.id);
+          if (idx < 0) return [...prev, ...next.messages];
+          return [...prev.slice(0, idx + 1), ...next.messages];
+        });
+      };
+
+      const priorOnNotification = client.onNotification;
+      let sawStreamActivity = false;
+      client.onNotification = (method, params) => {
+        priorOnNotification?.(method, params);
+        const event = notifyToStreamEvent(method, params);
+        if (!event) return;
+        if (!sawStreamActivity) {
+          sawStreamActivity = true;
+          callbacks.onProgress?.("");
+        }
+        if (event.type === "progress" && !state.hasReasoning) {
+          callbacks.onProgress?.(event.message || event.text || "Working...");
+        }
+        if (event.type === "tool_call") {
+          callbacks.onProgress?.(
+            event.name ? `Tool: ${event.name}` : "Running tool...",
+          );
+        }
+        if (event.type === "tool_result") {
+          callbacks.onApprovalRequest?.(null);
+        }
+        const next = applyStreamEvent(state, event, newId);
+        if (next !== state) publish(next);
+      };
+
+      this.activeCallbacks = callbacks;
+      const abort = new AbortController();
+      this.activePromptAbort = abort;
+      const onAbort = () => void this.interrupt();
+      signal?.addEventListener("abort", onAbort);
+      abort.signal.addEventListener("abort", onAbort);
+
+      try {
+        const result = (await client.request<PromptResult>("session/prompt", {
+          session_id: this.sessionId,
+          text: content,
+          mode,
+          timeout_seconds: 600,
+        })) as PromptResult;
+
+        if (result.text) {
+          const finalEvent = applyStreamEvent(
+            state,
+            { type: "final", text: result.text },
+            newId,
+          );
+          publish(finalEvent);
+        }
+
         publish({
           ...state,
-          messages: [
-            ...settleActiveMessages(state.messages, "cancelled"),
-            {
-              id: newId("system"),
-              role: "system",
-              content: "Cancelled.",
-              timestamp: Date.now(),
-            },
-          ],
+          messages: settleActiveMessages(state.messages),
         });
-      } else if (e instanceof ProtocolRpcError) {
-        callbacks.onMessages((prev) => [
-          ...settleActiveMessages(prev),
-          {
-            id: newId("system"),
-            role: "system",
-            content: (e as ProtocolRpcError).message,
-            timestamp: Date.now(),
-          },
-        ]);
-      } else {
-        callbacks.onMessages((prev) => [
-          ...settleActiveMessages(prev),
-          {
-            id: newId("system"),
-            role: "system",
-            content: e instanceof Error ? e.message : String(e),
-            timestamp: Date.now(),
-          },
-        ]);
+
+        this.lastStatus = {
+          input_tokens: result.input_tokens,
+          output_tokens: result.output_tokens,
+          mode,
+        };
+      } catch (e) {
+        if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
+          publish({
+            ...state,
+            messages: [
+              ...settleActiveMessages(state.messages, "cancelled"),
+              {
+                id: newId("system"),
+                role: "system",
+                content: "Cancelled.",
+                timestamp: Date.now(),
+              },
+            ],
+          });
+        } else if (e instanceof ProtocolRpcError) {
+          publish({
+            ...state,
+            messages: [
+              ...settleActiveMessages(state.messages),
+              {
+                id: newId("system"),
+                role: "system",
+                content: e.message,
+                timestamp: Date.now(),
+              },
+            ],
+          });
+        } else {
+          publish({
+            ...state,
+            messages: [
+              ...settleActiveMessages(state.messages),
+              {
+                id: newId("system"),
+                role: "system",
+                content: e instanceof Error ? e.message : String(e),
+                timestamp: Date.now(),
+              },
+            ],
+          });
+        }
+      } finally {
+        client.onNotification = priorOnNotification;
+        this.activeCallbacks = null;
+        this.activePromptAbort = null;
+        signal?.removeEventListener("abort", onAbort);
       }
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "appserver 启动失败，请检查 Python 路径";
+      callbacks.onMessages((prev) => [
+        ...prev,
+        {
+          id: newId("system"),
+          role: "system",
+          content: `启动失败: ${message}`,
+          timestamp: Date.now(),
+        },
+      ]);
+      callbacks.onStatus(null);
     } finally {
-      client.onNotification = priorOnNotification;
-      this.activeCallbacks = null;
-      this.activePromptAbort = null;
-      signal?.removeEventListener("abort", onAbort);
       callbacks.onStreaming(false);
       callbacks.onProgress?.("");
       callbacks.onStatus(this.lastStatus);
@@ -379,25 +469,31 @@ class StdioAppserverSession {
     } catch {
       // ignore
     }
-    this.proc?.kill();
-    this.proc = null;
-    this.client = null;
-    this.sessionId = null;
-    this.ready = null;
+    this.resetSession();
   }
 }
 
-const sharedSession = new StdioAppserverSession();
+let sharedSession = new StdioAppserverSession();
 
 export const stdioTransport: ChatTransport = {
   kind: "stdio",
 
   async fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
-    onStatus(null);
+    return httpFetchStatus(onStatus);
   },
 
-  async sendCommand(command: string): Promise<Record<string, unknown> | null> {
-    return sharedSession.sendCommand(command);
+  async sendCommand(command: string): Promise<CommandResult> {
+    const result = await httpSendCommand(command);
+    const trimmed = command.trim();
+    if (
+      result.ok &&
+      trimmed.startsWith("/model ") &&
+      result.action === "model_changed"
+    ) {
+      await sharedSession.shutdown();
+      sharedSession = new StdioAppserverSession();
+    }
+    return result;
   },
 
   async cancelActiveRequest(): Promise<void> {
@@ -422,7 +518,9 @@ export const stdioTransport: ChatTransport = {
   },
 };
 
-/** Test hook: replace shared stdio session (mock subprocess). */
+/** Test hook: reset shared stdio session between tests. */
 export function __resetStdioSessionForTests(): void {
-  // no-op placeholder; tests use notify mapper directly
+  void sharedSession.shutdown();
+  sharedSession = new StdioAppserverSession();
+  pythonCmdOverride = null;
 }

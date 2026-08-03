@@ -23,8 +23,20 @@ export function buildModelListOptions(
       providerNames.add(provider);
     }
     const title = m.nickname || m.provider_model_id || m.name || m.id;
-    const description = m.provider_model_id || m.name || "";
-    const footer = m.active || m.id === active ? "当前" : m.base_url || "";
+    const vendor = m.provider_model_id || m.name || "";
+    const host = (() => {
+      try {
+        return m.base_url ? new URL(m.base_url).host : "";
+      } catch {
+        return "";
+      }
+    })();
+    const description = [provider, vendor !== title ? vendor : "", host]
+      .filter(Boolean)
+      .join(" · ");
+    const footer = m.active || m.id === active
+      ? (host ? `当前 · ${host}` : "当前")
+      : host || m.base_url || "";
 
     opts.push({
       id: m.id,
@@ -40,11 +52,22 @@ export function buildModelListOptions(
   for (const recentId of recentIds) {
     const m = models.find((item) => item.id === recentId);
     if (!m) continue;
+    const provider = m.category || m.provider_name || "其他";
+    const title = m.nickname || m.provider_model_id || m.name || m.id;
+    const host = (() => {
+      try {
+        return m.base_url ? new URL(m.base_url).host : "";
+      } catch {
+        return "";
+      }
+    })();
     opts.unshift({
       id: `recent:${m.id}`,
-      title: m.nickname || m.provider_model_id || m.name || m.id,
-      description: m.provider_model_id || m.name || "",
-      footer: m.active || m.id === active ? "当前" : m.base_url || "",
+      title,
+      description: [provider, host].filter(Boolean).join(" · "),
+      footer: m.active || m.id === active
+        ? (host ? `当前 · ${host}` : "当前")
+        : host || "",
       category: "最近常用",
       value: m.id,
     });

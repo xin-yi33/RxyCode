@@ -2,7 +2,7 @@
 
 > **这里有两个独立的项目。** 别把它们的文档混着读。
 >
-> **更新**：2026-08-01（**Composer 主写全部 · Grok 辅助前端多模态**；新增 L10；森林三层 tier）
+> **更新**：2026-08-03（**Composer 主写全部 · Grok 辅助前端多模态**；主计划新增 Phase 3 模型输出上限，原 Desktop 顺延为 Phase 4）
 
 ---
 
@@ -27,7 +27,7 @@
 │  目标形态：headless 核心 + 类型化协议 + 多个薄客户端           │
 │                                                              │
 │  仓库：D:\agent-demo\RxyCode\RxyCode1_1_0                    │
-│  路线：Phase 0/1/2/3 → Phase A/B/C/D                        │
+│  路线：Phase 0/1/2/3/4 → Phase A/B/C/D                      │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          │  pip install rxycode
@@ -45,7 +45,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**两处排期硬依赖**：LinkAgent 的 L2 与 L9-1~L9-3 等 RxyCode **Phase 2**（协议）；L9-4~L9-8 等 **Phase C**（完整 Desktop 壳、扩展契约和基础工作台）。主计划 **Phase 3** 只是 Phase C 的基础壳前置。
+**三处排期硬依赖**：LinkAgent 的 L2 与 L9-1~L9-3 等 RxyCode **Phase 2**（协议）；模型/成本摘要消费 RxyCode **Phase 3**（按真实 model ID 解析输出上限）；L9-4~L9-8 等 **Phase D**（完整 Desktop 壳、扩展契约和基础工作台），其基础 Electron 壳来自主计划 **Phase 4**。
 
 **关键约束：RxyCode 本体不因为 LinkAgent 而改动一行。**
 
@@ -65,7 +65,7 @@ docs/plans/opus5-plan/
 │
 ├── rxycode/                         ← RxyCode 的施工文档
 │   ├── README.md                       路线索引与排期
-│   ├── 00-EXECUTION-PLAN.md            主计划 Phase 0–3
+│   ├── 00-EXECUTION-PLAN.md            主计划 Phase 0–4
 │   ├── PHASE-A-MODEL-ADAPTATION-LAYER.md
 │   ├── PHASE-B-ISOLATED-SUBAGENT.md       ← 隔离式子代理
 │   ├── PHASE-C-MULTI-AGENT-ORCHESTRATION.md
@@ -126,12 +126,13 @@ docs/plans/opus5-plan/
 |---|---|
 | RxyCode 做 Phase 0/1（止血、评测） | 与 LinkAgent 完全无关，随便并行 |
 | RxyCode 做 Phase 2（协议 + Session 重构） | ⚠ 会改 `AgentV2` 的对外形态，LinkAgent 的 L2 桥接层要跟着调整。**LinkAgent 的 L2 与 L9-1~L9-3 等 Phase 2 落地**，否则要返工 |
-| RxyCode 做 **Phase 3**（Electron 壳） | 只提供 Desktop 的基础壳、协议接入和最小交互；不等于完整桌面工作台 |
-| RxyCode 做 **Phase C**（完整 Desktop） | ⚠ **LinkAgent 的 L9-4~L9-8 应基于 Phase C 的扩展契约和稳定壳 fork**，否则会重复实现项目、Thread、审批和 diff 基础设施 |
+| RxyCode 做 **Phase 3**（模型输出上限） | 提供按真实 `model_id` 解析的共享模型摘要；Provider、CLI、OpenTUI 和 Desktop 不得各自复制一套上限表 |
+| RxyCode 做 **Phase 4**（Electron 壳） | 提供 Desktop 的基础壳、协议接入和最小交互；不等于完整桌面工作台 |
+| RxyCode 做 **Phase D**（完整 Desktop） | ⚠ **LinkAgent 的 L9-4~L9-8 应基于 Phase D 的扩展契约和稳定壳 fork**，否则会重复实现项目、Thread、审批和 diff 基础设施 |
 | RxyCode 做 Phase A/B/D/E/F | LinkAgent 只要不用这些新能力就不受影响；涉及多模型/多模态时以 capability 兼容为准 |
 | LinkAgent 做 L0/L1（建仓、EKO 核心） | 完全不碰 RxyCode，随时可做 |
 
-**最省事的排法**：LinkAgent 先做 L0 + L1（纯自己的代码，零依赖），这段时间 RxyCode 推进 Phase 0–2 和 Phase A/B；协议稳定后做 L2→L3；等 RxyCode Phase C 的 Desktop 扩展契约冻结后，再做 L9 桌面前端。L4/L5/L7/L8 可在等待窗口并行推进。
+**最省事的排法**：LinkAgent 先做 L0 + L1（纯自己的代码，零依赖），这段时间 RxyCode 推进 Phase 0–2；协议稳定后做 L2→L3，随后 RxyCode 完成 Phase 3 模型上限契约和 Phase 4 基础壳；等 RxyCode Phase D 的 Desktop 扩展契约冻结后，再做 L9 桌面前端。L4/L5/L7/L8 可在等待窗口并行推进。
 
 ---
 

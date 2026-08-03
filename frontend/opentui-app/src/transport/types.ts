@@ -1,5 +1,6 @@
 import type { ApprovalDecision, ApprovalInfo } from "../ApprovalDialog.tsx";
 import type { Mode, StatusInfo } from "../types.ts";
+import type { CommandResult } from "./httpAdmin.ts";
 
 export type MessageUpdater = (
   prev: import("../types.ts").ChatMessage[],
@@ -18,7 +19,7 @@ export type TransportKind = "http" | "stdio";
 export interface ChatTransport {
   readonly kind: TransportKind;
   fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void>;
-  sendCommand(command: string): Promise<Record<string, unknown> | null>;
+  sendCommand(command: string): Promise<CommandResult>;
   cancelActiveRequest(): Promise<void>;
   respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean>;
   sendChatMessage(

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getChatTransport, resetChatTransportForTests } from "./index.ts";
+import { __resetStdioSessionForTests } from "./stdioTransport.ts";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -10,6 +11,7 @@ const repoRoot = path.resolve(
 
 describe("stdio transport integration", () => {
   afterEach(() => {
+    __resetStdioSessionForTests();
     resetChatTransportForTests();
     delete process.env.RXYCODE_TRANSPORT;
     delete process.env.RXYCODE_APPSERVER_STUB;

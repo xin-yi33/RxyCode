@@ -1,4 +1,4 @@
-# RxyCode 执行计划（2026-07-31 修订版 / 权威版）
+# RxyCode 执行计划（2026-08-03 修订版 / 权威版）
 
 > **文档状态**：本文件取代本目录下 `00-master-plan.md`、`01-tech-debt-cleanup.md`、`README.md`、`QUICKSTART.md`、`DAILY-CHECKLIST.md`、`DELIVERY-SUMMARY.md`。
 > 那批文件基于 `docs/plans/2026-07-30-comprehensive-review-and-roadmap.md`，该报告存在**未经实测的事实错误**（见 §2.3），并按 6 人团队 / $630,740 预算编写，与实际的 2–3 人团队不匹配。
@@ -16,14 +16,16 @@
 | [§0 执行手册](#0-执行手册必读) | 硬性规则、任务卡协议、环境命令 | **每次开始工作前必读** |
 | [§1 事实基线](#1-事实基线全部经过实测) | 实测数据 + 证据行号 | 需要引用现状时 |
 | [§2 历史文档复盘](#2-历史文档复盘) | 7/27 计划执行情况、7/30 报告勘误 | 想知道"之前做到哪了" |
-| [§3 排期总表](#3-排期总表) | Phase 0–3、周级排期、人员分工 | 规划与汇报 |
+| [§3 排期总表](#3-排期总表) | Phase 0–4、周级排期、人员分工 | 规划与汇报 |
 | [§4 Phase 0 止血](#4-phase-0--止血w1-w2) | S1–S8 任务卡 | 执行 Phase 0 |
 | [§5 Phase 1 Harness](#5-phase-1--harness-说真话w3-w5) | H1–H6 任务卡 | 执行 Phase 1 |
 | [§6 Phase 2 协议与核心](#6-phase-2--协议层与核心解耦w6-w12) | P1–P8 任务卡 | 执行 Phase 2 |
-| [§7 Phase 3 Desktop](#7-phase-3--desktop-应用w13-w20) | D1–D8 任务卡 | 执行 Phase 3 |
-| [§8 竞品对照](#8-竞品对照窄赛道) | 与 20 个开源 Agent 的差距 | 做取舍决策时 |
-| [§9 维护与扩展手册](#9-维护与扩展手册) | 加工具/对话框/评测/协议方法的标准流程 | **日常维护必读** |
-| [§10 附录](#10-附录) | 命令速查、证据索引、术语表 | 随时查 |
+| [§7 Phase 3 模型输出上限](#7-phase-3--模型输出上限自适应w13-w15) | M1–M8 任务卡 | 执行 Phase 3 |
+| [§8 Phase 4 Desktop](#8-phase-4--desktop-应用w16-w23) | D1–D8 任务卡 | 执行 Phase 4 |
+| [§9 竞品对照](#9-竞品对照窄赛道) | 与 20 个开源 Agent 的差距 | 做取舍决策时 |
+| [§10 维护与扩展手册](#10-维护与扩展手册) | 加工具/对话框/评测/协议方法的标准流程 | **日常维护必读** |
+| [§11 附录](#11-附录) | 命令速查、证据索引、术语表 | 随时查 |
+| [§12 文档映射](#12-文档映射与工作流程) | 全路线文档、依赖和协作协议 | 接手任务前必读 |
 
 ---
 
@@ -58,7 +60,7 @@ D:\agent-demo\RxyCode\RxyCode1_1_0
 | R4 | **不要重构任务卡范围外的代码。** 看到丑代码忍住，记到 §10.4 待办里 | 防止 diff 爆炸导致无法 review |
 | R5 | **不要删除 / 重写 `core/agent_v2.py` 的任何现有分支逻辑**，除非任务卡明确要求。它有 3704 行且被 API + TUI + evals 三方依赖 | 破坏面极大 |
 | R6 | **不要碰 `data/`、`credentials.yaml`、`.env*`、`~/.rxycode/`**。里面是真实 API Key | 泄密 |
-| R7 | **PowerShell 不支持 heredoc（`<<'EOF'`）。** 要跑多行 Python，先用 `Write` 工具写成 `.py` 文件再 `python file.py`，跑完删掉 | 已踩坑，见 §10.1 |
+| R7 | **PowerShell 不支持 heredoc（`<<'EOF'`）。** 要跑多行 Python，先用 `Write` 工具写成 `.py` 文件再 `python file.py`，跑完删掉 | 已踩坑，见 §11.1 |
 | R8 | **不要在 CI 里加 `continue-on-error: true` 来"修复"失败的测试** | 这是把红灯涂成绿灯 |
 | R9 | **每个任务卡都要留下可回滚的单个 commit。** 不要一个 commit 里塞两个任务 | 出事能 revert |
 | R10 | **文档同步是任务的一部分**，不是可选项。改了模块就改 `docs/modules/<模块>.md` | 见 `AGENTS.md` |
@@ -254,8 +256,8 @@ setup_field: ''
 
 | 代号 | 角色 | 投入 | 主要负责 |
 |---|---|---|---|
-| **A** | 后端 / 核心架构（Tech Lead） | 100% | Phase 0 后端项、Phase 1 harness、Phase 2 协议与核心解耦 |
-| **B** | 前端 / TUI / Desktop | 100% | OpenTUI、协议 TS 客户端、Desktop 全部 |
+| **A** | 后端 / 核心架构（Tech Lead） | 100% | Phase 0 后端项、Phase 1 harness、Phase 2 协议与核心解耦、Phase 3 模型输出上限 |
+| **B** | 前端 / TUI / Desktop | 100% | OpenTUI、协议 TS 客户端、Phase 4 Desktop 全部 |
 | **C** | QA / CI（可选第 3 人） | 50% | CI 流水线、覆盖率、发布门禁；缺人时由 A 兼 |
 
 ### 3.2 Phase 总览
@@ -265,7 +267,8 @@ setup_field: ''
 | **Phase 0 止血** | W1–W2 | 08-03 ~ 08-14 | 补完 7/27 遗留，建立 lint 与最小门禁 | `ruff check .` 通过并进 CI；CORS 收紧；无跟踪的 `.bak`；CI 双 Python 版本 |
 | **Phase 1 Harness** | W3–W5 | 08-17 ~ 09-04 | 让评测说真话 | evals 跑真实 Agent；坏任务全部修复或删除；evals 进 CI（nightly）；基线分数落盘 |
 | **Phase 2 协议与核心** | W6–W12 | 09-07 ~ 10-23 | 抽出 headless core + 类型化协议 | `protocol/` 有 schema 且能生成 TS 类型；`appserver` stdio JSON-RPC 可跑通；OpenTUI 迁到协议；`api_server.py` 变薄 |
-| **Phase 3 Desktop** | W13–W20 | 10-26 ~ 12-18 | Desktop MVP 发布 | 三平台打包；对话/流式/审批/设置可用；复用同一协议客户端 |
+| **Phase 3 模型输出上限自适应** | W13–W15 | 10-26 ~ 11-13 | 模型 ID 驱动的输出上限解析 | 新增模型默认 auto；精确 ID 命中目录；未知模型高位兜底；来源可解释 |
+| **Phase 4 Desktop** | W16–W23 | 11-16 ~ 01-08 | Desktop MVP 发布 | 三平台打包；对话/流式/审批/设置可用；复用同一协议客户端，并消费 Phase 3 的模型上限摘要 |
 
 ### 3.3 周级排期
 
@@ -283,10 +286,13 @@ setup_field: ''
 | W10 | 10-05 ~ 10-09 | P5 | P5 | — |
 | W11 | 10-12 ~ 10-16 | P6 | P6 | — |
 | W12 | 10-19 ~ 10-23 | P7 P8 | P8 | P8 |
-| W13–W14 | 10-26 ~ 11-06 | （支援） | D1 D2 | — |
-| W15–W16 | 11-09 ~ 11-20 | D3 后端侧 | D3 D4 | — |
-| W17–W18 | 11-23 ~ 12-04 | — | D5 D6 | — |
-| W19–W20 | 12-07 ~ 12-18 | — | D7 | D8 |
+| W13 | 10-26 ~ 10-30 | M1 M2 | — | — |
+| W14 | 11-02 ~ 11-06 | M3 M4 | — | — |
+| W15 | 11-09 ~ 11-13 | M5 M6 M7 M8 | — | — |
+| W16–W17 | 11-16 ~ 11-27 | （支援） | D1 D2 | — |
+| W18–W19 | 11-30 ~ 12-11 | D3 后端侧 | D3 D4 | — |
+| W20–W21 | 12-14 ~ 12-25 | — | D5 D6 | — |
+| W22–W23 | 12-28 ~ 01-08 | — | D7 | D8 |
 
 ### 3.4 明确**不做**的事（范围保护）
 
@@ -297,7 +303,7 @@ setup_field: ''
 | Kubernetes / Helm / 多租户 | 没有企业客户，投入产出比极低 |
 | Telegram / Discord Bot | 与核心竞争力无关，是渠道不是产品 |
 | Skills 自动创建（轨迹分析 + 模式提取 + 代码生成） | 研究性课题，2–3 人做不出可用的东西 |
-| 可视化工作流编辑器 | Phase 3 之后再议 |
+| 可视化工作流编辑器 | Phase 4 之后再议 |
 | LSP 深度集成 | 现有 `lsp/` 保持实验状态，不投入 |
 
 ---
@@ -611,7 +617,7 @@ exclude = [
 
 [tool.ruff.lint]
 # 起步集：只开"几乎不会误报、且能抓真 bug"的规则。
-# 风格类（I 排序、UP 升级语法）等 CI 绿了之后再逐条开，见 §9.5。
+# 风格类（I 排序、UP 升级语法）等 CI 绿了之后再逐条开，见 §10.5。
 select = [
   "E9",    # 语法错误 / IO 错误
   "F",     # pyflakes：未定义名字、未使用 import、f-string 缺占位符
@@ -922,7 +928,7 @@ python -c "import yaml,pathlib; yaml.safe_load(pathlib.Path('.github/workflows/c
 
 **常见坑**
 - OpenTUI 测试可能依赖 TTY / 终端尺寸。CI 上没有 TTY，如果失败先看是不是这个原因，**修测试让它不依赖 TTY**，而不是跳过。
-- 不要顺手删掉 Ink 的 CI 步骤。Ink 是有 `RXYCODE_TUI=ink` 的正式回退路径，Phase 3 之后再评估下线。
+- 不要顺手删掉 Ink 的 CI 步骤。Ink 是有 `RXYCODE_TUI=ink` 的正式回退路径，Phase 4 之后再评估下线。
 
 **Commit**
 ```
@@ -1757,7 +1763,7 @@ Duration: 4246.1s | Tokens: 3372650
 
 ## §6 Phase 2 — 协议层与核心解耦（W6–W12）
 
-> **目标**：把 RxyCode 从"一个 Python 程序 + 一个 HTTP 接口"变成"一个 headless 核心 + 一份类型化协议 + 若干瘦客户端"。这是 Codex 架构的精髓，也是 Phase 3 Desktop 能在 8 周内做完的前提。
+> **目标**：把 RxyCode 从"一个 Python 程序 + 一个 HTTP 接口"变成"一个 headless 核心 + 一份类型化协议 + 若干瘦客户端"。这是 Codex 架构的精髓，也是 Phase 4 Desktop 能在 8 周内做完的前提。
 
 ### 6.0 目标架构（先读懂再动手）
 
@@ -1820,7 +1826,7 @@ Codex 的做法是：**核心不知道 UI 存在**，所有客户端通过一份
 | **T3** | **事件循环纪律** | event loop 内禁止同步阻塞调用（sync I/O、requests、mss、`time.sleep`）；一律 `asyncio.to_thread` + 超时或进程池 | P3 Session 层 Review 必查项：任何新增 `await` 前的同步 I/O 一律打回 |
 | **T4** | **看门狗兜底** | 运行时心跳 + 无响应 N 秒自动重启/降级；业务侧"已提交 / 执行中 / 失败"三态，客户端不无限等 | P4 appserver 心跳 + job 状态机；测试侧 `scripts/eval_watchdog.py` 总时长兜底 |
 
-**工具超时纪律**（硬约束，和 §7.3 的 DC1–DC5 同级，违反即打回）：
+**工具超时纪律**（硬约束，和 §8.3 的 DC1–DC5 同级，违反即打回）：
 
 - **bash 工具**：所有命令必须包超时；交互式程序（`tail -f`、REPL、git 需要凭证时挂起）要检测并拒绝，或给 PTY 输入超时
 - **vision `screenshot`**：必须走子进程 + 超时 + 会话预检（锁屏/无交互桌面**明确报错**，不抓屏）；`RXYCODE_DISABLE_SCREEN_CAPTURE=1` 可全局禁用
@@ -2181,11 +2187,827 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 
 ---
 
-## §7 Phase 3 — Desktop 应用（W13–W20）
+## §7 Phase 3 — 模型输出上限自适应（W13–W15）
+
+> **owner: backend → Composer 2.5 主写。** M1–M8 全部由 Composer 2.5 负责：配置契约、模型目录、发现 ID、解析器、Provider 接线、迁移、测试和验收。Grok 4.5 不参与本 Phase 的后端、协议、模型元数据或配置实现；只有当 M8 需要核对模型列表/设置页的显示状态时，才可按卡内明确范围做视觉辅助。Sonnet 5 可做 M2/M3/M5 的 diff 预审，但不代替 Composer 收口。
+
+> **执行规范**：全部 M 卡必须遵循 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md) 的 C1–C8 硬性规则、任务卡结构和 Review 清单；本 Phase 的额外硬约束见 §7.5，出口标准见 §7.6。
+
+> **一句话目标**：把模型输出上限从“新增模型时统一写入一个数字”改成“使用实际拉取到的 `model_id` 查找模型元数据，按显式配置、精确模型目录、Provider 元数据和高位未知模型兜底依次解析”，并让每次请求都能解释最终采用的上限来源。
+
+### 7.0 为什么必须先做这一 Phase
+
+当前 RxyCode 的模型添加和请求链路存在同一个错误假设：**所有模型都可以用一个全局 `8192` 作为 `max_tokens`**。这不是模型能力，只是历史默认值。它会造成三类问题：
+
+1. **批量发现污染配置**：`config/model_manager.py` 的 `add_model()` 默认参数是 `8192`，`onboard_models_batch()` 为发现列表中的每个模型调用它，导致模型 ID 不同但输出上限相同。
+2. **运行时二次写死**：`core/providers/base.py` 的 `llm_kwargs()` 在配置缺少 `max_tokens` 时仍回退到 `8192`，即使后续已经有模型能力目录，也会被这个回退截断。
+3. **配置和模型目录没有分层**：用户明确配置、模型官方上限、Provider 默认值和未知模型兜底没有来源字段，发生 400 或输出过短时无法解释“为什么是这个数字”。
+
+本 Phase 不把模型的真实输出能力“猜”出来，也不承诺所有 Provider 都会在 `/models` 返回限制。**模型发现接口只负责提供真实 `model_id`；上限由模型目录和能力元数据按 ID 查找。** Provider 返回可验证的能力字段时可以作为目录输入，但不能因为显示名相似就把一个模型的限制套给另一个模型。
+
+### 7.1 参考口径与 RxyCode 自己的边界
+
+Codex 的公开行为提供三个可借鉴的边界：
+
+- `model/list` 先发现可用模型及其能力，客户端不把模型选择器写死成一组静态名称；
+- `model_catalog_json` 允许启动时加载模型目录，目录与配置层分离；
+- `model_context_window` 是可选的模型级元数据，未设置时使用模型或预设默认值，而不是把所有模型写成同一个固定窗口。
+
+参考：
+
+- Codex App Server `model/list`：https://learn.chatgpt.com/docs/app-server
+- Codex 配置参考：https://learn.chatgpt.com/docs/config-reference
+- Codex 模型选择：https://learn.chatgpt.com/docs/models
+
+**归因边界**：`model_max_output_tokens`、`OutputLimitResolution`、`max_tokens: auto` 和未知模型高位兜底是 RxyCode 的实现契约，不得写成“Codex 公开字段”。RxyCode 借鉴的是“模型目录 + 可选覆盖 + 模型默认值”的分层方式。
+
+### 7.2 目标数据流
+
+```text
+Provider /models
+    │
+    │ 只取得真实 model_id、owned_by 和可选能力字段
+    ▼
+ModelDiscoveryRecord
+    │
+    │ provider_id + 精确 model_id 查找；保留原始 ID 用于请求
+    ▼
+ModelCatalog
+    │  exact provider+id → exact id → 已审计 family pattern → provider default
+    ▼
+OutputLimitResolver
+    │  显式配置覆盖；已知硬上限钳制；context window 再钳制
+    ▼
+OutputLimitResolution
+    │  resolved_max_tokens + source + evidence + warnings
+    ▼
+Provider llm_kwargs / 请求日志 / CLI、OpenTUI、未来 Desktop 的设置摘要
+```
+
+**目录输入不是“每次发现一次就把数字写进用户配置”。** 它分成三层：
+
+1. Provider `/models` 返回 `id` 以及经过 allowlist 验证的能力字段时，作为本次发现记录；
+2. Provider 只返回 `id` 时，按 `provider_id + model_id` 精确读取版本化 `model_catalog_json`/审计目录，目录记录带来源 URL 和 `as_of`；
+3. 两层都没有命中时，进入 Provider 默认或 `unknown_fallback`，只把解析结果写入诊断摘要，不把兜底数字批量抄回 `config.yaml`。
+
+目录可以刷新、替换和审计；请求链只读取解析结果，不在每个 Provider 文件里维护一份模型表。
+
+解析优先级冻结为：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | 用户显式 `max_tokens: <正整数>` | 兼容现有配置；如果超过已知模型硬上限，只能钳到硬上限并记录 warning，不能把无效值发给 Provider |
+| 2 | `provider_id + model_id` 精确目录项 | 最高可信的自动来源；model ID 使用规范化键查找，发请求仍使用原始 ID |
+| 3 | `model_id` 精确目录项 | 仅在 Provider 目录没有同名冲突时使用；有冲突必须报错或要求补 Provider |
+| 4 | 已审计的 family pattern | 只能作为显式登记的后备规则，必须记录命中的 pattern；不得使用昵称或模糊包含匹配 |
+| 5 | Provider 默认能力 | Provider 有明确默认但没有具体型号条目时使用 |
+| 6 | 未知模型高位兜底 | 默认 `32768`，实际值由 `model_limits.unknown_model_max_tokens` 配置；不再回退 `8192` |
+
+若同时知道 `model_context_window`，最终请求上限还必须满足：
+
+```text
+effective_max_tokens = min(
+    selected_output_limit,
+    context_window - estimated_input_tokens - context_safety_margin
+)
+```
+
+当计算结果小于 1 时，必须返回结构化 `MODEL_CONTEXT_BUDGET_EXHAUSTED`，不能发送 `0`、负数或偷偷切换到 `8192`。`reserved_output_tokens` 仍然是治理/限流的预留量，不是模型输出上限来源，不能把两个字段混为一谈。
+
+### 7.3 配置和目录契约
+
+新的用户配置允许以下三种形式，含义必须唯一：
+
+```yaml
+models:
+  deepseek/deepseek-v4-flash:
+    provider_id: deepseek
+    model_name: deepseek-v4-flash
+    max_tokens: auto       # 省略或 auto = 走模型目录解析
+
+  custom/manual-model:
+    provider_id: custom
+    model_name: manual-model
+    max_tokens: 4096       # 正整数 = 用户显式覆盖
+```
+
+约束：
+
+- `max_tokens` 只接受正整数、`auto` 或省略；`0`、负数、空字符串和浮点数都拒绝；
+- 新模型默认省略 `max_tokens` 或写 `auto`，`add_model()` 不能再默认写入 `8192`；
+- 旧配置中的正整数暂时按用户显式覆盖处理，保证升级不悄悄扩大费用；M6 提供可审计的批量转自动命令；
+- 目录元数据使用独立字段，不把模型能力伪装成用户配置：
+
+```json
+{
+  "provider_id": "deepseek",
+  "model_id": "deepseek-v4-flash",
+  "model_context_window": 1048576,
+  "model_max_output_tokens": 65536,
+  "source": "provider_catalog",
+  "source_url": "https://provider.example/models",
+  "as_of": "2026-08-03"
+}
+```
+
+上面目录数字只用于说明字段形状，不能直接当作任何厂商的官方上限；施工时必须由 M1/M8 记录的可核验来源填充，查不到就保留 `null` 或走 `unknown_fallback`。
+
+- `model_max_output_tokens` 是模型目录/能力元数据；`max_tokens` 是本地请求覆盖；二者不能作为两个同优先级配置源；
+- 未验证的数字不能进入目录。若官方资料只写“取决于上下文”或没有独立上限，目录字段保持 `null`，由下一级规则处理；
+- 每条目录记录必须包含 `provider_id`、精确 `model_id`、来源、来源时间和覆盖/冲突测试；
+- 目录键必须允许同一个模型 ID 在不同 Provider 下共存，例如 `deepseek:deepseek-v4-flash` 与 `opencode-go:deepseek-v4-flash`。
+
+### 7.4 M1–M8 任务总表
+
+| ID | 内容 | 负责 | owner | 工时 | 依赖 |
+|---|---|---|---|---|---|
+| **M1** | 现状盘点、字段来源和零回归基线 | A | **backend / Composer 主写** | 0.5d | P8、A 的能力契约（若已落地） |
+| **M2** | ModelCatalog 与 `OutputLimitResolution` 契约 | A | **backend / Composer 主写** | 2d | M1 |
+| **M3** | 以发现列表 `model_id` 为主键的目录查找与解析器 | A | **backend / Composer 主写** | 3d | M2 |
+| **M4** | Provider 请求参数接线、context window 钳制和错误模型 | A | **backend / Composer 主写** | 2d | M3 |
+| **M5** | 模型批量添加、单模型添加和旧配置兼容迁移 | A | **backend / Composer 主写** | 2d | M3、M4 |
+| **M6** | 自动迁移命令、可解释诊断和客户端摘要字段 | B | **frontend / Composer 主写** | 1.5d | M4、M5 |
+| **M7** | 单元、契约、回归、Provider 矩阵和评测门 | C | **QA / Composer 主写** | 2d | M1–M6 |
+| **M8** | 发布门、文档锁定和 Phase 3 出口 | C | **QA / Composer 主写** | 1d | M7 |
+
+### M1 · 现状盘点、字段来源和零回归基线
+
+`P0` / **A** / 0.5d / 依赖 P8、A 的能力契约（若已落地）
+
+**背景**
+
+先把“写死在哪里”和“自动解析在哪里”分开。不能一边新增 ModelCatalog，一边让旧的 `8192` fallback 继续在 Provider 层生效；也不能把 `reserved_output_tokens` 误当成请求上限。
+
+**涉及文件**
+
+- `data/config.yaml`：只读检查当前模型项，禁止把凭证内容带入日志；
+- `config/model_manager.py`：`add_model`、`onboard_models_batch`、`_parse_discovered_models`；
+- `config/settings.py`：模型配置加载/保存和治理限流字段；
+- `config/model_capabilities.py`：现有 `ModelCapabilities.context_window` 和默认能力；
+- `core/providers/base.py`：`llm_kwargs` 的 `max_tokens` 回退；
+- `core/providers/*.py`：Provider 级能力来源和现有型号判断；
+- `tests/unit/test_model_manager_batch.py`、`tests/test_providers/test_registry.py` 及现有配置测试。
+
+**操作步骤**
+
+1. 运行以下只读盘点，输出只允许包含键名、模型 ID、Provider 和 `max_tokens`，禁止输出 `api_key`、secret、环境变量值：
+
+```powershell
+rg -n "max_tokens|model_name|provider_id|provider_name|context_window|reserved_output_tokens" config core data tests
+rg -n "def add_model|def onboard_models_batch|def _parse_discovered_models|def llm_kwargs" config core
+```
+
+2. 画出当前链路：`/models/discover → _parse_discovered_models → onboard_models_batch → add_model → load_config → Provider.llm_kwargs`。
+3. 对每个 `8192` 标记来源：请求上限、治理预留、测试预期、历史兼容或文档示例；不允许使用“看起来都是 token 所以统一替换”。
+4. 保存当前配置 schema 和单模型请求参数的基线；旧模型在没有新目录时必须仍能启动。
+5. 将结果写入本卡的 commit 描述或 `docs/modules/model-limits.md`，并列出 M2–M6 的文件白名单。
+
+**验收命令**
+
+```powershell
+rg -n "max_tokens|model_name|provider_id|provider_name|context_window|reserved_output_tokens" config core data tests
+python -m pytest tests/unit/test_model_manager_batch.py tests/test_providers/test_registry.py tests/test_core/test_config_settings.py -q
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+
+- [ ] 已定位所有生产路径中的 `8192`，并说明哪些不能改；
+- [ ] 已确认发现列表当前至少保证 `id`，可选 `owned_by`，没有把显示名当主键；
+- [ ] 已确认现有配置中的数值 `max_tokens` 如何保持兼容；
+- [ ] 已确认 `reserved_output_tokens` 与请求 `max_tokens` 的边界；
+- [ ] 单 Agent、现有模型和评测基线没有因为盘点发生行为变化。
+
+**回滚**
+
+本卡只产生盘点记录；删除本卡文档/commit 即可回滚，不得为了盘点修改配置或源码。
+
+**常见坑**
+
+- 不要 `Get-Content data/config.yaml` 后把 API Key 一并复制进报告；
+- 不要看到 `8192` 就全部替换，限流预留字段不属于本卡目标；
+- 不要用 nickname、`owned_by` 或 UI 展示名称替代 Provider 返回的 `id`。
+
+**Commit**
+
+```text
+docs(model-limits): inventory fixed output token sources
+```
+
+### M2 · ModelCatalog 与 OutputLimitResolution 契约
+
+`P0` / **A** / 2d / 依赖 M1
+
+**背景**
+
+把“模型能力”“用户覆盖”“最终请求值”拆成三个对象。后续 Provider、CLI、OpenTUI 和 Phase 4 Desktop 只消费解析结果，不各自读取 `config.yaml` 或复制一套模型表。
+
+**涉及文件**
+
+- `config/model_capabilities.py`：增加输出上限能力字段；若 Phase A 已冻结该 dataclass，只能做向后兼容的可选字段扩展；
+- 新建 `config/model_catalog.py` 与版本化 `config/model_catalog.json`：模型目录记录、精确键、来源和已审计 family pattern；
+- 新建或明确 `config/model_limits.py`：解析结果、来源枚举、错误码和序列化摘要；
+- `protocol/types.py` 或对应模型元数据协议：只在客户端需要展示来源/上限时增加可选字段；
+- `tests/test_model_limits.py`、`tests/test_model_catalog.py`。
+
+**操作步骤**
+
+1. 定义不可变类型，字段名称冻结为：
+
+```python
+from dataclasses import dataclass
+from typing import Literal
+
+LimitSource = Literal[
+    "explicit_config",
+    "catalog_exact_provider",
+    "catalog_exact_model",
+    "catalog_family",
+    "provider_default",
+    "unknown_fallback",
+    "context_cap",
+    "explicit_clamped",
+]
+
+@dataclass(frozen=True)
+class ModelLimitRecord:
+    provider_id: str
+    model_id: str
+    model_context_window: int | None
+    model_max_output_tokens: int | None
+    source: str
+    source_url: str | None
+    as_of: str | None
+
+@dataclass(frozen=True)
+class OutputLimitResolution:
+    provider_id: str
+    model_id: str
+    requested_max_tokens: int | None
+    resolved_max_tokens: int
+    context_window: int | None
+    estimated_input_tokens: int | None
+    source: LimitSource
+    matched_catalog_key: str | None
+    warnings: tuple[str, ...]
+
+def resolve_output_limit(
+    *,
+    provider_id: str,
+    model_id: str,
+    configured_max_tokens: int | str | None,
+    catalog_record: ModelLimitRecord | None,
+    provider_default: int | None,
+    input_tokens: int | None,
+    context_safety_margin: int = 1024,
+) -> OutputLimitResolution:
+    raise NotImplementedError
+```
+
+2. 把 `model_max_output_tokens`、`max_tokens`、`resolved_max_tokens` 的职责写入 docstring 和 schema；禁止使用模糊字段 `limit`、`tokens` 或第二个同义 `output_limit`。
+3. 目录校验必须拒绝空 Provider、空 model ID、非正整数能力值、`model_max_output_tokens > model_context_window`（如果两者都提供）和无来源记录。
+4. 目录允许同一 `model_id` 在不同 Provider 下出现；同 Provider 同 ID 的重复项必须 fail closed，不能按文件顺序覆盖。
+5. 用 `model_id.casefold().strip()` 生成查找键，但始终保留原始 ID 用于 Provider 请求和审计。
+6. 导出最小 JSON Schema/冻结快照，后续客户端只能使用可选的摘要字段，不能自行解析目录文件。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_model_limits.py tests/test_model_catalog.py -q
+python -m ruff check config/model_capabilities.py config/model_catalog.py config/model_limits.py tests/test_model_limits.py tests/test_model_catalog.py
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+
+- [ ] 类型中能区分用户请求值、目录值、最终值和来源；
+- [ ] 同 Provider 同 ID 冲突会失败，不会静默覆盖；
+- [ ] 不同 Provider 的同名模型可以同时存在；
+- [ ] 未知模型记录可以合法表示 `model_max_output_tokens=None`；
+- [ ] 目录快照、schema 和测试在同一个 commit 中更新；
+- [ ] Phase A 已存在时没有新建第二套 `ModelCapabilities` 或 Provider registry。
+
+**回滚**
+
+回滚 M2 的 schema、目录和新模块；M1 的盘点记录保留。若已有下游引用，先回滚下游再回滚契约。
+
+**常见坑**
+
+- 不要把 `max_tokens` 直接命名成 `model_max_output_tokens`；前者是用户覆盖，后者是能力元数据；
+- 不要把上下文窗口当成输出上限；两者是不同维度；
+- 不要用目录文件中后出现的重复记录覆盖前一条。
+
+**Commit**
+
+```text
+feat(model-limits): freeze catalog and resolution contracts
+```
+
+### M3 · 以发现列表 model_id 为主键的目录查找与解析器
+
+`P0` / **A** / 3d / 依赖 M2
+
+**背景**
+
+用户已经明确：找模型的秘诀是看 Provider 拉取列表返回的模型 ID。M3 将这个 ID 变成唯一查找入口，避免“模型名称包含 `gpt` 就套 OpenAI 默认”“显示名相同就误合并”等不可靠猜测。
+
+**涉及文件**
+
+- `config/model_manager.py`：发现记录、Provider 命名空间和现有模型 key；
+- `config/model_catalog.py`、`config/model_limits.py`：查找和解析；
+- `core/providers/base.py`：只接收解析结果，不直接实现查找；
+- `tests/test_model_discovery.py`、`tests/test_model_limits.py`。
+
+**操作步骤**
+
+1. 扩展发现解析器：保留 `id`，可选读取 `owned_by`、`context_window`、`max_output_tokens`、`max_completion_tokens`；任何额外字段都必须在 allowlist 中，未知字段不得当成能力。若列表只有 `id`，不得把发现记录当成“能力未知且批量写 8192”，而应继续走精确目录查找。
+2. 把发现记录写成：
+
+```python
+ModelDiscoveryRecord(
+    provider_id="deepseek",
+    model_id="deepseek-v4-flash",  # 原始 Provider id
+    owned_by="deepseek",
+    advertised_context_window=None,
+    advertised_max_output_tokens=None,
+)
+```
+
+3. 实现查找顺序：
+
+```python
+resolve_output_limit(
+    provider_id="deepseek",
+    model_id="deepseek-v4-flash",
+    configured_max_tokens=None,
+    catalog_record=ModelLimitRecord(
+        provider_id="deepseek",
+        model_id="deepseek-v4-flash",
+        model_context_window=131072,
+        model_max_output_tokens=65536,
+        source="provider-catalog-audited-example",
+        source_url="https://provider.example/models",
+        as_of="2026-08-03",
+    ),
+    provider_default=16384,
+    input_tokens=12000,
+    context_safety_margin=1024,
+)
+# exact provider+id → exact id → audited family → provider default → 32768
+```
+
+4. 精确 Provider+ID 命中时停止继续匹配；只有没有精确命中时才允许 family pattern，且返回 `matched_catalog_key` 和 warning。目录命中值来自 Provider 能力字段或版本化审计目录，不得在运行时按字符串猜测。
+5. 同一原始 ID 在两个 Provider 下必须形成不同的本地配置 key，不能让后添加的模型覆盖先添加的模型。
+6. 目录没有模型时返回结构化 `MODEL_METADATA_NOT_FOUND` 的诊断上下文，但继续使用 `unknown_fallback`；只有配置/类型非法才阻止启动。
+7. 解析器不得读取模型昵称、UI label、API Key、prompt 或历史 transcript 来猜上限。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_model_discovery.py tests/test_model_limits.py tests/unit/test_model_manager_batch.py -q
+python -m ruff check config/model_manager.py config/model_catalog.py config/model_limits.py tests/test_model_discovery.py
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+
+- [ ] 返回列表中的真实 `id` 能被精确查找并用于发送请求；
+- [ ] Provider+ID 冲突不会串模型；
+- [ ] 精确命中优先于 family pattern；
+- [ ] 未知模型最终得到 `32768` 或配置的高位兜底，并标注 `unknown_fallback`；
+- [ ] 没有任何 nickname/模糊包含匹配路径；
+- [ ] `/models/discover` 失败时不会写入半条模型配置。
+
+**回滚**
+
+回滚解析器和目录适配，保留只读发现接口；恢复旧 `onboard_models_batch` 前必须跑 M1 的现状基线。
+
+**常见坑**
+
+- `deepseek-v4-flash` 和 `deepseek/deepseek-v4-flash` 分别是 Provider ID 与本地 key，不可混用；
+- `owned_by` 不是 Provider 身份的唯一证明，Provider namespace 仍以连接配置为准；
+- `/models` 返回 200 但没有可解析的 `id` 时，不得把空列表当成“所有模型都未知并批量写入”。
+
+**Commit**
+
+```text
+feat(model-limits): resolve output limits from discovered model ids
+```
+
+### M4 · Provider 请求参数接线、context window 钳制和错误模型
+
+`P0` / **A** / 2d / 依赖 M3
+
+**背景**
+
+解析器算出的值必须成为唯一进入 LLM 构造器的值。不能解析出 32768 后又在 `BaseProvider.llm_kwargs()` 里被 `.get("max_tokens", 8192)` 覆盖，也不能让 `auto` 字符串进入 SDK。
+
+**涉及文件**
+
+- `core/providers/base.py`：`llm_kwargs` 和公共请求构造；
+- `core/providers/openai.py`、`anthropic.py`、`deepseek.py`、`qwen.py` 等实际 Provider 适配；
+- `config/settings.py`：`model_limits.unknown_model_max_tokens` 和 context safety margin；
+- `tests/test_providers/test_registry.py`、`tests/test_model_limits.py`、Provider 专项测试。
+
+**操作步骤**
+
+1. 在 Provider 调用前按 M2 冻结的参数契约调用 `resolve_output_limit(provider_id=..., model_id=..., configured_max_tokens=..., catalog_record=..., provider_default=..., input_tokens=...)`，把解析结果传入 `llm_kwargs`；禁止 Provider 子类重新读取 `config.yaml`。
+2. 将默认配置改成：
+
+```python
+"model_limits": {
+    "unknown_model_max_tokens": 32768,
+    "context_safety_margin_tokens": 1024,
+}
+```
+
+3. `llm_kwargs` 必须满足：
+
+```python
+kwargs["max_tokens"] = resolution.resolved_max_tokens
+assert isinstance(kwargs["max_tokens"], int)
+assert kwargs["max_tokens"] > 0
+```
+
+4. 已知 `context_window` 时用估算输入 token 和安全余量钳制；没有 context window 时不凭空把未知模型降回 8192。
+5. 用户显式值超过已知模型硬上限时使用 `explicit_clamped`，写入结构化 warning；用户显式值低于模型上限时保留用户值。
+6. Provider 返回“max tokens 超限”时，返回 `MODEL_OUTPUT_LIMIT_REJECTED`，包含 model ID、requested、resolved、catalog source 和 Provider 原始安全错误摘要；不把错误吞掉后偷偷重试多个数字。
+7. 仍然遵守各 Provider 的参数差异：如果某 Provider 需要 `max_completion_tokens`，由 Provider adapter 映射，公共解析字段不变。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_providers/test_registry.py tests/test_model_limits.py tests/test_providers -q
+python -m ruff check core/providers config/model_limits.py config/settings.py tests/test_model_limits.py
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+
+- [ ] `8192` 不再是 Provider 缺省请求上限；
+- [ ] `auto` 不会进入任何 SDK 请求；
+- [ ] 已知模型的目录值能进入最终 `llm_kwargs`；
+- [ ] context window 钳制不会产生 0/负数；
+- [ ] Provider 特定参数由 adapter 映射，不复制解析器；
+- [ ] 超限错误可解释、可审计，不静默多次重试。
+
+**回滚**
+
+保留 `OutputLimitResolution` 类型，回滚 Provider 接线到旧路径；不得删除目录字段，以便下一次重接。回滚后必须明确恢复了旧的 8192 行为。
+
+**常见坑**
+
+- 不要把治理 `reserved_output_tokens` 塞进请求 payload；
+- 不要用 `max_tokens=None` 直接交给 ChatOpenAI；
+- 不要在每个 Provider 中各写一个未知模型默认值；
+- 不要因一个 Provider 的参数名改变公共 `OutputLimitResolution`。
+
+**Commit**
+
+```text
+feat(providers): route requests through resolved model output limits
+```
+
+### M5 · 模型批量添加、单模型添加和旧配置兼容迁移
+
+`P0` / **A** / 2d / 依赖 M3、M4
+
+**背景**
+
+配置写入是当前问题的源头。新增模型必须只保存 Provider ID、真实 model ID 和用户明确选择的覆盖；批量发现不能把同一个数字抄进每个模型。
+
+**涉及文件**
+
+- `config/model_manager.py`：`add_model`、`onboard_models_batch`、保存逻辑；
+- `config/settings.py`：配置 schema 校验和迁移版本；
+- `api_server.py`：`/models/onboard`、`/models/onboard/batch` 的响应摘要；
+- `frontend/src/components/AddModelWizard.tsx`、`frontend/src/modelSetup.ts`：只修改需要显示自动/手动状态的字段；
+- `tests/unit/test_model_manager_batch.py`、`tests/test_api_security_onboarding.py`、新增迁移测试。
+
+**操作步骤**
+
+1. 把 `config/model_manager.py` 的 `add_model` 参数改成 `max_tokens: int | Literal["auto"] | None = None`；缺省时不写死数值，保存为省略字段或显式 `auto`。
+2. `onboard_models_batch()` 为每个发现 ID 调用 `add_model()` 时不传统一 max token；每个模型进入运行时再解析自己的上限。
+3. 新增配置 schema 迁移：
+
+```text
+旧配置 max_tokens = 正整数  → 视为用户显式覆盖，保持不变
+旧配置缺少 max_tokens       → 进入 auto
+新配置 max_tokens: auto      → 进入 auto
+新配置 max_tokens: 正整数    → 显式覆盖
+```
+
+4. 提供非破坏性诊断/迁移入口：
+
+```powershell
+python -m RxyCode config model-limits inspect
+python -m RxyCode config model-limits set-auto --model deepseek/deepseek-v4-flash --backup
+```
+
+`inspect` 只报告当前来源；`set-auto` 必须先备份配置、显示变更列表、要求明确确认，并把旧值写入迁移审计记录。不得默认把用户手写的 16384 改掉。
+5. `/models` 和 onboarding 响应新增可选摘要：`model_id`、`max_tokens_mode`、`resolved_max_tokens`、`limit_source`；禁止返回 API Key。
+6. 批量添加失败时，已添加模型和未添加模型必须分开报告；不得留下没有 `model_name` 或没有 Provider namespace 的半条记录。
+7. 兼容旧的裸模型 key：读取时可识别，但新写入优先使用 `provider_id/model_id`，并保留迁移 warning。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/unit/test_model_manager_batch.py tests/test_api_security_onboarding.py tests/test_core/test_config_settings.py -q
+python -m ruff check config/model_manager.py config/settings.py api_server.py frontend/src tests/unit/test_model_manager_batch.py
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+
+- [ ] 单模型添加和批量添加默认不写 `8192`；
+- [ ] 新模型配置能明确区分 auto 与用户显式覆盖；
+- [ ] 旧的正整数配置不被静默扩大；
+- [ ] `inspect` 不泄漏凭证，`set-auto` 有备份和审计；
+- [ ] 同一 Provider 下模型 ID 不冲突，跨 Provider 同名模型可共存；
+- [ ] API 响应只包含模型元数据摘要，不包含 secret。
+
+**回滚**
+
+保留迁移前配置备份；回滚代码后可从备份恢复配置。不得用 `git checkout` 覆盖用户的 `data/config.yaml`。
+
+**常见坑**
+
+- 不要把 `model_name` 的 nickname 当成 Provider model ID；
+- 不要批量探测时给所有模型发一次聊天请求来“猜”上限；
+- 不要把旧的 16384 等用户明确值当成历史错误自动删除；
+- 不要在前端缓存一份独立的模型限制表。
+
+**Commit**
+
+```text
+feat(config): onboard models without a fixed output token default
+```
+
+### M6 · 自动迁移命令、可解释诊断和客户端摘要字段
+
+`P1` / **B** / 1.5d / 依赖 M4、M5
+
+**背景**
+
+“自动化不完全写死”必须能被用户看见。用户在 `/models`、模型切换和请求日志中应该知道最终上限来自显式配置、精确目录、Provider 默认还是未知模型兜底；否则自动化出了问题仍然无法排查。
+
+**涉及文件**
+
+- `api_server.py`：模型列表/模型诊断响应；
+- `frontend/src/modelSetup.ts`、`frontend/src/components/AddModelWizard.tsx`：已有模型设置入口；
+- `frontend/opentui-app/src/modelSetup.ts`：OpenTUI 文本摘要；
+- `protocol/` 和 `frontend/protocol-client/`：如果 Phase 2 协议已经承载模型摘要，只加可选字段；
+- `tests/test_api_security_onboarding.py`、`frontend/src/modelSetup.test.ts`、`frontend/opentui-app/src/modelSetup.wiring.test.ts`。
+
+**操作步骤**
+
+1. 模型列表摘要固定为：
+
+```json
+{
+  "id": "deepseek/deepseek-v4-flash",
+  "provider_model_id": "deepseek-v4-flash",
+  "max_tokens_mode": "auto",
+  "resolved_max_tokens": 65536,
+  "limit_source": "catalog_exact_provider",
+  "context_window": 131072,
+  "warning": null
+}
+```
+
+2. UI/CLI 只显示摘要，不在客户端自行计算 `min()` 或重新加载目录；如果能力未知，显示“未知模型兜底 32768”及来源，不显示“模型最大值 32768”。
+3. 自动迁移命令提供 `--dry-run`、`--backup`、`--model` 和明确确认；默认只检查，不写配置。
+4. 旧客户端收到新字段时必须忽略未知可选字段；新客户端收到旧服务器没有摘要时显示 `source=legacy_server`，不能假装精确。
+5. 确认 Grok 不触碰协议主契约；如有视觉环节，只验证自动/手动/未知三种状态的显示。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_api_security_onboarding.py tests/test_core/test_config_settings.py -q
+cd frontend; npm test -- --run modelSetup; cd ..
+cd frontend\opentui-app; bun run tsc --noEmit; bun test; cd ..\..
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+```
+
+**完成判据**
+
+- [ ] CLI/API/UI 能显示最终值和来源；
+- [ ] 未知模型显示高位兜底，但不声称这是 Provider 硬上限；
+- [ ] `--dry-run` 不写磁盘；
+- [ ] 迁移前有备份，迁移结果可审计；
+- [ ] 旧客户端不会因新增字段崩溃；
+- [ ] Grok 的视觉结果已由 Composer 转成测试或复现记录。
+
+**回滚**
+
+删除新增摘要字段和 UI 显示即可；模型解析与请求上限逻辑不因 UI 回滚而恢复固定 8192。
+
+**常见坑**
+
+- 不要在 UI 把“当前解析值”写成“官方最大值”；
+- 不要让前端根据 `provider_name` 自己猜模型族；
+- 不要用截图替代 API 契约测试；
+- 不要执行没有 `--backup` 的批量迁移。
+
+**Commit**
+
+```text
+feat(ui): expose model output limit source and migration state
+```
+
+### M7 · 单元、契约、回归、Provider 矩阵和评测门
+
+`P0` / **C** / 2d / 依赖 M1–M6
+
+**背景**
+
+这次变更最容易出现“已知模型更长了，但未知模型、旧配置或某个 Provider 又回到固定 8192”的回归。测试必须覆盖来源优先级，而不是只断言一个模型的最终数字。
+
+**涉及文件**
+
+- `tests/test_model_limits.py`：来源优先级、context cap、错误码；
+- `tests/test_model_discovery.py`：发现 ID、可选字段、空列表和冲突；
+- `tests/test_providers/test_registry.py` 及 Provider 专项测试：请求参数接线；
+- `tests/unit/test_model_manager_batch.py`、`tests/test_api_security_onboarding.py`：保存和迁移；
+- `evals/baselines/latest-agent.json`：只在基线确实改变并有解释时更新。
+
+**操作步骤**
+
+1. 建立来源优先级表驱动测试：
+
+```python
+@pytest.mark.parametrize(
+    ("configured", "catalog", "provider_default", "expected", "source"),
+    [
+        (4096, 131072, 65536, 4096, "explicit_config"),
+        (None, 131072, 65536, 131072, "catalog_exact_provider"),
+        (None, None, 65536, 65536, "provider_default"),
+        (None, None, None, 32768, "unknown_fallback"),
+    ],
+)
+def test_resolution_precedence(configured, catalog, provider_default, expected, source):
+    catalog_record = None
+    if catalog is not None:
+        catalog_record = ModelLimitRecord(
+            provider_id="demo",
+            model_id="demo-model",
+            model_context_window=262144,
+            model_max_output_tokens=catalog,
+            source="test-catalog",
+            source_url="https://example.invalid/catalog",
+            as_of="2026-08-03",
+        )
+
+    result = resolve_output_limit(
+        provider_id="demo",
+        model_id="demo-model",
+        configured_max_tokens=configured,
+        catalog_record=catalog_record,
+        provider_default=provider_default,
+        input_tokens=12000,
+        context_safety_margin=1024,
+    )
+
+    assert result.resolved_max_tokens == expected
+    assert result.source == source
+```
+
+2. 添加安全测试：未知 ID 不读取 secret；响应不含 `api_key`；目录冲突 fail closed；旧配置载入不扩展费用。
+3. 添加 Provider 矩阵：OpenAI-compatible、DeepSeek、Anthropic/Qwen 等现有 registry provider 都验证 `resolved_max_tokens` 进入正确参数名。
+4. 添加契约测试：模型列表摘要字段可选、旧服务器兼容、`auto` 不穿透到 SDK、最终值始终为正整数。
+5. 跑 Phase 1 Agent 评测和全量测试；如果结果变化，区分“请求上限变化导致的真实行为变化”和“无关回归”，不得为了绿灯把测试改回 8192。
+
+**验收命令**
+
+```powershell
+python -m pytest tests/test_model_limits.py tests/test_model_discovery.py tests/test_providers tests/unit/test_model_manager_batch.py tests/test_api_security_onboarding.py -q
+python -m ruff check config core/providers api_server.py tests
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+git diff --check
+```
+
+**完成判据**
+
+- [ ] 六级来源优先级都有正例和反例；
+- [ ] 发现 ID、Provider namespace、旧配置、未知模型和显式覆盖都有测试；
+- [ ] 所有 Provider 请求最终拿到正整数，且没有固定 8192 fallback；
+- [ ] API Key 和 secret 不出现在测试输出、摘要、trace 或错误中；
+- [ ] 全量测试和评测结果已记录，基线变化有原因；
+- [ ] `git diff --check` 通过。
+
+**回滚**
+
+按测试层级回滚：先回滚 UI/API 摘要，再回滚 Provider 接线，最后回滚目录/解析器。每一步都重新跑 M1 基线。
+
+**常见坑**
+
+- 不要只测 `deepseek-v4-flash` 一个已知型号；
+- 不要用“测试环境没有 API Key”作为跳过模型解析测试的理由；
+- 不要把 provider 默认值和未知模型兜底混成同一个 source；
+- 不要在评测基线变化时删除失败样本。
+
+**Commit**
+
+```text
+test(model-limits): cover per-model output budget resolution
+```
+
+### M8 · 发布门、文档锁定和 Phase 3 出口
+
+`P0` / **C** / 1d / 依赖 M7
+
+**背景**
+
+Phase 4 Desktop、Phase A provider 优化、Phase E 多模型协作都会依赖本 Phase 的解析契约。出口必须证明“模型 ID 驱动、来源可解释、未知模型高位兜底、旧配置可恢复”，而不是只证明一条请求成功。
+
+**涉及文件**
+
+- `docs/modules/model-limits.md`：字段、来源、迁移和诊断手册；
+- `docs/plans/opus5-plan/rxycode/00-EXECUTION-PLAN.md`：本 Phase 的完成记录和依赖表；
+- `config/`、`core/providers/`、`protocol/`、`tests/`：仅收口已在 M1–M7 白名单内的改动；
+- `evals/baselines/`：必要时保存带模型/来源摘要的评测结果。
+
+**操作步骤**
+
+1. 在干净临时配置中加入三个模型：一个精确目录命中、一个同 ID 不同 Provider、一个未知自定义 ID；分别检查 resolved 值和 source。
+2. 在已有配置中验证：显式 4096 保持 4096，`auto` 走目录，未知模型走 32768，context 不足时产生结构化错误。
+3. 从 `/models/discover` 到 Provider 请求跑一遍真实 mock 链路，确认原始 model ID 未被 nickname 替换。
+4. 生成配置/schema/TypeScript 类型（如果本 Phase 修改了协议），确认生成物和源在同一个 commit。
+5. 更新 Phase 4 D5 的前置依赖说明，并把 Phase A 的 `ModelCapabilities` 扩展点标成“复用本 Phase，不建第二套目录”。
+6. 输出一份 Phase 3 变更摘要：修改文件、兼容策略、未知模型默认值、已知限制、回滚方法和真实命令输出。
+
+**验收命令**
+
+```powershell
+python -m pytest -q
+cd frontend; npm test -- --run; cd ..
+cd frontend\opentui-app; bun run tsc --noEmit; bun test; cd ..\..
+python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json
+git diff --check
+git status --short
+```
+
+**完成判据**
+
+- [ ] 新增模型默认不批量写入统一 `8192`；
+- [ ] 精确 model ID 能解析到对应上限，Provider 同名模型不串；
+- [ ] 未知模型默认使用可配置的 `32768` 高位兜底，并明确标记来源；
+- [ ] 显式配置、目录能力、context window 和 Provider 参数顺序已冻结；
+- [ ] 旧配置可读取、可备份、可回滚；
+- [ ] Phase 4 Desktop、Phase A、Phase E 没有各自再建模型上限表；
+- [ ] 所有验收命令有真实输出，Composer 2.5 完成最终收口。
+
+**回滚**
+
+优先恢复配置备份；代码按 M7 的层级顺序回滚。不得通过恢复全局 `8192` 来掩盖目录或解析器错误，若必须临时回退要在配置中显式设置并记录期限。
+
+**常见坑**
+
+- 不要把“未知模型高位兜底”宣传成模型官方上限；
+- 不要在 Phase 4 Desktop 设置页重新实现 resolver；
+- 不要把 Phase A provider 调研数字复制到新目录而不写来源；
+- 不要只更新文档不跑迁移和回归命令。
+
+**Commit**
+
+```text
+docs(model-limits): close Phase 3 output limit adaptation gate
+```
+
+### 7.5 Phase 3 硬性约束
+
+| # | 约束 | 原因 |
+|---|---|---|
+| ML1 | **模型目录查找必须以 Provider 返回的真实 `model_id` 为主键**；显示名、nickname、prompt 和 `owned_by` 不能替代它 | 防止同名模型串配置或误套能力 |
+| ML2 | **`max_tokens` 只表示用户请求覆盖；`model_max_output_tokens` 只表示目录能力；`resolved_max_tokens` 才能进入 SDK** | 避免多个字段互相覆盖 |
+| ML3 | **未知模型默认 `32768`，且必须可配置、可观察、可回滚** | 避免未知模型被旧的 8192 统一截断 |
+| ML4 | **显式配置优先，但不能突破已知 Provider/模型硬上限或 context budget** | 防止用户覆盖变成无效请求或上下文溢出 |
+| ML5 | **Provider、CLI、OpenTUI、Phase 4 Desktop 只消费一个 resolver 和一个摘要协议** | 防止客户端/Provider 各自猜上限 |
+| ML6 | **未知、冲突、来源过期和 context 不足必须可解释失败；不允许静默降级** | 自动化必须可审计 |
+| ML7 | **新增模型默认 auto；旧数值配置默认保留为显式覆盖** | 保证升级不悄悄扩大费用和行为 |
+| ML8 | **任何来源数字必须有来源 URL、as_of 和测试；未找到不能编造** | 防止“调研数字”变成第二套未经验证的硬编码 |
+
+### 7.6 Phase 3 出口检查
+
+Phase 3 只有满足以下条件才算完成：
+
+- `add_model()` 和批量 onboarding 不再为每个发现模型写入统一 `8192`；
+- 发现列表中的真实 `model_id` 可以精确命中 ModelCatalog；
+- `max_tokens: auto`、旧正整数和未知模型三条路径都有兼容测试；
+- 未知模型默认 `32768`，可通过 `model_limits.unknown_model_max_tokens` 调整；
+- 已知 `model_context_window` 会参与最终钳制；
+- Provider 请求只接受 `OutputLimitResolution.resolved_max_tokens`；
+- API、CLI、OpenTUI 和后续 Desktop 可以看到最终值和来源；
+- Phase A、Phase 4、Phase E 不重复创建模型上限 registry；
+- M1–M8 的验收输出、迁移备份、回滚路径和评测基线均已记录。
+
+---
+
+## §8 Phase 4 — Desktop 应用（W16–W23）
 
 > **owner: frontend → Composer 主写，Grok 辅助多模态环节。** D1–D8 全部由 Composer 执行，纪律见 [`../COMPOSER-2.5-PLAYBOOK.md`](../COMPOSER-2.5-PLAYBOOK.md)；D3/D4/D5 的「多模态环节」（视觉验收：起 dev server 截屏核对渲染）按卡内标注委托 Grok（[`../GROK-FRONTEND-PLAYBOOK.md`](../GROK-FRONTEND-PLAYBOOK.md)）。Composer 主写，Grok 不做卡本体；若 appserver 缺契约，Composer 顺手补后端卡。
 
-### 7.1 技术选型
+### 8.1 技术选型
 
 **先说结论：核心决策不是 Electron 还是 Tauri，而是"客户端必须是瘦的"。** 因为 Phase 2 已经把协议和 TS 客户端做好了，桌面壳只负责渲染，换壳的成本被压到很低。
 
@@ -2197,13 +3019,13 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 | 打包 Python 后端 | 成熟（`extraResources` + 子进程） | 成熟（sidecar） |
 | 2–3 人团队风险 | 低 | 中（Rust 学习 + webview 调试） |
 
-**推荐：Electron。** 理由是团队没有 Rust 经验，而 Phase 3 只有 8 周。包体积不是当前阶段的关键指标。
+**推荐：Electron。** 理由是团队没有 Rust 经验，而 Phase 4 只有 8 周。包体积不是当前阶段的关键指标。
 
-**但这个决定是可逆的**——因为 UI 层只依赖 `frontend/protocol-client`，不依赖 Electron API。把"包体积优化（迁 Tauri）"记为 Phase 4 的候选项。
+**但这个决定是可逆的**——因为 UI 层只依赖 `frontend/protocol-client`，不依赖 Electron API。把"包体积优化（迁 Tauri）"记为 Phase 5 的候选项。
 
 > 如果用户明确偏好 Tauri，把 D1 的工时从 3 天改成 8 天，其余任务卡不变。
 
-### 7.2 任务卡
+### 8.2 任务卡
 
 | ID | 内容 | 负责 | owner | 工时 | 依赖 |
 |---|---|---|---|---|---|
@@ -2211,14 +3033,14 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 | **D2** | 主窗口：会话列表 + 对话区 + 输入区；接 `protocol-client` | B | **frontend / Composer 主写** | 8d | D1, P2 |
 | **D3** | 流式渲染（`event/message_delta`）+ 工具调用卡片（`tool_begin`/`tool_end`）+ 中断 | B | **frontend / Composer 主写 · Grok 视觉验收** | 8d | D2 |
 | **D4** | 审批 UI（`approval/request` 模态框），含 "always allow" 持久化 | B | **frontend / Composer 主写 · Grok 视觉验收** | 5d | D3 |
-| **D5** | 设置页：模型 / API Key / 工作区；复用后端 `config/model_manager.py` | B | **frontend / Composer 主写 · Grok 视觉验收** | 6d | D2 |
+| **D5** | 设置页：模型 / API Key / 工作区；复用后端 `config/model_manager.py`，展示 Phase 3 的上限来源摘要 | B | **frontend / Composer 主写 · Grok 视觉验收** | 6d | D2, M8 |
 | **D6** | 打包：Windows / macOS / Linux，含内嵌 Python 运行时 | B | **frontend / Composer 主写** | 6d | D5 |
 | **D7** | 自动更新 + 崩溃上报 | B | **frontend / Composer 主写** | 4d | D6 |
 | **D8** | Desktop 进 CI：typecheck + 单测 + 三平台构建产物 | C | **frontend / Composer 主写** | 4d | D6 |
 
 > 卡内「多模态环节」（D3 流式渲染核对、D4 审批弹层、D5 设置页截图）委托 Grok，交付物回 Composer 收口（见 COMPOSER §4）。
 
-### 7.3 Desktop 的硬性约束
+### 8.3 Desktop 的硬性约束
 
 | # | 约束 | 原因 |
 |---|---|---|
@@ -2230,9 +3052,9 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 
 ---
 
-## §8 竞品对照（窄赛道）
+## §9 竞品对照（窄赛道）
 
-### 8.1 数据
+### 9.1 数据
 
 以下 star 数为 **2026-07-30 用 GitHub API 实测**。刷新命令：
 
@@ -2247,26 +3069,26 @@ foreach ($r in $repos) {
 | 项目 | 形态 | Star（2026-07-30） | 与 RxyCode 的关系 |
 |---|---|---|---|
 | sst/opencode | 终端 Agent（TUI） | ~191k | **最直接对标**，RxyCode 的 TUI 就在学它 |
-| openai/codex | CLI + app-server + 多客户端 | ~102k | **架构对标**，Phase 2/3 抄的就是它 |
+| openai/codex | CLI + app-server + 多客户端 | ~102k | **架构对标**，Phase 2/4 抄的就是它 |
 | XiaomiMiMo/MiMo-Code | CLI Agent | ~12.6k | 同赛道后起 |
 | cline / Roo-Code | IDE 扩展 | — | 不同形态，不直接竞争 |
 | OpenHands / goose | 通用 Agent 平台 | — | 范围更大，不是终端优先 |
 
 > **7/30 报告的错误**在于把 IDE 扩展、Agent 框架、终端 CLI 混在一张表里比"功能覆盖度"，于是得出"要做 Kubernetes 多租户"的结论。正确的比法是**只跟终端优先的编码 Agent 比**。
 
-### 8.2 真实差距（只列在窄赛道内成立的）
+### 9.2 真实差距（只列在窄赛道内成立的）
 
 | 差距 | 严重度 | 本计划中的应对 |
 |---|---|---|
 | 无类型化协议，客户端难扩展 | **高** | Phase 2（P1–P5） |
-| 无 Desktop / IDE 客户端 | **高** | Phase 3；协议做好后 IDE 扩展成本很低 |
+| 无 Desktop / IDE 客户端 | **高** | Phase 4；协议做好后 IDE 扩展成本很低 |
 | 评测不可信，无法证明质量 | **高** | Phase 1 |
 | 核心是 3704 行 God Object | 中 | P3 P6 P7（渐进） |
 | 关键词路由，对非中文输入脆弱 | 中 | P6 |
 | 无 lint / 单 Python 版本 CI | 中 | S4 S5 |
 | 默认前端的测试不进 CI | 中 | S7 |
 
-### 8.3 RxyCode 已有的、竞品未必有的
+### 9.3 RxyCode 已有的、竞品未必有的
 
 不要在重构中把这些丢掉：
 - **分层记忆**（`memory/`：短期窗口 + 长期压缩 + 用户记忆）
@@ -2277,11 +3099,11 @@ foreach ($r in $repos) {
 
 ---
 
-## §9 维护与扩展手册
+## §10 维护与扩展手册
 
 > 这一章不是一次性计划，是**长期使用**的操作手册。做日常维护和加功能时查这里。
 
-### 9.1 加一个工具（tool）
+### 10.1 加一个工具（tool）
 
 1. 读 `docs/modules/tools.md`
 2. 在 `tools/` 下新建模块，实现工具函数
@@ -2294,7 +3116,7 @@ foreach ($r in $repos) {
 
 **验收**：`python -m pytest tests/test_tools_<名字>.py -q` + `python -m ruff check tools`
 
-### 9.2 加一个 OpenTUI 对话框
+### 10.2 加一个 OpenTUI 对话框
 
 1. 读 `docs/modules/frontend.md`
 2. **必须复用 `DialogSelect`**——不要手写选择列表。UI 不一致的历史问题就是这么来的
@@ -2304,7 +3126,7 @@ foreach ($r in $repos) {
 
 **常见坑**：不要给 Ink（`frontend/`）加新功能，它已弃用。
 
-### 9.3 加一个 eval 任务
+### 10.3 加一个 eval 任务
 
 1. 读 `docs/modules/evals.md`（H6 会重写它）
 2. 在 `evals/tasks/` 新建 YAML
@@ -2314,7 +3136,7 @@ foreach ($r in $repos) {
 6. 单跑：`python -m evals.cli run --backend agent --task <id>`
 7. 用 `--backend raw-llm` 也跑一次。**如果裸 LLM 也能过，说明这个任务没有区分度**，重新设计
 
-### 9.4 加一个协议方法（Phase 2 之后）
+### 10.4 加一个协议方法（Phase 2 之后）
 
 1. 在 `protocol/requests.py` 或 `notifications.py` 加 pydantic 模型
 2. 决定版本影响：加字段 = patch；加方法 = minor；改语义/删字段 = **major，需要迁移计划**
@@ -2326,7 +3148,7 @@ foreach ($r in $repos) {
 
 **硬规则**：`protocol/` 和 `frontend/protocol-client/src/generated/` **必须在同一个 commit 里更新**，否则 CI 的新鲜度检查会红。
 
-### 9.5 逐步收紧 lint（S4 之后的长期动作）
+### 10.5 逐步收紧 lint（S4 之后的长期动作）
 
 S4 的规则集是保守起步。CI 稳定 2 周后，**一次开一条规则**：
 
@@ -2340,7 +3162,7 @@ S4 的规则集是保守起步。CI 稳定 2 周后，**一次开一条规则**�
 
 流程固定：加规则 → `ruff check . --statistics` 看基数 → `--fix` → 跑测试 → 人工处理剩余 → 单独 commit。**不要一次加两条。**
 
-### 9.6 日常检查清单
+### 10.6 日常检查清单
 
 **每次 PR 之前：**
 ```powershell
@@ -2361,9 +3183,9 @@ git status --short
 
 ---
 
-## §10 附录
+## §11 附录
 
-### 10.1 PowerShell 踩坑速查
+### 11.1 PowerShell 踩坑速查
 
 | 症状 | 原因 | 正确做法 |
 |---|---|---|
@@ -2373,7 +3195,7 @@ git status --short
 | `Invoke-RestMethod` 结果做字符串切片报 `MissingArrayIndexExpression` | PowerShell 的 `[n]` 是索引不是切片 | 在 Python 里处理，不要在 PowerShell 里切字符串 |
 | `git rm` 之后文件还在磁盘上 | 用了 `--cached` | `git rm --cached` + `Remove-Item` 两步都要 |
 
-### 10.2 证据索引（2026-07-31 实测）
+### 11.2 证据索引（2026-07-31 实测）
 
 | 结论 | 证据位置 |
 |---|---|
@@ -2389,7 +3211,7 @@ git status --short
 | docs 被 ignore | `.gitignore:68` |
 | OpenTUI 19 测试文件 | `Get-ChildItem frontend\opentui-app\src -Recurse -Include *.test.ts,*.test.tsx` |
 
-### 10.3 术语表
+### 11.3 术语表
 
 | 术语 | 含义 |
 |---|---|
@@ -2400,7 +3222,7 @@ git status --short
 | **谎报绿灯** | 测试因缺工具静默跳过但 CI 报成功，见 S8 |
 | **God Object** | 一个类承担过多职责，`AgentV2` 是典型 |
 
-### 10.4 待办池（执行中发现的问题记这里，不要就地修）
+### 11.4 待办池（执行中发现的问题记这里，不要就地修）
 
 > 遵守 R4：任务卡范围外的问题记在这里，不要顺手改。
 
@@ -2410,7 +3232,7 @@ git status --short
 | 2026-07-31 | audit | Ink 前端下线时间点未定 | `frontend/` | P2 |
 | | | | | |
 
-### 10.5 本文件的维护
+### 11.5 本文件的维护
 
 - 每个 Phase 结束更新 §3 的实际完成情况
 - 任务卡里的行号会漂移，发现对不上就更新（这是维护的一部分）
@@ -2418,11 +3240,11 @@ git status --short
 
 ---
 
-## §11 文档映射与工作流程
+## §12 文档映射与工作流程
 
 > 本节是整套计划的**导航图**。任何模型接手工作前，先读这一节确定"我该打开哪个文件"。
 
-### 11.1 文档清单
+### 12.1 文档清单
 
 全部位于 `docs/plans/opus5-plan/rxycode/`，**严格按顺序执行，不要跳**。
 
@@ -2432,20 +3254,20 @@ git status --short
 
 | 顺序 | 文件 | 覆盖内容 | 前置 | 工时 |
 |---|---|---|---|---|
-| **1** | `00-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 Desktop | 无 | 20 周 |
+| **1** | `00-EXECUTION-PLAN.md`（本文件） | Phase 0 止血 → Phase 1 Harness → Phase 2 协议与核心解耦 → Phase 3 模型输出上限 → Phase 4 Desktop | 无 | 23 周 |
 | **2** | `PHASE-A-MODEL-ADAPTATION-LAYER.md` | 模型适配层：provider 策略、能力元数据、per-model 优化（DeepSeek / Claude / Qwen） | 本文件 Phase 0 + Phase 1 | 3 周 |
-| **3** | `PHASE-B-ISOLATED-SUBAGENT.md` | **隔离式子代理**：Primary/Subagent、Child Session、独立上下文、权限、预算、Task、`@`、事件和恢复 | 本文件 Phase 0–3 + Phase A | 8–12 周 |
+| **3** | `PHASE-B-ISOLATED-SUBAGENT.md` | **隔离式子代理**：Primary/Subagent、Child Session、独立上下文、权限、预算、Task、`@`、事件和恢复 | 本文件 Phase 0–3 + Phase A（不依赖 Desktop） | 8–12 周 |
 | **4** | `PHASE-C-MULTI-AGENT-ORCHESTRATION.md` | **多 Agent 专家团**：Coordinator、AgentSpec / SOP 状态机 / 机械验证门 / 成本熔断 / 难度路由；复用 Phase B Runtime | 本文件 Phase 0–3 + Phase A + B | 8 周 |
-| **5** | `PHASE-D-RXYCODE-DESKTOP.md` | **完整 Desktop 工作台**：项目、workspace、Thread、工具执行、审批、diff/review、文件预览、worktree、恢复、扩展契约、打包发布 | 本文件 Phase 0–3 + Phase A + B + C 公共契约 | 12–16 周 |
-| **6** | `PHASE-E-MULTI-MODEL-COLLABORATION.md` | **多 Agent × 多模型**：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | Phase A + B + C；Desktop 交互接入依赖 Phase D | 6 周 |
-| **7** | `PHASE-F-MULTIMODAL.md` | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 3 + A + B + C + D + E | 6 周 |
+| **5** | `PHASE-D-RXYCODE-DESKTOP.md` | **完整 Desktop 工作台**：项目、workspace、Thread、工具执行、审批、diff/review、文件预览、worktree、恢复、扩展契约、打包发布 | 本文件 Phase 0–4 + Phase A + B + C 公共契约 | 12–16 周 |
+| **6** | `PHASE-E-MULTI-MODEL-COLLABORATION.md` | **多 Agent × 多模型**：每角色不同模型、master 模型、跨模型交接、成本核算、结对编程、归因仲裁 | 本文件 Phase 3 + Phase A + B + C；Desktop 交互接入依赖 Phase D | 6 周 |
+| **7** | `PHASE-F-MULTIMODAL.md` | 多模态：ContentBlock 全链路、附件存储、视觉 Agent 角色 | 本文件 Phase 3 + Phase 4 + A + B + C + D + E | 6 周 |
 | **附** | `PHASE-G-PERSONA-AGENT-INTERFACE.md` | **PersonaAgent 接口预留**（不是施工图）：skill 元数据、蒸馏数据埋点、信任边界 | 无硬前置，§4 六张卡**插进 B/C/D/E 里顺手做** | 6 天 |
 | **↗** | ~~`PHASE-F-SKILLFOREST-PERSONA-AGENT.md`~~ | **已移出本路线。** PersonaAgent 独立成 [LinkAgent 项目](../linkagent/README.md)（独立仓库，把 RxyCode 当 pip 依赖）。原文档归档在 [`../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md`](../linkagent/ARCHIVE-PHASE-F-ORIGINAL-VISION.md)，**结论已被新版论文推翻，不要照它施工** | — | 不在本路线 |
 
-> **2026-08-02 第 4 版调整**：在 Phase A 后新增 **Phase B（隔离式子代理）**；原多 Agent 专家团顺延为 **Phase C**；完整 RxyCode Desktop 为 **Phase D**；原多 Agent × 多模型协作顺延为 **Phase E**；多模态顺延为 **Phase F**；PersonaAgent 接口预留为 **Phase G**。主计划 Phase 3 保留为 Desktop 基础壳，不与 Phase D 混淆。
+> **2026-08-03 第 5 版调整**：新增主计划 **Phase 3（模型输出上限自适应）**，以真实 `model_id` 驱动 ModelCatalog 和请求上限解析；原 Desktop 基础壳顺延为 **Phase 4**。Phase A/B/C/D/E/F/G 的扩展编号保持不变；完整 RxyCode Desktop 仍为 **Phase D**，但它消费主计划 Phase 4 的基础壳和 Phase 3 的模型上限摘要。
 > Phase C 保留原专家团的 8 周工作量；Phase B 单独补齐 Child Session、权限、预算、事件和恢复，不允许 Phase C 再复制一套隔离运行时。
 
-### 11.2 依赖关系
+### 12.2 依赖关系
 
 ```
 本文件 Phase 0  止血（lint / CI / CORS / 死文件）
@@ -2456,17 +3278,23 @@ git status --short
       │                                    │
       ├──────────────┬─────────────────────┤
       ▼              ▼                     │
- 本文件 Phase 2   Phase A 模型适配           │  ← 分模型后并行对变了：
- 协议 + Session       │                     │     见 §11.7（Composer 主写 ‖ Grok 辅助多模态）
+ 本文件 Phase 2   Phase A 模型适配           │
+ 协议 + Session       │                     │
       │              │                     │
       └──────┬───────┘                     │
              ▼                             │
-       Phase B 隔离式子代理                    │
+ 本文件 Phase 3 模型输出上限                 │
+             │                             │
+             ▼                             │
+       Phase B 隔离式子代理                  │
               │                             │
               ▼                             │
        Phase C 多 Agent 专家团                 │
               │                             │
               ▼                             │
+       本文件 Phase 4 Desktop 基础壳           │
+             │                             │
+             ▼                             │
        Phase D RxyCode Desktop 完整工作台      │
               │                             │
               ▼                             │
@@ -2479,10 +3307,10 @@ Phase G 的六张预留卡不在这条链上，按 Phase G §4 的表插进 B/C/
   G1 G5 → Phase B 开始前     G2 → 和 C3 一起
   G3    → 和 C12 一起        G4 → 和 E11 一起      G6 → Phase C 收尾后
 
-原 Phase F 已移出本路线，见 §11.2.1。
+原 Phase F 已移出本路线，见 §12.2.1。
 ```
 
-### 11.2.1 关于原 Phase F（已移出本路线）
+### 12.2.1 关于原 Phase F（已移出本路线）
 
 PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成了 **LinkAgent** 项目——独立仓库、独立排期，把 RxyCode 当 `pip` 依赖，**不改 RxyCode 一行代码**。
 
@@ -2494,19 +3322,19 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 **对本路线的唯一影响**：论文的评测方法论（配对消融共享原始输出、runtime–scoring 隔离、序列级统计单位、失败留在分母、预注册阈值）对本文件 Phase 1 的 evals harness、Phase B 的 B14、Phase D 的 D11 都直接适用，**和 PersonaAgent 做不做无关**。这部分可以照搬。
 
-**分模型后的并行结构见 §11.7**：Phase 2 期间没有真正的第二主链——Composer 主写 P1–P8，Grok 只做卡内标注的多模态环节；Phase A 排到 Phase 2 合并之后。其余全部串行。
+**分模型后的并行结构见 §12.7**：Phase 2 期间没有真正的第二主链——Composer 主写 P1–P8，Grok 只做卡内标注的多模态环节；Phase 3 的模型输出上限由 Composer 主写，Phase 4 Desktop 在其出口后接入。其余全部串行。
 
 **每个 Phase 的前置都是硬前置**，各文档的 §0.3 写了具体理由。最常见的两处误判：
 - **跳过 Phase 2 直接做 Phase B** —— 会导致在 `agent_v2.py` 这个 3704 行的 God Object 里手工造一套 ad-hoc 的 Agent 通信机制，半年后推倒重来。
 - **Phase C 差不多了就开始 Phase E** —— Phase E 会把 Phase B/C 所有没测到的隔离问题一次性引爆，而且因为每个角色用不同模型，症状会难懂得多。Phase D Desktop 可以先接收稳定的公共契约，但不能绕过 Phase B 的隔离边界。
 
-### 11.3 工作流程
+### 12.3 工作流程
 
 **接到任务时的判断顺序：**
 
 ```
 1. 任务属于哪个 Phase？
-   → 查 §11.1 的表，打开对应文档
+   → 查 §12.1 的表，打开对应文档
 
 2. 该 Phase 的前置做完了吗？
    → 跑对应文档 §0.3 的自检命令
@@ -2529,13 +3357,13 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 | 模型 | 职责 |
 |---|---|
-| **Composer 2.5** | **主写全部**。Python / 协议 schema / appserver / 评测 + Electron / React / TS UI / 协议客户端（Phase 3 全部、Phase 2 的 `protocol-client`）；按任务卡实现、补测试、跑验收 |
+| **Composer 2.5** | **主写全部**。Python / 协议 schema / appserver / 评测 + Electron / React / TS UI / 协议客户端（Phase 3 M1–M8、Phase 4 D1–D8、Phase 2 的 `protocol-client`）；按任务卡实现、补测试、跑验收 |
 | **Grok 4.5** | **前端辅助（多模态）**。只做前端卡里标注的「多模态环节」：视觉验收（截屏核对渲染）、图片类 UI（粘贴/预览）、对照设计稿。空闲时仍可查外部资料（定价、vision 格式等），查到的落进文档 |
-| **Sonnet 5** | Diff 预审（可选）。重点：Phase B 的 **B2**、Phase C 的 **C3/C8/C9**、Phase D 的 **D4**、Phase E 的 **E3/E4**、Phase 3 的壳分叉 |
+| **Sonnet 5** | Diff 预审（可选）。重点：Phase B 的 **B2**、Phase C 的 **C3/C8/C9**、Phase D 的 **D4**、Phase E 的 **E3/E4**、Phase 4 的壳分叉 |
 
 推荐回路：**Composer 写卡 → 卡内「多模态环节」委托 Grok →（可选）Sonnet 预审 → 你合并**。
 
-### 11.4 贯穿全程的三条铁律
+### 12.4 贯穿全程的三条铁律
 
 无论在哪个 Phase、哪张任务卡，这三条都成立：
 
@@ -2549,7 +3377,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 **从 Phase B 起还多一条**：新增能力**默认关闭**。隔离式子代理/专家团（Phase B/C）、多模型（Phase E）、蒸馏采集（Phase G）三者的开关默认都是 `False`。RxyCode Desktop 的基础壳、会话、审查和权限是主工作台，不得被高级协作开关阻塞；Desktop 对高级能力只按 capability 显示。理由是 Phase C §2.5 的实测数据——多 Agent 消耗 15 倍 token，而 Anthropic 明确说编码任务本就不是多 Agent 的强项。**能力要有，但不该悄悄替用户花钱。**
 
-### 11.5 文档本身的维护
+### 12.5 文档本身的维护
 
 | 时机 | 动作 |
 |---|---|
@@ -2558,7 +3386,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 | 发现范围外问题 | 记进 §10.4 待办池，**不要就地修**（规则 R4） |
 | 需求变化 | 改文档，不要"先改代码回头再说"。这套文档是多个模型之间唯一的共识载体 |
 
-### 11.6 被本套文档取代的旧文档
+### 12.6 被本套文档取代的旧文档
 
 `docs/plans/execution/` 下的全部文件（`00-master-plan.md`、`01-tech-debt-cleanup.md`、`README.md`、`QUICKSTART.md`、`DAILY-CHECKLIST.md`、`DELIVERY-SUMMARY.md`、`TASK-INDEX.md`、`AI-MODEL-GUIDE.md`、`PROJECT-DELIVERY-FINAL.md`、`TASK-T001-*.md`）**均已作废**，它们派生自 `docs/plans/2026-07-30-comprehensive-review-and-roadmap.md`，该报告的事实层错误见 §2.3。
 
@@ -2568,7 +3396,7 @@ PersonaAgent 那部分内容**不再是 RxyCode 的一个 Phase**，它独立成
 
 ---
 
-### 11.7 并行协作协议（Composer 主写 + Grok 辅助多模态）
+### 12.7 并行协作协议（Composer 主写 + Grok 辅助多模态）
 
 > **回答"Composer 做 Phase 2 的时候，Grok 窗口能同时做什么"。**
 >

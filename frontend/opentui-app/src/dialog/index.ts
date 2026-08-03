@@ -1,5 +1,5 @@
 export { DialogProvider, DialogOutlet, useDialog, stackReplace, stackPush, stackPop } from "./DialogHost.tsx";
-export { DialogSelect, shouldApplyMouseHover, buildSelectRows, textFromKeyEvent } from "./DialogSelect.tsx";
+export { DialogSelect, shouldApplyMouseHover, buildSelectRows, formatSearchFieldDisplay, textFromKeyEvent } from "./DialogSelect.tsx";
 export type { DialogSelectOption } from "./DialogSelect.tsx";
 export { DialogSession } from "./DialogSession.tsx";
 export { DialogModel } from "./DialogModel.tsx";

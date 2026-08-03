@@ -11,12 +11,14 @@ export type ModelInfo = {
   active?: boolean;
   category?: string;
   provider_name?: string;
+  provider_id?: string;
 };
 
 export async function probeModels(): Promise<{
   ok: boolean;
   models: ModelInfo[];
   active: string;
+  error?: string;
 }> {
   try {
     const resp = await axios.get(`${API_BASE}/models`, {
@@ -29,15 +31,22 @@ export async function probeModels(): Promise<{
       models: data.models ?? [],
       active: data.active ?? "",
     };
-  } catch {
-    return { ok: false, models: [], active: "" };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      models: [],
+      active: "",
+      error: err instanceof Error ? err.message : "无法连接 API 服务",
+    };
   }
 }
 
 export async function fetchModels(): Promise<{
+  ok: boolean;
   models: ModelInfo[];
   active: string;
   recent: string[];
+  error?: string;
 }> {
   try {
     const resp = await axios.get(`${API_BASE}/models`, {
@@ -46,12 +55,19 @@ export async function fetchModels(): Promise<{
     });
     const data = resp.data as { models?: ModelInfo[]; active?: string; recent?: string[] };
     return {
+      ok: true,
       models: data.models ?? [],
       active: data.active ?? "",
       recent: Array.isArray(data.recent) ? data.recent : [],
     };
-  } catch {
-    return { models: [], active: "", recent: [] };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      models: [],
+      active: "",
+      recent: [],
+      error: err instanceof Error ? err.message : "无法连接 API 服务",
+    };
   }
 }
 
@@ -272,10 +288,10 @@ export async function fetchStatusPayload(): Promise<Record<string, unknown> | nu
 
 /** Normalize /command list payloads into DialogSelect options. */
 export function listFromCommandResult(
-  result: Record<string, unknown> | null,
+  result: Record<string, unknown> | null | undefined,
   kind: "session" | "memory" | "skill" | "mcp" | "queue" | "schedule",
 ): Array<{ id: string; title: string; description?: string }> {
-  if (!result) return [];
+  if (!result || result.ok === false) return [];
   if (kind === "session") {
     const chats = (result.chats as Array<{ name?: string; preview?: string; time?: string }>) || [];
     return chats.map((c) => ({

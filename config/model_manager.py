@@ -95,22 +95,41 @@ def list_provider_presets() -> list[dict]:
 
 
 def infer_provider_group(base_url: str) -> dict:
-    """Map a base URL to a provider group via preset host match, else 其他."""
+    """Map a base URL to a provider group via preset host match, else 其他.
+
+    Host matching is exact / parent-domain only — never loose substring (that
+    incorrectly collapsed distinct providers into one /model group).
+    """
     try:
         normalized = normalize_provider_base_url(base_url, require_https=False)
     except ValueError:
         return {"id": "custom", "name": "其他"}
     host = (urlsplit(normalized).hostname or "").casefold()
+    if not host:
+        return {"id": "custom", "name": "其他"}
     for preset in PROVIDER_PRESETS:
         preset_host = (urlsplit(preset["base_url"]).hostname or "").casefold()
-        if host and preset_host and (
-            host == preset_host or host.endswith("." + preset_host) or preset_host.endswith("." + host)
+        if not preset_host:
+            continue
+        if (
+            host == preset_host
+            or host.endswith("." + preset_host)
+            or preset_host.endswith("." + host)
         ):
             return {"id": preset["id"], "name": preset["name"]}
-        # Also match when custom URL shares the registered host core.
-        if host and preset_host and preset_host in host:
-            return {"id": preset["id"], "name": preset["name"]}
     return {"id": "custom", "name": "其他"}
+
+
+def resolve_provider_meta(
+    base_url: str,
+    provider_id: Optional[str] = None,
+    provider_name: Optional[str] = None,
+) -> dict:
+    """Prefer explicit provider labels; otherwise infer from base_url."""
+    inferred = infer_provider_group(base_url)
+    pid = (provider_id or "").strip() or inferred["id"]
+    pname = (provider_name or "").strip() or inferred["name"]
+    return {"id": pid, "name": pname}
 
 
 def local_model_key(model_id: str, provider_id: Optional[str] = None) -> str:
@@ -120,6 +139,45 @@ def local_model_key(model_id: str, provider_id: Optional[str] = None) -> str:
     if pid:
         return f"{pid}/{mid}"
     return mid
+
+
+def ensure_models_provider_metadata(
+    cfg: Optional[dict] = None,
+    *,
+    persist: bool = True,
+) -> dict:
+    """Stamp provider_id/name from base_url onto entries that lack them.
+
+    Does not rename legacy bare keys (active_model / recent may still point at
+    them). Grouping for /model uses base_url via GET /models.
+    """
+    owned = cfg is None
+    if owned:
+        cfg = load_config()
+    models = cfg.get("models") or {}
+    dirty = False
+    for _name, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        base_url = entry.get("base_url") or ""
+        if not base_url:
+            continue
+        inferred = infer_provider_group(base_url)
+        if not entry.get("provider_id") or not entry.get("provider_name"):
+            entry["provider_id"] = inferred["id"]
+            entry["provider_name"] = inferred["name"]
+            dirty = True
+        elif inferred["id"] != "custom" and (
+            entry.get("provider_id") != inferred["id"]
+            or entry.get("provider_name") != inferred["name"]
+        ):
+            # Endpoint host wins over a stale stored label.
+            entry["provider_id"] = inferred["id"]
+            entry["provider_name"] = inferred["name"]
+            dirty = True
+    if persist and dirty and (owned or cfg is not None):
+        save_config(cfg)
+    return cfg
 
 
 def _credential_config(api_key: str) -> dict:
@@ -146,22 +204,25 @@ def add_model(
     temperature: float = 0.7,
     provider_id: Optional[str] = None,
     provider_name: Optional[str] = None,
+    nickname: Optional[str] = None,
 ) -> dict:
     base_url = normalize_provider_base_url(base_url, require_https=True)
+    meta = resolve_provider_meta(base_url, provider_id, provider_name)
     cfg = load_config()
     models = cfg.setdefault("models", {})
     previous_reference = models.get(name, {}).get("api_key_secret", "")
+    vendor_id = model_name or name
     entry = {
         **_credential_config(api_key),
         "base_url": base_url,
-        "model_name": model_name or name,
+        "model_name": vendor_id,
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "provider_id": meta["id"],
+        "provider_name": meta["name"],
     }
-    if provider_id:
-        entry["provider_id"] = provider_id
-    if provider_name:
-        entry["provider_name"] = provider_name
+    if nickname and nickname.strip() and nickname.strip() != vendor_id:
+        entry["nickname"] = nickname.strip()
     models[name] = entry
     if not cfg.get("active_model"):
         cfg["active_model"] = name
@@ -201,20 +262,38 @@ def onboard_models_batch(
     base_url = normalize_provider_base_url(base_url, require_https=True)
     added: list[str] = []
     skipped: list[str] = []
-    known = set(list_models())
+    cfg_snapshot = load_config()
+    models_snapshot = dict(cfg_snapshot.get("models") or {})
+    known = set(models_snapshot)
 
-    # Resolve provider group from URL when caller omitted it (custom / other path).
-    if not provider_id or not provider_name:
-        inferred = infer_provider_group(base_url)
-        provider_id = provider_id or inferred["id"]
-        provider_name = provider_name or inferred["name"]
+    meta = resolve_provider_meta(base_url, provider_id, provider_name)
+    provider_id = meta["id"]
+    provider_name = meta["name"]
+    normalized_url = base_url
+
+    legacy_same_endpoint: set[str] = set()
+    for existing_key, entry in models_snapshot.items():
+        if not isinstance(entry, dict):
+            continue
+        mid = (entry.get("model_name") or existing_key).strip()
+        try:
+            entry_url = normalize_provider_base_url(
+                entry.get("base_url", ""), require_https=False
+            )
+        except ValueError:
+            continue
+        if entry_url == normalized_url:
+            legacy_same_endpoint.add(mid)
+            # Bare key itself also counts as occupying that vendor id on this URL.
+            if "/" not in existing_key:
+                legacy_same_endpoint.add(existing_key)
 
     for model_id in model_ids:
         mid = model_id.strip()
         if not mid:
             continue
         key = local_model_key(mid, provider_id)
-        if key in known:
+        if key in known or mid in legacy_same_endpoint:
             skipped.append(key)
             continue
         if not skip_probe:
@@ -236,6 +315,7 @@ def onboard_models_batch(
         )
         added.append(key)
         known.add(key)
+        legacy_same_endpoint.add(mid)
 
     active: Optional[str] = None
     if added:

@@ -1,7 +1,7 @@
 # Phase C · 多 Agent 专家团编排（Expert Team Orchestration）
 
 > **在整条路线中的位置**：[`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase C。
-> **前置条件**：主计划 Phase 0/1/2 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) 全部完成。Phase B 的 Child Session、隔离 Runtime、TaskResult、权限、预算和事件契约是本 Phase 的底层依赖。
+> **前置条件**：主计划 Phase 0/1/2/3 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) 全部完成。Phase 3 的模型输出上限 resolver/摘要、Phase B 的 Child Session、隔离 Runtime、TaskResult、权限、预算和事件契约是本 Phase 的底层依赖。
 > **后继**：[`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md)
 >
 > **一句话目标**：把"一个 Agent 干所有事"变成"一个团长带一支专家团"——团长不干活只调度，成员各有角色、工具集、记忆域，所有跨成员通信经团长中转，全程有 SOP 约束、有机械验证门、有成本熔断。
@@ -1643,7 +1643,7 @@ budget: 187k/500k tokens · 412s/1800s · 7/20 delegations
    - `/why-mode` 打印路由依据
    - 预算用量在状态行右侧显示 `187k/500k`
 
-3. **Desktop**（如果主计划 Phase 3 已完成）：
+3. **Desktop**（如果主计划 Phase 4 已完成）：
    - 侧栏显示团队成员和当前阶段
    - 委派树可视化（C12 的 replay 输出的图形版）
    - 预算进度条，接近上限时变色

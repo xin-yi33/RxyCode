@@ -78,6 +78,54 @@ export class ProtocolClient {
     });
   }
 
+  requestWithTimeout<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutMs = 10_000,
+  ): Promise<T> {
+    const id = this.nextId++;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(
+          new ProtocolRpcError({
+            code: -32000,
+            message: `RPC timeout: ${method}`,
+          }),
+        );
+      }, timeoutMs);
+
+      this.pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value as T);
+        },
+        reject: (reason) => {
+          clearTimeout(timer);
+          reject(reason);
+        },
+      });
+
+      const message: Record<string, unknown> = {
+        jsonrpc: "2.0",
+        method,
+        id,
+      };
+      if (params !== undefined) {
+        message.params = params;
+      }
+      this.send(message);
+    });
+  }
+
+  rejectAllPending(reason: Error): void {
+    for (const [, entry] of this.pending) {
+      entry.reject(reason);
+    }
+    this.pending.clear();
+  }
+
   respond(id: JsonRpcId, result: unknown): void {
     this.send({ jsonrpc: "2.0", id, result });
   }

@@ -109,4 +109,23 @@ describe("ProtocolClient", () => {
       message: "workspace missing",
     });
   });
+
+  test("rejectAllPending rejects in-flight requests", async () => {
+    const { client } = createHarness();
+    const responsePromise = client.request("session/new", {
+      workspace_root: "/tmp",
+    });
+
+    client.rejectAllPending(new Error("appserver exited"));
+    await expect(responsePromise).rejects.toThrow("appserver exited");
+  });
+
+  test("requestWithTimeout rejects slow responses", async () => {
+    const { client } = createHarness();
+    const responsePromise = client.requestWithTimeout("initialize", {}, 20);
+    await expect(responsePromise).rejects.toBeInstanceOf(ProtocolRpcError);
+    await expect(responsePromise).rejects.toMatchObject({
+      message: "RPC timeout: initialize",
+    });
+  });
 });

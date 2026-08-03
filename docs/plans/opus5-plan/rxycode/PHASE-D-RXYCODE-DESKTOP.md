@@ -1,10 +1,10 @@
 # Phase D · RxyCode Desktop 完整桌面端（Coding Workspace）
 
-> **在整条路线中的位置**：这是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase D；它把主计划 Phase 3 规划的 Electron 壳、`appserver` 和协议客户端，补成一个可长期使用的 RxyCode Desktop 工作台。Phase 3 产物是否已经落地必须以工作区实测为准，不能由本文档的计划描述代替。
+> **在整条路线中的位置**：这是 [`00-EXECUTION-PLAN.md`](./00-EXECUTION-PLAN.md) 的后继扩展，编号 Phase D；它把主计划 Phase 4 规划的 Electron 壳、`appserver` 和协议客户端，补成一个可长期使用的 RxyCode Desktop 工作台，并消费主计划 Phase 3 的模型输出上限摘要。Phase 3/4 产物是否已经落地必须以工作区实测为准，不能由本文档的计划描述代替。
 >
 > **产品名称**：RxyCode Desktop。本文借鉴成熟 coding agent 的交互与协议边界，但不复刻任何第三方品牌、私有实现或视觉资产。
 >
-> **前置条件**：主计划 Phase 0/1/2/3 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 的公共契约已冻结。Phase B/C 的高级能力不是单 Agent Desktop 启动的硬依赖；它们通过 capability 握手和 feature flag 接入，不能把 Desktop 绑死在某一个后续 Phase 上。
+> **前置条件**：主计划 Phase 0/1/2/3/4 + [`PHASE-A-MODEL-ADAPTATION-LAYER.md`](./PHASE-A-MODEL-ADAPTATION-LAYER.md) + [`PHASE-B-ISOLATED-SUBAGENT.md`](./PHASE-B-ISOLATED-SUBAGENT.md) + [`PHASE-C-MULTI-AGENT-ORCHESTRATION.md`](./PHASE-C-MULTI-AGENT-ORCHESTRATION.md) 的公共契约已冻结。Phase 3 提供模型上限解析和摘要，Phase 4 提供基础 Desktop 壳。Phase B/C 的高级能力不是单 Agent Desktop 启动的硬依赖；它们通过 capability 握手和 feature flag 接入，不能把 Desktop 绑死在某一个后续 Phase 上。
 >
 > **后继**：原来的多模型协作文档顺延为 [`PHASE-E-MULTI-MODEL-COLLABORATION.md`](./PHASE-E-MULTI-MODEL-COLLABORATION.md)；多模态顺延为 [`PHASE-F-MULTIMODAL.md`](./PHASE-F-MULTIMODAL.md)；PersonaAgent 预留顺延为 [`PHASE-G-PERSONA-AGENT-INTERFACE.md`](./PHASE-G-PERSONA-AGENT-INTERFACE.md)。
 >
@@ -19,7 +19,7 @@
 | 章节 | 内容 |
 |---|---|
 | [§0 执行手册](#0-执行手册必须先读) | 谁写、怎么写、什么不许做 |
-| [§1 为什么需要新的 Phase D](#1-为什么需要新的-phase-d) | 对主计划 Phase 3 的审计结论 |
+| [§1 为什么需要新的 Phase D](#1-为什么需要新的-phase-d) | 对主计划 Phase 4 的审计结论 |
 | [§2 产品定义](#2-产品定义) | RxyCode Desktop 应该让用户看到什么 |
 | [§3 总体架构](#3-总体架构) | Desktop、协议、appserver、Session 的边界 |
 | [§4 交互模型](#4-交互模型) | Project、Thread、Turn、Item、Review |
@@ -37,11 +37,11 @@
 
 ### 0.1 这份文档解决什么问题
 
-主计划 Phase 3 计划定义了一个最小 Desktop 壳：Electron + React、启动 `python -m appserver`、显示会话、流式输出、工具卡片、审批和设置。当前开工前必须实际检查 `frontend/desktop-app/`、`frontend/protocol-client/` 和 `appserver/` 是否存在并能启动；不存在时不得把计划中的壳当成已交付产物。
+主计划 Phase 4 计划定义了一个最小 Desktop 壳：Electron + React、启动 `python -m appserver`、显示会话、流式输出、工具卡片、审批和设置，并消费 Phase 3 的模型上限摘要。当前开工前必须实际检查 `frontend/desktop-app/`、`frontend/protocol-client/` 和 `appserver/` 是否存在并能启动；不存在时不得把计划中的壳当成已交付产物。
 
 这足够验证“桌面客户端能不能接上 Agent”，但不够支撑长期编码工作。用户真正需要的是一个工作台：知道自己在哪个项目、当前有哪些会话、Agent 改了哪些文件、哪些动作有风险、任务是否还在后台运行、出了问题如何恢复，以及审查意见如何回到下一轮 Agent。
 
-本 Phase 不推翻 Phase 3 的壳，也不在 UI 里重写 Agent。它只补齐 Phase 3 没有定义清楚的**产品对象、协议对象、审查对象、持久化边界、进程生命周期和扩展边界**。
+本 Phase 不推翻 Phase 4 的壳，也不在 UI 里重写 Agent。它只补齐 Phase 4 没有定义清楚的**产品对象、协议对象、审查对象、持久化边界、进程生命周期和扩展边界**，并复用 Phase 3 的模型上限解析结果。
 
 ### 0.2 模型分工（硬约束）
 
@@ -122,9 +122,9 @@ LOCATE → READ → WRITE → TYPECHECK/LINT → UNIT TEST → E2E/手工验收 
 
 ## §1 为什么需要新的 Phase D
 
-### 1.1 对主计划 Phase 3 的审计结论
+### 1.1 对主计划 Phase 4 的审计结论
 
-主计划 Phase 3 的 D1–D8 在设计上能够形成一个**基础 Desktop 壳**，但本表只描述设计覆盖，不代表工作区已经实现；实现状态必须由 D1 的实测门确认。
+主计划 Phase 4 的 D1–D8 在设计上能够形成一个**基础 Desktop 壳**，并接入 Phase 3 的模型上限摘要；但本表只描述设计覆盖，不代表工作区已经实现；实现状态必须由 D1 的实测门确认。
 
 | 审计项 | 结论 | 说明 |
 |---|---|---|
@@ -139,7 +139,7 @@ LOCATE → READ → WRITE → TYPECHECK/LINT → UNIT TEST → E2E/手工验收 
 | 能否使用 worktree/Git 工作流 | 未定义 | 没有分支、worktree、提交和撤销的界面边界 |
 | 能否供 LinkAgent 稳定套壳 | 有风险 | 壳能 fork，但扩展点、协议超集和持久化边界不够清楚 |
 
-因此，Phase 3 的定位应当保留为：
+因此，主计划 Phase 4 的定位应当保留为：
 
 > **验证 Electron 壳 + appserver + 协议客户端能够工作。**
 
@@ -147,7 +147,7 @@ LOCATE → READ → WRITE → TYPECHECK/LINT → UNIT TEST → E2E/手工验收 
 
 > **把这个壳补成可用于真实编码工作的 RxyCode Desktop 工作台。**
 
-### 1.2 现有 Phase 3 的主要歧义
+### 1.2 现有 Phase 4 的主要歧义
 
 #### 歧义一：会话列表到底存什么
 
@@ -633,7 +633,70 @@ event replay / cursor
   └─ 状态未知：标为 recovery_required，不得伪造完成
 ```
 
-### 5.5 能力发现
+### 5.5 Review 协议（冻结版）
+
+`review/start` 是 Desktop、CLI 和 LinkAgent 共用的 JSON-RPC 请求，不是 UI 私有动作。它只读取指定变更，不直接修改工作树。
+
+```json
+{
+  "method": "review/start",
+  "params": {
+    "request_id": "req_review_123",
+    "thread_id": "thr_123",
+    "turn_id": "turn_456",
+    "scope": "working_tree",
+    "base_ref": null,
+    "head_ref": "HEAD",
+    "paths": [],
+    "criteria": ["correctness", "security", "regression"],
+    "reviewer": {"kind": "agent", "agent_id": "reviewer"}
+  }
+}
+```
+
+response：
+
+```json
+{
+  "request_id": "req_review_123",
+  "review_id": "rev_123",
+  "status": "pending",
+  "diff_hash": "sha256:..."
+}
+```
+
+服务端必须发送以下通知，并保证 `sequence` 单调、`event_id` 幂等：
+
+```text
+review/started
+review/progress
+review/finding
+review/completed
+review/stale
+review/failed
+review/cancelled
+```
+
+`review/finding` 的 payload 必须符合 §4.5 的 Finding；`review/completed` 必须返回完整 `Review` 或可通过 `review/read` 补读的引用。客户端断开后可用 `review/read(review_id)` 补读，不得重新启动一次审查来“猜测”结果。
+
+固定错误码：`REVIEW_SCOPE_INVALID`、`REVIEW_DIFF_UNAVAILABLE`、`REVIEW_ALREADY_RUNNING`、`REVIEW_CANCELLED`、`REVIEW_TIMEOUT`、`REVIEW_PROTOCOL_MISMATCH`。相同 `request_id` 重试必须幂等，不得生成多个 Review。
+
+### 5.6 快照、撤销和细粒度 Git 操作
+
+每个产生文件变更的 turn 在首次写入前创建 `checkpoint_id`，记录 workspace、前后 `diff_hash`、文件清单和创建原因。快照只由 appserver/host 创建，Renderer 不能伪造。协议至少提供：
+
+```text
+checkpoint/list
+checkpoint/read
+checkpoint/restore
+git/stage
+git/unstage
+git/revert
+```
+
+`checkpoint/restore`、整文件 revert 和 hunk revert 都必须经过权限中心；恢复前显示影响范围，恢复后产生新的 `diff_hash` 并令旧 Review 进入 `stale`。这使 Desktop 具备可解释的 undo/redo 边界，而不是只有一个不可追踪的“撤销”按钮。
+
+### 5.7 能力发现
 
 以下能力必须由 appserver 声明，UI 不能假设存在：
 
@@ -644,6 +707,9 @@ background_turns
 command_execution
 file_changes
 review
+review_comments
+checkpoint
+git_hunk_actions
 worktree
 file_preview
 browser
@@ -652,6 +718,7 @@ skills
 multi_agent
 multi_model
 vision
+approval.auto_review
 ```
 
 未声明的能力：
@@ -660,7 +727,7 @@ vision
 - 不发出服务端一定会拒绝的请求；
 - 仍然可以在设置或帮助页显示“当前版本未提供”。
 
-### 5.6 协议扩展规则
+### 5.8 协议扩展规则
 
 新增字段优先使用可选字段；新增方法使用新方法名；修改现有字段语义必须升级 protocol major。每次 protocol 改动固定执行：
 
@@ -684,14 +751,43 @@ vision
 
 ## §6 任务卡
 
+### 6.0 卡级施工格式（Composer 必须遵守）
+
+每张 D 卡都必须先冻结以下六项，再允许写代码：
+
+```text
+优先级 / 工时 / 依赖 / owner
+涉及文件白名单
+协议变化（schema / method / event / none）
+验收命令与预期结果
+完成判据 checkbox
+Grok 视觉辅助范围（没有就写“无”）
+```
+
+卡内的命令必须能在当前卡完成后复制执行；不存在的目录只能作为 D1 的前置阻塞，不能用“本地能跑”代替命令。Composer 负责协议、状态、权限、测试和最终合并；Grok 只处理卡内明确标出的截图、视觉回归或文件/图片预览环节。
+
+所有 D 卡共同继承以下完成判据；卡内另列的验收项是在此基础上的增量：
+
+- [ ] 文件改动没有超出本卡白名单；
+- [ ] 协议/schema 变化已生成类型并通过 contract test；
+- [ ] 单元/集成/E2E 命令有真实输出，失败不能以截图替代；
+- [ ] `git diff --check` 通过，已记录未解决限制和可回滚 commit。
+
+**编号消歧**：本文任务卡在提交、分支、测试和交接中统一写作 `PhaseD-D1` 至 `PhaseD-D16`；主计划基础壳卡写作 `Phase4-D1` 至 `Phase4-D8`。禁止只写裸 `D1` 作为跨文档引用。
+
 ### D1 · Desktop 基线与包边界冻结
 
-**目标**：确认 Phase 3 的 Electron 壳、`protocol-client` 和 appserver 能作为本 Phase 的稳定基线；若壳尚未落地，必须先完成最小启动基线或明确阻塞，不得伪造“已有壳”。
+`P0` / 1–2d / 无依赖（但依赖主计划 Phase 4 壳和 Phase 3 模型摘要） / **owner: Composer 2.5**
+**涉及文件**：`frontend/desktop-app/`、`frontend/protocol-client/`、`appserver/`、`protocol/schema.json`、`tests/test_protocol/`
+**协议变化**：none；**Grok**：无。
+**验收命令**：`Test-Path frontend\desktop-app; Test-Path frontend\protocol-client; python -m pytest tests/test_protocol -q`；壳不存在时预期输出 `BLOCKED_PREREQUISITE`。
+
+**目标**：确认 Phase 4 的 Electron 壳、`protocol-client`、appserver 和 Phase 3 模型上限摘要能作为本 Phase 的稳定基线；若壳尚未落地，必须先完成最小启动基线或明确阻塞，不得伪造“已有壳”。
 
 **内容**：
 
 1. 先检查 `frontend/desktop-app/`、`frontend/protocol-client/`、`appserver/`、package manifest 和启动脚本；每个缺失项都记录绝对路径和阻塞原因。
-2. 若 Electron 壳存在，记录 Desktop 启动方式、Node/Bun/Python 版本和构建命令；若不存在，按 Phase 3 的最小边界创建可启动壳，或输出 `BLOCKED_PREREQUISITE`，不得继续把后续卡标为可验收。
+2. 若 Electron 壳存在，记录 Desktop 启动方式、Node/Bun/Python 版本和构建命令；若不存在，按 Phase 4 的最小边界创建可启动壳，或输出 `BLOCKED_PREREQUISITE`，不得继续把后续卡标为可验收。
 3. 确认 Desktop 包的入口、renderer、main process 和 protocol-client 的边界。
 4. 确认 OpenTUI 与 Desktop 是否共享生成的 TypeScript types。
 5. 添加 capability/version handshake 的测试占位。
@@ -708,6 +804,11 @@ vision
 **禁止**：借 D1 重新整理整个 `frontend/`；没有证据的目录重命名属于独立卡。
 
 ### D2 · Protocol handshake、能力发现与错误模型
+
+`P0` / 2–3d / 依赖 D1 / **owner: Composer 2.5**
+**涉及文件**：`protocol/schema.json`、`protocol/`、`frontend/protocol-client/`、`frontend/desktop-app/src/protocol/`、`tests/test_protocol/`
+**协议变化**：`initialize`、capability、error schema；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_protocol -q; cd frontend\protocol-client; npm test`。
 
 **目标**：让 Desktop 能知道“当前 appserver 支持什么”，并能把版本错误、能力缺失和服务器错误变成可理解的 UI 状态。
 
@@ -733,6 +834,11 @@ vision
 
 ### D3 · Desktop Host 与 appserver 进程监督
 
+`P0` / 2–3d / 依赖 D1、D2 / **owner: Composer 2.5**
+**涉及文件**：`frontend/desktop-app/src/main/`、`frontend/desktop-app/src/preload/`、`frontend/desktop-app/src/platform/`、`appserver/`、`tests/test_appserver/`
+**协议变化**：process lifecycle/error events；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_appserver -q; cd frontend\desktop-app; npm run typecheck`。
+
 **目标**：解决启动、关闭、崩溃、重启、孤儿进程和多窗口生命周期。
 
 **内容**：
@@ -744,6 +850,9 @@ vision
 5. Desktop 退出时发送优雅 shutdown，再执行有限时间的强制回收。
 6. 禁止一个窗口关闭导致其他窗口使用的共享 appserver 被误杀；若暂不支持多窗口，必须明确单实例约束。
 7. 临时目录、日志句柄和管道在异常路径也要释放。
+8. BrowserWindow 必须显式设置 `contextIsolation=true`、`nodeIntegration=false`、`sandbox=true`，renderer 只能通过最小 preload API 访问平台能力。
+9. preload IPC 必须按方法名和参数 schema allowlist 校验；禁止把 `ipcRenderer`、Node `fs`、`child_process` 或完整环境变量暴露给 renderer。
+10. 拒绝未 allowlist 的导航、弹窗和外部协议；外部 URL 必须转交系统浏览器并经过明确用户动作或审批。
 
 **验收**：
 
@@ -753,8 +862,15 @@ vision
 - Desktop 重启后恢复 Thread；
 - Windows/macOS/Linux 至少各有进程回收测试或明确平台差异；
 - 连续启动和退出 20 次不产生孤儿进程。
+- renderer 无法直接读取文件、启动进程或读取 Key；
+- preload 的每个 API 都有 IPC contract test，未知方法和错误参数均被拒绝。
 
 ### D4 · Project / Workspace 管理
+
+`P1` / 2–3d / 依赖 D2、D3 / **owner: Composer 2.5**
+**涉及文件**：`appserver/`、`protocol/`、`frontend/desktop-app/src/features/projects/`、`frontend/desktop-app/src/features/workspaces/`、`tests/test_projects/`
+**协议变化**：Project/Workspace methods and events；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_projects -q; cd frontend\desktop-app; npm run typecheck`。
 
 **目标**：让用户知道 Agent 当前在哪个项目、哪个目录、哪个分支和哪个权限范围里工作。
 
@@ -777,6 +893,11 @@ vision
 - 路径信息不会被错误展示到另一个项目的 Thread。
 
 ### D5 · Thread / Turn / Item 会话中心
+
+`P0` / 3–4d / 依赖 D2、D3、D4 / **owner: Composer 2.5**
+**涉及文件**：`appserver/`、`protocol/`、`frontend/desktop-app/src/features/threads/`、`frontend/desktop-app/src/stores/`、`tests/test_threads/`
+**协议变化**：Thread/Turn/Item、parent/child cursor；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_threads -q; cd frontend\desktop-app; npm run typecheck`。
 
 **目标**：把“聊天窗口”提升为可恢复、可分叉、可审查的工作历史。
 
@@ -805,6 +926,11 @@ vision
 
 ### D6 · 对话时间线与流式 Item 渲染
 
+`P0` / 3–4d / 依赖 D5 / **owner: Composer 2.5**
+**涉及文件**：`frontend/desktop-app/src/features/timeline/`、`frontend/desktop-app/src/components/items/`、`frontend/desktop-app/src/stores/`、`frontend/desktop-app/tests/`
+**协议变化**：none；**Grok**：正常/空/加载/错误/窄窗口/深色主题视觉验收。
+**验收命令**：`cd frontend\desktop-app; npm run typecheck; npm run test -- --run`。
+
 **目标**：让用户能在一条可读时间线上理解 Agent 做了什么。
 
 **内容**：
@@ -830,6 +956,11 @@ vision
 
 ### D7 · Tool、Command、Background Task 工作台
 
+`P0` / 2–3d / 依赖 D5、D6 / **owner: Composer 2.5**
+**涉及文件**：`protocol/`、`appserver/`、`frontend/desktop-app/src/features/execution/`、`frontend/desktop-app/src/features/items/`、`tests/test_execution/`
+**协议变化**：Tool/Command/BackgroundTask item states；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_execution -q; cd frontend\desktop-app; npm run typecheck`。
+
 **目标**：把 Agent 的工具执行从一行状态文字升级成可观察、可控制的执行记录。
 
 **内容**：
@@ -848,6 +979,11 @@ vision
 **安全要求**：环境变量、API Key、Authorization header 和敏感路径必须在 UI 和日志中脱敏。
 
 ### D8 · Permission Center 与审批流
+
+`P0` / 2–3d / 依赖 D2、D7 / **owner: Composer 2.5**
+**涉及文件**：`protocol/`、`appserver/`、`frontend/desktop-app/src/features/approvals/`、`frontend/desktop-app/src/features/settings/`、`tests/test_approval/`
+**协议变化**：Approval、Auto-review capability and audit records；**Grok**：审批弹层视觉验收。
+**验收命令**：`python -m pytest tests/test_approval -q; cd frontend\desktop-app; npm run typecheck`。
 
 **目标**：让审批既安全又可理解，且不会因为 UI 约定被绕过。
 
@@ -882,7 +1018,14 @@ full_access（明确危险，默认不可选）
 - UI 无审批按钮时，后端仍然拒绝未授权动作；
 - 所有审批结果有 `approval_id` 并进入 trace。
 
+**Auto-review 边界**：当 capability `approval.auto_review` 已声明且当前 approval policy 允许时，可以把本来需要人工确认的越界请求交给独立、只读的 reviewer Agent；Auto-review 不是权限扩大，不能改变 sandbox、writable roots、网络或受保护路径。每次 reviewer 决策必须记录 reviewer id、策略版本、理由、原 approval_id 和最终 allow/deny。连续拒绝达到阈值时必须中断当前 turn，不能让主 Agent 无限重试。
+
 ### D9 · Git Diff 与 Review 工作台
+
+`P0` / 4–5d / 依赖 D4、D5、D7、D8 / **owner: Composer 2.5**
+**涉及文件**：`protocol/`、`appserver/`、`frontend/desktop-app/src/features/review/`、`frontend/desktop-app/src/features/git/`、`tests/test_review/`
+**协议变化**：`review/start`、Review/Finding、checkpoint、git hunk actions；**Grok**：diff 对齐、长行、折叠、空/错误态。
+**验收命令**：`python -m pytest tests/test_review -q; cd frontend\desktop-app; npm run typecheck; npm run test -- --run`。
 
 **目标**：让“审计”成为 Desktop 的一等能力，而不是把命令输出塞进聊天窗口。
 
@@ -897,6 +1040,9 @@ full_access（明确危险，默认不可选）
 7. 允许用户把一条 finding 作为下一轮输入发回 Agent。
 8. 变更 hash 改变后，旧 Review 标记 stale。
 9. 提供安全的“打开外部编辑器”和“撤销文件变更”入口；撤销前必须显示范围。
+10. 提供 staged/unstaged、文件级和 hunk 级 stage/unstage/revert；每个动作都经过权限中心。
+11. 支持行级 review comment，评论必须绑定 `review_id`、`finding_id`、文件 hash 和行范围，可作为下一轮 Agent 输入。
+12. 每个写入 turn 具有关联 `checkpoint_id`，支持列出、查看和恢复；恢复后生成新的 diff hash。
 
 **验收**：
 
@@ -905,11 +1051,20 @@ full_access（明确危险，默认不可选）
 - review 不修改工作树；
 - review 绑定的 diff hash 与界面显示一致；
 - Agent 修复后旧 finding 自动失效或标记 fixed，不能保持“当前开放”；
-- CLI、Desktop 对同一 review 结果使用同一协议对象。
+- CLI、Desktop 对同一 review 结果使用同一协议对象；
+- review/start 重试不会创建重复 Review；
+- 单个 hunk revert 不影响同一文件的其他 hunk；
+- checkpoint restore 后旧 Review 必须 stale，且可从审计记录解释恢复范围；
+- 行级评论能回到对应文件、行和下一轮 Agent 输入。
 
 **视觉辅助环节**：Grok 只负责 diff 对齐、长行换行、折叠、深色主题、错误和空状态的视觉验收；审查语义和 hash 绑定由 Composer 主写并测试。
 
 ### D10 · 文件树、预览与外部编辑器
+
+`P1` / 2–3d / 依赖 D4、D5、D9 / **owner: Composer 2.5**
+**涉及文件**：`frontend/desktop-app/src/features/files/`、`frontend/desktop-app/src/features/preview/`、`frontend/desktop-app/src/platform/`、`tests/test_file_preview/`
+**协议变化**：FilePreview/ExternalEditor capability；**Grok**：代码、Markdown、图片、二进制和超长路径视觉验收。
+**验收命令**：`python -m pytest tests/test_file_preview -q; cd frontend\desktop-app; npm run typecheck`。
 
 **目标**：让用户从 Agent 的变更直接进入文件上下文，而不必每次手工定位。
 
@@ -928,6 +1083,11 @@ full_access（明确危险，默认不可选）
 
 ### D11 · Git Branch / Worktree 与执行环境
 
+`P1` / 3–4d / 依赖 D4、D5、D8、D9 / **owner: Composer 2.5**
+**涉及文件**：`appserver/`、`protocol/`、`frontend/desktop-app/src/features/worktrees/`、`frontend/desktop-app/src/platform/git/`、`tests/test_worktrees/`
+**协议变化**：Worktree lifecycle/handoff/conflict events；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_worktrees -q; cd frontend\desktop-app; npm run typecheck`。
+
 **目标**：支持多个独立工作上下文，降低并行任务互相覆盖的风险。
 
 **内容**：
@@ -937,6 +1097,9 @@ full_access（明确危险，默认不可选）
 - Thread 绑定 workspace/worktree；
 - 从当前 Thread handoff 到另一个 worktree；
 - worktree 被其他进程删除、分支冲突和路径不可用时给出恢复入口；
+- 创建时明确 base branch/ref、工作树路径、分支或 detached HEAD 策略和 owner；
+- 关闭、归档、删除和 prune 前检查未提交变更；崩溃或半成品 worktree 可被发现并恢复；
+- handoff 必须记录 source/target workspace、未提交变更、冲突结果和可回滚点；
 - 禁止两个 Thread 默认共享同一个正在修改的目录，除非用户明确确认；
 - 不在 D11 自动提交用户代码；
 - commit、revert、clean 等破坏性动作必须经过权限中心。
@@ -946,9 +1109,15 @@ full_access（明确危险，默认不可选）
 - 两个 Thread 在不同 worktree 修改时不串变更；
 - UI 显示的 branch 与后端命令实际 branch 一致；
 - 关闭 worktree 前显示未提交变更；
-- worktree 创建失败不会留下半成品入口。
+- worktree 创建失败不会留下半成品入口；
+- 删除、prune、handoff 和崩溃恢复都有幂等测试，不会误删用户未提交内容。
 
 ### D12 · Settings、模型目录与安全存储
+
+`P1` / 2–3d / 依赖 D2、D8 / **owner: Composer 2.5**
+**涉及文件**：`protocol/`、`appserver/`、`frontend/desktop-app/src/features/settings/`、`frontend/desktop-app/src/platform/secrets/`、`tests/test_settings/`
+**协议变化**：Settings schema/capability；**Grok**：无。
+**验收命令**：`python -m pytest tests/test_settings -q; cd frontend\desktop-app; npm run typecheck`。
 
 **目标**：把模型、Provider、推理档位、权限、终端和项目偏好放到有作用域的设置系统里。
 
@@ -984,6 +1153,11 @@ thread/turn explicit override
 
 ### D13 · Skills、MCP、浏览器与可插拔能力面板
 
+`P1` / 3–4d / 依赖 D2、D8、D12 / **owner: Composer 2.5**
+**涉及文件**：`protocol/`、`appserver/`、`frontend/desktop-app/src/features/capabilities/`、`frontend/desktop-app/src/features/mcp/`、`tests/test_capabilities/`
+**协议变化**：Capability/Skill/MCP projections；**Grok**：浏览器/外部能力错误态视觉验收。
+**验收命令**：`python -m pytest tests/test_capabilities -q; cd frontend\desktop-app; npm run typecheck`。
+
 **目标**：让外部能力以可发现、可审批、可审计的方式进入 Desktop，而不是散落在 UI 按钮里。
 
 **本卡只做统一入口和能力投影**：
@@ -1006,6 +1180,11 @@ thread/turn explicit override
 
 ### D14 · Notifications、长任务与恢复体验
 
+`P1` / 2–3d / 依赖 D3、D5、D7、D8 / **owner: Composer 2.5**
+**涉及文件**：`protocol/`、`appserver/`、`frontend/desktop-app/src/features/notifications/`、`frontend/desktop-app/src/features/recovery/`、`tests/test_recovery/`
+**协议变化**：Notification/recovery events；**Grok**：通知、断线、恢复和空状态视觉验收。
+**验收命令**：`python -m pytest tests/test_recovery -q; cd frontend\desktop-app; npm run typecheck`。
+
 **目标**：让用户离开当前 Thread 后，仍然知道 Agent 是否完成、失败或等待审批。
 
 **内容**：
@@ -1022,6 +1201,11 @@ thread/turn explicit override
 - Desktop 重启后恢复未完成 Thread 的真实状态。
 
 ### D15 · 视觉系统、可访问性和交互一致性
+
+`P1` / 3–4d / 依赖 D6、D8、D9、D10 / **owner: Composer 2.5**
+**涉及文件**：`frontend/desktop-app/src/ui/`、`frontend/desktop-app/src/components/`、`frontend/desktop-app/tests/a11y/`、`frontend/desktop-app/tests/visual/`
+**协议变化**：none；**Grok**：视觉回归、主题、布局溢出、图片/文件预览和审批/diff 层级。
+**验收命令**：`cd frontend\desktop-app; npm run typecheck; npm run test -- --run`。
 
 **目标**：让 RxyCode Desktop 具备稳定而可扩展的视觉基础，而不是每张卡各写一套颜色和 loading。
 
@@ -1048,6 +1232,11 @@ thread/turn explicit override
 Composer 负责最终组件 API、状态覆盖测试和无障碍语义。
 
 ### D16 · 打包、更新、崩溃上报与发布门禁
+
+`P0` / 4–5d / 依赖 D2、D3、D12、D15 / **owner: Composer 2.5**
+**涉及文件**：`frontend/desktop-app/`、`packaging/`、`.github/workflows/`、`tests/test_release/`、`docs/`
+**协议变化**：package/appserver compatibility metadata；**Grok**：安装、升级、回滚和错误页视觉验收。
+**验收命令**：`python -m pytest tests/test_release -q; cd frontend\desktop-app; npm run build`。
 
 **目标**：让用户安装的是可诊断、可升级、可回滚的 RxyCode Desktop，而不是开发机上的临时 Electron 文件夹。
 
@@ -1165,6 +1354,10 @@ created_at / expires_at
 14. Key 不出现在日志、transcript 或 crash payload。
 15. Git 非仓库项目仍能聊天，但不显示伪造的 Git review。
 16. 未声明 capability 时相应面板进入禁用/说明态。
+17. Review 支持 staged/unstaged diff、文件级与 hunk 级操作，行级评论能绑定 finding、文件 hash 和行范围。
+18. 每个产生文件变更的 turn 都有 checkpoint；恢复 checkpoint 后旧 Review 变成 stale，并能在审计记录中解释影响范围。
+19. renderer 无法直接访问文件、进程、Key 或任意 IPC；未知 IPC 方法、参数和外部协议都会被拒绝。
+20. `approval.auto_review` 未声明或策略不允许时，UI 不显示自动审查入口；允许时仍保留 reviewer、策略版本和最终决定的审计记录。
 
 ### 8.3 视觉验收清单
 
@@ -1361,7 +1554,7 @@ LinkAgent extension contract test
 每张 D 卡完成时在 commit 或 PR 描述中复制：
 
 ```text
-Card: C__
+Card: PhaseD-D__
 Scope:
 Owner: Composer 2.5
 Grok visual handoff: none / attached below
@@ -1396,18 +1589,18 @@ Rollback:
 
 ---
 
-## 附录 B · 与主计划 Phase 3 的关系
+## 附录 B · 与主计划 Phase 3/4 的关系
 
 不要把本文的 D 卡重新塞回主计划 D1–D8。两者关系是：
 
 ```text
-主计划 Phase 3 D1–D8
+主计划 Phase 4 D1–D8
   = Electron 壳、基础协议接入、最小聊天/审批/设置、可打包
 
 Phase D D1–D16
   = 完整项目/会话工作台、执行可观测性、权限中心、diff/review、worktree、恢复、扩展和发布质量
 ```
 
-如果主计划 Phase 3 的某个 D 卡尚未完成，Phase D 可以做协议和 UX 设计，但不能通过临时 HTTP 或 mock 逻辑绕过前置产物直接合并到主链。
+如果主计划 Phase 4 的某个 D 卡尚未完成，Phase D 可以做协议和 UX 设计，但不能通过临时 HTTP 或 mock 逻辑绕过前置产物直接合并到主链。
 
-如果 Phase D 的某张卡需要修改主计划 Phase 3 已完成的协议，必须先更新 protocol/schema 和契约测试，再更新 Desktop；不得在 UI 里私自兼容两个互相矛盾的字段语义。
+如果 Phase D 的某张卡需要修改主计划 Phase 4 已完成的协议，必须先更新 protocol/schema 和契约测试，再更新 Desktop；不得在 UI 里私自兼容两个互相矛盾的字段语义。涉及模型上限时，必须复用主计划 Phase 3 的 resolver 和摘要协议，不得在 UI 里重新实现。
