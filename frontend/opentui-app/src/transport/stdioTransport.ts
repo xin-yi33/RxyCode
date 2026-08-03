@@ -1,5 +1,6 @@
 import { ProtocolClient, ProtocolRpcError } from "@rxycode/protocol-client";
 import type { Subprocess } from "bun";
+import { appendFileSync } from "node:fs";
 import type { ApprovalDecision } from "../ApprovalDialog.tsx";
 import {
   applyStreamEvent,
@@ -123,21 +124,29 @@ class StdioAppserverSession {
       return { request_id: requestId, decision };
     };
 
+    // Drain appserver stderr without writing to the TTY: OpenTUI owns the
+    // alternate screen; any process.stderr.write paints over the input row
+    // (looks like "garbled" log text). Optional file sink for debugging.
     void (async () => {
       const stderr = this.proc?.stderr;
-      if (stderr) {
-        const errReader = stderr.getReader();
-        const errDec = new TextDecoder();
-        try {
-          while (true) {
-            const { done, value } = await errReader.read();
-            if (done) break;
-            const text = errDec.decode(value);
-            if (text.trim()) process.stderr.write(text);
+      if (!stderr) return;
+      const logPath = (process.env.RXYCODE_APPSERVER_LOG || "").trim();
+      const errReader = stderr.getReader();
+      const errDec = new TextDecoder();
+      try {
+        while (true) {
+          const { done, value } = await errReader.read();
+          if (done) break;
+          const text = errDec.decode(value);
+          if (!text.trim() || !logPath) continue;
+          try {
+            appendFileSync(logPath, text);
+          } catch {
+            // ignore log write failures
           }
-        } catch {
-          // process exiting
         }
+      } catch {
+        // process exiting
       }
     })();
 

@@ -109,6 +109,7 @@ rollback via `RXYCODE_TUI=ink`.
 | `RXYCODE_APPSERVER_PYTHON` | set by `main.py` | Python executable for appserver subprocess |
 | `RXYCODE_WORKSPACE_ROOT` | cwd at launch | `session/new` workspace (stdio mode) |
 | `RXYCODE_API_URL` / `RXYCODE_API_TOKEN` | set by `main.py` | HTTP settings; chat fallback when `RXYCODE_TRANSPORT=http` |
+| `RXYCODE_APPSERVER_LOG` | unset | If set, appserver stderr is appended here (never written to the TTY — that corrupts OpenTUI) |
 
 ## Build
 - TypeScript compiler: npx tsc
