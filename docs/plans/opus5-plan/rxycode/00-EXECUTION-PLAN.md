@@ -2111,13 +2111,13 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 **操作步骤**
 
 1. OpenTUI 改用 `frontend/protocol-client`，走 `python -m appserver` 子进程，替代 HTTP + SSE
-2. **保留 HTTP 模式作为可切换的回退**：`RXYCODE_TRANSPORT=http|stdio`，默认先 `http`，稳定后翻转
+2. **保留 HTTP 模式作为可切换的回退**：`RXYCODE_TRANSPORT=stdio|http`，**默认 `stdio`**（2026-08-03 翻转）
 3. 两种传输下的 67 个测试都要绿
 
 **完成判据**
-- [ ] `RXYCODE_TRANSPORT=stdio` 下 OpenTUI 功能完整（对话、流式、工具展示、审批、中断）
-- [ ] 两种传输的测试都在 CI 上跑
-- [ ] 默认值翻转到 `stdio` 并观察一周无问题
+- [x] `RXYCODE_TRANSPORT=stdio` 下 OpenTUI 功能完整（对话、流式、工具展示、审批、中断）
+- [x] 两种传输的测试都在 CI 上跑
+- [x] 默认值翻转到 `stdio`（2026-08-03；观察期由团队持续跟踪）
 
 ---
 

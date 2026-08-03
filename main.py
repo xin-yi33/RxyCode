@@ -123,8 +123,8 @@ def _repo_root() -> str:
 
 
 def _resolve_transport() -> str:
-    """OpenTUI backend transport: http (default) or stdio (appserver JSON-RPC)."""
-    raw = (os.environ.get("RXYCODE_TRANSPORT") or "http").strip().lower()
+    """OpenTUI backend transport: stdio (default) or http (fallback)."""
+    raw = (os.environ.get("RXYCODE_TRANSPORT") or "stdio").strip().lower()
     if raw in ("http", "stdio"):
         return raw
     raise click.ClickException(

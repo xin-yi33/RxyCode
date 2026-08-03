@@ -11,9 +11,9 @@ rollback via `RXYCODE_TUI=ink`.
 ## Architecture
 - OpenTUI under `frontend/opentui-app/` (React 19.2+) — **default** when Bun is available
 - Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
-- **Chat transport** (P5): `RXYCODE_TRANSPORT=http|stdio` (default `http`)
-  - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`)
-  - `stdio`: spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
+- **Chat transport** (P5): `RXYCODE_TRANSPORT=stdio|http` (default `stdio`)
+  - `stdio` (default): spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
+  - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`) — fallback via `RXYCODE_TRANSPORT=http`
 - Settings dialogs (models, MCP, memory) still use HTTP API in both modes
 - OpenTUI: `bun run src/index.tsx`; Ink: Node.js process — both launched by `main.py`
 
@@ -104,11 +104,11 @@ rollback via `RXYCODE_TUI=ink`.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `RXYCODE_TRANSPORT` | `http` | `http` = SSE via embedded API; `stdio` = `python -m appserver` subprocess |
+| `RXYCODE_TRANSPORT` | `stdio` | `stdio` = appserver subprocess (default); `http` = SSE via embedded API |
 | `RXYCODE_PROJECT_ROOT` | set by `main.py` | Repo root for appserver `PYTHONPATH` (stdio mode) |
 | `RXYCODE_APPSERVER_PYTHON` | set by `main.py` | Python executable for appserver subprocess |
 | `RXYCODE_WORKSPACE_ROOT` | cwd at launch | `session/new` workspace (stdio mode) |
-| `RXYCODE_API_URL` / `RXYCODE_API_TOKEN` | set by `main.py` | HTTP settings + fallback chat when `transport=http` |
+| `RXYCODE_API_URL` / `RXYCODE_API_TOKEN` | set by `main.py` | HTTP settings; chat fallback when `RXYCODE_TRANSPORT=http` |
 
 ## Build
 - TypeScript compiler: npx tsc
