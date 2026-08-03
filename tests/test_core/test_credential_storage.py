@@ -236,3 +236,38 @@ def test_windows_permission_command_uses_only_trusted_principals(
     assert "*S-1-5-21-1-2-3-1001:(F)" in command
     assert "*S-1-5-18:(F)" in command
     assert "*S-1-5-32-544:(F)" in command
+
+def test_resolve_falls_back_to_secret_when_api_key_env_empty(tmp_path, monkeypatch):
+    """OpenTUI/appserver children often lack the operator shell env var."""
+    from RxyCode.RxyCode1_1_0.config.credential_store import store_credential
+    from RxyCode.RxyCode1_1_0.config.settings import get_config_path, resolve_model_config
+
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("RXYCODE_FALLBACK_KEY", raising=False)
+    credential = _opaque_value("env-fallback")
+    config_path = get_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("models: {}\n", encoding="utf-8")
+    reference = store_credential(credential, config_path)
+
+    resolved = resolve_model_config(
+        {
+            "model_name": "demo",
+            "api_key_env": "RXYCODE_FALLBACK_KEY",
+            "api_key_secret": reference,
+            "base_url": "https://provider.invalid/v1",
+        }
+    )
+    assert resolved["api_key"] == credential
+
+    monkeypatch.setenv("RXYCODE_FALLBACK_KEY", "opaque-env-wins-credential-value")
+    resolved_env = resolve_model_config(
+        {
+            "model_name": "demo",
+            "api_key_env": "RXYCODE_FALLBACK_KEY",
+            "api_key_secret": reference,
+            "base_url": "https://provider.invalid/v1",
+        }
+    )
+    assert resolved_env["api_key"] == "opaque-env-wins-credential-value"
+

@@ -349,7 +349,12 @@ def get_scheduler_config(cfg: Optional[dict] = None) -> dict:
 
 
 def resolve_model_config(entry: dict) -> dict:
-    """Return a runtime model config with environment references resolved."""
+    """Return a runtime model config with environment references resolved.
+
+    Prefer ``api_key_env`` when that variable is set; if it is unset/empty but
+    ``api_key_secret`` exists (common for OpenTUI/appserver child processes that
+    do not inherit the operator shell), fall back to the credential store.
+    """
     resolved = dict(entry)
     env_name = resolved.get("api_key_env")
     raw_value = resolved.get("api_key")
@@ -364,6 +369,12 @@ def resolve_model_config(entry: dict) -> dict:
             raise ValueError("Invalid api_key_env name")
         resolved["api_key_env"] = env_name
         resolved["api_key"] = os.environ.get(env_name, "")
+        if not str(resolved.get("api_key") or "").strip() and resolved.get(
+            "api_key_secret"
+        ):
+            resolved["api_key"] = load_credential(
+                resolved["api_key_secret"], get_config_path()
+            )
     elif resolved.get("api_key_secret"):
         resolved["api_key"] = load_credential(
             resolved["api_key_secret"], get_config_path()
