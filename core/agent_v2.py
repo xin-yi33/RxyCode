@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import time
 from typing import Optional
 
+from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 from RxyCode.RxyCode1_1_0.utils.tui import get_tui
 
 _logger = logging.getLogger(__name__)
@@ -248,8 +252,6 @@ def _record_usage(resp, messages=None) -> tuple[int, int]:
     only looked at usage_metadata (LangChain wrapper), which doesn't exist
     on raw chunks -> cache hit tokens were always 0 in streaming mode.
     """
-    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
-
     # 1. LangChain usage_metadata (non-streaming path)
     um = getattr(resp, "usage_metadata", None)
     if um:
@@ -401,6 +403,7 @@ class UsageTrackingLLM:
         if self._cache_enabled is None:
             try:
                 from RxyCode.RxyCode1_1_0.config.settings import load_config
+
                 cfg = load_config() or {}
                 self._cache_enabled = bool(
                     cfg.get("cache", {}).get("prompt_prefix_cache", False)
@@ -670,7 +673,12 @@ class AgentV2:
     """LangGraph-based agent, drop-in compatible with the old Agent class."""
 
     def __init__(self, model_name: Optional[str] = None):
-        from RxyCode.RxyCode1_1_0.config.settings import load_config, get_active_model_config, get_model_config
+        from RxyCode.RxyCode1_1_0.config.settings import (
+            get_active_model_config,
+            get_data_dir,
+            get_model_config,
+            load_config,
+        )
 
         self._cfg = load_config()
         self._session_id = "latest"
@@ -717,7 +725,6 @@ class AgentV2:
 
         # Tell token_stats which model is active so billing_amount can look
         # up its per-model price from the config ``pricing`` section.
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
         token_stats.set_model(self.model_config.get("model_name"))
 
         # Build memory system (use "latest" to match session storage)
@@ -758,7 +765,6 @@ class AgentV2:
 
         self._tool_journal = None
         if bool(execution_cfg.get("tool_journal_enabled", True)):
-            from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
             from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
             from RxyCode.RxyCode1_1_0.execution.tool_journal import (
                 ToolExecutionJournal,
@@ -905,8 +911,6 @@ class AgentV2:
         return total
 
     def _sync_token_stats_context(self) -> None:
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
-
         caps = getattr(self, "_capabilities", None)
         if caps is not None:
             token_stats.update_context(token_stats.context_used, caps.context_window)
@@ -1011,8 +1015,6 @@ class AgentV2:
             model_name=model_config.get("model_name"),
         )
         from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
-
         self._memory = MemoryManager(session_id=self._session_id, llm=self._llm)
         self._memory.bind_rag_indexer(
             getattr(self, "_rag_indexer_thread", None)
@@ -1567,7 +1569,6 @@ class AgentV2:
         optional server cannot add its full connection timeout to every chat.
         Broken or changed servers expose no stale tools.
         """
-        from RxyCode.RxyCode1_1_0.config.settings import load_config
         from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
 
         # A few embedders construct AgentV2 via ``__new__`` and inject their
@@ -1607,6 +1608,8 @@ class AgentV2:
             self._cfg = {}
 
         try:
+            from RxyCode.RxyCode1_1_0.config.settings import load_config
+
             fresh_config = load_config() or {}
             raw_mcp = fresh_config.get("mcpServers", {}) or {}
             if not isinstance(raw_mcp, dict):
@@ -1800,8 +1803,6 @@ class AgentV2:
 
     def _has_creation_product_intent(self, text: str) -> bool:
         """True when the user asks to create/build a product (game, app, …)."""
-        import re
-
         text_stripped = text.strip()
         text_lower = text_stripped.lower()
         zh_create = (
@@ -1827,8 +1828,6 @@ class AgentV2:
 
         Disambiguates 「玩游戏」 (social) from 「写一个游戏」 (code intent).
         """
-        import re
-
         text_stripped = text.strip()
         if not text_stripped or len(text_stripped) > 300:
             return False
@@ -1885,8 +1884,6 @@ class AgentV2:
         text_lower = text_stripped.lower()
 
         # Multi-step indicators: only these trigger the full pipeline
-        import re
-
         # English patterns (use \b word boundaries)
         en_patterns = [
             r"\b(build|create|implement)\b.*\b(full|complete|entire|whole)\b",
@@ -2062,8 +2059,6 @@ class AgentV2:
 
     def _get_memory_context(self, query: str, *, include_long_term: bool = True) -> str:
         """Call query-aware memory while preserving legacy test/plugin adapters."""
-        import inspect
-
         getter = self._memory.get_context_for_prompt
         try:
             if len(inspect.signature(getter).parameters) == 0:
@@ -2146,7 +2141,6 @@ class AgentV2:
 
         # Tool-aware turns may observe or mutate external state, so their answers
         # are never read from or written to the application answer caches.
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
         token_stats.record_application_cache("precise", bypass=True)
         token_stats.record_application_cache("semantic", bypass=True)
         tui = get_tui()
@@ -2256,7 +2250,6 @@ class AgentV2:
                 1,
                 int(execution_cfg.get("max_tool_rounds", 10) or 10),
             )
-            from RxyCode.RxyCode1_1_0.utils.streaming import token_stats as _ts
 
             for round_num in range(max_rounds):
                 round_received_real_usage = False
@@ -2356,7 +2349,7 @@ class AgentV2:
                         round_output_text += json.dumps(
                             tool_calls, ensure_ascii=False, sort_keys=True
                         )
-                    _ts.add_real_usage(
+                    token_stats.add_real_usage(
                         round_input, _estimate_tokens(round_output_text), 0
                     )
 
@@ -2430,7 +2423,7 @@ class AgentV2:
                         _estimate_tokens(getattr(message, "content", "") or "")
                         for message in messages
                     )
-                    _ts.add_real_usage(
+                    token_stats.add_real_usage(
                         synthesis_input, _estimate_tokens(answer), 0
                     )
                 if _synth_reasoning:
@@ -2463,13 +2456,13 @@ class AgentV2:
             # dropped or double-counted.
             _input = self._estimate_tokens(messages)
             _output = _estimate_tokens(answer, self._tokenizer_spec())
-            _ts.update_context(_input + _output, self._context_window())
+            token_stats.update_context(_input + _output, self._context_window())
 
             # Auto-compress if context is getting large (honours config autoCompact)
             auto_compact = bool(
                 (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
             )
-            if auto_compact and _ts.context_used > _ts.context_max * 0.85:
+            if auto_compact and token_stats.context_used > token_stats.context_max * 0.85:
                 try:
                     await self._memory.compress_if_needed(self._session_id)
                     if tui and hasattr(tui, "write_progress"):
@@ -2519,6 +2512,7 @@ class AgentV2:
             return f"[error: tool orchestrator unavailable for '{name}']"
         try:
             from RxyCode.RxyCode1_1_0.config.settings import load_config
+
             cfg = load_config()
         except Exception:
             cfg = {}
@@ -2701,7 +2695,6 @@ class AgentV2:
 
         # Level 1: exact hash cache (include memory context in key for freshness)
         from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
         memory_fingerprint = None
         if memory_ctx:
             memory_fingerprint = hashlib.sha256(memory_ctx.encode("utf-8")).hexdigest()
@@ -2851,13 +2844,12 @@ class AgentV2:
 
             # Estimate for context tracking, but prefer provider usage for
             # accounting whenever the stream supplied it.
-            from RxyCode.RxyCode1_1_0.utils.streaming import token_stats as _ts
             _input = self._estimate_tokens(messages)
             _output = _estimate_tokens(answer, self._tokenizer_spec())
             if answer and not received_real_usage:
-                _ts.add_real_usage(_input, _output, 0)
+                token_stats.add_real_usage(_input, _output, 0)
             # Update context window tracking
-            _ts.update_context(_input + _output, self._context_window())
+            token_stats.update_context(_input + _output, self._context_window())
 
             return answer
         except Exception as e:
@@ -2900,8 +2892,6 @@ class AgentV2:
         1. Plan 阶段: 分析任务，生成详细的执行计划（tmp 文件）
         2. Build 阶段: 按照计划执行，完成后自动删除 tmp 文件
         """
-        import tempfile
-        import os
         from RxyCode.RxyCode1_1_0.core.prompts import get_role_prompt, build_user_message
 
         # 1. Plan 阶段: 生成执行计划 — 使用 prompt 注册表模板
@@ -3028,8 +3018,6 @@ class AgentV2:
         run_id: str,
     ) -> str:
         """Capture terminal status and every nested tool evidence record."""
-        import time as _time
-
         from RxyCode.RxyCode1_1_0.core.tracing import Tracer
         from RxyCode.RxyCode1_1_0.core.trajectory import TrajectoryLogger
         from RxyCode.RxyCode1_1_0.core.session_runtime import (
@@ -3126,8 +3114,7 @@ class AgentV2:
             attempt_id,
             checkpoint_id,
         )
-        started_at = _time.monotonic()
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+        started_at = time.monotonic()
         token_start = (token_stats.input_tokens, token_stats.output_tokens)
         status = "failed"
         evidence = []
@@ -3289,7 +3276,7 @@ class AgentV2:
                 "run.finished",
                 {
                     "status": status,
-                    "duration_seconds": _time.monotonic() - started_at,
+                    "duration_seconds": time.monotonic() - started_at,
                     "steps": sum(
                         span.node_name in graph_node_names for span in spans
                     ),
@@ -3313,7 +3300,7 @@ class AgentV2:
             run_monitor.record(
                 run_id,
                 status,
-                _time.monotonic() - started_at,
+                time.monotonic() - started_at,
                 metrics={
                     "steps": sum(
                         span.node_name in graph_node_names for span in spans
@@ -3500,11 +3487,10 @@ class AgentV2:
             )
 
             # Smart pipeline monitoring: detect real problems, not just slow tasks
-            import time as _time
-
-            pipeline_start = _time.time()
+            pipeline_start = time.time()
             pipeline_tui = get_tui()
             from RxyCode.RxyCode1_1_0.config.settings import load_config
+
             execution_cfg = (load_config() or {}).get("execution", {})
             soft_budget = max(
                 0.0,
@@ -3540,7 +3526,7 @@ class AgentV2:
                     raise
                 if done:
                     break
-                elapsed = _time.time() - pipeline_start
+                elapsed = time.time() - pipeline_start
                 if pipeline_tui and hasattr(pipeline_tui, "write_progress"):
                     pipeline_tui.write_progress(build_progress_message(elapsed))
                 _logger.debug("build pipeline running elapsed=%.0fs", elapsed)
@@ -3559,7 +3545,7 @@ class AgentV2:
                     break
 
             if budget_reached:
-                elapsed = _time.time() - pipeline_start
+                elapsed = time.time() - pipeline_start
                 final = build_timeout_notice(elapsed)
                 self._memory.add_interaction(user_input, final)
                 self._memory.save_session()
@@ -3570,7 +3556,7 @@ class AgentV2:
             except Exception as e:
                 # Graph raised an exception (e.g. GraphRecursionError when the
                 # step budget is exhausted) - be honest instead of pretending.
-                elapsed = _time.time() - pipeline_start
+                elapsed = time.time() - pipeline_start
                 error_detail = f"{type(e).__name__}: {str(e)[:200]}"
                 _logger.warning(
                     "build pipeline raised %s after %.0fs: %s",
@@ -3597,7 +3583,7 @@ class AgentV2:
                 # response path here can repeat side effects (and _fast_reply can
                 # auto-save generated code), so fail honestly instead.
                 detail = str(final) if final else "No final response was produced"
-                final = build_failure_notice(_time.time() - pipeline_start, detail)
+                final = build_failure_notice(time.time() - pipeline_start, detail)
 
             # Store the interaction and save session
             self._memory.add_interaction(user_input, final)
@@ -3618,7 +3604,6 @@ class AgentV2:
 
     def _detect_file_operation(self, text: str) -> dict | None:
         """Detect file operations: read, write, list directory."""
-        import re
         text_stripped = text.strip()
         text_lower = text_stripped.lower()
 

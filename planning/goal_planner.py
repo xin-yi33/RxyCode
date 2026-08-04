@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 from uuid import uuid4
+
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode, TaskTree
 from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message, get_role_prompt
@@ -29,7 +31,6 @@ class GoalPlanner:
         self._llm = llm
 
     async def plan(self, user_input: str, memory_context: str = "") -> tuple[GoalResult, TaskTree]:
-        from langchain_core.messages import HumanMessage, SystemMessage
         user_msg = build_user_message(get_role_prompt("goal_planner"), f"User input:\n{user_input}", memory_context)
         messages = [SystemMessage(content=get_system_prompt()), HumanMessage(content=user_msg)]
         try:

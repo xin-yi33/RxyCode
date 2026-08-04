@@ -21,7 +21,9 @@ from RxyCode.RxyCode1_1_0.core.state import TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.execution.evidence import ToolEvidence
 from RxyCode.RxyCode1_1_0.validation.side_effects import (
     evidence_risk_level,
+    has_verified_side_effect,
     is_supporting_effect,
+    task_requires_side_effect_evidence,
 )
 
 
@@ -212,10 +214,6 @@ def verify_grounded_synthesis(
         )
 
     sources = build_grounding_sources(tree)
-    from RxyCode.RxyCode1_1_0.validation.side_effects import (
-        has_verified_side_effect,
-        task_requires_side_effect_evidence,
-    )
 
     for task in tree.get_leaf_nodes():
         if task.status != TaskStatus.PASSED:

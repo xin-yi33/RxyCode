@@ -13,6 +13,11 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, load_config
+from RxyCode.RxyCode1_1_0.log.log_helpers import redact_sensitive
+from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
+
+from ..log_retention import rotate_file
 from .policy import RiskLevel
 
 #: Keys matching any of these (case-insensitive substring) are redacted.
@@ -40,8 +45,6 @@ def sanitize_args(args: Any, max_chars: int = _MAX_VALUE_CHARS) -> Any:
         return [sanitize_args(v, max_chars) for v in args]
     if isinstance(args, str):
         try:
-            from ...log.log_helpers import redact_sensitive
-
             args = redact_sensitive(args)
         except Exception:
             pass
@@ -51,7 +54,6 @@ def sanitize_args(args: Any, max_chars: int = _MAX_VALUE_CHARS) -> Any:
 
 def _default_path() -> Path:
     try:
-        from ...config.settings import get_data_dir
         base = get_data_dir()
     except Exception:
         base = Path.home() / ".rxycode"
@@ -71,8 +73,6 @@ class AuditLogger:
         self._path = Path(path) if path else _default_path()
         self._lock = threading.Lock()
         try:
-            from ...config.settings import load_config
-
             config = load_config().get("observability") or {}
         except Exception:
             config = {}
@@ -114,15 +114,12 @@ class AuditLogger:
         """Append one record. ``approval`` is one of
         auto/approved/rejected/always/dry_run."""
         try:
-            from ...log.logger import get_current_run_id
             run_id = get_current_run_id()
         except Exception:
             run_id = "unknown"
 
         result_s = result if isinstance(result, str) else repr(result)
         try:
-            from ...log.log_helpers import redact_sensitive
-
             result_s = redact_sensitive(result_s)
         except Exception:
             result_s = sanitize_args(result_s)
@@ -142,8 +139,6 @@ class AuditLogger:
         try:
             with self._lock:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                from ..log_retention import rotate_file
-
                 rotate_file(
                     self._path,
                     incoming_bytes=len(line.encode("utf-8")) + 1,

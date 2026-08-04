@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 from uuid import uuid4
+
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, model_validator
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode, TaskTree
 from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message, get_role_prompt
@@ -112,7 +114,6 @@ class HierarchicalDecomposer:
             or len(tree.nodes) >= self._max_nodes
         ):
             return
-        from langchain_core.messages import HumanMessage, SystemMessage
         task_content = f"Task: {node.title}\nDescription: {node.description}\nConstraints: {tree.constraints}"
         user_msg = build_user_message(get_role_prompt("decomposer"), task_content, memory_context)
         messages = [SystemMessage(content=get_system_prompt()), HumanMessage(content=user_msg)]

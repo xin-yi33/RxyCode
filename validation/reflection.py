@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from RxyCode.RxyCode1_1_0.core.prompts import (
@@ -109,8 +110,6 @@ class Reflector:
             validation_issues=validation.get("issues", []),
             error_history=task.error_history[-5:],
         )
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         messages = [
             SystemMessage(content=get_system_prompt()),
             HumanMessage(content=build_user_message(role, "")),

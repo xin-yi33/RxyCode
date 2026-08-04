@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from langgraph.graph import StateGraph, START, END
 
 from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
+from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 from .state import AgentState, TaskNode, TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.execution.scheduler import TaskScheduler
@@ -550,8 +551,6 @@ async def executor_node(state: AgentState) -> dict:
 
     async def _run_single_task(task: TaskNode) -> dict:
         """Run one leaf task behind task-level hooks and trajectory events."""
-        from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
-
         payload = {
             "task_id": task.id,
             "task_title": task.title,

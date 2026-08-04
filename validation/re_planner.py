@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from RxyCode.RxyCode1_1_0.core.state import TaskNode, TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.core.prompts import (
     get_system_prompt,
@@ -23,6 +25,12 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
 from RxyCode.RxyCode1_1_0.planning.structured_output import (
     StructuredOutputError,
     invoke_structured_output,
+)
+from RxyCode.RxyCode1_1_0.planning.decomposer import (
+    DEFAULT_MAX_PLAN_DEPTH,
+    DEFAULT_MAX_PLAN_NODES,
+    SubTaskList,
+    select_task_indices_within_budget,
 )
 
 
@@ -37,11 +45,6 @@ class RePlanner:
         max_depth: int | None = None,
         max_nodes: int | None = None,
     ):
-        from RxyCode.RxyCode1_1_0.planning.decomposer import (
-            DEFAULT_MAX_PLAN_DEPTH,
-            DEFAULT_MAX_PLAN_NODES,
-        )
-
         resolved_depth = (
             DEFAULT_MAX_PLAN_DEPTH if max_depth is None else max_depth
         )
@@ -108,12 +111,6 @@ class RePlanner:
         user_msg = build_user_message(role_prompt, "")
 
         # Call LLM with shared infrastructure (SystemMessage + HumanMessage)
-        from RxyCode.RxyCode1_1_0.planning.decomposer import (
-            SubTaskList,
-            select_task_indices_within_budget,
-        )
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         messages = [
             SystemMessage(content=get_system_prompt()),
             HumanMessage(content=user_msg),

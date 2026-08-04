@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from RxyCode.RxyCode1_1_0.core.state import TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.core.prompts import (
     build_user_message,
@@ -80,7 +82,6 @@ class OutputSynthesizer:
                 "not completed and must not claim the full request succeeded."
             )
         user_msg = build_user_message(get_role_prompt("synthesizer"), task_content)
-        from langchain_core.messages import HumanMessage, SystemMessage
         messages = [
             SystemMessage(content=get_system_prompt()),
             HumanMessage(content=user_msg),
