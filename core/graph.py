@@ -16,12 +16,17 @@ as pure conditional_edges - not as separate nodes.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
+import time as _time
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from langgraph.graph import StateGraph, START, END
 
 from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
+from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 from .state import AgentState, TaskNode, TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.execution.scheduler import TaskScheduler
 
@@ -51,8 +56,6 @@ _TRACEABLE_GRAPH_NODES = frozenset({
 
 
 def _token_snapshot() -> tuple[int, int]:
-    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
-
     return int(token_stats.input_tokens), int(token_stats.output_tokens)
 
 
@@ -153,8 +156,6 @@ def observed_node(node_name: str, node):
     """Trace a real graph node with request-local token deltas."""
 
     async def wrapped(state: AgentState) -> dict:
-        import asyncio
-
         tracer = state.get("_tracer")
         task_id = str(state.get("current_task_id") or "")
         span = tracer.start_span(node_name, task_id=task_id) if tracer else None
@@ -365,9 +366,6 @@ async def executor_node(state: AgentState) -> dict:
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
     from RxyCode.RxyCode1_1_0.config.settings import load_config
     from langchain_core.runnables import Runnable
-
-    import asyncio
-    import time as _time
 
     llm = _model_for(state, "executor")
     memory = state["_memory"]
@@ -663,8 +661,6 @@ async def executor_node(state: AgentState) -> dict:
 
 async def validator_node(state: AgentState) -> dict:
     """Phase 3: Validate every task dispatched by the preceding executor."""
-    import asyncio
-
     from RxyCode.RxyCode1_1_0.validation.validator import Validator
 
     llm = _model_for(state, "reflection")
@@ -776,8 +772,6 @@ async def re_planner_node(state: AgentState) -> dict:
 
 async def reflection_node(state: AgentState) -> dict:
     """Classify failed tasks before selecting retry, re-plan, or termination."""
-    from collections import Counter
-
     from RxyCode.RxyCode1_1_0.validation.reflection import Reflector
 
     tree: TaskTree = state["task_tree"]
@@ -853,8 +847,6 @@ async def reflection_node(state: AgentState) -> dict:
 
 async def compressor_node(state: AgentState) -> dict:
     """Bound graph context while preserving full task results as artifacts."""
-    import hashlib
-
     from RxyCode.RxyCode1_1_0.config.credential_store import atomic_write_text
     from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, load_config
 

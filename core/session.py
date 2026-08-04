@@ -13,6 +13,9 @@ try:
 except ImportError:  # repo-root pytest/dev imports (top-level core + protocol)
     from protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
 
+from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
+from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
 
 EmitCallback = Callable[[BaseModel], None]
 
@@ -113,9 +116,6 @@ class Session:
         run_id: str,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
-        from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats as token_stats
-
         previous_input = token_stats.input_tokens
         previous_output = token_stats.output_tokens
         cursor = thinking_cursor(agent)

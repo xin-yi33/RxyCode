@@ -1539,89 +1539,14 @@ class AgentV2:
 
     def _register_tools(self):
         """Register all built-in tools and download tools."""
+        from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import register_builtin_tools
         from RxyCode.RxyCode1_1_0.tools.registry import registry
 
-        # Import and register all built-in tools (same as old agent)
-        try:
-            from RxyCode.RxyCode1_1_0.tools.read import read_tool
-            from RxyCode.RxyCode1_1_0.tools.write import write_tool
-            from RxyCode.RxyCode1_1_0.tools.edit import edit_tool
-            from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
-            from RxyCode.RxyCode1_1_0.tools.grep_tool import grep_tool
-            from RxyCode.RxyCode1_1_0.tools.glob_tool import glob_tool
-            from RxyCode.RxyCode1_1_0.tools.ls import ls_tool
-            from RxyCode.RxyCode1_1_0.tools.view import view_tool
-            from RxyCode.RxyCode1_1_0.tools.webfetch import webfetch_tool
-            from RxyCode.RxyCode1_1_0.tools.websearch import websearch_tool
-            from RxyCode.RxyCode1_1_0.tools.git_tool import git_tool
-            from RxyCode.RxyCode1_1_0.tools.datetime_tool import datetime_tool
-            from RxyCode.RxyCode1_1_0.tools.history_tool import history_tool
-            from RxyCode.RxyCode1_1_0.tools.question_tool import question_tool
-            from RxyCode.RxyCode1_1_0.tools.skill_tool import skill_tool
-            from RxyCode.RxyCode1_1_0.tools.change_directory import change_directory_tool
-            from RxyCode.RxyCode1_1_0.tools.diagnostics import diagnostics_tool
-            from RxyCode.RxyCode1_1_0.tools.format_tool import format_tool
-            from RxyCode.RxyCode1_1_0.tools.memory_tool import memory_tool
-            from RxyCode.RxyCode1_1_0.tools.vision import vision_tool
-            from RxyCode.RxyCode1_1_0.tools.workflow_tool import workflow_tool
-            from RxyCode.RxyCode1_1_0.tools.task_tool import task_tool
-            from RxyCode.RxyCode1_1_0.tools.patch import patch_tool
-            from RxyCode.RxyCode1_1_0.tools.open_file import open_file_tool
-
-            # Risk levels: read (read-only), write (default), danger (destructive)
-            # Stitched from OpenHands SecurityRisk classification
-            read_tools = [
-                read_tool, grep_tool, glob_tool, ls_tool, view_tool,
-                datetime_tool, websearch_tool, webfetch_tool, history_tool,
-                diagnostics_tool, format_tool,
-            ]
-            write_tools = [
-                write_tool, edit_tool, patch_tool, open_file_tool, memory_tool,
-                change_directory_tool, skill_tool, workflow_tool, task_tool,
-                vision_tool,
-            ]
-            danger_tools = [bash_tool, git_tool, question_tool]
-
-            for t in read_tools:
-                registry.register(t, risk="read")
-            for t in write_tools:
-                registry.register(t, risk="write")
-            for t in danger_tools:
-                registry.register(t, risk="danger")
-        except ImportError:
-            pass  # some tools may not be available
-
-        # Register download tools for natural language skill/MCP management
-        try:
-            from RxyCode.RxyCode1_1_0.tools.download_tool import download_skill_tool, download_mcp_tool
-            registry.register(download_skill_tool, risk="danger")
-            registry.register(download_mcp_tool, risk="danger")
-        except ImportError:
-            pass
-
-        # Keep the RAG tool out of the model contract when RAG is disabled.
-        if getattr(self._memory, "_rag_enabled", False):
-            try:
-                import RxyCode.RxyCode1_1_0.rag.search  # noqa: F401
-            except ImportError:
-                pass
-
-        # FIX-3: Register file download tool for direct URL downloads
-        try:
-            from RxyCode.RxyCode1_1_0.tools.file_download import file_download_tool
-            registry.register(file_download_tool)
-        except ImportError:
-            pass
-
-        # Copy all registered tools to the orchestrator
-        for name in registry.get_names():
-            if name == "code_search" and not getattr(
-                self._memory, "_rag_enabled", False
-            ):
-                continue
-            tool = registry.get(name)
-            if tool:
-                self._tool_orchestrator.register(name, tool)
+        register_builtin_tools(
+            registry,
+            self._tool_orchestrator,
+            rag_enabled=bool(getattr(self._memory, "_rag_enabled", False)),
+        )
 
     @staticmethod
     def _fingerprint_mcp_config(config: dict) -> str:

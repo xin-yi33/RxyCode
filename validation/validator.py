@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 from pydantic import BaseModel, Field
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message, get_role_prompt
+from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
 from RxyCode.RxyCode1_1_0.planning.structured_output import (
     StructuredOutputError,
     invoke_structured_output,
+)
+from RxyCode.RxyCode1_1_0.validation.side_effects import (
+    has_verified_side_effect,
+    task_requires_side_effect_evidence,
 )
 
 
@@ -33,15 +40,8 @@ class Validator:
         tools_hint: list[str] | None = None,
         effect: str = "auto",
     ) -> ValidationResult:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
-
         records = evidence or []
         issues = deterministic_issues(records)
-        from RxyCode.RxyCode1_1_0.validation.side_effects import (
-            has_verified_side_effect,
-            task_requires_side_effect_evidence,
-        )
 
         if task_requires_side_effect_evidence(
             title=title,
