@@ -161,6 +161,23 @@ Defines AgentState (TypedDict) - the shared state object passed between all grap
 READ-only tool ceiling. Validation treats `write`/`danger` as an unconditional
 evidence requirement and conservatively infers the requirement for `auto`.
 
+### P7 intentional lazy imports
+
+P7 tracks function-scoped imports under `core/`, `execution/`, `planning/`,
+`validation/`, and `synthesis/` via `scripts/count_lazy_imports.py` (budget **50**).
+
+After batch 3 (123 remaining), lazy imports are **intentional** in:
+
+| Module | Reason |
+|--------|--------|
+| `agent_v2.py` | Breaks `agent_v2`↔`graph` cycles; `load_config` must stay lazy so tests can patch `config.settings.load_config` |
+| `graph.py` | Node factories defer `execution` / `planning` / `validation` imports until graph build |
+| `session.py` | `protocol.notifications` try/except for repo-root pytest imports |
+| `builtin_tool_registration.py` | Optional `rag.search` import guarded by `rag_enabled` |
+
+`tracing.py`, `trajectory.py`, and `tool_orchestrator.py` now use module-scope
+absolute imports (no dual-path try/except).
+
 ## Dependencies
 - langchain_core for message types
 - langgraph for the state machine

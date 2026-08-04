@@ -12,15 +12,41 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import re
 import uuid
 from contextvars import ContextVar, Token
 from typing import Any
 
-_logger = logging.getLogger(__name__)
+from langchain_core.tools import StructuredTool
+
+from RxyCode.RxyCode1_1_0.core.governance import PolicyOutcome, SensitiveActionPolicy
+from RxyCode.RxyCode1_1_0.core.safety.approval import (
+    ApprovalDecision,
+    ApprovalRequest,
+    get_approval_broker,
+)
+from RxyCode.RxyCode1_1_0.core.safety.audit import get_audit_logger
+from RxyCode.RxyCode1_1_0.core.safety.policy import (
+    RiskLevel,
+    get_tool_risk,
+    is_dry_run,
+    is_write_allowed,
+    summarize_args,
+)
+from RxyCode.RxyCode1_1_0.log.log_helpers import (
+    tool_display_status,
+    trace_status_for_result,
+)
+from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
+from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
+from RxyCode.RxyCode1_1_0.recovery.error_recovery import retry_with_backoff
+from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
 from .evidence import ToolEvidence, build_tool_evidence, deterministic_issues
+
+_logger = logging.getLogger(__name__)
 
 
 _evidence_sinks: ContextVar[tuple[list[ToolEvidence], ...]] = ContextVar(
@@ -54,8 +80,6 @@ _live_tool_dedup: ContextVar[dict[str, str] | None] = ContextVar(
 
 
 def _canonical_tool_args(args: Any) -> str:
-    import json
-
     if isinstance(args, str):
         try:
             args = json.loads(args)
@@ -198,14 +222,10 @@ class ToolOrchestrator:
     def _record_evidence(evidence: ToolEvidence) -> None:
         for sink in _evidence_sinks.get():
             sink.append(evidence)
-        from ..log.logger import get_current_run_id
-        from ..log.monitor import run_monitor
-
         run_monitor.record_evidence(get_current_run_id(), evidence)
 
     def _get_audit_logger(self):
         if self._audit_logger is None:
-            from ..core.safety.audit import get_audit_logger
             self._audit_logger = get_audit_logger()
         return self._audit_logger
 
@@ -291,8 +311,6 @@ class ToolOrchestrator:
         if risk is None:
             self._risk_overrides.pop(canonical, None)
             return
-        from ..core.safety.policy import RiskLevel
-
         if isinstance(risk, RiskLevel):
             resolved = risk
         else:
@@ -372,9 +390,6 @@ class ToolOrchestrator:
         max_risk: Any | None = None,
     ) -> list[Any]:
         """Return LLM-facing proxies that can only execute through this gate."""
-        from ..core.safety.policy import RiskLevel, get_tool_risk
-        from langchain_core.tools import StructuredTool
-
         def make_executor(tool_name: str):
             async def execute_proxy(**kwargs: Any) -> str:
                 return await self.execute_tool(tool_name, kwargs, config=config)
@@ -531,8 +546,6 @@ class ToolOrchestrator:
 
         async def invoke() -> str:
             if getattr(risk, "name", "") == "READ" and retry_attempts > 1:
-                from ..recovery.error_recovery import retry_with_backoff
-
                 return await retry_with_backoff(
                     lambda: self._invoke_async_strict(tool, args),
                     max_attempts=retry_attempts,
@@ -645,8 +658,6 @@ class ToolOrchestrator:
         tracer = self.get_event_tracer()
         span = tracer.start_span(f"tool:{name}") if tracer is not None else None
         if span is not None:
-            from ..utils.streaming import token_stats
-
             token_before = (token_stats.input_tokens, token_stats.output_tokens)
         else:
             token_before = (0, 0)
@@ -654,8 +665,6 @@ class ToolOrchestrator:
         def finish_span(status: str, error_msg: str = "") -> None:
             if span is None:
                 return
-            from ..utils.streaming import token_stats
-
             prompt_tokens = max(0, token_stats.input_tokens - token_before[0])
             completion_tokens = max(0, token_stats.output_tokens - token_before[1])
             tracer.end_span(
@@ -781,8 +790,6 @@ class ToolOrchestrator:
                     pass
             raise
 
-        from ..log.log_helpers import trace_status_for_result
-
         trace_status, trace_detail = trace_status_for_result(result)
         if trajectory is not None:
             trajectory.record(
@@ -806,8 +813,6 @@ class ToolOrchestrator:
         )
         if event_started and hasattr(tui, "write_tool_result"):
             try:
-                from ..log.log_helpers import tool_display_status
-
                 tui.write_tool_result(
                     result,
                     tool_display_status(result),
@@ -836,15 +841,6 @@ class ToolOrchestrator:
            level is listed in ``safety.auto_approve`` or always-allowed)
         5. execute + audit
         """
-        from ..core.safety.policy import (
-            RiskLevel,
-            is_write_allowed, is_dry_run, summarize_args,
-        )
-        from ..core.safety.approval import (
-            ApprovalRequest, ApprovalDecision, get_approval_broker,
-        )
-        from ..core.governance import PolicyOutcome, SensitiveActionPolicy
-
         config = config or {}
         safety = (config.get("safety") or {})
 

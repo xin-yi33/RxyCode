@@ -19,12 +19,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-try:
-    from ..config.settings import get_data_dir, load_config
-    from .log_retention import prune_run_files
-except ImportError:  # Support direct ``python -m core.trajectory`` imports.
-    from config.settings import get_data_dir, load_config
-    from core.log_retention import prune_run_files
+from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, load_config
+from RxyCode.RxyCode1_1_0.core.log_retention import prune_run_files
 
 
 REDACTED = "[REDACTED]"

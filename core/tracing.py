@@ -11,6 +11,7 @@ Adapted from OpenHands (MIT) event stream/trajectory serialization pattern.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import time
@@ -19,14 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-try:
-    from ..config.settings import get_data_dir, load_config
-    from ..log.log_helpers import redact_sensitive
-    from .log_retention import prune_run_files
-except ImportError:  # Support direct ``python -m core.tracing`` invocation.
-    from config.settings import get_data_dir, load_config
-    from core.log_retention import prune_run_files
-    from log.log_helpers import redact_sensitive
+from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, load_config
+from RxyCode.RxyCode1_1_0.core.log_retention import prune_run_files
+from RxyCode.RxyCode1_1_0.log.log_helpers import redact_sensitive
 
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -309,8 +305,6 @@ def replay(run_id: str) -> None:
 
 def main():
     """CLI entry: python -m core.tracing replay <run_id>"""
-    import argparse
-
     parser = argparse.ArgumentParser(
         prog="core.tracing",
         description="RxyCode node-level tracing & replay",
