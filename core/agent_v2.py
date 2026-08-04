@@ -23,9 +23,78 @@ import tempfile
 import threading
 import time
 from typing import Optional
+from urllib.parse import urlsplit
 
-from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+import httpx
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
+
+from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
+from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
+from RxyCode.RxyCode1_1_0.config import settings as _settings
+from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
+from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import register_builtin_tools
+from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+from RxyCode.RxyCode1_1_0.core.governance import (
+    AsyncTokenBucketRateLimiter,
+    ModelRouter,
+    RateLimitPolicy,
+)
+from RxyCode.RxyCode1_1_0.core.hooks import HookRegistry
+from RxyCode.RxyCode1_1_0.core.prompts import (
+    build_user_message,
+    get_role_prompt,
+    get_system_prompt,
+)
+from RxyCode.RxyCode1_1_0.core.research_policy import (
+    ResearchPolicy,
+    extract_research_urls,
+    get_research_policy,
+    is_successful_research_fetch,
+    normalize_research_url,
+    research_failure_message,
+)
+from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
+from RxyCode.RxyCode1_1_0.core.session_runtime import (
+    bind_session,
+    clear_session_runtime,
+    current_working_directory,
+    reset_session_binding,
+)
+from RxyCode.RxyCode1_1_0.core.state import TaskTree
+from RxyCode.RxyCode1_1_0.core.tracing import Tracer
+from RxyCode.RxyCode1_1_0.core.trajectory import TrajectoryLogger
+from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
+from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+    ToolExecutionJournal,
+    new_attempt_id,
+)
+from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+from RxyCode.RxyCode1_1_0.log.log_helpers import (
+    classify_agent_result,
+    trace_status_for_result,
+)
+from RxyCode.RxyCode1_1_0.log.logger import get_bound_run_id, run_id_context
+from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
+from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
+from RxyCode.RxyCode1_1_0.memory.compressor import ContextCompressor
+from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
+from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
+from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
+from RxyCode.RxyCode1_1_0.tools.registry import registry
+from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
+from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
+from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX, token_stats
 from RxyCode.RxyCode1_1_0.utils.tui import get_tui
+from RxyCode.RxyCode1_1_0.validation.side_effects import (
+    has_verified_side_effect,
+    task_requires_side_effect_evidence,
+)
+
+from . import providers
+from .graph import build_graph
+from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
 
@@ -206,8 +275,6 @@ def _extract_cache_read(resp) -> int:
 
 def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
     """Estimate token count for a single text blob using a tokenizer spec."""
-    from .providers.tokenizers import count_tokens
-
     if text is None:
         return 0
     if not isinstance(text, str):
@@ -316,8 +383,6 @@ def _is_transport_retryable(exc: BaseException) -> bool:
     transport error as ``__cause__``/``__context__``, so we unwrap those too.
     """
     try:
-        import httpx
-
         if isinstance(exc, httpx.TransportError):
             return True
     except ImportError:  # pragma: no cover - httpx is always present in this app
@@ -402,9 +467,8 @@ class UsageTrackingLLM:
     def _ensure_cache_flag(self):
         if self._cache_enabled is None:
             try:
-                from RxyCode.RxyCode1_1_0.config.settings import load_config
 
-                cfg = load_config() or {}
+                cfg = _settings.load_config() or {}
                 self._cache_enabled = bool(
                     cfg.get("cache", {}).get("prompt_prefix_cache", False)
                 )
@@ -439,7 +503,6 @@ class UsageTrackingLLM:
         ak = getattr(first, "additional_kwargs", None) or {}
         if "cache_control" in ak:
             return messages
-        from langchain_core.messages import SystemMessage
         cached = SystemMessage(
             content=first.content,
             additional_kwargs={**ak, "cache_control": {"type": "ephemeral"}},
@@ -447,20 +510,14 @@ class UsageTrackingLLM:
         return [cached] + list(messages[1:])
 
     async def ainvoke(self, messages, **kwargs):
-        from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import (
-            SERVICE_UNAVAILABLE_MESSAGE,
-            circuit_breaker_enabled,
-            get_default_breaker,
-        )
-
         messages = self._apply_cache_control(messages)
         grant = await self._acquire_rate_limit(messages)
         usage: tuple[int, int] | None = None
         try:
-            if not circuit_breaker_enabled():
+            if not _circuit_breaker.circuit_breaker_enabled():
                 resp = await self._call_with_transport_retry(messages, kwargs)
             else:
-                breaker = get_default_breaker()
+                breaker = _circuit_breaker.get_default_breaker()
                 try:
                     resp = await breaker.call(
                         self._call_with_transport_retry, messages, kwargs
@@ -469,8 +526,7 @@ class UsageTrackingLLM:
                     import pybreaker
                     if isinstance(exc, pybreaker.CircuitBreakerError):
                         # Fast path: honest hint instead of cascading failure.
-                        from langchain_core.messages import AIMessage
-                        return AIMessage(content=SERVICE_UNAVAILABLE_MESSAGE)
+                        return AIMessage(content=_circuit_breaker.SERVICE_UNAVAILABLE_MESSAGE)
                     raise
             usage = _record_usage(resp, messages)
             return resp
@@ -483,19 +539,13 @@ class UsageTrackingLLM:
             )
 
     async def astream(self, messages, **kwargs):
-        from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import (
-            SERVICE_UNAVAILABLE_MESSAGE,
-            circuit_breaker_enabled,
-            get_default_breaker,
-        )
-
         messages = self._apply_cache_control(messages)
         grant = await self._acquire_rate_limit(messages)
         last_chunk = None
         partial_output_tokens = 0
         usage: tuple[int, int] | None = None
         try:
-            if not circuit_breaker_enabled():
+            if not _circuit_breaker.circuit_breaker_enabled():
                 first, rest = await self._open_stream_with_retry(messages, kwargs)
                 if first is not None:
                     last_chunk = first
@@ -510,7 +560,7 @@ class UsageTrackingLLM:
                     )
                     yield chunk
             else:
-                breaker = get_default_breaker()
+                breaker = _circuit_breaker.get_default_breaker()
                 try:
                     # Only stream *establishment* goes through the breaker;
                     # subsequent chunks flow through normally to keep streaming.
@@ -520,8 +570,7 @@ class UsageTrackingLLM:
                 except Exception as exc:
                     import pybreaker
                     if isinstance(exc, pybreaker.CircuitBreakerError):
-                        from langchain_core.messages import AIMessage
-                        yield AIMessage(content=SERVICE_UNAVAILABLE_MESSAGE)
+                        yield AIMessage(content=_circuit_breaker.SERVICE_UNAVAILABLE_MESSAGE)
                         return
                     raise
                 first, rest = agen
@@ -570,9 +619,8 @@ class UsageTrackingLLM:
         """Cached budget for transient transport-error retries (default 3)."""
         if self._transport_retries is None:
             try:
-                from RxyCode.RxyCode1_1_0.config.settings import load_config
 
-                cfg = load_config() or {}
+                cfg = _settings.load_config() or {}
                 self._transport_retries = int(
                     (cfg.get("llm") or {}).get("transport_retries", 3) or 3
                 )
@@ -673,32 +721,21 @@ class AgentV2:
     """LangGraph-based agent, drop-in compatible with the old Agent class."""
 
     def __init__(self, model_name: Optional[str] = None):
-        from RxyCode.RxyCode1_1_0.config.settings import (
-            get_active_model_config,
-            get_data_dir,
-            get_model_config,
-            load_config,
-        )
-
-        self._cfg = load_config()
+        self._cfg = _settings.load_config()
         self._session_id = "latest"
 
         # Resolve model config (same logic as old Agent)
         if model_name and model_name in self._cfg.get("models", {}):
-            self.model_config = get_model_config(model_name, self._cfg)
+            self.model_config = _settings.get_model_config(model_name, self._cfg)
         else:
-            self.model_config = get_active_model_config(self._cfg)
+            self.model_config = _settings.get_active_model_config(self._cfg)
 
         # Build LLM
         self._configure_rate_limiter()
         self._llm = self._build_llm()
-        from . import providers
-
         self._provider = providers.resolve(self.model_config)
         self._capabilities = self._provider.capabilities(self.model_config)
         self._sync_token_stats_context()
-
-        from .governance import ModelRouter
 
         self._model_router = ModelRouter(default_model=self._llm)
         routes = (self._cfg.get("governance", {}) or {}).get("model_routes", {})
@@ -706,15 +743,13 @@ class AgentV2:
             for role, configured_name in routes.items():
                 if not configured_name:
                     continue
-                routed_config = get_model_config(str(configured_name), self._cfg)
+                routed_config = _settings.get_model_config(str(configured_name), self._cfg)
                 self._model_router.register(
                     role,
                     self._build_llm_from_config(routed_config),
                     provider=self._provider_name(routed_config),
                     model_name=routed_config.get("model_name"),
                 )
-
-        from .hooks import HookRegistry
 
         lifecycle_cfg = self._cfg.get("lifecycle", {}) or {}
         hook_timeout = max(
@@ -729,7 +764,6 @@ class AgentV2:
 
         # Build memory system (use "latest" to match session storage)
         # Pass LLM so the compressor can use it for Tier 3 handoff summaries
-        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
         self._memory = MemoryManager(session_id=self._session_id, llm=self._llm)
         self._session_loaded = False
         self._rag_indexer_thread = None
@@ -753,8 +787,6 @@ class AgentV2:
         execution_cfg = self._cfg.get("execution", {})
         self._checkpoint_store = None
         if bool(execution_cfg.get("checkpoint_enabled", True)):
-            from .checkpoints import CheckpointStore
-
             retention = max(
                 1,
                 int(execution_cfg.get("checkpoint_retention", 50) or 50),
@@ -765,11 +797,6 @@ class AgentV2:
 
         self._tool_journal = None
         if bool(execution_cfg.get("tool_journal_enabled", True)):
-            from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
-            from RxyCode.RxyCode1_1_0.execution.tool_journal import (
-                ToolExecutionJournal,
-            )
-
             journal_retention = max(
                 1,
                 int(execution_cfg.get("tool_journal_retention", 100) or 100),
@@ -790,12 +817,11 @@ class AgentV2:
                 # snapshots are explicitly disabled.  This lightweight store
                 # persists only the attempt envelope used by the journal.
                 self._attempt_store = CheckpointStore(
-                    get_data_dir() / "tool_attempts",
+                    _settings.get_data_dir() / "tool_attempts",
                     retention_limit=journal_retention,
                 )
 
         # Build the LangGraph
-        from .graph import build_graph
         self._graph = build_graph()
 
         # Compatibility fields (used by main.py / api_server.py)
@@ -805,7 +831,6 @@ class AgentV2:
         self._last_thinking = ""
         self._thinking_history: list[str] = []
         # Register tools
-        from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
         self._tool_orchestrator = ToolOrchestrator()
         self._mcp_lock = threading.RLock()
         self._mcp_clients: dict[str, object] = {}
@@ -856,8 +881,6 @@ class AgentV2:
                 durable = dict(document.get("state") or {})
                 task_tree = durable.get("task_tree")
                 if isinstance(task_tree, dict):
-                    from .state import TaskTree
-
                     restored_tree = TaskTree.model_validate(task_tree)
                     restored_tree.assert_valid_plan()
                     durable["task_tree"] = restored_tree
@@ -887,8 +910,6 @@ class AgentV2:
         return caps.tokenizer if caps else "tiktoken:o200k_base"
 
     def _context_window(self) -> int:
-        from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX
-
         caps = getattr(self, "_capabilities", None)
         if caps is not None:
             return int(caps.context_window)
@@ -900,8 +921,6 @@ class AgentV2:
         改造前这里对所有模型硬用 gpt-4o 的编码，DeepSeek / Qwen 的偏差可达
         20% 以上，会让压缩时机和计费一起偏。
         """
-        from .providers.tokenizers import count_tokens
-
         spec = self._tokenizer_spec()
         total = 0
         for m in messages or []:
@@ -926,8 +945,6 @@ class AgentV2:
 
     def set_session(self, session_id: str) -> str:
         """Switch the serialized agent to an isolated durable session."""
-        from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
-
         resolved = validate_session_id(session_id)
         if resolved == self._session_id:
             return resolved
@@ -938,7 +955,6 @@ class AgentV2:
             self._memory.save_session()
         except Exception:
             pass
-        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 
         self._session_id = resolved
         self._memory = MemoryManager(session_id=resolved, llm=self._llm)
@@ -971,12 +987,6 @@ class AgentV2:
         attempt_store = getattr(self, "_attempt_store", None)
         if attempt_store is not None and attempt_store is not self._checkpoint_store:
             removed_checkpoints += attempt_store.reset(session_id=self._session_id)
-        from RxyCode.RxyCode1_1_0.core.session_runtime import clear_session_runtime
-        from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
-        from RxyCode.RxyCode1_1_0.tools.workflow_tool import (
-            clear_session_workflows,
-        )
-
         removed_runtime = clear_session_runtime(self._session_id)
         removed_tasks = clear_session_tasks(self._session_id)
         removed_workflows = clear_session_workflows(self._session_id)
@@ -991,20 +1001,17 @@ class AgentV2:
 
     def switch_model(self, configured_name: str) -> dict:
         """Rebuild the live model, router default and memory compressor."""
-        from RxyCode.RxyCode1_1_0.config.settings import get_model_config
 
         active = getattr(self, "_active_task", None)
         if active is not None and not active.done():
             raise RuntimeError("cannot switch model during an active run")
-        model_config = get_model_config(configured_name, self._cfg)
+        model_config = _settings.get_model_config(configured_name, self._cfg)
         try:
             self._memory.save_session()
         except Exception:
             pass
         self.model_config = model_config
         self._llm = self._build_llm_from_config(model_config)
-        from . import providers
-
         self._provider = providers.resolve(model_config)
         self._capabilities = self._provider.capabilities(model_config)
         self._sync_token_stats_context()
@@ -1014,7 +1021,6 @@ class AgentV2:
             provider=self._provider_name(model_config),
             model_name=model_config.get("model_name"),
         )
-        from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
         self._memory = MemoryManager(session_id=self._session_id, llm=self._llm)
         self._memory.bind_rag_indexer(
             getattr(self, "_rag_indexer_thread", None)
@@ -1025,10 +1031,6 @@ class AgentV2:
 
     def runtime_status(self) -> dict:
         """Return content-free runtime controls and live infrastructure state."""
-        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
-            resolve_graph_context_token_limit,
-        )
-
         execution_cfg = self._cfg.get("execution", {}) or {}
         context_cfg = self._cfg.get("context", {}) or {}
         observability_cfg = self._cfg.get("observability", {}) or {}
@@ -1074,12 +1076,6 @@ class AgentV2:
                 "error_type": type(exc).__name__,
             }
         try:
-            from .session_runtime import (
-                bind_session,
-                current_working_directory,
-                reset_session_binding,
-            )
-
             session_token = bind_session(self._session_id)
             try:
                 session_cwd = str(current_working_directory())
@@ -1231,8 +1227,6 @@ class AgentV2:
         已被 core.providers.resolve() 取代，仅为向后兼容保留。
         新代码请用 self._provider.name。
         """
-        from urllib.parse import urlsplit
-
         explicit = str(model_config.get("provider") or "").strip()
         if explicit:
             return explicit
@@ -1240,8 +1234,6 @@ class AgentV2:
         return host or "openai-compatible"
 
     def _configure_rate_limiter(self) -> None:
-        from .governance import AsyncTokenBucketRateLimiter, RateLimitPolicy
-
         rate_cfg = (self._cfg.get("governance", {}) or {}).get("rate_limit", {})
         if not isinstance(rate_cfg, dict) or not bool(rate_cfg.get("enabled", True)):
             self._rate_limiter = None
@@ -1271,10 +1263,6 @@ class AgentV2:
         provider 的默认实现（OpenAIProvider）复刻了改造前的参数，因此未识别
         的模型行为不变。差异化只发生在显式声明了差异的 provider 上。
         """
-        from langchain_openai import ChatOpenAI
-
-        from . import providers
-
         provider = providers.resolve(model_config)
         caps = provider.capabilities(model_config)
         raw_llm = ChatOpenAI(**provider.llm_kwargs(model_config, caps))
@@ -1354,8 +1342,6 @@ class AgentV2:
         client = getattr(llm, "async_client", None)
         if client is not None:
             return client
-        from openai import AsyncOpenAI
-
         # Match LangChain's ChatOpenAI default request timeout so the
         # fallback path does not silently switch to a different (shorter)
         # timeout than the primary async_client path. An empty api_key
@@ -1487,17 +1473,12 @@ class AgentV2:
             # (resolving to AsyncStream); others return the stream directly.
             return resp if hasattr(resp, "__aiter__") else await resp
 
-        from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import (
-            circuit_breaker_enabled,
-            get_default_breaker,
-        )
-
         last_chunk = None
         partial_output_tokens = 0
         usage: tuple[int, int] | None = None
         try:
-            if circuit_breaker_enabled():
-                agen = await get_default_breaker().call(_open_provider_stream)
+            if _circuit_breaker.circuit_breaker_enabled():
+                agen = await _circuit_breaker.get_default_breaker().call(_open_provider_stream)
             else:
                 agen = await _open_provider_stream()
             async for chunk in agen:
@@ -1541,9 +1522,6 @@ class AgentV2:
 
     def _register_tools(self):
         """Register all built-in tools and download tools."""
-        from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import register_builtin_tools
-        from RxyCode.RxyCode1_1_0.tools.registry import registry
-
         register_builtin_tools(
             registry,
             self._tool_orchestrator,
@@ -1569,8 +1547,6 @@ class AgentV2:
         optional server cannot add its full connection timeout to every chat.
         Broken or changed servers expose no stale tools.
         """
-        from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
-
         # A few embedders construct AgentV2 via ``__new__`` and inject their
         # own tool orchestrator. Keep that supported without weakening the
         # fully initialized production path.
@@ -1608,9 +1584,8 @@ class AgentV2:
             self._cfg = {}
 
         try:
-            from RxyCode.RxyCode1_1_0.config.settings import load_config
 
-            fresh_config = load_config() or {}
+            fresh_config = _settings.load_config() or {}
             raw_mcp = fresh_config.get("mcpServers", {}) or {}
             if not isinstance(raw_mcp, dict):
                 raw_mcp = {}
@@ -2106,9 +2081,7 @@ class AgentV2:
         5. Capture reasoning_content as thinking
         6. Update token stats and context tracking
         """
-        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
         await self._ensure_session_loaded()
-        from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message
         allowed_tool_names = self._resolve_fast_reply_tool_allowlist(
             user_input, allowed_tool_names
         )
@@ -2121,14 +2094,6 @@ class AgentV2:
         memory_ctx = self._memory_ctx_for_turn(user_input)
         system = get_system_prompt()
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
-        from RxyCode.RxyCode1_1_0.core.research_policy import (
-            ResearchPolicy,
-            extract_research_urls,
-            get_research_policy,
-            is_successful_research_fetch,
-            normalize_research_url,
-            research_failure_message,
-        )
         research_policy = get_research_policy(user_input)
         # Explicit git-only / social allowlists must not be forced into web research.
         if allowed_tool_names is not None and "websearch" not in allowed_tool_names:
@@ -2241,7 +2206,6 @@ class AgentV2:
         # API runs inject a request-correlated tracer; direct CLI usage creates
         # one lazily so tool spans still remain observable.
         if getattr(self, "_tool_tracer", None) is None:
-            from RxyCode.RxyCode1_1_0.core.tracing import Tracer
             self._tool_tracer = Tracer()
 
         try:
@@ -2511,12 +2475,10 @@ class AgentV2:
                 )
             return f"[error: tool orchestrator unavailable for '{name}']"
         try:
-            from RxyCode.RxyCode1_1_0.config.settings import load_config
 
-            cfg = load_config()
+            cfg = _settings.load_config()
         except Exception:
             cfg = {}
-        from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
         if classify_tool_risk(name, args) >= RiskLevel.WRITE:
             # Conservative by design: once a mutating tool is handed to the
             # orchestrator, a later failure must not replay the request through
@@ -2566,10 +2528,6 @@ class AgentV2:
                 if event_token is not None and callable(reset_event_tui):
                     reset_event_tui(event_token)
             if fallback_span is not None:
-                from RxyCode.RxyCode1_1_0.log.log_helpers import (
-                    trace_status_for_result,
-                )
-
                 span_status, detail = trace_status_for_result(result)
                 tracer.end_span(
                     fallback_span,
@@ -2603,8 +2561,6 @@ class AgentV2:
         This proactively triggers :class:`ContextCompressor` inside the tool
         loop instead of waiting until the very end of the run.
         """
-        from RxyCode.RxyCode1_1_0.memory.compressor import ContextCompressor
-
         budget = int(self._context_window() * 0.7)
         total = self._estimate_tokens(messages)
         if total <= budget:
@@ -2686,15 +2642,12 @@ class AgentV2:
         incrementally. When stream=False (default), uses ainvoke()
         for complete token usage tracking.
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
         await self._ensure_session_loaded()
         memory_ctx = self._memory_ctx_for_turn(user_input)
-        from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt, build_user_message
         system = get_system_prompt()
         user_msg = build_user_message("", user_input, memory_ctx)
 
         # Level 1: exact hash cache (include memory context in key for freshness)
-        from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
         memory_fingerprint = None
         if memory_ctx:
             memory_fingerprint = hashlib.sha256(memory_ctx.encode("utf-8")).hexdigest()
@@ -2716,7 +2669,6 @@ class AgentV2:
             return cached["response"]
 
         # Level 2: semantic similarity cache (only when no conversation context)
-        from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
         cached = None
         if not memory_ctx:
             cached = semantic_cache.get(user_input, namespace=cache_namespace)
@@ -2892,8 +2844,6 @@ class AgentV2:
         1. Plan 阶段: 分析任务，生成详细的执行计划（tmp 文件）
         2. Build 阶段: 按照计划执行，完成后自动删除 tmp 文件
         """
-        from RxyCode.RxyCode1_1_0.core.prompts import get_role_prompt, build_user_message
-
         # 1. Plan 阶段: 生成执行计划 — 使用 prompt 注册表模板
         plan_role = get_role_prompt(
             "compose_plan",
@@ -3000,11 +2950,6 @@ class AgentV2:
         if getattr(self, "_tool_orchestrator", None) is not None:
             await asyncio.to_thread(self._refresh_mcp_tools)
 
-        from RxyCode.RxyCode1_1_0.log.logger import (
-            get_bound_run_id,
-            run_id_context,
-        )
-
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
             return await self._run_observed(user_input, mode, bound_run_id)
@@ -3018,24 +2963,6 @@ class AgentV2:
         run_id: str,
     ) -> str:
         """Capture terminal status and every nested tool evidence record."""
-        from RxyCode.RxyCode1_1_0.core.tracing import Tracer
-        from RxyCode.RxyCode1_1_0.core.trajectory import TrajectoryLogger
-        from RxyCode.RxyCode1_1_0.core.session_runtime import (
-            bind_session,
-            reset_session_binding,
-        )
-        from RxyCode.RxyCode1_1_0.execution.tool_journal import new_attempt_id
-        from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
-            ToolOrchestrator,
-        )
-        from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
-        from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
-        from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
-        from RxyCode.RxyCode1_1_0.validation.side_effects import (
-            has_verified_side_effect,
-            task_requires_side_effect_evidence,
-        )
-
         active_task = asyncio.current_task()
         self._active_task = active_task
         self._cancelled = False
@@ -3358,7 +3285,6 @@ class AgentV2:
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
 
-        from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 
         ToolOrchestrator.clear_live_dedup()
 
@@ -3368,10 +3294,6 @@ class AgentV2:
         if mode == "plan":
             return await self._run_plan_only(user_input)
 
-        from RxyCode.RxyCode1_1_0.core.research_policy import (
-            get_research_policy,
-            research_failure_message,
-        )
         research_policy = get_research_policy(user_input)
 
         # Fast tool path for simple file operations (check BEFORE download intent)
@@ -3489,9 +3411,8 @@ class AgentV2:
             # Smart pipeline monitoring: detect real problems, not just slow tasks
             pipeline_start = time.time()
             pipeline_tui = get_tui()
-            from RxyCode.RxyCode1_1_0.config.settings import load_config
 
-            execution_cfg = (load_config() or {}).get("execution", {})
+            execution_cfg = (_settings.load_config() or {}).get("execution", {})
             soft_budget = max(
                 0.0,
                 float(execution_cfg.get("pipeline_soft_budget_seconds", 3600) or 0),

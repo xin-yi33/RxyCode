@@ -166,17 +166,20 @@ evidence requirement and conservatively infers the requirement for `auto`.
 P7 tracks function-scoped imports under `core/`, `execution/`, `planning/`,
 `validation/`, and `synthesis/` via `scripts/count_lazy_imports.py` (budget **50**).
 
-After batch 3 (123 remaining), lazy imports are **intentional** in:
+After P7 completion (~40 remaining), lazy imports are **intentional** in:
 
 | Module | Reason |
 |--------|--------|
-| `agent_v2.py` | Breaks `agent_v2`↔`graph` cycles; `load_config` must stay lazy so tests can patch `config.settings.load_config` |
-| `graph.py` | Node factories defer `execution` / `planning` / `validation` imports until graph build |
+| `agent_v2.py` | Optional `pybreaker` / conditional `rag.index`; config via `_settings.load_config()` for test patchability |
+| `graph.py` | `TYPE_CHECKING` import for `MemoryManager` annotations only |
 | `session.py` | `protocol.notifications` try/except for repo-root pytest imports |
 | `builtin_tool_registration.py` | Optional `rag.search` import guarded by `rag_enabled` |
+| `tool_journal.py` | Platform-specific `msvcrt` / `fcntl` file locking |
+| `checkpoints.py` | Defers `tool_journal` to avoid import cycles at module load |
+| `safety/policy.py` | Defers `session_runtime` path resolution |
 
-`tracing.py`, `trajectory.py`, and `tool_orchestrator.py` now use module-scope
-absolute imports (no dual-path try/except).
+`tracing.py`, `trajectory.py`, `tool_orchestrator.py`, and `graph.py` node factories
+now use module-scope absolute imports (config reads go through `config.settings`).
 
 ## Dependencies
 - langchain_core for message types
