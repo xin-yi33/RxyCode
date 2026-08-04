@@ -41,13 +41,16 @@ class TokenStats:
     a guessed/hard-coded price.
     """
 
-    def __init__(self):
+    def __init__(self, context_max: Optional[int] = None):
         self.input_tokens = 0
         self.output_tokens = 0
         self.cache_hits = 0
         self.cache_misses = 0
         self.context_used = 0
-        self.context_max = DEFAULT_CONTEXT_MAX
+        self._default_context_max = (
+            int(context_max) if context_max is not None else DEFAULT_CONTEXT_MAX
+        )
+        self.context_max = self._default_context_max
         self.cache_size = 0
         # Real provider-side usage (DeepSeek/OpenAI context caching)
         self.prompt_tokens = 0          # total prompt tokens billed
@@ -61,6 +64,12 @@ class TokenStats:
     def set_model(self, model_name: Optional[str]) -> None:
         """Set the active model name used for pricing lookups."""
         self._model_name = model_name
+
+    def set_context_max(self, max_ctx: int) -> None:
+        """Set the context window limit from ModelCapabilities.context_window."""
+        resolved = int(max_ctx)
+        self._default_context_max = resolved
+        self.context_max = resolved
 
     def add_real_usage(self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0):
         """Record real token usage reported by the LLM provider.
@@ -215,7 +224,7 @@ class TokenStats:
         self.cache_hits = 0
         self.cache_misses = 0
         self.context_used = 0
-        self.context_max = DEFAULT_CONTEXT_MAX
+        self.context_max = self._default_context_max
         self.cache_size = 0
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0

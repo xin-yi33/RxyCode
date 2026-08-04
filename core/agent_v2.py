@@ -913,7 +913,7 @@ class AgentV2:
     def _sync_token_stats_context(self) -> None:
         caps = getattr(self, "_capabilities", None)
         if caps is not None:
-            token_stats.update_context(token_stats.context_used, caps.context_window)
+            token_stats.set_context_max(int(caps.context_window))
 
     def list_checkpoints(self, *, include_completed: bool = False) -> list[dict]:
         """Return this logical session's durable execution snapshots."""

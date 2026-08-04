@@ -70,3 +70,31 @@ class TestTokenizerWiring:
         )
         loose = agent._estimate_tokens(messages)
         assert tight > loose
+
+
+class TestTokenStatsContextWiring:
+    def test_init_accepts_context_max(self):
+        from RxyCode.RxyCode1_1_0.utils.streaming import TokenStats
+
+        stats = TokenStats(context_max=32_000)
+        assert stats.context_max == 32_000
+
+    def test_set_context_max_updates_default_for_reset(self):
+        from RxyCode.RxyCode1_1_0.utils.streaming import TokenStats
+
+        stats = TokenStats()
+        stats.set_context_max(64_000)
+        stats.update_context(10_000)
+        stats.reset()
+        assert stats.context_max == 64_000
+        assert stats.context_used == 0
+
+    def test_agent_sync_sets_global_token_stats_context_max(self, monkeypatch):
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+        monkeypatch.setattr(AgentV2, "__init__", lambda self, model_name=None: None)
+        agent = AgentV2.__new__(AgentV2)
+        agent._capabilities = ModelCapabilities(context_window=48_000)
+        token_stats.reset()
+        agent._sync_token_stats_context()
+        assert token_stats.context_max == 48_000

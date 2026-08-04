@@ -19,8 +19,15 @@ class TestTokenStats:
         assert stats.cache_hit_tokens == 0
         assert stats.cache_hit_rate == 0.0
         assert stats.context_used == 0
-        # context_max defaults to 256000 (a reasonable default)
         assert stats.context_max == 256000
+
+    def test_init_context_max_override(self):
+        from RxyCode.RxyCode1_1_0.utils.streaming import TokenStats
+
+        stats = TokenStats(context_max=32_000)
+        assert stats.context_max == 32_000
+        stats.reset()
+        assert stats.context_max == 32_000
 
     def test_add_real_usage_basic(self):
         stats = self._make_stats()
