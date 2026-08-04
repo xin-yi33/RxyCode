@@ -11,7 +11,8 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_role_prompt,
     get_system_prompt,
 )
-from RxyCode.RxyCode1_1_0.core.state import TaskNode
+from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 
 
@@ -134,9 +135,6 @@ class Executor:
             event_token = self._tools.bind_event_tui(self._event_tui)
         token = self._tools.begin_evidence_capture()
         try:
-            from RxyCode.RxyCode1_1_0.core.state import TaskEffect
-            from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
-
             if task.effect == TaskEffect.READ:
                 available = self._tools.select_safe_tools(
                     task.tools_hint,

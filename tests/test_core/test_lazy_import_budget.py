@@ -11,7 +11,7 @@ from scripts.count_lazy_imports import P7_BUDGET, count_lazy_imports
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Ratchet milestone — lower toward P7_BUDGET (50) as batches land.
-P7_MILESTONE = 125
+P7_MILESTONE = 100
 
 
 def test_lazy_import_count_under_p7_milestone() -> None:
@@ -24,10 +24,6 @@ def test_lazy_import_count_under_p7_milestone() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="P7 final budget (50) — enable when 00-EXECUTION-PLAN.md P7 completes",
-)
 def test_lazy_import_count_under_p7_final_budget() -> None:
     counts = count_lazy_imports(REPO_ROOT)
     total = sum(counts.values())

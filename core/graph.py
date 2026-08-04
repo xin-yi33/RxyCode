@@ -24,10 +24,26 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from langgraph.graph import StateGraph, START, END
+from langchain_core.runnables import Runnable
 
+from RxyCode.RxyCode1_1_0.config import settings as _settings
+from RxyCode.RxyCode1_1_0.config.credential_store import atomic_write_text
 from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
+from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
+from RxyCode.RxyCode1_1_0.execution import executor as _executor_module
+from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
+from RxyCode.RxyCode1_1_0.planning.decomposer import HierarchicalDecomposer
+from RxyCode.RxyCode1_1_0.planning.goal_planner import GoalPlanner
+from RxyCode.RxyCode1_1_0.planning.structured_output import StructuredOutputError
+from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorRecovery
+from RxyCode.RxyCode1_1_0.synthesis.synthesizer import OutputSynthesizer
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
+from RxyCode.RxyCode1_1_0.validation.final_output import verify_grounded_synthesis
+from RxyCode.RxyCode1_1_0.validation import re_planner as _re_planner_module
+from RxyCode.RxyCode1_1_0.validation.reflection import Reflector
+from RxyCode.RxyCode1_1_0.validation import validator as _validator_module
 from .state import AgentState, TaskNode, TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.execution.scheduler import TaskScheduler
 
@@ -305,7 +321,6 @@ def _save_graph_checkpoint(state: AgentState, update: dict | None = None) -> Non
 
 async def goal_planner_node(state: AgentState) -> dict:
     """Phase 1: Extract the top-level goal from user input."""
-    from RxyCode.RxyCode1_1_0.planning.goal_planner import GoalPlanner
     llm = _model_for(state, "planner")
     memory: MemoryManager = state["_memory"]
     tui = state.get("_tui")
@@ -332,8 +347,6 @@ async def goal_planner_node(state: AgentState) -> dict:
 
 async def decomposer_node(state: AgentState) -> dict:
     """Phase 1b: Decompose the goal into a task tree."""
-    from RxyCode.RxyCode1_1_0.planning.decomposer import HierarchicalDecomposer
-
     llm = _model_for(state, "planner")
     tree: TaskTree = state["task_tree"]
     memory_ctx = state.get("memory_context", "")
@@ -363,18 +376,13 @@ async def executor_node(state: AgentState) -> dict:
     When ``parallel_tasks`` is empty or has a single entry, the original
     serial execution path is used unchanged.
     """
-    from RxyCode.RxyCode1_1_0.execution.executor import Executor
-    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
-    from RxyCode.RxyCode1_1_0.config.settings import load_config
-    from langchain_core.runnables import Runnable
-
     llm = _model_for(state, "executor")
     memory = state["_memory"]
     tree: TaskTree = state["task_tree"]
     tui = state.get("_tui")
 
     # Load execution config
-    cfg = load_config() or {}
+    cfg = _settings.load_config() or {}
     exec_cfg = cfg.get("execution", {})
     max_parallel = exec_cfg.get("max_parallel", 3)
 
@@ -422,7 +430,7 @@ async def executor_node(state: AgentState) -> dict:
         if tui and hasattr(tui, "write_progress"):
             tui.write_progress(f"Executing: {task.title[:60]}")
 
-        executor = Executor(llm, tool_orch, config=cfg, event_tui=tui)
+        executor = _executor_module.Executor(llm, tool_orch, config=cfg, event_tui=tui)
         tracker = _ProgressTracker()
 
         class _TrackingLLM(Runnable):
@@ -660,8 +668,6 @@ async def executor_node(state: AgentState) -> dict:
 
 async def validator_node(state: AgentState) -> dict:
     """Phase 3: Validate every task dispatched by the preceding executor."""
-    from RxyCode.RxyCode1_1_0.validation.validator import Validator
-
     llm = _model_for(state, "reflection")
     memory = state["_memory"]
     tree: TaskTree = state["task_tree"]
@@ -674,7 +680,7 @@ async def validator_node(state: AgentState) -> dict:
         return {"error": "No current task", "phase": "executing"}
 
     tui = state.get("_tui")
-    validator = Validator(llm)
+    validator = _validator_module.Validator(llm)
     failed_ids: list[str] = []
 
     for task in tasks:
@@ -741,11 +747,9 @@ async def validator_node(state: AgentState) -> dict:
 
 async def re_planner_node(state: AgentState) -> dict:
     """Phase 3b: Re-plan every failed task from the validated batch."""
-    from RxyCode.RxyCode1_1_0.validation.re_planner import RePlanner
-
     llm = _model_for(state, "planner")
     tree: TaskTree = state["task_tree"]
-    replanner = RePlanner(llm)
+    replanner = _re_planner_module.RePlanner(llm)
     current_id = state.get("current_task_id")
     failed_ids: list[str] = []
     if current_id and (
@@ -771,8 +775,6 @@ async def re_planner_node(state: AgentState) -> dict:
 
 async def reflection_node(state: AgentState) -> dict:
     """Classify failed tasks before selecting retry, re-plan, or termination."""
-    from RxyCode.RxyCode1_1_0.validation.reflection import Reflector
-
     tree: TaskTree = state["task_tree"]
     reflector = Reflector(_model_for(state, "reflection"))
     failures = [
@@ -846,12 +848,9 @@ async def reflection_node(state: AgentState) -> dict:
 
 async def compressor_node(state: AgentState) -> dict:
     """Bound graph context while preserving full task results as artifacts."""
-    from RxyCode.RxyCode1_1_0.config.credential_store import atomic_write_text
-    from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, load_config
-
     memory: MemoryManager = state["_memory"]
     session_id = state["session_id"]
-    cfg = load_config() or {}
+    cfg = _settings.load_config() or {}
     auto_compact = cfg.get("autoCompact", True)
     if isinstance(auto_compact, str):
         auto_compact = auto_compact.strip().casefold() in {"1", "true", "yes", "on"}
@@ -875,7 +874,7 @@ async def compressor_node(state: AgentState) -> dict:
     )
     per_result_budget = max(1000, int(token_limit * 3 * 0.7) // result_count)
     max_result_chars = min(configured_result_chars, per_result_budget)
-    archive_dir = get_data_dir() / "context_artifacts"
+    archive_dir = _settings.get_data_dir() / "context_artifacts"
 
     for task in tree.nodes.values():
         full_result = task.result or ""
@@ -930,8 +929,6 @@ async def error_recovery_node(state: AgentState) -> dict:
     - "cancel" -> task marked CANCELLED; TaskScheduler.get_ready_tasks()
       cascade-cancels its dependents on the next route_next() pass.
     """
-    from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorRecovery
-
     tree: TaskTree = state["task_tree"]
     task_id = state.get("current_task_id")
     error = state.get("error", "Unknown error")
@@ -955,11 +952,6 @@ async def error_recovery_node(state: AgentState) -> dict:
 
 async def synthesizer_node(state: AgentState) -> dict:
     """Phase 4: Synthesize all results into the final output."""
-    from RxyCode.RxyCode1_1_0.planning.structured_output import (
-        StructuredOutputError,
-    )
-    from RxyCode.RxyCode1_1_0.synthesis.synthesizer import OutputSynthesizer
-
     llm = _model_for(state, "default")
     tree: TaskTree = state["task_tree"]
     tui = state.get("_tui")
@@ -978,8 +970,6 @@ async def synthesizer_node(state: AgentState) -> dict:
             "synthesis_error": None,
         }
     except StructuredOutputError as exc:
-        from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
-
         internal = "[Build incomplete: Synthesizer output was not valid grounded JSON.]"
         final = to_user_facing_error(internal)
         synthesis_state = {
@@ -996,11 +986,6 @@ async def synthesizer_node(state: AgentState) -> dict:
 
 async def final_verifier_node(state: AgentState) -> dict:
     """Fail closed when the synthesized answer contradicts verified state."""
-    from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
-    from RxyCode.RxyCode1_1_0.validation.final_output import (
-        verify_grounded_synthesis,
-    )
-
     tree: TaskTree = state["task_tree"]
     final = str(state.get("final_response") or "").strip()
     issues = list(tree.validate_plan())
@@ -1051,8 +1036,6 @@ async def final_verifier_node(state: AgentState) -> dict:
         **grounding_metrics,
     }
     if issues:
-        from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
-
         detail = "; ".join(verification["issues"][:8])
         final = to_user_facing_error(f"[Build incomplete: {detail}]")
     else:
@@ -1122,9 +1105,7 @@ def route_next(state: AgentState) -> str:
     if tree.is_complete():
         return "synthesize"
 
-    from RxyCode.RxyCode1_1_0.config.settings import load_config
-
-    cfg = load_config() or {}
+    cfg = _settings.load_config() or {}
     context_cfg = cfg.get("context", {})
     token_limit = max(
         1000,
