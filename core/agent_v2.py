@@ -109,28 +109,21 @@ PLAN_READONLY_TOOL_NAMES = frozenset({
     "webfetch",
     "datetime",
 })
-# E6: social/emotional chat — dialogue only; no write/edit/bash/shell.
-SOCIAL_CHAT_TOOL_NAMES = frozenset({"datetime"})
-GIT_ONLY_TOOL_NAMES = frozenset({"git", "read", "ls", "grep", "glob"})
-_GIT_FORCE_RE = re.compile(
-    r"必须调用\s*git|只能使用\s*git|only\s+(?:use\s+)?git\s+tool|git\s+工具.*operation",
-    re.IGNORECASE,
-)
-SOCIAL_CHAT_ROLE_INSTRUCTION = (
-    "This is social or emotional chat. Respond warmly in dialogue. "
-    "Do not create markdown files, write code to disk, or run shell commands "
-    "unless the user explicitly asks for a file or runnable artifact. "
-    "If they mention errors from a prior turn, acknowledge and comfort them "
-    "instead of launching tools or a build pipeline. "
-    "Do NOT dump prior coding tasks, games, parkour, or large code blocks "
-    "unless the user explicitly asks to continue that work. "
-    "For short greetings (e.g. 你好 / hello), reply with a brief friendly "
-    "greeting only — no code, no file contents, no prior-task recap."
-)
-_PURE_SOCIAL_GREETING_RE = re.compile(
-    r"^(?:你好|您好|hello|hi|hey|在吗|谢谢|thank you|thanks)"
-    r"(?:[!！。.\s]*)$",
-    re.IGNORECASE,
+from RxyCode.RxyCode1_1_0.core.request_routing import (
+    GIT_FORCE_RE as _GIT_FORCE_RE,
+    GIT_ONLY_TOOL_NAMES,
+    PURE_SOCIAL_GREETING_RE as _PURE_SOCIAL_GREETING_RE,
+    RoutingDirective,
+    SOCIAL_CHAT_ROLE_INSTRUCTION,
+    SOCIAL_CHAT_TOOL_NAMES,
+    detect_download_intent,
+    detect_file_operation,
+    has_creation_product_intent,
+    is_simple_query,
+    is_social_chat,
+    parse_routing_directive,
+    resolve_fast_reply_tool_allowlist,
+    should_use_subagents,
 )
 CODE_MUTATING_TOOL_NAMES = frozenset({
     "write",
@@ -1777,238 +1770,24 @@ class AgentV2:
                 pass
 
     def _has_creation_product_intent(self, text: str) -> bool:
-        """True when the user asks to create/build a product (game, app, …)."""
-        text_stripped = text.strip()
-        text_lower = text_stripped.lower()
-        zh_create = (
-            "写一个", "写个", "编写", "实现", "开发", "创建", "做个", "做一个",
-            "帮我写", "生成一个", "生成个",
-        )
-        zh_products = (
-            "游戏", "代码", "脚本", "程序", "项目", "网站", "爬虫", "机器人", "算法",
-        )
-        if any(c in text_stripped for c in zh_create) and any(
-            p in text_stripped for p in zh_products
-        ):
-            return True
-        if re.search(
-            r"\b(build|create|implement|write|make)\b.*\b(game|app|website|code|script|bot)\b",
-            text_lower,
-        ):
-            return True
-        return False
+        return has_creation_product_intent(text)
 
     def _is_social_chat(self, text: str) -> bool:
-        """Narrow emotional/social chat that must not enter LangGraph.
-
-        Disambiguates 「玩游戏」 (social) from 「写一个游戏」 (code intent).
-        """
-        text_stripped = text.strip()
-        if not text_stripped or len(text_stripped) > 300:
-            return False
-        text_lower = text_stripped.lower()
-        if re.search(r"https?://", text_stripped):
-            return False
-        if re.search(r"[A-Za-z]:\\|/home/|~/", text_stripped):
-            return False
-        if self._has_creation_product_intent(text_stripped):
-            return False
-
-        social_signals = (
-            "伤心", "难过", "不理我", "陪我", "你好", "您好", "谢谢", "在吗",
-            "倾诉", "安慰", "孤独", "郁闷", "好伤心", "很难过",
-            "你却说", "你却报", "怎么又报错", "你说 error", "你说error",
-            "how are you", "i'm sad", "im sad", "i am sad", "feel sad",
-            "lonely", "upset", "you said error",
-        )
-        has_social = any(s in text_stripped for s in social_signals) or any(
-            s in text_lower for s in social_signals if s.isascii()
-        )
-        play_game = any(
-            p in text_stripped
-            for p in ("玩游戏", "陪我玩", "找我玩", "找朋友玩", "一起玩")
-        )
-        if play_game and not self._has_creation_product_intent(text_stripped):
-            return True
-        if has_social and not self._has_creation_product_intent(text_stripped):
-            return True
-        return False
+        return is_social_chat(text)
 
     def _resolve_fast_reply_tool_allowlist(
         self,
         user_input: str,
         allowed_tool_names: frozenset[str] | None,
     ) -> frozenset[str] | None:
-        """Return tool allowlist for _fast_reply_with_tools (E6 social whitelist)."""
-        if allowed_tool_names is not None:
-            return allowed_tool_names
-        if self._is_social_chat(user_input):
-            return SOCIAL_CHAT_TOOL_NAMES
-        if _GIT_FORCE_RE.search(user_input):
-            return GIT_ONLY_TOOL_NAMES
-        return None
+        return resolve_fast_reply_tool_allowlist(user_input, allowed_tool_names)
 
     def _is_simple_query(self, text: str) -> bool:
-        """Detect queries that can be handled by a single LLM call (fast path).
+        directive = getattr(self, "_routing_directive", RoutingDirective.AUTO)
+        return is_simple_query(text, directive=directive)
 
-        Only complex multi-step tasks that truly need decomposition should
-        go through the full LangGraph pipeline.  Everything else uses the
-        fast single-call path for much better response time.
-        """
-        text_stripped = text.strip()
-        text_lower = text_stripped.lower()
-
-        # Multi-step indicators: only these trigger the full pipeline
-        # English patterns (use \b word boundaries)
-        en_patterns = [
-            r"\b(build|create|implement)\b.*\b(full|complete|entire|whole)\b",
-            r"\b(step[- ]by[- ]step|multi[- ]step|phase\d)\b",
-            r"\b(refactor|rewrite|migrate)\b.*\b(entire|whole|all|codebase|project)\b",
-            r"\b(set up|setup|scaffold)\b.*\b(project|app|application|framework)\b",
-            r"\bci/cd\b",
-        ]
-        for pat in en_patterns:
-            if re.search(pat, text_lower):
-                return False
-
-        # Chinese patterns (no \b — Chinese chars are all \w, so \b won't fire)
-        # Inherently multi-step indicators — always trigger full pipeline
-        zh_always_complex = ["分步", "分阶段", "逐步", "分层"]
-        if any(k in text_stripped for k in zh_always_complex):
-            return False
-
-        # Action + scope combinations
-        zh_actions = ["重构", "重写", "迁移", "搭建", "初始化", "创建", "实现", "开发"]
-        zh_scopes = ["整个", "全部", "所有", "完整", "全面", "系统", "从零", "新项目", "整个项目"]
-
-        has_action = any(k in text_stripped for k in zh_actions)
-        has_scope = any(k in text_stripped for k in zh_scopes)
-
-        if has_action and has_scope:
-            return False
-
-        # Long queries (>500 chars) are likely complex
-        if len(text_stripped) > 500:
-            return False
-
-        # Social/emotional chat (incl. 「玩游戏」) stays on the fast path.
-        # Must run BEFORE the bare 「游戏」 code-intent check.
-        if self._is_social_chat(text_stripped):
-            return True
-
-        # Code / game / app generation must go through the tool-capable
-        # pipeline (write file + run + test), NOT the no-tool fast-reply
-        # path. Otherwise a request like "写一个跑酷小游戏" only gets a text
-        # snippet back and can never be built or run -> user sees "报错".
-        # (Root cause of "蜘蛛卡牌游戏可以、跑酷小游戏一直报错" inconsistency:
-        #  the keyword "写" was not in zh_actions, so it fell to the simple
-        #  path while a phrasing with 创建/实现 went through the full pipeline.)
-        zh_code_intent = ["游戏", "代码", "脚本", "程序", "项目", "网站", "爬虫", "机器人", "算法"]
-        # BUG FIX (2026-07-21): English code-intent keywords MUST be matched
-        # with word boundaries. A naive `k in text` substring check makes
-        # "app" match inside "happened"/"happier" and "script" match inside
-        # "descriptive", which wrongly routes plain chat ("what happened?")
-        # into the full plan-execute pipeline => 43 sub-tasks, 240s hang.
-        # Word boundaries stop "app" from matching "happened".
-        en_code_intent = [r"\b(game|app|website|code|script|bot|crawler|algorithm)\b"]
-        if any(k in text_stripped for k in zh_code_intent) or any(
-            re.search(p, text_lower) for p in en_code_intent
-        ):
-            return False
-
-        # File operations require tools (read_file, write_file, etc.) and
-        # must go through the tool-capable pipeline, not the fast-reply path.
-        zh_file_ops = ["读取文件", "读文件", "打开文件", "编辑文件", "写入文件", "写文件",
-                       "创建文件", "删除文件", "查看文件", "修改文件"]
-        # Word-boundary match so "read file.txt" (no standalone "file" word)
-        # and substrings like "read filename" don't over-match.
-        en_file_ops = [r"\b(read|open|edit|write|create|delete|view)\s+file\b"]
-        if any(k in text_stripped for k in zh_file_ops) or any(
-            re.search(p, text_lower) for p in en_file_ops
-        ):
-            return False
-
-        # Everything else is a simple query (fast path)
-        return True
     def _detect_download_intent(self, text: str) -> tuple[str, str, str] | None:
-        """Detect natural language download intent.
-        Returns (type, name, package) or None.
-        type is 'skill' or 'mcp'.
-        """
-        text_lower = text.lower().strip()
-        
-        # FIX-3: Check for file URL download patterns first (most specific)
-        url_pattern = r'(https?://[^\s]+\.(?:zip|tar|gz|pdf|doc|docx|xls|xlsx|ppt|pptx|txt|md|json|xml|csv|jpg|jpeg|png|gif|mp3|mp4|exe|msi|dmg|deb|rpm|apk|ipa))'
-        url_match = re.search(url_pattern, text, re.IGNORECASE)
-        if url_match:
-            url = url_match.group(1)
-            return ('file', url, '')
-        
-        # Check for download URL patterns
-        download_url_patterns = [
-            r'(?:下载|download)\s*(?:这个|这个文件|文件)?\s*(https?://[^\s]+)',
-            r'(?:从|from)\s*(https?://[^\s]+)\s*(?:下载|download)',
-            r'(?:帮我|please)\s*(?:下载|download)\s*(https?://[^\s]+)',
-        ]
-        for pattern in download_url_patterns:
-            m = re.search(pattern, text, re.IGNORECASE)
-            if m:
-                url = m.group(1)
-                return ('file', url, '')
-        
-        # Check for generic download requests with URL
-        if '下载' in text or 'download' in text.lower():
-            url_pattern2 = r'(https?://[^\s]+)'
-            url_match2 = re.search(url_pattern2, text)
-            if url_match2:
-                url = url_match2.group(1)
-                return ('file', url, '')
-
-        # Check for package pattern first (most specific)
-        # Like "npx -y @xxx/yyy" or "pip install xxx"
-        m = re.search(r'(npx|pip)\s+(-y\s+)?([@\w/.-]+)', text)
-        if m:
-            package = m.group(3)
-            # Extract name from package
-            name = package.split('/')[-1].replace('@', '')
-            # Determine type based on context
-            if 'skill' in text_lower:
-                return ('skill', name, package)
-            else:
-                return ('mcp', name, package)
-
-        # Skill download patterns
-        skill_patterns = [
-            r"(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-            r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-            r"(?:下载|安装|添加|获取|load|install|download|add)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*\s*(?:这个|个)?\s*(?:skill|插件)",
-            r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*\s*(?:这个|个)?\s*(?:skill|插件)",
-            r'(?:find-skill|/find-skill|/addskill)\s+([a-zA-Z0-9_-]+)',
-            r"(?:skill|插件)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-        ]
-
-        for pattern in skill_patterns:
-            m = re.search(pattern, text_lower)
-            if m:
-                name = m.group(1).strip()
-                if name and len(name) > 1:
-                    return ('skill', name, '')
-
-        # MCP download patterns (after package pattern)
-        mcp_patterns = [
-            r"(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-            r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-            r"(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-        ]
-
-        for pattern in mcp_patterns:
-            m = re.search(pattern, text_lower)
-            if m:
-                name = m.group(1).strip()
-                if name and len(name) > 1:
-                    return ('mcp', name, '')
-
-        return None
+        return detect_download_intent(text)
 
     async def _handle_download_intent(self, intent: tuple[str, str, str]) -> str:
         """Handle downloads through the registered, safety-gated tools."""
@@ -2809,27 +2588,7 @@ class AgentV2:
 
 
     def _should_use_subagents(self, user_input: str) -> bool:
-        """判断是否应该使用子代理。
-        
-        条件：
-        1. 任务包含多个独立子任务（如"同时修改A和B"）
-        2. 任务可以并行执行（如"读取多个文件"）
-        3. 任务明确要求子代理（如"用子代理执行"）
-        """
-        text_lower = user_input.lower()
-        
-        # 多任务 indicators
-        multi_task_patterns = [
-            r"同时|并行|一起|分别|各自",
-            r"at the same time|in parallel|simultaneously",
-            r"多个|多个文件|多个任务",
-            r"批量|batch",
-        ]
-        for pattern in multi_task_patterns:
-            if re.search(pattern, text_lower):
-                return True
-        
-        return False
+        return should_use_subagents(user_input)
 
     async def _run_with_subagents(self, user_input: str) -> str:
         """使用子代理并行执行任务。"""
@@ -3285,6 +3044,10 @@ class AgentV2:
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
 
+        routing_directive, user_input = parse_routing_directive(user_input)
+        self._routing_directive = routing_directive
+        force_fast = routing_directive == RoutingDirective.FORCE_FAST
+        force_full = routing_directive == RoutingDirective.FORCE_FULL
 
         ToolOrchestrator.clear_live_dedup()
 
@@ -3347,7 +3110,11 @@ class AgentV2:
                     "你可以再说一次，或者换个说法。"
                 )
 
-        if mode in ("build", "plan") and self._is_simple_query(user_input):
+        if (
+            mode in ("build", "plan")
+            and not force_full
+            and (force_fast or self._is_simple_query(user_input))
+        ):
             try:
                 if social:
                     _logger.info("route=social_chat mode=%s -> fast_tools", mode)
@@ -3524,48 +3291,7 @@ class AgentV2:
             return error_msg
 
     def _detect_file_operation(self, text: str) -> dict | None:
-        """Detect file operations: read, write, list directory."""
-        text_stripped = text.strip()
-        text_lower = text_stripped.lower()
-
-        # Skip code generation requests - let them go through the normal pipeline
-        code_gen_indicators = ['game', 'function', 'class', 'script', 'html', 'js',
-                               'python', 'program', 'code', 'implement', 'build',
-                               'generate', 'write a', 'create a', 'write me',
-                               '写一个', '创建一个',
-                               '小游戏', '代码', '函数',
-                               '脚本', '程序']
-        if any(ind in text_lower for ind in code_gen_indicators):
-            return None
-
-        # Extract any file path from the text
-        path_match = re.search(r'[A-Za-z]:[\\\/][^\s]+', text_stripped)
-        detected_path = path_match.group(0) if path_match else None
-
-        # List directory: "list files in X", "ls X", "show files in X"
-        list_kw = ["list", "ls", "\u5217\u51fa", "\u663e\u793a\u6587\u4ef6", "\u67e5\u770b\u6587\u4ef6"]
-        if any(k in text_lower for k in list_kw) and detected_path:
-            return {"op": "list", "path": detected_path}
-
-        # Read file: "read X", "cat X", "show X"
-        read_kw = ["read ", "cat ", "\u8bfb\u53d6", "\u67e5\u770b\u6587\u4ef6"]
-        if any(k in text_lower for k in read_kw) and detected_path:
-            return {"op": "read", "path": detected_path}
-
-        # Write/create file patterns
-        write_patterns = [
-            r'(?:\u521b\u5efa|\u5199\u5165|\u65b0\u5efa|create|write)\s*(?:\u4e00\u4e2a|a)?\s*(?:\u6587\u4ef6|file)\s*[\uff1a:\s]*([^\s]+)\s*(?:\u5185\u5bb9|content|with)?\s*[\uff1a:\s]*(.*)',
-            r'(?:\u4fdd\u5b58|save)\s*(?:\u5230|to)\s*([^\s]+)\s*(?:\u5185\u5bb9|content)?\s*[\uff1a:\s]*(.*)',
-        ]
-        for pattern in write_patterns:
-            m = re.search(pattern, text_stripped, re.IGNORECASE | re.DOTALL)
-            if m:
-                fpath = m.group(1).strip()
-                content_val = m.group(2).strip() if m.group(2) else ""
-                if ('\\' in fpath or '/' in fpath or '.' in fpath) and len(fpath) < 500:
-                    return {"op": "write", "path": fpath, "content": content_val}
-
-        return None
+        return detect_file_operation(text)
 
     async def _handle_file_operation(self, op: dict, mode: str = "build") -> str:
         """Adapt a direct file intent to the unified, safety-gated tool entry."""

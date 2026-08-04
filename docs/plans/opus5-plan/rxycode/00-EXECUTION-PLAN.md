@@ -2150,8 +2150,8 @@ Select-String -Path core\agent_v2.py -Pattern "in \(?\[?['\"].{1,12}['\"], |任�
 4. 每替换一处跑一次 evals 基线比对。
 
 **完成判据**
-- [ ] 25 处清单完整并写进 `docs/modules/core.md`
-- [ ] 高危项已替换且有测试
+- [x] 25 处清单完整并写进 `docs/modules/core.md`
+- [x] 高危项已替换且有测试
 - [ ] evals 分数不下降
 
 ---

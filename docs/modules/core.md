@@ -161,6 +161,51 @@ Defines AgentState (TypedDict) - the shared state object passed between all grap
 READ-only tool ceiling. Validation treats `write`/`danger` as an unconditional
 evidence requirement and conservatively infers the requirement for `auto`.
 
+### P6 request routing (`core/request_routing.py`)
+
+AgentV2 no longer embeds ~25 keyword lists inline. Routing lives in
+`core/request_routing.py` with this priority:
+
+1. **Explicit directives** (user prefix): `/full`, `/pipeline` → LangGraph;
+   `/fast` → tool-aware fast reply
+2. **Structured signals**: absolute paths, URLs, `mode` (`plan`/`compose`/`build`)
+3. **Narrow keyword heuristics** (legacy, test-locked)
+
+Canonical inventory (`ROUTING_INVENTORY`, 25 sites):
+
+| ID | Location | Triggers | Decides | Risk |
+|----|----------|----------|---------|------|
+| R01 | `GIT_FORCE_RE` | git-only phrases | Fast-reply allowlist | Low |
+| R02 | `PURE_SOCIAL_GREETING_RE` | hello/你好 | Social role hint | Low |
+| R03 | `has_creation_product_intent` | 写+游戏 / build+app | Social vs code | **High** |
+| R04 | `is_social_chat` | emotion / 玩游戏 | Skip LangGraph | Medium |
+| R05 | `is_simple_query.en_patterns` | build entire, multi-step | Full pipeline | **High** |
+| R06 | `is_simple_query.zh_always_complex` | 分步/逐步 | Full pipeline | Medium |
+| R07 | `is_simple_query.zh_action+scope` | 重构+整个 | Full pipeline | **High** |
+| R08 | `is_simple_query.length` | >500 chars | Full pipeline | Low |
+| R09 | `is_simple_query.zh_code_intent` | 游戏/代码/脚本 | Tool pipeline | **High** |
+| R10 | `is_simple_query.en_code_intent` | `\b(game\|app\|code)\b` | Tool pipeline | **High** |
+| R11 | `is_simple_query.zh_file_ops` | 读文件/写文件 | Tool pipeline | Medium |
+| R12 | `is_simple_query.en_file_ops` | `read file` | Tool pipeline | Medium |
+| R13 | `detect_download_intent.url` | file URL | Download path | Low |
+| R14 | `detect_download_intent.download_url` | 下载+URL | Download path | Low |
+| R15 | `detect_download_intent.package` | npx/pip | MCP/skill | Medium |
+| R16 | `detect_download_intent.skill_patterns` | install skill | `download_skill` | Medium |
+| R17 | `detect_download_intent.mcp_patterns` | install mcp | `download_mcp` | Medium |
+| R18 | `detect_file_operation.code_gen_skip` | game/code | Skip direct file op | Medium |
+| R19 | `detect_file_operation.list_kw` | list+path | Direct `ls` | Low |
+| R20 | `detect_file_operation.read_kw` | read+cat+path | Direct `read` | Low |
+| R21 | `detect_file_operation.write_patterns` | create file path | Direct `write` | Medium |
+| R22 | `should_use_subagents` | 并行/batch | `parallel_requested` | Low |
+| R23 | `agent_v2._run_impl` | `mode` plan/compose/build | Top-level path | **High** |
+| R24 | `agent_v2._run_compose` | build-phase classifier | Compose build | **High** |
+| R25 | `parse_routing_directive` | `/full` `/fast` `/pipeline` | Explicit override | Mitigation |
+
+High-risk sites (R03, R05, R07, R09–R10, R23–R24) are covered by
+`tests/test_core/test_routing_simple_queries.py`,
+`tests/test_core/test_social_chat_routing.py`, `tests/test_routing_consistency.py`,
+and `tests/test_core/test_request_routing.py`.
+
 ### P7 intentional lazy imports
 
 P7 tracks function-scoped imports under `core/`, `execution/`, `planning/`,
