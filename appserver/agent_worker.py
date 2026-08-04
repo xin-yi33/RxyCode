@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from .bootstrap import bootstrap_agent
 from .emitter import model_to_notification
 from .jsonrpc import write_message
-from .runtime import bind_prompt_context, install_tui_context_hook, reset_prompt_context
+from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
 from .tui import ProtocolTui
 
 try:
@@ -151,6 +151,7 @@ class AgentWorker:
             self._schedule_write(model_to_notification(notification))
 
         tui = ProtocolTui(session_id, emit)
+        tui.set_thinking_expanded(bool(params.get("thinking_expanded", False)))
         tokens = bind_prompt_context(session_id, tui)
         session = Session(
             session_id=session_id,
@@ -205,6 +206,24 @@ class AgentWorker:
             }
         )
 
+    async def _handle_set_thinking_expanded(
+        self, params: dict[str, Any], request_id: int
+    ) -> None:
+        expanded = bool(params.get("expanded", False))
+        tui = get_bound_tui()
+        if tui is not None and hasattr(tui, "set_thinking_expanded"):
+            tui.set_thinking_expanded(expanded)
+            ok = True
+        else:
+            ok = False
+        await write_message(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"ok": ok, "expanded": expanded},
+            }
+        )
+
     async def _dispatch(self, message: dict[str, Any]) -> None:
         if "id" in message and ("result" in message or "error" in message):
             if self._resolve_parent_response(message):
@@ -222,6 +241,8 @@ class AgentWorker:
             await self._handle_prompt(params, int(request_id))
         elif method == "interrupt":
             await self._handle_interrupt(int(request_id))
+        elif method == "thinking/set_expanded":
+            await self._handle_set_thinking_expanded(params, int(request_id))
         elif method == "shutdown":
             await write_message(
                 {"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}}

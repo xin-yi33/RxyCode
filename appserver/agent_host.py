@@ -189,6 +189,7 @@ class AgentHost:
         timeout: float,
         emit: EmitFn,
         mode: str = "build",
+        thinking_expanded: bool = False,
     ) -> dict[str, Any]:
         self._emit = emit
         import asyncio
@@ -201,9 +202,27 @@ class AgentHost:
                 "text": text,
                 "run_id": run_id,
                 "mode": mode,
+                "thinking_expanded": thinking_expanded,
             },
             timeout=timeout,
         )
+
+    async def set_thinking_expanded(self, expanded: bool, timeout: float = 5.0) -> bool:
+        """Forward Thought expand state to the in-flight worker TUI."""
+        if not self.alive():
+            return False
+        import asyncio
+
+        try:
+            result = await asyncio.to_thread(
+                self._request,
+                "thinking/set_expanded",
+                {"expanded": bool(expanded)},
+                timeout=timeout,
+            )
+        except Exception:
+            return False
+        return bool(result.get("ok", False))
 
     async def kill_async(self) -> None:
         await asyncio.to_thread(self.kill)

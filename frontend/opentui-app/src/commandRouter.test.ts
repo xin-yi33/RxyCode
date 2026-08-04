@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
-import { filterCommands, isSlashCommand, resolveSlashSubmit } from "./commands.ts";
+import { filterCommands, isSlashCommand, resolveSlashSubmit, isBareModelPickerCommand } from "./commands.ts";
 
 describe("classifyInput", () => {
   test("hello is chat", () => {
@@ -47,14 +47,14 @@ describe("resolveSlashSubmit", () => {
     const suggestions = filterCommands("/addmo");
     expect(suggestions.some((c) => c.name === "/addmodel")).toBe(true);
     const idx = suggestions.findIndex((c) => c.name === "/addmodel");
-    expect(resolveSlashSubmit("/addmo", suggestions, idx)).toBe("/addmodel");
+    expect(resolveSlashSubmit("/addmo", idx)).toBe("/addmodel");
   });
 
   test("Enter uses currently highlighted item among /addm matches", () => {
     const suggestions = filterCommands("/addm");
     const idx = suggestions.findIndex((c) => c.name === "/addmodel");
     expect(idx).toBeGreaterThanOrEqual(0);
-    expect(resolveSlashSubmit("/addm", suggestions, idx)).toBe("/addmodel");
+    expect(resolveSlashSubmit("/addm", idx)).toBe("/addmodel");
   });
 
   test("preserves args after expanding prefix", () => {
@@ -62,16 +62,28 @@ describe("resolveSlashSubmit", () => {
     const model = suggestions.find((c) => c.name === "/model");
     expect(model).toBeDefined();
     const idx = suggestions.indexOf(model!);
-    expect(resolveSlashSubmit("/mo glm-5", suggestions, idx)).toBe("/model glm-5");
+    expect(resolveSlashSubmit("/mo glm-5", idx)).toBe("/model glm-5");
+  });
+
+  test("/mod expands to /model on Enter (fresh suggestions)", () => {
+    expect(resolveSlashSubmit("/mod")).toBe("/model");
   });
 
   test("exact command name is not rewritten to a longer sibling", () => {
-    const suggestions = filterCommands("/model");
-    expect(resolveSlashSubmit("/model", suggestions, 0)).toBe("/model");
+    expect(resolveSlashSubmit("/model")).toBe("/model");
   });
 
   test("non-slash text is unchanged", () => {
-    expect(resolveSlashSubmit("hello", filterCommands("/a"), 0)).toBe("hello");
+    expect(resolveSlashSubmit("hello")).toBe("hello");
+  });
+});
+
+describe("isBareModelPickerCommand", () => {
+  test("/model and /models without args open picker", () => {
+    expect(isBareModelPickerCommand("/model", "")).toBe(true);
+    expect(isBareModelPickerCommand("/models", "")).toBe(true);
+    expect(isBareModelPickerCommand("/model", "glm-5")).toBe(false);
+    expect(isBareModelPickerCommand("/mod", "")).toBe(false);
   });
 });
 

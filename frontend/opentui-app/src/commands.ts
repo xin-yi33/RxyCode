@@ -86,18 +86,22 @@ export function filterCommands(query: string, limit = 8): Command[] {
  * Expand a partial slash token to the highlighted suggestion on Enter.
  * e.g. "/addm" + highlight "/addmodel" → "/addmodel"
  * Exact command names are left alone; trailing args are preserved.
+ *
+ * Suggestions are always derived from `raw` so submit cannot use stale palette state.
  */
 export function resolveSlashSubmit(
   raw: string,
-  suggestions: Command[],
   selectedIdx = 0,
 ): string {
   const trimmed = raw.trim();
-  if (!trimmed.startsWith("/") || suggestions.length === 0) return raw;
+  if (!trimmed.startsWith("/")) return raw;
 
   const firstSpace = trimmed.search(/\s/);
   const typedName = (firstSpace < 0 ? trimmed : trimmed.slice(0, firstSpace)).toLowerCase();
   const args = firstSpace < 0 ? "" : trimmed.slice(firstSpace).trim();
+
+  const suggestions = filterCommands(typedName, 8);
+  if (suggestions.length === 0) return raw;
 
   const exact = AVAILABLE_COMMANDS.find((c) => c.name.toLowerCase() === typedName);
   if (exact) {
@@ -109,4 +113,10 @@ export function resolveSlashSubmit(
   if (!highlighted) return raw;
   if (!highlighted.name.toLowerCase().startsWith(typedName)) return raw;
   return args ? `${highlighted.name} ${args}` : highlighted.name;
+}
+
+/** True when a bare slash command should open the model picker (not POST /command). */
+export function isBareModelPickerCommand(name: string, args: string): boolean {
+  const cmd = name.toLowerCase();
+  return (cmd === "/model" || cmd === "/models") && !args.trim();
 }

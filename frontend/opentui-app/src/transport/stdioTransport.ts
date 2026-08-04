@@ -14,6 +14,7 @@ import {
   type CommandResult,
 } from "./httpAdmin.ts";
 import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
+import { shouldClearStreamingOnNotify } from "./streamLifecycle.ts";
 import type { ChatApiCallbacks, ChatTransport } from "./types.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 10_000;
@@ -43,6 +44,8 @@ type PromptResult = {
 };
 
 let pythonCmdOverride: string[] | null = null;
+/** Survives session recreate (e.g. /model switch). */
+let thinkingExpandedPref = false;
 
 /** Test hook: override appserver spawn command. */
 export function __setPythonCmdForTests(cmd: string[] | null): void {
@@ -59,6 +62,7 @@ class StdioAppserverSession {
     string,
     (decision: ApprovalDecision) => void
   >();
+  private approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activePromptAbort: AbortController | null = null;
   private activeCallbacks: ChatApiCallbacks | null = null;
 
@@ -76,7 +80,19 @@ class StdioAppserverSession {
     return process.env.RXYCODE_WORKSPACE_ROOT ?? this.projectRoot();
   }
 
+  private clearPendingApprovals(decision: ApprovalDecision = "rejected"): void {
+    for (const timer of this.approvalTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.approvalTimers.clear();
+    for (const resolve of this.pendingApprovals.values()) {
+      resolve(decision);
+    }
+    this.pendingApprovals.clear();
+  }
+
   private resetSession(reason?: Error): void {
+    this.clearPendingApprovals();
     if (this.client) {
       this.client.rejectAllPending(
         reason ?? new Error("appserver session reset"),
@@ -161,12 +177,13 @@ class StdioAppserverSession {
       const argsRaw = details?.args;
       const decision = await new Promise<ApprovalDecision>((resolve) => {
         this.pendingApprovals.set(requestId, resolve);
-        setTimeout(() => {
-          if (this.pendingApprovals.has(requestId)) {
-            this.pendingApprovals.delete(requestId);
-            resolve("rejected");
-          }
+        const timer = setTimeout(() => {
+          if (!this.pendingApprovals.has(requestId)) return;
+          this.approvalTimers.delete(requestId);
+          this.pendingApprovals.delete(requestId);
+          resolve("rejected");
         }, 120_000);
+        this.approvalTimers.set(requestId, timer);
         this.activeCallbacks?.onApprovalRequest?.({
           approvalId: requestId,
           tool: String(payload.action ?? "unknown"),
@@ -258,11 +275,70 @@ class StdioAppserverSession {
       sessionTimeoutMs(),
     )) as { session_id: string };
     this.sessionId = session.session_id;
+    // Fire-and-forget warm so the first user prompt is not blocked on Agent ctor.
+    void this.warmBootstrap().catch(() => {
+      // best-effort; first prompt will bootstrap again
+    });
+  }
+
+  async warmBootstrap(timeoutSeconds = 180): Promise<void> {
+    const client = await this.ensureReady();
+    if (!this.sessionId) {
+      throw new Error("appserver session not ready");
+    }
+    await client.request("session/warm", {
+      session_id: this.sessionId,
+      timeout_seconds: timeoutSeconds,
+    });
+  }
+
+  async setThinkingExpanded(expanded: boolean): Promise<{
+    ok: boolean;
+    expanded: boolean;
+    action?: string;
+    message?: string;
+  }> {
+    const client = await this.ensureReady();
+    if (!this.sessionId) {
+      throw new Error("appserver session not ready");
+    }
+    const result = (await client.request("session/set_thinking_expanded", {
+      session_id: this.sessionId,
+      expanded,
+    })) as {
+      ok?: boolean;
+      expanded?: boolean;
+      action?: string;
+      message?: string;
+    };
+    thinkingExpandedPref = Boolean(result.expanded ?? expanded);
+    return {
+      ok: result.ok !== false,
+      expanded: thinkingExpandedPref,
+      action: result.action ?? "thinking_toggled",
+      message:
+        result.message ??
+        ("思考过程: " + (thinkingExpandedPref ? "展开" : "折叠")),
+    };
+  }
+
+  toggleThinkingExpanded(): Promise<{
+    ok: boolean;
+    expanded: boolean;
+    action?: string;
+    message?: string;
+  }> {
+    return this.setThinkingExpanded(!thinkingExpandedPref);
   }
 
   resolveApproval(approvalId: string, decision: ApprovalDecision): boolean {
     const resolve = this.pendingApprovals.get(approvalId);
     if (!resolve) return false;
+    const timer = this.approvalTimers.get(approvalId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.approvalTimers.delete(approvalId);
+    }
     this.pendingApprovals.delete(approvalId);
     resolve(decision);
     return true;
@@ -338,6 +414,13 @@ class StdioAppserverSession {
 
       const priorOnNotification = client.onNotification;
       let sawStreamActivity = false;
+      let streamingCleared = false;
+      const clearStreamingEarly = () => {
+        if (streamingCleared) return;
+        streamingCleared = true;
+        callbacks.onStreaming(false);
+        callbacks.onProgress?.("");
+      };
       client.onNotification = (method, params) => {
         priorOnNotification?.(method, params);
         const event = notifyToStreamEvent(method, params);
@@ -359,6 +442,13 @@ class StdioAppserverSession {
         }
         const next = applyStreamEvent(state, event, newId);
         if (next !== state) publish(next);
+        if (shouldClearStreamingOnNotify(method)) {
+          publish({
+            ...state,
+            messages: settleActiveMessages(state.messages),
+          });
+          clearStreamingEarly();
+        }
       };
 
       this.activeCallbacks = callbacks;
@@ -373,6 +463,7 @@ class StdioAppserverSession {
           session_id: this.sessionId,
           text: content,
           mode,
+          thinking_expanded: thinkingExpandedPref,
           timeout_seconds: 600,
         })) as PromptResult;
 
@@ -483,8 +574,24 @@ export const stdioTransport: ChatTransport = {
   },
 
   async sendCommand(command: string): Promise<CommandResult> {
-    const result = await httpSendCommand(command);
     const trimmed = command.trim();
+    if (trimmed === "/thinking") {
+      try {
+        const result = await sharedSession.toggleThinkingExpanded();
+        return {
+          ok: true,
+          action: result.action ?? "thinking_toggled",
+          message: result.message,
+          expanded: result.expanded,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }
+    const result = await httpSendCommand(command);
     if (
       result.ok &&
       trimmed.startsWith("/model ") &&
@@ -518,9 +625,15 @@ export const stdioTransport: ChatTransport = {
   },
 };
 
+/** Best-effort pre-warm of appserver Agent bootstrap (stdio only). */
+export async function warmStdioBootstrap(): Promise<void> {
+  await sharedSession.warmBootstrap();
+}
+
 /** Test hook: reset shared stdio session between tests. */
 export function __resetStdioSessionForTests(): void {
   void sharedSession.shutdown();
   sharedSession = new StdioAppserverSession();
   pythonCmdOverride = null;
+  thinkingExpandedPref = false;
 }

@@ -58,6 +58,11 @@ jobs:
           RXYCODE_PROJECT_ROOT: ${{ github.workspace }}
           RXYCODE_APPSERVER_PYTHON: python3
 
+      - name: Unit tests (http transport fallback)
+        run: bun test
+        env:
+          RXYCODE_TRANSPORT: http
+
 
   protocol-client:
     name: Protocol client
@@ -330,6 +335,20 @@ jobs:
           Get-Content artifacts/conpty.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Set up Bun (OpenTUI)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run OpenTUI /model Enter ConPTY test
+        working-directory: frontend/opentui-app
+        shell: pwsh
+        run: |
+          bun install --frozen-lockfile
+          node e2e/model-enter-verify.mjs 2>&1 | Out-File -FilePath ../../artifacts/opentui-model-enter.log -Encoding utf8
+          Get-Content ../../artifacts/opentui-model-enter.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Scan generated artifacts for credentials
         id: scan_generated_artifacts
         if: always()
@@ -345,6 +364,7 @@ jobs:
             artifacts/windows-backend.xml
             frontend/artifacts/vitest.xml
             frontend/artifacts/conpty.log
+            artifacts/opentui-model-enter.log
             artifacts/runtime
           if-no-files-found: warn
           retention-days: 14

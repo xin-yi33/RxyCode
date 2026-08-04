@@ -65,6 +65,7 @@ class AppServer:
         self._prompt_tasks: set[asyncio.Task[Any]] = set()
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._resolved_jobs: set[str] = set()
+        self._thinking_expanded = False
 
     def _session_lock(self, session_id: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_id)
@@ -244,6 +245,7 @@ class AppServer:
         job_id: str,
         timeout_seconds: float | None,
         mode: str = "build",
+        thinking_expanded: bool | None = None,
     ) -> None:
         record = self._sessions.get(session_id)
         if record is None:
@@ -255,6 +257,12 @@ class AppServer:
             if timeout_seconds is not None
             else _DEFAULT_PROMPT_TIMEOUT_SECONDS
         )
+        expand = (
+            self._thinking_expanded
+            if thinking_expanded is None
+            else bool(thinking_expanded)
+        )
+        self._thinking_expanded = expand
 
         current = asyncio.current_task()
         if current is not None:
@@ -281,6 +289,7 @@ class AppServer:
                         timeout=wall_timeout,
                         emit=emit_message,
                         mode=mode,
+                        thinking_expanded=expand,
                     )
 
                 try:
@@ -384,6 +393,12 @@ class AppServer:
 
         job_id = uuid.uuid4().hex[:12]
         mode = str(params.get("mode", "build"))
+        thinking_raw = params.get("thinking_expanded")
+        thinking_expanded: bool | None
+        if thinking_raw is None:
+            thinking_expanded = None
+        else:
+            thinking_expanded = bool(thinking_raw)
         await self._run_prompt(
             session_id=session_id,
             text=text,
@@ -391,6 +406,54 @@ class AppServer:
             job_id=job_id,
             timeout_seconds=timeout_seconds,
             mode=mode,
+            thinking_expanded=thinking_expanded,
+        )
+
+    async def _handle_set_thinking_expanded(
+        self, params: dict[str, Any], request_id: Any
+    ) -> None:
+        session_id = str(params.get("session_id", self._active_session_id))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if "expanded" not in params:
+            await self._respond_error(request_id, -32602, "expanded is required")
+            return
+        expanded = bool(params.get("expanded"))
+        self._thinking_expanded = expanded
+        host = self._session_hosts.get(session_id)
+        if host is not None and host.alive():
+            await host.set_thinking_expanded(expanded)
+        await self._respond(
+            request_id,
+            {
+                "ok": True,
+                "expanded": expanded,
+                "session_id": session_id,
+                "action": "thinking_toggled",
+                "message": "思考过程: " + ("展开" if expanded else "折叠"),
+            },
+        )
+
+    async def _handle_warm(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", self._active_session_id))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        timeout_raw = params.get("timeout_seconds")
+        timeout = float(timeout_raw) if timeout_raw is not None else 180.0
+        if timeout <= 0:
+            await self._respond_error(request_id, -32602, "timeout_seconds must be positive")
+            return
+        try:
+            host = await self._host_for_session(session_id)
+            await host.ensure_bootstrapped(timeout=timeout)
+        except Exception as exc:
+            await self._respond_error(request_id, -32000, str(exc))
+            return
+        await self._respond(
+            request_id,
+            {"ok": True, "session_id": session_id, "warmed": True},
         )
 
     async def _handle_interrupt(self, params: dict[str, Any], request_id: Any) -> None:
@@ -461,6 +524,12 @@ class AppServer:
             task.add_done_callback(self._prompt_tasks.discard)
         elif method == "session/interrupt":
             await self._handle_interrupt(params, request_id)
+        elif method == "session/set_thinking_expanded":
+            await self._handle_set_thinking_expanded(params, request_id)
+        elif method == "session/warm":
+            task = asyncio.create_task(self._handle_warm(params, request_id))
+            self._prompt_tasks.add(task)
+            task.add_done_callback(self._prompt_tasks.discard)
         elif method == "shutdown":
             await self._handle_shutdown(params, request_id)
         else:

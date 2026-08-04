@@ -65,6 +65,7 @@ def test_opentui_forced_without_app_errors(monkeypatch, bun: str):
 )
 def test_resolve_never_raises_unless_forced_opentui(monkeypatch, env_value: str, bun, ready: bool):
     stripped = env_value.strip().lower()
+    monkeypatch.setenv("RXYCODE_SKIP_BUN_INSTALL", "1")
     monkeypatch.setenv("RXYCODE_TUI", env_value)
     monkeypatch.setattr(main, "_bun_executable", lambda: bun)
     monkeypatch.setattr(main, "_opentui_ready", lambda: ready)

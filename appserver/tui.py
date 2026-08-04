@@ -35,11 +35,22 @@ class ProtocolTui:
         self.session_id = session_id
         self._emit = emit
         self._expand_thinking = False
+        self._thinking_acc = ""
         self._mode = "build"
         self._model_name = ""
 
     def set_thinking_expanded(self, expanded: bool) -> None:
+        was = self._expand_thinking
         self._expand_thinking = bool(expanded)
+        # Mid-run expand: push accumulated thinking so the client can show it.
+        if self._expand_thinking and not was and self._thinking_acc:
+            self._emit(
+                ReasoningSnapshot(
+                    session_id=self.session_id,
+                    text=self._thinking_acc,
+                    snapshot=True,
+                )
+            )
 
     def get_thinking_expanded(self) -> bool:
         return self._expand_thinking
@@ -69,11 +80,13 @@ class ProtocolTui:
         self.write_progress(f"[error] {text}")
 
     def write_reasoning(self, text: str) -> None:
+        chunk = str(text)
+        self._thinking_acc += chunk
         if self._expand_thinking:
             self._emit(
                 ReasoningSnapshot(
                     session_id=self.session_id,
-                    text=str(text),
+                    text=chunk,
                     snapshot=False,
                 )
             )

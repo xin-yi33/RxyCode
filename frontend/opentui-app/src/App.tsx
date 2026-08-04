@@ -9,10 +9,14 @@ import {
   useTerminalDimensions,
 } from "@opentui/react";
 import { cancelActiveRequest, fetchStatus, respondApproval, sendChatMessage, sendCommand } from "./chatApi.ts";
+import { resolveTransportKind } from "./transport/config.ts";
+import { warmStdioBootstrap } from "./transport/stdioTransport.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
-import { filterCommands, resolveSlashSubmit, AVAILABLE_COMMANDS, type Command } from "./commands.ts";
+import { filterCommands, resolveSlashSubmit, AVAILABLE_COMMANDS, type Command, isBareModelPickerCommand } from "./commands.ts";
 import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
+import { CHAT_PROMPT_KEY_BINDINGS } from "./promptKeyBindings.ts";
+import { isPromptSubmitKey, normalizePromptSubmitText } from "./promptSubmitKey.ts";
 import { buildStatusSegments, formatStatusBarText } from "./statusBar.ts";
 import {
   createStickyState,
@@ -367,6 +371,11 @@ export default function App() {
   useEffect(() => {
     void fetchStatus(setStatus);
     const iv = setInterval(() => void fetchStatus(setStatus), 30000);
+    if (resolveTransportKind() === "stdio") {
+      void warmStdioBootstrap().catch(() => {
+        // first prompt will bootstrap; ignore warm failures
+      });
+    }
     return () => clearInterval(iv);
   }, []);
 
@@ -693,11 +702,20 @@ export default function App() {
 
   const submitText = useCallback(
     async (raw: string) => {
-      const classified = classifyInput(raw);
-      if (classified.kind === "chat" && !classified.text) return;
       if (isStreaming) return;
 
+      const resolved = raw.trimStart().startsWith("/")
+        ? resolveSlashSubmit(raw, paletteIdx)
+        : raw;
+      const classified = classifyInput(resolved);
+      if (classified.kind === "chat" && !classified.text) return;
+
       if (classified.kind === "command") {
+        if (isBareModelPickerCommand(classified.name, classified.args)) {
+          openModel();
+          clearInput();
+          return;
+        }
         await runLocalOrRemoteCommand(
           classified.name,
           classified.args,
@@ -729,7 +747,30 @@ export default function App() {
       abortRef.current = null;
       textareaRef.current?.focus();
     },
-    [clearInput, isStreaming, mode, onApprovalRequest, reengageSticky, runLocalOrRemoteCommand],
+    [clearInput, isStreaming, mode, onApprovalRequest, openModel, paletteIdx, reengageSticky, runLocalOrRemoteCommand],
+  );
+
+  const submitFromInput = useCallback(() => {
+    if (isStreaming || dialogOpen || pendingApproval) return;
+    const text = normalizePromptSubmitText(
+      textareaRef.current?.plainText ?? inputValue,
+    );
+    if (!text) return;
+    void submitText(text);
+  }, [dialogOpen, inputValue, isStreaming, pendingApproval, submitText]);
+
+  const onPromptKeyDown = useCallback(
+    (key: { name?: string; sequence?: string; raw?: string; shift?: boolean; meta?: boolean; ctrl?: boolean; super?: boolean; preventDefault?: () => void }) => {
+      if (!isPromptSubmitKey(key)) return;
+      const text = normalizePromptSubmitText(
+        textareaRef.current?.plainText ?? inputValue,
+      );
+      if (!text || isStreaming || dialogOpen || pendingApproval) return;
+      // Stop textarea default newline / submit double-fire; we own submission.
+      key.preventDefault?.();
+      submitFromInput();
+    },
+    [dialogOpen, inputValue, isStreaming, pendingApproval, submitFromInput],
   );
 
   submitTextRef.current = submitText;
@@ -831,12 +872,13 @@ export default function App() {
       void toggleThinking();
       return;
     }
-    if (key.name === "return" && !key.shift && !key.meta && !key.ctrl) {
-      const text = textareaRef.current?.plainText ?? inputValue;
-      if (text.trim() && !isStreaming && !text.includes("\n")) {
-        key.preventDefault();
-        const resolved = resolveSlashSubmit(text, slashSuggestions, paletteIdx);
-        void submitText(resolved);
+    if (isPromptSubmitKey(key)) {
+      const text = normalizePromptSubmitText(
+        textareaRef.current?.plainText ?? inputValue,
+      );
+      if (text && !isStreaming) {
+        key.preventDefault?.();
+        submitFromInput();
       }
       return;
     }
@@ -1046,15 +1088,14 @@ export default function App() {
                   focused={!isStreaming && !dialogOpen}
                   placeholder={isStreaming ? "处理中..." : "输入指令或需求..."}
                   initialValue={inputValue}
+                  keyBindings={CHAT_PROMPT_KEY_BINDINGS}
+                  onKeyDown={onPromptKeyDown}
                   onContentChange={() => {
                     const next = textareaRef.current?.plainText ?? "";
                     setInputValue(next);
                     if (next.trimStart().startsWith("/")) setPaletteIdx(0);
                   }}
-                  onSubmit={() => {
-                    const text = textareaRef.current?.plainText ?? inputValue;
-                    void submitText(resolveSlashSubmit(text, slashSuggestions, paletteIdx));
-                  }}
+                  onSubmit={submitFromInput}
                   style={{ flexGrow: 1, height: Math.max(inputHeight, numInputLines(inputValue, inputWrapW)), backgroundColor: C.bg }}
                 />
               </scrollbox>
@@ -1064,15 +1105,14 @@ export default function App() {
                 focused={!isStreaming && !dialogOpen}
                 placeholder={isStreaming ? "处理中..." : "输入指令或需求..."}
                 initialValue={inputValue}
+                keyBindings={CHAT_PROMPT_KEY_BINDINGS}
+                onKeyDown={onPromptKeyDown}
                 onContentChange={() => {
                   const next = textareaRef.current?.plainText ?? "";
                   setInputValue(next);
                   if (next.trimStart().startsWith("/")) setPaletteIdx(0);
                 }}
-                onSubmit={() => {
-                  const text = textareaRef.current?.plainText ?? inputValue;
-                  void submitText(resolveSlashSubmit(text, slashSuggestions, paletteIdx));
-                }}
+                onSubmit={submitFromInput}
                 style={{ flexGrow: 1, height: inputHeight, backgroundColor: C.bg }}
               />
             )}

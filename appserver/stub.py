@@ -22,6 +22,18 @@ class StubAgent:
         self.model_config = {"model_name": "stub"}
 
     async def run(self, text: str, mode: str = "build") -> str:
+        if text.startswith("think:"):
+            thought = text[6:] or "stub-thought"
+            self._last_thinking = thought
+            self._thinking_history.append(thought)
+            try:
+                from utils.tui import get_tui
+            except ImportError:
+                from ..utils.tui import get_tui
+            tui = get_tui()
+            if tui is not None and hasattr(tui, "write_reasoning"):
+                tui.write_reasoning(thought)
+            return f"stub:{thought}"
         if text.startswith("slow:"):
             await asyncio.sleep(0.5)
             return f"stub:{text[5:]}"

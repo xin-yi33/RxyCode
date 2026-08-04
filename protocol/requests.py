@@ -42,6 +42,8 @@ class PromptRequest(BaseModel):
     ``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is
     ``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout
     semantics when appserver enforces wall-clock limits.
+    ``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning
+    stream emission on ``ProtocolTui``.
     """
 
     method: Literal["session/prompt"] = "session/prompt"
@@ -50,6 +52,14 @@ class PromptRequest(BaseModel):
     timeout_seconds: float | None = Field(
         default=None,
         description="Optional wall-clock limit for this prompt (maps execution.tool_timeout_seconds semantics).",
+    )
+    mode: str | None = Field(
+        default=None,
+        description="Agent run mode (build/plan/compose); defaults to build.",
+    )
+    thinking_expanded: bool | None = Field(
+        default=None,
+        description="When true, ProtocolTui emits event/reasoning_snapshot chunks.",
     )
 
 
@@ -61,6 +71,32 @@ class InterruptRequest(BaseModel):
 
     method: Literal["session/interrupt"] = "session/interrupt"
     session_id: str
+
+
+class SetThinkingExpandedRequest(BaseModel):
+    """Sync OpenTUI /thinking expand state into appserver ProtocolTui.
+
+    ``expanded`` mirrors the client Thought panel; when a prompt is in flight the
+    bound worker TUI is updated so mid-run expand can push an accumulated snapshot.
+    """
+
+    method: Literal["session/set_thinking_expanded"] = "session/set_thinking_expanded"
+    session_id: str
+    expanded: bool
+
+
+class WarmSessionRequest(BaseModel):
+    """Pre-bootstrap AgentV2 for a session so the first prompt is not cold-start.
+
+    Maps appserver ``AgentHost.ensure_bootstrapped`` without running a user turn.
+    """
+
+    method: Literal["session/warm"] = "session/warm"
+    session_id: str
+    timeout_seconds: float | None = Field(
+        default=None,
+        description="Optional wall-clock limit for bootstrap (defaults to appserver warm timeout).",
+    )
 
 
 class ShutdownRequest(BaseModel):
@@ -78,6 +114,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     NewSessionRequest,
     PromptRequest,
     InterruptRequest,
+    SetThinkingExpandedRequest,
+    WarmSessionRequest,
     ShutdownRequest,
 )
 
@@ -87,6 +125,8 @@ ClientRequest = Annotated[
         NewSessionRequest,
         PromptRequest,
         InterruptRequest,
+        SetThinkingExpandedRequest,
+        WarmSessionRequest,
         ShutdownRequest,
     ],
     Field(discriminator="method"),

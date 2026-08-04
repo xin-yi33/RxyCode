@@ -80,7 +80,7 @@
       "type": "object"
     },
     "PromptRequest": {
-      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.",
+      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.\n``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning\nstream emission on ``ProtocolTui``.",
       "properties": {
         "method": {
           "const": "session/prompt",
@@ -108,6 +108,32 @@
           "default": null,
           "description": "Optional wall-clock limit for this prompt (maps execution.tool_timeout_seconds semantics).",
           "title": "Timeout Seconds"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent run mode (build/plan/compose); defaults to build.",
+          "title": "Mode"
+        },
+        "thinking_expanded": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When true, ProtocolTui emits event/reasoning_snapshot chunks.",
+          "title": "Thinking Expanded"
         }
       },
       "required": [
@@ -135,6 +161,64 @@
         "session_id"
       ],
       "title": "InterruptRequest",
+      "type": "object"
+    },
+    "SetThinkingExpandedRequest": {
+      "description": "Sync OpenTUI /thinking expand state into appserver ProtocolTui.\n\n``expanded`` mirrors the client Thought panel; when a prompt is in flight the\nbound worker TUI is updated so mid-run expand can push an accumulated snapshot.",
+      "properties": {
+        "method": {
+          "const": "session/set_thinking_expanded",
+          "default": "session/set_thinking_expanded",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "expanded": {
+          "title": "Expanded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "expanded"
+      ],
+      "title": "SetThinkingExpandedRequest",
+      "type": "object"
+    },
+    "WarmSessionRequest": {
+      "description": "Pre-bootstrap AgentV2 for a session so the first prompt is not cold-start.\n\nMaps appserver ``AgentHost.ensure_bootstrapped`` without running a user turn.",
+      "properties": {
+        "method": {
+          "const": "session/warm",
+          "default": "session/warm",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional wall-clock limit for bootstrap (defaults to appserver warm timeout).",
+          "title": "Timeout Seconds"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "WarmSessionRequest",
       "type": "object"
     },
     "ShutdownRequest": {
@@ -905,6 +989,12 @@
         },
         {
           "$ref": "#/$defs/InterruptRequest"
+        },
+        {
+          "$ref": "#/$defs/SetThinkingExpandedRequest"
+        },
+        {
+          "$ref": "#/$defs/WarmSessionRequest"
         },
         {
           "$ref": "#/$defs/ShutdownRequest"

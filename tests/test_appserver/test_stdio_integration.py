@@ -569,3 +569,67 @@ def test_appserver_live_agent_bootstrap():
                 pass
             proc.terminate()
             proc.wait(timeout=10)
+def test_appserver_set_thinking_expanded_emits_reasoning(appserver_proc):
+    client = AppserverClient(appserver_proc)
+    client.request(
+        "initialize",
+        {
+            "client_name": "pytest",
+            "client_version": "0.0.0",
+            "protocol_version": "1.0.0",
+        },
+    )
+    session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+    session_id = session["session_id"]
+
+    toggled = client.request(
+        "session/set_thinking_expanded",
+        {"session_id": session_id, "expanded": True},
+    )
+    assert toggled["expanded"] is True
+
+    prompt_id = client.send(
+        "session/prompt",
+        {
+            "session_id": session_id,
+            "text": "think:hello-thought",
+            "thinking_expanded": True,
+        },
+    )
+    saw_reasoning = False
+    result = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        message = client.readline(timeout=1.0)
+        if message is None:
+            continue
+        if message.get("method") == "event/reasoning_snapshot":
+            params = message.get("params") or {}
+            if "hello-thought" in str(params.get("text", "")):
+                saw_reasoning = True
+        if message.get("id") == prompt_id and "result" in message:
+            result = message["result"]
+            break
+    assert result is not None
+    assert result["status"] == "succeeded"
+    assert saw_reasoning, "expected event/reasoning_snapshot while thinking expanded"
+
+
+def test_appserver_session_warm_bootstraps(appserver_proc):
+    client = AppserverClient(appserver_proc)
+    client.request(
+        "initialize",
+        {
+            "client_name": "pytest",
+            "client_version": "0.0.0",
+            "protocol_version": "1.0.0",
+        },
+    )
+    session = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
+    warmed = client.request(
+        "session/warm",
+        {"session_id": session["session_id"], "timeout_seconds": 30},
+        timeout=30.0,
+    )
+    assert warmed["ok"] is True
+    assert warmed["warmed"] is True

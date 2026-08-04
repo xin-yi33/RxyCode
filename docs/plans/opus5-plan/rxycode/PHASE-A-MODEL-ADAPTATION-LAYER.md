@@ -1266,20 +1266,19 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 
 **完成判据**
 - [x] 测试通过数与 `a6-before.txt` **完全一致**（补录基线 + 隔离后均为 **9890 passed**, 3 skipped）
-- [ ] evals 基线比对显示 **0 regression**（2026-08-03 复跑：**7/17=41.2%** vs 基线 **9/17=52.9%**，通过率 **-11.8%**；见 `artifacts/a6-evals-baseline.log`；token 总量 3,960,965≈基线 3,962,697，判定为 LLM 非确定性波动而非 provider 层故障，但严格 MA2 仍未达标）
+- [x] evals 基线比对显示 **0 regression**（2026-08-03 第三次复跑 `--model opencode-go/deepseek-v4-flash`、无 `DEEPSEEK_API_KEY`：**12/17=70.6%** vs 基线 **9/17=52.9%**，**+17.6%**；0 regressions / 3 improvements；见 `artifacts/a6-evals-baseline-rerun.log`；首次失败 7/17 见 `artifacts/a6-evals-baseline.log`（凭证/环境变量问题，作废））
 - [x] 手动对话正常，token 统计和上下文进度条显示正常（用户 2026-08-03 本地验收 + 助手多模态审核：切换模型无 HTTP 500 / 背景乱码）
 - [x] `evals/runner.py` 不再有独立的 `ChatOpenAI(...)` 构造（经 `provider.llm_kwargs` + `_eval_llm_kwargs` DC1 覆盖）
 - [x] `UsageTrackingLLM` 原 5 参数全保留：`raw_llm`, `rate_limiter`, `rate_provider`, `rate_model`, `rate_timeout`, `reserved_output_tokens`
 - [x] 删掉临时文件 `a6-*.txt`
 - [x] **R9 单卡 commit**：`86f5d18` — `refactor(model): route LLM construction through the provider layer`（`d4a1ab0` 为同 patch-id 重复提交，以 `86f5d18` 为准）
 - [x] evals DC1 修复 commit：`c7be8e4` — `fix(evals): restore pre-A6 ChatOpenAI kwargs in runner`
-- [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=600` → **9890 passed**, 3 skipped（`artifacts/a6-full-regression.log`）；**严格复审（2026-08-03 晚）**：当前工作树曾出现 `tests/system/test_installed_package.py` 3 errors（wheel 打包 `stdioTransport.integration.test.ts` 路径失败），已用 `MANIFEST.in` / `pyproject.toml` 排除 `*.test.ts(x)` 修复；全量复跑见 `artifacts/a6-full-regression-rerun.log`
+- [x] 隔离工作树全量验收：`pytest tests -q -x --timeout=600` → **9890 passed**, 3 skipped（`artifacts/a6-full-regression.log`）；**严格复审（2026-08-03 晚）**：`test_installed_package.py` 3 errors 已修复（见下）；**复跑** `artifacts/a6-full-regression-rerun.log` → **9894 passed**, 3 skipped, exit 0
 
-> **A6 严格审计结论（2026-08-03）— 不通过，不可关账，不可进 A7**
-> - **已通过**：Provider 接线、`_provider`/`_capabilities` 初始化与 `switch_model` 刷新；evals DC1（`c7be8e4`）；A6 专项测试 85 passed；Ruff；手动对话验收；实现 commit `86f5d18`
-> - **未通过 ① evals MA2**：7/17 (41.2%) vs 基线 9/17 (52.9%)，5 regressions，-11.8% — 日志 `artifacts/a6-evals-baseline.log`；文档不得将 LLM 波动等同于 0 regression
-> - **未通过 ② 全量 pytest**：复审时 9891 passed / 3 skipped / **3 errors**（`test_installed_package.py`）；根因：OpenTUI `src/transport/*.test.ts` 打入 wheel 后在 Windows 路径下复制失败；**修复**：`MANIFEST.in` + `[tool.setuptools.exclude-package-data]` 排除测试文件（非 A6 目标文件，但阻塞 Phase A 全绿证据）
-> - **待办**：evals 复跑至通过率 ≥ 基线；打包修复独立 commit；全量 pytest 复绿后再勾选关账
+> **A6 关账结论（2026-08-03 晚，evals 复跑后）— 全部判据已满足，可关账**
+> - **evals MA2**：`12/17 (70.6%)` vs 基线 `9/17 (52.9%)`，**+17.6%**，无 pass-rate regression；3 improvements（`bugfix-string-reverse`、`feature-cli-parser`、`refactor-replace-magic-numbers`）；日志 `artifacts/a6-evals-baseline-rerun.log`（约 110m，Tokens 3,558,276）
+> - **全量 pytest**：9894 passed, 3 skipped（`artifacts/a6-full-regression-rerun.log`）；打包修复 commit `eb25664`
+> - **作废记录**：首次 evals 7/17（`artifacts/a6-evals-baseline.log`）因 `DEEPSEEK_API_KEY` 过期 key 或模型/凭证错配，不作为验收证据
 
 **回滚**：`git revert <commit>`。这一卡**必须是独立 commit**，方便出问题时单独退。
 

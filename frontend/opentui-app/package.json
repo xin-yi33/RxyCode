@@ -9,7 +9,8 @@
     "dev": "bun run src/index.tsx",
     "probe": "bun run scripts/probe.ts",
     "test": "bun test",
-    "e2e": "node e2e/run-pty.mjs"
+    "e2e": "node e2e/model-enter-verify.mjs",
+    "e2e:model-enter": "node e2e/model-enter-verify.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.4.5",
