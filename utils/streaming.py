@@ -18,6 +18,9 @@ from rich.text import Text
 
 from .i18n import i18n
 
+#: 未指定时的兜底上下文窗口。真实值应由调用方按 ModelCapabilities 传入。
+DEFAULT_CONTEXT_MAX = 256_000
+
 
 def load_config() -> dict:
     """Deferred import wrapper so tests can patch this symbol directly."""
@@ -44,7 +47,7 @@ class TokenStats:
         self.cache_hits = 0
         self.cache_misses = 0
         self.context_used = 0
-        self.context_max = 256000
+        self.context_max = DEFAULT_CONTEXT_MAX
         self.cache_size = 0
         # Real provider-side usage (DeepSeek/OpenAI context caching)
         self.prompt_tokens = 0          # total prompt tokens billed
@@ -212,6 +215,7 @@ class TokenStats:
         self.cache_hits = 0
         self.cache_misses = 0
         self.context_used = 0
+        self.context_max = DEFAULT_CONTEXT_MAX
         self.cache_size = 0
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0

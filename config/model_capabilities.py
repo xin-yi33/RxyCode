@@ -112,3 +112,19 @@ class ModelCapabilities:
 
 #: 兜底能力：完全等价于 Phase A 之前的全局硬编码行为。
 DEFAULT_CAPABILITIES = ModelCapabilities()
+
+
+def resolve_graph_context_token_limit(
+    cfg: dict[str, Any] | None,
+    caps: Any = None,
+) -> int:
+    """Resolve LangGraph compaction threshold from config override or model caps."""
+    context_cfg = (cfg or {}).get("context") or {}
+    limit = context_cfg.get("graph_context_token_limit")
+    if limit:
+        return max(1000, int(limit))
+    if caps is not None:
+        threshold = getattr(caps, "compaction_threshold", None)
+        if threshold:
+            return max(1000, int(threshold))
+    return 232_000

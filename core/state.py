@@ -351,6 +351,8 @@ class AgentState(TypedDict):
     _hook_audit: Any              # Request-local hook audit sink
     _model_router: Any            # Optional role-aware model router
     _trajectory: Any              # Request-local durable trajectory logger
+    #: 当前模型的能力元数据（运行时注入，不序列化）
+    _capabilities: Any
 
     # -- task tree ----------------------------------------------------------
     task_tree: TaskTree

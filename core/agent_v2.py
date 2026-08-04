@@ -200,14 +200,15 @@ def _extract_cache_read(resp) -> int:
     return 0
 
 
-def _estimate_tokens(text):
-    """Estimate token count using tiktoken with char fallback."""
-    try:
-        import tiktoken
-        enc = tiktoken.encoding_for_model("gpt-4o")
-        return len(enc.encode(text or ""))
-    except Exception:
-        return len(text or "") // 3
+def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
+    """Estimate token count for a single text blob using a tokenizer spec."""
+    from .providers.tokenizers import count_tokens
+
+    if text is None:
+        return 0
+    if not isinstance(text, str):
+        text = str(text)
+    return count_tokens(text, spec)
 
 
 def _usage_counts(resp, messages=None) -> tuple[int, int]:
@@ -687,6 +688,7 @@ class AgentV2:
 
         self._provider = providers.resolve(self.model_config)
         self._capabilities = self._provider.capabilities(self.model_config)
+        self._sync_token_stats_context()
 
         from .governance import ModelRouter
 
@@ -869,9 +871,45 @@ class AgentV2:
                 "_hook_audit": getattr(self, "_active_hook_audit", None),
                 "_model_router": getattr(self, "_model_router", None),
                 "_trajectory": getattr(self, "_active_trajectory", None),
+                "_capabilities": getattr(self, "_capabilities", None),
             }
         )
         return state
+
+    def _tokenizer_spec(self) -> str:
+        caps = getattr(self, "_capabilities", None)
+        return caps.tokenizer if caps else "tiktoken:o200k_base"
+
+    def _context_window(self) -> int:
+        from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX
+
+        caps = getattr(self, "_capabilities", None)
+        if caps is not None:
+            return int(caps.context_window)
+        return DEFAULT_CONTEXT_MAX
+
+    def _estimate_tokens(self, messages) -> int:
+        """按当前模型的分词规格估算 token 数。
+
+        改造前这里对所有模型硬用 gpt-4o 的编码，DeepSeek / Qwen 的偏差可达
+        20% 以上，会让压缩时机和计费一起偏。
+        """
+        from .providers.tokenizers import count_tokens
+
+        spec = self._tokenizer_spec()
+        total = 0
+        for m in messages or []:
+            content = getattr(m, "content", "") or ""
+            if isinstance(content, str):
+                total += count_tokens(content, spec)
+        return total
+
+    def _sync_token_stats_context(self) -> None:
+        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+        caps = getattr(self, "_capabilities", None)
+        if caps is not None:
+            token_stats.update_context(token_stats.context_used, caps.context_window)
 
     def list_checkpoints(self, *, include_completed: bool = False) -> list[dict]:
         """Return this logical session's durable execution snapshots."""
@@ -965,6 +1003,7 @@ class AgentV2:
 
         self._provider = providers.resolve(model_config)
         self._capabilities = self._provider.capabilities(model_config)
+        self._sync_token_stats_context()
         self._model_router.register(
             "default",
             self._llm,
@@ -984,6 +1023,10 @@ class AgentV2:
 
     def runtime_status(self) -> dict:
         """Return content-free runtime controls and live infrastructure state."""
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            resolve_graph_context_token_limit,
+        )
+
         execution_cfg = self._cfg.get("execution", {}) or {}
         context_cfg = self._cfg.get("context", {}) or {}
         observability_cfg = self._cfg.get("observability", {}) or {}
@@ -1066,7 +1109,10 @@ class AgentV2:
                 "max_tool_rounds": int(execution_cfg.get("max_tool_rounds", 10) or 10),
                 "max_parallel": int(execution_cfg.get("max_parallel", 3) or 3),
                 "context_token_limit": int(
-                    context_cfg.get("graph_context_token_limit", 232000) or 232000
+                    resolve_graph_context_token_limit(
+                        {"context": context_cfg},
+                        getattr(self, "_capabilities", None),
+                    )
                 ),
                 "tool_timeout_seconds": float(
                     execution_cfg.get("tool_timeout_seconds", 1800) or 0
@@ -2490,9 +2536,9 @@ class AgentV2:
             # Context tracking uses the final assembled turn. Usage accounting is
             # handled per model round above so mixed real/estimated rounds are not
             # dropped or double-counted.
-            _input = sum(_estimate_tokens(getattr(m, "content", "") or "") for m in messages)
-            _output = _estimate_tokens(answer)
-            _ts.update_context(_input + _output, 256000)
+            _input = self._estimate_tokens(messages)
+            _output = _estimate_tokens(answer, self._tokenizer_spec())
+            _ts.update_context(_input + _output, self._context_window())
 
             # Auto-compress if context is getting large (honours config autoCompact)
             auto_compact = bool(
@@ -2639,10 +2685,9 @@ class AgentV2:
         loop instead of waiting until the very end of the run.
         """
         from RxyCode.RxyCode1_1_0.memory.compressor import ContextCompressor
-        from RxyCode.RxyCode1_1_0.utils.streaming import token_stats as _ts
 
-        budget = int(getattr(_ts, "context_max", 256000) * 0.7)
-        total = sum(_estimate_tokens(getattr(m, "content", "") or "") for m in messages)
+        budget = int(self._context_window() * 0.7)
+        total = self._estimate_tokens(messages)
         if total <= budget:
             return
 
@@ -2653,14 +2698,14 @@ class AgentV2:
                 break
             if type(m).__name__ == "ToolMessage":
                 content = getattr(m, "content", "") or ""
-                if _estimate_tokens(content) <= 200:
+                if _estimate_tokens(content, self._tokenizer_spec()) <= 200:
                     continue
                 new_content = compressor._middle_truncate(content)
                 try:
                     m.content = new_content  # type: ignore[attr-defined]
                 except Exception:
                     pass
-                total = sum(_estimate_tokens(getattr(x, "content", "") or "") for x in messages)
+                total = self._estimate_tokens(messages)
 
         # Persist a compressed session for the next turn once we are really full.
         auto_compact = bool(
@@ -2882,12 +2927,12 @@ class AgentV2:
             # Estimate for context tracking, but prefer provider usage for
             # accounting whenever the stream supplied it.
             from RxyCode.RxyCode1_1_0.utils.streaming import token_stats as _ts
-            _input = sum(_estimate_tokens(getattr(m, "content", "") or "") for m in messages)
-            _output = _estimate_tokens(answer)
+            _input = self._estimate_tokens(messages)
+            _output = _estimate_tokens(answer, self._tokenizer_spec())
             if answer and not received_real_usage:
                 _ts.add_real_usage(_input, _output, 0)
             # Update context window tracking
-            _ts.update_context(_input + _output, 256000)
+            _ts.update_context(_input + _output, self._context_window())
 
             return answer
         except Exception as e:

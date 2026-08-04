@@ -296,7 +296,9 @@ def _default_config() -> dict:
             "max_tool_output_chars": 30000,
             "max_task_result_chars": 12000,
             "max_context_compressions": 2,
-            "graph_context_token_limit": 232000,
+            # None 表示跟随当前模型的 ModelCapabilities.compaction_threshold。
+            # 显式设为数字则强制覆盖（用于压测或规避 provider 元数据不准的情况）。
+            "graph_context_token_limit": None,
         },
         # 阶段二 safety gate: risk classification + approval + audit.
         # auto_approve entries: "read" | "write" | "danger" (level names).

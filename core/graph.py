@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from langgraph.graph import StateGraph, START, END
 
+from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
 from .state import AgentState, TaskNode, TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.execution.scheduler import TaskScheduler
 
@@ -879,7 +880,7 @@ async def compressor_node(state: AgentState) -> dict:
     )
     token_limit = max(
         1000,
-        int(context_cfg.get("graph_context_token_limit", 232000) or 232000),
+        resolve_graph_context_token_limit(cfg, state.get("_capabilities")),
     )
     per_result_budget = max(1000, int(token_limit * 3 * 0.7) // result_count)
     max_result_chars = min(configured_result_chars, per_result_budget)
@@ -1136,7 +1137,7 @@ def route_next(state: AgentState) -> str:
     context_cfg = cfg.get("context", {})
     token_limit = max(
         1000,
-        int(context_cfg.get("graph_context_token_limit", 232000) or 232000),
+        resolve_graph_context_token_limit(cfg, state.get("_capabilities")),
     )
     max_compressions = max(
         1,
