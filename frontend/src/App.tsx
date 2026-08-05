@@ -27,7 +27,7 @@ const Header = React.memo(({ mode, model, expandThinking, isStreaming }: { mode:
   const modeColor = MODE_COLORS[mode];
   return (
     <Box paddingX={1} flexShrink={0}>
-        <Text color="#FFB6C1" bold>{"  "}RxyCode v1.2.5</Text>
+        <Text color="#FFB6C1" bold>{"  "}RxyCode v1.2.6</Text>
       <Text color="#555"> {" \u00B7 "} </Text>
       <Text color={modeColor} bold>{mode}</Text>
       <Text color="#555"> {" \u00B7 "} </Text>

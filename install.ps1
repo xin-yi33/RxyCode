@@ -7,7 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$DefaultVersion = "1.2.5"
+$DefaultVersion = "1.2.6"
 $Repository = "https://github.com/xin-yi33/RxyCode.git"
 $UvInstallerUrl = "https://astral.sh/uv/install.ps1"
 $BunInstallerUrl = "https://bun.sh/install.ps1"

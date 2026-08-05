@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.6] - 2026-08-06
+
+### Highlights
+
+Reliability-fix release. Webfetch no longer double-decodes brotli/gzip pages
+(`brotli: decoder failed`), the router only treats explicit
+"install/add an MCP server" phrases as MCP-install intent (so explaining the MCP
+protocol no longer silently adds an npx server to your config), and shell output
+on zh-CN Windows decodes as UTF-8 first, fixing Chinese mojibake. Agent-written
+POSIX habits (`ls -la`, heredocs, bare `&` separators) are translated to
+PowerShell on Windows.
+
+### Fixed
+
+- **webfetch** — drop `Content-Encoding` / `Content-Length` when re-constructing
+  the `httpx.Response`, so brotli/gzip pages no longer fail to decode.
+- **MCP mis-routing** — `detect_download_intent` now requires an explicit install
+  verb before routing to `download_mcp`; bare "MCP" mentions (explain/questions)
+  no longer trigger an MCP server install.
+- **Shell encoding** — subprocess output is decoded as UTF-8 first, falling back
+  to the system preferred encoding only when needed.
+- **Shell translation (Windows)** — `ls -la` → `Get-ChildItem -Force`, POSIX
+  heredoc → PowerShell here-strings, bare `&` separators → `;`.
+
+---
+
 ## [1.2.5] - 2026-08-06
 
 ### Highlights
@@ -412,6 +438,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.6]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6
 [1.2.5]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5
 [1.2.4]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4
 [1.2.3]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3
