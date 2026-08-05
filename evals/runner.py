@@ -495,6 +495,7 @@ async def run_suite(
     tag: Optional[str] = None,
     backend_name: str = "agent",
     max_tasks: Optional[int] = None,
+    task_timeout: Optional[int] = None,
 ) -> SuiteReport:
     """Run the full eval suite **serially** (to avoid API rate limits)."""
     report = SuiteReport(backend=backend_name)
@@ -515,7 +516,21 @@ async def run_suite(
             if task.needs_workdir:
                 workdir = setup_workdir(task, base)
 
-            result = await run_task(task, backend, workdir)
+            try:
+                if task_timeout and task_timeout > 0:
+                    result = await asyncio.wait_for(
+                        run_task(task, backend, workdir), timeout=task_timeout
+                    )
+                else:
+                    result = await run_task(task, backend, workdir)
+            except asyncio.TimeoutError:
+                result = TaskResult(
+                    task_id=task.id,
+                    category=task.category,
+                    passed=False,
+                    token_usage={"input": 0, "output": 0, "total": 0},
+                    error=f"task timed out after {task_timeout}s",
+                )
 
             # LLM-as-judge scoring.
             if judge_llm is not None:
@@ -842,6 +857,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--task-timeout",
+        type=int,
+        default=3600,
+        help="Per-task timeout in seconds (default 3600; 0 disables)",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
@@ -916,6 +937,7 @@ def main() -> int:
             tag=args.tag,
             backend_name=args.backend,
             max_tasks=args.max_tasks,
+            task_timeout=args.task_timeout,
         )
     )
 
@@ -955,9 +977,26 @@ def main() -> int:
             return 1
         diff_text, regressed = compare_baseline_pass_rate(report, baseline_path)
         print(f"\n{diff_text}")
+        try:
+            base_rate = float(
+                json.loads(baseline_path.read_text(encoding="utf-8"))
+                .get("summary", {})
+                .get("pass_rate", 0.0)
+            )
+        except Exception:
+            base_rate = 0.0
+        cur_rate = s["pass_rate"]
         if regressed:
-            print("\nPass rate regressed vs baseline.", file=sys.stderr)
+            print(
+                f"GATE: FAIL (pass rate {cur_rate:.1%} < baseline {base_rate:.1%})",
+                file=sys.stderr,
+            )
             exit_code = 2
+        else:
+            print(
+                f"GATE: PASS (pass rate {cur_rate:.1%} >= baseline {base_rate:.1%})"
+            )
+            exit_code = 0
 
     if args.compare_backends:
         from .report import BASELINES_DIR
