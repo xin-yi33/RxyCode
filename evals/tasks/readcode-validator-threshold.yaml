@@ -1,10 +1,9 @@
 id: readcode-validator-threshold
 category: readcode
 prompt: |
-  阅读当前仓库的 validation/validator.py，回答：Validator 对执行结果按哪几个维度打分？
-  每个维度的通过阈值是多少？ValidationResult 中 passed 字段是如何计算的？
-  请给出具体的维度名称和阈值数值。
-  回答时请引用维度英文名（completeness、relevance、format 等）和阈值数值（如 0.7）的原文。
+  说明并解释：本仓库的 validation/validator.py 中，Validator 对执行结果按哪几个维度打分？
+  每个维度的通过阈值是多少？ValidationResult 的 passed 字段是如何计算的？
+  请给出具体的维度名称和阈值数值，引用维度英文名（completeness、relevance、format 等）和阈值数值（如 0.7）的原文。
 checks:
   - type: output_contains
     pattern: "completeness"
