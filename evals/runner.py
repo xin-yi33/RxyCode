@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +31,10 @@ from .backends import EvalBackend, RawLLMBackend, build_backend
 
 #: Directory for persisted run results.
 RESULTS_DIR = Path(__file__).parent / "results"
+
+#: Directory for baseline snapshots (mirrors evals/report.BASELINES_DIR;
+#: defined here to avoid a circular import with evals.report).
+BASELINES_DIR = Path(__file__).parent / "baselines"
 
 #: Regex for fenced code blocks: ```lang info-string\n code ```
 _CODE_BLOCK_RE = re.compile(
@@ -581,6 +586,58 @@ def load_results(tag: str) -> dict:
         return json.load(f)
 
 
+def _parse_models_list(raw: str) -> list[str]:
+    """Split a comma-separated --models value into non-empty model ids."""
+    return [m.strip() for m in (raw or "").split(",") if m.strip()]
+
+
+def _model_slug(model_id: str) -> str:
+    """Filesystem-safe model label (id separators -> '-')."""
+    return model_id.strip().replace("/", "-").replace(":", "-")
+
+
+def load_model_baselines(
+    date_prefix: str, base: Path = BASELINES_DIR
+) -> list[tuple[str, SuiteReport]]:
+    """Load all baselines named '<date_prefix>-agent-<slug>.json'."""
+    reports: list[tuple[str, SuiteReport]] = []
+    for path in sorted(base.glob(f"{date_prefix}-agent-*.json")):
+        slug = path.stem[len(date_prefix) + len("-agent-"):]
+        reports.append((slug, load_report_from_baseline(path)))
+    return reports
+
+
+def format_model_comparison(reports: list[tuple[str, SuiteReport]]) -> str:
+    """Render a task x model comparison matrix (markdown)."""
+    labels = [f"`{label}`" for label, _ in reports]
+    lines = ["# Per-Model Comparison Matrix", ""]
+    header = ["Task", *labels]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("|" + "---|" * len(header))
+    task_ids: list[str] = []
+    for _, r in reports:
+        for t in r.results:
+            if t.task_id not in task_ids:
+                task_ids.append(t.task_id)
+    for tid in task_ids:
+        row = [tid]
+        for _, r in reports:
+            by_id = {t.task_id: t for t in r.results}
+            t = by_id.get(tid)
+            row.append("PASS" if t is not None and t.passed else "FAIL")
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    summary = [("Pass rate", lambda s: f"{s['pass_rate']:.0%} ({s['passed']}/{s['total_tasks']})"),
+               ("Avg tokens", lambda s: f"{s['total_tokens'] // max(1, s['total_tasks']):,}"),
+               ("Avg duration", lambda s: f"{s['total_duration_s'] / max(1, s['total_tasks']):.1f}s")]
+    for name, fmt in summary:
+        row = [name]
+        for _, r in reports:
+            row.append(fmt(r.compute_summary()))
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines) + "\n"
+
+
 def _load_tasks_resilient(
     *,
     task_ids: Optional[list[str]] = None,
@@ -868,7 +925,24 @@ def main() -> int:
         default=None,
         help="Override model name from config.yaml",
     )
+    parser.add_argument(
+        "--models",
+        type=str,
+        default=None,
+        metavar="ID1,ID2,...",
+        help="Comma-separated model IDs; run a full suite per model and save per-model baselines",
+    )
+    parser.add_argument(
+        "--models-report",
+        type=str,
+        default=None,
+        metavar="DATE",
+        help="Generate the comparison matrix from evals/baselines/<DATE>-agent-*.json (no runs); omit DATE for today",
+    )
     args = parser.parse_args()
+
+    if args.models and args.model:
+        parser.error("--models and --model are mutually exclusive")
 
     # Load tasks (fall back to resilient loader if a YAML is broken).
     tasks: list[EvalTask] = []
@@ -888,6 +962,53 @@ def main() -> int:
         return 1
 
     print(f"Loaded {len(tasks)} task(s)")
+
+    if args.models:
+        from .report import BASELINES_DIR, save_baseline
+
+        models = _parse_models_list(args.models)
+        date = datetime.now().strftime("%Y-%m-%d")
+        reports: list[tuple[str, SuiteReport]] = []
+        for mid in models:
+            try:
+                backend = build_backend("agent", model_name=mid)
+            except Exception as e:
+                print(f"Error building backend for {mid}: {e}", file=sys.stderr)
+                return 1
+            print(f"Running full suite for model {mid} ...", file=sys.stderr, flush=True)
+            report = asyncio.run(
+                run_suite(
+                    tasks, backend,
+                    tag=f"a10-{_model_slug(mid)}",
+                    backend_name="agent",
+                    max_tasks=args.max_tasks,
+                    task_timeout=args.task_timeout,
+                )
+            )
+            s = report.compute_summary()
+            print(f"{mid}: {s['passed']}/{s['total_tasks']} passed ({s['pass_rate']:.1%})")
+            path = save_baseline(report, f"{date}-agent-{_model_slug(mid)}")
+            print(f"Baseline saved to: {path}")
+            reports.append((mid, report))
+        md = format_model_comparison(reports)
+        out_path = BASELINES_DIR / f"models-comparison-{date}.md"
+        out_path.write_text(md, encoding="utf-8")
+        print(f"Comparison matrix saved to: {out_path}")
+        return 0
+
+    if args.models_report:
+        from .report import BASELINES_DIR
+
+        date = args.models_report or datetime.now().strftime("%Y-%m-%d")
+        reports = load_model_baselines(date)
+        if not reports:
+            print(f"No baselines matching evals/baselines/{date}-agent-*.json", file=sys.stderr)
+            return 1
+        md = format_model_comparison(reports)
+        out_path = BASELINES_DIR / f"models-comparison-{date}.md"
+        out_path.write_text(md, encoding="utf-8")
+        print(f"Comparison matrix saved to: {out_path}")
+        return 0
 
     if args.dry:
         print("Dry run - task setup validated:")
