@@ -57,6 +57,16 @@ env/
 *.old
 *.rej
 
+# --- 开发文档导出物 / Office 文档（不是源码，不入库）---
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.pdf
+*.rar
+
 # --- Node / frontend ---
 frontend/node_modules/
 # dist/ is needed for installation — track only the built bundle
@@ -68,10 +78,19 @@ node_modules/
 test-results-*.xml
 .pytest-*.xml
 TEST_MILESTONE.md
+# Eval-generated test residue (agent-generated tests that never landed in source)
 tests/test_llm_stream_resilience.py
 
 # --- Logs & runtime artifacts ---
 *.log
+*.err
+*.out
+*.pid
+*.tmp
+*.part
+*.swp
+*.swo
+~$*
 server_debug.log
 test_*.png
 log/*.txt

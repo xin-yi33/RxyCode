@@ -1394,7 +1394,7 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 - [x] 三处 256000 已参数化
 - [x] `graph_context_token_limit` 默认 `None` 且能被模型能力驱动
 - [x] 新增的 wiring 测试通过
-- [ ] evals 无回归（**默认模型的能力值与旧硬编码一致，所以分数应当完全不变**）— 复跑见 `artifacts/a7-evals-baseline-final.log`
+- [x] evals 无回归（**默认模型的能力值与旧硬编码一致，所以分数应当完全不变**）— 复跑见 `artifacts/a7-evals-baseline-final.log`；2026-08-05 gate-a7: PASS (88.2%)
 
 **常见坑**
 - 如果默认模型的 `context_window` 不等于 256000，evals 分数**会**变。那说明你把 A1 的默认值改了——回去检查 `DEFAULT_CAPABILITIES`。

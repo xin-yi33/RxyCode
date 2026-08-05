@@ -2152,7 +2152,7 @@ Select-String -Path core\agent_v2.py -Pattern "in \(?\[?['\"].{1,12}['\"], |任�
 **完成判据**
 - [x] 25 处清单完整并写进 `docs/modules/core.md`
 - [x] 高危项已替换且有测试
-- [ ] evals 分数不下降
+- [x] evals 分数不下降
 
 ---
 
@@ -2173,6 +2173,12 @@ Select-String -Path core\*.py,execution\*.py,planning\*.py,validation\*.py,synth
 3. 用 `TYPE_CHECKING` 块解决纯类型用途的（这类最容易，先清）
 4. 剩下的真循环，靠 P3 引入的 Session 层做依赖倒置
 5. **不要求清零**。目标是"从 131 降到 50 以下，且 `core/` 内部无循环"
+
+**完成判据**
+- [x] 延迟 import 降到 50 以下（当前 **34/50**，`python scripts/count_lazy_imports.py`）
+- [x] 明细表写入 `docs/modules/core.md`（P7 intentional lazy imports，逐文件注明原因）
+- [x] 回归守卫 `tests/test_core/test_lazy_import_budget.py` 通过
+- [x] evals 无回归（2026-08-05 gate-p7: PASS 88.2%）
 
 ---
 
