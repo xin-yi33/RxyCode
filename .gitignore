@@ -52,6 +52,7 @@ build/
 coverage.xml
 htmlcov/
 /artifacts/
+artifacts/a10-keys.md
 test-results.xml
 .ruff_cache/
 .mypy_cache/
