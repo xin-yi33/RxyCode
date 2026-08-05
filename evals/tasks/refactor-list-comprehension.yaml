@@ -4,6 +4,7 @@ prompt: |
   当前目录下的 filters.py 里 even_squares(nums) 用 for 循环 + append 构建结果列表。
   请重构为一个列表推导式（list comprehension），保持行为不变，
   运行 python -m pytest test_filters.py -q 确认通过。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     filters.py: |

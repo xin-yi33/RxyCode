@@ -5,6 +5,7 @@ prompt: |
   3 的倍数替换为 "Fizz"，5 的倍数替换为 "Buzz"，同时是 3 和 5 的倍数替换为 "FizzBuzz"，
   其余保留整数。实现后运行 python -m pytest test_fizzbuzz.py -q 确认通过
   （测试文件已存在）。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     test_fizzbuzz.py: |

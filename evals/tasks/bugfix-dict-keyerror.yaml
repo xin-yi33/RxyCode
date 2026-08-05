@@ -4,6 +4,7 @@ prompt: |
   当前目录下的 counter.py 里 count_words(text) 在统计词频时对未出现过的单词直接用
   counts[word] += 1，会抛 KeyError。请修复（用 dict.get 或 collections.Counter 均可），
   保持返回普通 dict，然后运行 python -m pytest test_counter.py -q 确认通过。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     counter.py: |

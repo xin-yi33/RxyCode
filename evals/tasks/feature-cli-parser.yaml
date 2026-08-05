@@ -5,6 +5,7 @@ prompt: |
   ["--name", "bob", "--age", "30"] 的参数列表解析为 dict
   {"name": "bob", "age": "30"}；遇到不带值的 flag（如 --verbose）记为 True。
   测试文件已存在，运行 python -m pytest test_cliparse.py -q 确认通过。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     test_cliparse.py: |

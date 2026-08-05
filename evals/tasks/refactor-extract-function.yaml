@@ -5,6 +5,7 @@ prompt: |
   请做一个小重构：把总计计算抽取为一个独立的 compute_total(rows) 函数，
   render_report 调用它。保持现有行为不变（见 test_report.py），
   运行 python -m pytest test_report.py -q 确认通过。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     report.py: |

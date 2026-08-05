@@ -4,6 +4,7 @@ prompt: |
   当前目录下有一个 calc.py，其中的 sum_up_to(n) 函数有 off-by-one bug：
   它应该返回 1+2+...+n 的和，但现在少加了 n。请修复这个 bug，
   然后运行 python -m pytest test_calc.py -q 确认测试通过。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     calc.py: |

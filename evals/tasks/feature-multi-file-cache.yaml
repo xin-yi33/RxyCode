@@ -7,6 +7,7 @@ prompt: |
   2) service.py：实现 make_cached_getter(cache, fetcher)，返回一个函数 g(k)：
      先查 cache，miss 时调用 fetcher(k) 并把结果写入 cache（ttl=60）。
   测试文件 test_cache.py 已存在，运行 python -m pytest test_cache.py -q 确认通过。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
 setup:
   files:
     test_cache.py: |
