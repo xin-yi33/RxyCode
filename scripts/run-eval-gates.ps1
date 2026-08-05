@@ -68,11 +68,13 @@ while (@($procs.Values | Where-Object { -not $_.HasExited }).Count -gt 0) {
 
 Write-Host ""
 foreach ($label in $Labels) {
-    $p = $procs[$label]
-    $code = if ($p.HasExited) { $p.ExitCode } else { "RUNNING" }
-    if ($code -eq 0) { $verdict = "PASS" }
-    elseif ($code -eq 2) { $verdict = "REGRESSION" }
-    else { $verdict = "ERROR($code)" }
+    $gateLine = Select-String -Path (Join-Path $Root "artifacts\gate-$label.log") -Pattern '^GATE: (PASS|FAIL)' -ErrorAction SilentlyContinue |
+        Select-Object -Last 1
+    if ($gateLine) {
+        $verdict = if ($gateLine.Line -match 'PASS') { "PASS" } else { "REGRESSION" }
+    } else {
+        $verdict = "UNKNOWN (no GATE line in log)"
+    }
     Write-Host "=== GATE $label : $verdict ==="
     Select-String -Path (Join-Path $Root "artifacts\gate-$label.log") -Pattern 'GATE:|Delta:|Pass Rate' -ErrorAction SilentlyContinue |
         ForEach-Object { Write-Host "   $($_.Line.Trim())" }
