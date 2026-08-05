@@ -16,19 +16,33 @@ headless core and the same typed `protocol/` schema.
   standalone with `rxycode --api`
 - Requests enter the agent through the headless `Session` facade
   (`core/session.py`) rather than calling `AgentV2` directly
-- File size: 2,726 lines of code (2,412 non-blank). Docstring:
+- File size: 2,011 lines. Docstring:
   "RxyCode API Server - FastAPI backend for the Ink TUI"
+
+### Module structure (post-thinning)
+
+The module was thinned by pure code relocation (behavior unchanged) into three
+files:
+
+| File | Lines | Responsibility |
+|---|---|---|
+| `api_server.py` | 2,011 | FastAPI route assembly layer (HTTP/SSE adapter): 8 `@app.` routes, request models, startup/auth; mounts `models_router` via `app.include_router` (api_server.py:71) |
+| `api_server_models.py` | 305 | Model-management endpoints (`/models`, `/models/presets`, `/models/discover`, `/models/onboard`, `/models/onboard/batch`) on an `APIRouter` (`models_router`), plus their request models |
+| `api_server_stream.py` | 451 | SSE transport classes: `APIProxyTUI` (11), `StreamSessionRecorder` (125), `StreamTUI` (271) |
 
 ## Phase 2 Adapter Positioning
 
 ### Current role
 
-api_server.py is today a **complete HTTP+SSE server**: 13 `@app.` routes
-(`/chat`, `/chat/stream`, `/status`, `/command`, `/approve`,
-`/question/respond`, `/models/*`, `/cancel`, `/log`), and the Ink fallback
+api_server.py is today a **complete HTTP+SSE server**: 13 routes (8 `@app.` in
+api_server.py, 5 `@router.` on `models_router` in api_server_models.py) covering
+`/chat`, `/chat/stream`, `/status`, `/command`, `/approve`,
+`/question/respond`, `/models/*`, `/cancel`, `/log`, and the Ink fallback
 frontend still uses it (AGENTS.md; OpenTUI migrated to `appserver` stdio in
-P5). It is not yet a thin adapter: it owns request parsing, the SSE stream,
-slash-command execution, model onboarding, and run lifecycle management.
+P5). It is not yet a thin adapter: it owns route assembly and request parsing,
+slash-command execution, and run lifecycle management, while the SSE transport
+classes live in `api_server_stream.py` and the model onboarding endpoints in
+`api_server_models.py`.
 
 ### Evolution direction
 
@@ -46,10 +60,10 @@ Per the Phase 2 development doc (docs/plans/opus5-plan/rxycode/00-EXECUTION-PLAN
 
 This direction is already partially realized: `/chat/stream` routes through
 `Session` — `from .core.session import Session, notification_to_sse_event`
-(api_server.py:2559), an `_emit_protocol` callback that converts protocol
-notifications to SSE events (2561), a `Session(...)` built with
-`emit=_emit_protocol` (2566-2571), and `session.prompt(agent, ...)` (2573).
-`/cancel` similarly uses `Session.interrupt` (2062-2069).
+(api_server.py:1844), an `_emit_protocol` callback that converts protocol
+notifications to SSE events (1846-1849), a `Session(...)` built with
+`emit=_emit_protocol` (1851-1856), and `session.prompt(agent, ...)` (1858-1863).
+`/cancel` similarly uses `Session.interrupt` (1666-1673).
 
 ### Backward-compatibility hard constraint
 
@@ -71,20 +85,20 @@ the legacy `StreamTUI` writers emit the remaining events directly.
 
 | SSE event (api_server.py) | Protocol model | Legacy source |
 |---|---|---|
-| `token` | `MessageDelta` | buffer key `token` (2297), `flush_stream_buffers` (2307) |
-| `progress` | `ProgressUpdate` | `write_progress` (2328) |
-| `reasoning` | `ReasoningSnapshot` | `_emit_thinking_snapshot` (2421), `_put` (2428) |
-| `plan` | `PlanUpdate` | `write_plan` (2350), `_put` (2354) |
-| `step` | `StepProgress` | `write_step` (2355), `_put` (2358) |
-| `tool_call` | `ToolBegin` | `write_tool_call` (2359) |
-| `tool_result` | `ToolEnd` | `write_tool_result` (2386) |
-| `error` | `ErrorNotification` | `write_error` (2346/2349), queue puts (2603/2627) |
+| `token` | `MessageDelta` | buffer key `token` (api_server_stream.py:409), `flush_stream_buffers` (306) |
+| `progress` | `ProgressUpdate` | `write_progress` (api_server_stream.py:327) |
+| `reasoning` | `ReasoningSnapshot` | `_emit_thinking_snapshot` (420), `_put` (299) |
+| `plan` | `PlanUpdate` | `write_plan` (349), `_put` (299) |
+| `step` | `StepProgress` | `write_step` (354), `_put` (299) |
+| `tool_call` | `ToolBegin` | `write_tool_call` (358) |
+| `tool_result` | `ToolEnd` | `write_tool_result` (385) |
+| `error` | `ErrorNotification` | `write_error` (345/81), runner queue puts (1888/1912) |
 | `final` | `FinalAnswer` + `TokenUsage` | `notification_to_sse_event` (core/session.py:57) |
-| `done` | `RunComplete` | queue put (2639) |
+| `done` | `RunComplete` | queue put (1924) |
 | `approval_request` / `question_request` | `ApprovalRequest` / `QuestionRequest` | core/safety/approval.py:46, core/question.py:47 |
 
 The `approval_request`/`question_request` events are answered in-band via
-`POST /approve` (859) and `POST /question/respond` (872) — the HTTP analogue
+`POST /approve` (656) and `POST /question/respond` (669) — the HTTP analogue
 of the protocol's `server_requests` channel. The full SSE inventory and
 protocol model reference is in docs/modules/protocol.md.
 
@@ -110,21 +124,27 @@ protocol model reference is in docs/modules/protocol.md.
 
 ## Endpoints
 
+8 `@app.` routes live in api_server.py; the 5 `/models/*` routes are registered
+on `models_router` in api_server_models.py and mounted via
+`app.include_router` (api_server.py:71). All 13 routes are listed below.
+
 | Endpoint | Method | Line | Purpose |
 |----------|--------|------|---------|
-| /status | GET | 918 | Current status: model, mode, memory, billing, cache, token stats |
-| /models | GET | 973 | Model nicknames and provider model IDs (never credentials) |
-| /models/presets | GET | 1016 | Connection presets (provider + base URL only, no model IDs) |
-| /models/discover | POST | 1028 | Probe a provider's model catalogue with supplied credentials; never persists |
-| /models/onboard | POST | 1055 | Probe an unsaved model configuration, then persist it on success |
-| /models/onboard/batch | POST | 1136 | Add multiple discovered models without per-model chat probes |
-| /chat | POST | 1166 | Non-streaming chat with the same run lifecycle and terminal classification |
-| /chat/stream | POST | 2447 | Send message, receive SSE stream of events |
-| /cancel | POST | 2048 | Cancel the active chat or command lifecycle (via `Session.interrupt`) |
-| /command | POST | 2077 | Execute slash commands (/help, /clear, etc.) |
-| /approve | POST | 859 | Resolve a pending safety approval |
-| /question/respond | POST | 872 | Resolve a correlated Agent question with a choice, text, or cancellation |
-| /log | POST | 901 | Receive recursively redacted frontend diagnostics |
+| /status | GET | 715 | Current status: model, mode, memory, billing, cache, token stats |
+| /models | GET | 115 | Model nicknames and provider model IDs (never credentials) |
+| /models/presets | GET | 158 | Connection presets (provider + base URL only, no model IDs) |
+| /models/discover | POST | 170 | Probe a provider's model catalogue with supplied credentials; never persists |
+| /models/onboard | POST | 197 | Probe an unsaved model configuration, then persist it on success |
+| /models/onboard/batch | POST | 278 | Add multiple discovered models without per-model chat probes |
+| /chat | POST | 770 | Non-streaming chat with the same run lifecycle and terminal classification |
+| /chat/stream | POST | 1732 | Send message, receive SSE stream of events |
+| /cancel | POST | 1652 | Cancel the active chat or command lifecycle (via `Session.interrupt`) |
+| /command | POST | 1681 | Execute slash commands (/help, /clear, etc.) |
+| /approve | POST | 656 | Resolve a pending safety approval |
+| /question/respond | POST | 669 | Resolve a correlated Agent question with a choice, text, or cancellation |
+| /log | POST | 698 | Receive recursively redacted frontend diagnostics |
+
+*Line numbers for the `/models/*` rows refer to api_server_models.py; all other rows refer to api_server.py.*
 
 ## Core: /chat/stream
 
@@ -142,7 +162,7 @@ protocol model reference is in docs/modules/protocol.md.
   - error: Non-success result, with `failed`, `timed_out`, or `cancelled` status
   - done: Stream complete, carrying the terminal run status
 
-The runner drives the agent through `Session` (api_server.py:2559-2578):
+The runner drives the agent through `Session` (api_server.py:1851-1863):
 protocol notifications are converted to SSE via `_emit_protocol` /
 `notification_to_sse_event`; terminal status comes from `session.prompt`.
 
@@ -150,8 +170,8 @@ Only classified successful results emit `final`. Agent/build/tool failure
 sentinels are emitted as `error` and counted under their real terminal status.
 Tool events preserve their `message_id`; request/response events preserve their
 approval or question ID so concurrent runs cannot update the wrong UI item.
-Legacy guards still inline SSE JSON: the empty-message guard (2458), invalid
-mode (2463-2467), and busy-stream guard (2473-2477) each emit `error` + `done`
+Legacy guards still inline SSE JSON: the empty-message guard (1742), invalid
+mode (1747-1752), and busy-stream guard (1758-1762) each emit `error` + `done`
 directly.
 
 ## Core: /status
@@ -159,7 +179,7 @@ directly.
 - Returns memory/billing/token data, application and provider cache metrics,
   mode/model/language, active run metadata, and aggregate terminal counts.
 - Source: global `token_stats` singleton (`utils/streaming.py`), imported at
-  api_server.py:920.
+  api_server.py:717.
 
 ## Core: /command
 
@@ -168,7 +188,7 @@ directly.
 - Handles: /help, /clear, /models, /cache, /list-chats, /thinking, /examples, etc.
 - Credential-bearing `/addmodel ...` and legacy `/addmodel-step` command bodies
   are rejected. The frontend uses the typed onboarding endpoint instead.
-- `/clear` resets token stats via `token_stats.reset()` (1335).
+- `/clear` resets token stats via `token_stats.reset()` (939).
 
 ## Core: /models/onboard
 
@@ -183,16 +203,16 @@ directly.
 - Successful credentials are stored through an opaque reference: Windows uses
   current-user DPAPI; other platforms use an owner-only secret file. YAML never
   stores the provider key inline, and legacy inline values are migrated.
-- `/models/presets` (1016) returns connection presets (provider + base URL
-  only) so the TUI can drive the add-model flow; `/models/discover` (1028)
-  lists a provider's models with the supplied credential and never persists;
-  `/models/onboard/batch` (1136) persists several discovered models at once
-  (with optional `skip_probe`).
+- `/models/presets` (api_server_models.py:158) returns connection presets
+  (provider + base URL only) so the TUI can drive the add-model flow;
+  `/models/discover` (170) lists a provider's models with the supplied
+  credential and never persists; `/models/onboard/batch` (278) persists several
+  discovered models at once (with optional `skip_probe`).
 
 ## Token Stats Integration
 
 - /status reads from the global token_stats singleton (streaming.py)
-- /clear (via /command) resets token_stats via `token_stats.reset()` (1335)
+- /clear (via /command) resets token_stats via `token_stats.reset()` (939)
 - Token usage is recorded inside AgentV2's `_record_usage`
   (core/agent_v2.py:302); the singleton is what /status reports
 
