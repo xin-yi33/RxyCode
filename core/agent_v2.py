@@ -1467,6 +1467,11 @@ class AgentV2:
             caps = DEFAULT_CAPABILITIES
         return provider.extract_reasoning(delta, caps) or ""
 
+    def _prompt_variant(self) -> str:
+        """A9: variant selector from current model capabilities."""
+        caps = getattr(self, "_capabilities", None)
+        return (caps or DEFAULT_CAPABILITIES).prompt_variant
+
     async def _raw_stream(self, messages, tools=None):
         """Stream from the raw OpenAI client, yielding native chunks.
 
@@ -1929,7 +1934,7 @@ class AgentV2:
             role_instruction = SOCIAL_CHAT_ROLE_INSTRUCTION
         # Social chat: skip all sticky memory (short + long + RAG).
         memory_ctx = self._memory_ctx_for_turn(user_input)
-        system = get_system_prompt()
+        system = get_system_prompt(variant=self._prompt_variant())
         user_msg = build_user_message(role_instruction, user_input, memory_ctx)
         research_policy = get_research_policy(user_input)
         # Explicit git-only / social allowlists must not be forced into web research.
@@ -2501,7 +2506,7 @@ class AgentV2:
         """
         await self._ensure_session_loaded()
         memory_ctx = self._memory_ctx_for_turn(user_input)
-        system = get_system_prompt()
+        system = get_system_prompt(variant=self._prompt_variant())
         user_msg = build_user_message("", user_input, memory_ctx)
 
         # Level 1: exact hash cache (include memory context in key for freshness)
@@ -2690,6 +2695,7 @@ class AgentV2:
         plan_role = get_role_prompt(
             "compose_plan",
             user_input=user_input,
+            variant=self._prompt_variant(),
         )
         plan_prompt = build_user_message(plan_role, "")
         plan_response = await self._fast_reply(plan_prompt)
@@ -2720,6 +2726,7 @@ class AgentV2:
                 user_input=user_input,
                 plan_file=tmp_file.name,
                 plan_content=plan_response,
+                variant=self._prompt_variant(),
             )
             build_prompt = build_user_message(build_role, "")
             # 根据原始任务复杂度选择执行方式（build_prompt 总是很长，不能用它判断）
