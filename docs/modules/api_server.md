@@ -194,7 +194,7 @@ directly.
 - /status reads from the global token_stats singleton (streaming.py)
 - /clear (via /command) resets token_stats via `token_stats.reset()` (1335)
 - Token usage is recorded inside AgentV2's `_record_usage`
-  (core/agent_v2.py:267); the singleton is what /status reports
+  (core/agent_v2.py:302); the singleton is what /status reports
 
 ## Commands
 

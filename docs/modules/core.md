@@ -36,13 +36,13 @@ Session restoration searches the current date, earlier dated records, and the le
 ### Core Code: agent_v2.py
 
 **Classes:**
-- UsageTrackingLLM (line ~382): Wrapper around any LangChain LLM that records
+- UsageTrackingLLM (line ~401): Wrapper around any LangChain LLM that records
   token usage and settles provider/model rate-limit grants for every
   `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
-- AgentV2 (line ~727): The main agent. Handles user input routing, fast-path optimization, sub-agent delegation, compose mode, and the full LangGraph pipeline.
-- SubAgentV2 (line ~3388): Lightweight sub-agent for parallel task execution.
+- AgentV2 (line ~746): The main agent. Handles user input routing, fast-path optimization, sub-agent delegation, compose mode, and the full LangGraph pipeline.
+- SubAgentV2 (line ~3407): Lightweight sub-agent for parallel task execution.
 
 **How a Request Flows:**
 1. AgentV2.run(user_input, mode) is called
