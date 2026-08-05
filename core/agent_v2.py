@@ -243,6 +243,29 @@ def _extract_cache_read(resp) -> int:
     )
 
 
+def _usage_obj_to_dict(raw_usage) -> dict:
+    """Serialize a raw usage object into the dict shape the provider expects.
+
+    ``model_dump`` objects (pydantic) already yield plain dicts; other objects
+    (e.g. SimpleNamespace-style chunks) are converted recursively so nested
+    attributes become nested dicts the provider can look up.
+    """
+    if hasattr(raw_usage, "model_dump"):
+        return raw_usage.model_dump()
+    result: dict = {}
+    for key, value in vars(raw_usage).items():
+        if isinstance(value, dict):
+            result[key] = {
+                k: _usage_obj_to_dict(v) if hasattr(v, "__dict__") or hasattr(v, "model_dump") else v
+                for k, v in value.items()
+            }
+        elif hasattr(value, "model_dump") or hasattr(value, "__dict__"):
+            result[key] = _usage_obj_to_dict(value)
+        else:
+            result[key] = value
+    return result
+
+
 def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
     """Estimate token count for a single text blob using a tokenizer spec."""
     if text is None:
@@ -324,11 +347,7 @@ def _record_usage(
     if raw_usage is not None:
         prompt_toks = int(getattr(raw_usage, "prompt_tokens", 0) or 0)
         completion_toks = int(getattr(raw_usage, "completion_tokens", 0) or 0)
-        usage_dict = (
-            raw_usage.model_dump()
-            if hasattr(raw_usage, "model_dump")
-            else dict(vars(raw_usage))
-        )
+        usage_dict = _usage_obj_to_dict(raw_usage)
         cache_read = provider.extract_cache_read(usage_dict, caps)
         if prompt_toks > 0 or completion_toks > 0:
             token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
