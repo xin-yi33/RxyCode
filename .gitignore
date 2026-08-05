@@ -68,6 +68,7 @@ node_modules/
 test-results-*.xml
 .pytest-*.xml
 TEST_MILESTONE.md
+tests/test_llm_stream_resilience.py
 
 # --- Logs & runtime artifacts ---
 *.log

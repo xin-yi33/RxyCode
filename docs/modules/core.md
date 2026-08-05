@@ -211,20 +211,36 @@ and `tests/test_core/test_request_routing.py`.
 P7 tracks function-scoped imports under `core/`, `execution/`, `planning/`,
 `validation/`, and `synthesis/` via `scripts/count_lazy_imports.py` (budget **50**).
 
-After P7 completion (~40 remaining), lazy imports are **intentional** in:
+Current total: **34 / 50** (`python scripts/count_lazy_imports.py --by-file`).
 
-| Module | Reason |
-|--------|--------|
-| `agent_v2.py` | Optional `pybreaker` / conditional `rag.index`; config via `_settings.load_config()` for test patchability |
-| `graph.py` | `TYPE_CHECKING` import for `MemoryManager` annotations only |
-| `session.py` | `protocol.notifications` try/except for repo-root pytest imports |
-| `builtin_tool_registration.py` | Optional `rag.search` import guarded by `rag_enabled` |
-| `tool_journal.py` | Platform-specific `msvcrt` / `fcntl` file locking |
-| `checkpoints.py` | Defers `tool_journal` to avoid import cycles at module load |
-| `safety/policy.py` | Defers `session_runtime` path resolution |
+The table below is **exhaustive** for every file that contributes to that count.
+Each row explains why the import stays function-scoped (or try-block scoped) instead
+of being hoisted to module level.
+
+| Module | Count | Reason |
+|--------|------:|--------|
+| `execution/tool_journal.py` | 4 | Platform-specific `msvcrt` / `fcntl` file locking; imported only when journal I/O runs |
+| `core/agent_v2.py` | 3 | Optional `pybreaker` (guarded by config); `rag.index.start_background_indexer` only when RAG enabled |
+| `core/checkpoints.py` | 3 | Defers `execution.tool_journal` (`validate_attempt_id`, `new_attempt_id`) to break import cycles at module load |
+| `core/prompts/registry.py` | 3 | `few_shot.format_few_shot` only when rendering few-shot blocks; `datetime` in `build_user_message` to avoid cold-start cost |
+| `core/safety/policy.py` | 3 | Defers `session_runtime` path helpers (`resolve_session_path`, `current_working_directory`); `importlib` for optional tool modules |
+| `core/prompts/tool_list.py` | 2 | `tools.registry` behind try/except so prompt unit tests run without full tool registration |
+| `core/providers/anthropic.py` | 2 | Dual import path (`...config` vs `config`) for installed-package vs repo-root pytest layouts |
+| `core/providers/base.py` | 2 | Same dual-path `model_capabilities` import as other provider modules |
+| `core/providers/deepseek.py` | 2 | Same dual-path `model_capabilities` import as other provider modules |
+| `core/providers/qwen.py` | 2 | Same dual-path `model_capabilities` import as other provider modules |
+| `core/safety/approval.py` | 2 | `utils.tui.get_tui` only in TUI approval path; `threading` only in `wait_for_request` test hook |
+| `core/session.py` | 2 | `protocol.notifications` try/except for repo-root vs package import layouts |
+| `core/builtin_tool_registration.py` | 1 | Optional `rag.search` import guarded by `rag_enabled` |
+| `core/graph.py` | 1 | `TYPE_CHECKING`-style deferred `MemoryManager` import for annotations / cycle avoidance |
+| `core/prompts/i18n.py` | 1 | `config.settings.load_config` in `get_locale()` so prompt tests can run without config I/O at import |
+| `core/providers/tokenizers.py` | 1 | Optional `tiktoken` import; falls back when package not installed |
 
 `tracing.py`, `trajectory.py`, `tool_orchestrator.py`, and `graph.py` node factories
 now use module-scope absolute imports (config reads go through `config.settings`).
+
+Regression guard: `tests/test_core/test_lazy_import_budget.py` (milestone & final budget)
+and `python scripts/count_lazy_imports.py` (must stay `< 50`).
 
 ## Dependencies
 - langchain_core for message types

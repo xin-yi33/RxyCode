@@ -77,6 +77,8 @@ class AgentWorker:
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 1
         self._approval = _PipeApproval(self._send_parent_request)
+        self._thinking_expanded = False
+        self._active_tui: Any | None = None
 
     def _schedule_write(self, message: dict[str, Any]) -> None:
         """Queue stdout write from sync emit callbacks (T3: no sync I/O on loop)."""
@@ -151,8 +153,11 @@ class AgentWorker:
             self._schedule_write(model_to_notification(notification))
 
         tui = ProtocolTui(session_id, emit)
-        tui.set_thinking_expanded(bool(params.get("thinking_expanded", False)))
+        expanded = bool(params.get("thinking_expanded", self._thinking_expanded))
+        self._thinking_expanded = expanded
+        tui.set_thinking_expanded(expanded)
         tokens = bind_prompt_context(session_id, tui)
+        self._active_tui = tui
         session = Session(
             session_id=session_id,
             workspace_root=self._workspace_root,
@@ -173,6 +178,7 @@ class AgentWorker:
             return
         finally:
             reset_prompt_context(tokens)
+            self._active_tui = None
 
         await write_message(
             {
@@ -210,17 +216,15 @@ class AgentWorker:
         self, params: dict[str, Any], request_id: int
     ) -> None:
         expanded = bool(params.get("expanded", False))
-        tui = get_bound_tui()
+        self._thinking_expanded = expanded
+        tui = self._active_tui or get_bound_tui()
         if tui is not None and hasattr(tui, "set_thinking_expanded"):
             tui.set_thinking_expanded(expanded)
-            ok = True
-        else:
-            ok = False
         await write_message(
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": {"ok": ok, "expanded": expanded},
+                "result": {"ok": True, "expanded": expanded},
             }
         )
 
