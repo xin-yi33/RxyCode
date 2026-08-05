@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -74,7 +75,11 @@ def _extract_agent_token_usage(
 
 
 @contextmanager
-def _headless_eval_runtime() -> Iterator[None]:
+def _headless_eval_runtime(
+    *,
+    workspace_root: Optional[Path] = None,
+    extra_write_paths: Optional[list[str]] = None,
+) -> Iterator[None]:
     """Headless eval: inject full_auto safety and an auto-approval broker.
 
     Agent graph nodes call ``load_config()`` directly (not ``agent._cfg``), so
@@ -114,8 +119,34 @@ def _headless_eval_runtime() -> Iterator[None]:
                 "danger",
             }
         )
+        safety["allowed_write_paths"] = sorted(
+            {
+                *(str(x) for x in (safety.get("allowed_write_paths") or [])),
+                *(str(p) for p in (extra_write_paths or [])),
+            }
+        )
         cfg["safety"] = safety
+        if workspace_root is not None:
+            execution = dict(cfg.get("execution") or {})
+            execution["sandbox_mode"] = "workspace"
+            execution["workspace_root"] = str(Path(workspace_root).resolve())
+            cfg["execution"] = execution
         return cfg
+
+    # Modules that bound ``load_config`` at import time must be patched on
+    # their own module-global name; patching only settings_module leaves the
+    # bash sandbox (utils.shell) reading the original config.
+    _import_bound_modules = ("utils.shell", "tools.workflow_tool")
+    real_bindings: dict = {}
+    for _rel in _import_bound_modules:
+        try:
+            _mod = importlib.import_module(f"RxyCode.RxyCode1_1_0.{_rel}")
+        except Exception:
+            continue
+        _orig = getattr(_mod, "load_config", None)
+        if _orig is not None:
+            real_bindings[_mod] = _orig
+            _mod.load_config = _eval_load_config
 
     prev_broker = get_approval_broker()
     settings_module.load_config = _eval_load_config  # type: ignore[method-assign]
@@ -124,6 +155,8 @@ def _headless_eval_runtime() -> Iterator[None]:
         yield
     finally:
         settings_module.load_config = real_load_config  # type: ignore[method-assign]
+        for _mod, _orig in real_bindings.items():
+            _mod.load_config = _orig
         set_approval_broker(prev_broker)
 
 
@@ -148,9 +181,21 @@ class AgentBackend:
         session_token = bind_session(session_id)
         token_start = (token_stats.input_tokens, token_stats.output_tokens)
         try:
-            with _headless_eval_runtime():
+            with _headless_eval_runtime(
+                workspace_root=workdir,
+                extra_write_paths=[str(workdir)] if workdir is not None else None,
+            ):
                 if workdir is not None:
                     set_working_directory(workdir)
+                    # Tool threads inside the LangGraph pipeline can lose the
+                    # ContextVar session binding and resolve to the default
+                    # "latest" session id; seed that id's cwd so tools observe
+                    # the eval workdir either way.
+                    latest_token = bind_session("latest")
+                    try:
+                        set_working_directory(workdir)
+                    finally:
+                        reset_session_binding(latest_token)
                 result = await agent.run(prompt, mode="build")
             answer = result if isinstance(result, str) else str(result or "")
             input_tokens = token_stats.input_tokens - token_start[0]
@@ -178,6 +223,7 @@ class AgentBackend:
         finally:
             reset_session_binding(session_token)
             clear_session_runtime(session_id)
+            clear_session_runtime("latest")
 
 
 def make_agent_factory(model_name: Optional[str] = None):
