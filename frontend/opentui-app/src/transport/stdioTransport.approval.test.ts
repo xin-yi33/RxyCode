@@ -36,7 +36,10 @@ describe("stdio transport approval lifecycle", () => {
         RXYCODE_TRANSPORT: "stdio",
         RXYCODE_APPSERVER_STUB: "1",
         RXYCODE_PROJECT_ROOT: repoRoot,
-        RXYCODE_APPSERVER_PYTHON: process.env.PYTHON ?? "python",
+        RXYCODE_APPSERVER_PYTHON:
+          process.env.RXYCODE_APPSERVER_PYTHON ??
+          process.env.PYTHON ??
+          "python",
       },
       stdout: "pipe",
       stderr: "pipe",

@@ -12,12 +12,20 @@ config.local.yaml
 **/config.local.yaml
 *.key
 *.pem
+*.p12
+*.jks
+*.secret
+*.token
+id_rsa
+id_rsa.pub
 .env
 .env.*
 .env.local
 # Live-test / CI secret injection files (never commit real keys)
 **/live_credentials.*
 **/rxycode_gh_secret.txt
+**/secrets.json
+**/secret.txt
 
 # --- IDE / tool data ---
 .codebuddy/
@@ -50,6 +58,19 @@ test-results.xml
 .venv/
 venv/
 env/
+*.tsbuildinfo
+
+# --- Frontend build / test coverage ---
+coverage/
+.nyc_output/
+playwright-report/
+allure-results/
+allure-report/
+mochawesome-report/
+test-output/
+.turbo/
+.next/
+.vercel/
 
 # --- 备份 / 临时副本（禁止入库）---
 *.bak

@@ -30,16 +30,32 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RXYCODE_APPSERVER_STUB: "1"
+      RXYCODE_APPSERVER_PYTHON: python3
     defaults:
       run:
         working-directory: frontend/opentui-app
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e . --no-deps
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -52,11 +68,6 @@ jobs:
 
       - name: Unit tests (stdio transport)
         run: bun test src/transport
-        env:
-          RXYCODE_TRANSPORT: stdio
-          RXYCODE_APPSERVER_STUB: "1"
-          RXYCODE_PROJECT_ROOT: ${{ github.workspace }}
-          RXYCODE_APPSERVER_PYTHON: python3
 
       - name: Unit tests (http transport fallback)
         run: bun test

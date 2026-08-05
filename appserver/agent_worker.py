@@ -79,10 +79,19 @@ class AgentWorker:
         self._approval = _PipeApproval(self._send_parent_request)
         self._thinking_expanded = False
         self._active_tui: Any | None = None
+        self._pending_writes: set[asyncio.Task[Any]] = set()
 
     def _schedule_write(self, message: dict[str, Any]) -> None:
         """Queue stdout write from sync emit callbacks (T3: no sync I/O on loop)."""
-        asyncio.get_running_loop().create_task(write_message(message))
+        task = asyncio.get_running_loop().create_task(write_message(message))
+        self._pending_writes.add(task)
+        task.add_done_callback(self._pending_writes.discard)
+
+    async def _flush_pending_writes(self) -> None:
+        """Wait for all scheduled notifications to hit stdout before a result."""
+        if not self._pending_writes:
+            return
+        await asyncio.gather(*list(self._pending_writes), return_exceptions=True)
 
     async def _send_parent_request(
         self, method: str, params: dict[str, Any]
@@ -127,6 +136,7 @@ class AgentWorker:
             stub=stub,
             workspace_root=self._workspace_root,
         )
+        await self._flush_pending_writes()
         await write_message(
             {
                 "jsonrpc": "2.0",
@@ -180,6 +190,9 @@ class AgentWorker:
             reset_prompt_context(tokens)
             self._active_tui = None
 
+        # Ensure notifications (e.g. reasoning_snapshot) reach stdout before
+        # the result, so the client never observes the result arrive first.
+        await self._flush_pending_writes()
         await write_message(
             {
                 "jsonrpc": "2.0",

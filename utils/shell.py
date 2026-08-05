@@ -196,6 +196,8 @@ class ShellExecutor:
             r"Set-Location",
             r"\[Environment\]::",
             r"powershell",
+            # PowerShell call operator: `& 'C:\path\app.exe' args`
+            r"^\s*&\s*['\"]",
         ]
         return any(re.search(pattern, command) for pattern in patterns)
 

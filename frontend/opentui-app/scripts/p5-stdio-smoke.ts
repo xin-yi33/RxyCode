@@ -16,7 +16,8 @@ const repoRoot = path.resolve(
 process.env.RXYCODE_TRANSPORT = "stdio";
 process.env.RXYCODE_APPSERVER_STUB = "1";
 process.env.RXYCODE_PROJECT_ROOT = repoRoot;
-process.env.RXYCODE_APPSERVER_PYTHON = process.env.PYTHON ?? "python";
+process.env.RXYCODE_APPSERVER_PYTHON =
+  process.env.RXYCODE_APPSERVER_PYTHON ?? process.env.PYTHON ?? "python";
 
 resetChatTransportForTests();
 const transport = getChatTransport();
