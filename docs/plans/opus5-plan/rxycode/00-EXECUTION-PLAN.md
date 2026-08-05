@@ -3530,3 +3530,16 @@ python -m evals.cli run --backend agent --compare-baseline evals\baselines\lates
 | **审查 + 调研** | Sonnet 5（diff 预审）+ Grok（查资料/调研） | 审每一张卡的 diff（尤其 B2 / C3 / D4）、跑调研 prompt、维护评测基线、写 `docs/modules/*.md` |
 
 Phase B 的 B14 和 Phase D 的 D11 两张评测卡工作量都不小，而且**可以和实现完全解耦**——这是第二个窗口（或 Grok 空闲时）最有价值的去处。
+
+---
+
+## Phase D 前后端分离开发补充（追加，不改变前置顺序）
+
+完整 Phase D 仍然是 `PHASE-D-RXYCODE-DESKTOP.md` 定义的一个 Phase，D1–D16、总体验收、模型适配、协议和 LinkAgent 接口不变。为支持两人并行施工，新增两个执行视图：
+
+- [`PHASE-D-FRONTEND-RXYCODE-DESKTOP.md`](./PHASE-D-FRONTEND-RXYCODE-DESKTOP.md)：Electron/React/TypeScript、preload、protocol-client、UI、视觉、前端测试和前端打包入口。
+- [`PHASE-D-BACKEND-RXYCODE-DESKTOP.md`](./PHASE-D-BACKEND-RXYCODE-DESKTOP.md)：appserver、schema、Session/Child、权限、工具、Git/Review、恢复、Phase 3 ModelSummary、runtime 和后端测试。
+
+这里不与本文早先“Phase B 及以后不要并行开发后端”的核心隔离规则冲突：那条规则禁止在 Phase B/C 核心 Runtime 和编排层之间随意切出第二套后端；本补充只允许在 Phase D 公共契约已经冻结后，把 Desktop 的前端视图和后端服务按文件 ownership 分开开发。协议 schema、生成类型、contract tests 和最终合并仍由 Composer 2.5 统一收口，Grok 4.5 只做卡内视觉辅助。
+
+两份执行文档单独完成时只能输出 `READY_FOR_FULL_D_INTEGRATION`；只有前端卡、后端卡和原 D D1–D16 的完整出口同时通过，才能把 Phase D 标记为完成。

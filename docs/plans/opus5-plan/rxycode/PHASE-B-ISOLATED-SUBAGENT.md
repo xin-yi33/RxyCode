@@ -1276,3 +1276,220 @@ Phase B 只有在以下条件全部满足时才算完成：
 8. 单 Agent 默认路径零回归，多 Agent 的额外成本和失败不会被隐藏。
 
 **下一步只能是 Phase C 的专家团编排**。Phase C 可以组合多个 Child，但不能再次发明 Child Runtime。
+
+---
+
+## 附录 C · 上游开源实现复用协议（追加补充）
+
+本附录是对本文既有 §0–§10 的补充，不替换、不删减既有章节和 B1–B14 任务卡。若本附录与既有文字出现表述层面的重复，以既有公共契约为准；若本附录提供了更严格的实施要求，以更严格的要求为准。
+
+本 Phase B 的实现顺序必须遵循：
+
+```text
+先审计上游实现
+  → 能直接复用则直接复用
+  → 不能直接复用则采用依赖 / fork / vendor / 隔离进程适配
+  → 只有存在明确不兼容且有记录时，才做最小语义移植
+  → RxyCode 的隔离、安全、预算和审计只做边界增强，不重造 Child 核心
+```
+
+### C.1 复用原则（BR0，B1–B14 全部继承）
+
+| 编号 | 强制规则 | 不符合时的处理 |
+|---|---|---|
+| BR0-1 | 每张涉及 Child、Task、权限、递归、导航或事件的卡，开工前都必须先写明对应的 OpenCode 上游来源、版本/commit 和复用路径。 | 卡不得进入实现状态。 |
+| BR0-2 | 如果上游已有可执行组件、配置解析器、状态机、权限匹配器、事件协议或测试，优先选择 dependency、fork、vendor 或独立子进程复用。 | 禁止以“自行实现更容易”为理由直接重写等价核心。 |
+| BR0-3 | 只有在运行时、语言、许可证、数据模型、安全边界或 RxyCode 的隔离要求确实不兼容时，才允许建立薄适配层；适配层不得复制一份 Child Runtime。 | 必须在决策记录中写出不兼容证据和回滚方式。 |
+| BR0-4 | OpenCode 的 Primary/Subagent、`@` 触发、Task 调度、Child Session、三态权限、Task 权限、steps、hidden 和 child navigation 是兼容性对照对象。 | RxyCode 可以增加隔离、预算、审计和协议字段，但不得无记录地改变这些基础语义。 |
+| BR0-5 | `subtask=true`、Provider 适配、workspace lease、预算汇总、敏感信息脱敏和 RxyCode 审计字段属于 RxyCode 扩展，不能错误标记为 OpenCode 原生字段。 | 在协议中标记为 `x-rxycode-*` 或等价扩展命名空间。 |
+| BR0-6 | Composer 2.5 是实现、重构、测试修复和最终合并的主力；其他协作者可以并行做源码研究、许可证核验、测试设计、静态审计或局部辅助，但不得在同一公共文件上无协议地覆盖 Composer 的工作。 | 由 Composer 根据决策记录和契约测试收口。 |
+| BR0-7 | “功能看起来相似”不等于“完成复用审计”。每次选择自研、移植或适配，都必须留下上游位置、实际复用内容、未复用内容、原因和验证命令。 | 缺少记录时，验收按未完成处理。 |
+
+### C.2 上游来源、范围与许可证边界
+
+本 Phase 只把公开可核验的 OpenCode 行为和代码作为复用候选，不假定私有服务、私有凭证或未公开的桌面实现可用。
+
+| 来源 | 复用/研究对象 | 允许的使用方式 | 实施要求 |
+|---|---|---|---|
+| [OpenCode 源码仓库](https://github.com/anomalyco/opencode) | Agent 定义、Primary/Subagent、Task、权限匹配、Child Session、事件与测试 | dependency、fork、vendor、隔离子进程或有记录的语义移植 | 锁定 commit；保留 MIT LICENSE；在第三方清单中记录。 |
+| [OpenCode Agents 官方文档](https://opencode.ai/docs/agents) | `mode`、`description`、`model`、`steps`、`hidden`、`@` 触发和内置 Agent 语义 | 作为行为兼容性基线 | 文档行为与实际源码不一致时，记录版本、差异和最终选择。 |
+| [OpenCode Permissions 官方文档](https://opencode.ai/v2/docs/permissions) | `allow` / `ask` / `reject`、glob、last-match-wins、Task 权限和子代理独立权限 | 作为权限语义基线 | RxyCode 可以更严格，但不得把 `ask` 静默降级为 `allow`。 |
+
+许可证规则：
+
+1. 复用代码时必须随实现保留原许可证、版权声明和适用的 NOTICE 文件。
+2. 只参考行为或协议时，也必须在决策记录里写出来源 URL 和版本，防止把 RxyCode 自有设计错误归因给 OpenCode。
+3. 不复制 OpenCode 的品牌、图标、私有凭证、服务端密钥或与 RxyCode 无关的产品资产。
+4. 若许可证、依赖传递关系或源码归属无法确认，先标记 `BLOCKED_LICENSE_REVIEW`，不得把代码提交到主链。
+
+### C.3 四种复用路径与选择条件
+
+#### C.3.1 路径一：直接依赖
+
+适用于 OpenCode 组件能够作为稳定依赖被 RxyCode 调用，且不会把 Primary 的权限、workspace 或生命周期带进 Child 内部的情况。
+
+```text
+RxyCode Task Tool
+  → OpenCode 公共组件 / 包
+  → RxyCode Adapter
+  → TaskResult / ChildSessionEvent
+```
+
+硬要求：依赖版本必须锁定；入口、异常、超时、取消、退出码和许可证必须有契约测试。不得让 Renderer 直接加载该依赖或自行判断权限。
+
+#### C.3.2 路径二：fork 或 vendor
+
+适用于需要少量补丁才能接入 RxyCode，但仍然希望持续跟踪 OpenCode 上游的情况。
+
+```text
+上游 OpenCode commit
+  → RxyCode fork/vendor 目录
+  → 最小补丁集
+  → RxyCode Adapter
+  → 主代理协议
+```
+
+硬要求：
+
+- 每个补丁说明上游文件、变更原因、是否可回 upstream、回滚方式。
+- 不把 RxyCode 的 Provider、密钥、workspace lease 或审计逻辑直接写进无法升级的上游核心。
+- 升级上游时先运行兼容性测试，再由 Composer 2.5 处理冲突。
+
+#### C.3.3 路径三：隔离子进程适配
+
+当依赖在同一解释器内会导致工具、环境变量、权限或错误恢复相互污染时，优先采用隔离子进程。
+
+```text
+Primary / RxyCode Task Tool
+  → ChildSessionManager
+  → OpenCodeSubagentAdapter
+  → 独立 OpenCode 进程
+  → 标准化 stdout / stderr / exit / event
+  → ContextEnvelope + TaskResult
+```
+
+隔离子进程必须满足：
+
+1. 子进程只能收到显式 ContextEnvelope，不得继承 Primary 的完整环境、密钥、隐藏消息或未授权路径。
+2. stdout、stderr、退出码、取消和超时都必须映射到统一的 ChildSessionEvent。
+3. 子进程崩溃不能让 Primary Runtime 崩溃；必须生成可审计的 `child.failed` 和最终 TaskResult。
+4. workspace、budget、permission、redaction 和 trace 由 RxyCode 边界控制，上游进程不能反向修改。
+5. 进程启动命令、版本、环境白名单和允许的文件范围必须写入决策记录。
+
+#### C.3.4 路径四：最小语义移植
+
+只有以下条件同时成立时才允许移植：
+
+- 直接依赖、fork/vendor 和隔离进程均因明确的不兼容证据不可行；
+- 移植对象可以被拆为配置解析、匹配算法、状态转换或测试，而不是复制完整 Runtime；
+- 每个移植点都能指向上游文件、文档章节或测试；
+- RxyCode 的扩展字段与上游语义分开命名；
+- 有行为对照测试和升级复核清单。
+
+### C.4 OpenCode → RxyCode 对照表
+
+| OpenCode 对照对象 | RxyCode 接入点 | 可扩展字段 | 禁止做法 |
+|---|---|---|---|
+| Primary Agent | `PrimaryRuntime` | provider、budget、audit、workspace lease | 让 Child 直接引用并修改 Primary 对象。 |
+| Subagent / Child Session | `ChildSessionManager`、独立 `SessionId` | `parent_session_id`、`depth`、`isolation_profile` | 用 Primary Session 加一个 `child=true` 伪装隔离。 |
+| `@agent` mention | CLI/OpenTUI/Desktop 的统一解析入口 | alias、source、explicit approval | 在三个界面分别实现三套解析规则。 |
+| Task 调用 | `task/start`、`TaskRequest`、`TaskResult` | trace、budget、lease、redaction | 直接在 UI 里启动 Python 子代理。 |
+| Permission | `PermissionPolicy` | audit_reason、approval_id | Renderer 自己作 allow/deny 决策。 |
+| Task permission | Child 的 task action 检查 | parent policy、tool scope | 把 task 权限和普通工具权限无优先级地合并。 |
+| `steps` | `TaskRequest.step_budget` / runtime guard | RxyCode 最大步数和取消原因 | 把 steps 当作 token 上限或递归开关。 |
+| `hidden` | catalog visibility / invocation metadata | `discoverable`、`source` | 隐藏 Agent 绕过权限或审计。 |
+| Child navigation | `session_child_first`、parent/child session tree | cursor、event sequence | UI 私自拼接一份与后端不一致的树。 |
+| `ask` permission | `approval.requested` / `approval.resolved` | expiry、actor、reason | 超时自动 allow 或丢弃请求。 |
+
+明确归因：OpenCode 没有 RxyCode 的 `subtask=true`、预算聚合、workspace lease 或 `x-rxycode-*` 审计扩展；这些属于本项目的安全增强，必须在协议和文档中保持来源边界。
+
+### C.5 上游复用决策记录格式
+
+每个进入实现的上游复用点都必须登记在 `docs/decisions/upstream-reuse.md`。记录格式如下，字段不能省略；不适用字段填写 `none`，不能留空。
+
+```yaml
+decision_id: B-UPSTREAM-001
+status: proposed # proposed | accepted | blocked | superseded
+upstream:
+  project: opencode
+  repository: https://github.com/anomalyco/opencode
+  reference_url: https://opencode.ai/docs/agents
+  commit: "<locked-commit>"
+  license: MIT
+capability: child-session-permission-and-task
+reuse_mode: direct-dependency # direct-dependency | fork | vendor | subprocess | semantic-port
+reused:
+  - "<upstream file / package / documentation section>"
+adapter_files:
+  - "<RxyCode adapter path>"
+adaptation_reason:
+  - "RxyCode requires isolated workspace lease and audit fields"
+preserved_semantics:
+  - "allow/ask/reject permission order"
+  - "child session has independent lifecycle"
+rxycode_extensions:
+  - "x-rxycode-budget"
+  - "x-rxycode-audit"
+verification:
+  commands:
+    - "python -m pytest tests/test_subagents -q"
+    - "python -m pytest tests/test_subagents/test_permissions.py -q"
+  evidence: "<test output / fixture / review link>"
+rollback: "<dependency pin rollback or adapter removal procedure>"
+owner: composer-2.5
+reviewers:
+  - "upstream-research"
+  - "security-review"
+```
+
+### C.6 BR1 · 上游复用审计与实现路径冻结卡
+
+| 字段 | 内容 |
+|---|---|
+| 卡号 | BR1 |
+| 优先级 | P0 |
+| 工时 | 1 人日 |
+| 依赖 | B1；若涉及权限则同时依赖 B4 |
+| Owner | Composer 2.5（实现与收口） |
+| 协作 | 其他 Agent 仅提交源码定位、许可证核验、测试建议或审计报告；不直接改 Composer 正在实现的公共接口。 |
+| 涉及文件 | `docs/decisions/upstream-reuse.md`、Agent/Task/Permission 模块、协议 schema、第三方清单、对应测试目录 |
+
+操作步骤：
+
+1. 锁定 OpenCode 仓库、官方文档 URL、commit 和许可证。
+2. 对 B1–B14 逐项标记：直接依赖、fork、vendor、subprocess 或 semantic-port。
+3. 记录实际复用的文件/函数/测试；只参考行为时也记录“未复制代码”。
+4. 把 RxyCode 独有的隔离、预算、lease、审计、脱敏和 `subtask` 扩展列入独立字段。
+5. 为每个适配层添加行为对照测试，至少覆盖成功、拒绝、超时、取消、崩溃和恢复。
+6. 由 Composer 2.5 检查公共协议是否仍由单一实现拥有，并把决策记录引用写入对应 B 卡的实现说明。
+7. 由审计协作者复核许可证、密钥边界和可升级性；其结论不能替代 Composer 的测试收口。
+
+完成判据：
+
+- [ ] 每个 B 卡都有上游来源和复用路径。
+- [ ] 没有未经说明的等价 Child Runtime 重写。
+- [ ] `subtask=true` 等 RxyCode 扩展已明确标记为 RxyCode 自有语义。
+- [ ] 许可证、commit、适配原因、验证命令和回滚方法齐全。
+- [ ] Composer 2.5 已完成最终 diff、测试和接口收口。
+
+验收命令（在实现完成后执行）：
+
+```powershell
+git ls-remote https://github.com/anomalyco/opencode.git HEAD
+git diff --check
+Test-Path docs\decisions\upstream-reuse.md
+rg -n "opencode|reuse_mode|commit|license|adapter|verification" docs\decisions\upstream-reuse.md
+python -m pytest tests/test_subagents -q
+python -m pytest tests/test_subagents/test_permissions.py -q
+```
+
+### C.7 Phase B 追加出口门
+
+既有 §10 的八项完成定义继续有效；在此基础上，Phase B 还必须满足以下追加出口：
+
+1. B1–B14 的每一项都能回答“复用了 OpenCode 哪一部分、通过什么路径复用、为什么没有复用其他部分”。
+2. 至少有一项真实的 dependency、fork、vendor 或隔离子进程复用证据；若全部采用 semantic-port，必须有逐项不兼容证据。
+3. OpenCode 的 Primary/Subagent、Task、权限、Child Session 和导航语义有行为测试，不只停留在文字对照。
+4. RxyCode 的隔离、预算、lease、审计和脱敏通过边界适配实现，不通过修改上游语义实现。
+5. 上游升级不会静默改变 RxyCode 的 `TaskRequest`、`TaskResult`、`ChildSessionEvent`、审批和错误契约。
+6. B14 的最终报告必须分别列出：上游原生行为、RxyCode 适配行为、RxyCode 独有增强、尚未复用的能力和后续升级风险。

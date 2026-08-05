@@ -109,3 +109,16 @@ Kubernetes / Helm / 多租户、Telegram / Discord Bot、Skills 自动创建、�
 | **Phase 2 的 `protocol-client`** | 优先作为 npm 依赖使用；拿不到就 vendor 传输层 | 如果顺手能发布到 npm，LinkAgent 那边会省一点事。**不发布也不影响** |
 
 除此之外，两条路线互不干涉。**不要为了 LinkAgent 的方便去改 RxyCode 的设计**——那正是把它们拆成两个项目要避免的事。
+
+---
+
+## Phase D 前后端分离开发入口（追加补充）
+
+完整 [`PHASE-D-RXYCODE-DESKTOP.md`](./PHASE-D-RXYCODE-DESKTOP.md) 继续作为公共规格、协议示例和最终验收基线。实际施工拆为两份职责文档：
+
+| 文档 | 施工范围 |
+|---|---|
+| [`PHASE-D-FRONTEND-RXYCODE-DESKTOP.md`](./PHASE-D-FRONTEND-RXYCODE-DESKTOP.md) | Electron Main/preload、React/TypeScript、protocol-client、Reducer、组件、视觉、前端测试和前端打包入口 |
+| [`PHASE-D-BACKEND-RXYCODE-DESKTOP.md`](./PHASE-D-BACKEND-RXYCODE-DESKTOP.md) | appserver、protocol/schema、Session/Child、权限、工具、Git/Review、恢复、Phase 3 ModelSummary、runtime 和后端测试 |
+
+两份文档采用 `PhaseD-F*` / `PhaseD-B*` 编号，不能把它们误认为新的 Phase；完整 D 的 D1–D16 编号和出口保持不变。前后端可以在不同分支并行，但 `protocol/schema.json`、生成类型、契约测试和最终合并由 Composer 2.5 收口；Grok 4.5 仍只做视觉辅助。
