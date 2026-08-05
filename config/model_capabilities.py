@@ -41,6 +41,7 @@ class UsageFieldMap:
     #: 命中前缀缓存的 token 数所在嵌套路径，形如 ("prompt_tokens_details", "cached_tokens")
     cache_read_nested: tuple[tuple[str, str], ...] = (
         ("prompt_tokens_details", "cached_tokens"),
+        ("input_token_details", "cache_read"),
     )
     #: 推理/思考内容所在字段（在 delta 或 message 上）
     reasoning: tuple[str, ...] = ("reasoning_content",)
