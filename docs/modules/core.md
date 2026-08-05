@@ -36,13 +36,13 @@ Session restoration searches the current date, earlier dated records, and the le
 ### Core Code: agent_v2.py
 
 **Classes:**
-- UsageTrackingLLM (line ~284): Wrapper around any LangChain LLM that records
+- UsageTrackingLLM (line ~382): Wrapper around any LangChain LLM that records
   token usage and settles provider/model rate-limit grants for every
   `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
-- AgentV2 (line ~240): The main agent. Handles user input routing, fast-path optimization, sub-agent delegation, compose mode, and the full LangGraph pipeline.
-- SubAgentV2 (line ~1090): Lightweight sub-agent for parallel task execution.
+- AgentV2 (line ~727): The main agent. Handles user input routing, fast-path optimization, sub-agent delegation, compose mode, and the full LangGraph pipeline.
+- SubAgentV2 (line ~3388): Lightweight sub-agent for parallel task execution.
 
 **How a Request Flows:**
 1. AgentV2.run(user_input, mode) is called
@@ -184,7 +184,7 @@ Canonical inventory (`ROUTING_INVENTORY`, 25 sites):
 | R07 | `is_simple_query.zh_action+scope` | 重构+整个 | Full pipeline | **High** |
 | R08 | `is_simple_query.length` | >500 chars | Full pipeline | Low |
 | R09 | `is_simple_query.zh_code_intent` | 游戏/代码/脚本 | Tool pipeline | **High** |
-| R10 | `is_simple_query.en_code_intent` | `\b(game\|app\|code)\b` | Tool pipeline | **High** |
+| R10 | `is_simple_query.en_code_intent` | `\b(game\|app\|website\|code\|script\|bot\|crawler\|algorithm)\b` | Tool pipeline | **High** |
 | R11 | `is_simple_query.zh_file_ops` | 读文件/写文件 | Tool pipeline | Medium |
 | R12 | `is_simple_query.en_file_ops` | `read file` | Tool pipeline | Medium |
 | R13 | `detect_download_intent.url` | file URL | Download path | Low |
