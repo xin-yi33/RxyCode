@@ -32,7 +32,10 @@ from openai import AsyncOpenAI
 from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
 from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
 from RxyCode.RxyCode1_1_0.config import settings as _settings
-from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
+from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+    DEFAULT_CAPABILITIES,
+    resolve_graph_context_token_limit,
+)
 from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import register_builtin_tools
 from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
 from RxyCode.RxyCode1_1_0.core.governance import (
@@ -93,6 +96,7 @@ from RxyCode.RxyCode1_1_0.validation.side_effects import (
 
 from . import providers
 from .graph import build_graph
+from .providers.base import BaseProvider
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
@@ -175,34 +179,6 @@ def build_progress_message(elapsed: float) -> str:
     return f"Build in progress... {elapsed:.0f}s — complex multi-step task"
 
 
-def _extract_reasoning(delta) -> str:
-    """Robustly pull a model's chain-of-thought from a streaming delta.
-
-    Some OpenAI-compatible clients (e.g. DeepSeek / reasoning models) expose
-    ``reasoning_content`` directly on ``delta``; others only include it in the
-    pydantic ``model_dump()`` extras. Handle both so the TUI's live thinking
-    panel is populated regardless of SDK quirks (Bug 1 fix).
-    """
-    if delta is None:
-        return ""
-    reasoning = getattr(delta, "reasoning_content", "") or ""
-    if not reasoning and not isinstance(delta, dict):
-        try:
-            if hasattr(delta, "model_dump"):
-                _d = delta.model_dump()
-            elif hasattr(delta, "__dict__"):
-                _d = dict(delta.__dict__)
-            else:
-                _d = {}
-            if isinstance(_d, dict):
-                reasoning = _d.get("reasoning_content") or ""
-        except Exception:
-            pass
-    if not reasoning and isinstance(delta, dict):
-        reasoning = delta.get("reasoning_content") or ""
-    return reasoning or ""
-
-
 def build_timeout_notice(elapsed: float, partial_text: str = "") -> str:
     """Report an explicit soft-budget stop without re-running side effects."""
     banner = (
@@ -231,45 +207,40 @@ def side_effect_failure_notice(detail: str) -> str:
     )
 
 
+def _merged_usage_dict(resp) -> dict:
+    """Merge all usage-bearing places on an LLM response into one flat dict.
+
+    Combines ``resp.usage_metadata``, its nested ``usage`` dict, and the
+    ``token_usage``/``usage`` payloads inside ``resp.response_metadata``.
+    Later updates overwrite earlier same-named keys.
+    """
+    merged: dict = {}
+    um = getattr(resp, "usage_metadata", None)
+    if isinstance(um, dict):
+        merged.update(um)
+        nested = um.get("usage")
+        if isinstance(nested, dict):
+            merged.update(nested)
+    rm = getattr(resp, "response_metadata", None)
+    if isinstance(rm, dict):
+        usage_rm = rm.get("token_usage")
+        if not isinstance(usage_rm, dict):
+            usage_rm = rm.get("usage")
+        if isinstance(usage_rm, dict):
+            merged.update(usage_rm)
+    return merged
+
 
 def _extract_cache_read(resp) -> int:
-    """从 LLM 响应中提取缓存命中 token 数。
+    """Deprecated compatibility shim: delegate to the provider layer (A8).
 
-    DeepSeek 返回 prompt_cache_hit_tokens，OpenAI 返回
-    prompt_tokens_details.cached_tokens，LangChain 标准化为
-    input_token_details.cache_read。
-
-    ?? 重要：必须从 response_metadata 和 usage_metadata 两个地方检查，
-    因为 LangChain 在流式模式下可能不会将所有字段传递到 usage_metadata。
+    All field lookup now lives in ``BaseProvider.extract_cache_read`` driven by
+    ``DEFAULT_CAPABILITIES``; this wrapper only exists so callers that used the
+    old module-level helper keep working.
     """
-    if not resp:
-        return 0
-
-    # 1. 从 response_metadata 提取（非流式模式最可靠）
-    rm = getattr(resp, "response_metadata", {}) or {}
-    usage_rm = rm.get("token_usage", {}) or rm.get("usage", {})
-
-    # DeepSeek 字段
-    if usage_rm.get("prompt_cache_hit_tokens"):
-        return int(usage_rm["prompt_cache_hit_tokens"])
-
-    # OpenAI 字段
-    ptd = usage_rm.get("prompt_tokens_details", {}) or {}
-    if ptd.get("cached_tokens"):
-        return int(ptd["cached_tokens"])
-
-    # 2. 从 usage_metadata 提取（LangChain 标准化字段）
-    um = getattr(resp, "usage_metadata", {}) or {}
-    details = um.get("input_token_details", {}) or {}
-    if details.get("cache_read"):
-        return int(details["cache_read"])
-
-    # 3. 直接从 usage 字段提取（某些 LangChain 版本）
-    usage_direct = um.get("usage", {}) or {}
-    if usage_direct.get("prompt_cache_hit_tokens"):
-        return int(usage_direct["prompt_cache_hit_tokens"])
-
-    return 0
+    return BaseProvider().extract_cache_read(
+        _merged_usage_dict(resp), DEFAULT_CAPABILITIES
+    )
 
 
 def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
@@ -305,12 +276,24 @@ def _usage_counts(resp, messages=None) -> tuple[int, int]:
     return 0, 0
 
 
-def _record_usage(resp, messages=None) -> tuple[int, int]:
+def _record_usage(
+    resp,
+    messages=None,
+    *,
+    provider=None,
+    caps=None,
+    capabilities=None,
+) -> tuple[int, int]:
     """Record usage and return the accounted ``(input, output)`` tokens.
 
     When usage_metadata is available (non-streaming), use it directly.
     When raw OpenAI streaming chunk with `.usage` is passed, extract from there.
     Otherwise fall back to tiktoken estimation.
+
+    Cache-hit extraction is delegated to the provider layer
+    (``provider.extract_cache_read(usage_dict, caps)``); when no provider or
+    capabilities are supplied, the BaseProvider default + DEFAULT_CAPABILITIES
+    reproduce the pre-refactor blind field-scan behaviour.
 
     P2 fix: raw streaming chunks (from _raw_stream) carry `chunk.usage`
     as a CompletionUsage object with prompt_cache_hit_tokens (DeepSeek) or
@@ -318,14 +301,19 @@ def _record_usage(resp, messages=None) -> tuple[int, int]:
     only looked at usage_metadata (LangChain wrapper), which doesn't exist
     on raw chunks -> cache hit tokens were always 0 in streaming mode.
     """
+    provider = provider if provider is not None else BaseProvider()
+    if caps is None:
+        caps = capabilities
+    if caps is None:
+        caps = DEFAULT_CAPABILITIES
     # 1. LangChain usage_metadata (non-streaming path)
     um = getattr(resp, "usage_metadata", None)
     if um:
-        usage = dict(um)
+        usage = _merged_usage_dict(resp)
         token_stats.add_real_usage(
             usage.get("input_tokens", 0),
             usage.get("output_tokens", 0),
-            _extract_cache_read(resp),
+            provider.extract_cache_read(usage, caps),
         )
         return int(usage.get("input_tokens", 0) or 0), int(
             usage.get("output_tokens", 0) or 0
@@ -336,18 +324,12 @@ def _record_usage(resp, messages=None) -> tuple[int, int]:
     if raw_usage is not None:
         prompt_toks = int(getattr(raw_usage, "prompt_tokens", 0) or 0)
         completion_toks = int(getattr(raw_usage, "completion_tokens", 0) or 0)
-        cache_read = 0
-        # DeepSeek: prompt_cache_hit_tokens
-        pch = getattr(raw_usage, "prompt_cache_hit_tokens", None)
-        if pch is not None:
-            cache_read = int(pch)
-        # OpenAI: prompt_tokens_details.cached_tokens
-        if cache_read == 0:
-            ptd = getattr(raw_usage, "prompt_tokens_details", None)
-            if ptd is not None:
-                ct = getattr(ptd, "cached_tokens", None)
-                if ct is not None:
-                    cache_read = int(ct)
+        usage_dict = (
+            raw_usage.model_dump()
+            if hasattr(raw_usage, "model_dump")
+            else dict(vars(raw_usage))
+        )
+        cache_read = provider.extract_cache_read(usage_dict, caps)
         if prompt_toks > 0 or completion_toks > 0:
             token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
             return prompt_toks, completion_toks
@@ -417,8 +399,12 @@ class UsageTrackingLLM:
         rate_model: str = "",
         rate_timeout: float | None = None,
         reserved_output_tokens: int = 0,
+        provider=None,
+        capabilities=None,
     ):
         self._llm = llm
+        self._provider = provider
+        self._capabilities = capabilities
         # Cache the prompt_prefix_cache decision so we don't re-read config
         # on every single LLM call.
         self._cache_enabled = None
@@ -491,6 +477,12 @@ class UsageTrackingLLM:
         """
         if not self._ensure_cache_flag():
             return messages
+        if (
+            self._provider is not None
+            and self._capabilities is not None
+            and not self._provider.supports_prompt_cache(self._capabilities)
+        ):
+            return messages
         if not messages:
             return messages
         first = messages[0]
@@ -527,7 +519,9 @@ class UsageTrackingLLM:
                         # Fast path: honest hint instead of cascading failure.
                         return AIMessage(content=_circuit_breaker.SERVICE_UNAVAILABLE_MESSAGE)
                     raise
-            usage = _record_usage(resp, messages)
+            usage = _record_usage(
+                resp, messages, provider=self._provider, capabilities=self._capabilities
+            )
             return resp
         finally:
             self._reconcile_rate_limit(
@@ -586,7 +580,12 @@ class UsageTrackingLLM:
                     )
                     yield chunk
             if last_chunk is not None:
-                reported = _record_usage(last_chunk, messages)
+                reported = _record_usage(
+                    last_chunk,
+                    messages,
+                    provider=self._provider,
+                    capabilities=self._capabilities,
+                )
                 usage = (
                     reported[0] or self._input_token_cost(messages),
                     reported[1] or partial_output_tokens,
@@ -690,6 +689,11 @@ class UsageTrackingLLM:
 
     def bind_tools(self, tools, **kwargs):
         """Re-wrap bind_tools result to keep usage tracking."""
+        if self._capabilities is not None and not self._capabilities.supports_function_calling:
+            raise ValueError(
+                "model does not support function calling; tools were requested but "
+                "capabilities.supports_function_calling is False"
+            )
         bound = self._llm.bind_tools(tools, **kwargs)
         return UsageTrackingLLM(
             bound,
@@ -698,6 +702,8 @@ class UsageTrackingLLM:
             rate_model=self._rate_model,
             rate_timeout=self._rate_timeout,
             reserved_output_tokens=self._reserved_output_tokens,
+            provider=self._provider,
+            capabilities=self._capabilities,
         )
 
     def with_structured_output(self, schema, **kwargs):
@@ -710,6 +716,8 @@ class UsageTrackingLLM:
             rate_model=self._rate_model,
             rate_timeout=self._rate_timeout,
             reserved_output_tokens=self._reserved_output_tokens,
+            provider=self._provider,
+            capabilities=self._capabilities,
         )
 
     def __getattr__(self, name):
@@ -1273,6 +1281,8 @@ class AgentV2:
             rate_model=str(model_config.get("model_name") or "unknown"),
             rate_timeout=self._rate_limit_timeout,
             reserved_output_tokens=self._rate_reserved_output_tokens,
+            provider=provider,
+            capabilities=caps,
         )
 
     def _build_llm(self):
@@ -1422,6 +1432,22 @@ class AgentV2:
             },
         }
 
+    def _provider_reasoning(self, delta) -> str:
+        """Delegate reasoning extraction to the provider layer (A8).
+
+        Real AgentV2 instances always carry ``self._provider`` and
+        ``self._capabilities`` (A6, set in __init__); bare instances built via
+        ``__new__`` (tests) fall back to the pre-A8 behaviour of extracting
+        nothing.
+        """
+        provider = getattr(self, "_provider", None)
+        if provider is None:
+            return ""
+        caps = getattr(self, "_capabilities", None)
+        if caps is None:
+            caps = DEFAULT_CAPABILITIES
+        return provider.extract_reasoning(delta, caps) or ""
+
     async def _raw_stream(self, messages, tools=None):
         """Stream from the raw OpenAI client, yielding native chunks.
 
@@ -1464,6 +1490,13 @@ class AgentV2:
             "max_tokens": self.model_config.get("max_tokens", 8192),
         }
         if tools:
+            caps = getattr(self, "_capabilities", None)
+            if caps is not None and not caps.supports_function_calling:
+                raise ValueError(
+                    f"model {self.model_config.get('model_name', '?')} does not support "
+                    "function calling; tools were requested but "
+                    "capabilities.supports_function_calling is False"
+                )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
 
         async def _open_provider_stream():
@@ -1487,7 +1520,7 @@ class AgentV2:
                     delta = getattr(choices[0], "delta", None)
                     partial_output_tokens += _estimate_tokens(
                         (getattr(delta, "content", "") or "")
-                        + (_extract_reasoning(delta) or "")
+                        + (self._provider_reasoning(delta) or "")
                     )
                 yield chunk
             if last_chunk is not None:
@@ -2022,7 +2055,12 @@ class AgentV2:
                         usage = getattr(chunk, "usage", None)
                         if usage is not None:
                             try:
-                                _record_usage(chunk, messages)
+                                _record_usage(
+                                    chunk,
+                                    messages,
+                                    provider=getattr(self, "_provider", None),
+                                    capabilities=getattr(self, "_capabilities", None),
+                                )
                                 round_received_real_usage = True
                             except Exception:
                                 pass
@@ -2030,7 +2068,7 @@ class AgentV2:
                     delta = chunk.choices[0].delta
 
                     # Capture reasoning content (thinking) - stream live to the UI
-                    reasoning = _extract_reasoning(delta)
+                    reasoning = self._provider_reasoning(delta)
                     if reasoning:
                         _reasoning_buffer.append(reasoning)
                         if tui and hasattr(tui, "write_reasoning"):
@@ -2059,7 +2097,12 @@ class AgentV2:
                     usage = getattr(chunk, "usage", None)
                     if usage is not None:
                         try:
-                            _record_usage(chunk, messages)
+                            _record_usage(
+                                chunk,
+                                messages,
+                                provider=getattr(self, "_provider", None),
+                                capabilities=getattr(self, "_capabilities", None),
+                            )
                             round_received_real_usage = True
                         except Exception:
                             pass
@@ -2143,13 +2186,18 @@ class AgentV2:
                         usage = getattr(chunk, "usage", None)
                         if usage is not None:
                             try:
-                                _record_usage(chunk, messages)
+                                _record_usage(
+                                    chunk,
+                                    messages,
+                                    provider=getattr(self, "_provider", None),
+                                    capabilities=getattr(self, "_capabilities", None),
+                                )
                                 synthesis_received_real_usage = True
                             except Exception:
                                 pass
                         continue
                     delta = chunk.choices[0].delta
-                    reasoning = _extract_reasoning(delta)
+                    reasoning = self._provider_reasoning(delta)
                     if reasoning:
                         _synth_reasoning.append(reasoning)
                         if tui and hasattr(tui, "write_reasoning"):
@@ -2162,7 +2210,12 @@ class AgentV2:
                     usage = getattr(chunk, "usage", None)
                     if usage is not None:
                         try:
-                            _record_usage(chunk, messages)
+                            _record_usage(
+                                chunk,
+                                messages,
+                                provider=getattr(self, "_provider", None),
+                                capabilities=getattr(self, "_capabilities", None),
+                            )
                             synthesis_received_real_usage = True
                         except Exception:
                             pass
@@ -2496,14 +2549,19 @@ class AgentV2:
                     usage = getattr(chunk, "usage", None)
                     if usage is not None:
                         try:
-                            _record_usage(chunk, messages)
+                            _record_usage(
+                                chunk,
+                                messages,
+                                provider=getattr(self, "_provider", None),
+                                capabilities=getattr(self, "_capabilities", None),
+                            )
                             received_real_usage = True
                         except Exception:
                             pass
                     continue
                 delta = chunk.choices[0].delta
                 # Capture DeepSeek reasoning_content (thinking)
-                reasoning = _extract_reasoning(delta)
+                reasoning = self._provider_reasoning(delta)
                 if reasoning:
                     _reasoning_buffer.append(reasoning)
                     # Stream reasoning live so the UI can show thinking in real time
