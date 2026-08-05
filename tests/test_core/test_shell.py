@@ -55,6 +55,53 @@ class TestShellExecutor:
         assert "cmd.exe" in started
         assert "python hello_rxy.py" in started
 
+    def test_powershell_translates_posix_ls_flags(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command("ls -la")
+        assert shell == "powershell"
+        assert "Get-ChildItem -Force" in cmd
+
+        cmd2, _ = executor.translate_command("pwd && ls -l")
+        assert "Get-ChildItem" in cmd2
+        assert "ls -l" not in cmd2
+
+    def test_powershell_translates_ampersand_separators(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        cmd, shell = executor.translate_command(
+            "python a.py X & echo --- & python a.py Y"
+        )
+        assert shell == "powershell"
+        assert cmd == "python a.py X; echo ---; python a.py Y"
+
+        # Call-operator `& 'path'` must be preserved.
+        call_op, _ = executor.translate_command("& 'C:\\Program Files\\app.exe' --help")
+        assert call_op.startswith("& '")
+        assert "; " not in call_op
+
+    def test_powershell_translates_posix_heredoc(self):
+        executor = self._make_executor()
+        executor.shell_type = "powershell"
+        heredoc = (
+            "python - <<'PY'\n"
+            "import os\n"
+            "print('hello', os.name)\n"
+            "PY"
+        )
+        cmd, shell = executor.translate_command(heredoc)
+        assert shell == "powershell"
+        assert "python -c" in cmd
+        assert "@'" in cmd
+        assert "import os" in cmd
+        assert "<<" not in cmd
+        assert "'PY'" not in cmd
+
+        # A plain command without heredoc must not be altered.
+        plain, shell2 = executor.translate_command("python --version")
+        assert shell2 == "powershell"
+        assert "python --version" in plain
+
     def test_translate_complex_command(self):
         executor = self._make_executor()
         result = executor.translate_command("pip install flask")

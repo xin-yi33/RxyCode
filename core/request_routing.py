@@ -324,10 +324,16 @@ def detect_download_intent(text: str) -> tuple[str, str, str] | None:
             if name and len(name) > 1:
                 return ("skill", name, "")
 
+    # Only a genuinely imperative "install/add an MCP server" phrase should
+    # route to download_mcp. A bare "MCP" mention (e.g. "什么是 MCP 协议",
+    # "mcp_intro.md") must NOT be treated as an install request — that led to
+    # the agent silently adding an npx MCP server to the user's config when
+    # asked to explain the Model Context Protocol.
     mcp_patterns = [
-        r"(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-        r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
-        r"(?:mcp|mcp服务器|mcp server)\s*(?:叫|名为|叫作|叫做|named|called)?\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
+        r"(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp\s*(?:服务器|server)?)\s*(?:叫|名为|叫作|叫做|named|called)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
+        r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*(?:一个|the)?\s*(?:mcp\s*(?:服务器|server)?)\s*(?:叫|名为|叫作|叫做|named|called)\s*[`\"']*([a-zA-Z0-9_-]+)[`\"']*",
+        r"(?:下载|安装|添加|获取|load|install|download|add)\s*[`\"']*([a-zA-Z0-9@/-]+)[`\"']*\s*(?:这个|个)?\s*(?:mcp\s*(?:服务器|server)?)",
+        r"(?:我要|我想|请|帮我|please)\s*(?:下载|安装|添加|获取|load|install|download|add)\s*[`\"']*([a-zA-Z0-9@/-]+)[`\"']*\s*(?:这个|个)?\s*(?:mcp\s*(?:服务器|server)?)",
     ]
     for pattern in mcp_patterns:
         match = re.search(pattern, text_lower)

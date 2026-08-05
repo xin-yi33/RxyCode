@@ -3,6 +3,7 @@
 from RxyCode.RxyCode1_1_0.core.request_routing import (
     ROUTING_INVENTORY,
     RoutingDirective,
+    detect_download_intent,
     has_structured_pipeline_signal,
     is_simple_query,
     parse_routing_directive,
@@ -74,3 +75,37 @@ def test_agent_v2_compat_routing_reexports():
     assert _PURE_SOCIAL_GREETING_RE.match("hello")
     assert "git" in GIT_ONLY_TOOL_NAMES
     assert _GIT_FORCE_RE.search("必须调用 git 工具")
+
+
+def test_mcp_explanatory_question_is_not_download_intent():
+    """Regression: asking about the MCP protocol must never be routed to
+    download_mcp, which would add an npx MCP server to the user's config."""
+    text = (
+        "请使用网页搜索工具搜索'MCP Model Context Protocol 是什么'，"
+        "然后写一份200字左右的《MCP协议简介》保存到当前目录的 mcp_intro.md，"
+        "内容包括：什么是MCP、核心概念、适用场景。"
+    )
+    assert detect_download_intent(text) is None
+
+
+def test_mcp_explanation_and_file_save_are_not_download_intent():
+    assert detect_download_intent("MCP是什么？解释一下Model Context Protocol") is None
+    assert detect_download_intent("写一份MCP协议介绍保存到 mcp_intro.md") is None
+
+
+def test_mcp_install_intent_still_detected():
+    assert detect_download_intent("安装 mcp server 叫 filesystem") == (
+        "mcp",
+        "filesystem",
+        "",
+    )
+    assert detect_download_intent("add mcp server named filesystem") == (
+        "mcp",
+        "filesystem",
+        "",
+    )
+    assert detect_download_intent("请添加一个MCP服务器叫chrome-devtools") == (
+        "mcp",
+        "chrome-devtools",
+        "",
+    )

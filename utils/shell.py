@@ -28,6 +28,19 @@ from ..core.session_runtime import (
 _MONITOR_INTERVAL_SECONDS = 0.05
 _DOCKER_CID_PATTERN = re.compile(r"^[a-fA-F0-9]{12,64}$")
 
+# POSIX heredoc: `python - <<'PY'` ... `PY`. The `head` group keeps any
+# leading command prefix (e.g. `cd /d X && python - <<'PY'`), the `prog`
+# group captures the interpreter, and `body` is everything up to the line
+# that holds exactly the closing marker.
+_HEREDOC_RE = re.compile(
+    r"^(?P<head>.*?)"
+    r"(?P<prog>[A-Za-z0-9_./+-]+?)\s+-\s*<<['\"]?"
+    r"(?P<marker>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*\r?\n"
+    r"(?P<body>.*?)"
+    r"^\s*(?P=marker)\s*$",
+    flags=re.MULTILINE | re.DOTALL,
+)
+
 
 @dataclass(frozen=True)
 class _ExecutionPolicy:
@@ -185,6 +198,43 @@ class ShellExecutor:
                 pass
         return str(Path.home() / "Desktop")
 
+    def _translate_heredoc(self, command: str) -> str | None:
+        """Rewrite a POSIX heredoc into a PowerShell here-string invocation.
+
+        Windows PowerShell has no ``<<'MARKER'`` redirection. Agent-written
+        bash habits like ``python - <<'PY'`` (read script from stdin) fail on
+        PowerShell with a parser error. Rewrite the heredoc as ``python -c``
+        with a here-string argument so the embedded script still runs.
+
+        Returns the rewritten command, or ``None`` when the command does not
+        start with an interpreter-fed heredoc.
+        """
+        match = _HEREDOC_RE.match(command)
+        if not match:
+            return None
+        head = match.group("head")
+        # The head may carry cmd-style chains (`cd /d X && python - <<'PY'`);
+        # translate those bits the same way the powershell branch would.
+        if "&&" in head:
+            head = re.sub(r"\s*&&\s*", "; ", head)
+        head = re.sub(
+            r"\bcd\s+/d\s+",
+            "Set-Location ",
+            head,
+            flags=re.IGNORECASE,
+        )
+        head = re.sub(
+            r"(?<![\w-])\bls\s+(-[alA]+)\b",
+            lambda m: "Get-ChildItem -Force"
+            if "a" in m.group(1)
+            else "Get-ChildItem",
+            head,
+            flags=re.IGNORECASE,
+        )
+        prog = match.group("prog")
+        body = match.group("body").rstrip("\r\n")
+        return f"{head}{prog} -c @'\n{body}\n'@"
+
     def _is_powershell_syntax(self, command: str) -> bool:
         patterns = [
             r"\$\w+\s*=",
@@ -207,6 +257,14 @@ class ShellExecutor:
         if needs_powershell and self.shell_type == "cmd":
             actual_shell = "powershell"
 
+        # POSIX heredocs have no PowerShell equivalent. Rewrite
+        # `python - <<'PY'` into a here-string so agent-written bash-style
+        # Python snippets run on Windows PowerShell.
+        if actual_shell in ("cmd", "powershell"):
+            heredoc = self._translate_heredoc(command)
+            if heredoc is not None:
+                return heredoc, "powershell"
+
         if actual_shell == "cmd":
             command = command.replace("$env:USERPROFILE", "%USERPROFILE%")
             command = command.replace("$env:APPDATA", "%APPDATA%")
@@ -219,10 +277,29 @@ class ShellExecutor:
             # Prefer `;` so agent-written cmd-style chains run on WinPS 5.
             if "&&" in command:
                 command = re.sub(r"\s*&&\s*", "; ", command)
+            # A bare `&` used as a command separator (bash habit:
+            # `cmd1 & cmd2 & cmd3`) is a parser error on PowerShell 5, where
+            # `&` is the call operator. Rewrite separators to `;`, while
+            # preserving the call-operator form `& 'path'` / `& $var`.
+            command = re.sub(
+                r"\s+&\s+(?=[^'\"$\s&])",
+                "; ",
+                command,
+            )
             # cmd.exe `cd /d X` → PowerShell Set-Location
             command = re.sub(
                 r"\bcd\s+/d\s+",
                 "Set-Location ",
+                command,
+                flags=re.IGNORECASE,
+            )
+            # POSIX `ls -la` / `ls -l` / `ls -a` → PowerShell Get-ChildItem,
+            # whose aliased `ls` rejects the GNU-style `-la` flag bundles.
+            command = re.sub(
+                r"(?<![\w-])\bls\s+(-[alA]+)\b",
+                lambda m: "Get-ChildItem -Force"
+                if "a" in m.group(1)
+                else "Get-ChildItem",
                 command,
                 flags=re.IGNORECASE,
             )
@@ -544,9 +621,23 @@ class ShellExecutor:
                     )
 
             stdout, stderr = await communicate_task
-            encoding = locale.getpreferredencoding(False) or "utf-8"
-            stdout_text = stdout.decode(encoding, errors="replace") if stdout else ""
-            stderr_text = stderr.decode(encoding, errors="replace") if stderr else ""
+            # Decode subprocess output as UTF-8 first. Python 3.6+ on Windows
+            # writes UTF-8 to pipes regardless of the console code page, and
+            # locale.getpreferredencoding() commonly returns cp936/gbk on
+            # zh-CN systems — decoding UTF-8 bytes as GBK produced mojibake
+            # (e.g. 测 → 娴嬭瘯). Fall back to the system locale encoding only
+            # when UTF-8 decoding fails.
+            def _decode_output(data: bytes | None) -> str:
+                if not data:
+                    return ""
+                try:
+                    return data.decode("utf-8", errors="strict")
+                except UnicodeDecodeError:
+                    fallback = locale.getpreferredencoding(False) or "utf-8"
+                    return data.decode(fallback, errors="replace")
+
+            stdout_text = _decode_output(stdout)
+            stderr_text = _decode_output(stderr)
             result: dict[str, Any] = {
                 "stdout": stdout_text,
                 "stderr": stderr_text,

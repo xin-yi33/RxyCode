@@ -198,9 +198,20 @@ async def fetch_public_response(
 
                 raw = await _read_limited(response, max_bytes)
                 request = httpx.Request("GET", normalized, headers=request_headers)
+                # aiter_bytes() already yields decoded content, but httpx keeps
+                # the Content-Encoding header on the stream. Re-constructing a
+                # Response with decoded bytes while keeping that header makes
+                # .text/.content try to decompress plaintext a second time and
+                # fail (brotli: decoder failed). Drop the header so the
+                # re-constructed response treats the bytes as final.
+                final_headers = {
+                    key: value
+                    for key, value in response.headers.items()
+                    if key.lower() not in {"content-encoding", "content-length"}
+                }
                 return httpx.Response(
                     response.status_code,
-                    headers=response.headers,
+                    headers=final_headers,
                     content=raw,
                     request=request,
                 )

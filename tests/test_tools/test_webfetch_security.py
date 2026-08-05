@@ -110,6 +110,43 @@ async def test_webfetch_rejects_private_dns_answers_before_connect(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_webfetch_decodes_content_encoding_without_double_decode(monkeypatch):
+    """Regression: a br/gzip encoded response must reach the caller as decoded
+    plaintext — keeping Content-Encoding while reconstructing the Response used
+    to make .text try to decompress plaintext again (brotli: decoder failed).
+    """
+    from RxyCode.RxyCode1_1_0.tools import webfetch
+    from RxyCode.RxyCode1_1_0.utils import safe_http
+
+    payload = b"<p>brotli encoded content</p>"
+    import brotli
+
+    compressed = brotli.compress(payload)
+
+    async def resolve(_hostname, _port):
+        return ["93.184.216.34"]
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            content=compressed,
+            headers={"Content-Encoding": "br", "Content-Type": "text/html"},
+        )
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(safe_http, "resolve_public_addresses", resolve)
+    monkeypatch.setattr(safe_http.httpx, "AsyncClient", client_factory)
+
+    result = await webfetch.fetch_url_async("https://example.com/page")
+
+    assert result == "brotli encoded content"
+
+
+@pytest.mark.asyncio
 async def test_webfetch_network_request_is_cooperatively_cancelled(monkeypatch):
     from RxyCode.RxyCode1_1_0.tools import webfetch
     from RxyCode.RxyCode1_1_0.utils import safe_http
