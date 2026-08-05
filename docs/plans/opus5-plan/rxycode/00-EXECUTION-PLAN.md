@@ -262,13 +262,13 @@ setup_field: ''
 
 ### 3.2 Phase 总览
 
-| Phase | 周次 | 日期 | 目标 | 出口标准（Exit Criteria） |
-|---|---|---|---|---|
-| **Phase 0 止血** | W1–W2 | 08-03 ~ 08-14 | 补完 7/27 遗留，建立 lint 与最小门禁 | `ruff check .` 通过并进 CI；CORS 收紧；无跟踪的 `.bak`；CI 双 Python 版本 |
-| **Phase 1 Harness** | W3–W5 | 08-17 ~ 09-04 | 让评测说真话 | evals 跑真实 Agent；坏任务全部修复或删除；evals 进 CI（nightly）；基线分数落盘 |
-| **Phase 2 协议与核心** | W6–W12 | 09-07 ~ 10-23 | 抽出 headless core + 类型化协议 | `protocol/` 有 schema 且能生成 TS 类型；`appserver` stdio JSON-RPC 可跑通；OpenTUI 迁到协议；`api_server.py` 变薄 |
-| **Phase 3 模型输出上限自适应** | W13–W15 | 10-26 ~ 11-13 | 模型 ID 驱动的输出上限解析 | 新增模型默认 auto；精确 ID 命中目录；未知模型高位兜底；来源可解释 |
-| **Phase 4 Desktop** | W16–W23 | 11-16 ~ 01-08 | Desktop MVP 发布 | 三平台打包；对话/流式/审批/设置可用；复用同一协议客户端，并消费 Phase 3 的模型上限摘要 |
+| Phase | 周次 | 日期 | 目标 | 出口标准（Exit Criteria） | 实际状态 |
+|---|---|---|---|---|---|
+| **Phase 0 止血** | W1–W2 | 08-03 ~ 08-14 | 补完 7/27 遗留，建立 lint 与最小门禁 | `ruff check .` 通过并进 CI；CORS 收紧；无跟踪的 `.bak`；CI 双 Python 版本 | ✅ 已完成 |
+| **Phase 1 Harness** | W3–W5 | 08-17 ~ 09-04 | 让评测说真话 | evals 跑真实 Agent；坏任务全部修复或删除；evals 进 CI（nightly）；基线分数落盘 | ✅ 已完成（基线重建 88.2%，2026-08-05） |
+| **Phase 2 协议与核心** | W6–W12 | 09-07 ~ 10-23 | 抽出 headless core + 类型化协议 | `protocol/` 有 schema 且能生成 TS 类型；`appserver` stdio JSON-RPC 可跑通；OpenTUI 迁到协议；`api_server.py` 变薄 | ✅ P1–P8 完成，api_server 收薄闭合（2026-08-05） |
+| **Phase 3 模型输出上限自适应** | W13–W15 | 10-26 ~ 11-13 | 模型 ID 驱动的输出上限解析 | 新增模型默认 auto；精确 ID 命中目录；未知模型高位兜底；来源可解释 | ⏳ 未开始（计划 W13 起） |
+| **Phase 4 Desktop** | W16–W23 | 11-16 ~ 01-08 | Desktop MVP 发布 | 三平台打包；对话/流式/审批/设置可用；复用同一协议客户端，并消费 Phase 3 的模型上限摘要 | ⏳ 未开始 |
 
 ### 3.3 周级排期
 
