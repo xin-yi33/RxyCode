@@ -97,38 +97,56 @@ class PromptRegistry:
     """
 
     def __init__(self):
-        self._specs: dict[str, PromptSpec] = {}
+        self._specs: dict[str, dict[str, PromptSpec]] = {}
+        self._system_templates: dict[str, str] = {"default": SYSTEM_PROMPT_TEMPLATE}
         self._register_defaults()
 
     def _register_defaults(self) -> None:
         """Register all default stage templates from templates.py."""
         for name, template in STAGE_TEMPLATES.items():
-            self._specs[name] = PromptSpec(
-                name=name,
-                version=_DEFAULT_VERSION,
-                template=template,
-            )
+            self._specs[name] = {
+                "default": PromptSpec(
+                    name=name,
+                    version=_DEFAULT_VERSION,
+                    template=template,
+                )
+            }
 
     def register(
         self,
         key: str,
         template: str,
         version: str = _DEFAULT_VERSION,
+        variant: str = "default",
     ) -> None:
-        """Register or override a stage prompt template."""
-        self._specs[key] = PromptSpec(
+        """Register or override a stage prompt template for a variant."""
+        self._specs.setdefault(key, {})[variant] = PromptSpec(
             name=key,
             version=version,
             template=template,
         )
 
-    def get_spec(self, key: str) -> PromptSpec:
-        """Return the PromptSpec for the given key."""
-        if key not in self._specs:
+    def register_system_template(self, variant: str, template: str) -> None:
+        """Register a system-prompt template for a variant (mechanism only)."""
+        self._system_templates[variant] = template
+
+    def _resolve_spec(self, key: str, variant: str) -> PromptSpec:
+        """Resolve (stage, locale, variant) with fallback to "default" (A9)."""
+        variants = self._specs.get(key)
+        if not variants:
             raise KeyError(
                 f"Unknown prompt key: {key!r}; available: {self.list_keys()}"
             )
-        return self._specs[key]
+        spec = variants.get(variant) or variants.get("default")
+        if spec is None:
+            raise KeyError(
+                f"No prompt spec for key {key!r} variant {variant!r} (no default)"
+            )
+        return spec
+
+    def get_spec(self, key: str) -> PromptSpec:
+        """Return the default-variant PromptSpec for the given key."""
+        return self._resolve_spec(key, "default")
 
     def list_keys(self) -> list[str]:
         """Return all registered stage keys."""
@@ -143,6 +161,7 @@ class PromptRegistry:
         key: str,
         locale: str | None = None,
         include_few_shot: bool = True,
+        variant: str = "default",
         **format_kwargs,
     ) -> str:
         """Render a stage role prompt.
@@ -151,12 +170,13 @@ class PromptRegistry:
             key: Stage key (e.g. "goal_planner").
             locale: Override locale; defaults to config locale.
             include_few_shot: Whether to inject few-shot examples.
+            variant: Model-specific variant key; falls back to "default".
             **format_kwargs: Additional format variables for the template.
 
         Returns:
             Rendered prompt string with XML tags.
         """
-        spec = self.get_spec(key)
+        spec = self._resolve_spec(key, variant)
 
         if locale is None:
             locale = get_locale()
@@ -178,6 +198,7 @@ class PromptRegistry:
         tools: bool = False,
         tool_names: list[str] | None = None,
         locale: str | None = None,
+        variant: str = "default",
     ) -> str:
         """Render the unified system prompt.
 
@@ -186,6 +207,7 @@ class PromptRegistry:
                    Default False for cache consistency.
             tool_names: If provided, only include these tools.
             locale: Override locale; defaults to config locale.
+            variant: Model-specific variant key; falls back to "default".
         """
         if locale is None:
             locale = get_locale()
@@ -194,7 +216,8 @@ class PromptRegistry:
         if not tool_desc:
             tool_desc = "(no tools registered)"
 
-        return SYSTEM_PROMPT_TEMPLATE.format(
+        template = self._system_templates.get(variant) or self._system_templates["default"]
+        return template.format(
             language_requirement=t("language_requirement", locale),
             tool_descriptions=tool_desc,
         )
@@ -211,19 +234,23 @@ def get_role_prompt(
     key: str,
     locale: str | None = None,
     include_few_shot: bool = True,
+    variant: str = "default",
     **format_kwargs,
 ) -> str:
     """Convenience: render a role prompt from the global registry."""
-    return _registry.get_role_prompt(key, locale, include_few_shot, **format_kwargs)
+    return _registry.get_role_prompt(
+        key, locale, include_few_shot, variant, **format_kwargs
+    )
 
 
 def get_system_prompt(
     tools: bool = False,
     tool_names: list[str] | None = None,
     locale: str | None = None,
+    variant: str = "default",
 ) -> str:
     """Convenience: render the system prompt from the global registry."""
-    return _registry.get_system_prompt(tools, tool_names, locale)
+    return _registry.get_system_prompt(tools, tool_names, locale, variant)
 
 
 def list_stages() -> list[str]:

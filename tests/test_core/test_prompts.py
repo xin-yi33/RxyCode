@@ -488,3 +488,68 @@ class TestAgentV2Migration:
         src = inspect.getsource(agent_v2)
         assert "compose_build" in src
 
+
+# ---------------------------------------------------------------------------
+# A9: per-model prompt variant mechanism
+# ---------------------------------------------------------------------------
+
+def test_variant_resolves_registered_variant():
+    from RxyCode.RxyCode1_1_0.core.prompts import PromptRegistry
+
+    reg = PromptRegistry()
+    reg.register(
+        "goal_planner",
+        template="VARIANT-TEMPLATE {language_requirement}",
+        variant="v-test",
+    )
+    out = reg.get_role_prompt("goal_planner", variant="v-test")
+    assert "VARIANT-TEMPLATE" in out
+
+
+def test_variant_falls_back_to_default():
+    from RxyCode.RxyCode1_1_0.core.prompts import PromptRegistry
+
+    reg = PromptRegistry()
+    assert reg.get_role_prompt("goal_planner", variant="nonexistent") == (
+        reg.get_role_prompt("goal_planner")
+    )
+
+
+def test_variant_raises_when_stage_unknown():
+    from RxyCode.RxyCode1_1_0.core.prompts import PromptRegistry
+
+    reg = PromptRegistry()
+    with pytest.raises(KeyError):
+        reg.get_role_prompt("no_such_stage", variant="v-test")
+
+
+def test_register_variant_keeps_default_behavior():
+    from RxyCode.RxyCode1_1_0.core.prompts import PromptRegistry
+
+    reg = PromptRegistry()
+    before = reg.get_role_prompt("goal_planner")
+    reg.register(
+        "goal_planner",
+        template="VARIANT {language_requirement}",
+        variant="v-test",
+    )
+    assert reg.get_role_prompt("goal_planner") == before
+
+
+def test_system_prompt_variant_falls_back():
+    from RxyCode.RxyCode1_1_0.core.prompts import PromptRegistry
+
+    reg = PromptRegistry()
+    assert reg.get_system_prompt(variant="nope") == reg.get_system_prompt()
+
+
+def test_system_prompt_variant_registered():
+    from RxyCode.RxyCode1_1_0.core.prompts import PromptRegistry
+
+    reg = PromptRegistry()
+    reg.register_system_template(
+        "v-sys", "SYS-VARIANT {language_requirement} {tool_descriptions}"
+    )
+    out = reg.get_system_prompt(variant="v-sys")
+    assert "SYS-VARIANT" in out
+
