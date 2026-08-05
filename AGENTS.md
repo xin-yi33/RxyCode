@@ -35,21 +35,70 @@
 ## Architecture Overview
 
 RxyCode is an AI coding assistant with a Python backend and TypeScript terminal
-frontend. **OpenTUI** (`frontend/opentui-app/`) is the default TUI; Ink
-(`frontend/`) remains an optional fallback via `RXYCODE_TUI=ink`.
+frontends. The core is headless: `Session` (`core/session.py`) is the
+transport-agnostic facade over `AgentV2`. **OpenTUI**
+(`frontend/opentui-app/`) is the default TUI and drives the core over stdio
+JSON-RPC via `appserver/` (`python -m appserver`); **Ink** (`frontend/`,
+`RXYCODE_TUI=ink`) is the optional fallback, served by `api_server.py`
+(HTTP/SSE adapter).
+
+```
++---------------------+           +---------------------+
+|OpenTUI / Desktop(P3)|           |   Ink (fallback)    |
+|frontend/opentui-app |           | frontend/ (TUI=ink) |
++---------------------+           +---------------------+
+           |                                 |
+           |  stdio JSON-RPC                 | HTTP + SSE
+           v                                 v
+Transport
++---------------------+           +---------------------+
+|     appserver/      |           |    api_server.py    |
+| python -m appserver |           |  HTTP/SSE adapter   |
+|watchdog + agent_host|           |   same protocol/    |
+|   -> agent_worker   |           |      contract       |
++---------------------+           +---------------------+
+           |                                 |
+           v                                 v
++-------------------------------------------------------+
+|      Session (core/session.py) - headless facade      |
+|    over AgentV2; no I/O; emit() -> protocol events    |
++-------------------------------------------------------+
+                            |
+                            v
++-------------------------------------------------------+
+|              AgentV2 (core/agent_v2.py)               |
+|     simple query -> _fast_reply() + 2-level cache     |
+| complex task -> LangGraph: goal_planner -> decomposer |
+|        -> executor -> validator -> synthesizer        |
+|  multi-task -> sub-agents / compose -> Plan + Build   |
+|     tools -> ToolOrchestrator / memory (memory/)      |
++-------------------------------------------------------+
+                            |
+                            v  results -> protocol notifications
++-------------------------------------------------------+
+|       appserver: ProtocolTui -> stdout JSON-RPC       |
+|           api_server: _emit_protocol -> SSE           |
++-------------------------------------------------------+
+```
 
 **Request Flow:**
-1. User types in OpenTUI (default) or Ink fallback, or sends HTTP request
-2. API server (api_server.py) receives the request
-3. AgentV2 (core/agent_v2.py) routes the request:
-   - Simple queries -> _fast_reply() with 2-level cache
-   - Complex tasks -> LangGraph pipeline (core/graph.py)
-   - Multi-task -> Sub-agent delegation
+1. User types in OpenTUI (default), Desktop, or the Ink fallback
+2. OpenTUI/Desktop -> `appserver` (`python -m appserver`): typed JSON-RPC over
+   stdio (`protocol/` pydantic models; TS types into `frontend/protocol-client`)
+3. `appserver` spawns a worker subprocess per session (`agent_host`/
+   `agent_worker`) -> `Session.prompt()` in `core/session.py`
+4. Session drives AgentV2 (`core/agent_v2.py`):
+   - Simple queries -> `_fast_reply()` with 2-level cache
+   - Complex tasks -> LangGraph (core/graph.py): goal_planner -> decomposer ->
+     executor -> validator -> synthesizer
+   - Multi-task -> sub-agent delegation
    - Compose mode -> Plan + Build
-4. LangGraph pipeline: goal_planner -> decomposer -> executor -> validator -> synthesizer
-5. Executor uses tools (tools/) via ToolOrchestrator
-6. Memory system (memory/) provides context injection
-7. Results flow back through SSE to the frontend
+5. Executor uses tools (tools/) via ToolOrchestrator; memory (memory/) injects
+   context; safety gates (core/safety/) raise approval/question requests
+6. Results stream back as protocol notifications: appserver -> `ProtocolTui`
+   -> stdout JSON-RPC; api_server -> `_emit_protocol` -> SSE
+   (`notification_to_sse_event`)
+7. Ink fallback: `api_server.py` (HTTP/SSE adapter) -> same Session -> same protocol mapping
 
 **Key Design Patterns:**
 - UsageTrackingLLM: Wraps all LLM calls to auto-record token usage
@@ -66,6 +115,6 @@ frontend. **OpenTUI** (`frontend/opentui-app/`) is the default TUI; Ink
 1. **Before modifying a module**: Read its README first
 2. **Cross-module changes**: Check the Dependencies section in each README
 3. **Frontend changes**: Run npx tsc && npx vitest run in frontend/
-4. **Backend changes**: Run the Playwright test suite
+4. **Backend changes**: Run the layered pytest suite (entry points in docs/modules/tests.md)
 5. **New features**: Add tests in tests/ and update the relevant README
 6. **Save location**: Files save to ~/.rxycode/output/ (configurable via RXYCODE_OUTPUT_DIR)
