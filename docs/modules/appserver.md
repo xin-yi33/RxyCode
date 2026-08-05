@@ -12,12 +12,14 @@ messages to **stdout**, and sends all logs to **stderr** only.
 
 | File | Role |
 |------|------|
+| `__init__.py` | Package marker |
 | `__main__.py` | CLI entry (`python -m appserver`) |
 | `server.py` | `AppServer` dispatch loop, watchdog heartbeat, session handlers |
 | `agent_host.py` | Parent-side client for one killable worker subprocess per session (T1) |
 | `agent_worker.py` | Isolated subprocess: bootstrap + `Session.prompt` (T1); async stdout via `write_message` (T3) |
 | `watchdog.py` | Stall detection + degraded mode (T4) |
 | `jsonrpc.py` | Read/write helpers; `write_message` offloads sync stdout to a thread (T3) |
+| `live_env.py` | Builds the live integration-test env (`build_live_appserver_env`) from real user config for `RXYCODE_APPSERVER_LIVE=1` |
 | `approval.py` | `JsonRpcApproval` broker (bidirectional `approval/request`) |
 | `runtime.py` | Per-prompt context vars for concurrent session isolation |
 | `tui.py` | `ProtocolTui` maps AgentV2 TUI calls to protocol notifications |
@@ -72,6 +74,7 @@ When the watchdog marks the server **degraded**, new `session/prompt` calls retu
 | `RXYCODE_APPSERVER_HEARTBEAT_SECONDS` | Interval for `event/server_heartbeat` (default `15`) |
 | `RXYCODE_APPSERVER_STALL_SECONDS` | Job stall threshold before degrade + worker kill (default `120`) |
 | `RXYCODE_APPSERVER_LIVE=1` | Run live AgentV2 integration test; uses real `~/.RxyCode/config.yaml`, not pytest-isolated data dir |
+| `RXYCODE_APPSERVER_LIVE_TIMEOUT` | Live prompt/run timeout in seconds (default `300`) |
 
 `session/prompt` `timeout_seconds` covers **worker bootstrap and prompt execution** (single
 wall-clock budget). On timeout the worker process is killed.
