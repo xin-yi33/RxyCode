@@ -36,6 +36,10 @@ foreach ($label in $Labels) {
         -ArgumentList '-u','-m','evals.cli','run','--backend','agent','--model','deepseek/deepseek-v4-flash','--tag',"gate-$label",'--compare-baseline','evals\baselines\latest-agent.json' `
         -WorkingDirectory $Root -RedirectStandardOutput $outLog -RedirectStandardError $errLog `
         -WindowStyle Hidden -PassThru
+    if ($null -eq $p) {
+        Write-Host "[$label] FAILED TO START (Start-Process returned nothing)."
+        continue
+    }
     $procs[$label] = $p
     Set-Content -Path $pidFile -Value $p.Id -Encoding ASCII
     Write-Host "[$label] started pid=$($p.Id) log=artifacts\gate-$label.log"
