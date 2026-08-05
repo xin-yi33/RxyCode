@@ -136,6 +136,9 @@ tmp-*.txt
 
 # --- Eval run artifacts (baselines in evals/baselines/ stay tracked) ---
 evals/results/
+# One-off per-model matrix outputs and dated comparison reports (keep latest-*.json)
+evals/baselines/20*-agent-*.json
+evals/baselines/models-comparison-*.md
 
 # --- Accidental eval / OS pollution in repo root ---
 Microsoft/
