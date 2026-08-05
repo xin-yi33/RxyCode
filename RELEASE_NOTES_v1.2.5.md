@@ -1,30 +1,57 @@
 # RxyCode v1.2.5
 
+RxyCode 是一个规划-执行型的 AI 编程助手：把复杂任务自动拆解成子任务，通过安全工具编排器执行、验证结果后综合出最终答案，全程实时流式输出到终端界面。
+
+## 简要说明 / Summary
+
+这一版聚焦三件事：**更好的模型适配、更快的启动、更稳的界面**。
+
+- 深度适配 DeepSeek / 通义千问 / Claude 等模型，Token 统计与上下文窗口更准确
+- 界面与核心之间的通信协议升级，交互更快更稳
+- 启动速度明显提升，冷启动更快进入对话
+- 文件修改类请求自动走完整的"分析—规划—执行—验证"流水线
+
 ## 亮点 / Highlights
 
-Phase 2 收口：OpenTUI 全面切到 stdio JSON-RPC、消除关键词路由、收敛延迟 import、`api_server` 变薄为适配器；Phase A 模型适配层落地，接入 DeepSeek / Anthropic / Qwen 等 Provider 与能力驱动解析。
+- **模型支持更广、更准** — 新增 DeepSeek、通义千问（Qwen）、Anthropic Claude 的适配层：思考模式识别、1M 超大上下文窗口、缓存命中计费、中文分词估算等均按各家规范解析，不再一刀切
+- **界面更流畅** — OpenTUI 默认改用本地 stdio 通道与核心通信（HTTP 保留为回退），审批交互更可靠，后端报错不再刷到聊天屏幕上
+- **启动更快** — 消除核心模块循环依赖、收敛延迟导入，冷启动耗时下降
+- **更懂你要改什么** — 显式请求路由：识别"改一下这个文件 / 这段代码"的意图时走完整流水线，而不是简单问答
+- **小但重要的修复** — 沙箱路径逃逸、API Key 读取兜底、思考开关跨对话保持
 
-## 新增 / Added
+## 详细说明 / Details
 
-- **Phase A 模型适配层** — LLM 构造统一走 Provider 层：`DeepSeekProvider`（reasoner 感知）、`AnthropicProvider` / `QwenProvider`、tokenizer spec 解析器、usage/reasoning 提取委托到 Provider、prompt (stage, locale, variant) 查找与回退
-- **Phase 2 收口** — `protocol/` + `appserver` stdio JSON-RPC 全线贯通；OpenTUI 默认 stdio 传输（`RXYCODE_TRANSPORT=stdio`）
-- **请求路由模块** — `core/request_routing.py` 显式路由指令，消除硬编码关键词；文件+修改意图请求走完整 pipeline
-- **并发门禁编排** — `evals` 并行 gate 编排脚本与每任务超时
-- **OpenTUI 迁移** — approval 生命周期修复、transport CI 覆盖、stderr 不再上屏
+### 模型与适配
 
-## 变更 / Changed
+- **DeepSeek**：自动识别思考型模型（thinking 模式）、1M 上下文窗口、缓存命中计费、温度参数按需生效
+- **通义千问（Qwen）**：中文分词启发式估算、缓存字段解析、混合思考模型支持
+- **Anthropic Claude**：适配框架落地，为后续完整支持铺路
+- **Token 统计**：按模型规格解析 tokenizer，计数失败时自动兜底，不阻塞对话
+- **提示词查找**：Prompt 模板支持按对话阶段 / 界面语言 / 模型变体查找与自动回退
 
-- **`api_server.py` 变薄** — SSE transport 与 model-onboarding 端点拆到独立模块，核心走 `Session` 门面
-- **延迟 import 收敛** — `core/` 内部循环依赖清除，延迟 import 降到 50 以下（回归守卫 `test_lazy_import_budget` 通过）
-- **一键安装默认钉死 `v1.2.5`**
-- **仅最新版开放安装包下载**；v1.2.4 及其更早 Release 保留说明、移除 wheel/sdist
+### 界面与交互（OpenTUI）
 
-## 修复 / Fixed
+- 默认使用 stdio JSON-RPC 通信，HTTP 传输保留为回退方案
+- 修复审批请求生命周期问题
+- 后端 stderr 不再直接打印到界面
+- 思考（思维链）展开开关在多次提问之间保持
 
-- readcode / workdir 任务在 sandbox 外的执行路径
-- 带 API key secret 回退的配置读取（`api_key_secret` 兜底）
-- appserver 思考开关跨 prompt 持久化
+### 架构与性能
+
+- 请求路由模块化：显式路由指令替代硬编码关键词
+- 核心包循环依赖清零，延迟 import 收敛到 50 以下（有回归测试守护）
+- API 服务端瘦身为纯 HTTP/SSE 适配器，统一走会话门面
+
+### 安全与修复
+
+- 修复 readcode / workdir 类任务可能逃出工作目录沙箱的执行路径
+- API Key 读取支持 secret 兜底（环境变量为空时自动回退）
 - 版本打包契约测试对齐 1.2.5
+
+### 质量保障
+
+- 评测系统支持并行门禁编排与单任务超时
+- OpenTUI stdio 传输补充集成与回归测试覆盖
 
 ## 安装 / Install
 

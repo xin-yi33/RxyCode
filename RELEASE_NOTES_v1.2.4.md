@@ -1,29 +1,36 @@
 # RxyCode v1.2.4
 
+## 简要说明 / Summary
+
+这一版打磨"添加模型"体验，并让常用操作更顺手：
+
+- 输入 `/addm` 等高亮建议后直接按回车即可执行，无需手动点击
+- 添加模型时按服务商自动分组展示，支持一键填入预设 URL
+- 内置 OpenCode Go 预设，开箱即用
+
 ## 亮点 / Highlights
 
-添加模型体验打磨、斜杠命令回车即执行；Phase 1 评测 harness 收口；Phase 2 类型化协议与 TypeScript JSON-RPC 客户端落地。
+- **斜杠命令回车即执行** — 输入 `/addm` 等高亮建议后直接 Enter 执行（↑↓ 选择，Tab 仍可补全）
+- **URL 推断服务商分组** — 自定义 endpoint 按 URL 自动归组；`/model` 按预设名 / 推断分组 / 其他展示
+- **OpenCode Go 预设** — 内置 `https://opencode.ai/zen/go/v1`，添加模型一步到位
 
-## 新增 / Added
+## 详细说明 / Details
 
-- **斜杠回车执行** — 输入 `/addm` 等高亮建议后直接 Enter 执行（↑↓ 选择，Tab 仍可补全）
-- **URL 推断服务商分组** — 自定义 endpoint 按 URL 归组；`/model` 按预设名 / 推断分组 / 其他
-- **OpenCode Go 预设** — `https://opencode.ai/zen/go/v1`
-- **Phase 1 eval harness** — 真实 AgentV2 流水线任务、tool_used 断言、baseline、夜间对比 CI
-- **Phase 2 协议层** — 冻结 JSON schema + TS JSON-RPC 客户端与 CI gate
+### 添加模型
 
-## 变更 / Changed
+- 自定义「其他」路径：清空残留 Key、走批量导入；默认别名 = model id
+- 确认添加模型时自动激活当前高亮项
+- API Key 输入框明文光标显示
 
-- 自定义「其他」路径：清空残留 Key、走批量 onboard；默认别名 = model id
-- 确认添加模型时激活当前高亮项
+### 质量保障
+
+- 评测体系落地：真实流水线任务、工具调用断言、基线对比、夜间自动对比 CI
+- 前后端协议层落地：冻结 JSON Schema + TypeScript JSON-RPC 客户端与 CI 门禁
+
+### 发布策略
+
 - 一键安装默认钉死 **`v1.2.4`**
 - **仅最新版开放安装包下载**；旧 Release 保留说明、移除 wheel/sdist
-
-## 修复 / Fixed
-
-- API Key 输入框明文光标
-- 夜间 eval / live lane 的 CI secret 与 env 处理
-- 安装与打包契约测试对齐 1.2.4
 
 ## 安装 / Install
 
