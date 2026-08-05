@@ -13,7 +13,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 POWERSHELL_INSTALLER = PROJECT_ROOT / "install.ps1"
 SHELL_INSTALLER = PROJECT_ROOT / "install.sh"
-DEFAULT_SOURCE = "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4"
+DEFAULT_SOURCE = "git+https://github.com/xin-yi33/RxyCode.git@v1.2.5"
 REPOSITORY = "https://github.com/xin-yi33/RxyCode.git"
 
 

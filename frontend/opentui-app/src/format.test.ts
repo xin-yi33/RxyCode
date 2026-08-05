@@ -21,7 +21,7 @@ describe("message formatting", () => {
 
   test("header keeps pink brand fields", () => {
     expect(formatHeaderLine("build", "deepseek-v4-flash", false)).toBe(
-      "RxyCode v1.2.4 · build · deepseek-v4-flash",
+      "RxyCode v1.2.5 · build · deepseek-v4-flash",
     );
     expect(formatHeaderLine("plan", "m", true)).toContain("思考中");
   });
