@@ -129,8 +129,9 @@ def test_apply_cache_control_applies_when_supported():
     llm._cache_enabled = True
     msg = MagicMock(type="system", content="sys")
     msg.additional_kwargs = {}
-    out = llm._apply_cache_control([msg])
-    assert out is not [msg]
+    msgs = [msg]
+    out = llm._apply_cache_control(msgs)
+    assert out is not msgs
     assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
 
 
