@@ -18,7 +18,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import tempfile
 import threading
 import time
@@ -141,6 +140,13 @@ CODE_MUTATING_TOOL_NAMES = frozenset({
 })
 MCP_RETRY_BASE_SECONDS = 5.0
 MCP_RETRY_MAX_SECONDS = 300.0
+
+# Compatibility re-exports for tests and legacy import sites (P6 routing module).
+__all__ = [
+    "_GIT_FORCE_RE",
+    "GIT_ONLY_TOOL_NAMES",
+    "_PURE_SOCIAL_GREETING_RE",
+]
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal
 
 # ---------------------------------------------------------------------------
 # Tool allowlists used by fast-reply routing
@@ -39,6 +38,17 @@ SOCIAL_CHAT_ROLE_INSTRUCTION = (
 PURE_SOCIAL_GREETING_RE = re.compile(
     r"^(?:你好|您好|hello|hi|hey|在吗|谢谢|thank you|thanks)"
     r"(?:[!！。.\s]*)$",
+    re.IGNORECASE,
+)
+
+# Relative path token (calc.py, src/foo.py) — not Windows drive-letter paths.
+_RELATIVE_FILE_RE = re.compile(
+    r"\b(?:[\w.-]+/)*[\w.-]+\.(?:py|pyw|js|ts|tsx|jsx|go|rs|java|cpp|c|h|hpp|"
+    r"md|json|yaml|yml|toml|ini|cfg|txt|sh|bat|ps1)\b",
+    re.IGNORECASE,
+)
+_MODIFY_INTENT_RE = re.compile(
+    r"(?:\b(fix|debug|patch|repair|modify|edit|bug)\b|修复|修改|调试)",
     re.IGNORECASE,
 )
 
@@ -200,6 +210,9 @@ def is_simple_query(
 
     text_stripped = text.strip()
     text_lower = text_stripped.lower()
+
+    if has_structured_pipeline_signal(text_stripped):
+        return False
 
     en_patterns = [
         r"\b(build|create|implement)\b.*\b(full|complete|entire|whole)\b",
@@ -365,6 +378,19 @@ def detect_file_operation(text: str) -> dict | None:
     return None
 
 
+def _mentions_relative_file(text: str) -> bool:
+    """True when text names a relative file path (not a drive-letter absolute path)."""
+    for match in _RELATIVE_FILE_RE.finditer(text):
+        start = match.start()
+        if start >= 2 and text[start - 1] == ":" and text[start - 2].isalpha():
+            continue
+        prefix = text[max(0, start - 12):start].lower()
+        if "://" in prefix or prefix.endswith("http") or prefix.endswith("https"):
+            continue
+        return True
+    return False
+
+
 def has_structured_pipeline_signal(text: str) -> bool:
     """Structured signals that require the full tool/LangGraph pipeline."""
     stripped = text.strip()
@@ -375,5 +401,7 @@ def has_structured_pipeline_signal(text: str) -> bool:
     if re.search(r"[A-Za-z]:[\\\/][^\s]+", stripped):
         return True
     if has_creation_product_intent(stripped):
+        return True
+    if _mentions_relative_file(stripped) and _MODIFY_INTENT_RE.search(stripped):
         return True
     return False

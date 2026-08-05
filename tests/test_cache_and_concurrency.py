@@ -10,7 +10,6 @@ LLM calls) injects `cache_control` on the first SystemMessage when the
 flag is enabled, and leaves messages untouched when disabled.
 """
 import sys
-import types
 import pytest
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
@@ -47,11 +46,11 @@ def _load_cfg(enabled: bool):
 
 
 def _get_wrapper(monkeypatch, enabled: bool):
-    # Patch load_config in the settings module BEFORE importing the wrapper,
-    # because UsageTrackingLLM reads config lazily inside ainvoke/astream.
-    settings = types.ModuleType(f"{PKG}.config.settings")
-    settings.load_config = _load_cfg(enabled)
-    monkeypatch.setitem(sys.modules, f"{PKG}.config.settings", settings)
+    # Patch load_config on the real settings module — do not replace the module,
+    # or imports like precise_cache.get_data_dir break during agent_v2 load.
+    from RxyCode.RxyCode1_1_0.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "load_config", _load_cfg(enabled))
 
     from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
     return UsageTrackingLLM(_FakeLLM())
