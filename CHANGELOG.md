@@ -11,6 +11,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.5] - 2026-08-06
+
+### Highlights
+
+Phase 2 completion: OpenTUI moves to the stdio JSON-RPC transport, keyword-based
+request routing is replaced by an explicit routing module, lazy imports are
+consolidated under budget, and `api_server.py` is thinned into an HTTP/SSE
+adapter over the headless `Session` facade. Phase A lands the model adaptation
+layer with a provider-driven LLM construction, tokenizer spec parsing, and
+prompt variant lookup.
+
+### Added
+
+- **Phase A model adaptation layer** — LLM construction routed through the
+  provider layer: `DeepSeekProvider` (reasoner-aware), `AnthropicProvider` /
+  `QwenProvider` skeletons, tokenizer spec parser with fail-safe
+  `count_tokens`, usage/reasoning extraction delegated to providers,
+  capabilities-driven prompt `(stage, locale, variant)` lookup with default
+  fallback
+- **Phase 2 completion** — `protocol/` + `appserver` stdio JSON-RPC end to end;
+  OpenTUI defaults to the stdio transport (`RXYCODE_TRANSPORT=stdio`)
+- **Request routing module** — `core/request_routing.py` with explicit routing
+  directives replacing hardcoded keyword lists; file+modify intent routes
+  through the full pipeline
+- **Parallel gate orchestration** — `evals` parallel gate runner with per-task
+  timeouts and gate-based exit codes
+- **OpenTUI migration hardening** — approval lifecycle fixes, transport CI
+  coverage, appserver stderr kept off the TUI screen
+
+### Changed
+
+- **`api_server.py` thinned** — SSE transport classes and model-onboarding
+  endpoints extracted to dedicated modules; core entry flows through `Session`
+- **Lazy import consolidation** — function-scoped imports under budget
+  (`test_lazy_import_budget` guard passes), `core/` internal cycles resolved
+- **Install pins** — one-command installers default to **`v1.2.5`**
+- **Release downloads** — only the latest release (v1.2.5) publishes
+  wheel/sdist assets; v1.2.4 and earlier keep notes but no installable
+  downloads
+
+### Fixed
+
+- Eval session cwd / sandbox root pinned to task workdir (readcode, workdir
+  tasks)
+- Config fallback to `api_key_secret` when `api_key_env` is empty
+- Appserver thinking toggle persists between prompts
+- Packaging / installer contract tests aligned to 1.2.5
+
+### Install notes
+
+- **Default one-command install** pins **`v1.2.5`**.
+- v1.2.4 release page keeps notes; **downloadable assets are removed** from
+  v1.2.4 (and older releases remain without assets).
+
+---
+
 ## [1.2.4] - 2026-08-02
 
 ### Highlights
@@ -356,6 +412,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.5]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5
 [1.2.4]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4
 [1.2.3]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3
 [1.2.2]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2

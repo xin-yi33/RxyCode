@@ -213,7 +213,7 @@ LinkAgent 通过 `pip install rxycode` 依赖，**不 fork 源码**。以下是�
 | 项 | 值 |
 |---|---|
 | PyPI 名 | `rxycode` |
-| 版本 | `1.2.4` |
+| 版本 | `1.2.5` |
 | Python | `>=3.10` |
 | 导入路径 | `from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2` |
 | 命令行 | `rxycode` |

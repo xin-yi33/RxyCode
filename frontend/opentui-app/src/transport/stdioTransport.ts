@@ -264,7 +264,7 @@ class StdioAppserverSession {
       "initialize",
       {
         client_name: "opentui",
-        client_version: "1.2.4",
+        client_version: "1.2.5",
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),

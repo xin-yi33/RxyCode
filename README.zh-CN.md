@@ -4,7 +4,7 @@
 
 **规划-执行型 AI 编程助手，带验证层与安全工具编排**
 
-[![Version](https://img.shields.io/badge/version-1.2.4-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4)
+[![Version](https://img.shields.io/badge/version-1.2.5-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -49,32 +49,32 @@ RxyCode 是一个基于 LangGraph 的通用 AI Agent，采用分层"规划-执�
 
 **Windows PowerShell：**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.4/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.5/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux：**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.4/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.5/install.sh | sh
 rxycode
 ```
 
-安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.4`** 版本。
+安装脚本会自动引导安装 `uv`（如果需要），创建隔离的工具环境，并安装 **`v1.2.5`** 版本。
 无需手动 clone 仓库。
 
-**下载说明：** 仅最新版（**`v1.2.4`**）提供可安装的 wheel/sdist。更早的
+**下载说明：** 仅最新版（**`v1.2.5`**）提供可安装的 wheel/sdist。更早的
 GitHub Release 仍保留说明文字，但**不开放**安装包下载。
 
 ### 方式二：一次性运行
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.5" rxycode
 ```
 
 ### 方式三：永久安装
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.4"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.5"
 rxycode
 ```
 
@@ -241,6 +241,7 @@ models:
 | [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | 自动安装 Bun 与 OpenTUI 依赖；无模型时欢迎提示并自动打开 /addmodel |
 | [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | OpenCode 式添加模型：预设、discover、预设多选批量入库、`/model` 按服务商分组 |
 | [v1.2.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4) | 2026-08 | 添加模型体验打磨 + 斜杠回车执行；Phase 1 评测 harness；Phase 2 协议层与 TS 客户端 |
+| [v1.2.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5) | 2026-08 | Phase A 模型适配层；Phase 2 收口（stdio 传输、请求路由、延迟 import、api_server 变薄） |
 
 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
