@@ -92,6 +92,15 @@ from .registry_provider import (
     init_manager,
     reset_manager,
 )
+from .permissions import (
+    ApprovalDecision,
+    ApprovalManager,
+    ApprovalRequest,
+    DecisionKind,
+    PermissionDecision,
+    PermissionPolicy,
+    is_system_hard_denied,
+)
 
 __all__ = [
     # Protocol types
@@ -171,4 +180,12 @@ __all__ = [
     "get_manager_or_none",
     "init_manager",
     "reset_manager",
+    # Permissions
+    "ApprovalDecision",
+    "ApprovalManager",
+    "ApprovalRequest",
+    "DecisionKind",
+    "PermissionDecision",
+    "PermissionPolicy",
+    "is_system_hard_denied",
 ]
