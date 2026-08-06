@@ -20,16 +20,24 @@ _manager: ChildSessionManager | None = None
 def init_manager(
     registry: AgentDefinitionRegistry | None = None,
     config: SubagentConfig | None = None,
+    *,
+    manager: ChildSessionManager | None = None,
 ) -> ChildSessionManager:
     """Initialize the process-wide manager singleton.
+
+    If *manager* is provided, it is registered directly (tests).
+    Otherwise a fresh ChildSessionManager is constructed from registry/config.
 
     Calling this twice replaces the manager (bootstrap/teardown only).
     """
     global _manager
-    _manager = ChildSessionManager(
-        registry=registry or AgentDefinitionRegistry(),
-        config=config or SubagentConfig(),
-    )
+    if manager is not None:
+        _manager = manager
+    else:
+        _manager = ChildSessionManager(
+            registry=registry or AgentDefinitionRegistry(),
+            config=config or SubagentConfig(),
+        )
     return _manager
 
 
