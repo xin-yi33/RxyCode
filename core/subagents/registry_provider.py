@@ -22,22 +22,33 @@ def init_manager(
     config: SubagentConfig | None = None,
     *,
     manager: ChildSessionManager | None = None,
+    load_builtins: bool = True,
 ) -> ChildSessionManager:
     """Initialize the process-wide manager singleton.
 
     If *manager* is provided, it is registered directly (tests).
-    Otherwise a fresh ChildSessionManager is constructed from registry/config.
+    Otherwise a fresh ChildSessionManager is constructed; when
+    ``load_builtins`` is True (default), the default ``config/agents``
+    built-ins are registered first.
 
     Calling this twice replaces the manager (bootstrap/teardown only).
     """
     global _manager
     if manager is not None:
         _manager = manager
-    else:
-        _manager = ChildSessionManager(
-            registry=registry or AgentDefinitionRegistry(),
-            config=config or SubagentConfig(),
-        )
+        return _manager
+
+    reg = registry
+    if reg is None and load_builtins:
+        from .builtin_agents import load_builtin_agents
+        reg = load_builtin_agents()
+    if reg is None:
+        reg = AgentDefinitionRegistry()
+
+    _manager = ChildSessionManager(
+        registry=reg,
+        config=config or SubagentConfig(),
+    )
     return _manager
 
 

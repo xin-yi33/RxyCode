@@ -304,7 +304,10 @@ def load_agent_definitions(
         Populated AgentDefinitionRegistry.
     """
 
-    reg = registry or AgentDefinitionRegistry()
+    # NOTE: `registry or AgentDefinitionRegistry()` is WRONG here — an empty
+    # registry is falsy (it defines __len__), which would silently replace a
+    # caller-provided empty registry with a fresh one.
+    reg = registry if registry is not None else AgentDefinitionRegistry()
 
     _load_from_directory(reg, builtin_dir, builtin=True)
     _load_from_directory(reg, user_dir, builtin=False)

@@ -12,20 +12,20 @@ from protocol.subagents import (
     TaskRequest,
     TriggerKind,
 )
-from core.subagents.definitions import AgentDefinitionRegistry
-from core.subagents.manager import (
+from RxyCode.RxyCode1_1_0.core.subagents.definitions import AgentDefinitionRegistry
+from RxyCode.RxyCode1_1_0.core.subagents.manager import (
     AgentNotFoundError,
     ChildSessionManager,
     FeatureDisabledError,
     ModeMismatchError,
 )
-from core.subagents.modes import SubagentConfig, SubagentFeatureFlags
-from core.subagents.registry_provider import (
+from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
+from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import (
     get_manager,
     init_manager,
     reset_manager,
 )
-from tools.agent_invoke import (
+from RxyCode.RxyCode1_1_0.tools.agent_invoke import (
     ParsedMention,
     invoke_mention,
     invoke_mention_async,
@@ -212,7 +212,7 @@ class TestMentionDispatch:
         assert result.child_session_id != ""
 
         # Sync entry works without an event loop running
-        from tools.agent_invoke import invoke_mention_sync
+        from RxyCode.RxyCode1_1_0.tools.agent_invoke import invoke_mention_sync
         result2 = invoke_mention_sync("explore", "查找")
         assert result2.child_session_id != ""
 

@@ -20,8 +20,8 @@ from protocol.subagents import (
     WorkspaceMode,
     WorkspaceScope,
 )
-from core.subagents.definitions import AgentDefinitionRegistry
-from core.subagents.manager import (
+from RxyCode.RxyCode1_1_0.core.subagents.definitions import AgentDefinitionRegistry
+from RxyCode.RxyCode1_1_0.core.subagents.manager import (
     AgentNotFoundError,
     ChildSessionManager,
     DepthLimitExceededError,
@@ -29,11 +29,11 @@ from core.subagents.manager import (
     ModeMismatchError,
     TaskPermissionDeniedError,
 )
-from core.subagents.modes import (
+from RxyCode.RxyCode1_1_0.core.subagents.modes import (
     SubagentConfig,
     SubagentFeatureFlags,
 )
-from core.subagents.registry_provider import (
+from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import (
     get_manager,
     get_manager_or_none,
     init_manager,
@@ -367,15 +367,15 @@ class TestTaskToolAdapter:
     """The `task` tool thin adapter delegates to the manager."""
 
     def test_tool_name_is_task(self):
-        from tools.subagent_task_tool import subagent_task_tool
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
         assert subagent_task_tool.name == "task"
 
     def test_tool_has_coroutine(self):
-        from tools.subagent_task_tool import subagent_task_tool
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
         assert subagent_task_tool.coroutine is not None
 
     def test_parse_context_refs(self):
-        from tools.subagent_task_tool import _parse_context_refs
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import _parse_context_refs
         refs = _parse_context_refs(["file:core/auth.py", "dir:protocol", "item:turn_1.2"])
         assert len(refs) == 3
         assert refs[0].kind == "file"
@@ -384,7 +384,7 @@ class TestTaskToolAdapter:
         assert refs[2].kind == "item"
 
     def test_parse_empty_refs(self):
-        from tools.subagent_task_tool import _parse_context_refs
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import _parse_context_refs
         assert _parse_context_refs([]) == ()
         assert _parse_context_refs(None) == ()
 
@@ -393,7 +393,7 @@ class TestTaskToolAdapter:
         reset_manager()
         init_manager(registry=registry, config=enabled_config)
 
-        from tools.subagent_task_tool import dispatch_subagent_task_sync
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import dispatch_subagent_task_sync
         result = dispatch_subagent_task_sync(agent_id="explore", prompt="探索")
         assert isinstance(result, str)
         reset_manager()

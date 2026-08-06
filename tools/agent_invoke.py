@@ -63,7 +63,7 @@ def list_mentionable_agents() -> list[dict]:
 
     Only ``mode in {subagent, all}`` and ``hidden=false`` agents are listed.
     """
-    from core.subagents.registry_provider import get_manager
+    from ..core.subagents.registry_provider import get_manager
 
     manager = get_manager()
     agents = manager.registry.list_visible()
@@ -99,8 +99,8 @@ async def invoke_mention(
         core.subagents.manager.FeatureDisabledError — feature disabled
         core.subagents.manager.DepthLimitExceededError — depth limit
     """
-    from core.subagents.manager import ChildSessionManager
-    from core.subagents.registry_provider import get_manager
+    from ..core.subagents.manager import ChildSessionManager, AgentNotFoundError, ModeMismatchError
+    from ..core.subagents.registry_provider import get_manager
 
     manager: ChildSessionManager = get_manager()
 
@@ -110,11 +110,9 @@ async def invoke_mention(
     # Verify the agent exists and is mentionable BEFORE creating anything
     definition = manager.registry.get(agent_id)
     if definition is None:
-        from core.subagents.manager import AgentNotFoundError
         raise AgentNotFoundError(agent_id)
 
     if not definition.is_subagent_capable or definition.hidden:
-        from core.subagents.manager import ModeMismatchError
         raise ModeMismatchError(
             agent_id,
             "agent is not mentionable (hidden or not subagent-capable)",

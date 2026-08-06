@@ -143,6 +143,7 @@ from .events import (
     build_event,
     terminal_event_name_for,
 )
+from .builtin_agents import builtin_agent_ids, load_builtin_agents
 
 __all__ = [
     # Protocol types
@@ -269,4 +270,7 @@ __all__ = [
     "EventStore",
     "build_event",
     "terminal_event_name_for",
+    # Built-in agents
+    "builtin_agent_ids",
+    "load_builtin_agents",
 ]

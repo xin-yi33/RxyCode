@@ -1,0 +1,16 @@
+{
+  "id": "explore",
+  "description": "只读探索代码库并返回文件、符号和证据",
+  "mode": "subagent",
+  "steps": 12,
+  "permission": {
+    "read": {"**": "allow"},
+    "edit": {"**": "deny"},
+    "bash": {"pytest *": "allow", "**": "deny"},
+    "task": {"**": "deny"},
+    "external_directory": "deny"
+  },
+  "hidden": false,
+  "subagent_depth": 1,
+  "workspace_scope": "read_only"
+}

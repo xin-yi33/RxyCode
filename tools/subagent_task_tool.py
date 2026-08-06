@@ -68,8 +68,8 @@ async def dispatch_subagent_task(
     This is the model-facing async entry point for the `task` tool.
     All permission/budget/workspace decisions are delegated to the manager.
     """
-    from core.subagents.manager import ChildSessionManager
-    from core.subagents.registry_provider import get_manager
+    from ..core.subagents.manager import ChildSessionManager
+    from ..core.subagents.registry_provider import get_manager
 
     manager: ChildSessionManager = get_manager()
 

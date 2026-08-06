@@ -1,0 +1,19 @@
+id: scout
+description: 外部文档/资料检索，不修改工作区
+mode: subagent
+steps: 8
+permission:
+  read:
+    '**': allow
+  edit:
+    '**': deny
+  webfetch:
+    '**': allow
+  websearch:
+    '**': allow
+  bash:
+    '**': deny
+  task:
+    '**': deny
+  external_directory: deny
+workspace_scope: read_only

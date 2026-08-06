@@ -199,7 +199,9 @@ class ChildSessionManager:
         Falls back to "latest" when no session is bound (tests, bootstrap).
         """
         try:
-            from core.session_runtime import current_session_id
+            # Relative import so it stays within the same package tree
+            # (bare `from core...` would create a second session_runtime instance).
+            from ..session_runtime import current_session_id
             return current_session_id()
         except Exception:
             return "latest"
