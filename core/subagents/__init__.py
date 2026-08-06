@@ -101,6 +101,18 @@ from .permissions import (
     PermissionPolicy,
     is_system_hard_denied,
 )
+from .workspace import (
+    Lease,
+    LeaseConflictError,
+    LeaseExpiredError,
+    LeaseManager,
+    NoWorkspaceScopeError,
+    OutsidePathError,
+    WorkspaceError,
+    WorkspaceValidator,
+    is_read_only_command,
+    make_validator,
+)
 
 __all__ = [
     # Protocol types
@@ -188,4 +200,15 @@ __all__ = [
     "PermissionDecision",
     "PermissionPolicy",
     "is_system_hard_denied",
+    # Workspace
+    "Lease",
+    "LeaseConflictError",
+    "LeaseExpiredError",
+    "LeaseManager",
+    "NoWorkspaceScopeError",
+    "OutsidePathError",
+    "WorkspaceError",
+    "WorkspaceValidator",
+    "is_read_only_command",
+    "make_validator",
 ]
