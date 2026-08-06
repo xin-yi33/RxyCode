@@ -56,6 +56,19 @@ from .sessions import (
     create_child_session,
     transition,
 )
+from .runtime import (
+    AgentRuntime,
+    AuditScope,
+    BudgetExceededError,
+    BudgetGuard,
+    CancellationToken,
+    ChildCancelledError,
+    ChildRuntime,
+    NamespaceIsolator,
+    ScopedToolRegistry,
+    create_child_runtime,
+    create_runtime,
+)
 
 __all__ = [
     # Protocol types
@@ -103,4 +116,16 @@ __all__ = [
     "SessionTree",
     "create_child_session",
     "transition",
+    # Runtime
+    "AgentRuntime",
+    "AuditScope",
+    "BudgetExceededError",
+    "BudgetGuard",
+    "CancellationToken",
+    "ChildCancelledError",
+    "ChildRuntime",
+    "NamespaceIsolator",
+    "ScopedToolRegistry",
+    "create_child_runtime",
+    "create_runtime",
 ]
