@@ -124,6 +124,25 @@ from .budget import (
     TotalTaskLimitExceeded,
     terminate_for_budget_error,
 )
+from .events import (
+    EVENT_APPROVAL_REQUIRED,
+    EVENT_CANCELLED,
+    EVENT_COMPLETED,
+    EVENT_CONTEXT_READY,
+    EVENT_CREATED,
+    EVENT_FAILED,
+    EVENT_PARTIAL_RESULT,
+    EVENT_PROGRESS,
+    EVENT_QUEUED,
+    EVENT_RECOVERED,
+    EVENT_STARTED,
+    EVENT_TOOL_CALL,
+    ChildSessionEvent,
+    EventBus,
+    EventStore,
+    build_event,
+    terminal_event_name_for,
+)
 
 __all__ = [
     # Protocol types
@@ -232,4 +251,22 @@ __all__ = [
     "TokenLimitExceeded",
     "TotalTaskLimitExceeded",
     "terminate_for_budget_error",
+    # Events
+    "EVENT_APPROVAL_REQUIRED",
+    "EVENT_CANCELLED",
+    "EVENT_COMPLETED",
+    "EVENT_CONTEXT_READY",
+    "EVENT_CREATED",
+    "EVENT_FAILED",
+    "EVENT_PARTIAL_RESULT",
+    "EVENT_PROGRESS",
+    "EVENT_QUEUED",
+    "EVENT_RECOVERED",
+    "EVENT_STARTED",
+    "EVENT_TOOL_CALL",
+    "ChildSessionEvent",
+    "EventBus",
+    "EventStore",
+    "build_event",
+    "terminal_event_name_for",
 ]
