@@ -113,6 +113,17 @@ from .workspace import (
     is_read_only_command,
     make_validator,
 )
+from .budget import (
+    BudgetError,
+    CancellationScope,
+    ConcurrencyGuard,
+    ConcurrencyLimitExceeded,
+    StepLimitExceeded,
+    TimeLimitExceeded,
+    TokenLimitExceeded,
+    TotalTaskLimitExceeded,
+    terminate_for_budget_error,
+)
 
 __all__ = [
     # Protocol types
@@ -211,4 +222,14 @@ __all__ = [
     "WorkspaceValidator",
     "is_read_only_command",
     "make_validator",
+    # Budget
+    "BudgetError",
+    "CancellationScope",
+    "ConcurrencyGuard",
+    "ConcurrencyLimitExceeded",
+    "StepLimitExceeded",
+    "TimeLimitExceeded",
+    "TokenLimitExceeded",
+    "TotalTaskLimitExceeded",
+    "terminate_for_budget_error",
 ]

@@ -26,7 +26,6 @@ from uuid import uuid4
 
 from protocol.subagents import (
     AgentDefinition,
-    BudgetSpec,
     PermissionSpec,
     TaskResult,
     WorkspaceMode,
@@ -118,68 +117,18 @@ class ChildCancelledError(Exception):
 
 
 # ============================================================================
-# Budget guard
+# Budget guard — canonical implementation lives in budget.py
 # ============================================================================
 
-@dataclass
-class BudgetGuard:
-    """Enforces budget limits for a single child session.
+from .budget import (
+    BudgetError,
+    BudgetGuard,
+)
 
-    Budget limits are frozen at creation time. Each model call and tool
-    execution consumes budget. When any limit is reached, the guard raises
-    BudgetExceededError.
-    """
-
-    budget: BudgetSpec = field(default_factory=BudgetSpec)
-
-    # Running counters
-    steps_used: int = field(default=0, init=False)
-    tokens_used: int = field(default=0, init=False)
-    wall_start_ms: int = field(default=0, init=False)
-
-    def __post_init__(self):
-        import time
-        self.wall_start_ms = int(time.time() * 1000)
-
-    # -- consumption ---------------------------------------------------------
-
-    def consume_step(self) -> None:
-        """Consume one agentic iteration step."""
-        self.steps_used += 1
-        if self.steps_used > self.budget.max_steps:
-            raise BudgetExceededError(
-                f"Step limit exceeded: {self.steps_used}/{self.budget.max_steps}"
-            )
-
-    def consume_tokens(self, count: int) -> None:
-        """Consume tokens from the budget."""
-        self.tokens_used += count
-        if self.tokens_used > self.budget.max_tokens:
-            raise BudgetExceededError(
-                f"Token limit exceeded: {self.tokens_used}/{self.budget.max_tokens}"
-            )
-
-    @property
-    def remaining_steps(self) -> int:
-        return max(0, self.budget.max_steps - self.steps_used)
-
-    @property
-    def remaining_tokens(self) -> int:
-        return max(0, self.budget.max_tokens - self.tokens_used)
-
-    @property
-    def wall_time_ms(self) -> int:
-        import time
-        return int(time.time() * 1000) - self.wall_start_ms
-
-    @property
-    def is_exhausted(self) -> bool:
-        return self.remaining_steps <= 0 or self.remaining_tokens <= 0
-
-
-class BudgetExceededError(Exception):
-    """Raised when a child session exceeds its budget."""
-    pass
+# Backward-compatible alias: B5 exposed BudgetExceededError; budget.py's
+# BudgetError and its subclasses (StepLimitExceeded, TokenLimitExceeded)
+# cover the same contract.
+BudgetExceededError = BudgetError
 
 
 # ============================================================================
