@@ -35,6 +35,19 @@ from .definitions import (
     load_agent_definitions,
     validate_agent_definition,
 )
+from .modes import (
+    SessionIdentity,
+    SessionMode,
+    SubagentCapability,
+    SubagentConfig,
+    SubagentFeatureFlags,
+    build_capability,
+    get_subagent_config,
+    reset_subagent_config,
+    set_subagent_config,
+    validate_primary_entry,
+    validate_subagent_entry,
+)
 
 __all__ = [
     # Protocol types
@@ -63,4 +76,16 @@ __all__ = [
     "DefinitionError",
     "load_agent_definitions",
     "validate_agent_definition",
+    # Modes & config
+    "SessionIdentity",
+    "SessionMode",
+    "SubagentCapability",
+    "SubagentConfig",
+    "SubagentFeatureFlags",
+    "build_capability",
+    "get_subagent_config",
+    "reset_subagent_config",
+    "set_subagent_config",
+    "validate_primary_entry",
+    "validate_subagent_entry",
 ]
