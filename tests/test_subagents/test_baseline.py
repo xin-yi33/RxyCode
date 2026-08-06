@@ -146,20 +146,20 @@ class TestSingleAgentPathIntegrity:
 class TestNoSecondSubagentImplementation:
     """Prove there is no hidden/duplicate subagent runtime."""
 
-    def test_no_core_subagents_package_yet(self):
-        """core/subagents/ must NOT exist before B2 creates it."""
+    def test_core_subagents_package_exists(self):
+        """core/subagents/ must exist after B2 (was created in B2)."""
         import importlib.util
         spec = importlib.util.find_spec("core.subagents")
-        assert spec is None, (
-            "core/subagents/ already exists — B1 expects it to be created in B2+"
+        assert spec is not None, (
+            "core/subagents/ missing — B2 should have created it"
         )
 
-    def test_no_protocol_subagents_module_yet(self):
-        """protocol/subagents.py must NOT exist before B2 creates it."""
+    def test_protocol_subagents_module_exists(self):
+        """protocol/subagents.py must exist after B2 (was created in B2)."""
         from pathlib import Path
         p = Path(__file__).resolve().parent.parent.parent / "protocol" / "subagents.py"
-        assert not p.exists(), (
-            "protocol/subagents.py already exists — B1 expects it to be created in B2+"
+        assert p.exists(), (
+            "protocol/subagents.py missing — B2 should have created it"
         )
 
     def test_no_subagent_task_tool_yet(self):
