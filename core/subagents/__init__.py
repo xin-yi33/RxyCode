@@ -77,6 +77,21 @@ from .context import (
     is_field_redacted,
     redact_text,
 )
+from .manager import (
+    AgentNotFoundError,
+    ChildSessionManager,
+    DepthLimitExceededError,
+    DispatchError,
+    FeatureDisabledError,
+    ModeMismatchError,
+    TaskPermissionDeniedError,
+)
+from .registry_provider import (
+    get_manager,
+    get_manager_or_none,
+    init_manager,
+    reset_manager,
+)
 
 __all__ = [
     # Protocol types
@@ -143,4 +158,17 @@ __all__ = [
     "create_minimal_context",
     "is_field_redacted",
     "redact_text",
+    # Manager
+    "AgentNotFoundError",
+    "ChildSessionManager",
+    "DepthLimitExceededError",
+    "DispatchError",
+    "FeatureDisabledError",
+    "ModeMismatchError",
+    "TaskPermissionDeniedError",
+    # Registry provider
+    "get_manager",
+    "get_manager_or_none",
+    "init_manager",
+    "reset_manager",
 ]

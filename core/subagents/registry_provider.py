@@ -1,0 +1,53 @@
+"""Process-wide ChildSessionManager singleton provider.
+
+B7 · Holds the runtime-scoped manager instance. The manager is set once at
+app bootstrap and reused by tools, CLI, Desktop, and appserver routes.
+
+This is a single read-mostly provider: it does NOT share mutable state
+between child sessions. All per-child state lives in ChildSession/
+AgentRuntime.
+"""
+
+from __future__ import annotations
+
+from .definitions import AgentDefinitionRegistry
+from .manager import ChildSessionManager
+from .modes import SubagentConfig
+
+_manager: ChildSessionManager | None = None
+
+
+def init_manager(
+    registry: AgentDefinitionRegistry | None = None,
+    config: SubagentConfig | None = None,
+) -> ChildSessionManager:
+    """Initialize the process-wide manager singleton.
+
+    Calling this twice replaces the manager (bootstrap/teardown only).
+    """
+    global _manager
+    _manager = ChildSessionManager(
+        registry=registry or AgentDefinitionRegistry(),
+        config=config or SubagentConfig(),
+    )
+    return _manager
+
+
+def get_manager() -> ChildSessionManager:
+    """Return the process-wide manager, raising if not initialized."""
+    if _manager is None:
+        raise RuntimeError(
+            "ChildSessionManager not initialized. Call init_manager() at bootstrap."
+        )
+    return _manager
+
+
+def get_manager_or_none() -> ChildSessionManager | None:
+    """Return the manager, or None if not initialized (for capability checks)."""
+    return _manager
+
+
+def reset_manager() -> None:
+    """Clear the manager singleton (test teardown)."""
+    global _manager
+    _manager = None

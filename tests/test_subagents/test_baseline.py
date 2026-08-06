@@ -162,13 +162,26 @@ class TestNoSecondSubagentImplementation:
             "protocol/subagents.py missing — B2 should have created it"
         )
 
-    def test_no_subagent_task_tool_yet(self):
-        """tools/subagent_task_tool.py must NOT exist before B7 creates it."""
+    def test_subagent_task_tool_exists(self):
+        """tools/subagent_task_tool.py must exist after B7 (the dispatch entry)."""
         from pathlib import Path
         p = Path(__file__).resolve().parent.parent.parent / "tools" / "subagent_task_tool.py"
-        assert not p.exists(), (
-            "tools/subagent_task_tool.py already exists — B1 expects it to be created in B7+"
+        assert p.exists(), (
+            "tools/subagent_task_tool.py missing — B7 should have created it"
         )
+
+    def test_subagent_task_tool_is_thin_adapter(self):
+        """The dispatch tool must NOT create AgentV2 or splice Primary history."""
+        from pathlib import Path
+        p = Path(__file__).resolve().parent.parent.parent / "tools" / "subagent_task_tool.py"
+        src = p.read_text(encoding="utf-8")
+        # No AgentV2 import or instantiation anywhere in the file
+        assert "import AgentV2" not in src
+        assert "AgentV2(" not in src
+        assert "from ..core.agent_v2" not in src
+        # Delegates to the manager
+        assert "ChildSessionManager" in src
+        assert "get_manager" in src
 
     def test_agent_tool_creates_new_agentv2_instance(self):
         """agent_tool creates a fresh AgentV2 — NOT a Child Session."""
