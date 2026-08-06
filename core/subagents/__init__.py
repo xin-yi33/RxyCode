@@ -48,6 +48,14 @@ from .modes import (
     validate_primary_entry,
     validate_subagent_entry,
 )
+from .sessions import (
+    ChildSession,
+    InvalidStateTransition,
+    SessionNotFound,
+    SessionTree,
+    create_child_session,
+    transition,
+)
 
 __all__ = [
     # Protocol types
@@ -88,4 +96,11 @@ __all__ = [
     "set_subagent_config",
     "validate_primary_entry",
     "validate_subagent_entry",
+    # Sessions
+    "ChildSession",
+    "InvalidStateTransition",
+    "SessionNotFound",
+    "SessionTree",
+    "create_child_session",
+    "transition",
 ]
