@@ -69,6 +69,14 @@ from .runtime import (
     create_child_runtime,
     create_runtime,
 )
+from .context import (
+    ContextBuilder,
+    ContextValidationError,
+    ReferenceValidationError,
+    create_minimal_context,
+    is_field_redacted,
+    redact_text,
+)
 
 __all__ = [
     # Protocol types
@@ -128,4 +136,11 @@ __all__ = [
     "ScopedToolRegistry",
     "create_child_runtime",
     "create_runtime",
+    # Context
+    "ContextBuilder",
+    "ContextValidationError",
+    "ReferenceValidationError",
+    "create_minimal_context",
+    "is_field_redacted",
+    "redact_text",
 ]
