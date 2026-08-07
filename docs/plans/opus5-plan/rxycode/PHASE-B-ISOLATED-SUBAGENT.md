@@ -603,11 +603,11 @@ Composer 执行每张卡时，必须把下面的命令复制到对应卡片的 `
 
 **完成判据**
 
-- [ ] 所有旧入口都有调用者和处置结论；
-- [ ] 找不到未标记的第二套子代理实现；
-- [ ] 单 Agent 旧路径回归基线不下降；
-- [ ] 输出下一张卡的真实文件白名单；
-- [ ] Composer 已把 Grok/Sonnet 的资料或审查意见转为可验证的卡内结论。
+- [x] 所有旧入口都有调用者和处置结论；
+- [x] 找不到未标记的第二套子代理实现；
+- [x] 单 Agent 旧路径回归基线不下降；
+- [x] 输出下一张卡的真实文件白名单；
+- [x] Composer 已把 Grok/Sonnet 的资料或审查意见转为可验证的卡内结论。
 
 ### B2 · AgentDefinition 与配置加载器
 
@@ -636,10 +636,10 @@ python -m pytest tests/test_subagents/test_definitions.py -q
 python -m ruff check core/subagents protocol tests/test_subagents
 ```
 
-- [ ] JSON 和 Markdown 加载结果相同；
-- [ ] 缺 id、重复 id、非法 mode、负 steps、非法权限规则均被拒绝；
-- [ ] `hidden=true` 只影响 UI 列表，不影响显式 Task；
-- [ ] schema 变更已生成 TypeScript 类型或明确记录生成命令。
+- [x] JSON 和 Markdown 加载结果相同；
+- [x] 缺 id、重复 id、非法 mode、负 steps、非法权限规则均被拒绝；
+- [x] `hidden=true` 只影响 UI 列表，不影响显式 Task；
+- [x] schema 变更已生成 TypeScript 类型或明确记录生成命令。
 
 ### B3 · Primary / Subagent 模式和默认配置
 
@@ -659,11 +659,11 @@ python -m ruff check core/subagents protocol tests/test_subagents
 
 **完成判据**
 
-- [ ] 当前普通会话仍使用 Primary；
-- [ ] 直接把 Subagent 当主会话启动会返回明确错误；
-- [ ] `all` 的入口行为在 CLI、OpenTUI、Desktop 一致；
-- [ ] 默认配置不产生额外模型调用；
-- [ ] 无 feature flag 时单 Agent 字节级回归通过。
+- [x] 当前普通会话仍使用 Primary；
+- [x] 直接把 Subagent 当主会话启动会返回明确错误；
+- [x] `all` 的入口行为在 CLI、OpenTUI、Desktop 一致；
+- [x] 默认配置不产生额外模型调用；
+- [x] 无 feature flag 时单 Agent 字节级回归通过。
 
 ### B4 · Child Session 生命周期
 
@@ -683,11 +683,11 @@ python -m ruff check core/subagents protocol tests/test_subagents
 
 **完成判据**
 
-- [ ] created → queued → running → finalizing → terminated 有状态机测试；
-- [ ] cancel、timeout、deny、failure、complete 都有终态；
-- [ ] 重复 terminal event 幂等；
-- [ ] Parent 取消会递归取消未完成 Child；
-- [ ] Child 终态可从 event log 恢复。
+- [x] created → queued → running → finalizing → terminated 有状态机测试；
+- [x] cancel、timeout、deny、failure、complete 都有终态；
+- [x] 重复 terminal event 幂等；
+- [x] Parent 取消会递归取消未完成 Child；
+- [x] Child 终态可从 event log 恢复。
 
 ### B5 · 隔离式 AgentRuntime
 
@@ -716,11 +716,11 @@ AgentRuntime
 
 **完成判据**
 
-- [ ] 两个 Child 的 tool registry、memory、cache、budget、trace id 均不同；
-- [ ] Provider 可共享的部分只有无状态调用能力，不能共享对话状态；
-- [ ] Child 结果只能通过 manager 回传；
-- [ ] 单 Agent 走 adapter 时旧路径回归通过；
-- [ ] Sonnet 或 Composer 独立完成一次交叉引用审查。
+- [x] 两个 Child 的 tool registry、memory、cache、budget、trace id 均不同；
+- [x] Provider 可共享的部分只有无状态调用能力，不能共享对话状态；
+- [x] Child 结果只能通过 manager 回传；
+- [x] 单 Agent 走 adapter 时旧路径回归通过；
+- [x] Sonnet 或 Composer 独立完成一次交叉引用审查。
 
 ### B6 · ContextEnvelope、引用和脱敏
 
@@ -734,11 +734,11 @@ AgentRuntime
 
 **完成判据**
 
-- [ ] 未授权的完整 history 不会出现在 Child prompt；
-- [ ] 引用文件在执行前校验 workspace scope 和 sha256；
-- [ ] secret、token、authorization 等字段有脱敏测试；
-- [ ] context 超限会产生结构化错误或可审计截断，不静默丢失；
-- [ ] Child 结果保留引用而不是复制大段内部上下文。
+- [x] 未授权的完整 history 不会出现在 Child prompt；
+- [x] 引用文件在执行前校验 workspace scope 和 sha256；
+- [x] secret、token、authorization 等字段有脱敏测试；
+- [x] context 超限会产生结构化错误或可审计截断，不静默丢失；
+- [x] Child 结果保留引用而不是复制大段内部上下文。
 
 ### B7 · Task Tool 和自动触发
 
@@ -752,11 +752,11 @@ AgentRuntime
 
 **完成判据**
 
-- [ ] Task Tool 不能通过参数绕过 Agent permission；
-- [ ] 不存在的 agent、模式不匹配和 task deny 都不创建 Child；
-- [ ] 自动触发和显式 `@` 使用相同 Child Manager；
-- [ ] `output_schema` 错误不会导致原始模型输出冒充结构化结果；
-- [ ] Task 调用和结果都带 correlation id。
+- [x] Task Tool 不能通过参数绕过 Agent permission；
+- [x] 不存在的 agent、模式不匹配和 task deny 都不创建 Child；
+- [x] 自动触发和显式 `@` 使用相同 Child Manager；
+- [x] `output_schema` 错误不会导致原始模型输出冒充结构化结果；
+- [x] Task 调用和结果都带 correlation id。
 
 ### B8 · `@` 触发与 CLI/OpenTUI/Desktop 共用入口
 
@@ -774,11 +774,11 @@ AgentRuntime
 
 **完成判据**
 
-- [ ] `@explore` 在 CLI、OpenTUI、Desktop 触发相同协议；
-- [ ] autocomplete 遵守 `hidden` 和 mode；
-- [ ] Child tree、状态和错误可见；
-- [ ] Grok 只提交视觉问题或受控前端 patch，Composer 完成最终合并和测试；
-- [ ] 无网络/服务端断开时不会生成假 Child。
+- [x] `@explore` 在 CLI、OpenTUI、Desktop 触发相同协议；
+- [x] autocomplete 遵守 `hidden` 和 mode；
+- [x] Child tree、状态和错误可见；
+- [x] Grok 只提交视觉问题或受控前端 patch，Composer 完成最终合并和测试；
+- [x] 无网络/服务端断开时不会生成假 Child。
 
 ### B9 · PermissionPolicy、审批和 Agent task 权限
 
@@ -790,13 +790,13 @@ AgentRuntime
 
 **验收重点**
 
-- [ ] `deny` 永远优先于普通默认 allow；
-- [ ] `ask` 产生可恢复审批，而不是直接失败或直接允许；
-- [ ] approval 绑定 session、tool call、路径、Agent definition version；
-- [ ] `task` 可允许 `explore` 而拒绝 `general`；
-- [ ] `external_directory` 单独测试；
-- [ ] 规则顺序和 pattern 匹配有表驱动测试；
-- [ ] 审批日志可被 Desktop 后续审计面板消费。
+- [x] `deny` 永远优先于普通默认 allow；
+- [x] `ask` 产生可恢复审批，而不是直接失败或直接允许；
+- [x] approval 绑定 session、tool call、路径、Agent definition version；
+- [x] `task` 可允许 `explore` 而拒绝 `general`；
+- [x] `external_directory` 单独测试；
+- [x] 规则顺序和 pattern 匹配有表驱动测试；
+- [x] 审批日志可被 Desktop 后续审计面板消费。
 
 ### B10 · WorkspaceScope、写租约和并发冲突
 
@@ -816,12 +816,12 @@ isolated_worktree  在独立 worktree 写，结果以 artifact/diff 回传
 
 **完成判据**
 
-- [ ] 同文件冲突有稳定错误码；
-- [ ] lease 释放在 complete/fail/cancel/timeout 全部执行；
-- [ ] crash recovery 能回收过期 lease；
-- [ ] isolated worktree 的 diff 不会自动写回 Primary workspace；
-- [ ] edit/bash Child 必须获得 WorkspaceScope；
-- [ ] 并行只读任务可以安全并发。
+- [x] 同文件冲突有稳定错误码；
+- [x] lease 释放在 complete/fail/cancel/timeout 全部执行；
+- [x] crash recovery 能回收过期 lease；
+- [x] isolated worktree 的 diff 不会自动写回 Primary workspace；
+- [x] edit/bash Child 必须获得 WorkspaceScope；
+- [x] 并行只读任务可以安全并发。
 
 ### B11 · Budget、steps、depth、并发和取消
 
@@ -835,14 +835,14 @@ isolated_worktree  在独立 worktree 写，结果以 artifact/diff 回传
 
 **完成判据**
 
-- [ ] `subagent_depth=0` 时 Primary 也不能创建 Child；
-- [ ] `subagent_depth=1` 时 Primary 可以创建 Child，但 Child 不能创建子 Child；
-- [ ] `subagent_depth=2` 时只允许一层 Child→Child，超过后以结构化 depth 错误终止；
-- [ ] depth、steps、token、time、concurrency 任一达到上限都能进入可解释终态；
-- [ ] cancel token 能终止模型等待、工具等待和子 Child；
-- [ ] Parent 取消不留下 orphan process、orphan lease 或 orphan task；
-- [ ] budget 使用量可在事件和 TaskResult 中查询；
-- [ ] 默认多 Agent 开关为 off，单 Agent 不增加调用。
+- [x] `subagent_depth=0` 时 Primary 也不能创建 Child；
+- [x] `subagent_depth=1` 时 Primary 可以创建 Child，但 Child 不能创建子 Child；
+- [x] `subagent_depth=2` 时只允许一层 Child→Child，超过后以结构化 depth 错误终止；
+- [x] depth、steps、token、time、concurrency 任一达到上限都能进入可解释终态；
+- [x] cancel token 能终止模型等待、工具等待和子 Child；
+- [x] Parent 取消不留下 orphan process、orphan lease 或 orphan task；
+- [x] budget 使用量可在事件和 TaskResult 中查询；
+- [x] 默认多 Agent 开关为 off，单 Agent 不增加调用。
 
 ### B12 · ChildSessionEvent、持久化和恢复
 
@@ -873,12 +873,12 @@ child_session/recovered
 
 **完成判据**
 
-- [ ] 事件序号单调且可检测 gap；
-- [ ] 客户端断开后可从 cursor 补读；
-- [ ] 重复事件幂等；
-- [ ] terminal event 持久化后才释放 lease；
-- [ ] 恢复后不会重复运行已完成的 Child；
-- [ ] Desktop 可只订阅某个 Child 子树。
+- [x] 事件序号单调且可检测 gap；
+- [x] 客户端断开后可从 cursor 补读；
+- [x] 重复事件幂等；
+- [x] terminal event 持久化后才释放 lease；
+- [x] 恢复后不会重复运行已完成的 Child；
+- [x] Desktop 可只订阅某个 Child 子树。
 
 ### B13 · 内置 Agent、Task Tool 迁移和示例目录
 
@@ -919,13 +919,13 @@ child_session/recovered
 
 **完成判据**
 
-- [ ] 新安装可以列出内置 Agent；
-- [ ] `explore` 能完成只读任务并返回证据；
-- [ ] `reviewer` 不能 edit；
-- [ ] 现有 `tools/task_tool.py` 仍保持任务清单职责，未被覆盖成子代理派发工具；
-- [ ] 新的子代理派发工具只有一个注册点，旧 `agent_tool` 调用者都有迁移或报废测试；
-- [ ] 旧入口要么完全迁移，要么明确报废并有测试保护；
-- [ ] Composer 已审查所有示例中的权限、路径和费用。
+- [x] 新安装可以列出内置 Agent；
+- [x] `explore` 能完成只读任务并返回证据；
+- [x] `reviewer` 不能 edit；
+- [x] 现有 `tools/task_tool.py` 仍保持任务清单职责，未被覆盖成子代理派发工具；
+- [x] 新的子代理派发工具只有一个注册点，旧 `agent_tool` 调用者都有迁移或报废测试；
+- [x] 旧入口要么完全迁移，要么明确报废并有测试保护；
+- [x] Composer 已审查所有示例中的权限、路径和费用。
 
 ### B14 · 全链路评测、迁移门和 Phase B 出口
 
@@ -950,15 +950,15 @@ child_session/recovered
 
 **出口**
 
-- [ ] B1–B14 每张卡都有独立 commit 和真实验收输出；
-- [ ] `ruff`、类型检查、协议 schema、单元、协议、E2E 全绿；
-- [ ] 单 Agent baseline 不下降；
-- [ ] 失败、取消、超时、拒绝和恢复均可审计；
-- [ ] CLI/OpenTUI/Desktop 使用同一 TaskRequest/TaskResult/Event；
-- [ ] Phase C 不需要复制 Runtime、权限或事件逻辑；
-- [ ] Phase D 能显示 parent/child tree 和审批/工具事件；
-- [ ] Phase E 可以在创建 Child 时替换 model，不改协议语义；
-- [ ] LinkAgent 可通过公开协议而不是内部 import 消费子会话。
+- [x] B1–B14 每张卡都有独立 commit 和真实验收输出；
+- [x] `ruff`、类型检查、协议 schema、单元、协议、E2E 全绿；
+- [x] 单 Agent baseline 不下降；
+- [x] 失败、取消、超时、拒绝和恢复均可审计；
+- [x] CLI/OpenTUI/Desktop 使用同一 TaskRequest/TaskResult/Event；
+- [x] Phase C 不需要复制 Runtime、权限或事件逻辑；
+- [x] Phase D 能显示 parent/child tree 和审批/工具事件；
+- [x] Phase E 可以在创建 Child 时替换 model，不改协议语义；
+- [x] LinkAgent 可通过公开协议而不是内部 import 消费子会话。
 
 ---
 
@@ -1466,11 +1466,11 @@ reviewers:
 
 完成判据：
 
-- [ ] 每个 B 卡都有上游来源和复用路径。
-- [ ] 没有未经说明的等价 Child Runtime 重写。
-- [ ] `subtask=true` 等 RxyCode 扩展已明确标记为 RxyCode 自有语义。
-- [ ] 许可证、commit、适配原因、验证命令和回滚方法齐全。
-- [ ] Composer 2.5 已完成最终 diff、测试和接口收口。
+- [x] 每个 B 卡都有上游来源和复用路径。
+- [x] 没有未经说明的等价 Child Runtime 重写。
+- [x] `subtask=true` 等 RxyCode 扩展已明确标记为 RxyCode 自有语义。
+- [x] 许可证、commit、适配原因、验证命令和回滚方法齐全。
+- [x] Composer 2.5 已完成最终 diff、测试和接口收口。
 
 验收命令（在实现完成后执行）：
 
