@@ -420,6 +420,36 @@ def _do_init():
     # (e.g. deepseek-v4-flash) instead of the misleading startup "default".
     _logger.info("Agent initialized", extra={"model": model_name})
 
+    # ── Phase B: init ChildSessionManager at bootstrap ────────────────
+    # Feature flags default to OFF — single-agent baseline preserved.
+    # Built-in agents (explore/reviewer/general/scout) are loaded but
+    # subagent dispatch is only active when subagents.enabled = true in
+    # config.yaml.
+    try:
+        from .core.subagents.modes import SubagentConfig, SubagentFeatureFlags
+        from .core.subagents.registry_provider import init_manager
+
+        sub_cfg = cfg.get("subagents", {}) or {}
+        flags = SubagentFeatureFlags(
+            subagents_enabled=bool(sub_cfg.get("enabled", False)),
+            subagents_task=bool(sub_cfg.get("task", False)),
+            subagents_mention=bool(sub_cfg.get("mention", False)),
+            subagents_child_tasks=bool(sub_cfg.get("child_tasks", False)),
+        )
+        config = SubagentConfig(flags=flags)
+        init_manager(config=config, load_builtins=True)
+        _logger.info(
+            "Subagent manager initialized",
+            extra={
+                "builtins_loaded": True,
+                "subagents_enabled": flags.subagents_enabled,
+                "mention": flags.subagents_mention,
+                "task": flags.subagents_task,
+            },
+        )
+    except Exception as exc:
+        _logger.warning("Subagent manager init skipped: %s", exc)
+
 
 async def startup(_app: FastAPI | None = None):
     """Create one queue and scheduler service for this application lifespan."""
@@ -1729,6 +1759,54 @@ async def command(req: CommandRequest):
 
 
 
+async def _dispatch_mention_sse(
+    manager,
+    agent_id: str,
+    prompt: str,
+    *,
+    parent_session_id: str = "latest",
+):
+    """Dispatch an @agent mention via Phase B ChildSessionManager as SSE.
+
+    Returns a StreamingResponse that the client can render like a normal
+    agent turn — the child's result summary is emitted as a final SSE
+    message block.
+    """
+    async def _stream():
+        yield "data: {\"type\": \"status\", \"status\": \"dispatching\", \"agent_id\": \""
+        yield agent_id
+        yield "\"}\n\n"
+
+        try:
+            from .tools.agent_invoke import invoke_mention
+
+            result = await invoke_mention(
+                agent_id, prompt, parent_session_id=parent_session_id,
+            )
+            status_text = result.status.value
+            summary = getattr(result, "summary", "") or ""
+
+            yield "data: "
+            yield _json.dumps({
+                "type": "child_result",
+                "agent_id": agent_id,
+                "status": status_text,
+                "summary": summary,
+            })
+            yield "\n\n"
+        except Exception as exc:
+            yield "data: "
+            yield _json.dumps({
+                "type": "error",
+                "message": f"Child agent error: {exc}",
+            })
+            yield "\n\n"
+        finally:
+            yield "data: {\"type\": \"done\"}\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream; charset=utf-8")
+
+
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     """Stream the agent's progress + answer as Server-Sent Events."""
@@ -1742,6 +1820,27 @@ async def chat_stream(req: ChatRequest):
     if not req.message or not req.message.strip():
         return StreamingResponse(iter(['data: {"type":"error","content":"Empty message"}\n\n', 'data: {"type":"done"}\n\n']),
                                  media_type="text/event-stream; charset=utf-8")
+
+    # ── Phase B: @agent mention interception ──────────────────────────
+    # If the message starts with @<agent_id>, route it through the isolated
+    # ChildSessionManager instead of the normal AgentV2 pipeline.  Feature-
+    # flag gated — when the manager is not initialized, falls through to
+    # the normal agent path (single-agent baseline preserved).
+    from .tools.agent_invoke import parse_mention
+
+    mention = parse_mention(req.message)
+    if mention.is_valid:
+        try:
+            from .core.subagents.registry_provider import get_manager
+
+            manager = get_manager()
+            if manager.config.flags.subagents_enabled and manager.config.flags.subagents_mention:
+                return await _dispatch_mention_sse(
+                    manager, mention.agent_id, mention.prompt,
+                    parent_session_id=req.session_id,
+                )
+        except RuntimeError:
+            pass  # manager not initialized — fall through to normal agent path
 
     # Validate mode
     valid_modes = ("build", "plan", "compose")

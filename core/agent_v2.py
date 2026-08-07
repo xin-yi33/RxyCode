@@ -1578,10 +1578,23 @@ class AgentV2:
 
     def _register_tools(self):
         """Register all built-in tools and download tools."""
+        # Phase B: check whether the isolated-subagent feature flag is on
+        # so the `task` tool dispatches via ChildSessionManager.
+        _subagents_on = False
+        try:
+            from .subagents.registry_provider import get_manager_or_none
+
+            mgr = get_manager_or_none()
+            if mgr is not None:
+                _subagents_on = mgr.config.flags.subagents_enabled
+        except Exception:
+            pass
+
         register_builtin_tools(
             registry,
             self._tool_orchestrator,
             rag_enabled=bool(getattr(self._memory, "_rag_enabled", False)),
+            subagents_enabled=_subagents_on,
         )
 
     @staticmethod
