@@ -7,6 +7,9 @@
 ```powershell
 cd "d:\ppt or work\opus\rxycode\RxyCode"
 $venv = ".\venv\Scripts\python.exe"
+
+# 将 uv 和 Git Bash 加入 PATH（减少 skip 数量）
+$env:PATH = "d:\ppt or work\opus\rxycode\RxyCode\venv\Scripts;A:\gitee\Git\usr\bin;$env:PATH"
 ```
 
 ## 第一步：确认环境
@@ -41,7 +44,15 @@ $venv = ".\venv\Scripts\python.exe"
 & $venv -m pytest tests -q --timeout=120 --ignore=tests/test_subagents
 ```
 
-**期望输出**：约 `9946 passed, 11 skipped`
+**期望输出**：约 `~9950 passed, 4 skipped`
+
+**4 个 skip 说明**：
+| 测试 | 原因 | 是否可修 |
+|------|------|----------|
+| 3 个 `test_installed_package` | `uv` 路径含空格，Bash 子进程找不到 | 可用 winget 装 uv 到系统 PATH 解决 |
+| 1 个 symlink | 需要管理员权限运行终端 | 以管理员身份启动 PowerShell |
+| 1 个 cache dedup | 同一个 query pair 故意跳过 | 设计如此，不是 bug |
+| 1 个 live research | 测试内部 webfetch 调用第三方 API 失败 | 非 Phase B 问题，基线本身就 skip |
 
 ## 第五步：协议 schema 校验
 
