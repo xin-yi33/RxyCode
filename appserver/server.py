@@ -532,6 +532,27 @@ class AppServer:
             task.add_done_callback(self._prompt_tasks.discard)
         elif method == "shutdown":
             await self._handle_shutdown(params, request_id)
+
+        # ── Phase B: subagent JSON-RPC methods ──────────────────────
+        elif method == "agent/invoke":
+            from .subagent_routes import invoke_agent
+
+            result = await invoke_agent(params)
+            await self._respond(request_id, result)
+        elif method == "task/start":
+            from .subagent_routes import start_task
+
+            result = await start_task(params)
+            await self._respond(request_id, result)
+        elif method == "subagents/list":
+            from .subagent_routes import list_agents
+
+            await self._respond(request_id, list_agents())
+        elif method == "subagents/capability":
+            from .subagent_routes import capability
+
+            await self._respond(request_id, capability())
+
         else:
             await self._respond_error(request_id, -32601, f"method not found: {method}")
 
