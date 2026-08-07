@@ -1,5 +1,22 @@
 # Phase B 手动测试说明书
 
+## 前置：开启 Phase B feature flag
+
+默认关闭，先在 `~/.RxyCode/config.yaml` 中添加：
+
+```yaml
+subagents:
+  enabled: true
+  task: true
+  mention: true
+  child_tasks: false
+```
+
+然后重启 RxyCode。启动日志应显示：
+```
+Subagent manager initialized: builtins_loaded=True subagents_enabled=True mention=True task=True
+```
+
 ## 方式一：TUI 交互模式（最直观）
 
 ### 启动
