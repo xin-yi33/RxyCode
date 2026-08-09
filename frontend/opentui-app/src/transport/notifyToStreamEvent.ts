@@ -3,6 +3,7 @@ import type { StreamEvent } from "../streamReducer.ts";
 /** Map appserver JSON-RPC notification method + params to OpenTUI SSE-shaped events. */
 export function notifyToStreamEvent(method: string, params: unknown): StreamEvent | null {
   const p = (params ?? {}) as Record<string, unknown>;
+  const payload = (p.payload ?? {}) as Record<string, unknown>;
   switch (method) {
     case "event/message_delta":
       return { type: "token", text: String(p.text ?? "") };
@@ -47,32 +48,32 @@ export function notifyToStreamEvent(method: string, params: unknown): StreamEven
         type: "child_created",
         childSessionId: String(p.session_id ?? ""),
         parentSessionId: String(p.parent_session_id ?? ""),
-        agentId: String(p.agent_id ?? p.payload?.agent_id ?? ""),
+        agentId: String(p.agent_id ?? payload.agent_id ?? ""),
         text: String(p.summary ?? `子代理 ${p.agent_id ?? ""} 已创建`),
       };
     case "child_session/status":
       return {
         type: "child_status",
         childSessionId: String(p.session_id ?? ""),
-        childStatus: String(p.status ?? p.payload?.status ?? "unknown"),
+        childStatus: String(p.status ?? payload.status ?? "unknown"),
         text: String(p.summary ?? ""),
-        agentId: String(p.agent_id ?? p.payload?.agent_id ?? ""),
+        agentId: String(p.agent_id ?? payload.agent_id ?? ""),
       };
     case "child_session/completed":
       return {
         type: "child_completed",
         childSessionId: String(p.session_id ?? ""),
         childStatus: "completed",
-        text: String(p.summary ?? p.payload?.summary ?? "子代理执行完成"),
-        usage: p.payload?.usage as Record<string, unknown> | undefined,
+        text: String(p.summary ?? payload.summary ?? "子代理执行完成"),
+        usage: payload.usage as Record<string, unknown> | undefined,
       };
     case "child_session/error":
       return {
         type: "child_error",
         childSessionId: String(p.session_id ?? ""),
         childStatus: "failed",
-        text: String((p.payload as Record<string, unknown> | undefined)?.message ?? p.summary ?? "error"),
-        error: String((p.payload as Record<string, unknown> | undefined)?.message ?? "子代理执行错误"),
+        text: String(payload.message ?? p.summary ?? "error"),
+        error: String(payload.message ?? "子代理执行错误"),
       };
   }
   return null;
