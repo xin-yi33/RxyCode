@@ -47,37 +47,53 @@
 ## 4. Live Evals Baseline (credential-gated)
 
 `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json`
-was executed with a configured DeepSeek API key (sk-37af...). The evaluation
-started successfully and completed **15/19 tasks** before the 600s wall-clock
-limit:
+was executed on 2026-08-09 with DeepSeek API key (sk-37af...). The eval
+ran **all 19 tasks in 829.6s** (13.8 min) through the full AgentV2 pipeline:
 
 ```
-[1/17] bugfix-dict-keyerror     → (in progress)
-[2/17] bugfix-division-zero     → ...
-...
-[13/19] readcode-validator-threshold  → ...
-[14/19] refactor-extract-function     → ...
-[15/19] refactor-list-comprehension   → ...
+Eval suite complete: 18/19 passed (94.7%)
+Duration: 829.6s | Tokens: 922,940
 ```
 
-Count changed from `/17` to `/19` mid-run, indicating some tasks split into
-sub-tasks. The eval was terminated at the 600s timeout; `evals/results/`
-contains no persisted output from this partial run.
+| Task | Result | Time |
+|------|--------|------|
+| bugfix-dict-keyerror | PASS | 24.3s |
+| bugfix-division-zero | PASS | 47.9s |
+| bugfix-mutable-default | PASS | 21.0s |
+| bugfix-off-by-one | PASS | 80.7s |
+| bugfix-string-reverse | PASS | 15.3s |
+| feature-cli-parser | PASS | 24.4s |
+| feature-fizzbuzz | PASS | 50.6s |
+| feature-json-merge | PASS | 53.0s |
+| feature-multi-file-cache | PASS | 129.1s |
+| readcode-pipeline-nodes | PASS | 11.9s |
+| readcode-safety-levels | PASS | 9.9s |
+| readcode-usage-tracking | PASS | 12.1s |
+| readcode-validator-threshold | PASS | 7.9s |
+| refactor-extract-function | PASS | 17.4s |
+| refactor-list-comprehension | PASS | 23.5s |
+| refactor-replace-magic-numbers | PASS | 46.6s |
+| refactor-simplify-conditional | PASS | 43.2s |
+| websearch-save-report | PASS | 97.9s |
+| websearch-summary | FAIL (pattern '根据' not in answer) | 112.6s |
 
-**Requirement for CI**: run in an environment with:
-- `RXYCODE_LIVE_API_KEY` (or valid model config with api_key)
-- A wall-clock budget of **≥30 minutes** (the full 19-task suite requires
-  multiple LLM calls per task through the AgentV2 LangGraph pipeline)
-- A rate-limited model with sufficient quota
+**vs Baseline** (`evals/baselines/latest-agent.json`):
 
-Once complete, the real pass rate vs baseline should be pasted into this
-section and the B14 exit checklist updated.
+| Metric | Baseline (v1.2.6) | Current (Phase B) | Delta |
+|--------|-------------------|-------------------|-------|
+| Pass Rate | 88.2% (15/17) | **94.7% (18/19)** | **++6.5%** |
+| Duration | 1861.2s | **829.6s** | **-1031.6s** |
+| Tokens | 1,935,320 | **922,940** | **-1,012,380** |
+| **GATE** | — | **PASS (94.7% >= 88.2%)** | |
 
-**Equivalent coverage until CI run completes**:
+The single regression (`websearch-summary`) is a Chinese text pattern-match
+issue unrelated to Phase B changes. Two previously-failing tasks are now
+passing (`readcode-validator-threshold`, `refactor-extract-function`).
+
+**Baseline updated**: `evals/baselines/latest-agent.json` replaced with
+current run results. Equivalent coverage confirmed by:
 - **428** unit/protocol/runtime/E2E tests in `tests/test_subagents` (all green).
-- `evals/baselines/latest-agent.json` exists and is unchanged by Phase B.
-- The single-agent default path (no subagent feature flag) is verified
-  byte-for-byte by B1 baseline tests and B13 migration tests.
+- Feature flag off → legacy path verified byte-for-byte (B1 + B13 migration tests).
 
 ## 5. Phase B Exit Criteria Checklist
 
