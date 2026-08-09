@@ -28,5 +28,18 @@ export interface ChatTransport {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
   ): Promise<void>;
+  invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult>;
   shutdown?(): Promise<void>;
+}
+
+/** Phase B result of `agent/invoke` (mirrors appserver/subagent_routes._result_to_dict). */
+export interface SubagentResult {
+  request_id: string;
+  child_session_id: string;
+  status: string;
+  summary: string;
+  artifacts: Array<{ kind: string; ref: string; sha256: string | null }>;
+  evidence: Array<{ path: string; line: number | null; sha256: string | null }>;
+  usage: { steps: number; input_tokens: number; output_tokens: number };
+  error: { code: string; message: string } | null;
 }

@@ -8,11 +8,12 @@ import {
   useSelectionHandler,
   useTerminalDimensions,
 } from "@opentui/react";
-import { cancelActiveRequest, fetchStatus, respondApproval, sendChatMessage, sendCommand } from "./chatApi.ts";
+import { cancelActiveRequest, fetchStatus, invokeSubagent, respondApproval, sendChatMessage, sendCommand } from "./chatApi.ts";
 import { resolveTransportKind } from "./transport/config.ts";
 import { warmStdioBootstrap } from "./transport/stdioTransport.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
+import { parseMention } from "./mention.ts";
 import { filterCommands, resolveSlashSubmit, AVAILABLE_COMMANDS, type Command, isBareModelPickerCommand } from "./commands.ts";
 import { APP_VERSION, formatHeaderLine, formatInputHint, formatMessageLine, messageFg } from "./format.ts";
 import { CHAT_PROMPT_KEY_BINDINGS } from "./promptKeyBindings.ts";
@@ -755,6 +756,52 @@ export default function App() {
 
       const controller = new AbortController();
       abortRef.current = controller;
+
+      const mention = parseMention(trimmed);
+      if (mention) {
+        const { agentId, prompt } = mention;
+        const userMsg = {
+          id: `user-${Date.now()}`,
+          role: "user" as const,
+          content: trimmed,
+          timestamp: Date.now(),
+          mode,
+        };
+        setMessages((prev) => [...prev, userMsg]);
+        setIsStreaming(true);
+        try {
+          const result = await invokeSubagent(agentId, prompt);
+          const childMsg = {
+            id: `child-${Date.now()}`,
+            role: "child_session" as const,
+            content: result.summary || result.error?.message || "子代理无返回",
+            childSessionId: result.child_session_id,
+            childStatus: result.status,
+            agentId,
+            timestamp: Date.now(),
+            done: true,
+          };
+          setMessages((prev) => [...prev, childMsg]);
+        } catch (e) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `child-${Date.now()}`,
+              role: "child_session" as const,
+              content: e instanceof Error ? e.message : String(e),
+              childStatus: "failed",
+              agentId,
+              timestamp: Date.now(),
+              done: true,
+            },
+          ]);
+        } finally {
+          setIsStreaming(false);
+          abortRef.current = null;
+        }
+        return;
+      }
+
       await sendChatMessage(
         trimmed,
         mode,

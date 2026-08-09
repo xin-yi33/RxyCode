@@ -16,7 +16,7 @@ import {
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
-import type { ChatApiCallbacks, ChatTransport } from "./types.ts";
+import type { ChatApiCallbacks, ChatTransport, SubagentResult } from "./types.ts";
 
 function newId(suffix: string): string {
   return `${Date.now()}-${suffix}-${Math.random().toString(36).slice(2, 7)}`;
@@ -39,6 +39,35 @@ export const httpTransport: ChatTransport = {
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
     return httpRespondApproval(approvalId, decision);
+  },
+
+  async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
+    try {
+      const resp = await axios.post<SubagentResult>(
+        `${API_BASE}/subagents/invoke`,
+        { agent_id: agentId, prompt },
+        { headers: authorizationHeaders() },
+      );
+      return resp.data;
+    } catch (err) {
+      return {
+        request_id: "",
+        child_session_id: "",
+        status: "failed",
+        summary: "",
+        artifacts: [],
+        evidence: [],
+        usage: { steps: 0, input_tokens: 0, output_tokens: 0 },
+        error: {
+          code: "transport_error",
+          message: axios.isAxiosError(err)
+            ? String(err.response?.data?.detail ?? err.message)
+            : err instanceof Error
+              ? err.message
+              : "HTTP transport failed",
+        },
+      };
+    }
   },
 
   async sendChatMessage(

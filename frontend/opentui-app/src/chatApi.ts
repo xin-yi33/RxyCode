@@ -34,4 +34,8 @@ export async function sendChatMessage(
   return getChatTransport().sendChatMessage(content, mode, callbacks, signal);
 }
 
+export async function invokeSubagent(agentId: string, prompt: string) {
+  return getChatTransport().invokeSubagent(agentId, prompt);
+}
+
 export type { ApprovalInfo };

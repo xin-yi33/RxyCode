@@ -90,8 +90,13 @@ The single regression (`websearch-summary`) is a Chinese text pattern-match
 issue unrelated to Phase B changes. Two previously-failing tasks are now
 passing (`readcode-validator-threshold`, `refactor-extract-function`).
 
-**Baseline updated**: `evals/baselines/latest-agent.json` replaced with
-current run results. Equivalent coverage confirmed by:
+**Baseline status**: the eval above ran 19 tasks (18/19 = 94.7%) on this
+branch, but `evals/baselines/latest-agent.json` in this PR was NOT replaced
+with that run — the committed baseline is still the prior 15/17 (88.2%)
+snapshot. The 94.7% result is consistent with the maintainer's own
+`phasea-exit-check` run on master (18/19 = 94.7%, GATE PASS) using the
+same command and task set; the baseline file update is deferred to the
+follow-up Phase B merge on master. Equivalent coverage confirmed by:
 - **428** unit/protocol/runtime/E2E tests in `tests/test_subagents` (all green).
 - Feature flag off → legacy path verified byte-for-byte (B1 + B13 migration tests).
 
