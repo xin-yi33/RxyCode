@@ -4,11 +4,11 @@
 
 **Plan-and-Execute AI Coding Agent with Verification & Safe Tool Orchestration**
 
-[![Version](https://img.shields.io/badge/version-1.2.6-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6)
+[![Version](https://img.shields.io/badge/version-1.2.7-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2477%20passed-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-9965%20passed-brightgreen.svg)](#testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
@@ -37,10 +37,14 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 - **Blazing fast** — Three-level cache (exact hash + semantic similarity +
   Provider KV), 50 ms token batching, fast-reply path for simple queries
 - **Beautiful TUI** — OpenTUI/React/TypeScript frontend (default) with
-  streaming output, ScrollBox chat, native textarea, and OpenCode-style panels;
-  Bun is auto-installed by the one-command installer when missing; Ink remains
-  as `RXYCODE_TUI=ink` fallback
+  streaming output, ScrollBox chat, native textarea, and command-palette style
+  panels; Bun is auto-installed by the one-command installer when missing; Ink
+  remains as `RXYCODE_TUI=ink` fallback
 - **30+ tools** — File ops, shell, web search/fetch, git, RAG, MCP, LSP, and more
+- **Evals that tell the truth** — The evaluation harness runs the *full* Agent
+  pipeline (plan → execute → validate → synthesize), asserts tools were really
+  used, compares against saved baselines, and nightly CI alarms on any pass-rate
+  regression — so capability changes are measured, never guessed
 
 ## Quick Start
 
@@ -57,34 +61,34 @@ a final answer — all streamed live to an OpenTUI terminal UI (Ink fallback ava
 
 **Windows PowerShell:**
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.6/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.7/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.6/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.7/install.sh | sh
 rxycode
 ```
 
 The installer bootstraps `uv` (if needed), creates an isolated tool
-environment, and installs the pinned **`v1.2.6`** release. No manual clone
+environment, and installs the pinned **`v1.2.7`** release. No manual clone
 required.
 
-**Downloads:** only the latest release (**`v1.2.6`**) publishes installable
+**Downloads:** only the latest release (**`v1.2.7`**) publishes installable
 wheel/sdist assets. Older GitHub Releases keep release notes but **do not**
 offer binary downloads.
 
 ### Option 2: Run once with uv
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.6" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.7" rxycode
 ```
 
 ### Option 3: Permanent install
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.6"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.7"
 rxycode
 ```
 
@@ -169,33 +173,34 @@ _raw_stream()                              chatApi.ts / App.tsx
 | `tools/` | 30+ built-in tools (read, write, edit, bash, grep, web, git, ...) |
 | `memory/` | Tiered memory (short-term, long-term, user, search) |
 | `cache/` | Three-level cache (exact + semantic + Provider KV) |
-| `config/` | Configuration management (`~/.rxycode/config.yaml`) |
+| `config/` | Configuration management (`~/.RxyCode/config.yaml`) |
 | `rag/` | Codebase vector search (chunking, embedding, cosine) |
 | `scheduler/` | Cron-like prompt scheduling |
 | `recovery/` | Error recovery with retry logic |
 | `mcp/` | MCP server integration |
 | `lsp/` | LSP integration (experimental) |
-| `safety/` | Risk levels, approval, write whitelist, audit |
+| `core/safety/` | Risk levels, approval, write whitelist, audit |
 | `evals/` | Evaluation harness (success rate, LLM-as-judge) |
-| `tests/` | Python test suite (2319 deterministic tests) |
+| `tests/` | Python test suite (9965 deterministic tests) |
 
 ## Testing
 
 ### Frontend (TypeScript)
 ```bash
-cd frontend && npm test    # 28 files / 158 tests
+cd frontend && npm test       # Ink UI: 1502 tests
+cd frontend/opentui-app && bun test   # OpenTUI: 128 tests
 ```
 
 ### Backend (Python)
 ```bash
 python -m pytest tests -m "not live and not pty and not serial" -n 2 --dist loadscope -q
 python -m pytest tests -m "serial and not live and not pty" -n 0 -q
-# 2319 deterministic tests passed
+# 9965 deterministic tests passed
 ```
 
 ## Configuration
 
-Configuration is stored at `~/.rxycode/config.yaml`:
+Configuration is stored at `~/.RxyCode/config.yaml`:
 
 ```yaml
 cache:
@@ -249,10 +254,11 @@ Use `/addmodel` in the TUI for a guided setup wizard.
 | [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | Frontend rewrite: OpenTUI default TUI (Ink fallback), settings parity, safer Ctrl+C, plan hints, autoCompact |
 | [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | Package fix: ship OpenTUI sources in the installable wheel |
 | [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | Auto-install Bun + OpenTUI deps; empty-model welcome hint + auto `/addmodel` |
-| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | OpenCode add-model: presets, discover, preset multi-select batch onboard, `/model` provider groups |
-| [v1.2.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4) | 2026-08 | Add-model polish + slash Enter; Phase 1 eval harness; Phase 2 typed protocol + TS client |
-| [v1.2.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5) | 2026-08 | Phase A model adaptation layer; Phase 2 completion (stdio transport, request routing, lazy imports, API thinning) |
+| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | Model onboarding: 10 provider presets, auto discovery, multi-select batch add, `/model` provider groups |
+| [v1.2.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4) | 2026-08 | Add-model experience polish + slash-key Enter; reliable eval harness; typed protocol layer + TypeScript client |
+| [v1.2.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5) | 2026-08 | Model adaptation for DeepSeek / Qwen / Claude (thinking, context windows, token counting); faster startup via lazy imports; explicit request routing; stdio transport |
 | [v1.2.6](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6) | 2026-08 | Reliability fixes: webfetch decoding, MCP mis-routing, shell/encoding fixes on Windows; web search hardening |
+| [v1.2.7](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7) | 2026-08 | Reliability fixes: completed answers no longer discarded by failed read-only probes; smarter web-research queries; DeepSeek thinking-mode reasoning echoed back; new providers (Doubao) |
 
 See [CHANGELOG.md](CHANGELOG.md) for the full change history.
 

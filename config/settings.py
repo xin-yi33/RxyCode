@@ -333,17 +333,6 @@ def _default_config() -> dict:
         "evals": {
             "judge_model": None,
         },
-        # ── Phase B: isolated subagent feature flags ─────────────────
-        # All default OFF — single-agent baseline must not regress.
-        # Set subagents.enabled = true to activate @agent, Task dispatch,
-        # and child sessions.  Each sub-feature can be toggled independently
-        # for gradual rollout.
-        "subagents": {
-            "enabled": False,
-            "task": False,         # model auto-dispatch via Task Tool
-            "mention": False,      # user @agent invocation
-            "child_tasks": False,  # allow children to spawn children
-        },
     }
 
 

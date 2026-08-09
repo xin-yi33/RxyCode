@@ -11,6 +11,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.7] - 2026-08-06
+
+### Highlights
+
+Reliability-fix release focused on the research and thinking-mode paths. A
+failed read-only probe (e.g. one 404 during web research) no longer discards a
+fully completed answer; the mandatory web-research path now derives a concise
+query from task language instead of sending the whole instruction to a search
+engine; DeepSeek-style thinking-mode providers get their `reasoning_content`
+echoed back on tool-bearing assistant messages (fixes HTTP 400); and tasks that
+already produced a written deliverable keep their answer even when a cited URL
+was not fetched. Also adds the Doubao (ark) provider.
+
+### Added
+
+- **DoubaoProvider** — model support for the ark coding endpoint (A23).
+- **Research query extraction** — `extract_research_query()` strips task-direction
+  boilerplate so the search engine receives the topic, not the full instruction.
+
+### Fixed
+
+- **Completed answers preserved** — only WRITE/DANGER or artifact-validation
+  failures override a finished answer; a failed read-only probe (webfetch 404,
+  websearch miss) no longer replaces a well-sourced reply with
+  `[evidence failed: ...]`.
+- **DeepSeek thinking-mode 400** — `reasoning_content` is carried back on
+  tool-bearing assistant messages (`_to_openai_messages` + `AIMessage`
+  `additional_kwargs`), satisfying the "must be passed back to the API" contract.
+- **Side-effect tasks keep their answer** — a task that already wrote a file no
+  longer returns "could not verify" just because the answer cited an unfetched URL.
+
+---
+
 ## [1.2.6] - 2026-08-06
 
 ### Highlights
@@ -438,6 +471,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.7]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7
 [1.2.6]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6
 [1.2.5]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5
 [1.2.4]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4

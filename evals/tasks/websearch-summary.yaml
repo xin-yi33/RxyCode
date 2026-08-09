@@ -1,0 +1,14 @@
+id: websearch-summary
+category: feature
+prompt: |
+  使用 websearch 工具搜索 2026 年 AI 编程助手领域最重要的趋势（例如 Agentic coding、
+  AI IDE、代码补全、自动化测试等方向），然后总结你认为最重要的 3 条趋势。
+  请在回答中明确说出你调用了哪些工具（例如"我使用 websearch 搜索了……"），
+  并给出每条趋势的一句话理由。若搜索服务受限无法返回结果，请基于你已有的知识
+  直接给出趋势总结，但必须在回答中说明搜索受限的情况。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
+checks:
+  - type: tool_used
+    tool: websearch
+  - type: output_contains
+    pattern: "趋势"

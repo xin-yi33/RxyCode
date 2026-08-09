@@ -29,7 +29,8 @@ class TestSearchWeb:
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_duckduckgo", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_google", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_bing", return_value=[]), \
-             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]):
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]), \
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_ddgs", return_value=[]):
             result = search_web("", 5)
             assert isinstance(result, str)
 
@@ -40,7 +41,8 @@ class TestSearchWeb:
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_duckduckgo", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_google", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_bing", return_value=[]), \
-             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]):
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]), \
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_ddgs", return_value=[]):
             result = search_web("test query", 1)
             assert isinstance(result, str)
             assert "result 1" in result
@@ -51,7 +53,8 @@ class TestSearchWeb:
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_duckduckgo", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_google", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_bing", return_value=[]), \
-             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]):
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]), \
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_ddgs", return_value=[]):
             result = search_web("python", 1)
             assert isinstance(result, str)
 
@@ -61,7 +64,8 @@ class TestSearchWeb:
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_duckduckgo", side_effect=Exception("fail")), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_google", side_effect=Exception("fail")), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_bing", side_effect=Exception("fail")), \
-             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", side_effect=Exception("fail")):
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", side_effect=Exception("fail")), \
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_ddgs", side_effect=Exception("fail")):
             result = search_web("test", 5)
             assert "error" in result.lower() or "no results" in result.lower()
 
@@ -135,6 +139,42 @@ class TestEngineFunctions:
             result = _search_duckduckgo("test", 2)
             assert len(result) <= 2
 
+    def test_ddgs_returns_list(self):
+        from RxyCode.RxyCode1_1_0.tools.websearch import _search_ddgs
+        with patch("ddgs.DDGS") as mock_ddgs_class:
+            mock_ddgs = MagicMock()
+            mock_ddgs.text.return_value = [
+                {"title": "Example Title", "href": "http://example.com/page", "body": "Example snippet"},
+                {"title": "Clean &amp; Co", "href": "//example.com/relative", "body": None},
+                {"title": "", "href": "http://empty.example.com", "body": "no title"},
+            ]
+            mock_ddgs_class.return_value.__enter__.return_value = mock_ddgs
+            result = _search_ddgs("test", 5)
+            # First result is fully formed; second has relative href cleaned to https
+            # and None body coerced to ""; third is dropped for missing title.
+            assert result[0] == "Example Title\n  http://example.com/page\n  Example snippet"
+            assert result[1].startswith("Clean & Co\n  https://example.com/relative\n  ")
+            assert len(result) == 2
+
+    def test_ddgs_returns_empty_on_any_exception(self):
+        from RxyCode.RxyCode1_1_0.tools.websearch import _search_ddgs
+        with patch("ddgs.DDGS", side_effect=RuntimeError("boom")):
+            assert _search_ddgs("test", 5) == []
+
+    def test_ddgs_import_error_degrades_gracefully(self, monkeypatch):
+        """If ddgs is not installed, _search_ddgs must return [] and never raise."""
+        import sys
+        from RxyCode.RxyCode1_1_0.tools.websearch import _search_ddgs
+        monkeypatch.setitem(sys.modules, "ddgs", None)
+        assert _search_ddgs("test", 5) == []
+
+    def test_engine_list_ddgs_precedes_baidu(self):
+        from RxyCode.RxyCode1_1_0.tools.websearch import _engine_list
+        names = [name for name, _ in _engine_list("some query")]
+        assert "DuckDuckGo API" in names
+        assert "Baidu" in names
+        assert names.index("DuckDuckGo API") < names.index("Baidu")
+
 
 class TestWebSearchTool:
     def test_tool_name(self):
@@ -155,17 +195,19 @@ class TestWebSearchTool:
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_duckduckgo", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_google", return_value=[]), \
              patch("RxyCode.RxyCode1_1_0.tools.websearch._search_bing", return_value=[]), \
-             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]):
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_via_redirect", return_value=[]), \
+             patch("RxyCode.RxyCode1_1_0.tools.websearch._search_ddgs", return_value=[]):
             result = websearch_tool.invoke({"query": "python", "numResults": 1})
             assert isinstance(result, str)
             assert "mock result" in result
 
     def test_search_engines_list(self):
         """Verify the engines list contains expected engines."""
-        from RxyCode.RxyCode1_1_0.tools.websearch import _search_baidu, _search_duckduckgo, _search_google, _search_bing, _search_via_redirect
+        from RxyCode.RxyCode1_1_0.tools.websearch import _search_baidu, _search_duckduckgo, _search_google, _search_bing, _search_via_redirect, _search_ddgs
         # These should be callable functions
         assert callable(_search_baidu)
         assert callable(_search_duckduckgo)
         assert callable(_search_google)
         assert callable(_search_bing)
         assert callable(_search_via_redirect)
+        assert callable(_search_ddgs)

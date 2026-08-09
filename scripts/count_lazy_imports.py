@@ -19,7 +19,7 @@ from pathlib import Path
 LAZY_IMPORT_RE = re.compile(r"^\s{4,}(?:from|import)\s+", re.MULTILINE)
 
 DEFAULT_DIRS = ("core", "execution", "planning", "validation", "synthesis")
-P7_BUDGET = 55  # Phase B added core/subagents/ tree with legitimate lazy imports
+P7_BUDGET = 50
 
 
 def iter_python_files(root: Path, dirs: tuple[str, ...]) -> list[Path]:

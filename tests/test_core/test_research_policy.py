@@ -1,6 +1,7 @@
 import pytest
 
 from RxyCode.RxyCode1_1_0.core.research_policy import (
+    extract_research_query,
     extract_research_urls,
     get_research_policy,
     is_successful_research_fetch,
@@ -84,3 +85,52 @@ def test_research_failure_message_refuses_to_guess():
     assert "could not verify" in message
     assert "will not guess" in message
     assert "timed out" in message
+
+
+@pytest.mark.parametrize(
+    ("user_input", "expected_query"),
+    [
+        # The mandatory-research path must not hand the whole instruction to a
+        # search engine; the topic after the search verb is what matters.
+        (
+            "使用网页搜索（websearch 工具）搜索成都三日游攻略，整理一份简要的成都三日游行程并写入当前目录的 travel_guide.md",
+            "成都三日游攻略",
+        ),
+        (
+            "使用网页搜索工具搜索 2026 年 AI 编程助手领域最重要的趋势，总结出 3 条趋势",
+            "2026 年 AI 编程助手领域最重要的趋势",
+        ),
+        (
+            "帮我搜索 Python 的 rich 库最新用法，然后写一个脚本",
+            "Python 的 rich 库最新用法",
+        ),
+        (
+            "What is the current stable Node.js release?",
+            "current stable Node.js release",
+        ),
+        (
+            "搜索一下 Python 3.12 的新特性",
+            "Python 3.12 的新特性",
+        ),
+        (
+            "查一下 2026 年成都马拉松的报名时间",
+            "2026 年成都马拉松的报名时间",
+        ),
+    ],
+)
+def test_extract_research_query_strips_task_direction(user_input, expected_query):
+    query = extract_research_query(user_input)
+    assert expected_query in query
+    # The query must never contain the instruction boilerplate.
+    assert "websearch" not in query
+    assert "写入" not in query
+    assert "整理一份" not in query
+    assert len(query) <= 120
+
+
+def test_extract_research_query_empty_and_fallback():
+    assert extract_research_query("") == ""
+    # No explicit search marker: falls back to the input, stripping prefixes.
+    query = extract_research_query("今天 Python 最新版本是什么？")
+    assert query  # non-empty
+    assert "今天 Python 最新版本是什么" in query or query

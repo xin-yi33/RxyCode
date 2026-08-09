@@ -1,0 +1,16 @@
+id: websearch-save-report
+category: feature
+prompt: |
+  使用 websearch 工具搜索"成都三日游攻略"，整理出一份简要的成都三日游行程，
+  写入当前目录下的 travel_guide.md 文件（使用 markdown 格式，包含 Day 1 / Day 2 / Day 3 的行程安排）。
+  若搜索服务受限无法返回结果，请基于你已有的知识仍写出该文件，并在文件中注明
+  搜索受限、内容基于已有知识。写出后请确认文件已保存到当前工作目录。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
+checks:
+  - type: tool_used
+    tool: websearch
+  - type: file_exists
+    path: travel_guide.md
+  - type: file_contains
+    path: travel_guide.md
+    pattern: "Day"

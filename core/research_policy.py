@@ -167,3 +167,115 @@ def research_failure_message(detail: str = "") -> str:
         "I could not verify the requested current information from external sources, "
         "so I will not guess or present stale knowledge as current." + suffix
     )
+
+
+# Instruction prefixes / boilerplate that should not be sent to a search engine.
+# They describe the *task*, not the *topic* being searched.
+_ZH_TASK_PREFIXES = (
+    "使用网页搜索（websearch 工具）",
+    "使用网页搜索(websearch 工具)",
+    "使用网页搜索工具",
+    "使用 websearch 工具",
+    "使用网页搜索",
+    "用网页搜索",
+    "联网搜索",
+    "网络搜索",
+    "网上搜索",
+    "搜索网页",
+    "搜索网络",
+    "搜索互联网",
+    "上网查",
+    "联网查",
+    "网上查",
+    "请你搜索",
+    "请搜索",
+    "帮我搜索",
+    "搜索一下",
+    "查一下",
+    "查找",
+    "浏览网页",
+    "浏览网站",
+    "帮我查",
+    "请查",
+)
+_ZH_TASK_SUFFIXES = (
+    "的内容",
+    "的相关信息",
+    "的信息",
+    "的资料",
+    "最新情况",
+    "最新动态",
+    "现状",
+)
+
+
+def extract_research_query(user_input: str) -> str:
+    """Derive a concise search query from free-form task language.
+
+    The deterministic research path must not hand the whole instruction to a
+    search engine ("使用网页搜索（websearch 工具）搜索成都三日游攻略，整理一份…")
+    — engines return junk for such prompts.  Strip task-direction boilerplate and
+    take the first searchable phrase instead.  When the input carries no
+    task-direction boilerplate it is already a usable query and is returned
+    unchanged.
+    """
+    text = str(user_input or "").strip()
+    if not text:
+        return ""
+
+    # 1. Strip known task-direction prefixes first so "使用网页搜索（websearch
+    #    工具）搜索成都三日游攻略…" becomes "搜索成都三日游攻略…" instead of
+    #    splitting inside the compound verb "网页搜索".
+    candidate = text
+    prefix_stripped = False
+    for prefix in _ZH_TASK_PREFIXES:
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix):].lstrip("（( ：:，,。")
+            prefix_stripped = True
+            break
+
+    # 2. Take the clause after an explicit search verb.
+    lowered = candidate.lower()
+    for marker in ("搜索", "search", "查一下", "查找", "浏览"):
+        idx = lowered.find(marker)
+        if idx == -1:
+            continue
+        after = candidate[idx + len(marker):].lstrip("（( ：:，,。")
+        # Drop leading filler words.
+        for filler in ("一下", "最新", "的", "有关", "关于"):
+            if after.startswith(filler):
+                after = after[len(filler):].lstrip()
+                break
+        if after:
+            # Stop at sentence punctuation or imperative filler that signals
+            # the topic ended.
+            stop = re.search(
+                r"[\n，,。；;！!？?：:]|，然后|然后|并|并写入|写入|总结|整理|列出|"
+                r"介绍|是啥|是什么|然后写|并写|写出",
+                after,
+            )
+            if stop:
+                after = after[: stop.start()].rstrip("（( ")
+            after = after.strip().strip("，,。")
+            if after and len(after) <= 120:
+                return after
+
+    # 3. No explicit verb.  If we stripped a task-direction prefix, trim
+    #    suffixes and command-direction filler; otherwise the input is already
+    #    a searchable query and we leave it untouched (preserving punctuation
+    #    such as the trailing "？" on "今天最新 Python 版本是什么？").
+    if not prefix_stripped:
+        return text
+    for suffix in _ZH_TASK_SUFFIXES:
+        if candidate.endswith(suffix):
+            candidate = candidate[: -len(suffix)].rstrip()
+            break
+    if len(candidate) > 120:
+        candidate = candidate[:120].rsplit("，", 1)[0]
+    fallback_stop = re.search(
+        r"[\n。；;！!？?]|，然后|然后|，并|并写入|，整理|，总结|，列出|，介绍",
+        candidate,
+    )
+    if fallback_stop:
+        candidate = candidate[: fallback_stop.start()].rstrip("，, ")
+    return candidate.strip() or text

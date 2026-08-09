@@ -11,9 +11,7 @@ from scripts.count_lazy_imports import P7_BUDGET, count_lazy_imports
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Ratchet milestone — lower toward P7_BUDGET (50) as batches land.
-# Phase B added core/subagents/ with legitimate function-scoped imports
-# (namespace isolation, lazy provider resolution); raised to 55.
-P7_MILESTONE = 55
+P7_MILESTONE = 50
 
 
 def test_lazy_import_count_under_p7_milestone() -> None:

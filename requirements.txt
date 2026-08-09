@@ -8,6 +8,7 @@ click>=8.0
 rich>=13.0
 tiktoken>=0.7.0
 httpx[brotli]>=0.27.0
+ddgs>=9.0.0
 psutil>=5.9.0
 fastapi>=0.109.0
 uvicorn>=0.27.0

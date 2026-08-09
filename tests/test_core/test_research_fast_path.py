@@ -276,6 +276,28 @@ async def test_required_research_rejects_unfetched_model_citation():
 
 
 @pytest.mark.asyncio
+async def test_side_effect_task_keeps_answer_despite_unfetched_citation():
+    """A task that already produced a verified write side effect must not have
+    its whole answer discarded because it cited an unfetched URL. The written
+    deliverable is the real proof of completion (regression for the travel-guide
+    smoke task where travel_guide.md was written but the answer was dropped)."""
+    search = "Official\n  https://good.example/source\n  current snippet"
+    agent, _captured = make_agent(
+        search,
+        answer="Guide written. See https://unverified.example/source for details",
+        fetch_results={
+            "https://good.example/source": "Authoritative fetched details",
+        },
+    )
+    agent._side_effecting_tool_attempted = True
+
+    result = await agent._fast_reply_with_tools("Search and write a report")
+
+    assert "could not verify" not in result
+    assert "Guide written" in result
+
+
+@pytest.mark.asyncio
 async def test_tool_aware_fast_path_bypasses_application_answer_caches(monkeypatch):
     from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
     from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache

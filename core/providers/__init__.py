@@ -13,6 +13,7 @@ from functools import lru_cache
 from .anthropic import AnthropicProvider
 from .base import BaseProvider
 from .deepseek import DeepSeekProvider
+from .doubao import DoubaoProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
 
@@ -21,6 +22,7 @@ _FALLBACK = OpenAIProvider()
 #: 注册顺序即匹配优先级。越具体的越靠前。
 _PROVIDERS: list[BaseProvider] = [
     DeepSeekProvider(),
+    DoubaoProvider(),
     AnthropicProvider(),
     QwenProvider(),
 ]

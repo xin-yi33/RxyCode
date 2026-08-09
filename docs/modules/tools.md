@@ -21,7 +21,7 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | glob_tool.py | GlobTool - find files by glob pattern |
 | git_tool.py | GitTool - git operations (status, diff, commit, etc.) |
 | webfetch.py | WebFetchTool - fetch URL content with size limits |
-| websearch.py | WebSearchTool - web search (requires API key) |
+| websearch.py | WebSearchTool - web search (free, no API key; DDGS official metasearch + multi-engine fallback) |
 | file_download.py | FileDownloadTool - download files from URLs to ~/.rxycode/output/ |
 | download_tool.py | DownloadTool - download skills/MCP servers from GitHub |
 | open_file.py | OpenFileTool - open allowlisted preview files with the host default application |

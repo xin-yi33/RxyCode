@@ -124,11 +124,11 @@ log/*.err
 Thumbs.db
 
 # --- docs: only keep modules/ and images/ ---
+# docs/plans/ 不入库（本地保留；2026-08-06 起从 git 索引移除）
 docs/*
 !docs/modules/
 !docs/images/
-!docs/plans/
-!docs/plans/**
+docs/plans/
 
 # --- 计划目录里的压缩包 / 零散笔记（不入库）---
 docs/plans/opus5-plan.rar
@@ -143,6 +143,13 @@ evals/baselines/models-comparison-*.md
 # --- Accidental eval / OS pollution in repo root ---
 Microsoft/
 screenshot_monitor_*.png
+
+# --- Agent smoke-run artifacts (never commit run outputs) ---
+ai_coding_*.md
+ai_coding_trends_*.md
+ai_coding_assistant_trends_*.md
+analysis_*.md
+core/UsageTrackingLLM_summary.md
 
 # --- Git worktree admin dirs (git worktree add .worktrees/...) ---
 .worktrees/
