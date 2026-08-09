@@ -47,6 +47,9 @@ export const AVAILABLE_COMMANDS: Command[] = [
   { name: "/tutorial", description: "交互式教程", category: "系统", keywords: "help 帮助" },
   { name: "/quickstart", description: "快速入门指南", category: "系统", keywords: "help 帮助" },
   { name: "/examples", description: "使用示例", category: "系统", keywords: "help 帮助" },
+  { name: "/children", description: "列出当前会话的所有子代理", category: "子代理", keywords: "subagent child" },
+  { name: "/child", description: "切换到指定子代理的会话", args: "<session_id>", category: "子代理", keywords: "subagent switch" },
+  { name: "/parent", description: "返回父代理会话", category: "子代理", keywords: "subagent back parent" },
   { name: "/help", description: "显示帮助信息", category: "系统", keywords: "help 帮助" },
 ];
 
@@ -59,6 +62,9 @@ export const LOCAL_COMMAND_NAMES = new Set([
   "/thinking",
   "/help",
   "/settings",
+  "/children",
+  "/child",
+  "/parent",
 ]);
 
 export function isSlashCommand(text: string): boolean {

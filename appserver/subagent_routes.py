@@ -19,15 +19,17 @@ from protocol.subagents import (
     BudgetSpec,
     TaskRequest,
     TriggerKind,
+    WorkspaceMode,
     WorkspaceScope,
 )
 
 
 def capability() -> dict[str, Any]:
     """Return the subagent capability report for client discovery."""
-    from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import (
-        get_manager_or_none,
-    )
+    try:
+        from ..core.subagents.registry_provider import get_manager_or_none
+    except ImportError:
+        from core.subagents.registry_provider import get_manager_or_none
 
     manager = get_manager_or_none()
     if manager is None:
@@ -50,7 +52,10 @@ def capability() -> dict[str, Any]:
 
 def list_agents() -> dict[str, Any]:
     """Return mentionable agents for @ autocomplete."""
-    from RxyCode.RxyCode1_1_0.tools.agent_invoke import list_mentionable_agents
+    try:
+        from ..tools.agent_invoke import list_mentionable_agents
+    except ImportError:
+        from tools.agent_invoke import list_mentionable_agents
 
     return {"agents": list_mentionable_agents()}
 
@@ -60,7 +65,10 @@ async def invoke_agent(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {agent_id, prompt, parent_session_id?}
     """
-    from RxyCode.RxyCode1_1_0.tools.agent_invoke import invoke_mention
+    try:
+        from ..tools.agent_invoke import invoke_mention
+    except ImportError:
+        from tools.agent_invoke import invoke_mention
 
     agent_id = params.get("agent_id", "")
     prompt = params.get("prompt", "")
@@ -79,8 +87,12 @@ async def start_task(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {agent_id, prompt, context?, requested_budget?, requested_workspace?}
     """
-    from RxyCode.RxyCode1_1_0.core.subagents.manager import ChildSessionManager
-    from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import get_manager
+    try:
+        from ..core.subagents.manager import ChildSessionManager
+        from ..core.subagents.registry_provider import get_manager
+    except ImportError:
+        from core.subagents.manager import ChildSessionManager
+        from core.subagents.registry_provider import get_manager
 
     manager: ChildSessionManager = get_manager()
 
@@ -101,7 +113,6 @@ async def start_task(params: dict[str, Any]) -> dict[str, Any]:
     requested_workspace = None
     if params.get("requested_workspace"):
         ws = params["requested_workspace"]
-        from protocol.subagents import WorkspaceMode
         requested_workspace = WorkspaceScope(
             mode=WorkspaceMode(ws.get("mode", "read_only")),
         )

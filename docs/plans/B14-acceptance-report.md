@@ -65,7 +65,7 @@ and an isolated budget to complete the baseline comparison.
 - [x] ruff clean, protocol schema validated, unit/protocol/E2E green
 - [x] Single-agent baseline does not regress (feature flag off = legacy path)
 - [x] failure/cancel/timeout/denied/recovery all auditable (events + approval log)
-- [x] CLI/OpenTUI/Desktop use the same TaskRequest/TaskResult/Event (shared `agent/invoke`, `task/start`, `subagents/*` routes)
+- [~] 服务端路由已就绪（`agent/invoke`、`task/start`、`subagents/*` 共享），**客户端消费待补**（OpenTUI 事件映射不含 `child_session/*`、protocol-client 无 TaskRequest/TaskResult 类型、CLI 缺子代理导航命令）
 - [x] Phase C need not replicate runtime/permissions/events (ChildRuntime facade, ChildSessionManager, EventStore)
 - [x] Phase D can display parent/child tree and approval/tool events (ChildSessionEvent + audit + appserver routes)
 - [x] Phase E can swap model at child creation without changing protocol semantics (AgentDefinition.model, provider handle in runtime)

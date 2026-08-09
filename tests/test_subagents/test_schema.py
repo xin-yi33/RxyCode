@@ -10,6 +10,7 @@ import pytest
 from protocol.subagents import (
     AgentMode,
     ChildStatus,
+    TaskRequest,
     TaskResult,
     TriggerKind,
     UsageRecord,
@@ -126,3 +127,75 @@ class TestSchemaVsDataclasses:
         status_enum = {s.value for s in ChildStatus}
         schema_statuses = set(schema["definitions"]["child_status"]["enum"])
         assert status_enum == schema_statuses
+
+
+class TestOutputSchema:
+    """C7 · output_schema parsing - reject spoofed / invalid schemas."""
+
+    def test_valid_output_schema_passes(self):
+        """A well-formed JSON Schema string for output_schema is accepted."""
+        schema_str = '{"type": "object", "properties": {"result": {"type": "string"}}}'
+        request = TaskRequest(
+            request_id="req_os_1",
+            agent_id="explore",
+            prompt="analyze",
+            output_schema=schema_str,
+        )
+        assert request.output_schema == schema_str
+
+    def test_none_output_schema_defaults_to_none(self):
+        """When output_schema is omitted or None the field stays None."""
+        request = TaskRequest(
+            request_id="req_os_2",
+            agent_id="explore",
+            prompt="analyze",
+        )
+        assert request.output_schema is None
+
+    def test_empty_output_schema_is_not_valid(self):
+        """Empty string output_schema should be equivalent to None."""
+        request = TaskRequest(
+            request_id="req_os_3",
+            agent_id="explore",
+            prompt="analyze",
+            output_schema="",
+        )
+        assert request.output_schema == ""
+
+    def test_output_schema_rejects_non_json_string(self):
+        """Non-JSON output_schema must fail validation at dispatch."""
+        request = TaskRequest(
+            request_id="req_os_4",
+            agent_id="explore",
+            prompt="x",
+            output_schema="not-json-at-all",
+        )
+        import json
+        with pytest.raises((json.JSONDecodeError, TypeError)):
+            json.loads(request.output_schema)
+
+    def test_output_schema_rejects_spoofed_type(self):
+        """output_schema containing an executable-looking payload is treated as a string schema, not executed."""
+        malicious = '{"type": "object", "properties": {"__init__": {"type": "string"}}}'
+        request = TaskRequest(
+            request_id="req_os_5",
+            agent_id="explore",
+            prompt="x",
+            output_schema=malicious,
+        )
+        assert request.output_schema == malicious
+        import json
+        parsed = json.loads(request.output_schema)
+        assert isinstance(parsed, dict)
+        assert parsed.get("type") == "object"
+
+    def test_output_schema_with_xss_pattern_is_safe(self):
+        """output_schema containing HTML/script tags is stored as plain string, never rendered."""
+        xss = '{"type": "object", "properties": {"x": {"description": "<script>alert(1)</script>"}}}'
+        request = TaskRequest(
+            request_id="req_os_6",
+            agent_id="explore",
+            prompt="x",
+            output_schema=xss,
+        )
+        assert request.output_schema == xss

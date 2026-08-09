@@ -41,6 +41,39 @@ export function notifyToStreamEvent(method: string, params: unknown): StreamEven
         error: String(p.message ?? p.text ?? "error"),
         message: String(p.message ?? p.text ?? "error"),
       };
+    /* ── Phase B: child_session/* events ─────────────────── */
+    case "child_session/created":
+      return {
+        type: "child_created",
+        childSessionId: String(p.session_id ?? ""),
+        parentSessionId: String(p.parent_session_id ?? ""),
+        agentId: String(p.agent_id ?? p.payload?.agent_id ?? ""),
+        text: String(p.summary ?? `子代理 ${p.agent_id ?? ""} 已创建`),
+      };
+    case "child_session/status":
+      return {
+        type: "child_status",
+        childSessionId: String(p.session_id ?? ""),
+        childStatus: String(p.status ?? p.payload?.status ?? "unknown"),
+        text: String(p.summary ?? ""),
+        agentId: String(p.agent_id ?? p.payload?.agent_id ?? ""),
+      };
+    case "child_session/completed":
+      return {
+        type: "child_completed",
+        childSessionId: String(p.session_id ?? ""),
+        childStatus: "completed",
+        text: String(p.summary ?? p.payload?.summary ?? "子代理执行完成"),
+        usage: p.payload?.usage as Record<string, unknown> | undefined,
+      };
+    case "child_session/error":
+      return {
+        type: "child_error",
+        childSessionId: String(p.session_id ?? ""),
+        childStatus: "failed",
+        text: String((p.payload as Record<string, unknown> | undefined)?.message ?? p.summary ?? "error"),
+        error: String((p.payload as Record<string, unknown> | undefined)?.message ?? "子代理执行错误"),
+      };
   }
   return null;
 }
