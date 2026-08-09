@@ -7,181 +7,498 @@
   "definitions": {
     "agent_mode": {
       "type": "string",
-      "enum": ["primary", "subagent", "all"]
+      "enum": [
+        "primary",
+        "subagent",
+        "all"
+      ]
     },
     "workspace_mode": {
       "type": "string",
-      "enum": ["read_only", "leased_write", "isolated_worktree"]
+      "enum": [
+        "read_only",
+        "leased_write",
+        "isolated_worktree"
+      ]
     },
     "trigger_kind": {
       "type": "string",
-      "enum": ["automatic", "mention", "command", "team"]
+      "enum": [
+        "automatic",
+        "mention",
+        "command",
+        "team"
+      ]
     },
     "child_status": {
       "type": "string",
       "enum": [
-        "created", "queued", "running", "finalizing",
-        "completed", "failed", "cancelled", "denied", "timed_out"
+        "created",
+        "queued",
+        "running",
+        "finalizing",
+        "completed",
+        "failed",
+        "cancelled",
+        "denied",
+        "timed_out"
       ]
     },
     "permission_verdict": {
       "type": "string",
-      "enum": ["allow", "ask", "deny"]
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
     },
     "permission_spec": {
       "type": "object",
       "properties": {
-        "read": {"type": ["string", "object"]},
-        "edit": {"type": ["string", "object"]},
-        "bash": {"type": ["string", "object"]},
-        "webfetch": {"type": ["string", "object"]},
-        "websearch": {"type": ["string", "object"]},
-        "task": {"type": ["string", "object"]},
-        "external_directory": {"$ref": "#/definitions/permission_verdict"}
+        "read": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "edit": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "bash": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "webfetch": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "websearch": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "task": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "external_directory": {
+          "$ref": "#/definitions/permission_verdict"
+        }
       },
       "additionalProperties": true
     },
     "agent_definition": {
       "type": "object",
-      "required": ["id", "description", "mode"],
+      "required": [
+        "id",
+        "description",
+        "mode"
+      ],
       "properties": {
-        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
-        "description": {"type": "string", "minLength": 1},
-        "mode": {"$ref": "#/definitions/agent_mode"},
-        "prompt": {"type": ["string", "null"]},
-        "model": {"type": ["string", "null"]},
-        "steps": {"type": ["integer", "null"], "minimum": 1},
-        "permission": {"$ref": "#/definitions/permission_spec"},
-        "hidden": {"type": "boolean"},
-        "subagent_depth": {"type": "integer", "minimum": 0},
-        "workspace_scope": {"$ref": "#/definitions/workspace_mode"}
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "$ref": "#/definitions/agent_mode"
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "permission": {
+          "$ref": "#/definitions/permission_spec"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "subagent_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workspace_scope": {
+          "$ref": "#/definitions/workspace_mode"
+        }
       },
       "additionalProperties": true,
       "not": {
-        "required": ["task_permission"],
+        "required": [
+          "task_permission"
+        ],
         "description": "Top-level task_permission is not a public config source; use permission.task"
       }
     },
     "context_reference": {
       "type": "object",
       "properties": {
-        "kind": {"type": "string", "enum": ["file", "directory", "item", "artifact"]},
-        "path": {"type": "string"},
-        "item_id": {"type": "string"},
-        "sha256": {"type": "string"},
-        "visibility": {"type": "string", "enum": ["full", "summary"]}
+        "kind": {
+          "type": "string",
+          "enum": [
+            "file",
+            "directory",
+            "item",
+            "artifact"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "item_id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "full",
+            "summary"
+          ]
+        }
       }
     },
     "context_envelope": {
       "type": "object",
-      "required": ["parent_session_id", "task"],
+      "required": [
+        "parent_session_id",
+        "task"
+      ],
       "properties": {
-        "parent_session_id": {"type": "string"},
-        "task": {"type": "string"},
-        "references": {"type": "array", "items": {"$ref": "#/definitions/context_reference"}},
-        "attachments": {"type": "array", "items": {"type": "string"}},
-        "redactions": {"type": "array", "items": {"type": "string"}},
-        "max_context_tokens": {"type": "integer", "minimum": 1}
+        "parent_session_id": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/context_reference"
+          }
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "redactions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_context_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "task_request": {
       "type": "object",
-      "required": ["agent_id", "prompt"],
+      "required": [
+        "agent_id",
+        "prompt"
+      ],
       "properties": {
-        "request_id": {"type": "string"},
-        "parent_session_id": {"type": "string"},
-        "agent_id": {"type": "string"},
-        "prompt": {"type": "string"},
-        "context": {"$ref": "#/definitions/context_envelope"},
-        "trigger": {"$ref": "#/definitions/trigger_kind"},
-        "output_schema": {"type": ["string", "null"]},
+        "request_id": {
+          "type": "string"
+        },
+        "parent_session_id": {
+          "type": "string"
+        },
+        "agent_id": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/definitions/context_envelope"
+        },
+        "trigger": {
+          "$ref": "#/definitions/trigger_kind"
+        },
+        "output_schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "requested_budget": {
-          "type": "object",
-          "properties": {
-            "max_steps": {"type": "integer"},
-            "max_tokens": {"type": "integer"},
-            "max_wall_time_seconds": {"type": "integer"},
-            "max_concurrent_children": {"type": "integer"}
-          }
+          "$ref": "#/definitions/budget_spec"
         },
         "requested_workspace": {
-          "type": "object",
-          "properties": {"mode": {"$ref": "#/definitions/workspace_mode"}}
+          "$ref": "#/definitions/workspace_scope"
         }
       }
     },
     "usage_record": {
       "type": "object",
       "properties": {
-        "steps": {"type": "integer"},
-        "input_tokens": {"type": "integer"},
-        "output_tokens": {"type": "integer"},
-        "wall_time_ms": {"type": "integer"},
-        "retry_count": {"type": "integer"}
+        "steps": {
+          "type": "integer"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "wall_time_ms": {
+          "type": "integer"
+        },
+        "retry_count": {
+          "type": "integer"
+        }
       }
     },
     "error_record": {
       "type": "object",
-      "required": ["code", "message"],
+      "required": [
+        "code",
+        "message"
+      ],
       "properties": {
-        "code": {"type": "string"},
-        "message": {"type": "string"},
-        "details": {"type": "object"}
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object"
+        }
       }
     },
     "task_result": {
       "type": "object",
-      "required": ["request_id", "child_session_id", "status"],
+      "required": [
+        "request_id",
+        "child_session_id",
+        "status"
+      ],
       "properties": {
-        "request_id": {"type": "string"},
-        "child_session_id": {"type": "string"},
-        "status": {"$ref": "#/definitions/child_status"},
-        "summary": {"type": "string"},
+        "request_id": {
+          "type": "string"
+        },
+        "child_session_id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/child_status"
+        },
+        "summary": {
+          "type": "string"
+        },
         "artifacts": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "kind": {"type": "string"},
-              "ref": {"type": "string"},
-              "sha256": {"type": "string"}
-            }
+            "$ref": "#/definitions/artifact_ref"
           }
         },
         "evidence": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "path": {"type": "string"},
-              "line": {"type": "integer"},
-              "sha256": {"type": "string"}
-            }
+            "$ref": "#/definitions/evidence_ref"
           }
         },
-        "usage": {"$ref": "#/definitions/usage_record"},
+        "usage": {
+          "$ref": "#/definitions/usage_record"
+        },
         "error": {
           "anyOf": [
-            {"$ref": "#/definitions/error_record"},
-            {"type": "null"}
+            {
+              "$ref": "#/definitions/error_record"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
     },
     "child_session_event": {
       "type": "object",
-      "required": ["event_name", "session_id", "parent_session_id"],
+      "required": [
+        "event_name",
+        "session_id",
+        "parent_session_id"
+      ],
       "properties": {
-        "event_id": {"type": "string"},
-        "event_name": {"type": "string"},
-        "session_id": {"type": "string"},
-        "parent_session_id": {"type": "string"},
-        "request_id": {"type": "string"},
-        "seq": {"type": "integer", "minimum": 0},
-        "timestamp": {"type": "number"},
-        "definition_version": {"type": "string"},
-        "redaction_metadata": {"type": "string"},
-        "payload": {"type": "object"}
+        "event_id": {
+          "type": "string"
+        },
+        "event_name": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "parent_session_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "definition_version": {
+          "type": "string"
+        },
+        "redaction_metadata": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object"
+        }
+      }
+    },
+    "budget_spec": {
+      "type": "object",
+      "properties": {
+        "max_steps": {
+          "type": "integer"
+        },
+        "max_tokens": {
+          "type": "integer"
+        },
+        "max_wall_time_seconds": {
+          "type": "integer"
+        },
+        "max_concurrent_children": {
+          "type": "integer"
+        }
+      }
+    },
+    "workspace_scope": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/workspace_mode"
+        }
+      }
+    },
+    "artifact_ref": {
+      "type": "object",
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "evidence_ref": {
+      "type": "object",
+      "required": [
+        "path",
+        "line"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      }
+    },
+    "agent_invoke_request": {
+      "type": "object",
+      "required": [
+        "agent_id",
+        "prompt"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "parent_session_id": {
+          "type": "string"
+        }
+      }
+    },
+    "task_start_request": {
+      "type": "object",
+      "required": [
+        "agent_id",
+        "prompt"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "parent_session_id": {
+          "type": "string"
+        },
+        "output_schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_budget": {
+          "$ref": "#/definitions/budget_spec"
+        },
+        "requested_workspace": {
+          "$ref": "#/definitions/workspace_scope"
+        }
       }
     }
   }

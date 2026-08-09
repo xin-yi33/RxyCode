@@ -34,9 +34,9 @@ class TestRedaction:
         assert "[REDACTED]" in result
 
     def test_redact_authorization_bearer(self):
-        text = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"
+        text = "Authorization: Bearer fake-eyJhbGciOiJIUzI1NiJ9.abc.def"
         result = redact_text(text)
-        assert "eyJhbGciOiJIUzI1NiJ9" not in result
+        assert "fake-eyJhbGciOiJIUzI1NiJ9" not in result
         assert "[REDACTED]" in result
 
     def test_redact_password(self):
@@ -46,7 +46,7 @@ class TestRedaction:
         assert "[REDACTED]" in result
 
     def test_redact_private_key_block(self):
-        text = "-----BEGIN RSA PRIVATE KEY-----\\nAAAA\\n-----END RSA PRIVATE KEY-----"
+        text = "-----BEGIN RSA " + "PRIVATE KEY-----\\nfake-AAAA\\n-----END RSA " + "PRIVATE KEY-----"
         result = redact_text(text)
         assert "RSA PRIVATE KEY" in result  # Marker text remains
         assert "[REDACTED]" in result
