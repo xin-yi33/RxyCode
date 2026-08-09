@@ -178,52 +178,63 @@ class TestExternalDirectory:
             workspace_root=None,  # No root → no external detection
         )
 
-    def test_external_directory_deny(self):
+    def test_external_directory_deny(self, tmp_path):
         """With workspace_root set, absolute external paths are denied."""
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(exist_ok=True)
+        outside = tmp_path / "outside" / "file.txt"
         spec = PermissionSpec(
             read=ToolPermission.from_raw({"**": "allow"}),
             external_directory=PermissionVerdict.DENY,
         )
         policy = PermissionPolicy.from_definition(
             spec, definition_version="v1",
-            workspace_root=__import__("pathlib").Path("C:/workspace"),
+            workspace_root=workspace_root,
         )
-        decision = policy.evaluate("read", "C:/outside/file.txt")
+        decision = policy.evaluate("read", str(outside))
         assert decision.kind == DecisionKind.DENY
         assert decision.matched_rule == "external_directory"
 
-    def test_external_directory_allow(self):
+    def test_external_directory_allow(self, tmp_path):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(exist_ok=True)
+        outside = tmp_path / "outside" / "file.txt"
         spec = PermissionSpec(
             read=ToolPermission.from_raw({"**": "allow"}),
             external_directory=PermissionVerdict.ALLOW,
         )
         policy = PermissionPolicy.from_definition(
             spec, definition_version="v1",
-            workspace_root=__import__("pathlib").Path("C:/workspace"),
+            workspace_root=workspace_root,
         )
-        decision = policy.evaluate("read", "C:/outside/file.txt")
+        decision = policy.evaluate("read", str(outside))
         assert decision.kind == DecisionKind.ALLOW
 
-    def test_external_directory_ask(self):
+    def test_external_directory_ask(self, tmp_path):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(exist_ok=True)
+        outside = tmp_path / "outside" / "file.txt"
         spec = PermissionSpec(
             read=ToolPermission.from_raw({"**": "allow"}),
             external_directory=PermissionVerdict.ASK,
         )
         policy = PermissionPolicy.from_definition(
             spec, definition_version="v1",
-            workspace_root=__import__("pathlib").Path("C:/workspace"),
+            workspace_root=workspace_root,
         )
-        decision = policy.evaluate("read", "C:/outside/file.txt")
+        decision = policy.evaluate("read", str(outside))
         assert decision.kind == DecisionKind.ASK
 
-    def test_relative_path_not_external(self):
+    def test_relative_path_not_external(self, tmp_path):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(exist_ok=True)
         spec = PermissionSpec(
             read=ToolPermission.from_raw({"**": "allow"}),
             external_directory=PermissionVerdict.DENY,
         )
         policy = PermissionPolicy.from_definition(
             spec, definition_version="v1",
-            workspace_root=__import__("pathlib").Path("C:/workspace"),
+            workspace_root=workspace_root,
         )
         # Relative paths are inside the workspace
         decision = policy.evaluate("read", "src/auth.py")

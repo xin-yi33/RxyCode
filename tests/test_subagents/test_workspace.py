@@ -198,31 +198,36 @@ class TestLeaseExpiry:
 class TestOutsidePath:
     """Paths outside the workspace root are rejected."""
 
-    def test_absolute_outside_path_rejected(self):
+    def test_absolute_outside_path_rejected(self, tmp_path):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(exist_ok=True)
+        outside = tmp_path / "outside" / "file.py"
         scope = WorkspaceScope(mode=WorkspaceMode.LEASED_WRITE, lease_id="l1")
-        validator = WorkspaceValidator(scope, root=__import__("pathlib").Path("C:/workspace"))
+        validator = WorkspaceValidator(scope, root=workspace_root)
         leases = LeaseManager()
         # Acquire the lease first so the outside-path check fires, not no_scope
-        leases.acquire("child", ["C:/workspace/src/auth.py"])
+        leases.acquire("child", [str(workspace_root / "src" / "auth.py")])
 
         with pytest.raises(OutsidePathError) as exc_info:
-            validator.check_edit("child", "C:/outside/file.py", leases)
+            validator.check_edit("child", str(outside), leases)
 
         assert exc_info.value.code == "workspace.outside_path"
 
-    def test_relative_path_accepted(self):
+    def test_relative_path_accepted(self, tmp_path):
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir(exist_ok=True)
         scope = WorkspaceScope(mode=WorkspaceMode.LEASED_WRITE, lease_id="l1")
-        validator = WorkspaceValidator(scope, root=__import__("pathlib").Path("C:/workspace"))
+        validator = WorkspaceValidator(scope, root=workspace_root)
         leases = LeaseManager()
         leases.acquire("child", ["src/auth.py"])
 
         # Relative path inside workspace passes outside-path check and lease check
         validator.check_edit("child", "src/auth.py", leases)  # Does not raise
 
-    def test_relative_path_missing_lease_raises_no_scope(self):
+    def test_relative_path_missing_lease_raises_no_scope(self, tmp_path):
         """A relative path without a lease is a scope violation, not outside-path."""
         scope = WorkspaceScope(mode=WorkspaceMode.LEASED_WRITE, lease_id="l1")
-        validator = WorkspaceValidator(scope, root=__import__("pathlib").Path("C:/workspace"))
+        validator = WorkspaceValidator(scope, root=tmp_path / "workspace")
         with pytest.raises(NoWorkspaceScopeError, match="no lease"):
             validator.check_edit("child", "src/auth.py", LeaseManager())
 
