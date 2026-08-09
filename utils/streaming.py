@@ -55,6 +55,11 @@ class TokenStats:
         # Real provider-side usage (DeepSeek/OpenAI context caching)
         self.prompt_tokens = 0          # total prompt tokens billed
         self.cache_hit_tokens = 0       # prompt tokens served from provider cache
+        # B1 (Pi dual-track): latest single assistant request, separate from the
+        # cumulative totals above so /status can show both a session aggregate
+        # and the most recent request (compaction spikes stay observable).
+        self._latest_prompt_tokens = 0
+        self._latest_hit_tokens = 0
         self._application_cache_lock = threading.RLock()
         self.application_cache_hits = {"precise": 0, "semantic": 0}
         self.application_cache_misses = {"precise": 0, "semantic": 0}
@@ -82,6 +87,9 @@ class TokenStats:
         self.output_tokens += int(output_tokens or 0)
         self.prompt_tokens += int(input_tokens or 0)
         self.cache_hit_tokens += int(cache_read_tokens or 0)
+        # B1: keep the latest single request so /status can expose totals vs latest.
+        self._latest_prompt_tokens = int(input_tokens or 0)
+        self._latest_hit_tokens = int(cache_read_tokens or 0)
         if cache_read_tokens:
             self.cache_hits += 1
         else:
@@ -106,6 +114,23 @@ class TokenStats:
         if total == 0:
             return 0.0
         return self.cache_hits / total * 100
+
+    @property
+    def latest_request(self) -> dict[str, int | float]:
+        """B1: most recent single assistant request (Pi dual-track 'latest').
+
+        Mirrors the cumulative ``cache_hit_rate`` formula but on the last
+        request only, so compaction/model-switch spikes are observable
+        instead of being diluted by session totals.
+        """
+        prompt = self._latest_prompt_tokens
+        hit = self._latest_hit_tokens
+        rate = hit / prompt * 100 if prompt > 0 else 0.0
+        return {
+            "prompt_tokens": prompt,
+            "hit_tokens": hit,
+            "hit_rate": rate,
+        }
 
     @property
     def context_percent(self) -> float:
@@ -228,6 +253,8 @@ class TokenStats:
         self.cache_size = 0
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0
+        self._latest_prompt_tokens = 0
+        self._latest_hit_tokens = 0
         with self._application_cache_lock:
             self.application_cache_hits = {"precise": 0, "semantic": 0}
             self.application_cache_misses = {"precise": 0, "semantic": 0}

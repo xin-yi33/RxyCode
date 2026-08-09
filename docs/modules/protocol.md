@@ -70,6 +70,20 @@ python -m pytest tests/test_protocol_schema.py -q
 python -m ruff check protocol
 ```
 
+## Schema → TypeScript 类型生成（C2）
+
+协议 schema 通过 `json-schema-to-typescript` 自动生成 TypeScript 类型定义。
+
+| Schema 源 | 生成目标 | 生成命令 |
+|-----------|---------|---------|
+| `protocol/schema.json` | `frontend/protocol-client/src/generated/types.ts` | `bun run generate`（在 `frontend/protocol-client/` 下执行） |
+| `protocol/subagents_schema.json` | `frontend/protocol-client/src/generated/subagent-types.ts` | 同上（`generate` 脚本已包含两个 schema） |
+
+**规则**：
+- 手改 `generated/` 下的文件直接违反 G3/C2，CI 会自动检测不一致。
+- 协议变更顺序：`protocol/*.py` → `protocol/schema.json`（`python -m protocol.schema` export）→ `bun run generate`（生成 TS 类型）→ 提交全部四个文件。
+- `frontend/protocol-client/package.json` 中的 `generate` 脚本是唯一可用的类型生成入口。
+
 ## Dependencies
 
 - **Consumers (today)**: `appserver/` (`server.py:33,37` imports `JobStatusUpdate`/`ServerHeartbeat`), `core/session.py` (imports `protocol.notifications`)

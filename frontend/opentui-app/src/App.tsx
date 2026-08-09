@@ -306,6 +306,30 @@ function ChatLine({
       </box>
     );
   }
+  if (msg.role === "child_session") {
+    const statusIcon =
+      msg.childStatus === "running" ? "⟳" :
+      msg.childStatus === "completed" ? "✓" :
+      msg.childStatus === "failed" || msg.childStatus === "cancelled" || msg.childStatus === "denied" ? "✗" :
+      msg.childStatus === "created" || msg.childStatus === "queued" ? "◷" :
+      "?";
+    const depthIndent = "  ".repeat(msg.depth ?? 0);
+    return (
+      <box style={{ width: "100%", paddingLeft: 1, paddingRight: 1, flexDirection: "column" }}>
+        <text selectable>
+          <span fg={msg.childStatus === "completed" ? C.green : msg.childStatus === "failed" ? C.yellow : C.teal}>
+            {`${depthIndent}${statusIcon} [${msg.agentId || "subagent"}] ${msg.childStatus || "unknown"}`}
+          </span>
+          <span fg={C.subtext}> {msg.childSessionId ? `(${msg.childSessionId.slice(0, 8)}…)` : ""}</span>
+        </text>
+        {msg.content ? (
+          <text fg={C.overlay2} selectable>
+            {`${depthIndent}  ${msg.content}`}
+          </text>
+        ) : null}
+      </box>
+    );
+  }
   if (msg.role === "tool") {
     const st = msg.toolStatus || "running";
     const icon = st === "running" ? "…" : st === "success" ? "✓" : "✗";

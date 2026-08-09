@@ -4,7 +4,7 @@ export type ToolStatus = "running" | "success" | "error" | "timeout" | "cancelle
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "tool" | "system" | "thinking";
+  role: "user" | "assistant" | "tool" | "system" | "thinking" | "child_session";
   content: string;
   timestamp: number;
   /** Mode at send time — user frame color must not follow live Tab switches. */
@@ -13,6 +13,24 @@ export interface ChatMessage {
   toolStatus?: ToolStatus;
   done?: boolean;
   live?: boolean;
+  /** child_session 专用字段 */
+  childSessionId?: string;
+  childStatus?: string;
+  parentSessionId?: string;
+  agentId?: string;
+  /** 子代理树嵌套层级 */
+  depth?: number;
+  /** 子代理列表 */
+  children?: ChildSessionInfo[];
+}
+
+export interface ChildSessionInfo {
+  session_id: string;
+  agent_id: string;
+  status: string;
+  summary: string;
+  depth: number;
+  created_at?: number;
 }
 
 export interface StatusInfo {

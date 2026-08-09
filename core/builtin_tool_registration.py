@@ -27,6 +27,7 @@ from RxyCode.RxyCode1_1_0.tools.vision import vision_tool
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import workflow_tool
 from RxyCode.RxyCode1_1_0.tools.task_tool import task_tool
 from RxyCode.RxyCode1_1_0.tools.patch import patch_tool
+from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
 from RxyCode.RxyCode1_1_0.tools.open_file import open_file_tool
 from RxyCode.RxyCode1_1_0.tools.download_tool import download_mcp_tool, download_skill_tool
 from RxyCode.RxyCode1_1_0.tools.file_download import file_download_tool
@@ -47,8 +48,18 @@ def register_builtin_tools(
     orchestrator: ToolOrchestrator,
     *,
     rag_enabled: bool,
+    subagents_enabled: bool = False,
 ) -> None:
-    """Populate registry and orchestrator with built-in tools."""
+    """Populate registry and orchestrator with built-in tools.
+
+    When ``subagents_enabled`` is True, the ``task`` name is the isolated
+    subagent dispatch tool and the task-list tool registers as
+    ``task_manage``. When False (default), the legacy ``task`` task-list
+    tool is registered and the subagent dispatch tool is NOT — guaranteeing
+    single-agent zero regression. Exactly one tool may own the ``task`` name.
+    """
+    from RxyCode.RxyCode1_1_0.tools.task_manage import task_manage_tool
+
     read_tools = [
         read_tool,
         grep_tool,
@@ -71,7 +82,9 @@ def register_builtin_tools(
         change_directory_tool,
         skill_tool,
         workflow_tool,
-        task_tool,
+        # Tool-name freeze (B13): `task` is either the task-list tool
+        # (legacy, subagents off) or the subagent dispatch tool (subagents on).
+        task_manage_tool if subagents_enabled else task_tool,
         vision_tool,
     ]
     danger_tools = [bash_tool, git_tool, question_tool]
@@ -82,6 +95,10 @@ def register_builtin_tools(
         registry.register(tool, risk="write")
     for tool in danger_tools:
         registry.register(tool, risk="danger")
+
+    # Isolated subagent dispatch tool (name `task`) — ONLY when subagents on
+    if subagents_enabled:
+        registry.register(subagent_task_tool, risk="write")
 
     registry.register(download_skill_tool, risk="danger")
     registry.register(download_mcp_tool, risk="danger")

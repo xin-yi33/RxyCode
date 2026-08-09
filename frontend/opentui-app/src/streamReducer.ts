@@ -21,6 +21,12 @@ export interface StreamEvent {
   approval_id?: string;
   tool?: string;
   risk?: string;
+  /* Phase B: child session fields */
+  childSessionId?: string;
+  childStatus?: string;
+  parentSessionId?: string;
+  agentId?: string;
+  usage?: Record<string, unknown>;
 }
 
 export interface StreamReduceState {
@@ -206,6 +212,52 @@ export function applyStreamEvent(
           },
         ],
       };
+    /* ── Phase B: child session events ─────────────────── */
+    case "child_created": {
+      const childMsg = {
+        id: newId("child"),
+        role: "child_session" as const,
+        content: event.text || `子代理 ${event.agentId ?? ""} 已创建`,
+        timestamp: Date.now(),
+        childSessionId: event.childSessionId,
+        childStatus: "created",
+        parentSessionId: event.parentSessionId,
+        agentId: event.agentId,
+        depth: 0,
+      };
+      return { ...next, messages: [...next.messages, childMsg] };
+    }
+    case "child_status": {
+      const status = event.childStatus || "unknown";
+      return {
+        ...next,
+        messages: next.messages.map((m) =>
+          m.childSessionId && m.childSessionId === event.childSessionId
+            ? { ...m, childStatus: status, content: event.text || m.content }
+            : m,
+        ),
+      };
+    }
+    case "child_completed": {
+      return {
+        ...next,
+        messages: next.messages.map((m) =>
+          m.childSessionId && m.childSessionId === event.childSessionId
+            ? { ...m, childStatus: "completed", content: event.text || m.content, done: true }
+            : m,
+        ),
+      };
+    }
+    case "child_error": {
+      return {
+        ...next,
+        messages: next.messages.map((m) =>
+          m.childSessionId && m.childSessionId === event.childSessionId
+            ? { ...m, childStatus: "failed", content: event.error || event.text || m.content, done: true }
+            : m,
+        ),
+      };
+    }
     default:
       return next;
   }

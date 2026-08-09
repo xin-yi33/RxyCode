@@ -16,3 +16,27 @@ export type {
   PromptRequest,
   ProtocolNotification,
 } from "./generated/types.ts";
+
+/* Phase B: subagent protocol types */
+export type {
+  AgentMode,
+  WorkspaceMode,
+  TriggerKind,
+  ChildStatus,
+  PermissionVerdict,
+  PermissionSpec,
+  AgentDefinition,
+  ContextReference,
+  ContextEnvelope,
+  BudgetSpec,
+  WorkspaceScope,
+  TaskRequest,
+  UsageRecord,
+  ErrorRecord,
+  ArtifactRef,
+  EvidenceRef,
+  TaskResult,
+  ChildSessionEvent,
+  AgentInvokeRequest,
+  TaskStartRequest,
+} from "./generated/subagent-types.ts";

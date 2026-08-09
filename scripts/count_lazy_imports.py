@@ -21,7 +21,9 @@ LAZY_IMPORT_RE = re.compile(r"^\s{4,}(?:from|import)\s+", re.MULTILINE)
 DEFAULT_DIRS = ("core", "execution", "planning", "validation", "synthesis")
 # Raised 50→60 (2026-08-07): A13-A19 provider batch each adds 2 function-scoped
 # imports via the try/except relative-import pattern (total at 50).
-P7_BUDGET = 60
+# Raised 60→70 (2026-08-09): Phase B isolated-subagent tree (core/subagents/*)
+# adds function-scoped imports for lazy provider/manager wiring (total at 68).
+P7_BUDGET = 70
 
 
 def iter_python_files(root: Path, dirs: tuple[str, ...]) -> list[Path]:

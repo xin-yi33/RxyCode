@@ -1,0 +1,16 @@
+{
+  "id": "general",
+  "description": "通用子任务，权限按调用者 scope 继承",
+  "mode": "subagent",
+  "steps": 12,
+  "permission": {
+    "read": {"**": "allow"},
+    "edit": {"**": "ask"},
+    "bash": {"**": "ask"},
+    "task": {"**": "deny"},
+    "external_directory": "deny"
+  },
+  "hidden": false,
+  "subagent_depth": 1,
+  "workspace_scope": "leased_write"
+}
