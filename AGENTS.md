@@ -120,3 +120,31 @@ Transport
 4. **Backend changes**: Run the layered pytest suite (entry points in docs/modules/tests.md)
 5. **New features**: Add tests in tests/ and update the relevant README
 6. **Save location**: Files save to ~/.rxycode/output/ (configurable via RXYCODE_OUTPUT_DIR)
+
+## Cursor Cloud specific instructions
+
+The Cloud Agent environment is bootstrapped by `scripts/cloud-agent-install.sh`
+(wired as the environment `install` command). It sits on Cursor's default image
+(Python 3.12 + Node 22) and adds: `python3-venv`, a `python`→`python3` symlink,
+the backend deps + editable install, `uv`, and Bun, then builds/installs the
+three frontends (Ink `frontend/`, `frontend/protocol-client`,
+`frontend/opentui-app`). The script is idempotent — re-run it any time.
+
+Environment-specific notes:
+
+- **Install Python packages into the system site-packages** (the script uses
+  `sudo pip install --break-system-packages`). A user-site (`~/.local`) install
+  is NOT loaded by child interpreters, so `pytest-xdist` workers and the
+  `python3 -m appserver` process the TS frontends spawn would fail to import
+  `RxyCode`.
+- **Run the deterministic backend suite by layer** with
+  `python scripts/run_phase1_pytest.py` (mirrors CI). The legacy `regression`
+  layer has known shared-state/timing sensitivity under `-n 2`; a handful of
+  timing tests (e.g. `tests/test_llm_timeout_guard.py`) can flake under parallel
+  load but pass when re-run in isolation.
+- **`tests/system/test_api_process.py::test_real_api_subprocess_reaches_status_endpoint`**
+  computes `project_root.parents[1]` and therefore requires the repo to be
+  checked out at least two levels below `/`. It fails at the top-level
+  `/workspace` checkout (an `IndexError`, not an app defect); the API server
+  itself is fine — launch it with `rxycode --api` (needs `RXYCODE_API_TOKEN`) and
+  GET `/status`.
