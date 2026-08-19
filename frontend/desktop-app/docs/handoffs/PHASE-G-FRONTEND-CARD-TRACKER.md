@@ -8,7 +8,7 @@
 | H2 Protocol-client 握手、能力和错误投影 | 验收完成 | PASS | 1ff060d |
 | H3 Electron Main/preload/连接监督 | 验收完成 | PASS | pending |
 | H4 Project/Workspace | 验收完成（pytest B4 BLOCKED） | PASS | pending |
-| H5 Thread/Turn/Item/Child Tree | 未开始 | — | — |
+| H5 Thread/Turn/Item/Child Tree | 验收完成（pytest B5 BLOCKED） | PASS | pending |
 | H6 对话时间线 | 未开始 | — | — |
 | H7 Tool/Command/Background Task | 未开始 | — | — |
 | H8 Permission Center | 未开始 | — | — |
