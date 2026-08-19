@@ -425,6 +425,76 @@ class GitRevertRequest(BaseModel):
     approval_id: str | None = None
 
 
+class FilePreviewRequest(BaseModel):
+    method: Literal["file/preview"] = "file/preview"
+    session_id: str
+    path: str
+
+
+class FileTreeRequest(BaseModel):
+    method: Literal["file/tree"] = "file/tree"
+    session_id: str
+    path: str | None = None
+
+
+class FileOpenExternalRequest(BaseModel):
+    method: Literal["file/open_external"] = "file/open_external"
+    session_id: str
+    path: str
+    confirm: bool = False
+
+
+class WorktreeListRequest(BaseModel):
+    method: Literal["worktree/list"] = "worktree/list"
+    session_id: str
+
+
+class WorktreeOpenRequest(BaseModel):
+    method: Literal["worktree/open"] = "worktree/open"
+    session_id: str
+    worktree_id: str
+
+
+class WorktreeCreateRequest(BaseModel):
+    method: Literal["worktree/create"] = "worktree/create"
+    session_id: str
+    dest: str
+    branch: str | None = None
+    approval_id: str | None = None
+
+
+class WorktreeCloseRequest(BaseModel):
+    method: Literal["worktree/close"] = "worktree/close"
+    session_id: str
+    worktree_id: str
+    force: bool = False
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorktreePruneRequest(BaseModel):
+    method: Literal["worktree/prune"] = "worktree/prune"
+    session_id: str
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorktreeHandoffRequest(BaseModel):
+    method: Literal["worktree/handoff"] = "worktree/handoff"
+    session_id: str
+    target_session: str
+    target_path: str
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorktreeHandoffRollbackRequest(BaseModel):
+    method: Literal["worktree/handoff/rollback"] = "worktree/handoff/rollback"
+    handoff_id: str
+    session_id: str
+    approval_id: str | None = None
+
+
 class SubagentCapabilityRequest(BaseModel):
     """Discover worker-owned isolated-subagent feature flags."""
 
@@ -747,6 +817,16 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     GitStageRequest,
     GitUnstageRequest,
     GitRevertRequest,
+    FilePreviewRequest,
+    FileTreeRequest,
+    FileOpenExternalRequest,
+    WorktreeListRequest,
+    WorktreeOpenRequest,
+    WorktreeCreateRequest,
+    WorktreeCloseRequest,
+    WorktreePruneRequest,
+    WorktreeHandoffRequest,
+    WorktreeHandoffRollbackRequest,
     SubagentCapabilityRequest,
     SubagentsListRequest,
     AgentInvokeRequest,

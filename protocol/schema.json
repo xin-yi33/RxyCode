@@ -1713,6 +1713,345 @@
       "title": "GitRevertRequest",
       "type": "object"
     },
+    "FilePreviewRequest": {
+      "properties": {
+        "method": {
+          "const": "file/preview",
+          "default": "file/preview",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "path"
+      ],
+      "title": "FilePreviewRequest",
+      "type": "object"
+    },
+    "FileTreeRequest": {
+      "properties": {
+        "method": {
+          "const": "file/tree",
+          "default": "file/tree",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "FileTreeRequest",
+      "type": "object"
+    },
+    "FileOpenExternalRequest": {
+      "properties": {
+        "method": {
+          "const": "file/open_external",
+          "default": "file/open_external",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "path"
+      ],
+      "title": "FileOpenExternalRequest",
+      "type": "object"
+    },
+    "WorktreeListRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/list",
+          "default": "worktree/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "WorktreeListRequest",
+      "type": "object"
+    },
+    "WorktreeOpenRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/open",
+          "default": "worktree/open",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "worktree_id": {
+          "title": "Worktree Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "worktree_id"
+      ],
+      "title": "WorktreeOpenRequest",
+      "type": "object"
+    },
+    "WorktreeCreateRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/create",
+          "default": "worktree/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "dest": {
+          "title": "Dest",
+          "type": "string"
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "dest"
+      ],
+      "title": "WorktreeCreateRequest",
+      "type": "object"
+    },
+    "WorktreeCloseRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/close",
+          "default": "worktree/close",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "worktree_id": {
+          "title": "Worktree Id",
+          "type": "string"
+        },
+        "force": {
+          "default": false,
+          "title": "Force",
+          "type": "boolean"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "worktree_id"
+      ],
+      "title": "WorktreeCloseRequest",
+      "type": "object"
+    },
+    "WorktreePruneRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/prune",
+          "default": "worktree/prune",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "WorktreePruneRequest",
+      "type": "object"
+    },
+    "WorktreeHandoffRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/handoff",
+          "default": "worktree/handoff",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "target_session": {
+          "title": "Target Session",
+          "type": "string"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "target_session",
+        "target_path"
+      ],
+      "title": "WorktreeHandoffRequest",
+      "type": "object"
+    },
+    "WorktreeHandoffRollbackRequest": {
+      "properties": {
+        "method": {
+          "const": "worktree/handoff/rollback",
+          "default": "worktree/handoff/rollback",
+          "title": "Method",
+          "type": "string"
+        },
+        "handoff_id": {
+          "title": "Handoff Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "handoff_id",
+        "session_id"
+      ],
+      "title": "WorktreeHandoffRollbackRequest",
+      "type": "object"
+    },
     "SubagentCapabilityRequest": {
       "description": "Discover worker-owned isolated-subagent feature flags.",
       "properties": {
@@ -5076,12 +5415,12 @@
           "type": "boolean"
         },
         "worktree": {
-          "default": false,
+          "default": true,
           "title": "Worktree",
           "type": "boolean"
         },
         "file_preview": {
-          "default": false,
+          "default": true,
           "title": "File Preview",
           "type": "boolean"
         },
@@ -5478,6 +5817,36 @@
         },
         {
           "$ref": "#/$defs/GitRevertRequest"
+        },
+        {
+          "$ref": "#/$defs/FilePreviewRequest"
+        },
+        {
+          "$ref": "#/$defs/FileTreeRequest"
+        },
+        {
+          "$ref": "#/$defs/FileOpenExternalRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeListRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeOpenRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeCloseRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreePruneRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeHandoffRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeHandoffRollbackRequest"
         },
         {
           "$ref": "#/$defs/SubagentCapabilityRequest"

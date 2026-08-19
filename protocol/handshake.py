@@ -23,8 +23,8 @@ class CapabilitySnapshot(BaseModel):
     review_comments: bool = True
     checkpoint: bool = True
     git_hunk_actions: bool = True
-    worktree: bool = False
-    file_preview: bool = False
+    worktree: bool = True
+    file_preview: bool = True
     browser: bool = False
     mcp: bool = True
     skills: bool = True

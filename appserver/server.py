@@ -33,8 +33,10 @@ from .runtime import install_tui_context_hook
 from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
 from .execution import ExecutionStore
 from .permission import PermissionStore
+from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .sessions import SessionStore
+from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
 
@@ -199,6 +201,7 @@ class AppServer:
         self._execution = ExecutionStore(on_change=self._schedule_execution_event)
         self._permissions = PermissionStore(persistent=not stub)
         self._reviews = ReviewService()
+        self._worktrees = WorktreeService()
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -1832,6 +1835,184 @@ class AppServer:
             return
         await self._respond(request_id, result)
 
+    async def _handle_file_preview(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        try:
+            result = preview_file(record.workspace_root, str(params.get("path") or ""))
+        except PathBoundaryError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_file_tree(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        try:
+            rows = list_tree(record.workspace_root, params.get("path"))
+        except PathBoundaryError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, {"entries": rows})
+
+    async def _handle_file_open_external(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        try:
+            result = prepare_open_external(
+                record.workspace_root,
+                str(params.get("path") or ""),
+                confirm=bool(params.get("confirm")),
+            )
+        except PathBoundaryError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_worktree_list(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        await self._respond(
+            request_id,
+            {"worktrees": self._worktrees.list(record.workspace_root, session_id=session_id)},
+        )
+
+    async def _handle_worktree_open(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        try:
+            result = self._worktrees.open(str(params.get("worktree_id") or ""), session_id=session_id)
+        except WorktreeError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        self._sessions.set_workspace(session_id, result["path"])
+        await self._respond(request_id, result)
+
+    async def _handle_worktree_create(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if await self._deny_write(params, request_id, "worktree_create", str(record.workspace_root)):
+            return
+        try:
+            result = self._worktrees.create(
+                record.workspace_root,
+                dest=str(params.get("dest") or ""),
+                branch=params.get("branch"),
+                session_id=session_id,
+                permission_store=self._permissions,
+                confirm=True,
+            )
+        except WorktreeError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_worktree_close(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if await self._deny_write(params, request_id, "worktree_close", str(record.workspace_root)):
+            return
+        try:
+            result = self._worktrees.close(
+                record.workspace_root,
+                str(params.get("worktree_id") or ""),
+                force=bool(params.get("force")),
+                confirm=bool(params.get("confirm")),
+                session_id=session_id,
+                permission_store=self._permissions,
+            )
+        except WorktreeError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_worktree_prune(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if await self._deny_write(params, request_id, "worktree_prune", str(record.workspace_root)):
+            return
+        try:
+            result = self._worktrees.prune(
+                record.workspace_root,
+                confirm=bool(params.get("confirm")),
+                permission_store=self._permissions,
+                session_id=session_id,
+            )
+        except WorktreeError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_worktree_handoff(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if await self._deny_write(params, request_id, "worktree_handoff", str(record.workspace_root)):
+            return
+        target_session = str(params.get("target_session") or "")
+        if self._sessions.get(target_session) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {target_session}")
+            return
+        try:
+            result = self._worktrees.handoff(
+                source_session=session_id,
+                target_session=target_session,
+                target_path=str(params.get("target_path") or ""),
+                workspace=record.workspace_root,
+                permission_store=self._permissions,
+                confirm=bool(params.get("confirm")),
+            )
+        except WorktreeError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        self._sessions.set_workspace(target_session, result["target"])
+        await self._respond(request_id, result)
+
+    async def _handle_worktree_rollback(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id") or "")
+        if not session_id:
+            await self._respond_error(request_id, -32602, "session_id is required")
+            return
+        record = self._sessions.get(session_id)
+        workspace = record.workspace_root if record is not None else Path(".")
+        if await self._deny_write(params, request_id, "worktree_handoff_rollback", str(workspace)):
+            return
+        try:
+            result = self._worktrees.rollback_handoff(
+                str(params.get("handoff_id") or ""),
+                session_id=session_id,
+                permission_store=self._permissions,
+                confirm=bool(params.get("confirm", True)),
+                workspace=workspace,
+            )
+        except WorktreeError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        if result.get("source_session") and result.get("source"):
+            self._sessions.set_workspace(str(result["source_session"]), str(result["source"]))
+        target = result.get("target_session")
+        previous = result.get("target_previous")
+        if target and previous:
+            self._sessions.set_workspace(str(target), str(previous))
+        await self._respond(request_id, result)
+
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
@@ -2031,6 +2212,26 @@ class AppServer:
             await self._handle_git_change(params, request_id, "unstage")
         elif method == "git/revert":
             await self._handle_git_change(params, request_id, "revert")
+        elif method == "file/preview":
+            await self._handle_file_preview(params, request_id)
+        elif method == "file/tree":
+            await self._handle_file_tree(params, request_id)
+        elif method == "file/open_external":
+            await self._handle_file_open_external(params, request_id)
+        elif method == "worktree/list":
+            await self._handle_worktree_list(params, request_id)
+        elif method == "worktree/open":
+            await self._handle_worktree_open(params, request_id)
+        elif method == "worktree/create":
+            await self._handle_worktree_create(params, request_id)
+        elif method == "worktree/close":
+            await self._handle_worktree_close(params, request_id)
+        elif method == "worktree/prune":
+            await self._handle_worktree_prune(params, request_id)
+        elif method == "worktree/handoff":
+            await self._handle_worktree_handoff(params, request_id)
+        elif method == "worktree/handoff/rollback":
+            await self._handle_worktree_rollback(params, request_id)
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":

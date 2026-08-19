@@ -77,6 +77,15 @@ class SessionStore:
         self._persist(record)
         return record
 
+    def set_workspace(self, session_id: str, workspace_root: Path | str) -> AppSessionRecord | None:
+        record = self.get(session_id)
+        if record is None:
+            return None
+        record.workspace_root = Path(workspace_root)
+        self._touch(record)
+        self._persist(record)
+        return record
+
     def get(self, session_id: str) -> AppSessionRecord | None:
         return self._sessions.get(session_id)
 
