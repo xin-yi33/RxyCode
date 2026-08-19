@@ -84,6 +84,7 @@ class CliHubService:
         self.cache_path = self.root / "registry_cache.json"
         self.installed_path = self.root / "installed.json"
         self.failures_path = self.root / "generate_failures.json"
+        self.local_registry_path = self.root / "local_registry.json"
         self._fixture_registry = registry
         self.registry_url = os.environ.get("RXYCODE_CLI_HUB_URL", "")
         self._procs: dict[str, subprocess.Popen[str]] = {}
@@ -104,36 +105,66 @@ class CliHubService:
         spec = software.get(sid[4:]) or software.get(sid)
         return spec if isinstance(spec, dict) else None
 
+    def register_local(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+        sid = software_id(name)
+        overlay = self._read_json(self.local_registry_path)
+        row = dict(spec)
+        row.setdefault("source", "self-generated")
+        overlay[sid[4:]] = row
+        self._write_json(self.local_registry_path, overlay)
+        if isinstance(self._fixture_registry, dict):
+            self._fixture_registry[sid[4:]] = row
+        return {"ok": True, "id": sid, "source": row.get("source")}
+
+    def _merged_software(self, software: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(software or {})
+        overlay = self._read_json(self.local_registry_path)
+        for key, spec in overlay.items():
+            if isinstance(spec, dict):
+                merged[key] = spec
+        return merged
+
     def fetch_registry(self) -> dict[str, Any]:
         cached = self._read_json(self.cache_path)
         if self._fixture_registry is not None:
-            data = {"fetched_at": time.time(), "software": self._fixture_registry, "from_cache": False}
+            data = {
+                "fetched_at": time.time(),
+                "software": self._merged_software(self._fixture_registry),
+                "from_cache": False,
+            }
             self._write_json(self.cache_path, data)
             return data
         fetched_at = float(cached.get("fetched_at") or 0)
         fresh = bool(cached) and time.time() - fetched_at < CACHE_TTL_S
         if fresh:
             cached["from_cache"] = True
+            cached["software"] = self._merged_software(cached.get("software") or {})
             return cached
         if self.registry_url:
             try:
                 with urlopen(self.registry_url, timeout=3) as resp:
                     remote = json.loads(resp.read().decode("utf-8"))
                 software = remote.get("software") if isinstance(remote, dict) else {}
-                data = {"fetched_at": time.time(), "software": software or {}, "from_cache": False}
+                data = {
+                    "fetched_at": time.time(),
+                    "software": self._merged_software(software or {}),
+                    "from_cache": False,
+                }
                 self._write_json(self.cache_path, data)
                 return data
             except (URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
                 if cached:
                     cached["from_cache"] = True
                     cached["stale"] = True
+                    cached["software"] = self._merged_software(cached.get("software") or {})
                     return cached
                 raise CliHubError("CLI_REGISTRY_UNAVAILABLE", "registry fetch failed and no cache")
         if cached:
             cached["from_cache"] = True
             cached["stale"] = True
+            cached["software"] = self._merged_software(cached.get("software") or {})
             return cached
-        empty = {"fetched_at": time.time(), "software": {}, "from_cache": False}
+        empty = {"fetched_at": time.time(), "software": self._merged_software({}), "from_cache": False}
         self._write_json(self.cache_path, empty)
         return empty
 
