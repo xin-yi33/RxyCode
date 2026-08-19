@@ -495,6 +495,24 @@ class CheckpointRestoreRequest(BaseModel):
     approval_id: str | None = None
 
 
+class CheckpointSnapshotCreateRequest(BaseModel):
+    """GX4 named snapshot. Distinct from automatic checkpoint/create."""
+
+    method: Literal["checkpoint/snapshot/create"] = "checkpoint/snapshot/create"
+    name: str
+    session_id: str
+    user_prompt: str | None = None
+
+
+class CheckpointRewindRequest(BaseModel):
+    """GX4 rewind: pre-rewind snapshot + B8 restore + projection + refill."""
+
+    method: Literal["checkpoint/rewind"] = "checkpoint/rewind"
+    checkpoint_id: str
+    confirm: bool
+    session_id: str
+
+
 class GitStageRequest(BaseModel):
     """Stage git paths inside the workspace."""
 
@@ -1372,6 +1390,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     CheckpointListRequest,
     CheckpointReadRequest,
     CheckpointRestoreRequest,
+    CheckpointSnapshotCreateRequest,
+    CheckpointRewindRequest,
     GitStageRequest,
     GitUnstageRequest,
     GitRevertRequest,

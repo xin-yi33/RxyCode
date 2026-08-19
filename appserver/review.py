@@ -567,6 +567,8 @@ class ReviewService:
         workspace: Path,
         reason: str = "write",
         turn_id: str | None = None,
+        name: str | None = None,
+        user_prompt: str | None = None,
     ) -> dict[str, Any]:
         root = canonicalize(workspace)
         files: dict[str, str] = {}
@@ -585,6 +587,7 @@ class ReviewService:
             if b"\0" in data[:8000] or len(data) > 400_000:
                 continue
             files[rel.replace("\\", "/")] = data.decode("utf-8", errors="replace")
+        seq = 1 + sum(1 for item in self._checkpoints.values() if item["session_id"] == session_id)
         record = {
             "checkpoint_id": "cp_" + uuid.uuid4().hex[:12],
             "session_id": session_id,
@@ -594,6 +597,9 @@ class ReviewService:
             "files": files,
             "file_list": sorted(files),
             "reason": reason,
+            "name": name,
+            "user_prompt": user_prompt,
+            "seq": seq,
             "created_at": _now(),
         }
         self._checkpoints[record["checkpoint_id"]] = record

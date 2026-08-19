@@ -37,6 +37,7 @@ from .permission import PermissionStore
 from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .review_comments import ReviewCommentService
+from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -212,6 +213,7 @@ class AppServer:
         self._approval_router = ApprovalRouter()
         self._reviews = ReviewService()
         self._review_comments = ReviewCommentService(self._reviews)
+        self._checkpoint_rewind = CheckpointRewindService(self._reviews, self._sessions)
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -1917,6 +1919,50 @@ class AppServer:
             )
         await self._respond(request_id, result)
 
+    async def _handle_checkpoint_snapshot_create(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._checkpoint_rewind.snapshot_create(
+                session_id=str(params.get("session_id") or ""),
+                name=str(params.get("name") or ""),
+                user_prompt=params.get("user_prompt"),
+            )
+        except CheckpointRewindError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_checkpoint_rewind(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id") or "")
+        record = self._sessions.get(session_id)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if await self._deny_write(params | {"session_id": session_id}, request_id, "checkpoint_restore", str(record.workspace_root)):
+            return
+        try:
+            result = self._checkpoint_rewind.rewind(
+                checkpoint_id=str(params.get("checkpoint_id") or ""),
+                confirm=params.get("confirm"),
+                session_id=session_id,
+            )
+        except CheckpointRewindError as exc:
+            code = -32602 if exc.code == "confirm_required" else -32001
+            await self._respond_error(request_id, code, exc.message, {"error_code": exc.code})
+            return
+        except (ReviewError, PathBoundaryError) as exc:
+            code = getattr(exc, "code", "REVIEW_DIFF_UNAVAILABLE")
+            await self._respond_error(request_id, -32003, str(exc), {"error_code": code})
+            return
+        for review_id in result.get("stale_reviews") or []:
+            self._schedule_notification(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "review/stale",
+                    "params": {"session_id": session_id, "review_id": review_id, "event_id": str(review_id)},
+                }
+            )
+        await self._respond(request_id, result)
+
     async def _handle_git_change(self, params: dict[str, Any], request_id: Any, action: str) -> None:
         record, session_id = self._review_session(params)
         if record is None:
@@ -2639,6 +2685,10 @@ class AppServer:
             await self._handle_checkpoint_read(params, request_id)
         elif method == "checkpoint/restore":
             await self._handle_checkpoint_restore(params, request_id)
+        elif method == "checkpoint/snapshot/create":
+            await self._handle_checkpoint_snapshot_create(params, request_id)
+        elif method == "checkpoint/rewind":
+            await self._handle_checkpoint_rewind(params, request_id)
         elif method == "git/stage":
             await self._handle_git_change(params, request_id, "stage")
         elif method == "git/unstage":

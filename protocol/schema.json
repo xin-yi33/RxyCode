@@ -1796,6 +1796,73 @@
       "title": "CheckpointRestoreRequest",
       "type": "object"
     },
+    "CheckpointSnapshotCreateRequest": {
+      "description": "GX4 named snapshot. Distinct from automatic checkpoint/create.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/snapshot/create",
+          "default": "checkpoint/snapshot/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "user_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Prompt"
+        }
+      },
+      "required": [
+        "name",
+        "session_id"
+      ],
+      "title": "CheckpointSnapshotCreateRequest",
+      "type": "object"
+    },
+    "CheckpointRewindRequest": {
+      "description": "GX4 rewind: pre-rewind snapshot + B8 restore + projection + refill.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/rewind",
+          "default": "checkpoint/rewind",
+          "title": "Method",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "confirm": {
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "confirm",
+        "session_id"
+      ],
+      "title": "CheckpointRewindRequest",
+      "type": "object"
+    },
     "GitStageRequest": {
       "description": "Stage git paths inside the workspace.",
       "properties": {
@@ -7666,6 +7733,12 @@
         },
         {
           "$ref": "#/$defs/CheckpointRestoreRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointSnapshotCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointRewindRequest"
         },
         {
           "$ref": "#/$defs/GitStageRequest"
