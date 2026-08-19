@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .requests import ThreadMetadata
 from .types import JsonObject
 from .version import APPSERVER_VERSION, PROTOCOL_VERSION, PROTOCOL_VERSION_MAX, PROTOCOL_VERSION_MIN
 
@@ -107,4 +108,5 @@ HANDSHAKE_MODELS: tuple[type[BaseModel], ...] = (
     PermissionProfileSummary,
     PackageCompatibility,
     InitializeResult,
+    ThreadMetadata,
 )

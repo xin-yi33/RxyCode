@@ -19,6 +19,10 @@ class AppSessionRecord:
     provider_id: str | None = None
     status: str = "queued"
     trashed_at: str | None = None
+    deleted_at: str | None = None
+    restored_at: str | None = None
+    associated_files: list[str] = field(default_factory=list)
+    list_category: str | None = None
     archived_at: str | None = None
     forked_from: str | None = None
     parent_session_id: str | None = None
@@ -332,7 +336,11 @@ class SessionStore:
 
     def trash(self, session_id: str) -> AppSessionRecord:
         record = self._require(session_id)
-        record.trashed_at = _now()
+        stamp = _now()
+        if not record.list_category:
+            record.list_category = "archive" if record.archived_at else "recent"
+        record.trashed_at = stamp
+        record.deleted_at = stamp
         self._touch(record)
         self._persist(record)
         self.mark_orphans(session_id, reason="parent_trashed")
@@ -372,9 +380,29 @@ class SessionStore:
     def restore(self, session_id: str) -> AppSessionRecord:
         record = self._require(session_id)
         record.trashed_at = None
+        record.deleted_at = None
+        record.restored_at = _now()
+        if record.list_category == "archive" and not record.archived_at:
+            record.archived_at = record.restored_at
         self._touch(record)
         self._persist(record)
         return record
+
+    def remember_associated(self, session_id: str, paths: list[str]) -> AppSessionRecord:
+        record = self._require(session_id)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
+            unique.append(path)
+        record.associated_files = unique
+        self._persist(record)
+        return record
+
+    def list_deleted(self) -> list[AppSessionRecord]:
+        return [record for record in self._sessions.values() if record.deleted_at or record.trashed_at]
 
     def purge(self, session_id: str) -> None:
         self._require(session_id)
@@ -425,6 +453,10 @@ class SessionStore:
             provider_id=task.get("provider_id"),
             status=str(task.get("status") or "queued"),
             trashed_at=task.get("trashed_at"),
+            deleted_at=task.get("deleted_at") or task.get("trashed_at"),
+            restored_at=task.get("restored_at"),
+            associated_files=list(task.get("associated_files") or []),
+            list_category=task.get("list_category"),
             archived_at=task.get("archived_at"),
             forked_from=task.get("forked_from"),
             parent_session_id=task.get("parent_session_id"),
@@ -464,6 +496,10 @@ class SessionStore:
             created_at=record.created_at,
             updated_at=record.updated_at,
             trashed_at=record.trashed_at,
+            deleted_at=record.deleted_at,
+            restored_at=record.restored_at,
+            associated_files=record.associated_files,
+            list_category=record.list_category,
             usage=record.usage,
             archived_at=record.archived_at,
             forked_from=record.forked_from,

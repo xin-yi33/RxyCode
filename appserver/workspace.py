@@ -30,25 +30,38 @@ def assert_exists(path: Path) -> Path:
     return path
 
 
+def is_inside(root: Path, target: Path) -> bool:
+    """True when ``target`` is ``root`` or a descendant. Uses OS case rules.
+
+    Rejects prefix siblings (``C:\\workspace2`` is not inside ``C:\\workspace``).
+    """
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        pass
+    if os.name != "nt":
+        return False
+    root_s = os.path.normcase(os.path.normpath(str(root))).rstrip("\\/")
+    target_s = os.path.normcase(os.path.normpath(str(target)))
+    return target_s == root_s or target_s.startswith(root_s + os.sep)
+
+
 def assert_inside_workspace(workspace: Path, raw: str | Path) -> Path:
     root = canonicalize(workspace)
     target = canonicalize(raw)
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
+    if not is_inside(root, target):
         raise PathBoundaryError(
             "PATH_OUTSIDE_WORKSPACE",
             f"{target} is outside workspace {root}",
-        ) from exc
+        )
     if target.is_symlink():
         real = target.resolve()
-        try:
-            real.relative_to(root)
-        except ValueError as exc:
+        if not is_inside(root, real):
             raise PathBoundaryError(
                 "PATH_OUTSIDE_WORKSPACE",
                 f"symlink {target} escapes workspace {root}",
-            ) from exc
+            )
     return target
 
 

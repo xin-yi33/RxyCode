@@ -509,12 +509,110 @@
         "session_id": {
           "title": "Session Id",
           "type": "string"
+        },
+        "confirm_purge": {
+          "default": false,
+          "title": "Confirm Purge",
+          "type": "boolean"
         }
       },
       "required": [
         "session_id"
       ],
       "title": "SessionPurgeRequest",
+      "type": "object"
+    },
+    "ThreadDeleteRequest": {
+      "description": "Soft-delete a thread (sets deleted_at).\n\nMaps ``thread/delete``.",
+      "properties": {
+        "method": {
+          "const": "thread/delete",
+          "default": "thread/delete",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ThreadDeleteRequest",
+      "type": "object"
+    },
+    "ThreadRestoreRequest": {
+      "description": "Restore a soft-deleted thread.\n\nMaps ``thread/restore``.",
+      "properties": {
+        "method": {
+          "const": "thread/restore",
+          "default": "thread/restore",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ThreadRestoreRequest",
+      "type": "object"
+    },
+    "ThreadPurgeRequest": {
+      "description": "Permanently purge a soft-deleted thread.\n\nMaps ``thread/purge``.",
+      "properties": {
+        "method": {
+          "const": "thread/purge",
+          "default": "thread/purge",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "confirm_purge": {
+          "default": false,
+          "title": "Confirm Purge",
+          "type": "boolean"
+        },
+        "paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paths"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ThreadPurgeRequest",
+      "type": "object"
+    },
+    "ThreadListDeletedRequest": {
+      "description": "List soft-deleted threads.\n\nMaps ``thread/list_deleted``.",
+      "properties": {
+        "method": {
+          "const": "thread/list_deleted",
+          "default": "thread/list_deleted",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ThreadListDeletedRequest",
       "type": "object"
     },
     "SessionForkRequest": {
@@ -7069,6 +7167,64 @@
       "title": "InitializeResult",
       "type": "object"
     },
+    "ThreadMetadata": {
+      "description": "PhaseG-B17 thread recycle-bin metadata.",
+      "properties": {
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deleted At"
+        },
+        "restored_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Restored At"
+        },
+        "list_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "List Category"
+        },
+        "associated_files": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Associated Files"
+        }
+      },
+      "title": "ThreadMetadata",
+      "type": "object"
+    },
     "ProtocolErrorData": {
       "description": "Machine-assertable error payload in JSON-RPC ``error.data``.",
       "properties": {
@@ -7177,6 +7333,18 @@
         },
         {
           "$ref": "#/$defs/SessionPurgeRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadDeleteRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadRestoreRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadPurgeRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadListDeletedRequest"
         },
         {
           "$ref": "#/$defs/SessionForkRequest"
@@ -7659,6 +7827,9 @@
         },
         {
           "$ref": "#/$defs/InitializeResult"
+        },
+        {
+          "$ref": "#/$defs/ThreadMetadata"
         },
         {
           "$ref": "#/$defs/ProtocolErrorData"

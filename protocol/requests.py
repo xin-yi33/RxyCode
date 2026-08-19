@@ -168,6 +168,57 @@ class SessionPurgeRequest(BaseModel):
 
     method: Literal["session/purge"] = "session/purge"
     session_id: str
+    confirm_purge: bool = False
+
+
+class ThreadMetadata(BaseModel):
+    """PhaseG-B17 thread recycle-bin metadata."""
+
+    deleted_at: str | None = None
+    restored_at: str | None = None
+    list_category: str | None = None
+    associated_files: list[str] | None = None
+
+
+class ThreadDeleteRequest(BaseModel):
+    """Soft-delete a thread (sets deleted_at).
+
+    Maps ``thread/delete``.
+    """
+
+    method: Literal["thread/delete"] = "thread/delete"
+    session_id: str
+
+
+class ThreadRestoreRequest(BaseModel):
+    """Restore a soft-deleted thread.
+
+    Maps ``thread/restore``.
+    """
+
+    method: Literal["thread/restore"] = "thread/restore"
+    session_id: str
+
+
+class ThreadPurgeRequest(BaseModel):
+    """Permanently purge a soft-deleted thread.
+
+    Maps ``thread/purge``.
+    """
+
+    method: Literal["thread/purge"] = "thread/purge"
+    session_id: str
+    confirm_purge: bool = False
+    paths: list[str] | None = None
+
+
+class ThreadListDeletedRequest(BaseModel):
+    """List soft-deleted threads.
+
+    Maps ``thread/list_deleted``.
+    """
+
+    method: Literal["thread/list_deleted"] = "thread/list_deleted"
 
 
 class SessionForkRequest(BaseModel):
@@ -1164,6 +1215,10 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     SessionTrashRequest,
     SessionRestoreRequest,
     SessionPurgeRequest,
+    ThreadDeleteRequest,
+    ThreadRestoreRequest,
+    ThreadPurgeRequest,
+    ThreadListDeletedRequest,
     SessionForkRequest,
     SessionTreeRequest,
     SessionArchiveRequest,
@@ -1281,6 +1336,10 @@ ClientRequest = Annotated[
         SessionTrashRequest,
         SessionRestoreRequest,
         SessionPurgeRequest,
+        ThreadDeleteRequest,
+        ThreadRestoreRequest,
+        ThreadPurgeRequest,
+        ThreadListDeletedRequest,
         SubagentCapabilityRequest,
         SubagentsListRequest,
         AgentInvokeRequest,

@@ -41,6 +41,7 @@ from .recovery import RecoveryError, RecoveryService
 from .release import ReleaseService
 from .cli_hub_service import CliHubError, CliHubService
 from .schedule_service import ScheduleError, ScheduleService
+from .trash_service import TrashError, TrashService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -224,6 +225,7 @@ class AppServer:
             task_store=self._task_store,
         )
         self._schedule_task: asyncio.Task[Any] | None = None
+        self._trash = TrashService(self._sessions)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -2318,6 +2320,23 @@ class AppServer:
             return sched.toggle(str(params.get("job_id") or ""), params.get("enabled"))
         raise ScheduleError("SCHEDULE_METHOD_UNKNOWN", f"unknown schedule method: {method}")
 
+    def _handle_thread_trash(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("session_id") or "")
+        if method == "thread/delete":
+            return self._trash.delete(session_id)
+        if method == "thread/restore":
+            return self._trash.restore(session_id)
+        if method == "thread/list_deleted":
+            return self._trash.list_deleted()
+        if method == "thread/purge":
+            paths = params.get("paths") if isinstance(params.get("paths"), list) else None
+            return self._trash.purge(
+                session_id,
+                confirm_purge=params.get("confirm_purge"),
+                extra_paths=paths,
+            )
+        raise TrashError("THREAD_METHOD_UNKNOWN", f"unknown thread method: {method}")
+
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
@@ -2414,6 +2433,13 @@ class AppServer:
             await self._handle_session_restore(params, request_id)
         elif method == "session/purge":
             await self._handle_session_purge(params, request_id)
+        elif method.startswith("thread/"):
+            try:
+                result = self._handle_thread_trash(method, params or {})
+            except TrashError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
         elif method == "session/fork":
             await self._handle_session_fork(params, request_id)
         elif method == "session/tree":
