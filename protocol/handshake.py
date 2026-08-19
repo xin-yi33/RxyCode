@@ -29,6 +29,7 @@ class CapabilitySnapshot(BaseModel):
     browser: bool = False
     mcp: bool = True
     skills: bool = True
+    capability_panel: bool = True
     multi_agent: bool = True
     multi_model: bool = True
     vision: bool = False

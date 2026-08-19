@@ -849,6 +849,81 @@ class SettingsRollbackRequest(BaseModel):
     approval_id: str | None = None
 
 
+class CapabilitiesListRequest(BaseModel):
+    """Project skills, MCP servers, and the browser placeholder.
+
+    Maps ``capabilities/list``. Unavailable items have available=false.
+    """
+
+    method: Literal["capabilities/list"] = "capabilities/list"
+    kind: str | None = None
+    available_only: bool = False
+    session_id: str | None = None
+
+
+class CapabilitiesGetRequest(BaseModel):
+    """Read one capability projection.
+
+    Maps ``capabilities/get``.
+    """
+
+    method: Literal["capabilities/get"] = "capabilities/get"
+    capability_id: str
+    session_id: str | None = None
+
+
+class CapabilitiesSetEnabledRequest(BaseModel):
+    """Enable or authorize a capability. Browser cannot be turned into a bypass.
+
+    Maps ``capabilities/set_enabled``.
+    """
+
+    method: Literal["capabilities/set_enabled"] = "capabilities/set_enabled"
+    capability_id: str
+    enabled: bool
+    authorize: bool | None = None
+    session_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+
+
+class CapabilitiesInvokeRequest(BaseModel):
+    """Invoke a capability as a normal Tool/Approval/Review job.
+
+    Maps ``capabilities/invoke``. Failures are terminal and cancellable.
+    """
+
+    method: Literal["capabilities/invoke"] = "capabilities/invoke"
+    capability_id: str
+    session_id: str | None = None
+    turn_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+    background: bool = False
+
+
+class CapabilitiesCancelRequest(BaseModel):
+    """Cancel an in-flight capability job so the Thread does not stay stuck.
+
+    Maps ``capabilities/cancel``.
+    """
+
+    method: Literal["capabilities/cancel"] = "capabilities/cancel"
+    job_id: str
+    session_id: str | None = None
+
+
+class CapabilitiesAuditRequest(BaseModel):
+    """Return copyable, source-located capability audit records.
+
+    Maps ``capabilities/audit``.
+    """
+
+    method: Literal["capabilities/audit"] = "capabilities/audit"
+    capability_id: str | None = None
+    session_id: str | None = None
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -936,6 +1011,12 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     SettingsModelsRequest,
     SettingsDiagnoseRequest,
     SettingsRollbackRequest,
+    CapabilitiesListRequest,
+    CapabilitiesGetRequest,
+    CapabilitiesSetEnabledRequest,
+    CapabilitiesInvokeRequest,
+    CapabilitiesCancelRequest,
+    CapabilitiesAuditRequest,
 )
 
 ClientRequest = Annotated[
@@ -967,6 +1048,12 @@ ClientRequest = Annotated[
         SettingsModelsRequest,
         SettingsDiagnoseRequest,
         SettingsRollbackRequest,
+        CapabilitiesListRequest,
+        CapabilitiesGetRequest,
+        CapabilitiesSetEnabledRequest,
+        CapabilitiesInvokeRequest,
+        CapabilitiesCancelRequest,
+        CapabilitiesAuditRequest,
     ],
     Field(discriminator="method"),
 ]

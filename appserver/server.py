@@ -36,6 +36,7 @@ from .permission import PermissionStore
 from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .sessions import SessionStore
+from .capabilities import CapabilityError, CapabilityService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -201,6 +202,11 @@ class AppServer:
         self._reviews = ReviewService()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
+        self._capabilities = CapabilityService(
+            persistent=not stub,
+            execution_store=self._execution,
+            review_service=self._reviews,
+        )
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -709,6 +715,7 @@ class AppServer:
                 "models": True,
                 "credentials": True,
                 "settings": True,
+                "capabilities": True,
             },
             capability_snapshot=CapabilitySnapshot(thread_fork=True),
             model_providers=_model_provider_summaries(),
@@ -2079,6 +2086,76 @@ class AppServer:
             ),
         )
 
+    async def _handle_capabilities_list(self, params: dict[str, Any], request_id: Any) -> None:
+        await self._respond(
+            request_id,
+            self._capabilities.list(
+                kind=params.get("kind"),
+                available_only=bool(params.get("available_only")),
+            ),
+        )
+
+    async def _handle_capabilities_get(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._capabilities.get(str(params.get("capability_id") or ""))
+        except CapabilityError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_capabilities_set_enabled(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._capabilities.set_enabled(
+                str(params.get("capability_id") or ""),
+                bool(params.get("enabled")),
+                authorize=params.get("authorize"),
+                permission_store=self._permissions,
+                actor=str(params.get("actor") or "user"),
+                session_id=params.get("session_id"),
+                approval_id=params.get("approval_id"),
+                project_id=params.get("project_id"),
+                workspace=params.get("workspace"),
+            )
+        except CapabilityError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_capabilities_invoke(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._capabilities.invoke(
+                str(params.get("capability_id") or ""),
+                permission_store=self._permissions,
+                session_id=params.get("session_id"),
+                turn_id=params.get("turn_id"),
+                actor=str(params.get("actor") or "user"),
+                approval_id=params.get("approval_id"),
+                project_id=params.get("project_id"),
+                workspace=params.get("workspace"),
+                background=bool(params.get("background")),
+            )
+        except CapabilityError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_capabilities_cancel(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._capabilities.cancel(
+                str(params.get("job_id") or ""),
+                session_id=params.get("session_id"),
+            )
+        except CapabilityError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_capabilities_audit(self, params: dict[str, Any], request_id: Any) -> None:
+        await self._respond(
+            request_id,
+            {"records": self._capabilities.audit(params.get("capability_id"))},
+        )
+
     async def _handle_settings_rollback(self, params: dict[str, Any], request_id: Any) -> None:
         scope = self._settings_scope(params)
         try:
@@ -2359,6 +2436,18 @@ class AppServer:
             await self._handle_settings_diagnose(params, request_id)
         elif method == "settings/rollback":
             await self._handle_settings_rollback(params, request_id)
+        elif method == "capabilities/list":
+            await self._handle_capabilities_list(params, request_id)
+        elif method == "capabilities/get":
+            await self._handle_capabilities_get(params, request_id)
+        elif method == "capabilities/set_enabled":
+            await self._handle_capabilities_set_enabled(params, request_id)
+        elif method == "capabilities/invoke":
+            await self._handle_capabilities_invoke(params, request_id)
+        elif method == "capabilities/cancel":
+            await self._handle_capabilities_cancel(params, request_id)
+        elif method == "capabilities/audit":
+            await self._handle_capabilities_audit(params, request_id)
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":

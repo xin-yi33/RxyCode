@@ -3310,6 +3310,295 @@
       "title": "SettingsRollbackRequest",
       "type": "object"
     },
+    "CapabilitiesListRequest": {
+      "description": "Project skills, MCP servers, and the browser placeholder.\n\nMaps ``capabilities/list``. Unavailable items have available=false.",
+      "properties": {
+        "method": {
+          "const": "capabilities/list",
+          "default": "capabilities/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "available_only": {
+          "default": false,
+          "title": "Available Only",
+          "type": "boolean"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "CapabilitiesListRequest",
+      "type": "object"
+    },
+    "CapabilitiesGetRequest": {
+      "description": "Read one capability projection.\n\nMaps ``capabilities/get``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/get",
+          "default": "capabilities/get",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "capability_id"
+      ],
+      "title": "CapabilitiesGetRequest",
+      "type": "object"
+    },
+    "CapabilitiesSetEnabledRequest": {
+      "description": "Enable or authorize a capability. Browser cannot be turned into a bypass.\n\nMaps ``capabilities/set_enabled``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/set_enabled",
+          "default": "capabilities/set_enabled",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "authorize": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authorize"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "capability_id",
+        "enabled"
+      ],
+      "title": "CapabilitiesSetEnabledRequest",
+      "type": "object"
+    },
+    "CapabilitiesInvokeRequest": {
+      "description": "Invoke a capability as a normal Tool/Approval/Review job.\n\nMaps ``capabilities/invoke``. Failures are terminal and cancellable.",
+      "properties": {
+        "method": {
+          "const": "capabilities/invoke",
+          "default": "capabilities/invoke",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "capability_id"
+      ],
+      "title": "CapabilitiesInvokeRequest",
+      "type": "object"
+    },
+    "CapabilitiesCancelRequest": {
+      "description": "Cancel an in-flight capability job so the Thread does not stay stuck.\n\nMaps ``capabilities/cancel``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/cancel",
+          "default": "capabilities/cancel",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "CapabilitiesCancelRequest",
+      "type": "object"
+    },
+    "CapabilitiesAuditRequest": {
+      "description": "Return copyable, source-located capability audit records.\n\nMaps ``capabilities/audit``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/audit",
+          "default": "capabilities/audit",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability Id"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "CapabilitiesAuditRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -5808,6 +6097,11 @@
           "title": "Skills",
           "type": "boolean"
         },
+        "capability_panel": {
+          "default": true,
+          "title": "Capability Panel",
+          "type": "boolean"
+        },
         "multi_agent": {
           "default": true,
           "title": "Multi Agent",
@@ -6434,6 +6728,24 @@
         },
         {
           "$ref": "#/$defs/SettingsRollbackRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesListRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesGetRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesSetEnabledRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesInvokeRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesCancelRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesAuditRequest"
         }
       ]
     },

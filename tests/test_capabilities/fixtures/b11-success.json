@@ -1,0 +1,5 @@
+{
+  "method": "capabilities/list",
+  "browser_implemented": false,
+  "available": true
+}
