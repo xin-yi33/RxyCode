@@ -1,0 +1,22 @@
+name: release-gate
+on:
+  push:
+    branches: [feat/phase-g-backend, main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install
+        run: python -m pip install -e . pytest pydantic
+      - name: bind gate
+        run: python packaging/check_bind.py
+      - name: handshake bind
+        run: python -m pytest tests/test_release -q
+      - name: sign entry
+        run: python packaging/sign.py protocol/schema.json

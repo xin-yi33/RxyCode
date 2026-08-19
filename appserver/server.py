@@ -38,6 +38,7 @@ from .review import ReviewError, ReviewService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
+from .release import ReleaseService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -50,6 +51,7 @@ try:
         CapabilitySnapshot,
         InitializeResult,
         ModelProviderSummary,
+        PackageCompatibility,
         PermissionProfileSummary,
     )
     from ..protocol.notifications import (
@@ -78,6 +80,7 @@ except ImportError:
         CapabilitySnapshot,
         InitializeResult,
         ModelProviderSummary,
+        PackageCompatibility,
         PermissionProfileSummary,
     )
     from protocol.notifications import (
@@ -209,6 +212,7 @@ class AppServer:
             review_service=self._reviews,
         )
         self._recovery = RecoveryService(persistent=not stub, task_store=self._task_store)
+        self._release = ReleaseService()
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -740,6 +744,19 @@ class AppServer:
             capability_snapshot=CapabilitySnapshot(thread_fork=True),
             model_providers=_model_provider_summaries(),
             permission_profiles=_permission_profiles(),
+            package=PackageCompatibility(**{
+                key: self._release.compatibility()[key]
+                for key in (
+                    "platform",
+                    "platforms",
+                    "appserver_version",
+                    "protocol_version",
+                    "schema_digest",
+                    "python",
+                    "compatible",
+                    "runtimes",
+                )
+            }),
         )
         await self._respond(request_id, result.model_dump(by_alias=True))
         await self._emit_model(
@@ -2499,6 +2516,10 @@ class AppServer:
                 await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
                 return
             await self._respond(request_id, result)
+        elif method == "release/status":
+            await self._respond(request_id, self._release.compatibility())
+        elif method == "release/diagnose":
+            await self._respond(request_id, self._release.diagnose_mismatch(params or {}))
         elif method == "notifications/cursor":
             try:
                 result = self._recovery.save_cursor(

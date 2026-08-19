@@ -3749,6 +3749,68 @@
       "title": "NotificationsCursorRequest",
       "type": "object"
     },
+    "ReleaseStatusRequest": {
+      "description": "Advertise runtime/protocol/schema bind.\n\nMaps ``release/status``.",
+      "properties": {
+        "method": {
+          "const": "release/status",
+          "default": "release/status",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ReleaseStatusRequest",
+      "type": "object"
+    },
+    "ReleaseDiagnoseRequest": {
+      "description": "Diagnose client/server version or schema mismatch.\n\nMaps ``release/diagnose``.",
+      "properties": {
+        "method": {
+          "const": "release/diagnose",
+          "default": "release/diagnose",
+          "title": "Method",
+          "type": "string"
+        },
+        "protocol_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protocol Version"
+        },
+        "appserver_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Appserver Version"
+        },
+        "schema_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Digest"
+        }
+      },
+      "title": "ReleaseDiagnoseRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -6491,6 +6553,76 @@
       "title": "PermissionProfileSummary",
       "type": "object"
     },
+    "PackageCompatibility": {
+      "description": "PhaseG-B13 appserver/schema/runtime bind advertised at initialize.",
+      "properties": {
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Platforms",
+          "type": "array"
+        },
+        "appserver_version": {
+          "title": "Appserver Version",
+          "type": "string"
+        },
+        "protocol_version": {
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "schema_digest": {
+          "title": "Schema Digest",
+          "type": "string"
+        },
+        "python": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Python"
+        },
+        "compatible": {
+          "default": true,
+          "title": "Compatible",
+          "type": "boolean"
+        },
+        "runtimes": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtimes"
+        }
+      },
+      "required": [
+        "platform",
+        "platforms",
+        "appserver_version",
+        "protocol_version",
+        "schema_digest"
+      ],
+      "title": "PackageCompatibility",
+      "type": "object"
+    },
     "InitializeResult": {
       "description": "Additive initialize response. Old clients ignore unknown keys.",
       "properties": {
@@ -6540,6 +6672,17 @@
           },
           "title": "Permission Profiles",
           "type": "array"
+        },
+        "package": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackageCompatibility"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -6914,6 +7057,12 @@
         },
         {
           "$ref": "#/$defs/NotificationsCursorRequest"
+        },
+        {
+          "$ref": "#/$defs/ReleaseStatusRequest"
+        },
+        {
+          "$ref": "#/$defs/ReleaseDiagnoseRequest"
         }
       ]
     },
@@ -7090,6 +7239,9 @@
         },
         {
           "$ref": "#/$defs/PermissionProfileSummary"
+        },
+        {
+          "$ref": "#/$defs/PackageCompatibility"
         },
         {
           "$ref": "#/$defs/InitializeResult"

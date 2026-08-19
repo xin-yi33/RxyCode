@@ -987,6 +987,27 @@ class NotificationsCursorRequest(BaseModel):
     cursor: int
 
 
+class ReleaseStatusRequest(BaseModel):
+    """Advertise runtime/protocol/schema bind.
+
+    Maps ``release/status``.
+    """
+
+    method: Literal["release/status"] = "release/status"
+
+
+class ReleaseDiagnoseRequest(BaseModel):
+    """Diagnose client/server version or schema mismatch.
+
+    Maps ``release/diagnose``.
+    """
+
+    method: Literal["release/diagnose"] = "release/diagnose"
+    protocol_version: str | None = None
+    appserver_version: str | None = None
+    schema_digest: str | None = None
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -1086,6 +1107,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     NotificationsListRequest,
     NotificationsAckRequest,
     NotificationsCursorRequest,
+    ReleaseStatusRequest,
+    ReleaseDiagnoseRequest,
 )
 
 ClientRequest = Annotated[
@@ -1129,6 +1152,8 @@ ClientRequest = Annotated[
         NotificationsListRequest,
         NotificationsAckRequest,
         NotificationsCursorRequest,
+        ReleaseStatusRequest,
+        ReleaseDiagnoseRequest,
     ],
     Field(discriminator="method"),
 ]

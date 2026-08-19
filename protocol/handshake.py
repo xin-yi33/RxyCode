@@ -72,6 +72,19 @@ class PermissionProfileSummary(BaseModel):
     description: str
 
 
+class PackageCompatibility(BaseModel):
+    """PhaseG-B13 appserver/schema/runtime bind advertised at initialize."""
+
+    platform: str
+    platforms: list[str]
+    appserver_version: str
+    protocol_version: str
+    schema_digest: str
+    python: str | None = None
+    compatible: bool = True
+    runtimes: dict[str, dict] | None = None
+
+
 class InitializeResult(BaseModel):
     """Additive initialize response. Old clients ignore unknown keys."""
 
@@ -84,6 +97,7 @@ class InitializeResult(BaseModel):
     capability_snapshot: CapabilitySnapshot
     model_providers: list[ModelProviderSummary]
     permission_profiles: list[PermissionProfileSummary]
+    package: PackageCompatibility | None = None
 
 
 HANDSHAKE_MODELS: tuple[type[BaseModel], ...] = (
@@ -91,5 +105,6 @@ HANDSHAKE_MODELS: tuple[type[BaseModel], ...] = (
     ModelProviderSummary,
     ModelSummary,
     PermissionProfileSummary,
+    PackageCompatibility,
     InitializeResult,
 )
