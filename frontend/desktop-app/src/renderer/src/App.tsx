@@ -43,6 +43,12 @@ import {
 } from './lib/desktopPreferences.mts'
 import { I18nProvider } from '../../i18n/I18nContext.tsx'
 import { normalizeLocale, t } from '../../i18n/t.ts'
+import {
+  dispatchRunEndNotice,
+  electronOsNotify,
+  watchRunStateTransitions,
+  type Notice
+} from '../../features/notifications/notify.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -74,6 +80,8 @@ function App(): React.JSX.Element {
   const [goalDraft, setGoalDraft] = useState('')
   const [skippedPlanIds, setSkippedPlanIds] = useState<Record<string, true>>({})
   const toastTimerRef = useRef<number | null>(null)
+  const prevRunStateRef = useRef<Record<string, string>>({})
+  const [runBanner, setRunBanner] = useState<Notice | null>(null)
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
   const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
   const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
@@ -186,6 +194,18 @@ function App(): React.JSX.Element {
   useEffect(() => () => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
+
+  useEffect(() => {
+    const next = conversation.state.runStateBySession
+    const transitions = watchRunStateTransitions(prevRunStateRef.current, next)
+    prevRunStateRef.current = { ...next }
+    for (const event of transitions) {
+      dispatchRunEndNotice(event.sessionId, event.state, {
+        osNotify: electronOsNotify,
+        showBanner: (notice) => setRunBanner(notice)
+      })
+    }
+  }, [conversation.state.runStateBySession])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -632,6 +652,11 @@ function App(): React.JSX.Element {
         </div>
       )}
       {toast !== null && <div className="task-toast" role="status" aria-live="polite" data-testid="task-toast">{toast}</div>}
+      {runBanner !== null && (
+        <div className="task-toast" role="status" aria-live="polite" data-testid="os-fallback-banner">
+          {runBanner.title}: {runBanner.body}
+        </div>
+      )}
     </div>
     </I18nProvider>
   )
