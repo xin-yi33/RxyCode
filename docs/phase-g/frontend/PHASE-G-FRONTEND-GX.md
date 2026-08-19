@@ -917,9 +917,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 路径 A：`session/rename`；路径 B：`thread/fork|pin|archive` BLOCKED
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
