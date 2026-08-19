@@ -650,7 +650,7 @@ npm run build
 - [x] Renderer 无 Python、数据库、任意 HTTP、secret 和未 allowlist IPC；
 - [x] Thread/Turn/Item/Child/Review/Approval 都能幂等投影并恢复；
 - [x] Phase 3 max token 只显示 resolver/summary，不在 UI 重新计算；
-- [ ] Grok 的视觉问题已转成组件状态或回归测试；
+- [x] Grok 的视觉问题已转成组件状态或回归测试；
 - [ ] typecheck、unit/component、IPC、E2E、视觉和 build 有真实输出；
 - [x] 已生成前端交接包、已知限制和可回滚 commit。
 
