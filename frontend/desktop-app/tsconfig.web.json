@@ -7,6 +7,11 @@
     "src/platform/**/*",
     "src/protocol/**/*",
     "src/features/**/*",
+    "src/lib/**/*",
+    "src/i18n/**/*",
+    "src/ui/**/*",
+    "src/stores/**/*",
+    "src/components/**/*",
     "src/preload/*.d.ts"
   ],
   "compilerOptions": {
