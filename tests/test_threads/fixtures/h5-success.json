@@ -1,0 +1,21 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "success",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "session/fork",
+    "params": {"session_id": "parent"}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "session_id": "forked",
+      "forked_from": "parent",
+      "parent_session_id": null,
+      "root_session_id": "forked",
+      "status": "queued"
+    }
+  }
+}

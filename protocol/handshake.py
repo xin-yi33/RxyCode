@@ -14,7 +14,7 @@ class CapabilitySnapshot(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     threads: bool = True
-    thread_fork: bool = False
+    thread_fork: bool = True
     background_turns: bool = False
     command_execution: bool = True
     file_changes: bool = True

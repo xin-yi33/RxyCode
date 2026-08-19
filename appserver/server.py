@@ -212,6 +212,7 @@ class AppServer:
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._resolved_jobs: set[str] = set()
         self._thinking_expanded = False
+        self._inflight_turns: dict[str, str] = {}
 
     def _ensure_notification_writer(self) -> None:
         if self._notification_writer is None or self._notification_writer.done():
@@ -306,9 +307,53 @@ class AppServer:
             # a completed task, while skipping deltas avoids both prompt-like
             # content in the durable task index and an fsync per token.
             return
-        session_id = params.get("root_session_id") or params.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
+        child_id = params.get("child_session_id")
+        sid = params.get("session_id")
+        parent_id = params.get("parent_session_id")
+        root_id = params.get("root_session_id")
+        if isinstance(child_id, str) and child_id:
+            session_id = child_id
+        elif (
+            isinstance(sid, str)
+            and sid
+            and isinstance(parent_id, str)
+            and parent_id
+            and sid != parent_id
+        ):
+            session_id = sid
+        elif isinstance(sid, str) and sid:
+            session_id = sid
+        elif isinstance(root_id, str) and root_id:
+            session_id = root_id
+        else:
             return
+        if isinstance(parent_id, str) and parent_id and parent_id != session_id:
+            parent = self._sessions.get(parent_id)
+            expected_root = (
+                (parent.root_session_id if parent is not None else None) or parent_id
+            )
+            claimed_root = params.get("root_session_id")
+            if isinstance(claimed_root, str) and claimed_root and claimed_root != expected_root:
+                claimed_root = expected_root
+            budget = params.get("budget") if isinstance(params.get("budget"), dict) else None
+            permission = (
+                params.get("permission_snapshot")
+                if isinstance(params.get("permission_snapshot"), dict)
+                else params.get("permission")
+            )
+            if not isinstance(permission, dict):
+                permission = None
+            self._sessions.ensure_child(
+                session_id=session_id,
+                parent_session_id=parent_id,
+                root_session_id=str(claimed_root or expected_root),
+                workspace_root=parent.workspace_root if parent is not None else Path("."),
+                agent_id=params.get("agent_id") if isinstance(params.get("agent_id"), str) else None,
+                trigger=params.get("trigger") if isinstance(params.get("trigger"), str) else None,
+                budget=budget,
+                permission_snapshot=permission,
+                lease_id=params.get("lease_id") if isinstance(params.get("lease_id"), str) else None,
+            )
 
         def redact(value: Any, key: str = "") -> Any:
             lowered = key.lower()
@@ -364,6 +409,26 @@ class AppServer:
             state = safe_params.get("status")
             if isinstance(state, str):
                 self._sessions.update_status(session_id, state)
+        elif method in {
+            "child_session/failed",
+            "child_session/cancelled",
+            "child_session/orphaned",
+            "child_session/completed",
+        }:
+            mapped = {
+                "child_session/failed": "failed",
+                "child_session/cancelled": "cancelled",
+                "child_session/orphaned": "orphaned",
+                "child_session/completed": "succeeded",
+            }[method]
+            self._sessions.update_status(session_id, mapped)
+            if method == "child_session/orphaned" and isinstance(
+                safe_params.get("reason"), str
+            ):
+                child = self._sessions.get(session_id)
+                if child is not None:
+                    child.orphan_reason = str(safe_params["reason"])
+                    self._sessions._persist(child)
         elif method in {"event/token_usage", "event/final"}:
             self._sessions.update_usage(
                 session_id,
@@ -496,6 +561,16 @@ class AppServer:
         if degrade_reason:
             self._watchdog.degrade(degrade_reason)
         await self._emit_job_state(session_id, job_id, "failed")
+        turn_key = self._inflight_turns.get(session_id) or str(request_id or "")
+        if turn_key:
+            status = "cancelled" if "cancel" in message.lower() else "failed"
+            if "timed out" in message.lower() or "timeout" in message.lower():
+                status = "timeout"
+            self._sessions.remember_turn(
+                session_id,
+                turn_key,
+                {"status": status, "text": "", "error": message, "code": code},
+            )
         if request_id is not None:
             await self._respond_error(request_id, code, message)
         if kill_host:
@@ -562,7 +637,7 @@ class AppServer:
                 "models": True,
                 "credentials": True,
             },
-            capability_snapshot=CapabilitySnapshot(),
+            capability_snapshot=CapabilitySnapshot(thread_fork=True),
             model_providers=_model_provider_summaries(),
             permission_profiles=_permission_profiles(),
         )
@@ -660,6 +735,7 @@ class AppServer:
         mode: str = "build",
         thinking_expanded: bool | None = None,
         permission_mode: str | None = None,
+        turn_key: str | None = None,
     ) -> None:
         record = self._sessions.get(session_id)
         if record is None:
@@ -804,21 +880,21 @@ class AppServer:
                 # degrade the watchdog if any stream event was lost.
                 await self._drain_emit_and_degrades(job_id)
 
-                await self._respond(
-                    request_id,
-                    {
-                        "run_id": payload.get("run_id", run_id),
-                        "status": status,
-                        "text": payload.get("text", ""),
-                        "thinking": payload.get("thinking"),
-                        "input_tokens": payload.get("input_tokens"),
-                        "output_tokens": payload.get("output_tokens"),
-                        "cache_hit_tokens": payload.get("cache_hit_tokens"),
-                        "cache_write_tokens": payload.get("cache_write_tokens"),
-                        "cache_hit_rate": payload.get("cache_hit_rate"),
-                        "reporting_status": payload.get("reporting_status", "not_reported"),
-                    },
-                )
+                result = {
+                    "run_id": payload.get("run_id", run_id),
+                    "status": status,
+                    "text": payload.get("text", ""),
+                    "thinking": payload.get("thinking"),
+                    "input_tokens": payload.get("input_tokens"),
+                    "output_tokens": payload.get("output_tokens"),
+                    "cache_hit_tokens": payload.get("cache_hit_tokens"),
+                    "cache_write_tokens": payload.get("cache_write_tokens"),
+                    "cache_hit_rate": payload.get("cache_hit_rate"),
+                    "reporting_status": payload.get("reporting_status", "not_reported"),
+                }
+                remembered = str(turn_key or request_id)
+                self._sessions.remember_turn(session_id, remembered, result)
+                await self._respond(request_id, result)
                 self._resolved_jobs.add(job_id)
         finally:
             self._job_tasks.pop(job_id, None)
@@ -831,6 +907,23 @@ class AppServer:
             return
         if self._sessions.get(session_id) is None:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        turn_key = str(params.get("request_id") or request_id)
+        record = self._sessions.get(session_id)
+        stored = self._sessions.turn_result(session_id, turn_key)
+        if stored is not None:
+            await self._respond(request_id, dict(stored))
+            return
+        if self._inflight_turns.get(session_id) == turn_key:
+            await self._respond(
+                request_id,
+                {
+                    "status": "running",
+                    "session_id": session_id,
+                    "request_id": turn_key,
+                    "idempotent": True,
+                },
+            )
             return
         if (
             self._watchdog.degraded
@@ -886,16 +979,22 @@ class AppServer:
         if permission_mode not in {None, "confirm_all", "auto_edit", "full_auto"}:
             await self._respond_error(request_id, -32602, "invalid permission_mode")
             return
-        await self._run_prompt(
-            session_id=session_id,
-            text=text,
-            request_id=request_id,
-            job_id=job_id,
-            timeout_seconds=timeout_seconds,
-            mode=mode,
-            thinking_expanded=thinking_expanded,
-            permission_mode=permission_mode,
-        )
+        self._inflight_turns[session_id] = turn_key
+        try:
+            await self._run_prompt(
+                session_id=session_id,
+                text=text,
+                request_id=request_id,
+                job_id=job_id,
+                timeout_seconds=timeout_seconds,
+                mode=mode,
+                thinking_expanded=thinking_expanded,
+                permission_mode=permission_mode,
+                turn_key=turn_key,
+            )
+        finally:
+            if self._inflight_turns.get(session_id) == turn_key:
+                self._inflight_turns.pop(session_id, None)
 
     async def _handle_set_thinking_expanded(
         self, params: dict[str, Any], request_id: Any
@@ -1114,8 +1213,7 @@ class AppServer:
             return
         await self._respond(request_id, result)
 
-    @staticmethod
-    def _session_summary(record: Any) -> dict[str, Any]:
+    def _session_summary(self, record: Any) -> dict[str, Any]:
         return {
             "session_id": record.session_id,
             "title": record.title,
@@ -1126,15 +1224,42 @@ class AppServer:
             "created_at": record.created_at,
             "updated_at": record.updated_at,
             "trashed_at": record.trashed_at,
-            "child_count": 0,
+            "archived_at": getattr(record, "archived_at", None),
+            "forked_from": getattr(record, "forked_from", None),
+            "parent_session_id": getattr(record, "parent_session_id", None),
+            "root_session_id": getattr(record, "root_session_id", None) or record.session_id,
+            "child_count": self._sessions.child_count(record.session_id),
+            "agent_id": getattr(record, "agent_id", None),
+            "trigger": getattr(record, "trigger", None),
+            "lease_id": getattr(record, "lease_id", None),
+            "orphan_reason": getattr(record, "orphan_reason", None),
+            "last_turn_request_id": getattr(record, "last_turn_request_id", None),
             "usage": dict(record.usage),
         }
 
     async def _handle_sessions_list(self, params: dict[str, Any], request_id: Any) -> None:
-        include_trashed = bool(params.get("include_trashed", False))
+        workspace_root = params.get("workspace_root")
+        project_id = params.get("project_id")
+        if isinstance(project_id, str) and project_id:
+            project = self._projects.get(project_id)
+            if project is None:
+                await self._respond_error(request_id, -32001, f"unknown project: {project_id}")
+                return
+            workspace_root = project.get("path")
+        records = self._sessions.list(
+            include_trashed=bool(params.get("include_trashed", False)),
+            include_archived=bool(params.get("include_archived", False)),
+            workspace_root=workspace_root,
+            status=params.get("status"),
+            updated_after=params.get("updated_after"),
+            updated_before=params.get("updated_before"),
+            created_after=params.get("created_after"),
+            created_before=params.get("created_before"),
+            parent_session_id=params.get("parent_session_id"),
+        )
         await self._respond(
             request_id,
-            {"sessions": [self._session_summary(record) for record in self._sessions.list(include_trashed=include_trashed)]},
+            {"sessions": [self._session_summary(record) for record in records]},
         )
 
     async def _handle_session_events(self, params: dict[str, Any], request_id: Any) -> None:
@@ -1198,6 +1323,140 @@ class AppServer:
         await self._kill_session_host(session_id)
         self._sessions.purge(session_id)
         await self._respond(request_id, {"ok": True, "session_id": session_id})
+
+    async def _handle_session_fork(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        parent_before = self._sessions.get(session_id)
+        if parent_before is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        parent_status = parent_before.status
+        parent_updated = parent_before.updated_at
+        parent_title = parent_before.title
+        parent_events, _, _ = self._task_store.events(session_id, 0)
+        child = self._sessions.fork(session_id)
+        parent_after = self._sessions.get(session_id)
+        assert parent_after is not None
+        if (
+            parent_after.status != parent_status
+            or parent_after.updated_at != parent_updated
+            or parent_after.title != parent_title
+        ):
+            await self._respond_error(request_id, -32603, "fork mutated parent thread")
+            return
+        after_events, _, _ = self._task_store.events(session_id, 0)
+        if len(after_events) != len(parent_events):
+            await self._respond_error(request_id, -32603, "fork mutated parent events")
+            return
+        await self._respond(request_id, self._session_summary(child))
+
+    async def _handle_session_tree(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        nodes = self._sessions.tree(session_id)
+        root_id = nodes[0].root_session_id if nodes else session_id
+        await self._respond(
+            request_id,
+            {
+                "root_session_id": root_id,
+                "sessions": [self._session_summary(item) for item in nodes],
+            },
+        )
+
+    async def _handle_session_archive(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        try:
+            record = self._sessions.archive(session_id)
+        except KeyError:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        await self._respond(request_id, self._session_summary(record))
+
+    async def _handle_session_unarchive(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        try:
+            record = self._sessions.unarchive(session_id)
+        except KeyError:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        await self._respond(request_id, self._session_summary(record))
+
+    async def _handle_session_items(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        cursor = int(params.get("cursor", 0) or 0)
+        limit = int(params.get("limit", 50) or 50)
+        items, next_cursor, gap = self._task_store.events(session_id, cursor, limit=limit)
+        await self._respond(
+            request_id,
+            {"items": items, "next_cursor": next_cursor, "gap_detected": gap},
+        )
+
+    async def _handle_turn_steer(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        text = str(params.get("text") or "").strip()
+        record = self._sessions.get(session_id)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if not text:
+            await self._respond_error(request_id, -32602, "text is required")
+            return
+        host = self._session_hosts.get(session_id)
+        running = any(job.session_id == session_id for job in self._watchdog.jobs.values())
+        if not running or host is None or not host.alive():
+            await self._respond_error(
+                request_id,
+                -32014,
+                "turn is not running",
+                {"error_code": "TURN_NOT_RUNNING", "retryable": False},
+            )
+            return
+        try:
+            steered = await host.steer(text)
+        except Exception as exc:
+            await self._respond_error(
+                request_id,
+                -32014,
+                str(exc) or "turn is not running",
+                {"error_code": "TURN_NOT_RUNNING", "retryable": False},
+            )
+            return
+        self._task_store.append_event(
+            session_id,
+            {
+                "method": "event/turn_steered",
+                "params": {"session_id": session_id, "text": text, "queued": True},
+            },
+        )
+        await self._respond(
+            request_id,
+            {"ok": True, "session_id": session_id, "queued": True, "worker": steered},
+        )
+
+    async def _handle_turn_retry(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        retry_id = str(params.get("request_id") or "")
+        record = self._sessions.get(session_id)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if not retry_id:
+            await self._respond_error(request_id, -32602, "request_id is required")
+            return
+        stored = self._sessions.turn_result(session_id, retry_id)
+        if stored is not None:
+            await self._respond(request_id, dict(stored))
+            return
+        text = str(params.get("text") or "retry")
+        await self._handle_prompt(
+            {"session_id": session_id, "text": text, "request_id": retry_id},
+            request_id,
+        )
 
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
@@ -1295,6 +1554,26 @@ class AppServer:
             await self._handle_session_restore(params, request_id)
         elif method == "session/purge":
             await self._handle_session_purge(params, request_id)
+        elif method == "session/fork":
+            await self._handle_session_fork(params, request_id)
+        elif method == "session/tree":
+            await self._handle_session_tree(params, request_id)
+        elif method == "session/archive":
+            await self._handle_session_archive(params, request_id)
+        elif method == "session/unarchive":
+            await self._handle_session_unarchive(params, request_id)
+        elif method == "session/items":
+            await self._handle_session_items(params, request_id)
+        elif method == "turn/start":
+            task = asyncio.create_task(self._handle_prompt(params, request_id))
+            self._prompt_tasks.add(task)
+            task.add_done_callback(self._prompt_tasks.discard)
+        elif method == "turn/steer":
+            await self._handle_turn_steer(params, request_id)
+        elif method == "turn/interrupt":
+            await self._handle_interrupt(params, request_id)
+        elif method == "turn/retry":
+            await self._handle_turn_retry(params, request_id)
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":

@@ -1,0 +1,19 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "reconnect",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "session/items",
+    "params": {"session_id": "s1", "cursor": 2, "limit": 50}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "items": [],
+      "next_cursor": 2,
+      "gap_detected": false
+    }
+  }
+}

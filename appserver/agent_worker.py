@@ -228,6 +228,7 @@ class AgentWorker:
         self._question = PipeQuestionBroker(self._send_parent_request, timeout=120.0)
         self._thinking_expanded = False
         self._active_tui: Any | None = None
+        self._steer_queue: list[str] = []
         self._write_failures: list[BaseException] = []
         self._run_task: asyncio.Task[Any] | None = None
         #: Request ids that already got a terminal response, so an early-cancel
@@ -591,6 +592,9 @@ class AgentWorker:
                 if not accepts_permission_mode:
                     prompt_kwargs.pop("permission_mode", None)
                 result = await session.prompt(self._agent, text, **prompt_kwargs)
+                while self._steer_queue:
+                    extra = self._steer_queue.pop(0)
+                    result = await session.prompt(self._agent, extra, **prompt_kwargs)
             except asyncio.CancelledError:
                 # Interrupt RPC cancelled this prompt task (C1): report the
                 # cancellation to the host so the pending request resolves
@@ -751,6 +755,46 @@ class AgentWorker:
             _logger.error("coalescer stop failed: %r", exc)
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _handle_steer(self, params: dict[str, Any], request_id: int) -> None:
+        text = str(params.get("text") or "").strip()
+        if not text:
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32602, "message": "text is required"},
+                }
+            )
+            return
+        running = self._run_task is not None and not self._run_task.done()
+        if not running:
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32014, "message": "turn is not running"},
+                }
+            )
+            return
+        self._steer_queue.append(text)
+        self._schedule_write(
+            model_to_notification(
+                ProgressUpdate(session_id=self._session_id, text=f"steer: {text}")
+            )
+        )
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "ok": True,
+                    "queued": True,
+                    "session_id": self._session_id,
+                    "pending": len(self._steer_queue),
+                },
+            }
+        )
 
     async def _handle_interrupt(self, request_id: int) -> None:
         """Cancel the running prompt task (C1: run_task.cancel()).
@@ -1151,6 +1195,8 @@ class AgentWorker:
             await self._handle_prompt(params, int(request_id))
         elif method == "interrupt":
             await self._handle_interrupt(int(request_id))
+        elif method == "prompt/steer":
+            await self._handle_steer(params, int(request_id))
         elif method == "thinking/set_expanded":
             await self._handle_set_thinking_expanded(params, int(request_id))
         elif method == "subagents/capability":

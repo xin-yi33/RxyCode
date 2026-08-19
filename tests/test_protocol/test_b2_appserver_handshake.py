@@ -29,7 +29,7 @@ async def test_initialize_1_0_and_1_1_succeed(monkeypatch) -> None:
     result = next(item["result"] for item in sent if "result" in item)
     assert result["protocol_version"] == PROTOCOL_VERSION
     assert result["capabilities"]["sessions"] is True
-    assert result["capability_snapshot"]["thread_fork"] is False
+    assert result["capability_snapshot"]["thread_fork"] is True
     assert result["capability_snapshot"]["review"] is False
     assert "model_providers" in result
     assert {row["profile_id"] for row in result["permission_profiles"]} >= {

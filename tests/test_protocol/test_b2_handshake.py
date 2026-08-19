@@ -51,7 +51,7 @@ def test_capability_snapshot_is_honest() -> None:
         permission_profiles=[],
     ).capability_snapshot
     assert snap.threads is True
-    assert snap.thread_fork is False
+    assert snap.thread_fork is True
     assert snap.review is False
     assert snap.approval_auto_review is False
     dumped = snap.model_dump(by_alias=True)

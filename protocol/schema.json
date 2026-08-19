@@ -300,6 +300,107 @@
           "default": false,
           "title": "Include Trashed",
           "type": "boolean"
+        },
+        "include_archived": {
+          "default": false,
+          "title": "Include Archived",
+          "type": "boolean"
+        },
+        "workspace_root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Root"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "updated_after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated After"
+        },
+        "updated_before": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated Before"
+        },
+        "created_after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created After"
+        },
+        "created_before": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created Before"
+        },
+        "parent_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Session Id"
         }
       },
       "title": "SessionsListRequest",
@@ -414,6 +515,250 @@
         "session_id"
       ],
       "title": "SessionPurgeRequest",
+      "type": "object"
+    },
+    "SessionForkRequest": {
+      "description": "PhaseG-B5 fork a thread. Parent events and status stay unchanged.",
+      "properties": {
+        "method": {
+          "const": "session/fork",
+          "default": "session/fork",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionForkRequest",
+      "type": "object"
+    },
+    "SessionTreeRequest": {
+      "description": "PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list.",
+      "properties": {
+        "method": {
+          "const": "session/tree",
+          "default": "session/tree",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionTreeRequest",
+      "type": "object"
+    },
+    "SessionArchiveRequest": {
+      "description": "PhaseG-B5 archive. Not delete; recoverable via unarchive.",
+      "properties": {
+        "method": {
+          "const": "session/archive",
+          "default": "session/archive",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionArchiveRequest",
+      "type": "object"
+    },
+    "SessionUnarchiveRequest": {
+      "description": "PhaseG-B5 restore an archived thread to the active list.",
+      "properties": {
+        "method": {
+          "const": "session/unarchive",
+          "default": "session/unarchive",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionUnarchiveRequest",
+      "type": "object"
+    },
+    "SessionItemsRequest": {
+      "description": "Paginate persisted items (events) after a cursor.",
+      "properties": {
+        "method": {
+          "const": "session/items",
+          "default": "session/items",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "cursor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cursor",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionItemsRequest",
+      "type": "object"
+    },
+    "TurnStartRequest": {
+      "description": "PhaseG-B5 start a turn. Wraps session/prompt without replacing it.",
+      "properties": {
+        "method": {
+          "const": "turn/start",
+          "default": "turn/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "TurnStartRequest",
+      "type": "object"
+    },
+    "TurnSteerRequest": {
+      "description": "Append steering text to an in-flight turn. No-op if not running.",
+      "properties": {
+        "method": {
+          "const": "turn/steer",
+          "default": "turn/steer",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "TurnSteerRequest",
+      "type": "object"
+    },
+    "TurnInterruptRequest": {
+      "description": "PhaseG-B5 interrupt a running turn. Wraps session/interrupt.",
+      "properties": {
+        "method": {
+          "const": "turn/interrupt",
+          "default": "turn/interrupt",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "TurnInterruptRequest",
+      "type": "object"
+    },
+    "TurnRetryRequest": {
+      "description": "Retry last turn. Same request_id returns the stored result.",
+      "properties": {
+        "method": {
+          "const": "turn/retry",
+          "default": "turn/retry",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id"
+      ],
+      "title": "TurnRetryRequest",
       "type": "object"
     },
     "SubagentCapabilityRequest": {
@@ -3616,7 +3961,7 @@
           "type": "boolean"
         },
         "thread_fork": {
-          "default": false,
+          "default": true,
           "title": "Thread Fork",
           "type": "boolean"
         },
@@ -3974,6 +4319,33 @@
         },
         {
           "$ref": "#/$defs/SessionPurgeRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionForkRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionTreeRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionArchiveRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionUnarchiveRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionItemsRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnStartRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnSteerRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnInterruptRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnRetryRequest"
         },
         {
           "$ref": "#/$defs/SubagentCapabilityRequest"

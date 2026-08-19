@@ -122,6 +122,15 @@ class SessionsListRequest(BaseModel):
 
     method: Literal["sessions/list"] = "sessions/list"
     include_trashed: bool = False
+    include_archived: bool = False
+    workspace_root: str | None = None
+    project_id: str | None = None
+    status: str | None = None
+    updated_after: str | None = None
+    updated_before: str | None = None
+    created_after: str | None = None
+    created_before: str | None = None
+    parent_session_id: str | None = None
 
 
 class SessionEventsRequest(BaseModel):
@@ -159,6 +168,77 @@ class SessionPurgeRequest(BaseModel):
 
     method: Literal["session/purge"] = "session/purge"
     session_id: str
+
+
+class SessionForkRequest(BaseModel):
+    """PhaseG-B5 fork a thread. Parent events and status stay unchanged."""
+
+    method: Literal["session/fork"] = "session/fork"
+    session_id: str
+
+
+class SessionTreeRequest(BaseModel):
+    """PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list."""
+
+    method: Literal["session/tree"] = "session/tree"
+    session_id: str
+
+
+class SessionArchiveRequest(BaseModel):
+    """PhaseG-B5 archive. Not delete; recoverable via unarchive."""
+
+    method: Literal["session/archive"] = "session/archive"
+    session_id: str
+
+
+class SessionUnarchiveRequest(BaseModel):
+    """PhaseG-B5 restore an archived thread to the active list."""
+
+    method: Literal["session/unarchive"] = "session/unarchive"
+    session_id: str
+
+
+class SessionItemsRequest(BaseModel):
+    """Paginate persisted items (events) after a cursor."""
+
+    method: Literal["session/items"] = "session/items"
+    session_id: str
+    cursor: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class TurnStartRequest(BaseModel):
+    """PhaseG-B5 start a turn. Wraps session/prompt without replacing it."""
+
+    method: Literal["turn/start"] = "turn/start"
+    session_id: str
+    text: str
+    request_id: str | None = None
+    timeout_seconds: float | None = None
+
+
+class TurnSteerRequest(BaseModel):
+    """Append steering text to an in-flight turn. No-op if not running."""
+
+    method: Literal["turn/steer"] = "turn/steer"
+    session_id: str
+    text: str
+
+
+class TurnInterruptRequest(BaseModel):
+    """PhaseG-B5 interrupt a running turn. Wraps session/interrupt."""
+
+    method: Literal["turn/interrupt"] = "turn/interrupt"
+    session_id: str
+
+
+class TurnRetryRequest(BaseModel):
+    """Retry last turn. Same request_id returns the stored result."""
+
+    method: Literal["turn/retry"] = "turn/retry"
+    session_id: str
+    request_id: str
+    text: str | None = None
 
 
 class SubagentCapabilityRequest(BaseModel):
@@ -455,6 +535,15 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     SessionTrashRequest,
     SessionRestoreRequest,
     SessionPurgeRequest,
+    SessionForkRequest,
+    SessionTreeRequest,
+    SessionArchiveRequest,
+    SessionUnarchiveRequest,
+    SessionItemsRequest,
+    TurnStartRequest,
+    TurnSteerRequest,
+    TurnInterruptRequest,
+    TurnRetryRequest,
     SubagentCapabilityRequest,
     SubagentsListRequest,
     AgentInvokeRequest,

@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "crash",
+  "note": "Unfinished parent/child turns stay recovery_required after appserver restart. B3 owns process_failed; B5 persists the thread tree.",
+  "expected_status": "recovery_required"
+}

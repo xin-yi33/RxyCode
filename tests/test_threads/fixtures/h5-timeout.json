@@ -1,0 +1,19 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "timeout",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/prompt",
+    "params": {"session_id": "s1", "text": "slow", "timeout_seconds": 0.01}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "error": {
+      "code": -32004,
+      "message": "timeout",
+      "data": {"error_code": "TIMEOUT", "retryable": true}
+    }
+  }
+}

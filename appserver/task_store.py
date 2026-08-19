@@ -7,9 +7,11 @@ workspace root and never stores prompt contents or credentials.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,9 @@ except ImportError:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_UNSET = object()
 
 
 class DesktopTaskStore:
@@ -99,9 +104,28 @@ class DesktopTaskStore:
         updated_at: str | None = None,
         trashed_at: str | None = None,
         usage: dict[str, Any] | None = None,
+        archived_at: Any = _UNSET,
+        forked_from: Any = _UNSET,
+        parent_session_id: Any = _UNSET,
+        root_session_id: Any = _UNSET,
+        last_turn_request_id: Any = _UNSET,
+        last_turn_result: Any = _UNSET,
+        turn_results: Any = _UNSET,
+        agent_id: Any = _UNSET,
+        trigger: Any = _UNSET,
+        budget: Any = _UNSET,
+        permission_snapshot: Any = _UNSET,
+        lease_id: Any = _UNSET,
+        orphan_reason: Any = _UNSET,
     ) -> dict[str, Any]:
         old = self._data["tasks"].get(session_id)
         now = _now()
+
+        def _pick(value: Any, key: str, default: Any = None) -> Any:
+            if value is _UNSET:
+                return (old or {}).get(key, default)
+            return value
+
         task = {
             "session_id": session_id,
             "title": title,
@@ -112,6 +136,19 @@ class DesktopTaskStore:
             "created_at": created_at or (old or {}).get("created_at") or now,
             "updated_at": updated_at or now,
             "trashed_at": trashed_at,
+            "archived_at": _pick(archived_at, "archived_at"),
+            "forked_from": _pick(forked_from, "forked_from"),
+            "parent_session_id": _pick(parent_session_id, "parent_session_id"),
+            "root_session_id": _pick(root_session_id, "root_session_id") or session_id,
+            "last_turn_request_id": _pick(last_turn_request_id, "last_turn_request_id"),
+            "last_turn_result": _pick(last_turn_result, "last_turn_result"),
+            "turn_results": _pick(turn_results, "turn_results", {}) or {},
+            "agent_id": _pick(agent_id, "agent_id"),
+            "trigger": _pick(trigger, "trigger"),
+            "budget": _pick(budget, "budget", {}) or {},
+            "permission_snapshot": _pick(permission_snapshot, "permission_snapshot", {}) or {},
+            "lease_id": _pick(lease_id, "lease_id"),
+            "orphan_reason": _pick(orphan_reason, "orphan_reason"),
             "child_count": int((old or {}).get("child_count", 0) or 0),
             "usage": usage or (old or {}).get("usage") or {
                 "input_tokens": None,
@@ -177,11 +214,30 @@ class DesktopTaskStore:
         value["seq"] = seq
         if isinstance(protocol_seq, int):
             value["protocol_seq"] = protocol_seq
+        if not value.get("event_id"):
+            value["event_id"] = uuid.uuid4().hex
+        if not value.get("ts"):
+            value["ts"] = _now()
         events.append(value)
         self._save()
         return seq
 
-    def events(self, session_id: str, cursor: int = 0) -> tuple[list[dict[str, Any]], int, bool]:
+    def copy_events(self, source_id: str, dest_id: str) -> int:
+        """Snapshot events into dest. Does not mutate source."""
+        raw = self._data["events"].get(source_id, [])
+        copied = []
+        for index, item in enumerate(raw, start=1):
+            if not isinstance(item, dict):
+                continue
+            value = copy.deepcopy(item)
+            value["event_id"] = uuid.uuid4().hex
+            value["seq"] = index
+            copied.append(value)
+        self._data["events"][dest_id] = copied
+        self._save()
+        return len(copied)
+
+    def events(self, session_id: str, cursor: int = 0, *, limit: int | None = None) -> tuple[list[dict[str, Any]], int, bool]:
         values = self._data["events"].get(session_id, [])
         if not isinstance(values, list):
             return [], cursor, False
@@ -190,6 +246,12 @@ class DesktopTaskStore:
         selected = [item for item in ordered if int(item.get("seq", 0)) > cursor]
         expected = cursor + 1
         gap = bool(selected and int(selected[0].get("seq", expected)) > expected)
+        if limit is not None and limit >= 0:
+            selected = selected[:limit]
+        if selected:
+            latest = int(selected[-1].get("seq", latest))
+        elif limit is not None:
+            latest = cursor
         return selected, latest, gap
 
     def _require(self, session_id: str) -> dict[str, Any]:
