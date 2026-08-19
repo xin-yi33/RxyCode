@@ -2,7 +2,7 @@ handoff_id: D-F-HANDOFF-PHASE-G-FRONTEND
 card: PhaseG-H1-H19
 source_baseline: PHASE-G-FRONTEND.md
 branch: feat/phase-g-frontend
-commit: 665b00b
+commit: 1945b03
 protocol_version: "1.1.0"
 verdict: READY_FOR_FULL_D_INTEGRATION
 exit_checkboxes: all_ticked
@@ -16,14 +16,17 @@ files_changed:
   - frontend/desktop-app/**
   - frontend/protocol-client/**
 tests:
-  - "cd frontend/desktop-app; npm run typecheck → pass"
-  - "H14-H19 remaining 完成判据 tests → pass"
-  - "npm test → 327 pass / 2 pre-existing fail (H1 contextIsolation regex vs webPreferencesSafe; geometry CSS regex)"
+  - "cd frontend/desktop-app; npm run typecheck → pass (scratch typecheck.log)"
+  - "npm test → 340 pass / 0 fail (scratch npm-test.log)"
+  - "frontend/protocol-client bun test → 29 pass"
+  - "python -m pytest tests/test_protocol -q → 6 passed"
+  - "python -m pytest tests/test_execution -q → 181 passed (pre-existing backend suite)"
+  - "npm run build → out/main out/preload out/renderer"
 visual_evidence: frontend/desktop-app/docs/gx-screenshots/h15-hover-sample.md
 known_limitations:
   - "H2-H13 主链大量为投影模块 + Phase4 壳接线；完整 F 对应卡 E2E/视觉未全部重跑"
-  - "python -m pytest tests/test_projects|threads|execution|approval|review|file_preview|worktrees|settings|capabilities|release 目录缺失 → BLOCKED_PREREQUISITE，不 mock"
-  - "macOS/Linux 构建目标 smoke 未在本机实跑"
+  - "python -m pytest tests/test_projects|threads|approval|review|file_preview|worktrees|settings|capabilities|release 目录缺失 → BLOCKED_PREREQUISITE，不 mock"
+  - "macOS/Linux dmg/AppImage/deb 实机安装器 BLOCKED_RUNTIME（本机 Windows）；构建目标+locale 入包+握手单测已过"
   - "Grok 实机截屏未全覆盖 H6/H8/H9 视觉清单"
   - "B17/B11/B14/E4 未合入路径保持 BLOCKED_PREREQUISITE"
 backend_questions:
