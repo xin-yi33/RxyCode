@@ -40,6 +40,7 @@ from .review_comments import ReviewCommentService
 from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService
 from .usage_tracker import UsageTracker
 from .thread_fork import ThreadForkError, ThreadForkService
+from .plan_files import PlanFileError, PlanFileService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -218,6 +219,7 @@ class AppServer:
         self._checkpoint_rewind = CheckpointRewindService(self._reviews, self._sessions)
         self._usage_tracker = UsageTracker(context_window_lookup=self._usage_context_window)
         self._thread_fork = ThreadForkService(self._sessions)
+        self._plan_files = PlanFileService()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -1603,6 +1605,32 @@ class AppServer:
             return
         await self._respond(request_id, result)
 
+    async def _handle_plan_persist(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._plan_files.persist(
+                thread_id=str(params.get("thread_id") or ""),
+                title=str(params.get("title") or "plan"),
+                goal=str(params.get("goal") or ""),
+                steps=[str(item) for item in (params.get("steps") or [])],
+                acceptance=[str(item) for item in (params.get("acceptance") or [])],
+            )
+        except PlanFileError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_plan_implement(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._plan_files.implement(
+                plan_id=str(params.get("plan_id") or ""),
+                confirm=params.get("confirm"),
+            )
+        except PlanFileError as exc:
+            code = -32602 if exc.code == "confirm_required" else -32001
+            await self._respond_error(request_id, code, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
     async def _handle_session_items(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))
         if self._sessions.get(session_id) is None:
@@ -2616,6 +2644,10 @@ class AppServer:
             await self._handle_thread_fork(params, request_id)
         elif method == "thread/pin":
             await self._handle_thread_pin(params, request_id)
+        elif method == "plan/persist":
+            await self._handle_plan_persist(params, request_id)
+        elif method == "plan/implement":
+            await self._handle_plan_implement(params, request_id)
         elif method.startswith("thread/"):
             try:
                 result = self._handle_thread_trash(method, params or {})

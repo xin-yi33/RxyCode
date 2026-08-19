@@ -530,6 +530,25 @@ class CheckpointRewindRequest(BaseModel):
     session_id: str
 
 
+class PlanPersistRequest(BaseModel):
+    """GX9 export thread plan to markdown under RXYCODE_DATA_DIR/plans."""
+
+    method: Literal["plan/persist"] = "plan/persist"
+    thread_id: str
+    title: str
+    goal: str
+    steps: list[str]
+    acceptance: list[str]
+
+
+class PlanImplementRequest(BaseModel):
+    """GX9 start execution from a persisted plan. Requires confirm=true."""
+
+    method: Literal["plan/implement"] = "plan/implement"
+    plan_id: str
+    confirm: bool
+
+
 class GitStageRequest(BaseModel):
     """Stage git paths inside the workspace."""
 
@@ -1411,6 +1430,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     CheckpointRestoreRequest,
     CheckpointSnapshotCreateRequest,
     CheckpointRewindRequest,
+    PlanPersistRequest,
+    PlanImplementRequest,
     GitStageRequest,
     GitUnstageRequest,
     GitRevertRequest,

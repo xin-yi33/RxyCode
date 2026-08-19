@@ -1925,6 +1925,77 @@
       "title": "CheckpointRewindRequest",
       "type": "object"
     },
+    "PlanPersistRequest": {
+      "description": "GX9 export thread plan to markdown under RXYCODE_DATA_DIR/plans.",
+      "properties": {
+        "method": {
+          "const": "plan/persist",
+          "default": "plan/persist",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "acceptance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance",
+          "type": "array"
+        }
+      },
+      "required": [
+        "thread_id",
+        "title",
+        "goal",
+        "steps",
+        "acceptance"
+      ],
+      "title": "PlanPersistRequest",
+      "type": "object"
+    },
+    "PlanImplementRequest": {
+      "description": "GX9 start execution from a persisted plan. Requires confirm=true.",
+      "properties": {
+        "method": {
+          "const": "plan/implement",
+          "default": "plan/implement",
+          "title": "Method",
+          "type": "string"
+        },
+        "plan_id": {
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "confirm": {
+          "title": "Confirm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan_id",
+        "confirm"
+      ],
+      "title": "PlanImplementRequest",
+      "type": "object"
+    },
     "GitStageRequest": {
       "description": "Stage git paths inside the workspace.",
       "properties": {
@@ -7986,6 +8057,12 @@
         },
         {
           "$ref": "#/$defs/CheckpointRewindRequest"
+        },
+        {
+          "$ref": "#/$defs/PlanPersistRequest"
+        },
+        {
+          "$ref": "#/$defs/PlanImplementRequest"
         },
         {
           "$ref": "#/$defs/GitStageRequest"
