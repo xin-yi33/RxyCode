@@ -22,4 +22,4 @@
 | H16 Settings 8 分区 | 验收勾选（luna PASS） | PASS | this-commit |
 | H17 运行状态视觉 | 验收勾选（luna PASS） | PASS | this-commit |
 | H18 多 Agent 契约预留 | 验收完成 | PASS | pending |
-| H19 CLI 画廊 | 验收完成 | PASS | pending |
+| H19 CLI 画廊 | 验收勾选（luna PASS） | PASS | this-commit |
