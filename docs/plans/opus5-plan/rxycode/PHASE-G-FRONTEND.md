@@ -645,7 +645,7 @@ npm run build
 
 ### 7.1 前端交付出口
 
-- [ ] J1–J13 完成，且每张卡引用了完整 F 对应卡；
+- [x] J1–J13 完成，且每张卡引用了完整 F 对应卡；
 - [x] 所有协议消费来自冻结 schema/生成类型，没有临时字段；
 - [x] Renderer 无 Python、数据库、任意 HTTP、secret 和未 allowlist IPC；
 - [x] Thread/Turn/Item/Child/Review/Approval 都能幂等投影并恢复；
