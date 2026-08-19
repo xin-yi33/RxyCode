@@ -31,7 +31,7 @@ export function attachCapability(
   return { capability: MODE_TO_CAPABILITY[mode] }
 }
 
-export function planOverridesWrite(planMode: boolean, capability: InvokeCapability): 'plan' | 'capability' {
+export function planOverridesWrite(planMode: boolean, _capability: InvokeCapability): 'plan' | 'capability' {
   if (planMode) return 'plan'
   return 'capability'
 }
