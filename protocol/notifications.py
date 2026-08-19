@@ -348,6 +348,40 @@ class InitializedNotification(BaseModel):
     server_version: str
 
 
+class ProcessStarted(BaseModel):
+    """PhaseG-B3 appserver process is up and holding the instance lock."""
+
+    method: Literal["event/process_started"] = "event/process_started"
+    pid: int
+    started_at: float
+    instance_policy: str = "single-instance-per-data-dir"
+
+
+class ProcessShutdown(BaseModel):
+    """PhaseG-B3 graceful shutdown. Incomplete work is not marked completed."""
+
+    method: Literal["event/process_shutdown"] = "event/process_shutdown"
+    reason: str
+    graceful: bool
+
+
+class RecoveryRequired(BaseModel):
+    """PhaseG-B3 restart found an unfinished turn. UI must not show success."""
+
+    method: Literal["event/recovery_required"] = "event/recovery_required"
+    session_id: str
+    previous_status: str
+    status: str = "recovery_required"
+
+
+class ProcessFailed(BaseModel):
+    """PhaseG-B3 failed to become the instance (lock or boot)."""
+
+    method: Literal["event/process_failed"] = "event/process_failed"
+    reason: str
+    error_code: str
+
+
 NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     AgentEvent,
     MessageDelta,
@@ -371,4 +405,8 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     JobStatusUpdate,
     ServerHeartbeat,
     InitializedNotification,
+    ProcessStarted,
+    ProcessShutdown,
+    RecoveryRequired,
+    ProcessFailed,
 )

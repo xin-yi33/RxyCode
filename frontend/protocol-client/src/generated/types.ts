@@ -209,7 +209,11 @@ export type ProtocolNotification =
   | RunComplete
   | JobStatusUpdate
   | ServerHeartbeat
-  | InitializedNotification;
+  | InitializedNotification
+  | ProcessStarted
+  | ProcessShutdown
+  | RecoveryRequired
+  | ProcessFailed;
 export type Method37 =
   | "event/agent_started"
   | "event/agent_tool"
@@ -355,16 +359,30 @@ export type Degraded = boolean;
 export type Method58 = "initialized";
 export type ProtocolVersion1 = string;
 export type ServerVersion = string;
-export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method59 = "approval/request";
+export type Method59 = "event/process_started";
+export type Pid = number;
+export type StartedAt = number;
+export type InstancePolicy = string;
+export type Method60 = "event/process_shutdown";
+export type Reason1 = string;
+export type Graceful = boolean;
+export type Method61 = "event/recovery_required";
 export type SessionId33 = string;
+export type PreviousStatus = string;
+export type Status3 = string;
+export type Method62 = "event/process_failed";
+export type Reason2 = string;
+export type ErrorCode = string;
+export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
+export type Method63 = "approval/request";
+export type SessionId34 = string;
 export type RequestId3 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action = string;
 export type RequestId4 = string;
 export type Decision = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method60 = "question/request";
-export type SessionId34 = string;
+export type Method64 = "question/request";
+export type SessionId35 = string;
 export type QuestionId = string;
 export type Question = string;
 export type Header = string;
@@ -429,8 +447,8 @@ export type EntryStage = string;
 export type TotalTokenBudget = number;
 export type TotalTimeoutS = number;
 export type MaxDelegations = number;
-export type Method61 = "agents/delegate";
-export type SessionId35 = string;
+export type Method65 = "agents/delegate";
+export type SessionId36 = string;
 export type RequestId5 = string;
 export type ToRole = string;
 export type Stage = string;
@@ -446,8 +464,8 @@ export type Error = string;
 export type ToolsUsed = string[];
 export type TokensUsed1 = number;
 export type DurationS = number;
-export type Method62 = "agents/consult";
-export type SessionId36 = string;
+export type Method66 = "agents/consult";
+export type SessionId37 = string;
 export type RequestId7 = string;
 export type FromRole = string;
 export type ToRole1 = string;
@@ -458,8 +476,8 @@ export type AuditorRole = string;
 export type Passed = boolean;
 export type Findings = string[];
 export type CreatedAt = number;
-export type Method63 = "event/team";
-export type SessionId37 = string;
+export type Method67 = "event/team";
+export type SessionId38 = string;
 export type Role3 = string;
 export type Stage2 = string;
 export type Phase =
@@ -475,47 +493,47 @@ export type Phase =
 export type Detail = string;
 export type Mode1 = "solo" | "team" | "team_multi";
 export type DecidedBy = "user" | "heuristic" | "llm" | "default";
-export type Reason1 = string;
+export type Reason3 = string;
 export type TokensUsed2 = number;
 export type ExperimentTag1 = "E0" | "E1" | "E2";
 export type Task1 = string;
 export type Tokens = number;
 export type TimeoutS1 = number;
-export type Method64 = "task_delegate";
+export type Method68 = "task_delegate";
 export type TaskId2 = string;
 export type ParentId = string | null;
 export type Goal1 = string;
 export type ContextRefs = string[];
 export type Acceptance = string[];
 export type Tools1 = string[];
-export type Method65 = "progress";
+export type Method69 = "progress";
 export type TaskId3 = string;
-export type Status3 = "running" | "blocked" | "done" | "failed";
+export type Status4 = "running" | "blocked" | "done" | "failed";
 export type Stage3 = string;
 export type Percent = number;
 export type EtaS = number | null;
 export type Notes = string;
-export type Method66 = "tool_call";
+export type Method70 = "tool_call";
 export type TaskId4 = string;
 export type Tool = string;
-export type Status4 = "running" | "done" | "failed";
+export type Status5 = "running" | "done" | "failed";
 export type ResultRef = string;
-export type Method67 = "plan";
+export type Method71 = "plan";
 export type TaskId5 = string;
 export type Steps1 = string[];
 export type Files = string[];
 export type EstTokens = number;
 export type Ack = boolean;
-export type Method68 = "result";
+export type Method72 = "result";
 export type TaskId6 = string;
 export type Ok3 = boolean;
 export type Summary1 = string;
 export type ArtifactPaths = string[];
 export type TokensUsed3 = number;
 export type DurationS1 = number;
-export type Method69 = "abort";
+export type Method73 = "abort";
 export type TaskId7 = string;
-export type Reason2 = "budget" | "timeout" | "user";
+export type Reason4 = "budget" | "timeout" | "user";
 export type Partial = boolean;
 /**
  * PhaseG-B2 initialize result, capability snapshot, and stable error payload. Not a session envelope.
@@ -560,7 +578,7 @@ export type ServerName = string;
 export type ServerVersion1 = string;
 export type ModelProviders = ModelProviderSummary[];
 export type PermissionProfiles = PermissionProfileSummary[];
-export type ErrorCode =
+export type ErrorCode1 =
   | "PROTOCOL_MISMATCH"
   | "UNSUPPORTED"
   | "OVERLOADED"
@@ -1270,11 +1288,49 @@ export interface InitializedNotification {
   [k: string]: unknown;
 }
 /**
+ * PhaseG-B3 appserver process is up and holding the instance lock.
+ */
+export interface ProcessStarted {
+  method?: Method59;
+  pid: Pid;
+  started_at: StartedAt;
+  instance_policy?: InstancePolicy;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B3 graceful shutdown. Incomplete work is not marked completed.
+ */
+export interface ProcessShutdown {
+  method?: Method60;
+  reason: Reason1;
+  graceful: Graceful;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B3 restart found an unfinished turn. UI must not show success.
+ */
+export interface RecoveryRequired {
+  method?: Method61;
+  session_id: SessionId33;
+  previous_status: PreviousStatus;
+  status?: Status3;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B3 failed to become the instance (lock or boot).
+ */
+export interface ProcessFailed {
+  method?: Method62;
+  reason: Reason2;
+  error_code: ErrorCode;
+  [k: string]: unknown;
+}
+/**
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method59;
-  session_id: SessionId33;
+  method?: Method63;
+  session_id: SessionId34;
   request_id: RequestId3;
   risk_level: RiskLevel;
   action: Action;
@@ -1296,8 +1352,8 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method60;
-  session_id: SessionId34;
+  method?: Method64;
+  session_id: SessionId35;
   question_id: QuestionId;
   question: Question;
   header?: Header;
@@ -1396,8 +1452,8 @@ export interface Extra1 {
  * 写清楚，否则成员会重复劳动或者不知道什么时候算完。
  */
 export interface DelegateRequest {
-  method?: Method61;
-  session_id: SessionId35;
+  method?: Method65;
+  session_id: SessionId36;
   request_id: RequestId5;
   to_role: ToRole;
   stage: Stage;
@@ -1428,8 +1484,8 @@ export interface DelegateResult {
  * 团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
  */
 export interface ConsultRequest {
-  method?: Method62;
-  session_id: SessionId36;
+  method?: Method66;
+  session_id: SessionId37;
   request_id: RequestId7;
   from_role: FromRole;
   to_role: ToRole1;
@@ -1461,8 +1517,8 @@ export interface VerdictRecord {
  * F 层不得再定义名为 AgentEvent 的类型。
  */
 export interface TeamEvent {
-  method?: Method63;
-  session_id: SessionId37;
+  method?: Method67;
+  session_id: SessionId38;
   role: Role3;
   stage?: Stage2;
   phase: Phase;
@@ -1475,7 +1531,7 @@ export interface TeamEvent {
 export interface RoutingDecision {
   mode: Mode1;
   decided_by: DecidedBy;
-  reason: Reason1;
+  reason: Reason3;
   tokens_used?: TokensUsed2;
   experiment_tag?: ExperimentTag1;
   task?: Task1;
@@ -1493,7 +1549,7 @@ export interface BridgeBudget {
  * Leader → Worker (F16). Lineage-only: refs, never conversation history.
  */
 export interface TaskDelegate {
-  method?: Method64;
+  method?: Method68;
   task_id: TaskId2;
   parent_id?: ParentId;
   goal: Goal1;
@@ -1507,9 +1563,9 @@ export interface TaskDelegate {
  * Worker → Leader streaming status. notes truncated to ~2k tokens.
  */
 export interface BridgeProgress {
-  method?: Method65;
+  method?: Method69;
   task_id: TaskId3;
-  status: Status3;
+  status: Status4;
   stage?: Stage3;
   percent?: Percent;
   eta_s?: EtaS;
@@ -1520,11 +1576,11 @@ export interface BridgeProgress {
  * Worker → Leader. Large results go to result_ref, never inline.
  */
 export interface BridgeToolCall {
-  method?: Method66;
+  method?: Method70;
   task_id: TaskId4;
   tool: Tool;
   args?: Args;
-  status?: Status4;
+  status?: Status5;
   result_ref?: ResultRef;
   [k: string]: unknown;
 }
@@ -1535,7 +1591,7 @@ export interface Args {
  * Worker → Leader execution plan before work starts.
  */
 export interface BridgePlan {
-  method?: Method67;
+  method?: Method71;
   task_id: TaskId5;
   steps?: Steps1;
   files?: Files;
@@ -1547,7 +1603,7 @@ export interface BridgePlan {
  * Worker → Leader. summary is 1–2k tokens; artifacts are paths.
  */
 export interface BridgeResult {
-  method?: Method68;
+  method?: Method72;
   task_id: TaskId6;
   ok: Ok3;
   summary?: Summary1;
@@ -1560,9 +1616,9 @@ export interface BridgeResult {
  * Leader → Worker. Sent before a hard kill.
  */
 export interface BridgeAbort {
-  method?: Method69;
+  method?: Method73;
   task_id: TaskId7;
-  reason: Reason2;
+  reason: Reason4;
   partial?: Partial;
   [k: string]: unknown;
 }
@@ -1628,7 +1684,7 @@ export interface Capabilities1 {
  * Machine-assertable error payload in JSON-RPC ``error.data``.
  */
 export interface ProtocolErrorData {
-  error_code: ErrorCode;
+  error_code: ErrorCode1;
   retryable: Retryable;
   protocol_version?: ProtocolVersion3;
   protocol_min?: ProtocolMin1;

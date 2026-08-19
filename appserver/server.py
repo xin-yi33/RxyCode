@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import time
 import sys
@@ -25,6 +26,7 @@ from .jsonrpc import (
     write_message,
     write_message_sync,
 )
+from .lifecycle import InstanceLock, mark_incomplete_recovery_required
 from .runtime import install_tui_context_hook
 from .sessions import SessionStore
 from .task_store import DesktopTaskStore
@@ -42,7 +44,11 @@ try:
     from ..protocol.notifications import (
         InitializedNotification,
         JobStatusUpdate,
+        ProcessFailed,
+        ProcessShutdown,
+        ProcessStarted,
         ProgressUpdate,
+        RecoveryRequired,
         ServerHeartbeat,
     )
     from ..protocol.version import (
@@ -64,7 +70,11 @@ except ImportError:
     from protocol.notifications import (
         InitializedNotification,
         JobStatusUpdate,
+        ProcessFailed,
+        ProcessShutdown,
+        ProcessStarted,
         ProgressUpdate,
+        RecoveryRequired,
         ServerHeartbeat,
     )
     from protocol.version import (
@@ -142,6 +152,7 @@ _REPLAY_EVENT_METHODS = {
     "event/recovery_attempt",
     "event/recovery_resolved",
     "event/recovery_exhausted",
+    "event/recovery_required",
 }
 _MAX_REPLAY_TEXT = 24_000
 
@@ -158,6 +169,22 @@ class AppServer:
         # they must never read or mutate a user's persistent Desktop history.
         # The production appserver keeps the durable store across restarts.
         self._task_store = DesktopTaskStore(persistent=not stub)
+        self._instance_lock = InstanceLock()
+        self._instance_blocked: str | None = None
+        self._recovered_sessions: list[tuple[str, str]] = []
+        should_lock = (not stub) or bool(os.environ.get("RXYCODE_APPSERVER_LOCK"))
+        if should_lock:
+            ok, reason = self._instance_lock.acquire()
+            if not ok:
+                self._instance_blocked = reason
+            else:
+                self._recovered_sessions = mark_incomplete_recovery_required(
+                    self._task_store
+                )
+        elif self._task_store.persistent:
+            self._recovered_sessions = mark_incomplete_recovery_required(
+                self._task_store
+            )
         self._sessions = SessionStore(task_store=self._task_store)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
@@ -946,7 +973,29 @@ class AppServer:
         if reason:
             _logger.info("shutdown requested: %s", reason)
         self._shutdown = True
+        self._mark_inflight_recovery_required()
+        await self._emit_model(
+            ProcessShutdown(reason=str(reason or "shutdown"), graceful=True)
+        )
         await self._respond(request_id, {"ok": True})
+
+    def _mark_inflight_recovery_required(self) -> None:
+        """Crash/EOF/shutdown: unfinished turns stay recoverable, never completed."""
+        for session_id, record in list(self._sessions._sessions.items()):
+            if record.status in {"succeeded", "failed", "cancelled", "timed_out", "recovery_required"}:
+                continue
+            if record.status in {"queued", "running", "approval", "submitted", "active"}:
+                previous = record.status
+                self._sessions.update_status(session_id, "recovery_required")
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                note = RecoveryRequired(session_id=session_id, previous_status=previous)
+                if loop is None:
+                    write_message_sync(model_to_notification(note))
+                else:
+                    self._schedule_notification(model_to_notification(note))
 
     def _touch_jobs_for_notification(self, message: dict[str, Any]) -> None:
         params = message.get("params")
@@ -1325,7 +1374,35 @@ class AppServer:
 
     async def run(self) -> None:
         """Read JSON-RPC lines from stdin until EOF or shutdown."""
+        if self._instance_blocked:
+            await write_message(
+                model_to_notification(
+                    ProcessFailed(
+                        reason=self._instance_blocked,
+                        error_code="INSTANCE_IN_USE",
+                    )
+                )
+            )
+            return
+        if os.environ.get("RXYCODE_APPSERVER_FAIL_BOOT") == "1":
+            await write_message(
+                model_to_notification(
+                    ProcessFailed(reason="boot probe failed", error_code="BOOT_FAILED")
+                )
+            )
+            self._instance_lock.release()
+            return
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        await self._emit_model(
+            ProcessStarted(
+                pid=os.getpid(),
+                started_at=self._started_at,
+            )
+        )
+        for session_id, previous in self._recovered_sessions:
+            await self._emit_model(
+                RecoveryRequired(session_id=session_id, previous_status=previous)
+            )
         try:
             while not self._shutdown:
                 line = await asyncio.to_thread(sys.stdin.readline)
@@ -1375,5 +1452,11 @@ class AppServer:
                     await asyncio.wait_for(writer, timeout=2.0)
             for exc in self._notification_write_failures:
                 _logger.error("emit write failed during shutdown: %r", exc)
+            if not self._shutdown:
+                self._mark_inflight_recovery_required()
+                await self._emit_model(
+                    ProcessShutdown(reason="eof-or-crash", graceful=False)
+                )
             for session_id in list(self._session_hosts):
                 await self._kill_session_host(session_id)
+            self._instance_lock.release()

@@ -2301,6 +2301,116 @@
       "title": "InitializedNotification",
       "type": "object"
     },
+    "ProcessStarted": {
+      "description": "PhaseG-B3 appserver process is up and holding the instance lock.",
+      "properties": {
+        "method": {
+          "const": "event/process_started",
+          "default": "event/process_started",
+          "title": "Method",
+          "type": "string"
+        },
+        "pid": {
+          "title": "Pid",
+          "type": "integer"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "number"
+        },
+        "instance_policy": {
+          "default": "single-instance-per-data-dir",
+          "title": "Instance Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pid",
+        "started_at"
+      ],
+      "title": "ProcessStarted",
+      "type": "object"
+    },
+    "ProcessShutdown": {
+      "description": "PhaseG-B3 graceful shutdown. Incomplete work is not marked completed.",
+      "properties": {
+        "method": {
+          "const": "event/process_shutdown",
+          "default": "event/process_shutdown",
+          "title": "Method",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "graceful": {
+          "title": "Graceful",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason",
+        "graceful"
+      ],
+      "title": "ProcessShutdown",
+      "type": "object"
+    },
+    "RecoveryRequired": {
+      "description": "PhaseG-B3 restart found an unfinished turn. UI must not show success.",
+      "properties": {
+        "method": {
+          "const": "event/recovery_required",
+          "default": "event/recovery_required",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "previous_status": {
+          "title": "Previous Status",
+          "type": "string"
+        },
+        "status": {
+          "default": "recovery_required",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "previous_status"
+      ],
+      "title": "RecoveryRequired",
+      "type": "object"
+    },
+    "ProcessFailed": {
+      "description": "PhaseG-B3 failed to become the instance (lock or boot).",
+      "properties": {
+        "method": {
+          "const": "event/process_failed",
+          "default": "event/process_failed",
+          "title": "Method",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "error_code": {
+          "title": "Error Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "error_code"
+      ],
+      "title": "ProcessFailed",
+      "type": "object"
+    },
     "ApprovalRequest": {
       "description": "Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.",
       "properties": {
@@ -3846,6 +3956,18 @@
         },
         {
           "$ref": "#/$defs/InitializedNotification"
+        },
+        {
+          "$ref": "#/$defs/ProcessStarted"
+        },
+        {
+          "$ref": "#/$defs/ProcessShutdown"
+        },
+        {
+          "$ref": "#/$defs/RecoveryRequired"
+        },
+        {
+          "$ref": "#/$defs/ProcessFailed"
         }
       ]
     },
