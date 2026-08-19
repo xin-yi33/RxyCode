@@ -382,6 +382,15 @@ class ProcessFailed(BaseModel):
     error_code: str
 
 
+class WorkspaceChanged(BaseModel):
+    """PhaseG-B4 active workspace changed. Does not chdir the process."""
+
+    method: Literal["event/workspace_changed"] = "event/workspace_changed"
+    project_id: str
+    workspace_root: str
+    display_name: str
+
+
 NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     AgentEvent,
     MessageDelta,
@@ -409,4 +418,5 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     ProcessShutdown,
     RecoveryRequired,
     ProcessFailed,
+    WorkspaceChanged,
 )

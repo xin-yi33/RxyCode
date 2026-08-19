@@ -39,7 +39,13 @@ export type ClientRequest =
   | TeamGroupsRequest
   | TeamGroupRenameRequest
   | TeamInstallRequest
-  | TeamSetActiveRequest;
+  | TeamSetActiveRequest
+  | ProjectListRequest
+  | ProjectAddRequest
+  | ProjectRemoveRequest
+  | ProjectSetActiveRequest
+  | WorkspaceStatusRequest
+  | WorkspaceResolveRequest;
 export type Method = "initialize";
 export type ClientName = string;
 export type ClientVersion = string;
@@ -187,6 +193,19 @@ export type Group = string;
 export type Method36 = "team/set_active";
 export type SessionId12 = string;
 export type TeamId = string;
+export type Method37 = "project/list";
+export type Method38 = "project/add";
+export type Path = string;
+export type DisplayName = string | null;
+export type Method39 = "project/remove";
+export type ProjectId = string;
+export type Method40 = "project/set_active";
+export type ProjectId1 = string;
+export type Method41 = "workspace/status";
+export type WorkspaceRoot1 = string;
+export type Method42 = "workspace/resolve";
+export type WorkspaceRoot2 = string;
+export type Path1 = string;
 export type ProtocolNotification =
   | AgentEvent
   | MessageDelta
@@ -213,8 +232,9 @@ export type ProtocolNotification =
   | ProcessStarted
   | ProcessShutdown
   | RecoveryRequired
-  | ProcessFailed;
-export type Method37 =
+  | ProcessFailed
+  | WorkspaceChanged;
+export type Method43 =
   | "event/agent_started"
   | "event/agent_tool"
   | "event/agent_progress"
@@ -235,43 +255,43 @@ export type TokensUsed = number | null;
 export type BudgetUsed = number | null;
 export type Source = ("internal" | "bridge") | null;
 export type RoutingReason = string | null;
-export type Method38 = "event/message_delta";
+export type Method44 = "event/message_delta";
 export type SessionId14 = string;
 export type Text1 = string;
-export type Method39 = "event/progress";
+export type Method45 = "event/progress";
 export type SessionId15 = string;
 export type Text2 = string;
-export type Method40 = "event/reasoning_snapshot";
+export type Method46 = "event/reasoning_snapshot";
 export type SessionId16 = string;
 export type Text3 = string;
 export type Snapshot = boolean;
-export type Method41 = "event/plan";
+export type Method47 = "event/plan";
 export type SessionId17 = string;
 export type Steps = string[];
-export type Method42 = "event/step";
+export type Method48 = "event/step";
 export type SessionId18 = string;
 export type Index = number;
 export type Total = number;
 export type Text4 = string;
-export type Method43 = "event/task_started";
+export type Method49 = "event/task_started";
 export type SessionId19 = string;
 export type TaskId = string;
 export type Title1 = string;
-export type Method44 = "event/tool_begin";
+export type Method50 = "event/tool_begin";
 export type SessionId20 = string;
 export type CallId = string;
 export type ToolName = string;
-export type Method45 = "event/tool_end";
+export type Method51 = "event/tool_end";
 export type SessionId21 = string;
 export type CallId1 = string;
 export type Ok = boolean;
 export type Summary = string;
 export type Status = string | null;
-export type Method46 = "event/task_complete";
+export type Method52 = "event/task_complete";
 export type SessionId22 = string;
 export type TaskId1 = string;
 export type Ok1 = boolean;
-export type Method47 = "event/token_usage";
+export type Method53 = "event/token_usage";
 export type SessionId23 = string;
 export type InputTokens = number | null;
 export type OutputTokens = number | null;
@@ -279,7 +299,7 @@ export type CacheHitTokens = number | null;
 export type CacheWriteTokens = number | null;
 export type CacheHitRate = number | null;
 export type ReportingStatus = "reported" | "partial" | "not_reported";
-export type Method48 = "event/final";
+export type Method54 = "event/final";
 export type SessionId24 = string;
 export type RunId1 = string;
 export type Text5 = string;
@@ -297,7 +317,7 @@ export type RecoveryId = string;
 export type EventId = string;
 export type Seq1 = number;
 export type Timestamp = string;
-export type Method49 = "event/recovery_started";
+export type Method55 = "event/recovery_started";
 export type SourceCallId = string;
 export type RecoveryKind = "transport_retry" | "model_recovery" | "graph_replan";
 export type ErrorKind = string;
@@ -308,14 +328,14 @@ export type RecoveryId1 = string;
 export type EventId1 = string;
 export type Seq2 = number;
 export type Timestamp1 = string;
-export type Method50 = "event/recovery_analyzing";
+export type Method56 = "event/recovery_analyzing";
 export type SessionId27 = string;
 export type RunId4 = string;
 export type RecoveryId2 = string;
 export type EventId2 = string;
 export type Seq3 = number;
 export type Timestamp2 = string;
-export type Method51 = "event/recovery_attempt";
+export type Method57 = "event/recovery_attempt";
 export type Attempt = number;
 export type Strategy = "same_tool" | "corrected_arguments" | "alternative_tool" | "retry_task" | "replan";
 export type ReplacementCallId = string | null;
@@ -326,7 +346,7 @@ export type RecoveryId3 = string;
 export type EventId3 = string;
 export type Seq4 = number;
 export type Timestamp3 = string;
-export type Method52 = "event/recovery_resolved";
+export type Method58 = "event/recovery_resolved";
 export type Attempts = number;
 export type DisplaySummary1 = string;
 export type SessionId29 = string;
@@ -335,53 +355,57 @@ export type RecoveryId4 = string;
 export type EventId4 = string;
 export type Seq5 = number;
 export type Timestamp4 = string;
-export type Method53 = "event/recovery_exhausted";
+export type Method59 = "event/recovery_exhausted";
 export type Attempts1 = number;
 export type FinalError = string;
-export type Method54 = "event/error";
+export type Method60 = "event/error";
 export type SessionId30 = string;
 export type Message = string;
 export type RunId7 = string | null;
 export type Status1 = ("succeeded" | "failed" | "cancelled" | "timed_out") | null;
-export type Method55 = "event/done";
+export type Method61 = "event/done";
 export type SessionId31 = string;
 export type RunId8 = string;
 export type Status2 = "succeeded" | "failed" | "cancelled" | "timed_out";
-export type Method56 = "event/job_status";
+export type Method62 = "event/job_status";
 export type SessionId32 = string;
 export type JobId = string;
 export type State =
   "submitted" | "queued" | "running" | "approval" | "succeeded" | "failed" | "cancelled" | "timed_out";
-export type Method57 = "event/server_heartbeat";
+export type Method63 = "event/server_heartbeat";
 export type UptimeSeconds = number;
 export type ActiveJobs = number;
 export type Degraded = boolean;
-export type Method58 = "initialized";
+export type Method64 = "initialized";
 export type ProtocolVersion1 = string;
 export type ServerVersion = string;
-export type Method59 = "event/process_started";
+export type Method65 = "event/process_started";
 export type Pid = number;
 export type StartedAt = number;
 export type InstancePolicy = string;
-export type Method60 = "event/process_shutdown";
+export type Method66 = "event/process_shutdown";
 export type Reason1 = string;
 export type Graceful = boolean;
-export type Method61 = "event/recovery_required";
+export type Method67 = "event/recovery_required";
 export type SessionId33 = string;
 export type PreviousStatus = string;
 export type Status3 = string;
-export type Method62 = "event/process_failed";
+export type Method68 = "event/process_failed";
 export type Reason2 = string;
 export type ErrorCode = string;
+export type Method69 = "event/workspace_changed";
+export type ProjectId2 = string;
+export type WorkspaceRoot3 = string;
+export type DisplayName1 = string;
 export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method63 = "approval/request";
+export type Method70 = "approval/request";
 export type SessionId34 = string;
 export type RequestId3 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action = string;
 export type RequestId4 = string;
 export type Decision = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method64 = "question/request";
+export type Method71 = "question/request";
 export type SessionId35 = string;
 export type QuestionId = string;
 export type Question = string;
@@ -416,7 +440,7 @@ export type AgentProtocol =
   | BridgeResult
   | BridgeAbort;
 export type Role = string;
-export type DisplayName = string;
+export type DisplayName2 = string;
 export type Goal = string;
 export type Backstory = string;
 export type Constraints = string[];
@@ -439,7 +463,7 @@ export type NextOnSuccess = string | null;
 export type NextOnFailure = string | null;
 export type MaxRetries = number;
 export type Name2 = string;
-export type DisplayName1 = string;
+export type DisplayName3 = string;
 export type Description = string;
 export type Members = AgentSpec[];
 export type Stages = SopStage[];
@@ -447,7 +471,7 @@ export type EntryStage = string;
 export type TotalTokenBudget = number;
 export type TotalTimeoutS = number;
 export type MaxDelegations = number;
-export type Method65 = "agents/delegate";
+export type Method72 = "agents/delegate";
 export type SessionId36 = string;
 export type RequestId5 = string;
 export type ToRole = string;
@@ -464,7 +488,7 @@ export type Error = string;
 export type ToolsUsed = string[];
 export type TokensUsed1 = number;
 export type DurationS = number;
-export type Method66 = "agents/consult";
+export type Method73 = "agents/consult";
 export type SessionId37 = string;
 export type RequestId7 = string;
 export type FromRole = string;
@@ -476,7 +500,7 @@ export type AuditorRole = string;
 export type Passed = boolean;
 export type Findings = string[];
 export type CreatedAt = number;
-export type Method67 = "event/team";
+export type Method74 = "event/team";
 export type SessionId38 = string;
 export type Role3 = string;
 export type Stage2 = string;
@@ -499,39 +523,39 @@ export type ExperimentTag1 = "E0" | "E1" | "E2";
 export type Task1 = string;
 export type Tokens = number;
 export type TimeoutS1 = number;
-export type Method68 = "task_delegate";
+export type Method75 = "task_delegate";
 export type TaskId2 = string;
 export type ParentId = string | null;
 export type Goal1 = string;
 export type ContextRefs = string[];
 export type Acceptance = string[];
 export type Tools1 = string[];
-export type Method69 = "progress";
+export type Method76 = "progress";
 export type TaskId3 = string;
 export type Status4 = "running" | "blocked" | "done" | "failed";
 export type Stage3 = string;
 export type Percent = number;
 export type EtaS = number | null;
 export type Notes = string;
-export type Method70 = "tool_call";
+export type Method77 = "tool_call";
 export type TaskId4 = string;
 export type Tool = string;
 export type Status5 = "running" | "done" | "failed";
 export type ResultRef = string;
-export type Method71 = "plan";
+export type Method78 = "plan";
 export type TaskId5 = string;
 export type Steps1 = string[];
 export type Files = string[];
 export type EstTokens = number;
 export type Ack = boolean;
-export type Method72 = "result";
+export type Method79 = "result";
 export type TaskId6 = string;
 export type Ok3 = boolean;
 export type Summary1 = string;
 export type ArtifactPaths = string[];
 export type TokensUsed3 = number;
 export type DurationS1 = number;
-export type Method73 = "abort";
+export type Method80 = "abort";
 export type TaskId7 = string;
 export type Reason4 = "budget" | "timeout" | "user";
 export type Partial = boolean;
@@ -992,6 +1016,55 @@ export interface TeamSetActiveRequest {
   [k: string]: unknown;
 }
 /**
+ * PhaseG-B4 list recent projects.
+ */
+export interface ProjectListRequest {
+  method?: Method37;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B4 add a local directory. Display name is separate from path.
+ */
+export interface ProjectAddRequest {
+  method?: Method38;
+  path: Path;
+  display_name?: DisplayName;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B4 drop from recent list. Never deletes user files.
+ */
+export interface ProjectRemoveRequest {
+  method?: Method39;
+  project_id: ProjectId;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B4 switch the active project without changing process cwd.
+ */
+export interface ProjectSetActiveRequest {
+  method?: Method40;
+  project_id: ProjectId1;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B4 report branch/worktree or NOT_A_GIT_REPO. Never chdir.
+ */
+export interface WorkspaceStatusRequest {
+  method?: Method41;
+  workspace_root: WorkspaceRoot1;
+  [k: string]: unknown;
+}
+/**
+ * Reject paths that escape the bound workspace, including symlink hops.
+ */
+export interface WorkspaceResolveRequest {
+  method?: Method42;
+  workspace_root: WorkspaceRoot2;
+  path: Path1;
+  [k: string]: unknown;
+}
+/**
  * Runtime agent event (Phase E4; E-layer bus carries these).
  *
  * Field matrix (PHASE-E §4.1, authoritative):
@@ -1017,7 +1090,7 @@ export interface TeamSetActiveRequest {
  * values are rejected on construction and deserialization.
  */
 export interface AgentEvent {
-  method: Method37;
+  method: Method43;
   session_id: SessionId13;
   agent_id: AgentId2;
   run_id?: RunId;
@@ -1038,7 +1111,7 @@ export interface Payload {
  * SSE ``type: token`` via ``StreamTUI._buffer("token")`` / flush (api_server.py).
  */
 export interface MessageDelta {
-  method?: Method38;
+  method?: Method44;
   session_id: SessionId14;
   text: Text1;
   [k: string]: unknown;
@@ -1047,7 +1120,7 @@ export interface MessageDelta {
  * SSE ``type: progress`` from ``StreamTUI.write_progress`` (api_server.py).
  */
 export interface ProgressUpdate {
-  method?: Method39;
+  method?: Method45;
   session_id: SessionId15;
   text: Text2;
   [k: string]: unknown;
@@ -1056,7 +1129,7 @@ export interface ProgressUpdate {
  * SSE ``type: reasoning`` with ``snapshot: true`` from ``StreamTUI._emit_thinking_snapshot`` (api_server.py).
  */
 export interface ReasoningSnapshot {
-  method?: Method40;
+  method?: Method46;
   session_id: SessionId16;
   text: Text3;
   snapshot?: Snapshot;
@@ -1066,7 +1139,7 @@ export interface ReasoningSnapshot {
  * SSE ``type: plan`` from ``StreamTUI.write_plan`` (api_server.py).
  */
 export interface PlanUpdate {
-  method?: Method41;
+  method?: Method47;
   session_id: SessionId17;
   steps: Steps;
   [k: string]: unknown;
@@ -1075,7 +1148,7 @@ export interface PlanUpdate {
  * SSE ``type: step`` from ``StreamTUI.write_step`` (api_server.py).
  */
 export interface StepProgress {
-  method?: Method42;
+  method?: Method48;
   session_id: SessionId18;
   index: Index;
   total: Total;
@@ -1086,7 +1159,7 @@ export interface StepProgress {
  * Structured task boundary for LangGraph runs (future emit from chat worker).
  */
 export interface TaskStarted {
-  method?: Method43;
+  method?: Method49;
   session_id: SessionId19;
   task_id: TaskId;
   title: Title1;
@@ -1096,7 +1169,7 @@ export interface TaskStarted {
  * SSE ``type: tool_call`` from ``StreamTUI.write_tool_call`` (api_server.py).
  */
 export interface ToolBegin {
-  method?: Method44;
+  method?: Method50;
   session_id: SessionId20;
   call_id: CallId;
   tool_name: ToolName;
@@ -1110,7 +1183,7 @@ export interface Arguments {
  * SSE ``type: tool_result`` from ``StreamTUI.write_tool_result`` (api_server.py).
  */
 export interface ToolEnd {
-  method?: Method45;
+  method?: Method51;
   session_id: SessionId21;
   call_id: CallId1;
   ok: Ok;
@@ -1122,7 +1195,7 @@ export interface ToolEnd {
  * Structured task completion paired with ``TaskStarted``.
  */
 export interface TaskComplete {
-  method?: Method46;
+  method?: Method52;
   session_id: SessionId22;
   task_id: TaskId1;
   ok: Ok1;
@@ -1132,7 +1205,7 @@ export interface TaskComplete {
  * Reported token usage; unknown provider values stay explicitly null.
  */
 export interface TokenUsage {
-  method?: Method47;
+  method?: Method53;
   session_id: SessionId23;
   input_tokens?: InputTokens;
   output_tokens?: OutputTokens;
@@ -1146,7 +1219,7 @@ export interface TokenUsage {
  * SSE ``type: final`` payload in ``/chat/stream`` worker (api_server.py).
  */
 export interface FinalAnswer {
-  method?: Method48;
+  method?: Method54;
   session_id: SessionId24;
   run_id: RunId1;
   text: Text5;
@@ -1170,7 +1243,7 @@ export interface RecoveryStarted {
   event_id: EventId;
   seq: Seq1;
   timestamp: Timestamp;
-  method?: Method49;
+  method?: Method55;
   source_call_id: SourceCallId;
   recovery_kind: RecoveryKind;
   error_kind: ErrorKind;
@@ -1187,7 +1260,7 @@ export interface RecoveryAnalyzing {
   event_id: EventId1;
   seq: Seq2;
   timestamp: Timestamp1;
-  method?: Method50;
+  method?: Method56;
   [k: string]: unknown;
 }
 /**
@@ -1200,7 +1273,7 @@ export interface RecoveryAttempt {
   event_id: EventId2;
   seq: Seq3;
   timestamp: Timestamp2;
-  method?: Method51;
+  method?: Method57;
   attempt: Attempt;
   strategy: Strategy;
   replacement_call_id?: ReplacementCallId;
@@ -1217,7 +1290,7 @@ export interface RecoveryResolved {
   event_id: EventId3;
   seq: Seq4;
   timestamp: Timestamp3;
-  method?: Method52;
+  method?: Method58;
   attempts: Attempts;
   display_summary: DisplaySummary1;
   [k: string]: unknown;
@@ -1232,7 +1305,7 @@ export interface RecoveryExhausted {
   event_id: EventId4;
   seq: Seq5;
   timestamp: Timestamp4;
-  method?: Method53;
+  method?: Method59;
   attempts: Attempts1;
   final_error: FinalError;
   [k: string]: unknown;
@@ -1241,7 +1314,7 @@ export interface RecoveryExhausted {
  * SSE ``type: error`` from ``StreamTUI.write_error`` and chat worker (api_server.py).
  */
 export interface ErrorNotification {
-  method?: Method54;
+  method?: Method60;
   session_id: SessionId30;
   message: Message;
   run_id?: RunId7;
@@ -1252,7 +1325,7 @@ export interface ErrorNotification {
  * SSE ``type: done`` from chat stream teardown (api_server.py).
  */
 export interface RunComplete {
-  method?: Method55;
+  method?: Method61;
   session_id: SessionId31;
   run_id: RunId8;
   status: Status2;
@@ -1262,7 +1335,7 @@ export interface RunComplete {
  * Background job state for watchdog / appserver (submitted|running|failed).
  */
 export interface JobStatusUpdate {
-  method?: Method56;
+  method?: Method62;
   session_id: SessionId32;
   job_id: JobId;
   state: State;
@@ -1272,7 +1345,7 @@ export interface JobStatusUpdate {
  * Periodic appserver liveness signal (T4 watchdog).
  */
 export interface ServerHeartbeat {
-  method?: Method57;
+  method?: Method63;
   uptime_seconds: UptimeSeconds;
   active_jobs: ActiveJobs;
   degraded: Degraded;
@@ -1282,7 +1355,7 @@ export interface ServerHeartbeat {
  * PhaseG-B2 handshake complete. No response expected.
  */
 export interface InitializedNotification {
-  method?: Method58;
+  method?: Method64;
   protocol_version: ProtocolVersion1;
   server_version: ServerVersion;
   [k: string]: unknown;
@@ -1291,7 +1364,7 @@ export interface InitializedNotification {
  * PhaseG-B3 appserver process is up and holding the instance lock.
  */
 export interface ProcessStarted {
-  method?: Method59;
+  method?: Method65;
   pid: Pid;
   started_at: StartedAt;
   instance_policy?: InstancePolicy;
@@ -1301,7 +1374,7 @@ export interface ProcessStarted {
  * PhaseG-B3 graceful shutdown. Incomplete work is not marked completed.
  */
 export interface ProcessShutdown {
-  method?: Method60;
+  method?: Method66;
   reason: Reason1;
   graceful: Graceful;
   [k: string]: unknown;
@@ -1310,7 +1383,7 @@ export interface ProcessShutdown {
  * PhaseG-B3 restart found an unfinished turn. UI must not show success.
  */
 export interface RecoveryRequired {
-  method?: Method61;
+  method?: Method67;
   session_id: SessionId33;
   previous_status: PreviousStatus;
   status?: Status3;
@@ -1320,16 +1393,26 @@ export interface RecoveryRequired {
  * PhaseG-B3 failed to become the instance (lock or boot).
  */
 export interface ProcessFailed {
-  method?: Method62;
+  method?: Method68;
   reason: Reason2;
   error_code: ErrorCode;
+  [k: string]: unknown;
+}
+/**
+ * PhaseG-B4 active workspace changed. Does not chdir the process.
+ */
+export interface WorkspaceChanged {
+  method?: Method69;
+  project_id: ProjectId2;
+  workspace_root: WorkspaceRoot3;
+  display_name: DisplayName1;
   [k: string]: unknown;
 }
 /**
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method63;
+  method?: Method70;
   session_id: SessionId34;
   request_id: RequestId3;
   risk_level: RiskLevel;
@@ -1352,7 +1435,7 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method64;
+  method?: Method71;
   session_id: SessionId35;
   question_id: QuestionId;
   question: Question;
@@ -1385,7 +1468,7 @@ export interface QuestionResponse {
  */
 export interface AgentSpec {
   role: Role;
-  display_name: DisplayName;
+  display_name: DisplayName2;
   goal: Goal;
   backstory?: Backstory;
   constraints?: Constraints;
@@ -1431,7 +1514,7 @@ export interface SopStage {
  */
 export interface TeamSpec {
   name: Name2;
-  display_name: DisplayName1;
+  display_name: DisplayName3;
   description?: Description;
   members: Members;
   stages: Stages;
@@ -1452,7 +1535,7 @@ export interface Extra1 {
  * 写清楚，否则成员会重复劳动或者不知道什么时候算完。
  */
 export interface DelegateRequest {
-  method?: Method65;
+  method?: Method72;
   session_id: SessionId36;
   request_id: RequestId5;
   to_role: ToRole;
@@ -1484,7 +1567,7 @@ export interface DelegateResult {
  * 团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
  */
 export interface ConsultRequest {
-  method?: Method66;
+  method?: Method73;
   session_id: SessionId37;
   request_id: RequestId7;
   from_role: FromRole;
@@ -1517,7 +1600,7 @@ export interface VerdictRecord {
  * F 层不得再定义名为 AgentEvent 的类型。
  */
 export interface TeamEvent {
-  method?: Method67;
+  method?: Method74;
   session_id: SessionId38;
   role: Role3;
   stage?: Stage2;
@@ -1549,7 +1632,7 @@ export interface BridgeBudget {
  * Leader → Worker (F16). Lineage-only: refs, never conversation history.
  */
 export interface TaskDelegate {
-  method?: Method68;
+  method?: Method75;
   task_id: TaskId2;
   parent_id?: ParentId;
   goal: Goal1;
@@ -1563,7 +1646,7 @@ export interface TaskDelegate {
  * Worker → Leader streaming status. notes truncated to ~2k tokens.
  */
 export interface BridgeProgress {
-  method?: Method69;
+  method?: Method76;
   task_id: TaskId3;
   status: Status4;
   stage?: Stage3;
@@ -1576,7 +1659,7 @@ export interface BridgeProgress {
  * Worker → Leader. Large results go to result_ref, never inline.
  */
 export interface BridgeToolCall {
-  method?: Method70;
+  method?: Method77;
   task_id: TaskId4;
   tool: Tool;
   args?: Args;
@@ -1591,7 +1674,7 @@ export interface Args {
  * Worker → Leader execution plan before work starts.
  */
 export interface BridgePlan {
-  method?: Method71;
+  method?: Method78;
   task_id: TaskId5;
   steps?: Steps1;
   files?: Files;
@@ -1603,7 +1686,7 @@ export interface BridgePlan {
  * Worker → Leader. summary is 1–2k tokens; artifacts are paths.
  */
 export interface BridgeResult {
-  method?: Method72;
+  method?: Method79;
   task_id: TaskId6;
   ok: Ok3;
   summary?: Summary1;
@@ -1616,7 +1699,7 @@ export interface BridgeResult {
  * Leader → Worker. Sent before a hard kill.
  */
 export interface BridgeAbort {
-  method?: Method73;
+  method?: Method80;
   task_id: TaskId7;
   reason: Reason4;
   partial?: Partial;

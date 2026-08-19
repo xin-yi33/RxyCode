@@ -398,6 +398,49 @@ class TeamSetActiveRequest(BaseModel):
     team_id: str
 
 
+class ProjectListRequest(BaseModel):
+    """PhaseG-B4 list recent projects."""
+
+    method: Literal["project/list"] = "project/list"
+
+
+class ProjectAddRequest(BaseModel):
+    """PhaseG-B4 add a local directory. Display name is separate from path."""
+
+    method: Literal["project/add"] = "project/add"
+    path: str
+    display_name: str | None = None
+
+
+class ProjectRemoveRequest(BaseModel):
+    """PhaseG-B4 drop from recent list. Never deletes user files."""
+
+    method: Literal["project/remove"] = "project/remove"
+    project_id: str
+
+
+class ProjectSetActiveRequest(BaseModel):
+    """PhaseG-B4 switch the active project without changing process cwd."""
+
+    method: Literal["project/set_active"] = "project/set_active"
+    project_id: str
+
+
+class WorkspaceStatusRequest(BaseModel):
+    """PhaseG-B4 report branch/worktree or NOT_A_GIT_REPO. Never chdir."""
+
+    method: Literal["workspace/status"] = "workspace/status"
+    workspace_root: str
+
+
+class WorkspaceResolveRequest(BaseModel):
+    """Reject paths that escape the bound workspace, including symlink hops."""
+
+    method: Literal["workspace/resolve"] = "workspace/resolve"
+    workspace_root: str
+    path: str
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -436,6 +479,12 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     TeamGroupRenameRequest,
     TeamInstallRequest,
     TeamSetActiveRequest,
+    ProjectListRequest,
+    ProjectAddRequest,
+    ProjectRemoveRequest,
+    ProjectSetActiveRequest,
+    WorkspaceStatusRequest,
+    WorkspaceResolveRequest,
 )
 
 ClientRequest = Annotated[

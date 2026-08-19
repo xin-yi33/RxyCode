@@ -1180,6 +1180,136 @@
       "title": "TeamSetActiveRequest",
       "type": "object"
     },
+    "ProjectListRequest": {
+      "description": "PhaseG-B4 list recent projects.",
+      "properties": {
+        "method": {
+          "const": "project/list",
+          "default": "project/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ProjectListRequest",
+      "type": "object"
+    },
+    "ProjectAddRequest": {
+      "description": "PhaseG-B4 add a local directory. Display name is separate from path.",
+      "properties": {
+        "method": {
+          "const": "project/add",
+          "default": "project/add",
+          "title": "Method",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ProjectAddRequest",
+      "type": "object"
+    },
+    "ProjectRemoveRequest": {
+      "description": "PhaseG-B4 drop from recent list. Never deletes user files.",
+      "properties": {
+        "method": {
+          "const": "project/remove",
+          "default": "project/remove",
+          "title": "Method",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "ProjectRemoveRequest",
+      "type": "object"
+    },
+    "ProjectSetActiveRequest": {
+      "description": "PhaseG-B4 switch the active project without changing process cwd.",
+      "properties": {
+        "method": {
+          "const": "project/set_active",
+          "default": "project/set_active",
+          "title": "Method",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "ProjectSetActiveRequest",
+      "type": "object"
+    },
+    "WorkspaceStatusRequest": {
+      "description": "PhaseG-B4 report branch/worktree or NOT_A_GIT_REPO. Never chdir.",
+      "properties": {
+        "method": {
+          "const": "workspace/status",
+          "default": "workspace/status",
+          "title": "Method",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_root"
+      ],
+      "title": "WorkspaceStatusRequest",
+      "type": "object"
+    },
+    "WorkspaceResolveRequest": {
+      "description": "Reject paths that escape the bound workspace, including symlink hops.",
+      "properties": {
+        "method": {
+          "const": "workspace/resolve",
+          "default": "workspace/resolve",
+          "title": "Method",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_root",
+        "path"
+      ],
+      "title": "WorkspaceResolveRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -2409,6 +2539,36 @@
         "error_code"
       ],
       "title": "ProcessFailed",
+      "type": "object"
+    },
+    "WorkspaceChanged": {
+      "description": "PhaseG-B4 active workspace changed. Does not chdir the process.",
+      "properties": {
+        "method": {
+          "const": "event/workspace_changed",
+          "default": "event/workspace_changed",
+          "title": "Method",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "workspace_root",
+        "display_name"
+      ],
+      "title": "WorkspaceChanged",
       "type": "object"
     },
     "ApprovalRequest": {
@@ -3886,6 +4046,24 @@
         },
         {
           "$ref": "#/$defs/TeamSetActiveRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectListRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectAddRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectRemoveRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectSetActiveRequest"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceStatusRequest"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceResolveRequest"
         }
       ]
     },
@@ -3968,6 +4146,9 @@
         },
         {
           "$ref": "#/$defs/ProcessFailed"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceChanged"
         }
       ]
     },

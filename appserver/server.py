@@ -27,7 +27,10 @@ from .jsonrpc import (
     write_message_sync,
 )
 from .lifecycle import InstanceLock, mark_incomplete_recovery_required
+from .project_routes import handle_project_rpc
+from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
+from .workspace import PathBoundaryError, assert_exists, canonicalize
 from .sessions import SessionStore
 from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
@@ -50,6 +53,7 @@ try:
         ProgressUpdate,
         RecoveryRequired,
         ServerHeartbeat,
+        WorkspaceChanged,
     )
     from ..protocol.version import (
         APPSERVER_VERSION,
@@ -76,6 +80,7 @@ except ImportError:
         ProgressUpdate,
         RecoveryRequired,
         ServerHeartbeat,
+        WorkspaceChanged,
     )
     from protocol.version import (
         APPSERVER_VERSION,
@@ -169,6 +174,7 @@ class AppServer:
         # they must never read or mutate a user's persistent Desktop history.
         # The production appserver keeps the durable store across restarts.
         self._task_store = DesktopTaskStore(persistent=not stub)
+        self._projects = ProjectStore(persistent=not stub)
         self._instance_lock = InstanceLock()
         self._instance_blocked: str | None = None
         self._recovered_sessions: list[tuple[str, str]] = []
@@ -572,6 +578,18 @@ class AppServer:
         workspace = params.get("workspace_root")
         if not isinstance(workspace, str) or not workspace.strip():
             await self._respond_error(request_id, -32602, "workspace_root is required")
+            return
+        try:
+            workspace = str(assert_exists(canonicalize(workspace)))
+            if self._projects.get(workspace) is None:
+                self._projects.add(workspace)
+        except PathBoundaryError as exc:
+            await self._respond_error(
+                request_id,
+                -32011,
+                exc.message,
+                {"error_code": exc.code, "retryable": False},
+            )
             return
         model_id = str(params.get("model") or "").strip() or None
         provider_value = str(params.get("provider_id") or "").strip()
@@ -1368,9 +1386,45 @@ class AppServer:
             from .team_routes import team_set_active
 
             await self._respond(request_id, team_set_active(params))
+        elif method in {
+            "project/list",
+            "project/add",
+            "project/remove",
+            "project/set_active",
+            "workspace/status",
+            "workspace/resolve",
+        }:
+            await self._handle_project_method(method, params, request_id)
 
         else:
             await self._respond_error(request_id, -32601, f"method not found: {method}")
+
+    async def _handle_project_method(
+        self, method: str, params: dict[str, Any], request_id: Any
+    ) -> None:
+        before = self._projects.active()
+        before_id = None if before is None else before.get("project_id")
+        try:
+            result = handle_project_rpc(self._projects, method, params)
+        except PathBoundaryError as exc:
+            await self._respond_error(
+                request_id,
+                -32011,
+                exc.message,
+                {"error_code": exc.code, "retryable": False},
+            )
+            return
+        after = self._projects.active()
+        after_id = None if after is None else after.get("project_id")
+        if method in {"project/add", "project/set_active", "project/remove"} and before_id != after_id:
+            await self._emit_model(
+                WorkspaceChanged(
+                    project_id=str((after or {}).get("project_id") or ""),
+                    workspace_root=str((after or {}).get("path") or ""),
+                    display_name=str((after or {}).get("display_name") or ""),
+                )
+            )
+        await self._respond(request_id, result)
 
     async def run(self) -> None:
         """Read JSON-RPC lines from stdin until EOF or shutdown."""
