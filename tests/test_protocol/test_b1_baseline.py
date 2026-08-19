@@ -122,4 +122,6 @@ def test_existing_object_contracts_are_not_mocked_away() -> None:
     if threads.exists():
         assert (threads / "test_b5_threads.py").is_file(), "B5 dir must contain real tests"
         assert (threads / "fixtures" / "h5-success.json").is_file(), "B5 must ship H5 fixtures"
-    assert not (ROOT / "tests" / "test_recovery").exists(), "B12 dir must not be faked in B1"
+    recovery = ROOT / "tests" / "test_recovery"
+    if recovery.exists():
+        assert any(recovery.glob("test_*.py")), "B12 dir must contain real tests"

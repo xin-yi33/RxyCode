@@ -256,10 +256,12 @@ class AppServer:
         self._inflight_turns: dict[str, str] = {}
 
     def _ensure_notification_writer(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
         if self._notification_writer is None or self._notification_writer.done():
-            self._notification_writer = asyncio.create_task(
-                self._notification_writer_loop()
-            )
+            self._notification_writer = loop.create_task(self._notification_writer_loop())
 
     async def _notification_writer_loop(self) -> None:
         while True:
