@@ -1492,6 +1492,9 @@ export interface ReviewCommentRequest {
   file_hash?: FileHash;
   [k: string]: unknown;
 }
+/**
+ * Create a session checkpoint without writing the workspace tree.
+ */
 export interface CheckpointCreateRequest {
   method?: Method38;
   session_id: SessionId29;
@@ -1499,17 +1502,26 @@ export interface CheckpointCreateRequest {
   turn_id?: TurnId2;
   [k: string]: unknown;
 }
+/**
+ * List checkpoints for a session.
+ */
 export interface CheckpointListRequest {
   method?: Method39;
   session_id: SessionId30;
   [k: string]: unknown;
 }
+/**
+ * Read one checkpoint payload.
+ */
 export interface CheckpointReadRequest {
   method?: Method40;
   checkpoint_id: CheckpointId;
   session_id: SessionId31;
   [k: string]: unknown;
 }
+/**
+ * Restore a session to a previous checkpoint.
+ */
 export interface CheckpointRestoreRequest {
   method?: Method41;
   checkpoint_id: CheckpointId1;
@@ -1517,6 +1529,9 @@ export interface CheckpointRestoreRequest {
   approval_id?: ApprovalId2;
   [k: string]: unknown;
 }
+/**
+ * Stage git paths inside the workspace.
+ */
 export interface GitStageRequest {
   method?: Method42;
   session_id: SessionId33;
@@ -1524,6 +1539,9 @@ export interface GitStageRequest {
   approval_id?: ApprovalId3;
   [k: string]: unknown;
 }
+/**
+ * Unstage git paths inside the workspace.
+ */
 export interface GitUnstageRequest {
   method?: Method43;
   session_id: SessionId34;
@@ -1531,6 +1549,9 @@ export interface GitUnstageRequest {
   approval_id?: ApprovalId4;
   [k: string]: unknown;
 }
+/**
+ * Revert git hunks or paths inside the workspace.
+ */
 export interface GitRevertRequest {
   method?: Method44;
   session_id: SessionId35;
@@ -1539,18 +1560,27 @@ export interface GitRevertRequest {
   approval_id?: ApprovalId5;
   [k: string]: unknown;
 }
+/**
+ * Preview a workspace file for the client.
+ */
 export interface FilePreviewRequest {
   method?: Method45;
   session_id: SessionId36;
   path: Path;
   [k: string]: unknown;
 }
+/**
+ * List a workspace directory tree.
+ */
 export interface FileTreeRequest {
   method?: Method46;
   session_id: SessionId37;
   path?: Path1;
   [k: string]: unknown;
 }
+/**
+ * Open a workspace file in an external program after confirm.
+ */
 export interface FileOpenExternalRequest {
   method?: Method47;
   session_id: SessionId38;
@@ -1558,17 +1588,26 @@ export interface FileOpenExternalRequest {
   confirm?: Confirm;
   [k: string]: unknown;
 }
+/**
+ * List git worktrees for the session workspace.
+ */
 export interface WorktreeListRequest {
   method?: Method48;
   session_id: SessionId39;
   [k: string]: unknown;
 }
+/**
+ * Switch the session onto an existing git worktree.
+ */
 export interface WorktreeOpenRequest {
   method?: Method49;
   session_id: SessionId40;
   worktree_id: WorktreeId;
   [k: string]: unknown;
 }
+/**
+ * Create a git worktree under the workspace.
+ */
 export interface WorktreeCreateRequest {
   method?: Method50;
   session_id: SessionId41;
@@ -1577,6 +1616,9 @@ export interface WorktreeCreateRequest {
   approval_id?: ApprovalId6;
   [k: string]: unknown;
 }
+/**
+ * Close a git worktree after optional confirm.
+ */
 export interface WorktreeCloseRequest {
   method?: Method51;
   session_id: SessionId42;
@@ -1586,6 +1628,9 @@ export interface WorktreeCloseRequest {
   approval_id?: ApprovalId7;
   [k: string]: unknown;
 }
+/**
+ * Prune stale git worktrees after confirm.
+ */
 export interface WorktreePruneRequest {
   method?: Method52;
   session_id: SessionId43;
@@ -1593,6 +1638,9 @@ export interface WorktreePruneRequest {
   approval_id?: ApprovalId8;
   [k: string]: unknown;
 }
+/**
+ * Hand a worktree path to another session after confirm.
+ */
 export interface WorktreeHandoffRequest {
   method?: Method53;
   session_id: SessionId44;
@@ -1602,6 +1650,9 @@ export interface WorktreeHandoffRequest {
   approval_id?: ApprovalId9;
   [k: string]: unknown;
 }
+/**
+ * Roll back a worktree handoff.
+ */
 export interface WorktreeHandoffRollbackRequest {
   method?: Method54;
   handoff_id: HandoffId;

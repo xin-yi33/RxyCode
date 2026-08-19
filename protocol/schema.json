@@ -1561,6 +1561,7 @@
       "type": "object"
     },
     "CheckpointCreateRequest": {
+      "description": "Create a session checkpoint without writing the workspace tree.",
       "properties": {
         "method": {
           "const": "checkpoint/create",
@@ -1604,6 +1605,7 @@
       "type": "object"
     },
     "CheckpointListRequest": {
+      "description": "List checkpoints for a session.",
       "properties": {
         "method": {
           "const": "checkpoint/list",
@@ -1623,6 +1625,7 @@
       "type": "object"
     },
     "CheckpointReadRequest": {
+      "description": "Read one checkpoint payload.",
       "properties": {
         "method": {
           "const": "checkpoint/read",
@@ -1647,6 +1650,7 @@
       "type": "object"
     },
     "CheckpointRestoreRequest": {
+      "description": "Restore a session to a previous checkpoint.",
       "properties": {
         "method": {
           "const": "checkpoint/restore",
@@ -1683,6 +1687,7 @@
       "type": "object"
     },
     "GitStageRequest": {
+      "description": "Stage git paths inside the workspace.",
       "properties": {
         "method": {
           "const": "git/stage",
@@ -1722,6 +1727,7 @@
       "type": "object"
     },
     "GitUnstageRequest": {
+      "description": "Unstage git paths inside the workspace.",
       "properties": {
         "method": {
           "const": "git/unstage",
@@ -1761,6 +1767,7 @@
       "type": "object"
     },
     "GitRevertRequest": {
+      "description": "Revert git hunks or paths inside the workspace.",
       "properties": {
         "method": {
           "const": "git/revert",
@@ -1812,6 +1819,7 @@
       "type": "object"
     },
     "FilePreviewRequest": {
+      "description": "Preview a workspace file for the client.",
       "properties": {
         "method": {
           "const": "file/preview",
@@ -1836,6 +1844,7 @@
       "type": "object"
     },
     "FileTreeRequest": {
+      "description": "List a workspace directory tree.",
       "properties": {
         "method": {
           "const": "file/tree",
@@ -1867,6 +1876,7 @@
       "type": "object"
     },
     "FileOpenExternalRequest": {
+      "description": "Open a workspace file in an external program after confirm.",
       "properties": {
         "method": {
           "const": "file/open_external",
@@ -1896,6 +1906,7 @@
       "type": "object"
     },
     "WorktreeListRequest": {
+      "description": "List git worktrees for the session workspace.",
       "properties": {
         "method": {
           "const": "worktree/list",
@@ -1915,6 +1926,7 @@
       "type": "object"
     },
     "WorktreeOpenRequest": {
+      "description": "Switch the session onto an existing git worktree.",
       "properties": {
         "method": {
           "const": "worktree/open",
@@ -1939,6 +1951,7 @@
       "type": "object"
     },
     "WorktreeCreateRequest": {
+      "description": "Create a git worktree under the workspace.",
       "properties": {
         "method": {
           "const": "worktree/create",
@@ -1987,6 +2000,7 @@
       "type": "object"
     },
     "WorktreeCloseRequest": {
+      "description": "Close a git worktree after optional confirm.",
       "properties": {
         "method": {
           "const": "worktree/close",
@@ -2033,6 +2047,7 @@
       "type": "object"
     },
     "WorktreePruneRequest": {
+      "description": "Prune stale git worktrees after confirm.",
       "properties": {
         "method": {
           "const": "worktree/prune",
@@ -2069,6 +2084,7 @@
       "type": "object"
     },
     "WorktreeHandoffRequest": {
+      "description": "Hand a worktree path to another session after confirm.",
       "properties": {
         "method": {
           "const": "worktree/handoff",
@@ -2115,6 +2131,7 @@
       "type": "object"
     },
     "WorktreeHandoffRollbackRequest": {
+      "description": "Roll back a worktree handoff.",
       "properties": {
         "method": {
           "const": "worktree/handoff/rollback",

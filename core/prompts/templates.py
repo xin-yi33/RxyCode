@@ -369,7 +369,10 @@ Task: {user_input}
 </OUTPUT_FORMAT>"""
 
 
-DELEGATE_REQUEST_TEMPLATE = """<GOAL>
+DELEGATE_REQUEST_TEMPLATE = """<ROLE>
+You are a stage worker for one delegated expert-team assignment.
+</ROLE>
+<GOAL>
 {goal}
 </GOAL>
 <OUTPUT>

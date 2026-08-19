@@ -7,18 +7,18 @@ import sys
 from pathlib import Path
 
 
-def venv_scripts(venv: Path) -> Path:
-    root = Path(venv)
-    if os.name == "nt":
-        return Path(str(root) + os.sep + "Scripts")
-    return Path(str(root) + os.sep + "bin")
+def venv_scripts(venv: Path, *, windows: bool | None = None) -> Path:
+    root = venv if isinstance(venv, Path) else Path(venv)
+    if (os.name == "nt") if windows is None else windows:
+        return root / "Scripts"
+    return root / "bin"
 
 
-def venv_python(venv: Path) -> Path:
-    scripts = venv_scripts(venv)
-    if os.name == "nt":
-        return Path(str(scripts) + os.sep + "python.exe")
-    return Path(str(scripts) + os.sep + "python")
+def venv_python(venv: Path, *, windows: bool | None = None) -> Path:
+    scripts = venv_scripts(venv, windows=windows)
+    if (os.name == "nt") if windows is None else windows:
+        return scripts / "python.exe"
+    return scripts / "python"
 
 
 def venv_site_packages(venv: Path) -> Path:

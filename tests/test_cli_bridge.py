@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -67,7 +68,14 @@ def test_list_install_launch_isolated(tmp_path: Path) -> None:
     assert installed["pip"]["kind"] == "local"
     assert installed["pip"]["pip_argv"][0] == installed["python"]
     assert installed["pip"]["pip_argv"][1:3] == ["-m", "pip"]
-    assert Path(installed["python"]).resolve() != Path(__import__("sys").executable).resolve()
+    venv_root = Path(installed["venv"])
+    isolated_python = Path(installed["python"])
+    assert os.path.normcase(os.path.abspath(str(isolated_python))).startswith(
+        os.path.normcase(os.path.abspath(str(venv_root))) + os.sep
+    )
+    assert os.path.normcase(os.path.abspath(str(isolated_python))) != os.path.normcase(
+        os.path.abspath(__import__("sys").executable)
+    )
     py = Path(installed["python"])
     probe = __import__("subprocess").run(
         [str(py), "-c", "import cli_hub_demo; print(cli_hub_demo.__version__)"],
@@ -236,20 +244,25 @@ def test_launch_start_fail_when_venv_python_missing(tmp_path: Path) -> None:
     assert INSTALL_GUIDE in start_err.value.message
 
 
-def test_venv_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_venv_paths() -> None:
     import appserver.cli_hub_service as hubmod
     import scripts.cli_venv as scriptmod
 
-    monkeypatch.setattr(hubmod.os, "name", "nt")
-    assert "Scripts" in str(hubmod.venv_python(Path("env")))
-    assert str(hubmod.venv_python(Path("env"))).endswith("python.exe")
-    monkeypatch.setattr(hubmod.os, "name", "posix")
-    posix_path = hubmod.venv_python(Path("env"))
-    assert str(posix_path).replace("\\", "/").endswith("bin/python")
-    monkeypatch.setattr(scriptmod.os, "name", "nt")
-    assert str(script_venv_python(Path("x"))).endswith("python.exe")
-    monkeypatch.setattr(scriptmod.os, "name", "posix")
-    assert str(scriptmod.venv_python(Path("x"))).replace("\\", "/").endswith("bin/python")
+    native = hubmod.venv_python(Path("env"))
+    if os.name == "nt":
+        assert native.name.lower() == "python.exe"
+        assert native.parent.name == "Scripts"
+    else:
+        assert native.name == "python"
+        assert native.parent.name == "bin"
+    win = hubmod.venv_python(Path("env"), windows=True)
+    posix = hubmod.venv_python(Path("env"), windows=False)
+    assert win.name.lower() == "python.exe"
+    assert win.parent.name == "Scripts"
+    assert posix.name == "python"
+    assert posix.parent.name == "bin"
+    assert script_venv_python(Path("x"), windows=True).name.lower() == "python.exe"
+    assert scriptmod.venv_python(Path("x"), windows=False).as_posix().endswith("bin/python")
 
 
 def test_schema_has_cli_methods() -> None:

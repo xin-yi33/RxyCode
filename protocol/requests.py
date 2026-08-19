@@ -430,6 +430,8 @@ class ReviewCommentRequest(BaseModel):
 
 
 class CheckpointCreateRequest(BaseModel):
+    """Create a session checkpoint without writing the workspace tree."""
+
     method: Literal["checkpoint/create"] = "checkpoint/create"
     session_id: str
     reason: str | None = None
@@ -437,17 +439,23 @@ class CheckpointCreateRequest(BaseModel):
 
 
 class CheckpointListRequest(BaseModel):
+    """List checkpoints for a session."""
+
     method: Literal["checkpoint/list"] = "checkpoint/list"
     session_id: str
 
 
 class CheckpointReadRequest(BaseModel):
+    """Read one checkpoint payload."""
+
     method: Literal["checkpoint/read"] = "checkpoint/read"
     checkpoint_id: str
     session_id: str
 
 
 class CheckpointRestoreRequest(BaseModel):
+    """Restore a session to a previous checkpoint."""
+
     method: Literal["checkpoint/restore"] = "checkpoint/restore"
     checkpoint_id: str
     session_id: str
@@ -455,6 +463,8 @@ class CheckpointRestoreRequest(BaseModel):
 
 
 class GitStageRequest(BaseModel):
+    """Stage git paths inside the workspace."""
+
     method: Literal["git/stage"] = "git/stage"
     session_id: str
     paths: list[str]
@@ -462,6 +472,8 @@ class GitStageRequest(BaseModel):
 
 
 class GitUnstageRequest(BaseModel):
+    """Unstage git paths inside the workspace."""
+
     method: Literal["git/unstage"] = "git/unstage"
     session_id: str
     paths: list[str]
@@ -469,6 +481,8 @@ class GitUnstageRequest(BaseModel):
 
 
 class GitRevertRequest(BaseModel):
+    """Revert git hunks or paths inside the workspace."""
+
     method: Literal["git/revert"] = "git/revert"
     session_id: str
     paths: list[str]
@@ -477,18 +491,24 @@ class GitRevertRequest(BaseModel):
 
 
 class FilePreviewRequest(BaseModel):
+    """Preview a workspace file for the client."""
+
     method: Literal["file/preview"] = "file/preview"
     session_id: str
     path: str
 
 
 class FileTreeRequest(BaseModel):
+    """List a workspace directory tree."""
+
     method: Literal["file/tree"] = "file/tree"
     session_id: str
     path: str | None = None
 
 
 class FileOpenExternalRequest(BaseModel):
+    """Open a workspace file in an external program after confirm."""
+
     method: Literal["file/open_external"] = "file/open_external"
     session_id: str
     path: str
@@ -496,17 +516,23 @@ class FileOpenExternalRequest(BaseModel):
 
 
 class WorktreeListRequest(BaseModel):
+    """List git worktrees for the session workspace."""
+
     method: Literal["worktree/list"] = "worktree/list"
     session_id: str
 
 
 class WorktreeOpenRequest(BaseModel):
+    """Switch the session onto an existing git worktree."""
+
     method: Literal["worktree/open"] = "worktree/open"
     session_id: str
     worktree_id: str
 
 
 class WorktreeCreateRequest(BaseModel):
+    """Create a git worktree under the workspace."""
+
     method: Literal["worktree/create"] = "worktree/create"
     session_id: str
     dest: str
@@ -515,6 +541,8 @@ class WorktreeCreateRequest(BaseModel):
 
 
 class WorktreeCloseRequest(BaseModel):
+    """Close a git worktree after optional confirm."""
+
     method: Literal["worktree/close"] = "worktree/close"
     session_id: str
     worktree_id: str
@@ -524,6 +552,8 @@ class WorktreeCloseRequest(BaseModel):
 
 
 class WorktreePruneRequest(BaseModel):
+    """Prune stale git worktrees after confirm."""
+
     method: Literal["worktree/prune"] = "worktree/prune"
     session_id: str
     confirm: bool = False
@@ -531,6 +561,8 @@ class WorktreePruneRequest(BaseModel):
 
 
 class WorktreeHandoffRequest(BaseModel):
+    """Hand a worktree path to another session after confirm."""
+
     method: Literal["worktree/handoff"] = "worktree/handoff"
     session_id: str
     target_session: str
@@ -540,6 +572,8 @@ class WorktreeHandoffRequest(BaseModel):
 
 
 class WorktreeHandoffRollbackRequest(BaseModel):
+    """Roll back a worktree handoff."""
+
     method: Literal["worktree/handoff/rollback"] = "worktree/handoff/rollback"
     handoff_id: str
     session_id: str

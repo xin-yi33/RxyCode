@@ -546,8 +546,9 @@ class CapabilityService:
             )
 
         if background or hang:
+            started = dict(self._jobs[job["job_id"]])
             threading.Thread(target=runner, daemon=True).start()
-            return dict(self._jobs[job["job_id"]])
+            return started
         runner()
         return dict(self._jobs[job["job_id"]])
 

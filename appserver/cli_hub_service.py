@@ -19,18 +19,18 @@ from urllib.request import urlopen
 from .settings import redact_text
 
 
-def venv_scripts(venv: Path) -> Path:
-    root = Path(venv)
-    if os.name == "nt":
-        return Path(str(root) + os.sep + "Scripts")
-    return Path(str(root) + os.sep + "bin")
+def venv_scripts(venv: Path, *, windows: bool | None = None) -> Path:
+    root = venv if isinstance(venv, Path) else Path(venv)
+    if (os.name == "nt") if windows is None else windows:
+        return root / "Scripts"
+    return root / "bin"
 
 
-def venv_python(venv: Path) -> Path:
-    scripts = venv_scripts(venv)
-    if os.name == "nt":
-        return Path(str(scripts) + os.sep + "python.exe")
-    return Path(str(scripts) + os.sep + "python")
+def venv_python(venv: Path, *, windows: bool | None = None) -> Path:
+    scripts = venv_scripts(venv, windows=windows)
+    if (os.name == "nt") if windows is None else windows:
+        return scripts / "python.exe"
+    return scripts / "python"
 
 
 def venv_site_packages(venv: Path) -> Path:
@@ -454,9 +454,20 @@ class CliHubService:
                 f"{sid} is not installed; {INSTALL_GUIDE}",
             )
         python = str(rec.get("python") or "")
-        if not python or not Path(python).exists():
+        venv_dir = Path(str(rec.get("venv") or ""))
+        py = Path(python)
+        if not python or not py.exists():
             raise CliHubError("CLI_VENV_FAILED", f"isolated python missing for {sid}; {INSTALL_GUIDE}")
-        if Path(python).resolve() == Path(sys.executable).resolve():
+        try:
+            py.resolve().relative_to(venv_dir.resolve())
+            isolated = True
+        except ValueError:
+            isolated = False
+        if not isolated:
+            py_abs = os.path.abspath(str(py))
+            venv_abs = os.path.abspath(str(venv_dir)) + os.sep
+            isolated = os.path.normcase(py_abs).startswith(os.path.normcase(venv_abs))
+        if not isolated:
             raise CliHubError("CLI_ISOLATION_BROKEN", f"CLI ran in the host interpreter; {INSTALL_GUIDE}")
         return sid, rec
 

@@ -43,7 +43,7 @@ def test_instance_lock_refuses_live_holder(tmp_path: Path) -> None:
 
 def test_stale_lock_is_stolen(tmp_path: Path) -> None:
     path = tmp_path / "appserver.lock"
-    path.write_text(json.dumps({"pid": 1}), encoding="utf-8")
+    path.write_text(json.dumps({"pid": 2_000_000_000}), encoding="utf-8")
     lock = InstanceLock(path)
     ok, _ = lock.acquire()
     assert ok

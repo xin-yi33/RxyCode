@@ -137,6 +137,30 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
             ),
         },
     ],
+    "agent_architect": [
+        {
+            "input": "Task: 给 CLI 增加 --json 输出",
+            "output": "file-level plan: entrypoint.py flag parse; formatters/json.py; tests/test_cli_json.py",
+        },
+    ],
+    "agent_coder": [
+        {
+            "input": "Plan: add --json to the CLI",
+            "output": "implemented formatters/json.py and wired entrypoint.py; tests pass",
+        },
+    ],
+    "agent_auditor": [
+        {
+            "input": "Diff of auth.py login handler",
+            "output": "通过; no blocking findings. Note: hash passwords before insert (info).",
+        },
+    ],
+    "delegate_request": [
+        {
+            "input": "goal: summarize listed refs about cache keys",
+            "output": "facts from context_refs only; no extra tools or sub-team",
+        },
+    ],
 }
 
 
