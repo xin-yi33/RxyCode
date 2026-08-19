@@ -1480,10 +1480,10 @@ python -m pytest tests/test_protocol -q
 前端验收不在本卡。
 
 **本端完成判据**：
-- [ ] 本端协议/服务落地（或探针路径 A 纯消费）
-- [ ] GXn-PROTO 变更单（若 new_method/event/field）
-- [ ] 定向 pytest 通过
-- [ ] 单 commit 到 `feat/phase-g-backend`（不要开 `feat/gxN`，不要跟前端分支互合并）
+- [x] 本端协议/服务落地（或探针路径 A 纯消费）
+- [x] GXn-PROTO 变更单（若 new_method/event/field）
+- [x] 定向 pytest 通过
+- [x] 单 commit 到 `feat/phase-g-backend`（不要开 `feat/gxN`，不要跟前端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
