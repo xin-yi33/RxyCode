@@ -5,6 +5,7 @@ branch: feat/phase-g-frontend
 commit: 665b00b
 protocol_version: "1.1.0"
 verdict: READY_FOR_FULL_D_INTEGRATION
+exit_checkboxes: all_ticked
 capabilities_consumed:
   - initialize
   - models/list

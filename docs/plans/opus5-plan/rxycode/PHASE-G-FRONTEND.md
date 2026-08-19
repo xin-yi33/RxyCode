@@ -662,7 +662,7 @@ npm run build
 - [x] 运行状态视觉（转圈/蓝点/常驻高亮）纯投影 B5 状态机；
 - [x] 多 Agent 契约预留零 mock 路径（capability 门控验证）；
 - [x] CLI 工具分组 + 预览画廊文件渲染边界（零 PHASE-I 附件协议依赖）；
-- [ ] macOS/Linux 构建目标 smoke（locale 入包 + 启动握手）通过。
+- [x] macOS/Linux 构建目标 smoke（locale 入包 + 启动握手）通过。
 
 ### 7.2 与后端的交接顺序
 
