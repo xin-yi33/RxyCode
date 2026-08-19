@@ -28,6 +28,7 @@ export interface ModelEntry {
   limit_source?: string
   context_window?: number | null
   warning?: string | null
+  effort_options?: string[]
 }
 
 export interface ModelsSnapshot {

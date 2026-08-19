@@ -1,4 +1,4 @@
-import { Pencil, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
+import { Pencil, Plus, RotateCcw, Search, Settings, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 import {
@@ -10,6 +10,7 @@ import {
   type CategorizedSession
 } from '../../../lib/sessionCategories.ts'
 import type { RunState, SessionEntry } from '../lib/conversationStore.mts'
+import { SETTINGS_ENTRY } from '../../../lib/settingsSections.ts'
 import { sessionVisualState } from './sessionVisualState.ts'
 
 export const SESSION_FOLD_STORAGE_KEY = 'rxycode.desktop.sessionFold.v1'
@@ -30,6 +31,7 @@ interface SessionListProps {
   onTrash?: (sessionId: string) => void
   onRestore?: (sessionId: string) => void
   onPurge?: (sessionId: string) => void
+  onOpenSettings?: () => void
 }
 
 interface FoldState {
@@ -86,7 +88,8 @@ function SessionList({
   onRename,
   onTrash,
   onRestore,
-  onPurge
+  onPurge,
+  onOpenSettings
 }: SessionListProps): React.JSX.Element {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
@@ -327,6 +330,19 @@ function SessionList({
             )}
           </section>
         </>
+      )}
+      {onOpenSettings !== undefined && (
+        <button
+          type="button"
+          className="settings-entry"
+          data-testid="open-settings"
+          data-radius={SETTINGS_ENTRY.borderRadiusPx}
+          aria-label={t('openSettings')}
+          onClick={onOpenSettings}
+        >
+          <Settings aria-hidden="true" size={16} />
+          <span>{t('settings')}</span>
+        </button>
       )}
       {purgeId !== null && (
         <div className="task-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPurgeId(null) }}>

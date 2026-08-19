@@ -3448,3 +3448,41 @@ html[data-theme='light'] .session-item:hover {
 .session-panel[data-visual-state='loading'] .empty-hint {
   padding: 12px;
 }
+
+.settings-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--cc-border, #2c2d33);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-text, #e8e8ea);
+  cursor: pointer;
+}
+
+.settings-entry:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='light'] .settings-entry:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.settings-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.settings-body .settings-tabs {
+  flex: 0 0 168px;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.settings-body .settings-content {
+  flex: 1;
+  min-width: 0;
+}

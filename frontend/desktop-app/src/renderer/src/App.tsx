@@ -387,7 +387,6 @@ function App(): React.JSX.Element {
             onClick={() => setSettingsOpen(true)}
             aria-label={tr('openSettings')}
             title={tr('openSettings')}
-            data-testid="open-settings"
           >
             <Settings aria-hidden="true" size={17} />
           </button>
@@ -416,6 +415,7 @@ function App(): React.JSX.Element {
               onTrash={(sessionId) => void handleTrash(sessionId)}
               onRestore={(sessionId) => void handleRestore(sessionId)}
               onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           </div>
         </div>
@@ -433,6 +433,7 @@ function App(): React.JSX.Element {
           onTrash={(sessionId) => void handleTrash(sessionId)}
           onRestore={(sessionId) => void handleRestore(sessionId)}
           onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         </div>
 

@@ -6,8 +6,13 @@ import type { ModelEntry } from '../hooks/useModels'
 import { modelsUnavailableCopy } from '../lib/modelAvailability.mts'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { DesktopLanguage, PermissionMode, ThemePreference } from '../lib/desktopPreferences.mts'
+import {
+  effortOptionsFor,
+  SETTINGS_SECTIONS,
+  type SettingsSectionId
+} from '../../../lib/settingsSections.ts'
 
-export type SettingsTab = 'general' | 'model' | 'apikey' | 'workspace' | 'diagnostics'
+export type SettingsTab = SettingsSectionId
 
 export interface SettingsPageProps {
   appVersion: string
@@ -28,13 +33,7 @@ export interface SettingsPageProps {
   onLanguageChange: (language: DesktopLanguage) => void
 }
 
-const TABS: Array<{ id: SettingsTab; labelKey: string }> = [
-  { id: 'general', labelKey: 'general' },
-  { id: 'model', labelKey: 'models' },
-  { id: 'apikey', labelKey: 'apiKey' },
-  { id: 'workspace', labelKey: 'workspace' },
-  { id: 'diagnostics', labelKey: 'updatesDiagnostics' }
-]
+
 
 const UPDATE_STATUS_KEYS: Record<UpdateStatus, string> = {
   disabled: 'updateDisabled',
@@ -290,7 +289,9 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
 
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const { t } = useI18n()
-  const [tab, setTab] = useState<SettingsTab>('general')
+  const [tab, setTab] = useState<SettingsSectionId>('general')
+  const activeModel = props.models.snapshot?.models.find((model) => model.active) ?? null
+  const effortOptions = effortOptionsFor(activeModel)
   const diagnostics = useDiagnostics()
   const updateStatus = diagnostics.updateStatus?.status ?? null
 
@@ -316,13 +317,14 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             {t('close')}
           </button>
         </header>
-        <nav className="settings-tabs">
-          {TABS.map((entry) => (
+        <div className="settings-body">
+        <nav className="settings-tabs" data-testid="settings-nav">
+          {SETTINGS_SECTIONS.map((entry) => (
             <button
               key={entry.id}
               type="button"
               className={`settings-tab${tab === entry.id ? ' active' : ''}`}
-              data-tab={entry.id}
+              data-tab={entry.id === 'models' ? 'model' : entry.id}
               onClick={() => setTab(entry.id)}
             >
               {t(entry.labelKey)}
@@ -330,6 +332,12 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           ))}
         </nav>
         <div className="settings-content">
+          {tab === 'recycle' && (
+            <section className="settings-panel" data-testid="settings-recycle">
+              <h2>{t('recycle')}</h2>
+              <UnavailablePanel title={t('blocked')} detail={t('recycleBlockedDetail')} blockedPrerequisite />
+            </section>
+          )}
           {tab === 'general' && (
             <section className="settings-panel" data-testid="general-settings">
               <h2>{t('general')}</h2>
@@ -342,15 +350,6 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 </select>
               </div>
               <div className="settings-option-row">
-                <div><strong>{t('theme')}</strong><p className="settings-hint">{t('themeHint')}</p></div>
-                <select aria-label={t('theme')} value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
-                  <option value="system">{t('themeSystem')}</option>
-                  <option value="light">{t('themeLight')}</option>
-                  <option value="dark">{t('themeDark')}</option>
-                  <option value="high-contrast">{t('themeHighContrast')}</option>
-                </select>
-              </div>
-              <div className="settings-option-row">
                 <div><strong>{t('language')}</strong><p className="settings-hint">{t('languageHint')}</p></div>
                 <select aria-label={t('language')} value={props.language} onChange={(event) => props.onLanguageChange(event.target.value as DesktopLanguage)}>
                   <option value="zh-CN">{t('languageZh')}</option>
@@ -359,7 +358,21 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               </div>
             </section>
           )}
-          {tab === 'model' && (
+          {tab === 'appearance' && (
+            <section className="settings-panel" data-testid="settings-appearance">
+              <h2>{t('appearance')}</h2>
+              <div className="settings-option-row">
+                <div><strong>{t('theme')}</strong><p className="settings-hint">{t('themeHint')}</p></div>
+                <select aria-label={t('theme')} value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
+                  <option value="system">{t('themeSystem')}</option>
+                  <option value="light">{t('themeLight')}</option>
+                  <option value="dark">{t('themeDark')}</option>
+                  <option value="high-contrast">{t('themeHighContrast')}</option>
+                </select>
+              </div>
+            </section>
+          )}
+          {tab === 'models' && (
             <section className="settings-panel">
               <h2>{t('models')}</h2>
               {props.models.loading && !props.models.supported ? (
@@ -441,12 +454,30 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   ))}
                 </div>
               )}
-              {props.models.supported && <AddModelPanel models={props.models} onModelSelected={props.onModelSelected} />}
+              <div className="settings-option-row">
+                <div><strong>{t('effort')}</strong></div>
+                <select
+                  aria-label={t('effort')}
+                  data-testid="effort-select"
+                  disabled={effortOptions.length === 0}
+                  defaultValue=""
+                >
+                  {effortOptions.length === 0 ? (
+                    <option value="">{t('effortNone')}</option>
+                  ) : (
+                    effortOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))
+                  )}
+                </select>
+              </div>
             </section>
           )}
-          {tab === 'apikey' && (
-            <section className="settings-panel">
-              <h2>{t('apiKey')}</h2>
+          {tab === 'addModel' && (
+            <section className="settings-panel" data-testid="settings-add-model">
+              <h2>{t('addModel')}</h2>
+              {props.models.supported && <AddModelPanel models={props.models} onModelSelected={props.onModelSelected} />}
+              <h3>{t('apiKey')}</h3>
               {props.models.loading && !props.models.supported ? (
                 <p className="settings-hint">{t('loading')}</p>
               ) : !props.models.supported ? (
@@ -475,7 +506,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               )}
             </section>
           )}
-          {tab === 'workspace' && (
+          {tab === 'general' && (
             <section className="settings-panel">
               <h2>{t('workspace')}</h2>
               <div className="workspace-card">
@@ -513,7 +544,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               </div>
             </section>
           )}
-          {tab === 'diagnostics' && (
+          {tab === 'general' && (
             <section className="settings-panel">
               <h2>{t('updatesDiagnostics')}</h2>
               <div className="workspace-card">
@@ -605,6 +636,25 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               </div>
             </section>
           )}
+          {tab === 'skills' && (
+            <section className="settings-panel" data-testid="settings-skills">
+              <h2>{t('skills')}</h2>
+              <UnavailablePanel title={t('blocked')} detail={t('skillsBlockedDetail')} blockedPrerequisite />
+            </section>
+          )}
+          {tab === 'mcp' && (
+            <section className="settings-panel" data-testid="settings-mcp">
+              <h2>{t('mcp')}</h2>
+              <UnavailablePanel title={t('blocked')} detail={t('mcpBlockedDetail')} blockedPrerequisite />
+            </section>
+          )}
+          {tab === 'team' && (
+            <section className="settings-panel" data-testid="settings-team">
+              <h2>{t('team')}</h2>
+              <UnavailablePanel title={t('blocked')} detail={t('teamBlockedDetail')} blockedPrerequisite />
+            </section>
+          )}
+        </div>
         </div>
       </div>
     </div>

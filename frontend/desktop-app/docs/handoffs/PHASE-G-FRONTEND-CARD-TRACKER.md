@@ -19,7 +19,7 @@
 | H13 打包与更新 UI | 验收完成（pytest B13 BLOCKED） | PASS | pending |
 | H14 i18n | 验收勾选（luna PASS） | PASS | pending-this-commit |
 | H15 会话栏三分类 | 验收勾选（luna PASS） | PASS | this-commit |
-| H16 Settings 8 分区 | 验收完成 | PASS | pending |
+| H16 Settings 8 分区 | 验收勾选（luna PASS） | PASS | this-commit |
 | H17 运行状态视觉 | 验收完成 | PASS | pending |
 | H18 多 Agent 契约预留 | 验收完成 | PASS | pending |
 | H19 CLI 画廊 | 验收完成 | PASS | pending |
