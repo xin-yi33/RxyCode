@@ -392,6 +392,21 @@ class ApprovalAuditRequest(BaseModel):
     session_id: str | None = None
 
 
+class ApprovalModeSetRequest(BaseModel):
+    """GX2 UI preset mapped onto B7 policy. Request must use ``preset`` not ``mode``."""
+
+    method: Literal["approval/mode_set"] = "approval/mode_set"
+    preset: Literal["ask", "auto", "full"]
+
+
+class ApprovalFullAccessEnableRequest(BaseModel):
+    """GX2-PROTO: session-scoped unlock of B7 full_access. Restart clears it."""
+
+    method: Literal["approval/full_access_enable"] = "approval/full_access_enable"
+    actor: str
+    source: str = "settings"
+
+
 class ReviewStartRequest(BaseModel):
     """PhaseG-B8 start a read-only review. Does not modify the working tree."""
 
@@ -1328,6 +1343,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ApprovalDecideRequest,
     ApprovalRevokeRequest,
     ApprovalAuditRequest,
+    ApprovalModeSetRequest,
+    ApprovalFullAccessEnableRequest,
     ReviewStartRequest,
     ReviewReadRequest,
     ReviewCommentRequest,

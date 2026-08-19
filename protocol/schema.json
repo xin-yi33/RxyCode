@@ -1336,6 +1336,56 @@
       "title": "ApprovalAuditRequest",
       "type": "object"
     },
+    "ApprovalModeSetRequest": {
+      "description": "GX2 UI preset mapped onto B7 policy. Request must use ``preset`` not ``mode``.",
+      "properties": {
+        "method": {
+          "const": "approval/mode_set",
+          "default": "approval/mode_set",
+          "title": "Method",
+          "type": "string"
+        },
+        "preset": {
+          "enum": [
+            "ask",
+            "auto",
+            "full"
+          ],
+          "title": "Preset",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "title": "ApprovalModeSetRequest",
+      "type": "object"
+    },
+    "ApprovalFullAccessEnableRequest": {
+      "description": "GX2-PROTO: session-scoped unlock of B7 full_access. Restart clears it.",
+      "properties": {
+        "method": {
+          "const": "approval/full_access_enable",
+          "default": "approval/full_access_enable",
+          "title": "Method",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "source": {
+          "default": "settings",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor"
+      ],
+      "title": "ApprovalFullAccessEnableRequest",
+      "type": "object"
+    },
     "ReviewStartRequest": {
       "description": "PhaseG-B8 start a read-only review. Does not modify the working tree.",
       "properties": {
@@ -7523,6 +7573,12 @@
         },
         {
           "$ref": "#/$defs/ApprovalAuditRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalModeSetRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalFullAccessEnableRequest"
         },
         {
           "$ref": "#/$defs/ReviewStartRequest"

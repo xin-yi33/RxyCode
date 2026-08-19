@@ -32,6 +32,7 @@ from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
 from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
 from .execution import ExecutionStore
+from .approval_router import ApprovalRouter
 from .permission import PermissionStore
 from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
@@ -207,6 +208,7 @@ class AppServer:
         self._sessions = SessionStore(task_store=self._task_store)
         self._execution = ExecutionStore(on_change=self._schedule_execution_event)
         self._permissions = PermissionStore(persistent=not stub)
+        self._approval_router = ApprovalRouter()
         self._reviews = ReviewService()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
@@ -294,6 +296,15 @@ class AppServer:
                     truncated=record.truncated,
                 )
             )
+        )
+
+    def route_approval(self, request_id: str, *, risk: str = "", action: str = "") -> str:
+        """B7 event presentation: card vs modal. High-risk always modal."""
+        return self._approval_router.route(
+            request_id,
+            risk=risk,
+            preset=self._permissions.ui_preset,
+            action=action,
         )
 
     def _schedule_notification(self, message: dict[str, Any]) -> None:
@@ -2561,6 +2572,31 @@ class AppServer:
                 request_id,
                 {"records": self._permissions.audit(params.get("session_id"))},
             )
+        elif method == "approval/mode_set":
+            try:
+                result = self._permissions.apply_ui_preset(str(params.get("preset") or ""))
+            except PermissionError as exc:
+                await self._respond_error(
+                    request_id,
+                    -32003,
+                    str(exc),
+                    {"error_code": "full_access_not_enabled"},
+                )
+                return
+            except ValueError as exc:
+                await self._respond_error(request_id, -32602, str(exc))
+                return
+            await self._respond(request_id, result)
+        elif method == "approval/full_access_enable":
+            try:
+                result = self._permissions.enable_full_access(
+                    actor=str(params.get("actor") or ""),
+                    source=str(params.get("source") or "settings"),
+                )
+            except ValueError as exc:
+                await self._respond_error(request_id, -32602, str(exc))
+                return
+            await self._respond(request_id, result)
         elif method == "review/start":
             await self._handle_review_start(params, request_id)
         elif method == "review/read":

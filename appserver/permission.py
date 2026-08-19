@@ -48,6 +48,13 @@ PROFILES = {
 READ_ACTIONS = frozenset({"read", "list"})
 REJECT_THRESHOLD = 3
 
+UIPreset = str
+PRESET_TO_B7: dict[str, str] = {
+    "ask": "ask_for_each_risky_action",
+    "auto": "allow_scoped_actions",
+    "full": "full_access",
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -96,6 +103,12 @@ class PermissionStore:
         self._reject_streak: dict[str, int] = {}
         self._last_decision: dict[str, Any] | None = None
         self._live: dict[str, dict[str, Any]] = {}
+        self._ui_preset: str = "ask"
+        self._session_policy: str | None = None
+        self._full_access_enabled: bool = False
+        self._full_access_actor: str | None = None
+        self._full_access_source: str | None = None
+        self._full_access_at: str | None = None
         self._load()
 
     def _load(self) -> None:
@@ -181,6 +194,51 @@ class PermissionStore:
         self._save()
         return self.snapshot()
 
+    def active_policy(self) -> str:
+        if self._session_policy:
+            return self._session_policy
+        return str(self._data.get("profile_id") or "ask_for_each_risky_action")
+
+    @property
+    def ui_preset(self) -> str:
+        return self._ui_preset
+
+    def enable_full_access(self, *, actor: str, source: str = "settings") -> dict[str, Any]:
+        """Session-only unlock. Never persisted. Restart clears it."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor required")
+        self._full_access_enabled = True
+        self._full_access_actor = actor
+        self._full_access_source = str(source or "settings")
+        self._full_access_at = _now()
+        return {
+            "enabled": True,
+            "actor": self._full_access_actor,
+            "source": self._full_access_source,
+            "created_at": self._full_access_at,
+        }
+
+    def apply_ui_preset(self, preset: str) -> dict[str, Any]:
+        """Map GX2 UI preset onto B7 policy. Request key is preset, never mode."""
+        key = str(preset or "").strip().lower()
+        if key not in PRESET_TO_B7:
+            raise ValueError("unknown preset")
+        if key == "full" and not self._full_access_enabled:
+            raise PermissionError("full_access_not_enabled")
+        policy = PRESET_TO_B7[key]
+        self._ui_preset = key
+        self._session_policy = policy
+        if key == "ask":
+            self._data["profile_id"] = policy
+            self._data["policy_version"] = int(self._data.get("policy_version") or 1) + 1
+            self._save()
+        return {
+            "preset": key,
+            "effective_policy": policy,
+            "writable_roots": list(self._data.get("writable_roots") or []),
+        }
+
     def grant_scope(
         self,
         *,
@@ -265,7 +323,7 @@ class PermissionStore:
     ) -> dict[str, Any]:
         if decision not in {"allow", "reject"}:
             raise ValueError("decision must be allow or reject")
-        profile_id = str(self._data.get("profile_id") or "ask_for_each_risky_action")
+        profile_id = self.active_policy()
         profile = PROFILES[profile_id]
         if decision == "allow" and not profile["writable"] and action not in READ_ACTIONS:
             decision = "reject"
@@ -487,7 +545,7 @@ class PermissionStore:
                 project_id=project_id,
                 reason="read_action",
             )
-        profile = PROFILES.get(str(self._data.get("profile_id")), PROFILES["ask_for_each_risky_action"])
+        profile = PROFILES.get(self.active_policy(), PROFILES["ask_for_each_risky_action"])
         mode = str(profile.get("mode") or "ask")
         verdict = "reject"
         reason = "ask_required"
