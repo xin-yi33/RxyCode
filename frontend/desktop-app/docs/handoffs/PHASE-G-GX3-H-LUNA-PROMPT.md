@@ -4,4 +4,9 @@
 探针：schema 无 review/comment/add、review/comment/resolve → 路径 B BLOCKED_PREREQUISITE，不 mock。
 已实现：五档 scope unstaged/staged/commit/branch/last_turn；评论状态 open→stale(hunk 失效)→resolved，stale 不可 reopen；下达草稿本地生成「请处理以下内联评论」；buildCommentAdd 在探针 B 返回 BLOCKED。
 InlineComment + ReviewScopeSelector 五态。测试 4/4 pass。
-第一行 VERDICT: PASS 或 FAIL。
+
+你的回复第一行必须逐字写成（不要省略 VERDICT: 前缀）：
+VERDICT: PASS
+或
+VERDICT: FAIL
+FAIL 只列 GX3-H 本端必改项。路径 B 合规不是 FAIL。
