@@ -1,0 +1,16 @@
+{
+  "method": "settings/get",
+  "values": {
+    "model_id": "deepseek-v4-flash",
+    "provider_id": "deepseek"
+  },
+  "sources": {
+    "model_id": "thread",
+    "provider_id": "global"
+  },
+  "model_summary": {
+    "limit_source": "catalog_exact_provider",
+    "is_fallback": false,
+    "known_model": true
+  }
+}

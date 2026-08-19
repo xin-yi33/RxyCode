@@ -2946,6 +2946,370 @@
       "title": "WorkspaceResolveRequest",
       "type": "object"
     },
+    "SettingsGetRequest": {
+      "description": "Resolve settings through global→project→workspace→thread/turn.\n\nMaps ``settings/get``. Same interpretation for Desktop and CLI.",
+      "properties": {
+        "method": {
+          "const": "settings/get",
+          "default": "settings/get",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "keys": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keys"
+        }
+      },
+      "title": "SettingsGetRequest",
+      "type": "object"
+    },
+    "SettingsSetRequest": {
+      "description": "Write one explicit settings layer. Secrets are not stored in values.\n\nMaps ``settings/set``. Requires B7 permission. Changing model does not\nrewrite existing thread history.",
+      "properties": {
+        "method": {
+          "const": "settings/set",
+          "default": "settings/set",
+          "title": "Method",
+          "type": "string"
+        },
+        "layer": {
+          "title": "Layer",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": true,
+          "title": "Values",
+          "type": "object"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "layer",
+        "values"
+      ],
+      "title": "SettingsSetRequest",
+      "type": "object"
+    },
+    "SettingsModelsRequest": {
+      "description": "Look up a real model_id in ModelCatalog and return a ModelSummary.\n\nMaps ``settings/models``. Unknown models keep their id and use the high\nfallback with warning; they are not rewritten to a known catalog model.",
+      "properties": {
+        "method": {
+          "const": "settings/models",
+          "default": "settings/models",
+          "title": "Method",
+          "type": "string"
+        },
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id"
+      ],
+      "title": "SettingsModelsRequest",
+      "type": "object"
+    },
+    "SettingsDiagnoseRequest": {
+      "description": "Classify key-invalid, quota, and model-unavailable as distinct codes.\n\nMaps ``settings/diagnose``. Messages are redacted.",
+      "properties": {
+        "method": {
+          "const": "settings/diagnose",
+          "default": "settings/diagnose",
+          "title": "Method",
+          "type": "string"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Id"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        }
+      },
+      "title": "SettingsDiagnoseRequest",
+      "type": "object"
+    },
+    "SettingsRollbackRequest": {
+      "description": "Restore a settings snapshot written before a previous set.\n\nMaps ``settings/rollback``. Requires B7 permission.",
+      "properties": {
+        "method": {
+          "const": "settings/rollback",
+          "default": "settings/rollback",
+          "title": "Method",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "snapshot_id"
+      ],
+      "title": "SettingsRollbackRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -5424,6 +5788,11 @@
           "title": "File Preview",
           "type": "boolean"
         },
+        "settings": {
+          "default": true,
+          "title": "Settings",
+          "type": "boolean"
+        },
         "browser": {
           "default": false,
           "title": "Browser",
@@ -5540,6 +5909,119 @@
         "provider_id"
       ],
       "title": "ModelProviderSummary",
+      "type": "object"
+    },
+    "ModelSummary": {
+      "description": "PhaseG-B10 model limit summary. limit_source is the Phase 3 resolver source.",
+      "properties": {
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "model_context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Context Window"
+        },
+        "model_max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Max Output Tokens"
+        },
+        "resolved_max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Max Tokens"
+        },
+        "limit_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Source"
+        },
+        "is_fallback": {
+          "default": false,
+          "title": "Is Fallback",
+          "type": "boolean"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        },
+        "matched_catalog_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matched Catalog Key"
+        },
+        "known_model": {
+          "default": false,
+          "title": "Known Model",
+          "type": "boolean"
+        },
+        "family_pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Family Pattern"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id"
+      ],
+      "title": "ModelSummary",
       "type": "object"
     },
     "PermissionProfileSummary": {
@@ -5937,6 +6419,21 @@
         },
         {
           "$ref": "#/$defs/WorkspaceResolveRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsGetRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsSetRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsModelsRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsDiagnoseRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsRollbackRequest"
         }
       ]
     },
@@ -6107,6 +6604,9 @@
         },
         {
           "$ref": "#/$defs/ModelProviderSummary"
+        },
+        {
+          "$ref": "#/$defs/ModelSummary"
         },
         {
           "$ref": "#/$defs/PermissionProfileSummary"

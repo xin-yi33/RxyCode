@@ -775,6 +775,80 @@ class WorkspaceResolveRequest(BaseModel):
     path: str
 
 
+class SettingsGetRequest(BaseModel):
+    """Resolve settings through global→project→workspace→thread/turn.
+
+    Maps ``settings/get``. Same interpretation for Desktop and CLI.
+    """
+
+    method: Literal["settings/get"] = "settings/get"
+    session_id: str | None = None
+    project_id: str | None = None
+    workspace: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    keys: list[str] | None = None
+
+
+class SettingsSetRequest(BaseModel):
+    """Write one explicit settings layer. Secrets are not stored in values.
+
+    Maps ``settings/set``. Requires B7 permission. Changing model does not
+    rewrite existing thread history.
+    """
+
+    method: Literal["settings/set"] = "settings/set"
+    layer: str
+    values: JsonObject
+    session_id: str | None = None
+    project_id: str | None = None
+    workspace: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+
+
+class SettingsModelsRequest(BaseModel):
+    """Look up a real model_id in ModelCatalog and return a ModelSummary.
+
+    Maps ``settings/models``. Unknown models keep their id and use the high
+    fallback with warning; they are not rewritten to a known catalog model.
+    """
+
+    method: Literal["settings/models"] = "settings/models"
+    provider_id: str
+    model_id: str
+    max_tokens: int | None = None
+    session_id: str | None = None
+
+
+class SettingsDiagnoseRequest(BaseModel):
+    """Classify key-invalid, quota, and model-unavailable as distinct codes.
+
+    Maps ``settings/diagnose``. Messages are redacted.
+    """
+
+    method: Literal["settings/diagnose"] = "settings/diagnose"
+    error_code: str | None = None
+    message: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+
+
+class SettingsRollbackRequest(BaseModel):
+    """Restore a settings snapshot written before a previous set.
+
+    Maps ``settings/rollback``. Requires B7 permission.
+    """
+
+    method: Literal["settings/rollback"] = "settings/rollback"
+    snapshot_id: str
+    session_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -857,6 +931,11 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ProjectSetActiveRequest,
     WorkspaceStatusRequest,
     WorkspaceResolveRequest,
+    SettingsGetRequest,
+    SettingsSetRequest,
+    SettingsModelsRequest,
+    SettingsDiagnoseRequest,
+    SettingsRollbackRequest,
 )
 
 ClientRequest = Annotated[
@@ -883,6 +962,11 @@ ClientRequest = Annotated[
         ChildSessionCancelRequest,
         ChildSessionRetryRequest,
         ShutdownRequest,
+        SettingsGetRequest,
+        SettingsSetRequest,
+        SettingsModelsRequest,
+        SettingsDiagnoseRequest,
+        SettingsRollbackRequest,
     ],
     Field(discriminator="method"),
 ]

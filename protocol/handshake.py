@@ -25,6 +25,7 @@ class CapabilitySnapshot(BaseModel):
     git_hunk_actions: bool = True
     worktree: bool = True
     file_preview: bool = True
+    settings: bool = True
     browser: bool = False
     mcp: bool = True
     skills: bool = True
@@ -46,6 +47,22 @@ class ModelProviderSummary(BaseModel):
     limit_source: str | None = None
     is_fallback: bool = False
     warning: str | None = None
+
+
+class ModelSummary(BaseModel):
+    """PhaseG-B10 model limit summary. limit_source is the Phase 3 resolver source."""
+
+    provider_id: str
+    model_id: str
+    model_context_window: int | None = None
+    model_max_output_tokens: int | None = None
+    resolved_max_tokens: int | None = None
+    limit_source: str | None = None
+    is_fallback: bool = False
+    warning: str | None = None
+    matched_catalog_key: str | None = None
+    known_model: bool = False
+    family_pattern: str | None = None
 
 
 class PermissionProfileSummary(BaseModel):
@@ -71,6 +88,7 @@ class InitializeResult(BaseModel):
 HANDSHAKE_MODELS: tuple[type[BaseModel], ...] = (
     CapabilitySnapshot,
     ModelProviderSummary,
+    ModelSummary,
     PermissionProfileSummary,
     InitializeResult,
 )

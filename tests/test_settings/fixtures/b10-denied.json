@@ -1,0 +1,5 @@
+{
+  "method": "settings/set",
+  "error_code": "SETTINGS_PERMISSION_DENIED",
+  "actor": "auto_review"
+}

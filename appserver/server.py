@@ -36,6 +36,7 @@ from .permission import PermissionStore
 from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .sessions import SessionStore
+from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
@@ -106,24 +107,21 @@ _MAX_CONCURRENT_PROMPTS = 256
 
 def _model_provider_summaries() -> list[ModelProviderSummary]:
     try:
-        from config.model_catalog import ModelCatalog
-
-        catalog = ModelCatalog.load()
+        rows = handshake_model_summaries()
     except Exception:
         return []
-    seen: dict[str, ModelProviderSummary] = {}
-    for record in catalog._exact.values():
-        if record.provider_id in seen:
-            continue
-        seen[record.provider_id] = ModelProviderSummary(
-            provider_id=record.provider_id,
-            model_id=record.model_id,
-            model_context_window=record.model_context_window,
-            model_max_output_tokens=record.model_max_output_tokens,
-            limit_source="model-metadata" if record.model_max_output_tokens else "fallback",
-            is_fallback=record.model_max_output_tokens is None,
+    return [
+        ModelProviderSummary(
+            provider_id=row["provider_id"],
+            model_id=row["model_id"],
+            model_context_window=row.get("model_context_window"),
+            model_max_output_tokens=row.get("resolved_max_tokens"),
+            limit_source=row.get("limit_source"),
+            is_fallback=bool(row.get("is_fallback")),
+            warning=row.get("warning"),
         )
-    return list(seen.values())
+        for row in rows
+    ]
 
 
 def _permission_profiles() -> list[PermissionProfileSummary]:
@@ -202,6 +200,7 @@ class AppServer:
         self._permissions = PermissionStore(persistent=not stub)
         self._reviews = ReviewService()
         self._worktrees = WorktreeService()
+        self._settings = SettingsService(persistent=not stub)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -709,6 +708,7 @@ class AppServer:
                 "approval": True,
                 "models": True,
                 "credentials": True,
+                "settings": True,
             },
             capability_snapshot=CapabilitySnapshot(thread_fork=True),
             model_providers=_model_provider_summaries(),
@@ -1985,6 +1985,123 @@ class AppServer:
         self._sessions.set_workspace(target_session, result["target"])
         await self._respond(request_id, result)
 
+    def _settings_scope(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("session_id") or "").strip() or None
+        thread_id = str(params.get("thread_id") or "").strip() or session_id
+        workspace = params.get("workspace")
+        project_id = str(params.get("project_id") or "").strip() or None
+        if session_id:
+            record = self._sessions.get(session_id)
+            if record is not None:
+                if not workspace:
+                    workspace = str(record.workspace_root)
+                if not project_id:
+                    found = self._projects.find_by_path(record.workspace_root)
+                    if found:
+                        project_id = str(found.get("project_id") or "") or None
+        return {
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "turn_id": str(params.get("turn_id") or "").strip() or None,
+            "workspace": workspace,
+            "project_id": project_id,
+        }
+
+    async def _handle_settings_get(self, params: dict[str, Any], request_id: Any) -> None:
+        scope = self._settings_scope(params)
+        keys = params.get("keys")
+        result = self._settings.get(
+            project_id=scope["project_id"],
+            workspace=scope["workspace"],
+            thread_id=scope["thread_id"],
+            turn_id=scope["turn_id"],
+            keys=keys if isinstance(keys, list) else None,
+        )
+        await self._respond(request_id, result)
+
+    async def _handle_settings_set(self, params: dict[str, Any], request_id: Any) -> None:
+        scope = self._settings_scope(params)
+        values = params.get("values")
+        if not isinstance(values, dict):
+            await self._respond_error(
+                request_id, -32602, "values must be an object", {"error_code": "SETTINGS_KEY_INVALID"}
+            )
+            return
+        try:
+            result = self._settings.set(
+                layer=str(params.get("layer") or ""),
+                values=values,
+                permission_store=self._permissions,
+                project_id=scope["project_id"],
+                workspace=scope["workspace"],
+                thread_id=scope["thread_id"],
+                turn_id=scope["turn_id"],
+                session_id=scope["session_id"],
+                actor=str(params.get("actor") or "user"),
+                approval_id=params.get("approval_id"),
+                project_store=self._projects,
+            )
+        except SettingsError as exc:
+            await self._respond_error(
+                request_id,
+                -32003,
+                exc.message,
+                {"error_code": exc.code, "retryable": False},
+            )
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_settings_models(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = summarize_model(
+                provider_id=str(params.get("provider_id") or ""),
+                model_id=str(params.get("model_id") or ""),
+                configured_max_tokens=params.get("max_tokens"),
+            )
+        except SettingsError as exc:
+            await self._respond_error(
+                request_id,
+                -32003,
+                exc.message,
+                {"error_code": exc.code, "retryable": False},
+            )
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_settings_diagnose(self, params: dict[str, Any], request_id: Any) -> None:
+        await self._respond(
+            request_id,
+            self._settings.diagnose(
+                error_code=params.get("error_code"),
+                message=params.get("message"),
+                provider_id=params.get("provider_id"),
+                model_id=params.get("model_id"),
+            ),
+        )
+
+    async def _handle_settings_rollback(self, params: dict[str, Any], request_id: Any) -> None:
+        scope = self._settings_scope(params)
+        try:
+            result = self._settings.rollback(
+                str(params.get("snapshot_id") or ""),
+                permission_store=self._permissions,
+                actor=str(params.get("actor") or "user"),
+                approval_id=params.get("approval_id"),
+                project_id=scope["project_id"],
+                workspace=scope["workspace"],
+                session_id=scope["session_id"],
+                turn_id=scope["turn_id"],
+            )
+        except SettingsError as exc:
+            await self._respond_error(
+                request_id,
+                -32003,
+                exc.message,
+                {"error_code": exc.code, "retryable": False},
+            )
+            return
+        await self._respond(request_id, result)
+
     async def _handle_worktree_rollback(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id") or "")
         if not session_id:
@@ -2232,6 +2349,16 @@ class AppServer:
             await self._handle_worktree_handoff(params, request_id)
         elif method == "worktree/handoff/rollback":
             await self._handle_worktree_rollback(params, request_id)
+        elif method == "settings/get":
+            await self._handle_settings_get(params, request_id)
+        elif method == "settings/set":
+            await self._handle_settings_set(params, request_id)
+        elif method == "settings/models":
+            await self._handle_settings_models(params, request_id)
+        elif method == "settings/diagnose":
+            await self._handle_settings_diagnose(params, request_id)
+        elif method == "settings/rollback":
+            await self._handle_settings_rollback(params, request_id)
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":
