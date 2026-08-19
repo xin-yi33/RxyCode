@@ -9,6 +9,7 @@
     "src/features/**/*",
     "src/lib/**/*",
     "src/i18n/**/*",
+    "src/i18n/**/*.json",
     "src/ui/**/*",
     "src/stores/**/*",
     "src/components/**/*",
@@ -19,6 +20,7 @@
     "jsx": "react-jsx",
     "noEmit": true,
     "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
     "paths": {
       "@renderer/*": [
         "./src/renderer/src/*"

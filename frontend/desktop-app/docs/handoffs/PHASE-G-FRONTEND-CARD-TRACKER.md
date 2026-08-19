@@ -17,7 +17,7 @@
 | H11 Settings/模型/Capabilities/MCP/Skills | 验收完成（pytest B10/B11 BLOCKED） | PASS | pending |
 | H12 Notifications/恢复/无障碍 | 验收完成 | PASS | pending |
 | H13 打包与更新 UI | 验收完成（pytest B13 BLOCKED） | PASS | pending |
-| H14 i18n | 验收完成（GX22 全量文案未完） | PASS | pending |
+| H14 i18n | 验收勾选（luna PASS） | PASS | pending-this-commit |
 | H15 会话栏三分类 | 验收完成 | PASS | pending |
 | H16 Settings 8 分区 | 验收完成 | PASS | pending |
 | H17 运行状态视觉 | 验收完成 | PASS | pending |

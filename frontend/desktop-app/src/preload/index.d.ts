@@ -50,6 +50,7 @@ declare global {
           appVersion: string
           appserverPid: number | null
           appserverStatus: string
+          systemLocale?: string
         }>
       }
       update: {

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface GoalDialogProps {
   open: boolean
@@ -17,6 +18,7 @@ function GoalDialog({
   onSave,
   onClear
 }: GoalDialogProps): React.JSX.Element | null {
+  const { t } = useI18n()
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => {
@@ -43,12 +45,12 @@ function GoalDialog({
       }}
     >
       <div className="confirm-dialog goal-dialog" role="dialog" aria-modal="true" aria-labelledby="goal-title">
-        <h2 id="goal-title">目标</h2>
-        <p>设置要持续追求的目标。之后每一轮对话都会带上它，直到你清除。</p>
+        <h2 id="goal-title">{t('goalTitle')}</h2>
+        <p>{t('goalBody')}</p>
         <textarea
           ref={inputRef}
           data-testid="goal-input"
-          aria-label="持续目标"
+          aria-label={t('goal')}
           placeholder="/goal 例如：把登录流程做成可演示的产品"
           value={value}
           rows={4}
@@ -61,9 +63,9 @@ function GoalDialog({
           }}
         />
         <div className="confirm-actions">
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="button" data-testid="goal-clear" onClick={onClear}>清除</button>
-          <button type="button" className="primary-action" data-testid="goal-save" onClick={onSave}>保存目标</button>
+          <button type="button" onClick={onClose}>{t('cancel')}</button>
+          <button type="button" data-testid="goal-clear" onClick={onClear}>{t('clear')}</button>
+          <button type="button" className="primary-action" data-testid="goal-save" onClick={onSave}>{t('goalSave')}</button>
         </div>
       </div>
     </div>

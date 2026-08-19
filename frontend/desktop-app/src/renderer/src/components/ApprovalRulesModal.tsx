@@ -1,10 +1,5 @@
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { ApprovalActionScope, ApprovalRule } from '../lib/approvalPolicy.mts'
-
-const SCOPE_LABELS: Record<ApprovalActionScope, string> = {
-  any: '此工作区此等级',
-  exact: '仅此动作',
-  prefix: '同类动作'
-}
 
 interface ApprovalRulesModalProps {
   open: boolean
@@ -19,16 +14,22 @@ function ApprovalRulesModal({
   onClose,
   onRevoke
 }: ApprovalRulesModalProps): React.JSX.Element | null {
+  const { t } = useI18n()
+  const scopeLabels: Record<ApprovalActionScope, string> = {
+    any: t('scopeAny'),
+    exact: t('scopeExact'),
+    prefix: t('scopePrefix')
+  }
   if (!open) return null
   return (
     <div className="approval-overlay">
       <div className="approval-dialog rules-dialog" role="dialog" aria-modal="true">
         <div className="approval-header">
-          <span className="approval-title">权限 · 始终允许规则</span>
+          <span className="approval-title">{t('rulesTitle')}</span>
         </div>
         {rules.length === 0 ? (
           <div className="rules-empty">
-            暂无始终允许规则。审批弹层中选择「始终允许」并设置作用域后，规则会出现在这里。
+            {t('rulesEmpty')}
           </div>
         ) : (
           <div className="rules-list">
@@ -38,9 +39,9 @@ function ApprovalRulesModal({
                   <span className={`approval-risk ${rule.riskLevel.toLowerCase()}`}>
                     {rule.riskLevel}
                   </span>
-                  <span className="rule-scope">{SCOPE_LABELS[rule.actionScope]}</span>
+                  <span className="rule-scope">{scopeLabels[rule.actionScope]}</span>
                   <button type="button" className="revoke-rule" onClick={() => onRevoke(rule.id)}>
-                    撤销
+                    {t('revoke')}
                   </button>
                 </div>
                 {rule.actionScope !== 'any' && <div className="rule-action">{rule.action}</div>}

@@ -1,18 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { ApprovalActionScope, ApprovalExpiryHours } from '../lib/approvalPolicy.mts'
 import type { ApprovalRequestItem } from '../lib/conversationStore.mts'
-
-const EXPIRY_OPTIONS: Array<{ value: ApprovalExpiryHours; label: string }> = [
-  { value: 1, label: '1 小时' },
-  { value: 24, label: '24 小时' },
-  { value: 168, label: '7 天' }
-]
-
-const SCOPE_OPTIONS: Array<{ value: ApprovalActionScope; label: string; hint: string }> = [
-  { value: 'exact', label: '仅此动作', hint: '只匹配完全相同的一条动作' },
-  { value: 'prefix', label: '同类动作', hint: '匹配以该描述开头的动作' },
-  { value: 'any', label: '此工作区此等级', hint: '允许该风险等级的全部动作' }
-]
 
 interface ApprovalModalProps {
   item: ApprovalRequestItem
@@ -29,9 +18,20 @@ function ApprovalModal({
   onAlwaysAllow,
   onDismiss
 }: ApprovalModalProps): React.JSX.Element {
+  const { t } = useI18n()
   const [formOpen, setFormOpen] = useState(false)
   const [scope, setScope] = useState<ApprovalActionScope>('exact')
   const [expiresInHours, setExpiresInHours] = useState<ApprovalExpiryHours>(24)
+  const expiryOptions: Array<{ value: ApprovalExpiryHours; label: string }> = [
+    { value: 1, label: t('expiry1h') },
+    { value: 24, label: t('expiry24h') },
+    { value: 168, label: t('expiry7d') }
+  ]
+  const scopeOptions: Array<{ value: ApprovalActionScope; label: string; hint: string }> = [
+    { value: 'exact', label: t('scopeExact'), hint: t('scopeExactHint') },
+    { value: 'prefix', label: t('scopePrefix'), hint: t('scopePrefixHint') },
+    { value: 'any', label: t('scopeAny'), hint: t('scopeAnyHint') }
+  ]
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => {
@@ -48,15 +48,15 @@ function ApprovalModal({
       <div className="approval-overlay">
         <div className="approval-dialog error" role="dialog" aria-modal="true">
           <div className="approval-header">
-            <span className="approval-title">审批请求失败</span>
+            <span className="approval-title">{t('approvalFailed')}</span>
           </div>
           <div className="approval-action">{item.action}</div>
           <div className="approval-error-message">
-            {item.error ?? '无法响应审批请求（连接可能已断开）。'}
+            {item.error ?? t('approvalDisconnect')}
           </div>
           <div className="approval-actions">
             <button type="button" className="approval-dismiss" onClick={onDismiss}>
-              关闭
+              {t('close')}
             </button>
           </div>
         </div>
@@ -69,7 +69,7 @@ function ApprovalModal({
       <div className="approval-dialog" role="dialog" aria-modal="true">
         <div className="approval-header">
           <span className={`approval-risk ${item.riskLevel.toLowerCase()}`}>{item.riskLevel}</span>
-          <span className="approval-title">审批请求</span>
+          <span className="approval-title">{t('approvalRequest')}</span>
         </div>
         <div className="approval-action">{item.action}</div>
         {item.details !== undefined && Object.keys(item.details).length > 0 && (
@@ -77,11 +77,11 @@ function ApprovalModal({
         )}
 
         {item.status === 'submitting' ? (
-          <div className="approval-submitting">正在提交…</div>
+          <div className="approval-submitting">{t('submitting')}</div>
         ) : formOpen ? (
           <div className="approval-scope-form">
-            <div className="approval-form-label">始终允许的作用域</div>
-            {SCOPE_OPTIONS.map((option) => (
+            <div className="approval-form-label">{t('alwaysAllowScope')}</div>
+            {scopeOptions.map((option) => (
               <label key={option.value} className="approval-scope-option">
                 <input
                   type="radio"
@@ -96,7 +96,7 @@ function ApprovalModal({
                 </span>
               </label>
             ))}
-            <div className="approval-form-label">有效期</div>
+            <div className="approval-form-label">{t('expiry')}</div>
             <select
               className="approval-expiry"
               value={expiresInHours}
@@ -104,7 +104,7 @@ function ApprovalModal({
                 setExpiresInHours(Number(event.target.value) as ApprovalExpiryHours)
               }
             >
-              {EXPIRY_OPTIONS.map((option) => (
+              {expiryOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -116,23 +116,23 @@ function ApprovalModal({
                 className="save-rule"
                 onClick={() => onAlwaysAllow(scope, expiresInHours)}
               >
-                保存并允许
+                {t('saveAndAllow')}
               </button>
               <button type="button" className="cancel-rule" onClick={() => setFormOpen(false)}>
-                取消
+                {t('cancel')}
               </button>
             </div>
           </div>
         ) : (
           <div className="approval-actions">
             <button type="button" className="approve" onClick={onApprove}>
-              批准
+              {t('approve')}
             </button>
             <button type="button" className="reject" onClick={onReject}>
-              拒绝
+              {t('reject')}
             </button>
             <button type="button" className="always-allow" onClick={() => setFormOpen(true)}>
-              始终允许…
+              {t('alwaysAllow')}…
             </button>
           </div>
         )}

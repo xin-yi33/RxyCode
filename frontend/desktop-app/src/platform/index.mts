@@ -29,6 +29,7 @@ export interface AppserverInfo {
   appVersion: string
   appserverPid?: number | null
   appserverStatus?: string
+  systemLocale?: string
 }
 
 export interface AppserverPlatform {

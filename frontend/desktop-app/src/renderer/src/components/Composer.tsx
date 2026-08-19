@@ -1,5 +1,6 @@
 import { ArrowUp, ChevronDown, Mic, Plus, Square } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { ModelEntry } from '../hooks/useModels'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { PermissionMode } from '../lib/desktopPreferences.mts'
@@ -26,10 +27,10 @@ interface ComposerProps {
   onRequestPermissionModeChange: (mode: PermissionMode) => void
 }
 
-const MODE_LABELS: Record<PermissionMode, string> = {
-  confirm_all: '更改前询问',
-  auto_edit: '自动编辑',
-  full_auto: '完全访问'
+const MODE_KEYS: Record<PermissionMode, string> = {
+  confirm_all: 'modeConfirmAll',
+  auto_edit: 'modeAutoEdit',
+  full_auto: 'modeFullAuto'
 }
 
 type FileWithPath = File & { path?: string }
@@ -59,6 +60,7 @@ function Composer({
   permissionMode,
   onRequestPermissionModeChange
 }: ComposerProps): React.JSX.Element {
+  const { t } = useI18n()
   const [text, setText] = useState('')
   const [attachment, setAttachment] = useState<{ name: string; path: string } | null>(null)
   const [plusOpen, setPlusOpen] = useState(false)
@@ -87,12 +89,12 @@ function Composer({
   }, [plusOpen])
 
   const placeholder = disabled
-    ? 'Waiting for appserver…'
+    ? t('composerWaiting')
     : running
-      ? 'Running — press Stop to cancel'
+      ? t('composerRunning')
       : planMode
-        ? (hasPlan ? '请你补充说明哪里需要改进' : '描述你想规划的任务…')
-        : '随心输入'
+        ? (hasPlan ? t('composerPlanRevise') : t('composerPlanNew'))
+        : t('composerIdle')
 
   return (
     <footer className="composer" data-testid="composer">
@@ -103,7 +105,7 @@ function Composer({
             <button
               type="button"
               className="composer-attachment-remove"
-              aria-label="Remove attachment"
+              aria-label={t('removeAttachment')}
               onClick={() => setAttachment(null)}
             >
               ×
@@ -112,11 +114,11 @@ function Composer({
         )}
         {goal !== '' && (
           <button type="button" className="composer-goal-chip" data-testid="composer-goal-chip" onClick={onOpenGoal}>
-            目标 · {goal}
+            {t('goal')} · {goal}
           </button>
         )}
         <textarea
-          aria-label="Task prompt"
+          aria-label={t('task')}
           data-testid="composer-input"
           value={text}
           placeholder={placeholder}
@@ -154,10 +156,10 @@ function Composer({
               <button
                 type="button"
                 className={'composer-icon-button' + (plusOpen ? ' is-open' : '')}
-                aria-label="添加"
+                aria-label={t('composerAdd')}
                 aria-expanded={plusOpen}
                 data-testid="composer-plus"
-                title="添加"
+                title={t('composerAdd')}
                 onClick={() => setPlusOpen((open) => !open)}
                 disabled={disabled || running}
               >
@@ -178,23 +180,23 @@ function Composer({
                 type="button"
                 className="composer-mode-chip"
                 data-testid="composer-plan-chip"
-                title="关闭计划模式"
+                title={t('planModeOff')}
                 onClick={onTogglePlanMode}
               >
-                计划
+                {t('planMode')}
               </button>
             )}
             <label className="composer-permission-control">
-              <span className="sr-only">Permission mode for this task</span>
+              <span className="sr-only">{t('permissionMode')}</span>
               <select
-                aria-label="Permission mode for this task"
+                aria-label={t('permissionMode')}
                 data-testid="composer-permission-mode"
                 value={permissionMode}
                 disabled={disabled || running}
                 onChange={(event) => onRequestPermissionModeChange(event.target.value as PermissionMode)}
               >
-                {(Object.keys(MODE_LABELS) as PermissionMode[]).map((mode) => (
-                  <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
+                {(Object.keys(MODE_KEYS) as PermissionMode[]).map((mode) => (
+                  <option key={mode} value={mode}>{t(MODE_KEYS[mode])}</option>
                 ))}
               </select>
               <ChevronDown aria-hidden="true" size={13} />
@@ -202,17 +204,17 @@ function Composer({
           </div>
           <div className="composer-toolbar-right">
             <label className="composer-model-control">
-              <span className="sr-only">Task model</span>
+              <span className="sr-only">{t('taskModel')}</span>
               <select
                 id="composer-model"
-                aria-label="Task model"
+                aria-label={t('taskModel')}
                 data-testid="composer-model"
                 value={selectedModelId}
                 disabled={disabled || running || models.length === 0}
                 onChange={(event) => onSelectModel(event.target.value)}
               >
                 {models.length === 0 ? (
-                  <option value="">{modelsLoading ? 'Loading models…' : 'No configured models'}</option>
+                  <option value="">{modelsLoading ? t('loadingModels') : t('noConfiguredModels')}</option>
                 ) : (
                   groups.map(([group, entries]) => (
                     <optgroup key={group} label={group}>
@@ -230,8 +232,8 @@ function Composer({
             <button
               type="button"
               className="composer-icon-button composer-mic"
-              aria-label="Voice input unavailable"
-              title="Voice input is not configured"
+              aria-label={t('voiceUnavailable')}
+              title={t('voiceUnavailable')}
               disabled
             >
               <Mic aria-hidden="true" size={16} />
@@ -240,7 +242,7 @@ function Composer({
               type={running ? 'button' : 'submit'}
               className={running ? 'composer-send composer-stop stop' : 'composer-send send'}
               data-testid={running ? 'composer-stop' : 'composer-send'}
-              aria-label={running ? 'Stop task' : 'Send task'}
+              aria-label={running ? t('stopTask') : t('sendTask')}
               onClick={running ? onStop : undefined}
               disabled={!running && !canSend}
             >

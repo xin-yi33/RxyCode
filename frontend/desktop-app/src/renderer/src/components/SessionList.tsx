@@ -1,5 +1,6 @@
 import { Pencil, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { RunState, SessionEntry } from '../lib/conversationStore.mts'
 
 interface SessionListProps {
@@ -29,6 +30,7 @@ function SessionList({
   onRestore,
   onPurge
 }: SessionListProps): React.JSX.Element {
+  const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [showTrash, setShowTrash] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -104,8 +106,8 @@ function SessionList({
                 aria-label={`Rename ${session.title}`}
                 data-testid={`rename-input-${session.sessionId}`}
               />
-              <button type="submit" className="rename-save" data-testid={`rename-save-${session.sessionId}`}>Save</button>
-              <button type="button" className="rename-cancel" data-testid={`rename-cancel-${session.sessionId}`} onClick={() => { setRenamingId(null); setRenameValue('') }}>Cancel</button>
+              <button type="submit" className="rename-save" data-testid={`rename-save-${session.sessionId}`}>{t('save')}</button>
+              <button type="button" className="rename-cancel" data-testid={`rename-cancel-${session.sessionId}`} onClick={() => { setRenamingId(null); setRenameValue('') }}>{t('cancel')}</button>
             </form>
           ) : (
             <button
@@ -128,10 +130,10 @@ function SessionList({
         <div className="session-actions" aria-label={`${session.title} actions`}>
           {trashed ? (
             <>
-              <button type="button" className="icon-button" title="Restore task" aria-label="Restore task" data-testid={`restore-task-${session.sessionId}`} onClick={() => onRestore?.(session.sessionId)}>
+              <button type="button" className="icon-button" title={t('restore')} aria-label={t('restore')} data-testid={`restore-task-${session.sessionId}`} onClick={() => onRestore?.(session.sessionId)}>
                 <RotateCcw aria-hidden="true" size={14} />
               </button>
-              <button type="button" className="icon-button danger" title="Delete permanently" aria-label="Delete permanently" data-testid={`purge-task-${session.sessionId}`} onClick={() => {
+              <button type="button" className="icon-button danger" title={t('deletePermanently')} aria-label={t('deletePermanently')} data-testid={`purge-task-${session.sessionId}`} onClick={() => {
                 setPurgeId(session.sessionId)
               }}>
                 <Trash2 aria-hidden="true" size={14} />
@@ -139,10 +141,10 @@ function SessionList({
             </>
           ) : (
             <>
-              <button type="button" className="icon-button" title="Rename task" aria-label="Rename task" data-testid={`rename-task-${session.sessionId}`} onClick={() => requestRename(session)}>
+              <button type="button" className="icon-button" title={t('rename')} aria-label={t('rename')} data-testid={`rename-task-${session.sessionId}`} onClick={() => requestRename(session)}>
                 <Pencil aria-hidden="true" size={14} />
               </button>
-              <button type="button" className="icon-button danger" title="Move to recently deleted" aria-label="Move to recently deleted" data-testid={`trash-task-${session.sessionId}`} onClick={() => onTrash?.(session.sessionId)}>
+              <button type="button" className="icon-button danger" title={t('moveToDeleted')} aria-label={t('moveToDeleted')} data-testid={`trash-task-${session.sessionId}`} onClick={() => onTrash?.(session.sessionId)}>
                 <Trash2 aria-hidden="true" size={14} />
               </button>
             </>
@@ -155,25 +157,25 @@ function SessionList({
   return (
     <aside className="session-panel" data-testid="session-nav" aria-label="Tasks and sessions">
       <div className="panel-header">
-        <span className="panel-title">Tasks</span>
-        <button type="button" className="new-session" onClick={onCreate} disabled={disabled} title="New task" aria-label="New task" data-testid="new-session">
+        <span className="panel-title">{t('tasks')}</span>
+        <button type="button" className="new-session" onClick={onCreate} disabled={disabled} title={t('newTask')} aria-label={t('newTask')} data-testid="new-session">
           <Plus aria-hidden="true" size={16} />
         </button>
       </div>
       <label className="session-search">
         <Search aria-hidden="true" size={14} />
-        <span className="sr-only">Search tasks</span>
-        <input type="search" placeholder="Search tasks" aria-label="Search tasks" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <span className="sr-only">{t('searchTasks')}</span>
+        <input type="search" placeholder={t('searchTasks')} aria-label={t('searchTasks')} value={query} onChange={(event) => setQuery(event.target.value)} />
       </label>
       {activeTasks.length === 0 && trashedTasks.length === 0 ? (
-        <p className="empty-hint">No tasks yet. Create a task to begin.</p>
+        <p className="empty-hint">{t('emptyTasks')}</p>
       ) : (
         <>
           {activeTasks.length > 0 && <ul className="session-list">{activeTasks.map((session) => renderTask(session, false))}</ul>}
           {trashedTasks.length > 0 && (
             <section className="recently-deleted">
               <button type="button" className="trash-toggle" aria-expanded={showTrash} onClick={() => setShowTrash((value) => !value)}>
-                Recently deleted ({trashedTasks.length})
+                {t('recentlyDeleted')} ({trashedTasks.length})
               </button>
               {showTrash && <ul className="session-list trashed-list">{trashedTasks.map((session) => renderTask(session, true))}</ul>}
             </section>
@@ -183,12 +185,12 @@ function SessionList({
       {purgeId !== null && (
         <div className="task-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPurgeId(null) }}>
           <section className="task-dialog" role="dialog" aria-modal="true" aria-labelledby="purge-task-title" data-testid="purge-dialog">
-            <p className="inspector-eyebrow">PERMANENT ACTION</p>
-            <h2 id="purge-task-title">Delete this task permanently?</h2>
-            <p>Only the saved task history will be removed. Workspace files, repositories, and generated artifacts are not deleted.</p>
+            <p className="inspector-eyebrow">{t('permanentAction')}</p>
+            <h2 id="purge-task-title">{t('purgeTitle')}</h2>
+            <p>{t('purgeBody')}</p>
             <div className="task-dialog-actions">
-              <button ref={purgeCancelRef} type="button" onClick={() => setPurgeId(null)}>Cancel</button>
-              <button type="button" className="danger" onClick={() => { onPurge?.(purgeId); setPurgeId(null) }}>Delete permanently</button>
+              <button ref={purgeCancelRef} type="button" onClick={() => setPurgeId(null)}>{t('cancel')}</button>
+              <button type="button" className="danger" onClick={() => { onPurge?.(purgeId); setPurgeId(null) }}>{t('deletePermanently')}</button>
             </div>
           </section>
         </div>
