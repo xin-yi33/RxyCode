@@ -3811,6 +3811,226 @@
       "title": "ReleaseDiagnoseRequest",
       "type": "object"
     },
+    "CliListRequest": {
+      "description": "List CLI-Hub software ids. Names stay out of tools/registry.\n\nMaps ``cli/list``.",
+      "properties": {
+        "method": {
+          "const": "cli/list",
+          "default": "cli/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "CliListRequest",
+      "type": "object"
+    },
+    "CliInstallRequest": {
+      "description": "Install one CLI into an isolated venv.\n\nMaps ``cli/install``.",
+      "properties": {
+        "method": {
+          "const": "cli/install",
+          "default": "cli/install",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "default": "cli-hub",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliInstallRequest",
+      "type": "object"
+    },
+    "CliLaunchRequest": {
+      "description": "Launch an installed CLI software id.\n\nMaps ``cli/launch``.",
+      "properties": {
+        "method": {
+          "const": "cli/launch",
+          "default": "cli/launch",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliLaunchRequest",
+      "type": "object"
+    },
+    "CliUninstallRequest": {
+      "description": "Uninstall one isolated CLI software id.\n\nMaps ``cli/uninstall``.",
+      "properties": {
+        "method": {
+          "const": "cli/uninstall",
+          "default": "cli/uninstall",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliUninstallRequest",
+      "type": "object"
+    },
+    "CliStartRequest": {
+      "description": "Start a long-running CLI process in its isolated venv.\n\nMaps ``cli/start``.",
+      "properties": {
+        "method": {
+          "const": "cli/start",
+          "default": "cli/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliStartRequest",
+      "type": "object"
+    },
+    "CliStopRequest": {
+      "description": "Stop a long-running CLI process.\n\nMaps ``cli/stop``.",
+      "properties": {
+        "method": {
+          "const": "cli/stop",
+          "default": "cli/stop",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliStopRequest",
+      "type": "object"
+    },
+    "CliDecideRequest": {
+      "description": "C-C registry-first decision for a software id.\n\nMaps ``cli/decide``.",
+      "properties": {
+        "method": {
+          "const": "cli/decide",
+          "default": "cli/decide",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "has_source": {
+          "default": false,
+          "title": "Has Source",
+          "type": "boolean"
+        },
+        "has_sdk": {
+          "default": false,
+          "title": "Has Sdk",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliDecideRequest",
+      "type": "object"
+    },
+    "CliRecordFailureRequest": {
+      "description": "C-E generate-failure ladder record.\n\nMaps ``cli/record_failure``.",
+      "properties": {
+        "method": {
+          "const": "cli/record_failure",
+          "default": "cli/record_failure",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "next_step": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Step"
+        }
+      },
+      "required": [
+        "name",
+        "stage",
+        "reason"
+      ],
+      "title": "CliRecordFailureRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -7063,6 +7283,30 @@
         },
         {
           "$ref": "#/$defs/ReleaseDiagnoseRequest"
+        },
+        {
+          "$ref": "#/$defs/CliListRequest"
+        },
+        {
+          "$ref": "#/$defs/CliInstallRequest"
+        },
+        {
+          "$ref": "#/$defs/CliLaunchRequest"
+        },
+        {
+          "$ref": "#/$defs/CliUninstallRequest"
+        },
+        {
+          "$ref": "#/$defs/CliStartRequest"
+        },
+        {
+          "$ref": "#/$defs/CliStopRequest"
+        },
+        {
+          "$ref": "#/$defs/CliDecideRequest"
+        },
+        {
+          "$ref": "#/$defs/CliRecordFailureRequest"
         }
       ]
     },

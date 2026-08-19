@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cli-hub-demo"
+version = "0.1.0"
+description = "Local fixture CLI package for PhaseG-B14"
+requires-python = ">=3.11"
+
+[project.scripts]
+cli-demo = "cli_hub_demo.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

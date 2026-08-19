@@ -20,7 +20,7 @@ from typing import Any, Callable
 from .review import ReviewError
 from .settings import redact_text
 
-KINDS = ("skill", "mcp", "browser")
+KINDS = ("skill", "mcp", "browser", "cli")
 JOB_STATES = ("started", "progress", "completed", "failed", "cancelled")
 
 
@@ -66,6 +66,7 @@ class CapabilityService:
         review_service: Any = None,
         mcp_invoker: Callable[..., Any] | None = None,
         invoke_timeout_s: float = 2.0,
+        cli_lister: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.persistent = persistent
         self.path = path or Path(os.environ.get("RXYCODE_DATA_DIR", ".")) / "desktop" / "capabilities.json"
@@ -77,6 +78,7 @@ class CapabilityService:
         self._reviews = review_service
         self._mcp_invoker = mcp_invoker
         self._invoke_timeout_s = invoke_timeout_s
+        self._cli_lister = cli_lister
         self._cancel_flags: dict[str, threading.Event] = {}
         self._lock = threading.RLock()
         self._data: dict[str, Any] = {
@@ -249,8 +251,59 @@ class CapabilityService:
             "bypass": False,
         }
 
+    def _project_cli(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if self._cli_lister is None:
+            return rows
+        try:
+            payload = self._cli_lister() or {}
+        except Exception:
+            return rows
+        tools = payload.get("tools")
+        software = payload.get("software") if not tools else None
+        items = tools if isinstance(tools, list) else (software or [])
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "cli-hub")
+            if source not in {"builtin", "cli-hub", "self-generated"}:
+                source = "cli-hub"
+            cap_id = str(item.get("id") or "")
+            if not cap_id:
+                continue
+            installed = bool(item.get("installed"))
+            enabled = self._enabled(cap_id, default=True)
+            authorized = self._authorized_flag(cap_id)
+            rows.append(
+                {
+                    "capability_id": cap_id,
+                    "kind": "cli",
+                    "name": str(item.get("name") or cap_id),
+                    "source": source,
+                    "installed": installed,
+                    "enabled": enabled,
+                    "authorized": authorized,
+                    "available": installed and enabled and authorized,
+                    "connection": "n/a",
+                    "permissions": ["cli.list", "cli.run"],
+                    "origin": "cli-hub",
+                    "locator": cap_id,
+                    "error": None,
+                    "cancellable": True,
+                    "copyable": True,
+                    "collapsible": True,
+                    "tool_metadata": {
+                        "software_id": cap_id,
+                        "source": source,
+                        "namespace": "cli",
+                        "agent_tools": ["cli_list", "cli_run"],
+                    },
+                }
+            )
+        return rows
+
     def list(self, *, kind: str | None = None, available_only: bool = False) -> dict[str, Any]:
-        rows = self._project_skills() + self._project_mcp() + [self._project_browser()]
+        rows = self._project_skills() + self._project_mcp() + [self._project_browser()] + self._project_cli()
         if kind:
             rows = [row for row in rows if row["kind"] == kind]
         if available_only:
@@ -565,6 +618,13 @@ class CapabilityService:
             raise CapabilityError("CAPABILITY_NOT_FOUND", "missing projection")
         if flag.is_set():
             raise CapabilityError("CAPABILITY_CANCELLED", "cancelled")
+        if projection["kind"] == "cli":
+            return self._result_payload(
+                projection["capability_id"],
+                [],
+                projection,
+                tool_metadata=projection.get("tool_metadata"),
+            )
         if projection["kind"] == "skill":
             skill_md = Path(str(projection.get("origin") or "")) / "SKILL.md"
             if not skill_md.is_file():

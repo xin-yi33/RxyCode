@@ -1008,6 +1008,93 @@ class ReleaseDiagnoseRequest(BaseModel):
     schema_digest: str | None = None
 
 
+class CliListRequest(BaseModel):
+    """List CLI-Hub software ids. Names stay out of tools/registry.
+
+    Maps ``cli/list``.
+    """
+
+    method: Literal["cli/list"] = "cli/list"
+
+
+class CliInstallRequest(BaseModel):
+    """Install one CLI into an isolated venv.
+
+    Maps ``cli/install``.
+    """
+
+    method: Literal["cli/install"] = "cli/install"
+    name: str
+    source: str = "cli-hub"
+
+
+class CliLaunchRequest(BaseModel):
+    """Launch an installed CLI software id.
+
+    Maps ``cli/launch``.
+    """
+
+    method: Literal["cli/launch"] = "cli/launch"
+    name: str
+    args: list[str] | None = None
+
+
+class CliUninstallRequest(BaseModel):
+    """Uninstall one isolated CLI software id.
+
+    Maps ``cli/uninstall``.
+    """
+
+    method: Literal["cli/uninstall"] = "cli/uninstall"
+    name: str
+
+
+class CliStartRequest(BaseModel):
+    """Start a long-running CLI process in its isolated venv.
+
+    Maps ``cli/start``.
+    """
+
+    method: Literal["cli/start"] = "cli/start"
+    name: str
+    args: list[str] | None = None
+
+
+class CliStopRequest(BaseModel):
+    """Stop a long-running CLI process.
+
+    Maps ``cli/stop``.
+    """
+
+    method: Literal["cli/stop"] = "cli/stop"
+    name: str
+
+
+class CliDecideRequest(BaseModel):
+    """C-C registry-first decision for a software id.
+
+    Maps ``cli/decide``.
+    """
+
+    method: Literal["cli/decide"] = "cli/decide"
+    name: str
+    has_source: bool = False
+    has_sdk: bool = False
+
+
+class CliRecordFailureRequest(BaseModel):
+    """C-E generate-failure ladder record.
+
+    Maps ``cli/record_failure``.
+    """
+
+    method: Literal["cli/record_failure"] = "cli/record_failure"
+    name: str
+    stage: str
+    reason: str
+    next_step: str | None = None
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -1109,6 +1196,14 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     NotificationsCursorRequest,
     ReleaseStatusRequest,
     ReleaseDiagnoseRequest,
+    CliListRequest,
+    CliInstallRequest,
+    CliLaunchRequest,
+    CliUninstallRequest,
+    CliStartRequest,
+    CliStopRequest,
+    CliDecideRequest,
+    CliRecordFailureRequest,
 )
 
 ClientRequest = Annotated[
@@ -1154,6 +1249,14 @@ ClientRequest = Annotated[
         NotificationsCursorRequest,
         ReleaseStatusRequest,
         ReleaseDiagnoseRequest,
+        CliListRequest,
+        CliInstallRequest,
+        CliLaunchRequest,
+        CliUninstallRequest,
+        CliStartRequest,
+        CliStopRequest,
+        CliDecideRequest,
+        CliRecordFailureRequest,
     ],
     Field(discriminator="method"),
 ]

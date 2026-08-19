@@ -39,6 +39,7 @@ from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
 from .release import ReleaseService
+from .cli_hub_service import CliHubError, CliHubService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -206,10 +207,12 @@ class AppServer:
         self._reviews = ReviewService()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
+        self._cli_hub = CliHubService()
         self._capabilities = CapabilityService(
             persistent=not stub,
             execution_store=self._execution,
             review_service=self._reviews,
+            cli_lister=self._cli_hub.tool_metadata,
         )
         self._recovery = RecoveryService(persistent=not stub, task_store=self._task_store)
         self._release = ReleaseService()
@@ -2244,6 +2247,39 @@ class AppServer:
             self._sessions.set_workspace(str(target), str(previous))
         await self._respond(request_id, result)
 
+    def _handle_cli(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        hub = self._cli_hub
+        name = str(params.get("name") or "")
+        args = params.get("args") if isinstance(params.get("args"), list) else None
+        if method == "cli/list":
+            return hub.list_software()
+        if method == "cli/install":
+            return hub.install(name, source=str(params.get("source") or "cli-hub"))
+        if method == "cli/uninstall":
+            return hub.uninstall(name)
+        if method == "cli/launch":
+            return hub.launch(name, args)
+        if method == "cli/start":
+            return hub.start(name, args)
+        if method == "cli/stop":
+            return hub.stop(name)
+        if method == "cli/decide":
+            return hub.decide(
+                name,
+                has_source=bool(params.get("has_source")),
+                has_sdk=bool(params.get("has_sdk")),
+            )
+        if method == "cli/record_failure":
+            return hub.record_generate_failure(
+                name,
+                str(params.get("stage") or ""),
+                str(params.get("reason") or ""),
+                params.get("next_step") if params.get("next_step") is not None else None,
+            )
+        if method == "cli/schema":
+            return hub.schema(name)
+        raise CliHubError("CLI_METHOD_UNKNOWN", f"unknown cli method: {method}")
+
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
@@ -2520,6 +2556,13 @@ class AppServer:
             await self._respond(request_id, self._release.compatibility())
         elif method == "release/diagnose":
             await self._respond(request_id, self._release.diagnose_mismatch(params or {}))
+        elif method.startswith("cli/"):
+            try:
+                result = self._handle_cli(method, params or {})
+            except CliHubError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
         elif method == "notifications/cursor":
             try:
                 result = self._recovery.save_cursor(
