@@ -67,6 +67,10 @@ class PromptRequest(BaseModel):
         default=None,
         description="When true, ProtocolTui emits event/reasoning_snapshot chunks.",
     )
+    capability: Literal["no_tools", "edit_only", "full"] | None = Field(
+        default=None,
+        description="GX14 Ask/Edit/Agent hard tool boundary (default full).",
+    )
 
 
 class InterruptRequest(BaseModel):
@@ -693,6 +697,7 @@ class AgentInvokeRequest(BaseModel):
     output_schema: str | None = None
     requested_budget: JsonObject | None = None
     requested_workspace: JsonObject | None = None
+    capability: Literal["no_tools", "edit_only", "full"] | None = None
 
 
 class TaskStartRequest(BaseModel):

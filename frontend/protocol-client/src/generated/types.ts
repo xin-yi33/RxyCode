@@ -166,6 +166,10 @@ export type Mode = string | null;
  * When true, ProtocolTui emits event/reasoning_snapshot chunks.
  */
 export type ThinkingExpanded = boolean | null;
+/**
+ * GX14 Ask/Edit/Agent hard tool boundary (default full).
+ */
+export type Capability = ("no_tools" | "edit_only" | "full") | null;
 export type Method3 = "session/interrupt";
 export type SessionId1 = string;
 export type Method4 = "session/set_thinking_expanded";
@@ -433,6 +437,7 @@ export type RequestedBudget = {
 export type RequestedWorkspace = {
   [k: string]: unknown;
 } | null;
+export type Capability1 = ("no_tools" | "edit_only" | "full") | null;
 export type Method68 = "task/start";
 export type RootSessionId3 = string;
 export type ParentSessionId2 = string | null;
@@ -1184,6 +1189,7 @@ export interface PromptRequest {
   timeout_seconds?: TimeoutSeconds;
   mode?: Mode;
   thinking_expanded?: ThinkingExpanded;
+  capability?: Capability;
   [k: string]: unknown;
 }
 /**
@@ -1856,6 +1862,7 @@ export interface AgentInvokeRequest {
   output_schema?: OutputSchema;
   requested_budget?: RequestedBudget;
   requested_workspace?: RequestedWorkspace;
+  capability?: Capability1;
   [k: string]: unknown;
 }
 /**

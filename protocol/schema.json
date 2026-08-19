@@ -175,6 +175,24 @@
           "default": null,
           "description": "When true, ProtocolTui emits event/reasoning_snapshot chunks.",
           "title": "Thinking Expanded"
+        },
+        "capability": {
+          "anyOf": [
+            {
+              "enum": [
+                "no_tools",
+                "edit_only",
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "GX14 Ask/Edit/Agent hard tool boundary (default full).",
+          "title": "Capability"
         }
       },
       "required": [
@@ -2604,6 +2622,23 @@
           ],
           "default": null,
           "title": "Requested Workspace"
+        },
+        "capability": {
+          "anyOf": [
+            {
+              "enum": [
+                "no_tools",
+                "edit_only",
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability"
         }
       },
       "required": [

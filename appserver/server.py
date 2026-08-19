@@ -42,6 +42,7 @@ from .usage_tracker import UsageTracker
 from .thread_fork import ThreadForkError, ThreadForkService
 from .plan_files import PlanFileError, PlanFileService
 from .needs_input import NeedsInputClassifier
+from .tool_registry_capability import CapabilityDenied, ToolRegistryCapability
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -222,6 +223,7 @@ class AppServer:
         self._thread_fork = ThreadForkService(self._sessions)
         self._plan_files = PlanFileService()
         self._needs_input = NeedsInputClassifier()
+        self._tool_capability = ToolRegistryCapability()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -1121,6 +1123,12 @@ class AppServer:
         if self._sessions.get(session_id) is None:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        if "capability" in params:
+            try:
+                self._tool_capability.set_session(session_id, params.get("capability"))
+            except CapabilityDenied as exc:
+                await self._respond_error(request_id, -32602, exc.message, {"error_code": exc.code})
+                return
         turn_key = str(params.get("request_id") or request_id)
         stored = self._sessions.turn_result(session_id, turn_key)
         if stored is not None:
@@ -1386,6 +1394,12 @@ class AppServer:
         forwarded["root_session_id"] = root_session_id
         if method in {"agent/invoke", "task/start"}:
             forwarded.setdefault("parent_session_id", root_session_id)
+            if "capability" in params:
+                try:
+                    self._tool_capability.set_session(root_session_id, params.get("capability"))
+                except CapabilityDenied as exc:
+                    await self._respond_error(request_id, -32602, exc.message, {"error_code": exc.code})
+                    return
 
         # Child replay is read-only. A cold desktop must not wait on AgentV2
         # bootstrap (30s+) just to learn there are no child sessions yet.
