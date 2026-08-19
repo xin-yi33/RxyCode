@@ -5,7 +5,7 @@
   "protocol_version": "1.1.0",
   "$defs": {
     "InitializeRequest": {
-      "description": "JSON-RPC handshake on connect (future ``python -m appserver``).\n\n``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;\n``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;\n``capabilities`` is an optional client feature manifest (unused in HTTP mode).",
+      "description": "JSON-RPC handshake on connect (future ``python -m appserver``).\n\n``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;\n``protocol_version`` must fall in ``PROTOCOL_VERSION_MIN``..``MAX`` (empty\nis unspecified/legacy); unknown extra fields are ignored.\n``capabilities`` is an optional client feature manifest (unused in HTTP mode).\n``client_info`` / ``client_capabilities`` / ``requested_features`` are\nPhaseG-B2 optional fields (G §5.1); they do not replace the older keys.",
       "properties": {
         "method": {
           "const": "initialize",
@@ -37,6 +37,47 @@
           ],
           "default": null,
           "title": "Capabilities"
+        },
+        "client_info": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Info"
+        },
+        "client_capabilities": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Capabilities"
+        },
+        "requested_features": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Features"
         }
       },
       "required": [
@@ -2235,6 +2276,31 @@
       "title": "ServerHeartbeat",
       "type": "object"
     },
+    "InitializedNotification": {
+      "description": "PhaseG-B2 handshake complete. No response expected.",
+      "properties": {
+        "method": {
+          "const": "initialized",
+          "default": "initialized",
+          "title": "Method",
+          "type": "string"
+        },
+        "protocol_version": {
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "server_version": {
+          "title": "Server Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "server_version"
+      ],
+      "title": "InitializedNotification",
+      "type": "object"
+    },
     "ApprovalRequest": {
       "description": "Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.",
       "properties": {
@@ -3271,6 +3337,333 @@
       "title": "BridgeAbort",
       "type": "object"
     },
+    "CapabilitySnapshot": {
+      "description": "Honest capability flags. False means not implemented yet, not hidden.",
+      "properties": {
+        "threads": {
+          "default": true,
+          "title": "Threads",
+          "type": "boolean"
+        },
+        "thread_fork": {
+          "default": false,
+          "title": "Thread Fork",
+          "type": "boolean"
+        },
+        "background_turns": {
+          "default": false,
+          "title": "Background Turns",
+          "type": "boolean"
+        },
+        "command_execution": {
+          "default": true,
+          "title": "Command Execution",
+          "type": "boolean"
+        },
+        "file_changes": {
+          "default": true,
+          "title": "File Changes",
+          "type": "boolean"
+        },
+        "review": {
+          "default": false,
+          "title": "Review",
+          "type": "boolean"
+        },
+        "review_comments": {
+          "default": false,
+          "title": "Review Comments",
+          "type": "boolean"
+        },
+        "checkpoint": {
+          "default": false,
+          "title": "Checkpoint",
+          "type": "boolean"
+        },
+        "git_hunk_actions": {
+          "default": false,
+          "title": "Git Hunk Actions",
+          "type": "boolean"
+        },
+        "worktree": {
+          "default": false,
+          "title": "Worktree",
+          "type": "boolean"
+        },
+        "file_preview": {
+          "default": false,
+          "title": "File Preview",
+          "type": "boolean"
+        },
+        "browser": {
+          "default": false,
+          "title": "Browser",
+          "type": "boolean"
+        },
+        "mcp": {
+          "default": true,
+          "title": "Mcp",
+          "type": "boolean"
+        },
+        "skills": {
+          "default": true,
+          "title": "Skills",
+          "type": "boolean"
+        },
+        "multi_agent": {
+          "default": true,
+          "title": "Multi Agent",
+          "type": "boolean"
+        },
+        "multi_model": {
+          "default": true,
+          "title": "Multi Model",
+          "type": "boolean"
+        },
+        "vision": {
+          "default": false,
+          "title": "Vision",
+          "type": "boolean"
+        },
+        "approval.auto_review": {
+          "default": false,
+          "description": "Wire name approval.auto_review.",
+          "title": "Approval.Auto Review",
+          "type": "boolean"
+        }
+      },
+      "title": "CapabilitySnapshot",
+      "type": "object"
+    },
+    "ModelProviderSummary": {
+      "properties": {
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        },
+        "model_context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Context Window"
+        },
+        "model_max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Max Output Tokens"
+        },
+        "limit_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Source"
+        },
+        "is_fallback": {
+          "default": false,
+          "title": "Is Fallback",
+          "type": "boolean"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "provider_id"
+      ],
+      "title": "ModelProviderSummary",
+      "type": "object"
+    },
+    "PermissionProfileSummary": {
+      "properties": {
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "selectable": {
+          "title": "Selectable",
+          "type": "boolean"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "selectable",
+        "description"
+      ],
+      "title": "PermissionProfileSummary",
+      "type": "object"
+    },
+    "InitializeResult": {
+      "description": "Additive initialize response. Old clients ignore unknown keys.",
+      "properties": {
+        "protocol_version": {
+          "default": "1.1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "protocol_min": {
+          "default": "1.0.0",
+          "title": "Protocol Min",
+          "type": "string"
+        },
+        "protocol_max": {
+          "default": "1.1.0",
+          "title": "Protocol Max",
+          "type": "string"
+        },
+        "server_name": {
+          "default": "rxycode-appserver",
+          "title": "Server Name",
+          "type": "string"
+        },
+        "server_version": {
+          "default": "1.2.10",
+          "title": "Server Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "additionalProperties": true,
+          "title": "Capabilities",
+          "type": "object"
+        },
+        "capability_snapshot": {
+          "$ref": "#/$defs/CapabilitySnapshot"
+        },
+        "model_providers": {
+          "items": {
+            "$ref": "#/$defs/ModelProviderSummary"
+          },
+          "title": "Model Providers",
+          "type": "array"
+        },
+        "permission_profiles": {
+          "items": {
+            "$ref": "#/$defs/PermissionProfileSummary"
+          },
+          "title": "Permission Profiles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "capabilities",
+        "capability_snapshot",
+        "model_providers",
+        "permission_profiles"
+      ],
+      "title": "InitializeResult",
+      "type": "object"
+    },
+    "ProtocolErrorData": {
+      "description": "Machine-assertable error payload in JSON-RPC ``error.data``.",
+      "properties": {
+        "error_code": {
+          "enum": [
+            "PROTOCOL_MISMATCH",
+            "UNSUPPORTED",
+            "OVERLOADED",
+            "CONFIGURATION_MISSING",
+            "TIMEOUT",
+            "CLOSED",
+            "NOT_INITIALIZED"
+          ],
+          "title": "Error Code",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "default": "1.1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "protocol_min": {
+          "default": "1.0.0",
+          "title": "Protocol Min",
+          "type": "string"
+        },
+        "protocol_max": {
+          "default": "1.1.0",
+          "title": "Protocol Max",
+          "type": "string"
+        },
+        "server_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Server Version"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        }
+      },
+      "required": [
+        "error_code",
+        "retryable"
+      ],
+      "title": "ProtocolErrorData",
+      "type": "object"
+    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -3450,6 +3843,9 @@
         },
         {
           "$ref": "#/$defs/ServerHeartbeat"
+        },
+        {
+          "$ref": "#/$defs/InitializedNotification"
         }
       ]
     },
@@ -3522,6 +3918,27 @@
           "$ref": "#/$defs/BridgeAbort"
         }
       ]
+    },
+    "HandshakeProtocol": {
+      "title": "HandshakeProtocol",
+      "description": "PhaseG-B2 initialize result, capability snapshot, and stable error payload. Not a session envelope.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CapabilitySnapshot"
+        },
+        {
+          "$ref": "#/$defs/ModelProviderSummary"
+        },
+        {
+          "$ref": "#/$defs/PermissionProfileSummary"
+        },
+        {
+          "$ref": "#/$defs/InitializeResult"
+        },
+        {
+          "$ref": "#/$defs/ProtocolErrorData"
+        }
+      ]
     }
   },
   "oneOf": [
@@ -3536,6 +3953,9 @@
     },
     {
       "$ref": "#/$defs/AgentProtocol"
+    },
+    {
+      "$ref": "#/$defs/HandshakeProtocol"
     }
   ]
 }

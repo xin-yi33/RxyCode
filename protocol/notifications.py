@@ -340,6 +340,14 @@ class ServerHeartbeat(BaseModel):
     degraded: bool
 
 
+class InitializedNotification(BaseModel):
+    """PhaseG-B2 handshake complete. No response expected."""
+
+    method: Literal["initialized"] = "initialized"
+    protocol_version: str
+    server_version: str
+
+
 NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     AgentEvent,
     MessageDelta,
@@ -362,4 +370,5 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     RunComplete,
     JobStatusUpdate,
     ServerHeartbeat,
+    InitializedNotification,
 )

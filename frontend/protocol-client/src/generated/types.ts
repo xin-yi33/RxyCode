@@ -1,6 +1,7 @@
 /* Auto-generated. Edit protocol/schema.json then run: bun run generate */
 
-export type RxyCodeProtocol = ClientRequest | ProtocolNotification | ServerRequestMessage | AgentProtocol;
+export type RxyCodeProtocol =
+  ClientRequest | ProtocolNotification | ServerRequestMessage | AgentProtocol | HandshakeProtocol;
 export type ClientRequest =
   | InitializeRequest
   | NewSessionRequest
@@ -46,6 +47,13 @@ export type ProtocolVersion = string;
 export type Capabilities = {
   [k: string]: unknown;
 } | null;
+export type ClientInfo = {
+  [k: string]: unknown;
+} | null;
+export type ClientCapabilities = {
+  [k: string]: unknown;
+} | null;
+export type RequestedFeatures = string[] | null;
 export type Method1 = "session/new";
 export type WorkspaceRoot = string;
 export type Model = string | null;
@@ -200,7 +208,8 @@ export type ProtocolNotification =
   | ErrorNotification
   | RunComplete
   | JobStatusUpdate
-  | ServerHeartbeat;
+  | ServerHeartbeat
+  | InitializedNotification;
 export type Method37 =
   | "event/agent_started"
   | "event/agent_tool"
@@ -343,15 +352,18 @@ export type Method57 = "event/server_heartbeat";
 export type UptimeSeconds = number;
 export type ActiveJobs = number;
 export type Degraded = boolean;
+export type Method58 = "initialized";
+export type ProtocolVersion1 = string;
+export type ServerVersion = string;
 export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method58 = "approval/request";
+export type Method59 = "approval/request";
 export type SessionId33 = string;
 export type RequestId3 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action = string;
 export type RequestId4 = string;
 export type Decision = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method59 = "question/request";
+export type Method60 = "question/request";
 export type SessionId34 = string;
 export type QuestionId = string;
 export type Question = string;
@@ -417,7 +429,7 @@ export type EntryStage = string;
 export type TotalTokenBudget = number;
 export type TotalTimeoutS = number;
 export type MaxDelegations = number;
-export type Method60 = "agents/delegate";
+export type Method61 = "agents/delegate";
 export type SessionId35 = string;
 export type RequestId5 = string;
 export type ToRole = string;
@@ -434,7 +446,7 @@ export type Error = string;
 export type ToolsUsed = string[];
 export type TokensUsed1 = number;
 export type DurationS = number;
-export type Method61 = "agents/consult";
+export type Method62 = "agents/consult";
 export type SessionId36 = string;
 export type RequestId7 = string;
 export type FromRole = string;
@@ -446,7 +458,7 @@ export type AuditorRole = string;
 export type Passed = boolean;
 export type Findings = string[];
 export type CreatedAt = number;
-export type Method62 = "event/team";
+export type Method63 = "event/team";
 export type SessionId37 = string;
 export type Role3 = string;
 export type Stage2 = string;
@@ -469,49 +481,111 @@ export type ExperimentTag1 = "E0" | "E1" | "E2";
 export type Task1 = string;
 export type Tokens = number;
 export type TimeoutS1 = number;
-export type Method63 = "task_delegate";
+export type Method64 = "task_delegate";
 export type TaskId2 = string;
 export type ParentId = string | null;
 export type Goal1 = string;
 export type ContextRefs = string[];
 export type Acceptance = string[];
 export type Tools1 = string[];
-export type Method64 = "progress";
+export type Method65 = "progress";
 export type TaskId3 = string;
 export type Status3 = "running" | "blocked" | "done" | "failed";
 export type Stage3 = string;
 export type Percent = number;
 export type EtaS = number | null;
 export type Notes = string;
-export type Method65 = "tool_call";
+export type Method66 = "tool_call";
 export type TaskId4 = string;
 export type Tool = string;
 export type Status4 = "running" | "done" | "failed";
 export type ResultRef = string;
-export type Method66 = "plan";
+export type Method67 = "plan";
 export type TaskId5 = string;
 export type Steps1 = string[];
 export type Files = string[];
 export type EstTokens = number;
 export type Ack = boolean;
-export type Method67 = "result";
+export type Method68 = "result";
 export type TaskId6 = string;
 export type Ok3 = boolean;
 export type Summary1 = string;
 export type ArtifactPaths = string[];
 export type TokensUsed3 = number;
 export type DurationS1 = number;
-export type Method68 = "abort";
+export type Method69 = "abort";
 export type TaskId7 = string;
 export type Reason2 = "budget" | "timeout" | "user";
 export type Partial = boolean;
+/**
+ * PhaseG-B2 initialize result, capability snapshot, and stable error payload. Not a session envelope.
+ */
+export type HandshakeProtocol =
+  CapabilitySnapshot | ModelProviderSummary | PermissionProfileSummary | InitializeResult | ProtocolErrorData;
+export type Threads = boolean;
+export type ThreadFork = boolean;
+export type BackgroundTurns = boolean;
+export type CommandExecution = boolean;
+export type FileChanges = boolean;
+export type Review = boolean;
+export type ReviewComments = boolean;
+export type Checkpoint = boolean;
+export type GitHunkActions = boolean;
+export type Worktree = boolean;
+export type FilePreview = boolean;
+export type Browser = boolean;
+export type Mcp = boolean;
+export type Skills = boolean;
+export type MultiAgent = boolean;
+export type MultiModel = boolean;
+export type Vision = boolean;
+/**
+ * Wire name approval.auto_review.
+ */
+export type ApprovalAutoReview = boolean;
+export type ProviderId1 = string;
+export type ModelId1 = string | null;
+export type ModelContextWindow = number | null;
+export type ModelMaxOutputTokens = number | null;
+export type LimitSource = string | null;
+export type IsFallback = boolean;
+export type Warning = string | null;
+export type ProfileId = string;
+export type Selectable = boolean;
+export type Description1 = string;
+export type ProtocolVersion2 = string;
+export type ProtocolMin = string;
+export type ProtocolMax = string;
+export type ServerName = string;
+export type ServerVersion1 = string;
+export type ModelProviders = ModelProviderSummary[];
+export type PermissionProfiles = PermissionProfileSummary[];
+export type ErrorCode =
+  | "PROTOCOL_MISMATCH"
+  | "UNSUPPORTED"
+  | "OVERLOADED"
+  | "CONFIGURATION_MISSING"
+  | "TIMEOUT"
+  | "CLOSED"
+  | "NOT_INITIALIZED";
+export type Retryable = boolean;
+export type ProtocolVersion3 = string;
+export type ProtocolMin1 = string;
+export type ProtocolMax1 = string;
+export type ServerVersion2 = string | null;
+export type Details1 = {
+  [k: string]: unknown;
+} | null;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
  *
  * ``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;
- * ``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;
+ * ``protocol_version`` must fall in ``PROTOCOL_VERSION_MIN``..``MAX`` (empty
+ * is unspecified/legacy); unknown extra fields are ignored.
  * ``capabilities`` is an optional client feature manifest (unused in HTTP mode).
+ * ``client_info`` / ``client_capabilities`` / ``requested_features`` are
+ * PhaseG-B2 optional fields (G §5.1); they do not replace the older keys.
  */
 export interface InitializeRequest {
   method?: Method;
@@ -519,6 +593,9 @@ export interface InitializeRequest {
   client_version: ClientVersion;
   protocol_version: ProtocolVersion;
   capabilities?: Capabilities;
+  client_info?: ClientInfo;
+  client_capabilities?: ClientCapabilities;
+  requested_features?: RequestedFeatures;
   [k: string]: unknown;
 }
 /**
@@ -1184,10 +1261,19 @@ export interface ServerHeartbeat {
   [k: string]: unknown;
 }
 /**
+ * PhaseG-B2 handshake complete. No response expected.
+ */
+export interface InitializedNotification {
+  method?: Method58;
+  protocol_version: ProtocolVersion1;
+  server_version: ServerVersion;
+  [k: string]: unknown;
+}
+/**
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method58;
+  method?: Method59;
   session_id: SessionId33;
   request_id: RequestId3;
   risk_level: RiskLevel;
@@ -1210,7 +1296,7 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method59;
+  method?: Method60;
   session_id: SessionId34;
   question_id: QuestionId;
   question: Question;
@@ -1310,7 +1396,7 @@ export interface Extra1 {
  * 写清楚，否则成员会重复劳动或者不知道什么时候算完。
  */
 export interface DelegateRequest {
-  method?: Method60;
+  method?: Method61;
   session_id: SessionId35;
   request_id: RequestId5;
   to_role: ToRole;
@@ -1342,7 +1428,7 @@ export interface DelegateResult {
  * 团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
  */
 export interface ConsultRequest {
-  method?: Method61;
+  method?: Method62;
   session_id: SessionId36;
   request_id: RequestId7;
   from_role: FromRole;
@@ -1375,7 +1461,7 @@ export interface VerdictRecord {
  * F 层不得再定义名为 AgentEvent 的类型。
  */
 export interface TeamEvent {
-  method?: Method62;
+  method?: Method63;
   session_id: SessionId37;
   role: Role3;
   stage?: Stage2;
@@ -1407,7 +1493,7 @@ export interface BridgeBudget {
  * Leader → Worker (F16). Lineage-only: refs, never conversation history.
  */
 export interface TaskDelegate {
-  method?: Method63;
+  method?: Method64;
   task_id: TaskId2;
   parent_id?: ParentId;
   goal: Goal1;
@@ -1421,7 +1507,7 @@ export interface TaskDelegate {
  * Worker → Leader streaming status. notes truncated to ~2k tokens.
  */
 export interface BridgeProgress {
-  method?: Method64;
+  method?: Method65;
   task_id: TaskId3;
   status: Status3;
   stage?: Stage3;
@@ -1434,7 +1520,7 @@ export interface BridgeProgress {
  * Worker → Leader. Large results go to result_ref, never inline.
  */
 export interface BridgeToolCall {
-  method?: Method65;
+  method?: Method66;
   task_id: TaskId4;
   tool: Tool;
   args?: Args;
@@ -1449,7 +1535,7 @@ export interface Args {
  * Worker → Leader execution plan before work starts.
  */
 export interface BridgePlan {
-  method?: Method66;
+  method?: Method67;
   task_id: TaskId5;
   steps?: Steps1;
   files?: Files;
@@ -1461,7 +1547,7 @@ export interface BridgePlan {
  * Worker → Leader. summary is 1–2k tokens; artifacts are paths.
  */
 export interface BridgeResult {
-  method?: Method67;
+  method?: Method68;
   task_id: TaskId6;
   ok: Ok3;
   summary?: Summary1;
@@ -1474,9 +1560,80 @@ export interface BridgeResult {
  * Leader → Worker. Sent before a hard kill.
  */
 export interface BridgeAbort {
-  method?: Method68;
+  method?: Method69;
   task_id: TaskId7;
   reason: Reason2;
   partial?: Partial;
+  [k: string]: unknown;
+}
+/**
+ * Honest capability flags. False means not implemented yet, not hidden.
+ */
+export interface CapabilitySnapshot {
+  threads?: Threads;
+  thread_fork?: ThreadFork;
+  background_turns?: BackgroundTurns;
+  command_execution?: CommandExecution;
+  file_changes?: FileChanges;
+  review?: Review;
+  review_comments?: ReviewComments;
+  checkpoint?: Checkpoint;
+  git_hunk_actions?: GitHunkActions;
+  worktree?: Worktree;
+  file_preview?: FilePreview;
+  browser?: Browser;
+  mcp?: Mcp;
+  skills?: Skills;
+  multi_agent?: MultiAgent;
+  multi_model?: MultiModel;
+  vision?: Vision;
+  "approval.auto_review"?: ApprovalAutoReview;
+  [k: string]: unknown;
+}
+export interface ModelProviderSummary {
+  provider_id: ProviderId1;
+  model_id?: ModelId1;
+  model_context_window?: ModelContextWindow;
+  model_max_output_tokens?: ModelMaxOutputTokens;
+  limit_source?: LimitSource;
+  is_fallback?: IsFallback;
+  warning?: Warning;
+  [k: string]: unknown;
+}
+export interface PermissionProfileSummary {
+  profile_id: ProfileId;
+  selectable: Selectable;
+  description: Description1;
+  [k: string]: unknown;
+}
+/**
+ * Additive initialize response. Old clients ignore unknown keys.
+ */
+export interface InitializeResult {
+  protocol_version?: ProtocolVersion2;
+  protocol_min?: ProtocolMin;
+  protocol_max?: ProtocolMax;
+  server_name?: ServerName;
+  server_version?: ServerVersion1;
+  capabilities: Capabilities1;
+  capability_snapshot: CapabilitySnapshot;
+  model_providers: ModelProviders;
+  permission_profiles: PermissionProfiles;
+  [k: string]: unknown;
+}
+export interface Capabilities1 {
+  [k: string]: unknown;
+}
+/**
+ * Machine-assertable error payload in JSON-RPC ``error.data``.
+ */
+export interface ProtocolErrorData {
+  error_code: ErrorCode;
+  retryable: Retryable;
+  protocol_version?: ProtocolVersion3;
+  protocol_min?: ProtocolMin1;
+  protocol_max?: ProtocolMax1;
+  server_version?: ServerVersion2;
+  details?: Details1;
   [k: string]: unknown;
 }

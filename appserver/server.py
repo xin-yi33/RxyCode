@@ -32,17 +32,97 @@ from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stal
 
 try:
     from ..core.safety.approval import set_approval_broker
-    from ..protocol.notifications import JobStatusUpdate, ProgressUpdate, ServerHeartbeat
-    from ..protocol.version import PROTOCOL_VERSION
+    from ..protocol.errors import JSONRPC_STABLE_CODE, error_payload
+    from ..protocol.handshake import (
+        CapabilitySnapshot,
+        InitializeResult,
+        ModelProviderSummary,
+        PermissionProfileSummary,
+    )
+    from ..protocol.notifications import (
+        InitializedNotification,
+        JobStatusUpdate,
+        ProgressUpdate,
+        ServerHeartbeat,
+    )
+    from ..protocol.version import (
+        APPSERVER_VERSION,
+        PROTOCOL_VERSION,
+        PROTOCOL_VERSION_MAX,
+        PROTOCOL_VERSION_MIN,
+        protocol_version_compatible,
+    )
 except ImportError:
     from core.safety.approval import set_approval_broker
-    from protocol.notifications import JobStatusUpdate, ProgressUpdate, ServerHeartbeat
-    from protocol.version import PROTOCOL_VERSION
+    from protocol.errors import JSONRPC_STABLE_CODE, error_payload
+    from protocol.handshake import (
+        CapabilitySnapshot,
+        InitializeResult,
+        ModelProviderSummary,
+        PermissionProfileSummary,
+    )
+    from protocol.notifications import (
+        InitializedNotification,
+        JobStatusUpdate,
+        ProgressUpdate,
+        ServerHeartbeat,
+    )
+    from protocol.version import (
+        APPSERVER_VERSION,
+        PROTOCOL_VERSION,
+        PROTOCOL_VERSION_MAX,
+        PROTOCOL_VERSION_MIN,
+        protocol_version_compatible,
+    )
 
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 600.0
 _DEFAULT_WARM_TIMEOUT_SECONDS = 180.0
+_MAX_CONCURRENT_PROMPTS = 256
+
+
+def _model_provider_summaries() -> list[ModelProviderSummary]:
+    try:
+        from config.model_catalog import ModelCatalog
+
+        catalog = ModelCatalog.load()
+    except Exception:
+        return []
+    seen: dict[str, ModelProviderSummary] = {}
+    for record in catalog._exact.values():
+        if record.provider_id in seen:
+            continue
+        seen[record.provider_id] = ModelProviderSummary(
+            provider_id=record.provider_id,
+            model_id=record.model_id,
+            model_context_window=record.model_context_window,
+            model_max_output_tokens=record.model_max_output_tokens,
+            limit_source="model-metadata" if record.model_max_output_tokens else "fallback",
+            is_fallback=record.model_max_output_tokens is None,
+        )
+    return list(seen.values())
+
+
+def _permission_profiles() -> list[PermissionProfileSummary]:
+    """Advertise modes the appserver already enforces. G names wait for B7."""
+    return [
+        PermissionProfileSummary(
+            profile_id="confirm_all",
+            selectable=True,
+            description="Existing appserver mode: confirm risky actions",
+        ),
+        PermissionProfileSummary(
+            profile_id="auto_edit",
+            selectable=True,
+            description="Existing appserver mode: auto-apply edits",
+        ),
+        PermissionProfileSummary(
+            profile_id="full_auto",
+            selectable=True,
+            description="Existing appserver mode: auto",
+        ),
+    ]
 _SHUTDOWN_PROMPT_WAIT_SECONDS = 30.0
 _REPLAY_EVENT_METHODS = {
     "event/task_started",
@@ -307,8 +387,16 @@ class AppServer:
         self, request_id: Any, code: int, message: str, data: Any = None
     ) -> None:
         error: dict[str, Any] = {"code": code, "message": message}
-        if data is not None:
-            error["data"] = data
+        payload: dict[str, Any] = {}
+        stable = JSONRPC_STABLE_CODE.get(code)
+        if stable:
+            payload.update(error_payload(stable, server_version=APPSERVER_VERSION))
+        if isinstance(data, dict):
+            payload.update(data)
+        elif data is not None:
+            payload["details"] = data
+        if payload:
+            error["data"] = payload
         await write_message({"jsonrpc": "2.0", "id": request_id, "error": error})
 
     async def _send_server_request(
@@ -401,26 +489,56 @@ class AppServer:
                 await task
 
     async def _handle_initialize(self, params: dict[str, Any], request_id: Any) -> None:
-        client_version = str(params.get("protocol_version", ""))
-        if client_version and client_version != PROTOCOL_VERSION:
-            _logger.warning(
-                "client protocol %s != server %s",
-                client_version,
-                PROTOCOL_VERSION,
+        if self._shutdown:
+            await self._respond_error(request_id, -32009, "appserver is closed")
+            return
+        if not str(params.get("client_name") or "").strip():
+            await self._respond_error(
+                request_id,
+                -32007,
+                "client_name is required",
+                error_payload(
+                    "CONFIGURATION_MISSING",
+                    server_version=APPSERVER_VERSION,
+                    details={"field": "client_name"},
+                ),
             )
+            return
+        client_version = str(params.get("protocol_version", ""))
+        if not protocol_version_compatible(client_version):
+            await self._respond_error(
+                request_id,
+                -32006,
+                "protocol version incompatible",
+                error_payload(
+                    "PROTOCOL_MISMATCH",
+                    server_version=APPSERVER_VERSION,
+                    details={
+                        "client_protocol_version": client_version,
+                        "protocol_min": PROTOCOL_VERSION_MIN,
+                        "protocol_max": PROTOCOL_VERSION_MAX,
+                    },
+                ),
+            )
+            return
         self._initialized = True
-        await self._respond(
-            request_id,
-            {
-                "protocol_version": PROTOCOL_VERSION,
-                "server_name": "rxycode-appserver",
-                "capabilities": {
-                    "sessions": True,
-                    "approval": True,
-                    "models": True,
-                    "credentials": True,
-                },
+        result = InitializeResult(
+            capabilities={
+                "sessions": True,
+                "approval": True,
+                "models": True,
+                "credentials": True,
             },
+            capability_snapshot=CapabilitySnapshot(),
+            model_providers=_model_provider_summaries(),
+            permission_profiles=_permission_profiles(),
+        )
+        await self._respond(request_id, result.model_dump(by_alias=True))
+        await self._emit_model(
+            InitializedNotification(
+                protocol_version=PROTOCOL_VERSION,
+                server_version=APPSERVER_VERSION,
+            )
         )
 
     async def _handle_session_new(self, params: dict[str, Any], request_id: Any) -> None:
@@ -1083,11 +1201,17 @@ class AppServer:
             params = {}
         request_id = message.get("id")
 
+        if self._shutdown and method != "shutdown":
+            await self._respond_error(request_id, -32009, "appserver is closed")
+            return
         if method == "initialize":
             await self._handle_initialize(params, request_id)
             return
         if not self._initialized and method != "shutdown":
             await self._respond_error(request_id, -32002, "call initialize first")
+            return
+        if method == "session/prompt" and len(self._prompt_tasks) >= _MAX_CONCURRENT_PROMPTS:
+            await self._respond_error(request_id, -32008, "too many in-flight prompts")
             return
 
         if method == "session/new":

@@ -13,8 +13,11 @@ class InitializeRequest(BaseModel):
     """JSON-RPC handshake on connect (future ``python -m appserver``).
 
     ``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;
-    ``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;
+    ``protocol_version`` must fall in ``PROTOCOL_VERSION_MIN``..``MAX`` (empty
+    is unspecified/legacy); unknown extra fields are ignored.
     ``capabilities`` is an optional client feature manifest (unused in HTTP mode).
+    ``client_info`` / ``client_capabilities`` / ``requested_features`` are
+    PhaseG-B2 optional fields (G §5.1); they do not replace the older keys.
     """
 
     method: Literal["initialize"] = "initialize"
@@ -22,6 +25,9 @@ class InitializeRequest(BaseModel):
     client_version: str
     protocol_version: str
     capabilities: JsonObject | None = None
+    client_info: JsonObject | None = None
+    client_capabilities: JsonObject | None = None
+    requested_features: list[str] | None = None
 
 
 class NewSessionRequest(BaseModel):

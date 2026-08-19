@@ -7,6 +7,8 @@ import sys
 from typing import Any
 
 from .agents import AGENT_PROTOCOL_MODELS
+from .errors import ERROR_MODELS
+from .handshake import HANDSHAKE_MODELS
 from .notifications import NOTIFICATION_MODELS
 from .requests import CLIENT_REQUEST_MODELS
 from .server_requests import SERVER_REQUEST_MODELS
@@ -21,6 +23,8 @@ def export_schema() -> dict[str, Any]:
         *NOTIFICATION_MODELS,
         *SERVER_REQUEST_MODELS,
         *AGENT_PROTOCOL_MODELS,
+        *HANDSHAKE_MODELS,
+        *ERROR_MODELS,
     )
     defs: dict[str, Any] = {}
     for model in models:
@@ -52,6 +56,17 @@ def export_schema() -> dict[str, Any]:
         ),
         "oneOf": [{"$ref": f"#/$defs/{model.__name__}"} for model in AGENT_PROTOCOL_MODELS],
     }
+    defs["HandshakeProtocol"] = {
+        "title": "HandshakeProtocol",
+        "description": (
+            "PhaseG-B2 initialize result, capability snapshot, and stable "
+            "error payload. Not a session envelope."
+        ),
+        "oneOf": [
+            {"$ref": f"#/$defs/{model.__name__}"}
+            for model in (*HANDSHAKE_MODELS, *ERROR_MODELS)
+        ],
+    }
 
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -64,6 +79,7 @@ def export_schema() -> dict[str, Any]:
             {"$ref": "#/$defs/ProtocolNotification"},
             {"$ref": "#/$defs/ServerRequestMessage"},
             {"$ref": "#/$defs/AgentProtocol"},
+            {"$ref": "#/$defs/HandshakeProtocol"},
         ],
     }
 
