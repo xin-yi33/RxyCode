@@ -2324,6 +2324,11 @@ A：全局 agent baseline 只在**批次/阶段出口**跑一次（不是每张�
 
 # Part · 3 · GUI 增强卡（GX1–GX28 追加阶段，含 P3 · Codex 对齐批）
 
+> **施工已拆分，不要在这份基线里打钩/改卡面。**
+> - 后端：[`backend/PHASE-G-BACKEND-GX.md`](./backend/PHASE-G-BACKEND-GX.md) · 分支 `feat/phase-g-backend`
+> - 前端：[`frontend/PHASE-G-FRONTEND-GX.md`](./frontend/PHASE-G-FRONTEND-GX.md) · 分支 `feat/phase-g-frontend`
+> 分支纪律见 [`BRANCHING.md`](./BRANCHING.md)。本文 Part 3 仍是产品原文。
+
 > **本部分来源**：原 `PHASE-G-GUI-ENHANCEMENT.md`（合并时正文一字未改，仅链接映射到新文件名；P3 批 GX19–GX28 为 2026-08-12 追加）
 # Phase G 增强 · GUI 基准增强任务卡（GX1–GX28）
 

@@ -1,10 +1,12 @@
+> **增强卡施工已拆出**：[PHASE-G-BACKEND-GX.md](./PHASE-G-BACKEND-GX.md)（本分支只改这份 + 本文件）。不要再往本文追加 GX。
+
 # PHASE-G-BACKEND（合并版）· 后端开发执行文档
 
 > **本文档由两部分合并而成**：
 > - **Part 1 权威后端拆分**（原 `PHASE-G-BACKEND-RXYCODE-DESKTOP.md`）：PhaseG-B1-B13 卡、协议变更单、文件白名单——**后端验收以此为准**
 > - **Part 2 后端开工清单**（原 `PHASE-G-BACKEND-KICKOFF.md`）：给后端开发者的开工速查（卡表/交接项/增强卡/纪律）
 >
-> **配套文件**：公共基线+总手册+增强卡见 [`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md)；前端见 [`PHASE-G-FRONTEND.md`](./PHASE-G-FRONTEND.md)。
+> **配套文件**：公共基线+总手册+增强卡见 [`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md)；前端见 [`PHASE-G-FRONTEND.md`](../frontend/PHASE-G-FRONTEND.md)。
 >
 > **合并日期**：2026-08-11　**合并原则**：各部分正文一字未改。
 
@@ -16,13 +18,13 @@
 > **本部分来源**：原 `PHASE-G-BACKEND-RXYCODE-DESKTOP.md`（合并时正文一字未改，仅链接映射到新文件名）
 # Phase G-B · RxyCode Desktop 后端开发执行文档
 
-> **文档定位**：本文是 [`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md) 的后端执行拆分文档，不替换完整 G 文档，也不删除其中的产品定义、协议示例、任务卡验收和完整出口标准。完整 G 文档是公共基线；本文把 appserver、协议、Session 真相、权限、工具、Git、恢复、能力和发布 runtime 责任拆出来，使后端开发者可以独立施工、测试和交接。
+> **文档定位**：本文是 [`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的后端执行拆分文档，不替换完整 G 文档，也不删除其中的产品定义、协议示例、任务卡验收和完整出口标准。完整 G 文档是公共基线；本文把 appserver、协议、Session 真相、权限、工具、Git、恢复、能力和发布 runtime 责任拆出来，使后端开发者可以独立施工、测试和交接。
 >
 > **产品名称**：RxyCode Desktop。本文保持完整 G 文档中对 Codex App Server、OpenCode 子代理、Phase 3 模型上限摘要、Phase A/D/F 公共契约和 LinkAgent 扩展边界不变。
 >
 > **前置条件**：主计划 Phase 0/1/2/3/4 + Phase A/D/F 公共契约已冻结；`appserver/`、`protocol/schema.json`、Phase 3 resolver/summary 和既有 backend tests 是否真实存在必须以工作区检查为准。缺失时只能输出 `BLOCKED_PREREQUISITE`，不得用临时 mock 代替。
 >
-> **主文档关系**：完整功能、示例代码和总体验收以 [`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md) 为唯一基线；本文只增加后端 owner、后端文件白名单、后端任务卡和前后端交接要求。
+> **主文档关系**：完整功能、示例代码和总体验收以 [`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 为唯一基线；本文只增加后端 owner、后端文件白名单、后端任务卡和前后端交接要求。
 >
 > **基线日期**：2026-08-05　**建议工时**：与完整 Phase G 的 12–16 周总估算并行拆分，不得将两份文档的工时简单相加　**任务卡**：PhaseG-B1–PhaseG-B13（主链 13 张）＋ **追加卡 PhaseG-B14–B18**（P3 批 · Codex 对齐批，见 §4 卡区；不属主链 26 卡，主链出口门槛不变，立项依据 `research/2026-08-12-agent-native-computer-use-research.md`）
 
@@ -860,7 +862,7 @@ schema changed?
 
 > **读者**：后端开发者（feat/phase-g-backend 分支）。
 > **你的角色**：App Server、协议（schema）、Session/Thread 真相、权限、工具、Git、恢复的**唯一生产者**。
-> **先读**：[`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md)（总手册，§0-§10 全部适用）+ [`PHASE-G-BACKEND.md`](./PHASE-G-BACKEND.md)（你的施工权威文档）。
+> **先读**：[`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md)（总手册，§0-§10 全部适用）+ [`PHASE-G-BACKEND.md`](./PHASE-G-BACKEND.md)（你的施工权威文档）。
 > **创建**：2026-08-10
 
 ---
@@ -945,7 +947,7 @@ B1→B2→B3→B4→B5→B6→B7→B8   （前 8 张串行）
 
 ---
 
-## §4 你的增强卡（主链完成后，详见 PHASE-G-DESKTOP.md）
+## §4 你的增强卡（主链完成后，详见 [../PHASE-G-DESKTOP.md](../PHASE-G-DESKTOP.md) 与 [PHASE-G-BACKEND-GX.md](./PHASE-G-BACKEND-GX.md)）
 
 | 增强卡 | 你的部分 | 协议变更 |
 |---|---|---|

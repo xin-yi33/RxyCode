@@ -1,10 +1,12 @@
+> **增强卡施工已拆出**：[PHASE-G-FRONTEND-GX.md](./PHASE-G-FRONTEND-GX.md)（本分支只改这份 + 本文件）。不要再往本文追加 GX。
+
 # PHASE-G-FRONTEND（合并版）· 前端开发执行文档
 
 > **本文档由两部分合并而成**：
 > - **Part 1 权威前端拆分**（原 `PHASE-G-FRONTEND-RXYCODE-DESKTOP.md`）：PhaseG-H1-H13 卡、文件边界、安全红线——**前端验收以此为准**
 > - **Part 2 前端开工清单**（原 `PHASE-G-FRONTEND-KICKOFF.md`）：给前端开发者的开工速查（卡表/等卡间隙/增强卡/纪律）
 >
-> **配套文件**：公共基线+总手册+增强卡见 [`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md)；后端见 [`PHASE-G-BACKEND.md`](./PHASE-G-BACKEND.md)。
+> **配套文件**：公共基线+总手册+增强卡见 [`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md)；后端见 [`PHASE-G-BACKEND.md`](../backend/PHASE-G-BACKEND.md)。
 >
 > **合并日期**：2026-08-11　**合并原则**：各部分正文一字未改。
 
@@ -16,13 +18,13 @@
 > **本部分来源**：原 `PHASE-G-FRONTEND-RXYCODE-DESKTOP.md`（合并时正文一字未改，仅链接映射到新文件名）
 # Phase G-H · RxyCode Desktop 前端开发执行文档
 
-> **文档定位**：本文是 [`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md) 的前端执行拆分文档，不替换完整 G 文档，也不删除其中的产品定义、协议示例、任务卡验收和完整出口标准。完整 G 文档是公共基线；本文把前端和 Electron Host 的实现责任拆出来，使前端开发者可以独立施工、测试和交接。
+> **文档定位**：本文是 [`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的前端执行拆分文档，不替换完整 G 文档，也不删除其中的产品定义、协议示例、任务卡验收和完整出口标准。完整 G 文档是公共基线；本文把前端和 Electron Host 的实现责任拆出来，使前端开发者可以独立施工、测试和交接。
 >
 > **产品名称**：RxyCode Desktop。本文保持完整 G 文档中对 Codex 工作台的交互目标、OpenCode/Codex 上游复用边界、Phase 3 模型上限摘要和 Phase A/D/F 公共契约不变。
 >
 > **前置条件**：主计划 Phase 0/1/2/3/4 + Phase A/D/F 公共契约已冻结；Phase 4 的 Electron 壳、`frontend/protocol-client/`、`appserver/` 和 `protocol/schema.json` 是否真实存在必须以工作区检查为准。缺失时只能输出 `BLOCKED_PREREQUISITE`，不能用 mock 或临时 HTTP 绕过。
 >
-> **主文档关系**：完整功能、示例代码和总体验收以 [`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md) 为唯一基线；本文只增加前端 owner、前端文件边界、前端任务卡和前后端交接要求。
+> **主文档关系**：完整功能、示例代码和总体验收以 [`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 为唯一基线；本文只增加前端 owner、前端文件边界、前端任务卡和前后端交接要求。
 >
 > **基线日期**：2026-08-05　**建议工时**：与完整 Phase G 的 12–16 周总估算并行拆分，不得将两份文档的工时简单相加　**任务卡**：PhaseG-H1–PhaseG-H13（主链 13 张）＋ **追加卡 PhaseG-H14–H19**（P3 批 · Codex 对齐批前端基建，见 §4 卡区；不属主链 26 卡，主链出口门槛不变，立项依据 `research/2026-08-12-agent-native-computer-use-research.md`）
 
@@ -759,7 +761,7 @@ owner: composer-2.5
 
 > **读者**：前端开发者（feat/phase-g-frontend 分支）。
 > **你的角色**：Electron 壳、React 界面、协议客户端（protocol-client）的**消费者与实现者**。
-> **先读**：[`PHASE-G-DESKTOP.md`](./PHASE-G-DESKTOP.md)（总手册，§0-§10 全部适用）+ [`PHASE-G-FRONTEND.md`](./PHASE-G-FRONTEND.md)（你的施工权威文档）。
+> **先读**：[`PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md)（总手册，§0-§10 全部适用）+ [`PHASE-G-FRONTEND.md`](./PHASE-G-FRONTEND.md)（你的施工权威文档）。
 > **创建**：2026-08-10
 
 ---
@@ -819,7 +821,7 @@ owner: composer-2.5
 
 ---
 
-## §4 你的增强卡（主链完成后，详见 PHASE-G-DESKTOP.md）
+## §4 你的增强卡（主链完成后，详见 [../PHASE-G-DESKTOP.md](../PHASE-G-DESKTOP.md) 与 [PHASE-G-FRONTEND-GX.md](./PHASE-G-FRONTEND-GX.md)）
 
 | 增强卡 | 你的部分 | 说明 |
 |---|---|---|

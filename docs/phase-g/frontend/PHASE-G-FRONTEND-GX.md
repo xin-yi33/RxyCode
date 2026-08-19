@@ -46,7 +46,7 @@
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX1-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX1
+**配对卡**：无（纯前端，无 GX1-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX1
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -669,7 +669,7 @@ turn-steering protocol check (GX5-B protocol change if absent).
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX6-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX6
+**配对卡**：无（纯前端，无 GX6-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX6
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -1119,7 +1119,7 @@ with the plan as first-turn context.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX10-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX10
+**配对卡**：无（纯前端，无 GX10-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX10
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -1222,7 +1222,7 @@ by separate protocol sub-card, never hidden-and-complete.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX11-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX11
+**配对卡**：无（纯前端，无 GX11-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX11
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -1317,7 +1317,7 @@ Filter by status/project, group view.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX12-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX12
+**配对卡**：无（纯前端，无 GX12-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX12
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -1660,7 +1660,7 @@ Edit mode tool allowlist freezes edit/write only. Default agent.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX15-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX15
+**配对卡**：无（纯前端，无 GX15-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX15
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -1870,7 +1870,7 @@ promote back requires confirmation.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX17-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX17
+**配对卡**：无（纯前端，无 GX17-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX17
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -2308,7 +2308,7 @@ hover highlight sampled from Codex; pin and trash projection wired.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX21-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX21
+**配对卡**：无（纯前端，无 GX21-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX21
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -2411,7 +2411,7 @@ double confirm, confirm_purge flag); backend rejects unconfirmed purge.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX22-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX22
+**配对卡**：无（纯前端，无 GX22-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX22
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
@@ -2874,7 +2874,7 @@ consume existing B11 backends; team section capability-gated.
 
 **owner: frontend（Composer 2.5）** · 分支 `feat/phase-g-frontend`
 
-**配对卡**：GX27-B（另一端施工文档） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX27
+**配对卡**：无（纯前端，无 GX27-B） · **产品原文**：[`../PHASE-G-DESKTOP.md`](../PHASE-G-DESKTOP.md) 的 GX27
 
 **本端必须实现**：
 - 只消费 `protocol/schema.json` 与已合入/已推送的后端方法，禁止 mock 成真协议
