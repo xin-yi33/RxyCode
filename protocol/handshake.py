@@ -19,10 +19,10 @@ class CapabilitySnapshot(BaseModel):
     background_tasks: bool = True
     command_execution: bool = True
     file_changes: bool = True
-    review: bool = False
-    review_comments: bool = False
-    checkpoint: bool = False
-    git_hunk_actions: bool = False
+    review: bool = True
+    review_comments: bool = True
+    checkpoint: bool = True
+    git_hunk_actions: bool = True
     worktree: bool = False
     file_preview: bool = False
     browser: bool = False

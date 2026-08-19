@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B8",
+  "kind": "success",
+  "request": {"method": "review/start", "params": {"request_id": "req1", "scope": "working_tree"}},
+  "result": {"status": "pending"}
+}

@@ -1238,6 +1238,481 @@
       "title": "ApprovalAuditRequest",
       "type": "object"
     },
+    "ReviewStartRequest": {
+      "description": "PhaseG-B8 start a read-only review. Does not modify the working tree.",
+      "properties": {
+        "method": {
+          "const": "review/start",
+          "default": "review/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "scope": {
+          "default": "working_tree",
+          "title": "Scope",
+          "type": "string"
+        },
+        "base_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Ref"
+        },
+        "head_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Head Ref"
+        },
+        "paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paths"
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Criteria"
+        },
+        "reviewer": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "ReviewStartRequest",
+      "type": "object"
+    },
+    "ReviewReadRequest": {
+      "description": "Reconnect/read a persisted review without restarting it.",
+      "properties": {
+        "method": {
+          "const": "review/read",
+          "default": "review/read",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "after_sequence": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Sequence"
+        }
+      },
+      "required": [
+        "review_id"
+      ],
+      "title": "ReviewReadRequest",
+      "type": "object"
+    },
+    "ReviewCommentRequest": {
+      "description": "Line comment bound to review/finding/file hash/line range.",
+      "properties": {
+        "method": {
+          "const": "review/comment",
+          "default": "review/comment",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "start_line": {
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "end_line": {
+          "title": "End Line",
+          "type": "integer"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "finding_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finding Id"
+        },
+        "file_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Hash"
+        }
+      },
+      "required": [
+        "review_id",
+        "file",
+        "start_line",
+        "end_line",
+        "body"
+      ],
+      "title": "ReviewCommentRequest",
+      "type": "object"
+    },
+    "CheckpointCreateRequest": {
+      "properties": {
+        "method": {
+          "const": "checkpoint/create",
+          "default": "checkpoint/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "CheckpointCreateRequest",
+      "type": "object"
+    },
+    "CheckpointListRequest": {
+      "properties": {
+        "method": {
+          "const": "checkpoint/list",
+          "default": "checkpoint/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "CheckpointListRequest",
+      "type": "object"
+    },
+    "CheckpointReadRequest": {
+      "properties": {
+        "method": {
+          "const": "checkpoint/read",
+          "default": "checkpoint/read",
+          "title": "Method",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "session_id"
+      ],
+      "title": "CheckpointReadRequest",
+      "type": "object"
+    },
+    "CheckpointRestoreRequest": {
+      "properties": {
+        "method": {
+          "const": "checkpoint/restore",
+          "default": "checkpoint/restore",
+          "title": "Method",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "session_id"
+      ],
+      "title": "CheckpointRestoreRequest",
+      "type": "object"
+    },
+    "GitStageRequest": {
+      "properties": {
+        "method": {
+          "const": "git/stage",
+          "default": "git/stage",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "paths"
+      ],
+      "title": "GitStageRequest",
+      "type": "object"
+    },
+    "GitUnstageRequest": {
+      "properties": {
+        "method": {
+          "const": "git/unstage",
+          "default": "git/unstage",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "paths"
+      ],
+      "title": "GitUnstageRequest",
+      "type": "object"
+    },
+    "GitRevertRequest": {
+      "properties": {
+        "method": {
+          "const": "git/revert",
+          "default": "git/revert",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "hunk_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hunk Index"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "paths"
+      ],
+      "title": "GitRevertRequest",
+      "type": "object"
+    },
     "SubagentCapabilityRequest": {
       "description": "Discover worker-owned isolated-subagent feature flags.",
       "properties": {
@@ -4581,22 +5056,22 @@
           "type": "boolean"
         },
         "review": {
-          "default": false,
+          "default": true,
           "title": "Review",
           "type": "boolean"
         },
         "review_comments": {
-          "default": false,
+          "default": true,
           "title": "Review Comments",
           "type": "boolean"
         },
         "checkpoint": {
-          "default": false,
+          "default": true,
           "title": "Checkpoint",
           "type": "boolean"
         },
         "git_hunk_actions": {
-          "default": false,
+          "default": true,
           "title": "Git Hunk Actions",
           "type": "boolean"
         },
@@ -4973,6 +5448,36 @@
         },
         {
           "$ref": "#/$defs/ApprovalAuditRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewStartRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewReadRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewCommentRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointListRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointReadRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointRestoreRequest"
+        },
+        {
+          "$ref": "#/$defs/GitStageRequest"
+        },
+        {
+          "$ref": "#/$defs/GitUnstageRequest"
+        },
+        {
+          "$ref": "#/$defs/GitRevertRequest"
         },
         {
           "$ref": "#/$defs/SubagentCapabilityRequest"

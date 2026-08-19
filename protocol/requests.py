@@ -341,6 +341,90 @@ class ApprovalAuditRequest(BaseModel):
     session_id: str | None = None
 
 
+class ReviewStartRequest(BaseModel):
+    """PhaseG-B8 start a read-only review. Does not modify the working tree."""
+
+    method: Literal["review/start"] = "review/start"
+    request_id: str
+    session_id: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    scope: str = "working_tree"
+    base_ref: str | None = None
+    head_ref: str | None = None
+    paths: list[str] | None = None
+    criteria: list[str] | None = None
+    reviewer: JsonObject | None = None
+
+
+class ReviewReadRequest(BaseModel):
+    """Reconnect/read a persisted review without restarting it."""
+
+    method: Literal["review/read"] = "review/read"
+    review_id: str
+    after_sequence: int | None = None
+
+
+class ReviewCommentRequest(BaseModel):
+    """Line comment bound to review/finding/file hash/line range."""
+
+    method: Literal["review/comment"] = "review/comment"
+    review_id: str
+    file: str
+    start_line: int
+    end_line: int
+    body: str
+    finding_id: str | None = None
+    file_hash: str | None = None
+
+
+class CheckpointCreateRequest(BaseModel):
+    method: Literal["checkpoint/create"] = "checkpoint/create"
+    session_id: str
+    reason: str | None = None
+    turn_id: str | None = None
+
+
+class CheckpointListRequest(BaseModel):
+    method: Literal["checkpoint/list"] = "checkpoint/list"
+    session_id: str
+
+
+class CheckpointReadRequest(BaseModel):
+    method: Literal["checkpoint/read"] = "checkpoint/read"
+    checkpoint_id: str
+    session_id: str
+
+
+class CheckpointRestoreRequest(BaseModel):
+    method: Literal["checkpoint/restore"] = "checkpoint/restore"
+    checkpoint_id: str
+    session_id: str
+    approval_id: str | None = None
+
+
+class GitStageRequest(BaseModel):
+    method: Literal["git/stage"] = "git/stage"
+    session_id: str
+    paths: list[str]
+    approval_id: str | None = None
+
+
+class GitUnstageRequest(BaseModel):
+    method: Literal["git/unstage"] = "git/unstage"
+    session_id: str
+    paths: list[str]
+    approval_id: str | None = None
+
+
+class GitRevertRequest(BaseModel):
+    method: Literal["git/revert"] = "git/revert"
+    session_id: str
+    paths: list[str]
+    hunk_index: int | None = None
+    approval_id: str | None = None
+
+
 class SubagentCapabilityRequest(BaseModel):
     """Discover worker-owned isolated-subagent feature flags."""
 
@@ -653,6 +737,16 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ApprovalDecideRequest,
     ApprovalRevokeRequest,
     ApprovalAuditRequest,
+    ReviewStartRequest,
+    ReviewReadRequest,
+    ReviewCommentRequest,
+    CheckpointCreateRequest,
+    CheckpointListRequest,
+    CheckpointReadRequest,
+    CheckpointRestoreRequest,
+    GitStageRequest,
+    GitUnstageRequest,
+    GitRevertRequest,
     SubagentCapabilityRequest,
     SubagentsListRequest,
     AgentInvokeRequest,

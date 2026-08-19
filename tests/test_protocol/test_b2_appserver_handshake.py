@@ -30,7 +30,9 @@ async def test_initialize_1_0_and_1_1_succeed(monkeypatch) -> None:
     assert result["protocol_version"] == PROTOCOL_VERSION
     assert result["capabilities"]["sessions"] is True
     assert result["capability_snapshot"]["thread_fork"] is True
-    assert result["capability_snapshot"]["review"] is False
+    assert result["capability_snapshot"]["review"] is True
+    assert result["capability_snapshot"]["checkpoint"] is True
+    assert result["capability_snapshot"]["git_hunk_actions"] is True
     assert "model_providers" in result
     assert {row["profile_id"] for row in result["permission_profiles"]} >= {
         "read_only",

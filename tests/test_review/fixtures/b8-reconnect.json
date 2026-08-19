@@ -1,0 +1,5 @@
+{
+  "card": "PhaseG-B8",
+  "kind": "reconnect",
+  "request": {"method": "review/read"}
+}

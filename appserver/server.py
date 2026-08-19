@@ -33,6 +33,7 @@ from .runtime import install_tui_context_hook
 from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
 from .execution import ExecutionStore
 from .permission import PermissionStore
+from .review import ReviewError, ReviewService
 from .sessions import SessionStore
 from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
@@ -154,6 +155,13 @@ _REPLAY_EVENT_METHODS = {
     "event/recovery_resolved",
     "event/recovery_exhausted",
     "event/recovery_required",
+    "review/started",
+    "review/progress",
+    "review/finding",
+    "review/completed",
+    "review/stale",
+    "review/failed",
+    "review/cancelled",
 }
 _MAX_REPLAY_TEXT = 24_000
 
@@ -190,6 +198,7 @@ class AppServer:
         self._sessions = SessionStore(task_store=self._task_store)
         self._execution = ExecutionStore(on_change=self._schedule_execution_event)
         self._permissions = PermissionStore(persistent=not stub)
+        self._reviews = ReviewService()
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -1655,6 +1664,174 @@ class AppServer:
         self._execution.mark_read(task_id)
         await self._respond(request_id, item.to_dict())
 
+    def _review_session(self, params: dict[str, Any]) -> Any:
+        session_id = str(params.get("session_id") or params.get("thread_id") or "")
+        return self._sessions.get(session_id), session_id
+
+    async def _deny_write(self, params: dict[str, Any], request_id: Any, action: str, scope: str) -> bool:
+        session_id = str(params.get("session_id") or params.get("thread_id") or "")
+        record = self._sessions.get(session_id)
+        workspace = str(record.workspace_root) if record is not None else scope
+        verdict = self._permissions.evaluate(
+            action=action,
+            actor=str(params.get("actor") or "user"),
+            approval_id=params.get("approval_id"),
+            scope=scope or workspace,
+            workspace=workspace,
+            session_id=session_id or None,
+            project_id=params.get("project_id"),
+        )
+        if verdict == "allow":
+            return False
+        denied = self._permissions.last_decision()
+        await self._respond_error(
+            request_id,
+            -32003,
+            "permission denied",
+            {"error_code": "PERMISSION_DENIED", "approval": denied},
+        )
+        return True
+
+    async def _handle_review_start(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        try:
+            result, events = self._reviews.start(
+                request_id=str(params.get("request_id") or ""),
+                session_id=session_id,
+                workspace=record.workspace_root,
+                scope=str(params.get("scope") or "working_tree"),
+                base_ref=params.get("base_ref"),
+                head_ref=params.get("head_ref"),
+                paths=list(params.get("paths") or []) or None,
+                turn_id=params.get("turn_id"),
+                thread_id=params.get("thread_id") or session_id,
+                criteria=list(params.get("criteria") or []) or None,
+                reviewer=params.get("reviewer") if isinstance(params.get("reviewer"), dict) else None,
+            )
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+            return
+        for event in events:
+            self._persist_notification(event)
+            self._schedule_notification(event)
+        await self._respond(request_id, result)
+
+    async def _handle_review_read(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            after = params.get("after_sequence")
+            review = self._reviews.read(
+                str(params.get("review_id") or ""),
+                after_sequence=int(after) if after is not None else None,
+            )
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, review)
+
+    async def _handle_review_comment(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            comment = self._reviews.comment(
+                review_id=str(params.get("review_id") or ""),
+                finding_id=params.get("finding_id"),
+                file=str(params.get("file") or ""),
+                start_line=int(params.get("start_line") or 1),
+                end_line=int(params.get("end_line") or 1),
+                body=str(params.get("body") or ""),
+                file_hash=params.get("file_hash"),
+            )
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, comment)
+
+    async def _handle_checkpoint_create(self, params: dict[str, Any], request_id: Any) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        result = self._reviews.create_checkpoint(
+            session_id=session_id,
+            workspace=record.workspace_root,
+            reason=str(params.get("reason") or "write"),
+            turn_id=params.get("turn_id"),
+        )
+        await self._respond(request_id, result)
+
+    async def _handle_checkpoint_list(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id") or "")
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        await self._respond(request_id, {"checkpoints": self._reviews.list_checkpoints(session_id)})
+
+    async def _handle_checkpoint_read(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            item = self._reviews.read_checkpoint(
+                str(params.get("checkpoint_id") or ""),
+                session_id=str(params.get("session_id") or ""),
+            )
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, item)
+
+    async def _handle_checkpoint_restore(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            item = self._reviews.read_checkpoint(
+                str(params.get("checkpoint_id") or ""),
+                session_id=str(params.get("session_id") or ""),
+                include_files=False,
+            )
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        session_id = str(params.get("session_id") or item.get("session_id") or "")
+        if await self._deny_write(params | {"session_id": session_id}, request_id, "checkpoint_restore", str(item.get("workspace") or "")):
+            return
+        try:
+            result = self._reviews.restore_checkpoint(str(item["checkpoint_id"]), session_id=session_id or None)
+        except (ReviewError, PathBoundaryError) as exc:
+            code = getattr(exc, "code", "REVIEW_DIFF_UNAVAILABLE")
+            await self._respond_error(request_id, -32003, str(exc), {"error_code": code})
+            return
+        for review_id in result.get("stale_reviews") or []:
+            self._schedule_notification(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "review/stale",
+                    "params": {"session_id": session_id, "review_id": review_id, "event_id": str(review_id)},
+                }
+            )
+        await self._respond(request_id, result)
+
+    async def _handle_git_change(self, params: dict[str, Any], request_id: Any, action: str) -> None:
+        record, session_id = self._review_session(params)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        paths = [str(item) for item in (params.get("paths") or [])]
+        if await self._deny_write(params, request_id, f"git_{action}", str(record.workspace_root)):
+            return
+        try:
+            result = self._reviews.git_change(
+                record.workspace_root,
+                action=action,
+                paths=paths,
+                hunk_index=params.get("hunk_index"),
+                permission_store=self._permissions,
+                actor=str(params.get("actor") or "user"),
+                approval_id=params.get("approval_id"),
+                session_id=session_id,
+            )
+        except (ReviewError, PathBoundaryError) as exc:
+            code = getattr(exc, "code", "REVIEW_DIFF_UNAVAILABLE")
+            await self._respond_error(request_id, -32003, str(exc), {"error_code": code})
+            return
+        await self._respond(request_id, result)
+
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
@@ -1834,6 +2011,26 @@ class AppServer:
                 request_id,
                 {"records": self._permissions.audit(params.get("session_id"))},
             )
+        elif method == "review/start":
+            await self._handle_review_start(params, request_id)
+        elif method == "review/read":
+            await self._handle_review_read(params, request_id)
+        elif method == "review/comment":
+            await self._handle_review_comment(params, request_id)
+        elif method == "checkpoint/create":
+            await self._handle_checkpoint_create(params, request_id)
+        elif method == "checkpoint/list":
+            await self._handle_checkpoint_list(params, request_id)
+        elif method == "checkpoint/read":
+            await self._handle_checkpoint_read(params, request_id)
+        elif method == "checkpoint/restore":
+            await self._handle_checkpoint_restore(params, request_id)
+        elif method == "git/stage":
+            await self._handle_git_change(params, request_id, "stage")
+        elif method == "git/unstage":
+            await self._handle_git_change(params, request_id, "unstage")
+        elif method == "git/revert":
+            await self._handle_git_change(params, request_id, "revert")
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":
