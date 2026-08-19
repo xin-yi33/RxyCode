@@ -38,6 +38,7 @@ from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .review_comments import ReviewCommentService
 from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService
+from .usage_tracker import UsageTracker
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -214,6 +215,7 @@ class AppServer:
         self._reviews = ReviewService()
         self._review_comments = ReviewCommentService(self._reviews)
         self._checkpoint_rewind = CheckpointRewindService(self._reviews, self._sessions)
+        self._usage_tracker = UsageTracker(context_window_lookup=self._usage_context_window)
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -314,6 +316,37 @@ class AppServer:
     def _schedule_notification(self, message: dict[str, Any]) -> None:
         self._ensure_notification_writer()
         self._notification_queue.put_nowait(message)
+
+    def _usage_context_window(self, session_id: str) -> int | None:
+        record = self._sessions.get(session_id)
+        if record is None or not record.model_id:
+            return None
+        try:
+            summary = summarize_model(
+                provider_id=record.provider_id or "unknown",
+                model_id=record.model_id,
+            )
+        except Exception:
+            return None
+        window = summary.get("model_context_window")
+        return int(window) if isinstance(window, int) and window > 0 else None
+
+    def _emit_agent_usage(
+        self,
+        session_id: str,
+        usage: dict[str, Any],
+        *,
+        reason: str,
+    ) -> dict[str, Any]:
+        payload = self._usage_tracker.ingest(session_id, usage, reason=reason)
+        self._schedule_notification(
+            {
+                "jsonrpc": "2.0",
+                "method": "event/agent_usage",
+                "params": payload,
+            }
+        )
+        return payload
 
     def _session_lock(self, session_id: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_id)
@@ -559,17 +592,18 @@ class AppServer:
                     child.orphan_reason = str(safe_params["reason"])
                     self._sessions._persist(child)
         elif method in {"event/token_usage", "event/final"}:
-            self._sessions.update_usage(
-                session_id,
-                {
-                    "input_tokens": safe_params.get("input_tokens"),
-                    "output_tokens": safe_params.get("output_tokens"),
-                    "cache_hit_tokens": safe_params.get("cache_hit_tokens"),
-                    "cache_write_tokens": safe_params.get("cache_write_tokens"),
-                    "cache_hit_rate": safe_params.get("cache_hit_rate"),
-                    "reporting_status": safe_params.get("reporting_status", "not_reported"),
-                },
-            )
+            usage = {
+                "input_tokens": safe_params.get("input_tokens"),
+                "output_tokens": safe_params.get("output_tokens"),
+                "cache_hit_tokens": safe_params.get("cache_hit_tokens"),
+                "cache_write_tokens": safe_params.get("cache_write_tokens"),
+                "cache_hit_rate": safe_params.get("cache_hit_rate"),
+                "reporting_status": safe_params.get("reporting_status", "not_reported"),
+            }
+            self._sessions.update_usage(session_id, usage)
+            self._emit_agent_usage(session_id, usage, reason="token_usage")
+        if method == "event/tool_end":
+            self._emit_agent_usage(session_id, {}, reason="tool")
 
     async def _drain_emit_writes(self) -> list[BaseException]:
         """Wait for the notification FIFO, surfacing any write failures.

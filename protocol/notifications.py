@@ -250,6 +250,27 @@ class TokenUsage(BaseModel):
     reporting_status: Literal["reported", "partial", "not_reported"] = "reported"
 
 
+class AgentUsage(BaseModel):
+    """GX7 session usage ring. Additive; does not replace event/token_usage."""
+
+    method: Literal["event/agent_usage"] = "event/agent_usage"
+    session_id: str
+    seq: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_hit_rate: float | None = None
+    reporting_status: Literal["reported", "partial", "not_reported"] | None = None
+    context_used: int | None = None
+    context_window: int | None = None
+    used_pct: float | None = None
+    cost: float | None = None
+    currency: str | None = None
+    cost_available: bool = False
+    reason: str | None = None
+
+
 class FinalAnswer(BaseModel):
     """SSE ``type: final`` payload in ``/chat/stream`` worker (api_server.py)."""
 
@@ -423,6 +444,7 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     ExecutionItem,
     TaskComplete,
     TokenUsage,
+    AgentUsage,
     FinalAnswer,
     RecoveryStarted,
     RecoveryAnalyzing,
