@@ -39,6 +39,27 @@ def _posix_shell() -> str | None:
     return None
 
 
+def _system_path(*extra: Path) -> str:
+    """PATH with host uv/bun stripped so dry-run cannot discover them.
+
+    An empty PATH hangs Linux pwsh startup (locale/uname lookups). Keep the
+    platform system directories instead.
+    """
+    parts = [str(path) for path in extra]
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        parts.extend(
+            [
+                str(Path(system_root) / "System32"),
+                str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0"),
+                system_root,
+            ]
+        )
+    else:
+        parts.extend(["/usr/bin", "/bin"])
+    return os.pathsep.join(parts)
+
+
 def _base_env(tmp_path: Path) -> dict[str, str]:
     home = tmp_path / "home"
     local_app_data = tmp_path / "local-app-data"
@@ -190,12 +211,13 @@ def test_powershell_dry_run_uses_version_without_network(tmp_path: Path, version
         {
             "RXYCODE_VERSION": version,
             "RXYCODE_INSTALL_DRY_RUN": "1",
-            "PATH": "",
+            "PATH": _system_path(),
         }
     )
     result = subprocess.run(
         [
             powershell,
+            "-NoLogo",
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -206,7 +228,7 @@ def test_powershell_dry_run_uses_version_without_network(tmp_path: Path, version
         capture_output=True,
         text=True,
         env=env,
-        timeout=15,
+        timeout=60,
         check=False,
     )
 
