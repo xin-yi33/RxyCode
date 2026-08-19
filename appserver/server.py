@@ -41,6 +41,7 @@ from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService
 from .usage_tracker import UsageTracker
 from .thread_fork import ThreadForkError, ThreadForkService
 from .plan_files import PlanFileError, PlanFileService
+from .needs_input import NeedsInputClassifier
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -220,6 +221,7 @@ class AppServer:
         self._usage_tracker = UsageTracker(context_window_lookup=self._usage_context_window)
         self._thread_fork = ThreadForkService(self._sessions)
         self._plan_files = PlanFileService()
+        self._needs_input = NeedsInputClassifier()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -335,6 +337,19 @@ class AppServer:
         window = summary.get("model_context_window")
         return int(window) if isinstance(window, int) and window > 0 else None
 
+    def _maybe_emit_needs_input(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        payload = self._needs_input.emit_payload(event)
+        if payload is None or payload.get("kind") != "needs_input":
+            return payload
+        self._schedule_notification(
+            {
+                "jsonrpc": "2.0",
+                "method": "event/agent_needs_input",
+                "params": payload,
+            }
+        )
+        return payload
+
     def _emit_agent_usage(
         self,
         session_id: str,
@@ -417,6 +432,7 @@ class AppServer:
             self._recovery.observe_event(method, params)
         except Exception:
             pass
+        self._maybe_emit_needs_input({"method": method, "params": params})
         if method.startswith("child_session/") or method.startswith("approval/"):
             persist_event = True
         else:

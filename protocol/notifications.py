@@ -250,8 +250,17 @@ class TokenUsage(BaseModel):
     reporting_status: Literal["reported", "partial", "not_reported"] = "reported"
 
 
+class AgentNeedsInput(BaseModel):
+    """GX13 agent waiting for approval or a question. Additive new_event."""
+
+    method: Literal["event/agent_needs_input"] = "event/agent_needs_input"
+    session_id: str | None = None
+    request_id: str | None = None
+    kind: Literal["needs_input"] = "needs_input"
+    preview: str | None = None
+
+
 class AgentUsage(BaseModel):
-    """GX7 session usage ring. Additive; does not replace event/token_usage."""
 
     method: Literal["event/agent_usage"] = "event/agent_usage"
     session_id: str
@@ -445,6 +454,7 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     TaskComplete,
     TokenUsage,
     AgentUsage,
+    AgentNeedsInput,
     FinalAnswer,
     RecoveryStarted,
     RecoveryAnalyzing,

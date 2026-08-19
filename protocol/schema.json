@@ -5344,7 +5344,6 @@
       "type": "object"
     },
     "AgentUsage": {
-      "description": "GX7 session usage ring. Additive; does not replace event/token_usage.",
       "properties": {
         "method": {
           "const": "event/agent_usage",
@@ -5520,6 +5519,61 @@
         "seq"
       ],
       "title": "AgentUsage",
+      "type": "object"
+    },
+    "AgentNeedsInput": {
+      "description": "GX13 agent waiting for approval or a question. Additive new_event.",
+      "properties": {
+        "method": {
+          "const": "event/agent_needs_input",
+          "default": "event/agent_needs_input",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "kind": {
+          "const": "needs_input",
+          "default": "needs_input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview"
+        }
+      },
+      "title": "AgentNeedsInput",
       "type": "object"
     },
     "FinalAnswer": {
@@ -8343,6 +8397,9 @@
         },
         {
           "$ref": "#/$defs/AgentUsage"
+        },
+        {
+          "$ref": "#/$defs/AgentNeedsInput"
         },
         {
           "$ref": "#/$defs/FinalAnswer"
