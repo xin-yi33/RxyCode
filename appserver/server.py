@@ -42,6 +42,7 @@ from .release import ReleaseService
 from .cli_hub_service import CliHubError, CliHubService
 from .schedule_service import ScheduleError, ScheduleService
 from .trash_service import TrashError, TrashService
+from .plugin_service import PluginError, PluginService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -226,6 +227,12 @@ class AppServer:
         )
         self._schedule_task: asyncio.Task[Any] | None = None
         self._trash = TrashService(self._sessions)
+        self._plugins = PluginService(
+            persistent=not stub,
+            capabilities=self._capabilities,
+            permission_store=self._permissions,
+        )
+        self._plugins.attach_to_capabilities()
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -2320,6 +2327,36 @@ class AppServer:
             return sched.toggle(str(params.get("job_id") or ""), params.get("enabled"))
         raise ScheduleError("SCHEDULE_METHOD_UNKNOWN", f"unknown schedule method: {method}")
 
+    def _handle_plugin(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        hub = self._plugins
+        if method == "plugin/list":
+            return hub.list_plugins()
+        if method == "plugin/install":
+            return hub.install(
+                source=str(params.get("source") or ""),
+                path=params.get("path"),
+                name=params.get("name"),
+            )
+        if method == "plugin/uninstall":
+            from pydantic import ValidationError
+            from protocol.requests import PluginUninstallRequest
+
+            try:
+                req = PluginUninstallRequest.model_validate({"name": params.get("name"), "keep_user_config": params.get("keep_user_config", False)})
+            except ValidationError as exc:
+                raise PluginError("PLUGIN_UNINSTALL_INVALID", "keep_user_config must be boolean") from exc
+            return hub.uninstall(req.name, keep_user_config=req.keep_user_config)
+        if method == "plugin/toggle":
+            from pydantic import ValidationError
+            from protocol.requests import PluginToggleRequest
+
+            try:
+                req = PluginToggleRequest.model_validate({"name": params.get("name"), "enabled": params.get("enabled")})
+            except ValidationError as exc:
+                raise PluginError("PLUGIN_TOGGLE_INVALID", "enabled must be boolean") from exc
+            return hub.toggle(req.name, req.enabled)
+        raise PluginError("PLUGIN_METHOD_UNKNOWN", f"unknown plugin method: {method}")
+
     def _handle_thread_trash(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("session_id") or "")
         if method == "thread/delete":
@@ -2631,6 +2668,13 @@ class AppServer:
             try:
                 result = self._handle_schedule(method, params or {})
             except ScheduleError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
+        elif method.startswith("plugin/"):
+            try:
+                result = self._handle_plugin(method, params or {})
+            except PluginError as exc:
                 await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
                 return
             await self._respond(request_id, result)

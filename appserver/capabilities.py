@@ -67,6 +67,7 @@ class CapabilityService:
         mcp_invoker: Callable[..., Any] | None = None,
         invoke_timeout_s: float = 2.0,
         cli_lister: Callable[[], dict[str, Any]] | None = None,
+        extra_lister: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.persistent = persistent
         self.path = path or Path(os.environ.get("RXYCODE_DATA_DIR", ".")) / "desktop" / "capabilities.json"
@@ -79,6 +80,7 @@ class CapabilityService:
         self._mcp_invoker = mcp_invoker
         self._invoke_timeout_s = invoke_timeout_s
         self._cli_lister = cli_lister
+        self._extra_lister = extra_lister
         self._cancel_flags: dict[str, threading.Event] = {}
         self._lock = threading.RLock()
         self._data: dict[str, Any] = {
@@ -302,8 +304,17 @@ class CapabilityService:
             )
         return rows
 
+    def _project_extra(self) -> list[dict[str, Any]]:
+        if self._extra_lister is None:
+            return []
+        try:
+            rows = self._extra_lister() or []
+        except Exception:
+            return []
+        return [row for row in rows if isinstance(row, dict) and row.get("capability_id")]
+
     def list(self, *, kind: str | None = None, available_only: bool = False) -> dict[str, Any]:
-        rows = self._project_skills() + self._project_mcp() + [self._project_browser()] + self._project_cli()
+        rows = self._project_skills() + self._project_mcp() + [self._project_browser()] + self._project_cli() + self._project_extra()
         if kind:
             rows = [row for row in rows if row["kind"] == kind]
         if available_only:
@@ -625,11 +636,12 @@ class CapabilityService:
                 projection,
                 tool_metadata=projection.get("tool_metadata"),
             )
-        if projection["kind"] == "skill":
-            skill_md = Path(str(projection.get("origin") or "")) / "SKILL.md"
-            if not skill_md.is_file():
-                raise CapabilityError("CAPABILITY_INVOKE_FAILED", "skill SKILL.md missing")
-            text = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+        if projection["kind"] in {"skill", "command", "tool"}:
+            origin = Path(str(projection.get("origin") or ""))
+            target = origin if origin.is_file() else origin / "SKILL.md"
+            if not target.is_file():
+                raise CapabilityError("CAPABILITY_INVOKE_FAILED", f"{projection['kind']} payload missing")
+            text = target.read_text(encoding="utf-8", errors="replace")[:4000]
             return self._result_payload(
                 projection["capability_id"],
                 [],

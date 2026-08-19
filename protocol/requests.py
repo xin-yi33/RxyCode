@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .types import JsonObject
 
@@ -1201,6 +1201,63 @@ class CliRecordFailureRequest(BaseModel):
     next_step: str | None = None
 
 
+class PluginListRequest(BaseModel):
+    """List installed plugins.
+
+    Maps ``plugin/list``.
+    """
+
+    method: Literal["plugin/list"] = "plugin/list"
+
+
+class PluginInstallRequest(BaseModel):
+    """Install a plugin from a local directory or configured registry.
+
+    Maps ``plugin/install``.
+    """
+
+    method: Literal["plugin/install"] = "plugin/install"
+    source: str
+    path: str | None = None
+    name: str | None = None
+
+
+class PluginUninstallRequest(BaseModel):
+    """Unregister a plugin and optionally keep user.json.
+
+    Maps ``plugin/uninstall``.
+    """
+
+    method: Literal["plugin/uninstall"] = "plugin/uninstall"
+    name: str
+    keep_user_config: bool = False
+
+    @field_validator("keep_user_config", mode="before")
+    @classmethod
+    def _keep_user_config_bool(cls, value: object) -> object:
+        if value is not True and value is not False:
+            raise ValueError("keep_user_config must be a JSON boolean")
+        return value
+
+
+class PluginToggleRequest(BaseModel):
+    """Enable or disable a plugin via B11 capability/set_enabled.
+
+    Maps ``plugin/toggle``.
+    """
+
+    method: Literal["plugin/toggle"] = "plugin/toggle"
+    name: str
+    enabled: bool
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _enabled_bool(cls, value: object) -> object:
+        if value is not True and value is not False:
+            raise ValueError("enabled must be a JSON boolean")
+        return value
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -1319,6 +1376,10 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ScheduleUpdateRequest,
     ScheduleDeleteRequest,
     ScheduleToggleRequest,
+    PluginListRequest,
+    PluginInstallRequest,
+    PluginUninstallRequest,
+    PluginToggleRequest,
 )
 
 ClientRequest = Annotated[
@@ -1381,6 +1442,10 @@ ClientRequest = Annotated[
         ScheduleUpdateRequest,
         ScheduleDeleteRequest,
         ScheduleToggleRequest,
+        PluginListRequest,
+        PluginInstallRequest,
+        PluginUninstallRequest,
+        PluginToggleRequest,
     ],
     Field(discriminator="method"),
 ]

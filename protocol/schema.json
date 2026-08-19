@@ -4284,6 +4284,113 @@
       "title": "ScheduleToggleRequest",
       "type": "object"
     },
+    "PluginListRequest": {
+      "description": "List installed plugins.\n\nMaps ``plugin/list``.",
+      "properties": {
+        "method": {
+          "const": "plugin/list",
+          "default": "plugin/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "PluginListRequest",
+      "type": "object"
+    },
+    "PluginInstallRequest": {
+      "description": "Install a plugin from a local directory or configured registry.\n\nMaps ``plugin/install``.",
+      "properties": {
+        "method": {
+          "const": "plugin/install",
+          "default": "plugin/install",
+          "title": "Method",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "PluginInstallRequest",
+      "type": "object"
+    },
+    "PluginUninstallRequest": {
+      "description": "Unregister a plugin and optionally keep user.json.\n\nMaps ``plugin/uninstall``.",
+      "properties": {
+        "method": {
+          "const": "plugin/uninstall",
+          "default": "plugin/uninstall",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "keep_user_config": {
+          "default": false,
+          "title": "Keep User Config",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PluginUninstallRequest",
+      "type": "object"
+    },
+    "PluginToggleRequest": {
+      "description": "Enable or disable a plugin via B11 capability/set_enabled.\n\nMaps ``plugin/toggle``.",
+      "properties": {
+        "method": {
+          "const": "plugin/toggle",
+          "default": "plugin/toggle",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "enabled"
+      ],
+      "title": "PluginToggleRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -7645,6 +7752,18 @@
         },
         {
           "$ref": "#/$defs/ScheduleToggleRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginListRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginInstallRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginUninstallRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginToggleRequest"
         }
       ]
     },
