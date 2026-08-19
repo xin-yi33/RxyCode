@@ -924,6 +924,69 @@ class CapabilitiesAuditRequest(BaseModel):
     session_id: str | None = None
 
 
+class RecoveryStatusRequest(BaseModel):
+    """Project session recovery state. Incomplete never becomes completed.
+
+    Maps ``recovery/status``.
+    """
+
+    method: Literal["recovery/status"] = "recovery/status"
+    session_id: str | None = None
+
+
+class RecoveryReplayRequest(BaseModel):
+    """Replay events after a saved cursor and persist the new cursor.
+
+    Maps ``recovery/replay``.
+    """
+
+    method: Literal["recovery/replay"] = "recovery/replay"
+    session_id: str
+    cursor: int | None = None
+    limit: int = 100
+
+
+class RecoveryReclaimRequest(BaseModel):
+    """Mark orphan incomplete sessions recovery_required.
+
+    Maps ``recovery/reclaim``.
+    """
+
+    method: Literal["recovery/reclaim"] = "recovery/reclaim"
+
+
+class NotificationsListRequest(BaseModel):
+    """List deduped recovery notifications.
+
+    Maps ``notifications/list``.
+    """
+
+    method: Literal["notifications/list"] = "notifications/list"
+    session_id: str | None = None
+    include_acked: bool = False
+
+
+class NotificationsAckRequest(BaseModel):
+    """Acknowledge one notification.
+
+    Maps ``notifications/ack``.
+    """
+
+    method: Literal["notifications/ack"] = "notifications/ack"
+    notification_id: str
+
+
+class NotificationsCursorRequest(BaseModel):
+    """Persist a disconnect cursor for later replay.
+
+    Maps ``notifications/cursor``.
+    """
+
+    method: Literal["notifications/cursor"] = "notifications/cursor"
+    session_id: str
+    cursor: int
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -1017,6 +1080,12 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     CapabilitiesInvokeRequest,
     CapabilitiesCancelRequest,
     CapabilitiesAuditRequest,
+    RecoveryStatusRequest,
+    RecoveryReplayRequest,
+    RecoveryReclaimRequest,
+    NotificationsListRequest,
+    NotificationsAckRequest,
+    NotificationsCursorRequest,
 )
 
 ClientRequest = Annotated[
@@ -1054,6 +1123,12 @@ ClientRequest = Annotated[
         CapabilitiesInvokeRequest,
         CapabilitiesCancelRequest,
         CapabilitiesAuditRequest,
+        RecoveryStatusRequest,
+        RecoveryReplayRequest,
+        RecoveryReclaimRequest,
+        NotificationsListRequest,
+        NotificationsAckRequest,
+        NotificationsCursorRequest,
     ],
     Field(discriminator="method"),
 ]

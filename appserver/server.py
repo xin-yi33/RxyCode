@@ -37,6 +37,7 @@ from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
+from .recovery import RecoveryError, RecoveryService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -207,6 +208,7 @@ class AppServer:
             execution_store=self._execution,
             review_service=self._reviews,
         )
+        self._recovery = RecoveryService(persistent=not stub, task_store=self._task_store)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -333,6 +335,10 @@ class AppServer:
         params = message.get("params")
         if not isinstance(method, str) or not isinstance(params, dict):
             return
+        try:
+            self._recovery.observe_event(method, params)
+        except Exception:
+            pass
         if method.startswith("child_session/") or method.startswith("approval/"):
             persist_event = True
         else:
@@ -342,6 +348,10 @@ class AppServer:
             # final event and tool/recovery records are sufficient to rebuild
             # a completed task, while skipping deltas avoids both prompt-like
             # content in the durable task index and an fsync per token.
+            try:
+                self._recovery.observe_event(method, params)
+            except Exception:
+                pass
             return
         child_id = params.get("child_session_id")
         sid = params.get("session_id")
@@ -708,6 +718,13 @@ class AppServer:
             )
             return
         self._initialized = True
+        recovery_ok = True
+        try:
+            self._recovery.restore_after_restart(self._task_store)
+            self._recovery.reclaim_orphans(set(self._sessions._sessions))
+        except Exception as exc:
+            recovery_ok = False
+            _logger.error("recovery restore failed: %s", exc)
         result = InitializeResult(
             capabilities={
                 "sessions": True,
@@ -716,6 +733,9 @@ class AppServer:
                 "credentials": True,
                 "settings": True,
                 "capabilities": True,
+                "recovery": True,
+                "notifications": True,
+                "recovery_restore_ok": recovery_ok,
             },
             capability_snapshot=CapabilitySnapshot(thread_fork=True),
             model_providers=_model_provider_summaries(),
@@ -2448,6 +2468,47 @@ class AppServer:
             await self._handle_capabilities_cancel(params, request_id)
         elif method == "capabilities/audit":
             await self._handle_capabilities_audit(params, request_id)
+        elif method == "recovery/status":
+            await self._respond(request_id, self._recovery.status(params.get("session_id")))
+        elif method == "recovery/replay":
+            await self._respond(
+                request_id,
+                self._recovery.replay(
+                    str(params.get("session_id") or ""),
+                    params.get("cursor"),
+                    limit=int(params.get("limit") or 100),
+                ),
+            )
+        elif method == "recovery/reclaim":
+            live = set(self._sessions._sessions)
+            await self._respond(request_id, {"orphans": self._recovery.reclaim_orphans(live)})
+        elif method == "notifications/list":
+            await self._respond(
+                request_id,
+                {
+                    "notifications": self._recovery.list_notifications(
+                        params.get("session_id"),
+                        include_acked=bool(params.get("include_acked")),
+                    )
+                },
+            )
+        elif method == "notifications/ack":
+            try:
+                result = self._recovery.ack(str(params.get("notification_id") or ""))
+            except RecoveryError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
+        elif method == "notifications/cursor":
+            try:
+                result = self._recovery.save_cursor(
+                    str(params.get("session_id") or ""),
+                    int(params.get("cursor") or 0),
+                )
+            except RecoveryError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":
