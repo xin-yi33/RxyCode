@@ -7,5 +7,5 @@
   "protocol_version": "1.1.0",
   "appserver_version": "1.2.10",
   "schema_digest_source": "protocol/schema.json",
-  "schema_digest": "sha256:09402599f0d07eb0fb1e2e072752e02214a5b9307aa99b24acbc771b5104bf6d"
+  "schema_digest": "sha256:feba3c5eb182022ad4e685dedd186096de7ae677ddf092da03b47cacf4d9aa65"
 }

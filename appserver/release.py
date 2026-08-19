@@ -38,6 +38,7 @@ def host_platform() -> str:
 def schema_digest(schema_path: Path | None = None) -> str:
     path = schema_path or Path(__file__).resolve().parents[1] / "protocol" / "schema.json"
     data = path.read_bytes() if path.is_file() else b""
+    data = data.replace(b"\r\n", b"\n")
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
