@@ -16,7 +16,7 @@
 | H8 / J8 Permission | F H8 | 验收勾选 | PASS | 1ae7466 |
 | H9 / J9 Review/Diff | F H9 | 验收勾选（pytest B8 BLOCKED） | PASS | b12b157 |
 | H10 / J10 文件/Worktree | F H10/H11 | 验收勾选（pytest B9 BLOCKED） | PASS | 9de99c6 |
-| H11 / J11 Settings/MCP | F H12/H13 | 验收勾选（pytest B10/B11 BLOCKED） | PASS | 1252181 |
+| H11 / J11 Settings/MCP | F H12/H13 | 验收勾选（pytest B10/B11 BLOCKED） | PASS | 1252181 + H11 luna close |
 | H12 / J12 通知/a11y | F H14/H15 | 验收勾选 | PASS | 52e33d2 |
 | H13 / J13 打包更新 | F H16 | 验收勾选（pytest B13 BLOCKED） | PASS | 91d867f |
 | H14 i18n | — | 验收勾选 | PASS | c93b020 |

@@ -7,7 +7,7 @@
 | H8 | PASS |
 | H9 | PASS |
 | H10 | PASS |
-| H11 | pending last audit |
+| H11 | PASS |
 | H12 | PASS |
 | H13 | PASS |
 | H14 | PASS |
