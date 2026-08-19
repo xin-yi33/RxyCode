@@ -23,7 +23,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'addModel', labelKey: 'addModel', lazy: true },
   { id: 'skills', labelKey: 'skills', lazy: true },
   { id: 'mcp', labelKey: 'mcp', lazy: true },
-  { id: 'team', labelKey: 'team', blocked: true, lazy: true }
+  { id: 'team', labelKey: 'team', lazy: true }
 ]
 
 export const SETTINGS_ENTRY = {
