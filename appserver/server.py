@@ -40,6 +40,7 @@ from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
 from .release import ReleaseService
 from .cli_hub_service import CliHubError, CliHubService
+from .schedule_service import ScheduleError, ScheduleService
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -216,6 +217,13 @@ class AppServer:
         )
         self._recovery = RecoveryService(persistent=not stub, task_store=self._task_store)
         self._release = ReleaseService()
+        self._schedule = ScheduleService(
+            persistent=not stub,
+            sessions=self._sessions,
+            permissions=self._permissions,
+            task_store=self._task_store,
+        )
+        self._schedule_task: asyncio.Task[Any] | None = None
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -729,6 +737,11 @@ class AppServer:
         try:
             self._recovery.restore_after_restart(self._task_store)
             self._recovery.reclaim_orphans(set(self._sessions._sessions))
+            self._schedule.reclaim_orphans()
+            if self._schedule_task is None or self._schedule_task.done():
+                from .schedule_service import schedule_loop
+
+                self._schedule_task = asyncio.create_task(schedule_loop(self._schedule, asyncio.sleep, 30.0))
         except Exception as exc:
             recovery_ok = False
             _logger.error("recovery restore failed: %s", exc)
@@ -1210,6 +1223,8 @@ class AppServer:
         if reason:
             _logger.info("shutdown requested: %s", reason)
         self._shutdown = True
+        if self._schedule_task is not None:
+            self._schedule_task.cancel()
         self._mark_inflight_recovery_required()
         await self._emit_model(
             ProcessShutdown(reason=str(reason or "shutdown"), graceful=True)
@@ -2280,6 +2295,29 @@ class AppServer:
             return hub.schema(name)
         raise CliHubError("CLI_METHOD_UNKNOWN", f"unknown cli method: {method}")
 
+    def _handle_schedule(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        sched = self._schedule
+        if method == "schedule/list":
+            return sched.list_jobs()
+        if method == "schedule/create":
+            return sched.create(
+                rule=params.get("rule") if isinstance(params.get("rule"), dict) else {},
+                action=params.get("action") if isinstance(params.get("action"), dict) else {},
+                enabled=bool(params.get("enabled", True)),
+            )
+        if method == "schedule/update":
+            return sched.update(
+                str(params.get("job_id") or ""),
+                rule=params.get("rule"),
+                action=params.get("action"),
+                enabled=params.get("enabled"),
+            )
+        if method == "schedule/delete":
+            return sched.delete(str(params.get("job_id") or ""))
+        if method == "schedule/toggle":
+            return sched.toggle(str(params.get("job_id") or ""), params.get("enabled"))
+        raise ScheduleError("SCHEDULE_METHOD_UNKNOWN", f"unknown schedule method: {method}")
+
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
@@ -2560,6 +2598,13 @@ class AppServer:
             try:
                 result = self._handle_cli(method, params or {})
             except CliHubError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
+        elif method.startswith("schedule/"):
+            try:
+                result = self._handle_schedule(method, params or {})
+            except ScheduleError as exc:
                 await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
                 return
             await self._respond(request_id, result)

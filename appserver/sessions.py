@@ -338,6 +338,37 @@ class SessionStore:
         self.mark_orphans(session_id, reason="parent_trashed")
         return record
 
+    def enqueue_scheduled(self, session_id: str, *, kind: str, text: str, origin: str = "schedule") -> dict[str, object]:
+        """B5 Thread channel: restore a trashed session and append a scheduled message."""
+        record = self.get(session_id)
+        if record is None:
+            raise KeyError(session_id)
+        if record.trashed_at:
+            record = self.restore(session_id)
+        if self._task_store is None:
+            raise RuntimeError("task store required")
+        method = {
+            "session": "event/user_message",
+            "command": "event/command",
+            "skill": "event/skill",
+        }.get(kind, "event/user_message")
+        seq = self._task_store.append_event(
+            record.session_id,
+            {
+                "method": method,
+                "params": {
+                    "session_id": record.session_id,
+                    "text": text,
+                    "kind": kind,
+                    "origin": origin,
+                    "channel": "b5-thread",
+                },
+            },
+        )
+        self._touch(record)
+        self._persist(record)
+        return {"session_id": record.session_id, "seq": seq, "method": method, "channel": "b5-thread"}
+
     def restore(self, session_id: str) -> AppSessionRecord:
         record = self._require(session_id)
         record.trashed_at = None

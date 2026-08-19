@@ -4031,6 +4031,161 @@
       "title": "CliRecordFailureRequest",
       "type": "object"
     },
+    "ScheduleListRequest": {
+      "description": "List application-layer scheduled jobs.\n\nMaps ``schedule/list``.",
+      "properties": {
+        "method": {
+          "const": "schedule/list",
+          "default": "schedule/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ScheduleListRequest",
+      "type": "object"
+    },
+    "ScheduleCreateRequest": {
+      "description": "Create an interval or at-time job.\n\nMaps ``schedule/create``.",
+      "properties": {
+        "method": {
+          "const": "schedule/create",
+          "default": "schedule/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "rule": {
+          "additionalProperties": true,
+          "title": "Rule",
+          "type": "object"
+        },
+        "action": {
+          "additionalProperties": true,
+          "title": "Action",
+          "type": "object"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rule",
+        "action"
+      ],
+      "title": "ScheduleCreateRequest",
+      "type": "object"
+    },
+    "ScheduleUpdateRequest": {
+      "description": "Update one scheduled job.\n\nMaps ``schedule/update``.",
+      "properties": {
+        "method": {
+          "const": "schedule/update",
+          "default": "schedule/update",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "rule": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rule"
+        },
+        "action": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "ScheduleUpdateRequest",
+      "type": "object"
+    },
+    "ScheduleDeleteRequest": {
+      "description": "Delete one scheduled job.\n\nMaps ``schedule/delete``.",
+      "properties": {
+        "method": {
+          "const": "schedule/delete",
+          "default": "schedule/delete",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "ScheduleDeleteRequest",
+      "type": "object"
+    },
+    "ScheduleToggleRequest": {
+      "description": "Enable or disable one scheduled job.\n\nMaps ``schedule/toggle``.",
+      "properties": {
+        "method": {
+          "const": "schedule/toggle",
+          "default": "schedule/toggle",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "ScheduleToggleRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -7307,6 +7462,21 @@
         },
         {
           "$ref": "#/$defs/CliRecordFailureRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleListRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleUpdateRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleDeleteRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleToggleRequest"
         }
       ]
     },

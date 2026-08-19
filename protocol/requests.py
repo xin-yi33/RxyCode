@@ -1082,6 +1082,61 @@ class CliDecideRequest(BaseModel):
     has_sdk: bool = False
 
 
+class ScheduleListRequest(BaseModel):
+    """List application-layer scheduled jobs.
+
+    Maps ``schedule/list``.
+    """
+
+    method: Literal["schedule/list"] = "schedule/list"
+
+
+class ScheduleCreateRequest(BaseModel):
+    """Create an interval or at-time job.
+
+    Maps ``schedule/create``.
+    """
+
+    method: Literal["schedule/create"] = "schedule/create"
+    rule: dict
+    action: dict
+    enabled: bool = True
+
+
+class ScheduleUpdateRequest(BaseModel):
+    """Update one scheduled job.
+
+    Maps ``schedule/update``.
+    """
+
+    method: Literal["schedule/update"] = "schedule/update"
+    job_id: str
+    rule: dict | None = None
+    action: dict | None = None
+    enabled: bool | None = None
+
+
+class ScheduleDeleteRequest(BaseModel):
+    """Delete one scheduled job.
+
+    Maps ``schedule/delete``.
+    """
+
+    method: Literal["schedule/delete"] = "schedule/delete"
+    job_id: str
+
+
+class ScheduleToggleRequest(BaseModel):
+    """Enable or disable one scheduled job.
+
+    Maps ``schedule/toggle``.
+    """
+
+    method: Literal["schedule/toggle"] = "schedule/toggle"
+    job_id: str
+    enabled: bool | None = None
+
+
 class CliRecordFailureRequest(BaseModel):
     """C-E generate-failure ladder record.
 
@@ -1204,6 +1259,11 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     CliStopRequest,
     CliDecideRequest,
     CliRecordFailureRequest,
+    ScheduleListRequest,
+    ScheduleCreateRequest,
+    ScheduleUpdateRequest,
+    ScheduleDeleteRequest,
+    ScheduleToggleRequest,
 )
 
 ClientRequest = Annotated[
@@ -1257,6 +1317,11 @@ ClientRequest = Annotated[
         CliStopRequest,
         CliDecideRequest,
         CliRecordFailureRequest,
+        ScheduleListRequest,
+        ScheduleCreateRequest,
+        ScheduleUpdateRequest,
+        ScheduleDeleteRequest,
+        ScheduleToggleRequest,
     ],
     Field(discriminator="method"),
 ]
