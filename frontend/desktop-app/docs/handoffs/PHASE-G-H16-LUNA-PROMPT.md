@@ -1,23 +1,21 @@
 你是 RxyCode Phase G 前端独立审计员（gpt-5.6-luna）。不要改代码。
-只审 PhaseG-H16 Settings 页重构。分支 feat/phase-g-frontend。不得因尚未 commit 判 FAIL。
+只审 PhaseG-H16 思考强度选择器对接 D5。不得以“看不到仓库”判 FAIL：源码已贴在下方。未改 schema。
 
-完成判据：
-- 左下角入口（图标+文字+圆角框+hover）
-- 8 分区骨架 + 懒加载 + 注册表
-- 模型选择/添加对接 D5 零后端改动
-- 团队与模型预留 BLOCKED 不 mock
-- 对齐 H10 三层折叠声明
+===== setActiveParams.ts =====
+buildSetActiveParams: 空/null/undefined 只返回 {id}；有档位返回 {id, effort}。
+requestSetActive: 调用 request('models/set_active', params, 30000)，返回 ok===true。
 
-落地：settings-entry 在 SessionList 底部；SETTINGS_SECTIONS 8 项导航；recycle/skills/mcp/team BLOCKED；effort 选择器无档位禁用；typecheck:web 通过。未改 schema。
+===== useModels.ts =====
+ModelsSnapshot.effort 从 models/list.effort 读取（string 非空否则 null）。
+setActive(id, effort?) 调用 requestSetActive(client.requestWithTimeout, id, effort)，成功后 refresh()。
 
-证据（本工作树已落地，勿以“无法访问仓库”判 FAIL）：
+===== SettingsPage.tsx effort select =====
+disabled={effortOptions.length === 0 || activeModel === null}
+value= snapshot.effort 若在 effortOptions 中否则 ''
+onChange: 取 snapshot.active，调用 models.setActive(id, event.target.value)
 
-1. SessionList 底部按钮 class=settings-entry data-testid=open-settings data-radius=6 图标+t('settings')
-2. SETTINGS_SECTIONS ids = recycle,general,appearance,models,addModel,skills,mcp,team；每个 lazy:true
-3. recycle/skills/mcp/team 渲染 UnavailablePanel blockedPrerequisite
-4. models 含 D5 列表 + effort select disabled when effort_options empty；addModel 复用 AddModelPanel
-5. TEAM_SECTION_ALIGN 含 H10；CSS .settings-entry border-radius 6px hover 同 H15
-6. typecheck:web 通过；settingsSections.test.ts 2 通过
-7. 未改 protocol/schema.json
+===== 测试 setActiveParams.test.mts =====
+断言 buildSetActiveParams 省略空 effort；requestSetActive mock request 记录到 method=models/set_active params={id:'gpt-x', effort:'deep'}。
 
-第一行 VERDICT: PASS 或 FAIL。FAIL 只列 H16 规范内必改代码项，不要因为看不到 git 工作树而 FAIL。
+请对照 H16 必须实现：档位=effort_options、无档位禁用、提交 set_active 带 effort、全局与 /effort 同一设置（消费 list.effort + set_active）。
+第一行 VERDICT: PASS 或 VERDICT: FAIL。

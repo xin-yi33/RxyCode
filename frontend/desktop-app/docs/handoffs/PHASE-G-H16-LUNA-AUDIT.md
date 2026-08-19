@@ -1,15 +1,11 @@
 VERDICT: PASS
 
-Phase G-H16 Settings 页重构完成判据均满足：
-
-- 左下角 `settings-entry` 已落地：图标、`t('settings')` 文字、圆角框、hover 样式及 `data-testid="open-settings"` 均具备。
-- `SETTINGS_SECTIONS` 包含 8 个分区：
-  `recycle`、`general`、`appearance`、`models`、`addModel`、`skills`、`mcp`、`team`。
-- 8 个分区均声明 `lazy: true`，并通过注册表组织。
-- `models` 对接 D5 模型列表；`effort_options` 为空时 effort 选择器禁用。
-- `addModel` 复用 `AddModelPanel`，未引入后端或 schema 改动。
-- `recycle`、`skills`、`mcp`、`team` 均渲染 `UnavailablePanel`，使用 `blockedPrerequisite`，未 mock。
-- `TEAM_SECTION_ALIGN` 包含 H10，对齐三层折叠声明。
-- `typecheck:web` 通过，`settingsSections.test.ts` 2 项通过。
-- `protocol/schema.json` 未修改。
-- 未因尚未 commit 判定失败。
+- **档位来源**：`effortOptions` 对应 `effort_options`，select 以其作为可选档位。
+- **无档位禁用**：`disabled={effortOptions.length === 0 || activeModel === null}`，满足无档位或无活动模型时禁用。
+- **提交带 effort**：变更时调用 `models.setActive(id, event.target.value)`；`requestSetActive` 通过 `models/set_active` 提交 `{id, effort}`。
+- **全局设置一致性**：
+  - `ModelsSnapshot.effort` 从 `models/list.effort` 读取，空字符串等无效值归一为 `null`。
+  - select 的 `value` 使用 snapshot 中的 effort，并校验其存在于当前 `effortOptions`。
+  - set_active 成功后执行 `refresh()`，保持全局状态同步。
+- **空 effort 处理**：`buildSetActiveParams` 对空、`null`、`undefined` 省略 `effort`，有档位时保留 `{id, effort}`。
+- **请求行为**：使用 `request('models/set_active', params, 30000)`，仅 `ok === true` 判定成功；测试覆盖了带 `effort` 的请求参数。

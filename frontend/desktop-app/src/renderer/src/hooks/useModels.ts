@@ -12,6 +12,7 @@ import {
   classifyModelsListFailure,
   type ModelsUnavailableReason
 } from '../lib/modelAvailability.mts'
+import { requestSetActive } from '../../../features/settings/setActiveParams.ts'
 
 export interface ModelEntry {
   id: string
@@ -35,6 +36,7 @@ export interface ModelsSnapshot {
   models: ModelEntry[]
   active: string
   recent: string[]
+  effort: string | null
 }
 
 export interface ProviderPreset {
@@ -73,7 +75,7 @@ export interface UseModelsResult {
   unavailableReason: ModelsUnavailableReason | null
   snapshot: ModelsSnapshot | null
   refresh(): Promise<void>
-  setActive(id: string): Promise<boolean>
+  setActive(id: string, effort?: string | null): Promise<boolean>
   remove(id: string): Promise<boolean>
   upsertCredential(id: string, apiKey: string): Promise<boolean>
   deleteCredential(id: string): Promise<boolean>
@@ -137,7 +139,8 @@ export function useModels({
       setSnapshot({
         models: (list.models ?? []) as ModelEntry[],
         active: String(list.active ?? ''),
-        recent: (list.recent ?? []) as string[]
+        recent: (list.recent ?? []) as string[],
+        effort: typeof list.effort === 'string' && list.effort !== '' ? list.effort : null
       })
     } catch (e) {
       setSupported(false)
@@ -154,14 +157,16 @@ export function useModels({
   }, [refresh, refreshKey])
 
   const setActive = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string, effort?: string | null): Promise<boolean> => {
       if (client === null) return false
       try {
-        const r = (await client.requestWithTimeout('models/set_active', { id }, 30_000)) as {
-          ok?: boolean
-        }
-        if (r.ok === true) await refresh()
-        return r.ok === true
+        const ok = await requestSetActive(
+          (method, params, timeoutMs) => client.requestWithTimeout(method, params, timeoutMs),
+          id,
+          effort
+        )
+        if (ok) await refresh()
+        return ok
       } catch {
         return false
       }

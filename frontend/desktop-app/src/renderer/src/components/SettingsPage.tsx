@@ -459,8 +459,17 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 <select
                   aria-label={t('effort')}
                   data-testid="effort-select"
-                  disabled={effortOptions.length === 0}
-                  defaultValue=""
+                  disabled={effortOptions.length === 0 || activeModel === null}
+                  value={
+                    effortOptions.includes(props.models.snapshot?.effort ?? '')
+                      ? (props.models.snapshot?.effort ?? '')
+                      : ''
+                  }
+                  onChange={(event) => {
+                    const id = props.models.snapshot?.active
+                    if (id === undefined || id === '') return
+                    void props.models.setActive(id, event.target.value)
+                  }}
                 >
                   {effortOptions.length === 0 ? (
                     <option value="">{t('effortNone')}</option>
