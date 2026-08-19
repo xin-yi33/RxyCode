@@ -1,27 +1,21 @@
 import { createElement, type ReactElement } from 'react'
-import { probeMethods } from '../gx/schemaProbe.ts'
+import { TrashSection } from '../settings/TrashSection.ts'
+import type { TrashItemModel } from '../../components/TrashItem.ts'
 
-export function probeRecycle(schemaText: string): { path: 'A' | 'B'; present: string[]; missing: string[] } {
-  const result = probeMethods(schemaText, ['session/trash', 'session/restore', 'session/purge'])
-  return { path: result.missing.length === 0 ? 'A' : 'B', ...result }
-}
+export { probeRecycle } from './recycle.probe.ts'
 
 export function RecycleBin(props: {
-  items: readonly { id: string; title: string }[]
+  items: readonly TrashItemModel[]
+  blocked: boolean
+  missing: readonly string[]
   onRestore: (id: string) => void
-  onPurge: (id: string) => void
+  onPurgeConfirmed: () => void
 }): ReactElement {
-  return createElement(
-    'section',
-    { 'data-testid': 'recycle-bin', 'data-visual-state': props.items.length === 0 ? 'empty' : 'ok' },
-    props.items.map((item) =>
-      createElement(
-        'div',
-        { key: item.id },
-        item.title,
-        createElement('button', { type: 'button', onClick: () => props.onRestore(item.id) }, 'Restore'),
-        createElement('button', { type: 'button', onClick: () => props.onPurge(item.id) }, 'Purge')
-      )
-    )
-  )
+  return createElement(TrashSection, {
+    items: props.items,
+    blocked: props.blocked,
+    missing: props.missing,
+    onRestore: props.onRestore,
+    onPurgeConfirmed: props.onPurgeConfirmed
+  })
 }

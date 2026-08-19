@@ -2340,11 +2340,7 @@ npm run test -- --run
 - [x] UI/投影/五态落地
 - [x] typecheck + 组件测试通过
 - [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
-
-<details>
-<summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
-
-## GX21 · 回收站 UI
+- 探针路径 B：B17 `thread/list_deleted|restore|purge` 缺失；session/* 不能替代。PurgeConfirmDialog + confirm_purge 已落地，RPC 不 mock。
 
 **借鉴来源**：Codex 会话删除映射（删映射不删文件）；用户规格（垃圾桶图标入口、点击恢复、清空弹窗确认风险操作）。
 **优先级/工时**：P1 / 2–3d / 依赖：B17（回收站后端）+ H15（三分类投影）/ **owner: frontend**

@@ -11,6 +11,9 @@ import {
   SETTINGS_SECTIONS,
   type SettingsSectionId
 } from '../../../lib/settingsSections.ts'
+import { TeamSection } from '../../../features/settings/TeamSection.ts'
+import { TrashSection } from '../../../features/settings/TrashSection.ts'
+import { B17_RECYCLE_METHODS } from '../../../features/recycle/recycle.probe.ts'
 
 export type SettingsTab = SettingsSectionId
 
@@ -290,6 +293,7 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const { t } = useI18n()
   const [tab, setTab] = useState<SettingsSectionId>('general')
+  const [teamAuto, setTeamAuto] = useState(false)
   const activeModel = props.models.snapshot?.models.find((model) => model.active) ?? null
   const effortOptions = effortOptionsFor(activeModel)
   const diagnostics = useDiagnostics()
@@ -335,7 +339,13 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'recycle' && (
             <section className="settings-panel" data-testid="settings-recycle">
               <h2>{t('recycle')}</h2>
-              <UnavailablePanel title={t('blocked')} detail={t('recycleBlockedDetail')} blockedPrerequisite />
+              <TrashSection
+                items={[]}
+                blocked
+                missing={[...B17_RECYCLE_METHODS]}
+                onRestore={() => undefined}
+                onPurgeConfirmed={() => undefined}
+              />
             </section>
           )}
           {tab === 'general' && (
@@ -660,7 +670,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'team' && (
             <section className="settings-panel" data-testid="settings-team">
               <h2>{t('team')}</h2>
-              <UnavailablePanel title={t('blocked')} detail={t('teamBlockedDetail')} blockedPrerequisite />
+              <TeamSection auto={teamAuto} onAutoChange={setTeamAuto} />
             </section>
           )}
         </div>
