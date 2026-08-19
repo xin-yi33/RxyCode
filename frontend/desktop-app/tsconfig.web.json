@@ -6,6 +6,7 @@
     "src/renderer/src/**/*.tsx",
     "src/platform/**/*",
     "src/protocol/**/*",
+    "src/features/**/*",
     "src/preload/*.d.ts"
   ],
   "compilerOptions": {
