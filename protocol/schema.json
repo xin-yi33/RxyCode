@@ -1610,6 +1610,66 @@
       "title": "ReviewCommentRequest",
       "type": "object"
     },
+    "ReviewCommentAddRequest": {
+      "description": "GX3 add inline comment. Does not replace review/comment.",
+      "properties": {
+        "method": {
+          "const": "review/comment/add",
+          "default": "review/comment/add",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "hunk_hash": {
+          "title": "Hunk Hash",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        }
+      },
+      "required": [
+        "review_id",
+        "file",
+        "line",
+        "hunk_hash",
+        "body"
+      ],
+      "title": "ReviewCommentAddRequest",
+      "type": "object"
+    },
+    "ReviewCommentResolveRequest": {
+      "description": "GX3 resolve an inline comment (open or stale).",
+      "properties": {
+        "method": {
+          "const": "review/comment/resolve",
+          "default": "review/comment/resolve",
+          "title": "Method",
+          "type": "string"
+        },
+        "comment_id": {
+          "title": "Comment Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "comment_id"
+      ],
+      "title": "ReviewCommentResolveRequest",
+      "type": "object"
+    },
     "CheckpointCreateRequest": {
       "description": "Create a session checkpoint without writing the workspace tree.",
       "properties": {
@@ -7588,6 +7648,12 @@
         },
         {
           "$ref": "#/$defs/ReviewCommentRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewCommentAddRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewCommentResolveRequest"
         },
         {
           "$ref": "#/$defs/CheckpointCreateRequest"

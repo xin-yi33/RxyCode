@@ -36,6 +36,7 @@ from .approval_router import ApprovalRouter
 from .permission import PermissionStore
 from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
+from .review_comments import ReviewCommentService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -210,6 +211,7 @@ class AppServer:
         self._permissions = PermissionStore(persistent=not stub)
         self._approval_router = ApprovalRouter()
         self._reviews = ReviewService()
+        self._review_comments = ReviewCommentService(self._reviews)
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -1833,6 +1835,28 @@ class AppServer:
             return
         await self._respond(request_id, comment)
 
+    async def _handle_review_comment_add(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            comment = self._review_comments.add(
+                review_id=str(params.get("review_id") or ""),
+                file=str(params.get("file") or ""),
+                line=int(params.get("line") or 0),
+                hunk_hash=str(params.get("hunk_hash") or ""),
+                body=str(params.get("body") or ""),
+            )
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, comment)
+
+    async def _handle_review_comment_resolve(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            comment = self._review_comments.resolve(str(params.get("comment_id") or ""))
+        except ReviewError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, comment)
+
     async def _handle_checkpoint_create(self, params: dict[str, Any], request_id: Any) -> None:
         record, session_id = self._review_session(params)
         if record is None:
@@ -2603,6 +2627,10 @@ class AppServer:
             await self._handle_review_read(params, request_id)
         elif method == "review/comment":
             await self._handle_review_comment(params, request_id)
+        elif method == "review/comment/add":
+            await self._handle_review_comment_add(params, request_id)
+        elif method == "review/comment/resolve":
+            await self._handle_review_comment_resolve(params, request_id)
         elif method == "checkpoint/create":
             await self._handle_checkpoint_create(params, request_id)
         elif method == "checkpoint/list":

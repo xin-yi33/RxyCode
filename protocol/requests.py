@@ -444,6 +444,24 @@ class ReviewCommentRequest(BaseModel):
     file_hash: str | None = None
 
 
+class ReviewCommentAddRequest(BaseModel):
+    """GX3 add inline comment. Does not replace review/comment."""
+
+    method: Literal["review/comment/add"] = "review/comment/add"
+    review_id: str
+    file: str
+    line: int
+    hunk_hash: str
+    body: str
+
+
+class ReviewCommentResolveRequest(BaseModel):
+    """GX3 resolve an inline comment (open or stale)."""
+
+    method: Literal["review/comment/resolve"] = "review/comment/resolve"
+    comment_id: str
+
+
 class CheckpointCreateRequest(BaseModel):
     """Create a session checkpoint without writing the workspace tree."""
 
@@ -1348,6 +1366,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ReviewStartRequest,
     ReviewReadRequest,
     ReviewCommentRequest,
+    ReviewCommentAddRequest,
+    ReviewCommentResolveRequest,
     CheckpointCreateRequest,
     CheckpointListRequest,
     CheckpointReadRequest,

@@ -16,12 +16,17 @@ SCOPE_ALIASES = {
     "working_tree": "working_tree",
     "base": "base_branch",
     "base_branch": "base_branch",
+    "branch": "base_branch",
     "head": "commit",
     "commit": "commit",
     "files": "files",
     "paths": "files",
+    "unstaged": "unstaged",
+    "staged": "staged",
+    "last_turn": "last_turn",
 }
 SCOPES = frozenset(SCOPE_ALIASES)
+GX3_SCOPES = ("unstaged", "staged", "commit", "branch", "last_turn")
 SEVERITIES = ("P0", "P1", "P2", "P3", "info")
 
 
@@ -81,6 +86,14 @@ def _file_content_hash(root: Path, rel: str) -> str:
     return "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
 
 
+def _files_from_diff(diff_text: str) -> list[str]:
+    files: list[str] = []
+    for line in (diff_text or "").splitlines():
+        if line.startswith("diff --git "):
+            files.append(line.split(" b/", 1)[-1])
+    return files
+
+
 def current_diff(
     workspace: Path,
     *,
@@ -133,6 +146,18 @@ def current_diff(
                 files.append(name)
         blob = "\n".join(part.rstrip() for part in parts if part).strip() + "\n"
         return {"diff": blob, "files": files, "untracked": True, "hash": _sha256(blob)}
+    if scope == "unstaged":
+        result = _git(root, "diff", "--no-color", *(["--", *path_args] if path_args else []))
+        files = _files_from_diff(result.stdout)
+        blob = result.stdout
+        return {"diff": blob, "files": files, "untracked": False, "hash": _sha256(blob)}
+    if scope == "staged":
+        result = _git(root, "diff", "--cached", "--no-color", *(["--", *path_args] if path_args else []))
+        files = _files_from_diff(result.stdout)
+        blob = result.stdout
+        return {"diff": blob, "files": files, "untracked": False, "hash": _sha256(blob)}
+    if scope == "last_turn":
+        return {"diff": "", "files": [], "untracked": False, "hash": _sha256(""), "empty_reason": "no_turn_diff"}
     if scope == "base_branch":
         ref = base_ref or "HEAD"
         result = _git(root, "diff", "--no-color", ref, *(["--", *path_args] if path_args else []))
@@ -321,7 +346,7 @@ class ReviewService:
         if request_id and request_id in self._start_results:
             return dict(self._start_results[request_id]), []
         scope = SCOPE_ALIASES.get(scope, scope)
-        if scope not in {"working_tree", "base_branch", "commit", "files"}:
+        if scope not in {"working_tree", "base_branch", "commit", "files", "unstaged", "staged", "last_turn"}:
             raise ReviewError("REVIEW_SCOPE_INVALID", f"unknown scope: {scope}")
         if session_id in self._running:
             raise ReviewError("REVIEW_ALREADY_RUNNING", "a review is already running")
