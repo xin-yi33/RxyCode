@@ -23,6 +23,7 @@ async def test_command_success_separates_streams(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr("appserver.server.write_message", _noop)
     server = AppServer(stub=True)
     server._initialized = True
+    server._permissions.set_profile("workspace_write")
     session = server._sessions.create(tmp_path, title="p")
     await server._handle_command_start(
         {
@@ -48,6 +49,7 @@ async def test_command_timeout_and_readable_output(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr("appserver.server.write_message", _noop)
     server = AppServer(stub=True)
     server._initialized = True
+    server._permissions.set_profile("workspace_write")
     session = server._sessions.create(tmp_path, title="p")
     server._sessions.update_status(session.session_id, "running")
     await server._handle_command_start(
@@ -71,6 +73,7 @@ async def test_stop_background_task(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("appserver.server.write_message", _noop)
     server = AppServer(stub=True)
     server._initialized = True
+    server._permissions.set_profile("workspace_write")
     session = server._sessions.create(tmp_path, title="p")
     await server._handle_command_start(
         {

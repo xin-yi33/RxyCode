@@ -806,6 +806,77 @@
           ],
           "default": null,
           "title": "Timeout Seconds"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "expand_sandbox": {
+          "default": false,
+          "title": "Expand Sandbox",
+          "type": "boolean"
+        },
+        "expand_writable_roots": {
+          "default": false,
+          "title": "Expand Writable Roots",
+          "type": "boolean"
+        },
+        "expand_network": {
+          "default": false,
+          "title": "Expand Network",
+          "type": "boolean"
+        },
+        "network": {
+          "default": false,
+          "title": "Network",
+          "type": "boolean"
+        },
+        "writable_roots": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Writable Roots"
         }
       },
       "required": [
@@ -888,6 +959,283 @@
         "task_id"
       ],
       "title": "ExecutionOutputRequest",
+      "type": "object"
+    },
+    "PermissionGetRequest": {
+      "description": "PhaseG-B7 read current permission profile and policy version.",
+      "properties": {
+        "method": {
+          "const": "permission/get",
+          "default": "permission/get",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "PermissionGetRequest",
+      "type": "object"
+    },
+    "PermissionScopeGrant": {
+      "description": "Durable scoped allow used only by allow_scoped_actions.",
+      "properties": {
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "PermissionScopeGrant",
+      "type": "object"
+    },
+    "PermissionSetRequest": {
+      "description": "PhaseG-B7 set a selectable profile. full_access is rejected.",
+      "properties": {
+        "method": {
+          "const": "permission/set",
+          "default": "permission/set",
+          "title": "Method",
+          "type": "string"
+        },
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PermissionScopeGrant"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scopes"
+        }
+      },
+      "required": [
+        "profile_id"
+      ],
+      "title": "PermissionSetRequest",
+      "type": "object"
+    },
+    "ApprovalDecideRequest": {
+      "description": "Record an approval decision. One allow does not reuse.",
+      "properties": {
+        "method": {
+          "const": "approval/decide",
+          "default": "approval/decide",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "decision": {
+          "title": "Decision",
+          "type": "string"
+        },
+        "actor": {
+          "default": "user",
+          "title": "Actor",
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "reviewer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "original_approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Original Approval Id"
+        },
+        "expand_sandbox": {
+          "default": false,
+          "title": "Expand Sandbox",
+          "type": "boolean"
+        },
+        "expand_writable_roots": {
+          "default": false,
+          "title": "Expand Writable Roots",
+          "type": "boolean"
+        },
+        "expand_network": {
+          "default": false,
+          "title": "Expand Network",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "action",
+        "decision"
+      ],
+      "title": "ApprovalDecideRequest",
+      "type": "object"
+    },
+    "ApprovalRevokeRequest": {
+      "description": "Revoke a previous allow. Restart only keeps persisted non-revoked policy.",
+      "properties": {
+        "method": {
+          "const": "approval/revoke",
+          "default": "approval/revoke",
+          "title": "Method",
+          "type": "string"
+        },
+        "approval_id": {
+          "title": "Approval Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id"
+      ],
+      "title": "ApprovalRevokeRequest",
+      "type": "object"
+    },
+    "ApprovalAuditRequest": {
+      "description": "List approval audit records for a session or all.",
+      "properties": {
+        "method": {
+          "const": "approval/audit",
+          "default": "approval/audit",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "ApprovalAuditRequest",
       "type": "object"
     },
     "SubagentCapabilityRequest": {
@@ -4293,7 +4641,7 @@
           "type": "boolean"
         },
         "approval.auto_review": {
-          "default": false,
+          "default": true,
           "description": "Wire name approval.auto_review.",
           "title": "Approval.Auto Review",
           "type": "boolean"
@@ -4610,6 +4958,21 @@
         },
         {
           "$ref": "#/$defs/ExecutionOutputRequest"
+        },
+        {
+          "$ref": "#/$defs/PermissionGetRequest"
+        },
+        {
+          "$ref": "#/$defs/PermissionSetRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalDecideRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalRevokeRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalAuditRequest"
         },
         {
           "$ref": "#/$defs/SubagentCapabilityRequest"

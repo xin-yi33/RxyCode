@@ -250,6 +250,14 @@ class CommandStartRequest(BaseModel):
     cwd: str | None = None
     background: bool = False
     timeout_seconds: float | None = None
+    approval_id: str | None = None
+    actor: str | None = None
+    project_id: str | None = None
+    expand_sandbox: bool = False
+    expand_writable_roots: bool = False
+    expand_network: bool = False
+    network: bool = False
+    writable_roots: list[str] | None = None
 
 
 class ExecutionListRequest(BaseModel):
@@ -274,6 +282,63 @@ class ExecutionOutputRequest(BaseModel):
     method: Literal["execution/output"] = "execution/output"
     session_id: str
     task_id: str
+
+
+class PermissionGetRequest(BaseModel):
+    """PhaseG-B7 read current permission profile and policy version."""
+
+    method: Literal["permission/get"] = "permission/get"
+
+
+class PermissionScopeGrant(BaseModel):
+    """Durable scoped allow used only by allow_scoped_actions."""
+
+    action: str
+    scope: str | None = None
+    project_id: str | None = None
+    expires_at: str | None = None
+
+
+class PermissionSetRequest(BaseModel):
+    """PhaseG-B7 set a selectable profile. full_access is rejected."""
+
+    method: Literal["permission/set"] = "permission/set"
+    profile_id: str
+    scopes: list[PermissionScopeGrant] | None = None
+
+
+class ApprovalDecideRequest(BaseModel):
+    """Record an approval decision. One allow does not reuse."""
+
+    method: Literal["approval/decide"] = "approval/decide"
+    session_id: str
+    action: str
+    decision: str
+    actor: str = "user"
+    scope: str | None = None
+    expires_at: str | None = None
+    turn_id: str | None = None
+    project_id: str | None = None
+    reviewer_id: str | None = None
+    reason: str | None = None
+    original_approval_id: str | None = None
+    expand_sandbox: bool = False
+    expand_writable_roots: bool = False
+    expand_network: bool = False
+
+
+class ApprovalRevokeRequest(BaseModel):
+    """Revoke a previous allow. Restart only keeps persisted non-revoked policy."""
+
+    method: Literal["approval/revoke"] = "approval/revoke"
+    approval_id: str
+
+
+class ApprovalAuditRequest(BaseModel):
+    """List approval audit records for a session or all."""
+
+    method: Literal["approval/audit"] = "approval/audit"
+    session_id: str | None = None
 
 
 class SubagentCapabilityRequest(BaseModel):
@@ -583,6 +648,11 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ExecutionListRequest,
     ExecutionStopRequest,
     ExecutionOutputRequest,
+    PermissionGetRequest,
+    PermissionSetRequest,
+    ApprovalDecideRequest,
+    ApprovalRevokeRequest,
+    ApprovalAuditRequest,
     SubagentCapabilityRequest,
     SubagentsListRequest,
     AgentInvokeRequest,

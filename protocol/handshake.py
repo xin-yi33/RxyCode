@@ -32,7 +32,7 @@ class CapabilitySnapshot(BaseModel):
     multi_model: bool = True
     vision: bool = False
     approval_auto_review: bool = Field(
-        default=False,
+        default=True,
         alias="approval.auto_review",
         description="Wire name approval.auto_review.",
     )

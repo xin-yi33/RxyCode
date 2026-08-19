@@ -32,6 +32,7 @@ from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
 from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
 from .execution import ExecutionStore
+from .permission import PermissionStore
 from .sessions import SessionStore
 from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
@@ -123,23 +124,14 @@ def _model_provider_summaries() -> list[ModelProviderSummary]:
 
 
 def _permission_profiles() -> list[PermissionProfileSummary]:
-    """Advertise modes the appserver already enforces. G names wait for B7."""
+    """Advertise PhaseG-B7 profiles. full_access is visible but not selectable."""
     return [
         PermissionProfileSummary(
-            profile_id="confirm_all",
-            selectable=True,
-            description="Existing appserver mode: confirm risky actions",
-        ),
-        PermissionProfileSummary(
-            profile_id="auto_edit",
-            selectable=True,
-            description="Existing appserver mode: auto-apply edits",
-        ),
-        PermissionProfileSummary(
-            profile_id="full_auto",
-            selectable=True,
-            description="Existing appserver mode: auto",
-        ),
+            profile_id=row["profile_id"],
+            selectable=bool(row["selectable"]),
+            description=str(row["description"]),
+        )
+        for row in PermissionStore(persistent=False).snapshot()["profiles"]
     ]
 _SHUTDOWN_PROMPT_WAIT_SECONDS = 30.0
 _REPLAY_EVENT_METHODS = {
@@ -197,6 +189,7 @@ class AppServer:
             )
         self._sessions = SessionStore(task_store=self._task_store)
         self._execution = ExecutionStore(on_change=self._schedule_execution_event)
+        self._permissions = PermissionStore(persistent=not stub)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -1536,7 +1529,72 @@ class AppServer:
         if not command:
             await self._respond_error(request_id, -32602, "command is required")
             return
+        actor = str(params.get("actor") or "user")
         cwd = params.get("cwd") or str(record.workspace_root)
+        bound = self._projects.find_by_path(record.workspace_root)
+        bound_project = None if bound is None else str(bound.get("project_id"))
+        requested_project = params.get("project_id")
+        if isinstance(requested_project, str) and requested_project.strip():
+            project_id = requested_project.strip()
+            known = self._projects.get(project_id)
+            if known is None:
+                await self._respond_error(
+                    request_id,
+                    -32003,
+                    "permission denied",
+                    {"error_code": "PERMISSION_DENIED", "reason": "unknown_project"},
+                )
+                return
+            try:
+                same = canonicalize(known.get("path") or "") == canonicalize(record.workspace_root)
+            except PathBoundaryError:
+                same = False
+            if not same:
+                await self._respond_error(
+                    request_id,
+                    -32003,
+                    "permission denied",
+                    {"error_code": "PERMISSION_DENIED", "reason": "project_mismatch"},
+                )
+                return
+        else:
+            project_id = bound_project
+        roots = params.get("writable_roots")
+        verdict = self._permissions.evaluate(
+            action="command",
+            actor=actor,
+            approval_id=params.get("approval_id"),
+            scope=str(cwd),
+            project_id=project_id,
+            workspace=str(record.workspace_root),
+            session_id=session_id,
+            turn_id=params.get("turn_id"),
+            expand_sandbox=bool(params.get("expand_sandbox")),
+            expand_writable_roots=bool(params.get("expand_writable_roots")),
+            expand_network=bool(params.get("expand_network")),
+            writable_roots=list(roots) if isinstance(roots, list) else None,
+            network=params.get("network") if isinstance(params.get("network"), bool) else None,
+        )
+        if verdict != "allow":
+            denied = self._permissions.last_decision() or self._permissions.decide(
+                session_id=session_id,
+                action="command",
+                actor=actor,
+                decision="reject",
+                turn_id=record.last_turn_request_id,
+                project_id=project_id,
+                scope=str(cwd),
+                consumed=True,
+            )
+            if denied.get("interrupt_turn"):
+                self._sessions.update_status(session_id, "interrupted")
+            await self._respond_error(
+                request_id,
+                -32003,
+                "permission denied",
+                {"error_code": "PERMISSION_DENIED", "approval": denied},
+            )
+            return
         try:
             assert_inside_workspace(record.workspace_root, cwd)
         except PathBoundaryError as exc:
@@ -1721,6 +1779,61 @@ class AppServer:
             await self._handle_execution_stop(params, request_id)
         elif method == "execution/output":
             await self._handle_execution_output(params, request_id)
+        elif method == "permission/get":
+            await self._respond(request_id, self._permissions.snapshot())
+        elif method == "permission/set":
+            try:
+                scopes = params.get("scopes")
+                result = self._permissions.set_profile(
+                    str(params.get("profile_id") or ""),
+                    scopes=list(scopes) if isinstance(scopes, list) else None,
+                )
+            except PermissionError as exc:
+                await self._respond_error(request_id, -32003, str(exc), {"error_code": "PROFILE_NOT_SELECTABLE"})
+                return
+            except ValueError as exc:
+                await self._respond_error(request_id, -32602, str(exc))
+                return
+            await self._respond(request_id, result)
+        elif method == "approval/decide":
+            try:
+                record = self._permissions.decide(
+                    session_id=str(params.get("session_id") or ""),
+                    action=str(params.get("action") or ""),
+                    actor=str(params.get("actor") or "user"),
+                    scope=params.get("scope"),
+                    decision=str(params.get("decision") or "reject"),
+                    expires_at=params.get("expires_at"),
+                    turn_id=params.get("turn_id"),
+                    project_id=params.get("project_id"),
+                    reviewer_id=params.get("reviewer_id"),
+                    reason=params.get("reason"),
+                    original_approval_id=params.get("original_approval_id"),
+                    expand_sandbox=bool(params.get("expand_sandbox")),
+                    expand_writable_roots=bool(params.get("expand_writable_roots")),
+                    expand_network=bool(params.get("expand_network")),
+                )
+            except ValueError as exc:
+                await self._respond_error(request_id, -32602, str(exc))
+                return
+            if record.get("interrupt_turn") and record.get("session_id"):
+                self._sessions.update_status(str(record["session_id"]), "interrupted")
+                for item in self._execution.list(str(record["session_id"])):
+                    if item.status == "running":
+                        self._execution.request_stop(item.task_id)
+            await self._respond(request_id, record)
+        elif method == "approval/revoke":
+            try:
+                revoked = self._permissions.revoke(str(params.get("approval_id") or ""))
+            except KeyError:
+                await self._respond_error(request_id, -32001, "unknown approval")
+                return
+            await self._respond(request_id, revoked)
+        elif method == "approval/audit":
+            await self._respond(
+                request_id,
+                {"records": self._permissions.audit(params.get("session_id"))},
+            )
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":

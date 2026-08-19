@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B7",
+  "kind": "success",
+  "request": {"method": "approval/decide", "params": {"session_id": "s1", "action": "read", "decision": "allow", "actor": "auto_review"}},
+  "result": {"decision": "allow", "actor": "auto_review"}
+}

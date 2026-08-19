@@ -101,6 +101,18 @@ class ProjectStore:
         item = self._data["projects"].get(project_id)
         return dict(item) if isinstance(item, dict) else None
 
+    def find_by_path(self, raw_path: str | Path) -> dict[str, Any] | None:
+        try:
+            real = str(canonicalize(raw_path))
+        except PathBoundaryError:
+            return None
+        for project in self._data["projects"].values():
+            if not isinstance(project, dict):
+                continue
+            if str(project.get("path")) == real or str(project.get("project_id")) == real:
+                return dict(project)
+        return None
+
     def active(self) -> dict[str, Any] | None:
         active_id = self._data.get("active_id")
         if not active_id:

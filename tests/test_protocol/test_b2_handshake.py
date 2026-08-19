@@ -53,9 +53,9 @@ def test_capability_snapshot_is_honest() -> None:
     assert snap.threads is True
     assert snap.thread_fork is True
     assert snap.review is False
-    assert snap.approval_auto_review is False
+    assert snap.approval_auto_review is True
     dumped = snap.model_dump(by_alias=True)
-    assert dumped["approval.auto_review"] is False
+    assert dumped["approval.auto_review"] is True
     assert snap.vision is False
 
 

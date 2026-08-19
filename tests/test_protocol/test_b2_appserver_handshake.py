@@ -33,10 +33,14 @@ async def test_initialize_1_0_and_1_1_succeed(monkeypatch) -> None:
     assert result["capability_snapshot"]["review"] is False
     assert "model_providers" in result
     assert {row["profile_id"] for row in result["permission_profiles"]} >= {
-        "confirm_all",
-        "auto_edit",
-        "full_auto",
+        "read_only",
+        "workspace_write",
+        "ask_for_each_risky_action",
+        "allow_scoped_actions",
+        "full_access",
     }
+    full = next(row for row in result["permission_profiles"] if row["profile_id"] == "full_access")
+    assert full["selectable"] is False
     note = next(item for item in sent if item.get("method") == "initialized")
     assert note["params"]["protocol_version"] == PROTOCOL_VERSION
 
