@@ -43,6 +43,7 @@ from .thread_fork import ThreadForkError, ThreadForkService
 from .plan_files import PlanFileError, PlanFileService
 from .needs_input import NeedsInputClassifier
 from .tool_registry_capability import CapabilityDenied, ToolRegistryCapability
+from .side_chat import SideChatError, SideChatService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -224,6 +225,7 @@ class AppServer:
         self._plan_files = PlanFileService()
         self._needs_input = NeedsInputClassifier()
         self._tool_capability = ToolRegistryCapability()
+        self._side_chat = SideChatService(self._sessions)
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -1523,6 +1525,7 @@ class AppServer:
         except KeyError:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        self._side_chat.close_for_parent(session_id)
         await self._respond(request_id, self._session_summary(record))
         # Do not make a reversible UI operation wait for process teardown.
         # The host is owned by this session and can be cleaned up in the
@@ -1601,6 +1604,7 @@ class AppServer:
         except KeyError:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        self._side_chat.close_for_parent(session_id)
         await self._respond(request_id, self._session_summary(record))
 
     async def _handle_session_unarchive(self, params: dict[str, Any], request_id: Any) -> None:
@@ -1647,6 +1651,31 @@ class AppServer:
         except PlanFileError as exc:
             await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
             return
+        await self._respond(request_id, result)
+
+    async def _handle_side_chat_create(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._side_chat.create(thread_id=str(params.get("thread_id") or ""))
+        except SideChatError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_side_chat_close(self, params: dict[str, Any], request_id: Any) -> None:
+        if params.get("promote") and params.get("confirm_promote") is not True:
+            await self._respond_error(
+                request_id,
+                -32602,
+                "promote requires confirm_promote=true",
+                {"error_code": "confirm_required"},
+            )
+            return
+        try:
+            result = self._side_chat.close(side_thread_id=str(params.get("side_thread_id") or ""))
+        except SideChatError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        result["promoted"] = bool(params.get("promote") and params.get("confirm_promote") is True)
         await self._respond(request_id, result)
 
     async def _handle_plan_implement(self, params: dict[str, Any], request_id: Any) -> None:
@@ -2678,6 +2707,10 @@ class AppServer:
             await self._handle_plan_persist(params, request_id)
         elif method == "plan/implement":
             await self._handle_plan_implement(params, request_id)
+        elif method == "thread/side_chat/create":
+            await self._handle_side_chat_create(params, request_id)
+        elif method == "thread/side_chat/close":
+            await self._handle_side_chat_close(params, request_id)
         elif method.startswith("thread/"):
             try:
                 result = self._handle_thread_trash(method, params or {})

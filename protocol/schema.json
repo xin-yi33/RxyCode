@@ -715,6 +715,56 @@
       "title": "ThreadPinRequest",
       "type": "object"
     },
+    "ThreadSideChatCreateRequest": {
+      "description": "GX16 read-only derived side chat.",
+      "properties": {
+        "method": {
+          "const": "thread/side_chat/create",
+          "default": "thread/side_chat/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ThreadSideChatCreateRequest",
+      "type": "object"
+    },
+    "ThreadSideChatCloseRequest": {
+      "description": "GX16 close a side chat. Default does not promote back.",
+      "properties": {
+        "method": {
+          "const": "thread/side_chat/close",
+          "default": "thread/side_chat/close",
+          "title": "Method",
+          "type": "string"
+        },
+        "side_thread_id": {
+          "title": "Side Thread Id",
+          "type": "string"
+        },
+        "promote": {
+          "default": false,
+          "title": "Promote",
+          "type": "boolean"
+        },
+        "confirm_promote": {
+          "default": false,
+          "title": "Confirm Promote",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "side_thread_id"
+      ],
+      "title": "ThreadSideChatCloseRequest",
+      "type": "object"
+    },
     "SessionTreeRequest": {
       "description": "PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list.",
       "properties": {
@@ -8056,6 +8106,12 @@
         },
         {
           "$ref": "#/$defs/ThreadPinRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadSideChatCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadSideChatCloseRequest"
         },
         {
           "$ref": "#/$defs/SessionTreeRequest"

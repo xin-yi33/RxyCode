@@ -249,6 +249,22 @@ class ThreadPinRequest(BaseModel):
     pinned: bool = True
 
 
+class ThreadSideChatCreateRequest(BaseModel):
+    """GX16 read-only derived side chat."""
+
+    method: Literal["thread/side_chat/create"] = "thread/side_chat/create"
+    thread_id: str
+
+
+class ThreadSideChatCloseRequest(BaseModel):
+    """GX16 close a side chat. Default does not promote back."""
+
+    method: Literal["thread/side_chat/close"] = "thread/side_chat/close"
+    side_thread_id: str
+    promote: bool = False
+    confirm_promote: bool = False
+
+
 class SessionTreeRequest(BaseModel):
     """PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list."""
 
@@ -1405,6 +1421,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     SessionForkRequest,
     ThreadForkRequest,
     ThreadPinRequest,
+    ThreadSideChatCreateRequest,
+    ThreadSideChatCloseRequest,
     SessionTreeRequest,
     SessionArchiveRequest,
     SessionUnarchiveRequest,
