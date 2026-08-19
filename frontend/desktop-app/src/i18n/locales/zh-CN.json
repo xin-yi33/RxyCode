@@ -1,0 +1,16 @@
+{
+  "settings": "设置",
+  "skills": "技能",
+  "newTask": "新任务",
+  "recycle": "回收站",
+  "general": "常规",
+  "appearance": "外观",
+  "models": "模型选择",
+  "addModel": "模型添加",
+  "mcp": "MCP 服务管理",
+  "team": "团队与模型",
+  "pinned": "置顶",
+  "projects": "项目",
+  "recent": "最近",
+  "blocked": "BLOCKED_PREREQUISITE"
+}

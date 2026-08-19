@@ -442,7 +442,8 @@ app.whenReady().then(() => {
       appserverPid: manager.pid,
       appserverStatus: manager.status,
       appserverStartedAt: manager.startedAt,
-      appserverLastExit: manager.lastExit
+      appserverLastExit: manager.lastExit,
+      systemLocale: app.getLocale()
     }
   })
 
