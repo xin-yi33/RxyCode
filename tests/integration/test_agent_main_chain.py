@@ -157,7 +157,6 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
     monkeypatch.setattr(agent, "_detect_file_operation", lambda _text: None)
     monkeypatch.setattr(agent, "_detect_download_intent", lambda _text: None)
     monkeypatch.setattr(agent, "_is_simple_query", lambda _text: False)
-    monkeypatch.setattr(agent, "_should_request_parallel_execution", lambda _text: False)
 
     graph_result = {}
     compiled_graph = agent._graph

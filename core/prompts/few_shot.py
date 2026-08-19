@@ -137,6 +137,46 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
             ),
         },
     ],
+    "agent_architect": [
+        {
+            "input": "Task: 给 API 增加健康检查端点",
+            "output": (
+                '[{{"task": "在 routes/health.py 新增 GET /health，返回 {{{{status: ok}}}}", '
+                '"tools_hint": ["read", "ls"]}}, '
+                '{{"task": "验收：pytest tests/test_health.py 通过", '
+                '"tools_hint": ["read"]}}]'
+            ),
+        },
+    ],
+    "agent_coder": [
+        {
+            "input": "Architect plan: add GET /health in routes/health.py returning {status: ok}",
+            "output": (
+                "Changed files:\n"
+                "- routes/health.py: added GET /health handler returning {\"status\": \"ok\"}\n"
+                "Summary: implemented the plan as specified; did not change tests."
+            ),
+        },
+    ],
+    "agent_auditor": [
+        {
+            "input": "Task: review GET /health implementation against the architect plan",
+            "output": (
+                "通过\n"
+                "- routes/health.py:12 implementation matches plan (GET /health, {status: ok})\n"
+                "- no plan or implementation issues found"
+            ),
+        },
+    ],
+    "delegate_request": [
+        {
+            "input": "goal=add health endpoint; expected_output=file-level plan; tools=read,ls",
+            "output": (
+                "Self-contained specialist brief: produce the assigned stage output only. "
+                "Do not create a sub-team. Read listed context refs instead of leader history."
+            ),
+        },
+    ],
 }
 
 
