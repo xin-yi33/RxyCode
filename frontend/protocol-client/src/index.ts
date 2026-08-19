@@ -1,11 +1,40 @@
 export {
   ProtocolClient,
+  ProtocolDisconnectError,
   ProtocolRpcError,
+  ProtocolTimeoutError,
   type JsonRpcErrorObject,
   type JsonRpcId,
   type NotificationHandler,
   type ServerRequestHandler,
 } from "./client.ts";
+
+export {
+  classifyProtocolError,
+  disconnectError,
+  handlingFor,
+  type ClassifiedError,
+  type ErrorHandling,
+  type HandshakeErrorCode,
+} from "./errorModel.ts";
+
+export {
+  DEFAULT_PROTOCOL_VERSION,
+  PROTOCOL_VERSION_MAX,
+  PROTOCOL_VERSION_MIN,
+  applyDisconnect,
+  createClientTransport,
+  initializeHandshake,
+  isDeclaredCapability,
+  isVersionInRange,
+  matchProtocolVersion,
+  type ClientTransport,
+  type HandshakeState,
+  type HandshakeStatus,
+  type InitializeResult,
+  type ProtocolEvent,
+  type ProtocolMatch,
+} from "./handshake.ts";
 
 export type {
   ApprovalRequest,

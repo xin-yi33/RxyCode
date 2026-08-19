@@ -7,7 +7,7 @@
  * stream, or it could race an approval response.
  */
 import { useCallback, useEffect, useState } from 'react'
-import type { ProtocolClient } from '@rxycode/protocol-client'
+import { isDeclaredCapability, type ProtocolClient } from '@rxycode/protocol-client'
 import {
   classifyModelsListFailure,
   type ModelsUnavailableReason
@@ -62,6 +62,7 @@ export interface OnboardResult {
 export interface UseModelsOptions {
   client: ProtocolClient | null
   refreshKey: number
+  capabilities?: Readonly<Record<string, unknown>> | null
 }
 
 export interface UseModelsResult {
@@ -94,7 +95,8 @@ export interface UseModelsResult {
 
 export function useModels({
   client,
-  refreshKey
+  refreshKey,
+  capabilities = null
 }: UseModelsOptions): UseModelsResult {
   const [supported, setSupported] = useState(false)
   const [loading, setLoading] = useState(() => client !== null)
@@ -110,6 +112,14 @@ export function useModels({
       setSnapshot(null)
       setUnavailableReason('not-connected')
       setError('appserver not connected')
+      setLoading(false)
+      return
+    }
+    if (capabilities !== null && !isDeclaredCapability(capabilities, 'models')) {
+      setSupported(false)
+      setSnapshot(null)
+      setUnavailableReason('method-not-found')
+      setError('capability not declared: models')
       setLoading(false)
       return
     }
@@ -136,7 +146,7 @@ export function useModels({
     } finally {
       setLoading(false)
     }
-  }, [client])
+  }, [client, capabilities])
 
   useEffect(() => {
     void refresh()

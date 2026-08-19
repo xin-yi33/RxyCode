@@ -1,0 +1,45 @@
+handoff_id: D-F-HANDOFF-H2
+card: PhaseG-H2
+source_baseline: PHASE-G-DESKTOP.md#G2
+branch: feat/phase-g-frontend
+commit: pending
+protocol_version: "1.1.0"
+capabilities_consumed:
+  - initialize
+generated_types:
+  path: frontend/protocol-client/src/generated/types.ts
+  source_commit: af0adee0d43ae1b239990383a24a3ee491d2f96e
+  frontend_submitted_generate_diff: false
+protocol_change: none
+fixtures:
+  success: frontend/protocol-client/src/handshake.test.ts completed initialize
+  denied: unsupported_feature / configuration_missing cases
+  reconnect: connection_closed classification + ClientTransport.close
+files_changed:
+  - frontend/protocol-client/src/errorModel.ts
+  - frontend/protocol-client/src/handshake.ts
+  - frontend/protocol-client/src/client.ts
+  - frontend/protocol-client/src/index.ts
+  - frontend/desktop-app/src/platform/index.mts
+  - frontend/desktop-app/src/protocol/capabilityGate.ts
+  - frontend/desktop-app/src/protocol/errorProjection.ts
+  - frontend/desktop-app/src/protocol/handshakePlaceholder.ts
+  - frontend/desktop-app/src/renderer/src/hooks/useConversation.ts
+  - frontend/desktop-app/src/renderer/src/hooks/useModels.ts
+  - frontend/desktop-app/src/renderer/src/App.tsx
+  - frontend/desktop-app/tests/h2-handshake.test.mts
+tests:
+  - "python -m pytest tests/test_protocol -q -> 6 passed"
+  - "cd frontend/protocol-client; bun test -> 29 pass"
+  - "desktop typecheck pass"
+  - "h1+h2+platform tests 23 pass"
+visual_evidence: none
+known_limitations:
+  - B2 error schema not frozen; client classifies existing JSON-RPC codes, no new schema fields
+  - version range is exact match with client protocol_version (schema requires equality)
+  - auto_review / multi_agent remain gated off until handshake declares them
+backend_questions:
+  - B2 may later freeze dedicated error codes; frontend will consume without inventing fields
+rollback: pending
+owner: composer-2.5
+grok: none

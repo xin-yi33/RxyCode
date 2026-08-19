@@ -31,6 +31,7 @@ import {
   saveWorkspaceSettings,
   type WorkspaceSettings
 } from './lib/workspaceSettings.mts'
+import { isUiEntryEnabled } from '../../protocol/capabilityGate.ts'
 import { usePlatform } from '../../platform/index.mts'
 import {
   loadDesktopPreferences,
@@ -71,6 +72,8 @@ function App(): React.JSX.Element {
   const [skippedPlanIds, setSkippedPlanIds] = useState<Record<string, true>>({})
   const toastTimerRef = useRef<number | null>(null)
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
+  const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
+  const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
   const activeSessionId = conversation.state.activeSessionId
   const running = activeSessionId !== null && conversation.state.runningBySession[activeSessionId]
   const activeSession = conversation.state.sessions.find((session) => session.sessionId === activeSessionId)
@@ -89,7 +92,8 @@ function App(): React.JSX.Element {
   const effectiveWorkspace = effectiveWorkspaceRoot(workspaceSettings, info?.repoRoot ?? '')
   const models = useModels({
     client: conversation.protocolClient,
-    refreshKey: settingsOpen ? 1 : 0
+    refreshKey: settingsOpen ? 1 : 0,
+    capabilities: conversation.handshakeCapabilities
   })
   const selectedTaskModel = activeSession?.modelId ?? models.snapshot?.active ?? ''
   const agentMode: AgentRunMode =
@@ -388,7 +392,7 @@ function App(): React.JSX.Element {
               activeSessionId={activeSessionId}
               runStateBySession={conversation.state.runStateBySession}
               childCountBySession={childCountBySession}
-              disabled={status !== 'running' || conversation.protocolClient === null}
+              disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
               onCreate={() => void handleCreate()}
               onSelect={(sessionId) => {
                 conversation.selectSession(sessionId)
@@ -408,7 +412,7 @@ function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           runStateBySession={conversation.state.runStateBySession}
           childCountBySession={childCountBySession}
-          disabled={status !== 'running' || conversation.protocolClient === null}
+          disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
           onCreate={() => void handleCreate()}
           onSelect={conversation.selectSession}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
@@ -526,7 +530,7 @@ function App(): React.JSX.Element {
         </div>
       </details>
 
-      {pendingApproval !== null && (
+      {approvalEnabled && pendingApproval !== null && (
         <ApprovalModal
           item={pendingApproval}
           onApprove={() => conversation.resolveApproval(pendingApproval.requestId, 'approved')}

@@ -176,7 +176,10 @@ test('attach is idempotent while already attached', async () => {
   })
   await attachWithResponse(connection, fake.emitLine)
   await connection.attach(INFO)
-  assert.equal(fake.lines.length, 1)
+  const initializes = fake.lines
+    .map((line) => JSON.parse(line) as { method?: string })
+    .filter((message) => message.method === 'initialize')
+  assert.equal(initializes.length, 1)
 })
 
 test('initialize timeout retries and then rejects, leaving the connection clean for reattach', async () => {
@@ -199,7 +202,7 @@ test('initialize timeout retries and then rejects, leaving the connection clean 
   assert.ok(connection.client !== null)
 })
 
-test('attach retries initialize after a transient error and succeeds on the second attempt', async () => {
+test('attach does not retry unrecoverable JSON-RPC -32000', async () => {
   const fake = createFakePlatform()
   const connection = createConversationConnection({
     platform: fake.platform,
@@ -208,16 +211,13 @@ test('attach retries initialize after a transient error and succeeds on the seco
     initializeRetryDelayMs: 10
   })
   const pending = connection.attach(INFO)
-  fake.emitLine(errorResponse(1))
-  await delay(50)
-  fake.emitLine(initializeResponse(2))
-  await pending
-
-  assert.ok(connection.client !== null)
+  fake.emitLine(errorResponse(1, 'transient'))
+  await assert.rejects(pending, /transient/)
+  assert.equal(connection.client, null)
   const initializes = fake.lines
     .map((line) => JSON.parse(line) as { method?: string })
     .filter((message) => message.method === 'initialize')
-  assert.equal(initializes.length, 2)
+  assert.equal(initializes.length, 1)
 })
 
 test('attach gives up after max attempts, cleans up, and reports the connection error', async () => {
@@ -235,9 +235,7 @@ test('attach gives up after max attempts, cleans up, and reports the connection 
   })
 
   const pending = connection.attach(INFO)
-  fake.emitLine(errorResponse(1))
-  await delay(50)
-  fake.emitLine(errorResponse(2, 'still down'))
+  fake.emitLine(errorResponse(1, 'still down'))
   await assert.rejects(pending, /still down/)
 
   assert.equal(connection.client, null)
