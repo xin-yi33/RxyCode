@@ -44,6 +44,7 @@ from .plan_files import PlanFileError, PlanFileService
 from .needs_input import NeedsInputClassifier
 from .tool_registry_capability import CapabilityDenied, ToolRegistryCapability
 from .side_chat import SideChatError, SideChatService
+from .followup_scanner import FollowupScanner
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -226,6 +227,7 @@ class AppServer:
         self._needs_input = NeedsInputClassifier()
         self._tool_capability = ToolRegistryCapability()
         self._side_chat = SideChatService(self._sessions)
+        self._followup = FollowupScanner()
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -595,6 +597,12 @@ class AppServer:
             state = safe_params.get("status")
             if isinstance(state, str):
                 self._sessions.update_status(session_id, state)
+            record = self._sessions.get(session_id)
+            if record is not None:
+                self._followup.scan(
+                    record.workspace_root,
+                    turn_id=str(safe_params.get("turn_id") or session_id),
+                )
         elif method in {
             "child_session/failed",
             "child_session/cancelled",
