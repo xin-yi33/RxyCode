@@ -21,6 +21,10 @@ test('GX11: status x project filter and grouping', () => {
     { id: '3', title: 'c', status: 'running' as const, projectId: 'p2' }
   ]
   assert.equal(filterSessions(sessions, { status: 'running', projectId: 'p1' }).map((s) => s.id).join(), '1')
+  assert.deepEqual(
+    filterSessions(sessions, { status: 'all', projectId: '' }).map((s) => s.id).sort(),
+    ['1', '2', '3']
+  )
   assert.deepEqual(Object.keys(groupByProject(sessions)).sort(), ['p1', 'p2'])
   const html = renderToStaticMarkup(
     createElement(SessionListFilter, {

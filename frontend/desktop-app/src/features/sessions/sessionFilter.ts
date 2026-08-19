@@ -13,7 +13,9 @@ export function filterSessions(
 ): FilterableSession[] {
   return sessions.filter((session) => {
     if (query.status !== 'all' && session.status !== query.status) return false
-    if (query.projectId !== undefined && session.projectId !== query.projectId) return false
+    if (query.projectId !== undefined && query.projectId !== '' && session.projectId !== query.projectId) {
+      return false
+    }
     return true
   })
 }
