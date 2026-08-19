@@ -7,6 +7,7 @@
     "src/platform/**/*",
     "src/protocol/**/*",
     "src/features/**/*",
+    "src/app/**/*",
     "src/lib/**/*",
     "src/i18n/**/*",
     "src/i18n/**/*.json",

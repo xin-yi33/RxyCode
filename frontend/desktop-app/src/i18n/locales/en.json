@@ -181,5 +181,16 @@
   "scopePrefixHint": "Match actions that start with this description",
   "scopeAnyHint": "Allow every action at this risk level in the workspace",
   "submitAnswer": "Submit",
-  "answerPlaceholder": "Type an answer"
+  "answerPlaceholder": "Type an answer",
+  "boardView": "Task board",
+  "boardDrafts": "Drafts",
+  "boardActive": "Active",
+  "boardReady": "Ready",
+  "boardDone": "Done",
+  "boardEmpty": "No threads",
+  "boardOpen": "Open",
+  "boardRename": "Rename",
+  "boardCancel": "Cancel",
+  "boardReview": "Review",
+  "commandOpenBoard": "Open task board"
 }

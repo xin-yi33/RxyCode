@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { sessionVisualState } from '../../src/renderer/src/components/sessionVisualState.ts'
 import { statusVisualState } from '../../src/lib/statusProjection.ts'
 import { galleryVisualState } from '../../src/features/preview/galleryVisualState.ts'
+import { boardVisualState } from '../../src/features/board/boardVisualState.ts'
 import { HOVER_DARK, HOVER_LIGHT } from '../../src/lib/sessionCategories.ts'
 import { themes } from '../../src/ui/tokens.ts'
 import { colors } from '../../src/ui/tokens.ts'
@@ -26,6 +27,11 @@ test('Grok visual: empty/loading/error/narrow/dark map to component states', () 
     galleryVisualState({ artifacts: [], loading: false, error: 'x', narrow: false, dark: true }),
     'error'
   )
+  assert.equal(boardVisualState({ loading: true, error: null, empty: false, narrow: false, dark: false }), 'loading')
+  assert.equal(boardVisualState({ loading: false, error: 'e', empty: false, narrow: false, dark: false }), 'error')
+  assert.equal(boardVisualState({ loading: false, error: null, empty: true, narrow: false, dark: false }), 'empty')
+  assert.equal(boardVisualState({ loading: false, error: null, empty: false, narrow: true, dark: false }), 'narrow')
+  assert.equal(boardVisualState({ loading: false, error: null, empty: false, narrow: false, dark: true }), 'dark')
 })
 
 test('Grok visual: hover, high-contrast, risk not color-only, status animation, settings entry', () => {
@@ -40,6 +46,8 @@ test('Grok visual: hover, high-contrast, risk not color-only, status animation, 
   assert.match(css, /\.settings-entry \{/)
   assert.match(css, /border-radius:\s*6px/)
   assert.match(css, /session-panel\[data-visual-state='narrow'\]/)
+  assert.match(css, /\.board-view/)
+  assert.match(css, /--board-active/)
   assert.match(css, /\.composer \{[\s\S]*?z-index:\s*\d+/)
 })
 

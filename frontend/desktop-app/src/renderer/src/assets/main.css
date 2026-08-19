@@ -3523,3 +3523,144 @@ html[data-theme='light'] .settings-entry:hover {
     transform: rotate(360deg);
   }
 }
+
+:root {
+  --board-draft: #8b8b8b;
+  --board-active: #3b82f6;
+  --board-ready: #22c55e;
+  --board-applying: #a855f7;
+  --board-done: #22c55e;
+  --board-error: #ef4444;
+  --board-timeout: #f97316;
+}
+
+.board-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  padding: 12px;
+}
+
+.board-view[data-visual-state='narrow'] .board-columns,
+.board-columns[data-narrow='true'] {
+  overflow-x: auto;
+}
+
+.board-columns {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(220px, 1fr));
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+.board-column {
+  background: var(--cc-panel, rgba(255, 255, 255, 0.04));
+  border-radius: 8px;
+  padding: 8px;
+  min-width: 220px;
+}
+
+.board-column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.board-column-header h2 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.board-column-empty,
+.board-empty,
+.board-error {
+  color: var(--text-secondary, #9a9aa2);
+  font-size: 13px;
+}
+
+.board-skeleton {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.board-skeleton-col {
+  min-height: 180px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+}
+
+.board-card {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--cc-card, rgba(0, 0, 0, 0.2));
+}
+
+.board-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+}
+
+.board-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.board-status-badge,
+.board-error-badge,
+.board-timeout-badge {
+  color: #fff;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.board-review-entry {
+  margin-top: 6px;
+}
+
+.board-card-menu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.command-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.command-palette-list {
+  position: relative;
+  z-index: 41;
+  max-width: 420px;
+  margin: 12vh auto 0;
+  background: var(--cc-panel, #1b1b1f);
+  border-radius: 10px;
+  padding: 8px;
+  list-style: none;
+}
+
+.command-palette-list button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 10px;
+}

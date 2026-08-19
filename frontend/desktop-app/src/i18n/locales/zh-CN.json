@@ -181,5 +181,16 @@
   "scopePrefixHint": "匹配以该描述开头的动作",
   "scopeAnyHint": "允许该风险等级的全部动作",
   "submitAnswer": "提交",
-  "answerPlaceholder": "输入回答"
+  "answerPlaceholder": "输入回答",
+  "boardView": "任务看板",
+  "boardDrafts": "草稿",
+  "boardActive": "进行中",
+  "boardReady": "待审查",
+  "boardDone": "完成",
+  "boardEmpty": "暂无会话",
+  "boardOpen": "打开",
+  "boardRename": "重命名",
+  "boardCancel": "取消",
+  "boardReview": "审查",
+  "commandOpenBoard": "打开任务看板"
 }

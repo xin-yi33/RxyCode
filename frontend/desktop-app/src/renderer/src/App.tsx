@@ -1,5 +1,8 @@
-import { Activity, Menu, Settings, ShieldCheck, X } from 'lucide-react'
+import { Activity, LayoutGrid, Menu, Settings, ShieldCheck, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { DESKTOP_VIEWS, resolveDesktopView, type DesktopViewId } from '../../app/views/index.ts'
+import { BoardView } from '../../features/board/BoardView.ts'
+import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -82,6 +85,8 @@ function App(): React.JSX.Element {
   const toastTimerRef = useRef<number | null>(null)
   const prevRunStateRef = useRef<Record<string, string>>({})
   const [runBanner, setRunBanner] = useState<Notice | null>(null)
+  const [desktopView, setDesktopView] = useState<DesktopViewId>('chat')
+  const [commandOpen, setCommandOpen] = useState(false)
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
   const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
   const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
@@ -131,6 +136,18 @@ function App(): React.JSX.Element {
     document.documentElement.lang = language
     saveDesktopPreferences(preferences, window.localStorage)
   }, [preferences, theme, language])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setCommandOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   useEffect(() => {
     if (info?.systemLocale === undefined) return
@@ -394,6 +411,17 @@ function App(): React.JSX.Element {
           </span>
           <button
             type="button"
+            className="icon-button board-button"
+            onClick={() => setDesktopView(desktopView === 'board' ? 'chat' : 'board')}
+            aria-label={tr('boardView')}
+            title={tr('boardView')}
+            data-testid="open-board-view"
+            aria-pressed={desktopView === 'board'}
+          >
+            <LayoutGrid aria-hidden="true" size={17} />
+          </button>
+          <button
+            type="button"
             className="icon-button rules-button"
             onClick={() => setRulesOpen(true)}
             aria-label={tr('approvalRules')}
@@ -458,6 +486,46 @@ function App(): React.JSX.Element {
         </div>
 
         <main className="chat-column task-main" id="task-main" data-testid="task-main">
+          {desktopView === 'board' ? (
+            <BoardView
+              threads={sessionsToBoardThreads(
+                conversation.state.sessions,
+                conversation.state.runStateBySession,
+                Object.fromEntries(
+                  Object.entries(conversation.state.timelineBySession).map(([id, items]) => [
+                    id,
+                    items.length > 0
+                  ])
+                )
+              )}
+              loading={status === 'starting'}
+              error={conversation.connectionError}
+              dark={theme === 'dark'}
+              onOpenThread={(sessionId) => {
+                conversation.selectSession(sessionId)
+                setDesktopView('chat')
+              }}
+              onRenameThread={(sessionId) => {
+                const session = conversation.state.sessions.find((item) => item.sessionId === sessionId)
+                const next = window.prompt(tr('rename'), session?.title ?? '')
+                if (next !== null && next.trim() !== '') {
+                  void conversation.renameSession(sessionId, next.trim())
+                }
+              }}
+              onCancelThread={(sessionId) => {
+                if (conversation.state.activeSessionId === sessionId) {
+                  void conversation.interrupt()
+                }
+              }}
+              onReviewThread={(sessionId) => {
+                conversation.selectSession(sessionId)
+                setDesktopView('chat')
+                setInspectorOpen(true)
+              }}
+            />
+          ) : null}
+          {desktopView === 'chat' ? (
+          <>
           <TaskHeader
             title={activeSession?.title ?? 'New task'}
             workspaceRoot={activeSession?.workspaceRoot ?? effectiveWorkspace}
@@ -527,7 +595,30 @@ function App(): React.JSX.Element {
             permissionMode={permissionMode}
             onRequestPermissionModeChange={requestPermissionModeChange}
           />
+          </>
+          ) : null}
         </main>
+        {commandOpen ? (
+          <div className="command-palette" data-testid="command-palette" role="dialog">
+            <button type="button" className="sheet-backdrop" aria-label={tr('close')} onClick={() => setCommandOpen(false)} />
+            <ul className="command-palette-list">
+              {DESKTOP_VIEWS.map((view) => (
+                <li key={view.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDesktopView(resolveDesktopView(view.id).id)
+                      setCommandOpen(false)
+                    }}
+                  >
+                    {tr(view.titleKey)}
+                    <kbd>{view.shortcut}</kbd>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         {inspectorOpen && (
           <div className="contextual-inspector-slot">
