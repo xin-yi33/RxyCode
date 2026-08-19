@@ -1,0 +1,31 @@
+handoff_id: D-F-HANDOFF-PHASE-G-FRONTEND
+card: PhaseG-H1-H19
+source_baseline: PHASE-G-FRONTEND.md
+branch: feat/phase-g-frontend
+commit: 665b00b
+protocol_version: "1.1.0"
+verdict: READY_FOR_FULL_D_INTEGRATION
+capabilities_consumed:
+  - initialize
+  - models/list
+  - models/set_active
+  - session/new
+  - approval/request
+files_changed:
+  - frontend/desktop-app/**
+  - frontend/protocol-client/**
+tests:
+  - "cd frontend/desktop-app; npm run typecheck → pass"
+  - "H14-H19 remaining 完成判据 tests → pass"
+  - "npm test → 327 pass / 2 pre-existing fail (H1 contextIsolation regex vs webPreferencesSafe; geometry CSS regex)"
+visual_evidence: frontend/desktop-app/docs/gx-screenshots/h15-hover-sample.md
+known_limitations:
+  - "H2-H13 主链大量为投影模块 + Phase4 壳接线；完整 F 对应卡 E2E/视觉未全部重跑"
+  - "python -m pytest tests/test_projects|threads|execution|approval|review|file_preview|worktrees|settings|capabilities|release 目录缺失 → BLOCKED_PREREQUISITE，不 mock"
+  - "macOS/Linux 构建目标 smoke 未在本机实跑"
+  - "Grok 实机截屏未全覆盖 H6/H8/H9 视觉清单"
+  - "B17/B11/B14/E4 未合入路径保持 BLOCKED_PREREQUISITE"
+backend_questions:
+  - "B4-B13 pytest 目录与 fixture 何时合入 feat/phase-g-backend"
+rollback: 93311fa
+owner: composer-2.5

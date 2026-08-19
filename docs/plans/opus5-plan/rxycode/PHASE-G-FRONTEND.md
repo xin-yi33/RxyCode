@@ -646,22 +646,22 @@ npm run build
 ### 7.1 前端交付出口
 
 - [ ] J1–J13 完成，且每张卡引用了完整 F 对应卡；
-- [ ] 所有协议消费来自冻结 schema/生成类型，没有临时字段；
-- [ ] Renderer 无 Python、数据库、任意 HTTP、secret 和未 allowlist IPC；
-- [ ] Thread/Turn/Item/Child/Review/Approval 都能幂等投影并恢复；
-- [ ] Phase 3 max token 只显示 resolver/summary，不在 UI 重新计算；
+- [x] 所有协议消费来自冻结 schema/生成类型，没有临时字段；
+- [x] Renderer 无 Python、数据库、任意 HTTP、secret 和未 allowlist IPC；
+- [x] Thread/Turn/Item/Child/Review/Approval 都能幂等投影并恢复；
+- [x] Phase 3 max token 只显示 resolver/summary，不在 UI 重新计算；
 - [ ] Grok 的视觉问题已转成组件状态或回归测试；
 - [ ] typecheck、unit/component、IPC、E2E、视觉和 build 有真实输出；
-- [ ] 已生成前端交接包、已知限制和可回滚 commit。
+- [x] 已生成前端交接包、已知限制和可回滚 commit。
 
 **P3 批（Codex 对齐批）附加出口**（H14–H19 + GX19–GX27 前端部分，主链出口达标后执行）：
-- [ ] H14–H19 六张追加卡完成，且消费协议来自 GXn-PROTO 登记的冻结 schema；
-- [ ] i18n：全部静态文案经 `t()` 取词（zh-CN + en），切换不影响对话回复语言；
-- [ ] 会话栏三分类（置顶/项目/最近）+ 折叠/`>`/hover 取样值落地；
-- [ ] 设置页 8 分区 + 左下角入口 + 团队与模型预留分区（BLOCKED 不 mock）；
-- [ ] 运行状态视觉（转圈/蓝点/常驻高亮）纯投影 B5 状态机；
-- [ ] 多 Agent 契约预留零 mock 路径（capability 门控验证）；
-- [ ] CLI 工具分组 + 预览画廊文件渲染边界（零 PHASE-I 附件协议依赖）；
+- [x] H14–H19 六张追加卡完成，且消费协议来自 GXn-PROTO 登记的冻结 schema；
+- [x] i18n：全部静态文案经 `t()` 取词（zh-CN + en），切换不影响对话回复语言；
+- [x] 会话栏三分类（置顶/项目/最近）+ 折叠/`>`/hover 取样值落地；
+- [x] 设置页 8 分区 + 左下角入口 + 团队与模型预留分区（BLOCKED 不 mock）；
+- [x] 运行状态视觉（转圈/蓝点/常驻高亮）纯投影 B5 状态机；
+- [x] 多 Agent 契约预留零 mock 路径（capability 门控验证）；
+- [x] CLI 工具分组 + 预览画廊文件渲染边界（零 PHASE-I 附件协议依赖）；
 - [ ] macOS/Linux 构建目标 smoke（locale 入包 + 启动握手）通过。
 
 ### 7.2 与后端的交接顺序
