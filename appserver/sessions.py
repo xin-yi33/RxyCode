@@ -24,6 +24,7 @@ class AppSessionRecord:
     associated_files: list[str] = field(default_factory=list)
     list_category: str | None = None
     archived_at: str | None = None
+    pinned: bool = False
     forked_from: str | None = None
     parent_session_id: str | None = None
     root_session_id: str | None = None

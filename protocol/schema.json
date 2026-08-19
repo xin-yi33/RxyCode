@@ -635,6 +635,68 @@
       "title": "SessionForkRequest",
       "type": "object"
     },
+    "ThreadForkRequest": {
+      "description": "GX8 message-level fork. Distinct from session/fork (whole-thread copy).",
+      "properties": {
+        "method": {
+          "const": "thread/fork",
+          "default": "thread/fork",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "edited_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edited Text"
+        }
+      },
+      "required": [
+        "thread_id",
+        "message_id"
+      ],
+      "title": "ThreadForkRequest",
+      "type": "object"
+    },
+    "ThreadPinRequest": {
+      "description": "GX8 pin/unpin. Operation, not an optional field substitute.",
+      "properties": {
+        "method": {
+          "const": "thread/pin",
+          "default": "thread/pin",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "pinned": {
+          "default": true,
+          "title": "Pinned",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ThreadPinRequest",
+      "type": "object"
+    },
     "SessionTreeRequest": {
       "description": "PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list.",
       "properties": {
@@ -7828,6 +7890,12 @@
         },
         {
           "$ref": "#/$defs/SessionForkRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadForkRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadPinRequest"
         },
         {
           "$ref": "#/$defs/SessionTreeRequest"

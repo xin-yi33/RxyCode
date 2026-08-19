@@ -39,6 +39,7 @@ from .review import ReviewError, ReviewService
 from .review_comments import ReviewCommentService
 from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService
 from .usage_tracker import UsageTracker
+from .thread_fork import ThreadForkError, ThreadForkService
 from .sessions import SessionStore
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
@@ -216,6 +217,7 @@ class AppServer:
         self._review_comments = ReviewCommentService(self._reviews)
         self._checkpoint_rewind = CheckpointRewindService(self._reviews, self._sessions)
         self._usage_tracker = UsageTracker(context_window_lookup=self._usage_context_window)
+        self._thread_fork = ThreadForkService(self._sessions)
         self._worktrees = WorktreeService()
         self._settings = SettingsService(persistent=not stub)
         self._cli_hub = CliHubService()
@@ -1419,6 +1421,7 @@ class AppServer:
             "updated_at": record.updated_at,
             "trashed_at": record.trashed_at,
             "archived_at": getattr(record, "archived_at", None),
+            "pinned": bool(getattr(record, "pinned", False)),
             "forked_from": getattr(record, "forked_from", None),
             "parent_session_id": getattr(record, "parent_session_id", None),
             "root_session_id": getattr(record, "root_session_id", None) or record.session_id,
@@ -1576,6 +1579,29 @@ class AppServer:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
         await self._respond(request_id, self._session_summary(record))
+
+    async def _handle_thread_fork(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._thread_fork.fork(
+                thread_id=str(params.get("thread_id") or params.get("session_id") or ""),
+                message_id=str(params.get("message_id") or ""),
+                edited_text=params.get("edited_text"),
+            )
+        except ThreadForkError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
+
+    async def _handle_thread_pin(self, params: dict[str, Any], request_id: Any) -> None:
+        try:
+            result = self._thread_fork.pin(
+                str(params.get("thread_id") or params.get("session_id") or ""),
+                pinned=bool(params.get("pinned", True)),
+            )
+        except ThreadForkError as exc:
+            await self._respond_error(request_id, -32001, exc.message, {"error_code": exc.code})
+            return
+        await self._respond(request_id, result)
 
     async def _handle_session_items(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))
@@ -2586,6 +2612,10 @@ class AppServer:
             await self._handle_session_restore(params, request_id)
         elif method == "session/purge":
             await self._handle_session_purge(params, request_id)
+        elif method == "thread/fork":
+            await self._handle_thread_fork(params, request_id)
+        elif method == "thread/pin":
+            await self._handle_thread_pin(params, request_id)
         elif method.startswith("thread/"):
             try:
                 result = self._handle_thread_trash(method, params or {})

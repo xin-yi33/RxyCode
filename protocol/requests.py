@@ -228,6 +228,23 @@ class SessionForkRequest(BaseModel):
     session_id: str
 
 
+class ThreadForkRequest(BaseModel):
+    """GX8 message-level fork. Distinct from session/fork (whole-thread copy)."""
+
+    method: Literal["thread/fork"] = "thread/fork"
+    thread_id: str
+    message_id: str
+    edited_text: str | None = None
+
+
+class ThreadPinRequest(BaseModel):
+    """GX8 pin/unpin. Operation, not an optional field substitute."""
+
+    method: Literal["thread/pin"] = "thread/pin"
+    thread_id: str
+    pinned: bool = True
+
+
 class SessionTreeRequest(BaseModel):
     """PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list."""
 
@@ -1362,6 +1379,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     ThreadPurgeRequest,
     ThreadListDeletedRequest,
     SessionForkRequest,
+    ThreadForkRequest,
+    ThreadPinRequest,
     SessionTreeRequest,
     SessionArchiveRequest,
     SessionUnarchiveRequest,
