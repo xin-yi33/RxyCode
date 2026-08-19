@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 import { DESKTOP_VIEWS, resolveDesktopView, type DesktopViewId } from '../../app/views/index.ts'
 import { BoardView } from '../../features/board/BoardView.ts'
 import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
+import { ApprovalCard } from '../../features/approvals/ApprovalCard.ts'
+import { PermissionModeSwitcher } from '../../features/approvals/PermissionModeSwitcher.ts'
+import { approvalChannel, MODE_SET_CANDIDATE } from '../../features/approvals/approval.mode.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -568,6 +571,31 @@ function App(): React.JSX.Element {
               }
             }}
           />
+          {pendingApproval !== null &&
+          approvalChannel({
+            risk: pendingApproval.riskLevel,
+            preset: 'ask',
+            action: pendingApproval.action
+          }) === 'card' ? (
+            <ApprovalCard
+              item={{
+                requestId: pendingApproval.requestId,
+                action: pendingApproval.action,
+                risk: pendingApproval.riskLevel
+              }}
+              onAllow={(requestId) => conversation.resolveApproval(requestId, 'approved')}
+              onDeny={(requestId) => conversation.resolveApproval(requestId, 'rejected')}
+              onCancel={(requestId) => conversation.dismissApproval(requestId)}
+            />
+          ) : null}
+          <PermissionModeSwitcher
+            preset="ask"
+            fullEnabled={false}
+            blocked
+            missingMethods={[MODE_SET_CANDIDATE]}
+            dark={theme === 'dark'}
+            onRequestPreset={() => undefined}
+          />
           <Composer
             disabled={status !== 'running' || activeSessionId === null}
             running={running}
@@ -656,7 +684,12 @@ function App(): React.JSX.Element {
         </div>
       </details>
 
-      {approvalEnabled && pendingApproval !== null && (
+      {approvalEnabled && pendingApproval !== null &&
+      approvalChannel({
+        risk: pendingApproval.riskLevel,
+        preset: 'ask',
+        action: pendingApproval.action
+      }) === 'modal' && (
         <ApprovalModal
           item={pendingApproval}
           onApprove={() => conversation.resolveApproval(pendingApproval.requestId, 'approved')}
