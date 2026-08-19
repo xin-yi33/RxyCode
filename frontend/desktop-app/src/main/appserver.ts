@@ -30,6 +30,8 @@ export interface AppServerManagerOptions {
   fakeAppserver?: boolean
   /** Spawn the orphan guard (job object on Windows, group guard on POSIX). */
   guard?: boolean
+  /** Test hook: skip repo/runtime discovery and spawn this spec. */
+  spawnOverride?: SpawnSpec
 }
 
 export interface AppserverExitInfo {
@@ -176,10 +178,13 @@ export class AppServerManager extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null
   private stdoutBuffer = ''
   private lastLogs: string[] = []
+  startedAt: number | null = null
+  lastExit: AppserverExitInfo | null = null
   status: AppserverStatus = 'stopped'
 
   constructor(options: AppServerManagerOptions = {}) {
     super()
+    this.on('error', () => {})
     this.options = options
     let devRoot: string | null = null
     try {
@@ -221,15 +226,17 @@ export class AppServerManager extends EventEmitter {
     this.status = 'starting'
     this.emit('status', this.status)
 
-    const runtime = this.bundledRuntime()
-    const repoRoot = runtime !== null ? null : this.devRepoRoot
-    const spec = buildSpawnSpec({
-      fakeAppserver: this.options.fakeAppserver,
-      python: this.options.python,
-      stub: this.options.stub,
-      runtime,
-      repoRoot
-    })
+    const spec = this.options.spawnOverride ?? (() => {
+      const runtime = this.bundledRuntime()
+      const repoRoot = runtime !== null ? null : this.devRepoRoot
+      return buildSpawnSpec({
+        fakeAppserver: this.options.fakeAppserver,
+        python: this.options.python,
+        stub: this.options.stub,
+        runtime,
+        repoRoot
+      })
+    })()
 
     const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
@@ -248,22 +255,68 @@ export class AppServerManager extends EventEmitter {
     child.stderr.on('data', (chunk: string) => this.handleStderr(chunk))
     child.on('spawn', () => {
       if (this.child !== child) return
+      this.startedAt = Date.now()
       this.status = 'running'
       this.emit('status', this.status)
     })
     child.on('error', (error) => {
       if (this.child === child) this.child = null
+      this.startedAt = null
       this.status = 'crashed'
       this.emit('status', this.status)
       this.emit('error', error)
     })
     child.on('exit', (code, signal) => {
       if (this.child === child) this.child = null
+      const exit = { code, signal } as AppserverExitInfo
+      this.lastExit = exit
+      this.startedAt = null
       this.status = code === 0 ? 'stopped' : 'crashed'
       this.emit('status', this.status)
-      this.emit('exit', { code, signal } as AppserverExitInfo)
+      this.emit('exit', exit)
     })
     return true
+  }
+
+  /**
+   * Wait until status is running, or fail on crash/timeout.
+   * AbortSignal cancels the wait (does not kill unless timeout fires).
+   */
+  waitUntilRunning(timeoutMs = 15_000, signal?: AbortSignal): Promise<void> {
+    if (this.status === 'running') return Promise.resolve()
+    if (this.status === 'crashed') {
+      return Promise.reject(new Error('appserver crashed during start'))
+    }
+    return new Promise((resolve, reject) => {
+      let done = false
+      const finish = (error?: Error): void => {
+        if (done) return
+        done = true
+        this.off('status', onStatus)
+        this.off('error', onError)
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        if (error) reject(error)
+        else resolve()
+      }
+      const onStatus = (status: AppserverStatus): void => {
+        if (status === 'running') finish()
+        if (status === 'crashed') finish(new Error('appserver crashed during start'))
+      }
+      const onError = (error: Error): void => {
+        finish(error)
+      }
+      const onAbort = (): void => {
+        finish(new Error('appserver start cancelled'))
+      }
+      const timer = setTimeout(() => {
+        if (this.pid !== null) void killProcessTree(this.pid)
+        finish(new Error(`appserver start timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.on('status', onStatus)
+      this.on('error', onError)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
   }
 
   /**

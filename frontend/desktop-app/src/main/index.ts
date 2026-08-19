@@ -15,9 +15,17 @@ import {
   type CrashReportSummary
 } from './crash-report'
 import { isSafeExternalUrl } from './external-url'
+import { registerAllowedHandle } from './ipc-allowlist'
 import { isAllowedNavigation } from './navigation'
 import { pickWorkspaceDirectory } from './workspace-dialog'
 import { shouldDisableLinuxSandbox } from './linuxStartup'
+import { shouldQuitSecondInstance } from './window-policy'
+import { webPreferencesSafe } from './web-preferences'
+import {
+  getSharedSupervisor,
+  ProcessSupervisor,
+  type ProcessLifecycleEvent
+} from './supervisor'
 
 const SMOKE = process.env.RXYCODE_DESKTOP_SMOKE === '1'
 const KEEPALIVE = process.env.RXYCODE_DESKTOP_KEEPALIVE === '1'
@@ -27,21 +35,26 @@ const USER_DATA_OVERRIDE = process.env.RXYCODE_DESKTOP_USER_DATA
 const APP_ID = 'com.rxycode.desktop'
 const APP_INDEX_URL = pathToFileURL(join(__dirname, '../renderer/index.html')).href
 
-// Headless/VM environments (e.g. remote desktop) have no usable GPU and
-// Electron aborts on startup with "GPU process isn't usable". On Windows
-// disableHardwareAcceleration() alone does not stop that crash, so force
-// the explicit --disable-gpu switch (verified equivalent). The impact on
-// this text-first UI is negligible; packaging (D6) may refine per environment.
-app.commandLine.appendSwitch('disable-gpu')
-if (shouldDisableLinuxSandbox(process.platform, app.isPackaged)) {
-  app.commandLine.appendSwitch('no-sandbox')
-}
-
 if (USER_DATA_OVERRIDE !== undefined && USER_DATA_OVERRIDE !== '') {
   app.setPath('userData', USER_DATA_OVERRIDE)
-  // Keep the electron-updater download cache inside the same temp profile
-  // so smoke runs never pollute the real user's AppData.
   app.setPath('cache', join(USER_DATA_OVERRIDE, 'cache'))
+}
+
+const gotDesktopLock = app.requestSingleInstanceLock()
+if (shouldQuitSecondInstance(gotDesktopLock)) {
+  app.quit()
+}
+
+// Headless/VM environments (e.g. remote desktop) have no usable GPU and
+// Electron aborts on startup with "GPU process isn't usable".
+app.commandLine.appendSwitch('disable-gpu')
+// Chromium --no-sandbox is AppImage-only and opt-in. BrowserWindow sandbox
+// (webPreferences.sandbox=true) stays on for H3 acceptance.
+if (
+  shouldDisableLinuxSandbox(process.platform, app.isPackaged) &&
+  process.env.RXYCODE_LINUX_NO_SANDBOX === '1'
+) {
+  app.commandLine.appendSwitch('no-sandbox')
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -77,6 +90,16 @@ function getManager(): AppServerManager {
     })
   }
   return manager
+}
+
+function getSupervisor() {
+  return getSharedSupervisor(() => {
+    const next = new ProcessSupervisor(getManager())
+    next.on('lifecycle', (event: ProcessLifecycleEvent) => {
+      broadcast('appserver:lifecycle', event)
+    })
+    return next
+  })
 }
 
 function getUpdateManager(): UpdateManager {
@@ -183,12 +206,9 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
-    }
+    webPreferences: webPreferencesSafe({
+      preload: join(__dirname, '../preload/index.js')
+    })
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -197,7 +217,9 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    getSupervisor().closeWindow()
   })
+  getSupervisor().openWindow()
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isSafeExternalUrl(details.url)) {
@@ -358,6 +380,16 @@ async function runUpdateSmoke(): Promise<number> {
   return 0
 }
 
+app.on('second-instance', () => {
+  if (mainWindow !== null) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    return
+  }
+  createWindow()
+})
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId(APP_ID)
 
@@ -365,37 +397,37 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.handle('appserver:get-status', () => getManager().status)
-  ipcMain.handle('appserver:start', () => {
-    getManager().start()
+  registerAllowedHandle(ipcMain, 'appserver:get-status', () => getManager().status)
+  registerAllowedHandle(ipcMain, 'appserver:start', () => {
+    getSupervisor().start()
     return getManager().status
   })
-  ipcMain.handle('appserver:stop', async () => {
-    await getManager().stop()
+  registerAllowedHandle(ipcMain, 'appserver:stop', async () => {
+    await getSupervisor().stop()
     return getManager().status
   })
-  ipcMain.handle('appserver:send-line', (_event, line: string) => {
-    getManager().sendLine(line)
+  registerAllowedHandle(ipcMain, 'appserver:send-line', (_event, line: unknown) => {
+    getManager().sendLine(String(line))
   })
-  ipcMain.handle('workspace:pick-directory', () => pickWorkspaceDirectory(dialog))
-  ipcMain.handle('update:get-status', () => getUpdateManager().snapshot())
-  ipcMain.handle('update:check', async () => {
+  registerAllowedHandle(ipcMain, 'workspace:pick-directory', () => pickWorkspaceDirectory(dialog))
+  registerAllowedHandle(ipcMain, 'update:get-status', () => getUpdateManager().snapshot())
+  registerAllowedHandle(ipcMain, 'update:check', async () => {
     await getUpdateManager().check()
     return getUpdateManager().snapshot()
   })
-  ipcMain.handle('update:download', async () => {
+  registerAllowedHandle(ipcMain, 'update:download', async () => {
     await getUpdateManager().download()
     return getUpdateManager().snapshot()
   })
-  ipcMain.handle('update:install', () => {
+  registerAllowedHandle(ipcMain, 'update:install', () => {
     getUpdateManager().install()
   })
-  ipcMain.handle('crash-report:get-consent', () => getCrashManager().getConsent())
-  ipcMain.handle('crash-report:set-consent', (_event, enabled: boolean) => {
+  registerAllowedHandle(ipcMain, 'crash-report:get-consent', () => getCrashManager().getConsent())
+  registerAllowedHandle(ipcMain, 'crash-report:set-consent', (_event, enabled: unknown) => {
     getCrashManager().setConsent(enabled === true)
   })
-  ipcMain.handle('crash-report:list', () => getCrashManager().listReports())
-  ipcMain.handle('appserver:get-info', () => {
+  registerAllowedHandle(ipcMain, 'crash-report:list', () => getCrashManager().listReports())
+  registerAllowedHandle(ipcMain, 'appserver:get-info', () => {
     const manager = getManager()
     const schema = JSON.parse(
       readFileSync(join(manager.repoRootDir, 'protocol', 'schema.json'), 'utf8')
@@ -408,7 +440,9 @@ app.whenReady().then(() => {
       protocolVersion: schema.protocol_version,
       appVersion: packageJson.version,
       appserverPid: manager.pid,
-      appserverStatus: manager.status
+      appserverStatus: manager.status,
+      appserverStartedAt: manager.startedAt,
+      appserverLastExit: manager.lastExit
     }
   })
 

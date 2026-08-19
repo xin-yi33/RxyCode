@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   appserver: {
@@ -34,7 +33,14 @@ const api = {
       appVersion: string
       appserverPid: number | null
       appserverStatus: string
-    }> => ipcRenderer.invoke('appserver:get-info')
+    }> => ipcRenderer.invoke('appserver:get-info'),
+    onLifecycle: (callback: (event: unknown) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, payload: unknown): void => callback(payload)
+      ipcRenderer.on('appserver:lifecycle', listener)
+      return () => {
+        ipcRenderer.removeListener('appserver:lifecycle', listener)
+      }
+    }
   },
   update: {
     getStatus: () => ipcRenderer.invoke('update:get-status'),
@@ -69,14 +75,11 @@ const api = {
 
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('api', api)
   } catch (error) {
     console.error(error)
   }
 } else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
-  window.api = api
+  // Isolated+sandboxed BrowserWindow is required (DC-J7); do not expose Node.
+  throw new Error('preload requires contextIsolation')
 }
