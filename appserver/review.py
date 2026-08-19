@@ -569,6 +569,7 @@ class ReviewService:
         turn_id: str | None = None,
         name: str | None = None,
         user_prompt: str | None = None,
+        items_seq: int | None = None,
     ) -> dict[str, Any]:
         root = canonicalize(workspace)
         files: dict[str, str] = {}
@@ -600,6 +601,7 @@ class ReviewService:
             "name": name,
             "user_prompt": user_prompt,
             "seq": seq,
+            "items_seq": items_seq,
             "created_at": _now(),
         }
         self._checkpoints[record["checkpoint_id"]] = record

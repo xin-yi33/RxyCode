@@ -1,4 +1,4 @@
-"""GX14-B: agent/invoke + session/prompt capability hard boundary."""
+"""GX14-B: capability hard boundary on the live tool-begin path."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from appserver.server import AppServer
-from appserver.tool_registry_capability import CapabilityDenied, ToolRegistryCapability, allow_tool
 from protocol.requests import AgentInvokeRequest, PromptRequest
 
 
@@ -20,36 +19,156 @@ def test_capability_optional_on_invoke_and_prompt() -> None:
     assert prompt.capability == "no_tools"
 
 
-def test_registry_rejects_edit_only_and_no_tools() -> None:
-    allow_tool("full", "bash")
-    allow_tool("edit_only", "edit")
-    allow_tool("edit_only", "write")
-    with pytest.raises(CapabilityDenied, match="edit_only"):
-        allow_tool("edit_only", "bash")
-    with pytest.raises(CapabilityDenied, match="edit_only"):
-        allow_tool("edit_only", "delete")
-    with pytest.raises(CapabilityDenied, match="edit_only"):
-        allow_tool("edit_only", "git")
-    with pytest.raises(CapabilityDenied, match="no_tools"):
-        allow_tool("no_tools", "read")
+@pytest.mark.asyncio
+async def test_prompt_edit_only_denies_bash_on_tool_begin(tmp_path: Path, monkeypatch) -> None:
+    sent: list[dict] = []
 
+    async def capture(message: dict) -> None:
+        sent.append(message)
 
-def test_session_store_and_appserver_check(tmp_path: Path) -> None:
+    async def no_worker(**kwargs):
+        return None
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
     server = AppServer(stub=True)
+    server._initialized = True
+    monkeypatch.setattr(server, "_run_prompt", no_worker)
     session = server._sessions.create(tmp_path, title="gx14")
-    server._tool_capability.set_session(session.session_id, "edit_only")
-    server._tool_capability.check(session.session_id, "write")
-    with pytest.raises(CapabilityDenied):
-        server._tool_capability.check(session.session_id, "bash")
-    server._tool_capability.set_session(session.session_id, "no_tools")
-    with pytest.raises(CapabilityDenied):
-        server._tool_capability.check(session.session_id, "edit")
-    # capability first vs plan mode: registry raises protocol error, not plan blocked text
-    with pytest.raises(CapabilityDenied) as exc:
-        server._tool_capability.check(session.session_id, "write")
-    assert "plan mode" not in str(exc.value)
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/prompt",
+            "params": {
+                "session_id": session.session_id,
+                "text": "edit the file",
+                "capability": "edit_only",
+            },
+        }
+    )
+    for task in list(server._prompt_tasks):
+        await task
+    sent.clear()
+    server._persist_notification(
+        {
+            "jsonrpc": "2.0",
+            "method": "event/tool_begin",
+            "params": {
+                "session_id": session.session_id,
+                "call_id": "call-bash",
+                "tool_name": "bash",
+                "arguments": {"command": "rm -rf /"},
+            },
+        }
+    )
+    await server._drain_emit_writes()
+    errors = [
+        item
+        for item in sent
+        if item.get("method") == "event/error"
+        and (item.get("params") or {}).get("error_code") == "capability_denied"
+    ]
+    assert errors, sent
+    assert server._execution.get("call-bash") is None
+
+
+@pytest.mark.asyncio
+async def test_invoke_no_tools_denies_any_tool(tmp_path: Path, monkeypatch) -> None:
+    sent: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        sent.append(message)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("no worker")
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
+    server = AppServer(stub=True)
+    server._initialized = True
+    monkeypatch.setattr(server, "_host_for_session", boom)
+    session = server._sessions.create(tmp_path, title="gx14")
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "agent/invoke",
+            "params": {
+                "root_session_id": session.session_id,
+                "agent_id": "helper",
+                "prompt": "look around",
+                "capability": "no_tools",
+            },
+        }
+    )
+    sent.clear()
+    server._persist_notification(
+        {
+            "jsonrpc": "2.0",
+            "method": "event/tool_begin",
+            "params": {
+                "session_id": session.session_id,
+                "call_id": "call-read",
+                "tool_name": "read",
+            },
+        }
+    )
+    await server._drain_emit_writes()
+    errors = [
+        item
+        for item in sent
+        if item.get("method") == "event/error"
+        and (item.get("params") or {}).get("error_code") == "capability_denied"
+    ]
+    assert errors, sent
+    assert server._execution.get("call-read") is None
+
+
+@pytest.mark.asyncio
+async def test_edit_only_allows_write_tool_begin(tmp_path: Path, monkeypatch) -> None:
+    sent: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        sent.append(message)
+
+    async def no_worker(**kwargs):
+        return None
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
+    server = AppServer(stub=True)
+    server._initialized = True
+    monkeypatch.setattr(server, "_run_prompt", no_worker)
+    session = server._sessions.create(tmp_path, title="gx14")
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/prompt",
+            "params": {
+                "session_id": session.session_id,
+                "text": "write it",
+                "capability": "edit_only",
+            },
+        }
+    )
+    for task in list(server._prompt_tasks):
+        await task
+    server._persist_notification(
+        {
+            "jsonrpc": "2.0",
+            "method": "event/tool_begin",
+            "params": {
+                "session_id": session.session_id,
+                "call_id": "call-write",
+                "tool_name": "write",
+            },
+        }
+    )
+    await server._drain_emit_writes()
+    assert server._execution.get("call-write") is not None
+    assert not any(
+        (item.get("params") or {}).get("error_code") == "capability_denied" for item in sent
+    )
 
 
 def test_no_handlers_package() -> None:
     assert not (Path(__file__).resolve().parents[1] / "appserver" / "handlers").exists()
-    assert ToolRegistryCapability().get("missing") == "full"

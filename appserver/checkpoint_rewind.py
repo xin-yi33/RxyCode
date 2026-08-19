@@ -2,7 +2,7 @@
 
 Consumes B8 ReviewService.create/restore. Never lives under appserver/handlers/.
 History checkpoints stay stored (forward nav = rewind to a later id).
-Conversation truncation is a read-surface projection, not a delete.
+Conversation truncation is a session/items read-surface projection, not a delete.
 """
 
 from __future__ import annotations
@@ -27,22 +27,27 @@ class CheckpointRewindService:
     def __init__(self, reviews: ReviewService, sessions: SessionStore) -> None:
         self._reviews = reviews
         self._sessions = sessions
-        self._messages: dict[str, list[dict[str, Any]]] = {}
-        self._cutoff_seq: dict[str, int] = {}
 
-    def record_message(self, session_id: str, *, role: str, text: str) -> dict[str, Any]:
-        rows = self._messages.setdefault(session_id, [])
-        seq = 1 + len(rows)
-        item = {"seq": seq, "role": role, "text": text, "hidden": False}
-        rows.append(item)
-        return dict(item)
+    def _items(self, session_id: str) -> list[dict[str, Any]]:
+        store = getattr(self._sessions, "_task_store", None)
+        if store is None:
+            return []
+        items, _, _ = store.events(session_id, 0)
+        return list(items)
 
-    def visible_messages(self, session_id: str) -> list[dict[str, Any]]:
-        cutoff = self._cutoff_seq.get(session_id)
-        rows = self._messages.get(session_id) or []
+    def _last_items_seq(self, session_id: str) -> int:
+        items = self._items(session_id)
+        if not items:
+            return 0
+        return int(items[-1].get("seq") or 0)
+
+    def visible_items(self, session_id: str) -> list[dict[str, Any]]:
+        record = self._sessions.get(session_id)
+        cutoff = getattr(record, "projection_until_seq", None) if record is not None else None
+        items = self._items(session_id)
         if cutoff is None:
-            return [dict(item) for item in rows if not item.get("hidden")]
-        return [dict(item) for item in rows if int(item["seq"]) <= cutoff and not item.get("hidden")]
+            return items
+        return [item for item in items if int(item.get("seq") or 0) <= int(cutoff)]
 
     def snapshot_create(
         self,
@@ -58,15 +63,14 @@ class CheckpointRewindService:
             raise CheckpointRewindError("name is required", code="invalid_name")
         prompt = user_prompt
         if prompt is None:
-            visible = self.visible_messages(session_id)
-            users = [item for item in visible if item.get("role") == "user"]
-            prompt = str(users[-1]["text"]) if users else None
+            prompt = getattr(record, "last_user_prompt", None)
         created = self._reviews.create_checkpoint(
             session_id=session_id,
             workspace=record.workspace_root,
             reason="named_snapshot",
             name=str(name).strip(),
             user_prompt=prompt,
+            items_seq=self._last_items_seq(session_id),
         )
         return created
 
@@ -89,12 +93,13 @@ class CheckpointRewindService:
             reason="pre-rewind",
             name=None,
             user_prompt=None,
+            items_seq=self._last_items_seq(session_id),
         )
         restored = self._reviews.restore_checkpoint(checkpoint_id, session_id=session_id)
-        target_seq = int(target.get("seq") or 0)
-        before = self.visible_messages(session_id)
-        self._cutoff_seq[session_id] = target_seq
-        after = self.visible_messages(session_id)
+        before = self.visible_items(session_id)
+        target_seq = int(target.get("items_seq") or 0)
+        record.projection_until_seq = target_seq
+        after = self.visible_items(session_id)
         truncated = max(0, len(before) - len(after))
         return {
             "restore_point": restore_point["checkpoint_id"],

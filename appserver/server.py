@@ -563,6 +563,23 @@ class AppServer:
         if method == "event/tool_begin":
             call_id = str(safe_params.get("call_id") or uuid.uuid4().hex)
             tool_name = str(safe_params.get("tool_name") or "tool")
+            try:
+                self._tool_capability.check(session_id, tool_name)
+            except CapabilityDenied as exc:
+                self._schedule_notification(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "event/error",
+                        "params": {
+                            "session_id": session_id,
+                            "message": exc.message,
+                            "error_code": exc.code,
+                            "tool_name": tool_name,
+                            "call_id": call_id,
+                        },
+                    }
+                )
+                return
             from .execution import risk_for
 
             started = self._execution.start(
@@ -1139,6 +1156,16 @@ class AppServer:
             except CapabilityDenied as exc:
                 await self._respond_error(request_id, -32602, exc.message, {"error_code": exc.code})
                 return
+        session_record = self._sessions.get(session_id)
+        if session_record is not None:
+            session_record.last_user_prompt = text
+        self._task_store.append_event(
+            session_id,
+            {
+                "method": "session/prompt",
+                "params": {"session_id": session_id, "text": text, "role": "user"},
+            },
+        )
         turn_key = str(params.get("request_id") or request_id)
         stored = self._sessions.turn_result(session_id, turn_key)
         if stored is not None:
@@ -1508,6 +1535,7 @@ class AppServer:
             return
         cursor = int(params.get("cursor", 0) or 0)
         events, next_cursor, gap = self._task_store.events(session_id, cursor)
+        events = self._project_session_items(session_id, events)
         await self._respond(
             request_id,
             {"events": events, "next_cursor": next_cursor, "gap_detected": gap},
@@ -1698,6 +1726,13 @@ class AppServer:
             return
         await self._respond(request_id, result)
 
+    def _project_session_items(self, session_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        record = self._sessions.get(session_id)
+        cutoff = getattr(record, "projection_until_seq", None) if record is not None else None
+        if cutoff is None:
+            return items
+        return [item for item in items if int(item.get("seq") or 0) <= int(cutoff)]
+
     async def _handle_session_items(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))
         if self._sessions.get(session_id) is None:
@@ -1706,6 +1741,7 @@ class AppServer:
         cursor = int(params.get("cursor", 0) or 0)
         limit = int(params.get("limit", 50) or 50)
         items, next_cursor, gap = self._task_store.events(session_id, cursor, limit=limit)
+        items = self._project_session_items(session_id, items)
         await self._respond(
             request_id,
             {"items": items, "next_cursor": next_cursor, "gap_detected": gap},
