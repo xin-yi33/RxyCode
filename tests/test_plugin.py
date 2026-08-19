@@ -159,7 +159,7 @@ def test_uninstall_cleanup_and_keep_user_config(tmp_path: Path) -> None:
 
 
 def test_registry_install(tmp_path: Path) -> None:
-    pkg = _plugin_pkg(tmp_path / "reg", name="from-reg")
+    _plugin_pkg(tmp_path / "reg", name="from-reg")
     registry = tmp_path / "reg"
     (registry / "registry.json").write_text(
         json.dumps({"plugins": [{"name": "from-reg", "version": "1.0.0", "path": "from-reg"}]}),
@@ -231,9 +231,10 @@ def test_schema_has_plugin_methods() -> None:
     assert "#/$defs/PluginListRequest" in refs
     assert "#/$defs/PluginInstallRequest" in refs
     assert Path("appserver/handlers").exists() is False
+    from pydantic import ValidationError
     from protocol.requests import PluginToggleRequest
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         PluginToggleRequest.model_validate({"name": "x", "enabled": "false"})
 
 

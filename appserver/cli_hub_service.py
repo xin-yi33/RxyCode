@@ -158,7 +158,9 @@ class CliHubService:
                     cached["stale"] = True
                     cached["software"] = self._merged_software(cached.get("software") or {})
                     return cached
-                raise CliHubError("CLI_REGISTRY_UNAVAILABLE", "registry fetch failed and no cache")
+                raise CliHubError(
+                    "CLI_REGISTRY_UNAVAILABLE", "registry fetch failed and no cache"
+                ) from None
         if cached:
             cached["from_cache"] = True
             cached["stale"] = True

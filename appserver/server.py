@@ -1053,7 +1053,6 @@ class AppServer:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
         turn_key = str(params.get("request_id") or request_id)
-        record = self._sessions.get(session_id)
         stored = self._sessions.turn_result(session_id, turn_key)
         if stored is not None:
             await self._respond(request_id, dict(stored))

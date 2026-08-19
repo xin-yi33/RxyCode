@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .workspace import PathBoundaryError, assert_inside_workspace, canonicalize
+from .workspace import assert_inside_workspace, canonicalize
 
 SCOPE_ALIASES = {
     "working_tree": "working_tree",

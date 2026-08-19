@@ -103,7 +103,7 @@ def test_desktop_and_cli_share_resolver(tmp_path: Path) -> None:
 
 
 def test_secret_not_in_log_file_or_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    secret = "sk-b10-secret-do-not-leak-9f3a"
+    secret = "sk-b10-test-secret-do-not-leak-9f3a"
     service = SettingsService(tmp_path / "s.json", persistent=True)
     with caplog.at_level(logging.INFO, logger="appserver.settings"):
         result = service.set(
@@ -114,7 +114,7 @@ def test_secret_not_in_log_file_or_error(tmp_path: Path, caplog: pytest.LogCaptu
     persisted = (tmp_path / "s.json").read_text(encoding="utf-8")
     assert secret not in persisted
     assert '"api_key"' not in persisted
-    assert "sk-b10-secret" not in persisted
+    assert "sk-b10-test-secret" not in persisted
     assert result["has_credential"] is True
     assert secret not in json.dumps(result)
     assert secret not in caplog.text
@@ -347,17 +347,17 @@ def test_rollback_keeps_previous_secret(tmp_path: Path) -> None:
     perms = _write_perms()
     service.set(
         layer="global",
-        values={"api_key": "sk-b10-first-secret-aaaa"},
+        values={"api_key": "sk-b10-first-test-secret-aaaa"},
         permission_store=perms,
     )
     second = service.set(
         layer="global",
-        values={"api_key": "sk-b10-second-secret-bbbb"},
+        values={"api_key": "sk-b10-second-test-secret-bbbb"},
         permission_store=perms,
     )
     service.rollback(second["snapshot_id"], permission_store=perms)
     ref = service._data["credentials"]["credential_ref"]
-    assert load_credential(ref, service._secret_config_path()) == "sk-b10-first-secret-aaaa"
+    assert load_credential(ref, service._secret_config_path()) == "sk-b10-first-test-secret-aaaa"
 
 
 def test_migrate_strips_inline_secrets(tmp_path: Path) -> None:
