@@ -67,9 +67,11 @@ test('H1: generated types consume schema protocol_version 1.1.0', () => {
 
 test('H1: BrowserWindow hardens contextIsolation / no nodeIntegration / sandbox', () => {
   const main = readFileSync(join(desktopRoot, 'src', 'main', 'index.ts'), 'utf8')
-  assert.match(main, /contextIsolation:\s*true/)
-  assert.match(main, /nodeIntegration:\s*false/)
-  assert.match(main, /sandbox:\s*true/)
+  const prefs = readFileSync(join(desktopRoot, 'src', 'main', 'web-preferences.ts'), 'utf8')
+  assert.match(main, /webPreferencesSafe\(/)
+  assert.match(prefs, /contextIsolation:\s*true/)
+  assert.match(prefs, /nodeIntegration:\s*false/)
+  assert.match(prefs, /sandbox:\s*true/)
 })
 
 test('H1: production renderer has no Python, Node fs/child_process, or backend HTTP client', () => {

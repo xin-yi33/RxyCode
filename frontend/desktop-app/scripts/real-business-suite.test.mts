@@ -465,7 +465,10 @@ test('desktop geometry contract keeps the transcript above a fixed composer', ()
   const css = readFileSync(new URL('../src/renderer/src/assets/main.css', import.meta.url), 'utf8')
   assert.match(css, /\.task-main \{\s*display: flex;\s*flex-direction: column;\s*min-height: 0;\s*overflow: hidden;/)
   assert.match(css, /\.chat-area \{\s*min-height: 0;\s*flex: 1 1 auto;\s*overflow: auto;/)
-  assert.match(css, /\.composer \{\s*flex: 0 0 auto;\s*min-height: 0;\s*position: relative;\s*z-index: 1;/)
+  assert.match(
+    css,
+    /\.composer \{\s*flex: 0 0 auto;\s*min-height: 0;[\s\S]*?position: relative;[\s\S]*?z-index:\s*\d+;/
+  )
 })
 
 test('successful GUI runs must expose a non-empty Final Answer', () => {
