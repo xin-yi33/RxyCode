@@ -3398,3 +3398,53 @@ details[open] .activity-chevron {
   position: relative;
   z-index: 20;
 }
+
+.session-category {
+  margin: 4px 0 8px;
+}
+
+.session-category-title {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-dim, #9a9aa2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-category-chevron {
+  margin-left: 4px;
+}
+
+.session-category-title:hover,
+.session-project-title:hover,
+.session-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='light'] .session-category-title:hover,
+html[data-theme='light'] .session-project-title:hover,
+html[data-theme='light'] .session-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.session-project-title {
+  margin: 0;
+  padding: 4px 10px;
+  color: var(--cc-dim, #9a9aa2);
+  font-size: 11px;
+}
+
+.session-panel[data-visual-state='narrow'] {
+  max-width: 168px;
+}
+
+.session-panel[data-visual-state='error'] .empty-hint,
+.session-panel[data-visual-state='loading'] .empty-hint {
+  padding: 12px;
+}

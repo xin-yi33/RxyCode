@@ -481,7 +481,7 @@ Grok 视觉辅助范围（没有就写“无”）
 - [x] 折叠/展开 + `>` 符号 + 4px 间距；
 - [x] hover 高亮取样值落地（含截图对照记录）；
 - [x] 置顶/回收站数据源接入（B17 未合入时回收站区显示 BLOCKED_PREREQUISITE，不 mock）；
-- [ ] 五态测试通过；单 commit。
+- [x] 五态测试通过；单 commit。
 
 ### PhaseG-H16 · Settings 页重构框架（P3 批追加卡）
 

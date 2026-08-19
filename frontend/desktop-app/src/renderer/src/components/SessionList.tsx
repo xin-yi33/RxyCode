@@ -1,7 +1,18 @@
 import { Pencil, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
+import {
+  CHEVRON_GAP_PX,
+  chevron,
+  HOVER_DARK,
+  HOVER_LIGHT,
+  projectCategories,
+  type CategorizedSession
+} from '../../../lib/sessionCategories.ts'
 import type { RunState, SessionEntry } from '../lib/conversationStore.mts'
+import { sessionVisualState } from './sessionVisualState.ts'
+
+export const SESSION_FOLD_STORAGE_KEY = 'rxycode.desktop.sessionFold.v1'
 
 interface SessionListProps {
   sessions: SessionEntry[]
@@ -9,6 +20,10 @@ interface SessionListProps {
   runStateBySession?: Record<string, RunState>
   childCountBySession?: Record<string, number>
   disabled: boolean
+  loading?: boolean
+  error?: string | null
+  listDeletedAvailable?: boolean
+  pinnedIds?: readonly string[]
   onCreate: () => void
   onSelect: (sessionId: string) => void
   onRename?: (sessionId: string, title: string) => void
@@ -17,12 +32,55 @@ interface SessionListProps {
   onPurge?: (sessionId: string) => void
 }
 
+interface FoldState {
+  pinned: boolean
+  projects: boolean
+  recent: boolean
+}
+
+const DEFAULT_FOLD: FoldState = { pinned: true, projects: true, recent: true }
+
+function loadFold(storage: Pick<Storage, 'getItem'> | undefined): FoldState {
+  if (storage === undefined) return { ...DEFAULT_FOLD }
+  try {
+    const raw = storage.getItem(SESSION_FOLD_STORAGE_KEY)
+    if (raw === null) return { ...DEFAULT_FOLD }
+    const parsed = JSON.parse(raw) as Partial<FoldState>
+    return {
+      pinned: parsed.pinned !== false,
+      projects: parsed.projects !== false,
+      recent: parsed.recent !== false
+    }
+  } catch {
+    return { ...DEFAULT_FOLD }
+  }
+}
+
+function toCategorized(
+  sessions: SessionEntry[],
+  pinnedIds: readonly string[]
+): CategorizedSession[] {
+  const pinned = new Set(pinnedIds)
+  return sessions.map((session) => ({
+    sessionId: session.sessionId,
+    title: session.title,
+    workspaceRoot: session.workspaceRoot,
+    pinned: pinned.has(session.sessionId),
+    deletedAt: session.trashedAt === null ? null : String(session.trashedAt),
+    projectId: session.workspaceRoot === '' ? null : session.workspaceRoot
+  }))
+}
+
 function SessionList({
   sessions,
   activeSessionId,
   runStateBySession = {},
   childCountBySession = {},
   disabled,
+  loading = false,
+  error = null,
+  listDeletedAvailable = false,
+  pinnedIds = [],
   onCreate,
   onSelect,
   onRename,
@@ -32,7 +90,7 @@ function SessionList({
 }: SessionListProps): React.JSX.Element {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
-  const [showTrash, setShowTrash] = useState(false)
+  const [fold, setFold] = useState<FoldState>(() => loadFold(typeof window === 'undefined' ? undefined : window.localStorage))
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [purgeId, setPurgeId] = useState<string | null>(null)
@@ -41,14 +99,29 @@ function SessionList({
   const normalizedQuery = query.trim().toLowerCase()
   const matches = (session: SessionEntry): boolean =>
     normalizedQuery === '' || `${session.title} ${session.workspaceRoot}`.toLowerCase().includes(normalizedQuery)
-  const activeTasks = useMemo(
-    () => sessions.filter((session) => session.trashedAt === null && matches(session)),
-    [sessions, normalizedQuery]
+
+  const visible = sessions.filter(matches)
+  const buckets = useMemo(
+    () => projectCategories(toCategorized(visible, pinnedIds), listDeletedAvailable),
+    [visible, pinnedIds, listDeletedAvailable]
   )
-  const trashedTasks = useMemo(
-    () => sessions.filter((session) => session.trashedAt !== null && matches(session)),
-    [sessions, normalizedQuery]
+  const sessionById = useMemo(
+    () => new Map(sessions.map((session) => [session.sessionId, session])),
+    [sessions]
   )
+  const theme = typeof document === 'undefined' ? 'dark' : document.documentElement.dataset.theme
+  const visual = sessionVisualState({
+    loading,
+    error,
+    empty: sessions.length === 0,
+    narrow: false,
+    dark: theme !== 'light'
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SESSION_FOLD_STORAGE_KEY, JSON.stringify(fold))
+  }, [fold])
 
   useEffect(() => {
     if (renamingId !== null) renameInputRef.current?.focus()
@@ -77,6 +150,10 @@ function SessionList({
     setRenameValue('')
   }
 
+  const toggle = (key: keyof FoldState): void => {
+    setFold((current) => ({ ...current, [key]: !current[key] }))
+  }
+
   const renderTask = (session: SessionEntry, trashed: boolean): React.JSX.Element => {
     const state = runStateBySession[session.sessionId] ?? 'succeeded'
     const childCount = childCountBySession[session.sessionId] ?? 0
@@ -103,7 +180,7 @@ function SessionList({
                     setRenameValue('')
                   }
                 }}
-                aria-label={`Rename ${session.title}`}
+                aria-label={`${t('rename')} ${session.title}`}
                 data-testid={`rename-input-${session.sessionId}`}
               />
               <button type="submit" className="rename-save" data-testid={`rename-save-${session.sessionId}`}>{t('save')}</button>
@@ -154,8 +231,56 @@ function SessionList({
     )
   }
 
+  const renderCategory = (
+    id: keyof FoldState,
+    title: string,
+    items: SessionEntry[]
+  ): React.JSX.Element => {
+    const expanded = fold[id]
+    return (
+      <section className="session-category" data-testid={`session-category-${id}`}>
+        <button
+          type="button"
+          className="session-category-title"
+          aria-expanded={expanded}
+          onClick={() => toggle(id)}
+        >
+          {title}
+          <span className="session-category-chevron" style={{ marginLeft: CHEVRON_GAP_PX }}>
+            {chevron(expanded)}
+          </span>
+        </button>
+        {expanded && items.length === 0 ? (
+          <p className="empty-hint" data-testid={`session-category-${id}-empty`}>{t('emptyTasks')}</p>
+        ) : null}
+        {expanded && items.length > 0 ? (
+          <ul className="session-list">{items.map((session) => renderTask(session, false))}</ul>
+        ) : null}
+      </section>
+    )
+  }
+
+  const resolve = (entries: CategorizedSession[]): SessionEntry[] =>
+    entries
+      .map((entry) => sessionById.get(entry.sessionId))
+      .filter((session): session is SessionEntry => session !== undefined)
+
+  const projectSections = Object.entries(buckets.projects).map(([projectId, entries]) => (
+    <section key={projectId} className="session-project" data-testid={`session-project-${projectId}`}>
+      <p className="session-project-title">{projectId}</p>
+      <ul className="session-list">{resolve(entries).map((session) => renderTask(session, false))}</ul>
+    </section>
+  ))
+
   return (
-    <aside className="session-panel" data-testid="session-nav" aria-label="Tasks and sessions">
+    <aside
+      className="session-panel"
+      data-testid="session-nav"
+      data-visual-state={visual}
+      data-hover-light={HOVER_LIGHT}
+      data-hover-dark={HOVER_DARK}
+      aria-label={t('tasks')}
+    >
       <div className="panel-header">
         <span className="panel-title">{t('tasks')}</span>
         <button type="button" className="new-session" onClick={onCreate} disabled={disabled} title={t('newTask')} aria-label={t('newTask')} data-testid="new-session">
@@ -167,19 +292,40 @@ function SessionList({
         <span className="sr-only">{t('searchTasks')}</span>
         <input type="search" placeholder={t('searchTasks')} aria-label={t('searchTasks')} value={query} onChange={(event) => setQuery(event.target.value)} />
       </label>
-      {activeTasks.length === 0 && trashedTasks.length === 0 ? (
-        <p className="empty-hint">{t('emptyTasks')}</p>
+      {loading ? (
+        <p className="empty-hint" data-testid="session-loading">{t('sessionLoading')}</p>
+      ) : error !== null ? (
+        <p className="empty-hint" data-testid="session-error">{error || t('sessionError')}</p>
       ) : (
         <>
-          {activeTasks.length > 0 && <ul className="session-list">{activeTasks.map((session) => renderTask(session, false))}</ul>}
-          {trashedTasks.length > 0 && (
-            <section className="recently-deleted">
-              <button type="button" className="trash-toggle" aria-expanded={showTrash} onClick={() => setShowTrash((value) => !value)}>
-                {t('recentlyDeleted')} ({trashedTasks.length})
-              </button>
-              {showTrash && <ul className="session-list trashed-list">{trashedTasks.map((session) => renderTask(session, true))}</ul>}
-            </section>
-          )}
+          {renderCategory('pinned', t('pinned'), resolve(buckets.pinned))}
+          <section className="session-category" data-testid="session-category-projects">
+            <button
+              type="button"
+              className="session-category-title"
+              aria-expanded={fold.projects}
+              onClick={() => toggle('projects')}
+            >
+              {t('projects')}
+              <span className="session-category-chevron" style={{ marginLeft: CHEVRON_GAP_PX }}>
+                {chevron(fold.projects)}
+              </span>
+            </button>
+            {fold.projects ? projectSections : null}
+          </section>
+          {renderCategory('recent', t('recent'), resolve(buckets.recent))}
+          <section className="session-category recycle" data-testid="session-recycle">
+            <p className="session-category-title">{t('recycle')}</p>
+            {buckets.recycleBlocked ? (
+              <p className="blocked-badge" data-testid="session-recycle-blocked">
+                {t('blocked')}: {t('recycleBlockedDetail')}
+              </p>
+            ) : (
+              <ul className="session-list trashed-list">
+                {sessions.filter((session) => session.trashedAt !== null).map((session) => renderTask(session, true))}
+              </ul>
+            )}
+          </section>
         </>
       )}
       {purgeId !== null && (
