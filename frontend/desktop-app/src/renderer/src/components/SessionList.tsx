@@ -10,6 +10,8 @@ import {
   type CategorizedSession
 } from '../../../lib/sessionCategories.ts'
 import type { RunState, SessionEntry } from '../lib/conversationStore.mts'
+import { StatusIndicator } from '../../../components/StatusIndicator.tsx'
+import { fromSessionRunState } from '../../../lib/statusProjection.ts'
 import { SETTINGS_ENTRY } from '../../../lib/settingsSections.ts'
 import { sessionVisualState } from './sessionVisualState.ts'
 
@@ -192,14 +194,14 @@ function SessionList({
           ) : (
             <button
               type="button"
-              className={`session-item${session.sessionId === activeSessionId ? ' active' : ''}`}
+              className={`session-item${session.sessionId === activeSessionId ? ' active' : ''}${!trashed && fromSessionRunState(state) === 'running' ? ' is-running' : ''}`}
               onClick={() => onSelect(session.sessionId)}
               disabled={trashed}
               data-testid={`session-${session.sessionId}`}
             >
               <span className="session-title-row">
                 <span className="session-title">{session.title}</span>
-                {!trashed && <span className={'session-state state-' + state}>{state === 'succeeded' ? 'ready' : state}</span>}
+                {!trashed && <StatusIndicator backend={fromSessionRunState(state)} visualState={visual} />}
               </span>
               <span className="session-id">{session.sessionId}</span>
               <span className="session-workspace" title={session.workspaceRoot}>{session.workspaceRoot}</span>

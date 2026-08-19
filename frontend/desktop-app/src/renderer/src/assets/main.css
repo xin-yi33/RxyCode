@@ -3486,3 +3486,40 @@ html[data-theme='light'] .settings-entry:hover {
   flex: 1;
   min-width: 0;
 }
+
+.status-indicator {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.status-indicator[data-status='spin'] {
+  border: 2px solid var(--cc-dim, #9a9aa2);
+  border-top-color: #3b82f6;
+  animation: status-spin 0.8s linear infinite;
+  background: transparent;
+}
+
+.status-indicator[data-status='dot'] {
+  background: #3b82f6;
+}
+
+.status-indicator[data-status='error'] {
+  background: #ef4444;
+}
+
+.status-indicator[data-status='idle'] {
+  background: transparent;
+}
+
+.session-item.is-running {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
