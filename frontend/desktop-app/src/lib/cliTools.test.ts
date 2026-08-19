@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { groupTools, PHASE_I_ATTACHMENT_PROTOCOL } from './cliTools.ts'
-import { canRender, normalizePreviewPath } from '../features/preview/previewGallery.ts'
+import { canRender, normalizePreviewPath } from '../features/preview/previewArtifacts.ts'
 import { galleryVisualState } from '../features/preview/galleryVisualState.ts'
 
 test('H19: without B14 only builtin group; zero PHASE-I; four artifact kinds', () => {

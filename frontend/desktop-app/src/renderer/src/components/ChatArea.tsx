@@ -14,6 +14,8 @@ import type { TimelineItem } from '../lib/conversationStore.mts'
 import { looksLikePlanDocument, parsePlanDocument, type PlanDocument } from '../lib/planDocument.mts'
 import { hasLaterPlanFinal } from '../lib/planTimeline.mts'
 import { shouldShowStartupProgress, visibleRunProgress } from '../lib/taskPresentation.mts'
+import { PreviewGallery } from '../../../features/preview/previewGallery.ts'
+import { artifactsFromTool, toolSourceLabel } from '../../../features/preview/previewArtifacts.ts'
 
 interface ChatAreaProps {
   timeline: TimelineItem[]
@@ -39,6 +41,7 @@ function ToolActivity({ item, onOpenInspector }: {
       <summary className="activity-summary">
         {isRunning || isRecovering ? <CircleDashed className="activity-spinner" aria-hidden="true" size={15} /> : item.status === 'ok' ? <Check aria-hidden="true" size={15} /> : <X aria-hidden="true" size={15} />}
         <span className="activity-label">{verb} {item.toolName}</span>
+        <span className="tool-source" data-tool-source={toolSourceLabel(item.toolName)}>{toolSourceLabel(item.toolName)}</span>
         {item.summary !== undefined && <span className="activity-result">· {item.summary}</span>}
         <ChevronDown className="activity-chevron" aria-hidden="true" size={14} />
       </summary>
@@ -53,6 +56,7 @@ function ToolActivity({ item, onOpenInspector }: {
           {item.arguments !== undefined && <div><dt>参数</dt><dd><pre>{JSON.stringify(item.arguments, null, 2)}</pre></dd></div>}
           {item.summary !== undefined && <div><dt>结果摘要</dt><dd>{item.summary}</dd></div>}
         </dl>
+        <PreviewGallery artifacts={artifactsFromTool(item.toolName, item.arguments)} />
       </div>
     </details>
   )

@@ -1,4 +1,4 @@
-import type { PreviewArtifact } from './previewGallery.ts'
+import type { PreviewArtifact } from './previewArtifacts.ts'
 
 export type GalleryVisualState = 'empty' | 'loading' | 'error' | 'narrow' | 'dark' | 'ok'
 
