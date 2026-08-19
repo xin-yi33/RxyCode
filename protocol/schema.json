@@ -761,6 +761,135 @@
       "title": "TurnRetryRequest",
       "type": "object"
     },
+    "CommandStartRequest": {
+      "description": "PhaseG-B6 user-initiated command. Distinct from agent tool calls.",
+      "properties": {
+        "method": {
+          "const": "command/start",
+          "default": "command/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        }
+      },
+      "required": [
+        "session_id",
+        "command"
+      ],
+      "title": "CommandStartRequest",
+      "type": "object"
+    },
+    "ExecutionListRequest": {
+      "description": "List tool/command/background items for one session.",
+      "properties": {
+        "method": {
+          "const": "execution/list",
+          "default": "execution/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "include_completed": {
+          "default": false,
+          "title": "Include Completed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ExecutionListRequest",
+      "type": "object"
+    },
+    "ExecutionStopRequest": {
+      "description": "Stop one running tool/command/background task.",
+      "properties": {
+        "method": {
+          "const": "execution/stop",
+          "default": "execution/stop",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id"
+      ],
+      "title": "ExecutionStopRequest",
+      "type": "object"
+    },
+    "ExecutionOutputRequest": {
+      "description": "Read persisted stdout/stderr after the process has exited.",
+      "properties": {
+        "method": {
+          "const": "execution/output",
+          "default": "execution/output",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id"
+      ],
+      "title": "ExecutionOutputRequest",
+      "type": "object"
+    },
     "SubagentCapabilityRequest": {
       "description": "Discover worker-owned isolated-subagent feature flags.",
       "properties": {
@@ -2040,6 +2169,124 @@
         "summary"
       ],
       "title": "ToolEnd",
+      "type": "object"
+    },
+    "ExecutionItem": {
+      "description": "PhaseG-B6 tool/command/background item snapshot.",
+      "properties": {
+        "method": {
+          "const": "event/execution",
+          "default": "event/execution",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "args_summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Summary"
+        },
+        "risk": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Risk"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "env_summary": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Env Summary"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "unread": {
+          "default": false,
+          "title": "Unread",
+          "type": "boolean"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id",
+        "kind",
+        "origin",
+        "name",
+        "status"
+      ],
+      "title": "ExecutionItem",
       "type": "object"
     },
     "TaskComplete": {
@@ -3970,6 +4217,11 @@
           "title": "Background Turns",
           "type": "boolean"
         },
+        "background_tasks": {
+          "default": true,
+          "title": "Background Tasks",
+          "type": "boolean"
+        },
         "command_execution": {
           "default": true,
           "title": "Command Execution",
@@ -4348,6 +4600,18 @@
           "$ref": "#/$defs/TurnRetryRequest"
         },
         {
+          "$ref": "#/$defs/CommandStartRequest"
+        },
+        {
+          "$ref": "#/$defs/ExecutionListRequest"
+        },
+        {
+          "$ref": "#/$defs/ExecutionStopRequest"
+        },
+        {
+          "$ref": "#/$defs/ExecutionOutputRequest"
+        },
+        {
           "$ref": "#/$defs/SubagentCapabilityRequest"
         },
         {
@@ -4467,6 +4731,9 @@
         },
         {
           "$ref": "#/$defs/ToolEnd"
+        },
+        {
+          "$ref": "#/$defs/ExecutionItem"
         },
         {
           "$ref": "#/$defs/TaskComplete"

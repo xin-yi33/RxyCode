@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B6",
+  "kind": "denied",
+  "request": {"method": "command/start", "params": {"session_id": "s1", "command": "echo", "cwd": "C:\\\\outside"}},
+  "error_code": "PATH_OUTSIDE_WORKSPACE"
+}

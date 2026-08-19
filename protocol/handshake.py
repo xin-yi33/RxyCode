@@ -16,6 +16,7 @@ class CapabilitySnapshot(BaseModel):
     threads: bool = True
     thread_fork: bool = True
     background_turns: bool = False
+    background_tasks: bool = True
     command_execution: bool = True
     file_changes: bool = True
     review: bool = False

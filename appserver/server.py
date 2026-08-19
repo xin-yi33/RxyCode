@@ -30,7 +30,8 @@ from .lifecycle import InstanceLock, mark_incomplete_recovery_required
 from .project_routes import handle_project_rpc
 from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
-from .workspace import PathBoundaryError, assert_exists, canonicalize
+from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
+from .execution import ExecutionStore
 from .sessions import SessionStore
 from .task_store import DesktopTaskStore
 from .watchdog import ActiveJob, WatchdogState, heartbeat_interval_seconds, stall_timeout_seconds
@@ -54,6 +55,7 @@ try:
         RecoveryRequired,
         ServerHeartbeat,
         WorkspaceChanged,
+        ExecutionItem,
     )
     from ..protocol.version import (
         APPSERVER_VERSION,
@@ -81,6 +83,7 @@ except ImportError:
         RecoveryRequired,
         ServerHeartbeat,
         WorkspaceChanged,
+        ExecutionItem,
     )
     from protocol.version import (
         APPSERVER_VERSION,
@@ -149,6 +152,7 @@ _REPLAY_EVENT_METHODS = {
     "event/job_status",
     "event/tool_begin",
     "event/tool_end",
+    "event/execution",
     "event/token_usage",
     "event/final",
     "event/done",
@@ -192,6 +196,7 @@ class AppServer:
                 self._task_store
             )
         self._sessions = SessionStore(task_store=self._task_store)
+        self._execution = ExecutionStore(on_change=self._schedule_execution_event)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
         self._started_at = time.monotonic()
@@ -231,6 +236,27 @@ class AppServer:
                 self._notification_write_failures.append(exc)
             finally:
                 self._notification_queue.task_done()
+
+    def _schedule_execution_event(self, record: Any) -> None:
+        self._schedule_notification(
+            model_to_notification(
+                ExecutionItem(
+                    session_id=record.session_id,
+                    task_id=record.task_id,
+                    kind=record.kind,
+                    origin=record.origin,
+                    name=record.name,
+                    status=record.status,
+                    args_summary=record.args_summary,
+                    risk=record.risk,
+                    cwd=record.cwd,
+                    env_summary=dict(record.env_summary),
+                    exit_code=record.exit_code,
+                    unread=record.unread,
+                    truncated=record.truncated,
+                )
+            )
+        )
 
     def _schedule_notification(self, message: dict[str, Any]) -> None:
         self._ensure_notification_writer()
@@ -398,6 +424,48 @@ class AppServer:
         except Exception:
             _logger.exception("failed to persist session event for %s", session_id)
 
+        if method.endswith("approval_required") or method.startswith("approval/"):
+            target = (
+                safe_params.get("task_id")
+                or safe_params.get("call_id")
+                or safe_params.get("approval_id")
+            )
+            if isinstance(target, str) and self._execution.get(target) is not None:
+                self._execution.set_waiting(target)
+            else:
+                running = [
+                    item
+                    for item in self._execution.list(session_id)
+                    if item.status == "running" and item.session_id == session_id
+                ]
+                if len(running) == 1:
+                    self._execution.set_waiting(running[0].task_id)
+        if method == "event/tool_begin":
+            call_id = str(safe_params.get("call_id") or uuid.uuid4().hex)
+            tool_name = str(safe_params.get("tool_name") or "tool")
+            from .execution import risk_for
+
+            started = self._execution.start(
+                session_id=session_id,
+                name=tool_name,
+                kind="tool",
+                origin="agent",
+                arguments=safe_params.get("arguments"),
+                risk=risk_for(tool_name),
+                parent_session_id=parent_id if isinstance(parent_id, str) else None,
+                task_id=call_id,
+            )
+            self._schedule_execution_event(started)
+        elif method == "event/tool_end":
+            call_id = str(safe_params.get("call_id") or "")
+            if call_id and self._execution.get(call_id) is not None:
+                ok = bool(safe_params.get("ok", True))
+                finished = self._execution.finish(
+                    call_id,
+                    "succeeded" if ok else "failed",
+                    stdout=str(safe_params.get("summary") or ""),
+                )
+                self._schedule_execution_event(finished)
         if method == "event/job_status":
             state = safe_params.get("state")
             if isinstance(state, str):
@@ -1458,6 +1526,77 @@ class AppServer:
             request_id,
         )
 
+    async def _handle_command_start(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        command = str(params.get("command") or "").strip()
+        record = self._sessions.get(session_id)
+        if record is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        if not command:
+            await self._respond_error(request_id, -32602, "command is required")
+            return
+        cwd = params.get("cwd") or str(record.workspace_root)
+        try:
+            assert_inside_workspace(record.workspace_root, cwd)
+        except PathBoundaryError as exc:
+            await self._respond_error(request_id, -32003, str(exc), {"error_code": exc.code})
+            return
+        timeout = float(params.get("timeout_seconds") or 30.0)
+        item = await self._execution.run_command(
+            session_id=session_id,
+            command=command,
+            cwd=str(canonicalize(cwd)),
+            origin="user",
+            background=bool(params.get("background")),
+            timeout=timeout,
+        )
+        self._schedule_execution_event(item)
+        await self._respond(request_id, item.to_dict())
+
+    async def _handle_execution_list(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        items = self._execution.list(
+            session_id, include_completed=bool(params.get("include_completed", False))
+        )
+        await self._respond(
+            request_id,
+            {"items": [item.to_dict(include_output=False) for item in items]},
+        )
+
+    async def _handle_execution_stop(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        task_id = str(params.get("task_id", ""))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        item = self._execution.get(task_id)
+        if item is None or item.session_id != session_id:
+            await self._respond_error(request_id, -32001, f"unknown task: {task_id}")
+            return
+        try:
+            self._execution.request_stop(task_id)
+        except ValueError as exc:
+            await self._respond_error(request_id, -32003, str(exc))
+            return
+        await self._respond(request_id, {"ok": True, "task_id": task_id})
+
+    async def _handle_execution_output(self, params: dict[str, Any], request_id: Any) -> None:
+        session_id = str(params.get("session_id", ""))
+        task_id = str(params.get("task_id", ""))
+        if self._sessions.get(session_id) is None:
+            await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
+            return
+        item = self._execution.get(task_id)
+        if item is None or item.session_id != session_id:
+            await self._respond_error(request_id, -32001, f"unknown task: {task_id}")
+            return
+        self._execution.mark_read(task_id)
+        await self._respond(request_id, item.to_dict())
+
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
@@ -1574,6 +1713,14 @@ class AppServer:
             await self._handle_interrupt(params, request_id)
         elif method == "turn/retry":
             await self._handle_turn_retry(params, request_id)
+        elif method == "command/start":
+            await self._handle_command_start(params, request_id)
+        elif method == "execution/list":
+            await self._handle_execution_list(params, request_id)
+        elif method == "execution/stop":
+            await self._handle_execution_stop(params, request_id)
+        elif method == "execution/output":
+            await self._handle_execution_output(params, request_id)
         elif method == "session/set_model":
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":

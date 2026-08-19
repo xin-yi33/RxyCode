@@ -209,6 +209,25 @@ class ToolEnd(BaseModel):
     status: str | None = None
 
 
+class ExecutionItem(BaseModel):
+    """PhaseG-B6 tool/command/background item snapshot."""
+
+    method: Literal["event/execution"] = "event/execution"
+    session_id: str
+    task_id: str
+    kind: str
+    origin: str
+    name: str
+    status: str
+    args_summary: str | None = None
+    risk: str | None = None
+    cwd: str | None = None
+    env_summary: dict[str, str] | None = None
+    exit_code: int | None = None
+    unread: bool = False
+    truncated: bool = False
+
+
 class TaskComplete(BaseModel):
     """Structured task completion paired with ``TaskStarted``."""
 
@@ -401,6 +420,7 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     TaskStarted,
     ToolBegin,
     ToolEnd,
+    ExecutionItem,
     TaskComplete,
     TokenUsage,
     FinalAnswer,

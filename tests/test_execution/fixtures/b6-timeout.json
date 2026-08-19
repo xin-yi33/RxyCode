@@ -1,0 +1,5 @@
+{
+  "card": "PhaseG-B6",
+  "kind": "timeout",
+  "response": {"result": {"status": "timeout"}}
+}

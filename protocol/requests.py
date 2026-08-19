@@ -241,6 +241,41 @@ class TurnRetryRequest(BaseModel):
     text: str | None = None
 
 
+class CommandStartRequest(BaseModel):
+    """PhaseG-B6 user-initiated command. Distinct from agent tool calls."""
+
+    method: Literal["command/start"] = "command/start"
+    session_id: str
+    command: str
+    cwd: str | None = None
+    background: bool = False
+    timeout_seconds: float | None = None
+
+
+class ExecutionListRequest(BaseModel):
+    """List tool/command/background items for one session."""
+
+    method: Literal["execution/list"] = "execution/list"
+    session_id: str
+    include_completed: bool = False
+
+
+class ExecutionStopRequest(BaseModel):
+    """Stop one running tool/command/background task."""
+
+    method: Literal["execution/stop"] = "execution/stop"
+    session_id: str
+    task_id: str
+
+
+class ExecutionOutputRequest(BaseModel):
+    """Read persisted stdout/stderr after the process has exited."""
+
+    method: Literal["execution/output"] = "execution/output"
+    session_id: str
+    task_id: str
+
+
 class SubagentCapabilityRequest(BaseModel):
     """Discover worker-owned isolated-subagent feature flags."""
 
@@ -544,6 +579,10 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     TurnSteerRequest,
     TurnInterruptRequest,
     TurnRetryRequest,
+    CommandStartRequest,
+    ExecutionListRequest,
+    ExecutionStopRequest,
+    ExecutionOutputRequest,
     SubagentCapabilityRequest,
     SubagentsListRequest,
     AgentInvokeRequest,
