@@ -5429,6 +5429,7 @@
       "type": "object"
     },
     "AgentUsage": {
+      "description": "GX16 additive per-turn token/cost snapshot for the side-chat usage strip.",
       "properties": {
         "method": {
           "const": "event/agent_usage",

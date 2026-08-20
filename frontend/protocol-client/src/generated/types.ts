@@ -2757,6 +2757,9 @@ export interface TokenUsage {
   reporting_status?: ReportingStatus;
   [k: string]: unknown;
 }
+/**
+ * GX16 additive per-turn token/cost snapshot for the side-chat usage strip.
+ */
 export interface AgentUsage {
   method?: Method145;
   session_id: SessionId77;

@@ -261,6 +261,7 @@ class AgentNeedsInput(BaseModel):
 
 
 class AgentUsage(BaseModel):
+    """GX16 additive per-turn token/cost snapshot for the side-chat usage strip."""
 
     method: Literal["event/agent_usage"] = "event/agent_usage"
     session_id: str
