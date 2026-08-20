@@ -31,6 +31,7 @@ class AppSessionRecord:
     last_turn_request_id: str | None = None
     last_user_prompt: str | None = None
     projection_until_seq: int | None = None
+    projection_hidden_until_seq: int | None = None
     last_turn_result: dict[str, object] | None = None
     turn_results: dict[str, dict[str, object]] = field(default_factory=dict)
     agent_id: str | None = None

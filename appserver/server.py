@@ -37,7 +37,7 @@ from .permission import PermissionStore
 from .preview import preview_file, list_tree, prepare_open_external
 from .review import ReviewError, ReviewService
 from .review_comments import ReviewCommentService
-from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService
+from .checkpoint_rewind import CheckpointRewindError, CheckpointRewindService, project_session_items
 from .usage_tracker import UsageTracker
 from .thread_fork import ThreadForkError, ThreadForkService
 from .plan_files import PlanFileError, PlanFileService
@@ -1727,11 +1727,7 @@ class AppServer:
         await self._respond(request_id, result)
 
     def _project_session_items(self, session_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        record = self._sessions.get(session_id)
-        cutoff = getattr(record, "projection_until_seq", None) if record is not None else None
-        if cutoff is None:
-            return items
-        return [item for item in items if int(item.get("seq") or 0) <= int(cutoff)]
+        return project_session_items(self._sessions.get(session_id), items)
 
     async def _handle_session_items(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))

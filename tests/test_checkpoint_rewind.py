@@ -214,6 +214,73 @@ async def test_appserver_snapshot_rewind_rpc(tmp_path: Path, monkeypatch) -> Non
     assert "later" not in texts
 
 
+@pytest.mark.asyncio
+async def test_rewind_keeps_prompts_typed_after_cutoff(tmp_path: Path, monkeypatch) -> None:
+    """Hide only (target_seq, seq_at_rewind]; a later prompt stays on session/items."""
+    root = _workspace(tmp_path)
+    sent: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        sent.append(message)
+
+    async def no_worker(**kwargs):
+        return None
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
+    server = AppServer(stub=True)
+    server._initialized = True
+    server._permissions.set_profile("workspace_write")
+    monkeypatch.setattr(server, "_run_prompt", no_worker)
+    session = server._sessions.create(root, title="gx4")
+    await _prompt(server, session.session_id, "first prompt", 30)
+    sent.clear()
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "checkpoint/snapshot/create",
+            "params": {"session_id": session.session_id, "name": "keep-first"},
+        }
+    )
+    named = next(item["result"] for item in sent if item.get("id") == 1)
+    await _prompt(server, session.session_id, "second prompt", 31)
+    sent.clear()
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "checkpoint/rewind",
+            "params": {
+                "session_id": session.session_id,
+                "checkpoint_id": named["checkpoint_id"],
+                "confirm": True,
+            },
+        }
+    )
+    assert any(item.get("id") == 2 and "result" in item for item in sent)
+    cutoff = session.projection_until_seq
+    hidden_until = session.projection_hidden_until_seq
+    assert cutoff is not None
+    assert hidden_until is not None
+    await _prompt(server, session.session_id, "third prompt after rewind", 32)
+    assert session.projection_until_seq == cutoff
+    assert session.projection_hidden_until_seq == hidden_until
+    sent.clear()
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/items",
+            "params": {"session_id": session.session_id},
+        }
+    )
+    items = next(item["result"] for item in sent if item.get("id") == 3)["items"]
+    texts = [str((row.get("params") or {}).get("text") or "") for row in items]
+    assert "first prompt" in texts
+    assert "second prompt" not in texts
+    assert "third prompt after rewind" in texts
+
+
 def test_no_handlers_package() -> None:
     assert not (Path(__file__).resolve().parents[1] / "appserver" / "handlers").exists()
     assert not hasattr(__import__("appserver.checkpoint_rewind", fromlist=["CheckpointRewindService"]).CheckpointRewindService, "record_message")

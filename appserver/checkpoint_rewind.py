@@ -11,7 +11,27 @@ from pathlib import Path
 from typing import Any
 
 from .review import ReviewService
-from .sessions import SessionStore
+from .sessions import AppSessionRecord, SessionStore
+
+
+def project_session_items(
+    record: AppSessionRecord | None, items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Read-surface projection: hide (until, hidden_until], keep newer events."""
+    if record is None:
+        return items
+    until = record.projection_until_seq
+    if until is None:
+        return items
+    hidden_until = record.projection_hidden_until_seq
+    if hidden_until is None:
+        return [item for item in items if int(item.get("seq") or 0) <= int(until)]
+    visible: list[dict[str, Any]] = []
+    for item in items:
+        seq = int(item.get("seq") or 0)
+        if seq <= int(until) or seq > int(hidden_until):
+            visible.append(item)
+    return visible
 
 
 class CheckpointRewindError(Exception):
@@ -43,11 +63,7 @@ class CheckpointRewindService:
 
     def visible_items(self, session_id: str) -> list[dict[str, Any]]:
         record = self._sessions.get(session_id)
-        cutoff = getattr(record, "projection_until_seq", None) if record is not None else None
-        items = self._items(session_id)
-        if cutoff is None:
-            return items
-        return [item for item in items if int(item.get("seq") or 0) <= int(cutoff)]
+        return project_session_items(record, self._items(session_id))
 
     def snapshot_create(
         self,
@@ -98,7 +114,12 @@ class CheckpointRewindService:
         restored = self._reviews.restore_checkpoint(checkpoint_id, session_id=session_id)
         before = self.visible_items(session_id)
         target_seq = int(target.get("items_seq") or 0)
+        seq_at_rewind = self._last_items_seq(session_id)
         record.projection_until_seq = target_seq
+        # Hide only (target_seq, seq_at_rewind]. Never raise the high-water
+        # afterward — that would swallow prompts typed after rewind.
+        if record.projection_hidden_until_seq is None:
+            record.projection_hidden_until_seq = seq_at_rewind
         after = self.visible_items(session_id)
         truncated = max(0, len(before) - len(after))
         return {
