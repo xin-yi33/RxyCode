@@ -22,7 +22,7 @@ test('GX14: capability field missing on agent/invoke and session/prompt', () => 
   assert.equal(probe.presentOnPrompt, false)
   const attached = attachCapability(schema, 'edit', 'session/prompt')
   assert.equal('status' in attached && attached.status === 'BLOCKED_PREREQUISITE', true)
-  assert.equal(planOverridesWrite(true, 'full'), 'plan')
+  assert.equal(planOverridesWrite(true), 'plan')
 })
 
 test('GX14: selector UI', () => {

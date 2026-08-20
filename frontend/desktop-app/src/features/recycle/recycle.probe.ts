@@ -20,17 +20,26 @@ export function probeRecycle(schemaText: string): {
   }
 }
 
-export function buildThreadRestore(schemaText: string, threadId: string) {
+export function buildThreadRestore(
+  schemaText: string,
+  threadId: string
+): { method: 'thread/restore'; params: { thread_id: string } } | ReturnType<typeof blockedPrerequisite> {
   const probe = probeRecycle(schemaText)
   if (probe.path === 'B') return blockedPrerequisite(probe.missing)
-  return { method: 'thread/restore' as const, params: { thread_id: threadId } }
+  return { method: 'thread/restore', params: { thread_id: threadId } }
 }
 
-export function buildThreadPurge(schemaText: string, confirmPurge: boolean) {
-  if (!confirmPurge) return { error: 'confirm_purge_required' as const }
+export function buildThreadPurge(
+  schemaText: string,
+  confirmPurge: boolean
+):
+  | { error: 'confirm_purge_required' }
+  | { method: 'thread/purge'; params: { confirm_purge: true } }
+  | ReturnType<typeof blockedPrerequisite> {
+  if (!confirmPurge) return { error: 'confirm_purge_required' }
   const probe = probeRecycle(schemaText)
   if (probe.path === 'B') return blockedPrerequisite(probe.missing)
-  return { method: 'thread/purge' as const, params: { confirm_purge: true } }
+  return { method: 'thread/purge', params: { confirm_purge: true } }
 }
 
 export function gx21VisualState(input: {

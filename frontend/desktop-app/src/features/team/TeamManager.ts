@@ -2,7 +2,11 @@ import { createElement, type ReactElement } from 'react'
 import { probeMethods } from '../gx/schemaProbe.ts'
 import { gx28VisualState, type TeamGroup } from './team.visual.ts'
 
-export function probeTeam(schemaText: string) {
+export function probeTeam(schemaText: string): {
+  path: 'A' | 'B'
+  present: string[]
+  missing: string[]
+} {
   const result = probeMethods(schemaText, [
     'team/list',
     'team/groups',

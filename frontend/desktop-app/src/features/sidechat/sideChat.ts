@@ -7,7 +7,12 @@ export function probeSideChat(schemaText: string): { path: 'A' | 'B'; missing: s
   return { path: result.missing.length === 0 ? 'A' : 'B', missing: result.missing }
 }
 
-export function buildSideChatCreate(schemaText: string, threadId: string) {
+export function buildSideChatCreate(
+  schemaText: string,
+  threadId: string
+):
+  | { method: 'thread/side_chat/create'; params: { thread_id: string } }
+  | ReturnType<typeof blockedPrerequisite> {
   const probe = probeSideChat(schemaText)
   if (probe.path === 'B') return blockedPrerequisite(probe.missing)
   return { method: 'thread/side_chat/create', params: { thread_id: threadId } }

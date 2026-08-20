@@ -1,5 +1,9 @@
 /** Read-only probe of protocol/schema.json method consts. Never invents methods. */
 
+export type ProbeOutcome = { path: 'A' | 'B'; present: string[]; missing: string[] }
+
+export type BlockedClose = { status: 'BLOCKED_PREREQUISITE'; missing: string[] }
+
 export function extractSchemaMethods(schemaText: string): string[] {
   const found = new Set<string>()
   const re = /"const"\s*:\s*"([^"]+)"/g
@@ -24,9 +28,6 @@ export function probeMethods(
   return { present, missing }
 }
 
-export function blockedPrerequisite(missing: readonly string[]): {
-  status: 'BLOCKED_PREREQUISITE'
-  missing: string[]
-} {
+export function blockedPrerequisite(missing: readonly string[]): BlockedClose {
   return { status: 'BLOCKED_PREREQUISITE', missing: [...missing] }
 }
