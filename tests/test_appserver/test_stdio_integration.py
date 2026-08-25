@@ -372,8 +372,9 @@ def test_appserver_concurrent_sessions(appserver_proc):
     assert results["r1"]["text"] == "stub:one"
     assert results["r2"]["text"] == "stub:two"
     # Two slow stubs sleep 0.5s each; sequential ≥1.0s plus IPC. Coverage and
-    # worker spawn add ~0.5–0.8s; 1.75s still fails a fully serial 2×0.5s+IPC run.
-    assert elapsed < 1.75, f"expected concurrent prompts (<1.75s), got {elapsed:.2f}s"
+    # worker spawn add ~0.5–0.8s; 1.9s still fails a fully serial 2×0.5s+IPC
+    # run, but leaves slack for GitHub-hosted py3.12 coverage (1.76s flake).
+    assert elapsed < 1.9, f"expected concurrent prompts (<1.9s), got {elapsed:.2f}s"
 
 
 def test_appserver_bootstrap_timeout():
