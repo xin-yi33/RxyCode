@@ -213,7 +213,7 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         encoding="utf-8",
     )
     allowed_dirs = {"agent", "assets", "imgs", "modules", "release-notes"}
-    allowed_files = {"quickstart.md", "GUI.md"}
+    allowed_files = {"quickstart.md", "GUI.md", "community.md", "community.zh-CN.md"}
     unexpected = []
     for line in listed.splitlines():
         rel = line[5:] if line.startswith("docs/") else line
