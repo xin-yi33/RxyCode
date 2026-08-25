@@ -1,0 +1,57 @@
+name: Bug report
+description: A confirmed defect with steps to reproduce.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when something is broken and you can reproduce it.
+        Usage questions belong in [Discussions Q&A](https://github.com/xin-yi33/RxyCode/discussions/new?category=q-a).
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - "OpenTUI (`rxycode`)"
+        - "Desktop (`rxycode gui`)"
+        - Ink fallback
+        - API / headless
+        - Installer / packaging
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`rxycode --version` or the Git tag."
+      placeholder: 1.2.11
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Redact API keys.
+      render: shell
+    validations:
+      required: false

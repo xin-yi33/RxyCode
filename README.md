@@ -14,6 +14,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
 [![Issues](https://img.shields.io/github/issues/xin-yi33/RxyCode)](https://github.com/xin-yi33/RxyCode/issues)
+[![Discussions](https://img.shields.io/badge/GitHub-Discussions-6e40c9)](https://github.com/xin-yi33/RxyCode/discussions)
 [![Stars](https://img.shields.io/github/stars/xin-yi33/RxyCode?style=social)](https://github.com/xin-yi33/RxyCode/stargazers)
 
 <p>
@@ -278,4 +279,15 @@ Full notes: [CHANGELOG.md](CHANGELOG.md). Per-version copy: [docs/release-notes/
 
 [MIT](LICENSE) © RxyCode contributors
 
-If RxyCode is useful, [star the repo](https://github.com/xin-yi33/RxyCode) so you can find it again. Bugs and ideas: [Issues](https://github.com/xin-yi33/RxyCode/issues).
+If RxyCode is useful, [star the repo](https://github.com/xin-yi33/RxyCode) so you can find it again.
+
+## Community
+
+The project forum is [GitHub Discussions](https://github.com/xin-yi33/RxyCode/discussions) — no extra account beyond GitHub.
+
+| Need | Where |
+|------|--------|
+| How-to / install / config | [Q&A](https://github.com/xin-yi33/RxyCode/discussions/new?category=q-a) |
+| Feature idea | [Ideas](https://github.com/xin-yi33/RxyCode/discussions/new?category=ideas) |
+| Reproducible bug | [Issues](https://github.com/xin-yi33/RxyCode/issues/new?template=bug.yml) |
+| Enable the same forum on your own repo | [docs/community.md](docs/community.md) · [中文](docs/community.zh-CN.md) |

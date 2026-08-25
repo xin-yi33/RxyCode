@@ -1,0 +1,57 @@
+title: "[Q&A] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask how to install, configure, or use RxyCode. Search existing
+        [Q&A](https://github.com/xin-yi33/RxyCode/discussions/categories/q-a)
+        first.
+
+        用法、安装、配置问题请发这里。先搜索已有问答。
+        Confirmed bugs belong in [Issues](https://github.com/xin-yi33/RxyCode/issues).
+        已确认的缺陷请开 Issue。
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface / 使用入口
+      options:
+        - "OpenTUI (`rxycode`)"
+        - "Desktop (`rxycode gui`)"
+        - "Ink fallback (`RXYCODE_TUI=ink`)"
+        - "API / headless (`rxycode --api`)"
+        - Installer / packaging
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版本
+      description: "Output of `rxycode --version`, or the Git tag you installed."
+      placeholder: 1.2.11
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question / 问题
+      description: One concrete question. What are you trying to do?
+      placeholder: How do I add a DeepSeek model in OpenTUI?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you already tried / 已经试过什么
+      description: Commands, settings, docs you followed, and what happened.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output / 相关输出
+      description: Paste errors or logs. Redact API keys.
+      render: shell
+    validations:
+      required: false

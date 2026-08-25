@@ -1,0 +1,40 @@
+title: "[Announce] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maintainer announcements only. Pin the post after publishing.
+        仅维护者发布公告。发布后请置顶。
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind / 类型
+      options:
+        - Release
+        - Breaking change
+        - Community process
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary / 摘要
+      description: What changed, and who should care.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details / 详情
+      description: Links to the release, docs, or migration notes.
+    validations:
+      required: true
+  - type: textarea
+    id: action
+    attributes:
+      label: Action required / 需要用户做什么
+      description: Leave "None" if this is informational.
+      value: None
+    validations:
+      required: true

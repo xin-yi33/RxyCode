@@ -1,0 +1,43 @@
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a product idea before it becomes a tracked issue.
+        Search [Ideas](https://github.com/xin-yi33/RxyCode/discussions/categories/ideas)
+        first so we do not duplicate threads.
+
+        功能想法先在这里讨论。成熟后再开 Issue / PR。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 要解决什么
+      description: What is painful or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / 建议
+      description: What should RxyCode do instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it would show up / 影响哪一层
+      options:
+        - OpenTUI
+        - Desktop
+        - "Agent / tools / safety"
+        - "Docs / community"
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Follow-up / 后续
+      options:
+        - label: I can help implement this if maintainers agree / 如果方向认可，我可以帮忙实现

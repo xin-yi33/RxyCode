@@ -14,6 +14,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
 [![Issues](https://img.shields.io/github/issues/xin-yi33/RxyCode)](https://github.com/xin-yi33/RxyCode/issues)
+[![Discussions](https://img.shields.io/badge/GitHub-Discussions-6e40c9)](https://github.com/xin-yi33/RxyCode/discussions)
 [![Stars](https://img.shields.io/github/stars/xin-yi33/RxyCode?style=social)](https://github.com/xin-yi33/RxyCode/stargazers)
 
 <p>
@@ -278,4 +279,15 @@ OpenTUI 里用 `/addmodel` 走引导向导。不要把 API key 写进仓库、RE
 
 [MIT](LICENSE) © RxyCode contributors
 
-觉得有用就 [点个 Star](https://github.com/xin-yi33/RxyCode)，问题和改进直接开 [Issue](https://github.com/xin-yi33/RxyCode/issues)。
+觉得有用就 [点个 Star](https://github.com/xin-yi33/RxyCode)。
+
+## 社区
+
+项目论坛就是 [GitHub Discussions](https://github.com/xin-yi33/RxyCode/discussions)，不需要另开账号。
+
+| 需求 | 去哪里 |
+|------|--------|
+| 用法 / 安装 / 配置 | [Q&A](https://github.com/xin-yi33/RxyCode/discussions/new?category=q-a) |
+| 功能想法 | [Ideas](https://github.com/xin-yi33/RxyCode/discussions/new?category=ideas) |
+| 可复现缺陷 | [Issues](https://github.com/xin-yi33/RxyCode/issues/new?template=bug.yml) |
+| 自己的仓库也要这样建论坛 | [docs/community.zh-CN.md](docs/community.zh-CN.md) · [English](docs/community.md) |

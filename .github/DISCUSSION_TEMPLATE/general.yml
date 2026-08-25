@@ -1,0 +1,24 @@
+title: "[General] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this category for conversation that is not a how-to question,
+        feature idea, or show-and-tell.
+
+        闲聊、经验交流、和其他不好归类的话题。
+        Bugs → [Issues](https://github.com/xin-yi33/RxyCode/issues).
+        How-to → [Q&A](https://github.com/xin-yi33/RxyCode/discussions/categories/q-a).
+  - type: input
+    id: topic
+    attributes:
+      label: Topic / 主题
+      description: One line that names the conversation.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details / 内容
+    validations:
+      required: true

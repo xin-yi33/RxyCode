@@ -1,0 +1,33 @@
+name: Feature request
+description: A concrete, agreed-upon feature to track in Issues.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Prefer starting in [Ideas](https://github.com/xin-yi33/RxyCode/discussions/new?category=ideas)
+        if the design is still open. Open this issue when the request is
+        specific enough to implement.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change, and where in the product?
+    validations:
+      required: true
+  - type: input
+    id: discussion
+    attributes:
+      label: Related discussion
+      description: Optional link to the Ideas thread.
+      placeholder: https://github.com/xin-yi33/RxyCode/discussions/N
+    validations:
+      required: false

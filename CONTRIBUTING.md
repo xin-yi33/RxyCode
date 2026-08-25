@@ -4,9 +4,12 @@ Thanks for your interest in contributing! RxyCode follows a development-plan-fir
 
 ## How to contribute
 
-- **Report bugs / request features** — open a [GitHub issue](https://github.com/xin-yi33/RxyCode/issues).
-- **Ask questions** — open an issue, or start a [discussion](https://github.com/xin-yi33/RxyCode/discussions).
+- **Ask a usage question** — [Discussions Q&A](https://github.com/xin-yi33/RxyCode/discussions/new?category=q-a).
+- **Share an idea** — [Discussions Ideas](https://github.com/xin-yi33/RxyCode/discussions/new?category=ideas). Do not open a tracking issue until the design is specific.
+- **Report a reproducible bug** — [bug issue form](https://github.com/xin-yi33/RxyCode/issues/new?template=bug.yml).
 - **Submit a pull request** — follow the checklist below.
+
+The project forum is [GitHub Discussions](https://github.com/xin-yi33/RxyCode/discussions). To enable the same kind of forum on your own repository, see [docs/community.md](docs/community.md) ([中文](docs/community.zh-CN.md)). Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Development setup
 

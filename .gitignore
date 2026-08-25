@@ -129,7 +129,7 @@ log/*.err
 .DS_Store
 Thumbs.db
 
-# --- docs on GitHub: agent/, assets/, imgs/, modules/, release-notes/, GUI.md, quickstart.md ---
+# --- docs on GitHub: agent/, assets/, imgs/, modules/, release-notes/, GUI.md, quickstart.md, community ---
 docs/*
 !docs/modules/
 !docs/imgs/
@@ -138,6 +138,8 @@ docs/*
 !docs/agent/
 !docs/GUI.md
 !docs/quickstart.md
+!docs/community.md
+!docs/community.zh-CN.md
 docs/plans/
 
 # --- 计划目录里的压缩包 / 零散笔记（不入库）---

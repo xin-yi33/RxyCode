@@ -1,0 +1,31 @@
+title: "[Show] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show something you built with RxyCode — a workflow, prompt, plugin,
+        or downstream project.
+
+        展示你用 RxyCode 做的东西。不要在这里贴密钥。
+  - type: textarea
+    id: what
+    attributes:
+      label: What you made / 做了什么
+      description: A short description a stranger can understand.
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How RxyCode helped / 怎么用到 RxyCode
+      description: "Commands, modes (`/plan`, `/build`), models, or tools."
+    validations:
+      required: false
+  - type: input
+    id: links
+    attributes:
+      label: Links / 链接
+      description: Repo, screenshot, or demo. Leave blank if there is none.
+      placeholder: https://github.com/you/example
+    validations:
+      required: false
