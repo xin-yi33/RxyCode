@@ -139,42 +139,87 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
     ],
     "agent_architect": [
         {
-            "input": "Task: 给 API 增加健康检查端点",
+            "input": "Task: add POST /login with hashed passwords",
             "output": (
-                '[{{"task": "在 routes/health.py 新增 GET /health，返回 {{{{status: ok}}}}", '
-                '"tools_hint": ["read", "ls"]}}, '
-                '{{"task": "验收：pytest tests/test_health.py 通过", '
-                '"tools_hint": ["read"]}}]'
+                "1. auth/passwords.py — hash/verify helpers\n"
+                "2. auth/routes.py — POST /login\n"
+                "3. tests/test_login.py — success and 401 cases"
             ),
         },
     ],
     "agent_coder": [
         {
-            "input": "Architect plan: add GET /health in routes/health.py returning {status: ok}",
+            "input": "Task: implement POST /login from the architect plan",
             "output": (
-                "Changed files:\n"
-                "- routes/health.py: added GET /health handler returning {\"status\": \"ok\"}\n"
-                "Summary: implemented the plan as specified; did not change tests."
+                "Wrote auth/passwords.py and auth/routes.py. "
+                "Login hashes the password and returns 401 on mismatch."
             ),
         },
     ],
     "agent_auditor": [
         {
-            "input": "Task: review GET /health implementation against the architect plan",
+            "input": "Task: audit POST /login after mechanical checks passed",
             "output": (
-                "通过\n"
-                "- routes/health.py:12 implementation matches plan (GET /health, {status: ok})\n"
-                "- no plan or implementation issues found"
+                "不通过\n"
+                "auth/routes.py:12 implementation: password compared in plain text; use the hash helper."
             ),
+        },
+    ],
+    "agent_pm": [
+        {
+            "input": "Task: add POST /login with hashed passwords",
+            "output": (
+                "Goal: login API with hashed passwords.\n"
+                "Acceptance: pytest tests/test_login.py covers 401 and success."
+            ),
+        },
+    ],
+    "agent_frontend_coder": [
+        {
+            "input": "Task: frontend for POST /echo",
+            "output": "Wrote frontend/index.html that POSTs to /echo. SKIP if no frontend paths.",
+        },
+    ],
+    "agent_backend_coder": [
+        {
+            "input": "Task: implement POST /login from the architect plan",
+            "output": "Wrote auth/passwords.py and auth/routes.py. Passwords are hashed.",
+        },
+    ],
+    "agent_tester": [
+        {
+            "input": "Task: tests for POST /login",
+            "output": "Wrote tests/test_login.py with 401 and success. pytest green.",
+        },
+    ],
+    "agent_security_auditor": [
+        {
+            "input": "Task: security audit of POST /login",
+            "output": "不通过\nauth/routes.py:12 secrets in plaintext.",
+        },
+    ],
+    "agent_quality_auditor": [
+        {
+            "input": "Task: quality audit of POST /login",
+            "output": "不通过\ntests/test_login.py: missing 401 case.",
+        },
+    ],
+    "agent_maintainability_auditor": [
+        {
+            "input": "Task: maintainability audit of POST /login",
+            "output": "通过\nModules match the architect file list.",
+        },
+    ],
+    "agent_doc": [
+        {
+            "input": "Task: document POST /login",
+            "output": "Wrote docs/login.md with hash+verify and 401 behavior.",
         },
     ],
     "delegate_request": [
         {
-            "input": "goal=add health endpoint; expected_output=file-level plan; tools=read,ls",
-            "output": (
-                "Self-contained specialist brief: produce the assigned stage output only. "
-                "Do not create a sub-team. Read listed context refs instead of leader history."
-            ),
+            "input": "goal: write tests/test_login.py | tools: write | refs: auth/routes.py",
+            "output": "Created tests/test_login.py covering 200 and 401. Did not edit auth/routes.py.",
         },
     ],
 }

@@ -218,6 +218,9 @@ export function selectMissingFileRepair(scenarioId: string, error: string, files
   if (scenarioId === 'T03') {
     // A missing-file stub that rewrites index.html is how T03-3 went false-green.
     // Docs and a missing admin.html on an already-written site should still use write-now repair.
+    // Demo-login failures live in index.html; missing-file repair says
+    // "Do not rewrite index.html" and would never add #btn-demo-login.
+    if (/demo login|#btn-demo-login/i.test(error)) return []
     if (!hasIndex) return []
     const docs = parsed.filter((name) => /\.md$/i.test(name))
     const other = parsed.filter((name) => !/\.md$/i.test(name))
@@ -230,6 +233,7 @@ export function selectMissingFileRepair(scenarioId: string, error: string, files
   }
   if (scenarioId === 'T09') {
     if (/starter-flyway/i.test(error)) return []
+    if (/AutoConfigureMockMvc|webmvc\.test\.autoconfigure|autoconfigure\.web\.servlet/i.test(error)) return []
     if (/H2\/SQLite|jdbc:h2|org\.h2\.Driver|H2Dialect/i.test(error)) {
       const testCfg = rels.filter((file) => /src\/test\/resources\/application/i.test(file))
       return testCfg.length > 0 ? testCfg : []
@@ -380,6 +384,9 @@ export function buildSpringMysqlRepairInstructions(validationError: string): str
   if (/boot\.test\.autoconfigure\.webmvc|autoconfigure\.web\.servlet/i.test(validationError)) {
     return `${mandatory} AutoConfigureMockMvc lives in org.springframework.boot.webmvc.test.autoconfigure, not org.springframework.boot.test.autoconfigure.webmvc. Fix the import, add spring-boot-starter-webmvc-test, then run project-local mvn test.`
   }
+  if (/HttpSession无法转换为|cannot be converted to org\.springframework\.mock\.web\.MockHttpSession/i.test(validationError)) {
+    return `${mandatory} MockMvc.session() requires MockHttpSession; getSession() returns HttpSession and a cast is forbidden. Delete .session(login.getRequest().getSession()) and use .with(user("admin").roles("ADMIN")) on the authenticated requests. Then run project-local mvn test.`
+  }
   if (/H2\/SQLite|jdbc:h2|@ActiveProfiles/i.test(validationError)) {
     return `${mandatory} Tests must use the injected SPRING_DATASOURCE_* / MYSQL_* MySQL 8 schema. Delete the H2 dependency, application-test.yml, and @ActiveProfiles("test"). Do not use MYSQL_ADMIN_PASSWORD as the demo login password. Then run project-local mvn test.`
   }
@@ -430,7 +437,7 @@ export function buildMissingFileRepairPrompt(outputDir: string, files: string[],
     : writesH2Yml
       ? 'Each named application.yml must use SPRING_DATASOURCE_* for MySQL 8. jdbc:h2, org.h2.Driver, and H2Dialect are a hard failure. After the writes succeed, delete the H2 pom dependency, run project-local mvn test, then give a short Final Answer listing only the files written.'
     : writesTests
-      ? 'Each *Test.java must be compilable JUnit. Use @SpringBootTest and org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc. Inject MockMvc and call mockMvc.perform(...) for at least login or one API. An empty contextLoads() or getSimpleName() check is a hard failure. After the writes succeed, call ls, confirm every named file exists, then give a short Final Answer listing only the files written.'
+      ? 'Each *Test.java must be compilable JUnit. Use @SpringBootTest and org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc. Inject MockMvc and call mockMvc.perform(...) for at least login or one API. If javac says HttpSession cannot convert to MockHttpSession, do not cast: replace .session(getSession()) with .with(user("admin").roles("ADMIN")). An empty contextLoads() or getSimpleName() check is a hard failure. After the writes succeed, call ls, confirm every named file exists, then give a short Final Answer listing only the files written.'
     : writesSupportJava
       ? 'Each named *Service.java or *Dto.java must be a real compilable class in that package, not markdown and not an import-only fix. Controllers already import these types. After the writes succeed, call ls, confirm every named file exists, then give a short Final Answer listing only the files written.'
     : writesT06Index

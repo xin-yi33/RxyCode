@@ -113,6 +113,33 @@ def test_dispatch_packet_has_no_coordinator_history() -> None:
     assert "secret coordinator thought" not in blob
 
 
+class _CancelledChild:
+    status = "cancelled"
+    summary = "files: auth/routes.py; backend only; SKIP frontend"
+
+
+class _CancelledRuntime:
+    async def run(self, _req):  # noqa: ANN001
+        return _CancelledChild()
+
+
+def test_text_stage_nonempty_summary_ok_even_if_child_cancelled() -> None:
+    coord = Coordinator(_session())
+    team = _team()
+    coord._runtimes["architect"] = _CancelledRuntime()
+    out = asyncio.run(coord._dispatch_one(team.stages[0], team, "task", "architect"))
+    assert out.ok is True
+    assert "auth/routes.py" in out.answer
+
+
+def test_write_stage_cancelled_child_stays_not_ok() -> None:
+    coord = Coordinator(_session())
+    team = _team()
+    coord._runtimes["coder"] = _CancelledRuntime()
+    out = asyncio.run(coord._dispatch_one(team.stages[1], team, "task", "coder"))
+    assert out.ok is False
+
+
 def test_stall_twice_triggers_replan_event() -> None:
     coord = Coordinator(_session())
     coord.record_progress(made_progress=False)

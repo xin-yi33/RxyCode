@@ -67,6 +67,8 @@ class SopMachine:
             return stage
 
         nxt = stage.next_on_failure
+        if nxt and nxt != stage.name:
+            self._retries[nxt] = 0
         self._history.append(
             StageRecord(stage=stage.name, ok=False, retry=used, next_stage=nxt)
         )

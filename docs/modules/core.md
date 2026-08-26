@@ -39,7 +39,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/verifier.py | Phase F mechanical gate (no LLM). Eight low-level checks plus high-level `goal_satisfied`. Verdicts bind `subject_hash`. |
 | agents/budget.py | Phase F `BudgetGuard`: token / wall-clock / delegation fuses. Over-budget returns a truncated partial answer. |
 | agents/router.py | Phase F `ModeRouter`: /solo /team /team-multi /why-mode, then heuristics, then optional LLM. Default `agents.enabled=false`. |
-| agents/teams/software_dev.yaml | Builtin software_dev SOP (architect → coder → audit). Tool names: `read`/`ls`. |
+| agents/teams/software_dev/ | Builtin software_dev Team Pack (pm → architect → frontend/backend → tester → verify → 3-way audit → doc). Tool names: `read`/`ls`. |
 | tracing.py | Node spans plus team tree (`replay --show-team`). J3 `LlmCallRecord` is opt-in via `settings.distillation.collect`. |
 | agents/client_settings.py | F13 settings projection: nested expert-team fields hidden until `agents.enabled`. |
 | agents/bridge/ | F16 external-agent Workers: JSON-RPC task_delegate/progress/tool_call/plan/result/abort over stdio or WS. No resident pool. |

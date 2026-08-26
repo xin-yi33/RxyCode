@@ -47,8 +47,8 @@ classes live in `api_server_stream.py` and the model onboarding endpoints in
 
 ### Evolution direction
 
-Per the Phase 2 development doc (docs/plans/opus5-plan/rxycode/00-EXECUTION-PLAN.md,
-§6), api_server.py evolves into a **HTTP adapter over the headless core**:
+Per the Phase 2 execution plan (local design notes, not in this tree),
+api_server.py evolves into a **HTTP adapter over the headless core**:
 
 - The core becomes headless: `core/session.py` `Session` (`class Session`,
   core/session.py:94) is the facade through which any transport drives

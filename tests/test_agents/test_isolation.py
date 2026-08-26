@@ -159,6 +159,25 @@ def _role(
     )
 
 
+def test_inherited_model_config_fills_empty_model_name() -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.runtime import (
+        _inherited_model_config,
+        _primary_model_name,
+    )
+
+    class _LLM:
+        model_name = "mimo-v2.5"
+
+    class _Primary:
+        model_config = {"base_url": "https://opencode.ai/zen/go/v1", "model_name": ""}
+        _llm = _LLM()
+        _cfg = {"active_model": "opencode-go/mimo-v2.5"}
+
+    assert _primary_model_name(_Primary()) == "mimo-v2.5"
+    inherited = _inherited_model_config(_Primary())
+    assert inherited["model_name"] == "mimo-v2.5"
+
+
 def test_runtimes_have_separate_tool_registries():
     session = _session()
     left = AgentRuntime(_role("architect"), session=session)

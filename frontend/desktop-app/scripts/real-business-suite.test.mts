@@ -178,6 +178,18 @@ test('missing-file repair prompt writes documents instead of re-reading source',
     selectMissingFileRepair('T03', 'web artifact is incomplete; missing README.md, TEST-REPORT.md', ['index.html', 'admin.html', 'PLAN.md']),
     ['README.md', 'TEST-REPORT.md']
   )
+  assert.deepEqual(
+    selectMissingFileRepair('T03', 'company website has no demo login control (#btn-demo-login)', ['index.html', 'admin.html', 'PLAN.md']),
+    []
+  )
+  assert.deepEqual(
+    selectMissingFileRepair(
+      'T09',
+      'spring-mysql Boot 4 AutoConfigureMockMvc is org.springframework.boot.webmvc.test.autoconfigure, not org.springframework.boot.test.autoconfigure.web.servlet',
+      ['pom.xml', 'src/test/java/com/rxycode/t09coffee/CoffeeShopApplicationTests.java']
+    ),
+    []
+  )
   const adminRepair = buildMissingFileRepairPrompt('T03-company', ['README.md', 'TEST-REPORT.md', 'admin.html'])
   assert.match(adminRepair, /T03-company\/admin\.html/)
   assert.match(adminRepair, /用户管理/)
@@ -484,6 +496,14 @@ test('successful GUI runs must expose a non-empty Final Answer', () => {
   assert.match(
     String(terminalOutcomeIssue('failed', '[evidence failed: Tool write did not complete: failed]', false)),
     /GUI session failed/
+  )
+  assert.equal(
+    terminalOutcomeIssue(
+      'failed',
+      '[error] FirstTokenTimeoutError: provider produced no first response event before the deadline',
+      true
+    ),
+    null
   )
 })
 
@@ -923,9 +943,10 @@ test('game play probe accepts Chinese running state and rejects the menu', () =>
 
 test('painted canvas behind a visible start menu is not playable', () => {
   assert.equal(gameMenuStillBlockingPlay({ overlayHidden: false, startVisible: true, state: '', score: 0 }), true)
-  assert.equal(gameMenuStillBlockingPlay({ overlayHidden: true, startVisible: false, state: '', score: 0 }), false)
+  assert.equal(gameMenuStillBlockingPlay({ overlayHidden: true, startVisible: false, state: '', score: 0 }), true)
   assert.equal(gameMenuStillBlockingPlay({ overlayHidden: false, startVisible: true, state: '', score: 22 }), false)
   assert.equal(gameMenuStillBlockingPlay({ overlayHidden: false, startVisible: false, state: '', score: 0 }), true)
+  assert.equal(gameMenuStillBlockingPlay({ overlayHidden: true, startVisible: false, state: '运行中', score: 0 }), false)
 })
 
 test('dotenv parser keeps quoted values and skips comments', () => {
@@ -978,12 +999,22 @@ test('web play probe prefers explicit start buttons over the first button on the
   assert.match(suite, /#screen-menu/)
   assert.match(suite, /#stat-score/)
   assert.match(suite, /startVisible/)
+  assert.match(suite, /pageExceptions/)
+  assert.match(suite, /admin\\\\.html/)
+  assert.match(suite, /scenario\.timeoutMs/)
+  assert.match(suite, /error === null && status !== 'succeeded'/)
   assert.match(suite, /desktopSuiteEnv|mysqlTestEnv/)
   assert.match(suite, /APP_ADMIN_PASSWORD|T09_ADMIN_PASSWORD/)
-  assert.match(suite, /opencode-go\/deepseek-v4-flash/)
+  assert.match(suite, /opencode-go\/mimo-v2\.5/)
   assert.match(suite, /opencode\.ai\/zen\/go\/v1/)
   assert.match(suite, /selectOpenCodeGoModelInSettings|assertOpenCodeGoModel/)
-  assert.doesNotMatch(suite, /api\.deepseek\.com\/v1/)
+  assert.doesNotMatch(suite, /deepseek-v4-flash/)
+  assert.doesNotMatch(suite, /api\.deepseek\.com/)
+  const cliHarness = readFileSync(new URL('./real-business-cli-harness.mts', import.meta.url), 'utf8')
+  assert.match(cliHarness, /opencode-go\/mimo-v2\.5/)
+  assert.match(cliHarness, /opencode\.ai\/zen\/go\/v1/)
+  assert.doesNotMatch(cliHarness, /deepseek-v4-flash/)
+  assert.doesNotMatch(cliHarness, /api\.deepseek\.com/)
   assert.doesNotMatch(suite, /assertOfficialModel|selectOfficialModelInSettings/)
   assert.match(suite, /buildSpringMysqlRepairInstructions/)
   const authBeanRepair = buildSpringMysqlRepairInstructions("mvn test failed:\nNo qualifying bean of type 'org.springframework.security.authentication.AuthenticationManager'")
@@ -1192,8 +1223,8 @@ test('a follow-up prompt stops a still-running task before typing into the compo
 test('one-shot approval storms and long wall clocks are hard failures', () => {
   assert.equal(approvalStormIssue(12), null)
   assert.match(String(approvalStormIssue(13)), /approval storm/)
-  assert.equal(taskWallClockIssue(15 * 60 * 1000), null)
-  assert.match(String(taskWallClockIssue(15 * 60 * 1000 + 1)), /15m hard-fail/)
+  assert.equal(taskWallClockIssue(45 * 60 * 1000), null)
+  assert.match(String(taskWallClockIssue(45 * 60 * 1000 + 1)), /45m hard-fail/)
   const suite = readFileSync(new URL('./real-business-suite.mts', import.meta.url), 'utf8')
   assert.match(suite, /always-allow/)
   assert.match(suite, /save-rule/)

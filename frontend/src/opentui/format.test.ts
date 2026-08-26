@@ -62,7 +62,7 @@ describe('formatHeaderLine mode matrix', () => {
       for (const thinkingLive of [false, true]) {
         test(`${mode}/${model}/thinking=${thinkingLive}`, () => {
           const line = formatHeaderLine(mode, model, thinkingLive);
-          expect(line).toContain('RxyCode v1.2.10');
+          expect(line).toContain('RxyCode v1.2.11');
           expect(line).toContain(mode);
           expect(line).toContain(model);
           if (thinkingLive) expect(line).toContain('思考中');

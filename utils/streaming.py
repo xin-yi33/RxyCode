@@ -23,6 +23,14 @@ from .i18n import i18n
 DEFAULT_CONTEXT_MAX = 256_000
 
 
+class _UsageScope(dict):
+    """Task-local token bucket. ``dict(scope)`` stays the three counter keys."""
+
+    def __init__(self, *, count_as_primary: bool = False) -> None:
+        super().__init__(input_tokens=0, output_tokens=0, cache_hit_tokens=0)
+        self.count_as_primary = bool(count_as_primary)
+
+
 def load_config() -> dict:
     """Deferred import wrapper so tests can patch this symbol directly."""
     from RxyCode.RxyCode1_1_0.config.settings import load_config as _load
@@ -59,6 +67,12 @@ class TokenStats:
         # Real provider-side usage (DeepSeek/OpenAI context caching)
         self.prompt_tokens = 0          # total prompt tokens billed
         self.cache_hit_tokens = 0       # prompt tokens served from provider cache
+        # FX-CB7: Primary-only counters. Child usage_scopes with
+        # count_as_primary=False must not dilute cache_hit_rate.
+        self.primary_input_tokens = 0
+        self.primary_output_tokens = 0
+        self.primary_prompt_tokens = 0
+        self.primary_cache_hit_tokens = 0
         # B1 (Pi dual-track): latest single assistant request, separate from the
         # cumulative totals above so /status can show both a session aggregate
         # and the most recent request (compaction spikes stay observable).
@@ -98,14 +112,14 @@ class TokenStats:
         context cache (DeepSeek `prompt_cache_hit_tokens` /
         OpenAI `prompt_tokens_details.cached_tokens`).
         """
-        self.input_tokens += int(input_tokens or 0)
-        self.output_tokens += int(output_tokens or 0)
-        self.prompt_tokens += int(input_tokens or 0)
-        self.cache_hit_tokens += int(cache_read_tokens or 0)
-        # B1: keep the latest single request so /status can expose totals vs latest.
-        self._latest_prompt_tokens = int(input_tokens or 0)
-        self._latest_hit_tokens = int(cache_read_tokens or 0)
-        if cache_read_tokens:
+        inp = int(input_tokens or 0)
+        out = int(output_tokens or 0)
+        cache = int(cache_read_tokens or 0)
+        self.input_tokens += inp
+        self.output_tokens += out
+        self.prompt_tokens += inp
+        self.cache_hit_tokens += cache
+        if cache:
             self.cache_hits += 1
         else:
             self.cache_misses += 1
@@ -113,13 +127,27 @@ class TokenStats:
         self.cache_size = self.cache_hit_tokens
         scoped = self._usage_scope.get()
         if scoped is not None:
-            scoped["input_tokens"] += int(input_tokens or 0)
-            scoped["output_tokens"] += int(output_tokens or 0)
-            scoped["cache_hit_tokens"] += int(cache_read_tokens or 0)
+            scoped["input_tokens"] += inp
+            scoped["output_tokens"] += out
+            scoped["cache_hit_tokens"] += cache
+            if not getattr(scoped, "count_as_primary", False):
+                return
+        # FX-CB7: only Primary (or team shared-prefix) turns update these.
+        self.primary_input_tokens += inp
+        self.primary_output_tokens += out
+        self.primary_prompt_tokens += inp
+        self.primary_cache_hit_tokens += cache
+        self._latest_prompt_tokens = inp
+        self._latest_hit_tokens = cache
 
-    def begin_usage_scope(self) -> tuple[Token, dict[str, int]]:
-        """Start task-local usage attribution while retaining global totals."""
-        usage = {"input_tokens": 0, "output_tokens": 0, "cache_hit_tokens": 0}
+    def begin_usage_scope(self, *, count_as_primary: bool = False) -> tuple[Token, dict[str, int]]:
+        """Start task-local usage attribution while retaining global totals.
+
+        Isolated Child 冷写 keep ``count_as_primary=False`` so they cannot
+        mix into Primary cache_hit_rate. Team roles that ride the frozen
+        AgentPrefix pass ``count_as_primary=True`` (F14 shared path).
+        """
+        usage: dict[str, int] = _UsageScope(count_as_primary=count_as_primary)
         return self._usage_scope.set(usage), usage
 
     def end_usage_scope(self, token: Token) -> None:
@@ -143,6 +171,25 @@ class TokenStats:
         if total == 0:
             return 0.0
         return self.cache_hits / total * 100
+
+    @property
+    def primary_cache_hit_rate(self) -> float:
+        """FX-CB7: Primary-only provider cache hit percentage."""
+        if self.primary_prompt_tokens <= 0:
+            return 0.0
+        return self.primary_cache_hit_tokens / self.primary_prompt_tokens * 100
+
+    def primary_usage(self) -> dict[str, int | float]:
+        """Shipped Primary-only snapshot used by Session event/final (P6)."""
+        prompt = int(self.primary_prompt_tokens)
+        hit = int(self.primary_cache_hit_tokens)
+        return {
+            "input_tokens": int(self.primary_input_tokens),
+            "output_tokens": int(self.primary_output_tokens),
+            "prompt_tokens": prompt,
+            "cache_hit_tokens": hit,
+            "cache_hit_rate": (hit / prompt * 100) if prompt > 0 else 0.0,
+        }
 
     @property
     def latest_request(self) -> dict[str, int | float]:
@@ -294,6 +341,10 @@ class TokenStats:
         self.cache_size = 0
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0
+        self.primary_input_tokens = 0
+        self.primary_output_tokens = 0
+        self.primary_prompt_tokens = 0
+        self.primary_cache_hit_tokens = 0
         self._latest_prompt_tokens = 0
         self._latest_hit_tokens = 0
         with self._application_cache_lock:

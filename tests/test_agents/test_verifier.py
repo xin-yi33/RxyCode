@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
 import time
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from RxyCode.RxyCode1_1_0.core.agents.verifier import (
     SOFTWARE_DEV_STAGE_CHECKS,
     MechanicalVerifier,
     VerifyContext,
+    named_product_files,
+    named_pytest_targets,
     subject_hash,
 )
 from RxyCode.RxyCode1_1_0.core.session import Session
@@ -59,6 +62,13 @@ def test_python_parses_pass_and_fail(tmp_path: Path) -> None:
     assert not bad.passed
 
 
+def test_python_parses_utf16_is_a_failed_check_not_a_crash(tmp_path: Path) -> None:
+    (tmp_path / "wide.py").write_bytes("print(1)\n".encode("utf-16"))
+    verdict = _run(tmp_path, ["python_parses"], claimed_files=["wide.py"])
+    assert not verdict.passed
+    assert "utf-8" in verdict.findings[0]
+
+
 def test_json_parses_pass_and_fail(tmp_path: Path) -> None:
     (tmp_path / "ok.json").write_text('{"a": 1}\n', encoding="utf-8")
     (tmp_path / "bad.json").write_text("{", encoding="utf-8")
@@ -78,6 +88,86 @@ def test_lint_clean_pass_and_fail(tmp_path: Path) -> None:
     (tmp_path / "bad.py").write_text("import os\n", encoding="utf-8")
     assert _run(tmp_path, ["lint_clean"], claimed_files=["ok.py"]).passed
     assert not _run(tmp_path, ["lint_clean"], claimed_files=["bad.py"]).passed
+
+
+def test_lint_clean_timeout_is_not_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ok.py").write_text("x = 1\n", encoding="utf-8")
+
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="ruff", timeout=15)
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    assert _run(tmp_path, ["lint_clean"], claimed_files=["ok.py"]).passed
+
+
+def test_tests_pass_timeout_is_a_failed_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+    def _hang(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    assert not _run(
+        tmp_path, ["tests_pass"], claimed_files=["test_ok.py"], pytest_targets=["test_ok.py"]
+    ).passed
+
+
+def test_named_pytest_targets_prefer_prompt_file() -> None:
+    on_disk = [
+        "tests/test_lru_cache.py",
+        "tests/test_lru_cache_independent.py",
+        "test_direct.py",
+        "run_tests.py",
+    ]
+    prompt = "/team 实现 LRU：lru_cache.py；tests/test_lru_cache.py 覆盖淘汰。pytest 必须绿。"
+    assert named_pytest_targets(prompt, on_disk=on_disk) == ["tests/test_lru_cache.py"]
+
+
+def test_named_pytest_targets_keep_named_file_not_extras() -> None:
+    on_disk = ["tests/test_simple.py", "test_lru_temp.py"]
+    prompt = "/team LRU；tests/test_lru_cache.py 覆盖淘汰。pytest 必须绿。"
+    assert named_pytest_targets(prompt, on_disk=on_disk) == ["tests/test_lru_cache.py"]
+
+
+def test_named_product_files_skip_tests() -> None:
+    prompt = "/team 实现带 TTL 的 LRU：lru_cache.py 提供 get/set；tests/test_lru_cache.py 覆盖淘汰。"
+    assert named_product_files(prompt) == ["lru_cache.py"]
+    login = (
+        "/solo 实现 POST /login。必须落地 auth/passwords.py、auth/routes.py、"
+        "tests/test_login.py。"
+    )
+    assert named_product_files(login) == ["auth/passwords.py", "auth/routes.py"]
+
+
+def test_tests_pass_fails_when_named_file_has_failing_extra(tmp_path: Path) -> None:
+    (tmp_path / "mod.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_mod.py").write_text(
+        "from mod import add\n"
+        "def test_add():\n    assert add(1, 2) == 3\n"
+        "def test_ttl_with_lru_eviction():\n    assert False\n"
+        "def test_invalid_character():\n    assert False\n",
+        encoding="utf-8",
+    )
+    verdict = _run(
+        tmp_path,
+        ["tests_pass"],
+        pytest_targets=["tests/test_mod.py"],
+        claimed_files=["tests/test_mod.py"],
+    )
+    assert not verdict.passed
+
+
+def test_named_pytest_targets_fallback_tests_dir() -> None:
+    on_disk = ["tests/test_app.py", "test_simple.py", "backend/app.py"]
+    assert named_pytest_targets("no explicit test file", on_disk=on_disk) == [
+        "tests/test_app.py"
+    ]
 
 
 def test_tests_pass_pass_and_fail(tmp_path: Path) -> None:

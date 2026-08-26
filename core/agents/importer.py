@@ -80,6 +80,7 @@ def write_sample_package(dest: Path, *, name: str = "demo", disable_model: bool 
     extra = dict(base.extra)
     extra["ecosystem.category"] = "other"
     extra["ecosystem.version"] = "1.0"
+    extra.pop("ecosystem.disable_model_invocation", None)
     if disable_model:
         extra["ecosystem.disable_model_invocation"] = True
     team_yaml = dest / "team.yaml"

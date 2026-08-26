@@ -2593,6 +2593,21 @@
           "default": 2,
           "title": "Max Retries",
           "type": "integer"
+        },
+        "parallel_members": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parallel Members"
         }
       },
       "required": [

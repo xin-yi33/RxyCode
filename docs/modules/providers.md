@@ -87,7 +87,7 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 
 ### 完整流程（照抄 PHASE-A §5 扩展手册原文）
 
-> 原文出处（本地开发文档引用，docs/plans 不入 GitHub）：[PHASE-A-MODEL-ADAPTATION-LAYER.md §5 扩展手册](../plans/opus5-plan/rxycode/PHASE-A-MODEL-ADAPTATION-LAYER.md#5-扩展手册加一个新-provider)
+> 原文出处：本地开发文档 PHASE-A §5 扩展手册（`docs/plans/` 不入 GitHub）。
 
 ## §5 扩展手册：加一个新 Provider
 

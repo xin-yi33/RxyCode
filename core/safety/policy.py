@@ -123,6 +123,14 @@ _READ_ONLY_BASH_SEGMENTS = [
         re.IGNORECASE,
     ),
     re.compile(
+        r"^pip(?:3)?(?:\.exe)?\s+show(?:\s+[A-Za-z0-9_.\-]+)+\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^grep(?:\.[A-Za-z]+)?(?:\s+-\w+)*\s+(?:-E\s+)?['\"][^'\"]+['\"]\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"^node(?:\.exe|\.cmd)?\s+--check\s+[A-Za-z0-9_./\\-]+\.(?:js|mjs|cjs)\s*$",
         re.IGNORECASE,
     ),
@@ -155,6 +163,15 @@ def _is_read_only_bash_probe(command: str) -> bool:
     normalized = _STDERR_ONLY_REDIRECT_RE.sub(" ", command)
     if any(token in normalized for token in (">", "<", "`", "$(", "${")):
         return False
+    # ``pip show … | grep -E "^(Name|Version)"`` is an env probe. The grep
+    # pattern contains ``|``, which would otherwise split the quoted string
+    # and keep the command at WRITE.
+    if re.search(r"\bpip(?:3)?(?:\.exe)?\s+show\b", normalized, re.I) and not re.search(
+        r"\b(?:pip\s+install|npm\s+install|python3?\s+\S+\.py|Set-Content|Out-File|rm\s+)\b",
+        normalized,
+        re.I,
+    ):
+        return True
     segments = re.split(r"(?:&&|\|\||[;&|])", normalized)
     return bool(segments) and all(
         any(pattern.fullmatch(segment.strip()) for pattern in _READ_ONLY_BASH_SEGMENTS)

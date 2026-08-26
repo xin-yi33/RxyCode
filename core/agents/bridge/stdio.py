@@ -32,6 +32,7 @@ class StdioChannel:
             env=env,
             text=True,
             encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._inbox: queue.Queue[dict[str, Any] | None] = queue.Queue()

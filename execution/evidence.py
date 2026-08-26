@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from html.parser import HTMLParser
 import re
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -233,6 +234,24 @@ def build_tool_evidence(
     )
 
 
+def _is_rejected_helper_path(path: str) -> bool:
+    """Root helper tests rejected by write.py must not fail the run."""
+    p = Path(path)
+    parts = {part.lower() for part in p.parts}
+    if "tests" in parts:
+        return False
+    name = p.name.lower()
+    return (
+        name.startswith("test_")
+        or name in {"test.py", "verify.py", "smoke_test.py"}
+        or name.startswith(
+            ("verify_", "create_", "_gen", "_run", "quick_test", "run_test")
+        )
+        or (name.startswith("_") and "test" in name)
+        or name.endswith("_test.py")
+    )
+
+
 def deterministic_issues(evidence: list[dict[str, Any] | ToolEvidence]) -> list[str]:
     records = [
         item if isinstance(item, ToolEvidence) else ToolEvidence.model_validate(item)
@@ -263,9 +282,14 @@ def deterministic_issues(evidence: list[dict[str, Any] | ToolEvidence]) -> list[
         )
         if superseded:
             continue
-        if not record.passed:
+        helper_only = bool(record.artifacts) and all(
+            _is_rejected_helper_path(art.path) for art in record.artifacts
+        )
+        if not record.passed and not helper_only:
             issues.append(f"Tool {record.tool} did not complete: {record.status}")
         for artifact in record.artifacts:
+            if _is_rejected_helper_path(artifact.path):
+                continue
             if not artifact.exists:
                 issues.append(f"Expected artifact does not exist: {artifact.path}")
             elif artifact.valid is False:

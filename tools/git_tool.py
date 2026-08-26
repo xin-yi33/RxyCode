@@ -35,6 +35,8 @@ def _run_git(cmd: list[str], repo_path: str) -> str:
             cwd=repo_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
         return _format_git_result(result.stdout, result.stderr, result.returncode == 0)

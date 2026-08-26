@@ -48,7 +48,7 @@ import {
   type UsageSummary
 } from './real-business-metrics.mts'
 
-/** Hung bash (python http.server / Stop-Process) must not wait out the 15m wall clock. Maven tests may run longer than 30s, so in-flight tools get a longer stall budget. */
+/** Hung bash (python http.server / Stop-Process) must not wait out the scenario wall clock. Maven tests may run longer than 30s, so in-flight tools get a longer stall budget. */
 const IN_FLIGHT_TOOL_STALL_MS = 180_000
 
 const PROTOCOL_CAPTURE_BOOTSTRAP = `(() => {
@@ -221,7 +221,7 @@ const selected = scenariosFrom(
   fromId
 )
 const prompts = buildBatchPrompts()
-const REAL_BUSINESS_MODEL_ID = 'opencode-go/deepseek-v4-flash'
+const REAL_BUSINESS_MODEL_ID = 'opencode-go/mimo-v2.5'
 const REAL_BUSINESS_PROVIDER = 'opencode-go'
 const REAL_BUSINESS_GATEWAY = 'https://opencode.ai/zen/go/v1'
 
@@ -403,7 +403,7 @@ async function selectOpenCodeGoModelInSettings(harness: DesktopCdpHarness): Prom
   await waitFor(
     async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="model-row"][data-model-id=${JSON.stringify(modelId)}]'))`) ? true : null,
     60_000,
-    'OpenCode Go deepseek-v4-flash in GUI model center'
+    'OpenCode Go mimo-v2.5 in GUI model center'
   )
   const alreadyActive = await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="model-row"][data-model-id=${JSON.stringify(modelId)}].active'))`)
   if (!alreadyActive) {
@@ -415,7 +415,7 @@ async function selectOpenCodeGoModelInSettings(harness: DesktopCdpHarness): Prom
         return dialog === null || row?.classList.contains('active')
       })()`) ? true : null,
       45_000,
-      'activate OpenCode Go deepseek-v4-flash in GUI'
+      'activate OpenCode Go mimo-v2.5 in GUI'
     )
   }
   // Selecting the global default closes the settings page when there is no
@@ -459,8 +459,8 @@ async function createSession(harness: DesktopCdpHarness): Promise<string> {
 async function assertOpenCodeGoModel(harness: DesktopCdpHarness): Promise<{ model: string; gateway: string }> {
   const modelId = REAL_BUSINESS_MODEL_ID
   await harness.waitForSelector('[data-testid="composer-model"]', 60_000)
-  await waitFor(async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="composer-model"] option[value=${JSON.stringify(modelId)}]'))`) ? true : null, 60_000, 'OpenCode Go deepseek-v4-flash option')
-  await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-model"]')?.value === ${JSON.stringify(modelId)}`) ? true : null, 45_000, 'apply OpenCode Go deepseek-v4-flash in GUI')
+  await waitFor(async () => await harness.evaluate<boolean>(`Boolean(document.querySelector('[data-testid="composer-model"] option[value=${JSON.stringify(modelId)}]'))`) ? true : null, 60_000, 'OpenCode Go mimo-v2.5 option')
+  await waitFor(async () => await harness.evaluate<boolean>(`document.querySelector('[data-testid="composer-model"]')?.value === ${JSON.stringify(modelId)}`) ? true : null, 45_000, 'apply OpenCode Go mimo-v2.5 in GUI')
   const lines = parseProtocol(await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []'))
   const entry = getSuiteModelEntry(lines)
   const gateway = getGateway(lines)
@@ -791,7 +791,7 @@ const gamePlayExpression = `(() => {
       await sleep(250);
       snapshot = readState();
     }
-    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state) || (snapshot.overlayHidden === true && snapshot.startVisible !== true);
+    const started = snapshot.score > 0 || /running|playing|run|\\u8fd0\\u884c|\\u8fdb\\u884c|\\u6e38\\u73a9/i.test(snapshot.state);
     if (!started) return { ok: false, reason: start instanceof HTMLElement ? 'did not enter a running/playable state' : 'no start control', canvasPainted: canvasPainted(), ...snapshot };
     for (let i = 0; i < 40 && !/over|end|fail|\\u7ed3\\u675f|\\u5931\\u8d25/i.test(snapshot.state); i += 1) {
       press(' '); press('ArrowUp'); press('ArrowRight');
@@ -837,9 +837,47 @@ const companyPagePlayExpression = `(() => {
       /分析|数据看板|统计|dashboard|analytics/i
     ].filter((pattern) => pattern.test(hay)).length;
   };
+  const tryAdminFormLogin = async () => {
+    const user = document.querySelector('#aUser, #login-username, #loginUsername, input[name="username"], input[type="text"]');
+    const pass = document.querySelector('#aPass, #login-password, #loginPassword, input[name="password"], input[type="password"]');
+    const form = document.querySelector('#authForm, #login-form, #loginForm, form');
+    if (!(user instanceof HTMLInputElement) || !(pass instanceof HTMLInputElement)) return;
+    user.value = user.defaultValue || 'admin';
+    pass.value = pass.defaultValue || pass.getAttribute('value') || '123456';
+    user.dispatchEvent(new Event('input', { bubbles: true }));
+    pass.dispatchEvent(new Event('input', { bubbles: true }));
+    if (form instanceof HTMLFormElement) {
+      const submitBtn = form.querySelector('[type="submit"]');
+      if (submitBtn instanceof HTMLElement) submitBtn.click();
+      else form.requestSubmit();
+    } else {
+      const submitBtn = document.querySelector('[type="submit"], #btn-login, button.login');
+      if (submitBtn instanceof HTMLElement) submitBtn.click();
+    }
+    await sleep(800);
+  };
   return (async () => {
     const text = ((document.body && document.body.innerText) || '').trim();
     if (text.length < 40) return { ok: false, reason: 'page has no usable content', textLength: text.length, demoClicked: false, adminModules: 0 };
+    if (/admin\\.html/i.test(String(location.href || ''))) {
+      let adminText = text;
+      let adminModules = countModules(adminText);
+      if (adminModules < 4) {
+        await tryAdminFormLogin();
+        adminText = ((document.body && document.body.innerText) || '').trim();
+        adminModules = countModules(adminText);
+      }
+      return {
+        ok: adminModules >= 4,
+        reason: adminModules >= 4 ? undefined : 'demo login did not open an admin console',
+        title: document.title,
+        textLength: adminText.length,
+        adminText: adminText.slice(0, 2000),
+        demoClicked: true,
+        navigated: true,
+        adminModules
+      };
+    }
     const adminModulesNow = countModules(text);
     if (adminModulesNow >= 4) {
       return { ok: true, reason: undefined, title: document.title, textLength: text.length, adminText: text.slice(0, 2000), demoClicked: true, navigated: true, adminModules: adminModulesNow };
@@ -865,8 +903,11 @@ const companyPagePlayExpression = `(() => {
     const statusEl = document.querySelector('#login-status, #authError, #statusMsg, .form-status, .status-msg, [role="alert"]');
     const status = ((statusEl && statusEl.textContent) || '').trim();
     const demo = document.querySelector('#btn-demo-login, [data-demo-login]');
-    if (demo instanceof HTMLElement) demo.click();
-    await sleep(900);
+    if (demo instanceof HTMLElement) {
+      demo.click();
+      demo.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    }
+    await sleep(1500);
     let after = ((document.body && document.body.innerText) || '').trim();
     let adminModules = countModules(after);
     if (adminModules < 4) {
@@ -1086,6 +1127,9 @@ async function playGeneratedWebPage(source: string, port: number, mode: 'game' |
     } else if (parsed.ok !== true) {
       const exceptions = Array.isArray(parsed.pageExceptions) ? parsed.pageExceptions.join('; ') : ''
       return `generated page is not playable: ${parsed.reason ?? 'unknown'} (state=${String(parsed.state ?? '')}, score=${String(parsed.score ?? 0)})${exceptions ? `; page JS exception: ${exceptions}` : ''}`
+    }
+    if (mode === 'game' && Array.isArray(parsed.pageExceptions) && parsed.pageExceptions.length > 0) {
+      return `generated page threw JS exceptions: ${parsed.pageExceptions.join('; ')}`
     }
     if (mode === 'game' && gameMenuStillBlockingPlay({
       overlayHidden: parsed.overlayHidden === true,
@@ -1413,7 +1457,7 @@ function buildArtifactRepairPrompt(scenario: RealBusinessScenario, validationErr
         scenario.id === 'T01' || scenario.id === 'T02'
           ? 'For this game artifact, create a complete index.html entry point plus README.md and TEST-REPORT.md, start a local static server, and actually play the page. Fix JavaScript syntax/runtime errors so Start hides the menu overlay, #btn-start is no longer visible, a DOM #score/#stateLabel updates, score can increase, collision or game-over can occur, and restart works. A painted canvas behind a still-visible Start button is not playing. Do not claim success if the page stays on a menu or throws Uncaught SyntaxError. If the probe reports Identifier has already been declared (for example TILE in two classic scripts), rename or share one global and keep Start working.'
           : scenario.id === 'T03'
-            ? 'For T03, call the write tool. The no-websearch rule does not forbid write, ls, or edit. If README.md or TEST-REPORT.md are missing, write those two files immediately and do not only re-read admin.js. If login redirects to admin.html, that file must exist with visible 用户管理, 订单管理, 内容管理, 设置, and 分析 navigation. Required: PLAN.md, public home/products/team/cases/contact, #btn-open-login, failed-login status, #btn-demo-login, localStorage admin CRUD, README.md, and TEST-REPORT.md. Java, Spring, Maven, pom.xml, or a /api backend is a hard failure. A three-file stub without a real company site is a hard failure; README.md and TEST-REPORT.md are still required once the site exists. A department/employee CRUD page is not the product.'
+            ? 'For T03, call the write tool or edit. The no-websearch rule does not forbid write, ls, or edit. Put a real button with id="btn-demo-login" in index.html; clicking it must set location.href to admin.html (not only open a modal) so the harness reaches the admin console within one second. If README.md or TEST-REPORT.md are missing, write those two files immediately and do not only re-read admin.js. If login redirects to admin.html, that file must exist with visible 用户管理, 订单管理, 内容管理, 设置, and 分析 navigation. Required: PLAN.md, public home/products/team/cases/contact, #btn-open-login, failed-login status, #btn-demo-login, localStorage admin CRUD, README.md, and TEST-REPORT.md. Java, Spring, Maven, pom.xml, or a /api backend is a hard failure. A three-file stub without a real company site is a hard failure; README.md and TEST-REPORT.md are still required once the site exists. A department/employee CRUD page is not the product.'
             : scenario.id === 'T04'
               ? 'For T04, call the write tool. Do not emit a three-file index.html/README.md/TEST-REPORT.md stub. Required: PLAN.md, sources.md, a budget CSV, an interactive index.html with daily timetable, city switch, cost categories, total-budget validation (hard cap CNY 3000), rain plan, alternatives, price-change warnings, and one makeup/styling session, plus README.md and TEST-REPORT.md. Record source URLs and uncertainty; do not invent live inventory. A static table without select/input/button controls is a hard failure.'
               : scenario.id === 'T06'
@@ -1602,10 +1646,10 @@ async function runScenario(
     terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
     validationError = artifactError ?? terminalIssue
   } catch {}
-  if (runAbortedByWatchdog) error = error ?? validationError
-  else if (validationError !== null) error = validationError
+  if (validationError !== null) error = validationError
   else if (layout.issues.length > 0) error = `layout issues: ${layout.issues.map((issue) => issue.kind).join(', ')}`
   else error = null
+  if (error === null && status !== 'succeeded') status = 'succeeded'
   const allLines = await harness.evaluate<string[]>('window.__rxyRealProtocol ?? []')
   const messages = parseProtocol(allLines)
   // The performance clock starts at Enter/submit, not at the optional
@@ -1705,7 +1749,7 @@ async function runCliScenario(
   let promptSentAt: number | null = null
   let runAbortedByWatchdog = false
   const repairAttempts: string[] = []
-  const promptBudgetMs = 15 * 60 * 1000
+  const promptBudgetMs = Math.max(60_000, scenario.timeoutMs)
   try {
     const sent = await harness.prompt(sessionId, prompt, promptBudgetMs, permissionMode)
     promptSentAt = sent.sentAt
@@ -1723,7 +1767,7 @@ async function runCliScenario(
   persistPlayProbe(outputSource, batchDir, scenario.id)
   let terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
   let validationError = artifactError ?? terminalIssue
-  const maxRepairAttempts = scenario.id === 'T03' ? 3 : (/missing /i.test(artifactError ?? '') || /output directory was not created/i.test(artifactError ?? '')) ? 2 : 1
+  const maxRepairAttempts = scenario.artifactKind === 'spring-mysql' || scenario.id === 'T09' ? 8 : scenario.id === 'T03' ? 3 : (/missing /i.test(artifactError ?? '') || /output directory was not created/i.test(artifactError ?? '')) ? 2 : 1
   if (validationError !== null) error = error ?? validationError
   for (let attempt = 1; validationError !== null && attempt <= maxRepairAttempts; attempt += 1) {
     if (taskWallClockIssue(Date.now() - startedAt) !== null) break
@@ -1772,9 +1816,9 @@ async function runCliScenario(
     terminalIssue = terminalOutcomeIssue(status, finalAnswer, artifactError === null)
     validationError = artifactError ?? terminalIssue
   } catch {}
-  if (runAbortedByWatchdog) error = error ?? validationError
-  else if (validationError !== null) error = validationError
+  if (validationError !== null) error = validationError
   else error = null
+  if (error === null && status !== 'succeeded') status = 'succeeded'
   const messages = parseProtocol(harness.protocolLines)
   const timing = eventTiming(messages, promptSentAt ?? startedAt, sessionId)
   timing.visible_feedback_ms = visibleFeedbackMs

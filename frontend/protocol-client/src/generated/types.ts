@@ -408,6 +408,7 @@ export type AuditAfterVerify = boolean;
 export type NextOnSuccess = string | null;
 export type NextOnFailure = string | null;
 export type MaxRetries = number;
+export type ParallelMembers = string[] | null;
 export type Name2 = string;
 export type DisplayName1 = string;
 export type Description = string;
@@ -1278,6 +1279,7 @@ export interface SopStage {
   next_on_success?: NextOnSuccess;
   next_on_failure?: NextOnFailure;
   max_retries?: MaxRetries;
+  parallel_members?: ParallelMembers;
   [k: string]: unknown;
 }
 /**

@@ -540,3 +540,100 @@ class TestSessionResumeHitRate:
         assert token_stats.prompt_tokens == 2000
         assert token_stats.cache_hit_tokens == 1600
         assert token_stats.cache_hit_rate == pytest.approx(80.0)
+
+
+@pytest.mark.asyncio
+async def test_second_agent_turn_appends_to_frozen_prefix(monkeypatch):
+    """F14 / PHASE-FIX: warmup then H3 on the same AgentV2 must keep S1 + prior
+    turns and only append the new user suffix. Restarting at [S1, human] every
+    execute() is why live Primary cache sat at 80–88% instead of 97%.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+
+    captured: list[list] = []
+
+    agent = object.__new__(AgentV2)
+    agent._session_loaded = True
+    agent._session_id = "prefix-append"
+    agent._memory = SimpleNamespace(
+        get_context_for_prompt=lambda _q, **_k: "",
+        add_interaction=lambda *_a, **_k: None,
+        save_session=lambda: None,
+        compress_if_needed=lambda _sid: None,
+        _rag_enabled=False,
+    )
+    agent._cfg = {"execution": {"max_tool_rounds": 1}}
+    agent.model_config = {
+        "base_url": "https://api.example.test/v1",
+        "model_name": "test-model",
+        "effort": "balanced",
+    }
+    agent._capabilities = DEFAULT_CAPABILITIES
+    agent._resolved_limits = None
+    agent._keep_alive_state = None
+    agent._tokenizer = "tiktoken:o200k_base"
+    agent._tool_tracer = None
+    agent._last_thinking = ""
+    agent._thinking_history = []
+    agent._agent_prefix_messages = None
+    agent._provider = None
+    agent._git_snapshot = None
+    agent._prompt_variant = lambda: "default"
+
+    async def fake_stream(messages, tools=None, **_kwargs):
+        captured.append(list(messages))
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="done", tool_calls=None),
+                )
+            ],
+            usage=None,
+        )
+
+    agent._raw_stream = fake_stream
+    agent._get_core_tools = lambda: []
+    agent._maybe_compress_context = lambda _m: asyncio.sleep(0)
+    agent._capture_git_snapshot_async = lambda: asyncio.sleep(0)
+    agent._tokenizer_spec = lambda: "tiktoken:o200k_base"
+    agent._has_creation_product_intent = lambda _t: False
+    agent._is_social_chat = lambda _t: False
+    agent._should_emit_analyze_progress = lambda _t: False
+    agent._memory_ctx_for_turn = lambda _t: ""
+    agent._turn_context_suffix = lambda: ""
+    agent._effort_for = lambda _mode, _text: "balanced"
+    agent._application_cache_namespace = lambda: "ns-test"
+
+    first = await agent._fast_reply_with_tools(
+        "warmup LRU cache",
+        allowed_tool_names=None,
+        role_instruction="",
+        mode="build",
+    )
+    second = await agent._fast_reply_with_tools(
+        "H3 TTL LRU cache",
+        allowed_tool_names=None,
+        role_instruction="",
+        mode="build",
+    )
+    assert first == "done"
+    assert second == "done"
+    assert len(captured) == 2
+    first_msgs, second_msgs = captured
+    assert isinstance(first_msgs[0], SystemMessage)
+    assert isinstance(first_msgs[1], HumanMessage)
+    assert "warmup LRU cache" in first_msgs[1].content
+    assert len(first_msgs) == 2
+    assert second_msgs[0].content == first_msgs[0].content
+    assert isinstance(second_msgs[1], HumanMessage)
+    assert "warmup LRU cache" in second_msgs[1].content
+    assert isinstance(second_msgs[2], AIMessage)
+    assert second_msgs[2].content == "done"
+    assert "H3 TTL LRU cache" in second_msgs[-1].content
+    assert len(second_msgs) == 4

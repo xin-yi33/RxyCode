@@ -19,7 +19,7 @@ export interface DesktopCdScenario {
   title: string
   kind: ScenarioKind
   prompt: string
-  model: 'opencode-go/deepseek-v4-flash' | 'zen/gpt-5.6-luna'
+  model: 'opencode-go/mimo-v2.5' | 'zen/gpt-5.6-luna'
   screenshotCheckpoints: string[]
 }
 
@@ -63,7 +63,7 @@ export const desktopCdScenarios: DesktopCdScenario[] = rows.map((row, index) => 
     id,
     model: index === 14 || index === 29
       ? 'zen/gpt-5.6-luna'
-      : 'opencode-go/deepseek-v4-flash'
+      : 'opencode-go/mimo-v2.5'
   }
 })
 

@@ -37,7 +37,7 @@ def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
 def run_bash(command: str, description: str = "", workdir: str = "", timeout: int = 60) -> str:
     # 委托给 ShellExecutor，自动探测 PowerShell/CMD/Bash
     result = shell_executor.execute(command, workdir, timeout)
-    return _format_result(result)
+    return _format_result(result, command)
 
 
 async def run_bash_async(
@@ -48,10 +48,20 @@ async def run_bash_async(
 ) -> str:
     """Cancellable Bash implementation used by the async agent path."""
     result = await shell_executor.execute_async(command, workdir, timeout)
-    return _format_result(result)
+    return _format_result(result, command)
 
 
-def _format_result(result: dict) -> str:
+def _looks_like_env_probe(command: str) -> bool:
+    lowered = (command or "").lower()
+    if "pip install" in lowered or "npm install" in lowered:
+        return False
+    return any(
+        token in lowered
+        for token in ("pip show", "--version", "python -c", "python3 -c")
+    )
+
+
+def _format_result(result: dict, command: str = "") -> str:
     output = result["stdout"]
     if result["stderr"]:
         output += ("\n" if output else "") + result["stderr"]
@@ -63,7 +73,14 @@ def _format_result(result: dict) -> str:
         # Tool recovery classifies the stable [error...] prefix.  Preserve the
         # command output and exit code, but do not let a failed shell probe be
         # mistaken for a successful empty/diagnostic result.
-        return f"[error executing bash: {output or 'command failed'}]"
+        msg = f"[error executing bash: {output or 'command failed'}]"
+        if _looks_like_env_probe(command):
+            msg += (
+                " Do not retry pip/python/node probes. Call write for the "
+                "user-named source files using the stdlib. Do not install "
+                "Flask/FastAPI/Django unless the user named that framework."
+            )
+        return msg
     return output or "[no output]"
 
 

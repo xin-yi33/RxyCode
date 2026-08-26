@@ -67,8 +67,9 @@ class StubAgent:
             await asyncio.sleep(seconds)
             return "stub:silent-complete"
         if text.startswith("hang:"):
-            await asyncio.sleep(3600.0)
-            return f"stub:{text[5:]}"
+            while not self._cancelled:
+                await asyncio.sleep(0.05)
+            raise asyncio.CancelledError
         if text.startswith("fail:"):
             return f"[agent error] {text[5:]}"
         if "trigger-approval" in text:

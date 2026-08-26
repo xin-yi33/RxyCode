@@ -16,7 +16,7 @@ import { join, resolve } from 'node:path'
 import { ProtocolClient } from '@rxycode/protocol-client'
 import { repositoryDir, type CleanupProof } from './cdp-harness.mts'
 
-const REAL_BUSINESS_MODEL_ID = 'opencode-go/deepseek-v4-flash'
+const REAL_BUSINESS_MODEL_ID = 'opencode-go/mimo-v2.5'
 const REAL_BUSINESS_PROVIDER = 'opencode-go'
 const REAL_BUSINESS_GATEWAY = 'https://opencode.ai/zen/go/v1'
 

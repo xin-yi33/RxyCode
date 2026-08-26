@@ -8,6 +8,17 @@ from appserver.tui import ProtocolTui
 from protocol.notifications import ProgressUpdate, ReasoningSnapshot
 
 
+def test_write_turn_liveness_emits_reasoning_snapshot() -> None:
+    emitted: list[object] = []
+    tui = ProtocolTui("s1", emitted.append)
+    tui.set_thinking_expanded(False)
+    tui.write_turn_liveness("思考中...")
+    assert len(emitted) == 1
+    assert isinstance(emitted[0], ReasoningSnapshot)
+    assert emitted[0].text == "思考中..."
+    assert emitted[0].snapshot is False
+
+
 def test_write_reasoning_silent_when_collapsed() -> None:
     emitted: list[object] = []
     tui = ProtocolTui("s1", emitted.append)

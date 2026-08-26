@@ -58,6 +58,14 @@ def test_disable_model_invocation_hidden_from_auto(tmp_path: Path) -> None:
     assert "ecosystem.category" in hidden.extra
 
 
+def test_builtin_software_dev_is_listed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    registry = TeamRegistry(root=tmp_path / "teams")
+    assert "software_dev" in registry.records
+    assert registry.records["software_dev"].group == "builtin"
+    assert "software_dev" in registry.groups["builtin"]
+
+
 def test_f18_surface_does_not_import_agent_event() -> None:
     from pathlib import Path
 

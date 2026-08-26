@@ -1,4 +1,4 @@
-﻿"""RxyCode 1.2.10 - LangGraph-based agent."""
+﻿"""RxyCode 1.2.11 - LangGraph-based agent."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import importlib.util
 import sys as _sys
 import types as _types
 
-__version__ = "1.2.10"
+__version__ = "1.2.11"
 
 __all__ = ["__version__", "unify_bare_package_aliases", "install_test_import_unify_hook"]
 

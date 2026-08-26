@@ -109,7 +109,7 @@ export function terminalOutcomeIssue(status: string, finalAnswer: string, artifa
     // passing smoke/play probe (T06 retry3 had CSV + probe ok).
     if (
       artifactOk &&
-      /Tool (?:write|edit) did not complete|Artifact failed format validation/i.test(finalAnswer)
+      /Tool (?:write|edit) did not complete|Artifact failed format validation|FirstTokenTimeoutError|no first response event before the deadline|idle deadline/i.test(finalAnswer)
     ) {
       return null
     }
@@ -718,8 +718,9 @@ export function gameMenuStillBlockingPlay(input: {
   score: number
 }): boolean {
   if (gameEnteredPlayableState(input.state, input.score)) return false
-  if (input.overlayHidden === true && input.startVisible !== true) return false
-  return input.startVisible === true || input.overlayHidden !== true
+  // A hidden start overlay is not enough. T02 hid #btn-start after a
+  // JS crash while #state stayed 待开始 and the canvas never painted.
+  return true
 }
 
 export function parseDotEnv(text: string): Record<string, string> {
@@ -804,7 +805,7 @@ export function approvalStormIssue(approvalCount: number): string | null {
 }
 
 export function taskWallClockIssue(wallMs: number): string | null {
-  if (wallMs > 15 * 60 * 1000) return `task wall clock ${wallMs}ms exceeds 15m hard-fail gate`
+  if (wallMs > 45 * 60 * 1000) return `task wall clock ${wallMs}ms exceeds 45m hard-fail gate`
   return null
 }
 

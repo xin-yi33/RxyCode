@@ -129,15 +129,15 @@ log/*.err
 .DS_Store
 Thumbs.db
 
-# --- docs: keep modules/, images/, assets/ ---
-# docs/plans/ 不入库（本地保留，2026-08-06 起从 git 索引移除）
+# --- docs on GitHub: agent/, assets/, imgs/, modules/, release-notes/, GUI.md, quickstart.md ---
 docs/*
 !docs/modules/
-!docs/images/
+!docs/imgs/
 !docs/assets/
 !docs/release-notes/
+!docs/agent/
 !docs/GUI.md
-!docs/RXYCODE-GUI-REAL-E2E-REPORT-2026-08-13.md
+!docs/quickstart.md
 !docs/phase-g/
 !docs/phase-g/**
 docs/plans/

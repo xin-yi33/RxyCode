@@ -310,14 +310,17 @@ class AgentRuntime:
 class ChildRuntime:
     """Stable facade over AgentRuntime with a single real execution bridge.
 
-    Each invocation owns a fresh AgentV2 and child session binding.  The facade
-    never receives a Primary AgentV2 instance or its conversation history.
+    Isolated Phase D children own a fresh AgentV2 per execute(). Team roles
+    with ``_share_primary_prefix`` reuse one AgentV2 so warmup stays on the
+    frozen prefix. The facade never receives a Primary AgentV2 instance.
     """
 
     def __init__(self, runtime: AgentRuntime):
         self._runtime = runtime
         self._agent_factory: Callable[[str | None], Any] | None = None
         self._active_agent: Any = None
+        self._persistent_agent: Any = None
+        self._share_primary_prefix: bool = False
 
     def set_agent_factory(self, factory: Callable[[str | None], Any]) -> None:
         """Inject a child-local AgentV2 factory (tests/bootstrap only)."""
@@ -353,7 +356,12 @@ class ChildRuntime:
         elif name in {"websearch", "webfetch"}:
             value = str(args.get("url") or args.get("query") or "")
         policy = PermissionPolicy.from_definition(self.definition.permission)
-        category = "edit" if name in {"write", "edit", "patch", "open_file"} else name
+        if name in {"write", "edit", "patch", "open_file"}:
+            category = "edit"
+        elif name in {"read", "grep", "ls", "glob"}:
+            category = "read"
+        else:
+            category = name
         decision = policy.evaluate(category, value)
         self.audit.permission_decision(name, decision.kind.value, decision.matched_rule)
         if decision.kind != DecisionKind.ALLOW:
@@ -409,14 +417,24 @@ class ChildRuntime:
         """Run the child through a fresh AgentV2 under child policy/context."""
         self._runtime.cancel_token.throw_if_cancelled()
         started = __import__("time").monotonic()
-        usage_scope_token, scoped_usage = token_stats.begin_usage_scope()
+        usage_scope_token, scoped_usage = token_stats.begin_usage_scope(
+            count_as_primary=bool(self._share_primary_prefix),
+        )
         input_tokens = 0
         output_tokens = 0
         cache_hit_tokens = 0
         try:
             self._runtime.budget.consume_step()
             self.audit.record("execute", prompt=task_prompt)
-            agent = self._build_agent()
+            reused_agent = (
+                self._share_primary_prefix and self._persistent_agent is not None
+            )
+            if reused_agent:
+                agent = self._persistent_agent
+            else:
+                agent = self._build_agent()
+                if self._share_primary_prefix:
+                    self._persistent_agent = agent
             self._active_agent = agent
             if callable(getattr(agent, "set_session", None)):
                 agent.set_session(self.session_id)
@@ -437,11 +455,17 @@ class ChildRuntime:
             try:
                 wall_limit = self._runtime.budget.budget.max_wall_time_seconds
                 role_prompt = (self.definition.prompt or self.definition.description).strip()
-                execution_prompt = (
-                    "/fast\n"
-                    f"Child role and constraints:\n{role_prompt}\n\n"
-                    f"Task:\n{task_prompt}"
-                )
+                # F14 shared path: reused AgentV2 already has the role suffix
+                # in history. Re-sending it every execute inflates the unique
+                # suffix and misses Primary 97%.
+                if reused_agent:
+                    execution_prompt = "/fast\nTask:\n" + task_prompt
+                else:
+                    execution_prompt = (
+                        "/fast\n"
+                        f"Child role and constraints:\n{role_prompt}\n\n"
+                        f"Task:\n{task_prompt}"
+                    )
                 if wall_limit > 0:
                     try:
                         answer = await __import__("asyncio").wait_for(

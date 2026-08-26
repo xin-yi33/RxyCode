@@ -265,6 +265,23 @@ class ProtocolTui:
     def write_progress(self, text: str) -> None:
         self._push_async("progress", text)
 
+    def write_turn_liveness(self, text: str = "思考中...") -> None:
+        """PHASE-FIX LC20: visible thinking within 1s/3s without waiting on TTFT.
+
+        Collapsed CoT stays hidden (``write_reasoning``). This emits a short
+        liveness snapshot so greetings and complex turns show thinking before
+        the gateway's first model token.
+        """
+        chunk = str(text or "思考中...")
+        self._flush_pending_stream()
+        self._emit(
+            ReasoningSnapshot(
+                session_id=self.session_id,
+                text=chunk,
+                snapshot=False,
+            )
+        )
+
     def write(self, text: str, color: str = "") -> None:
         self.write_progress(text)
 

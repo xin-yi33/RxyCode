@@ -135,6 +135,20 @@ class TestEditFile:
         result = self._edit(str(f), "notfound", "x")
         assert "file starts with" in result.lower() or "line1" in result
 
+    def test_edit_rejects_too_many_lru_tests(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        target = tests / "test_lru_cache.py"
+        original = "def test_one():\n    assert True\n"
+        target.write_text(original, encoding="utf-8", newline="\n")
+        body = target.read_text(encoding="utf-8")
+        extra = body + "\n".join(f"def test_{i}():\n    assert True\n" for i in range(2, 5))
+        result = self._edit(str(target), body, extra)
+        assert "error editing file" in result
+        assert "test_ functions" in result
+        assert target.read_text(encoding="utf-8") == body
+
 
 class TestEditTool:
     def test_tool_name(self):

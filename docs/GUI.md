@@ -5,7 +5,7 @@ terminal interface. Launch it with a single command, or install the packaged
 Windows/macOS/Linux builds from the [GitHub Release](https://github.com/xin-yi33/RxyCode/releases).
 
 <p align="center">
-  <img src="../docs/images/gui-shell.png" alt="RxyCode Desktop chat shell" width="800">
+  <img src="imgs/gui-shell.png" alt="RxyCode Desktop chat shell" width="800">
 </p>
 
 ## How it launches
@@ -70,7 +70,7 @@ parent directory.
 | Top bar | Brand, connection state |
 
 <p align="center">
-  <img src="../docs/images/gui-plan-mode.png" alt="Plan mode" width="800">
+  <img src="imgs/gui-plan-mode.png" alt="Plan mode" width="800">
 </p>
 
 ## Composer `+` menu
@@ -83,7 +83,7 @@ parent directory.
 | Plan mode | Toggle Plan mode (agent stays on the plan document) |
 
 <p align="center">
-  <img src="../docs/images/gui-plus-menu.png" alt="Composer plus menu" width="800">
+  <img src="imgs/gui-plus-menu.png" alt="Composer plus menu" width="800">
 </p>
 
 ## Plan, goal and approval
@@ -96,17 +96,18 @@ parent directory.
   asks for confirmation (Escape cancels).
 
 <p align="center">
-  <img src="../docs/images/gui-plan-card.png" alt="Plan card" width="800">
+  <img src="imgs/gui-plan-card.png" alt="Plan card" width="800">
 </p>
 <p align="center">
-  <img src="../docs/images/gui-goal-dialog.png" alt="Goal dialog" width="800">
+  <img src="imgs/gui-goal-dialog.png" alt="Goal dialog" width="800">
 </p>
 
 ## Settings
 
 - **更新与诊断**: manual check/download/install of updates; crash-report
   consent defaults to off and diagnostic bundles are sanitized.
-- **关于**: shows the product version (1.2.10).
+- **关于**: shows the product version of that Desktop build
+  (this tree is 1.2.11; packaged v1.2.10 assets still display 1.2.10).
 
 ## Development
 

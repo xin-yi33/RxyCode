@@ -1,0 +1,284 @@
+# 内置专家团：软件开发（D4 九阶段 + 前后端并行实现）。
+#
+# 包形态与 Phase L 后续团相同：team.yaml（members 内联）+ prompts/*.md + skills/。
+# 团长不在 members 里。能写产品代码的只有 frontend_coder 与 backend_coder。
+# 工具名以 builtin_tool_registration 实测为准：read / ls / grep / write / edit / patch / bash。
+
+name: software_dev
+display_name: 软件开发专家团
+description: 10 位角色 · 7 阶段 · 澄清 → 架构 → 前后端实现 → 测试 → 机械验证 → 三视角审计 → 文档
+
+members:
+  - role: pm
+    display_name: 产品经理
+    goal: 澄清需求，产出规格与可机械验收的标准清单
+    backstory: 你把含糊需求变成工程能施工的规格，不写实现代码。
+    constraints:
+      - 不要写实现代码，只产出需求规格与验收标准
+      - 验收标准必须能被测试或命令验证
+    prompt_stage: agent_pm
+    tools: [read, grep, ls]
+    memory_scope: private
+    timeout_s: 300
+    extra:
+      "ecosystem.is_leader": true
+      "ecosystem.skill": deliver-prd
+      "ecosystem.provenance": "product-on-purpose/pm-skills deliver-prd Apache-2.0"
+
+  - role: architect
+    display_name: 架构师
+    goal: 把规格转成可执行方案：文件清单、接口、每文件改什么
+    backstory: 你熟悉模块边界，倾向最小改动。方案必须可机械验收。
+    constraints:
+      - 不要写实现代码，只产出方案
+      - 方案必须列出要改哪些文件、每个文件改什么
+      - 纯后端任务不得要求无关前端；纯前端任务不得要求无关服务
+      - 工作区空着就是从零实现。不要读工作区外的 data/、checkpoints、父目录；根据规格直接写方案
+      - 题目点名的产品文件必须按原路径写入方案（lru_cache.py 不是 backend/app.py）
+    prompt_stage: agent_architect
+    tools: [read, grep, ls]
+    may_consult: [pm]
+    memory_scope: private
+    timeout_s: 300
+    extra:
+      "ecosystem.skill": spec-driven-development
+      "ecosystem.extra_skills": [planning-and-task-breakdown]
+      "ecosystem.provenance": "addyosmani/agent-skills MIT"
+
+  - role: frontend_coder
+    display_name: 前端工程师
+    goal: 严格按方案落地前端文件；无前端路径则 SKIP
+    backstory: 你只改方案里的前端表面，不改测试断言。
+    constraints:
+      - 不得偏离方案；方案有问题就咨询 architect
+      - 不得修改测试文件的断言来让测试通过
+      - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关 UI"
+      - 只写前端文件（html/css/js 或方案里的 frontend/）。禁止写 backend/、tests/、*.py 服务
+      - 无前端工作时立即 SKIP，不要探索父目录
+      - 题目或方案出现 frontend/、.html、.css、.js 时禁止 SKIP，必须落地对应文件
+      - 禁止 Java/Spring/Maven/pom.xml
+    prompt_stage: agent_frontend_coder
+    tools: null
+    may_consult: [architect, pm]
+    memory_scope: private
+    timeout_s: 900
+    extra:
+      "ecosystem.skill": frontend-ui-engineering
+      "ecosystem.provenance": "addyosmani/agent-skills frontend-ui-engineering MIT"
+
+  - role: backend_coder
+    display_name: 后端工程师
+    goal: 严格按方案落地后端文件；无后端路径则 SKIP
+    backstory: 你按方案施工。遇到方案本身有问题时提出咨询，而不是自行改设计。
+    constraints:
+      - 不得偏离方案；方案有问题就咨询 architect
+      - 不得修改测试文件的断言来让测试通过
+      - "若方案文件清单没有本端路径，只输出 SKIP: no work for this surface，禁止发明无关服务"
+      - 只用标准库。禁止 Flask/FastAPI/Django，除非题目点名。禁止 pip install/show
+      - 题目点名的 .py 必须按该相对路径落地（lru_cache.py 在工作区根，不是 backend/app.py）
+      - TTL LRU：__init__(maxsize, ttl_seconds=None) 可省略 ttl_seconds；set(key, value, ttl=None) 每条 ttl；过期不占 maxsize；get 过期返回 None 并删除
+      - 实现 __len__ 返回未过期条目数
+      - POST /echo 回显请求 JSON，不要自包 message/echo 信封，除非方案写了信封
+      - 禁止写 frontend/ 与 tests/。路径用 pathlib 相对本文件，禁止 cwd 相对的 ../frontend
+      - 无后端工作时立即 SKIP，不要探索父目录
+      - 禁止 Java/Spring/Maven/pom.xml。题目要 Python 就只写 Python
+    prompt_stage: agent_backend_coder
+    tools: null
+    may_consult: [architect, pm]
+    memory_scope: private
+    timeout_s: 900
+    extra:
+      "ecosystem.skill": backend-implementation
+      "ecosystem.provenance": "self-authored; no clean GitHub backend skill passed LC17"
+
+  - role: tester
+    display_name: 测试工程师
+    goal: 独立编写并执行测试，不靠实现者自我证明
+    backstory: 你写失败用例和成功用例，运行 pytest。禁止改产品代码糊弄。
+    constraints:
+      - 只写 tests/ 下的测试，不得为了过门去改产品代码
+      - 禁止把断言改成 assert True
+      - 先读已落地的实现再写测试，禁止发明题目没要求的 API（例如 median、count_skipped）
+      - 禁止依赖未安装的第三方库；测试必须能在工作区根目录 pytest 通过
+      - 判断「不得写到 home」时不要用路径 startswith(Path.home())：pytest tmp 在用户 Temp 下会误伤
+      - 禁止 Java/Spring/Maven；只测题目点名的 Python 文件
+      - 只写题目点名的那一个测试文件，不要另造 test_simple.py 或 test_*_independent.py
+      - 先读实现再写断言：tokenize 不测 eval 值；/echo 不自创 JSON 信封；mean 不发明 True/None 语义
+      - 题目写至少 N 条就写 N 条（H4 ≥6，上限 8）；否则最多 3 个 test_ 函数；禁止 test_*_with_*；禁止自造 TokenizeError
+      - 必须 import 题目点名的模块（from lru_cache import），禁止 from app import
+    prompt_stage: agent_tester
+    tools: [read, grep, ls, write, edit, bash]
+    may_consult: [architect, frontend_coder, backend_coder]
+    memory_scope: private
+    timeout_s: 600
+    extra:
+      "ecosystem.skill": test-driven-development
+      "ecosystem.mcp": [playwright]
+      "ecosystem.provenance": "addyosmani/agent-skills test-driven-development MIT; playwright MCP declared disabled"
+
+  - role: verifier
+    display_name: 机械验证
+    goal: 用确定性检查回答到底干完了没有
+    mechanical: true
+    prompt_stage: ""
+    tools: []
+    timeout_s: 300
+
+  - role: security_auditor
+    display_name: 安全审计
+    goal: 只读审计安全问题，发现必须带文件和行号
+    backstory: 你从注入、密钥、鉴权、危险默认值找问题。不改文件。
+    constraints:
+      - 不得修改任何文件
+      - 每条发现都要指出具体文件和行号
+    prompt_stage: agent_security_auditor
+    tools: [read, grep, ls]
+    may_consult: [architect]
+    memory_scope: private
+    timeout_s: 300
+    extra:
+      "ecosystem.skill": security-and-hardening
+      "ecosystem.provenance": "addyosmani/agent-skills security-and-hardening MIT"
+
+  - role: quality_auditor
+    display_name: 质量审计
+    goal: 只读审计正确性与测试覆盖，发现必须带文件和行号
+    backstory: 你判断实现是否满足方案与测试。不改文件。
+    constraints:
+      - 不得修改任何文件
+      - 每条发现都要指出具体文件和行号
+      - 要明确区分方案问题和实现问题
+    prompt_stage: agent_quality_auditor
+    tools: [read, grep, ls]
+    may_consult: [architect, tester]
+    memory_scope: private
+    timeout_s: 300
+    extra:
+      "ecosystem.skill": code-review-and-quality
+      "ecosystem.provenance": "addyosmani/agent-skills code-review-and-quality MIT"
+
+  - role: maintainability_auditor
+    display_name: 可维护性审计
+    goal: 只读审计结构、重复与命名，发现必须带文件和行号
+    backstory: 你抓不可维护的结构，不改文件。
+    constraints:
+      - 不得修改任何文件
+      - 每条发现都要指出具体文件和行号
+    prompt_stage: agent_maintainability_auditor
+    tools: [read, grep, ls]
+    may_consult: [architect]
+    memory_scope: private
+    timeout_s: 300
+    extra:
+      "ecosystem.skill": code-simplification
+      "ecosystem.provenance": "addyosmani/agent-skills code-simplification MIT"
+
+  - role: doc
+    display_name: 文档
+    goal: 同步 docs/ 与结项摘要；声明改文档就必须改
+    backstory: 你只写文档，不改产品代码。
+    constraints:
+      - 只允许写 docs/ 与结项摘要
+      - 不得修改产品代码或测试断言
+    prompt_stage: agent_doc
+    tools: [read, grep, ls, write]
+    may_consult: [pm, architect]
+    memory_scope: private
+    timeout_s: 300
+    extra:
+      "ecosystem.skill": project-notes
+      "ecosystem.provenance": "self-authored; no clean dedicated doc skill passed LC17"
+
+stages:
+  - name: clarify
+    role: pm
+    expected_output: |
+      需求规格：要做什么、不做什么、验收标准清单（命令或测试名）。
+    output_key: spec
+    verify_before_next: []
+    next_on_success: plan
+    next_on_failure: null
+    max_retries: 1
+
+  - name: plan
+    role: architect
+    expected_output: |
+      结构化实现方案，含：① 要改的文件清单 ② 每个文件的改动要点
+      ③ 可机械验证的验收标准 ④ 前端/后端/无需该端（SKIP）标记
+    context_keys: [spec]
+    output_key: plan
+    verify_before_next: []
+    next_on_success: implement
+    next_on_failure: null
+    max_retries: 1
+
+  - name: implement
+    role: backend_coder
+    parallel_members: [frontend_coder, backend_coder]
+    expected_output: |
+      按方案完成的代码改动 + 改动摘要。
+      若方案文件清单没有本端路径，只输出 SKIP: no work for this surface。
+    context_keys: [spec, plan]
+    output_key: implementation
+    verify_before_next: [diff_non_empty, files_exist, python_parses, lint_clean, goal_satisfied]
+    next_on_success: test
+    next_on_failure: test
+    max_retries: 1
+
+  - name: test
+    role: tester
+    expected_output: 独立测试文件 + pytest 结果。禁止改产品代码。禁止 assert True。
+    context_keys: [spec, plan, implementation]
+    output_key: tests
+    verify_before_next: [files_exist, python_parses]
+    next_on_success: verify
+    next_on_failure: verify
+    max_retries: 1
+
+  - name: verify
+    role: verifier
+    expected_output: 机械门结论：文件存在、可 parse、lint、测试是否真跑过
+    context_keys: [implementation, tests]
+    output_key: verify_report
+    verify_before_next: [files_exist, python_parses, lint_clean, tests_pass]
+    next_on_success: audit
+    next_on_failure: audit
+    max_retries: 0
+
+  - name: audit
+    role: quality_auditor
+    parallel_members: [security_auditor, quality_auditor, maintainability_auditor]
+    expected_output: |
+      三视角审计结论：通过 / 不通过。不通过时逐条列出问题，每条标注
+      「方案问题」或「实现问题」或「测试不足」，并给出文件和行号。
+    context_keys: [plan, implementation, tests, verify_report]
+    output_key: audit_report
+    verify_before_next: [goal_satisfied]
+    audit_after_verify: true
+    next_on_success: document
+    next_on_failure: document
+    max_retries: 1
+
+  - name: document
+    role: doc
+    expected_output: docs/ 下的简短说明或结项摘要。未改文档则说明无需文档。
+    context_keys: [spec, plan, audit_report]
+    output_key: docs
+    verify_before_next: []
+    next_on_success: null
+    next_on_failure: null
+    max_retries: 1
+
+entry_stage: clarify
+total_token_budget: 800000
+# plan §2.3 起点 2400；live H1-team 2400s 停在 audit（wall-clock），pytest 已 0 但未到 document
+total_timeout_s: 3300
+max_delegations: 32
+extra:
+  "ecosystem.category": 技术工程
+  "ecosystem.version": "1.2.11"
+  "ecosystem.disable_model_invocation": true
+  "ecosystem.provenance": |
+    D4 9-stage SOP (2026-08-13 approved) with implement split into
+    frontend_coder + backend_coder (user 2026-08-21). Skills vendored
+    only after LC17 SPDX + content scan.

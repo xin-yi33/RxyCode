@@ -314,6 +314,7 @@ _state = {
     "service_futures": set(),
     "service_tasks": set(),
     "init_task": None,
+    "core_sessions": {},
 }
 
 # 请求级并发控制（C4）：SessionSlots 提供 全局配额 + 每会话槽，
@@ -875,14 +876,17 @@ async def chat(req: ChatRequest):
             try:
                 agent._tool_tracer = Tracer(run_id=run_id)
                 thinking_cursor = _thinking_cursor(agent)
-                from .core.session import Session
+                from .core.session import reuse_or_create_session
 
                 session_notifications: list = []
-                session = Session(
+                sessions = _state.setdefault("core_sessions", {})
+                session = reuse_or_create_session(
+                    sessions.get(req.session_id),
                     session_id=req.session_id,
                     workspace_root=Path.cwd(),
                     emit=session_notifications.append,
                 )
+                sessions[req.session_id] = session
                 prompt_result = await session.prompt(
                     agent,
                     req.message,
@@ -2049,19 +2053,22 @@ async def chat_stream(req: ChatRequest):
             try:
                 agent._stream_mode = True
                 agent._tool_tracer = tracer
-                from .core.session import Session, notification_to_sse_event
+                from .core.session import notification_to_sse_event, reuse_or_create_session
 
                 def _emit_protocol(notification) -> None:
                     event = notification_to_sse_event(notification)
                     if event is not None:
                         _publish_to_stream(event)
 
-                session = Session(
+                sessions = _state.setdefault("core_sessions", {})
+                session = reuse_or_create_session(
+                    sessions.get(req.session_id),
                     session_id=req.session_id,
                     workspace_root=Path.cwd(),
                     emit=_emit_protocol,
                     session_schema_version=CHAT_SCHEMA_VERSION,
                 )
+                sessions[req.session_id] = session
                 log_chat_request(_logger, req.mode, req.message, run_id=run_id)
                 result = await session.prompt(
                     agent,

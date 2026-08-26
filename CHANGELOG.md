@@ -9,13 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.2.11] - 2026-08-21
+
+### Highlights
+
+Expert-team runtime (Phase F) ships behind `settings.agents.enabled=false`.
+Long tool writes, Windows encoding, and empty HTTP 200 responses are more
+reliable. GitHub Release **v1.2.11** publishes **one** asset:
+`rxycode-1.2.11.tar.gz`. No new Windows / macOS / Linux Desktop binaries.
+**v1.2.10** stays published. Protocol version stays `1.1.0`.
+
+### Added
+
+- **Expert teams** — AgentSpec / TeamSpec, deterministic SopMachine,
+  Coordinator, BudgetGuard, mechanical verifier, ModeRouter, JSON-RPC
+  worker bridge, builtin `software_dev` Team Pack
+  (`core/agents/teams/software_dev/`: 10 roles, 7 SOP stages, PM +
+  frontend/backend + tester + mechanical verifier + three auditors + doc).
+  Default off. Role-level `ecosystem.*` skill bindings; GitHub skills
+  vendored only after SPDX + content gates. Live dispatch uses a per-role
+  `AgentRuntime` (isolated cache namespace), not a shared Primary instance.
+  The sdist includes `core/agents/teams/**/*.yaml` and `**/*.md`.
+- **Docs** — `docs/agent/`, `docs/quickstart.md`. Screenshots live in
+  `docs/imgs/`.
+
 ### Fixed
 
+- Clarify/plan no longer stall-replan when a child hits wall-clock after
+  already producing a non-empty spec or file-level plan. Architect prompt
+  treats an empty workspace as greenfield and must not browse `data/`
+  or parent directories.
+- Stdio OpenTUI and Desktop now route `/team`, `/team-multi`, `/solo`,
+  `/why-mode`, and `/agents` through `Session.prompt`, so expert teams
+  actually start. Builtin `software_dev` is listed by `team/list`.
+  Coordinator dispatches roles through the live AgentV2 instead of a stub.
+  When `agents.enabled=false` (the default), ordinary prompts skip ModeRouter
+  so concurrent sessions and `session/interrupt` keep AgentV2 latency.
+- Expert-team `form_team` binds a per-role `AgentRuntime` so architect
+  cannot `write`/`edit`/`patch`. Parallel stages (`parallel_members`)
+  dispatch with `asyncio.gather`. `ChildStatus.COMPLETED` now advances SOP
+  (Python 3.11+ `str(enum)` is not `completed`).
+- `software_dev` plan stage no longer requires a verbatim `expected_output`
+  match (`goal_satisfied`) before implement.
+- Expert-team `delegate_request` prompt now has a `<ROLE>` section; architect /
+  coder / auditor / delegate stages have few-shot examples.
+- Integration main-chain test no longer patches the removed
+  `AgentV2._should_request_parallel_execution` (ModeRouter / `should_use_subagents`).
+- Stream idle timeout 30s (cap 90s) and tool-arg wait 60s so large writes
+  are not cut mid-file.
+- appserver JSON-RPC stdio limit raised to 8MiB (was 64KiB).
+- Windows tool output decodes with `errors=replace` instead of crashing on
+  mixed UTF-8 / GBK.
+- One retry when a provider returns HTTP 200 then silence.
 - Release notes no longer tell a CLI-only install to run `rxycode gui`.
-  Desktop is a separate GitHub Release download; the wheel does not ship
+  Desktop is a separate GitHub Release download; the sdist does not ship
   Electron.
-- Published wheel / sdist / Desktop runtime no longer ship `evals`,
-  `.coveragerc`, `AGENTS.md`, or repo test scripts.
+- Published sdist no longer ships `evals`, `.coveragerc`, `AGENTS.md`, or
+  repo test scripts.
 - Linux AppImage startup: `rxycode gui` marks the image executable and
   sets `APPIMAGE_EXTRACT_AND_RUN=1`; the packaged app passes `--no-sandbox`
   so missing FUSE / unsigned chrome-sandbox no longer abort launch.
@@ -25,6 +77,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asterisk-masked forms) into CI logs, agent answers, or eval artifacts.
 - GitHub Actions no longer stores or injects `RXYCODE_LIVE_API_KEY`. Live and
   eval suite runs stay on a local machine.
+
+### Changed
+
+- Product version **1.2.11** in `pyproject.toml`, installers, OpenTUI/Ink
+  headers, MCP `clientInfo`, and Desktop package metadata. Protocol
+  (`protocol/version.py` `1.1.0`) is unchanged.
+- Release workflow builds and uploads **sdist only**. No desktop matrix
+  on this tag.
+- GitHub `docs/` is trimmed to `agent/`, `assets/`, `imgs/`, `modules/`,
+  `release-notes/`, `quickstart.md`, and `GUI.md`.
 
 ---
 
@@ -649,6 +711,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.11]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11
 [1.2.10]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10
 [1.2.9]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9
 [1.2.8]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8

@@ -1588,6 +1588,26 @@ export function applyProtocolNotification(
         progressBySession: { ...state.progressBySession, [progress.session_id]: progress.text }
       }
     }
+    case 'event/team': {
+      const team = params as { session_id: string; role?: string; stage?: string; phase?: string }
+      const role = String(team.role ?? '')
+      const stage = String(team.stage ?? '')
+      const label = role && stage ? `[${role}] ${stage}` : role || stage || 'team'
+      return {
+        ...state,
+        progressBySession: { ...state.progressBySession, [team.session_id]: label }
+      }
+    }
+    case 'event/agent_routed': {
+      const routed = params as { session_id: string; routing_reason?: string; payload?: { mode?: string } }
+      const mode = String(routed.payload?.mode ?? '')
+      const reason = String(routed.routing_reason ?? '')
+      const label = [mode && `mode=${mode}`, reason].filter(Boolean).join(' ')
+      return {
+        ...state,
+        progressBySession: { ...state.progressBySession, [routed.session_id]: label || 'routed' }
+      }
+    }
     case 'event/task_started': {
       const task = params as { session_id: string }
       return {

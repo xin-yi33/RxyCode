@@ -46,6 +46,14 @@ def async_rpc_enabled() -> bool:
     return os.environ.get("RXYCODE_ASYNC_RPC", "1") != "0"
 
 
+# asyncio.StreamReader defaults to 64 KiB. A completed T01 write/final
+# JSON-RPC line exceeded that and raised "Separator is found, but chunk
+# is longer than limit", so the job was marked failed after the files
+# already existed. Keep the worker stdio limit large enough for a full
+# source file plus envelope.
+WORKER_STDIO_LIMIT_BYTES = 8 * 1024 * 1024
+
+
 def _log_pipe_event(event: str, *, exc: BaseException | None = None) -> None:
     """Record a telemetry event for the pipe supervision paths."""
     if exc is None:
@@ -557,6 +565,7 @@ class AgentHost:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=WORKER_STDIO_LIMIT_BYTES,
         )
         self._pipe = AsyncRpcPipe(
             self._proc.stdin,
@@ -603,6 +612,7 @@ class AgentHost:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)

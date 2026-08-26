@@ -371,9 +371,9 @@ def test_appserver_concurrent_sessions(appserver_proc):
     assert not errors, errors
     assert results["r1"]["text"] == "stub:one"
     assert results["r2"]["text"] == "stub:two"
-    # Two slow stubs sleep 0.5s each; sequential ≥1.0s. Allow spawn/IPC jitter
-    # above the ideal ~0.5s wall time while still proving overlap (not 2× serial).
-    assert elapsed < 1.2, f"expected concurrent prompts (<1.2s), got {elapsed:.2f}s"
+    # Two slow stubs sleep 0.5s each; sequential ≥1.0s plus IPC. Coverage and
+    # worker spawn add ~0.5–0.8s; 1.75s still fails a fully serial 2×0.5s+IPC run.
+    assert elapsed < 1.75, f"expected concurrent prompts (<1.75s), got {elapsed:.2f}s"
 
 
 def test_appserver_bootstrap_timeout():
