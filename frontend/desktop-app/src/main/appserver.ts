@@ -135,6 +135,7 @@ export function buildSpawnSpec(options: {
       detached: process.platform !== 'win32'
     }
   }
+  env.RXYCODE_APPSERVER_PREEMPT = '1'
   if (options.runtime !== null && options.runtime !== undefined) {
     return {
       command: options.runtime.python,

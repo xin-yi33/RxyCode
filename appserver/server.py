@@ -204,6 +204,8 @@ class AppServer:
         should_lock = (not stub) or bool(os.environ.get("RXYCODE_APPSERVER_LOCK"))
         if should_lock:
             ok, reason = self._instance_lock.acquire()
+            if not ok and os.environ.get("RXYCODE_APPSERVER_PREEMPT") == "1":
+                ok, reason = self._instance_lock.preempt_and_acquire()
             if not ok:
                 self._instance_blocked = reason
             else:

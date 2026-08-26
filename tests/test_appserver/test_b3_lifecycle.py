@@ -41,6 +41,41 @@ def test_instance_lock_refuses_live_holder(tmp_path: Path) -> None:
     InstanceLock(path).release()
 
 
+def test_preempt_kills_live_holder_then_acquires(tmp_path: Path) -> None:
+    path = tmp_path / "appserver.lock"
+    holder = _live_holder(tmp_path)
+    try:
+        lock = InstanceLock(path)
+        ok, reason = lock.acquire()
+        assert ok is False
+        assert "already running" in reason
+        ok, _ = lock.preempt_and_acquire()
+        assert ok is True
+        holder.wait(timeout=5)
+        assert holder.poll() is not None
+        lock.release()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+
+
+def test_preempt_env_lets_appserver_take_over(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RXYCODE_APPSERVER_LOCK", str(tmp_path / "appserver.lock"))
+    monkeypatch.setenv("RXYCODE_APPSERVER_PREEMPT", "1")
+    holder = _live_holder(tmp_path)
+    try:
+        server = AppServer(stub=True)
+        assert server._instance_blocked is None
+        holder.wait(timeout=5)
+        assert holder.poll() is not None
+        server._instance_lock.release()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+
+
 def test_stale_lock_is_stolen(tmp_path: Path) -> None:
     path = tmp_path / "appserver.lock"
     path.write_text(json.dumps({"pid": 2_000_000_000}), encoding="utf-8")
