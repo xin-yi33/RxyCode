@@ -97,6 +97,18 @@ test('buildSpawnSpec does not set the stub flag otherwise', () => {
   assert.equal(spec.env.RXYCODE_APPSERVER_STUB, undefined)
 })
 
+test('buildSpawnSpec sets preempt for real python appserver, not fake mode', () => {
+  const real = buildSpawnSpec({ runtime: null, repoRoot: 'D:\\dev' })
+  assert.equal(real.env.RXYCODE_APPSERVER_PREEMPT, '1')
+  const fake = buildSpawnSpec({
+    fakeAppserver: true,
+    runtime: null,
+    repoRoot: 'D:\\dev',
+    scriptsDir: 'C:\\scripts'
+  })
+  assert.equal(fake.env.RXYCODE_APPSERVER_PREEMPT, undefined)
+})
+
 test('buildSpawnSpec throws when neither runtime nor repo root is available', () => {
   assert.throws(
     () => buildSpawnSpec({ runtime: null, repoRoot: null }),
