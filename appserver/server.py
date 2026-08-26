@@ -3146,6 +3146,7 @@ class AppServer:
                     )
                 )
             )
+            self._instance_lock.release()
             return
         if os.environ.get("RXYCODE_APPSERVER_FAIL_BOOT") == "1":
             await write_message(
