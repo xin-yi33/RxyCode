@@ -89,7 +89,7 @@ describe('App integration', () => {
     const { lastFrame, unmount } = renderWide(<MouseProvider value={mouseManager}><App /></MouseProvider>);
     await settle();
     const f = lastFrame() ?? '';
-    expect(f).toContain('RxyCode v1.2.10');
+    expect(f).toContain('RxyCode v1.2.11');
     expect(f).toContain('Ready');
     unmount();
   });

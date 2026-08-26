@@ -38,6 +38,8 @@ def _windows_current_sid() -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
     )
     row = next(csv.reader(result.stdout.splitlines()))
@@ -77,6 +79,8 @@ def restrict_file_permissions(path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=15,
     )
     if result.returncode != 0:

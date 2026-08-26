@@ -139,26 +139,87 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
     ],
     "agent_architect": [
         {
-            "input": "Task: 给 CLI 增加 --json 输出",
-            "output": "file-level plan: entrypoint.py flag parse; formatters/json.py; tests/test_cli_json.py",
+            "input": "Task: add POST /login with hashed passwords",
+            "output": (
+                "1. auth/passwords.py — hash/verify helpers\n"
+                "2. auth/routes.py — POST /login\n"
+                "3. tests/test_login.py — success and 401 cases"
+            ),
         },
     ],
     "agent_coder": [
         {
-            "input": "Plan: add --json to the CLI",
-            "output": "implemented formatters/json.py and wired entrypoint.py; tests pass",
+            "input": "Task: implement POST /login from the architect plan",
+            "output": (
+                "Wrote auth/passwords.py and auth/routes.py. "
+                "Login hashes the password and returns 401 on mismatch."
+            ),
         },
     ],
     "agent_auditor": [
         {
-            "input": "Diff of auth.py login handler",
-            "output": "通过; no blocking findings. Note: hash passwords before insert (info).",
+            "input": "Task: audit POST /login after mechanical checks passed",
+            "output": (
+                "不通过\n"
+                "auth/routes.py:12 implementation: password compared in plain text; use the hash helper."
+            ),
+        },
+    ],
+    "agent_pm": [
+        {
+            "input": "Task: add POST /login with hashed passwords",
+            "output": (
+                "Goal: login API with hashed passwords.\n"
+                "Acceptance: pytest tests/test_login.py covers 401 and success."
+            ),
+        },
+    ],
+    "agent_frontend_coder": [
+        {
+            "input": "Task: frontend for POST /echo",
+            "output": "Wrote frontend/index.html that POSTs to /echo. SKIP if no frontend paths.",
+        },
+    ],
+    "agent_backend_coder": [
+        {
+            "input": "Task: implement POST /login from the architect plan",
+            "output": "Wrote auth/passwords.py and auth/routes.py. Passwords are hashed.",
+        },
+    ],
+    "agent_tester": [
+        {
+            "input": "Task: tests for POST /login",
+            "output": "Wrote tests/test_login.py with 401 and success. pytest green.",
+        },
+    ],
+    "agent_security_auditor": [
+        {
+            "input": "Task: security audit of POST /login",
+            "output": "不通过\nauth/routes.py:12 secrets in plaintext.",
+        },
+    ],
+    "agent_quality_auditor": [
+        {
+            "input": "Task: quality audit of POST /login",
+            "output": "不通过\ntests/test_login.py: missing 401 case.",
+        },
+    ],
+    "agent_maintainability_auditor": [
+        {
+            "input": "Task: maintainability audit of POST /login",
+            "output": "通过\nModules match the architect file list.",
+        },
+    ],
+    "agent_doc": [
+        {
+            "input": "Task: document POST /login",
+            "output": "Wrote docs/login.md with hash+verify and 401 behavior.",
         },
     ],
     "delegate_request": [
         {
-            "input": "goal: summarize listed refs about cache keys",
-            "output": "facts from context_refs only; no extra tools or sub-team",
+            "input": "goal: write tests/test_login.py | tools: write | refs: auth/routes.py",
+            "output": "Created tests/test_login.py covering 200 and 401. Did not edit auth/routes.py.",
         },
     ],
 }

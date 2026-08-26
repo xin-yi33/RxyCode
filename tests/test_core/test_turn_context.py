@@ -189,4 +189,7 @@ async def test_empty_blocks_byte_identical_through_agent_path(monkeypatch):
     await agent._fast_reply_with_tools("帮我写个排序函数。")
 
     assert len(captured) == 3
-    assert captured[0] == captured[1] == captured[2] == "MEMORY-BASE"
+    assert captured[0] == "MEMORY-BASE"
+    # Later turns ride the frozen AgentPrefix; empty FX8 blocks still must
+    # not change the new-suffix memory_context relative to each other.
+    assert captured[1] == captured[2]

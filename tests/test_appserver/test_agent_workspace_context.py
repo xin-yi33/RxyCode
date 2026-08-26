@@ -34,3 +34,15 @@ def test_configure_agent_workspace_binds_session_scoped_working_directory(
         assert current_working_directory() == workspace.resolve()
     finally:
         reset_session_binding(token)
+
+
+def test_agent_worker_bind_core_session_reuses_runtimes(tmp_path):
+    """Live session/prompt must keep Session.agent_runtimes across warmup→H3."""
+    from appserver.agent_worker import AgentWorker
+
+    worker = AgentWorker()
+    first = worker.bind_core_session("ses-live", tmp_path, lambda _n: None)
+    first.agent_runtimes["architect"] = "kept"
+    second = worker.bind_core_session("ses-live", tmp_path, lambda _n: None)
+    assert second is first
+    assert second.agent_runtimes["architect"] == "kept"

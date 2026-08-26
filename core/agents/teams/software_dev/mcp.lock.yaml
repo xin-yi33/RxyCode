@@ -1,0 +1,7 @@
+# Declared MCP servers. Default disabled (LC8). H1–H6 do not require them.
+servers:
+  playwright:
+    enabled: false
+    package: "@playwright/mcp"
+    license: Apache-2.0
+    note: Optional browser tests. pytest is the coding-team hard gate.

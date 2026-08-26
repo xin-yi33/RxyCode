@@ -46,7 +46,7 @@ def test_replay_tree_includes_consult_and_verify(tmp_path: Path) -> None:
         ConsultRequest(
             session_id="ses-f12",
             request_id="q1",
-            from_role="coder",
+            from_role="backend_coder",
             to_role="architect",
             question="方案里没提到迁移脚本",
             stage="implement",

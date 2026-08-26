@@ -30,7 +30,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.2.10"
+    assert project["version"] == "1.2.11"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -75,6 +75,7 @@ def test_manifest_includes_opentui_and_ink_runtimes_and_excludes_node_modules():
     assert "include frontend/opentui-app/package.json" in manifest
     assert "recursive-include frontend/protocol-client/src *" in manifest
     assert "include frontend/protocol-client/package.json" in manifest
+    assert "include core/agents/teams/*.yaml" in manifest
     assert "prune frontend/node_modules" in manifest
     assert "prune frontend/opentui-app/node_modules" in manifest
     assert "prune frontend/protocol-client/node_modules" in manifest
@@ -108,6 +109,7 @@ def test_package_data_ships_opentui_sources():
     assert "frontend/opentui-app/src/**/*" in joined
     assert "frontend/protocol-client/package.json" in joined
     assert "frontend/protocol-client/src/**/*" in joined
+    assert "core/agents/teams/*.yaml" in joined
 
 
 def test_pyproject_includes_every_core_subpackage():
@@ -156,6 +158,7 @@ def test_release_waits_for_cross_platform_installed_smoke_tests():
     assert workflow["permissions"]["contents"] == "read"
 
     jobs = workflow["jobs"]
+    assert "desktop" not in jobs
     assert jobs["smoke-install"]["needs"] == "build"
     assert set(jobs["publish"]["needs"]) == {"build", "smoke-install"}
     assert jobs["publish"]["permissions"]["contents"] == "write"
@@ -169,11 +172,13 @@ def test_release_waits_for_cross_platform_installed_smoke_tests():
     release_text = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
-    assert "frontend/desktop-app/dist/*.dmg" in release_text
-    assert "frontend/desktop-app/dist/*.zip" in release_text
-    assert release_text.count("frontend/desktop-app/dist/*.zip") >= 2
-    assert "python -m build --no-isolation" in build_commands
+    assert "frontend/desktop-app/dist/*.dmg" not in release_text
+    assert "frontend/desktop-app/dist/*.zip" not in release_text
+    assert "python -m build --sdist" in build_commands
+    assert "--no-isolation" in build_commands
     assert "python -m twine check dist/*" in build_commands
+    assert "dist/*.tar.gz" in publish_commands
+    assert "*.whl" in publish_commands
     assert "gh release create" in publish_commands
     assert "--verify-tag" in publish_commands
 
@@ -196,6 +201,31 @@ def test_published_desktop_asset_names_match_electron_builder():
     assert "RxyCode.Desktop-<version>-win.zip" in gui
     assert "rxycode-desktop-<version>-win.zip" not in gui
     assert "RxyCode.Desktop-1.2.10-win.zip" in readme
+
+
+def test_tracked_docs_only_contain_the_github_allowlist():
+    import subprocess
+
+    listed = subprocess.check_output(
+        ["git", "ls-files", "docs"],
+        cwd=PROJECT_ROOT,
+        text=True,
+        encoding="utf-8",
+    )
+    allowed_dirs = {"agent", "assets", "imgs", "modules", "release-notes"}
+    allowed_files = {"quickstart.md", "GUI.md"}
+    unexpected = []
+    for line in listed.splitlines():
+        rel = line[5:] if line.startswith("docs/") else line
+        if not rel:
+            continue
+        first = rel.split("/", 1)[0]
+        if "/" in rel:
+            if first not in allowed_dirs:
+                unexpected.append(line)
+        elif first not in allowed_files:
+            unexpected.append(line)
+    assert not unexpected, f"tracked docs outside GitHub allowlist: {unexpected}"
 
 
 def test_release_notes_separate_cli_install_from_desktop_gui():

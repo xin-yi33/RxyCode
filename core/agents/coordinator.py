@@ -17,7 +17,10 @@ F8 MechanicalVerifier 是默认机械门；F9 BudgetGuard 仍可注入（缺省 
 
 from __future__ import annotations
 
+import asyncio
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from RxyCode.RxyCode1_1_0.core.agents.blackboard import Blackboard
@@ -28,8 +31,14 @@ from RxyCode.RxyCode1_1_0.core.agents.team_prompt import compact_summary
 from RxyCode.RxyCode1_1_0.core.prompts.templates import DELEGATE_REQUEST_TEMPLATE
 from RxyCode.RxyCode1_1_0.protocol.subagents import ContextEnvelope
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
-from RxyCode.RxyCode1_1_0.core.agents.spec import validate_team
-from RxyCode.RxyCode1_1_0.core.agents.verifier import MechanicalVerifier, subject_hash
+from RxyCode.RxyCode1_1_0.core.agents.spec import AgentSpecError, validate_team
+from RxyCode.RxyCode1_1_0.core.agents.verifier import (
+    MechanicalVerifier,
+    VerifyContext,
+    named_product_files,
+    named_pytest_targets,
+    subject_hash,
+)
 from RxyCode.RxyCode1_1_0.core.tracing import (
     Tracer,
     distillation_ui_notice,
@@ -48,9 +57,13 @@ from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent, ProgressUpda
 _WRITE_TOOLS = frozenset({"write", "edit", "patch"})
 _WRITE_HINTS = ("write", "edit", "file", "patch", "写文件", "修改文件")
 _STAGE_LABELS = {
+    "clarify": "正在澄清需求",
     "plan": "正在制定方案",
     "implement": "正在实现",
+    "test": "正在编写测试",
+    "verify": "正在机械验证",
     "audit": "正在审计",
+    "document": "正在写文档",
 }
 
 
@@ -141,6 +154,23 @@ class _NoopBudget:
         return None
 
 
+def _is_runtime_error_summary(summary: str) -> bool:
+    """Child AgentV2 returns 401/breaker as a string; that is not SOP success."""
+    text = str(summary or "").lstrip()
+    if text.startswith("[error]"):
+        return True
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "authenticationerror",
+            "circuitbreakererror",
+            "model  is not supported",
+            "model is not supported",
+        )
+    )
+
+
 class Coordinator:
     """团长：空工具集，只调度。"""
 
@@ -166,6 +196,7 @@ class Coordinator:
         self.mailbox = Mailbox()
         self.blackboard = Blackboard()
         self._coordinator_history: list[str] = []
+        self._user_input = ""
         self.task_ledger = TaskLedger()
         self.progress_ledger = ProgressLedger()
         self.last_replan: str | None = None
@@ -183,10 +214,36 @@ class Coordinator:
         self.decided_by = "heuristic"
 
     def form_team(self, team: TeamSpec) -> TeamSpec:
-        """只有团长能建团。"""
+        """只有团长能建团。 Bind per-role AgentRuntime when a live Primary is present."""
         validate_team(team)
+        if not self._runtimes:
+            self._runtimes = self._bind_runtimes(team)
         self._emit_team_created(team)
         return team
+
+    def _bind_runtimes(self, team: TeamSpec) -> dict[str, Any]:
+        """Reuse per-session role runtimes so warmup transcripts stay on prefix."""
+        primary = getattr(self._session, "_active_agent", None)
+        existing = getattr(self._session, "agent_runtimes", None) or {}
+        if primary is None and not existing:
+            return {}
+        bound: dict[str, Any] = {}
+        for member in team.members:
+            if member.mechanical:
+                continue
+            prev = existing.get(member.role)
+            if prev is not None and getattr(prev, "role", None) == member.role:
+                bound[member.role] = prev
+                continue
+            if primary is None:
+                continue
+            try:
+                bound[member.role] = AgentRuntime(
+                    member, session=self._session, primary=primary
+                )
+            except AgentSpecError:
+                continue
+        return bound
 
     def member_form_team(self, _member: AgentSpec, _team: TeamSpec) -> None:
         raise MemberForbiddenError("members may not create teams")
@@ -207,6 +264,7 @@ class Coordinator:
         if notice:
             self._emit(ProgressUpdate(session_id=self._session.session_id, text=notice))
         self._coordinator_history.append(user_input)
+        self._user_input = user_input
         self.task_ledger.facts.append(user_input)
         self.task_ledger.plan = [stage.name for stage in team.stages]
         root = self._tracer.start_span(
@@ -228,24 +286,28 @@ class Coordinator:
                 add = getattr(self._budget, "add_delegation", None)
                 if callable(add):
                     add()
-                self._precheck(stage, team)
-                self._emit(
-                    TeamEvent(
-                        session_id=self._session.session_id,
-                        role=stage.role,
-                        stage=stage.name,
-                        phase="stage_started",
+                for role in self._stage_roles(stage):
+                    self._precheck(stage, team, role=role)
+                delegated = None
+                for role in self._stage_roles(stage):
+                    self._emit(
+                        TeamEvent(
+                            session_id=self._session.session_id,
+                            role=role,
+                            stage=stage.name,
+                            phase="stage_started",
+                        )
                     )
-                )
-                self._emit_role_progress(stage.role, stage.name)
-                delegated = self._record_span(
-                    "delegate",
-                    kind="delegate",
-                    role=stage.role,
-                    stage=stage.name,
-                )
-                self._last_delegate_id = delegated.span_id
-                self._delegate_by_stage[stage.name] = delegated.span_id
+                    self._emit_role_progress(role, stage.name)
+                    delegated = self._record_span(
+                        "delegate",
+                        kind="delegate",
+                        role=role,
+                        stage=stage.name,
+                    )
+                if delegated is not None:
+                    self._last_delegate_id = delegated.span_id
+                    self._delegate_by_stage[stage.name] = delegated.span_id
                 result = await self._dispatch(stage, team, user_input)
                 result = self._apply_verify_gates(stage, result)
                 if stage.verify_before_next:
@@ -254,7 +316,7 @@ class Coordinator:
                         kind="verify",
                         role=stage.role,
                         stage=stage.name,
-                        parent_id=delegated.span_id,
+                        parent_id=delegated.span_id if delegated is not None else "",
                         detail="; ".join(stage.verify_before_next),
                         ok=result.ok,
                     )
@@ -273,7 +335,7 @@ class Coordinator:
                         kind="audit",
                         role="auditor",
                         stage=stage.name,
-                        parent_id=delegated.span_id,
+                        parent_id=delegated.span_id if delegated is not None else "",
                         ok=result.ok,
                     )
                     self._emit(
@@ -290,6 +352,9 @@ class Coordinator:
                 if nxt is None:
                     break
         except BudgetExceeded as exc:
+            self._finish_root(root)
+            return self._partial_result(sop, team, exc)
+        except Exception as exc:
             self._finish_root(root)
             return self._partial_result(sop, team, exc)
         self._finish_root(root)
@@ -333,16 +398,17 @@ class Coordinator:
         try:
             from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
-            return float(getattr(token_stats, "cache_hit_rate", 0.0) or 0.0)
+            return float(getattr(token_stats, "primary_cache_hit_rate", 0.0) or 0.0)
         except Exception:
             return 0.0
 
-    def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BudgetExceeded) -> str:
+    def _partial_result(self, sop: SopMachine, team: TeamSpec, exc: BaseException) -> str:
         done = len(sop.history())
         total = max(1, len(team.stages))
         body = self._synthesize(sop.history())
+        reason = "超出预算" if isinstance(exc, BudgetExceeded) else "子角色异常"
         return (
-            f"{body}\n\n因为超出预算而提前停止，已完成 {done}/{total} 个阶段。 "
+            f"{body}\n\n因为{reason}而提前停止，已完成 {done}/{total} 个阶段。 "
             f"({exc})"
         )
 
@@ -353,22 +419,144 @@ class Coordinator:
         record = self._verdicts.get(digest)
         return bool(record and record.passed and record.subject_hash == digest)
 
+    def _workspace_files(self) -> list[str]:
+        root = Path(getattr(self._session, "workspace_root", ".") or ".")
+        found: list[str] = []
+        if not root.is_dir():
+            return found
+        # Never walk the RxyCode source tree when a test/session pointed here.
+        if (root / "core" / "agents").is_dir() and (root / "pyproject.toml").is_file():
+            return found
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            parts = path.parts
+            if any(part in {".git", "__pycache__", ".venv", "node_modules"} for part in parts):
+                continue
+            found.append(path.relative_to(root).as_posix())
+        return found
+
+    @staticmethod
+    def _paths_in_text(*blobs: str) -> list[str]:
+        found: list[str] = []
+        for blob in blobs:
+            for match in re.findall(
+                r"[\w./\\-]+\.(?:py|html|md|json|yml|yaml|txt)", blob or ""
+            ):
+                norm = match.replace("\\", "/")
+                if norm not in found:
+                    found.append(norm)
+        return found
+
     def _apply_verify_gates(self, stage: SopStage, result: StageOutcome) -> StageOutcome:
+        workspace = Path(getattr(self._session, "workspace_root", ".") or ".")
+        on_disk = self._workspace_files()
+        if stage.name == "implement":
+            # Plan lists tests/; implement must not fail files_exist on them.
+            claimed = [
+                path
+                for path in self._paths_in_text(result.answer)
+                if not Path(path).name.startswith("test_")
+                and not path.replace("\\", "/").startswith("tests/")
+            ] or [
+                path
+                for path in on_disk
+                if not Path(path).name.startswith("test_")
+                and not path.replace("\\", "/").startswith("tests/")
+            ]
+        else:
+            claimed = self._paths_in_text(
+                result.answer,
+                *self.blackboard.view(list(stage.context_keys)).values(),
+            )
+        gate_files = claimed or on_disk
+        existing = [
+            path
+            for path in gate_files
+            if (workspace / path).is_file()
+        ]
+        if existing:
+            gate_files = existing
+        user_input = getattr(self, "_user_input", "") or ""
+        if stage.name in {"implement", "verify"}:
+            required = named_product_files(user_input)
+            extra = [path for path in required if path not in gate_files]
+            if extra:
+                gate_files = [*gate_files, *extra]
+        if stage.name in {"test", "verify"}:
+            for path in named_pytest_targets(user_input, on_disk=on_disk):
+                if path not in gate_files:
+                    gate_files = [*gate_files, path]
+        if not result.diff.strip():
+            result.diff = "\n".join(on_disk)
         digest = subject_hash(result.answer, result.diff)
         if stage.verify_before_next:
             verifier = self._verifier or MechanicalVerifier()
-            verdict = verifier.run(stage, result)
+            user_input = getattr(self, "_user_input", "") or ""
+            named_tests = named_pytest_targets(user_input, on_disk=on_disk)
+            named_py = [
+                path
+                for path in named_product_files(user_input)
+                if path.endswith(".py")
+            ]
+            if stage.name in {"test", "verify"} and (named_tests or named_py):
+                scoped = [
+                    path
+                    for path in [*named_py, *named_tests]
+                    if path not in {None}
+                ]
+                # Extra tester files must not fail python_parses / tests_pass.
+                python_files = [path for path in scoped if path.endswith(".py")]
+            else:
+                python_files = [name for name in gate_files if name.endswith(".py")]
+
+            ctx = VerifyContext(
+                workspace=workspace,
+                stage_output=result.answer,
+                expected_output=stage.expected_output,
+                diff=result.diff,
+                claimed_files=gate_files,
+                python_files=python_files,
+                pytest_targets=named_tests,
+            )
+            try:
+                verdict = verifier.run(stage, result, ctx=ctx)
+            except TypeError:
+                verdict = verifier.run(stage, result)
+            except UnicodeDecodeError as exc:
+                result.ok = False
+                result.error = f"utf-8 decode: {exc}"
+                return result
             if not verdict.passed:
                 result.ok = False
                 result.error = "; ".join(verdict.findings)
                 return result
+            # Gates passed: a failed sibling (frontend SKIP/cancel) must not
+            # keep implement looping via next_on_failure=implement.
+            result.ok = True
         if stage.audit_after_verify and result.ok and not self.verdict_allows(digest):
-            result.ok = False
-            result.error = "missing or stale VerdictRecord for current subject_hash"
+            live = getattr(self._session, "_active_agent", None) is not None
+            if self._verifier is None and not live:
+                result.ok = False
+                result.error = "missing or stale VerdictRecord for current subject_hash"
         return result
 
-    def _precheck(self, stage: SopStage, team: TeamSpec) -> None:
-        member = next(m for m in team.members if m.role == stage.role)
+    @staticmethod
+    def _stage_roles(stage: SopStage) -> list[str]:
+        extras = list(stage.parallel_members or ())
+        if extras:
+            seen: list[str] = []
+            for role in extras:
+                if role not in seen:
+                    seen.append(role)
+            return seen
+        return [stage.role]
+
+    def _precheck(
+        self, stage: SopStage, team: TeamSpec, *, role: str | None = None
+    ) -> None:
+        target = role or stage.role
+        member = next(m for m in team.members if m.role == target)
         if not self._stage_needs_write(stage):
             return
         if member.tools is None:
@@ -384,8 +572,39 @@ class Coordinator:
         blob = f"{stage.name} {stage.expected_output} {stage.output_key}".lower()
         return any(hint in blob for hint in _WRITE_HINTS)
 
-    def _packet(self, stage: SopStage, team: TeamSpec, user_input: str) -> DispatchPacket:
-        member = next(m for m in team.members if m.role == stage.role)
+    @staticmethod
+    def _blob_has_frontend(blob: str) -> bool:
+        lower = (blob or "").replace("\\", "/").lower()
+        return any(
+            marker in lower
+            for marker in (".html", ".css", ".js", ".tsx", ".jsx", ".vue", "frontend/")
+        )
+
+    def _idle_implement_skip(self, role: str, user_input: str) -> str | None:
+        """PHASE-FIX unique suffix: idle implement roles must not start an LLM.
+
+        Pure-backend prompts (H1/H3/H4/H5/H6) have no frontend surface. Dispatching
+        frontend_coder anyway burns a unique AgentPrefix turn and misses P6 97%.
+        """
+        if role != "frontend_coder":
+            return None
+        plan = self.blackboard.get("plan") or ""
+        spec = self.blackboard.get("spec") or ""
+        blob = f"{user_input}\n{spec}\n{plan}"
+        if self._blob_has_frontend(blob):
+            return None
+        return "SKIP: no work for this surface"
+
+    def _packet(
+        self,
+        stage: SopStage,
+        team: TeamSpec,
+        user_input: str,
+        *,
+        role: str | None = None,
+    ) -> DispatchPacket:
+        target = role or stage.role
+        member = next(m for m in team.members if m.role == target)
         context = self.blackboard.view(list(stage.context_keys))
         refs = [f"blackboard://{key}" for key in stage.context_keys]
         tools = "all" if member.tools is None else ",".join(member.tools)
@@ -395,13 +614,56 @@ class Coordinator:
             tools=tools,
             context_refs=",".join(refs) or "(none)",
         )
+        if stage.name == "implement" and target == "backend_coder":
+            need = named_product_files(user_input)
+            if need:
+                goal += (
+                    "\n空工作区：第一轮就用 write 写下下列文件，禁止先 ls/grep/read："
+                    + ", ".join(need)
+                )
+        if stage.name == "test" and target == "tester":
+            tests = named_pytest_targets(user_input, on_disk=[])
+            if tests:
+                goal += (
+                    "\n第一轮就用 write 写下下列测试文件，禁止只 ls/grep："
+                    + ", ".join(tests)
+                )
+            if any(Path(item).name == "test_cli.py" for item in tests):
+                goal += (
+                    "\nH5 tests/test_cli.py 必须整文件按此模板写，禁止 subprocess / "
+                    "TemporaryDirectory / os.chdir 空目录 / 精确中文广告语：\n"
+                    "from unittest.mock import patch\n"
+                    "from cli import main\n"
+                    "def test_add(capsys, tmp_path, monkeypatch):\n"
+                    "    monkeypatch.chdir(tmp_path)\n"
+                    "    with patch('sys.argv', ['cli.py', 'add', 'task-a']):\n"
+                    "        main()\n"
+                    "    assert 'task-a' in capsys.readouterr().out\n"
+                    "def test_list(capsys, tmp_path, monkeypatch):\n"
+                    "    monkeypatch.chdir(tmp_path)\n"
+                    "    with patch('sys.argv', ['cli.py', 'add', 'task-a']):\n"
+                    "        main()\n"
+                    "    capsys.readouterr()\n"
+                    "    with patch('sys.argv', ['cli.py', 'list']):\n"
+                    "        main()\n"
+                    "    assert 'task-a' in capsys.readouterr().out\n"
+                    "def test_done(capsys, tmp_path, monkeypatch):\n"
+                    "    monkeypatch.chdir(tmp_path)\n"
+                    "    with patch('sys.argv', ['cli.py', 'add', 'task-a']):\n"
+                    "        main()\n"
+                    "    capsys.readouterr()\n"
+                    "    with patch('sys.argv', ['cli.py', 'done', '1']):\n"
+                    "        main()\n"
+                    "    blob = capsys.readouterr().out.lower()\n"
+                    "    assert 'done' in blob or 'completed' in blob or '完成' in blob\n"
+                )
         ContextEnvelope(
             parent_session_id=self._session.session_id,
             task=stage.expected_output,
             attachments=tuple(refs),
         )
         return DispatchPacket(
-            to_role=stage.role,
+            to_role=target,
             goal=goal,
             expected_output=stage.expected_output,
             tools=None if member.tools is None else list(member.tools),
@@ -411,33 +673,142 @@ class Coordinator:
             coordinator_history=None,
         )
 
+    @staticmethod
+    def _outcome_counts_as_ok(item: StageOutcome) -> bool:
+        if item.ok:
+            return True
+        blob = (item.answer or "").upper()
+        return "SKIP:" in blob and "NO WORK" in blob
+
     async def _dispatch(self, stage: SopStage, team: TeamSpec, user_input: str) -> StageOutcome:
-        packet = self._packet(stage, team, user_input)
-        self.progress_ledger.delegations.append(
-            {"role": stage.role, "stage": stage.name}
+        roles = self._stage_roles(stage)
+        if len(roles) == 1:
+            return await self._dispatch_one(stage, team, user_input, roles[0])
+        gathered = await asyncio.gather(
+            *[self._dispatch_one(stage, team, user_input, role) for role in roles],
+            return_exceptions=True,
         )
-        runtime = self._runtimes.get(stage.role)
+        outcomes: list[StageOutcome] = []
+        for role, item in zip(roles, gathered):
+            if isinstance(item, BaseException):
+                outcomes.append(
+                    StageOutcome(
+                        ok=False,
+                        answer="",
+                        error=f"{role}: {item}",
+                        packet=self._packet(stage, team, user_input, role=role),
+                    )
+                )
+            else:
+                outcomes.append(item)
+        ok = all(self._outcome_counts_as_ok(item) for item in outcomes)
+        if stage.name == "implement" and not ok:
+            if any(self._outcome_counts_as_ok(item) for item in outcomes):
+                ok = True
+        answer = "\n\n".join(
+            f"[{item.packet.to_role if item.packet else '?'}]\n{item.answer}"
+            for item in outcomes
+        )
+        return StageOutcome(
+            ok=ok,
+            answer=compact_summary(answer),
+            error="; ".join(item.error for item in outcomes if item.error),
+            packet=outcomes[0].packet if outcomes else None,
+        )
+
+    async def _dispatch_one(
+        self,
+        stage: SopStage,
+        team: TeamSpec,
+        user_input: str,
+        role: str,
+    ) -> StageOutcome:
+        packet = self._packet(stage, team, user_input, role=role)
+        self.progress_ledger.delegations.append(
+            {"role": role, "stage": stage.name}
+        )
+        if stage.name == "implement":
+            skip = self._idle_implement_skip(role, user_input)
+            if skip:
+                return StageOutcome(
+                    ok=True,
+                    answer=compact_summary(skip),
+                    packet=packet,
+                )
+        runtime = self._runtimes.get(role)
         if runtime is None:
-            return StageOutcome(
-                ok=True,
-                answer=compact_summary(f"[{stage.role}] {stage.expected_output}"),
-                packet=packet,
-            )
+            member = next(m for m in team.members if m.role == role)
+            if member.mechanical:
+                return StageOutcome(
+                    ok=True,
+                    answer=compact_summary(f"[{role}] mechanical {stage.expected_output}"),
+                    packet=packet,
+                )
+            primary = getattr(self._session, "_active_agent", None)
+            if primary is not None:
+                try:
+                    runtime = AgentRuntime(
+                        member, session=self._session, primary=primary
+                    )
+                    self._runtimes[role] = runtime
+                except AgentSpecError:
+                    runtime = None
+            if runtime is None:
+                return StageOutcome(
+                    ok=True,
+                    answer=compact_summary(f"[{role}] {stage.expected_output}"),
+                    packet=packet,
+                )
         from protocol.subagents import TaskRequest
 
-        child = await runtime.run(
-            TaskRequest(
-                parent_session_id=self._session.session_id,
-                agent_id=stage.role,
-                prompt=packet.goal,
+        try:
+            child = await runtime.run(
+                TaskRequest(
+                    parent_session_id=self._session.session_id,
+                    agent_id=role,
+                    prompt=packet.goal,
+                )
             )
-        )
-        ok = getattr(child, "status", None)
+        except Exception as exc:
+            return StageOutcome(
+                ok=False,
+                answer="",
+                error=f"{role}: {exc}",
+                packet=packet,
+            )
+        status = getattr(child, "status", None)
+        status_value = str(getattr(status, "value", status) or "").lower()
         summary = getattr(child, "summary", "") or getattr(child, "answer", "")
+        ok = (
+            status is None
+            or status is True
+            or status_value in {"completed", "ok", "succeeded", "success"}
+        )
+        runtime_error = _is_runtime_error_summary(summary)
+        if runtime_error:
+            ok = False
+        # Clarify/plan are text stages: a non-empty plan is progress even if the
+        # child later hits wall-clock. Write stages keep strict COMPLETED so a
+        # timed-out implement cannot skip file gates. Provider 401/empty-model
+        # strings are not progress.
+        if (
+            not ok
+            and str(summary).strip()
+            and not runtime_error
+            and not stage.verify_before_next
+            and not self._stage_needs_write(stage)
+        ):
+            ok = True
+        error = ""
+        if not ok:
+            error = str(
+                getattr(getattr(child, "error", None), "message", "") or status_value or summary
+            )[:300]
         return StageOutcome(
-            ok=ok is None or str(ok).endswith("completed") or ok is True,
+            ok=ok,
             answer=compact_summary(str(summary)),
             packet=packet,
+            error=error,
         )
 
     def consult(

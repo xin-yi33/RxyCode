@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode"
-version = "1.2.10"
+version = "1.2.11"
 description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,6 +50,9 @@ packages = [
   "RxyCode.RxyCode1_1_0.core.providers",
   "RxyCode.RxyCode1_1_0.core.safety",
   "RxyCode.RxyCode1_1_0.core.subagents",
+  "RxyCode.RxyCode1_1_0.core.agents",
+  "RxyCode.RxyCode1_1_0.core.agents.bridge",
+  "RxyCode.RxyCode1_1_0.core.agents.teams",
   "RxyCode.RxyCode1_1_0.appserver",
   "RxyCode.RxyCode1_1_0.protocol",
   "RxyCode.RxyCode1_1_0.execution",
@@ -88,6 +91,8 @@ dependencies = { file = ["requirements.txt"] }
   "frontend/protocol-client/tsconfig.json",
   "frontend/protocol-client/src/**/*.ts",
   "core/agents/teams/*.yaml",
+  "core/agents/teams/**/*.yaml",
+  "core/agents/teams/**/*.md",
 ]
 
 [tool.setuptools.exclude-package-data]

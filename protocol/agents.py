@@ -61,7 +61,9 @@ class AgentSpec(BaseModel):
     #:   pair.*      Phase H  结对编程（pair.with / pair.role）
     #:   vision.*    Phase I  视觉能力（vision.required）
     #:   persona.*   Phase J  人格（persona.id / persona.skills / persona.source）
-    #:   ecosystem.* F18  专家团打包（category / version / is_leader / …）
+    #:   ecosystem.* F18/L2 专家团打包与角色级绑定：
+    #:     skill / extra_skills / mcp / is_leader / category / version
+    #:     disable_model_invocation / provenance / feasibility / tags
     #:
     #: 用 extra 而不是加一等字段，是为了不让还没定型的功能污染协议 schema。
     #: 某个命名空间稳定之后，再提升为一等字段并同步生成 TS 类型。
@@ -97,6 +99,8 @@ class SopStage(BaseModel):
     next_on_failure: str | None = None
     #: 该阶段最多重试几次
     max_retries: int = 2
+    #: 并发成员。None = 仅 ``role`` 一人；非空 = 列出的角色并发执行（D3）。
+    parallel_members: list[str] | None = None
 
 
 class TeamSpec(BaseModel):

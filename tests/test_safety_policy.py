@@ -111,6 +111,8 @@ class TestClassifyBashCommand:
         "Get-ChildItem -Force; \"---NODE---\"; node --version 2>&1; Get-Location",
         "node --check game.js; \"check-exit: $LASTEXITCODE\"",
         "python --version & node --version & cmd /c ver",
+        "pip show fastapi passlib pyjwt",
+        'python3 --version && pip show fastapi passlib pyjwt httpx pytest bcrypt 2>&1 | grep -E "^(Name|Version)"',
     ])
     def test_known_read_only_probe_commands_do_not_require_write_approval(self, cmd):
         """Environment probes are READ; unknown shell remains fail-closed WRITE."""
@@ -122,6 +124,7 @@ class TestClassifyBashCommand:
         "echo hi > file.txt",
         "node --check game.js > out.txt",
         "python3 script.py",
+        'python -c "import fastapi; print(fastapi.__version__)"',
     ])
     def test_stderr_redirect_does_not_downgrade_mutating_shell(self, cmd):
         """Only stderr-only redirects may be ignored; file writes stay WRITE."""

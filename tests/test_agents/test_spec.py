@@ -260,6 +260,7 @@ def test_agent_protocol_models_are_in_schema_defs() -> None:
         assert model.__name__ in defs, model.__name__
     assert "extra" in defs["TeamSpec"]["properties"]
     assert "extra" in defs["AgentSpec"]["properties"]
+    assert "parallel_members" in defs["SopStage"]["properties"]
     assert "TeamEvent" in defs
     assert "AgentProtocol" in defs
     assert {"$ref": "#/$defs/AgentProtocol"} in schema["oneOf"]
@@ -276,3 +277,71 @@ def test_f_layer_has_no_agent_event() -> None:
 
     assert not hasattr(agents_mod, "AgentEvent")
     assert hasattr(agents_mod, "TeamEvent")
+
+
+def test_parallel_members_unknown_role() -> None:
+    team = _team(
+        [_member("coder")],
+        [
+            SopStage(
+                name="code",
+                role="coder",
+                expected_output="artifact",
+                output_key="code",
+                parallel_members=["ghost"],
+            )
+        ],
+    )
+    with pytest.raises(AgentSpecError, match="unknown role"):
+        validate_team(team)
+
+
+def test_parallel_members_duplicate() -> None:
+    team = _team(
+        [_member("coder"), _member("reviewer")],
+        [
+            SopStage(
+                name="code",
+                role="coder",
+                expected_output="artifact",
+                output_key="code",
+                parallel_members=["coder", "coder"],
+            )
+        ],
+    )
+    with pytest.raises(AgentSpecError, match="duplicate parallel"):
+        validate_team(team)
+
+
+def test_invalid_skill_name_rejected() -> None:
+    team = _team(
+        [_member("coder", extra={"ecosystem.skill": "Not Valid"})],
+        [_stage("code", "coder")],
+    )
+    with pytest.raises(AgentSpecError, match="invalid skill name"):
+        validate_team(team)
+
+
+def test_two_leaders_rejected() -> None:
+    team = _team(
+        [
+            _member("pm", extra={"ecosystem.is_leader": True}),
+            _member("coder", extra={"ecosystem.is_leader": True}),
+        ],
+        [_stage("code", "coder")],
+    )
+    with pytest.raises(AgentSpecError, match="is_leader"):
+        validate_team(team)
+
+
+def test_unknown_ecosystem_key_is_ignored() -> None:
+    from RxyCode.RxyCode1_1_0.core.agents.spec import unknown_ecosystem_keys
+
+    team = _team(
+        [_member("coder", extra={"ecosystem.not_a_real_field": 1})],
+        [_stage("code", "coder")],
+        extra={"ecosystem.also_future": "x"},
+    )
+    validate_team(team)
+    assert "ecosystem.not_a_real_field" in unknown_ecosystem_keys(team.members[0].extra)
+    assert "ecosystem.also_future" in unknown_ecosystem_keys(team.extra)

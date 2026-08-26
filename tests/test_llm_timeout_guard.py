@@ -91,10 +91,19 @@ class TestLlmCallTimeout:
     def test_stream_idle_timeout_is_bounded_and_can_only_be_shorter(self):
         from RxyCode.RxyCode1_1_0.core.agent_v2 import _resolve_stream_idle_timeout
 
-        assert _resolve_stream_idle_timeout(90) == 15.0
+        assert _resolve_stream_idle_timeout(90) == 30.0
         assert _resolve_stream_idle_timeout(90, 12) == 12.0
-        assert _resolve_stream_idle_timeout(90, 45) == 30.0
+        assert _resolve_stream_idle_timeout(90, 45) == 45.0
+        assert _resolve_stream_idle_timeout(90, 120) == 90.0
         assert _resolve_stream_idle_timeout(10) == 10.0
+
+    def test_legacy_worker_popen_replaces_undecodable_stderr(self):
+        import inspect
+
+        from RxyCode.RxyCode1_1_0.appserver.agent_host import AgentHost
+
+        source = inspect.getsource(AgentHost._start_legacy)
+        assert 'errors="replace"' in source or "errors='replace'" in source
 
 
 class TestOpenStreamFirstChunkTimeout:
@@ -454,6 +463,64 @@ class TestRawStreamFirstChunkTimeout:
             await drain()
         elapsed = asyncio.get_event_loop().time() - start
         assert elapsed < 4.0
+
+    async def test_idle_timeout_closes_the_provider_stream(self, monkeypatch):
+        """A timed-out stream must be aclosed so the next turn can open a socket."""
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, StreamIdleTimeoutError
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        first = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="partial", reasoning_content="")
+                )
+            ]
+        )
+        closed: list[str] = []
+
+        class PartialHangingStream:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not closed:
+                    closed.append("opened")
+                    return first
+                await asyncio.Event().wait()
+
+            async def aclose(self):
+                closed.append("closed")
+
+        class Completions:
+            async def create(self, **_kwargs):
+                return PartialHangingStream()
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {
+            "timeout": 5.0,
+            "stream_idle_timeout": 0.2,
+            "model_name": "x",
+            "temperature": 0,
+        }
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: Completions()
+
+        with pytest.raises(StreamIdleTimeoutError):
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+        assert "closed" in closed
 
     async def test_reasoning_then_content_writes_reasoning(self, monkeypatch):
         from types import SimpleNamespace

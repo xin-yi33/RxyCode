@@ -62,6 +62,22 @@ def edit_file(filePath: str, oldString: str, newString: str, replaceAll: bool = 
             content = content.replace(oldString, newString, 1)
         else:
             content = content.replace(oldString, newString)
+        from .write import (
+            _TEST_FUNCTION_CAP,
+            _TEST_FUNCTION_CAP_BY_NAME,
+            _count_test_functions,
+        )
+        parts = {part.lower() for part in p.parts}
+        if p.suffix == ".py" and (
+            p.name.startswith("test_") or p.name == "test.py" or "tests" in parts
+        ):
+            n = _count_test_functions(content)
+            cap = _TEST_FUNCTION_CAP_BY_NAME.get(p.name, _TEST_FUNCTION_CAP)
+            if n is not None and n > cap:
+                return (
+                    f"[error editing file: {p.name} would have {n} test_ functions; "
+                    f"keep at most {cap} covering the named behaviors. File not edited.]"
+                )
         atomic_write_text(p, content)
         return f"[edited {filePath}]"
     except Exception as e:

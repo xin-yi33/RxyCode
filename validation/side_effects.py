@@ -71,9 +71,15 @@ _EXPLICIT_EXPLANATION_RE = re.compile(
     r"please\s+(?:summarize|summarise|explain|describe|list|show)\b|"
     r"(?:总结|概括|说明|解释|分析|汇总|搜索|查询|检索)(?:一下|一遍)|"
     r"(?:搜索|检索|查询|websearch|research)\b[\s\S]{0,120}?(?:总结|概括|汇总|"
-    r"conclude|summarize)",
+    r"conclude|summarize)|"
+    r"这段代码\s*(?:干什么|做什么|是什么|干嘛|做什么用)|"
+    r"(?:干什么|做什么|是什么意思|干嘛)",
     re.IGNORECASE,
 )
+
+# Fenced samples are examples, not an instruction to ``add``/``write`` a file.
+# S3 "这段代码干什么" + ``def add`` must stay read-only.
+_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 
 # Tool allow/deny lists are execution constraints, not an instruction to perform
 # every verb they happen to contain.  In particular, a read-only prompt often
@@ -183,6 +189,7 @@ def task_requires_side_effect_evidence(
     intent_request = _READ_ONLY_SKILL_INVOCATION_RE.sub("", intent_request)
     intent_request = _READ_ONLY_INSPECTION_RE.sub("", intent_request)
     intent_request = _READ_ONLY_TOOL_SEQUENCE_RE.sub("", intent_request)
+    intent_request = _CODE_FENCE_RE.sub(" ", intent_request)
     # 锚定解释意图（请求以解释/总结词开头）：即使提到修复/重构话题也是只读
     anchored_explanation = bool(_EXPLANATION_RE.search(intent_request))
     # 中段显式请求短语（请总结/总结一下/搜索…总结）：覆盖 ACTION+ARTIFACT

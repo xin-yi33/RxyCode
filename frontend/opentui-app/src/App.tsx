@@ -877,21 +877,30 @@ export default function App() {
       if (classified.kind === "chat" && !classified.text) return;
 
       if (classified.kind === "command") {
-        if (isBareModelPickerCommand(classified.name, classified.args)) {
-          openModel();
-          clearInput();
+        const phaseFPromptCommands = new Set([
+          "/solo",
+          "/team",
+          "/team-multi",
+          "/why-mode",
+          "/agents",
+        ]);
+        if (!phaseFPromptCommands.has(classified.name)) {
+          if (isBareModelPickerCommand(classified.name, classified.args)) {
+            openModel();
+            clearInput();
+            return;
+          }
+          await runLocalOrRemoteCommand(
+            classified.name,
+            classified.args,
+            classified.raw,
+            classified.local,
+          );
           return;
         }
-        await runLocalOrRemoteCommand(
-          classified.name,
-          classified.args,
-          classified.raw,
-          classified.local,
-        );
-        return;
       }
 
-      const trimmed = classified.text;
+      const trimmed = classified.kind === "command" ? classified.raw : classified.text;
       reengageSticky();
       clearInput();
 

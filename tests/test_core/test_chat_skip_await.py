@@ -52,6 +52,32 @@ def _chat_agent() -> AgentV2:
 
 
 @pytest.mark.asyncio
+async def test_chat_turn_emits_thinking_liveness_before_llm(monkeypatch):
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as mod
+
+    class _Tui:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+
+        def write_turn_liveness(self, text: str) -> None:
+            self.seen.append(text)
+
+    tui = _Tui()
+    monkeypatch.setattr(mod, "get_tui", lambda: tui)
+    agent = _chat_agent()
+    before = {"ok": False}
+
+    async def _guard(*_args, **_kwargs):
+        before["ok"] = tui.seen == ["思考中..."]
+        return "fast"
+
+    agent._fast_reply = AsyncMock(side_effect=_guard)
+    result = await agent._run_impl(HELLO, mode="build")
+    assert result == "fast"
+    assert before["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_chat_turn_skips_initialize_and_defers_load_session():
     agent = _chat_agent()
     load_before_reply = {"called": False}

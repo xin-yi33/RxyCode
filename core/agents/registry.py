@@ -10,7 +10,8 @@ import yaml
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
 from RxyCode.RxyCode1_1_0.core.agents.spec import AgentSpecError, validate_team
-from RxyCode.RxyCode1_1_0.protocol.agents import AgentSpec, SopStage, TeamSpec
+from RxyCode.RxyCode1_1_0.core.agents.teams import load_team_from_mapping
+from RxyCode.RxyCode1_1_0.protocol.agents import TeamSpec
 
 BUILTIN_GROUPS = ("builtin", "other")
 DESCRIPTION_LIMIT = 1536
@@ -41,19 +42,10 @@ def _load_team_yaml(path: Path) -> TeamSpec:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise TeamRegistryError(f"{path} is not a team mapping")
-    members = [AgentSpec(**row) for row in raw.get("members") or []]
-    stages = [SopStage(**row) for row in raw.get("stages") or []]
-    team = TeamSpec(
-        name=str(raw["name"]),
-        display_name=str(raw.get("display_name") or raw["name"]),
-        description=str(raw.get("description") or ""),
-        members=members,
-        stages=stages,
-        entry_stage=str(raw.get("entry_stage") or (stages[0].name if stages else "")),
-        extra=dict(raw.get("extra") or {}),
-    )
-    validate_team(team)
-    return team
+    try:
+        return load_team_from_mapping(raw)
+    except (AgentSpecError, TypeError, KeyError, ValueError) as exc:
+        raise TeamRegistryError(f"{path} is not a team mapping") from exc
 
 
 def route_blurb(team: TeamSpec) -> str:
@@ -101,6 +93,29 @@ class TeamRegistry:
                 raise TeamRegistryError(f"reject {team_yaml}: {exc}") from exc
             group = self._group_of(team.name)
             self.records[team.name] = TeamRecord(team=team, path=team_yaml, group=group)
+        self._scan_builtins()
+
+    def _scan_builtins(self) -> None:
+        from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
+
+        builtin_dir = Path(__file__).resolve().parent / "teams"
+        found: list[Path] = []
+        found.extend(sorted(builtin_dir.glob("*/team.yaml")))
+        found.extend(sorted(builtin_dir.glob("*.yaml")))
+        seen: set[str] = set()
+        for path in found:
+            name = path.parent.name if path.name == "team.yaml" else path.stem
+            if name in seen or name in self.records:
+                continue
+            seen.add(name)
+            try:
+                team = load_builtin_team(name)
+            except Exception:
+                continue
+            self.records[team.name] = TeamRecord(team=team, path=path, group="builtin")
+            members = self.groups.setdefault("builtin", [])
+            if team.name not in members:
+                members.append(team.name)
 
     def _group_of(self, team_id: str) -> str:
         for name, members in self.groups.items():
@@ -118,6 +133,9 @@ class TeamRegistry:
             "display_name": team.display_name,
             "description": team.description,
             "entry_stage": team.entry_stage,
+            "total_token_budget": team.total_token_budget,
+            "total_timeout_s": team.total_timeout_s,
+            "max_delegations": team.max_delegations,
             "extra": dict(team.extra),
             "members": [m.model_dump() for m in team.members],
             "stages": [s.model_dump() for s in team.stages],

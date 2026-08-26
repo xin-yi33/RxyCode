@@ -91,7 +91,20 @@ def _worker_env() -> dict[str, str]:
     return env
 
 
+def test_worker_stdio_limit_covers_large_write_payloads():
+    """T01 final/write JSON-RPC lines exceed asyncio's default 64 KiB reader."""
+    import inspect
+
+    from appserver.agent_host import WORKER_STDIO_LIMIT_BYTES, AgentHost
+
+    assert WORKER_STDIO_LIMIT_BYTES >= 1024 * 1024
+    source = inspect.getsource(AgentHost._start_async)
+    assert "limit=WORKER_STDIO_LIMIT_BYTES" in source
+
+
 async def _spawn_worker() -> tuple[asyncio.subprocess.Process, AsyncRpcPipe]:
+    from appserver.agent_host import WORKER_STDIO_LIMIT_BYTES
+
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -101,6 +114,7 @@ async def _spawn_worker() -> tuple[asyncio.subprocess.Process, AsyncRpcPipe]:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        limit=WORKER_STDIO_LIMIT_BYTES,
     )
     pipe = AsyncRpcPipe(proc.stdin, proc.stdout)
     await pipe.start()
@@ -980,16 +994,23 @@ def test_appserver_interrupt_cancels_hung_prompt(switch: str):
                     saw_running = True
                     break
         assert saw_running, "prompt never reached the running state"
-        time.sleep(0.8)  # let the worker set _run_task and enter the hang
-        interrupt = client.request(
-            "session/interrupt",
-            {"session_id": session["session_id"]},
-            timeout=10.0,
-        )
-        assert interrupt.get("cancelled") is True
+        # Cold Windows workers finish bootstrap after job_status=running.
+        # Poll interrupt until the worker has a prompt task (or agent).
+        interrupt = {"cancelled": False}
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            interrupt = client.request(
+                "session/interrupt",
+                {"session_id": session["session_id"]},
+                timeout=10.0,
+            )
+            if interrupt.get("cancelled") is True:
+                break
+            time.sleep(0.2)
+        assert interrupt.get("cancelled") is True, interrupt
 
         try:
-            message = response.get(timeout=10.0)
+            message = response.get(timeout=15.0)
         finally:
             with client._pending_lock:
                 client._pending.pop(prompt_id, None)

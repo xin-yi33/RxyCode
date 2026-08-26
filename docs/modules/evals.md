@@ -211,6 +211,6 @@ Follow-up directions (per model):
 - luna (88%): cheap and competitive; readcode gaps point at the same identifier-citation issue.
 - websearch tasks: investigate task quality/tool wiring before including in the canonical suite.
 
-验收记录（入库）：`docs/plans/opus5-plan/rxycode/evidence/a10-acceptance.md` 与 `a10b-acceptance.md`。
+验收记录留在本地开发笔记中（`docs/plans/` 不入库）。
 
 Raw evidence (per-model baselines + matrix md) is intentionally **not tracked** (gitignore policy 5c6c84a: date-stamped per-model runs are run artifacts); data lives locally under `evals/baselines/2026-08-06-agent-*.json` and `evals/baselines/models-comparison-2026-08-06.md`. Public-benchmark context (Artificial Analysis / Arena Intelligence, 2026-08): Kimi K3 is the top open-weights model (AA index 57) and GLM-5.2 second (51); qwen3.8-max leads the Arena text chart; consistent with the measured ordering where coverage overlaps.

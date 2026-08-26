@@ -27,7 +27,8 @@
 ## AgentSpec / TeamSpec / SopStage
 
 - **AgentSpec**：角色静态定义。`role` / `goal` / `tools`（None=全开，[]=空）/ `may_consult` / `memory_scope` / `mechanical` / `prompt_stage`。
-- **SopStage**：状态机节点。`next_on_success` / `next_on_failure` 静态决定下一跳。`verify_before_next`、`audit_after_verify`。
+- **SopStage**：状态机节点。`next_on_success` / `next_on_failure` 静态决定下一跳。`verify_before_next`、`audit_after_verify`。`parallel_members` 非空时该阶段并发派发（D3）。
+- **内置 software_dev**：目录包 `core/agents/teams/software_dev/`。10 角色 7 阶段：pm → architect → frontend_coder∥backend_coder → tester → verifier → 三审计并行 → doc。默认 `ecosystem.disable_model_invocation=true`。角色级 skill 写在 `extra.ecosystem.skill`。
 - **TeamSpec**：成员 + 阶段 + `entry_stage` + `total_token_budget` / `total_timeout_s` / `max_delegations`。
 - **extra 命名空间**：`pair.*`（H）/ `vision.*`（I）/ `persona.*`（J）/ `ecosystem.*`（F18）。不要把未定型字段提升为一等字段。
 
@@ -93,7 +94,7 @@
 
 ### 加一支新专家团
 
-1. 复制 `core/agents/teams/software_dev.yaml`。
+1. 复制 `core/agents/teams/software_dev/`（`team.yaml` + `prompts/` + `skills/`）。架构与 Phase L 后续团相同。
 2. 先画 SOP 状态图，确认有终点。
 3. `validate_team` 必须通过。
 4. mock LLM 端到端先绿。

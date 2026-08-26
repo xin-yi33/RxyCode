@@ -54,18 +54,30 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build wheel and source distribution
+      - name: Build source distribution
         run: |
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -r requirements-dev.txt
-          python -m build --no-isolation
+          python -m build --sdist --no-isolation
           python -m twine check dist/*
+          shopt -s nullglob
+          tars=(dist/*.tar.gz)
+          wheels=(dist/*.whl)
+          if [ "${#tars[@]}" -ne 1 ]; then
+            echo "Expected exactly one sdist under dist/, found ${#tars[@]}" >&2
+            ls -la dist/ >&2 || true
+            exit 1
+          fi
+          if [ "${#wheels[@]}" -ne 0 ]; then
+            echo "Wheel artifacts are not part of this release: ${wheels[*]}" >&2
+            exit 1
+          fi
 
       - name: Upload validated distributions
         uses: actions/upload-artifact@v4
         with:
           name: rxycode-distributions
-          path: dist/*
+          path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -99,13 +111,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Smoke test installed wheel on Linux
+      - name: Smoke test installed sdist on Linux
         if: runner.os == 'Linux'
         shell: bash
         run: |
           smoke_env="$RUNNER_TEMP/rxycode-release-smoke"
           python -m venv --system-site-packages "$smoke_env"
-          "$smoke_env/bin/python" -m pip install --no-deps --force-reinstall dist/*.whl
+          "$smoke_env/bin/python" -m pip install --no-deps --force-reinstall dist/*.tar.gz
           unset PYTHONPATH
           "$smoke_env/bin/rxycode" --version
           "$smoke_env/bin/rxycode" --help
@@ -117,7 +129,7 @@ jobs:
           test "$status" -eq 1
           grep -F "requires an interactive terminal (TTY)" <<<"$output"
 
-      - name: Smoke test installed wheel on Windows
+      - name: Smoke test installed sdist on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -126,9 +138,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $smokePython = Join-Path $smokeEnv "Scripts/python.exe"
           $rxycode = Join-Path $smokeEnv "Scripts/rxycode.exe"
-          $wheel = (Get-ChildItem -LiteralPath dist -Filter *.whl | Select-Object -First 1).FullName
-          if (-not $wheel) { throw "Release artifact does not contain dist/*.whl" }
-          & $smokePython -m pip install --no-deps --force-reinstall $wheel
+          $sdist = (Get-ChildItem -LiteralPath dist -Filter *.tar.gz | Select-Object -First 1).FullName
+          if (-not $sdist) { throw "Release artifact does not contain dist/*.tar.gz" }
+          & $smokePython -m pip install --no-deps --force-reinstall $sdist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
           $env:PYTHONIOENCODING = "utf-8"
@@ -158,24 +170,34 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download validated distributions
         uses: actions/download-artifact@v4
         with:
           name: rxycode-distributions
           path: dist
 
-      - name: Create or update release and upload distributions
+      - name: Create or update release and upload the sdist
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          artifacts=(dist/*)
-          if [ "${#artifacts[@]}" -eq 0 ]; then
-            echo "No distribution artifacts found under dist/" >&2
+          artifacts=(dist/*.tar.gz)
+          if [ "${#artifacts[@]}" -ne 1 ]; then
+            echo "Expected exactly one tar.gz under dist/, found ${#artifacts[@]}" >&2
+            ls -la dist/ >&2 || true
             exit 1
           fi
+          extra=(dist/*.whl dist/*.zip dist/*.exe dist/*.dmg dist/*.AppImage)
+          if [ "${#extra[@]}" -ne 0 ]; then
+            echo "Refusing to publish non-sdist artifacts: ${extra[*]}" >&2
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          notes_file="docs/release-notes/RELEASE_NOTES_v${tag_version}.md"
           upload_with_retry() {
             local file="$1"
             local attempt
@@ -189,129 +211,17 @@ jobs:
             echo "upload failed for $file after retries" >&2
             return 1
           }
-          # Retries / concurrent tag workflows may find an existing release
-          # (sometimes without assets). Create once, otherwise replace assets.
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          if [ -f "$notes_file" ]; then
+            notes_args=(--notes-file "$notes_file")
+          else
+            notes_args=(--generate-notes)
           fi
-          echo "Release $GITHUB_REF_NAME exists; uploading assets with --clobber."
-          for artifact in "${artifacts[@]}"; do
-            upload_with_retry "$artifact"
-          done
-
-  desktop:
-    name: Build desktop app (${{ matrix.label }})
-    needs: [build]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            label: win-nsis-zip
-            script: build:win
-            glob: |
-              frontend/desktop-app/dist/*.exe
-              frontend/desktop-app/dist/*.zip
-            find: '-name "*.exe" -o -name "*.zip"'
-          - os: macos-latest
-            label: mac-dmg
-            script: build:mac
-            glob: |
-              frontend/desktop-app/dist/*.dmg
-              frontend/desktop-app/dist/*.zip
-            find: '-name "*.dmg" -o -name "*.zip"'
-          - os: ubuntu-latest
-            label: linux-appimage
-            script: build:linux
-            glob: |
-              frontend/desktop-app/dist/*.AppImage
-            find: '-name "*.AppImage"'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/desktop-app/package-lock.json
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install desktop deps
-        working-directory: frontend/desktop-app
-        run: npm ci
-
-      - name: Install Python build backend (setuptools/wheel for offline runtime install)
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -r requirements.txt
-
-      - name: Install uv (standalone POSIX runtime)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          uv --version
-
-      - name: Build desktop app
-        working-directory: frontend/desktop-app
-        env:
-          RXYCODE_REPO_DIR: ${{ github.workspace }}
-        run: npm run ${{ matrix.script }}
-
-      - name: Upload desktop artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: rxycode-desktop-${{ matrix.label }}
-          path: ${{ matrix.glob }}
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Attach desktop artifacts to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # macOS runners ship bash 3.2 where globstar and mapfile are
-          # unavailable; also avoid shell/gh glob re-expansion by uploading
-          # each file individually.
-          upload_with_retry() {
-            file="$1"
-            attempt=1
-            while [ "$attempt" -le 5 ]; do
-              if gh release upload "$GITHUB_REF_NAME" "$file" --clobber; then
-                return 0
-              fi
-              echo "upload failed for $file (attempt $attempt); retrying..." >&2
-              sleep $((attempt * 5))
-              attempt=$((attempt + 1))
-            done
-            echo "upload failed for $file after retries" >&2
-            return 1
-          }
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists; refreshing notes and uploading the sdist."
+            if [ -f "$notes_file" ]; then
+              gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$notes_file"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" "${notes_args[@]}"
           fi
-          found=0
-          while IFS= read -r f; do
-            [ -f "$f" ] || continue
-            found=1
-            upload_with_retry "$f"
-          done < <(find frontend/desktop-app/dist -maxdepth 1 -type f \( ${{ matrix.find }} \) -print)
-          if [ "$found" -eq 0 ]; then
-            echo "No desktop artifacts produced for ${{ matrix.label }}" >&2
-            ls -la frontend/desktop-app/dist/ >&2 || true
-            exit 1
-          fi
+          upload_with_retry "${artifacts[0]}"

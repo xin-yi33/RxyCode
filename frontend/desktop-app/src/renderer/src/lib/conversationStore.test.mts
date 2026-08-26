@@ -580,6 +580,17 @@ test('applyProtocolNotification routes tool and done notifications into state', 
   assert.equal(state.runningBySession['s1'], false)
 })
 
+test('applyProtocolNotification maps event/team to a role progress line', () => {
+  let state = addSession(createInitialState(), { sessionId: 's1', workspaceRoot: WORKSPACE })
+  state = applyProtocolNotification(state, 'event/team', {
+    session_id: 's1',
+    role: 'architect',
+    stage: 'plan',
+    phase: 'stage_started'
+  })
+  assert.equal(state.progressBySession.s1, '[architect] plan')
+})
+
 test('applyProtocolNotification ignores unknown methods without changing state', () => {
   const state = baseState()
   assert.equal(applyProtocolNotification(state, 'event/unknown', { session_id: 's1' }), state)

@@ -118,3 +118,17 @@ def test_anchored_explanation_overrides_strong_action():
     assert task_requires_side_effect_evidence(
         title="解释如何修复这个 bug", result="", effect="auto"
     ) is False
+
+
+def test_s3_explain_code_snippet_is_not_side_effecting():
+    """Plan S3：只读问「这段代码干什么」+ fenced ``def add`` 不得判 WRITE。"""
+    title = (
+        "这段代码干什么？\n\n"
+        "```python\n"
+        "def add(a, b):\n"
+        "    return a + b\n"
+        "```"
+    )
+    assert task_requires_side_effect_evidence(
+        title=title, result="", effect="auto"
+    ) is False

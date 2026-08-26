@@ -57,6 +57,23 @@ def _new_agent(caps: ModelCapabilities, tools: list):
     return agent
 
 
+def test_agent_get_core_tools_role_allowlist_does_not_crop_schema():
+    """FX6: role allowlist is an execution deny, not an API schema crop."""
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    names = ["read", "write", "bash", "grep"]
+    tools = [SimpleNamespace(name=n) for n in names]
+    agent = object.__new__(AgentV2)
+    agent._tool_orchestrator = SimpleNamespace(get_all=lambda: {t.name: t for t in tools})
+    agent._memory = SimpleNamespace(_rag_enabled=False)
+    agent._capabilities = SimpleNamespace(tool_send_policy=None)
+    agent._role_tool_allowlist = frozenset({"read", "grep"})
+    out = {t.name for t in agent._get_core_tools()}
+    assert out == set(names)
+
+
 def test_agent_get_core_tools_default_full():
     """默认（tool_send_policy=None）→ _get_core_tools 全量，现状不变。"""
     tools = [SimpleNamespace(name=f"tool{i:02d}") for i in range(12)]

@@ -113,6 +113,19 @@ def test_nonzero_command_is_never_successful_evidence():
     ]
 
 
+def test_rejected_root_helper_write_is_not_a_run_failure(tmp_path: Path):
+    helper = tmp_path / "run_test.py"
+    evidence = build_tool_evidence(
+        "write",
+        {"filePath": str(helper), "content": "print(1)\n"},
+        "[error writing file: run_test.py belongs under tests/, not the workspace root. File not written.]",
+        executed=True,
+        approval="auto",
+    )
+    assert "run_test.py" in (evidence.artifacts[0].path if evidence.artifacts else str(helper))
+    assert deterministic_issues([evidence]) == []
+
+
 def test_download_captures_published_artifact_hash(tmp_path: Path):
     artifact = tmp_path / "archive.bin"
     artifact.write_bytes(b"verified download")
