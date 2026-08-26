@@ -41,6 +41,16 @@ def test_instance_lock_refuses_live_holder(tmp_path: Path) -> None:
     InstanceLock(path).release()
 
 
+def test_unreaped_killed_holder_lock_is_stolen(tmp_path: Path) -> None:
+    holder = _live_holder(tmp_path)
+    try:
+        holder.kill()
+        ok, _ = InstanceLock(tmp_path / "appserver.lock").acquire()
+        assert ok is True
+    finally:
+        holder.wait(timeout=5)
+
+
 def test_preempt_kills_live_holder_then_acquires(tmp_path: Path) -> None:
     path = tmp_path / "appserver.lock"
     holder = _live_holder(tmp_path)

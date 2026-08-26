@@ -53,7 +53,20 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    # SIGKILL leaves a zombie until the parent reaps it. signal 0 still
+    # succeeds for zombies, so steal the lock instead of waiting forever.
+    procfs = Path("/proc")
+    if not procfs.is_dir():
+        return True
+    try:
+        raw = (procfs / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    rparen = raw.rfind(")")
+    if rparen == -1:
+        return True
+    parts = raw[rparen + 1 :].split()
+    return not (parts and parts[0] == "Z")
 
 
 def _terminate_pid_tree(pid: int) -> None:
@@ -71,9 +84,16 @@ def _terminate_pid_tree(pid: int) -> None:
         )
         return
     try:
-        os.kill(pid, 9)
+        pgid = os.getpgid(pid)
+        if pgid == pid:
+            os.killpg(pgid, 9)
+        else:
+            os.kill(pid, 9)
     except OSError:
-        pass
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
 
 
 class InstanceLock:
