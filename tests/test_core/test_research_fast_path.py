@@ -498,6 +498,40 @@ async def test_tool_free_fast_path_estimates_after_empty_usage(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fast_reply_plain_text_is_streamed_once(monkeypatch):
+    """Plain chat used to stream each token then flush the whole buffer again."""
+    from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
+    from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_v2_mod
+
+    monkeypatch.setattr(precise_cache, "get", MagicMock(return_value=None))
+    monkeypatch.setattr(semantic_cache, "get", MagicMock(return_value=None))
+    monkeypatch.setattr(precise_cache, "put", MagicMock())
+    monkeypatch.setattr(semantic_cache, "put", MagicMock())
+
+    tokens: list[str] = []
+    fake_tui = SimpleNamespace(
+        stream_token=lambda ch: tokens.append(ch),
+        write_progress=lambda *_a, **_k: None,
+        write_reasoning=lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(agent_v2_mod, "get_tui", lambda: fake_tui)
+
+    agent, _captured = make_agent("unused", answer="unused")
+
+    async def raw_stream(messages, _tools=None, **_kwargs):
+        yield Chunk("我是 RxyCode。")
+        yield Chunk("有什么我可以帮你的？")
+
+    agent._raw_stream = raw_stream
+    result = await agent._fast_reply("你是谁？")
+    streamed = "".join(tokens)
+    expected = "我是 RxyCode。有什么我可以帮你的？"
+    assert result == expected
+    assert streamed == expected
+
+
+@pytest.mark.asyncio
 async def test_tool_aware_fast_path_estimates_each_round_missing_usage(monkeypatch):
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 

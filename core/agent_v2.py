@@ -5684,7 +5684,6 @@ class AgentV2:
             in_code_block = False
             code_block_buffer = []
             code_block_chars = 0
-            non_code_buffer = []
             CODE_BLOCK_FLUSH_CHARS = 64
 
             _reasoning_buffer = []
@@ -5734,11 +5733,6 @@ class AgentV2:
                         else:
                             in_code_block = True
                             code_block_chars = 0
-                            if non_code_buffer:
-                                text = ''.join(non_code_buffer)
-                                if tui and hasattr(tui, 'stream_token'):
-                                    tui.stream_token(text)
-                                non_code_buffer = []
 
                     if in_code_block:
                         code_block_buffer.append(token)
@@ -5753,22 +5747,19 @@ class AgentV2:
                             code_block_buffer = []
                             code_block_chars = 0
                     else:
-                        non_code_buffer.append(token)
-                        # Stream every token in real-time
+                        # Stream every token in real-time. Do not buffer for a
+                        # later flush: that would concatenate a second copy.
                         if tui and hasattr(tui, 'stream_token'):
                             tui.stream_token(token)
 
                     if chunk_count % 50 == 0 and tui and hasattr(tui, 'write_progress'):
                         tui.write_progress(f'Generating... ({len(answer_parts)} chars)')
 
-            # Flush remaining buffer
+            # Flush leftover code-block tokens that were not streamed live.
+            # Plain text was already streamed token-by-token.
             if code_block_buffer:
                 text = "".join(code_block_buffer)
                 if tui and hasattr(tui, "stream_token"):
-                    tui.stream_token(text)
-            if non_code_buffer:
-                text = ''.join(non_code_buffer)
-                if tui and hasattr(tui, 'stream_token'):
                     tui.stream_token(text)
 
             answer = ''.join(answer_parts)
