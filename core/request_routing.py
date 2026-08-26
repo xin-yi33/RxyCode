@@ -41,6 +41,20 @@ PURE_SOCIAL_GREETING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Whole-string identity / capability questions. Substring matches like
+# 「你是谁写的这段代码」 must stay on the coding agent path.
+_IDENTITY_OR_META_CHAT_RE = re.compile(
+    r"^(?:"
+    r"你是谁|你谁啊|你叫什么(?:名字)?|介绍一下你自己|介绍下你自己|"
+    r"你能做什么|你是干什么的|你会什么|"
+    r"你在干嘛|你在做什么|"
+    r"who\s+are\s+you|what\s+are\s+you(?:\s+doing)?|what\s+can\s+you\s+do|"
+    r"introduce\s+yourself"
+    r")"
+    r"(?:[呢吗啊呀？?！!。.\s]*)*$",
+    re.IGNORECASE,
+)
+
 # Relative path token (calc.py, src/foo.py) — not Windows drive-letter paths.
 _RELATIVE_FILE_RE = re.compile(
     r"\b(?:[\w.-]+/)*[\w.-]+\.(?:py|pyw|js|ts|tsx|jsx|go|rs|java|cpp|c|h|hpp|"
@@ -158,6 +172,12 @@ def has_creation_product_intent(text: str) -> bool:
     return False
 
 
+def is_identity_or_meta_chat(text: str) -> bool:
+    """True for short identity/capability questions with no extra task text."""
+    stripped = (text or "").strip()
+    return bool(stripped and _IDENTITY_OR_META_CHAT_RE.match(stripped))
+
+
 def is_social_chat(text: str) -> bool:
     """Narrow emotional/social chat that must not enter LangGraph."""
     text_stripped = text.strip()
@@ -170,6 +190,8 @@ def is_social_chat(text: str) -> bool:
         return False
     if has_creation_product_intent(text_stripped):
         return False
+    if is_identity_or_meta_chat(text_stripped):
+        return True
 
     social_signals = (
         "伤心", "难过", "不理我", "陪我", "你好", "您好", "谢谢", "在吗",

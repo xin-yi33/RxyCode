@@ -84,3 +84,21 @@ def test_download_is_download():
 def test_force_full_skips_chat_fast_paths():
     d = route("你好", "build", RoutingDirective.FORCE_FULL, file_op=None, download=None)
     assert d.path == "graph"
+
+
+def test_who_are_you_is_chat():
+    d = route("你是谁？", "build", RoutingDirective.AUTO, file_op=None, download=None)
+    assert d.path == "chat"
+    assert d.profile_kind == "chat"
+    assert "session.load" in d.skip_await
+
+
+def test_who_wrote_this_code_stays_agent():
+    d = route(
+        "你是谁写的这段代码",
+        "build",
+        RoutingDirective.AUTO,
+        file_op=None,
+        download=None,
+    )
+    assert d.path == "agent"
