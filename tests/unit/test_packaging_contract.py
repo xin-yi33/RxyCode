@@ -212,7 +212,7 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         text=True,
         encoding="utf-8",
     )
-    allowed_dirs = {"agent", "assets", "imgs", "modules", "release-notes"}
+    allowed_dirs = {"agent", "assets", "imgs", "modules", "release-notes", "phase-g"}
     allowed_files = {"quickstart.md", "GUI.md"}
     unexpected = []
     for line in listed.splitlines():
