@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import time
 import sys
@@ -25,6 +26,7 @@ from .jsonrpc import (
     write_message,
     write_message_sync,
 )
+from .lifecycle import InstanceLock, mark_incomplete_recovery_required
 from .runtime import install_tui_context_hook
 from .sessions import SessionStore
 from .task_store import DesktopTaskStore
@@ -78,6 +80,24 @@ class AppServer:
         # they must never read or mutate a user's persistent Desktop history.
         # The production appserver keeps the durable store across restarts.
         self._task_store = DesktopTaskStore(persistent=not stub)
+        self._instance_lock = InstanceLock()
+        self._instance_blocked: str | None = None
+        self._recovered_sessions: list[tuple[str, str]] = []
+        should_lock = (not stub) or bool(os.environ.get("RXYCODE_APPSERVER_LOCK"))
+        if should_lock:
+            ok, reason = self._instance_lock.acquire()
+            if not ok and os.environ.get("RXYCODE_APPSERVER_PREEMPT") == "1":
+                ok, reason = self._instance_lock.preempt_and_acquire()
+            if not ok:
+                self._instance_blocked = reason
+            else:
+                self._recovered_sessions = mark_incomplete_recovery_required(
+                    self._task_store
+                )
+        elif self._task_store.persistent:
+            self._recovered_sessions = mark_incomplete_recovery_required(
+                self._task_store
+            )
         self._sessions = SessionStore(task_store=self._task_store)
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
@@ -1201,6 +1221,19 @@ class AppServer:
 
     async def run(self) -> None:
         """Read JSON-RPC lines from stdin until EOF or shutdown."""
+        if self._instance_blocked:
+            await write_message(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event/process_failed",
+                    "params": {
+                        "reason": self._instance_blocked,
+                        "error_code": "INSTANCE_IN_USE",
+                    },
+                }
+            )
+            self._instance_lock.release()
+            return
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         try:
             while not self._shutdown:
@@ -1253,3 +1286,4 @@ class AppServer:
                 _logger.error("emit write failed during shutdown: %r", exc)
             for session_id in list(self._session_hosts):
                 await self._kill_session_host(session_id)
+            self._instance_lock.release()

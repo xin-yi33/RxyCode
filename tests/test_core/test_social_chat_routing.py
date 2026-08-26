@@ -12,6 +12,7 @@ from RxyCode.RxyCode1_1_0.core.agent_v2 import (
     SOCIAL_CHAT_ROLE_INSTRUCTION,
     _PURE_SOCIAL_GREETING_RE,
 )
+from RxyCode.RxyCode1_1_0.core.request_routing import is_identity_or_meta_chat
 
 
 def _agent() -> AgentV2:
@@ -142,3 +143,17 @@ def test_memory_ctx_for_turn_skips_all_social():
     # Non-social should call through
     assert "PARKOUR" in AgentV2._memory_ctx_for_turn(agent, "写一个跑酷小游戏")
     assert calls == ["写一个跑酷小游戏"]
+
+
+def test_who_are_you_is_identity_and_social():
+    assert is_identity_or_meta_chat("你是谁？") is True
+    assert is_identity_or_meta_chat("你是谁呢") is True
+    assert is_identity_or_meta_chat("who are you") is True
+    assert _social("你是谁？") is True
+    assert _simple("你是谁？") is True
+
+
+def test_who_wrote_this_code_is_not_identity_chat():
+    text = "你是谁写的这段代码"
+    assert is_identity_or_meta_chat(text) is False
+    assert _social(text) is False
