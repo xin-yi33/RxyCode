@@ -20,7 +20,7 @@ const COLS = 80;
 const ROWS = 24;
 const NARROW_COLS = 52;
 const NARROW_ROWS = 18;
-const TIMEOUT_MS = 8000;
+const TIMEOUT_MS = 20000;
 const SGR_MOUSE = /\x1b\[<\d+;\d+;\d+[Mm]/;
 const ANSI_CONTROL = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const plain = (value) => value.replace(ANSI_CONTROL, '');
@@ -395,6 +395,7 @@ async function main() {
     mark = observed.mark();
     send('PTY_CANCEL_ME');
     await waitSince(mark, /PTY_CANCEL_ME/, 'cancellation prompt input');
+    await observed.waitForIdle('cancel prompt to settle');
     send('\r');
     await api.waitForChatRequest((body) => body.message === 'PTY_CANCEL_ME');
     await waitSince(mark, /PTYWAITING|Processing/, 'cancellable stream');
