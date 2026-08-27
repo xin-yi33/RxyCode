@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { QuestionRequest } from '@rxycode/protocol-client'
 
 interface QuestionModalProps {
@@ -8,6 +9,7 @@ interface QuestionModalProps {
 }
 
 function QuestionModal({ request, onAnswer, onCancel }: QuestionModalProps): React.JSX.Element {
+  const { t } = useI18n()
   const options = request.options ?? []
   const hasOptions = options.length > 0
   const [draft, setDraft] = useState('')
@@ -26,7 +28,7 @@ function QuestionModal({ request, onAnswer, onCancel }: QuestionModalProps): Rea
     <div className="approval-overlay">
       <div className="approval-dialog" role="dialog" aria-modal="true">
         <div className="approval-header">
-          <span className="approval-title">{request.header || '需要你的选择'}</span>
+          <span className="approval-title">{request.header || t('needChoice')}</span>
         </div>
         <div className="approval-action">{request.question}</div>
         {hasOptions ? (
@@ -42,7 +44,7 @@ function QuestionModal({ request, onAnswer, onCancel }: QuestionModalProps): Rea
               </button>
             ))}
             <button type="button" className="approval-reject" onClick={onCancel}>
-              取消
+              {t('cancel')}
             </button>
           </div>
         ) : (
@@ -58,14 +60,14 @@ function QuestionModal({ request, onAnswer, onCancel }: QuestionModalProps): Rea
               autoFocus
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="输入回答"
+              placeholder={t('answerPlaceholder')}
             />
             <div className="approval-actions">
               <button type="submit" className="approval-approve" disabled={!draft.trim()}>
-                提交
+                {t('submitAnswer')}
               </button>
               <button type="button" className="approval-reject" onClick={onCancel}>
-                取消
+                {t('cancel')}
               </button>
             </div>
           </form>

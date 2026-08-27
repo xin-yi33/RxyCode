@@ -17,6 +17,8 @@ asarUnpack:
 extraResources:
   - from: build/runtime
     to: runtime
+  - from: src/i18n/locales
+    to: locales
 afterAllArtifactBuild: scripts/wrap-win-zip.cjs
 win:
   executableName: rxycode-desktop
@@ -51,6 +53,7 @@ linux:
   executableName: rxycode-desktop
   target:
     - AppImage
+    - deb
   maintainer: RxyCode
   category: Utility
 appImage:

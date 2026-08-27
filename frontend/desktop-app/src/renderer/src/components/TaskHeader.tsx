@@ -1,4 +1,5 @@
 import { FolderGit2, GitBranch, Sparkles } from 'lucide-react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface TaskHeaderProps {
   title: string
@@ -13,16 +14,17 @@ function TaskHeader({
   modelLabel,
   runState
 }: TaskHeaderProps): React.JSX.Element {
+  const { t } = useI18n()
   return (
     <header className="task-header">
       <div>
-        <p className="task-kicker">TASK</p>
+        <p className="task-kicker">{t('task')}</p>
         <h1>{title}</h1>
       </div>
-      <div className="task-metadata" aria-label="Task metadata">
+      <div className="task-metadata" aria-label={t('task')}>
         <span title={workspaceRoot}>
           <FolderGit2 aria-hidden="true" size={14} />
-          {workspaceRoot === '' ? 'No workspace selected' : workspaceRoot}
+          {workspaceRoot === '' ? t('noWorkspace') : workspaceRoot}
         </span>
         <span>
           <GitBranch aria-hidden="true" size={14} />

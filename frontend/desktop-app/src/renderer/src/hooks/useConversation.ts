@@ -79,6 +79,7 @@ export interface UseConversationResult {
   state: ConversationState
   connectionError: string | null
   protocolClient: ProtocolClient | null
+  handshakeCapabilities: Record<string, unknown>
   approvalRules: ApprovalRule[]
   createSession: (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }) => Promise<boolean>
   selectSession: (sessionId: string) => void
@@ -110,6 +111,7 @@ export function useConversation(
   const [state, setState] = useState<ConversationState>(createInitialState)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [protocolClient, setProtocolClient] = useState<ProtocolClient | null>(null)
+  const [handshakeCapabilities, setHandshakeCapabilities] = useState<Record<string, unknown>>({})
   const [approvalRules, setApprovalRules] = useState<ApprovalRule[]>(() =>
     loadApprovalRules(window.localStorage)
   )
@@ -408,6 +410,9 @@ export function useConversation(
           const client = connection.client
           setProtocolClient(client)
           setConnectionError(null)
+          if (connection.handshake.status === 'completed') {
+            setHandshakeCapabilities(connection.handshake.capabilities)
+          }
           if (client === null) return
           let sessionsForReplay: Array<{ sessionId: string }> = stateRef.current.sessions
             .map((session) => ({ sessionId: session.sessionId }))
@@ -868,6 +873,7 @@ export function useConversation(
     state,
     connectionError,
     protocolClient,
+    handshakeCapabilities,
     approvalRules,
     createSession,
     selectSession,

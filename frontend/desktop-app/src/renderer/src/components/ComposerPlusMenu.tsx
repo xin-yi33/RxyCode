@@ -1,4 +1,5 @@
 import { Check, Folder, Lightbulb, Paperclip, Target } from 'lucide-react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface ComposerPlusMenuProps {
   open: boolean
@@ -19,29 +20,30 @@ function ComposerPlusMenu({
   onOpenGoal,
   onTogglePlanMode
 }: ComposerPlusMenuProps): React.JSX.Element | null {
+  const { t } = useI18n()
   if (!open) return null
   return (
     <div className="composer-plus-menu" role="menu" data-testid="composer-plus-menu">
-      <p className="composer-plus-heading">添加</p>
+      <p className="composer-plus-heading">{t('composerAdd')}</p>
       <button type="button" role="menuitem" data-testid="plus-attach" onClick={() => { onAttachFile(); onClose() }}>
         <Paperclip aria-hidden="true" size={16} />
         <span>
-          <strong>文件和文件夹</strong>
-          <small>把本地文件附加到这次对话</small>
+          <strong>{t('attachFile')}</strong>
+          <small>{t('attachFileHint')}</small>
         </span>
       </button>
       <button type="button" role="menuitem" data-testid="plus-workspace" onClick={() => { onPickWorkspace(); onClose() }}>
         <Folder aria-hidden="true" size={16} />
         <span>
-          <strong>在项目中使用</strong>
-          <small>选择工作区并开新聊天</small>
+          <strong>{t('useInProject')}</strong>
+          <small>{t('useInProjectHint')}</small>
         </span>
       </button>
       <button type="button" role="menuitem" data-testid="plus-goal" onClick={() => { onOpenGoal(); onClose() }}>
         <Target aria-hidden="true" size={16} />
         <span>
-          <strong>目标</strong>
-          <small>设置要持续追求的目标</small>
+          <strong>{t('goal')}</strong>
+          <small>{t('goalHint')}</small>
         </span>
       </button>
       <button
@@ -53,8 +55,8 @@ function ComposerPlusMenu({
       >
         <Lightbulb aria-hidden="true" size={16} />
         <span>
-          <strong>计划模式</strong>
-          <small>{planMode ? '已开启，只生成和改写计划文档' : '开启计划模式'}</small>
+          <strong>{t('planMode')}</strong>
+          <small>{planMode ? t('planModeOnHint') : t('planModeOffHint')}</small>
         </span>
         {planMode ? <Check aria-hidden="true" size={14} /> : null}
       </button>

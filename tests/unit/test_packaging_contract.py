@@ -218,8 +218,6 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         "imgs",
         "modules",
         "release-notes",
-        # feat/phase-g-backend unique construction docs kept alongside master
-        # GitHub allowlist.
         "phase-g",
         "decisions",
         "agents",

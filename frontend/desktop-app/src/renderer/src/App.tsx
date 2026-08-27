@@ -1,5 +1,11 @@
-import { Activity, Menu, Settings, ShieldCheck, X } from 'lucide-react'
+import { Activity, LayoutGrid, Menu, Settings, ShieldCheck, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { DESKTOP_VIEWS, resolveDesktopView, type DesktopViewId } from '../../app/views/index.ts'
+import { BoardView } from '../../features/board/BoardView.ts'
+import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
+import { ApprovalCard } from '../../features/approvals/ApprovalCard.ts'
+import { PermissionModeSwitcher } from '../../features/approvals/PermissionModeSwitcher.ts'
+import { approvalChannel, MODE_SET_CANDIDATE } from '../../features/approvals/approval.mode.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -31,14 +37,24 @@ import {
   saveWorkspaceSettings,
   type WorkspaceSettings
 } from './lib/workspaceSettings.mts'
+import { isUiEntryEnabled } from '../../protocol/capabilityGate.ts'
 import { usePlatform } from '../../platform/index.mts'
 import {
+  DESKTOP_PREFERENCES_STORAGE_KEY,
   loadDesktopPreferences,
   saveDesktopPreferences,
   type DesktopLanguage,
   type PermissionMode,
   type ThemePreference
 } from './lib/desktopPreferences.mts'
+import { I18nProvider } from '../../i18n/I18nContext.tsx'
+import { normalizeLocale, t } from '../../i18n/t.ts'
+import {
+  dispatchRunEndNotice,
+  electronOsNotify,
+  watchRunStateTransitions,
+  type Notice
+} from '../../features/notifications/notify.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -70,7 +86,13 @@ function App(): React.JSX.Element {
   const [goalDraft, setGoalDraft] = useState('')
   const [skippedPlanIds, setSkippedPlanIds] = useState<Record<string, true>>({})
   const toastTimerRef = useRef<number | null>(null)
+  const prevRunStateRef = useRef<Record<string, string>>({})
+  const [runBanner, setRunBanner] = useState<Notice | null>(null)
+  const [desktopView, setDesktopView] = useState<DesktopViewId>('chat')
+  const [commandOpen, setCommandOpen] = useState(false)
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
+  const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
+  const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
   const activeSessionId = conversation.state.activeSessionId
   const running = activeSessionId !== null && conversation.state.runningBySession[activeSessionId]
   const activeSession = conversation.state.sessions.find((session) => session.sessionId === activeSessionId)
@@ -89,7 +111,8 @@ function App(): React.JSX.Element {
   const effectiveWorkspace = effectiveWorkspaceRoot(workspaceSettings, info?.repoRoot ?? '')
   const models = useModels({
     client: conversation.protocolClient,
-    refreshKey: settingsOpen ? 1 : 0
+    refreshKey: settingsOpen ? 1 : 0,
+    capabilities: conversation.handshakeCapabilities
   })
   const selectedTaskModel = activeSession?.modelId ?? models.snapshot?.active ?? ''
   const agentMode: AgentRunMode =
@@ -108,11 +131,33 @@ function App(): React.JSX.Element {
     setAgentModeBySession((current) => ({ ...current, [activeSessionId]: next }))
   }
 
+  const locale = normalizeLocale(language)
+  const tr = (key: string, vars: Record<string, string> = {}): string => t(locale, key, vars)
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     document.documentElement.lang = language
     saveDesktopPreferences(preferences, window.localStorage)
   }, [preferences, theme, language])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey)) return
+      if (event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setCommandOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
+    if (info?.systemLocale === undefined) return
+    if (window.localStorage.getItem(DESKTOP_PREFERENCES_STORAGE_KEY) !== null) return
+    const next: DesktopLanguage = normalizeLocale(info.systemLocale) === 'en' ? 'en-US' : 'zh-CN'
+    setPreferences((current) => (current.language === next ? current : { ...current, language: next }))
+  }, [info])
 
   const setTheme = (next: ThemePreference): void => {
     setPreferences((current) => ({ ...current, theme: next }))
@@ -169,6 +214,18 @@ function App(): React.JSX.Element {
   useEffect(() => () => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
   }, [])
+
+  useEffect(() => {
+    const next = conversation.state.runStateBySession
+    const transitions = watchRunStateTransitions(prevRunStateRef.current, next)
+    prevRunStateRef.current = { ...next }
+    for (const event of transitions) {
+      dispatchRunEndNotice(event.sessionId, event.state, {
+        osNotify: electronOsNotify,
+        showBanner: (notice) => setRunBanner(notice)
+      })
+    }
+  }, [conversation.state.runStateBySession])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -243,7 +300,7 @@ function App(): React.JSX.Element {
     if (command?.kind === 'slash_plan') {
       setAgentMode('plan')
       if (command.rest === '') {
-        showToast('已开启计划模式')
+        showToast(tr('planModeOn'))
         return
       }
       await sendTurn(command.rest, 'plan')
@@ -252,7 +309,7 @@ function App(): React.JSX.Element {
     if (command?.kind === 'slash_build') {
       setAgentMode('build')
       if (command.rest === '') {
-        showToast('已切换到 Agent 模式')
+        showToast(tr('agentModeOn'))
         return
       }
       await sendTurn(command.rest, 'build')
@@ -266,11 +323,11 @@ function App(): React.JSX.Element {
       if (activeSessionId === null) return
       if (isClearGoalText(command.rest)) {
         persistGoal(activeSessionId, '')
-        showToast('已清除目标')
+        showToast(tr('goalCleared'))
         return
       }
       persistGoal(activeSessionId, command.rest)
-      showToast('已保存目标')
+      showToast(tr('goalSaved'))
       return
     }
     await sendTurn(text, agentMode)
@@ -280,13 +337,13 @@ function App(): React.JSX.Element {
     // Navigation is independent from the session/new RPC. Close the drawer
     // immediately so a slow server warm cannot make the click look stuck.
     setNavOpen(false)
-    showToast('正在创建任务…')
+    showToast(tr('creatingTask'))
     const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
     const created = await conversation.createSession({
       modelId: selectedTaskModel || undefined,
       providerId: selected?.provider_id ?? null
     })
-    showToast(created ? '任务已创建' : '任务创建失败，请检查连接')
+    showToast(created ? tr('taskCreated') : tr('taskCreateFailed'))
   }
 
   const handlePickWorkspaceForChat = async (): Promise<void> => {
@@ -300,14 +357,14 @@ function App(): React.JSX.Element {
       setWorkspaceSettings(next)
       saveWorkspaceSettings(next, window.localStorage)
       setNavOpen(false)
-      showToast('正在用所选项目创建任务…')
+      showToast(tr('creatingTaskInProject'))
       const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
       const created = await conversation.createSession({
         modelId: selectedTaskModel || undefined,
         providerId: selected?.provider_id || undefined,
         workspaceRoot
       })
-      showToast(created ? '已在新项目中创建任务' : '工作区已保存，但任务创建失败')
+      showToast(created ? tr('taskCreatedInProject') : tr('taskCreatePartialFail'))
     } finally {
       setPickingWorkspace(false)
     }
@@ -316,29 +373,30 @@ function App(): React.JSX.Element {
   const handleTrash = async (sessionId: string): Promise<void> => {
     const decision = canTrashTask(activeSessionId, sessionId)
     if (!decision.allowed) {
-      showToast(decision.message ?? '当前任务无法删除')
+      showToast(decision.message ?? tr('cannotDeleteTask'))
       return
     }
     const operation = conversation.trashSession(sessionId)
-    showToast('已删除任务')
-    if (!(await operation)) showToast('删除未保存，请重试')
+    showToast(tr('taskDeleted'))
+    if (!(await operation)) showToast(tr('deleteNotSaved'))
   }
 
   const handleRestore = async (sessionId: string): Promise<void> => {
     const operation = conversation.restoreSession(sessionId)
-    showToast('已恢复任务')
-    if (!(await operation)) showToast('恢复未保存，请重试')
+    showToast(tr('taskRestored'))
+    if (!(await operation)) showToast(tr('restoreNotSaved'))
   }
 
   return (
+    <I18nProvider locale={locale}>
     <div className="workspace command-center" data-testid="task-command-center">
-      <a className="skip-link" href="#task-main">Skip to task</a>
+      <a className="skip-link" href="#task-main">{tr('skipToTask')}</a>
       <header className="topbar command-topbar">
         <div className="topbar-leading">
           <button
             type="button"
             className="icon-button nav-toggle"
-            aria-label="Open task navigation"
+            aria-label={tr('openNav')}
             onClick={() => setNavOpen(true)}
           >
             <Menu aria-hidden="true" size={18} />
@@ -346,7 +404,7 @@ function App(): React.JSX.Element {
           <div className="brand">
             <span className="brand-mark" aria-hidden="true">R</span>
             <span>RxyCode</span>
-            <span className="brand-product">Desktop</span>
+            <span className="brand-product">{tr('desktop')}</span>
           </div>
         </div>
         <div className="topbar-actions">
@@ -356,10 +414,21 @@ function App(): React.JSX.Element {
           </span>
           <button
             type="button"
+            className="icon-button board-button"
+            onClick={() => setDesktopView(desktopView === 'board' ? 'chat' : 'board')}
+            aria-label={tr('boardView')}
+            title={tr('boardView')}
+            data-testid="open-board-view"
+            aria-pressed={desktopView === 'board'}
+          >
+            <LayoutGrid aria-hidden="true" size={17} />
+          </button>
+          <button
+            type="button"
             className="icon-button rules-button"
             onClick={() => setRulesOpen(true)}
-            aria-label="Approval rules"
-            title="Approval rules"
+            aria-label={tr('approvalRules')}
+            title={tr('approvalRules')}
           >
             <ShieldCheck aria-hidden="true" size={17} />
           </button>
@@ -367,9 +436,8 @@ function App(): React.JSX.Element {
             type="button"
             className="icon-button settings-button"
             onClick={() => setSettingsOpen(true)}
-            aria-label="Settings"
-            title="Settings"
-            data-testid="open-settings"
+            aria-label={tr('openSettings')}
+            title={tr('openSettings')}
           >
             <Settings aria-hidden="true" size={17} />
           </button>
@@ -378,9 +446,9 @@ function App(): React.JSX.Element {
 
       <div className={'main-layout command-layout' + (inspectorOpen ? ' inspector-open' : '') + (navOpen ? ' navigation-open' : '')}>
         <div className={'mobile-sheet nav-sheet' + (navOpen ? ' open' : '')}>
-          <button type="button" className="sheet-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} />
+          <button type="button" className="sheet-backdrop" aria-label={tr('closeNav')} onClick={() => setNavOpen(false)} />
           <div className="sheet-panel">
-            <button type="button" className="sheet-close" aria-label="Close navigation" onClick={() => setNavOpen(false)}>
+            <button type="button" className="sheet-close" aria-label={tr('closeNav')} onClick={() => setNavOpen(false)}>
               <X aria-hidden="true" size={18} />
             </button>
             <SessionList
@@ -388,7 +456,7 @@ function App(): React.JSX.Element {
               activeSessionId={activeSessionId}
               runStateBySession={conversation.state.runStateBySession}
               childCountBySession={childCountBySession}
-              disabled={status !== 'running' || conversation.protocolClient === null}
+              disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
               onCreate={() => void handleCreate()}
               onSelect={(sessionId) => {
                 conversation.selectSession(sessionId)
@@ -398,6 +466,7 @@ function App(): React.JSX.Element {
               onTrash={(sessionId) => void handleTrash(sessionId)}
               onRestore={(sessionId) => void handleRestore(sessionId)}
               onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
           </div>
         </div>
@@ -408,17 +477,58 @@ function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           runStateBySession={conversation.state.runStateBySession}
           childCountBySession={childCountBySession}
-          disabled={status !== 'running' || conversation.protocolClient === null}
+          disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
           onCreate={() => void handleCreate()}
           onSelect={conversation.selectSession}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
           onTrash={(sessionId) => void handleTrash(sessionId)}
           onRestore={(sessionId) => void handleRestore(sessionId)}
           onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         </div>
 
         <main className="chat-column task-main" id="task-main" data-testid="task-main">
+          {desktopView === 'board' ? (
+            <BoardView
+              threads={sessionsToBoardThreads(
+                conversation.state.sessions,
+                conversation.state.runStateBySession,
+                Object.fromEntries(
+                  Object.entries(conversation.state.timelineBySession).map(([id, items]) => [
+                    id,
+                    items.length > 0
+                  ])
+                )
+              )}
+              loading={status === 'starting'}
+              error={conversation.connectionError}
+              dark={theme === 'dark'}
+              onOpenThread={(sessionId) => {
+                conversation.selectSession(sessionId)
+                setDesktopView('chat')
+              }}
+              onRenameThread={(sessionId) => {
+                const session = conversation.state.sessions.find((item) => item.sessionId === sessionId)
+                const next = window.prompt(tr('rename'), session?.title ?? '')
+                if (next !== null && next.trim() !== '') {
+                  void conversation.renameSession(sessionId, next.trim())
+                }
+              }}
+              onCancelThread={(sessionId) => {
+                if (conversation.state.activeSessionId === sessionId) {
+                  void conversation.interrupt()
+                }
+              }}
+              onReviewThread={(sessionId) => {
+                conversation.selectSession(sessionId)
+                setDesktopView('chat')
+                setInspectorOpen(true)
+              }}
+            />
+          ) : null}
+          {desktopView === 'chat' ? (
+          <>
           <TaskHeader
             title={activeSession?.title ?? 'New task'}
             workspaceRoot={activeSession?.workspaceRoot ?? effectiveWorkspace}
@@ -431,7 +541,7 @@ function App(): React.JSX.Element {
           />
           {conversation.connectionError !== null && (
             <div className="error-banner" role="alert">
-              appserver connection failed: {conversation.connectionError}
+              {tr('connectionFailed', { error: conversation.connectionError })}
             </div>
           )}
           <ChatArea
@@ -461,6 +571,31 @@ function App(): React.JSX.Element {
               }
             }}
           />
+          {pendingApproval !== null &&
+          approvalChannel({
+            risk: pendingApproval.riskLevel,
+            preset: 'ask',
+            action: pendingApproval.action
+          }) === 'card' ? (
+            <ApprovalCard
+              item={{
+                requestId: pendingApproval.requestId,
+                action: pendingApproval.action,
+                risk: pendingApproval.riskLevel
+              }}
+              onAllow={(requestId) => conversation.resolveApproval(requestId, 'approved')}
+              onDeny={(requestId) => conversation.resolveApproval(requestId, 'rejected')}
+              onCancel={(requestId) => conversation.dismissApproval(requestId)}
+            />
+          ) : null}
+          <PermissionModeSwitcher
+            preset="ask"
+            fullEnabled={false}
+            blocked
+            missingMethods={[MODE_SET_CANDIDATE]}
+            dark={theme === 'dark'}
+            onRequestPreset={() => undefined}
+          />
           <Composer
             disabled={status !== 'running' || activeSessionId === null}
             running={running}
@@ -472,7 +607,7 @@ function App(): React.JSX.Element {
             onTogglePlanMode={() => {
               const next: AgentRunMode = agentMode === 'plan' ? 'build' : 'plan'
               setAgentMode(next)
-              showToast(next === 'plan' ? '已开启计划模式' : '已关闭计划模式')
+              showToast(next === 'plan' ? tr('planModeOn') : tr('planModeOff'))
             }}
             onOpenGoal={openGoalDialog}
             onPickWorkspace={() => void handlePickWorkspaceForChat()}
@@ -488,7 +623,30 @@ function App(): React.JSX.Element {
             permissionMode={permissionMode}
             onRequestPermissionModeChange={requestPermissionModeChange}
           />
+          </>
+          ) : null}
         </main>
+        {commandOpen ? (
+          <div className="command-palette" data-testid="command-palette" role="dialog">
+            <button type="button" className="sheet-backdrop" aria-label={tr('close')} onClick={() => setCommandOpen(false)} />
+            <ul className="command-palette-list">
+              {DESKTOP_VIEWS.map((view) => (
+                <li key={view.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDesktopView(resolveDesktopView(view.id).id)
+                      setCommandOpen(false)
+                    }}
+                  >
+                    {tr(view.titleKey)}
+                    <kbd>{view.shortcut}</kbd>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         {inspectorOpen && (
           <div className="contextual-inspector-slot">
@@ -516,17 +674,22 @@ function App(): React.JSX.Element {
       </div>
 
       <details className="diagnostics">
-        <summary>Diagnostics</summary>
+        <summary>{tr('diagnostics')}</summary>
         <div className="diagnostics-content">
           <span>appserver: {status}</span>
           <span data-testid="diagnostics-appserver-pid">PID: {info?.appserverPid ?? 'not running'}</span>
           <span data-testid="diagnostics-pending-rpc">pending RPC: {conversation.protocolClient?.pendingRequestCount ?? 0}</span>
-          <button type="button" className="appserver-start" onClick={() => platform.start()} disabled={status === 'running' || status === 'starting'}>Start</button>
-          <button type="button" className="appserver-stop" onClick={() => platform.stop()} disabled={status === 'stopped' || status === 'crashed'}>Stop</button>
+          <button type="button" className="appserver-start" onClick={() => platform.start()} disabled={status === 'running' || status === 'starting'}>{tr('start')}</button>
+          <button type="button" className="appserver-stop" onClick={() => platform.stop()} disabled={status === 'stopped' || status === 'crashed'}>{tr('stop')}</button>
         </div>
       </details>
 
-      {pendingApproval !== null && (
+      {approvalEnabled && pendingApproval !== null &&
+      approvalChannel({
+        risk: pendingApproval.riskLevel,
+        preset: 'ask',
+        action: pendingApproval.action
+      }) === 'modal' && (
         <ApprovalModal
           item={pendingApproval}
           onApprove={() => conversation.resolveApproval(pendingApproval.requestId, 'approved')}
@@ -582,13 +745,13 @@ function App(): React.JSX.Element {
         onSave={() => {
           if (activeSessionId !== null) persistGoal(activeSessionId, goalDraft)
           setGoalOpen(false)
-          showToast(goalDraft.trim() === '' ? '已清除目标' : '已保存目标')
+          showToast(goalDraft.trim() === '' ? tr('goalCleared') : tr('goalSaved'))
         }}
         onClear={() => {
           setGoalDraft('')
           if (activeSessionId !== null) persistGoal(activeSessionId, '')
           setGoalOpen(false)
-          showToast('已清除目标')
+          showToast(tr('goalCleared'))
         }}
       />
       {pendingFullAuto && (
@@ -600,20 +763,26 @@ function App(): React.JSX.Element {
           }}
         >
           <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="full-auto-title">
-            <h2 id="full-auto-title">启用完全访问？</h2>
-            <p>此任务可能在不逐次询问的情况下运行写入和命令工具。你可以随时从输入框切回。</p>
+            <h2 id="full-auto-title">{tr('fullAutoTitle')}</h2>
+            <p>{tr('fullAutoBody')}</p>
             <div className="confirm-actions">
-              <button type="button" onClick={() => setPendingFullAuto(false)}>取消</button>
+              <button type="button" onClick={() => setPendingFullAuto(false)}>{tr('cancel')}</button>
               <button type="button" className="danger-action" onClick={() => {
                 setPreferences((current) => ({ ...current, permissionMode: 'full_auto' }))
                 setPendingFullAuto(false)
-              }}>启用完全访问</button>
+              }}>{tr('fullAutoEnable')}</button>
             </div>
           </div>
         </div>
       )}
       {toast !== null && <div className="task-toast" role="status" aria-live="polite" data-testid="task-toast">{toast}</div>}
+      {runBanner !== null && (
+        <div className="task-toast" role="status" aria-live="polite" data-testid="os-fallback-banner">
+          {runBanner.title}: {runBanner.body}
+        </div>
+      )}
     </div>
+    </I18nProvider>
   )
 }
 

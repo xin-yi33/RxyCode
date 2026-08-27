@@ -1,12 +1,21 @@
 import { useEffect, useState } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
 import type { UseModelsResult } from '../hooks/useModels'
 import type { ModelEntry } from '../hooks/useModels'
 import { modelsUnavailableCopy } from '../lib/modelAvailability.mts'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { DesktopLanguage, PermissionMode, ThemePreference } from '../lib/desktopPreferences.mts'
+import {
+  effortOptionsFor,
+  SETTINGS_SECTIONS,
+  type SettingsSectionId
+} from '../../../lib/settingsSections.ts'
+import { TeamSection } from '../../../features/settings/TeamSection.ts'
+import { TrashSection } from '../../../features/settings/TrashSection.ts'
+import { B17_RECYCLE_METHODS } from '../../../features/recycle/recycle.probe.ts'
 
-export type SettingsTab = 'general' | 'model' | 'apikey' | 'workspace' | 'diagnostics'
+export type SettingsTab = SettingsSectionId
 
 export interface SettingsPageProps {
   appVersion: string
@@ -27,23 +36,17 @@ export interface SettingsPageProps {
   onLanguageChange: (language: DesktopLanguage) => void
 }
 
-const TABS: Array<{ id: SettingsTab; label: string }> = [
-  { id: 'general', label: 'General' },
-  { id: 'model', label: '模型' },
-  { id: 'apikey', label: 'API Key' },
-  { id: 'workspace', label: '工作区' },
-  { id: 'diagnostics', label: '更新与诊断' }
-]
 
-const UPDATE_STATUS_LABELS: Record<UpdateStatus, string> = {
-  disabled: '不可用',
-  idle: '空闲',
-  checking: '检查中…',
-  available: '有可用更新',
-  'not-available': '已是最新',
-  downloading: '下载中…',
-  downloaded: '已下载，可安装',
-  error: '出错'
+
+const UPDATE_STATUS_KEYS: Record<UpdateStatus, string> = {
+  disabled: 'updateDisabled',
+  idle: 'updateIdle',
+  checking: 'updateChecking',
+  available: 'updateAvailable',
+  'not-available': 'updateNotAvailable',
+  downloading: 'updateDownloading',
+  downloaded: 'updateDownloaded',
+  error: 'updateError'
 }
 
 function UnavailablePanel({
@@ -55,9 +58,10 @@ function UnavailablePanel({
   detail: string
   blockedPrerequisite: boolean
 }): React.JSX.Element {
+  const { t } = useI18n()
   return (
     <div className="blocked-panel">
-      {blockedPrerequisite ? <span className="blocked-badge">BLOCKED_PREREQUISITE</span> : null}
+      {blockedPrerequisite ? <span className="blocked-badge">{t('blocked')}</span> : null}
       <p className="blocked-title">{title}</p>
       <p className="blocked-detail">{detail}</p>
     </div>
@@ -78,6 +82,7 @@ function ApiKeyRow({
   const [key, setKey] = useState('')
   const [saved, setSaved] = useState(false)
 
+  const { t } = useI18n()
   const submit = (): void => {
     if (key.trim() === '') return
     onSave(key.trim())
@@ -93,22 +98,23 @@ function ApiKeyRow({
       <input
         type="password"
         className="apikey-input"
-        placeholder="粘贴 API Key（不回显）"
+        placeholder={t('apiKeyPlaceholder')}
         value={key}
         onChange={(event) => setKey(event.target.value)}
       />
       <button type="button" className="apikey-save" disabled={key.trim() === ''} onClick={submit}>
-        保存
+        {t('save')}
       </button>
       <button type="button" className="apikey-delete" onClick={onDelete}>
-        清除
+        {t('clear')}
       </button>
-      {saved && <span className="apikey-saved">已保存（后端加密存储）</span>}
+      {saved && <span className="apikey-saved">{t('apiKeySaved')}</span>}
     </div>
   )
 }
 
 function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; onModelSelected?: (modelId: string) => void }): React.JSX.Element {
+  const { t } = useI18n()
   const [presets, setPresets] = useState<Array<{ id: string; name: string; base_url: string; category?: string }>>([])
   const [selectedPreset, setSelectedPreset] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
@@ -206,9 +212,9 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
 
   return (
     <div className="addmodel-card">
-      <div className="addmodel-title">添加模型</div>
+      <div className="addmodel-title">{t('addModel')}</div>
       <div className="addmodel-row">
-        <span className="label">Provider 预设</span>
+        <span className="label">{t('providerPreset')}</span>
         <select
           className="addmodel-select"
           value={selectedPreset}
@@ -224,7 +230,7 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
         </select>
       </div>
       <div className="addmodel-row">
-        <span className="label">Base URL</span>
+        <span className="label">{t('baseUrl')}</span>
         <input
           className="addmodel-input"
           type="text"
@@ -234,11 +240,11 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
         />
       </div>
       <div className="addmodel-row">
-        <span className="label">API Key</span>
+        <span className="label">{t('apiKey')}</span>
         <input
           className="addmodel-input"
           type="password"
-          placeholder="粘贴 API Key（不回显）"
+          placeholder={t('apiKeyPlaceholder')}
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
         />
@@ -285,7 +291,11 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
 }
 
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
-  const [tab, setTab] = useState<SettingsTab>('general')
+  const { t } = useI18n()
+  const [tab, setTab] = useState<SettingsSectionId>('general')
+  const [teamAuto, setTeamAuto] = useState(false)
+  const activeModel = props.models.snapshot?.models.find((model) => model.active) ?? null
+  const effortOptions = effortOptionsFor(activeModel)
   const diagnostics = useDiagnostics()
   const updateStatus = diagnostics.updateStatus?.status ?? null
 
@@ -306,58 +316,77 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
     }}>
       <div className="settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-testid="settings-dialog">
         <header className="settings-header">
-          <div id="settings-title" className="settings-title">Settings</div>
+          <div id="settings-title" className="settings-title">{t('settings')}</div>
           <button type="button" className="settings-close" onClick={props.onClose}>
-            关闭
+            {t('close')}
           </button>
         </header>
-        <nav className="settings-tabs">
-          {TABS.map((entry) => (
+        <div className="settings-body">
+        <nav className="settings-tabs" data-testid="settings-nav">
+          {SETTINGS_SECTIONS.map((entry) => (
             <button
               key={entry.id}
               type="button"
               className={`settings-tab${tab === entry.id ? ' active' : ''}`}
-              data-tab={entry.id}
+              data-tab={entry.id === 'models' ? 'model' : entry.id}
               onClick={() => setTab(entry.id)}
             >
-              {entry.label}
+              {t(entry.labelKey)}
             </button>
           ))}
         </nav>
         <div className="settings-content">
+          {tab === 'recycle' && (
+            <section className="settings-panel" data-testid="settings-recycle">
+              <h2>{t('recycle')}</h2>
+              <TrashSection
+                items={[]}
+                blocked
+                missing={[...B17_RECYCLE_METHODS]}
+                onRestore={() => undefined}
+                onPurgeConfirmed={() => undefined}
+              />
+            </section>
+          )}
           {tab === 'general' && (
             <section className="settings-panel" data-testid="general-settings">
-              <h2>General</h2>
+              <h2>{t('general')}</h2>
               <div className="settings-option-row">
-                <div><strong>Approval mode</strong><p className="settings-hint">The mode applies to this task window. Full access always requires confirmation.</p></div>
-                <select aria-label="Approval mode" value={props.permissionMode} onChange={(event) => props.onPermissionModeChange(event.target.value as PermissionMode)}>
-                  <option value="confirm_all">更改前询问</option>
-                  <option value="auto_edit">自动编辑</option>
-                  <option value="full_auto">完全访问</option>
+                <div><strong>{t('approvalMode')}</strong><p className="settings-hint">{t('approvalModeHint')}</p></div>
+                <select aria-label={t('approvalMode')} value={props.permissionMode} onChange={(event) => props.onPermissionModeChange(event.target.value as PermissionMode)}>
+                  <option value="confirm_all">{t('modeConfirmAll')}</option>
+                  <option value="auto_edit">{t('modeAutoEdit')}</option>
+                  <option value="full_auto">{t('modeFullAuto')}</option>
                 </select>
               </div>
               <div className="settings-option-row">
-                <div><strong>Theme</strong><p className="settings-hint">Choose the canvas and panel appearance.</p></div>
-                <select aria-label="Theme" value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
-                  <option value="system">System</option>
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
-                </select>
-              </div>
-              <div className="settings-option-row">
-                <div><strong>Language</strong><p className="settings-hint">UI language preference for the Desktop shell.</p></div>
-                <select aria-label="Language" value={props.language} onChange={(event) => props.onLanguageChange(event.target.value as DesktopLanguage)}>
-                  <option value="zh-CN">简体中文</option>
-                  <option value="en-US">English</option>
+                <div><strong>{t('language')}</strong><p className="settings-hint">{t('languageHint')}</p></div>
+                <select aria-label={t('language')} value={props.language} onChange={(event) => props.onLanguageChange(event.target.value as DesktopLanguage)}>
+                  <option value="zh-CN">{t('languageZh')}</option>
+                  <option value="en-US">{t('languageEn')}</option>
                 </select>
               </div>
             </section>
           )}
-          {tab === 'model' && (
+          {tab === 'appearance' && (
+            <section className="settings-panel" data-testid="settings-appearance">
+              <h2>{t('appearance')}</h2>
+              <div className="settings-option-row">
+                <div><strong>{t('theme')}</strong><p className="settings-hint">{t('themeHint')}</p></div>
+                <select aria-label={t('theme')} value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
+                  <option value="system">{t('themeSystem')}</option>
+                  <option value="light">{t('themeLight')}</option>
+                  <option value="dark">{t('themeDark')}</option>
+                  <option value="high-contrast">{t('themeHighContrast')}</option>
+                </select>
+              </div>
+            </section>
+          )}
+          {tab === 'models' && (
             <section className="settings-panel">
-              <h2>模型</h2>
+              <h2>{t('models')}</h2>
               {props.models.loading && !props.models.supported ? (
-                <p className="settings-hint">加载中…</p>
+                <p className="settings-hint">{t('loading')}</p>
               ) : !props.models.supported ? (
                 <>
                   <UnavailablePanel
@@ -377,12 +406,12 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                 </>
               ) : (
                 <div className="models-list">
-                  {props.models.loading && <p className="settings-hint">加载中…</p>}
+                  {props.models.loading && <p className="settings-hint">{t('loading')}</p>}
                   {props.models.error !== null && (
                     <p className="settings-error">{props.models.error}</p>
                   )}
                   {(props.models.snapshot?.models ?? []).length === 0 && (
-                    <p className="settings-hint">尚无模型。请在此处选择 Provider、填写 API Key 并探测可用模型。</p>
+                    <p className="settings-hint">{t('noModels')}</p>
                   )}
                   {groupModelsByProvider(props.models.snapshot?.models ?? []).map(([group, entries]) => (
                     <section key={group} className="model-group" aria-labelledby={`model-group-${group}`}>
@@ -393,7 +422,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                             <span className="model-name">{model.nickname || model.name}</span>
                             <span className="model-id">{model.id}</span>
                             <span className="model-provider">{model.provider_name}</span>
-                            {model.active && <span className="model-badge">当前</span>}
+                            {model.active && <span className="model-badge">{t('current')}</span>}
                             {model.limit_source !== undefined && (
                               <span className="model-limit">
                                 max_out={model.resolved_max_tokens ?? 'auto'} · {model.limit_source}
@@ -411,7 +440,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                                   if (ok) props.onModelSelected?.(model.id)
                                 })}
                               >
-                                设为当前
+                                {t('setCurrent')}
                               </button>
                             )}
                             <button
@@ -419,14 +448,14 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                               className="model-test"
                               onClick={() => void props.models.testConnection(model.id)}
                             >
-                              测试连接
+                              {t('testConnection')}
                             </button>
                             <button
                               type="button"
                               className="model-remove"
                               onClick={() => void props.models.remove(model.id)}
                             >
-                               删除
+                               {t('remove')}
                             </button>
                           </div>
                         </div>
@@ -435,14 +464,41 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                   ))}
                 </div>
               )}
-              {props.models.supported && <AddModelPanel models={props.models} onModelSelected={props.onModelSelected} />}
+              <div className="settings-option-row">
+                <div><strong>{t('effort')}</strong></div>
+                <select
+                  aria-label={t('effort')}
+                  data-testid="effort-select"
+                  disabled={effortOptions.length === 0 || activeModel === null}
+                  value={
+                    effortOptions.includes(props.models.snapshot?.effort ?? '')
+                      ? (props.models.snapshot?.effort ?? '')
+                      : ''
+                  }
+                  onChange={(event) => {
+                    const id = props.models.snapshot?.active
+                    if (id === undefined || id === '') return
+                    void props.models.setActive(id, event.target.value)
+                  }}
+                >
+                  {effortOptions.length === 0 ? (
+                    <option value="">{t('effortNone')}</option>
+                  ) : (
+                    effortOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))
+                  )}
+                </select>
+              </div>
             </section>
           )}
-          {tab === 'apikey' && (
-            <section className="settings-panel">
-              <h2>API Key</h2>
+          {tab === 'addModel' && (
+            <section className="settings-panel" data-testid="settings-add-model">
+              <h2>{t('addModel')}</h2>
+              {props.models.supported && <AddModelPanel models={props.models} onModelSelected={props.onModelSelected} />}
+              <h3>{t('apiKey')}</h3>
               {props.models.loading && !props.models.supported ? (
-                <p className="settings-hint">加载中…</p>
+                <p className="settings-hint">{t('loading')}</p>
               ) : !props.models.supported ? (
                 <UnavailablePanel
                   {...modelsUnavailableCopy(
@@ -454,7 +510,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               ) : (
                 <div className="apikey-list">
                   {(props.models.snapshot?.models ?? []).length === 0 && (
-                    <p className="settings-hint">尚无模型可配置密钥。</p>
+                    <p className="settings-hint">{t('noModelsForKeys')}</p>
                   )}
                   {(props.models.snapshot?.models ?? []).map((model: ModelEntry) => (
                     <ApiKeyRow
@@ -469,18 +525,18 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               )}
             </section>
           )}
-          {tab === 'workspace' && (
+          {tab === 'general' && (
             <section className="settings-panel">
-              <h2>工作区</h2>
+              <h2>{t('workspace')}</h2>
               <div className="workspace-card">
                 <div className="workspace-row">
-                  <span className="label">当前生效</span>
+                  <span className="label">{t('workspaceEffective')}</span>
                   <span className="workspace-path">{props.effectiveWorkspaceRoot}</span>
                 </div>
                 <div className="workspace-row">
-                  <span className="label">已保存设置</span>
+                  <span className="label">{t('workspaceSaved')}</span>
                   <span className="workspace-path">
-                    {props.savedWorkspaceRoot ?? '未设置（使用后端仓库根目录）'}
+                    {props.savedWorkspaceRoot ?? t('workspaceUnset')}
                   </span>
                 </div>
                 <div className="workspace-actions">
@@ -490,7 +546,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     disabled={props.picking}
                     onClick={() => void props.onPickWorkspace()}
                   >
-                    {props.picking ? '选择中…' : '选择目录'}
+                    {props.picking ? t('picking') : t('pickDirectory')}
                   </button>
                   <button
                     type="button"
@@ -498,28 +554,27 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     disabled={props.savedWorkspaceRoot === null || props.picking}
                     onClick={props.onClearWorkspace}
                   >
-                    恢复默认
+                    {t('restoreDefault')}
                   </button>
                 </div>
                 <p className="settings-hint">
-                  新会话通过既有协议字段 session/new.workspace_root
-                  使用所选目录；未设置时回退到后端仓库根目录。协议与 schema.json 均未改动。
+                  {t('workspaceHint')}
                 </p>
               </div>
             </section>
           )}
-          {tab === 'diagnostics' && (
+          {tab === 'general' && (
             <section className="settings-panel">
-              <h2>更新与诊断</h2>
+              <h2>{t('updatesDiagnostics')}</h2>
               <div className="workspace-card">
                 <div className="workspace-row">
-                  <span className="label">当前版本</span>
+                  <span className="label">{t('currentVersion')}</span>
                   <span className="workspace-path">{props.appVersion}</span>
                 </div>
                 <div className="workspace-row">
-                  <span className="label">更新状态</span>
+                  <span className="label">{t('updateStatus')}</span>
                   <span className="workspace-path">
-                    {updateStatus !== null ? UPDATE_STATUS_LABELS[updateStatus] : '加载中…'}
+                    {updateStatus !== null ? t(UPDATE_STATUS_KEYS[updateStatus]) : t('loading')}
                   </span>
                 </div>
                 {diagnostics.updateStatus?.error !== null &&
@@ -543,7 +598,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                     }
                     onClick={() => void diagnostics.checkForUpdates()}
                   >
-                    检查更新
+                    {t('checkUpdates')}
                   </button>
                   {updateStatus === 'available' && (
                     <button
@@ -551,7 +606,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                       className="workspace-pick"
                       onClick={() => void diagnostics.downloadUpdate()}
                     >
-                      下载更新
+                      {t('downloadUpdate')}
                     </button>
                   )}
                   {updateStatus === 'downloaded' && (
@@ -560,7 +615,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                       className="workspace-pick"
                       onClick={() => diagnostics.installUpdate()}
                     >
-                      立即重启安装
+                      {t('installUpdate')}
                     </button>
                   )}
                 </div>
@@ -570,7 +625,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               </div>
               <div className="workspace-card">
                 <div className="workspace-row">
-                  <span className="label">崩溃上报</span>
+                  <span className="label">{t('crashReport')}</span>
                   <label className="settings-toggle">
                     <input
                       type="checkbox"
@@ -578,16 +633,16 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
                       disabled={diagnostics.consent === null}
                       onChange={(event) => void diagnostics.setConsent(event.target.checked)}
                     />
-                    允许上传脱敏崩溃诊断（默认关闭，切换立即生效）
+                    {t('crashConsent')}
                   </label>
                 </div>
                 <p className="settings-hint">
                   诊断包只包含版本、平台、协议状态与日志摘要，不含 API Key、代码、完整 prompt
                   或工具输入输出。未开启同意时仅在本地记录。
                 </p>
-                <h3>最近诊断</h3>
+                <h3>{t('recentDiagnostics')}</h3>
                 {diagnostics.reports.length === 0 ? (
-                  <p className="settings-hint">暂无诊断记录。</p>
+                  <p className="settings-hint">{t('noDiagnostics')}</p>
                 ) : (
                   <ul className="crash-report-list">
                     {diagnostics.reports.map((report) => (
@@ -600,6 +655,25 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               </div>
             </section>
           )}
+          {tab === 'skills' && (
+            <section className="settings-panel" data-testid="settings-skills">
+              <h2>{t('skills')}</h2>
+              <UnavailablePanel title={t('blocked')} detail={t('skillsBlockedDetail')} blockedPrerequisite />
+            </section>
+          )}
+          {tab === 'mcp' && (
+            <section className="settings-panel" data-testid="settings-mcp">
+              <h2>{t('mcp')}</h2>
+              <UnavailablePanel title={t('blocked')} detail={t('mcpBlockedDetail')} blockedPrerequisite />
+            </section>
+          )}
+          {tab === 'team' && (
+            <section className="settings-panel" data-testid="settings-team">
+              <h2>{t('team')}</h2>
+              <TeamSection auto={teamAuto} onAutoChange={setTeamAuto} />
+            </section>
+          )}
+        </div>
         </div>
       </div>
     </div>

@@ -7,11 +7,12 @@
  * stream, or it could race an approval response.
  */
 import { useCallback, useEffect, useState } from 'react'
-import type { ProtocolClient } from '@rxycode/protocol-client'
+import { isDeclaredCapability, type ProtocolClient } from '@rxycode/protocol-client'
 import {
   classifyModelsListFailure,
   type ModelsUnavailableReason
 } from '../lib/modelAvailability.mts'
+import { requestSetActive } from '../../../features/settings/setActiveParams.ts'
 
 export interface ModelEntry {
   id: string
@@ -28,12 +29,14 @@ export interface ModelEntry {
   limit_source?: string
   context_window?: number | null
   warning?: string | null
+  effort_options?: string[]
 }
 
 export interface ModelsSnapshot {
   models: ModelEntry[]
   active: string
   recent: string[]
+  effort: string | null
 }
 
 export interface ProviderPreset {
@@ -62,6 +65,7 @@ export interface OnboardResult {
 export interface UseModelsOptions {
   client: ProtocolClient | null
   refreshKey: number
+  capabilities?: Readonly<Record<string, unknown>> | null
 }
 
 export interface UseModelsResult {
@@ -71,7 +75,7 @@ export interface UseModelsResult {
   unavailableReason: ModelsUnavailableReason | null
   snapshot: ModelsSnapshot | null
   refresh(): Promise<void>
-  setActive(id: string): Promise<boolean>
+  setActive(id: string, effort?: string | null): Promise<boolean>
   remove(id: string): Promise<boolean>
   upsertCredential(id: string, apiKey: string): Promise<boolean>
   deleteCredential(id: string): Promise<boolean>
@@ -94,7 +98,8 @@ export interface UseModelsResult {
 
 export function useModels({
   client,
-  refreshKey
+  refreshKey,
+  capabilities = null
 }: UseModelsOptions): UseModelsResult {
   const [supported, setSupported] = useState(false)
   const [loading, setLoading] = useState(() => client !== null)
@@ -113,6 +118,14 @@ export function useModels({
       setLoading(false)
       return
     }
+    if (capabilities !== null && !isDeclaredCapability(capabilities, 'models')) {
+      setSupported(false)
+      setSnapshot(null)
+      setUnavailableReason('method-not-found')
+      setError('capability not declared: models')
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -126,7 +139,8 @@ export function useModels({
       setSnapshot({
         models: (list.models ?? []) as ModelEntry[],
         active: String(list.active ?? ''),
-        recent: (list.recent ?? []) as string[]
+        recent: (list.recent ?? []) as string[],
+        effort: typeof list.effort === 'string' && list.effort !== '' ? list.effort : null
       })
     } catch (e) {
       setSupported(false)
@@ -136,21 +150,23 @@ export function useModels({
     } finally {
       setLoading(false)
     }
-  }, [client])
+  }, [client, capabilities])
 
   useEffect(() => {
     void refresh()
   }, [refresh, refreshKey])
 
   const setActive = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string, effort?: string | null): Promise<boolean> => {
       if (client === null) return false
       try {
-        const r = (await client.requestWithTimeout('models/set_active', { id }, 30_000)) as {
-          ok?: boolean
-        }
-        if (r.ok === true) await refresh()
-        return r.ok === true
+        const ok = await requestSetActive(
+          (method, params, timeoutMs) => client.requestWithTimeout(method, params, timeoutMs),
+          id,
+          effort
+        )
+        if (ok) await refresh()
+        return ok
       } catch {
         return false
       }

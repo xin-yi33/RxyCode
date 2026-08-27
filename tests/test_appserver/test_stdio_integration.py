@@ -373,7 +373,7 @@ def test_appserver_multiple_sessions(appserver_proc):
 
 
 def test_appserver_concurrent_sessions(appserver_proc):
-    """Two sessions prompt in parallel; wall time must stay below 2x slow stub."""
+    """Two sessions prompt in parallel; wall time must beat sequential stubs."""
     client = AppserverClient(appserver_proc)
     client.request(
         "initialize",
@@ -393,6 +393,24 @@ def test_appserver_concurrent_sessions(appserver_proc):
         {"workspace_root": str(PROJECT_ROOT)},
         timeout=30.0,
     )
+
+    # Sequential baseline on the same warm sessions. Linux CI coverage+xdist
+    # made a 1.75s wall-clock bound flake at 1.76s–1.82s; overlapping the 0.5s
+    # stub sleeps is the actual concurrency invariant.
+    start_seq = time.monotonic()
+    seq1 = client.request(
+        "session/prompt",
+        {"session_id": s1["session_id"], "text": "slow:seq-one"},
+        timeout=30.0,
+    )
+    seq2 = client.request(
+        "session/prompt",
+        {"session_id": s2["session_id"], "text": "slow:seq-two"},
+        timeout=30.0,
+    )
+    seq_elapsed = time.monotonic() - start_seq
+    assert seq1["text"] == "stub:seq-one"
+    assert seq2["text"] == "stub:seq-two"
 
     results: dict[str, dict] = {}
     errors: list[BaseException] = []
@@ -425,10 +443,10 @@ def test_appserver_concurrent_sessions(appserver_proc):
     assert not errors, errors
     assert results["r1"]["text"] == "stub:one"
     assert results["r2"]["text"] == "stub:two"
-    # Two slow stubs sleep 0.5s each; sequential ≥1.0s plus IPC. Coverage,
-    # worker spawn, and GX job/persist work add ~0.5–1.2s in parallel; 2.25s
-    # still fails a fully serial 2×(0.5s+spawn) run.
-    assert elapsed < 2.25, f"expected concurrent prompts (<2.25s), got {elapsed:.2f}s"
+    assert elapsed <= seq_elapsed - 0.3, (
+        f"expected concurrent prompts to beat sequential {seq_elapsed:.2f}s "
+        f"by ≥0.3s, got {elapsed:.2f}s"
+    )
 
 
 def test_appserver_bootstrap_timeout():

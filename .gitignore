@@ -130,7 +130,7 @@ log/*.err
 Thumbs.db
 
 # --- docs on GitHub: agent/, assets/, imgs/, modules/, release-notes/, GUI.md, quickstart.md ---
-# feat/phase-g-backend also tracks phase-g/, decisions/, agents/ (G-PROTOCOL + harness).
+# Phase G also tracks phase-g/, decisions/, agents/ (G-PROTOCOL + harness).
 docs/*
 !docs/modules/
 !docs/imgs/

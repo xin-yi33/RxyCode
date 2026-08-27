@@ -50,9 +50,6 @@ packages = [
   "RxyCode.RxyCode1_1_0.core.providers",
   "RxyCode.RxyCode1_1_0.core.safety",
   "RxyCode.RxyCode1_1_0.core.subagents",
-  "RxyCode.RxyCode1_1_0.core.agents",
-  "RxyCode.RxyCode1_1_0.core.agents.bridge",
-  "RxyCode.RxyCode1_1_0.core.agents.teams",
   "RxyCode.RxyCode1_1_0.appserver",
   "RxyCode.RxyCode1_1_0.protocol",
   "RxyCode.RxyCode1_1_0.execution",
@@ -93,6 +90,9 @@ dependencies = { file = ["requirements.txt"] }
   "core/agents/teams/*.yaml",
   "core/agents/teams/**/*.yaml",
   "core/agents/teams/**/*.md",
+]
+"RxyCode.RxyCode1_1_0.core.agents.teams" = [
+  "*.yaml",
 ]
 
 [tool.setuptools.exclude-package-data]

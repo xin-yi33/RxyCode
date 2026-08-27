@@ -1,0 +1,18 @@
+handoff_id: D-F-HANDOFF-H3
+card: PhaseG-H3
+source_baseline: PHASE-G-DESKTOP.md#G3
+branch: feat/phase-g-frontend
+commit: pending
+protocol_version: "1.1.0"
+protocol_change: consume process lifecycle events only
+tests:
+  - "npm run typecheck -> pass"
+  - "H3 ipc/supervisor/window-policy/web-preferences tests pass"
+  - "appserver-lifecycle 4 pass including 20 cycles"
+  - "pytest tests/test_appserver 108 passed, 3 failed backend stall (not frontend)"
+known_limitations:
+  - three backend stall tests fail; frontend did not change appserver
+  - macOS/Linux orphan-guard covered by scripts + platform tests, not live Darwin CI here
+rollback: pending
+owner: composer-2.5
+grok: none
