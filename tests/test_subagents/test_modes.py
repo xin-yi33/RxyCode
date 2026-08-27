@@ -26,7 +26,7 @@ from core.subagents.modes import (
 # ============================================================================
 
 class TestFeatureFlagDefaults:
-    """All feature flags must default to OFF — single-agent path zero regression."""
+    """Blank flag objects stay off; product env defaults turn the master path on."""
 
     def test_subagents_enabled_defaults_false(self):
         flags = SubagentFeatureFlags()
@@ -52,7 +52,7 @@ class TestFeatureFlagDefaults:
         assert config.flags.subagents_child_tasks is False
 
     def test_default_config_no_extra_model_calls(self):
-        """Default config must not produce additional model invocations."""
+        """Blank config must not produce additional model invocations."""
         config = SubagentConfig()
         cap = config.capability
         assert cap.subagents_enabled is False
@@ -60,17 +60,34 @@ class TestFeatureFlagDefaults:
         assert cap.mention is False
         assert cap.child_tasks is False
 
-    def test_environment_flags_require_explicit_master_enable(self, monkeypatch):
-        monkeypatch.setenv("RXYCODE_SUBAGENTS_TASK", "1")
-        assert subagent_config_from_env().flags.subagents_task is False
-
-        monkeypatch.setenv("RXYCODE_SUBAGENTS", "true")
-        monkeypatch.setenv("RXYCODE_SUBAGENTS_MENTION", "yes")
+    def test_from_env_defaults_on_without_child_recursion(self, monkeypatch):
+        monkeypatch.delenv("RXYCODE_SUBAGENTS", raising=False)
+        monkeypatch.delenv("RXYCODE_SUBAGENTS_TASK", raising=False)
+        monkeypatch.delenv("RXYCODE_SUBAGENTS_MENTION", raising=False)
+        monkeypatch.delenv("RXYCODE_SUBAGENTS_CHILD_TASKS", raising=False)
         config = subagent_config_from_env()
         assert config.flags.subagents_enabled is True
         assert config.flags.subagents_task is True
         assert config.flags.subagents_mention is True
         assert config.flags.subagents_child_tasks is False
+
+    def test_master_kill_switch_disables_feature_flags(self, monkeypatch):
+        monkeypatch.setenv("RXYCODE_SUBAGENTS", "0")
+        monkeypatch.setenv("RXYCODE_SUBAGENTS_TASK", "1")
+        monkeypatch.setenv("RXYCODE_SUBAGENTS_MENTION", "yes")
+        config = subagent_config_from_env()
+        assert config.flags.subagents_enabled is False
+        assert config.flags.subagents_task is False
+        assert config.flags.subagents_mention is False
+        assert config.flags.subagents_child_tasks is False
+
+    def test_task_can_be_turned_off_while_master_stays_on(self, monkeypatch):
+        monkeypatch.delenv("RXYCODE_SUBAGENTS", raising=False)
+        monkeypatch.setenv("RXYCODE_SUBAGENTS_TASK", "off")
+        config = subagent_config_from_env()
+        assert config.flags.subagents_enabled is True
+        assert config.flags.subagents_task is False
+        assert config.flags.subagents_mention is True
 
 
 # ============================================================================
@@ -213,7 +230,8 @@ class TestConfigConsistency:
         c2 = get_subagent_config()
         assert c1 is c2
 
-    def test_set_and_reset_config(self):
+    def test_set_and_reset_config(self, monkeypatch):
+        monkeypatch.delenv("RXYCODE_SUBAGENTS", raising=False)
         reset_subagent_config()
         custom = SubagentConfig(
             default_subagent_depth=2,
@@ -223,10 +241,11 @@ class TestConfigConsistency:
         assert get_subagent_config().default_subagent_depth == 2
         assert get_subagent_config().flags.subagents_enabled is True
 
-        # Reset
         reset_subagent_config()
         assert get_subagent_config().default_subagent_depth == 1
-        assert get_subagent_config().flags.subagents_enabled is False
+        assert get_subagent_config().flags.subagents_enabled is True
+        assert get_subagent_config().flags.subagents_task is True
+        assert get_subagent_config().flags.subagents_child_tasks is False
 
     def test_feature_flag_off_no_extra_calls(self):
         """When all flags are off, capability reports nothing enabled."""

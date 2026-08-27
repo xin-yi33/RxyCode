@@ -104,7 +104,7 @@ controlled executor and waits for process-tree cleanup before unwinding.
 ## Tool Registration Flow
 1. `core/builtin_tool_registration.register_builtin_tools(registry, orchestrator, ...)`
    creates and registers all built-in tools (called by AgentV2._register_tools())
-2. When `subagents_enabled` is on, the `task` name is the isolated subagent
+2. Isolated subagents default on (`subagent_config_from_env()`; `RXYCODE_SUBAGENTS=0` disables). When `subagents_enabled` is on, the `task` name is the isolated subagent
    dispatch tool and the task-list tool registers as `task_manage`; exactly one
    tool owns the `task` name
 3. Tools are bound to the LLM via bind_tools() for automatic tool calling

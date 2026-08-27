@@ -83,9 +83,23 @@ class AppserverClient:
         self._stop.set()
 
     def send(self, method: str, params: dict | None = None) -> int:
+        return self._write_request(method, params)
+
+    def _write_request(
+        self,
+        method: str,
+        params: dict | None = None,
+        *,
+        pending: queue.Queue[dict] | None = None,
+    ) -> int:
         with self._send_lock:
             request_id = self._next_id
             self._next_id += 1
+        if pending is not None:
+            # Subscribe before the stdin write so a fast JSON-RPC result cannot
+            # land in the reader thread and get dropped as a notification.
+            with self._pending_lock:
+                self._pending[request_id] = pending
         message = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             message["params"] = params
@@ -111,10 +125,8 @@ class AppserverClient:
             return None
 
     def request(self, method: str, params: dict | None = None, timeout: float = 10.0) -> dict:
-        request_id = self.send(method, params)
         response_queue: queue.Queue[dict] = queue.Queue()
-        with self._pending_lock:
-            self._pending[request_id] = response_queue
+        request_id = self._write_request(method, params, pending=response_queue)
         try:
             message = response_queue.get(timeout=timeout)
         except queue.Empty as exc:
@@ -125,6 +137,48 @@ class AppserverClient:
         if "error" in message:
             raise AssertionError(message["error"])
         return message.get("result") or {}
+
+
+class _InstantJsonRpcProc:
+    """Fake appserver that replies on the same thread tick as stdin.write."""
+
+    def __init__(self) -> None:
+        self.stdin = self
+        self.stdout = self
+        self._ready = threading.Event()
+        self._line = ""
+
+    def write(self, data: str) -> int:
+        payload = json.loads(data)
+        self._line = (
+            json.dumps({"jsonrpc": "2.0", "id": payload["id"], "result": {"ok": True}})
+            + "\n"
+        )
+        self._ready.set()
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def readline(self) -> str:
+        if not self._ready.wait(timeout=5.0):
+            return ""
+        self._ready.clear()
+        return self._line
+
+    def poll(self) -> None:
+        return None
+
+
+def test_appserver_client_request_does_not_drop_fast_responses():
+    """A stub session/new can answer before request() used to subscribe."""
+    client = AppserverClient(_InstantJsonRpcProc())  # type: ignore[arg-type]
+    try:
+        assert client.request("session/new", {"workspace_root": "."}, timeout=1.0) == {
+            "ok": True
+        }
+    finally:
+        client.close()
 
 
 @pytest.fixture

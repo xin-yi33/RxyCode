@@ -232,7 +232,8 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 
 | Command | Description |
 |---------|-------------|
-| `/help` | All commands |
+| `/help` | All commands (includes expert-team / subagent usage) |
+| `/agents on` `/team <task>` | Expert team (off by default; everyday coding stays solo) |
 | `/addmodel` | Add a model (masked credentials) |
 | `/models` / `/model <name>` | List / switch models |
 | `/build` `/plan` `/compose` | Work mode |
@@ -242,7 +243,7 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 | `/cache` | Cache stats |
 | `/language` | UI language |
 | `/thinking` | Thinking panel |
-| `/children` `/child` `/parent` | Isolated child-agent tree (when subagents are on) |
+| `/children` `/child` `/parent` | Isolated child-agent tree (on by default; `RXYCODE_SUBAGENTS=0` disables) |
 
 | Shortcut | Action |
 |----------|--------|

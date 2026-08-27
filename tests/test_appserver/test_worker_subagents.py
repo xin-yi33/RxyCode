@@ -35,13 +35,33 @@ def test_worker_bootstrap_owns_manager_and_persists_outside_workspace(
         reset_manager()
 
 
-def test_worker_bootstrap_keeps_subagents_disabled_by_default(tmp_path, monkeypatch):
+def test_worker_bootstrap_enables_subagents_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("RXYCODE_SUBAGENTS", raising=False)
+    monkeypatch.delenv("RXYCODE_SUBAGENTS_TASK", raising=False)
+    monkeypatch.delenv("RXYCODE_SUBAGENTS_MENTION", raising=False)
     reset_manager()
     try:
         manager, _store = bootstrap_subagent_manager(
             session_id="primary-2",
+            workspace_root=tmp_path,
+            emit=lambda _method, _params: None,
+        )
+        assert manager.capability.subagents_enabled is True
+        assert manager.capability.task is True
+        assert manager.capability.mention is True
+        assert manager.capability.child_tasks is False
+    finally:
+        reset_manager()
+
+
+def test_worker_bootstrap_honors_master_kill_switch(tmp_path, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RXYCODE_SUBAGENTS", "0")
+    reset_manager()
+    try:
+        manager, _store = bootstrap_subagent_manager(
+            session_id="primary-off",
             workspace_root=tmp_path,
             emit=lambda _method, _params: None,
         )
