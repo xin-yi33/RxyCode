@@ -189,7 +189,7 @@ directly.
 
 - Accepts: {command}
 - Returns: {action, message, ...}
-- Handles: /help, /clear, /models, /cache, /list-chats, /thinking, /examples, etc.
+- Handles: /help (canonical text in `utils/slash_help.py`, including expert-team and subagent usage), /clear, /models, /cache, /list-chats, /thinking, /examples, etc.
 - Credential-bearing `/addmodel ...` and legacy `/addmodel-step` command bodies
   are rejected. The frontend uses the typed onboarding endpoint instead.
 - `/clear` resets token stats via `token_stats.reset()` (939).

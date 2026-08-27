@@ -522,6 +522,9 @@ def test_help_never_teaches_credential_bearing_model_commands(monkeypatch, comma
     assert "/addmodel" in help_text
     assert "<key>" not in help_text
     assert "密钥不写入命令" in help_text
+    assert "不会自动拉专家团" in help_text
+    assert "/team <可拆任务>" in help_text
+    assert "/children" in help_text
 
 
 def test_preset_endpoint_exposes_connection_targets_without_model_ids(monkeypatch):

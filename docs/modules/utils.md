@@ -9,6 +9,7 @@ Shared utilities used across the codebase: backend event output, streaming state
 | streaming.py | TokenStats singleton, terminal output helpers, status bar formatting |
 | tui.py | Non-interactive backend output adapter and `get_tui()` / `set_tui()` event sink access |
 | i18n.py | Internationalization: zh/en language support |
+| slash_help.py | Canonical `/help` body (`build_help_text`) for HTTP `/command` |
 | shell.py | `ShellExecutor` - cross-platform command execution with enforceable sandbox policies (workspace/docker/host modes, process-tree cleanup, timeout/cancellation). On Windows PowerShell, an actual `mysql.exe` / `mysql -u` invocation is wrapped in `cmd.exe` so password-on-CLI stderr warnings and `-e` SQL semicolons do not fail the tool. Env probes such as `MYSQL_*` and `Get-Command mysql` stay in PowerShell. |
 | queue.py | QueueManager: persistent task queue |
 | safe_http.py | Pinned public HTTP client: `validate_public_url` / `is_public_address` / `fetch_public_response` / `safe_url_label`, `UnsafeUrlError`, `ResponseTooLargeError` (used by webfetch/file_download) |
