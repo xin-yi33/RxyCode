@@ -1,0 +1,11 @@
+{
+  "platform": "linux",
+  "python": "3.11+",
+  "python_requires": ">=3.11",
+  "appserver_entry": "python -m appserver",
+  "artifact": "rxycode-appserver-linux",
+  "protocol_version": "1.1.0",
+  "appserver_version": "1.2.10",
+  "schema_digest_source": "protocol/schema.json",
+  "schema_digest": "sha256:4e288ba22f5ccfa2525d53e6af1ef24222d435f74f0b9d7fc908db0a17a8379b"
+}

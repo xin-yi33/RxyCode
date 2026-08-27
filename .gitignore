@@ -130,6 +130,7 @@ log/*.err
 Thumbs.db
 
 # --- docs on GitHub: agent/, assets/, imgs/, modules/, release-notes/, GUI.md, quickstart.md ---
+# feat/phase-g-backend also tracks phase-g/, decisions/, agents/ (G-PROTOCOL + harness).
 docs/*
 !docs/modules/
 !docs/imgs/
@@ -138,6 +139,12 @@ docs/*
 !docs/agent/
 !docs/GUI.md
 !docs/quickstart.md
+!docs/phase-g/
+!docs/phase-g/**
+!docs/decisions/
+!docs/decisions/**
+!docs/agents/
+!docs/agents/**
 docs/plans/
 
 # --- 计划目录里的压缩包 / 零散笔记（不入库）---

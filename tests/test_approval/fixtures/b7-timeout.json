@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B7",
+  "kind": "timeout",
+  "request": {"method": "approval/decide", "params": {"session_id": "s1", "action": "bash", "decision": "allow", "expires_at": "2000-01-01T00:00:00Z"}},
+  "evaluate": "reject"
+}

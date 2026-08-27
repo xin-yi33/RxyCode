@@ -1,0 +1,30 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "replay",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "session/events",
+    "params": {"session_id": "child", "cursor": 0}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "events": [
+        {
+          "method": "child_session/orphaned",
+          "params": {
+            "session_id": "child",
+            "parent_session_id": "parent",
+            "root_session_id": "parent",
+            "status": "orphaned"
+          },
+          "seq": 1
+        }
+      ],
+      "next_cursor": 1,
+      "gap_detected": false
+    }
+  }
+}

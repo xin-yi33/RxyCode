@@ -923,6 +923,16 @@ class AgentHost:
             return False
         return bool(result.get("ok", False))
 
+    async def steer(self, text: str, *, timeout: float = 5.0) -> dict[str, Any]:
+        """Forward steer text to the in-flight worker prompt."""
+        if not self.alive():
+            raise RuntimeError("turn is not running")
+        return await self._pipe_request(
+            "prompt/steer",
+            {"session_id": self.session_id, "text": text},
+            timeout=timeout,
+        )
+
     async def interrupt(self, *, timeout: float = 5.0) -> dict[str, Any]:
         """Send an interrupt RPC; the worker cancels its running task.
 

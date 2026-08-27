@@ -1,0 +1,5 @@
+{
+  "card": "PhaseG-B6",
+  "kind": "cancel",
+  "request": {"method": "execution/stop", "params": {"session_id": "s1", "task_id": "t1"}}
+}

@@ -1,0 +1,31 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "child_tree",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "session/tree",
+    "params": {"session_id": "parent"}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "root_session_id": "parent",
+      "sessions": [
+        {
+          "session_id": "parent",
+          "parent_session_id": null,
+          "root_session_id": "parent",
+          "child_count": 1
+        },
+        {
+          "session_id": "child",
+          "parent_session_id": "parent",
+          "root_session_id": "parent",
+          "agent_id": "explore"
+        }
+      ]
+    }
+  }
+}

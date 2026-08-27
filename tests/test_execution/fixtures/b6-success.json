@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B6",
+  "kind": "success",
+  "request": {"method": "command/start", "params": {"session_id": "s1", "command": "python -c \"print(1)\""}},
+  "response": {"result": {"status": "succeeded", "origin": "user", "kind": "command", "exit_code": 0}}
+}

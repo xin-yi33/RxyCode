@@ -5,7 +5,7 @@
   "protocol_version": "1.1.0",
   "$defs": {
     "InitializeRequest": {
-      "description": "JSON-RPC handshake on connect (future ``python -m appserver``).\n\n``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;\n``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;\n``capabilities`` is an optional client feature manifest (unused in HTTP mode).",
+      "description": "JSON-RPC handshake on connect (future ``python -m appserver``).\n\n``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;\n``protocol_version`` must fall in ``PROTOCOL_VERSION_MIN``..``MAX`` (empty\nis unspecified/legacy); unknown extra fields are ignored.\n``capabilities`` is an optional client feature manifest (unused in HTTP mode).\n``client_info`` / ``client_capabilities`` / ``requested_features`` are\nPhaseG-B2 optional fields (G §5.1); they do not replace the older keys.",
       "properties": {
         "method": {
           "const": "initialize",
@@ -37,6 +37,47 @@
           ],
           "default": null,
           "title": "Capabilities"
+        },
+        "client_info": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Info"
+        },
+        "client_capabilities": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Capabilities"
+        },
+        "requested_features": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Features"
         }
       },
       "required": [
@@ -134,6 +175,24 @@
           "default": null,
           "description": "When true, ProtocolTui emits event/reasoning_snapshot chunks.",
           "title": "Thinking Expanded"
+        },
+        "capability": {
+          "anyOf": [
+            {
+              "enum": [
+                "no_tools",
+                "edit_only",
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "GX14 Ask/Edit/Agent hard tool boundary (default full).",
+          "title": "Capability"
         }
       },
       "required": [
@@ -259,6 +318,107 @@
           "default": false,
           "title": "Include Trashed",
           "type": "boolean"
+        },
+        "include_archived": {
+          "default": false,
+          "title": "Include Archived",
+          "type": "boolean"
+        },
+        "workspace_root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Root"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "updated_after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated After"
+        },
+        "updated_before": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated Before"
+        },
+        "created_after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created After"
+        },
+        "created_before": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created Before"
+        },
+        "parent_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Session Id"
         }
       },
       "title": "SessionsListRequest",
@@ -367,12 +527,2022 @@
         "session_id": {
           "title": "Session Id",
           "type": "string"
+        },
+        "confirm_purge": {
+          "default": false,
+          "title": "Confirm Purge",
+          "type": "boolean"
         }
       },
       "required": [
         "session_id"
       ],
       "title": "SessionPurgeRequest",
+      "type": "object"
+    },
+    "ThreadDeleteRequest": {
+      "description": "Soft-delete a thread (sets deleted_at).\n\nMaps ``thread/delete``.",
+      "properties": {
+        "method": {
+          "const": "thread/delete",
+          "default": "thread/delete",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ThreadDeleteRequest",
+      "type": "object"
+    },
+    "ThreadRestoreRequest": {
+      "description": "Restore a soft-deleted thread.\n\nMaps ``thread/restore``.",
+      "properties": {
+        "method": {
+          "const": "thread/restore",
+          "default": "thread/restore",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ThreadRestoreRequest",
+      "type": "object"
+    },
+    "ThreadPurgeRequest": {
+      "description": "Permanently purge a soft-deleted thread.\n\nMaps ``thread/purge``.",
+      "properties": {
+        "method": {
+          "const": "thread/purge",
+          "default": "thread/purge",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "confirm_purge": {
+          "default": false,
+          "title": "Confirm Purge",
+          "type": "boolean"
+        },
+        "paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paths"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ThreadPurgeRequest",
+      "type": "object"
+    },
+    "ThreadListDeletedRequest": {
+      "description": "List soft-deleted threads.\n\nMaps ``thread/list_deleted``.",
+      "properties": {
+        "method": {
+          "const": "thread/list_deleted",
+          "default": "thread/list_deleted",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ThreadListDeletedRequest",
+      "type": "object"
+    },
+    "SessionForkRequest": {
+      "description": "PhaseG-B5 fork a thread. Parent events and status stay unchanged.",
+      "properties": {
+        "method": {
+          "const": "session/fork",
+          "default": "session/fork",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionForkRequest",
+      "type": "object"
+    },
+    "ThreadForkRequest": {
+      "description": "GX8 message-level fork. Distinct from session/fork (whole-thread copy).",
+      "properties": {
+        "method": {
+          "const": "thread/fork",
+          "default": "thread/fork",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "edited_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edited Text"
+        }
+      },
+      "required": [
+        "thread_id",
+        "message_id"
+      ],
+      "title": "ThreadForkRequest",
+      "type": "object"
+    },
+    "ThreadPinRequest": {
+      "description": "GX8 pin/unpin. Operation, not an optional field substitute.",
+      "properties": {
+        "method": {
+          "const": "thread/pin",
+          "default": "thread/pin",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "pinned": {
+          "default": true,
+          "title": "Pinned",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ThreadPinRequest",
+      "type": "object"
+    },
+    "ThreadSideChatCreateRequest": {
+      "description": "GX16 read-only derived side chat.",
+      "properties": {
+        "method": {
+          "const": "thread/side_chat/create",
+          "default": "thread/side_chat/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id"
+      ],
+      "title": "ThreadSideChatCreateRequest",
+      "type": "object"
+    },
+    "ThreadSideChatCloseRequest": {
+      "description": "GX16 close a side chat. Default does not promote back.",
+      "properties": {
+        "method": {
+          "const": "thread/side_chat/close",
+          "default": "thread/side_chat/close",
+          "title": "Method",
+          "type": "string"
+        },
+        "side_thread_id": {
+          "title": "Side Thread Id",
+          "type": "string"
+        },
+        "promote": {
+          "default": false,
+          "title": "Promote",
+          "type": "boolean"
+        },
+        "confirm_promote": {
+          "default": false,
+          "title": "Confirm Promote",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "side_thread_id"
+      ],
+      "title": "ThreadSideChatCloseRequest",
+      "type": "object"
+    },
+    "SessionTreeRequest": {
+      "description": "PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list.",
+      "properties": {
+        "method": {
+          "const": "session/tree",
+          "default": "session/tree",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionTreeRequest",
+      "type": "object"
+    },
+    "SessionArchiveRequest": {
+      "description": "PhaseG-B5 archive. Not delete; recoverable via unarchive.",
+      "properties": {
+        "method": {
+          "const": "session/archive",
+          "default": "session/archive",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionArchiveRequest",
+      "type": "object"
+    },
+    "SessionUnarchiveRequest": {
+      "description": "PhaseG-B5 restore an archived thread to the active list.",
+      "properties": {
+        "method": {
+          "const": "session/unarchive",
+          "default": "session/unarchive",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionUnarchiveRequest",
+      "type": "object"
+    },
+    "SessionItemsRequest": {
+      "description": "Paginate persisted items (events) after a cursor.",
+      "properties": {
+        "method": {
+          "const": "session/items",
+          "default": "session/items",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "cursor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cursor",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "SessionItemsRequest",
+      "type": "object"
+    },
+    "TurnStartRequest": {
+      "description": "PhaseG-B5 start a turn. Wraps session/prompt without replacing it.",
+      "properties": {
+        "method": {
+          "const": "turn/start",
+          "default": "turn/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "TurnStartRequest",
+      "type": "object"
+    },
+    "TurnSteerRequest": {
+      "description": "Append steering text to an in-flight turn. No-op if not running.",
+      "properties": {
+        "method": {
+          "const": "turn/steer",
+          "default": "turn/steer",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "text"
+      ],
+      "title": "TurnSteerRequest",
+      "type": "object"
+    },
+    "TurnInterruptRequest": {
+      "description": "PhaseG-B5 interrupt a running turn. Wraps session/interrupt.",
+      "properties": {
+        "method": {
+          "const": "turn/interrupt",
+          "default": "turn/interrupt",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "TurnInterruptRequest",
+      "type": "object"
+    },
+    "TurnRetryRequest": {
+      "description": "Retry last turn. Same request_id returns the stored result.",
+      "properties": {
+        "method": {
+          "const": "turn/retry",
+          "default": "turn/retry",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id"
+      ],
+      "title": "TurnRetryRequest",
+      "type": "object"
+    },
+    "CommandStartRequest": {
+      "description": "PhaseG-B6 user-initiated command. Distinct from agent tool calls.",
+      "properties": {
+        "method": {
+          "const": "command/start",
+          "default": "command/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "expand_sandbox": {
+          "default": false,
+          "title": "Expand Sandbox",
+          "type": "boolean"
+        },
+        "expand_writable_roots": {
+          "default": false,
+          "title": "Expand Writable Roots",
+          "type": "boolean"
+        },
+        "expand_network": {
+          "default": false,
+          "title": "Expand Network",
+          "type": "boolean"
+        },
+        "network": {
+          "default": false,
+          "title": "Network",
+          "type": "boolean"
+        },
+        "writable_roots": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Writable Roots"
+        }
+      },
+      "required": [
+        "session_id",
+        "command"
+      ],
+      "title": "CommandStartRequest",
+      "type": "object"
+    },
+    "ExecutionListRequest": {
+      "description": "List tool/command/background items for one session.",
+      "properties": {
+        "method": {
+          "const": "execution/list",
+          "default": "execution/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "include_completed": {
+          "default": false,
+          "title": "Include Completed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ExecutionListRequest",
+      "type": "object"
+    },
+    "ExecutionStopRequest": {
+      "description": "Stop one running tool/command/background task.",
+      "properties": {
+        "method": {
+          "const": "execution/stop",
+          "default": "execution/stop",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id"
+      ],
+      "title": "ExecutionStopRequest",
+      "type": "object"
+    },
+    "ExecutionOutputRequest": {
+      "description": "Read persisted stdout/stderr after the process has exited.",
+      "properties": {
+        "method": {
+          "const": "execution/output",
+          "default": "execution/output",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id"
+      ],
+      "title": "ExecutionOutputRequest",
+      "type": "object"
+    },
+    "PermissionGetRequest": {
+      "description": "PhaseG-B7 read current permission profile and policy version.",
+      "properties": {
+        "method": {
+          "const": "permission/get",
+          "default": "permission/get",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "PermissionGetRequest",
+      "type": "object"
+    },
+    "PermissionScopeGrant": {
+      "description": "Durable scoped allow used only by allow_scoped_actions.",
+      "properties": {
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "PermissionScopeGrant",
+      "type": "object"
+    },
+    "PermissionSetRequest": {
+      "description": "PhaseG-B7 set a selectable profile. full_access is rejected.",
+      "properties": {
+        "method": {
+          "const": "permission/set",
+          "default": "permission/set",
+          "title": "Method",
+          "type": "string"
+        },
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PermissionScopeGrant"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scopes"
+        }
+      },
+      "required": [
+        "profile_id"
+      ],
+      "title": "PermissionSetRequest",
+      "type": "object"
+    },
+    "ApprovalDecideRequest": {
+      "description": "Record an approval decision. One allow does not reuse.",
+      "properties": {
+        "method": {
+          "const": "approval/decide",
+          "default": "approval/decide",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "decision": {
+          "title": "Decision",
+          "type": "string"
+        },
+        "actor": {
+          "default": "user",
+          "title": "Actor",
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "reviewer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "original_approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Original Approval Id"
+        },
+        "expand_sandbox": {
+          "default": false,
+          "title": "Expand Sandbox",
+          "type": "boolean"
+        },
+        "expand_writable_roots": {
+          "default": false,
+          "title": "Expand Writable Roots",
+          "type": "boolean"
+        },
+        "expand_network": {
+          "default": false,
+          "title": "Expand Network",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "action",
+        "decision"
+      ],
+      "title": "ApprovalDecideRequest",
+      "type": "object"
+    },
+    "ApprovalRevokeRequest": {
+      "description": "Revoke a previous allow. Restart only keeps persisted non-revoked policy.",
+      "properties": {
+        "method": {
+          "const": "approval/revoke",
+          "default": "approval/revoke",
+          "title": "Method",
+          "type": "string"
+        },
+        "approval_id": {
+          "title": "Approval Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id"
+      ],
+      "title": "ApprovalRevokeRequest",
+      "type": "object"
+    },
+    "ApprovalAuditRequest": {
+      "description": "List approval audit records for a session or all.",
+      "properties": {
+        "method": {
+          "const": "approval/audit",
+          "default": "approval/audit",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "ApprovalAuditRequest",
+      "type": "object"
+    },
+    "ApprovalModeSetRequest": {
+      "description": "GX2 UI preset mapped onto B7 policy. Request must use ``preset`` not ``mode``.",
+      "properties": {
+        "method": {
+          "const": "approval/mode_set",
+          "default": "approval/mode_set",
+          "title": "Method",
+          "type": "string"
+        },
+        "preset": {
+          "enum": [
+            "ask",
+            "auto",
+            "full"
+          ],
+          "title": "Preset",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "title": "ApprovalModeSetRequest",
+      "type": "object"
+    },
+    "ApprovalFullAccessEnableRequest": {
+      "description": "GX2-PROTO: session-scoped unlock of B7 full_access. Restart clears it.",
+      "properties": {
+        "method": {
+          "const": "approval/full_access_enable",
+          "default": "approval/full_access_enable",
+          "title": "Method",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "source": {
+          "default": "settings",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor"
+      ],
+      "title": "ApprovalFullAccessEnableRequest",
+      "type": "object"
+    },
+    "ReviewStartRequest": {
+      "description": "PhaseG-B8 start a read-only review. Does not modify the working tree.",
+      "properties": {
+        "method": {
+          "const": "review/start",
+          "default": "review/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "scope": {
+          "default": "working_tree",
+          "title": "Scope",
+          "type": "string"
+        },
+        "base_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Ref"
+        },
+        "head_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Head Ref"
+        },
+        "paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paths"
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Criteria"
+        },
+        "reviewer": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "ReviewStartRequest",
+      "type": "object"
+    },
+    "ReviewReadRequest": {
+      "description": "Reconnect/read a persisted review without restarting it.",
+      "properties": {
+        "method": {
+          "const": "review/read",
+          "default": "review/read",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "after_sequence": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "After Sequence"
+        }
+      },
+      "required": [
+        "review_id"
+      ],
+      "title": "ReviewReadRequest",
+      "type": "object"
+    },
+    "ReviewCommentRequest": {
+      "description": "Line comment bound to review/finding/file hash/line range.",
+      "properties": {
+        "method": {
+          "const": "review/comment",
+          "default": "review/comment",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "start_line": {
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "end_line": {
+          "title": "End Line",
+          "type": "integer"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "finding_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finding Id"
+        },
+        "file_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File Hash"
+        }
+      },
+      "required": [
+        "review_id",
+        "file",
+        "start_line",
+        "end_line",
+        "body"
+      ],
+      "title": "ReviewCommentRequest",
+      "type": "object"
+    },
+    "ReviewCommentAddRequest": {
+      "description": "GX3 add inline comment. Does not replace review/comment.",
+      "properties": {
+        "method": {
+          "const": "review/comment/add",
+          "default": "review/comment/add",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "hunk_hash": {
+          "title": "Hunk Hash",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        }
+      },
+      "required": [
+        "review_id",
+        "file",
+        "line",
+        "hunk_hash",
+        "body"
+      ],
+      "title": "ReviewCommentAddRequest",
+      "type": "object"
+    },
+    "ReviewCommentResolveRequest": {
+      "description": "GX3 resolve an inline comment (open or stale).",
+      "properties": {
+        "method": {
+          "const": "review/comment/resolve",
+          "default": "review/comment/resolve",
+          "title": "Method",
+          "type": "string"
+        },
+        "comment_id": {
+          "title": "Comment Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "comment_id"
+      ],
+      "title": "ReviewCommentResolveRequest",
+      "type": "object"
+    },
+    "CheckpointCreateRequest": {
+      "description": "Create a session checkpoint without writing the workspace tree.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/create",
+          "default": "checkpoint/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "CheckpointCreateRequest",
+      "type": "object"
+    },
+    "CheckpointListRequest": {
+      "description": "List checkpoints for a session.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/list",
+          "default": "checkpoint/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "CheckpointListRequest",
+      "type": "object"
+    },
+    "CheckpointReadRequest": {
+      "description": "Read one checkpoint payload.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/read",
+          "default": "checkpoint/read",
+          "title": "Method",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "session_id"
+      ],
+      "title": "CheckpointReadRequest",
+      "type": "object"
+    },
+    "CheckpointRestoreRequest": {
+      "description": "Restore a session to a previous checkpoint.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/restore",
+          "default": "checkpoint/restore",
+          "title": "Method",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "session_id"
+      ],
+      "title": "CheckpointRestoreRequest",
+      "type": "object"
+    },
+    "CheckpointSnapshotCreateRequest": {
+      "description": "GX4 named snapshot. Distinct from automatic checkpoint/create.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/snapshot/create",
+          "default": "checkpoint/snapshot/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "user_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Prompt"
+        }
+      },
+      "required": [
+        "name",
+        "session_id"
+      ],
+      "title": "CheckpointSnapshotCreateRequest",
+      "type": "object"
+    },
+    "CheckpointRewindRequest": {
+      "description": "GX4 rewind: pre-rewind snapshot + B8 restore + projection + refill.",
+      "properties": {
+        "method": {
+          "const": "checkpoint/rewind",
+          "default": "checkpoint/rewind",
+          "title": "Method",
+          "type": "string"
+        },
+        "checkpoint_id": {
+          "title": "Checkpoint Id",
+          "type": "string"
+        },
+        "confirm": {
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint_id",
+        "confirm",
+        "session_id"
+      ],
+      "title": "CheckpointRewindRequest",
+      "type": "object"
+    },
+    "PlanPersistRequest": {
+      "description": "GX9 export thread plan to markdown under RXYCODE_DATA_DIR/plans.",
+      "properties": {
+        "method": {
+          "const": "plan/persist",
+          "default": "plan/persist",
+          "title": "Method",
+          "type": "string"
+        },
+        "thread_id": {
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "acceptance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Acceptance",
+          "type": "array"
+        }
+      },
+      "required": [
+        "thread_id",
+        "title",
+        "goal",
+        "steps",
+        "acceptance"
+      ],
+      "title": "PlanPersistRequest",
+      "type": "object"
+    },
+    "PlanImplementRequest": {
+      "description": "GX9 start execution from a persisted plan. Requires confirm=true.",
+      "properties": {
+        "method": {
+          "const": "plan/implement",
+          "default": "plan/implement",
+          "title": "Method",
+          "type": "string"
+        },
+        "plan_id": {
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "confirm": {
+          "title": "Confirm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan_id",
+        "confirm"
+      ],
+      "title": "PlanImplementRequest",
+      "type": "object"
+    },
+    "GitStageRequest": {
+      "description": "Stage git paths inside the workspace.",
+      "properties": {
+        "method": {
+          "const": "git/stage",
+          "default": "git/stage",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "paths"
+      ],
+      "title": "GitStageRequest",
+      "type": "object"
+    },
+    "GitUnstageRequest": {
+      "description": "Unstage git paths inside the workspace.",
+      "properties": {
+        "method": {
+          "const": "git/unstage",
+          "default": "git/unstage",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "paths"
+      ],
+      "title": "GitUnstageRequest",
+      "type": "object"
+    },
+    "GitRevertRequest": {
+      "description": "Revert git hunks or paths inside the workspace.",
+      "properties": {
+        "method": {
+          "const": "git/revert",
+          "default": "git/revert",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "hunk_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hunk Index"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "paths"
+      ],
+      "title": "GitRevertRequest",
+      "type": "object"
+    },
+    "FilePreviewRequest": {
+      "description": "Preview a workspace file for the client.",
+      "properties": {
+        "method": {
+          "const": "file/preview",
+          "default": "file/preview",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "path"
+      ],
+      "title": "FilePreviewRequest",
+      "type": "object"
+    },
+    "FileTreeRequest": {
+      "description": "List a workspace directory tree.",
+      "properties": {
+        "method": {
+          "const": "file/tree",
+          "default": "file/tree",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "FileTreeRequest",
+      "type": "object"
+    },
+    "FileOpenExternalRequest": {
+      "description": "Open a workspace file in an external program after confirm.",
+      "properties": {
+        "method": {
+          "const": "file/open_external",
+          "default": "file/open_external",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "path"
+      ],
+      "title": "FileOpenExternalRequest",
+      "type": "object"
+    },
+    "WorktreeListRequest": {
+      "description": "List git worktrees for the session workspace.",
+      "properties": {
+        "method": {
+          "const": "worktree/list",
+          "default": "worktree/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "WorktreeListRequest",
+      "type": "object"
+    },
+    "WorktreeOpenRequest": {
+      "description": "Switch the session onto an existing git worktree.",
+      "properties": {
+        "method": {
+          "const": "worktree/open",
+          "default": "worktree/open",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "worktree_id": {
+          "title": "Worktree Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "worktree_id"
+      ],
+      "title": "WorktreeOpenRequest",
+      "type": "object"
+    },
+    "WorktreeCreateRequest": {
+      "description": "Create a git worktree under the workspace.",
+      "properties": {
+        "method": {
+          "const": "worktree/create",
+          "default": "worktree/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "dest": {
+          "title": "Dest",
+          "type": "string"
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "dest"
+      ],
+      "title": "WorktreeCreateRequest",
+      "type": "object"
+    },
+    "WorktreeCloseRequest": {
+      "description": "Close a git worktree after optional confirm.",
+      "properties": {
+        "method": {
+          "const": "worktree/close",
+          "default": "worktree/close",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "worktree_id": {
+          "title": "Worktree Id",
+          "type": "string"
+        },
+        "force": {
+          "default": false,
+          "title": "Force",
+          "type": "boolean"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "worktree_id"
+      ],
+      "title": "WorktreeCloseRequest",
+      "type": "object"
+    },
+    "WorktreePruneRequest": {
+      "description": "Prune stale git worktrees after confirm.",
+      "properties": {
+        "method": {
+          "const": "worktree/prune",
+          "default": "worktree/prune",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "WorktreePruneRequest",
+      "type": "object"
+    },
+    "WorktreeHandoffRequest": {
+      "description": "Hand a worktree path to another session after confirm.",
+      "properties": {
+        "method": {
+          "const": "worktree/handoff",
+          "default": "worktree/handoff",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "target_session": {
+          "title": "Target Session",
+          "type": "string"
+        },
+        "target_path": {
+          "title": "Target Path",
+          "type": "string"
+        },
+        "confirm": {
+          "default": false,
+          "title": "Confirm",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "session_id",
+        "target_session",
+        "target_path"
+      ],
+      "title": "WorktreeHandoffRequest",
+      "type": "object"
+    },
+    "WorktreeHandoffRollbackRequest": {
+      "description": "Roll back a worktree handoff.",
+      "properties": {
+        "method": {
+          "const": "worktree/handoff/rollback",
+          "default": "worktree/handoff/rollback",
+          "title": "Method",
+          "type": "string"
+        },
+        "handoff_id": {
+          "title": "Handoff Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "handoff_id",
+        "session_id"
+      ],
+      "title": "WorktreeHandoffRollbackRequest",
       "type": "object"
     },
     "SubagentCapabilityRequest": {
@@ -502,6 +2672,23 @@
           ],
           "default": null,
           "title": "Requested Workspace"
+        },
+        "capability": {
+          "anyOf": [
+            {
+              "enum": [
+                "no_tools",
+                "edit_only",
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability"
         }
       },
       "required": [
@@ -1139,6 +3326,1483 @@
       "title": "TeamSetActiveRequest",
       "type": "object"
     },
+    "ProjectListRequest": {
+      "description": "PhaseG-B4 list recent projects.",
+      "properties": {
+        "method": {
+          "const": "project/list",
+          "default": "project/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ProjectListRequest",
+      "type": "object"
+    },
+    "ProjectAddRequest": {
+      "description": "PhaseG-B4 add a local directory. Display name is separate from path.",
+      "properties": {
+        "method": {
+          "const": "project/add",
+          "default": "project/add",
+          "title": "Method",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ProjectAddRequest",
+      "type": "object"
+    },
+    "ProjectRemoveRequest": {
+      "description": "PhaseG-B4 drop from recent list. Never deletes user files.",
+      "properties": {
+        "method": {
+          "const": "project/remove",
+          "default": "project/remove",
+          "title": "Method",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "ProjectRemoveRequest",
+      "type": "object"
+    },
+    "ProjectSetActiveRequest": {
+      "description": "PhaseG-B4 switch the active project without changing process cwd.",
+      "properties": {
+        "method": {
+          "const": "project/set_active",
+          "default": "project/set_active",
+          "title": "Method",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "ProjectSetActiveRequest",
+      "type": "object"
+    },
+    "WorkspaceStatusRequest": {
+      "description": "PhaseG-B4 report branch/worktree or NOT_A_GIT_REPO. Never chdir.",
+      "properties": {
+        "method": {
+          "const": "workspace/status",
+          "default": "workspace/status",
+          "title": "Method",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_root"
+      ],
+      "title": "WorkspaceStatusRequest",
+      "type": "object"
+    },
+    "WorkspaceResolveRequest": {
+      "description": "Reject paths that escape the bound workspace, including symlink hops.",
+      "properties": {
+        "method": {
+          "const": "workspace/resolve",
+          "default": "workspace/resolve",
+          "title": "Method",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_root",
+        "path"
+      ],
+      "title": "WorkspaceResolveRequest",
+      "type": "object"
+    },
+    "SettingsGetRequest": {
+      "description": "Resolve settings through global→project→workspace→thread/turn.\n\nMaps ``settings/get``. Same interpretation for Desktop and CLI.",
+      "properties": {
+        "method": {
+          "const": "settings/get",
+          "default": "settings/get",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "keys": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keys"
+        }
+      },
+      "title": "SettingsGetRequest",
+      "type": "object"
+    },
+    "SettingsSetRequest": {
+      "description": "Write one explicit settings layer. Secrets are not stored in values.\n\nMaps ``settings/set``. Requires B7 permission. Changing model does not\nrewrite existing thread history.",
+      "properties": {
+        "method": {
+          "const": "settings/set",
+          "default": "settings/set",
+          "title": "Method",
+          "type": "string"
+        },
+        "layer": {
+          "title": "Layer",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": true,
+          "title": "Values",
+          "type": "object"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "layer",
+        "values"
+      ],
+      "title": "SettingsSetRequest",
+      "type": "object"
+    },
+    "SettingsModelsRequest": {
+      "description": "Look up a real model_id in ModelCatalog and return a ModelSummary.\n\nMaps ``settings/models``. Unknown models keep their id and use the high\nfallback with warning; they are not rewritten to a known catalog model.",
+      "properties": {
+        "method": {
+          "const": "settings/models",
+          "default": "settings/models",
+          "title": "Method",
+          "type": "string"
+        },
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id"
+      ],
+      "title": "SettingsModelsRequest",
+      "type": "object"
+    },
+    "SettingsDiagnoseRequest": {
+      "description": "Classify key-invalid, quota, and model-unavailable as distinct codes.\n\nMaps ``settings/diagnose``. Messages are redacted.",
+      "properties": {
+        "method": {
+          "const": "settings/diagnose",
+          "default": "settings/diagnose",
+          "title": "Method",
+          "type": "string"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Id"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        }
+      },
+      "title": "SettingsDiagnoseRequest",
+      "type": "object"
+    },
+    "SettingsRollbackRequest": {
+      "description": "Restore a settings snapshot written before a previous set.\n\nMaps ``settings/rollback``. Requires B7 permission.",
+      "properties": {
+        "method": {
+          "const": "settings/rollback",
+          "default": "settings/rollback",
+          "title": "Method",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "snapshot_id"
+      ],
+      "title": "SettingsRollbackRequest",
+      "type": "object"
+    },
+    "CapabilitiesListRequest": {
+      "description": "Project skills, MCP servers, and the browser placeholder.\n\nMaps ``capabilities/list``. Unavailable items have available=false.",
+      "properties": {
+        "method": {
+          "const": "capabilities/list",
+          "default": "capabilities/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kind"
+        },
+        "available_only": {
+          "default": false,
+          "title": "Available Only",
+          "type": "boolean"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "CapabilitiesListRequest",
+      "type": "object"
+    },
+    "CapabilitiesGetRequest": {
+      "description": "Read one capability projection.\n\nMaps ``capabilities/get``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/get",
+          "default": "capabilities/get",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "capability_id"
+      ],
+      "title": "CapabilitiesGetRequest",
+      "type": "object"
+    },
+    "CapabilitiesSetEnabledRequest": {
+      "description": "Enable or authorize a capability. Browser cannot be turned into a bypass.\n\nMaps ``capabilities/set_enabled``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/set_enabled",
+          "default": "capabilities/set_enabled",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "authorize": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authorize"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        }
+      },
+      "required": [
+        "capability_id",
+        "enabled"
+      ],
+      "title": "CapabilitiesSetEnabledRequest",
+      "type": "object"
+    },
+    "CapabilitiesInvokeRequest": {
+      "description": "Invoke a capability as a normal Tool/Approval/Review job.\n\nMaps ``capabilities/invoke``. Failures are terminal and cancellable.",
+      "properties": {
+        "method": {
+          "const": "capabilities/invoke",
+          "default": "capabilities/invoke",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        },
+        "approval_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approval Id"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "capability_id"
+      ],
+      "title": "CapabilitiesInvokeRequest",
+      "type": "object"
+    },
+    "CapabilitiesCancelRequest": {
+      "description": "Cancel an in-flight capability job so the Thread does not stay stuck.\n\nMaps ``capabilities/cancel``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/cancel",
+          "default": "capabilities/cancel",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "CapabilitiesCancelRequest",
+      "type": "object"
+    },
+    "CapabilitiesAuditRequest": {
+      "description": "Return copyable, source-located capability audit records.\n\nMaps ``capabilities/audit``.",
+      "properties": {
+        "method": {
+          "const": "capabilities/audit",
+          "default": "capabilities/audit",
+          "title": "Method",
+          "type": "string"
+        },
+        "capability_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability Id"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "CapabilitiesAuditRequest",
+      "type": "object"
+    },
+    "RecoveryStatusRequest": {
+      "description": "Project session recovery state. Incomplete never becomes completed.\n\nMaps ``recovery/status``.",
+      "properties": {
+        "method": {
+          "const": "recovery/status",
+          "default": "recovery/status",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        }
+      },
+      "title": "RecoveryStatusRequest",
+      "type": "object"
+    },
+    "RecoveryReplayRequest": {
+      "description": "Replay events after a saved cursor and persist the new cursor.\n\nMaps ``recovery/replay``.",
+      "properties": {
+        "method": {
+          "const": "recovery/replay",
+          "default": "recovery/replay",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
+        },
+        "limit": {
+          "default": 100,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "RecoveryReplayRequest",
+      "type": "object"
+    },
+    "RecoveryReclaimRequest": {
+      "description": "Mark orphan incomplete sessions recovery_required.\n\nMaps ``recovery/reclaim``.",
+      "properties": {
+        "method": {
+          "const": "recovery/reclaim",
+          "default": "recovery/reclaim",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "RecoveryReclaimRequest",
+      "type": "object"
+    },
+    "NotificationsListRequest": {
+      "description": "List deduped recovery notifications.\n\nMaps ``notifications/list``.",
+      "properties": {
+        "method": {
+          "const": "notifications/list",
+          "default": "notifications/list",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "include_acked": {
+          "default": false,
+          "title": "Include Acked",
+          "type": "boolean"
+        }
+      },
+      "title": "NotificationsListRequest",
+      "type": "object"
+    },
+    "NotificationsAckRequest": {
+      "description": "Acknowledge one notification.\n\nMaps ``notifications/ack``.",
+      "properties": {
+        "method": {
+          "const": "notifications/ack",
+          "default": "notifications/ack",
+          "title": "Method",
+          "type": "string"
+        },
+        "notification_id": {
+          "title": "Notification Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "notification_id"
+      ],
+      "title": "NotificationsAckRequest",
+      "type": "object"
+    },
+    "NotificationsCursorRequest": {
+      "description": "Persist a disconnect cursor for later replay.\n\nMaps ``notifications/cursor``.",
+      "properties": {
+        "method": {
+          "const": "notifications/cursor",
+          "default": "notifications/cursor",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "cursor": {
+          "title": "Cursor",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor"
+      ],
+      "title": "NotificationsCursorRequest",
+      "type": "object"
+    },
+    "ReleaseStatusRequest": {
+      "description": "Advertise runtime/protocol/schema bind.\n\nMaps ``release/status``.",
+      "properties": {
+        "method": {
+          "const": "release/status",
+          "default": "release/status",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ReleaseStatusRequest",
+      "type": "object"
+    },
+    "ReleaseDiagnoseRequest": {
+      "description": "Diagnose client/server version or schema mismatch.\n\nMaps ``release/diagnose``.",
+      "properties": {
+        "method": {
+          "const": "release/diagnose",
+          "default": "release/diagnose",
+          "title": "Method",
+          "type": "string"
+        },
+        "protocol_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Protocol Version"
+        },
+        "appserver_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Appserver Version"
+        },
+        "schema_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Digest"
+        }
+      },
+      "title": "ReleaseDiagnoseRequest",
+      "type": "object"
+    },
+    "CliListRequest": {
+      "description": "List CLI-Hub software ids. Names stay out of tools/registry.\n\nMaps ``cli/list``.",
+      "properties": {
+        "method": {
+          "const": "cli/list",
+          "default": "cli/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "CliListRequest",
+      "type": "object"
+    },
+    "CliInstallRequest": {
+      "description": "Install one CLI into an isolated venv.\n\nMaps ``cli/install``.",
+      "properties": {
+        "method": {
+          "const": "cli/install",
+          "default": "cli/install",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "source": {
+          "default": "cli-hub",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliInstallRequest",
+      "type": "object"
+    },
+    "CliLaunchRequest": {
+      "description": "Launch an installed CLI software id.\n\nMaps ``cli/launch``.",
+      "properties": {
+        "method": {
+          "const": "cli/launch",
+          "default": "cli/launch",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliLaunchRequest",
+      "type": "object"
+    },
+    "CliUninstallRequest": {
+      "description": "Uninstall one isolated CLI software id.\n\nMaps ``cli/uninstall``.",
+      "properties": {
+        "method": {
+          "const": "cli/uninstall",
+          "default": "cli/uninstall",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliUninstallRequest",
+      "type": "object"
+    },
+    "CliStartRequest": {
+      "description": "Start a long-running CLI process in its isolated venv.\n\nMaps ``cli/start``.",
+      "properties": {
+        "method": {
+          "const": "cli/start",
+          "default": "cli/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliStartRequest",
+      "type": "object"
+    },
+    "CliStopRequest": {
+      "description": "Stop a long-running CLI process.\n\nMaps ``cli/stop``.",
+      "properties": {
+        "method": {
+          "const": "cli/stop",
+          "default": "cli/stop",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliStopRequest",
+      "type": "object"
+    },
+    "CliDecideRequest": {
+      "description": "C-C registry-first decision for a software id.\n\nMaps ``cli/decide``.",
+      "properties": {
+        "method": {
+          "const": "cli/decide",
+          "default": "cli/decide",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "has_source": {
+          "default": false,
+          "title": "Has Source",
+          "type": "boolean"
+        },
+        "has_sdk": {
+          "default": false,
+          "title": "Has Sdk",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CliDecideRequest",
+      "type": "object"
+    },
+    "CliRecordFailureRequest": {
+      "description": "C-E generate-failure ladder record.\n\nMaps ``cli/record_failure``.",
+      "properties": {
+        "method": {
+          "const": "cli/record_failure",
+          "default": "cli/record_failure",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "next_step": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Step"
+        }
+      },
+      "required": [
+        "name",
+        "stage",
+        "reason"
+      ],
+      "title": "CliRecordFailureRequest",
+      "type": "object"
+    },
+    "ScheduleListRequest": {
+      "description": "List application-layer scheduled jobs.\n\nMaps ``schedule/list``.",
+      "properties": {
+        "method": {
+          "const": "schedule/list",
+          "default": "schedule/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "ScheduleListRequest",
+      "type": "object"
+    },
+    "ScheduleCreateRequest": {
+      "description": "Create an interval or at-time job.\n\nMaps ``schedule/create``.",
+      "properties": {
+        "method": {
+          "const": "schedule/create",
+          "default": "schedule/create",
+          "title": "Method",
+          "type": "string"
+        },
+        "rule": {
+          "additionalProperties": true,
+          "title": "Rule",
+          "type": "object"
+        },
+        "action": {
+          "additionalProperties": true,
+          "title": "Action",
+          "type": "object"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rule",
+        "action"
+      ],
+      "title": "ScheduleCreateRequest",
+      "type": "object"
+    },
+    "ScheduleUpdateRequest": {
+      "description": "Update one scheduled job.\n\nMaps ``schedule/update``.",
+      "properties": {
+        "method": {
+          "const": "schedule/update",
+          "default": "schedule/update",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "rule": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rule"
+        },
+        "action": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "ScheduleUpdateRequest",
+      "type": "object"
+    },
+    "ScheduleDeleteRequest": {
+      "description": "Delete one scheduled job.\n\nMaps ``schedule/delete``.",
+      "properties": {
+        "method": {
+          "const": "schedule/delete",
+          "default": "schedule/delete",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "ScheduleDeleteRequest",
+      "type": "object"
+    },
+    "ScheduleToggleRequest": {
+      "description": "Enable or disable one scheduled job.\n\nMaps ``schedule/toggle``.",
+      "properties": {
+        "method": {
+          "const": "schedule/toggle",
+          "default": "schedule/toggle",
+          "title": "Method",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "title": "ScheduleToggleRequest",
+      "type": "object"
+    },
+    "PluginListRequest": {
+      "description": "List installed plugins.\n\nMaps ``plugin/list``.",
+      "properties": {
+        "method": {
+          "const": "plugin/list",
+          "default": "plugin/list",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "PluginListRequest",
+      "type": "object"
+    },
+    "PluginInstallRequest": {
+      "description": "Install a plugin from a local directory or configured registry.\n\nMaps ``plugin/install``.",
+      "properties": {
+        "method": {
+          "const": "plugin/install",
+          "default": "plugin/install",
+          "title": "Method",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "PluginInstallRequest",
+      "type": "object"
+    },
+    "PluginUninstallRequest": {
+      "description": "Unregister a plugin and optionally keep user.json.\n\nMaps ``plugin/uninstall``.",
+      "properties": {
+        "method": {
+          "const": "plugin/uninstall",
+          "default": "plugin/uninstall",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "keep_user_config": {
+          "default": false,
+          "title": "Keep User Config",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PluginUninstallRequest",
+      "type": "object"
+    },
+    "PluginToggleRequest": {
+      "description": "Enable or disable a plugin via B11 capability/set_enabled.\n\nMaps ``plugin/toggle``.",
+      "properties": {
+        "method": {
+          "const": "plugin/toggle",
+          "default": "plugin/toggle",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "enabled"
+      ],
+      "title": "PluginToggleRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -1526,6 +5190,124 @@
       "title": "ToolEnd",
       "type": "object"
     },
+    "ExecutionItem": {
+      "description": "PhaseG-B6 tool/command/background item snapshot.",
+      "properties": {
+        "method": {
+          "const": "event/execution",
+          "default": "event/execution",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "args_summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Summary"
+        },
+        "risk": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Risk"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "env_summary": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Env Summary"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "unread": {
+          "default": false,
+          "title": "Unread",
+          "type": "boolean"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id",
+        "kind",
+        "origin",
+        "name",
+        "status"
+      ],
+      "title": "ExecutionItem",
+      "type": "object"
+    },
     "TaskComplete": {
       "description": "Structured task completion paired with ``TaskStarted``.",
       "properties": {
@@ -1644,6 +5426,240 @@
         "session_id"
       ],
       "title": "TokenUsage",
+      "type": "object"
+    },
+    "AgentUsage": {
+      "description": "GX16 additive per-turn token/cost snapshot for the side-chat usage strip.",
+      "properties": {
+        "method": {
+          "const": "event/agent_usage",
+          "default": "event/agent_usage",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "cache_hit_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Hit Tokens"
+        },
+        "cache_write_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Write Tokens"
+        },
+        "cache_hit_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Hit Rate"
+        },
+        "reporting_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "reported",
+                "partial",
+                "not_reported"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reporting Status"
+        },
+        "context_used": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Used"
+        },
+        "context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Window"
+        },
+        "used_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Used Pct"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currency"
+        },
+        "cost_available": {
+          "default": false,
+          "title": "Cost Available",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "session_id",
+        "seq"
+      ],
+      "title": "AgentUsage",
+      "type": "object"
+    },
+    "AgentNeedsInput": {
+      "description": "GX13 agent waiting for approval or a question. Additive new_event.",
+      "properties": {
+        "method": {
+          "const": "event/agent_needs_input",
+          "default": "event/agent_needs_input",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "kind": {
+          "const": "needs_input",
+          "default": "needs_input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview"
+        }
+      },
+      "title": "AgentNeedsInput",
       "type": "object"
     },
     "FinalAnswer": {
@@ -2233,6 +6249,171 @@
         "degraded"
       ],
       "title": "ServerHeartbeat",
+      "type": "object"
+    },
+    "InitializedNotification": {
+      "description": "PhaseG-B2 handshake complete. No response expected.",
+      "properties": {
+        "method": {
+          "const": "initialized",
+          "default": "initialized",
+          "title": "Method",
+          "type": "string"
+        },
+        "protocol_version": {
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "server_version": {
+          "title": "Server Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol_version",
+        "server_version"
+      ],
+      "title": "InitializedNotification",
+      "type": "object"
+    },
+    "ProcessStarted": {
+      "description": "PhaseG-B3 appserver process is up and holding the instance lock.",
+      "properties": {
+        "method": {
+          "const": "event/process_started",
+          "default": "event/process_started",
+          "title": "Method",
+          "type": "string"
+        },
+        "pid": {
+          "title": "Pid",
+          "type": "integer"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "number"
+        },
+        "instance_policy": {
+          "default": "single-instance-per-data-dir",
+          "title": "Instance Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pid",
+        "started_at"
+      ],
+      "title": "ProcessStarted",
+      "type": "object"
+    },
+    "ProcessShutdown": {
+      "description": "PhaseG-B3 graceful shutdown. Incomplete work is not marked completed.",
+      "properties": {
+        "method": {
+          "const": "event/process_shutdown",
+          "default": "event/process_shutdown",
+          "title": "Method",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "graceful": {
+          "title": "Graceful",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason",
+        "graceful"
+      ],
+      "title": "ProcessShutdown",
+      "type": "object"
+    },
+    "RecoveryRequired": {
+      "description": "PhaseG-B3 restart found an unfinished turn. UI must not show success.",
+      "properties": {
+        "method": {
+          "const": "event/recovery_required",
+          "default": "event/recovery_required",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "previous_status": {
+          "title": "Previous Status",
+          "type": "string"
+        },
+        "status": {
+          "default": "recovery_required",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "previous_status"
+      ],
+      "title": "RecoveryRequired",
+      "type": "object"
+    },
+    "ProcessFailed": {
+      "description": "PhaseG-B3 failed to become the instance (lock or boot).",
+      "properties": {
+        "method": {
+          "const": "event/process_failed",
+          "default": "event/process_failed",
+          "title": "Method",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "error_code": {
+          "title": "Error Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "error_code"
+      ],
+      "title": "ProcessFailed",
+      "type": "object"
+    },
+    "WorkspaceChanged": {
+      "description": "PhaseG-B4 active workspace changed. Does not chdir the process.",
+      "properties": {
+        "method": {
+          "const": "event/workspace_changed",
+          "default": "event/workspace_changed",
+          "title": "Method",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "workspace_root": {
+          "title": "Workspace Root",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "workspace_root",
+        "display_name"
+      ],
+      "title": "WorkspaceChanged",
       "type": "object"
     },
     "ApprovalRequest": {
@@ -3286,6 +7467,600 @@
       "title": "BridgeAbort",
       "type": "object"
     },
+    "CapabilitySnapshot": {
+      "description": "Honest capability flags. False means not implemented yet, not hidden.",
+      "properties": {
+        "threads": {
+          "default": true,
+          "title": "Threads",
+          "type": "boolean"
+        },
+        "thread_fork": {
+          "default": true,
+          "title": "Thread Fork",
+          "type": "boolean"
+        },
+        "background_turns": {
+          "default": false,
+          "title": "Background Turns",
+          "type": "boolean"
+        },
+        "background_tasks": {
+          "default": true,
+          "title": "Background Tasks",
+          "type": "boolean"
+        },
+        "command_execution": {
+          "default": true,
+          "title": "Command Execution",
+          "type": "boolean"
+        },
+        "file_changes": {
+          "default": true,
+          "title": "File Changes",
+          "type": "boolean"
+        },
+        "review": {
+          "default": true,
+          "title": "Review",
+          "type": "boolean"
+        },
+        "review_comments": {
+          "default": true,
+          "title": "Review Comments",
+          "type": "boolean"
+        },
+        "checkpoint": {
+          "default": true,
+          "title": "Checkpoint",
+          "type": "boolean"
+        },
+        "git_hunk_actions": {
+          "default": true,
+          "title": "Git Hunk Actions",
+          "type": "boolean"
+        },
+        "worktree": {
+          "default": true,
+          "title": "Worktree",
+          "type": "boolean"
+        },
+        "file_preview": {
+          "default": true,
+          "title": "File Preview",
+          "type": "boolean"
+        },
+        "settings": {
+          "default": true,
+          "title": "Settings",
+          "type": "boolean"
+        },
+        "browser": {
+          "default": false,
+          "title": "Browser",
+          "type": "boolean"
+        },
+        "mcp": {
+          "default": true,
+          "title": "Mcp",
+          "type": "boolean"
+        },
+        "skills": {
+          "default": true,
+          "title": "Skills",
+          "type": "boolean"
+        },
+        "capability_panel": {
+          "default": true,
+          "title": "Capability Panel",
+          "type": "boolean"
+        },
+        "multi_agent": {
+          "default": true,
+          "title": "Multi Agent",
+          "type": "boolean"
+        },
+        "multi_model": {
+          "default": true,
+          "title": "Multi Model",
+          "type": "boolean"
+        },
+        "vision": {
+          "default": false,
+          "title": "Vision",
+          "type": "boolean"
+        },
+        "approval.auto_review": {
+          "default": true,
+          "description": "Wire name approval.auto_review.",
+          "title": "Approval.Auto Review",
+          "type": "boolean"
+        }
+      },
+      "title": "CapabilitySnapshot",
+      "type": "object"
+    },
+    "ModelProviderSummary": {
+      "properties": {
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        },
+        "model_context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Context Window"
+        },
+        "model_max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Max Output Tokens"
+        },
+        "limit_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Source"
+        },
+        "is_fallback": {
+          "default": false,
+          "title": "Is Fallback",
+          "type": "boolean"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "provider_id"
+      ],
+      "title": "ModelProviderSummary",
+      "type": "object"
+    },
+    "ModelSummary": {
+      "description": "PhaseG-B10 model limit summary. limit_source is the Phase 3 resolver source.",
+      "properties": {
+        "provider_id": {
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "model_context_window": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Context Window"
+        },
+        "model_max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Max Output Tokens"
+        },
+        "resolved_max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Max Tokens"
+        },
+        "limit_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Source"
+        },
+        "is_fallback": {
+          "default": false,
+          "title": "Is Fallback",
+          "type": "boolean"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        },
+        "matched_catalog_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matched Catalog Key"
+        },
+        "known_model": {
+          "default": false,
+          "title": "Known Model",
+          "type": "boolean"
+        },
+        "family_pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Family Pattern"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id"
+      ],
+      "title": "ModelSummary",
+      "type": "object"
+    },
+    "PermissionProfileSummary": {
+      "properties": {
+        "profile_id": {
+          "title": "Profile Id",
+          "type": "string"
+        },
+        "selectable": {
+          "title": "Selectable",
+          "type": "boolean"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "selectable",
+        "description"
+      ],
+      "title": "PermissionProfileSummary",
+      "type": "object"
+    },
+    "PackageCompatibility": {
+      "description": "PhaseG-B13 appserver/schema/runtime bind advertised at initialize.",
+      "properties": {
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Platforms",
+          "type": "array"
+        },
+        "appserver_version": {
+          "title": "Appserver Version",
+          "type": "string"
+        },
+        "protocol_version": {
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "schema_digest": {
+          "title": "Schema Digest",
+          "type": "string"
+        },
+        "python": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Python"
+        },
+        "compatible": {
+          "default": true,
+          "title": "Compatible",
+          "type": "boolean"
+        },
+        "runtimes": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtimes"
+        }
+      },
+      "required": [
+        "platform",
+        "platforms",
+        "appserver_version",
+        "protocol_version",
+        "schema_digest"
+      ],
+      "title": "PackageCompatibility",
+      "type": "object"
+    },
+    "InitializeResult": {
+      "description": "Additive initialize response. Old clients ignore unknown keys.",
+      "properties": {
+        "protocol_version": {
+          "default": "1.1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "protocol_min": {
+          "default": "1.0.0",
+          "title": "Protocol Min",
+          "type": "string"
+        },
+        "protocol_max": {
+          "default": "1.1.0",
+          "title": "Protocol Max",
+          "type": "string"
+        },
+        "server_name": {
+          "default": "rxycode-appserver",
+          "title": "Server Name",
+          "type": "string"
+        },
+        "server_version": {
+          "default": "1.2.10",
+          "title": "Server Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "additionalProperties": true,
+          "title": "Capabilities",
+          "type": "object"
+        },
+        "capability_snapshot": {
+          "$ref": "#/$defs/CapabilitySnapshot"
+        },
+        "model_providers": {
+          "items": {
+            "$ref": "#/$defs/ModelProviderSummary"
+          },
+          "title": "Model Providers",
+          "type": "array"
+        },
+        "permission_profiles": {
+          "items": {
+            "$ref": "#/$defs/PermissionProfileSummary"
+          },
+          "title": "Permission Profiles",
+          "type": "array"
+        },
+        "package": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackageCompatibility"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "capabilities",
+        "capability_snapshot",
+        "model_providers",
+        "permission_profiles"
+      ],
+      "title": "InitializeResult",
+      "type": "object"
+    },
+    "ThreadMetadata": {
+      "description": "PhaseG-B17 thread recycle-bin metadata.",
+      "properties": {
+        "deleted_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deleted At"
+        },
+        "restored_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Restored At"
+        },
+        "list_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "List Category"
+        },
+        "associated_files": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Associated Files"
+        }
+      },
+      "title": "ThreadMetadata",
+      "type": "object"
+    },
+    "ProtocolErrorData": {
+      "description": "Machine-assertable error payload in JSON-RPC ``error.data``.",
+      "properties": {
+        "error_code": {
+          "enum": [
+            "PROTOCOL_MISMATCH",
+            "UNSUPPORTED",
+            "OVERLOADED",
+            "CONFIGURATION_MISSING",
+            "TIMEOUT",
+            "CLOSED",
+            "NOT_INITIALIZED"
+          ],
+          "title": "Error Code",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "default": "1.1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "protocol_min": {
+          "default": "1.0.0",
+          "title": "Protocol Min",
+          "type": "string"
+        },
+        "protocol_max": {
+          "default": "1.1.0",
+          "title": "Protocol Max",
+          "type": "string"
+        },
+        "server_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Server Version"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        }
+      },
+      "required": [
+        "error_code",
+        "retryable"
+      ],
+      "title": "ProtocolErrorData",
+      "type": "object"
+    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -3326,6 +8101,168 @@
         },
         {
           "$ref": "#/$defs/SessionPurgeRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadDeleteRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadRestoreRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadPurgeRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadListDeletedRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionForkRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadForkRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadPinRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadSideChatCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/ThreadSideChatCloseRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionTreeRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionArchiveRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionUnarchiveRequest"
+        },
+        {
+          "$ref": "#/$defs/SessionItemsRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnStartRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnSteerRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnInterruptRequest"
+        },
+        {
+          "$ref": "#/$defs/TurnRetryRequest"
+        },
+        {
+          "$ref": "#/$defs/CommandStartRequest"
+        },
+        {
+          "$ref": "#/$defs/ExecutionListRequest"
+        },
+        {
+          "$ref": "#/$defs/ExecutionStopRequest"
+        },
+        {
+          "$ref": "#/$defs/ExecutionOutputRequest"
+        },
+        {
+          "$ref": "#/$defs/PermissionGetRequest"
+        },
+        {
+          "$ref": "#/$defs/PermissionSetRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalDecideRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalRevokeRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalAuditRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalModeSetRequest"
+        },
+        {
+          "$ref": "#/$defs/ApprovalFullAccessEnableRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewStartRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewReadRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewCommentRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewCommentAddRequest"
+        },
+        {
+          "$ref": "#/$defs/ReviewCommentResolveRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointListRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointReadRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointRestoreRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointSnapshotCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/CheckpointRewindRequest"
+        },
+        {
+          "$ref": "#/$defs/PlanPersistRequest"
+        },
+        {
+          "$ref": "#/$defs/PlanImplementRequest"
+        },
+        {
+          "$ref": "#/$defs/GitStageRequest"
+        },
+        {
+          "$ref": "#/$defs/GitUnstageRequest"
+        },
+        {
+          "$ref": "#/$defs/GitRevertRequest"
+        },
+        {
+          "$ref": "#/$defs/FilePreviewRequest"
+        },
+        {
+          "$ref": "#/$defs/FileTreeRequest"
+        },
+        {
+          "$ref": "#/$defs/FileOpenExternalRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeListRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeOpenRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeCloseRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreePruneRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeHandoffRequest"
+        },
+        {
+          "$ref": "#/$defs/WorktreeHandoffRollbackRequest"
         },
         {
           "$ref": "#/$defs/SubagentCapabilityRequest"
@@ -3398,6 +8335,132 @@
         },
         {
           "$ref": "#/$defs/TeamSetActiveRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectListRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectAddRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectRemoveRequest"
+        },
+        {
+          "$ref": "#/$defs/ProjectSetActiveRequest"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceStatusRequest"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceResolveRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsGetRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsSetRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsModelsRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsDiagnoseRequest"
+        },
+        {
+          "$ref": "#/$defs/SettingsRollbackRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesListRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesGetRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesSetEnabledRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesInvokeRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesCancelRequest"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesAuditRequest"
+        },
+        {
+          "$ref": "#/$defs/RecoveryStatusRequest"
+        },
+        {
+          "$ref": "#/$defs/RecoveryReplayRequest"
+        },
+        {
+          "$ref": "#/$defs/RecoveryReclaimRequest"
+        },
+        {
+          "$ref": "#/$defs/NotificationsListRequest"
+        },
+        {
+          "$ref": "#/$defs/NotificationsAckRequest"
+        },
+        {
+          "$ref": "#/$defs/NotificationsCursorRequest"
+        },
+        {
+          "$ref": "#/$defs/ReleaseStatusRequest"
+        },
+        {
+          "$ref": "#/$defs/ReleaseDiagnoseRequest"
+        },
+        {
+          "$ref": "#/$defs/CliListRequest"
+        },
+        {
+          "$ref": "#/$defs/CliInstallRequest"
+        },
+        {
+          "$ref": "#/$defs/CliLaunchRequest"
+        },
+        {
+          "$ref": "#/$defs/CliUninstallRequest"
+        },
+        {
+          "$ref": "#/$defs/CliStartRequest"
+        },
+        {
+          "$ref": "#/$defs/CliStopRequest"
+        },
+        {
+          "$ref": "#/$defs/CliDecideRequest"
+        },
+        {
+          "$ref": "#/$defs/CliRecordFailureRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleListRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleUpdateRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleDeleteRequest"
+        },
+        {
+          "$ref": "#/$defs/ScheduleToggleRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginListRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginInstallRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginUninstallRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginToggleRequest"
         }
       ]
     },
@@ -3431,10 +8494,19 @@
           "$ref": "#/$defs/ToolEnd"
         },
         {
+          "$ref": "#/$defs/ExecutionItem"
+        },
+        {
           "$ref": "#/$defs/TaskComplete"
         },
         {
           "$ref": "#/$defs/TokenUsage"
+        },
+        {
+          "$ref": "#/$defs/AgentUsage"
+        },
+        {
+          "$ref": "#/$defs/AgentNeedsInput"
         },
         {
           "$ref": "#/$defs/FinalAnswer"
@@ -3465,6 +8537,24 @@
         },
         {
           "$ref": "#/$defs/ServerHeartbeat"
+        },
+        {
+          "$ref": "#/$defs/InitializedNotification"
+        },
+        {
+          "$ref": "#/$defs/ProcessStarted"
+        },
+        {
+          "$ref": "#/$defs/ProcessShutdown"
+        },
+        {
+          "$ref": "#/$defs/RecoveryRequired"
+        },
+        {
+          "$ref": "#/$defs/ProcessFailed"
+        },
+        {
+          "$ref": "#/$defs/WorkspaceChanged"
         }
       ]
     },
@@ -3537,6 +8627,36 @@
           "$ref": "#/$defs/BridgeAbort"
         }
       ]
+    },
+    "HandshakeProtocol": {
+      "title": "HandshakeProtocol",
+      "description": "PhaseG-B2 initialize result, capability snapshot, and stable error payload. Not a session envelope.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CapabilitySnapshot"
+        },
+        {
+          "$ref": "#/$defs/ModelProviderSummary"
+        },
+        {
+          "$ref": "#/$defs/ModelSummary"
+        },
+        {
+          "$ref": "#/$defs/PermissionProfileSummary"
+        },
+        {
+          "$ref": "#/$defs/PackageCompatibility"
+        },
+        {
+          "$ref": "#/$defs/InitializeResult"
+        },
+        {
+          "$ref": "#/$defs/ThreadMetadata"
+        },
+        {
+          "$ref": "#/$defs/ProtocolErrorData"
+        }
+      ]
     }
   },
   "oneOf": [
@@ -3551,6 +8671,9 @@
     },
     {
       "$ref": "#/$defs/AgentProtocol"
+    },
+    {
+      "$ref": "#/$defs/HandshakeProtocol"
     }
   ]
 }

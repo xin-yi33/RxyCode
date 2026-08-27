@@ -1,0 +1,19 @@
+{
+  "card": "PhaseG-B5",
+  "kind": "denied",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "turn/steer",
+    "params": {"session_id": "s1", "text": "go"}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "error": {
+      "code": -32014,
+      "message": "turn is not running",
+      "data": {"error_code": "TURN_NOT_RUNNING", "retryable": false}
+    }
+  }
+}

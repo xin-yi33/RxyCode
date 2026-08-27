@@ -209,6 +209,25 @@ class ToolEnd(BaseModel):
     status: str | None = None
 
 
+class ExecutionItem(BaseModel):
+    """PhaseG-B6 tool/command/background item snapshot."""
+
+    method: Literal["event/execution"] = "event/execution"
+    session_id: str
+    task_id: str
+    kind: str
+    origin: str
+    name: str
+    status: str
+    args_summary: str | None = None
+    risk: str | None = None
+    cwd: str | None = None
+    env_summary: dict[str, str] | None = None
+    exit_code: int | None = None
+    unread: bool = False
+    truncated: bool = False
+
+
 class TaskComplete(BaseModel):
     """Structured task completion paired with ``TaskStarted``."""
 
@@ -229,6 +248,37 @@ class TokenUsage(BaseModel):
     cache_write_tokens: int | None = None
     cache_hit_rate: float | None = None
     reporting_status: Literal["reported", "partial", "not_reported"] = "reported"
+
+
+class AgentNeedsInput(BaseModel):
+    """GX13 agent waiting for approval or a question. Additive new_event."""
+
+    method: Literal["event/agent_needs_input"] = "event/agent_needs_input"
+    session_id: str | None = None
+    request_id: str | None = None
+    kind: Literal["needs_input"] = "needs_input"
+    preview: str | None = None
+
+
+class AgentUsage(BaseModel):
+    """GX16 additive per-turn token/cost snapshot for the side-chat usage strip."""
+
+    method: Literal["event/agent_usage"] = "event/agent_usage"
+    session_id: str
+    seq: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_hit_rate: float | None = None
+    reporting_status: Literal["reported", "partial", "not_reported"] | None = None
+    context_used: int | None = None
+    context_window: int | None = None
+    used_pct: float | None = None
+    cost: float | None = None
+    currency: str | None = None
+    cost_available: bool = False
+    reason: str | None = None
 
 
 class FinalAnswer(BaseModel):
@@ -340,6 +390,57 @@ class ServerHeartbeat(BaseModel):
     degraded: bool
 
 
+class InitializedNotification(BaseModel):
+    """PhaseG-B2 handshake complete. No response expected."""
+
+    method: Literal["initialized"] = "initialized"
+    protocol_version: str
+    server_version: str
+
+
+class ProcessStarted(BaseModel):
+    """PhaseG-B3 appserver process is up and holding the instance lock."""
+
+    method: Literal["event/process_started"] = "event/process_started"
+    pid: int
+    started_at: float
+    instance_policy: str = "single-instance-per-data-dir"
+
+
+class ProcessShutdown(BaseModel):
+    """PhaseG-B3 graceful shutdown. Incomplete work is not marked completed."""
+
+    method: Literal["event/process_shutdown"] = "event/process_shutdown"
+    reason: str
+    graceful: bool
+
+
+class RecoveryRequired(BaseModel):
+    """PhaseG-B3 restart found an unfinished turn. UI must not show success."""
+
+    method: Literal["event/recovery_required"] = "event/recovery_required"
+    session_id: str
+    previous_status: str
+    status: str = "recovery_required"
+
+
+class ProcessFailed(BaseModel):
+    """PhaseG-B3 failed to become the instance (lock or boot)."""
+
+    method: Literal["event/process_failed"] = "event/process_failed"
+    reason: str
+    error_code: str
+
+
+class WorkspaceChanged(BaseModel):
+    """PhaseG-B4 active workspace changed. Does not chdir the process."""
+
+    method: Literal["event/workspace_changed"] = "event/workspace_changed"
+    project_id: str
+    workspace_root: str
+    display_name: str
+
+
 NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     AgentEvent,
     MessageDelta,
@@ -350,8 +451,11 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     TaskStarted,
     ToolBegin,
     ToolEnd,
+    ExecutionItem,
     TaskComplete,
     TokenUsage,
+    AgentUsage,
+    AgentNeedsInput,
     FinalAnswer,
     RecoveryStarted,
     RecoveryAnalyzing,
@@ -362,4 +466,10 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     RunComplete,
     JobStatusUpdate,
     ServerHeartbeat,
+    InitializedNotification,
+    ProcessStarted,
+    ProcessShutdown,
+    RecoveryRequired,
+    ProcessFailed,
+    WorkspaceChanged,
 )

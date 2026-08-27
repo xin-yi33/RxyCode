@@ -1,0 +1,6 @@
+{
+  "card": "PhaseG-B7",
+  "kind": "denied",
+  "request": {"method": "command/start", "params": {"session_id": "s1", "command": "echo", "cwd": "."}},
+  "error_code": "PERMISSION_DENIED"
+}

@@ -1,0 +1,5 @@
+{
+  "card": "PhaseG-B7",
+  "kind": "reconnect",
+  "note": "restart restores profile and revoked flags; reject_streak and unused approval_id do not reuse"
+}

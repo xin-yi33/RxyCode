@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .types import JsonObject
 
@@ -13,8 +13,11 @@ class InitializeRequest(BaseModel):
     """JSON-RPC handshake on connect (future ``python -m appserver``).
 
     ``client_name`` / ``client_version`` identify the OpenTUI or Desktop client;
-    ``protocol_version`` must equal ``protocol.version.PROTOCOL_VERSION``;
+    ``protocol_version`` must fall in ``PROTOCOL_VERSION_MIN``..``MAX`` (empty
+    is unspecified/legacy); unknown extra fields are ignored.
     ``capabilities`` is an optional client feature manifest (unused in HTTP mode).
+    ``client_info`` / ``client_capabilities`` / ``requested_features`` are
+    PhaseG-B2 optional fields (G §5.1); they do not replace the older keys.
     """
 
     method: Literal["initialize"] = "initialize"
@@ -22,6 +25,9 @@ class InitializeRequest(BaseModel):
     client_version: str
     protocol_version: str
     capabilities: JsonObject | None = None
+    client_info: JsonObject | None = None
+    client_capabilities: JsonObject | None = None
+    requested_features: list[str] | None = None
 
 
 class NewSessionRequest(BaseModel):
@@ -60,6 +66,10 @@ class PromptRequest(BaseModel):
     thinking_expanded: bool | None = Field(
         default=None,
         description="When true, ProtocolTui emits event/reasoning_snapshot chunks.",
+    )
+    capability: Literal["no_tools", "edit_only", "full"] | None = Field(
+        default=None,
+        description="GX14 Ask/Edit/Agent hard tool boundary (default full).",
     )
 
 
@@ -116,6 +126,15 @@ class SessionsListRequest(BaseModel):
 
     method: Literal["sessions/list"] = "sessions/list"
     include_trashed: bool = False
+    include_archived: bool = False
+    workspace_root: str | None = None
+    project_id: str | None = None
+    status: str | None = None
+    updated_after: str | None = None
+    updated_before: str | None = None
+    created_after: str | None = None
+    created_before: str | None = None
+    parent_session_id: str | None = None
 
 
 class SessionEventsRequest(BaseModel):
@@ -153,6 +172,519 @@ class SessionPurgeRequest(BaseModel):
 
     method: Literal["session/purge"] = "session/purge"
     session_id: str
+    confirm_purge: bool = False
+
+
+class ThreadMetadata(BaseModel):
+    """PhaseG-B17 thread recycle-bin metadata."""
+
+    deleted_at: str | None = None
+    restored_at: str | None = None
+    list_category: str | None = None
+    associated_files: list[str] | None = None
+
+
+class ThreadDeleteRequest(BaseModel):
+    """Soft-delete a thread (sets deleted_at).
+
+    Maps ``thread/delete``.
+    """
+
+    method: Literal["thread/delete"] = "thread/delete"
+    session_id: str
+
+
+class ThreadRestoreRequest(BaseModel):
+    """Restore a soft-deleted thread.
+
+    Maps ``thread/restore``.
+    """
+
+    method: Literal["thread/restore"] = "thread/restore"
+    session_id: str
+
+
+class ThreadPurgeRequest(BaseModel):
+    """Permanently purge a soft-deleted thread.
+
+    Maps ``thread/purge``.
+    """
+
+    method: Literal["thread/purge"] = "thread/purge"
+    session_id: str
+    confirm_purge: bool = False
+    paths: list[str] | None = None
+
+
+class ThreadListDeletedRequest(BaseModel):
+    """List soft-deleted threads.
+
+    Maps ``thread/list_deleted``.
+    """
+
+    method: Literal["thread/list_deleted"] = "thread/list_deleted"
+
+
+class SessionForkRequest(BaseModel):
+    """PhaseG-B5 fork a thread. Parent events and status stay unchanged."""
+
+    method: Literal["session/fork"] = "session/fork"
+    session_id: str
+
+
+class ThreadForkRequest(BaseModel):
+    """GX8 message-level fork. Distinct from session/fork (whole-thread copy)."""
+
+    method: Literal["thread/fork"] = "thread/fork"
+    thread_id: str
+    message_id: str
+    edited_text: str | None = None
+
+
+class ThreadPinRequest(BaseModel):
+    """GX8 pin/unpin. Operation, not an optional field substitute."""
+
+    method: Literal["thread/pin"] = "thread/pin"
+    thread_id: str
+    pinned: bool = True
+
+
+class ThreadSideChatCreateRequest(BaseModel):
+    """GX16 read-only derived side chat."""
+
+    method: Literal["thread/side_chat/create"] = "thread/side_chat/create"
+    thread_id: str
+
+
+class ThreadSideChatCloseRequest(BaseModel):
+    """GX16 close a side chat. Default does not promote back."""
+
+    method: Literal["thread/side_chat/close"] = "thread/side_chat/close"
+    side_thread_id: str
+    promote: bool = False
+    confirm_promote: bool = False
+
+
+class SessionTreeRequest(BaseModel):
+    """PhaseG-B5 parent/child tree. Additive; does not replace child_sessions/list."""
+
+    method: Literal["session/tree"] = "session/tree"
+    session_id: str
+
+
+class SessionArchiveRequest(BaseModel):
+    """PhaseG-B5 archive. Not delete; recoverable via unarchive."""
+
+    method: Literal["session/archive"] = "session/archive"
+    session_id: str
+
+
+class SessionUnarchiveRequest(BaseModel):
+    """PhaseG-B5 restore an archived thread to the active list."""
+
+    method: Literal["session/unarchive"] = "session/unarchive"
+    session_id: str
+
+
+class SessionItemsRequest(BaseModel):
+    """Paginate persisted items (events) after a cursor."""
+
+    method: Literal["session/items"] = "session/items"
+    session_id: str
+    cursor: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class TurnStartRequest(BaseModel):
+    """PhaseG-B5 start a turn. Wraps session/prompt without replacing it."""
+
+    method: Literal["turn/start"] = "turn/start"
+    session_id: str
+    text: str
+    request_id: str | None = None
+    timeout_seconds: float | None = None
+
+
+class TurnSteerRequest(BaseModel):
+    """Append steering text to an in-flight turn. No-op if not running."""
+
+    method: Literal["turn/steer"] = "turn/steer"
+    session_id: str
+    text: str
+
+
+class TurnInterruptRequest(BaseModel):
+    """PhaseG-B5 interrupt a running turn. Wraps session/interrupt."""
+
+    method: Literal["turn/interrupt"] = "turn/interrupt"
+    session_id: str
+
+
+class TurnRetryRequest(BaseModel):
+    """Retry last turn. Same request_id returns the stored result."""
+
+    method: Literal["turn/retry"] = "turn/retry"
+    session_id: str
+    request_id: str
+    text: str | None = None
+
+
+class CommandStartRequest(BaseModel):
+    """PhaseG-B6 user-initiated command. Distinct from agent tool calls."""
+
+    method: Literal["command/start"] = "command/start"
+    session_id: str
+    command: str
+    cwd: str | None = None
+    background: bool = False
+    timeout_seconds: float | None = None
+    approval_id: str | None = None
+    actor: str | None = None
+    project_id: str | None = None
+    expand_sandbox: bool = False
+    expand_writable_roots: bool = False
+    expand_network: bool = False
+    network: bool = False
+    writable_roots: list[str] | None = None
+
+
+class ExecutionListRequest(BaseModel):
+    """List tool/command/background items for one session."""
+
+    method: Literal["execution/list"] = "execution/list"
+    session_id: str
+    include_completed: bool = False
+
+
+class ExecutionStopRequest(BaseModel):
+    """Stop one running tool/command/background task."""
+
+    method: Literal["execution/stop"] = "execution/stop"
+    session_id: str
+    task_id: str
+
+
+class ExecutionOutputRequest(BaseModel):
+    """Read persisted stdout/stderr after the process has exited."""
+
+    method: Literal["execution/output"] = "execution/output"
+    session_id: str
+    task_id: str
+
+
+class PermissionGetRequest(BaseModel):
+    """PhaseG-B7 read current permission profile and policy version."""
+
+    method: Literal["permission/get"] = "permission/get"
+
+
+class PermissionScopeGrant(BaseModel):
+    """Durable scoped allow used only by allow_scoped_actions."""
+
+    action: str
+    scope: str | None = None
+    project_id: str | None = None
+    expires_at: str | None = None
+
+
+class PermissionSetRequest(BaseModel):
+    """PhaseG-B7 set a selectable profile. full_access is rejected."""
+
+    method: Literal["permission/set"] = "permission/set"
+    profile_id: str
+    scopes: list[PermissionScopeGrant] | None = None
+
+
+class ApprovalDecideRequest(BaseModel):
+    """Record an approval decision. One allow does not reuse."""
+
+    method: Literal["approval/decide"] = "approval/decide"
+    session_id: str
+    action: str
+    decision: str
+    actor: str = "user"
+    scope: str | None = None
+    expires_at: str | None = None
+    turn_id: str | None = None
+    project_id: str | None = None
+    reviewer_id: str | None = None
+    reason: str | None = None
+    original_approval_id: str | None = None
+    expand_sandbox: bool = False
+    expand_writable_roots: bool = False
+    expand_network: bool = False
+
+
+class ApprovalRevokeRequest(BaseModel):
+    """Revoke a previous allow. Restart only keeps persisted non-revoked policy."""
+
+    method: Literal["approval/revoke"] = "approval/revoke"
+    approval_id: str
+
+
+class ApprovalAuditRequest(BaseModel):
+    """List approval audit records for a session or all."""
+
+    method: Literal["approval/audit"] = "approval/audit"
+    session_id: str | None = None
+
+
+class ApprovalModeSetRequest(BaseModel):
+    """GX2 UI preset mapped onto B7 policy. Request must use ``preset`` not ``mode``."""
+
+    method: Literal["approval/mode_set"] = "approval/mode_set"
+    preset: Literal["ask", "auto", "full"]
+
+
+class ApprovalFullAccessEnableRequest(BaseModel):
+    """GX2-PROTO: session-scoped unlock of B7 full_access. Restart clears it."""
+
+    method: Literal["approval/full_access_enable"] = "approval/full_access_enable"
+    actor: str
+    source: str = "settings"
+
+
+class ReviewStartRequest(BaseModel):
+    """PhaseG-B8 start a read-only review. Does not modify the working tree."""
+
+    method: Literal["review/start"] = "review/start"
+    request_id: str
+    session_id: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    scope: str = "working_tree"
+    base_ref: str | None = None
+    head_ref: str | None = None
+    paths: list[str] | None = None
+    criteria: list[str] | None = None
+    reviewer: JsonObject | None = None
+
+
+class ReviewReadRequest(BaseModel):
+    """Reconnect/read a persisted review without restarting it."""
+
+    method: Literal["review/read"] = "review/read"
+    review_id: str
+    after_sequence: int | None = None
+
+
+class ReviewCommentRequest(BaseModel):
+    """Line comment bound to review/finding/file hash/line range."""
+
+    method: Literal["review/comment"] = "review/comment"
+    review_id: str
+    file: str
+    start_line: int
+    end_line: int
+    body: str
+    finding_id: str | None = None
+    file_hash: str | None = None
+
+
+class ReviewCommentAddRequest(BaseModel):
+    """GX3 add inline comment. Does not replace review/comment."""
+
+    method: Literal["review/comment/add"] = "review/comment/add"
+    review_id: str
+    file: str
+    line: int
+    hunk_hash: str
+    body: str
+
+
+class ReviewCommentResolveRequest(BaseModel):
+    """GX3 resolve an inline comment (open or stale)."""
+
+    method: Literal["review/comment/resolve"] = "review/comment/resolve"
+    comment_id: str
+
+
+class CheckpointCreateRequest(BaseModel):
+    """Create a session checkpoint without writing the workspace tree."""
+
+    method: Literal["checkpoint/create"] = "checkpoint/create"
+    session_id: str
+    reason: str | None = None
+    turn_id: str | None = None
+
+
+class CheckpointListRequest(BaseModel):
+    """List checkpoints for a session."""
+
+    method: Literal["checkpoint/list"] = "checkpoint/list"
+    session_id: str
+
+
+class CheckpointReadRequest(BaseModel):
+    """Read one checkpoint payload."""
+
+    method: Literal["checkpoint/read"] = "checkpoint/read"
+    checkpoint_id: str
+    session_id: str
+
+
+class CheckpointRestoreRequest(BaseModel):
+    """Restore a session to a previous checkpoint."""
+
+    method: Literal["checkpoint/restore"] = "checkpoint/restore"
+    checkpoint_id: str
+    session_id: str
+    approval_id: str | None = None
+
+
+class CheckpointSnapshotCreateRequest(BaseModel):
+    """GX4 named snapshot. Distinct from automatic checkpoint/create."""
+
+    method: Literal["checkpoint/snapshot/create"] = "checkpoint/snapshot/create"
+    name: str
+    session_id: str
+    user_prompt: str | None = None
+
+
+class CheckpointRewindRequest(BaseModel):
+    """GX4 rewind: pre-rewind snapshot + B8 restore + projection + refill."""
+
+    method: Literal["checkpoint/rewind"] = "checkpoint/rewind"
+    checkpoint_id: str
+    confirm: bool
+    session_id: str
+
+
+class PlanPersistRequest(BaseModel):
+    """GX9 export thread plan to markdown under RXYCODE_DATA_DIR/plans."""
+
+    method: Literal["plan/persist"] = "plan/persist"
+    thread_id: str
+    title: str
+    goal: str
+    steps: list[str]
+    acceptance: list[str]
+
+
+class PlanImplementRequest(BaseModel):
+    """GX9 start execution from a persisted plan. Requires confirm=true."""
+
+    method: Literal["plan/implement"] = "plan/implement"
+    plan_id: str
+    confirm: bool
+
+
+class GitStageRequest(BaseModel):
+    """Stage git paths inside the workspace."""
+
+    method: Literal["git/stage"] = "git/stage"
+    session_id: str
+    paths: list[str]
+    approval_id: str | None = None
+
+
+class GitUnstageRequest(BaseModel):
+    """Unstage git paths inside the workspace."""
+
+    method: Literal["git/unstage"] = "git/unstage"
+    session_id: str
+    paths: list[str]
+    approval_id: str | None = None
+
+
+class GitRevertRequest(BaseModel):
+    """Revert git hunks or paths inside the workspace."""
+
+    method: Literal["git/revert"] = "git/revert"
+    session_id: str
+    paths: list[str]
+    hunk_index: int | None = None
+    approval_id: str | None = None
+
+
+class FilePreviewRequest(BaseModel):
+    """Preview a workspace file for the client."""
+
+    method: Literal["file/preview"] = "file/preview"
+    session_id: str
+    path: str
+
+
+class FileTreeRequest(BaseModel):
+    """List a workspace directory tree."""
+
+    method: Literal["file/tree"] = "file/tree"
+    session_id: str
+    path: str | None = None
+
+
+class FileOpenExternalRequest(BaseModel):
+    """Open a workspace file in an external program after confirm."""
+
+    method: Literal["file/open_external"] = "file/open_external"
+    session_id: str
+    path: str
+    confirm: bool = False
+
+
+class WorktreeListRequest(BaseModel):
+    """List git worktrees for the session workspace."""
+
+    method: Literal["worktree/list"] = "worktree/list"
+    session_id: str
+
+
+class WorktreeOpenRequest(BaseModel):
+    """Switch the session onto an existing git worktree."""
+
+    method: Literal["worktree/open"] = "worktree/open"
+    session_id: str
+    worktree_id: str
+
+
+class WorktreeCreateRequest(BaseModel):
+    """Create a git worktree under the workspace."""
+
+    method: Literal["worktree/create"] = "worktree/create"
+    session_id: str
+    dest: str
+    branch: str | None = None
+    approval_id: str | None = None
+
+
+class WorktreeCloseRequest(BaseModel):
+    """Close a git worktree after optional confirm."""
+
+    method: Literal["worktree/close"] = "worktree/close"
+    session_id: str
+    worktree_id: str
+    force: bool = False
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorktreePruneRequest(BaseModel):
+    """Prune stale git worktrees after confirm."""
+
+    method: Literal["worktree/prune"] = "worktree/prune"
+    session_id: str
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorktreeHandoffRequest(BaseModel):
+    """Hand a worktree path to another session after confirm."""
+
+    method: Literal["worktree/handoff"] = "worktree/handoff"
+    session_id: str
+    target_session: str
+    target_path: str
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorktreeHandoffRollbackRequest(BaseModel):
+    """Roll back a worktree handoff."""
+
+    method: Literal["worktree/handoff/rollback"] = "worktree/handoff/rollback"
+    handoff_id: str
+    session_id: str
+    approval_id: str | None = None
 
 
 class SubagentCapabilityRequest(BaseModel):
@@ -181,6 +713,7 @@ class AgentInvokeRequest(BaseModel):
     output_schema: str | None = None
     requested_budget: JsonObject | None = None
     requested_workspace: JsonObject | None = None
+    capability: Literal["no_tools", "edit_only", "full"] | None = None
 
 
 class TaskStartRequest(BaseModel):
@@ -392,6 +925,481 @@ class TeamSetActiveRequest(BaseModel):
     team_id: str
 
 
+class ProjectListRequest(BaseModel):
+    """PhaseG-B4 list recent projects."""
+
+    method: Literal["project/list"] = "project/list"
+
+
+class ProjectAddRequest(BaseModel):
+    """PhaseG-B4 add a local directory. Display name is separate from path."""
+
+    method: Literal["project/add"] = "project/add"
+    path: str
+    display_name: str | None = None
+
+
+class ProjectRemoveRequest(BaseModel):
+    """PhaseG-B4 drop from recent list. Never deletes user files."""
+
+    method: Literal["project/remove"] = "project/remove"
+    project_id: str
+
+
+class ProjectSetActiveRequest(BaseModel):
+    """PhaseG-B4 switch the active project without changing process cwd."""
+
+    method: Literal["project/set_active"] = "project/set_active"
+    project_id: str
+
+
+class WorkspaceStatusRequest(BaseModel):
+    """PhaseG-B4 report branch/worktree or NOT_A_GIT_REPO. Never chdir."""
+
+    method: Literal["workspace/status"] = "workspace/status"
+    workspace_root: str
+
+
+class WorkspaceResolveRequest(BaseModel):
+    """Reject paths that escape the bound workspace, including symlink hops."""
+
+    method: Literal["workspace/resolve"] = "workspace/resolve"
+    workspace_root: str
+    path: str
+
+
+class SettingsGetRequest(BaseModel):
+    """Resolve settings through global→project→workspace→thread/turn.
+
+    Maps ``settings/get``. Same interpretation for Desktop and CLI.
+    """
+
+    method: Literal["settings/get"] = "settings/get"
+    session_id: str | None = None
+    project_id: str | None = None
+    workspace: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    keys: list[str] | None = None
+
+
+class SettingsSetRequest(BaseModel):
+    """Write one explicit settings layer. Secrets are not stored in values.
+
+    Maps ``settings/set``. Requires B7 permission. Changing model does not
+    rewrite existing thread history.
+    """
+
+    method: Literal["settings/set"] = "settings/set"
+    layer: str
+    values: JsonObject
+    session_id: str | None = None
+    project_id: str | None = None
+    workspace: str | None = None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+
+
+class SettingsModelsRequest(BaseModel):
+    """Look up a real model_id in ModelCatalog and return a ModelSummary.
+
+    Maps ``settings/models``. Unknown models keep their id and use the high
+    fallback with warning; they are not rewritten to a known catalog model.
+    """
+
+    method: Literal["settings/models"] = "settings/models"
+    provider_id: str
+    model_id: str
+    max_tokens: int | None = None
+    session_id: str | None = None
+
+
+class SettingsDiagnoseRequest(BaseModel):
+    """Classify key-invalid, quota, and model-unavailable as distinct codes.
+
+    Maps ``settings/diagnose``. Messages are redacted.
+    """
+
+    method: Literal["settings/diagnose"] = "settings/diagnose"
+    error_code: str | None = None
+    message: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+
+
+class SettingsRollbackRequest(BaseModel):
+    """Restore a settings snapshot written before a previous set.
+
+    Maps ``settings/rollback``. Requires B7 permission.
+    """
+
+    method: Literal["settings/rollback"] = "settings/rollback"
+    snapshot_id: str
+    session_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+
+
+class CapabilitiesListRequest(BaseModel):
+    """Project skills, MCP servers, and the browser placeholder.
+
+    Maps ``capabilities/list``. Unavailable items have available=false.
+    """
+
+    method: Literal["capabilities/list"] = "capabilities/list"
+    kind: str | None = None
+    available_only: bool = False
+    session_id: str | None = None
+
+
+class CapabilitiesGetRequest(BaseModel):
+    """Read one capability projection.
+
+    Maps ``capabilities/get``.
+    """
+
+    method: Literal["capabilities/get"] = "capabilities/get"
+    capability_id: str
+    session_id: str | None = None
+
+
+class CapabilitiesSetEnabledRequest(BaseModel):
+    """Enable or authorize a capability. Browser cannot be turned into a bypass.
+
+    Maps ``capabilities/set_enabled``.
+    """
+
+    method: Literal["capabilities/set_enabled"] = "capabilities/set_enabled"
+    capability_id: str
+    enabled: bool
+    authorize: bool | None = None
+    session_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+
+
+class CapabilitiesInvokeRequest(BaseModel):
+    """Invoke a capability as a normal Tool/Approval/Review job.
+
+    Maps ``capabilities/invoke``. Failures are terminal and cancellable.
+    """
+
+    method: Literal["capabilities/invoke"] = "capabilities/invoke"
+    capability_id: str
+    session_id: str | None = None
+    turn_id: str | None = None
+    actor: str | None = None
+    approval_id: str | None = None
+    background: bool = False
+
+
+class CapabilitiesCancelRequest(BaseModel):
+    """Cancel an in-flight capability job so the Thread does not stay stuck.
+
+    Maps ``capabilities/cancel``.
+    """
+
+    method: Literal["capabilities/cancel"] = "capabilities/cancel"
+    job_id: str
+    session_id: str | None = None
+
+
+class CapabilitiesAuditRequest(BaseModel):
+    """Return copyable, source-located capability audit records.
+
+    Maps ``capabilities/audit``.
+    """
+
+    method: Literal["capabilities/audit"] = "capabilities/audit"
+    capability_id: str | None = None
+    session_id: str | None = None
+
+
+class RecoveryStatusRequest(BaseModel):
+    """Project session recovery state. Incomplete never becomes completed.
+
+    Maps ``recovery/status``.
+    """
+
+    method: Literal["recovery/status"] = "recovery/status"
+    session_id: str | None = None
+
+
+class RecoveryReplayRequest(BaseModel):
+    """Replay events after a saved cursor and persist the new cursor.
+
+    Maps ``recovery/replay``.
+    """
+
+    method: Literal["recovery/replay"] = "recovery/replay"
+    session_id: str
+    cursor: int | None = None
+    limit: int = 100
+
+
+class RecoveryReclaimRequest(BaseModel):
+    """Mark orphan incomplete sessions recovery_required.
+
+    Maps ``recovery/reclaim``.
+    """
+
+    method: Literal["recovery/reclaim"] = "recovery/reclaim"
+
+
+class NotificationsListRequest(BaseModel):
+    """List deduped recovery notifications.
+
+    Maps ``notifications/list``.
+    """
+
+    method: Literal["notifications/list"] = "notifications/list"
+    session_id: str | None = None
+    include_acked: bool = False
+
+
+class NotificationsAckRequest(BaseModel):
+    """Acknowledge one notification.
+
+    Maps ``notifications/ack``.
+    """
+
+    method: Literal["notifications/ack"] = "notifications/ack"
+    notification_id: str
+
+
+class NotificationsCursorRequest(BaseModel):
+    """Persist a disconnect cursor for later replay.
+
+    Maps ``notifications/cursor``.
+    """
+
+    method: Literal["notifications/cursor"] = "notifications/cursor"
+    session_id: str
+    cursor: int
+
+
+class ReleaseStatusRequest(BaseModel):
+    """Advertise runtime/protocol/schema bind.
+
+    Maps ``release/status``.
+    """
+
+    method: Literal["release/status"] = "release/status"
+
+
+class ReleaseDiagnoseRequest(BaseModel):
+    """Diagnose client/server version or schema mismatch.
+
+    Maps ``release/diagnose``.
+    """
+
+    method: Literal["release/diagnose"] = "release/diagnose"
+    protocol_version: str | None = None
+    appserver_version: str | None = None
+    schema_digest: str | None = None
+
+
+class CliListRequest(BaseModel):
+    """List CLI-Hub software ids. Names stay out of tools/registry.
+
+    Maps ``cli/list``.
+    """
+
+    method: Literal["cli/list"] = "cli/list"
+
+
+class CliInstallRequest(BaseModel):
+    """Install one CLI into an isolated venv.
+
+    Maps ``cli/install``.
+    """
+
+    method: Literal["cli/install"] = "cli/install"
+    name: str
+    source: str = "cli-hub"
+
+
+class CliLaunchRequest(BaseModel):
+    """Launch an installed CLI software id.
+
+    Maps ``cli/launch``.
+    """
+
+    method: Literal["cli/launch"] = "cli/launch"
+    name: str
+    args: list[str] | None = None
+
+
+class CliUninstallRequest(BaseModel):
+    """Uninstall one isolated CLI software id.
+
+    Maps ``cli/uninstall``.
+    """
+
+    method: Literal["cli/uninstall"] = "cli/uninstall"
+    name: str
+
+
+class CliStartRequest(BaseModel):
+    """Start a long-running CLI process in its isolated venv.
+
+    Maps ``cli/start``.
+    """
+
+    method: Literal["cli/start"] = "cli/start"
+    name: str
+    args: list[str] | None = None
+
+
+class CliStopRequest(BaseModel):
+    """Stop a long-running CLI process.
+
+    Maps ``cli/stop``.
+    """
+
+    method: Literal["cli/stop"] = "cli/stop"
+    name: str
+
+
+class CliDecideRequest(BaseModel):
+    """C-C registry-first decision for a software id.
+
+    Maps ``cli/decide``.
+    """
+
+    method: Literal["cli/decide"] = "cli/decide"
+    name: str
+    has_source: bool = False
+    has_sdk: bool = False
+
+
+class ScheduleListRequest(BaseModel):
+    """List application-layer scheduled jobs.
+
+    Maps ``schedule/list``.
+    """
+
+    method: Literal["schedule/list"] = "schedule/list"
+
+
+class ScheduleCreateRequest(BaseModel):
+    """Create an interval or at-time job.
+
+    Maps ``schedule/create``.
+    """
+
+    method: Literal["schedule/create"] = "schedule/create"
+    rule: dict
+    action: dict
+    enabled: bool = True
+
+
+class ScheduleUpdateRequest(BaseModel):
+    """Update one scheduled job.
+
+    Maps ``schedule/update``.
+    """
+
+    method: Literal["schedule/update"] = "schedule/update"
+    job_id: str
+    rule: dict | None = None
+    action: dict | None = None
+    enabled: bool | None = None
+
+
+class ScheduleDeleteRequest(BaseModel):
+    """Delete one scheduled job.
+
+    Maps ``schedule/delete``.
+    """
+
+    method: Literal["schedule/delete"] = "schedule/delete"
+    job_id: str
+
+
+class ScheduleToggleRequest(BaseModel):
+    """Enable or disable one scheduled job.
+
+    Maps ``schedule/toggle``.
+    """
+
+    method: Literal["schedule/toggle"] = "schedule/toggle"
+    job_id: str
+    enabled: bool | None = None
+
+
+class CliRecordFailureRequest(BaseModel):
+    """C-E generate-failure ladder record.
+
+    Maps ``cli/record_failure``.
+    """
+
+    method: Literal["cli/record_failure"] = "cli/record_failure"
+    name: str
+    stage: str
+    reason: str
+    next_step: str | None = None
+
+
+class PluginListRequest(BaseModel):
+    """List installed plugins.
+
+    Maps ``plugin/list``.
+    """
+
+    method: Literal["plugin/list"] = "plugin/list"
+
+
+class PluginInstallRequest(BaseModel):
+    """Install a plugin from a local directory or configured registry.
+
+    Maps ``plugin/install``.
+    """
+
+    method: Literal["plugin/install"] = "plugin/install"
+    source: str
+    path: str | None = None
+    name: str | None = None
+
+
+class PluginUninstallRequest(BaseModel):
+    """Unregister a plugin and optionally keep user.json.
+
+    Maps ``plugin/uninstall``.
+    """
+
+    method: Literal["plugin/uninstall"] = "plugin/uninstall"
+    name: str
+    keep_user_config: bool = False
+
+    @field_validator("keep_user_config", mode="before")
+    @classmethod
+    def _keep_user_config_bool(cls, value: object) -> object:
+        if value is not True and value is not False:
+            raise ValueError("keep_user_config must be a JSON boolean")
+        return value
+
+
+class PluginToggleRequest(BaseModel):
+    """Enable or disable a plugin via B11 capability/set_enabled.
+
+    Maps ``plugin/toggle``.
+    """
+
+    method: Literal["plugin/toggle"] = "plugin/toggle"
+    name: str
+    enabled: bool
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _enabled_bool(cls, value: object) -> object:
+        if value is not True and value is not False:
+            raise ValueError("enabled must be a JSON boolean")
+        return value
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -406,6 +1414,60 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     SessionTrashRequest,
     SessionRestoreRequest,
     SessionPurgeRequest,
+    ThreadDeleteRequest,
+    ThreadRestoreRequest,
+    ThreadPurgeRequest,
+    ThreadListDeletedRequest,
+    SessionForkRequest,
+    ThreadForkRequest,
+    ThreadPinRequest,
+    ThreadSideChatCreateRequest,
+    ThreadSideChatCloseRequest,
+    SessionTreeRequest,
+    SessionArchiveRequest,
+    SessionUnarchiveRequest,
+    SessionItemsRequest,
+    TurnStartRequest,
+    TurnSteerRequest,
+    TurnInterruptRequest,
+    TurnRetryRequest,
+    CommandStartRequest,
+    ExecutionListRequest,
+    ExecutionStopRequest,
+    ExecutionOutputRequest,
+    PermissionGetRequest,
+    PermissionSetRequest,
+    ApprovalDecideRequest,
+    ApprovalRevokeRequest,
+    ApprovalAuditRequest,
+    ApprovalModeSetRequest,
+    ApprovalFullAccessEnableRequest,
+    ReviewStartRequest,
+    ReviewReadRequest,
+    ReviewCommentRequest,
+    ReviewCommentAddRequest,
+    ReviewCommentResolveRequest,
+    CheckpointCreateRequest,
+    CheckpointListRequest,
+    CheckpointReadRequest,
+    CheckpointRestoreRequest,
+    CheckpointSnapshotCreateRequest,
+    CheckpointRewindRequest,
+    PlanPersistRequest,
+    PlanImplementRequest,
+    GitStageRequest,
+    GitUnstageRequest,
+    GitRevertRequest,
+    FilePreviewRequest,
+    FileTreeRequest,
+    FileOpenExternalRequest,
+    WorktreeListRequest,
+    WorktreeOpenRequest,
+    WorktreeCreateRequest,
+    WorktreeCloseRequest,
+    WorktreePruneRequest,
+    WorktreeHandoffRequest,
+    WorktreeHandoffRollbackRequest,
     SubagentCapabilityRequest,
     SubagentsListRequest,
     AgentInvokeRequest,
@@ -430,6 +1492,48 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     TeamGroupRenameRequest,
     TeamInstallRequest,
     TeamSetActiveRequest,
+    ProjectListRequest,
+    ProjectAddRequest,
+    ProjectRemoveRequest,
+    ProjectSetActiveRequest,
+    WorkspaceStatusRequest,
+    WorkspaceResolveRequest,
+    SettingsGetRequest,
+    SettingsSetRequest,
+    SettingsModelsRequest,
+    SettingsDiagnoseRequest,
+    SettingsRollbackRequest,
+    CapabilitiesListRequest,
+    CapabilitiesGetRequest,
+    CapabilitiesSetEnabledRequest,
+    CapabilitiesInvokeRequest,
+    CapabilitiesCancelRequest,
+    CapabilitiesAuditRequest,
+    RecoveryStatusRequest,
+    RecoveryReplayRequest,
+    RecoveryReclaimRequest,
+    NotificationsListRequest,
+    NotificationsAckRequest,
+    NotificationsCursorRequest,
+    ReleaseStatusRequest,
+    ReleaseDiagnoseRequest,
+    CliListRequest,
+    CliInstallRequest,
+    CliLaunchRequest,
+    CliUninstallRequest,
+    CliStartRequest,
+    CliStopRequest,
+    CliDecideRequest,
+    CliRecordFailureRequest,
+    ScheduleListRequest,
+    ScheduleCreateRequest,
+    ScheduleUpdateRequest,
+    ScheduleDeleteRequest,
+    ScheduleToggleRequest,
+    PluginListRequest,
+    PluginInstallRequest,
+    PluginUninstallRequest,
+    PluginToggleRequest,
 )
 
 ClientRequest = Annotated[
@@ -447,6 +1551,10 @@ ClientRequest = Annotated[
         SessionTrashRequest,
         SessionRestoreRequest,
         SessionPurgeRequest,
+        ThreadDeleteRequest,
+        ThreadRestoreRequest,
+        ThreadPurgeRequest,
+        ThreadListDeletedRequest,
         SubagentCapabilityRequest,
         SubagentsListRequest,
         AgentInvokeRequest,
@@ -456,6 +1564,42 @@ ClientRequest = Annotated[
         ChildSessionCancelRequest,
         ChildSessionRetryRequest,
         ShutdownRequest,
+        SettingsGetRequest,
+        SettingsSetRequest,
+        SettingsModelsRequest,
+        SettingsDiagnoseRequest,
+        SettingsRollbackRequest,
+        CapabilitiesListRequest,
+        CapabilitiesGetRequest,
+        CapabilitiesSetEnabledRequest,
+        CapabilitiesInvokeRequest,
+        CapabilitiesCancelRequest,
+        CapabilitiesAuditRequest,
+        RecoveryStatusRequest,
+        RecoveryReplayRequest,
+        RecoveryReclaimRequest,
+        NotificationsListRequest,
+        NotificationsAckRequest,
+        NotificationsCursorRequest,
+        ReleaseStatusRequest,
+        ReleaseDiagnoseRequest,
+        CliListRequest,
+        CliInstallRequest,
+        CliLaunchRequest,
+        CliUninstallRequest,
+        CliStartRequest,
+        CliStopRequest,
+        CliDecideRequest,
+        CliRecordFailureRequest,
+        ScheduleListRequest,
+        ScheduleCreateRequest,
+        ScheduleUpdateRequest,
+        ScheduleDeleteRequest,
+        ScheduleToggleRequest,
+        PluginListRequest,
+        PluginInstallRequest,
+        PluginUninstallRequest,
+        PluginToggleRequest,
     ],
     Field(discriminator="method"),
 ]

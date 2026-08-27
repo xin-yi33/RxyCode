@@ -1,0 +1,4 @@
+# PhaseG-B13 Python dependency bind (runtime gate)
+python>=3.11
+pydantic
+pytest

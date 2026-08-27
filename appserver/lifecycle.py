@@ -1,4 +1,4 @@
-"""Process lock, incomplete-task recovery, and instance policy."""
+"""PhaseG-B3 process lock, incomplete-task recovery, and instance policy."""
 
 from __future__ import annotations
 
