@@ -15,15 +15,19 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX8: rename exists; fork/pin/archive missing; only user messages fork', () => {
+test('GX8: rename and thread/fork are present; only user messages fork', () => {
   const probe = probeSessionOps(schema)
   assert.ok(probe.present.includes('session/rename'))
-  assert.equal(probe.forkPath, 'B')
-  assert.ok(probe.missing.includes('thread/fork'))
+  assert.equal(probe.forkPath, 'A')
+  assert.ok(probe.present.includes('thread/fork'))
+  assert.ok(probe.present.includes('thread/pin'))
   assert.equal(canForkFrom('user'), true)
   assert.equal(canForkFrom('assistant'), false)
   const req = buildFork(schema, { threadId: 't', messageId: 'm' })
-  assert.equal('status' in req && req.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(req, {
+    method: 'thread/fork',
+    params: { thread_id: 't', message_id: 'm', edited_text: undefined }
+  })
 })
 
 test('GX8: local search redacts secrets and drops deleted threads', () => {

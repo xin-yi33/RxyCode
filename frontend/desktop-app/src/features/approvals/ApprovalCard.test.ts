@@ -30,12 +30,12 @@ test('GX2: UI presets map onto B7 policies and never invent a third model', () =
   assert.equal(rejectFullWithoutEnable('full', true), null)
 })
 
-test('GX2: protocol probe — approval/mode_set missing is path B BLOCKED', () => {
+test('GX2: protocol probe — approval/mode_set is path A after backend merge', () => {
   const probe = probeModeSet(schema)
-  assert.equal(probe.path, 'B')
-  assert.deepEqual(probe.missing, [MODE_SET_CANDIDATE])
+  assert.equal(probe.path, 'A')
+  assert.deepEqual(probe.present, [MODE_SET_CANDIDATE])
   const request = buildModeSetRequest('ask', schema)
-  assert.equal('status' in request && request.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(request, { method: MODE_SET_CANDIDATE, params: { preset: 'ask' } })
 })
 
 test('GX2: card vs modal mutex — high risk always modal', () => {

@@ -51,11 +51,11 @@ test('GX5: shortcuts and idle vs running dropdown', () => {
   assert.match(running, /turn\/steer/)
 })
 
-test('GX5: turn/steer missing is path B; session/interrupt present for stop', () => {
+test('GX5: turn/steer is path A; session/interrupt present for stop', () => {
   const probe = probeSteer(schema)
-  assert.equal(probe.path, 'B')
-  assert.deepEqual(probe.missing, ['turn/steer'])
+  assert.equal(probe.path, 'A')
+  assert.deepEqual(probe.missing, [])
   assert.equal(probe.stopMethod, 'session/interrupt')
   const steer = buildSteer(schema, 'nudge')
-  assert.equal('status' in steer && steer.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(steer, { method: 'turn/steer', params: { text: 'nudge' } })
 })

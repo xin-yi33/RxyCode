@@ -13,10 +13,10 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX13: B12 probe uses existing approval/request and completion events; no invented needs_input', () => {
+test('GX13: B12 probe consumes approval/request and event/agent_needs_input', () => {
   const probe = probeNeedsInput(schema)
   assert.ok(probe.consumed.includes('approval/request'))
-  assert.ok(probe.missing.includes('event/agent_needs_input'))
+  assert.ok(probe.present.includes('event/agent_needs_input'))
   assert.equal(classifyNotify('approval/request'), 'needs_input')
   assert.equal(classifyNotify('event/task_complete'), 'response')
   assert.equal(classifyNotify('event/message_delta'), null)

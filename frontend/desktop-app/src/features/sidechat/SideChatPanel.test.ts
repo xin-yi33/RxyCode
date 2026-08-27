@@ -13,13 +13,13 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX16: side chat methods missing', () => {
+test('GX16: side chat methods are path A', () => {
   const probe = probeSideChat(schema)
-  assert.equal(probe.path, 'B')
+  assert.equal(probe.path, 'A')
   const req = buildSideChatCreate(schema, 't1')
-  assert.equal('status' in req && req.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(req, { method: 'thread/side_chat/create', params: { thread_id: 't1' } })
   const html = renderToStaticMarkup(
-    createElement(SideChatPanel, { blocked: true, missing: probe.missing })
+    createElement(SideChatPanel, { blocked: false, missing: [] })
   )
-  assert.match(html, /thread\/side_chat\/create/)
+  assert.match(html, /data-testid="side-chat"/)
 })

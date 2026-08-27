@@ -47,19 +47,20 @@ test('GX3: comment state machine open→stale→resolved and no reopen from stal
   assert.equal(canReopen(stale), false)
 })
 
-test('GX3: comment protocol missing is BLOCKED; draft is local only', () => {
+test('GX3: comment protocol is path A; draft stays local until add RPC', () => {
   const probe = probeReviewComments(schema)
-  assert.equal(probe.path, 'B')
-  assert.ok(probe.missing.includes('review/comment/add'))
-  assert.ok(probe.missing.includes('review/comment/resolve'))
-  const req = buildCommentAdd(schema, {
+  assert.equal(probe.path, 'A')
+  assert.ok(probe.present.includes('review/comment/add'))
+  assert.ok(probe.present.includes('review/comment/resolve'))
+  const payload = {
     reviewId: 'r',
     file: 'a.ts',
     line: 1,
     hunkHash: 'h',
     body: 'x'
-  })
-  assert.equal('status' in req && req.status === 'BLOCKED_PREREQUISITE', true)
+  }
+  const req = buildCommentAdd(schema, payload)
+  assert.deepEqual(req, { method: 'review/comment/add', params: payload })
   assert.match(draftFromComments([{ id: '1', file: 'a.ts', line: 1, hunkHash: 'h', body: 'fix', status: 'open' }]), /请处理以下内联评论/)
 })
 

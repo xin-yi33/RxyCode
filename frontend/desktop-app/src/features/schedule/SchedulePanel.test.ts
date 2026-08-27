@@ -13,11 +13,12 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX23: schedule/* missing', () => {
+test('GX23: schedule/* is path A', () => {
   const probe = probeSchedule(schema)
-  assert.equal(probe.path, 'B')
+  assert.equal(probe.path, 'A')
+  assert.ok(probe.present.includes('schedule/list'))
   const html = renderToStaticMarkup(
-    createElement(SchedulePanel, { blocked: true, missing: probe.missing })
+    createElement(SchedulePanel, { blocked: false, missing: [] })
   )
-  assert.match(html, /schedule\/list/)
+  assert.match(html, /data-testid="schedule-panel"/)
 })

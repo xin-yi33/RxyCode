@@ -13,11 +13,12 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX25: cli/* missing; gallery still reuses H19 PreviewGallery', () => {
+test('GX25: cli/* is path A; gallery still reuses H19 PreviewGallery', () => {
   const probe = probeCli(schema)
-  assert.equal(probe.path, 'B')
+  assert.equal(probe.path, 'A')
+  assert.ok(probe.present.includes('cli/list'))
   const html = renderToStaticMarkup(
-    createElement(CliGallery, { blocked: true, missing: probe.missing, artifacts: [] })
+    createElement(CliGallery, { blocked: false, missing: [], artifacts: [] })
   )
-  assert.match(html, /cli\/list/)
+  assert.match(html, /data-testid="cli-gallery"/)
 })

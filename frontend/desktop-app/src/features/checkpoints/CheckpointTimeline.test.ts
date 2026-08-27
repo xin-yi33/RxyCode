@@ -14,13 +14,15 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX4: checkpoint rewind/snapshot missing → BLOCKED; confirm required', () => {
+test('GX4: checkpoint rewind/snapshot is path A; confirm still required', () => {
   const probe = probeCheckpoints(schema)
-  assert.equal(probe.path, 'B')
-  assert.ok(probe.missing.includes('checkpoint/rewind'))
+  assert.equal(probe.path, 'A')
+  assert.ok(probe.present.includes('checkpoint/rewind'))
   assert.deepEqual(buildRewind(schema, 'c1', false), { error: 'confirm_required' })
-  const blocked = buildRewind(schema, 'c1', true)
-  assert.equal('status' in blocked && blocked.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(buildRewind(schema, 'c1', true), {
+    method: 'checkpoint/rewind',
+    params: { checkpoint_id: 'c1', confirm: true }
+  })
 })
 
 test('GX4: timeline five states and revert hover entry', () => {

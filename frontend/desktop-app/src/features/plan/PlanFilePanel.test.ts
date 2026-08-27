@@ -13,17 +13,20 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX9: plan/persist and plan/implement missing; data dir injected', () => {
+test('GX9: plan/persist and plan/implement are path A; data dir injected', () => {
   const probe = probePlan(schema)
-  assert.equal(probe.path, 'B')
-  assert.ok(probe.missing.includes('plan/persist'))
-  assert.ok(probe.missing.includes('plan/implement'))
+  assert.equal(probe.path, 'A')
+  assert.ok(probe.present.includes('plan/persist'))
+  assert.ok(probe.present.includes('plan/implement'))
   assert.equal(
     planPath('t1', 'slug', process.env.RXYCODE_DATA_DIR ?? 'C:/tmp/rxy-test'),
     `${(process.env.RXYCODE_DATA_DIR ?? 'C:/tmp/rxy-test').replace(/\\/g, '/')}/plans/t1-slug.md`
   )
   const req = buildPersist(schema, { threadId: 't', markdown: '# p' })
-  assert.equal('status' in req && req.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(req, {
+    method: 'plan/persist',
+    params: { thread_id: 't', markdown: '# p' }
+  })
 })
 
 test('GX9: panel five states', () => {

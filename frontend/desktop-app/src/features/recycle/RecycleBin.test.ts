@@ -23,16 +23,18 @@ const item = {
   originCategory: 'recent' as const
 }
 
-test('GX21: B17 thread/list_deleted|restore|purge missing is path B, not session/*', () => {
+test('GX21: B17 thread/list_deleted|restore|purge is path A, not session/*', () => {
   const probe = probeRecycle(schema)
-  assert.equal(probe.path, 'B')
+  assert.equal(probe.path, 'A')
   for (const method of B17_RECYCLE_METHODS) {
-    assert.ok(probe.missing.includes(method), method)
+    assert.ok(probe.present.includes(method), method)
   }
-  assert.ok(!probe.present.includes('session/purge') || probe.missing.includes('thread/purge'))
+  assert.ok(!probe.present.includes('session/purge'))
   assert.deepEqual(buildThreadPurge(schema, false), { error: 'confirm_purge_required' })
-  const blocked = buildThreadPurge(schema, true)
-  assert.equal('status' in blocked && blocked.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(buildThreadPurge(schema, true), {
+    method: 'thread/purge',
+    params: { confirm_purge: true }
+  })
 })
 
 test('GX21: TrashItem shows name, deleted time, origin; PurgeConfirmDialog ships', () => {

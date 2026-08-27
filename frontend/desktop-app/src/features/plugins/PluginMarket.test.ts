@@ -13,11 +13,12 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX24: plugin/* missing', () => {
+test('GX24: plugin/* is path A', () => {
   const probe = probePlugins(schema)
-  assert.equal(probe.path, 'B')
+  assert.equal(probe.path, 'A')
+  assert.ok(probe.present.includes('plugin/list'))
   const html = renderToStaticMarkup(
-    createElement(PluginMarket, { blocked: true, missing: probe.missing })
+    createElement(PluginMarket, { blocked: false, missing: [] })
   )
-  assert.match(html, /plugin\/list/)
+  assert.match(html, /data-testid="plugin-market"/)
 })

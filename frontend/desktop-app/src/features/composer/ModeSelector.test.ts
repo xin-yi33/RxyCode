@@ -13,15 +13,15 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX14: capability field missing on agent/invoke and session/prompt', () => {
+test('GX14: capability field present on agent/invoke and session/prompt', () => {
   assert.equal(MODE_TO_CAPABILITY.ask, 'no_tools')
   assert.equal(MODE_TO_CAPABILITY.edit, 'edit_only')
   assert.equal(MODE_TO_CAPABILITY.agent, 'full')
   const probe = probeCapabilityField(schema)
-  assert.equal(probe.presentOnInvoke, false)
-  assert.equal(probe.presentOnPrompt, false)
+  assert.equal(probe.presentOnInvoke, true)
+  assert.equal(probe.presentOnPrompt, true)
   const attached = attachCapability(schema, 'edit', 'session/prompt')
-  assert.equal('status' in attached && attached.status === 'BLOCKED_PREREQUISITE', true)
+  assert.deepEqual(attached, { capability: 'edit_only' })
   assert.equal(planOverridesWrite(true), 'plan')
 })
 

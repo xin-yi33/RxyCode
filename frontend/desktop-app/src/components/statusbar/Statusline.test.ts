@@ -13,10 +13,10 @@ const schema = readFileSync(
   'utf8'
 )
 
-test('GX7: consume event/token_usage; agent_usage missing; cost PENDING_PRICING', () => {
+test('GX7: consume event/token_usage and event/agent_usage; cost PENDING_PRICING', () => {
   const source = statuslineUsageSource(schema)
   assert.equal(source.event, 'event/token_usage')
-  assert.equal(source.agentUsage, false)
+  assert.equal(source.agentUsage, true)
   assert.equal(source.pendingPricing, true)
   assert.deepEqual(
     visibleStatuslineItems(['model', 'context', 'tokens', 'cost'], { hasPricing: false, narrow: false }),
