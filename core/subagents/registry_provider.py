@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .definitions import AgentDefinitionRegistry
 from .manager import ChildSessionManager
-from .modes import SubagentConfig
+from .modes import SubagentConfig, subagent_config_from_env
 
 _manager: ChildSessionManager | None = None
 
@@ -50,7 +50,7 @@ def init_manager(
 
     _manager = ChildSessionManager(
         registry=reg,
-        config=config or SubagentConfig(),
+        config=config or subagent_config_from_env(),
         workspace_root=workspace_root,
     )
     return _manager

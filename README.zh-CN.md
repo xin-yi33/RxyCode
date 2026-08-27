@@ -232,7 +232,8 @@ OpenTUI 里用 `/addmodel` 走引导向导。不要把 API key 写进仓库、RE
 
 | 命令 | 说明 |
 |------|------|
-| `/help` | 全部命令 |
+| `/help` | 全部命令（含专家团/子代理怎么用） |
+| `/agents on` `/team <任务>` | 专家团（默认关；普通 coding 不自动走） |
 | `/addmodel` | 添加模型（凭据掩码） |
 | `/models` / `/model <name>` | 列出 / 切换模型 |
 | `/build` `/plan` `/compose` | 工作模式 |
@@ -242,7 +243,7 @@ OpenTUI 里用 `/addmodel` 走引导向导。不要把 API key 写进仓库、RE
 | `/cache` | 缓存统计 |
 | `/language` | 界面语言 |
 | `/thinking` | 思考面板 |
-| `/children` `/child` `/parent` | 隔离式子代理树（功能开启时） |
+| `/children` `/child` `/parent` | 隔离式子代理树（默认开；`RXYCODE_SUBAGENTS=0` 关闭） |
 
 | 快捷键 | 作用 |
 |--------|------|

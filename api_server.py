@@ -1258,45 +1258,10 @@ async def _execute_command(req: CommandRequest):
         message = get_default_router().handle_slash(raw)
         return {"action": "route", "message": message}
 
-    if c == "/help":
-        help_text = (
-            "/help - 帮助\n"
-            "/solo <任务> - 强制单 Agent\n"
-            "/team <任务> - 强制专家团\n"
-            "/team-multi <任务> - 强制专家团+多模型\n"
-            "/why-mode - 上次路由依据\n"
-            "/agents on|off - 启用/关闭专家团（关闭时设置页不显示子项）\n"
-            "/clear - 清除上下文\n"
-            "/models - 列出模型\n"
-            "/model <name> - 切换模型\n"
-            "/effort [档位] - 设置/查看思考强度（档位随当前模型）\n"
-            "/addmodel - 打开安全模型接入向导（密钥不写入命令）\n"
-            "/plan - 规划模式\n"
-            "/build - 构建模式\n"
-            "/compose - 编排模式\n"
-            "/mode <build|plan|compose> - 切换模式\n"
-            "/memory add|list|remove|search <args>\n"
-            "/list-chats - 列出已保存的对话\n"
-            "/save-chat - 保存当前对话\n"
-            "/load-chat - 加载已保存的对话\n"
-            "/queue - 任务队列管理\n"
-            "/schedule - 定时任务管理\n"
-            "/language zh|en - 切换界面语言\n"
-            "/permission [confirm_all|auto_edit|full_auto] - 权限模式\n"
-            "/settings - 设置\n"
-            "/agents on|off - 启用/关闭专家团（关闭时设置页不显示子项）\n"
-            "/thinking - 展开/折叠思考过程\n"
-            "/cache - 缓存统计\n"
-            "/find-skill <name> - \u641c\u7d22\u5e76\u4e0b\u8f7d skill\n"
-            "/addskill <name|url> - \u5b89\u88c5 skill\n"
-            "/list-skills - \u5217\u51fa\u5df2\u5b89\u88c5\u7684 skills\n"
-            "/remove-skill <name> - \u5220\u9664 skill\n"
-            "/addmcp <name> <cmd> [args] - \u6dfb\u52a0 MCP \u670d\u52a1\n"
-            "/list-mcp - \u5217\u51fa MCP \u670d\u52a1\n"
-            "/remove-mcp <name> - \u5220\u9664 MCP \u670d\u52a1\n"
-            "/exit - 退出\n"
-        )
-        return {"message": help_text}
+    if c in {"/help", "/"}:
+        from .utils.slash_help import build_help_text
+
+        return {"action": "help", "message": build_help_text()}
 
     if c == "/session" or c == "/list-chats":
         from .memory.chat_storage import chat_storage
@@ -1347,36 +1312,6 @@ async def _execute_command(req: CommandRequest):
             )
             return {"action": "memory_search" if ok else "error", "message": result}
         return {"message": "Usage: /memory add|list|remove|search <args>"}
-
-    # Handle bare / or /help
-    if c == "/" or c == "/help":
-        help_text = (
-            "/help - 帮助\n"
-            "/solo <任务> - 强制单 Agent\n"
-            "/team <任务> - 强制专家团\n"
-            "/team-multi <任务> - 强制专家团+多模型\n"
-            "/why-mode - 上次路由依据\n"
-            "/agents on|off - 启用/关闭专家团（关闭时设置页不显示子项）\n"
-            "/clear - 清除上下文\n"
-            "/models - 列出模型\n"
-            "/model <name> - 切换模型\n"
-            "/effort [档位] - 设置/查看思考强度（档位随当前模型）\n"
-            "/addmodel - 打开安全模型接入向导（密钥不写入命令）\n"
-            "/plan - 规划模式\n"
-            "/build - 构建模式\n"
-            "/compose - 编排模式\n"
-            "/memory add|list|remove|search <args>\n"
-            "/list-chats - 列出已保存的对话\n"
-            "/save-chat - 保存当前对话\n"
-            "/load-chat - 加载已保存的对话\n"
-            "/queue - 任务队列管理\n"
-            "/schedule - 定时任务管理\n"
-            "/language zh|en - 切换界面语言\n"
-            "/thinking - 展开/折叠思考过程\n"
-            "/cache - 缓存统计\n"
-            "/exit - 退出\n"
-        )
-        return {"action": "help", "message": help_text}
 
     if c == "/thinking":
         # Safe before agent init: never block on _init_agent / never AttributeError
@@ -1724,15 +1659,72 @@ async def _execute_command(req: CommandRequest):
 
     # ── /tutorial ───────────────────────────────────────────
     if c == "/tutorial":
-        return {"action": "tutorial", "message": "🎓 RxyCode 交互式教程\n\n1. 基本对话: 直接输入问题或需求\n2. 文件操作: '读取/编辑/创建文件'\n3. 代码开发: '写一个函数/类/模块'\n4. 项目管理: '运行测试/提交代码'\n5. 模式切换: /plan /build /compose\n6. 记忆管理: /memory add/list/search\n7. 任务调度: /schedule add/list\n\n试试: '创建一个 Python 计算器' 或 '分析当前项目结构'"}
+        return {
+            "action": "tutorial",
+            "message": (
+                "🎓 RxyCode 交互式教程\n\n"
+                "1. 基本对话: 直接输入问题或需求（默认单 Agent，不会自动走专家团）\n"
+                "2. 文件操作: '读取/编辑/创建文件'\n"
+                "3. 代码开发: '写一个函数/类/模块'\n"
+                "4. 项目管理: '运行测试/提交代码'\n"
+                "5. 模式切换: /plan /build /compose\n"
+                "6. 专家团: /agents on 或 /team <可拆任务>；/why-mode 看上次路由\n"
+                "7. 记忆管理: /memory add/list/search\n"
+                "8. 任务调度: /schedule add/list\n\n"
+                "试试: '创建一个 Python 计算器' 或 /team 做前后端登录"
+            ),
+        }
 
     # ── /quickstart ─────────────────────────────────────────
     if c == "/quickstart":
-        return {"action": "quickstart", "message": "🚀 RxyCode 快速入门\n\n• 输入自然语言描述需求\n• RxyCode 会自动理解并执行\n• 支持代码开发、文件操作、项目管理\n\n常用命令:\n  /help      帮助\n  /clear     清除上下文\n  /models    列出模型\n  /memory    管理记忆\n  /queue     任务队列\n\n开始吧！试试输入你的第一个需求。"}
+        return {
+            "action": "quickstart",
+            "message": (
+                "🚀 RxyCode 快速入门\n\n"
+                "• 输入自然语言描述需求；默认单 Agent 写代码\n"
+                "• 专家团默认关。要看团长调度：/team <可拆任务> 或 /agents on\n"
+                "• 完整说明见 /help\n\n"
+                "常用命令:\n"
+                "  /help      帮助（含专家团/子代理）\n"
+                "  /team      本轮强制专家团\n"
+                "  /clear     清除上下文\n"
+                "  /models    列出模型\n"
+                "  /memory    管理记忆\n"
+                "  /queue     任务队列\n\n"
+                "开始吧！试试输入你的第一个需求。"
+            ),
+        }
 
     # ── /examples ───────────────────────────────────────────
     if c == "/examples":
-        return {"action": "examples", "message": "📚 RxyCode 使用示例\n\n代码开发:\n  • '写一个 Python 函数实现快速排序'\n  • '创建一个 React 组件显示用户列表'\n  • '重构这个函数，提高可读性'\n\n文件操作:\n  • '读取 README.md 文件'\n  • '搜索所有包含 TODO 的 Python 文件'\n  • '编辑 main.py 中的配置部分'\n\n项目管理:\n  • '查看当前 Git 状态'\n  • '运行所有单元测试'\n  • '提交代码到本地仓库'\n\n问题排查:\n  • '分析这个错误信息'\n  • '为什么这段代码运行缓慢'\n\n技术调研:\n  • '搜索 Python 异步编程最佳实践'\n  • '研究 React Hooks 的使用方法'"}
+        return {
+            "action": "examples",
+            "message": (
+                "📚 RxyCode 使用示例\n\n"
+                "代码开发（单 Agent）:\n"
+                "  • '写一个 Python 函数实现快速排序'\n"
+                "  • '创建一个 React 组件显示用户列表'\n"
+                "  • '重构这个函数，提高可读性'\n\n"
+                "专家团（可拆任务）:\n"
+                "  • /team 做前后端：前端登录页 + 后端登录 API，可独立验收\n"
+                "  • /solo 这次只用单 Agent 修这个 bug\n"
+                "  • /why-mode  看上次为什么是 solo 或 team\n\n"
+                "文件操作:\n"
+                "  • '读取 README.md 文件'\n"
+                "  • '搜索所有包含 TODO 的 Python 文件'\n"
+                "  • '编辑 main.py 中的配置部分'\n\n"
+                "项目管理:\n"
+                "  • '查看当前 Git 状态'\n"
+                "  • '运行所有单元测试'\n"
+                "  • '提交代码到本地仓库'\n\n"
+                "问题排查:\n"
+                "  • '分析这个错误信息'\n"
+                "  • '为什么这段代码运行缓慢'\n\n"
+                "技术调研:\n"
+                "  • '搜索 Python 异步编程最佳实践'\n"
+                "  • '研究 React Hooks 的使用方法'"
+            ),
+        }
 
     # ── /resave-chatname ────────────────────────────────────
     if c == "/resave-chatname" or c.startswith("/resave-chatname"):
@@ -1833,11 +1825,12 @@ async def _execute_command(req: CommandRequest):
 
     # 模糊匹配命令
     known_commands = [
-        "/help", "/clear", "/models", "/model", "/addmodel",
+        "/help", "/clear", "/models", "/model", "/addmodel", "/effort",
         "/solo", "/team", "/team-multi", "/why-mode", "/agents",
         "/plan", "/build", "/compose", "/language", "/memory",
-        "/list-chats", "/save-chat", "/load-chat", "/queue",
+        "/session", "/list-chats", "/save-chat", "/load-chat", "/copy", "/queue",
         "/schedule", "/cache", "/thinking", "/mode", "/exit",
+        "/permission", "/settings", "/children", "/child", "/parent",
         "/tutorial", "/quickstart", "/examples",
         "/find-skill", "/addskill", "/list-skills", "/remove-skill",
         "/addmcp", "/list-mcp", "/remove-mcp",

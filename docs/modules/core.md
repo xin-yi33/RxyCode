@@ -83,7 +83,7 @@ Session restoration searches the current date, earlier dated records, and the le
 
 **Key Methods in AgentV2:**
 - _fast_reply(user_input): Direct LLM call with caching. Uses astream() in stream mode, ainvoke() otherwise. Includes tiktoken fallback for token estimation when streaming chunks lack usage metadata.
-- _register_tools(): Registers all available tools via `core/builtin_tool_registration.register_builtin_tools()` (bash, read, write, edit, grep, glob, git, webfetch, websearch, file_download, `task`/`task_manage`, subagent dispatch, etc.). When `subagents_enabled` is on, the `task` name is the isolated subagent dispatch tool and the task-list tool registers as `task_manage`.
+- _register_tools(): Registers all available tools via `core/builtin_tool_registration.register_builtin_tools()` (bash, read, write, edit, grep, glob, git, webfetch, websearch, file_download, `task`/`task_manage`, subagent dispatch, etc.). Isolated subagents default on (`subagent_config_from_env()`; `RXYCODE_SUBAGENTS=0` disables). When `subagents_enabled` is on, the `task` name is the isolated subagent dispatch tool and the task-list tool registers as `task_manage`.
 - _is_simple_query(text): Heuristic to decide if a query can skip the full pipeline.
 - _detect_download_intent(text): Regex-based detection of file download, skill download, and MCP download intents.
 - _run_plan_only(user_input): Produces a Markdown plan (`#` / `## Summary` / `## Steps`) with an explicit read/view/ls/grep/glob/websearch/webfetch/datetime allowlist; mutating calls are hidden and rejected, and the execution graph is never entered. Desktop 在计划文档下用「是，实施此计划」切到 Build。

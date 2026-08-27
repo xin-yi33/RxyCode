@@ -14,14 +14,17 @@ from protocol.subagents import AgentMode
 
 
 # ---------------------------------------------------------------------------
-# Feature flags — default: multi-agent OFF
+# Feature flags — product default: isolated subagents ON
+# (task + @mention). Child→child recursion stays off. Set
+# RXYCODE_SUBAGENTS=0 to restore the single-agent-only baseline.
 # ---------------------------------------------------------------------------
 
 @dataclass
 class SubagentFeatureFlags:
     """Runtime feature flags controlling subagent availability.
 
-    All flags default to OFF — single-agent baseline must not regress.
+    Blank ``SubagentFeatureFlags()`` stays all-off for explicit test setups.
+    The product default is ``subagent_config_from_env()`` (master/task/mention on).
     """
 
     # Master kill-switch: when False, no subagent paths are available
@@ -160,23 +163,37 @@ class SubagentConfig:
         return build_capability(self.flags)
 
 
-def _env_enabled(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if not value:
+        return default
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    return default
 
 
 def subagent_config_from_env(*, default_max_tokens: int | None = None) -> SubagentConfig:
-    """Build worker-local feature flags from explicit environment switches.
+    """Build worker-local feature flags from environment switches.
 
-    The master switch is authoritative: feature-specific switches cannot
-    accidentally enable subagents on their own.
+    Defaults (unset env): enabled + task + mention ON; child_tasks OFF.
+    ``RXYCODE_SUBAGENTS=0`` is the master kill-switch.
     """
-    enabled = _env_enabled("RXYCODE_SUBAGENTS")
+    enabled = _env_flag("RXYCODE_SUBAGENTS", True)
     flags = SubagentFeatureFlags(
         subagents_enabled=enabled,
-        subagents_task=enabled and _env_enabled("RXYCODE_SUBAGENTS_TASK"),
-        subagents_mention=enabled and _env_enabled("RXYCODE_SUBAGENTS_MENTION"),
+        subagents_task=enabled and _env_flag("RXYCODE_SUBAGENTS_TASK", True),
+        subagents_mention=enabled and _env_flag("RXYCODE_SUBAGENTS_MENTION", True),
         subagents_child_tasks=(
-            enabled and _env_enabled("RXYCODE_SUBAGENTS_CHILD_TASKS")
+            enabled and _env_flag("RXYCODE_SUBAGENTS_CHILD_TASKS", False)
         ),
     )
     return SubagentConfig(
@@ -200,7 +217,7 @@ def get_subagent_config() -> SubagentConfig:
     """Return the process-wide subagent configuration singleton."""
     global _config
     if _config is None:
-        _config = SubagentConfig()
+        _config = subagent_config_from_env()
     return _config
 
 
@@ -214,7 +231,7 @@ def set_subagent_config(config: SubagentConfig) -> None:
 
 
 def reset_subagent_config() -> SubagentConfig:
-    """Reset to default configuration (used in tests)."""
+    """Reset to product defaults from the environment (used in tests)."""
     global _config
-    _config = SubagentConfig()
+    _config = subagent_config_from_env()
     return _config
