@@ -5,7 +5,7 @@ import { BoardView } from '../../features/board/BoardView.ts'
 import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
 import { ApprovalCard } from '../../features/approvals/ApprovalCard.ts'
 import { PermissionModeSwitcher } from '../../features/approvals/PermissionModeSwitcher.ts'
-import { approvalChannel, MODE_SET_CANDIDATE } from '../../features/approvals/approval.mode.ts'
+import { approvalChannel, MODE_SET_CANDIDATE, type UIPreset } from '../../features/approvals/approval.mode.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -90,6 +90,7 @@ function App(): React.JSX.Element {
   const [runBanner, setRunBanner] = useState<Notice | null>(null)
   const [desktopView, setDesktopView] = useState<DesktopViewId>('chat')
   const [commandOpen, setCommandOpen] = useState(false)
+  const [gxPermissionPreset, setGxPermissionPreset] = useState<UIPreset>('ask')
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
   const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
   const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
@@ -456,6 +457,7 @@ function App(): React.JSX.Element {
               activeSessionId={activeSessionId}
               runStateBySession={conversation.state.runStateBySession}
               childCountBySession={childCountBySession}
+              listDeletedAvailable
               disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
               onCreate={() => void handleCreate()}
               onSelect={(sessionId) => {
@@ -477,6 +479,7 @@ function App(): React.JSX.Element {
           activeSessionId={activeSessionId}
           runStateBySession={conversation.state.runStateBySession}
           childCountBySession={childCountBySession}
+          listDeletedAvailable
           disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
           onCreate={() => void handleCreate()}
           onSelect={conversation.selectSession}
@@ -589,12 +592,17 @@ function App(): React.JSX.Element {
             />
           ) : null}
           <PermissionModeSwitcher
-            preset="ask"
+            preset={gxPermissionPreset}
             fullEnabled={false}
-            blocked
-            missingMethods={[MODE_SET_CANDIDATE]}
+            blocked={false}
+            missingMethods={[]}
             dark={theme === 'dark'}
-            onRequestPreset={() => undefined}
+            onRequestPreset={(preset) => {
+              setGxPermissionPreset(preset)
+              const client = conversation.protocolClient
+              if (client === null) return
+              void client.request(MODE_SET_CANDIDATE, { preset }).catch(() => undefined)
+            }}
           />
           <Composer
             disabled={status !== 'running' || activeSessionId === null}

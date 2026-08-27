@@ -768,6 +768,34 @@ rl.on('line', (line) => {
     })
     return
   }
+  if (method === 'initialized' || (method !== '' && id === undefined)) {
+    return
+  }
+  if (method === 'approval/mode_set') {
+    respond(id, { ok: true, preset: String(params.preset ?? 'ask') })
+    return
+  }
+  if (method === 'thread/list_deleted') {
+    const items = [...sessionRecords.values()].filter((task) => task.trashed_at)
+    respond(id, { threads: items })
+    return
+  }
+  if (method === 'thread/restore') {
+    const task = ensureTask(String(params.thread_id ?? params.session_id ?? ''), { trashed_at: null })
+    respond(id, task)
+    return
+  }
+  if (method === 'thread/purge') {
+    if (params.confirm_purge !== true) {
+      respondError(id, -32602, 'confirm_purge required')
+      return
+    }
+    const sessionId = String(params.thread_id ?? params.session_id ?? '')
+    sessionRecords.delete(sessionId)
+    sessionEvents.delete(sessionId)
+    respond(id, { thread_id: sessionId, purged: true })
+    return
+  }
   if (method === 'session/new') {
     sessionCounter += 1
     const sessionId = `demo-${sessionCounter}`

@@ -108,19 +108,21 @@ async function main(): Promise<void> {
     await check('UX-03 approval closes after decision', async () => {
       await harness.typePrompt('approval demo')
       await harness.pressKey('Enter')
+      const approvalReady = `document.querySelector('.approval-dialog .approve, [data-testid="approval-card"] [data-action="allow"]')`
       try {
-        await waitFor(async () => (await harness.has('.approval-dialog .approve')) ? true : null, 20_000, 'approval dialog')
+        await waitFor(async () => (await harness.has('.approval-dialog .approve') || await harness.has('[data-testid="approval-card"] [data-action="allow"]')) ? true : null, 20_000, 'approval card or dialog')
       } catch (error) {
         const debug = await harness.evaluate(`(() => ({
           composerDisabled: document.querySelector('[data-testid="composer-input"]')?.disabled ?? null,
           composerValue: document.querySelector('[data-testid="composer-input"]')?.value ?? '',
           timeline: document.querySelector('[data-testid="task-timeline"]')?.textContent ?? '',
-          pending: document.querySelector('[data-testid="diagnostics-pending-rpc"]')?.textContent ?? ''
+          pending: document.querySelector('[data-testid="diagnostics-pending-rpc"]')?.textContent ?? '',
+          card: document.querySelector('[data-testid="approval-card"]')?.textContent ?? ''
         }))()`)
         throw new Error(`${error instanceof Error ? error.message : String(error)} debug=${JSON.stringify(debug)} lines=${JSON.stringify(await harness.evaluate('window.__rxyGuiUxLines ?? []'))}`)
       }
-      await harness.evaluate(`document.querySelector('.approval-dialog .approve')?.click()`)
-      await waitFor(async () => (await harness.has('.approval-dialog')) ? null : true, 2_000, 'approval dialog close')
+      await harness.evaluate(`${approvalReady}?.click()`)
+      await waitFor(async () => (await harness.has('.approval-dialog') || await harness.has('[data-testid="approval-card"] [data-action="allow"]')) ? null : true, 2_000, 'approval UI close')
       await waitFor(async () => (await harness.has('[data-testid="composer-stop"]')) ? null : true, 20_000, 'approved task terminal')
       await waitFor(async () => {
         const pending = await harness.evaluate<number>(`Number((document.querySelector('[data-testid="diagnostics-pending-rpc"]')?.textContent ?? '').match(/\\d+/)?.[0] ?? 0)`)
@@ -256,9 +258,10 @@ async function main(): Promise<void> {
       await harness.waitForSelector('.nav-sheet .session-item.active', 2_000)
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="trash-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已删除任务') ? true : null, 2_000, 'delete success toast')
-      if (await harness.has(`.nav-sheet [data-testid="session-${secondId}"]`)) throw new Error('deleted task remained in active task list')
-      await harness.evaluate(`document.querySelector('.nav-sheet .trash-toggle')?.click()`)
-      await harness.waitForSelector(`.nav-sheet [data-testid="restore-task-${secondId}"]`, 2_000)
+      if (await harness.has(`.nav-sheet [data-testid="session-category-recent"] [data-testid="session-${secondId}"]`)) {
+        throw new Error('deleted task remained in active task list')
+      }
+      await harness.waitForSelector(`.nav-sheet [data-testid="session-recycle"] [data-testid="restore-task-${secondId}"]`, 2_000)
       await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="restore-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已恢复任务') ? true : null, 2_000, 'restore success toast')
       await waitFor(async () => (await harness.has(`.nav-sheet [data-testid="session-${secondId}"]`)) ? true : null, 2_000, 'restored task visible')
