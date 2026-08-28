@@ -997,26 +997,27 @@ button:disabled {
   font-size: 12px;
 }
 
-/* Phase 4-CD: task command center. Components only consume semantic tokens. */
+/* Phase 4-CD: task command center. Components only consume semantic tokens.
+ * Dark values sampled from Codex Desktop 26.825 (`._darkTheme_*` + `--gray-1000`). */
 :root,
 :root[data-theme='system'] {
   color-scheme: dark;
-  --cc-canvas: #111318;
-  --cc-surface: #171a21;
-  --cc-surface-raised: #1d212a;
-  --cc-surface-hover: #252b36;
-  --cc-border: #303744;
-  --cc-border-strong: #475162;
-  --cc-text: #f0f3f8;
-  --cc-muted: #a4adbc;
-  --cc-dim: #707b8d;
-  --cc-accent: #a9c7ff;
-  --cc-accent-surface: #263755;
+  --cc-canvas: #0d0d0d;
+  --cc-surface: #000000;
+  --cc-surface-raised: #181818;
+  --cc-surface-hover: #ffffff14;
+  --cc-border: #ffffff14;
+  --cc-border-strong: #ffffff29;
+  --cc-text: #ffffff;
+  --cc-muted: #ffffffa6;
+  --cc-dim: #ffffff73;
+  --cc-accent: #339cff;
+  --cc-accent-surface: #339cff33;
   --cc-success: #8edbb5;
   --cc-warning: #f3cc7a;
   --cc-danger: #ffabb0;
-  --cc-focus: #c7d8ff;
-  --cc-shadow: rgba(0, 0, 0, 0.34);
+  --cc-focus: #339cffb3;
+  --cc-shadow: rgba(0, 0, 0, 0.58);
 }
 
 :root[data-theme='light'] {
@@ -3123,21 +3124,22 @@ details[open] .activity-chevron {
   }
 }
 
-/* --- RxyCode desktop command surface: single-column default --- */
+/* --- RxyCode desktop command surface: Codex 26.825 dark canvas --- */
 :root,
 :root[data-theme='system'],
 :root[data-theme='dark'] {
-  --cc-canvas: #090a0c;
-  --cc-surface: #111316;
-  --cc-surface-raised: #191b1f;
-  --cc-surface-hover: #23262b;
-  --cc-border: #25282e;
-  --cc-border-strong: #3b4049;
+  --cc-canvas: #0d0d0d;
+  --cc-surface: #000000;
+  --cc-surface-raised: #181818;
+  --cc-surface-hover: #ffffff14;
+  --cc-border: #ffffff14;
+  --cc-border-strong: #ffffff29;
   --cc-shadow: rgba(0, 0, 0, 0.58);
-  --cc-text: #f1f2f4;
-  --cc-muted: #a4a8b1;
-  --cc-dim: #777d88;
-  --cc-accent: #c4d0ff;
+  --cc-text: #ffffff;
+  --cc-muted: #ffffffa6;
+  --cc-dim: #ffffff73;
+  --cc-accent: #339cff;
+  --cc-focus: #339cffb3;
 }
 
 .command-layout {
@@ -3311,13 +3313,13 @@ details[open] .activity-chevron {
  * as the Composer; only an opened Inspector changes the grid. */
 :root,
 :root[data-theme='dark'] {
-  --cc-canvas: #0d0f11;
-  --cc-surface: #151719;
-  --cc-surface-raised: #222427;
-  --cc-surface-hover: #2a2c30;
-  --cc-border: #282b30;
-  --cc-border-strong: #3b3f46;
-  --cc-shadow: rgba(0, 0, 0, 0.62);
+  --cc-canvas: #0d0d0d;
+  --cc-surface: #000000;
+  --cc-surface-raised: #181818;
+  --cc-surface-hover: #ffffff14;
+  --cc-border: #ffffff14;
+  --cc-border-strong: #ffffff29;
+  --cc-shadow: rgba(0, 0, 0, 0.58);
   --cc-content-width: 760px;
 }
 
