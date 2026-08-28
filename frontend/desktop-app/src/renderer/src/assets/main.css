@@ -3383,6 +3383,23 @@ details[open] .activity-chevron {
   box-shadow: 0 16px 42px var(--cc-shadow);
 }
 
+.send-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.send-menu button,
+.send-menu .btn-primary {
+  padding: 4px 8px;
+  border: 1px solid var(--cc-border);
+  border-radius: 6px;
+  background: var(--cc-surface-raised);
+  color: var(--cc-text);
+  font-size: 12px;
+}
+
 @media (max-width: 700px) {
   .chat-area,
   .composer {

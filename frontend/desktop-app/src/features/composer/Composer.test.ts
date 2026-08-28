@@ -51,6 +51,22 @@ test('GX5: shortcuts and idle vs running dropdown', () => {
   assert.match(running, /turn\/steer/)
 })
 
+test('Composer ships SendDropdown while running and keeps harness send/stop testids', () => {
+  const composer = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/Composer.tsx'),
+    'utf8'
+  )
+  assert.match(composer, /SendDropdown/)
+  assert.match(composer, /data-testid=\{running \? 'composer-stop' : 'composer-send'\}/)
+  assert.match(composer, /data-testid="composer-permission-mode"/)
+})
+
+test('App unmounts duplicate PermissionModeSwitcher', () => {
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/App.tsx'), 'utf8')
+  assert.doesNotMatch(app, /PermissionModeSwitcher/)
+  assert.doesNotMatch(app, /gxPermissionPreset/)
+})
+
 test('GX5: turn/steer is path A; session/interrupt present for stop', () => {
   const probe = probeSteer(schema)
   assert.equal(probe.path, 'A')

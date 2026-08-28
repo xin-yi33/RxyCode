@@ -4,8 +4,8 @@ import { DESKTOP_VIEWS, resolveDesktopView, type DesktopViewId } from '../../app
 import { BoardView } from '../../features/board/BoardView.ts'
 import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
 import { ApprovalCard } from '../../features/approvals/ApprovalCard.ts'
-import { PermissionModeSwitcher } from '../../features/approvals/PermissionModeSwitcher.ts'
-import { approvalChannel, MODE_SET_CANDIDATE, type UIPreset } from '../../features/approvals/approval.mode.ts'
+import { approvalChannel } from '../../features/approvals/approval.mode.ts'
+import { pushPending, type PendingItem, type SendIntent } from '../../features/composer/pending.queue.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -92,7 +92,7 @@ function App(): React.JSX.Element {
   const [runBanner, setRunBanner] = useState<Notice | null>(null)
   const [desktopView, setDesktopView] = useState<DesktopViewId>('chat')
   const [commandOpen, setCommandOpen] = useState(false)
-  const [gxPermissionPreset, setGxPermissionPreset] = useState<UIPreset>('ask')
+  const [pendingBySession, setPendingBySession] = useState<Record<string, PendingItem[]>>({})
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
   const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
   const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
@@ -334,6 +334,32 @@ function App(): React.JSX.Element {
       return
     }
     await sendTurn(text, agentMode)
+  }
+
+  const handleSendIntent = async (intent: SendIntent, text: string): Promise<void> => {
+    if (intent === 'queue') {
+      if (activeSessionId === null) return
+      setPendingBySession((current) => ({
+        ...current,
+        [activeSessionId]: pushPending(current[activeSessionId] ?? [], {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          text
+        })
+      }))
+      return
+    }
+    if (intent === 'steer') {
+      const client = conversation.protocolClient
+      if (client === null || text.trim() === '') return
+      try {
+        await client.request('turn/steer', { text })
+      } catch (error) {
+        showToast(tr('connectionFailed', { error: error instanceof Error ? error.message : String(error) }))
+      }
+      return
+    }
+    await conversation.interrupt()
+    if (text.trim() !== '') await handleComposerSend(text)
   }
 
   const handleCreate = async (): Promise<void> => {
@@ -608,19 +634,6 @@ function App(): React.JSX.Element {
               onCancel={(requestId) => conversation.dismissApproval(requestId)}
             />
           ) : null}
-          <PermissionModeSwitcher
-            preset={gxPermissionPreset}
-            fullEnabled={false}
-            blocked={false}
-            missingMethods={[]}
-            dark={theme === 'dark'}
-            onRequestPreset={(preset) => {
-              setGxPermissionPreset(preset)
-              const client = conversation.protocolClient
-              if (client === null) return
-              void client.request(MODE_SET_CANDIDATE, { preset }).catch(() => undefined)
-            }}
-          />
           <Composer
             disabled={status !== 'running' || activeSessionId === null}
             running={running}
@@ -629,6 +642,9 @@ function App(): React.JSX.Element {
             hasPlan={latestPlan !== null && skippedPlanIds[latestPlan.itemId] !== true}
             onSend={(text) => void handleComposerSend(text)}
             onStop={() => void conversation.interrupt()}
+            pendingCount={activeSessionId === null ? 0 : (pendingBySession[activeSessionId] ?? []).length}
+            steerBlocked={false}
+            onSendIntent={(intent, text) => void handleSendIntent(intent, text)}
             onTogglePlanMode={() => {
               const next: AgentRunMode = agentMode === 'plan' ? 'build' : 'plan'
               setAgentMode(next)

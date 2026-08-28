@@ -6,6 +6,8 @@ import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { PermissionMode } from '../lib/desktopPreferences.mts'
 import type { AgentRunMode } from '../lib/planDocument.mts'
 import { canSubmitComposer, promptWithAttachment, shouldSubmitOnKey } from '../lib/composerBehavior.mts'
+import { SendDropdown } from '../../../features/composer/SendDropdown.ts'
+import type { SendIntent } from '../../../features/composer/pending.queue.ts'
 import ComposerPlusMenu from './ComposerPlusMenu'
 
 interface ComposerProps {
@@ -25,6 +27,9 @@ interface ComposerProps {
   onSelectModel: (modelId: string) => void
   permissionMode: PermissionMode
   onRequestPermissionModeChange: (mode: PermissionMode) => void
+  pendingCount?: number
+  steerBlocked?: boolean
+  onSendIntent?: (intent: SendIntent, text: string) => void
 }
 
 const MODE_KEYS: Record<PermissionMode, string> = {
@@ -58,7 +63,10 @@ function Composer({
   selectedModelId,
   onSelectModel,
   permissionMode,
-  onRequestPermissionModeChange
+  onRequestPermissionModeChange,
+  pendingCount = 0,
+  steerBlocked = false,
+  onSendIntent
 }: ComposerProps): React.JSX.Element {
   const { t } = useI18n()
   const [text, setText] = useState('')
@@ -238,6 +246,21 @@ function Composer({
             >
               <Mic aria-hidden="true" size={16} />
             </button>
+            {running && onSendIntent !== undefined ? (
+              <SendDropdown
+                running
+                pendingCount={pendingCount}
+                steerBlocked={steerBlocked}
+                onSend={(intent) => {
+                  const payload = promptWithAttachment(text, attachment)
+                  onSendIntent(intent, payload)
+                  if (intent !== 'queue' || payload.trim() !== '') {
+                    setText('')
+                    setAttachment(null)
+                  }
+                }}
+              />
+            ) : null}
             <button
               type={running ? 'button' : 'submit'}
               className={running ? 'composer-send composer-stop stop' : 'composer-send send'}

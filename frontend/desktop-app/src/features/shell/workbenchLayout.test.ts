@@ -53,4 +53,5 @@ test('App ships a persistent desktop-navigation-panel SessionList', () => {
   assert.match(app, /className="desktop-navigation-panel"/)
   assert.match(app, /data-testid="workbench-layout"/)
   assert.match(app, /workbenchLayoutClass/)
+  assert.doesNotMatch(app, /PermissionModeSwitcher/)
 })
