@@ -19,18 +19,39 @@ export function probeSteer(schemaText: string): {
   }
 }
 
-export function buildSteer(schemaText: string, text: string):
-  | { method: 'turn/steer'; params: { text: string } }
+export function steerRequestParams(
+  sessionId: string,
+  text: string
+): { session_id: string; text: string } | null {
+  const session_id = sessionId.trim()
+  const trimmed = text.trim()
+  if (session_id === '' || trimmed === '') return null
+  return { session_id, text: trimmed }
+}
+
+export function buildSteer(
+  schemaText: string,
+  text: string,
+  sessionId: string
+):
+  | { method: 'turn/steer'; params: { session_id: string; text: string } }
   | ReturnType<typeof blockedPrerequisite> {
   const probe = probeSteer(schemaText)
   if (probe.path === 'B') return blockedPrerequisite(probe.missing)
-  return { method: 'turn/steer', params: { text } }
+  const params = steerRequestParams(sessionId, text)
+  if (params === null) return blockedPrerequisite(['session_id'])
+  return { method: 'turn/steer', params }
 }
 
-export function buildStopAndSend(schemaText: string):
-  | { method: 'session/interrupt'; params: Record<string, never> }
+export function buildStopAndSend(
+  schemaText: string,
+  sessionId: string
+):
+  | { method: 'session/interrupt'; params: { session_id: string } }
   | ReturnType<typeof blockedPrerequisite> {
   const probe = probeSteer(schemaText)
   if (probe.stopMethod === null) return blockedPrerequisite(['session/interrupt'])
-  return { method: 'session/interrupt', params: {} }
+  const session_id = sessionId.trim()
+  if (session_id === '') return blockedPrerequisite(['session_id'])
+  return { method: 'session/interrupt', params: { session_id } }
 }

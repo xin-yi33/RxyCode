@@ -5,7 +5,13 @@ import { BoardView } from '../../features/board/BoardView.ts'
 import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
 import { ApprovalCard } from '../../features/approvals/ApprovalCard.ts'
 import { approvalChannel } from '../../features/approvals/approval.mode.ts'
-import { pushPending, type PendingItem, type SendIntent } from '../../features/composer/pending.queue.ts'
+import {
+  applyTurnEndToPending,
+  pushPending,
+  type PendingItem,
+  type SendIntent
+} from '../../features/composer/pending.queue.ts'
+import { steerRequestParams } from '../../features/composer/steer.message.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -97,6 +103,9 @@ function App(): React.JSX.Element {
   const [desktopView, setDesktopView] = useState<DesktopViewId>('chat')
   const [commandOpen, setCommandOpen] = useState(false)
   const [pendingBySession, setPendingBySession] = useState<Record<string, PendingItem[]>>({})
+  const pendingRef = useRef(pendingBySession)
+  pendingRef.current = pendingBySession
+  const prevRunningBySessionRef = useRef<Record<string, boolean>>({})
   const conversation = useConversation(platform, info, status, workspaceSettings.workspaceRoot)
   const sessionListEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'sessionList')
   const approvalEnabled = isUiEntryEnabled(conversation.handshakeCapabilities, 'approvalModal')
@@ -343,20 +352,26 @@ function App(): React.JSX.Element {
   const handleSendIntent = async (intent: SendIntent, text: string): Promise<void> => {
     if (intent === 'queue') {
       if (activeSessionId === null) return
-      setPendingBySession((current) => ({
-        ...current,
-        [activeSessionId]: pushPending(current[activeSessionId] ?? [], {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          text
-        })
-      }))
+      setPendingBySession((current) => {
+        const next = {
+          ...current,
+          [activeSessionId]: pushPending(current[activeSessionId] ?? [], {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            text
+          })
+        }
+        pendingRef.current = next
+        return next
+      })
       return
     }
     if (intent === 'steer') {
       const client = conversation.protocolClient
-      if (client === null || text.trim() === '') return
+      if (client === null || activeSessionId === null) return
+      const params = steerRequestParams(activeSessionId, text)
+      if (params === null) return
       try {
-        await client.request('turn/steer', { text })
+        await client.request('turn/steer', params)
       } catch (error) {
         showToast(tr('connectionFailed', { error: error instanceof Error ? error.message : String(error) }))
       }
@@ -365,6 +380,25 @@ function App(): React.JSX.Element {
     await conversation.interrupt()
     if (text.trim() !== '') await handleComposerSend(text)
   }
+
+  useEffect(() => {
+    const nextRunning = conversation.state.runningBySession
+    const flushed = applyTurnEndToPending(
+      pendingRef.current,
+      prevRunningBySessionRef.current,
+      nextRunning
+    )
+    prevRunningBySessionRef.current = { ...nextRunning }
+    if (flushed.toSend.length === 0) return
+    pendingRef.current = flushed.pendingBySession
+    setPendingBySession(flushed.pendingBySession)
+    for (const item of flushed.toSend) {
+      if (conversation.state.activeSessionId !== item.sessionId) {
+        conversation.selectSession(item.sessionId)
+      }
+      void handleComposerSend(item.text)
+    }
+  }, [conversation.state.runningBySession])
 
   const handleCreate = async (): Promise<void> => {
     // Navigation is independent from the session/new RPC. Close the drawer

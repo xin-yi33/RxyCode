@@ -17,6 +17,43 @@ export function removePending(queue: readonly PendingItem[], id: string): Pendin
   return queue.filter((item) => item.id !== id)
 }
 
+export function takeNextPending(queue: readonly PendingItem[]): {
+  item: PendingItem | null
+  remaining: PendingItem[]
+} {
+  const [first, ...rest] = queue
+  if (first === undefined) return { item: null, remaining: [] }
+  return { item: first, remaining: rest }
+}
+
+export function sessionsWhoseTurnEnded(
+  prevRunning: Record<string, boolean>,
+  nextRunning: Record<string, boolean>
+): string[] {
+  const ids = new Set([...Object.keys(prevRunning), ...Object.keys(nextRunning)])
+  return [...ids].filter((sessionId) => prevRunning[sessionId] === true && nextRunning[sessionId] !== true)
+}
+
+export function applyTurnEndToPending(
+  pendingBySession: Record<string, PendingItem[]>,
+  prevRunning: Record<string, boolean>,
+  nextRunning: Record<string, boolean>
+): {
+  pendingBySession: Record<string, PendingItem[]>
+  toSend: Array<{ sessionId: string; text: string }>
+} {
+  const toSend: Array<{ sessionId: string; text: string }> = []
+  const nextPending: Record<string, PendingItem[]> = { ...pendingBySession }
+  for (const sessionId of sessionsWhoseTurnEnded(prevRunning, nextRunning)) {
+    const taken = takeNextPending(nextPending[sessionId] ?? [])
+    if (taken.item !== null) {
+      toSend.push({ sessionId, text: taken.item.text })
+      nextPending[sessionId] = taken.remaining
+    }
+  }
+  return { pendingBySession: nextPending, toSend }
+}
+
 export function reorderPending(queue: readonly PendingItem[], from: number, to: number): PendingItem[] {
   if (from < 0 || to < 0 || from >= queue.length || to >= queue.length) return [...queue]
   const next = [...queue]
