@@ -3400,6 +3400,38 @@ details[open] .activity-chevron {
   font-size: 12px;
 }
 
+.prompt-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: var(--cc-content-width, 760px);
+  margin: 0 auto 8px;
+  padding: 0 16px;
+  list-style: none;
+}
+
+.prompt-suggestions button {
+  padding: 6px 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.statusline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 16px;
+  border-top: 1px solid var(--cc-border);
+  background: var(--cc-surface);
+  color: var(--cc-muted);
+  font-size: 11px;
+}
+
 @media (max-width: 700px) {
   .chat-area,
   .composer {

@@ -55,3 +55,12 @@ test('App ships a persistent desktop-navigation-panel SessionList', () => {
   assert.match(app, /workbenchLayoutClass/)
   assert.doesNotMatch(app, /PermissionModeSwitcher/)
 })
+
+test('App mounts Statusline, PromptSuggestions, and review scope', () => {
+  const app = readFileSync(join(root, 'src/renderer/src/App.tsx'), 'utf8')
+  const inspector = readFileSync(join(root, 'src/renderer/src/components/TaskInspector.tsx'), 'utf8')
+  assert.match(app, /Statusline/)
+  assert.match(app, /PromptSuggestions/)
+  assert.match(inspector, /ReviewScopeSelector/)
+  assert.match(inspector, /review-diff-empty|ReviewScopeSelector/)
+})

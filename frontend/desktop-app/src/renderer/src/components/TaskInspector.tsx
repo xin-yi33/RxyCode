@@ -1,6 +1,10 @@
 import { Bot, Check, ChevronLeft, CircleDashed, FileText, Terminal, X } from 'lucide-react'
+import { useState } from 'react'
 import type { ChildSessionView, RunState, TimelineItem, UsageSnapshot } from '../lib/conversationStore.mts'
 import { formatTokenCount, formatUsageRate } from '../lib/taskPresentation.mts'
+import { ReviewScopeSelector } from '../../../features/review/ReviewScopeSelector.ts'
+import { type ReviewScope } from '../../../features/review/review.comments.ts'
+import { emptyDiffState } from '../../../features/git/diffView.ts'
 
 interface TaskInspectorProps {
   focusItem: TimelineItem | null
@@ -37,6 +41,7 @@ function UsagePanel({ usage }: { usage: UsageSnapshot }): React.JSX.Element {
 }
 
 function TaskInspector({ focusItem, usage, childSessions, onClose, onSelectChild }: TaskInspectorProps): React.JSX.Element {
+  const [reviewScope, setReviewScope] = useState<ReviewScope>('last_turn')
   const focusedChild = focusItem?.kind === 'child_agent'
     ? childSessions.find((child) => child.sessionId === focusItem.sessionId)
     : undefined
@@ -47,6 +52,13 @@ function TaskInspector({ focusItem, usage, childSessions, onClose, onSelectChild
         <div><p className="inspector-eyebrow">INSPECTOR</p><h2>{focusItem?.kind === 'child_agent' ? 'Child agent' : focusItem?.kind === 'tool_activity' ? 'Tool activity' : focusItem?.kind === 'recovery' ? 'Automatic recovery' : 'Task usage'}</h2></div>
       </header>
       <div className="inspector-content">
+        <section className="inspector-section">
+          <p className="inspector-eyebrow">REVIEW SCOPE</p>
+          <ReviewScopeSelector value={reviewScope} onChange={setReviewScope} />
+          {emptyDiffState() === 'empty' ? (
+            <p className="inspector-muted" data-testid="review-diff-empty">No diff on this branch</p>
+          ) : null}
+        </section>
         {focusItem?.kind === 'child_agent' && (
           <section className="inspector-section child-inspector">
             <div className="inspector-title-row"><Bot aria-hidden="true" size={18} /><strong>@{focusItem.agentId}</strong><span className={`state-${focusItem.state}`}>{focusItem.state}</span></div>

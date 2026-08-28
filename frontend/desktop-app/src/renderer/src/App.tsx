@@ -59,6 +59,8 @@ import {
 import { workbenchLayoutClass } from '../../features/shell/workbenchLayout.ts'
 import { RunPanel } from '../../features/runpanel/RunPanel.ts'
 import { projectRunPanel } from '../../features/runpanel/runPanel.model.ts'
+import { Statusline } from '../../components/statusbar/Statusline.ts'
+import { PromptSuggestions } from '../../features/composer/PromptSuggestions.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -626,6 +628,11 @@ function App(): React.JSX.Element {
               }
             }}
           />
+          <PromptSuggestions
+            items={['Fix the failing test', 'Summarize this repository']}
+            visible={!running && activeTimeline.length === 0}
+            onPick={(text) => void handleComposerSend(text)}
+          />
           {pendingApproval !== null &&
           approvalChannel({
             risk: pendingApproval.riskLevel,
@@ -730,6 +737,22 @@ function App(): React.JSX.Element {
           </div>
         )}
       </div>
+      <Statusline
+        hasSession={activeSessionId !== null}
+        model={selectedTaskModel}
+        tokens={
+          ((activeSessionId === null
+            ? EMPTY_USAGE
+            : conversation.state.usageBySession[activeSessionId] ?? EMPTY_USAGE
+          ).inputTokens ?? 0) +
+          ((activeSessionId === null
+            ? EMPTY_USAGE
+            : conversation.state.usageBySession[activeSessionId] ?? EMPTY_USAGE
+          ).outputTokens ?? 0)
+        }
+        progress={activeSessionId === null ? undefined : conversation.state.progressBySession[activeSessionId]}
+        dark={theme === 'dark'}
+      />
 
       <details className="diagnostics">
         <summary>{tr('diagnostics')}</summary>
