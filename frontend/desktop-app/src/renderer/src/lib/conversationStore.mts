@@ -502,13 +502,21 @@ function completeAssistant(
           }
         ]
   const tools = toolsFor(state, sessionId).map((tool) => {
-    if (tool.status !== 'running') return tool
+    if (tool.status !== 'running' && tool.status !== 'recovering') return tool
     return succeeded
       ? { ...tool, status: 'ok' as const, summary: 'completed with final answer' }
       : { ...tool, status: 'error' as const, summary: `run ${resultStatus}` }
   })
+  const finalizedTimeline = nextTimeline.map((item) => {
+    if (item.kind !== 'tool_activity' || (item.status !== 'running' && item.status !== 'recovering')) {
+      return item
+    }
+    return succeeded
+      ? { ...item, status: 'ok' as const, summary: 'completed with final answer' }
+      : { ...item, status: 'error' as const, summary: `run ${resultStatus}` }
+  })
   return {
-    ...withTimeline(withMessages(state, sessionId, next), sessionId, nextTimeline),
+    ...withTimeline(withMessages(state, sessionId, next), sessionId, finalizedTimeline),
     toolsBySession: { ...state.toolsBySession, [sessionId]: tools },
     runningBySession: { ...state.runningBySession, [sessionId]: false },
     runStateBySession: { ...state.runStateBySession, [sessionId]: runState },

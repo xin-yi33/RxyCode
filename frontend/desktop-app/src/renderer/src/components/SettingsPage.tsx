@@ -13,7 +13,7 @@ import {
 } from '../../../lib/settingsSections.ts'
 import { TeamSection } from '../../../features/settings/TeamSection.ts'
 import { TrashSection } from '../../../features/settings/TrashSection.ts'
-import { B17_RECYCLE_METHODS } from '../../../features/recycle/recycle.probe.ts'
+import type { TrashItemModel } from '../../../components/TrashItem.ts'
 
 export type SettingsTab = SettingsSectionId
 
@@ -34,6 +34,11 @@ export interface SettingsPageProps {
   onThemeChange: (theme: ThemePreference) => void
   language: DesktopLanguage
   onLanguageChange: (language: DesktopLanguage) => void
+  recycleItems: readonly TrashItemModel[]
+  recycleBlocked: boolean
+  recycleMissing: readonly string[]
+  onRestoreDeleted: (sessionId: string) => void
+  onPurgeRecycle: () => void
 }
 
 
@@ -340,11 +345,11 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
             <section className="settings-panel" data-testid="settings-recycle">
               <h2>{t('recycle')}</h2>
               <TrashSection
-                items={[]}
-                blocked
-                missing={[...B17_RECYCLE_METHODS]}
-                onRestore={() => undefined}
-                onPurgeConfirmed={() => undefined}
+                items={props.recycleItems}
+                blocked={props.recycleBlocked}
+                missing={props.recycleMissing}
+                onRestore={props.onRestoreDeleted}
+                onPurgeConfirmed={props.onPurgeRecycle}
               />
             </section>
           )}

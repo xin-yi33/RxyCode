@@ -243,6 +243,19 @@ test('applyFinalAnswer finalizes tool cards that never received a tool_end event
       { status: 'ok', summary: 'completed with final answer' }
     ]
   )
+  assert.deepEqual(
+    timelineFor(state, 's1')
+      .filter((item) => item.kind === 'tool_activity')
+      .map((item) => ({ status: item.status, summary: item.summary })),
+    [
+      { status: 'ok', summary: 'completed with final answer' },
+      { status: 'ok', summary: 'completed with final answer' }
+    ]
+  )
+  assert.equal(
+    timelineFor(state, 's1').some((item) => item.kind === 'tool_activity' && item.status === 'running'),
+    false
+  )
 })
 
 test('applyPromptResult records the final answer when no final event arrived', () => {

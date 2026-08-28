@@ -9,7 +9,7 @@ import { PurgeConfirmDialog } from '../../components/PurgeConfirmDialog.ts'
 import { TrashItem } from '../../components/TrashItem.ts'
 import { TrashSection } from '../settings/TrashSection.ts'
 import { RecycleBin } from './RecycleBin.ts'
-import { B17_RECYCLE_METHODS, buildThreadPurge, probeRecycle } from './recycle.probe.ts'
+import { B17_RECYCLE_METHODS, buildThreadPurge, probeRecycle, recycleSectionModel } from './recycle.probe.ts'
 
 const schema = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '../../../../../protocol/schema.json'),
@@ -56,6 +56,35 @@ test('GX21: TrashItem shows name, deleted time, origin; PurgeConfirmDialog ships
   assert.match(dialog, /将永久删除会话记录与关联文件/)
   assert.match(dialog, /data-action="cancel"/)
   assert.match(dialog, /data-step="first"/)
+})
+
+test('GX21: settings recycle uses live B17 sessions, not a hardcoded BLOCKED stub', () => {
+  const live = recycleSectionModel({
+    listDeletedAvailable: true,
+    missing: B17_RECYCLE_METHODS,
+    sessions: [
+      { sessionId: 'open', title: 'active', trashedAt: null },
+      { sessionId: 'gone', title: 'old task', trashedAt: '2026-08-01T00:00:00.000Z' }
+    ]
+  })
+  assert.equal(live.blocked, false)
+  assert.deepEqual(live.missing, [])
+  assert.deepEqual(live.items, [
+    { id: 'gone', title: 'old task', deletedAt: '2026-08-01T00:00:00.000Z', originCategory: 'recent' }
+  ])
+  const html = renderToStaticMarkup(
+    createElement(TrashSection, {
+      items: live.items,
+      blocked: live.blocked,
+      missing: live.missing,
+      onRestore: () => undefined,
+      onPurgeConfirmed: () => undefined
+    })
+  )
+  assert.match(html, /data-blocked="false"/)
+  assert.doesNotMatch(html, /BLOCKED_PREREQUISITE/)
+  assert.match(html, /old task/)
+  assert.match(html, /data-action="restore"/)
 })
 
 test('GX21: TrashSection five states + BLOCKED missing list; RecycleBin mounts dialog', () => {

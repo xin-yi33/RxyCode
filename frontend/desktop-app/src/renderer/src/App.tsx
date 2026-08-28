@@ -38,6 +38,7 @@ import {
   type WorkspaceSettings
 } from './lib/workspaceSettings.mts'
 import { isUiEntryEnabled } from '../../protocol/capabilityGate.ts'
+import { recycleSectionModel } from '../../features/recycle/recycle.probe.ts'
 import { usePlatform } from '../../platform/index.mts'
 import {
   DESKTOP_PREFERENCES_STORAGE_KEY,
@@ -386,6 +387,18 @@ function App(): React.JSX.Element {
     const operation = conversation.restoreSession(sessionId)
     showToast(tr('taskRestored'))
     if (!(await operation)) showToast(tr('restoreNotSaved'))
+  }
+
+  const recycleModel = recycleSectionModel({
+    listDeletedAvailable: true,
+    sessions: conversation.state.sessions
+  })
+
+  const handlePurgeRecycle = async (): Promise<void> => {
+    const ids = recycleModel.items.map((item) => item.id)
+    for (const id of ids) {
+      if (!(await conversation.purgeSession(id))) showToast(tr('deleteNotSaved'))
+    }
   }
 
   return (
@@ -743,6 +756,11 @@ function App(): React.JSX.Element {
           onThemeChange={setTheme}
           language={language}
           onLanguageChange={setLanguage}
+          recycleItems={recycleModel.items}
+          recycleBlocked={recycleModel.blocked}
+          recycleMissing={recycleModel.missing}
+          onRestoreDeleted={(sessionId) => void handleRestore(sessionId)}
+          onPurgeRecycle={() => void handlePurgeRecycle()}
         />
       )}
       <GoalDialog

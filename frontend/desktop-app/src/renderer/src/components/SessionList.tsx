@@ -198,6 +198,7 @@ function SessionList({
               onClick={() => onSelect(session.sessionId)}
               disabled={trashed}
               data-testid={`session-${session.sessionId}`}
+              data-run-state={state}
             >
               <span className="session-title-row">
                 <span className="session-title">{session.title}</span>
