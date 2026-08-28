@@ -31,29 +31,29 @@ async function main(): Promise<void> {
       window.__rxyGuiUxLines = [];
       window.api.appserver.onLine((line) => window.__rxyGuiUxLines.push(line));
     })()`)
-    await harness.waitForSelector('.nav-toggle:not(:disabled)', 60_000)
-    await harness.evaluate(`document.querySelector('.nav-toggle:not(:disabled)')?.click()`)
-    await harness.waitForSelector('.nav-sheet.open .new-session:not(:disabled)', 5_000)
-    await harness.evaluate(`document.querySelector('.nav-sheet.open .new-session:not(:disabled)')?.click()`)
-    await harness.waitForSelector('.nav-sheet:not(.open)', 2_000)
+    const rail = '.desktop-navigation-panel'
+    await harness.waitForSelector(`${rail} .new-session:not(:disabled)`, 60_000)
+    await harness.evaluate(`document.querySelector('${rail} .new-session:not(:disabled)')?.click()`)
     await harness.waitForSelector('[data-testid="composer-input"]:not(:disabled)', 20_000)
 
     await check('UX-01 composer structure', async () => {
       if (!(await harness.has('[data-testid="composer-surface"]'))) throw new Error('Codex-like composer surface missing')
       if (!(await harness.has('[data-testid="composer-send"]'))) throw new Error('send arrow missing')
       if (!(await harness.has('[data-testid="composer-permission-mode"]'))) throw new Error('task permission switch missing')
-      const emptyLayout = await harness.evaluate<{ borderStyle: string; center: number; viewportCenter: number }>(`(() => {
+      const emptyLayout = await harness.evaluate<{ borderStyle: string; center: number; columnCenter: number }>(`(() => {
         const empty = document.querySelector('.chat-empty')
-        if (!(empty instanceof HTMLElement)) throw new Error('empty task surface missing')
+        const column = document.querySelector('.task-main')
+        if (!(empty instanceof HTMLElement) || !(column instanceof HTMLElement)) throw new Error('empty task surface missing')
         const rect = empty.getBoundingClientRect()
+        const columnRect = column.getBoundingClientRect()
         return {
           borderStyle: getComputedStyle(empty).borderStyle,
           center: (rect.left + rect.right) / 2,
-          viewportCenter: window.innerWidth / 2
+          columnCenter: (columnRect.left + columnRect.right) / 2
         }
       })()`)
       if (emptyLayout.borderStyle === 'dashed') throw new Error('empty task still uses a boxed placeholder')
-      if (Math.abs(emptyLayout.center - emptyLayout.viewportCenter) > 48) throw new Error(`empty task is not centered: ${JSON.stringify(emptyLayout)}`)
+      if (Math.abs(emptyLayout.center - emptyLayout.columnCenter) > 48) throw new Error(`empty task is not centered in the task column: ${JSON.stringify(emptyLayout)}`)
       const startupStatus = await harness.evaluate<string | null>(`document.querySelector('[data-testid="task-startup-status"]')?.textContent ?? null`)
       if (startupStatus !== null) throw new Error(`idle task retained a stale startup banner: ${startupStatus}`)
       await harness.screenshot('layout-empty.png')
@@ -91,15 +91,12 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.evaluate<number>(`document.querySelectorAll('[data-testid="final-answer"]').length`)) > finalCountBeforeRetry ? true : null, 10_000, 'post-reconnect final answer')
     })
     await check('UX-02c recovery survives switching to another task', async () => {
-      await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
-      await harness.waitForSelector('.nav-sheet.open .new-session:not(:disabled)', 2_000)
-      const previousId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
-      await harness.evaluate(`document.querySelector('.nav-sheet .new-session:not(:disabled)')?.click()`)
+      const previousId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      await harness.evaluate(`document.querySelector('${rail} .new-session:not(:disabled)')?.click()`)
       await waitFor(async () => {
-        const nextId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
+        const nextId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
         return nextId !== '' && nextId !== previousId ? true : null
       }, 3_000, 'task after recovered timeout')
-      await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
       await harness.typePrompt('new task after recovered timeout')
       await harness.pressKey('Enter')
       await waitFor(async () => (await harness.has('[data-testid="final-answer"]')) ? true : null, 10_000, 'new task final answer after recovery')
@@ -165,24 +162,30 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.has('[data-testid="goal-dialog"]')) ? null : true, 2_000, 'goal dialog Escape close')
     })
     await check('UX-07 delete is optimistic', async () => {
-      await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
-      await harness.waitForSelector('.nav-sheet.open', 2_000)
-      const taskId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
+      const taskId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
       const started = Date.now()
-      await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="trash-task-${taskId}"]')?.click()`)
+      await harness.evaluate(`document.querySelector('${rail} [data-testid="trash-task-${taskId}"]')?.click()`)
       await harness.waitForSelector('[data-testid="task-toast"]', 2_000)
       const feedback = await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)
       if (!feedback.includes('正在打开')) throw new Error(`active task was not protected: ${feedback}`)
       if (!(await harness.has(`.session-item.active .session-id`))) throw new Error('active task disappeared after delete')
       if (Date.now() - started > 1_000) throw new Error('active-task protection was not immediate')
-      await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
     })
-    await check('UX-08 default layout centers task content without an inspector column', async () => {
-      const layout = await harness.evaluate<{ columns: string; inspector: boolean; viewportCenter: number; timelineCenter: number; composerCenter: number }>(`(() => {
+    await check('UX-08 default layout keeps a persistent left rail and centers the task column', async () => {
+      const layout = await harness.evaluate<{
+        columns: string
+        inspector: boolean
+        railDisplay: string
+        columnCenter: number
+        timelineCenter: number
+        composerCenter: number
+      }>(`(() => {
         const node = document.querySelector('.command-layout')
+        const railNode = document.querySelector('.desktop-navigation-panel')
+        const column = document.querySelector('.task-main')
         const timeline = document.querySelector('.timeline')
         const composer = document.querySelector('[data-testid="composer-surface"]')
-        if (!(node instanceof HTMLElement) || !(timeline instanceof HTMLElement) || !(composer instanceof HTMLElement)) throw new Error('command layout geometry missing')
+        if (!(node instanceof HTMLElement) || !(railNode instanceof HTMLElement) || !(column instanceof HTMLElement) || !(timeline instanceof HTMLElement) || !(composer instanceof HTMLElement)) throw new Error('command layout geometry missing')
         const center = (element) => {
           const rect = element.getBoundingClientRect()
           return (rect.left + rect.right) / 2
@@ -190,15 +193,19 @@ async function main(): Promise<void> {
         return {
           columns: getComputedStyle(node).gridTemplateColumns,
           inspector: document.querySelector('.contextual-inspector-slot') !== null,
-          viewportCenter: window.innerWidth / 2,
+          railDisplay: getComputedStyle(railNode).display,
+          columnCenter: center(column),
           timelineCenter: center(timeline),
           composerCenter: center(composer)
         }
       })()`)
       if (layout.inspector) throw new Error('inspector is open by default')
-      if (layout.columns.trim().split(/\\s+/).length > 1) throw new Error(`default layout reserves extra columns: ${layout.columns}`)
-      if (Math.abs(layout.timelineCenter - layout.viewportCenter) > 48) throw new Error(`timeline is not centered: ${JSON.stringify(layout)}`)
-      if (Math.abs(layout.composerCenter - layout.viewportCenter) > 48) throw new Error(`composer is not centered: ${JSON.stringify(layout)}`)
+      if (layout.railDisplay === 'none') throw new Error('desktop rail is hidden')
+      const tracks = layout.columns.trim().split(/\s+/).filter(Boolean)
+      if (tracks.length !== 2) throw new Error(`desktop workbench should be rail + task: ${layout.columns}`)
+      if (!tracks[0].startsWith('248')) throw new Error(`left rail is not 248px: ${layout.columns}`)
+      if (Math.abs(layout.timelineCenter - layout.columnCenter) > 48) throw new Error(`timeline is not centered in the task column: ${JSON.stringify(layout)}`)
+      if (Math.abs(layout.composerCenter - layout.columnCenter) > 48) throw new Error(`composer is not centered in the task column: ${JSON.stringify(layout)}`)
       const composerWidth = await harness.evaluate<number>(`document.querySelector('[data-testid="composer-surface"]')?.getBoundingClientRect().width ?? 0`)
       if (composerWidth > 800) throw new Error(`composer is wider than the Codex-style command surface: ${composerWidth}`)
       await harness.screenshot('layout-default.png')
@@ -245,27 +252,24 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.has('.contextual-inspector-slot')) ? null : true, 2_000, 'usage inspector close')
     })
     await check('UX-12 non-active task delete and restore give immediate feedback', async () => {
-      await harness.evaluate(`document.querySelector('.nav-toggle')?.click()`)
-      await harness.waitForSelector('.nav-sheet.open', 2_000)
-      const originalId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
-      await harness.evaluate(`document.querySelector('.nav-sheet .new-session')?.click()`)
+      const originalId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      await harness.evaluate(`document.querySelector('${rail} .new-session')?.click()`)
       await waitFor(async () => {
-        const next = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
+        const next = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
         return next !== '' && next !== originalId ? true : null
       }, 3_000, 'second task creation')
-      const secondId = await harness.evaluate<string>(`document.querySelector('.nav-sheet .session-item.active .session-id')?.textContent ?? ''`)
-      await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="session-${originalId}"]')?.click()`)
-      await harness.waitForSelector('.nav-sheet .session-item.active', 2_000)
-      await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="trash-task-${secondId}"]')?.click()`)
+      const secondId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      await harness.evaluate(`document.querySelector('${rail} [data-testid="session-${originalId}"]')?.click()`)
+      await harness.waitForSelector(`${rail} .session-item.active`, 2_000)
+      await harness.evaluate(`document.querySelector('${rail} [data-testid="trash-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已删除任务') ? true : null, 2_000, 'delete success toast')
-      if (await harness.has(`.nav-sheet [data-testid="session-category-recent"] [data-testid="session-${secondId}"]`)) {
+      if (await harness.has(`${rail} [data-testid="session-category-recent"] [data-testid="session-${secondId}"]`)) {
         throw new Error('deleted task remained in active task list')
       }
-      await harness.waitForSelector(`.nav-sheet [data-testid="session-recycle"] [data-testid="restore-task-${secondId}"]`, 2_000)
-      await harness.evaluate(`document.querySelector('.nav-sheet [data-testid="restore-task-${secondId}"]')?.click()`)
+      await harness.waitForSelector(`${rail} [data-testid="session-recycle"] [data-testid="restore-task-${secondId}"]`, 2_000)
+      await harness.evaluate(`document.querySelector('${rail} [data-testid="restore-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已恢复任务') ? true : null, 2_000, 'restore success toast')
-      await waitFor(async () => (await harness.has(`.nav-sheet [data-testid="session-${secondId}"]`)) ? true : null, 2_000, 'restored task visible')
-      await harness.evaluate(`document.querySelector('.nav-sheet .sheet-close')?.click()`)
+      await waitFor(async () => (await harness.has(`${rail} [data-testid="session-${secondId}"]`)) ? true : null, 2_000, 'restored task visible')
     })
     await check('UX-13 inspector opens only on demand from a tool activity', async () => {
       await harness.evaluate(`(() => { const details = document.querySelector('.tool-activity'); if (details instanceof HTMLDetailsElement) details.open = true; const button = details?.querySelector('.activity-inspect-button'); if (button instanceof HTMLElement) button.click(); })()`)

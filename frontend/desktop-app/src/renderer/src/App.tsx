@@ -56,6 +56,7 @@ import {
   watchRunStateTransitions,
   type Notice
 } from '../../features/notifications/notify.ts'
+import { workbenchLayoutClass } from '../../features/shell/workbenchLayout.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -458,7 +459,10 @@ function App(): React.JSX.Element {
         </div>
       </header>
 
-      <div className={'main-layout command-layout' + (inspectorOpen ? ' inspector-open' : '') + (navOpen ? ' navigation-open' : '')}>
+      <div
+        className={workbenchLayoutClass({ inspectorOpen, runPanelOpen: running, navOpen })}
+        data-testid="workbench-layout"
+      >
         <div className={'mobile-sheet nav-sheet' + (navOpen ? ' open' : '')}>
           <button type="button" className="sheet-backdrop" aria-label={tr('closeNav')} onClick={() => setNavOpen(false)} />
           <div className="sheet-panel">

@@ -3144,20 +3144,28 @@ details[open] .activity-chevron {
 
 .command-layout {
   position: relative;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   background: var(--cc-canvas);
 }
 
-.command-layout.inspector-open {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+.command-layout.inspector-open,
+.command-layout.run-panel-open {
+  grid-template-columns: 248px minmax(0, 1fr) minmax(280px, 360px);
 }
 
 .desktop-navigation-panel {
-  display: none;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.desktop-navigation-panel .session-panel {
+  height: 100%;
 }
 
 .nav-toggle {
-  display: inline-grid;
+  display: none;
 }
 
 .nav-sheet {
@@ -3179,11 +3187,18 @@ details[open] .activity-chevron {
   right: 10px;
 }
 
-.contextual-inspector-slot {
-  grid-column: 2;
+.contextual-inspector-slot,
+.run-panel {
+  grid-column: 3;
   grid-row: 1;
   min-width: 0;
-  border-left-color: var(--cc-border);
+  border-left: 1px solid var(--cc-border);
+  background: var(--cc-surface);
+  overflow: auto;
+}
+
+.run-panel {
+  padding: 12px;
 }
 
 .task-main {
