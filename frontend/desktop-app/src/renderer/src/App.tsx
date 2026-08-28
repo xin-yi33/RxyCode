@@ -57,6 +57,8 @@ import {
   type Notice
 } from '../../features/notifications/notify.ts'
 import { workbenchLayoutClass } from '../../features/shell/workbenchLayout.ts'
+import { RunPanel } from '../../features/runpanel/RunPanel.ts'
+import { projectRunPanel } from '../../features/runpanel/runPanel.model.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -420,6 +422,9 @@ function App(): React.JSX.Element {
     listDeletedAvailable: true,
     sessions: conversation.state.sessions
   })
+  const runPanel = activeSessionId === null
+    ? null
+    : projectRunPanel(conversation.state, activeSessionId)
 
   const handlePurgeRecycle = async (): Promise<void> => {
     const ids = recycleModel.items.map((item) => item.id)
@@ -486,7 +491,11 @@ function App(): React.JSX.Element {
       </header>
 
       <div
-        className={workbenchLayoutClass({ inspectorOpen, runPanelOpen: running, navOpen })}
+        className={workbenchLayoutClass({
+          inspectorOpen,
+          runPanelOpen: !inspectorOpen && (runPanel?.open === true),
+          navOpen
+        })}
         data-testid="workbench-layout"
       >
         <div className={'mobile-sheet nav-sheet' + (navOpen ? ' open' : '')}>
@@ -689,6 +698,14 @@ function App(): React.JSX.Element {
           </div>
         ) : null}
 
+        {!inspectorOpen && runPanel?.open === true ? (
+          <RunPanel
+            model={runPanel.model}
+            open={runPanel.open}
+            usageAvailable={runPanel.usageAvailable}
+            dark={theme === 'dark'}
+          />
+        ) : null}
         {inspectorOpen && (
           <div className="contextual-inspector-slot">
             <TaskInspector
