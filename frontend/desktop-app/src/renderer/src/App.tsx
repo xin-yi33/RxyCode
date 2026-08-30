@@ -67,6 +67,9 @@ import { RunPanel } from '../../features/runpanel/RunPanel.ts'
 import { projectRunPanel } from '../../features/runpanel/runPanel.model.ts'
 import { Statusline } from '../../components/statusbar/Statusline.ts'
 import { PromptSuggestions } from '../../features/composer/PromptSuggestions.ts'
+import { CREATE_TEAM_PROMPT } from '../../features/team/team.model.ts'
+import { useAgentsSettings } from './hooks/useAgentsSettings'
+import { useTeams } from './hooks/useTeams'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -130,6 +133,12 @@ function App(): React.JSX.Element {
     refreshKey: settingsOpen ? 1 : 0,
     capabilities: conversation.handshakeCapabilities
   })
+  const teams = useTeams(conversation.protocolClient, activeSessionId)
+  const agentsSettings = useAgentsSettings(conversation.protocolClient)
+  const [composerPrefill, setComposerPrefill] = useState('')
+  const [composerPrefillNonce, setComposerPrefillNonce] = useState(0)
+  const [installPreview, setInstallPreview] = useState<{ message?: string } | null>(null)
+  const creatingTeamRef = useRef(false)
   const selectedTaskModel = activeSession?.modelId ?? models.snapshot?.active ?? ''
   const agentMode: AgentRunMode =
     activeSessionId === null ? 'build' : (agentModeBySession[activeSessionId] ?? 'build')
@@ -400,6 +409,15 @@ function App(): React.JSX.Element {
     }
   }, [conversation.state.runningBySession])
 
+  useEffect(() => {
+    if (activeSessionId == null) return
+    const nowRunning = conversation.state.runningBySession[activeSessionId] === true
+    if (!nowRunning && creatingTeamRef.current) {
+      creatingTeamRef.current = false
+      void teams.refresh().then(() => showToast(tr('teamCreated')))
+    }
+  }, [activeSessionId, conversation.state.runningBySession])
+
   const handleCreate = async (): Promise<void> => {
     // Navigation is independent from the session/new RPC. Close the drawer
     // immediately so a slow server warm cannot make the click look stuck.
@@ -629,6 +647,7 @@ function App(): React.JSX.Element {
               snapshotLoaded: models.snapshot !== null
             })}
             runState={activeRunState}
+            activeTeamLabel={teams.teams.find((team) => team.id === teams.activeTeamId)?.name ?? null}
           />
           {conversation.connectionError !== null && (
             <div className="error-banner" role="alert">
@@ -713,6 +732,22 @@ function App(): React.JSX.Element {
             }}
             permissionMode={permissionMode}
             onRequestPermissionModeChange={requestPermissionModeChange}
+            teams={teams.teams}
+            prefillText={composerPrefill}
+            prefillNonce={composerPrefillNonce}
+            onSummonTeam={(teamId) => {
+              void teams.setActive(teamId).then((ok) => {
+                if (ok) {
+                  setComposerPrefill('/team ')
+                  setComposerPrefillNonce((n) => n + 1)
+                  showToast(tr('teamSummoned'))
+                }
+              })
+            }}
+            onCreateTeam={() => {
+              creatingTeamRef.current = true
+              void handleComposerSend(CREATE_TEAM_PROMPT)
+            }}
           />
           </>
           ) : null}
@@ -753,6 +788,8 @@ function App(): React.JSX.Element {
               focusItem={inspectorItem}
               usage={activeSessionId !== null ? (conversation.state.usageBySession[activeSessionId] ?? EMPTY_USAGE) : EMPTY_USAGE}
               childSessions={activeChildSessions}
+              teamEvents={activeSessionId !== null ? (conversation.state.teamEventsBySession[activeSessionId] ?? []) : []}
+              capabilities={conversation.handshakeCapabilities}
               onClose={() => { setInspectorOpen(false); setInspectorItem(null) }}
               onSelectChild={(sessionId) => {
                 const child = activeChildSessions.find((entry) => entry.sessionId === sessionId)
@@ -855,6 +892,33 @@ function App(): React.JSX.Element {
           recycleMissing={recycleModel.missing}
           onRestoreDeleted={(sessionId) => void handleRestore(sessionId)}
           onPurgeRecycle={() => void handlePurgeRecycle()}
+          teams={teams.teams}
+          groups={teams.groups}
+          teamLoading={teams.loading}
+          teamError={teams.error}
+          agentsSettings={agentsSettings.settings}
+          onAgentsSettingsChange={(next) => void agentsSettings.save(next)}
+          onRenameGroup={(id, name) => void teams.renameGroup(id, name)}
+          onActivateTeam={(teamId) => void teams.setActive(teamId)}
+          onActivateGroup={(groupId) => void teams.activateGroup(groupId)}
+          installPreview={installPreview}
+          onPreviewInstall={(_source, value) => {
+            void teams.install({ name: value, url: value, confirm: false }).then((message) => {
+              setInstallPreview({ message })
+            })
+          }}
+          onInstallTeam={(input) => {
+            void teams.install({
+              name: input.value,
+              url: input.value,
+              confirm: true,
+              group: input.groupId
+            }).then((message) => {
+              setInstallPreview({ message })
+              showToast(tr('teamInstalled'))
+              void teams.refresh()
+            })
+          }}
         />
       )}
       <GoalDialog

@@ -232,7 +232,11 @@ class Coordinator:
             if member.mechanical:
                 continue
             prev = existing.get(member.role)
-            if prev is not None and getattr(prev, "role", None) == member.role:
+            if (
+                prev is not None
+                and getattr(prev, "role", None) == member.role
+                and getattr(prev, "resolved_model", None) == member.model
+            ):
                 bound[member.role] = prev
                 continue
             if primary is None:
@@ -245,6 +249,37 @@ class Coordinator:
                 continue
         return bound
 
+    def _apply_multi_model(
+        self,
+        team: TeamSpec,
+        agents_cfg: dict[str, Any] | None = None,
+        *,
+        force: bool | None = None,
+    ) -> TeamSpec:
+        """Resolve per-role models: AgentSpec.model → role_models → master_model."""
+        cfg = agents_cfg
+        if cfg is None:
+            try:
+                from RxyCode.RxyCode1_1_0.config.settings import load_config
+
+                raw = load_config().get("agents")
+                cfg = raw if isinstance(raw, dict) else {}
+            except Exception:
+                cfg = {}
+        mm = cfg.get("multi_model") if isinstance(cfg.get("multi_model"), dict) else {}
+        enabled = bool(mm.get("enabled")) if force is None else bool(force)
+        if not enabled:
+            return team
+        role_models = mm.get("role_models") if isinstance(mm.get("role_models"), dict) else {}
+        master = mm.get("master_model")
+        master_id = str(master).strip() if master not in (None, "", "none") else ""
+        members: list[AgentSpec] = []
+        for member in team.members:
+            resolved = member.model or role_models.get(member.role) or (master_id or None)
+            model_id = str(resolved).strip() if resolved not in (None, "") else None
+            members.append(member if model_id == member.model else member.model_copy(update={"model": model_id}))
+        return team.model_copy(update={"members": members})
+
     def member_form_team(self, _member: AgentSpec, _team: TeamSpec) -> None:
         raise MemberForbiddenError("members may not create teams")
 
@@ -254,8 +289,10 @@ class Coordinator:
         user_input: str,
         *,
         budget_overrides: dict[str, Any] | None = None,
+        multi_model: bool | None = None,
     ) -> str:
         """跑完一整支专家团。"""
+        team = self._apply_multi_model(team, force=multi_model)
         self.form_team(team)
         if budget_overrides:
             self._budget = BudgetGuard(team, overrides=budget_overrides)

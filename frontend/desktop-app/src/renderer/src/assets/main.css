@@ -2208,6 +2208,44 @@ summary:focus-visible {
   color: var(--cc-accent);
 }
 
+.composer-plus-team-detail {
+  padding: 8px 10px 4px;
+}
+
+.task-team-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cc-accent) 16%, var(--cc-surface));
+}
+
+.agents-settings,
+.team-install,
+.team-picker,
+.team-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.agents-advanced,
+.agents-role-models {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 4px;
+}
+
+.agents-settings label,
+.team-install label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .composer-mode-chip,
 .composer-goal-chip {
   display: inline-flex;

@@ -8,6 +8,7 @@ import type { AgentRunMode } from '../lib/planDocument.mts'
 import { canSubmitComposer, promptWithAttachment, shouldSubmitOnKey } from '../lib/composerBehavior.mts'
 import { SendDropdown } from '../../../features/composer/SendDropdown.ts'
 import type { SendIntent } from '../../../features/composer/pending.queue.ts'
+import type { TeamRecord } from '../../../features/team/team.visual.ts'
 import ComposerPlusMenu from './ComposerPlusMenu'
 
 interface ComposerProps {
@@ -30,6 +31,11 @@ interface ComposerProps {
   pendingCount?: number
   steerBlocked?: boolean
   onSendIntent?: (intent: SendIntent, text: string) => void
+  teams?: readonly TeamRecord[]
+  onSummonTeam?: (teamId: string) => void
+  onCreateTeam?: () => void
+  prefillText?: string
+  prefillNonce?: number
 }
 
 const MODE_KEYS: Record<PermissionMode, string> = {
@@ -66,7 +72,12 @@ function Composer({
   onRequestPermissionModeChange,
   pendingCount = 0,
   steerBlocked = false,
-  onSendIntent
+  onSendIntent,
+  teams = [],
+  onSummonTeam,
+  onCreateTeam,
+  prefillText,
+  prefillNonce = 0
 }: ComposerProps): React.JSX.Element {
   const { t } = useI18n()
   const [text, setText] = useState('')
@@ -84,6 +95,10 @@ function Composer({
     setText('')
     setAttachment(null)
   }
+
+  useEffect(() => {
+    if (prefillText != null && prefillText !== '') setText(prefillText)
+  }, [prefillText, prefillNonce])
 
   useEffect(() => {
     if (!plusOpen) return
@@ -176,11 +191,14 @@ function Composer({
               <ComposerPlusMenu
                 open={plusOpen}
                 planMode={planMode}
+                teams={teams}
                 onClose={() => setPlusOpen(false)}
                 onAttachFile={() => fileInputRef.current?.click()}
                 onPickWorkspace={onPickWorkspace}
                 onOpenGoal={onOpenGoal}
                 onTogglePlanMode={onTogglePlanMode}
+                onSummonTeam={onSummonTeam}
+                onCreateTeam={onCreateTeam}
               />
             </div>
             {planMode && (

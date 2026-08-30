@@ -13,10 +13,23 @@ export function gx28VisualState(input: {
   return 'ok'
 }
 
+export interface TeamMemberView {
+  role: string
+  displayName: string
+  title?: string
+  isLeader: boolean
+}
+
+export interface TeamStageView {
+  name: string
+  role: string
+}
+
 export interface TeamGroup {
   id: string
   name: string
   builtin?: boolean
+  members?: readonly string[]
 }
 
 export interface TeamRecord {
@@ -24,5 +37,10 @@ export interface TeamRecord {
   name: string
   groupId: string
   description?: string
+  summary?: string
+  extra?: Record<string, unknown>
+  members?: readonly TeamMemberView[]
+  stages?: readonly TeamStageView[]
+  examplePrompts?: readonly string[]
   disableModelInvocation?: boolean
 }

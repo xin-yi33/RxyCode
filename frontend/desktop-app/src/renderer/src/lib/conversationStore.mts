@@ -168,10 +168,19 @@ export interface ConversationState {
   sessionEventGapBySession: Record<string, boolean>
   childLastSeqBySession: Record<string, number>
   mentionDispatchBySession: Record<string, MentionDispatchState>
+  teamEventsBySession: Record<string, TeamEventRecord[]>
   runningBySession: Record<string, boolean>
   runStateBySession: Record<string, RunState>
   errorBySession: Record<string, string | null>
   approvals: ApprovalRequestItem[]
+}
+
+export interface TeamEventRecord {
+  sessionId: string
+  role: string
+  stage: string
+  phase: string
+  detail: string
 }
 
 export type ApprovalRequestStatus = 'pending' | 'submitting' | 'error'
@@ -234,6 +243,7 @@ export function createInitialState(): ConversationState {
     sessionEventGapBySession: {},
     childLastSeqBySession: {},
     mentionDispatchBySession: {},
+    teamEventsBySession: {},
     runningBySession: {},
     runStateBySession: {},
     errorBySession: {},
@@ -1597,13 +1607,33 @@ export function applyProtocolNotification(
       }
     }
     case 'event/team': {
-      const team = params as { session_id: string; role?: string; stage?: string; phase?: string }
+      const team = params as {
+        session_id: string
+        role?: string
+        stage?: string
+        phase?: string
+        detail?: string
+      }
       const role = String(team.role ?? '')
       const stage = String(team.stage ?? '')
       const label = role && stage ? `[${role}] ${stage}` : role || stage || 'team'
+      const previous = state.teamEventsBySession[team.session_id] ?? []
       return {
         ...state,
-        progressBySession: { ...state.progressBySession, [team.session_id]: label }
+        progressBySession: { ...state.progressBySession, [team.session_id]: label },
+        teamEventsBySession: {
+          ...state.teamEventsBySession,
+          [team.session_id]: [
+            ...previous,
+            {
+              sessionId: team.session_id,
+              role,
+              stage,
+              phase: String(team.phase ?? ''),
+              detail: String(team.detail ?? '')
+            }
+          ]
+        }
       }
     }
     case 'event/agent_routed': {

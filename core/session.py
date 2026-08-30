@@ -353,22 +353,29 @@ class Session:
             if decision.mode in (ExecutionMode.TEAM, ExecutionMode.TEAM_MULTI_MODEL):
                 if not task:
                     return router.handle_slash(stripped)
+                team_name = "software_dev"
+                agents_cfg: dict[str, Any] = {}
+                try:
+                    from RxyCode.RxyCode1_1_0.config.settings import load_config
+
+                    raw_agents = load_config().get("agents")
+                    agents_cfg = raw_agents if isinstance(raw_agents, dict) else {}
+                    team_name = str(agents_cfg.get("team") or "software_dev")
+                except Exception:
+                    team_name = "software_dev"
+                mm = agents_cfg.get("multi_model") if isinstance(agents_cfg.get("multi_model"), dict) else {}
+                mm_enabled = bool(mm.get("enabled"))
                 if decision.mode is ExecutionMode.TEAM_MULTI_MODEL:
                     self.emit(
                         ProgressUpdate(
                             session_id=self.session_id,
-                            text="多模型协作尚未启用（Phase H），按同模型专家团运行",
+                            text=(
+                                "多模型协作已启用，按角色解析模型"
+                                if mm_enabled
+                                else "多模型协作未开启，按同模型专家团运行"
+                            ),
                         )
                     )
-                team_name = "software_dev"
-                try:
-                    from RxyCode.RxyCode1_1_0.config.settings import load_config
-
-                    team_name = str(
-                        (load_config().get("agents") or {}).get("team") or "software_dev"
-                    )
-                except Exception:
-                    team_name = "software_dev"
                 try:
                     team = load_builtin_team(team_name)
                 except Exception:
@@ -376,7 +383,11 @@ class Session:
                 self._active_agent = agent
                 try:
                     coord = Coordinator(self, emit=self.emit)
-                    return await coord.run_team(team, task)
+                    return await coord.run_team(
+                        team,
+                        task,
+                        multi_model=True if decision.mode is ExecutionMode.TEAM_MULTI_MODEL and mm_enabled else None,
+                    )
                 finally:
                     self._active_agent = None
 

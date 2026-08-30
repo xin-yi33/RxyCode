@@ -11,7 +11,13 @@ import {
   SETTINGS_SECTIONS,
   type SettingsSectionId
 } from '../../../lib/settingsSections.ts'
+import { AgentsSettingsPanel } from '../../../features/settings/AgentsSettingsPanel.ts'
 import { TeamSection } from '../../../features/settings/TeamSection.ts'
+import { TeamInstallPanel } from '../../../features/team/TeamInstallPanel.ts'
+import { TeamManager } from '../../../features/team/TeamManager.ts'
+import { TeamPicker } from '../../../features/team/TeamPicker.ts'
+import type { TeamGroup, TeamRecord } from '../../../features/team/team.visual.ts'
+import type { AgentsSettingsView } from '../../../features/settings/agentsSettings.ts'
 import { TrashSection } from '../../../features/settings/TrashSection.ts'
 import type { TrashItemModel } from '../../../components/TrashItem.ts'
 
@@ -39,6 +45,19 @@ export interface SettingsPageProps {
   recycleMissing: readonly string[]
   onRestoreDeleted: (sessionId: string) => void
   onPurgeRecycle: () => void
+  teams?: readonly TeamRecord[]
+  groups?: readonly TeamGroup[]
+  teamLoading?: boolean
+  teamError?: string | null
+  agentsSettings?: AgentsSettingsView | null
+  onAgentsSettingsChange?: (next: AgentsSettingsView) => void
+  onRenameGroup?: (id: string, name: string) => void
+  onDeleteGroup?: (id: string) => void
+  onActivateTeam?: (teamId: string) => void
+  onActivateGroup?: (groupId: string) => void
+  onPreviewInstall?: (source: string, value: string) => void
+  onInstallTeam?: (input: { groupId: string; source: string; value: string }) => void
+  installPreview?: { message?: string; hooks?: boolean; members?: number } | null
 }
 
 
@@ -675,7 +694,61 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'team' && (
             <section className="settings-panel" data-testid="settings-team">
               <h2>{t('team')}</h2>
+              {props.agentsSettings != null && props.onAgentsSettingsChange != null ? (
+                <AgentsSettingsPanel
+                  settings={props.agentsSettings}
+                  models={(props.models.snapshot?.models ?? []).map((model) => ({
+                    id: model.id,
+                    label: model.nickname || model.name || model.id
+                  }))}
+                  roles={[...new Set((props.teams ?? []).flatMap((team) => (team.members ?? []).map((member) => member.role)))]}
+                  labels={{
+                    agentsEnable: t('agentsEnable'),
+                    agentsRoute: t('agentsRoute'),
+                    agentsRouterModel: t('agentsRouterModel'),
+                    agentsBudget: t('agentsBudget'),
+                    multiModelEnable: t('multiModelEnable'),
+                    masterModel: t('masterModel'),
+                    inheritMaster: t('inheritMaster'),
+                    routeAuto: t('routeAuto'),
+                    routeSolo: t('routeSolo'),
+                    routeTeam: t('routeTeam'),
+                    routerNone: t('routerNone')
+                  }}
+                  onChange={props.onAgentsSettingsChange}
+                />
+              ) : null}
               <TeamSection auto={teamAuto} onAutoChange={setTeamAuto} />
+              <TeamManager
+                groups={props.groups ?? []}
+                loading={props.teamLoading}
+                error={props.teamError}
+                onRename={(id, name) => props.onRenameGroup?.(id, name)}
+                onDelete={(id) => props.onDeleteGroup?.(id)}
+                onInstall={() => undefined}
+                onActivate={(id) => props.onActivateGroup?.(id)}
+              />
+              <TeamPicker
+                groups={props.groups ?? []}
+                teams={props.teams ?? []}
+                loading={props.teamLoading}
+                error={props.teamError}
+                onUse={(teamId) => props.onActivateTeam?.(teamId)}
+              />
+              <TeamInstallPanel
+                groups={props.groups ?? []}
+                preview={props.installPreview}
+                labels={{
+                  source: t('teamImportSource'),
+                  directory: t('teamImportDirectory'),
+                  zip: t('teamImportZip'),
+                  github: t('teamImportGithub'),
+                  confirm: t('teamInstallConfirm'),
+                  finish: t('teamInstallFinish')
+                }}
+                onPreview={props.onPreviewInstall}
+                onInstall={(input) => props.onInstallTeam?.(input)}
+              />
             </section>
           )}
         </div>

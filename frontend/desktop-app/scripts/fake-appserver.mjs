@@ -34,6 +34,39 @@ const sessionEvents = new Map()
 let childEventSequence = 0
 let sessionEventSequence = 0
 let activeModel = 'opencode-go/deepseek-v4-flash'
+const activeTeams = new Map()
+const agentsSettings = {
+  enabled: false,
+  team: 'software_dev',
+  route_mode: 'auto',
+  router_model: null,
+  total_token_budget: 500000,
+  total_timeout_s: 1800,
+  multi_model: { enabled: false, master_model: null, role_models: {} }
+}
+const fakeTeams = [
+  {
+    id: 'software_dev',
+    display_name: '软件研发团',
+    summary: '10 位角色 · 7 阶段 · clarify → plan',
+    description: '结构化软件研发专家团',
+    group: 'builtin',
+    extra: { 'ecosystem.category': '技术工程', 'ecosystem.example_prompts': ['试试这样问我：拆这个需求'] },
+    members: [
+      { role: 'pm', display_name: '主理人', extra: { 'ecosystem.is_leader': true } },
+      { role: 'architect', display_name: '架构师', extra: {} },
+      { role: 'coder', display_name: '编码员', extra: {} }
+    ],
+    stages: [
+      { name: 'clarify', role: 'pm' },
+      { name: 'plan', role: 'architect' }
+    ]
+  }
+]
+const fakeGroups = [
+  { id: 'builtin', name: 'builtin', members: ['software_dev'], builtin: true },
+  { id: 'other', name: 'other', members: [], builtin: false }
+]
 
 const FAKE_MODELS = [
   {
@@ -575,6 +608,33 @@ async function runPrompt(requestId, sessionId, text, mode = 'build') {
     return
   }
 
+  if (text.includes('/team') || text.includes('专家团') || text.includes('expert team')) {
+    notify('event/team', {
+      method: 'event/team',
+      session_id: sessionId,
+      role: 'pm',
+      stage: 'clarify',
+      phase: 'stage_started',
+      detail: 'team mock'
+    })
+    notify('event/team', {
+      method: 'event/team',
+      session_id: sessionId,
+      role: 'architect',
+      stage: 'plan',
+      phase: 'delegated',
+      detail: 'design'
+    })
+    notify('event/team', {
+      method: 'event/team',
+      session_id: sessionId,
+      role: 'coordinator',
+      stage: 'plan',
+      phase: 'team_completed',
+      detail: 'done'
+    })
+  }
+
   if (isImplementPrompt(text)) {
     await runImplementPrompt(requestId, sessionId, text)
     return
@@ -764,7 +824,7 @@ rl.on('line', (line) => {
     respond(id, {
       protocol_version: '1.1.0',
       server_name: 'rxycode-appserver',
-      capabilities: { sessions: true, approval: true, subagents: true }
+      capabilities: { sessions: true, approval: true, subagents: true, models: true, multi_agent: true, multi_model: true }
     })
     return
   }
@@ -947,6 +1007,65 @@ rl.on('line', (line) => {
   }
   if (method === 'child_sessions/retry') {
     respond(id, { accepted: true, request_id: String(params.request_id ?? `retry-${Date.now()}`) })
+    return
+  }
+  if (method === 'team/list') {
+    respond(id, { teams: fakeTeams })
+    return
+  }
+  if (method === 'team/groups') {
+    respond(id, { groups: fakeGroups })
+    return
+  }
+  if (method === 'team/set_active') {
+    const sessionId = String(params.session_id ?? '')
+    const teamId = String(params.team_id ?? '')
+    const known = fakeTeams.some((team) => team.id === teamId)
+    if (!known) {
+      respond(id, { ok: false, error: `unknown team ${teamId}` })
+      return
+    }
+    const previous = activeTeams.get(sessionId)
+    activeTeams.set(sessionId, teamId)
+    respond(id, { ok: true, active: teamId, changed: previous !== teamId })
+    return
+  }
+  if (method === 'team/install') {
+    if (params.confirm !== true) {
+      respond(id, {
+        message: `ASK_CONFIRM source=${params.url || params.name} members=3 hooks=false tools=read,grep. Reply with confirm=true.`
+      })
+      return
+    }
+    respond(id, { message: `installed ${params.name || 'team'} into group ${params.group || 'other'}` })
+    return
+  }
+  if (method === 'team/group_rename') {
+    respond(id, { ok: params.old !== 'builtin', error: params.old === 'builtin' ? 'builtin groups cannot be renamed' : undefined })
+    return
+  }
+  if (method === 'agents/settings_get') {
+    respond(id, { ...agentsSettings, multi_model: { ...agentsSettings.multi_model, role_models: { ...agentsSettings.multi_model.role_models } } })
+    return
+  }
+  if (method === 'agents/settings_set') {
+    if (params.enabled !== undefined && params.enabled !== null) agentsSettings.enabled = Boolean(params.enabled)
+    if (typeof params.team === 'string') agentsSettings.team = params.team
+    if (params.route_mode === 'solo' || params.route_mode === 'auto' || params.route_mode === 'team') {
+      agentsSettings.route_mode = params.route_mode
+    }
+    if (params.clear_router_model === true) agentsSettings.router_model = null
+    else if ('router_model' in params) agentsSettings.router_model = params.router_model ?? null
+    if (params.total_token_budget != null) agentsSettings.total_token_budget = Number(params.total_token_budget)
+    if (params.total_timeout_s != null) agentsSettings.total_timeout_s = Number(params.total_timeout_s)
+    if (params.multi_model && typeof params.multi_model === 'object') {
+      if ('enabled' in params.multi_model) agentsSettings.multi_model.enabled = Boolean(params.multi_model.enabled)
+      if ('master_model' in params.multi_model) agentsSettings.multi_model.master_model = params.multi_model.master_model ?? null
+      if (params.multi_model.role_models && typeof params.multi_model.role_models === 'object') {
+        agentsSettings.multi_model.role_models = { ...params.multi_model.role_models }
+      }
+    }
+    respond(id, { ...agentsSettings, multi_model: { ...agentsSettings.multi_model, role_models: { ...agentsSettings.multi_model.role_models } } })
     return
   }
   if (method === 'shutdown') {

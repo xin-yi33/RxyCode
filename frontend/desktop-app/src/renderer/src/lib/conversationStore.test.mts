@@ -599,9 +599,13 @@ test('applyProtocolNotification maps event/team to a role progress line', () => 
     session_id: 's1',
     role: 'architect',
     stage: 'plan',
-    phase: 'stage_started'
+    phase: 'stage_started',
+    detail: 'design'
   })
   assert.equal(state.progressBySession.s1, '[architect] plan')
+  assert.equal(state.teamEventsBySession.s1?.length, 1)
+  assert.equal(state.teamEventsBySession.s1?.[0]?.phase, 'stage_started')
+  assert.equal(state.teamEventsBySession.s1?.[0]?.detail, 'design')
 })
 
 test('applyProtocolNotification ignores unknown methods without changing state', () => {

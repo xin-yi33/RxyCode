@@ -20,15 +20,32 @@ def _l1_summary(team) -> str:
     return f"{len(team.members)} 位角色 · {len(team.stages)} 阶段 · {chain}"
 
 
+def _member_view(member) -> dict[str, Any]:
+    extra = dict(member.extra or {})
+    return {
+        "role": member.role,
+        "display_name": member.display_name,
+        "title": extra.get("ecosystem.title") or extra.get("title") or member.display_name,
+        "extra": extra,
+    }
+
+
 def team_list() -> dict[str, Any]:
     registry = TeamRegistry()
     items = []
     for record in registry.records.values():
+        team = record.team
+        extra = dict(team.extra or {})
         items.append(
             {
-                "id": record.team.name,
-                "display_name": record.team.display_name,
-                "summary": _l1_summary(record.team),
+                "id": team.name,
+                "display_name": team.display_name,
+                "summary": _l1_summary(team),
+                "description": team.description,
+                "group": record.group,
+                "extra": extra,
+                "members": [_member_view(member) for member in team.members],
+                "stages": [{"name": stage.name, "role": stage.role} for stage in team.stages],
             }
         )
     return {"teams": items}

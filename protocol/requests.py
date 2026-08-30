@@ -925,6 +925,34 @@ class TeamSetActiveRequest(BaseModel):
     team_id: str
 
 
+class AgentsMultiModelSettings(BaseModel):
+    """Phase H · per-role model assignment for expert teams."""
+
+    enabled: bool = False
+    master_model: str | None = None
+    role_models: dict[str, str] = Field(default_factory=dict)
+
+
+class AgentsSettingsGetRequest(BaseModel):
+    """Read persisted agents.* including multi_model."""
+
+    method: Literal["agents/settings_get"] = "agents/settings_get"
+
+
+class AgentsSettingsSetRequest(BaseModel):
+    """Partial update of agents.* including multi_model."""
+
+    method: Literal["agents/settings_set"] = "agents/settings_set"
+    enabled: bool | None = None
+    team: str | None = None
+    route_mode: Literal["solo", "auto", "team"] | None = None
+    router_model: str | None = None
+    clear_router_model: bool = False
+    total_token_budget: int | None = None
+    total_timeout_s: float | None = None
+    multi_model: AgentsMultiModelSettings | None = None
+
+
 class ProjectListRequest(BaseModel):
     """PhaseG-B4 list recent projects."""
 
@@ -1492,6 +1520,8 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     TeamGroupRenameRequest,
     TeamInstallRequest,
     TeamSetActiveRequest,
+    AgentsSettingsGetRequest,
+    AgentsSettingsSetRequest,
     ProjectListRequest,
     ProjectAddRequest,
     ProjectRemoveRequest,

@@ -83,8 +83,13 @@ def settings_items(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             {
                 "id": "agents_multi_model",
                 "label": "启用多模型协作（每角色不同模型）",
-                "desc": "Phase H 才可用",
-                "disabled": True,
+                "desc": (
+                    "开"
+                    if bool((agents.get("multi_model") or {}).get("enabled"))
+                    else "关（默认关闭）"
+                ),
+                "value": bool((agents.get("multi_model") or {}).get("enabled")),
+                "disabled": False,
             },
         ]
     )
@@ -131,7 +136,32 @@ def apply_agents_args(cfg: dict[str, Any], args: str) -> tuple[dict[str, Any], s
     if verb == "timeout" and rest:
         agents["total_timeout_s"] = float(rest)
         return agents, f"agents.total_timeout_s={agents['total_timeout_s']}"
+    if verb in {"multi-model", "multi_model"} and rest in {"on", "off"}:
+        mm = agents.setdefault("multi_model", {})
+        if not isinstance(mm, dict):
+            mm = {}
+            agents["multi_model"] = mm
+        mm["enabled"] = rest == "on"
+        return agents, f"agents.multi_model.enabled={mm['enabled']}"
+    if verb in {"role-model", "role_model"} and rest:
+        parts = rest.split(None, 1)
+        role = parts[0]
+        model = parts[1].strip() if len(parts) > 1 else ""
+        mm = agents.setdefault("multi_model", {})
+        if not isinstance(mm, dict):
+            mm = {}
+            agents["multi_model"] = mm
+        roles = mm.setdefault("role_models", {})
+        if not isinstance(roles, dict):
+            roles = {}
+            mm["role_models"] = roles
+        if model in {"", "none"}:
+            roles.pop(role, None)
+        else:
+            roles[role] = model
+        return agents, f"agents.multi_model.role_models.{role}={roles.get(role) or 'none'}"
     return agents, (
         "用法: /agents on|off | team <name> | route solo|auto|team | "
-        "router-model <id>|none | budget <n> | timeout <s>"
+        "router-model <id>|none | budget <n> | timeout <s> | "
+        "multi-model on|off | role-model <role> <model>|none"
     )

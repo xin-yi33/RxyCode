@@ -7,9 +7,10 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { SETTINGS_SECTIONS } from '../../lib/settingsSections.ts'
 import { TeamSection, TEAM_AUTO_WARNING } from '../settings/TeamSection.ts'
-import { TeamInstallPanel } from './TeamInstallPanel.ts'
+import { TEAM_HOOKS_WARNING, TEAM_PACK_HINT, TeamInstallPanel } from './TeamInstallPanel.ts'
 import { TeamManager, probeTeam } from './TeamManager.ts'
-import { TeamPicker } from './TeamPicker.ts'
+import { TeamDetailCard, TeamPicker } from './TeamPicker.ts'
+import { CREATE_TEAM_PROMPT } from './team.model.ts'
 
 const schema = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '../../../../../protocol/schema.json'),
@@ -34,7 +35,11 @@ test('GX28: team/* path A; picker/install/section exist; team settings unlocked'
     createElement(TeamInstallPanel, { groups: [{ id: 'g1', name: 'reviewers' }], onInstall: () => undefined })
   )
   assert.match(install, /data-testid="team-install-panel"/)
-  assert.match(install, /data-step="confirm"/)
+  assert.match(install, /data-step="source"/)
+  assert.match(install, /team-install-source/)
+  assert.match(install, new RegExp(TEAM_PACK_HINT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(TEAM_HOOKS_WARNING, /hooks/)
+  assert.match(CREATE_TEAM_PROMPT, /team_install/)
   const section = renderToStaticMarkup(
     createElement(TeamSection, { auto: false, onAutoChange: () => undefined })
   )
@@ -51,4 +56,41 @@ test('GX28: team/* path A; picker/install/section exist; team settings unlocked'
   )
   assert.match(manager, /Set active/)
   assert.match(manager, /data-visual-state/)
+  const detail = renderToStaticMarkup(
+    createElement(TeamDetailCard, {
+      team: {
+        id: 't1',
+        name: 'review',
+        groupId: 'g1',
+        description: 'reviews diffs',
+        members: [
+          { role: 'lead', displayName: '主理人', isLeader: true },
+          { role: 'coder', displayName: '编码员', isLeader: false }
+        ],
+        stages: [{ name: 'review', role: 'lead' }],
+        examplePrompts: ['试试这样问我']
+      }
+    })
+  )
+  assert.match(detail, /team-detail-members/)
+  assert.match(detail, /主理人/)
+  assert.match(detail, /team-detail-stages/)
+  assert.match(detail, /试试这样问我/)
+  const plusMenu = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/ComposerPlusMenu.tsx'),
+    'utf8'
+  )
+  assert.match(plusMenu, /plus-summon-team/)
+  assert.match(plusMenu, /plus-create-team/)
+  const header = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/TaskHeader.tsx'),
+    'utf8'
+  )
+  assert.match(header, /task-team-badge/)
+  const inspector = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/TaskInspector.tsx'),
+    'utf8'
+  )
+  assert.match(inspector, /team-activity/)
+  assert.match(inspector, /AgentActivity/)
 })

@@ -251,6 +251,11 @@ def _default_config() -> dict:
             "total_token_budget": 500_000,
             "total_timeout_s": 1800.0,
             "max_delegations": 20,
+            "multi_model": {
+                "enabled": False,
+                "master_model": None,
+                "role_models": {},
+            },
         },
         "distillation": {
             "collect": False,

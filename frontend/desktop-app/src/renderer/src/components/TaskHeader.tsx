@@ -1,4 +1,4 @@
-import { FolderGit2, GitBranch, Sparkles } from 'lucide-react'
+import { FolderGit2, GitBranch, Sparkles, Users } from 'lucide-react'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface TaskHeaderProps {
@@ -6,13 +6,15 @@ interface TaskHeaderProps {
   workspaceRoot: string
   modelLabel: string
   runState: string
+  activeTeamLabel?: string | null
 }
 
 function TaskHeader({
   title,
   workspaceRoot,
   modelLabel,
-  runState
+  runState,
+  activeTeamLabel
 }: TaskHeaderProps): React.JSX.Element {
   const { t } = useI18n()
   return (
@@ -34,6 +36,12 @@ function TaskHeader({
           <Sparkles aria-hidden="true" size={14} />
           {modelLabel}
         </span>
+        {activeTeamLabel != null && activeTeamLabel !== '' ? (
+          <span className="task-team-badge" data-testid="task-team-badge">
+            <Users aria-hidden="true" size={14} />
+            {activeTeamLabel}
+          </span>
+        ) : null}
         <span className={'task-status state-' + runState}>{runState.replace('_', ' ')}</span>
       </div>
     </header>

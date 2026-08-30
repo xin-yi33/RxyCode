@@ -252,15 +252,18 @@ class AgentRuntime:
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
         inherited = _inherited_model_config(primary) if primary is not None else {}
-        model_id = (model or inherited.get("model_name") or _primary_model_name(primary) or "").strip() or None
+        explicit = (self._spec.model or model or "").strip() or None
+        model_id = (explicit or inherited.get("model_name") or _primary_model_name(primary) or "").strip() or None
         agent = AgentV2(model_name=model_id)
         if primary is not None:
             packed = getattr(primary, "_cfg", None)
             if isinstance(packed, dict):
                 agent._cfg = packed
-            if inherited:
+            if inherited or explicit:
                 merged = dict(agent.model_config or {})
                 merged.update({key: value for key, value in inherited.items() if value not in (None, "")})
+                if explicit:
+                    merged["model_name"] = explicit
                 if not str(merged.get("model_name") or "").strip():
                     raise AgentSpecError(
                         "role agent inherited empty model_name from Primary"

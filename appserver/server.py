@@ -867,8 +867,10 @@ class AppServer:
                 "recovery": True,
                 "notifications": True,
                 "recovery_restore_ok": recovery_ok,
+                "multi_agent": True,
+                "multi_model": True,
             },
-            capability_snapshot=CapabilitySnapshot(thread_fork=True),
+            capability_snapshot=CapabilitySnapshot(thread_fork=True, multi_agent=True, multi_model=True),
             model_providers=_model_provider_summaries(),
             permission_profiles=_permission_profiles(),
             package=PackageCompatibility(**{
@@ -3095,6 +3097,14 @@ class AppServer:
             from .team_routes import team_set_active
 
             await self._respond(request_id, team_set_active(params))
+        elif method == "agents/settings_get":
+            from .agents_routes import agents_settings_get
+
+            await self._respond(request_id, agents_settings_get())
+        elif method == "agents/settings_set":
+            from .agents_routes import agents_settings_set
+
+            await self._respond(request_id, agents_settings_set(params))
         elif method in {
             "project/list",
             "project/add",
