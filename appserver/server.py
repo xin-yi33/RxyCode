@@ -53,6 +53,13 @@ from .cli_hub_service import CliHubError, CliHubService
 from .schedule_service import ScheduleError, ScheduleService
 from .trash_service import TrashError, TrashService
 from .plugin_service import PluginError, PluginService
+
+
+class SkillError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -2630,6 +2637,52 @@ class AppServer:
             return hub.toggle(req.name, req.enabled)
         raise PluginError("PLUGIN_METHOD_UNKNOWN", f"unknown plugin method: {method}")
 
+    async def _handle_skill(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        from tools.skill_manager import (
+            KNOWN_SKILLS,
+            find_and_download_skill_async,
+            install_skill_from_local,
+            install_skill_from_url_async,
+            list_installed_skills,
+            search_github_skills,
+        )
+
+        if method == "skill/list":
+            return {"skills": list_installed_skills()}
+        if method == "skill/search":
+            source = str(params.get("source") or "github")
+            query = str(params.get("query") or "SKILL")
+            if source == "hub":
+                rows = [
+                    {
+                        "name": name,
+                        "repo": repo,
+                        "path": path,
+                        "source": "hub",
+                        "stars": 0,
+                        "description": "",
+                        "scope": repo,
+                    }
+                    for name, (repo, path) in KNOWN_SKILLS.items()
+                ]
+                return {"skills": rows}
+            return {"skills": search_github_skills(query)}
+        if method == "skill/install":
+            source = str(params.get("source") or "github").lower()
+            name = str(params.get("name") or params.get("query") or "").strip()
+            if source in {"github", "query", "llm"}:
+                ok, message = await find_and_download_skill_async(str(params.get("query") or name))
+            elif source == "url":
+                ok, message = await install_skill_from_url_async(str(params.get("url") or params.get("path") or ""), name or "skill")
+            elif source == "local":
+                ok, message = install_skill_from_local(str(params.get("path") or ""), name or "skill")
+            else:
+                raise SkillError("SKILL_SOURCE_INVALID", "source must be github, url, or local")
+            if not ok:
+                raise SkillError("SKILL_INSTALL_FAILED", message)
+            return {"ok": True, "message": message}
+        raise SkillError("SKILL_METHOD_UNKNOWN", f"unknown skill method: {method}")
+
     def _handle_thread_trash(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("session_id") or "")
         if method == "thread/delete":
@@ -2993,6 +3046,13 @@ class AppServer:
             try:
                 result = self._handle_plugin(method, params or {})
             except PluginError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
+        elif method.startswith("skill/"):
+            try:
+                result = await self._handle_skill(method, params or {})
+            except SkillError as exc:
                 await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
                 return
             await self._respond(request_id, result)

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
+import type { ProtocolClient } from '@rxycode/protocol-client'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 import { useDiagnostics, type UpdateStatus } from '../../../platform/index.mts'
 import type { UseModelsResult } from '../hooks/useModels'
 import type { ModelEntry } from '../hooks/useModels'
+import { useCapabilities } from '../hooks/useCapabilities.ts'
 import { modelsUnavailableCopy } from '../lib/modelAvailability.mts'
 import { groupModelsByProvider } from '../lib/modelPresentation.mts'
 import type { DesktopLanguage, PermissionMode, ThemePreference } from '../lib/desktopPreferences.mts'
@@ -15,11 +17,14 @@ import { AgentsSettingsPanel } from '../../../features/settings/AgentsSettingsPa
 import { TeamSection } from '../../../features/settings/TeamSection.ts'
 import { TeamInstallPanel } from '../../../features/team/TeamInstallPanel.ts'
 import { TeamManager } from '../../../features/team/TeamManager.ts'
-import { TeamPicker } from '../../../features/team/TeamPicker.ts'
+import { TeamGallery } from '../../../features/team/TeamGallery.ts'
+import { TeamHubNav, type TeamHubTab } from '../../../features/team/TeamHub.ts'
 import type { TeamGroup, TeamRecord } from '../../../features/team/team.visual.ts'
+import { CapabilityPanel } from '../../../features/capabilities/capabilityPanel.ts'
 import type { AgentsSettingsView } from '../../../features/settings/agentsSettings.ts'
 import { TrashSection } from '../../../features/settings/TrashSection.ts'
 import type { TrashItemModel } from '../../../components/TrashItem.ts'
+import { ThemeMenu } from '../../../features/composer/ThemeMenu.ts'
 
 export type SettingsTab = SettingsSectionId
 
@@ -44,6 +49,7 @@ export interface SettingsPageProps {
   recycleBlocked: boolean
   recycleMissing: readonly string[]
   onRestoreDeleted: (sessionId: string) => void
+  onPurgeItem?: (sessionId: string) => void
   onPurgeRecycle: () => void
   teams?: readonly TeamRecord[]
   groups?: readonly TeamGroup[]
@@ -55,9 +61,12 @@ export interface SettingsPageProps {
   onDeleteGroup?: (id: string) => void
   onActivateTeam?: (teamId: string) => void
   onActivateGroup?: (groupId: string) => void
+  onCreateTeam?: () => void
   onPreviewInstall?: (source: string, value: string) => void
   onInstallTeam?: (input: { groupId: string; source: string; value: string }) => void
   installPreview?: { message?: string; hooks?: boolean; members?: number } | null
+  protocolClient?: ProtocolClient | null
+  activeTeamId?: string | null
 }
 
 
@@ -157,6 +166,10 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
     }
   }
 
+  useEffect(() => {
+    void loadPresets()
+  }, [])
+
   const applyPreset = (presetId: string): void => {
     setSelectedPreset(presetId)
     const preset = presets.find((p) => p.id === presetId)
@@ -239,19 +252,17 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
       <div className="addmodel-title">{t('addModel')}</div>
       <div className="addmodel-row">
         <span className="label">{t('providerPreset')}</span>
-        <select
-          className="addmodel-select"
+        <ThemeMenu
           value={selectedPreset}
-          onChange={(event) => applyPreset(event.target.value)}
-          onFocus={() => void loadPresets()}
-        >
-          <option value="">（选择预设）</option>
-          {presets.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.name}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: '', label: t('selectPreset') },
+            ...presets.map((preset) => ({ value: preset.id, label: preset.name }))
+          ]}
+          onChange={(value) => applyPreset(value)}
+          testId="addmodel-preset"
+          ariaLabel={t('providerPreset')}
+          placement="down"
+        />
       </div>
       <div className="addmodel-row">
         <span className="label">{t('baseUrl')}</span>
@@ -317,7 +328,10 @@ function AddModelPanel({ models, onModelSelected }: { models: UseModelsResult; o
 function SettingsPage(props: SettingsPageProps): React.JSX.Element {
   const { t } = useI18n()
   const [tab, setTab] = useState<SettingsSectionId>('general')
+  const [teamHub, setTeamHub] = useState<TeamHubTab>('gallery')
   const [teamAuto, setTeamAuto] = useState(false)
+  const skillCaps = useCapabilities(props.protocolClient ?? null, 'skill')
+  const mcpCaps = useCapabilities(props.protocolClient ?? null, 'mcp')
   const activeModel = props.models.snapshot?.models.find((model) => model.active) ?? null
   const effortOptions = effortOptionsFor(activeModel)
   const diagnostics = useDiagnostics()
@@ -341,7 +355,7 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
       <div className="settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-testid="settings-dialog">
         <header className="settings-header">
           <div id="settings-title" className="settings-title">{t('settings')}</div>
-          <button type="button" className="settings-close" onClick={props.onClose}>
+          <button type="button" className="settings-close" data-testid="close-settings" onClick={props.onClose}>
             {t('close')}
           </button>
         </header>
@@ -362,12 +376,13 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
         <div className="settings-content">
           {tab === 'recycle' && (
             <section className="settings-panel" data-testid="settings-recycle">
-              <h2>{t('recycle')}</h2>
               <TrashSection
                 items={props.recycleItems}
                 blocked={props.recycleBlocked}
                 missing={props.recycleMissing}
+                locale={props.language}
                 onRestore={props.onRestoreDeleted}
+                onPurgeItem={props.onPurgeItem}
                 onPurgeConfirmed={props.onPurgeRecycle}
               />
             </section>
@@ -377,18 +392,34 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               <h2>{t('general')}</h2>
               <div className="settings-option-row">
                 <div><strong>{t('approvalMode')}</strong><p className="settings-hint">{t('approvalModeHint')}</p></div>
-                <select aria-label={t('approvalMode')} value={props.permissionMode} onChange={(event) => props.onPermissionModeChange(event.target.value as PermissionMode)}>
-                  <option value="confirm_all">{t('modeConfirmAll')}</option>
-                  <option value="auto_edit">{t('modeAutoEdit')}</option>
-                  <option value="full_auto">{t('modeFullAuto')}</option>
-                </select>
+                <ThemeMenu
+                  value={props.permissionMode}
+                  options={[
+                    { value: 'confirm_all', label: t('modeConfirmAll') },
+                    { value: 'auto_edit', label: t('modeAutoEdit') },
+                    { value: 'full_auto', label: t('modeFullAuto') }
+                  ]}
+                  onChange={(value) => props.onPermissionModeChange(value as PermissionMode)}
+                  testId="settings-permission-mode"
+                  ariaLabel={t('approvalMode')}
+                  placement="down"
+                  align="end"
+                />
               </div>
               <div className="settings-option-row">
                 <div><strong>{t('language')}</strong><p className="settings-hint">{t('languageHint')}</p></div>
-                <select aria-label={t('language')} value={props.language} onChange={(event) => props.onLanguageChange(event.target.value as DesktopLanguage)}>
-                  <option value="zh-CN">{t('languageZh')}</option>
-                  <option value="en-US">{t('languageEn')}</option>
-                </select>
+                <ThemeMenu
+                  value={props.language}
+                  options={[
+                    { value: 'zh-CN', label: t('languageZh') },
+                    { value: 'en-US', label: t('languageEn') }
+                  ]}
+                  onChange={(value) => props.onLanguageChange(value as DesktopLanguage)}
+                  testId="settings-language"
+                  ariaLabel={t('language')}
+                  placement="down"
+                  align="end"
+                />
               </div>
             </section>
           )}
@@ -397,12 +428,20 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               <h2>{t('appearance')}</h2>
               <div className="settings-option-row">
                 <div><strong>{t('theme')}</strong><p className="settings-hint">{t('themeHint')}</p></div>
-                <select aria-label={t('theme')} value={props.theme} onChange={(event) => props.onThemeChange(event.target.value as ThemePreference)}>
-                  <option value="system">{t('themeSystem')}</option>
-                  <option value="light">{t('themeLight')}</option>
-                  <option value="dark">{t('themeDark')}</option>
-                  <option value="high-contrast">{t('themeHighContrast')}</option>
-                </select>
+                <ThemeMenu
+                  value={props.theme}
+                  options={[
+                    { value: 'system', label: t('themeSystem') },
+                    { value: 'light', label: t('themeLight') },
+                    { value: 'dark', label: t('themeDark') },
+                    { value: 'high-contrast', label: t('themeHighContrast') }
+                  ]}
+                  onChange={(value) => props.onThemeChange(value as ThemePreference)}
+                  testId="settings-theme"
+                  ariaLabel={t('theme')}
+                  placement="down"
+                  align="end"
+                />
               </div>
             </section>
           )}
@@ -490,29 +529,28 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
               )}
               <div className="settings-option-row">
                 <div><strong>{t('effort')}</strong></div>
-                <select
-                  aria-label={t('effort')}
-                  data-testid="effort-select"
-                  disabled={effortOptions.length === 0 || activeModel === null}
+                <ThemeMenu
                   value={
                     effortOptions.includes(props.models.snapshot?.effort ?? '')
                       ? (props.models.snapshot?.effort ?? '')
                       : ''
                   }
-                  onChange={(event) => {
+                  options={
+                    effortOptions.length === 0
+                      ? [{ value: '', label: t('effortNone') }]
+                      : effortOptions.map((option) => ({ value: option, label: option }))
+                  }
+                  onChange={(value) => {
                     const id = props.models.snapshot?.active
                     if (id === undefined || id === '') return
-                    void props.models.setActive(id, event.target.value)
+                    void props.models.setActive(id, value)
                   }}
-                >
-                  {effortOptions.length === 0 ? (
-                    <option value="">{t('effortNone')}</option>
-                  ) : (
-                    effortOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))
-                  )}
-                </select>
+                  disabled={effortOptions.length === 0 || activeModel === null}
+                  testId="effort-select"
+                  ariaLabel={t('effort')}
+                  placement="down"
+                  align="end"
+                />
               </div>
             </section>
           )}
@@ -682,73 +720,143 @@ function SettingsPage(props: SettingsPageProps): React.JSX.Element {
           {tab === 'skills' && (
             <section className="settings-panel" data-testid="settings-skills">
               <h2>{t('skills')}</h2>
-              <UnavailablePanel title={t('blocked')} detail={t('skillsBlockedDetail')} blockedPrerequisite />
+              <CapabilityPanel
+                kind="skill"
+                items={skillCaps.items}
+                loading={skillCaps.loading}
+                error={skillCaps.error}
+                labels={{
+                  empty: t('capabilitiesEmpty'),
+                  enabled: t('capabilityEnabled'),
+                  installed: t('capabilityInstalled'),
+                  available: t('capabilityAvailable'),
+                  connection: t('capabilityConnection')
+                }}
+                onSetEnabled={(id, enabled) => void skillCaps.setEnabled(id, enabled)}
+              />
             </section>
           )}
           {tab === 'mcp' && (
             <section className="settings-panel" data-testid="settings-mcp">
               <h2>{t('mcp')}</h2>
-              <UnavailablePanel title={t('blocked')} detail={t('mcpBlockedDetail')} blockedPrerequisite />
+              <CapabilityPanel
+                kind="mcp"
+                items={mcpCaps.items}
+                loading={mcpCaps.loading}
+                error={mcpCaps.error}
+                labels={{
+                  empty: t('capabilitiesEmpty'),
+                  enabled: t('capabilityEnabled'),
+                  installed: t('capabilityInstalled'),
+                  available: t('capabilityAvailable'),
+                  connection: t('capabilityConnection')
+                }}
+                onSetEnabled={(id, enabled) => void mcpCaps.setEnabled(id, enabled)}
+              />
             </section>
           )}
           {tab === 'team' && (
             <section className="settings-panel" data-testid="settings-team">
               <h2>{t('team')}</h2>
-              {props.agentsSettings != null && props.onAgentsSettingsChange != null ? (
-                <AgentsSettingsPanel
-                  settings={props.agentsSettings}
-                  models={(props.models.snapshot?.models ?? []).map((model) => ({
-                    id: model.id,
-                    label: model.nickname || model.name || model.id
-                  }))}
-                  roles={[...new Set((props.teams ?? []).flatMap((team) => (team.members ?? []).map((member) => member.role)))]}
+              <TeamHubNav
+                tab={teamHub}
+                labels={{
+                  gallery: t('teamHubGallery'),
+                  create: t('teamHubCreate'),
+                  settings: t('teamHubSettings')
+                }}
+                onChange={setTeamHub}
+              />
+              {teamHub === 'gallery' ? (
+                <TeamGallery
+                  groups={props.groups ?? []}
+                  teams={props.teams ?? []}
+                  loading={props.teamLoading}
+                  error={props.teamError}
+                  activeTeamId={props.activeTeamId}
                   labels={{
-                    agentsEnable: t('agentsEnable'),
-                    agentsRoute: t('agentsRoute'),
-                    agentsRouterModel: t('agentsRouterModel'),
-                    agentsBudget: t('agentsBudget'),
-                    multiModelEnable: t('multiModelEnable'),
-                    masterModel: t('masterModel'),
-                    inheritMaster: t('inheritMaster'),
-                    routeAuto: t('routeAuto'),
-                    routeSolo: t('routeSolo'),
-                    routeTeam: t('routeTeam'),
-                    routerNone: t('routerNone')
+                    search: t('searchSpecialists'),
+                    featured: t('featuredScenarios'),
+                    specialists: t('specialists'),
+                    all: t('allCategories'),
+                    use: t('useTeam'),
+                    intro: t('teamIntro'),
+                    scope: t('teamScope'),
+                    ability: t('teamAbility'),
+                    domains: t('teamDomains'),
+                    members: t('teamMembers'),
+                    leader: t('teamLeader'),
+                    tryAsk: t('tryAskMe'),
+                    summonNamed: t('summonNamed')
                   }}
-                  onChange={props.onAgentsSettingsChange}
+                  onUse={(teamId) => props.onActivateTeam?.(teamId)}
                 />
               ) : null}
-              <TeamSection auto={teamAuto} onAutoChange={setTeamAuto} />
-              <TeamManager
-                groups={props.groups ?? []}
-                loading={props.teamLoading}
-                error={props.teamError}
-                onRename={(id, name) => props.onRenameGroup?.(id, name)}
-                onDelete={(id) => props.onDeleteGroup?.(id)}
-                onInstall={() => undefined}
-                onActivate={(id) => props.onActivateGroup?.(id)}
-              />
-              <TeamPicker
-                groups={props.groups ?? []}
-                teams={props.teams ?? []}
-                loading={props.teamLoading}
-                error={props.teamError}
-                onUse={(teamId) => props.onActivateTeam?.(teamId)}
-              />
-              <TeamInstallPanel
-                groups={props.groups ?? []}
-                preview={props.installPreview}
-                labels={{
-                  source: t('teamImportSource'),
-                  directory: t('teamImportDirectory'),
-                  zip: t('teamImportZip'),
-                  github: t('teamImportGithub'),
-                  confirm: t('teamInstallConfirm'),
-                  finish: t('teamInstallFinish')
-                }}
-                onPreview={props.onPreviewInstall}
-                onInstall={(input) => props.onInstallTeam?.(input)}
-              />
+              {teamHub === 'create' ? (
+                <>
+                  <button
+                    type="button"
+                    className="team-hub-create-chat"
+                    data-testid="team-hub-create-chat"
+                    onClick={() => props.onCreateTeam?.()}
+                  >
+                    {t('createTeam')}
+                  </button>
+                  <p className="settings-hint">{t('createTeamHint')}</p>
+                  <TeamInstallPanel
+                    groups={props.groups ?? []}
+                    preview={props.installPreview}
+                    labels={{
+                      source: t('teamImportSource'),
+                      directory: t('teamImportDirectory'),
+                      zip: t('teamImportZip'),
+                      github: t('teamImportGithub'),
+                      confirm: t('teamInstallConfirm'),
+                      finish: t('teamInstallFinish')
+                    }}
+                    onPreview={props.onPreviewInstall}
+                    onInstall={(input) => props.onInstallTeam?.(input)}
+                  />
+                </>
+              ) : null}
+              {teamHub === 'settings' ? (
+                <>
+                  {props.agentsSettings != null && props.onAgentsSettingsChange != null ? (
+                    <AgentsSettingsPanel
+                      settings={props.agentsSettings}
+                      models={(props.models.snapshot?.models ?? []).map((model) => ({
+                        id: model.id,
+                        label: model.nickname || model.name || model.id
+                      }))}
+                      roles={[...new Set((props.teams ?? []).flatMap((team) => (team.members ?? []).map((member) => member.role)))]}
+                      labels={{
+                        agentsEnable: t('agentsEnable'),
+                        agentsRoute: t('agentsRoute'),
+                        agentsRouterModel: t('agentsRouterModel'),
+                        agentsBudget: t('agentsBudget'),
+                        multiModelEnable: t('multiModelEnable'),
+                        masterModel: t('masterModel'),
+                        inheritMaster: t('inheritMaster'),
+                        routeAuto: t('routeAuto'),
+                        routeSolo: t('routeSolo'),
+                        routeTeam: t('routeTeam'),
+                        routerNone: t('routerNone')
+                      }}
+                      onChange={props.onAgentsSettingsChange}
+                    />
+                  ) : null}
+                  <TeamSection auto={teamAuto} onAutoChange={setTeamAuto} />
+                  <TeamManager
+                    groups={props.groups ?? []}
+                    loading={props.teamLoading}
+                    error={props.teamError}
+                    onRename={(id, name) => props.onRenameGroup?.(id, name)}
+                    onDelete={(id) => props.onDeleteGroup?.(id)}
+                    onInstall={() => undefined}
+                    onActivate={(id) => props.onActivateGroup?.(id)}
+                  />
+                </>
+              ) : null}
             </section>
           )}
         </div>

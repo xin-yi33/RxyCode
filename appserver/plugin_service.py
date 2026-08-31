@@ -499,6 +499,12 @@ class PluginService:
         if kind == "registry":
             src = self._source_from_registry(str(name or ""))
             origin = "registry"
+        elif kind in {"url", "github"}:
+            loc = str(path or name or "")
+            if not self._is_http(loc):
+                raise PluginError("PLUGIN_SOURCE_INVALID", "github/url install requires an http(s) zip")
+            src = self._fetch_remote_plugin(loc)
+            origin = "github" if kind == "github" else "url"
         elif kind == "local":
             if not path:
                 raise PluginError("PLUGIN_SOURCE_INVALID", "local install requires path")
@@ -508,7 +514,7 @@ class PluginService:
             src = self._open_package(canonicalize(raw))
             origin = "local"
         else:
-            raise PluginError("PLUGIN_SOURCE_INVALID", "source must be local or registry")
+            raise PluginError("PLUGIN_SOURCE_INVALID", "source must be local, registry, url, or github")
         if src.is_symlink() or not src.is_dir():
             raise PluginError("PLUGIN_PATH_UNSAFE", "plugin source must be a real directory")
         checked = self.validate_manifest(src)

@@ -91,3 +91,39 @@ export function mapTeamGroups(rawGroups: readonly Record<string, unknown>[]): Te
 export function firstTeamIdInGroup(teams: readonly TeamRecord[], groupId: string): string | null {
   return teams.find((team) => team.groupId === groupId)?.id ?? null
 }
+
+export function teamInitials(name: string): string {
+  const trimmed = name.trim()
+  return trimmed === '' ? '?' : [...trimmed][0] ?? '?'
+}
+
+export function teamCategory(team: TeamRecord): string {
+  const extra = team.extra ?? {}
+  const value = extra['ecosystem.category'] ?? extra.category
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : team.groupId
+}
+
+export function teamCardTags(team: TeamRecord): string[] {
+  const roles = (team.members ?? []).map((member) => member.displayName || member.role).filter((item) => item !== '')
+  return [...new Set(roles)].slice(0, 4)
+}
+
+export function teamIntro(team: TeamRecord): string {
+  const text = team.description ?? team.summary ?? ''
+  return text.trim()
+}
+
+export function teamScopeTags(team: TeamRecord): string[] {
+  const extra = team.extra ?? {}
+  const raw = extra['ecosystem.tags'] ?? extra.tags ?? extra['ecosystem.domains']
+  const tags: string[] = []
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const value = String(item).trim()
+      if (value !== '') tags.push(value)
+    }
+  }
+  const category = teamCategory(team)
+  if (category !== '' && !tags.includes(category)) tags.unshift(category)
+  return [...new Set(tags)].slice(0, 4)
+}

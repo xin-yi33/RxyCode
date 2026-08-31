@@ -45,6 +45,8 @@ import {
 } from './lib/workspaceSettings.mts'
 import { isUiEntryEnabled } from '../../protocol/capabilityGate.ts'
 import { recycleSectionModel } from '../../features/recycle/recycle.probe.ts'
+import { SchedulePanel } from '../../features/schedule/SchedulePanel.ts'
+import { PluginMarket } from '../../features/plugins/PluginMarket.ts'
 import { usePlatform } from '../../platform/index.mts'
 import {
   DESKTOP_PREFERENCES_STORAGE_KEY,
@@ -68,8 +70,15 @@ import { projectRunPanel } from '../../features/runpanel/runPanel.model.ts'
 import { Statusline } from '../../components/statusbar/Statusline.ts'
 import { PromptSuggestions } from '../../features/composer/PromptSuggestions.ts'
 import { CREATE_TEAM_PROMPT } from '../../features/team/team.model.ts'
+import { CREATE_SKILL_PROMPT } from '../../features/skills/skill.model.ts'
 import { useAgentsSettings } from './hooks/useAgentsSettings'
 import { useTeams } from './hooks/useTeams'
+import {
+  addProject,
+  loadProjects,
+  projectDisplayName,
+  saveProjects
+} from '../../features/projects/projectRegistry.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -87,6 +96,18 @@ function App(): React.JSX.Element {
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
+  const [projects, setProjects] = useState(() => loadProjects(window.localStorage))
+  const [unreadIds, setUnreadIds] = useState<string[]>([])
+  const [railPanel, setRailPanel] = useState<null | 'schedule' | 'plugins'>(null)
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+    try {
+      const raw = window.localStorage.getItem('rxycode.desktop.pinned.v1')
+      const parsed = raw === null ? [] : JSON.parse(raw) as string[]
+      return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : []
+    } catch {
+      return []
+    }
+  })
   const [rulesOpen, setRulesOpen] = useState(false)
   const [preferences, setPreferences] = useState(() => loadDesktopPreferences(window.localStorage))
   const { theme, permissionMode, language } = preferences
@@ -166,6 +187,14 @@ function App(): React.JSX.Element {
   }, [preferences, theme, language])
 
   useEffect(() => {
+    saveProjects(projects, window.localStorage)
+  }, [projects])
+
+  useEffect(() => {
+    window.localStorage.setItem('rxycode.desktop.pinned.v1', JSON.stringify(pinnedIds))
+  }, [pinnedIds])
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (!(event.metaKey || event.ctrlKey)) return
       if (event.key.toLowerCase() === 'k') {
@@ -205,9 +234,11 @@ function App(): React.JSX.Element {
     try {
       const picked = await platform.pickWorkspaceDirectory()
       if (picked !== null) {
-        const next: WorkspaceSettings = { workspaceRoot: normalizeWorkspaceRoot(picked) }
+        const workspaceRoot = normalizeWorkspaceRoot(picked)
+        const next: WorkspaceSettings = { workspaceRoot }
         setWorkspaceSettings(next)
         saveWorkspaceSettings(next, window.localStorage)
+        if (workspaceRoot !== null) setProjects((current) => addProject(current, workspaceRoot))
         return true
       }
       return false
@@ -392,6 +423,12 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const nextRunning = conversation.state.runningBySession
+    const finished = Object.entries(prevRunningBySessionRef.current)
+      .filter(([id, wasRunning]) => wasRunning === true && nextRunning[id] !== true && id !== conversation.state.activeSessionId)
+      .map(([id]) => id)
+    if (finished.length > 0) {
+      setUnreadIds((current) => [...new Set([...current, ...finished])])
+    }
     const flushed = applyTurnEndToPending(
       pendingRef.current,
       prevRunningBySessionRef.current,
@@ -431,6 +468,35 @@ function App(): React.JSX.Element {
     showToast(created ? tr('taskCreated') : tr('taskCreateFailed'))
   }
 
+  const handleAddProject = async (): Promise<void> => {
+    setPickingWorkspace(true)
+    try {
+      const picked = await platform.pickWorkspaceDirectory()
+      if (picked === null) return
+      const cwd = normalizeWorkspaceRoot(picked)
+      if (cwd === null) return
+      setProjects((current) => addProject(current, cwd))
+    } finally {
+      setPickingWorkspace(false)
+    }
+  }
+
+  const handleCreateInProject = async (cwd: string): Promise<void> => {
+    setProjects((current) => addProject(current, cwd))
+    const next: WorkspaceSettings = { workspaceRoot: cwd }
+    setWorkspaceSettings(next)
+    saveWorkspaceSettings(next, window.localStorage)
+    setNavOpen(false)
+    showToast(tr('creatingTaskInProject'))
+    const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
+    const created = await conversation.createSession({
+      modelId: selectedTaskModel || undefined,
+      providerId: selected?.provider_id || undefined,
+      workspaceRoot: cwd
+    })
+    showToast(created ? tr('taskCreatedInProject') : tr('taskCreatePartialFail'))
+  }
+
   const handlePickWorkspaceForChat = async (): Promise<void> => {
     setPickingWorkspace(true)
     try {
@@ -441,6 +507,7 @@ function App(): React.JSX.Element {
       const next: WorkspaceSettings = { workspaceRoot }
       setWorkspaceSettings(next)
       saveWorkspaceSettings(next, window.localStorage)
+      setProjects((current) => addProject(current, workspaceRoot))
       setNavOpen(false)
       showToast(tr('creatingTaskInProject'))
       const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
@@ -471,6 +538,27 @@ function App(): React.JSX.Element {
     showToast(tr('taskRestored'))
     if (!(await operation)) showToast(tr('restoreNotSaved'))
   }
+
+  const selectTask = (sessionId: string): void => {
+    setUnreadIds((current) => current.filter((id) => id !== sessionId))
+    conversation.selectSession(sessionId)
+  }
+
+  const handlePin = (sessionId: string, pinned: boolean): void => {
+    setPinnedIds((current) =>
+      pinned ? [...new Set([...current, sessionId])] : current.filter((id) => id !== sessionId)
+    )
+    void conversation.pinSession(sessionId, pinned)
+  }
+
+  const handlePurgeItem = async (sessionId: string): Promise<void> => {
+    if (!(await conversation.purgeSession(sessionId))) showToast(tr('deleteNotSaved'))
+  }
+
+  const pinnedFromSessions = conversation.state.sessions
+    .filter((session) => session.pinned)
+    .map((session) => session.sessionId)
+  const effectivePinnedIds = [...new Set([...pinnedIds, ...pinnedFromSessions])]
 
   const recycleModel = recycleSectionModel({
     listDeletedAvailable: true,
@@ -564,16 +652,25 @@ function App(): React.JSX.Element {
               runStateBySession={conversation.state.runStateBySession}
               childCountBySession={childCountBySession}
               listDeletedAvailable
+              projects={projects}
               disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
               onCreate={() => void handleCreate()}
+              onAddProject={() => void handleAddProject()}
+              onCreateInProject={(cwd) => void handleCreateInProject(cwd)}
               onSelect={(sessionId) => {
-                conversation.selectSession(sessionId)
+                selectTask(sessionId)
                 setNavOpen(false)
               }}
+              runningBySession={conversation.state.runningBySession}
+              unreadIds={unreadIds}
+              onOpenScheduled={() => setRailPanel('schedule')}
+              onOpenPlugins={() => setRailPanel('plugins')}
               onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
               onTrash={(sessionId) => void handleTrash(sessionId)}
               onRestore={(sessionId) => void handleRestore(sessionId)}
               onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
+              pinnedIds={effectivePinnedIds}
+              onPin={handlePin}
               onOpenSettings={() => setSettingsOpen(true)}
             />
           </div>
@@ -586,13 +683,22 @@ function App(): React.JSX.Element {
           runStateBySession={conversation.state.runStateBySession}
           childCountBySession={childCountBySession}
           listDeletedAvailable
+          projects={projects}
           disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
           onCreate={() => void handleCreate()}
-          onSelect={conversation.selectSession}
+          onAddProject={() => void handleAddProject()}
+          onCreateInProject={(cwd) => void handleCreateInProject(cwd)}
+          onSelect={selectTask}
+          runningBySession={conversation.state.runningBySession}
+          unreadIds={unreadIds}
+          onOpenScheduled={() => setRailPanel('schedule')}
+          onOpenPlugins={() => setRailPanel('plugins')}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
           onTrash={(sessionId) => void handleTrash(sessionId)}
           onRestore={(sessionId) => void handleRestore(sessionId)}
           onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
+          pinnedIds={effectivePinnedIds}
+          onPin={handlePin}
           onOpenSettings={() => setSettingsOpen(true)}
         />
         </div>
@@ -614,7 +720,7 @@ function App(): React.JSX.Element {
               error={conversation.connectionError}
               dark={theme === 'dark'}
               onOpenThread={(sessionId) => {
-                conversation.selectSession(sessionId)
+                selectTask(sessionId)
                 setDesktopView('chat')
               }}
               onRenameThread={(sessionId) => {
@@ -638,8 +744,9 @@ function App(): React.JSX.Element {
           ) : null}
           {desktopView === 'chat' ? (
           <>
+          {activeTimeline.length > 0 ? (
           <TaskHeader
-            title={activeSession?.title ?? 'New task'}
+            title={activeSession?.title ?? tr('newTask')}
             workspaceRoot={activeSession?.workspaceRoot ?? effectiveWorkspace}
             modelLabel={modelStatusLabel({
               selectedModelId: selectedTaskModel,
@@ -649,6 +756,7 @@ function App(): React.JSX.Element {
             runState={activeRunState}
             activeTeamLabel={teams.teams.find((team) => team.id === teams.activeTeamId)?.name ?? null}
           />
+          ) : null}
           {conversation.connectionError !== null && (
             <div className="error-banner" role="alert">
               {tr('connectionFailed', { error: conversation.connectionError })}
@@ -683,7 +791,7 @@ function App(): React.JSX.Element {
           />
           <PromptSuggestions
             items={['Fix the failing test', 'Summarize this repository']}
-            visible={!running && activeTimeline.length === 0}
+            visible={false}
             onPick={(text) => void handleComposerSend(text)}
           />
           {pendingApproval !== null &&
@@ -721,6 +829,11 @@ function App(): React.JSX.Element {
             }}
             onOpenGoal={openGoalDialog}
             onPickWorkspace={() => void handlePickWorkspaceForChat()}
+            projectLabel={
+              activeSession?.workspaceRoot
+                ? projectDisplayName(activeSession.workspaceRoot)
+                : undefined
+            }
             models={models.snapshot?.models ?? []}
             modelsLoading={models.loading || (conversation.protocolClient !== null && models.snapshot === null)}
             selectedModelId={selectedTaskModel}
@@ -863,6 +976,47 @@ function App(): React.JSX.Element {
         onClose={() => setRulesOpen(false)}
         onRevoke={conversation.revokeApprovalRule}
       />
+      {railPanel !== null && (
+        <div className="settings-overlay" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setRailPanel(null)
+        }}>
+          <div className={'settings-page rail-panel' + (railPanel === 'plugins' ? ' rail-panel-wide' : '')} role="dialog" aria-modal="true">
+            <header className="settings-header">
+              <div className="settings-title">{railPanel === 'schedule' ? tr('scheduled') : tr('plugins')}</div>
+              <button type="button" className="settings-close" onClick={() => setRailPanel(null)}>{tr('close')}</button>
+            </header>
+            <div className="settings-body">
+              {railPanel === 'schedule' ? (
+                <SchedulePanel blocked={false} missing={[]} />
+              ) : (
+                <PluginMarket
+                  blocked={false}
+                  missing={[]}
+                  client={conversation.protocolClient}
+                  teams={teams.teams}
+                  groups={teams.groups}
+                  teamLoading={teams.loading}
+                  teamError={teams.error}
+                  onSummonTeam={(teamId) => {
+                    void teams.setActive(teamId).then((ok) => {
+                      if (ok) {
+                        setRailPanel(null)
+                        setComposerPrefill('/team ')
+                        setComposerPrefillNonce((n) => n + 1)
+                        showToast(tr('teamSummoned'))
+                      }
+                    })
+                  }}
+                  onCreateSkill={(need) => {
+                    setRailPanel(null)
+                    void handleComposerSend(CREATE_SKILL_PROMPT.replace('{need}', need))
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {settingsOpen && (
         <SettingsPage
           appVersion={info?.appVersion ?? ''}
@@ -891,6 +1045,7 @@ function App(): React.JSX.Element {
           recycleBlocked={recycleModel.blocked}
           recycleMissing={recycleModel.missing}
           onRestoreDeleted={(sessionId) => void handleRestore(sessionId)}
+          onPurgeItem={(sessionId) => void handlePurgeItem(sessionId)}
           onPurgeRecycle={() => void handlePurgeRecycle()}
           teams={teams.teams}
           groups={teams.groups}
@@ -899,7 +1054,23 @@ function App(): React.JSX.Element {
           agentsSettings={agentsSettings.settings}
           onAgentsSettingsChange={(next) => void agentsSettings.save(next)}
           onRenameGroup={(id, name) => void teams.renameGroup(id, name)}
-          onActivateTeam={(teamId) => void teams.setActive(teamId)}
+          protocolClient={conversation.protocolClient}
+          activeTeamId={teams.activeTeamId}
+          onActivateTeam={(teamId) => {
+            void teams.setActive(teamId).then((ok) => {
+              if (ok) {
+                setSettingsOpen(false)
+                setComposerPrefill('/team ')
+                setComposerPrefillNonce((n) => n + 1)
+                showToast(tr('teamSummoned'))
+              }
+            })
+          }}
+          onCreateTeam={() => {
+            creatingTeamRef.current = true
+            setSettingsOpen(false)
+            void handleComposerSend(CREATE_TEAM_PROMPT)
+          }}
           onActivateGroup={(groupId) => void teams.activateGroup(groupId)}
           installPreview={installPreview}
           onPreviewInstall={(_source, value) => {

@@ -120,6 +120,7 @@ test('App uses the steer builder and drains the queue; no second permission swit
   assert.match(app, /applyTurnEndToPending/)
   assert.match(composer, /SendDropdown/)
   assert.match(composer, /data-testid=\{running \? 'composer-stop' : 'composer-send'\}/)
-  assert.match(composer, /data-testid="composer-permission-mode"/)
+  assert.match(composer, /PermissionMenu/)
+  assert.match(composer, /testId="composer-permission-mode"/)
   assert.doesNotMatch(app, /request\('turn\/steer',\s*\{\s*text\s*\}/)
 })

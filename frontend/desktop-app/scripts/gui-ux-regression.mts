@@ -32,6 +32,7 @@ async function main(): Promise<void> {
       window.api.appserver.onLine((line) => window.__rxyGuiUxLines.push(line));
     })()`)
     const rail = '.desktop-navigation-panel'
+    const activeSessionIdJs = `(document.querySelector('${rail} .session-item.active')?.getAttribute('data-testid') ?? '').replace(/^session-/, '')`
     await harness.waitForSelector(`${rail} .new-session:not(:disabled)`, 60_000)
     await harness.evaluate(`document.querySelector('${rail} .new-session:not(:disabled)')?.click()`)
     await harness.waitForSelector('[data-testid="composer-input"]:not(:disabled)', 20_000)
@@ -91,10 +92,10 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.evaluate<number>(`document.querySelectorAll('[data-testid="final-answer"]').length`)) > finalCountBeforeRetry ? true : null, 10_000, 'post-reconnect final answer')
     })
     await check('UX-02c recovery survives switching to another task', async () => {
-      const previousId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      const previousId = await harness.evaluate<string>(activeSessionIdJs)
       await harness.evaluate(`document.querySelector('${rail} .new-session:not(:disabled)')?.click()`)
       await waitFor(async () => {
-        const nextId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+        const nextId = await harness.evaluate<string>(activeSessionIdJs)
         return nextId !== '' && nextId !== previousId ? true : null
       }, 3_000, 'task after recovered timeout')
       await harness.typePrompt('new task after recovered timeout')
@@ -162,13 +163,13 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.has('[data-testid="goal-dialog"]')) ? null : true, 2_000, 'goal dialog Escape close')
     })
     await check('UX-07 delete is optimistic', async () => {
-      const taskId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      const taskId = await harness.evaluate<string>(activeSessionIdJs)
       const started = Date.now()
       await harness.evaluate(`document.querySelector('${rail} [data-testid="trash-task-${taskId}"]')?.click()`)
       await harness.waitForSelector('[data-testid="task-toast"]', 2_000)
       const feedback = await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)
       if (!feedback.includes('正在打开')) throw new Error(`active task was not protected: ${feedback}`)
-      if (!(await harness.has(`.session-item.active .session-id`))) throw new Error('active task disappeared after delete')
+      if (!(await harness.has(`${rail} .session-item.active`))) throw new Error('active task disappeared after delete')
       if (Date.now() - started > 1_000) throw new Error('active-task protection was not immediate')
     })
     await check('UX-08 default layout keeps a persistent left rail and centers the task column', async () => {
@@ -252,13 +253,13 @@ async function main(): Promise<void> {
       await waitFor(async () => (await harness.has('.contextual-inspector-slot')) ? null : true, 2_000, 'usage inspector close')
     })
     await check('UX-12 non-active task delete and restore give immediate feedback', async () => {
-      const originalId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      const originalId = await harness.evaluate<string>(activeSessionIdJs)
       await harness.evaluate(`document.querySelector('${rail} .new-session')?.click()`)
       await waitFor(async () => {
-        const next = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+        const next = await harness.evaluate<string>(activeSessionIdJs)
         return next !== '' && next !== originalId ? true : null
       }, 3_000, 'second task creation')
-      const secondId = await harness.evaluate<string>(`document.querySelector('${rail} .session-item.active .session-id')?.textContent ?? ''`)
+      const secondId = await harness.evaluate<string>(activeSessionIdJs)
       await harness.evaluate(`document.querySelector('${rail} [data-testid="session-${originalId}"]')?.click()`)
       await harness.waitForSelector(`${rail} .session-item.active`, 2_000)
       await harness.evaluate(`document.querySelector('${rail} [data-testid="trash-task-${secondId}"]')?.click()`)
@@ -266,9 +267,13 @@ async function main(): Promise<void> {
       if (await harness.has(`${rail} [data-testid="session-category-recent"] [data-testid="session-${secondId}"]`)) {
         throw new Error('deleted task remained in active task list')
       }
-      await harness.waitForSelector(`${rail} [data-testid="session-recycle"] [data-testid="restore-task-${secondId}"]`, 2_000)
-      await harness.evaluate(`document.querySelector('${rail} [data-testid="restore-task-${secondId}"]')?.click()`)
+      await harness.evaluate(`document.querySelector('${rail} [data-testid="open-settings"]')?.click()`)
+      await harness.waitForSelector('[data-testid="settings-recycle"]', 2_000)
+      await harness.evaluate(`document.querySelector('[data-tab="recycle"]')?.click()`)
+      await harness.waitForSelector(`[data-testid="restore-task-${secondId}"]`, 2_000)
+      await harness.evaluate(`document.querySelector('[data-testid="restore-task-${secondId}"]')?.click()`)
       await waitFor(async () => (await harness.evaluate<string>(`document.querySelector('[data-testid="task-toast"]')?.textContent ?? ''`)).includes('已恢复任务') ? true : null, 2_000, 'restore success toast')
+      await harness.evaluate(`document.querySelector('.settings-close')?.click()`)
       await waitFor(async () => (await harness.has(`${rail} [data-testid="session-${secondId}"]`)) ? true : null, 2_000, 'restored task visible')
     })
     await check('UX-13 inspector opens only on demand from a tool activity', async () => {

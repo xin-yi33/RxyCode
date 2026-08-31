@@ -216,6 +216,9 @@ def search_github_skills(query: str) -> list[dict]:
                 "repo": repo,
                 "path": path,
                 "source": "known",
+                "stars": 0,
+                "description": "",
+                "scope": repo,
             })
 
     # Then search GitHub API for repos with SKILL.md
@@ -239,10 +242,14 @@ def search_github_skills(query: str) -> list[dict]:
                         "repo": repo_name,
                         "path": "",
                         "source": "github",
+                        "stars": int(item.get("stargazers_count") or 0),
+                        "description": str(item.get("description") or ""),
+                        "scope": str(item.get("language") or repo_name),
                     })
     except Exception:
         pass
 
+    results.sort(key=lambda row: int(row.get("stars") or 0), reverse=True)
     return results
 
 
@@ -300,6 +307,37 @@ async def install_skill_from_url_async(url: str, skill_name: str) -> tuple[bool,
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+
+
+def install_skill_from_local(path: str, skill_name: str) -> tuple[bool, str]:
+    """Install a skill from a local SKILL.md, zip, or folder."""
+    try:
+        skill_name = _validate_skill_name(skill_name)
+    except ValueError as exc:
+        return False, str(exc)
+    src = Path(path)
+    if src.is_symlink() or not src.exists():
+        return False, "local skill path is missing or a symlink"
+    skills_dir = get_skills_dir()
+    dest = skills_dir / skill_name
+    if dest.exists():
+        return False, f"Skill '{skill_name}' is already installed"
+    try:
+        if src.is_file() and src.suffix.lower() == ".zip":
+            dest.mkdir(parents=True, exist_ok=True)
+            _safe_extract_zip(src.read_bytes(), dest)
+        elif src.is_file() and src.suffix.lower() == ".md":
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "SKILL.md").write_bytes(src.read_bytes())
+        elif src.is_dir() and (src / "SKILL.md").is_file() and not (src / "SKILL.md").is_symlink():
+            shutil.copytree(src, dest, symlinks=False)
+        else:
+            return False, "local skill must be SKILL.md, a zip, or a folder with SKILL.md"
+    except (ValueError, zipfile.BadZipFile, OSError) as exc:
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        return False, f"Install failed: {exc}"
+    return True, f"Installed skill at {dest}"
 
 
 def remove_skill(skill_name: str) -> tuple[bool, str]:

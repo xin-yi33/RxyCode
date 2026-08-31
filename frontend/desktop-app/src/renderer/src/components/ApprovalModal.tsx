@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { ApprovalActionScope, ApprovalExpiryHours } from '../lib/approvalPolicy.mts'
 import type { ApprovalRequestItem } from '../lib/conversationStore.mts'
+import { ThemeMenu } from '../../../features/composer/ThemeMenu.ts'
 
 interface ApprovalModalProps {
   item: ApprovalRequestItem
@@ -97,19 +98,17 @@ function ApprovalModal({
               </label>
             ))}
             <div className="approval-form-label">{t('expiry')}</div>
-            <select
-              className="approval-expiry"
-              value={expiresInHours}
-              onChange={(event) =>
-                setExpiresInHours(Number(event.target.value) as ApprovalExpiryHours)
-              }
-            >
-              {expiryOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <ThemeMenu
+              value={String(expiresInHours)}
+              options={expiryOptions.map((option) => ({
+                value: String(option.value),
+                label: option.label
+              }))}
+              onChange={(value) => setExpiresInHours(Number(value) as ApprovalExpiryHours)}
+              testId="approval-expiry"
+              ariaLabel={t('expiry')}
+              placement="down"
+            />
             <div className="approval-actions">
               <button
                 type="button"

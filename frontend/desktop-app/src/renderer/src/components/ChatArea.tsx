@@ -16,6 +16,7 @@ import { hasLaterPlanFinal } from '../lib/planTimeline.mts'
 import { shouldShowStartupProgress, visibleRunProgress } from '../lib/taskPresentation.mts'
 import { PreviewGallery } from '../../../features/preview/previewGallery.ts'
 import { artifactsFromTool, toolSourceLabel } from '../../../features/preview/previewArtifacts.ts'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface ChatAreaProps {
   timeline: TimelineItem[]
@@ -180,6 +181,7 @@ function ChatArea({
   onRevisePlan,
   onSkipPlan
 }: ChatAreaProps): React.JSX.Element {
+  const { t } = useI18n()
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
   const runProgress = visibleRunProgress({ progress, timelineLength: timeline.length })
@@ -201,7 +203,7 @@ function ChatArea({
     >
       {timeline.length === 0 ? (
         <div className="chat-empty">
-          <p>新建任务后，在下方输入你的需求。</p>
+          <p className="chat-empty-hero">{t('emptyChatGreeting')}</p>
           {shouldShowStartupProgress({
             timelineLength: 0,
             running,

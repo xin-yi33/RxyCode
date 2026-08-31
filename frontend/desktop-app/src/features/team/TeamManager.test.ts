@@ -9,7 +9,9 @@ import { SETTINGS_SECTIONS } from '../../lib/settingsSections.ts'
 import { TeamSection, TEAM_AUTO_WARNING } from '../settings/TeamSection.ts'
 import { TEAM_HOOKS_WARNING, TEAM_PACK_HINT, TeamInstallPanel } from './TeamInstallPanel.ts'
 import { TeamManager, probeTeam } from './TeamManager.ts'
-import { TeamDetailCard, TeamPicker } from './TeamPicker.ts'
+import { TeamGallery } from './TeamGallery.ts'
+import { TeamHubNav } from './TeamHub.ts'
+import { TeamDetailCard, TeamDetailOverlay, TeamPicker } from './TeamPicker.ts'
 import { CREATE_TEAM_PROMPT } from './team.model.ts'
 
 const schema = readFileSync(
@@ -93,4 +95,75 @@ test('GX28: team/* path A; picker/install/section exist; team settings unlocked'
   )
   assert.match(inspector, /team-activity/)
   assert.match(inspector, /AgentActivity/)
+  const gallery = renderToStaticMarkup(
+    createElement(TeamGallery, {
+      groups: [{ id: 'builtin', name: 'builtin' }],
+      teams: [{
+        id: 'software_dev',
+        name: '软件研发团',
+        groupId: 'builtin',
+        description: '结构化分工',
+        extra: { 'ecosystem.category': '技术工程' },
+        members: [{ role: 'pm', displayName: '产品经理', isLeader: true }]
+      }],
+      labels: { use: '召唤', intro: '部分简介', scope: '应用范围' },
+      onUse: () => undefined
+    })
+  )
+  assert.match(gallery, /data-testid="team-gallery"/)
+  assert.match(gallery, /team-gallery-card/)
+  assert.match(gallery, /软件研发团/)
+  assert.match(gallery, /部分简介/)
+  assert.match(gallery, /应用范围/)
+  assert.match(gallery, /技术工程/)
+  assert.match(gallery, />召唤</)
+  assert.match(gallery, /data-testid="use-team-software_dev"/)
+  const hub = renderToStaticMarkup(
+    createElement(TeamHubNav, {
+      tab: 'gallery',
+      labels: { gallery: '专家团', create: '专家团创建', settings: '多agent与专家团设置' },
+      onChange: () => undefined
+    })
+  )
+  assert.match(hub, /data-testid="team-hub-gallery"/)
+  assert.match(hub, /data-testid="team-hub-create"/)
+  assert.match(hub, /data-testid="team-hub-settings"/)
+  const overlay = renderToStaticMarkup(
+    createElement(TeamDetailOverlay, {
+      team: {
+        id: 'software_dev',
+        name: '软件研发团',
+        groupId: 'builtin',
+        description: '结构化分工',
+        extra: { 'ecosystem.category': '技术工程' },
+        members: [{ role: 'pm', displayName: '产品经理', isLeader: true }]
+      },
+      onSummon: () => undefined,
+      onClose: () => undefined
+    })
+  )
+  assert.match(overlay, /data-testid="team-detail-overlay"/)
+  assert.match(overlay, /能力介绍/)
+  assert.match(overlay, /擅长领域/)
+  assert.match(overlay, /团队成员/)
+  assert.match(overlay, /产品经理/)
+  assert.match(overlay, /主理人/)
+  assert.match(overlay, /data-testid="team-detail-summon"/)
+  assert.match(overlay, /teams\/software_dev\.png/)
+  assert.match(overlay, /teams\/member-pm\.png/)
+  const settingsPage = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/SettingsPage.tsx'),
+    'utf8'
+  )
+  assert.match(settingsPage, /TeamHubNav/)
+  assert.match(settingsPage, /CapabilityPanel/)
+  assert.match(settingsPage, /useCapabilities/)
+  assert.doesNotMatch(settingsPage, /skillsBlockedDetail/)
+  assert.doesNotMatch(settingsPage, /mcpBlockedDetail/)
+  const hook = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/hooks/useCapabilities.ts'),
+    'utf8'
+  )
+  assert.match(hook, /capabilities\/list/)
+  assert.match(hook, /capabilities\/set_enabled/)
 })

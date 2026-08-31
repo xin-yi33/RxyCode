@@ -32,6 +32,7 @@ import {
   updateApprovalRequestStatus,
   setSessionModel,
   trashSession,
+  pinSession,
   type ConversationState
 } from './conversationStore.mts'
 import type { ApprovalRequest, RunComplete, ToolBegin, ToolEnd } from '@rxycode/protocol-client'
@@ -357,6 +358,19 @@ test('task metadata supports model selection and reversible deletion', () => {
   assert.equal(state.sessions[0]?.trashedAt, null)
   state = purgeSession(state, 's1')
   assert.equal(state.sessions.length, 0)
+})
+
+test('pinSession toggles pinned without deleting the task', () => {
+  let state = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE
+  })
+  assert.equal(state.sessions[0]?.pinned, false)
+  state = pinSession(state, 's1', true)
+  assert.equal(state.sessions[0]?.pinned, true)
+  state = pinSession(state, 's1', false)
+  assert.equal(state.sessions[0]?.pinned, false)
+  assert.equal(state.sessions.length, 1)
 })
 
 test('hydrated task status restores active and terminal state without re-running the task', () => {

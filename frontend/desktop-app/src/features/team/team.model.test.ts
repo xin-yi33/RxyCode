@@ -6,7 +6,12 @@ import {
   firstTeamIdInGroup,
   leaderFirstMembers,
   mapTeamGroups,
-  mapTeamListItem
+  mapTeamListItem,
+  teamCardTags,
+  teamCategory,
+  teamInitials,
+  teamIntro,
+  teamScopeTags
 } from './team.model.ts'
 
 test('maps team/list extra onto a WorkBuddy detail card: leader first, stages, example prompts', () => {
@@ -72,5 +77,23 @@ test('conversational create prompt names team.yaml, roles, and team_install', ()
   assert.match(CREATE_TEAM_PROMPT, /团长居首/)
   assert.match(CREATE_TEAM_PROMPT, /team_install/)
   assert.match(CREATE_TEAM_PROMPT, /~\/\.RxyCode\/teams/)
-}
-)
+})
+
+test('WorkBuddy gallery cards expose initials, intro, and scope tags', () => {
+  const team = mapTeamListItem({
+    id: 'software_dev',
+    display_name: '软件研发团',
+    description: '结构化分工',
+    group: 'builtin',
+    extra: { 'ecosystem.category': '技术工程' },
+    members: [
+      { role: 'pm', display_name: '主理人', extra: { 'ecosystem.is_leader': true } },
+      { role: 'coder', display_name: '编码员', extra: {} }
+    ]
+  })
+  assert.equal(teamInitials(team.name), '软')
+  assert.equal(teamCategory(team), '技术工程')
+  assert.equal(teamIntro(team), '结构化分工')
+  assert.deepEqual(teamScopeTags(team), ['技术工程'])
+  assert.deepEqual(teamCardTags(team), ['主理人', '编码员'])
+})

@@ -148,6 +148,7 @@ export interface SessionEntry {
   modelId: string | null
   providerId: string | null
   trashedAt: number | null
+  pinned: boolean
 }
 
 export interface ConversationState {
@@ -204,6 +205,7 @@ export interface NewSessionInput {
   modelId?: string | null
   providerId?: string | null
   trashedAt?: number | null
+  pinned?: boolean
 }
 
 export interface TaskSummaryInput {
@@ -216,6 +218,7 @@ export interface TaskSummaryInput {
   created_at?: string
   updated_at?: string
   trashed_at?: string | null
+  pinned?: boolean
 }
 
 export interface PromptResult {
@@ -337,7 +340,8 @@ export function addSession(state: ConversationState, input: NewSessionInput): Co
     updatedAt: input.updatedAt ?? input.createdAt ?? Date.now(),
     modelId: input.modelId ?? null,
     providerId: input.providerId ?? null,
-    trashedAt: input.trashedAt ?? null
+    trashedAt: input.trashedAt ?? null,
+    pinned: input.pinned === true
   }
   return {
     ...state,
@@ -577,7 +581,8 @@ export function hydrateSessions(
       providerId: summary.provider_id ?? null,
       trashedAt: summary.trashed_at === null || summary.trashed_at === undefined
         ? null
-        : timeFromProtocol(summary.trashed_at, now)
+        : timeFromProtocol(summary.trashed_at, now),
+      pinned: summary.pinned === true
     })
     if (current !== undefined) {
       next = {
@@ -596,7 +601,8 @@ export function hydrateSessions(
                     ? session.trashedAt
                     : summary.trashed_at === null
                       ? null
-                      : timeFromProtocol(summary.trashed_at, session.trashedAt ?? now)
+                      : timeFromProtocol(summary.trashed_at, session.trashedAt ?? now),
+                pinned: summary.pinned === undefined ? session.pinned : summary.pinned === true
               }
             : session
         )
@@ -650,6 +656,19 @@ export function setSessionModel(
       session.sessionId === sessionId
         ? { ...session, modelId, providerId, updatedAt: Date.now() }
         : session
+    )
+  }
+}
+
+export function pinSession(
+  state: ConversationState,
+  sessionId: string,
+  pinned: boolean
+): ConversationState {
+  return {
+    ...state,
+    sessions: state.sessions.map((session) =>
+      session.sessionId === sessionId ? { ...session, pinned, updatedAt: Date.now() } : session
     )
   }
 }

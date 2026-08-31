@@ -9,7 +9,15 @@ import { PurgeConfirmDialog } from '../../components/PurgeConfirmDialog.ts'
 import { TrashItem } from '../../components/TrashItem.ts'
 import { TrashSection } from '../settings/TrashSection.ts'
 import { RecycleBin } from './RecycleBin.ts'
-import { B17_RECYCLE_METHODS, buildThreadPurge, probeRecycle, recycleSectionModel } from './recycle.probe.ts'
+import {
+  B17_RECYCLE_METHODS,
+  buildThreadPurge,
+  filterArchived,
+  formatArchivedAt,
+  groupArchivedByProject,
+  probeRecycle,
+  recycleSectionModel
+} from './recycle.probe.ts'
 
 const schema = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '../../../../../protocol/schema.json'),
@@ -70,7 +78,7 @@ test('GX21: settings recycle uses live B17 sessions, not a hardcoded BLOCKED stu
   assert.equal(live.blocked, false)
   assert.deepEqual(live.missing, [])
   assert.deepEqual(live.items, [
-    { id: 'gone', title: 'old task', deletedAt: '2026-08-01T00:00:00.000Z', originCategory: 'recent' }
+    { id: 'gone', title: 'old task', deletedAt: '2026-08-01T00:00:00.000Z', originCategory: 'recent', workspaceRoot: '' }
   ])
   const html = renderToStaticMarkup(
     createElement(TrashSection, {
@@ -111,4 +119,32 @@ test('GX21: TrashSection five states + BLOCKED missing list; RecycleBin mounts d
     })
   )
   assert.match(empty, /data-visual-state="empty"/)
+})
+
+test('archived chats group by project, search, and format the timestamp', () => {
+  const live = recycleSectionModel({
+    listDeletedAvailable: true,
+    sessions: [
+      { sessionId: 'a', title: 'git commit', trashedAt: '2026-08-12T13:36:00.000Z', workspaceRoot: 'D:\\papers' },
+      { sessionId: 'b', title: 'login fix', trashedAt: '2026-08-13T01:00:00.000Z', workspaceRoot: 'D:\\rxy' }
+    ]
+  })
+  assert.equal(live.items[0]?.workspaceRoot, 'D:\\papers')
+  const groups = groupArchivedByProject(live.items)
+  assert.deepEqual(groups.map((group) => group.displayName), ['papers', 'rxy'])
+  assert.equal(filterArchived(live.items, 'git', 'all').map((item) => item.id).join(','), 'a')
+  assert.equal(filterArchived(live.items, '', 'D:\\rxy').map((item) => item.id).join(','), 'b')
+  assert.match(formatArchivedAt('2026-08-12T13:36:00.000Z', 'zh-CN'), /2026/)
+  const html = renderToStaticMarkup(
+    createElement(TrashSection, {
+      items: live.items,
+      blocked: false,
+      missing: [],
+      onRestore: () => undefined,
+      onPurgeConfirmed: () => undefined
+    })
+  )
+  assert.match(html, /archived-chats/)
+  assert.match(html, /data-action="restore"/)
+  assert.match(html, /data-action="open-purge"/)
 })

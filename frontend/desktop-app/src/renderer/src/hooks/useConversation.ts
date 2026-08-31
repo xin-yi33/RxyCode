@@ -29,6 +29,7 @@ import {
   createInitialState,
   hydrateChildSessions,
   hydrateSessions,
+  pinSession,
   parseLeadingAgentMentions,
   purgeSession,
   releaseStaleRun,
@@ -87,6 +88,7 @@ export interface UseConversationResult {
   trashSession: (sessionId: string) => Promise<boolean>
   restoreSession: (sessionId: string) => Promise<boolean>
   purgeSession: (sessionId: string) => Promise<boolean>
+  pinSession: (sessionId: string, pinned: boolean) => Promise<boolean>
   setSessionModel: (sessionId: string, modelId: string, providerId?: string | null) => Promise<boolean>
   sendMessage: (text: string, permissionModeOrOptions?: PermissionMode | SendMessageOptions) => Promise<void>
   interrupt: () => Promise<void>
@@ -437,7 +439,8 @@ export function useConversation(
                   updated_at: typeof item.updated_at === 'string' ? item.updated_at : undefined,
                   trashed_at: item.trashed_at === null || typeof item.trashed_at === 'string'
                     ? item.trashed_at
-                    : null
+                    : null,
+                  pinned: item.pinned === true
                 }))
               )
             )
@@ -626,6 +629,18 @@ export function useConversation(
       setState((current) => restoreSession(current, sessionId))
       return false
     }
+  }, [])
+
+  const pinTask = useCallback(async (sessionId: string, pinned: boolean): Promise<boolean> => {
+    setState((current) => pinSession(current, sessionId, pinned))
+    const client = await ensureClient(sessionId)
+    if (client === null || client === undefined) return true
+    try {
+      await client.requestWithTimeout('thread/pin', { thread_id: sessionId, pinned }, 10_000)
+    } catch {
+      // Keep the local pin even if this appserver build has no thread/pin yet.
+    }
+    return true
   }, [])
 
   const restoreTask = useCallback(async (sessionId: string): Promise<boolean> => {
@@ -881,6 +896,7 @@ export function useConversation(
     trashSession: trashTask,
     restoreSession: restoreTask,
     purgeSession: purgeTask,
+    pinSession: pinTask,
     setSessionModel: setTaskModel,
     sendMessage,
     interrupt,

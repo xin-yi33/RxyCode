@@ -1,4 +1,4 @@
-import { ArrowUp, ChevronDown, Mic, Plus, Square } from 'lucide-react'
+import { ArrowUp, Folder, Mic, Plus, Square } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { ModelEntry } from '../hooks/useModels'
@@ -9,6 +9,8 @@ import { canSubmitComposer, promptWithAttachment, shouldSubmitOnKey } from '../l
 import { SendDropdown } from '../../../features/composer/SendDropdown.ts'
 import type { SendIntent } from '../../../features/composer/pending.queue.ts'
 import type { TeamRecord } from '../../../features/team/team.visual.ts'
+import { ThemeMenu } from '../../../features/composer/ThemeMenu.ts'
+import { PermissionMenu } from '../../../features/composer/PermissionMenu.ts'
 import ComposerPlusMenu from './ComposerPlusMenu'
 
 interface ComposerProps {
@@ -36,12 +38,7 @@ interface ComposerProps {
   onCreateTeam?: () => void
   prefillText?: string
   prefillNonce?: number
-}
-
-const MODE_KEYS: Record<PermissionMode, string> = {
-  confirm_all: 'modeConfirmAll',
-  auto_edit: 'modeAutoEdit',
-  full_auto: 'modeFullAuto'
+  projectLabel?: string
 }
 
 type FileWithPath = File & { path?: string }
@@ -77,7 +74,8 @@ function Composer({
   onSummonTeam,
   onCreateTeam,
   prefillText,
-  prefillNonce = 0
+  prefillNonce = 0,
+  projectLabel
 }: ComposerProps): React.JSX.Element {
   const { t } = useI18n()
   const [text, setText] = useState('')
@@ -135,6 +133,16 @@ function Composer({
             </button>
           </div>
         )}
+        <button
+          type="button"
+          className="composer-project-chip"
+          data-testid="composer-project"
+          onClick={onPickWorkspace}
+          disabled={disabled}
+        >
+          <Folder aria-hidden="true" size={14} />
+          {projectLabel === undefined || projectLabel === '' ? t('selectProject') : projectLabel}
+        </button>
         {goal !== '' && (
           <button type="button" className="composer-goal-chip" data-testid="composer-goal-chip" onClick={onOpenGoal}>
             {t('goal')} · {goal}
@@ -212,49 +220,46 @@ function Composer({
                 {t('planMode')}
               </button>
             )}
-            <label className="composer-permission-control">
-              <span className="sr-only">{t('permissionMode')}</span>
-              <select
-                aria-label={t('permissionMode')}
-                data-testid="composer-permission-mode"
-                value={permissionMode}
-                disabled={disabled || running}
-                onChange={(event) => onRequestPermissionModeChange(event.target.value as PermissionMode)}
-              >
-                {(Object.keys(MODE_KEYS) as PermissionMode[]).map((mode) => (
-                  <option key={mode} value={mode}>{t(MODE_KEYS[mode])}</option>
-                ))}
-              </select>
-              <ChevronDown aria-hidden="true" size={13} />
-            </label>
+            <PermissionMenu
+              value={permissionMode}
+              onChange={(value) => onRequestPermissionModeChange(value)}
+              disabled={disabled || running}
+              testId="composer-permission-mode"
+              labels={{
+                header: t('permissionHeader'),
+                learnMore: t('permissionLearnMore'),
+                confirmAll: t('permissionConfirmAll'),
+                confirmAllHint: t('permissionConfirmAllHint'),
+                autoEdit: t('permissionAutoEdit'),
+                autoEditHint: t('permissionAutoEditHint'),
+                fullAuto: t('permissionFullAuto'),
+                fullAutoHint: t('permissionFullAutoHint'),
+                trigger: t('permissionMode')
+              }}
+            />
           </div>
           <div className="composer-toolbar-right">
-            <label className="composer-model-control">
-              <span className="sr-only">{t('taskModel')}</span>
-              <select
-                id="composer-model"
-                aria-label={t('taskModel')}
-                data-testid="composer-model"
-                value={selectedModelId}
-                disabled={disabled || running || models.length === 0}
-                onChange={(event) => onSelectModel(event.target.value)}
-              >
-                {models.length === 0 ? (
-                  <option value="">{modelsLoading ? t('loadingModels') : t('noConfiguredModels')}</option>
-                ) : (
-                  groups.map(([group, entries]) => (
-                    <optgroup key={group} label={group}>
-                      {entries.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.nickname || model.name || model.provider_model_id}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))
-                )}
-              </select>
-              <ChevronDown aria-hidden="true" size={13} />
-            </label>
+            <ThemeMenu
+              value={selectedModelId}
+              options={
+                models.length === 0
+                  ? [{ value: '', label: modelsLoading ? t('loadingModels') : t('noConfiguredModels') }]
+                  : groups.flatMap(([group, entries]) =>
+                      entries.map((model) => ({
+                        value: model.id,
+                        label: model.nickname || model.name || model.provider_model_id,
+                        group
+                      }))
+                    )
+              }
+              onChange={onSelectModel}
+              disabled={disabled || running || models.length === 0}
+              testId="composer-model"
+              ariaLabel={t('taskModel')}
+              title={t('taskModelHint')}
+              placement="up"
+              align="end"
+            />
             <button
               type="button"
               className="composer-icon-button composer-mic"

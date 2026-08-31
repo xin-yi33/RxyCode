@@ -1,4 +1,5 @@
 import { createElement, type ReactElement } from 'react'
+import { ThemeMenu } from '../composer/ThemeMenu.ts'
 import { agentsSettingsVisible, type AgentsSettingsView, type RouteMode } from './agentsSettings.ts'
 
 export interface AgentsModelOption {
@@ -16,8 +17,8 @@ export function AgentsSettingsPanel(props: {
   const visible = agentsSettingsVisible(props.settings)
   const inherit = props.labels.inheritMaster ?? 'Inherit master'
   const modelOptions = [
-    createElement('option', { key: '', value: '' }, inherit),
-    ...props.models.map((model) => createElement('option', { key: model.id, value: model.id }, model.label))
+    { value: '', label: inherit },
+    ...props.models.map((model) => ({ value: model.id, label: model.label }))
   ]
   return createElement(
     'section',
@@ -42,37 +43,40 @@ export function AgentsSettingsPanel(props: {
             'label',
             null,
             props.labels.agentsRoute ?? 'Route',
-            createElement(
-              'select',
-              {
-                'data-testid': 'agents-route',
-                value: props.settings.routeMode,
-                onChange: (event: React.ChangeEvent<HTMLSelectElement>) =>
-                  props.onChange({ ...props.settings, routeMode: event.target.value as RouteMode })
-              },
-              createElement('option', { value: 'auto' }, props.labels.routeAuto ?? 'auto'),
-              createElement('option', { value: 'solo' }, props.labels.routeSolo ?? 'solo'),
-              createElement('option', { value: 'team' }, props.labels.routeTeam ?? 'team')
-            )
+            createElement(ThemeMenu, {
+              value: props.settings.routeMode,
+              options: [
+                { value: 'auto', label: props.labels.routeAuto ?? 'auto' },
+                { value: 'solo', label: props.labels.routeSolo ?? 'solo' },
+                { value: 'team', label: props.labels.routeTeam ?? 'team' }
+              ],
+              onChange: (value) => props.onChange({ ...props.settings, routeMode: value as RouteMode }),
+              testId: 'agents-route',
+              ariaLabel: props.labels.agentsRoute ?? 'Route',
+              placement: 'down',
+              align: 'end'
+            })
           ),
           createElement(
             'label',
             null,
             props.labels.agentsRouterModel ?? 'Router model',
-            createElement(
-              'select',
-              {
-                'data-testid': 'agents-router-model',
-                value: props.settings.routerModel ?? '',
-                onChange: (event: React.ChangeEvent<HTMLSelectElement>) =>
-                  props.onChange({
-                    ...props.settings,
-                    routerModel: event.target.value === '' ? null : event.target.value
-                  })
-              },
-              createElement('option', { value: '' }, props.labels.routerNone ?? 'None'),
-              ...props.models.map((model) => createElement('option', { key: model.id, value: model.id }, model.label))
-            )
+            createElement(ThemeMenu, {
+              value: props.settings.routerModel ?? '',
+              options: [
+                { value: '', label: props.labels.routerNone ?? 'None' },
+                ...props.models.map((model) => ({ value: model.id, label: model.label }))
+              ],
+              onChange: (value) =>
+                props.onChange({
+                  ...props.settings,
+                  routerModel: value === '' ? null : value
+                }),
+              testId: 'agents-router-model',
+              ariaLabel: props.labels.agentsRouterModel ?? 'Router model',
+              placement: 'down',
+              align: 'end'
+            })
           ),
           createElement(
             'label',
@@ -109,45 +113,45 @@ export function AgentsSettingsPanel(props: {
                   'label',
                   null,
                   props.labels.masterModel ?? 'Master model',
-                  createElement(
-                    'select',
-                    {
-                      'data-testid': 'master-model',
-                      value: props.settings.multiModel.masterModel ?? '',
-                      onChange: (event: React.ChangeEvent<HTMLSelectElement>) =>
-                        props.onChange({
-                          ...props.settings,
-                          multiModel: {
-                            ...props.settings.multiModel,
-                            masterModel: event.target.value === '' ? null : event.target.value
-                          }
-                        })
-                    },
-                    ...modelOptions
-                  )
+                  createElement(ThemeMenu, {
+                    value: props.settings.multiModel.masterModel ?? '',
+                    options: modelOptions,
+                    onChange: (value) =>
+                      props.onChange({
+                        ...props.settings,
+                        multiModel: {
+                          ...props.settings.multiModel,
+                          masterModel: value === '' ? null : value
+                        }
+                      }),
+                    testId: 'master-model',
+                    ariaLabel: props.labels.masterModel ?? 'Master model',
+                    placement: 'down',
+                    align: 'end'
+                  })
                 ),
                 ...props.roles.map((role) =>
                   createElement(
                     'label',
                     { key: role },
                     role,
-                    createElement(
-                      'select',
-                      {
-                        'data-testid': `role-model-${role}`,
-                        value: props.settings.multiModel.roleModels[role] ?? '',
-                        onChange: (event: React.ChangeEvent<HTMLSelectElement>) => {
-                          const next = { ...props.settings.multiModel.roleModels }
-                          if (event.target.value === '') delete next[role]
-                          else next[role] = event.target.value
-                          props.onChange({
-                            ...props.settings,
-                            multiModel: { ...props.settings.multiModel, roleModels: next }
-                          })
-                        }
+                    createElement(ThemeMenu, {
+                      value: props.settings.multiModel.roleModels[role] ?? '',
+                      options: modelOptions,
+                      onChange: (value) => {
+                        const next = { ...props.settings.multiModel.roleModels }
+                        if (value === '') delete next[role]
+                        else next[role] = value
+                        props.onChange({
+                          ...props.settings,
+                          multiModel: { ...props.settings.multiModel, roleModels: next }
+                        })
                       },
-                      ...modelOptions
-                    )
+                      testId: `role-model-${role}`,
+                      ariaLabel: role,
+                      placement: 'down',
+                      align: 'end'
+                    })
                   )
                 )
               )

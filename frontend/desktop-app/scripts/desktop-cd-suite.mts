@@ -218,7 +218,7 @@ async function createSessionAndSubmit(
     return count > prior ? true : null
   }, 20_000, 'new task session')
   const sessionId = await harness.evaluate<string>(
-    `document.querySelector('.session-item.active .session-id')?.textContent ?? ''`
+    `(document.querySelector('.session-item.active')?.getAttribute('data-testid') ?? '').replace(/^session-/, '')`
   )
   await harness.typePrompt(prompt)
   await waitFor(async () => (await harness.has(SEND_READY_SELECTOR)) ? true : null, 5_000, 'enabled send')
@@ -234,7 +234,7 @@ async function createSessionOnly(harness: DesktopCdpHarness): Promise<string> {
     const count = await harness.evaluate<number>('document.querySelectorAll(".session-item").length')
     return count > prior ? true : null
   }, 20_000, 'new parallel task')
-  return harness.evaluate<string>('document.querySelector(".session-item.active .session-id")?.textContent ?? ""')
+  return harness.evaluate<string>("(document.querySelector('.session-item.active')?.getAttribute('data-testid') ?? '').replace(/^session-/, '')")
 }
 
 async function submitExistingSession(
@@ -285,7 +285,7 @@ async function waitForSessionsTerminal(
 async function selectSession(harness: DesktopCdpHarness, sessionId: string): Promise<void> {
   await harness.evaluate(`document.querySelector('[data-testid="session-${sessionId}"]')?.click()`)
   await waitFor(async () => (await harness.evaluate<boolean>(
-    `document.querySelector('.session-item.active .session-id')?.textContent === ${JSON.stringify(sessionId)}`
+    `(document.querySelector('.session-item.active')?.getAttribute('data-testid') ?? '') === ${JSON.stringify(`session-${sessionId}`)}`
   )) ? true : null, 5_000, `select session ${sessionId}`)
 }
 
@@ -384,12 +384,16 @@ async function runOne(
       const replacementTaskId = await createSessionOnly(harness)
       sessionIds.push(replacementTaskId)
       await harness.evaluate(`document.querySelector('[data-testid="trash-task-${taskId}"]')?.click()`)
+      await harness.evaluate(`document.querySelector('[data-testid="open-settings"]')?.click()`)
+      await harness.waitForSelector('[data-testid="settings-recycle"]', 5_000)
+      await harness.evaluate(`document.querySelector('[data-tab="recycle"]')?.click()`)
       await waitFor(async () => (
-        await harness.has(`[data-testid="session-recycle"] [data-testid="restore-task-${taskId}"]`)
-      ) ? true : null, 5_000, 'recently deleted section')
+        await harness.has(`[data-testid="restore-task-${taskId}"]`)
+      ) ? true : null, 5_000, 'archived chats section')
       await harness.evaluate(
-        `document.querySelector('[data-testid="session-recycle"] [data-testid="restore-task-${taskId}"]')?.click()`
+        `document.querySelector('[data-testid="restore-task-${taskId}"]')?.click()`
       )
+      await harness.evaluate(`document.querySelector('.settings-close')?.click()`)
       await waitFor(async () => (
         await harness.has(`[data-testid="session-${taskId}"]:not([disabled])`)
       ) ? true : null, 5_000, 'restored task visible')
