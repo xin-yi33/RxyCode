@@ -20,7 +20,10 @@ const COLS = 80;
 const ROWS = 24;
 const NARROW_COLS = 52;
 const NARROW_ROWS = 18;
-const TIMEOUT_MS = 8000;
+// Hosted Windows runners can take longer to deliver the first ConPTY input
+// and mock request even though the process is healthy. Keep local failures
+// fast while allowing CI enough time for that scheduling variance.
+const TIMEOUT_MS = process.env.CI === 'true' ? 15000 : 8000;
 const SGR_MOUSE = /\x1b\[<\d+;\d+;\d+[Mm]/;
 const ANSI_CONTROL = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const plain = (value) => value.replace(ANSI_CONTROL, '');

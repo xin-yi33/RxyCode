@@ -23,12 +23,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Sequence
 import re as _re
 from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 # 2026-08-13: ChatOpenAI 改为懒导入——顶层 `from langchain_openai import ChatOpenAI`
 # 会传递导入 torch/transformers（实测 6.5s），拖慢 worker bootstrap（切换模型/
 # 会话重建时的"agent 重启"等待）。使用点在 _build_llm_from_config 内局部导入。
@@ -105,7 +107,30 @@ from RxyCode.RxyCode1_1_0.validation.side_effects import (
 )
 
 from . import providers
-from .providers.base import BaseProvider
+from .providers.base import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
+    BaseProvider,
+    CHAT_TRANSPORT,
+    LLMTransport,
+    RESPONSES_TRANSPORT,
+)
+from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds
+from .providers._compat import (
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+    ensure_resource_path_rewritable,
+    normalize_llm_endpoint,
+    normalize_resource_path,
+    normalize_transport_candidates,
+    resource_path_request_hook,
+)
+from .providers.responses_adapter import (
+    accumulate_reasoning_items,
+    assistant_content_for_responses_replay,
+    astream_with_native_reasoning_events,
+    install_langchain_responses_reasoning_patch,
+    responses_stream_as_chat_chunks,
+)
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
@@ -1022,11 +1047,28 @@ def _record_usage(
     um = getattr(resp, "usage_metadata", None)
     if um:
         usage = _merged_usage_dict(resp)
-        token_stats.add_real_usage(
-            usage.get("input_tokens", 0),
-            usage.get("output_tokens", 0),
-            provider.extract_cache_read(usage, caps),
+        cache_read = provider.extract_cache_read(usage, caps)
+        cache_write_extractor = getattr(provider, "extract_cache_write", None)
+        cache_write = (
+            cache_write_extractor(usage, caps)
+            if callable(cache_write_extractor)
+            else 0
         )
+        # Keep the historical three-argument call shape when there is no
+        # cache-write usage to report.  Besides preserving older embedders,
+        # this avoids needlessly changing the public call contract for the
+        # common path; the fourth argument is reserved for real cache writes.
+        if cache_write:
+            token_stats.add_real_usage(
+                usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0),
+                cache_read,
+                cache_write,
+            )
+        else:
+            token_stats.add_real_usage(
+                usage.get("input_tokens", 0), usage.get("output_tokens", 0), cache_read
+            )
         return int(usage.get("input_tokens", 0) or 0), int(
             usage.get("output_tokens", 0) or 0
         )
@@ -1038,8 +1080,19 @@ def _record_usage(
         completion_toks = int(getattr(raw_usage, "completion_tokens", 0) or 0)
         usage_dict = _usage_obj_to_dict(raw_usage)
         cache_read = provider.extract_cache_read(usage_dict, caps)
+        cache_write_extractor = getattr(provider, "extract_cache_write", None)
+        cache_write = (
+            cache_write_extractor(usage_dict, caps)
+            if callable(cache_write_extractor)
+            else 0
+        )
         if prompt_toks > 0 or completion_toks > 0:
-            token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
+            if cache_write:
+                token_stats.add_real_usage(
+                    prompt_toks, completion_toks, cache_read, cache_write
+                )
+            else:
+                token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
             # B3 (CB3): DeepSeek 自动前缀验证——不注入 cache_control，用
             # prompt_cache_hit_tokens 验证前缀是否生效，失败记录警告而非静默。
             if getattr(provider, "name", "") == "deepseek":
@@ -1176,10 +1229,12 @@ class UsageTrackingLLM:
         capabilities=None,
         llm_timeout: float = 90.0,
         first_token_timeout: float | None = None,
+        cache_cfg: dict | None = None,
     ):
         self._llm = llm
         self._provider = provider
         self._capabilities = capabilities
+        self._cfg = dict(cache_cfg or {})
         # Cache the prompt_prefix_cache decision so we don't re-read config
         # on every single LLM call.
         self._cache_enabled = None
@@ -1513,7 +1568,11 @@ class UsageTrackingLLM:
                 "model does not support function calling; tools were requested but "
                 "capabilities.supports_function_calling is False"
             )
-        bound = self._llm.bind_tools(tools, **kwargs)
+        tool_list = list(tools)
+        tool_validator = getattr(self._provider, "validate_tool_payloads", None)
+        if callable(tool_validator):
+            tool_validator([convert_to_openai_tool(tool) for tool in tool_list])
+        bound = self._llm.bind_tools(tool_list, **kwargs)
         return UsageTrackingLLM(
             bound,
             rate_limiter=self._rate_limiter,
@@ -1525,6 +1584,7 @@ class UsageTrackingLLM:
             capabilities=self._capabilities,
             llm_timeout=self._llm_timeout,
             first_token_timeout=self._first_token_timeout,
+            cache_cfg=getattr(self, "_cfg", None),
         )
 
     def with_structured_output(self, schema, **kwargs):
@@ -1541,6 +1601,7 @@ class UsageTrackingLLM:
             capabilities=self._capabilities,
             llm_timeout=self._llm_timeout,
             first_token_timeout=self._first_token_timeout,
+            cache_cfg=getattr(self, "_cfg", None),
         )
 
     def __getattr__(self, name):
@@ -1782,7 +1843,9 @@ class AgentV2:
 
     def _tokenizer_spec(self) -> str:
         caps = getattr(self, "_capabilities", None)
-        return caps.tokenizer if caps else "tiktoken:o200k_base"
+        if caps is None:
+            return "tiktoken:o200k_base"
+        return getattr(caps, "tokenizer", None) or "tiktoken:o200k_base"
 
     def _context_window(self) -> int:
         caps = getattr(self, "_capabilities", None)
@@ -2190,6 +2253,19 @@ class AgentV2:
                 "API credential is unavailable; "
                 f"set {env_name} or re-add the model with its API key."
             )
+        candidate_resolver = getattr(provider, "transport_candidates", None)
+        resolved_candidates = (
+            candidate_resolver(model_config)
+            if callable(candidate_resolver)
+            else (CHAT_TRANSPORT,)
+        )
+        primary_transport = normalize_transport_candidates(resolved_candidates)[0]
+        model_config["base_url"] = normalize_llm_endpoint(
+            str(model_config.get("base_url") or ""),
+            primary_transport,
+            require_https=True,
+        )
+        self._llm_base_url = model_config["base_url"]
         try:
             resolution = resolve_configured_max_tokens(
                 model_config=model_config,
@@ -2214,31 +2290,67 @@ class AgentV2:
         self._stuck_detector: StuckDetector = StuckDetector(threshold=3)
         # B7: Git 快照（LLM 调用前捕获，坏结局回滚）。
         self._git_snapshot = None
+        self._cache_cfg = cfg or {}
         # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
         try:
-            from .cache_policy import resolve_ttl_seconds
-
             model_config["cache_ttl"] = resolve_ttl_seconds(cfg or {})
         except Exception:  # pragma: no cover
             pass
 
-        # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
+        if primary_transport == ANTHROPIC_MESSAGES_TRANSPORT:
+            try:
+                ChatAnthropic = __import__(
+                    "langchain_anthropic", fromlist=["ChatAnthropic"]
+                ).ChatAnthropic
+            except ImportError as exc:  # pragma: no cover - dependency gate
+                raise RuntimeError(
+                    "anthropic_messages requires langchain-anthropic; "
+                    "install the project requirements"
+                ) from exc
+            kwargs_builder = getattr(provider, "anthropic_llm_kwargs", None)
+            if not callable(kwargs_builder):
+                raise RuntimeError(
+                    "provider selected anthropic_messages without an "
+                    "Anthropic client configuration"
+                )
+            exact_resource = normalize_resource_path(
+                model_config.get("resource_path")
+            )
+            if exact_resource:
+                ensure_resource_path_rewritable(
+                    exact_resource, ANTHROPIC_MESSAGES_TRANSPORT
+                )
+            raw_llm = ChatAnthropic(**kwargs_builder(model_config, caps))
+        else:
+            # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
+            from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
 
-        llm_kwargs = provider.llm_kwargs(model_config, caps)
-        # FXC4: session affinity headers keep gateway cache hits on one replica
-        # (opencode.ai/zen/go gateways) and X-Session-Id on direct endpoints.
-        headers = build_session_headers(
-            str(model_config.get("base_url") or ""),
-            str(self._session_id or ""),
-        )
-        if headers:
-            llm_kwargs["default_headers"] = {
-                **(llm_kwargs.get("default_headers") or {}),
-                **headers,
-            }
-
-        raw_llm = ChatOpenAI(**llm_kwargs)
+            llm_kwargs = provider.llm_kwargs(model_config, caps)
+            # FXC4: session affinity headers keep gateway cache hits on one replica
+            # (opencode.ai/zen/go gateways) and X-Session-Id on direct endpoints.
+            headers = build_session_headers(
+                str(model_config.get("base_url") or ""),
+                str(self._session_id or ""),
+            )
+            if headers:
+                llm_kwargs["default_headers"] = {
+                    **(llm_kwargs.get("default_headers") or {}),
+                    **headers,
+                }
+            exact_resource = normalize_resource_path(
+                model_config.get("resource_path")
+            )
+            if exact_resource:
+                llm_kwargs["http_async_client"] = httpx.AsyncClient(
+                    event_hooks={
+                        "request": [
+                            resource_path_request_hook(
+                                exact_resource, primary_transport
+                            )
+                        ]
+                    }
+                )
+            raw_llm = ChatOpenAI(**llm_kwargs)
 
         return UsageTrackingLLM(
             raw_llm,
@@ -2251,6 +2363,7 @@ class AgentV2:
             capabilities=caps,
             llm_timeout=float(model_config.get('timeout', 90.0) or 90.0),
             first_token_timeout=model_config.get("first_token_timeout"),
+            cache_cfg=cfg or {},
         )
 
     def _build_llm(self):
@@ -2317,6 +2430,9 @@ class AgentV2:
         """
         llm = self._llm
         client = getattr(llm, "async_client", None)
+        if client is None:
+            inner = vars(llm).get("_llm") if llm is not None else None
+            client = getattr(inner, "async_client", None)
         if client is not None:
             return client
         # Match LangChain's ChatOpenAI default request timeout so the
@@ -2324,15 +2440,35 @@ class AgentV2:
         # timeout than the primary async_client path. An empty api_key
         # string (not None) lets the SDK fall back to the OPENAI_API_KEY
         # environment variable instead of raising on None.
-        return AsyncOpenAI(
-            api_key=self.model_config.get("api_key") or "",
-            base_url=self.model_config.get("base_url"),
+        client_kwargs = {
+            "api_key": self.model_config.get("api_key") or "",
+            "base_url": getattr(
+                self, "_llm_base_url", self.model_config.get("base_url")
+            ),
             # 2026-08-13: 默认超时 600 → 90s（对齐 _llm_call_timeout 与 watchdog
             # 120s 层级：LLM 单次调用超时必须先于 watchdog 触发，否则挂起被
             # 伪装成 "job stalled"）。httpx read timeout 覆盖流式消费期块间等待；
             # 流式建立期由 _open_stream/_open_stream_with_retry 的 wait_for 兜底。
-            timeout=self.model_config.get("timeout", 90.0),
+            "timeout": self.model_config.get("timeout", 90.0),
+        }
+        exact_resource = normalize_resource_path(
+            (self.model_config or {}).get("resource_path")
         )
+        if exact_resource:
+            transport = OPENAI_CHAT_TRANSPORT
+            provider = getattr(self, "_provider", None)
+            if provider is not None and getattr(
+                provider, "uses_responses_api", lambda _c: False
+            )(self.model_config or {}):
+                transport = OPENAI_RESPONSES_TRANSPORT
+            client_kwargs["http_client"] = httpx.AsyncClient(
+                event_hooks={
+                    "request": [
+                        resource_path_request_hook(exact_resource, transport)
+                    ]
+                }
+            )
+        return AsyncOpenAI(**client_kwargs)
 
     @staticmethod
     def _to_openai_messages(
@@ -2447,6 +2583,40 @@ class AgentV2:
         return out
 
     @staticmethod
+    def _to_anthropic_messages(messages) -> list:
+        """Promote cache metadata into native Anthropic content blocks.
+
+        ``cache_control`` stored on ``additional_kwargs`` is convenient for
+        the shared OpenAI converter, but ChatAnthropic sends native Messages
+        and expects the field on a text content block.  Keep this conversion
+        local to the native transport so the legacy Chat wire is unchanged.
+        """
+        converted = []
+        for message in messages:
+            ak = dict(getattr(message, "additional_kwargs", None) or {})
+            cache_control = ak.pop("cache_control", None)
+            if not cache_control or not isinstance(
+                message, (SystemMessage, HumanMessage)
+            ):
+                converted.append(message)
+                continue
+            content = getattr(message, "content", "")
+            if isinstance(content, str):
+                blocks = [{"type": "text", "text": content, "cache_control": dict(cache_control)}]
+            elif isinstance(content, list):
+                blocks = [dict(block) if isinstance(block, dict) else block for block in content]
+                text_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") == "text"]
+                if text_blocks:
+                    text_blocks[-1]["cache_control"] = dict(cache_control)
+                else:
+                    blocks.append({"type": "text", "text": "", "cache_control": dict(cache_control)})
+            else:
+                blocks = [{"type": "text", "text": str(content), "cache_control": dict(cache_control)}]
+            cls = SystemMessage if isinstance(message, SystemMessage) else HumanMessage
+            converted.append(cls(content=blocks, additional_kwargs=ak))
+        return converted
+
+    @staticmethod
     def _tool_to_openai(tool) -> dict:
         """Convert a LangChain tool to an OpenAI function-tool dict."""
         schema = None
@@ -2467,6 +2637,35 @@ class AgentV2:
                 "parameters": schema or {"type": "object", "properties": {}},
             },
         }
+
+    @staticmethod
+    def _to_anthropic_tools(tools: list[dict]) -> list[dict]:
+        """Convert shared OpenAI tool dicts to native Anthropic definitions.
+
+        ``ChatAnthropic.bind_tools`` preserves ``cache_control`` only when it
+        receives an Anthropic-shaped definition.  The shared tool loop stores
+        OpenAI-shaped definitions, so translate them at the native transport
+        boundary instead of losing a tools breakpoint during conversion.
+        """
+        converted = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                converted.append(tool)
+                continue
+            function = tool.get("function")
+            if tool.get("type") == "function" and isinstance(function, dict):
+                native = {
+                    "name": function.get("name", "tool"),
+                    "description": function.get("description", "") or "",
+                    "input_schema": function.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+                if "cache_control" in tool:
+                    native["cache_control"] = dict(tool["cache_control"])
+                converted.append(native)
+            else:
+                converted.append(tool)
+        return converted
 
     def _provider_reasoning(self, delta) -> str:
         """Delegate reasoning extraction to the provider layer (A8).
@@ -2507,6 +2706,143 @@ class AgentV2:
         if extra:
             return True
         return False
+
+    @staticmethod
+    async def _responses_stream_as_chat_chunks(stream):
+        """Translate LangChain Responses chunks to the legacy raw-chat shape."""
+        async for chunk in responses_stream_as_chat_chunks(stream):
+            yield chunk
+
+    @staticmethod
+    async def _anthropic_stream_as_chat_chunks(stream):
+        """Normalize public ``ChatAnthropic`` chunks to the internal stream."""
+        saw_legal_terminal = False
+        async for item in stream:
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            native_reasoning_blocks: list[dict] = []
+            content = getattr(item, "content", "")
+            if isinstance(content, str):
+                if content:
+                    text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        if isinstance(block, str):
+                            text_parts.append(block)
+                        continue
+                    block_type = str(block.get("type") or "")
+                    if block_type == "text":
+                        text_parts.append(str(block.get("text") or ""))
+                    elif block_type == "thinking":
+                        reasoning_parts.append(
+                            str(block.get("thinking") or "")
+                        )
+                        native_reasoning_blocks.append(dict(block))
+                    elif block_type == "redacted_thinking":
+                        native_reasoning_blocks.append(dict(block))
+
+            tool_deltas = []
+            for call in getattr(item, "tool_call_chunks", None) or []:
+                if not isinstance(call, dict):
+                    continue
+                tool_deltas.append(
+                    SimpleNamespace(
+                        index=call.get("index", 0),
+                        id=call.get("id"),
+                        function=SimpleNamespace(
+                            name=call.get("name"),
+                            arguments=call.get("args") or "",
+                        ),
+                    )
+                )
+
+            usage = None
+            usage_metadata = getattr(item, "usage_metadata", None)
+            if isinstance(usage_metadata, dict):
+                input_details = usage_metadata.get("input_token_details") or {}
+                output_details = usage_metadata.get("output_token_details") or {}
+                cached_tokens = int(input_details.get("cache_read", 0) or 0)
+                cache_write_tokens = int(
+                    input_details.get("cache_creation", 0)
+                    or input_details.get("cache_creation_input_tokens", 0)
+                    or usage_metadata.get("cache_creation_input_tokens", 0)
+                    or 0
+                )
+                reasoning_tokens = int(output_details.get("reasoning", 0) or 0)
+                usage = SimpleNamespace(
+                    prompt_tokens=int(usage_metadata.get("input_tokens", 0) or 0),
+                    completion_tokens=int(
+                        usage_metadata.get("output_tokens", 0) or 0
+                    ),
+                    # Keep the official LangChain Anthropic shape so the
+                    # provider usage map can distinguish cache reads from
+                    # cache creation.  The plural fields below remain for
+                    # the existing internal/OpenAI-shaped assertions.
+                    input_token_details=SimpleNamespace(
+                        cache_read=cached_tokens,
+                        cache_creation=cache_write_tokens,
+                    ),
+                    cache_creation_input_tokens=cache_write_tokens,
+                    input_tokens_details=SimpleNamespace(
+                        cached_tokens=cached_tokens
+                    ),
+                    prompt_tokens_details=SimpleNamespace(
+                        cached_tokens=cached_tokens
+                    ),
+                    completion_tokens_details=SimpleNamespace(
+                        reasoning_tokens=reasoning_tokens
+                    ),
+                    output_tokens_details=SimpleNamespace(
+                        reasoning_tokens=reasoning_tokens
+                    ),
+                )
+
+            terminal = getattr(item, "chunk_position", None) == "last"
+            finish_reason = None
+            if terminal:
+                metadata = getattr(item, "response_metadata", None)
+                metadata = metadata if isinstance(metadata, dict) else {}
+                stop_reason = str(
+                    metadata.get("stop_reason") or ""
+                ).strip().casefold()
+                if stop_reason in {"end_turn", "stop_sequence"}:
+                    finish_reason = "stop"
+                elif stop_reason == "tool_use":
+                    finish_reason = "tool_calls"
+                elif stop_reason in {
+                    "max_tokens",
+                    "model_context_window_exceeded",
+                }:
+                    finish_reason = "length"
+                elif stop_reason == "refusal":
+                    finish_reason = "content_filter"
+                else:
+                    raise RuntimeError(
+                        "Anthropic Messages stream ended without a supported "
+                        "stop_reason"
+                    )
+                saw_legal_terminal = True
+
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="".join(text_parts),
+                            reasoning_content="".join(reasoning_parts),
+                            tool_calls=tool_deltas,
+                        ),
+                        finish_reason=finish_reason,
+                    )
+                ],
+                usage=usage,
+                _rxy_anthropic_terminal=terminal,
+                _rxy_anthropic_native_blocks=native_reasoning_blocks,
+            )
+        if not saw_legal_terminal:
+            raise RuntimeError(
+                "Anthropic Messages stream ended without a legal terminal"
+            )
 
     def _prompt_variant(self) -> str:
         """A9: variant selector from current model capabilities.
@@ -3081,10 +3417,11 @@ class AgentV2:
         return resolution.resolved_max_tokens
 
     async def _raw_stream(self, messages, tools=None, *, max_tokens=None):
-        """Stream from the raw OpenAI client, yielding native chunks.
+        """Stream through the Provider-selected transport as internal chunks.
 
-        Unlike LangChain's astream, this preserves `reasoning_content` so the
-        agent can surface the model's thinking in real time.
+        OpenAI Chat keeps the raw SDK path that preserves ``reasoning_content``.
+        OpenAI Responses and Anthropic Messages use their LangChain integrations
+        and are normalized from public ``AIMessageChunk`` fields.
 
         P2 fix: apply _apply_cache_control before converting to dicts so
         the ephemeral cache breakpoint is injected into messages[0] (system
@@ -3094,14 +3431,32 @@ class AgentV2:
         """
         if max_tokens != 1:
             await self._cancel_background_prewarm()
-        client = self._openai_client()
+        provider = getattr(self, "_provider", None)
+        candidate_resolver = getattr(provider, "transport_candidates", None)
+        resolved_candidates = (
+            candidate_resolver(self.model_config)
+            if callable(candidate_resolver)
+            else (CHAT_TRANSPORT,)
+        )
+        # Canonicalization accepts migration aliases but fails closed for an
+        # empty/unknown Provider sequence. Stable de-duplication prevents the
+        # same billable endpoint from being tried twice.
+        transport_candidates: tuple[LLMTransport, ...] = (
+            normalize_transport_candidates(resolved_candidates)
+        )
+        transport_index = 0
+        active_transport = transport_candidates[transport_index]
+        client = None
         # Apply cache_control before conversion (was missing: _raw_stream
         # bypassed _apply_cache_control, so streaming calls never got the
         # cache breakpoint, resulting in ~0% provider cache hit rate)
         if hasattr(self._llm, '_apply_cache_control'):
             messages = self._llm._apply_cache_control(messages, tools=tools)
+        tokenizer_spec = self._tokenizer_spec()
         input_tokens = sum(
-            _estimate_tokens(getattr(message, "content", "") or "")
+            _estimate_tokens(
+                getattr(message, "content", "") or "", tokenizer_spec
+            )
             for message in messages
         )
         rate_grant = None
@@ -3184,7 +3539,18 @@ class AgentV2:
             body = payload.get("extra_body")
             if isinstance(body, dict) and "thinking" in body:
                 body["thinking"] = {"type": "disabled"}
-            payload.pop("reasoning_effort", None)
+            disabled_effort_resolver = getattr(
+                provider, "reasoning_effort_when_disabled", None
+            )
+            disabled_effort = (
+                disabled_effort_resolver(self.model_config)
+                if callable(disabled_effort_resolver)
+                else None
+            )
+            if disabled_effort:
+                payload["reasoning_effort"] = disabled_effort
+            else:
+                payload.pop("reasoning_effort", None)
         # FXC2: prompt_cache_key 只信 injects_prompt_cache_key(contract)。
         # 未知模型默认不发 key（§15.3）；禁止 caps.provider==openai 启发式。
         from .catalog import injects_prompt_cache_key
@@ -3240,13 +3606,22 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
+            tool_validator = getattr(provider, "validate_tool_payloads", None)
+            if callable(tool_validator):
+                tool_validator(payload["tools"])
             # FXC2: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
             from .catalog import injects_cache_control
 
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]
                 if isinstance(last_tool, dict):
-                    last_tool["cache_control"] = {"type": "ephemeral"}
+                    last_tool["cache_control"] = cache_control_for_ttl(
+                        resolve_ttl_seconds(
+                            getattr(self, "_cache_cfg", None)
+                            or getattr(self, "_cfg", None)
+                            or (_settings.load_config() or {})
+                        )
+                    )
 
         # Keep provider latency diagnosable without logging prompt text,
         # credentials, workspace paths, or tool arguments.  An HTTP 200 can
@@ -3340,9 +3715,92 @@ class AgentV2:
             # B8/luna R1-4/R2-1: TTFT 起点 = 请求实际发出前（不含 client 初始化/
             # 缓存控制/消息转换）。局部计时 + 局部已记录标志，每请求独立，
             # 不依赖全局 is None（避免多请求/并发污染）。
-            nonlocal _ttft_start
+            nonlocal _ttft_start, client
             _ttft_start = time.monotonic()
-            resp = client.create(**payload)
+            # Rebuild provider-dependent kwargs for every attempt.  A
+            # Responses-first failure must not carry its (possibly stripped)
+            # fields into the Chat fallback, and vice versa.
+            attempt_payload = dict(payload)
+            attempt_extra = {}
+            original_extra = payload.get("extra_body") or {}
+            if isinstance(original_extra, dict) and "prompt_cache_key" in original_extra:
+                attempt_extra["prompt_cache_key"] = original_extra["prompt_cache_key"]
+            if provider is not None and caps is not None:
+                attempt_cfg = dict(self.model_config)
+                attempt_cfg["api_transport"] = active_transport
+                attempt_cfg.setdefault("resolved_max_tokens", payload["max_tokens"])
+                attempt_cfg.setdefault("api_key", "raw-stream")
+                attempt_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
+                attempt_caps = caps
+                caps_resolver = getattr(provider, "capabilities", None)
+                if callable(caps_resolver):
+                    attempt_caps = caps_resolver(attempt_cfg)
+                attempt_kwargs = provider.llm_kwargs(attempt_cfg, attempt_caps)
+                if isinstance(attempt_kwargs.get("extra_body"), dict):
+                    attempt_extra.update(attempt_kwargs["extra_body"])
+                attempt_payload.pop("reasoning_effort", None)
+                if attempt_kwargs.get("reasoning_effort") is not None:
+                    attempt_payload["reasoning_effort"] = attempt_kwargs["reasoning_effort"]
+                if "temperature" in attempt_kwargs:
+                    attempt_payload["temperature"] = attempt_kwargs["temperature"]
+                else:
+                    attempt_payload.pop("temperature", None)
+                # A greeting/no-tool turn can explicitly disable thinking for
+                # this request.  Rebuilding provider kwargs per fallback
+                # attempt must not resurrect the normal effort value (or its
+                # ``None`` placeholder) that the first payload removed.
+                if getattr(self, "_thinking_disabled_this_turn", False):
+                    attempt_payload.pop("reasoning_effort", None)
+                    if "thinking" in attempt_extra:
+                        attempt_extra["thinking"] = {"type": "disabled"}
+            if attempt_extra:
+                attempt_payload["extra_body"] = attempt_extra
+            else:
+                attempt_payload.pop("extra_body", None)
+            if active_transport == RESPONSES_TRANSPORT:
+                # ChatOpenAI builds the Responses payload. langchain-openai
+                # 1.3.3 drops response.reasoning_text.delta and reasoning
+                # output_item.done; patch those events back in before astream.
+                raw_llm = vars(self._llm).get("_llm", self._llm)
+                invoke_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
+                # Never pass a ``None`` effort: langchain-openai serializes the
+                # mere presence of this key as ``reasoning: {effort: null}``.
+                effort = attempt_payload.get("reasoning_effort")
+                if effort is not None:
+                    invoke_kwargs["reasoning_effort"] = effort
+                if "temperature" in attempt_payload:
+                    invoke_kwargs["temperature"] = attempt_payload["temperature"]
+                if attempt_payload.get("extra_body"):
+                    invoke_kwargs["extra_body"] = attempt_payload["extra_body"]
+                if attempt_payload.get("tools"):
+                    invoke_kwargs["tools"] = attempt_payload["tools"]
+                install_langchain_responses_reasoning_patch()
+                response_stream = astream_with_native_reasoning_events(
+                    raw_llm.astream(messages, **invoke_kwargs)
+                )
+                resp = self._responses_stream_as_chat_chunks(response_stream)
+            elif active_transport == ANTHROPIC_MESSAGES_TRANSPORT:
+                raw_llm = vars(self._llm).get("_llm", self._llm)
+                if attempt_payload.get("tools"):
+                    raw_llm = raw_llm.bind_tools(
+                        self._to_anthropic_tools(attempt_payload["tools"])
+                    )
+                astream_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
+                if getattr(self, "_thinking_disabled_this_turn", False):
+                    astream_kwargs["thinking"] = {"type": "disabled"}
+                response_stream = raw_llm.astream(
+                    self._to_anthropic_messages(messages),
+                    **astream_kwargs,
+                )
+                resp = self._anthropic_stream_as_chat_chunks(response_stream)
+            elif active_transport == CHAT_TRANSPORT:
+                if client is None:
+                    client = self._openai_client()
+                resp = client.create(**attempt_payload)
+            else:
+                raise RuntimeError(
+                    f"LLM transport execution is not configured: {active_transport}"
+                )
             # Some openai SDK versions declare create() as `async def`
             # (resolving to AsyncStream); others return the stream directly.
             stream = resp if hasattr(resp, "__aiter__") else await resp
@@ -3368,114 +3826,174 @@ class AgentV2:
             return agen.__aiter__()
 
         try:
-            ait = await _connect_provider_stream()
-            useful_deadline = time.monotonic() + first_chunk_timeout
-            got_useful = False
-            first_token_retries_left = 1
+            transport_failures: list[LLMTransport] = []
             while True:
+                got_useful = False
+                first_token_retries_left = 1
                 try:
-                    if got_useful:
-                        # A provider may send a partial assistant/tool-call
-                        # response and then stop yielding without closing the
-                        # SSE stream. Bound every subsequent gap as well; the
-                        # first-chunk timeout alone cannot protect the user
-                        # from this half-open response. Tool-argument
-                        # streaming (large write payloads) is allowed a
-                        # longer gap than ordinary tokens.
-                        chunk = await asyncio.wait_for(
-                            ait.__anext__(), timeout=pending_idle
+                    ait = await _connect_provider_stream()
+                    useful_deadline = time.monotonic() + first_chunk_timeout
+                    while True:
+                        try:
+                            if got_useful:
+                                # A provider may send a partial assistant/tool-call
+                                # response and then stop yielding without closing the
+                                # SSE stream. Bound every subsequent gap as well; the
+                                # first-chunk timeout alone cannot protect the user
+                                # from this half-open response. Tool-argument
+                                # streaming (large write payloads) is allowed a
+                                # longer gap than ordinary tokens.
+                                chunk = await asyncio.wait_for(
+                                    ait.__anext__(), timeout=pending_idle
+                                )
+                            else:
+                                remaining = useful_deadline - time.monotonic()
+                                if remaining <= 0:
+                                    raise asyncio.TimeoutError(
+                                        "timed out waiting for first useful stream chunk"
+                                    )
+                                chunk = await asyncio.wait_for(
+                                    ait.__anext__(), timeout=remaining
+                                )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError as exc:
+                            if got_useful:
+                                raise StreamIdleTimeoutError(
+                                    "provider stopped producing stream events before the idle deadline"
+                                ) from exc
+                            if first_token_retries_left > 0:
+                                first_token_retries_left -= 1
+                                closer = getattr(stream_obj, "aclose", None)
+                                if callable(closer):
+                                    try:
+                                        await closer()
+                                    except Exception:
+                                        _logger.debug(
+                                            "provider stream aclose failed before first-token retry",
+                                            exc_info=True,
+                                        )
+                                stream_obj = None
+                                _logger.warning(
+                                    "llm_stream first-token timeout; retrying once seq=%d",
+                                    request_seq,
+                                )
+                                await asyncio.sleep(0.5)
+                                ait = await _connect_provider_stream()
+                                useful_deadline = time.monotonic() + first_chunk_timeout
+                                continue
+                            raise
+                        _stream_chunks += 1
+                        # First useful packet = reasoning, visible text, or tool_calls.
+                        # Empty keepalives must not start the idle-timeout window.
+                        if self._stream_chunk_is_useful(chunk):
+                            if _ttft_start is not None and not _ttft_recorded:
+                                _ttft_recorded = True
+                                token_stats.record_ttft(
+                                    (time.monotonic() - _ttft_start) * 1000
+                                )
+                            got_useful = True
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices:
+                            delta = getattr(choices[0], "delta", None)
+                            content = getattr(delta, "content", "") or ""
+                            _stream_content_chars += len(content)
+                            reasoning_text = self._provider_reasoning(delta) or ""
+                            _stream_reasoning_chars += len(reasoning_text)
+                            before_args = _stream_tool_argument_chars
+                            for tc_delta in getattr(delta, "tool_calls", None) or []:
+                                fn = getattr(tc_delta, "function", None)
+                                if fn is not None:
+                                    _stream_tool_argument_chars += len(
+                                        str(getattr(fn, "arguments", "") or "")
+                                    )
+                            if _stream_tool_argument_chars > before_args:
+                                pending_idle = tool_arg_idle
+                            elif self._stream_chunk_is_useful(chunk):
+                                pending_idle = stream_idle_timeout
+                        if _ttft_start is not None and not _first_stream_event_logged:
+                            _logger.info(
+                                "llm_first_stream_event seq=%d elapsed_ms=%.0f has_choices=%s",
+                                request_seq,
+                                (time.monotonic() - _ttft_start) * 1000,
+                                bool(getattr(chunk, "choices", None)),
+                            )
+                            _first_stream_event_logged = True
+                        last_chunk = chunk
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices:
+                            delta = getattr(choices[0], "delta", None)
+                            partial_output_tokens += _estimate_tokens(
+                                (getattr(delta, "content", "") or "")
+                                + (self._provider_reasoning(delta) or ""),
+                                tokenizer_spec,
+                            )
+                        yield chunk
+                    if last_chunk is not None:
+                        reported = _usage_counts(last_chunk, messages)
+                        usage = (
+                            reported[0] or input_tokens,
+                            reported[1] or partial_output_tokens,
                         )
                     else:
-                        remaining = useful_deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise asyncio.TimeoutError(
-                                "timed out waiting for first useful stream chunk"
-                            )
-                        chunk = await asyncio.wait_for(
-                            ait.__anext__(), timeout=remaining
-                        )
-                except StopAsyncIteration:
+                        usage = (input_tokens, 0)
+                    _stream_completed = True
                     break
-                except asyncio.TimeoutError as exc:
-                    if got_useful:
-                        raise StreamIdleTimeoutError(
-                            "provider stopped producing stream events before the idle deadline"
-                        ) from exc
-                    if first_token_retries_left > 0:
-                        first_token_retries_left -= 1
+                except Exception as exc:
+                    next_index = transport_index + 1
+                    next_transport = (
+                        transport_candidates[next_index]
+                        if next_index < len(transport_candidates)
+                        else None
+                    )
+                    fallback_check = getattr(
+                        provider, "should_fallback_transport", None
+                    )
+                    unsupported = bool(
+                        not got_useful
+                        and callable(fallback_check)
+                        and fallback_check(
+                            exc,
+                            from_transport=active_transport,
+                            to_transport=next_transport or active_transport,
+                        )
+                    )
+                    if unsupported and next_transport is not None:
+                        transport_failures.append(active_transport)
                         closer = getattr(stream_obj, "aclose", None)
                         if callable(closer):
                             try:
                                 await closer()
                             except Exception:
                                 _logger.debug(
-                                    "provider stream aclose failed before first-token retry",
+                                    "provider stream aclose failed before transport fallback",
                                     exc_info=True,
                                 )
                         stream_obj = None
-                        _logger.warning(
-                            "llm_stream first-token timeout; retrying once seq=%d",
-                            request_seq,
-                        )
-                        await asyncio.sleep(0.5)
-                        ait = await _connect_provider_stream()
-                        useful_deadline = time.monotonic() + first_chunk_timeout
-                        continue
-                    raise
-                _stream_chunks += 1
-                # First useful packet = reasoning, visible text, or tool_calls.
-                # Empty keepalives must not start the idle-timeout window.
-                if self._stream_chunk_is_useful(chunk):
-                    if _ttft_start is not None and not _ttft_recorded:
-                        _ttft_recorded = True
-                        token_stats.record_ttft(
-                            (time.monotonic() - _ttft_start) * 1000
-                        )
-                    got_useful = True
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = getattr(choices[0], "delta", None)
-                    content = getattr(delta, "content", "") or ""
-                    _stream_content_chars += len(content)
-                    reasoning_text = self._provider_reasoning(delta) or ""
-                    _stream_reasoning_chars += len(reasoning_text)
-                    before_args = _stream_tool_argument_chars
-                    for tc_delta in getattr(delta, "tool_calls", None) or []:
-                        fn = getattr(tc_delta, "function", None)
-                        if fn is not None:
-                            _stream_tool_argument_chars += len(
-                                str(getattr(fn, "arguments", "") or "")
-                            )
-                    if _stream_tool_argument_chars > before_args:
-                        pending_idle = tool_arg_idle
-                    elif self._stream_chunk_is_useful(chunk):
+                        previous_transport = active_transport
+                        transport_index = next_index
+                        active_transport = next_transport
+                        last_chunk = None
+                        partial_output_tokens = 0
                         pending_idle = stream_idle_timeout
-                if _ttft_start is not None and not _first_stream_event_logged:
-                    _logger.info(
-                        "llm_first_stream_event seq=%d elapsed_ms=%.0f has_choices=%s",
-                        request_seq,
-                        (time.monotonic() - _ttft_start) * 1000,
-                        bool(getattr(chunk, "choices", None)),
-                    )
-                    _first_stream_event_logged = True
-                last_chunk = chunk
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = getattr(choices[0], "delta", None)
-                    partial_output_tokens += _estimate_tokens(
-                        (getattr(delta, "content", "") or "")
-                        + (self._provider_reasoning(delta) or "")
-                    )
-                yield chunk
-            if last_chunk is not None:
-                reported = _usage_counts(last_chunk, messages)
-                usage = (
-                    reported[0] or input_tokens,
-                    reported[1] or partial_output_tokens,
-                )
-            else:
-                usage = (input_tokens, 0)
-            _stream_completed = True
+                        _first_stream_event_logged = False
+                        _logger.warning(
+                            "llm_transport_fallback seq=%d provider=%s from=%s to=%s",
+                            request_seq,
+                            getattr(provider, "name", "unknown"),
+                            previous_transport,
+                            active_transport,
+                        )
+                        continue
+                    if unsupported and transport_failures:
+                        attempted = ", ".join(
+                            [*transport_failures, active_transport]
+                        )
+                        raise RuntimeError(
+                            "No supported LLM API transport for this provider/model; "
+                            f"attempted: {attempted}"
+                        ) from exc
+                    raise
         except StreamIdleTimeoutError:
             raise
         except asyncio.TimeoutError as exc:
@@ -4546,6 +5064,13 @@ class AgentV2:
                 # ALWAYS stream for real-time token display
                 answer_parts = []
                 _reasoning_buffer = []
+                # Native Anthropic thinking blocks (including signatures) must
+                # be replayed verbatim on the next tool round.  The public
+                # stream normalizer exposes these blocks without making the
+                # generic OpenAI-shaped chunk contract depend on them.
+                _native_anthropic_blocks: list[dict] = []
+                _responses_reasoning_items: list[dict] = []
+
                 tool_calls_acc: dict = {}
                 tool_call_delta_chunks = 0
                 tool_call_delta_chars = 0
@@ -4587,6 +5112,30 @@ class AgentV2:
                                 pass
                         continue
                     delta = chunk.choices[0].delta
+
+                    accumulate_reasoning_items(
+                        _responses_reasoning_items,
+                        getattr(chunk, "_rxy_reasoning_items", None) or [],
+                    )
+                    for native_block in (
+                        getattr(chunk, "_rxy_anthropic_native_blocks", None) or []
+                    ):
+                        if not isinstance(native_block, dict):
+                            continue
+                        block = dict(native_block)
+                        if (
+                            block.get("type") == "thinking"
+                            and _native_anthropic_blocks
+                            and _native_anthropic_blocks[-1].get("type") == "thinking"
+                        ):
+                            previous = _native_anthropic_blocks[-1]
+                            previous["thinking"] = str(previous.get("thinking") or "") + str(
+                                block.get("thinking") or ""
+                            )
+                            if block.get("signature"):
+                                previous["signature"] = block["signature"]
+                        else:
+                            _native_anthropic_blocks.append(block)
 
                     # Capture reasoning content (thinking) - stream live to the UI
                     reasoning = self._provider_reasoning(delta)
@@ -4827,10 +5376,38 @@ class AgentV2:
                 # back to the API."). Carry it in additional_kwargs so
                 # _to_openai_messages can preserve it on the wire.
                 ai_kwargs = {}
-                if _reasoning_buffer:
+                if _reasoning_buffer and not _native_anthropic_blocks:
                     ai_kwargs["reasoning_content"] = "".join(_reasoning_buffer)
+                assistant_content = answer
+                if _native_anthropic_blocks and getattr(getattr(self, "_provider", None), "name", "") == "anthropic":
+                    assistant_content = [*(_native_anthropic_blocks)]
+                    if answer:
+                        assistant_content.append({"type": "text", "text": answer})
+                elif _responses_reasoning_items or (
+                    _reasoning_buffer
+                    and getattr(self._provider, "uses_responses_api", lambda _c: False)(
+                        self.model_config or {}
+                    )
+                ):
+                    items = list(_responses_reasoning_items)
+                    if not items and _reasoning_buffer:
+                        items = [
+                            {
+                                "type": "reasoning",
+                                "content": [
+                                    {
+                                        "type": "reasoning_text",
+                                        "text": "".join(_reasoning_buffer),
+                                    }
+                                ],
+                            }
+                        ]
+                    ai_kwargs["responses_reasoning_items"] = items
+                    assistant_content = assistant_content_for_responses_replay(
+                        items, answer
+                    )
                 messages.append(AIMessage(
-                    content=answer,
+                    content=assistant_content,
                     tool_calls=tool_calls,
                     additional_kwargs=ai_kwargs,
                 ))
@@ -6233,6 +6810,7 @@ class AgentV2:
         token_start = (token_stats.input_tokens, token_stats.output_tokens)
         # A19: 缓存命中 token 快照基线（run 级），用于 run.finished 的 cache_read 落盘
         cache_start = token_stats.cache_hit_tokens
+        cache_write_start = token_stats.cache_write_tokens
         status = "failed"
         evidence = []
         session_token = bind_session(session_id)
@@ -6437,6 +7015,7 @@ class AgentV2:
             output_tokens = max(0, token_stats.output_tokens - token_start[1])
             # A19: 本 run 缓存命中 token（可观测，供 evals/trajectory 计算命中率）
             cache_read = max(0, token_stats.cache_hit_tokens - cache_start)
+            cache_write = max(0, token_stats.cache_write_tokens - cache_write_start)
             trajectory.record(
                 "run.finished",
                 {
@@ -6456,6 +7035,7 @@ class AgentV2:
                         "output_tokens": output_tokens,
                         "total_tokens": input_tokens + output_tokens,
                         "cache_read": cache_read,
+                        "cache_write": cache_write,
                     },
                     "tool_evidence_count": len(evidence),
                     "hook_event_count": len(self._active_hook_audit),
@@ -6844,8 +7424,3 @@ class AgentV2:
         """Compatibility: flush thinking to TUI."""
         if tui and hasattr(tui, "write_progress") and self._last_thinking:
             tui.write_progress(self._last_thinking)
-
-
-
-
-

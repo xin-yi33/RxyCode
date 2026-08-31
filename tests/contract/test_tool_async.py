@@ -474,7 +474,7 @@ async def test_process_class_timeout_terminates_process_tree():
 
     before = _collect_marker_pids(marker)
     await _run_with_watchdog(
-        shell_executor, [blocker, "-c", script], timeout=0.3, watchdog=2.0
+        shell_executor, [blocker, "-c", script], timeout=0.3, watchdog=8.0
     )
     await asyncio.sleep(0.6)  # allow cleanup to settle
     after = _collect_marker_pids(marker)

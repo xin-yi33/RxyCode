@@ -150,8 +150,8 @@ async def test_executor_wires_config_to_agent_local_limit(monkeypatch):
 
     assert result == "completed"
     middleware = create_agent.call_args.kwargs["middleware"]
-    assert len(middleware) == 1
-    assert middleware[0].max_tool_rounds == 3
+    assert len(middleware) == 2
+    assert middleware[1].max_tool_rounds == 3
     invocation_config = graph.ainvoke.await_args.args[1]
     assert invocation_config == {"recursion_limit": _internal_recursion_limit(3)}
 

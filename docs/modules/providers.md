@@ -7,7 +7,8 @@ provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状�
 
 注册表（`core/providers/__init__.py`）当前登记：`OpenAIProvider`、`DeepSeekProvider`、
 `KimiProvider`、`GLMProvider`、`MiniMaxProvider`、`MIMOProvider`、`DoubaoProvider`、
-`AnthropicProvider`、`QwenProvider`，兜底 `_FALLBACK = OpenAIProvider()`。
+`AnthropicProvider`、`QwenProvider`、`MuseSparkProvider`、`Hy3Provider`，兜底
+`_FALLBACK = OpenAIProvider()`。
 
 ## ModelCapabilities 字段表（含义 / 默认值 / 来源）
 
@@ -78,9 +79,87 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 > | GLM | §7.4 | GLMProvider | 已注册 |
 > | MiniMax | §7.5 | MiniMaxProvider | 已注册 |
 > | MIMO | §7.6 | MIMOProvider | 已注册 |
-> | Anthropic | §7.8 | AnthropicProvider | 已注册 |
+> | Anthropic | §7.8 + 2026-08-25 三协议专项 | AnthropicProvider（官方 Host 走原生 Messages，兼容代理保持其 OpenAI 契约） | 已注册 |
 > | Qwen | §7.7 | QwenProvider | 已注册 |
 > | Doubao | §7.9 | DoubaoProvider（A23） | 已注册 |
+> | Muse Spark | 2026-08-24 专项调研 | MuseSparkProvider（Go 上仅 Contributor 走 Responses） | 已注册 |
+> | HY3 | 2026-08-25 专项调研 | Hy3Provider（只匹配正式版，保持 Chat） | 已注册 |
+
+## 三种 LLM 传输与 URL 规范化（2026-08-25）
+
+Provider 通过 `transport_candidates(model_config)` 返回有序接口候选：
+
+- 规范值只有 `openai_chat`、`openai_responses`、`anthropic_messages`；
+- 默认 `("openai_chat",)`：完全保留原 Chat Completions 行为；
+- 已确认 Responses 的路由返回 `("openai_responses", "openai_chat")`；
+- Anthropic 官方 Host 返回 `("anthropic_messages",)`，不跨到 OpenAI 接口；
+- `api_transport: openai_chat` 是显式兼容开关，只走 Chat；
+- 配置解析边界兼容旧值 `chat`/`responses`，运行时统一转换成规范值；非法或空候选失败关闭。
+
+Responses 请求构造和 SSE 解析复用 `langchain-openai` 的
+`ChatOpenAI(use_responses_api=True)`。`AgentV2` 只把公开 `AIMessageChunk` 归一成
+既有内部 chunk，不实现 provider SSE grammar。
+
+Anthropic 官方 Host 使用 `langchain-anthropic` 的 `ChatAnthropic`。该集成负责
+`x-api-key`、`anthropic-version`、system/content block、tool schema、tool use/result
+与 SSE；RxyCode 只从公开 `AIMessageChunk` 归一 text、thinking、tool call、usage 和
+stop reason。缺少依赖时明确报错，不静默降级到 OpenAI client。
+
+`config/model_endpoint.py` 是持久化、连接探测和运行时共同使用的 URL 边界：它把完整
+`/chat`、`/chat/completions`、`/responses`、`/messages` 精确还原为 API root，再由
+对应 SDK 或探测层只拼接一次资源路径（``/chat`` 是 Chat Completions 别名，探针与
+OpenAI SDK 都落到 ``/chat/completions``）。多段网关前缀会保留；协议与完整资源冲突、
+query、fragment、userinfo、非法端口，以及携带凭据的明文 HTTP 均在联网前拒绝。
+
+回退只允许在尚未产生 text/reasoning/tool output 时处理明确的 endpoint/protocol
+unsupported：只有 400/404/405/422 且错误短语明确指向 endpoint、route、protocol 或命名 API 时才回退；对于 SDK 明确暴露的 `/responses` 或 `/chat/completions` 请求路径，FastAPI/nginx 的通用 `Not Found`/`Invalid URL` 也可作为端点不存在证据；没有请求路径证据的普通 404/405 保持失败。认证、DataPolicy、限流、网络、
+超时、5xx、内容安全、普通参数错误以及部分输出后的错误都不换接口。
+
+P2 Responses-first：OpenAI 官方 Host、火山方舟官方 Host 上的 Doubao、
+DashScope/Qwen 官方 Host 与预设、OpenRouter、Groq 预设和 Other/custom。DeepSeek 官方
+Host 保持 Chat Completions（thinking 工具轮必须回放 ``reasoning_content``；Responses
+的 ``reasoning_text`` item 尚未能按原生 item 重放）。火山方舟托管的
+第三方模型不因 Ark Host 被整体切换；Together 与缺少官方 Responses 证据的预设保持
+Chat；OpenCode Go 普通模型也不整体切换，由精确 Provider 单独声明。
+
+Qwen 在 Chat 路径继续使用 `extra_body.enable_thinking`；在 Responses 路径改用
+`reasoning.effort`。自动预设不包含仅北京/新加坡支持的 `xhigh`、`max`，避免跨地域配置
+被路由为上游不接受的档位。
+
+## Muse Spark / HY3 / OpenCode Go（2026-08-25）
+
+`muse-spark-1.1`、`muse-spark-1.2` 和
+`muse-spark-1.2-contributor` 会被 Provider 家族识别。识别不等于网关可用：
+OpenCode Go 2026-08-24 的公开 `/models` 在该家族中只暴露 Contributor，并把它固定到
+`/v1/responses`。因此 `transport_candidates()` 只对“OpenCode Go + 精确 Contributor”
+返回 Responses-first；直接 Meta 配置和 Go 上的另外两个 ID 不会被强制改协议。
+
+- Meta 模型页需要登录，本轮没有可公开复核的 1M context、131072 max output 或五档
+  effort 证据；三个 ID 使用保守数值能力，catalog 不发布未确认的精确上限。
+- OpenCode Go 没有公开 Muse effort 请求契约，因此 Go 请求不自动发送
+  `reasoning_effort` 或 `thinking`。
+- RxyCode 隐式 temperature 0.7 省略，用户显式值保留。
+- Contributor 的 Go 路由使用自动前缀缓存、零 `cache_control` 断点；Responses cached usage 路径是
+  `input_tokens_details.cached_tokens`。
+- Contributor 允许提示词/补全用于 Meta 后续训练且受区域限制，不能作为默认。
+- `Hy3Provider` 只精确匹配正式 `hy3`，声明 256k context / 128k max output；preview
+  与近似 ID 不匹配。它保持 OpenCode Go 既有 Chat Completions 请求形状，不发送
+  TokenHub 直连的 thinking/reasoning/echo 扩展字段。
+- 现有 OpenCode 上游兼容记录显示 Contributor function tool 名称超过 64 字符会被
+  拒绝；Muse provider 在联网前防御性验证，不截断名称。该记录不是模型能力来源。
+- Responses 流兼容独立 `response.output_text.delta`；不能要求上游一定先发送
+  `output_item.added`。
+- Responses 只有观察到 LangChain terminal metadata 的 `status=completed` 才映射为
+  `stop`；`incomplete` 映射为 `length`/`content_filter`，失败事件被 LangChain 丢弃后
+  产生的无状态合成 terminal 以及缺失合法终态都会失败关闭。
+
+三协议和 URL 的本地证据分别在
+`tests/test_providers/test_transport_routing.py`、
+`tests/test_providers/test_model_endpoints.py` 与
+`tests/test_providers/test_anthropic_transport.py`。这些是 mock/wire 与单元证据，不代表
+外部服务 live 已通过。完整依据与验收见
+`docs/agent/research/2026-08-24-opencode-go-hy3-muse-provider.md` 和
+`docs/agent/plans/PHASE-MUSE-SPARK-OPENCODE-GO.md`。
 
 
 ## 新增一个 Provider 的完整流程

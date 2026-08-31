@@ -45,7 +45,10 @@ def test_real_api_subprocess_reaches_status_endpoint(isolated_runtime):
         stderr=subprocess.STDOUT,
         text=True,
     )
-    deadline = time.monotonic() + 15
+    # Windows-hosted runners can be busy while importing the installed
+    # application and starting Uvicorn. Keep polling the real endpoint, but
+    # allow enough startup time for that platform scheduling variance.
+    deadline = time.monotonic() + 30
     response = None
     try:
         with httpx.Client(trust_env=False) as client:

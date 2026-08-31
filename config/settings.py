@@ -15,6 +15,12 @@ from .credential_store import (
     restrict_file_permissions,
     store_credential,
 )
+from .model_endpoint import (
+    detect_explicit_transport,
+    normalize_llm_endpoint,
+    normalize_resource_path,
+)
+from .model_transport import normalize_api_transport
 
 
 _ENV_REFERENCE = re.compile(r"^(?:env:|\$\{)([A-Za-z_][A-Za-z0-9_]*)\}?$")
@@ -413,6 +419,25 @@ def resolve_model_config(entry: dict) -> dict:
     do not inherit the operator shell), fall back to the credential store.
     """
     resolved = dict(entry)
+    if "api_transport" in resolved:
+        resolved["api_transport"] = normalize_api_transport(
+            resolved.get("api_transport"), allow_auto=True
+        )
+    if "resource_path" in resolved:
+        resolved["resource_path"] = normalize_resource_path(
+            resolved.get("resource_path")
+        )
+    base_url = resolved.get("base_url")
+    if isinstance(base_url, str) and base_url.strip():
+        configured_transport = resolved.get("api_transport", "auto")
+        if configured_transport == "auto":
+            configured_transport = detect_explicit_transport(base_url) or "auto"
+            if configured_transport != "auto":
+                resolved["api_transport"] = configured_transport
+        if configured_transport != "auto":
+            resolved["base_url"] = normalize_llm_endpoint(
+                base_url, configured_transport
+            )
     env_name = resolved.get("api_key_env")
     raw_value = resolved.get("api_key")
     if not env_name and isinstance(raw_value, str):

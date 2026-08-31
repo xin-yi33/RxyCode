@@ -7,6 +7,22 @@ from typing import Literal, Optional
 from urllib.parse import urlsplit
 
 from .credential_store import delete_credential, store_credential
+from .model_endpoint import (
+    detect_explicit_transport,
+    ensure_resource_path_rewritable,
+    infer_transport_from_resource_path,
+    llm_endpoint_url,
+    normalize_llm_endpoint,
+    normalize_resource_path,
+    validate_llm_base_url,
+)
+from .model_transport import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+    normalize_api_transport,
+    normalize_transport_candidates,
+)
 from .settings import get_config_path, get_model_config, load_config, save_config
 
 
@@ -68,26 +84,7 @@ def normalize_provider_base_url(
     require_https: bool = False,
 ) -> str:
     """Validate and normalize an HTTP(S) provider API root."""
-    value = value.strip().rstrip("/")
-    if not value or any(char.isspace() for char in value):
-        raise ValueError("base_url must be an absolute http:// or https:// URL")
-
-    parsed = urlsplit(value)
-    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("base_url must be an absolute http:// or https:// URL")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError(
-            "base_url must not contain credentials, query parameters, or fragments"
-        )
-    try:
-        _ = parsed.port
-    except ValueError as exc:
-        raise ValueError("base_url contains an invalid port") from exc
-    if require_https and parsed.scheme.casefold() != "https":
-        raise ValueError(
-            "base_url must use https:// when an API credential is sent"
-        )
-    return value
+    return validate_llm_base_url(value, require_https=require_https)
 
 
 def list_provider_presets() -> list[dict]:
@@ -221,6 +218,8 @@ def add_model(
     provider_id: Optional[str] = None,
     provider_name: Optional[str] = None,
     nickname: Optional[str] = None,
+    api_transport: Optional[str] = None,
+    resource_path: Optional[str] = None,
 ) -> dict:
     """M5：max_tokens 只接受正整数 / "auto" / None；0/负数/空串/浮点拒绝。"""
     if max_tokens is not None and max_tokens != "auto":
@@ -232,6 +231,40 @@ def add_model(
         if max_tokens <= 0:
             raise ValueError(f"max_tokens must be a positive integer; got {max_tokens}")
     base_url = normalize_provider_base_url(base_url, require_https=True)
+    exact_resource = normalize_resource_path(resource_path)
+    requested_transport = normalize_api_transport(
+        api_transport, allow_auto=True
+    )
+    if exact_resource:
+        inferred_from_path = infer_transport_from_resource_path(exact_resource)
+        if (
+            requested_transport != "auto"
+            and requested_transport != inferred_from_path
+        ):
+            raise ValueError(
+                "resource_path does not match api_transport: "
+                f"{exact_resource} != {requested_transport}"
+            )
+        ensure_resource_path_rewritable(
+            exact_resource,
+            requested_transport
+            if requested_transport != "auto"
+            else inferred_from_path,
+        )
+    explicit_transport = detect_explicit_transport(base_url)
+    if requested_transport != "auto":
+        if (
+            explicit_transport is not None
+            and explicit_transport != requested_transport
+        ):
+            raise ValueError(
+                "base_url explicit resource conflicts with api_transport"
+            )
+        explicit_transport = requested_transport
+    if explicit_transport is not None:
+        base_url = normalize_llm_endpoint(
+            base_url, explicit_transport, require_https=True
+        )
     meta = resolve_provider_meta(base_url, provider_id, provider_name)
     cfg = load_config()
     models = cfg.setdefault("models", {})
@@ -268,6 +301,11 @@ def add_model(
         "provider_id": meta["id"],
         "provider_name": meta["name"],
     }
+    if explicit_transport is not None:
+        entry["api_transport"] = explicit_transport
+    if exact_resource:
+        entry["resource_path"] = exact_resource
+        entry["api_transport"] = infer_transport_from_resource_path(exact_resource)
     if nickname and nickname.strip() and nickname.strip() != vendor_id:
         entry["nickname"] = nickname.strip()
     models[name] = entry
@@ -307,6 +345,12 @@ def onboard_models_batch(
         }
 
     base_url = normalize_provider_base_url(base_url, require_https=True)
+    probe_base_url = base_url
+    explicit_transport = detect_explicit_transport(base_url)
+    if explicit_transport is not None:
+        base_url = normalize_llm_endpoint(
+            base_url, explicit_transport, require_https=True
+        )
     added: list[str] = []
     skipped: list[str] = []
     cfg_snapshot = load_config()
@@ -346,7 +390,10 @@ def onboard_models_batch(
         if not skip_probe:
             probe = probe_model_connection(
                 api_key=api_key,
-                base_url=base_url,
+                # Preserve an explicitly pasted terminal resource for the
+                # probe so it tests that protocol instead of reverting to
+                # Other/custom auto-discovery after persistence normalization.
+                base_url=probe_base_url,
                 provider_model_id=mid,
             )
             if not probe.get("success"):
@@ -359,6 +406,7 @@ def onboard_models_batch(
             model_name=mid,
             provider_id=provider_id,
             provider_name=provider_name,
+            api_transport=explicit_transport,
         )
         added.append(key)
         known.add(key)
@@ -613,6 +661,11 @@ def discover_provider_models(*, api_key: str, base_url: str) -> dict:
     api_key = api_key.strip()
     try:
         base_url = normalize_provider_base_url(base_url, require_https=True)
+        explicit_transport = detect_explicit_transport(base_url)
+        if explicit_transport is not None:
+            base_url = normalize_llm_endpoint(
+                base_url, explicit_transport, require_https=True
+            )
     except ValueError as exc:
         message = str(exc)
         code = (
@@ -719,11 +772,20 @@ def probe_model_connection(
     api_key: str,
     base_url: str,
     provider_model_id: str,
+    resource_path: Optional[str] = None,
 ) -> dict:
-    """Test an unsaved provider configuration without touching disk."""
+    """Test an unsaved provider configuration without touching disk.
+
+    The Provider chooses the preferred interface.  ``Other``/custom endpoints
+    try Responses first and fall back to Chat only for an explicit endpoint or
+    protocol mismatch.  Auth, policy, rate-limit, timeout, and server failures
+    retain their original meaning and never trigger a second request.
+    """
     api_key = api_key.strip()
     try:
         base_url = normalize_provider_base_url(base_url, require_https=True)
+        explicit_transport = detect_explicit_transport(base_url)
+        exact_resource = normalize_resource_path(resource_path)
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
     provider_model_id = provider_model_id.strip()
@@ -734,29 +796,265 @@ def probe_model_connection(
         text = str(value)
         return text.replace(api_key, "[REDACTED]") if api_key else text
 
-    url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": provider_model_id,
-        "messages": [{"role": "user", "content": "Hi"}],
-        "max_tokens": 32,
-        "stream": False,
+
+    # Lazy import avoids pulling the Agent/LangGraph stack into ordinary config
+    # reads.  The probe and runtime now share the same Provider transport policy.
+    from RxyCode.RxyCode1_1_0.core import providers as _providers
+
+    meta = resolve_provider_meta(base_url)
+    probe_cfg = {
+        "base_url": base_url,
+        "model_name": provider_model_id,
+        "provider_id": meta["id"],
+        "api_key": api_key,
+        "resolved_max_tokens": 32,
     }
+    if explicit_transport is not None:
+        probe_cfg["api_transport"] = explicit_transport
+    if exact_resource:
+        probe_cfg["resource_path"] = exact_resource
+        try:
+            ensure_resource_path_rewritable(
+                exact_resource,
+                explicit_transport
+                if explicit_transport is not None
+                else infer_transport_from_resource_path(exact_resource),
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+    provider = _providers.resolve(probe_cfg)
+    candidates = normalize_transport_candidates(
+        provider.transport_candidates(probe_cfg)
+    )
+
+    class _ProbeHTTPError(RuntimeError):
+        def __init__(
+            self, response: httpx.Response, detail: str, request_url: str
+        ):
+            super().__init__(detail)
+            self.status_code = response.status_code
+            self.response = response
+            self.request_url = request_url
+
+    def request_for(transport: str) -> tuple[str, dict, dict]:
+        if transport == OPENAI_RESPONSES_TRANSPORT:
+            return (
+                llm_endpoint_url(
+                    base_url,
+                    transport,
+                    require_https=True,
+                    resource_path=exact_resource,
+                ),
+                {
+                    "model": provider_model_id,
+                    "input": "Hi",
+                    "max_output_tokens": 32,
+                    "stream": False,
+                },
+                headers,
+            )
+        if transport == OPENAI_CHAT_TRANSPORT:
+            return (
+                llm_endpoint_url(
+                    base_url,
+                    transport,
+                    require_https=True,
+                    resource_path=exact_resource,
+                ),
+                {
+                    "model": provider_model_id,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "max_tokens": 32,
+                    "stream": False,
+                },
+                headers,
+            )
+        if transport == ANTHROPIC_MESSAGES_TRANSPORT:
+            return (
+                llm_endpoint_url(
+                    base_url,
+                    transport,
+                    require_https=True,
+                    resource_path=exact_resource,
+                ),
+                {
+                    "model": provider_model_id,
+                    "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+                {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
+            )
+        raise ValueError(
+            f"connection probe is not implemented for transport {transport}"
+        )
+
+    def inspect_probe_body(
+        data: object, transport: str
+    ) -> tuple[bool, str | None, str]:
+        """Return (structurally_valid, visible_text, outcome).
+
+        Connection tests must accept reasoning-only / refusal / empty-text
+        completions.  Missing protocol shape is not a successful probe.
+        """
+        if not isinstance(data, dict):
+            return False, None, "invalid_body"
+        if transport == OPENAI_CHAT_TRANSPORT:
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                return False, None, "invalid_body"
+            first = choices[0]
+            message = first.get("message") if isinstance(first, dict) else None
+            if not isinstance(message, dict):
+                return False, None, "invalid_body"
+            content = message.get("content")
+            reasoning = message.get("reasoning_content")
+            text = content if isinstance(content, str) and content.strip() else None
+            if text is None and isinstance(reasoning, str) and reasoning.strip():
+                return True, None, "completed_no_text"
+            if text is None:
+                return True, None, "completed_no_text"
+            return True, text, "completed"
+        if transport == OPENAI_RESPONSES_TRANSPORT:
+            status = str(data.get("status") or "").strip().casefold()
+            if status == "failed":
+                return False, None, "failed"
+            if status == "incomplete":
+                details = data.get("incomplete_details") or {}
+                reason = (
+                    str(details.get("reason") or "").strip().casefold()
+                    if isinstance(details, dict)
+                    else ""
+                )
+                if reason not in {"max_output_tokens", "content_filter"}:
+                    return False, None, "invalid_body"
+            elif status and status != "completed":
+                return False, None, "invalid_body"
+            items = data.get("output")
+            has_items = isinstance(items, list)
+            if not has_items and status not in {"completed", "incomplete"}:
+                if isinstance(data.get("output_text"), str) and data["output_text"].strip():
+                    return True, data["output_text"], "completed"
+                return False, None, "invalid_body"
+            parts: list[str] = []
+            refused = False
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "refusal" or str(
+                    item.get("status") or ""
+                ).casefold() == "incomplete":
+                    refused = refused or item.get("type") == "refusal"
+                if item.get("type") == "message":
+                    for block in item.get("content") or []:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "refusal":
+                            refused = True
+                            continue
+                        if block.get("type") in {"output_text", "text"}:
+                            value = block.get("text")
+                            if isinstance(value, str):
+                                parts.append(value)
+            direct = data.get("output_text")
+            if isinstance(direct, str) and direct.strip():
+                parts.append(direct)
+            text = "".join(parts).strip() or None
+            if refused and not text:
+                return True, None, "refused"
+            if text is None:
+                return True, None, "completed_no_text"
+            return True, text, "completed"
+        if transport == ANTHROPIC_MESSAGES_TRANSPORT:
+            items = data.get("content")
+            if not isinstance(items, list):
+                return False, None, "invalid_body"
+            parts: list[str] = []
+            for item in items:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    value = item.get("text")
+                    if isinstance(value, str):
+                        parts.append(value)
+            text = "".join(parts).strip() or None
+            if text is None:
+                return True, None, "completed_no_text"
+            return True, text, "completed"
+        raise ValueError(f"unsupported probe response transport {transport}")
 
     start = time.time()
     try:
         with httpx.Client(timeout=30) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            elapsed = round(time.time() - start, 2)
-            if resp.status_code == 200:
-                data = resp.json()
-                reply = data["choices"][0]["message"]["content"]
-                return {"success": True, "elapsed": elapsed, "reply": reply}
-            else:
+            attempted: list[str] = []
+            for index, transport in enumerate(candidates):
+                url, payload, request_headers = request_for(transport)
+                resp = client.post(url, json=payload, headers=request_headers)
+                elapsed = round(time.time() - start, 2)
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                    except (ValueError, AttributeError):
+                        data = {}
+                    valid, reply, outcome = inspect_probe_body(data, transport)
+                    if valid:
+                        result = {
+                            "success": True,
+                            "elapsed": elapsed,
+                            "reply": reply,
+                            "transport": transport,
+                            "outcome": outcome,
+                        }
+                        if outcome == "refused":
+                            result["message"] = (
+                                "连接成功，但请求被策略拒绝"
+                            )
+                        return result
+                    next_transport = (
+                        candidates[index + 1]
+                        if index + 1 < len(candidates)
+                        else None
+                    )
+                    if next_transport:
+                        attempted.append(transport)
+                        continue
+                    return {
+                        "success": False,
+                        "elapsed": elapsed,
+                        "error": (
+                            "Provider returned HTTP 200 but no valid "
+                            f"{transport} reply body"
+                        ),
+                        "transport": transport,
+                    }
+
                 detail = safe_error(_provider_error_message(resp))
+                probe_error = _ProbeHTTPError(resp, detail, url)
+                next_transport = (
+                    candidates[index + 1] if index + 1 < len(candidates) else None
+                )
+                unsupported_transport = provider.should_fallback_transport(
+                    probe_error,
+                    from_transport=transport,
+                    to_transport=next_transport or transport,
+                )
+                if next_transport and unsupported_transport:
+                    attempted.append(transport)
+                    continue
+                if unsupported_transport and attempted:
+                    return {
+                        "success": False,
+                        "elapsed": elapsed,
+                        "error": (
+                            "No supported LLM API transport; attempted "
+                            + ", ".join([*attempted, transport])
+                        ),
+                    }
                 if re.search(
                     r"not supported|unknown model|does not exist|invalid model",
                     detail,
@@ -771,6 +1069,14 @@ def probe_model_connection(
                     "elapsed": elapsed,
                     "error": detail or safe_error(f"HTTP {resp.status_code}"),
                 }
+            return {
+                "success": False,
+                "elapsed": round(time.time() - start, 2),
+                "error": (
+                    "No supported LLM API transport; attempted "
+                    + ", ".join([*attempted, candidates[-1]])
+                ),
+            }
     except Exception as e:
         elapsed = round(time.time() - start, 2)
         estr = safe_error(e)

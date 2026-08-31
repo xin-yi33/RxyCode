@@ -78,6 +78,11 @@ def test_contract_mode_consistent_with_provider():
     claude = get_contract("anthropic", "claude-sonnet-4.5")
     assert claude["cache_mode"] == "explicit_breakpoints"
     assert claude["breakpoints_max"] == 4
+    assert get_contract("anthropic", "claude-sonnet-4-5") == claude
+    assert get_contract("anthropic", "claude-sonnet-5") != claude
+    assert get_contract("anthropic", "claude-haiku-4-5") == get_contract(
+        "anthropic", "claude-haiku-4.5"
+    )
 
 
 # ============================================================================
