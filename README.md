@@ -1,4 +1,4 @@
-﻿<!-- README_SYNC: source=working-tree; updated=2026-08-20 -->
+﻿<!-- README_SYNC: source=working-tree; updated=2026-08-31 -->
 <div align="center">
 
 **English** · [简体中文](./README.zh-CN.md)
@@ -9,7 +9,7 @@
 
 [⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want a local agent that plans, runs tools, and asks before risky writes.
 
-[![Version](https://img.shields.io/badge/version-1.2.11-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11)
+[![Version](https://img.shields.io/badge/version-1.2.12-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -60,33 +60,33 @@ RxyCode is a Python coding agent. The core is headless: `Session` (`core/session
 **Windows PowerShell:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.12/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.12/install.sh | sh
 rxycode
 ```
 
-The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.2.11`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
+The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.2.12`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
 
 Set `RXYCODE_NO_MODIFY_PATH=1` to skip PATH updates. A PATH-update failure is a warning; the install still succeeds.
 
-**Downloads:** the latest release (**`v1.2.11`**) publishes **one** asset: `rxycode-1.2.11.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
+**Downloads:** the latest release (**`v1.2.12`**) publishes **one** asset: `rxycode-1.2.12.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
 
 ### Option 2: Run once with uv
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.12" rxycode
 ```
 
 ### Option 3: Permanent install
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.12"
 rxycode
 ```
 
@@ -127,7 +127,7 @@ OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -
 
 ## Desktop GUI
 
-v1.2.11 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
+v1.2.12 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
 
 | OS | Asset |
 |----|--------|
@@ -257,6 +257,7 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| [v1.2.12](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12) | 2026-08 | Muse Spark + HY3 providers; Responses reasoning replay; custom `resource_path`; GitHub Release is `rxycode-1.2.12.tar.gz` only — Desktop stays on v1.2.10 |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | Expert teams (off by default); CLI reliability; GitHub Release is `rxycode-1.2.11.tar.gz` only — Desktop stays on v1.2.10 |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop Plan / Goal / `+` menu; plan card Build/Revise/Skip; default CLI remains OpenTUI (`rxycode`) |
 | [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Isolated subagents (Phase C): independent child sessions; `@agent` mention, Task tool, `subtask=true`; OpenTUI child tree |

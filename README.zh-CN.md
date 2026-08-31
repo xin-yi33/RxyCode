@@ -1,4 +1,4 @@
-﻿<!-- README_SYNC: source=working-tree; updated=2026-08-20 -->
+﻿<!-- README_SYNC: source=working-tree; updated=2026-08-31 -->
 <div align="center">
 
 [English](./README.md) · **简体中文**
@@ -9,7 +9,7 @@
 
 [⭐ 给仓库点 Star](https://github.com/xin-yi33/RxyCode) —— 方便以后回来，也让同样在找「会规划、会调工具、危险操作会问你」的本地 Agent 的人更容易发现它。
 
-[![Version](https://img.shields.io/badge/version-1.2.11-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11)
+[![Version](https://img.shields.io/badge/version-1.2.12-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -60,33 +60,33 @@ RxyCode 是一个 Python 编程 Agent。核心无界面：`Session`（`core/sess
 **Windows PowerShell：**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.12/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.12/install.sh | sh
 rxycode
 ```
 
-安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.2.11`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
+安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.2.12`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
 
 设置 `RXYCODE_NO_MODIFY_PATH=1` 可跳过改 PATH。PATH 更新失败只警告，安装仍算成功。
 
-**下载说明：** 最新版（**`v1.2.11`**）只发布 **一个** 资源：`rxycode-1.2.11.tar.gz`。不提供 wheel，也不发布新的 Windows / macOS / Linux Desktop 安装包。桌面安装包和便携 zip 仍在未关闭的 **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)**（`RxyCode.Desktop-1.2.10-win.zip`、setup.exe、dmg、AppImage）。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更细的步骤见 [docs/quickstart.md](docs/quickstart.md)。
+**下载说明：** 最新版（**`v1.2.12`**）只发布 **一个** 资源：`rxycode-1.2.12.tar.gz`。不提供 wheel，也不发布新的 Windows / macOS / Linux Desktop 安装包。桌面安装包和便携 zip 仍在未关闭的 **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)**（`RxyCode.Desktop-1.2.10-win.zip`、setup.exe、dmg、AppImage）。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更细的步骤见 [docs/quickstart.md](docs/quickstart.md)。
 
 ### 方式二：一次性运行
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.12" rxycode
 ```
 
 ### 方式三：永久安装
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.12"
 rxycode
 ```
 
@@ -127,7 +127,7 @@ OpenTUI 和核心之间是 **stdio JSON-RPC**：前端拉起 `python -m appserve
 
 ## Desktop GUI
 
-v1.2.11 **不再**打包 Desktop。请从仍开放的 [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) 下载：
+v1.2.12 **不再**打包 Desktop。请从仍开放的 [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) 下载：
 
 | 系统 | 资源 |
 |------|------|
@@ -257,6 +257,7 @@ OpenTUI 里用 `/addmodel` 走引导向导。不要把 API key 写进仓库、RE
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| [v1.2.12](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12) | 2026-08 | Muse Spark + HY3；Responses 推理回放；自定义 `resource_path`；GitHub Release 只提供 `rxycode-1.2.12.tar.gz` — Desktop 仍在 v1.2.10 |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 专家团（默认关）；CLI 稳定性；GitHub Release 只提供 `rxycode-1.2.11.tar.gz` — Desktop 仍在 v1.2.10 |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop 计划 / 目标 / `+` 菜单；计划卡片实施/补充/跳过；默认 CLI 仍是 OpenTUI（`rxycode`） |
 | [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | 隔离式子代理（Phase C）：独立 Child 会话；`@agent`、Task 工具、`subtask=true`；OpenTUI 子代理树 |
