@@ -1,0 +1,11 @@
+{
+  "name": "github",
+  "version": "1.0.0",
+  "description": "Connect GitHub repositories, Issues, and Pull Requests via the official GitHub MCP stdio server.",
+  "mcp": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}

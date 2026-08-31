@@ -26,6 +26,28 @@ except ImportError:
 
 NAME_OK = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+_GITHUB_REPO_RE = re.compile(
+    r"^(?:https?://github\.com/)?(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)"
+    r"(?:\.git)?(?:/(?:tree|archive/refs/heads)/(?P<ref>[^/]+))?(?:/|\.zip)?$"
+)
+
+
+def bundled_plugin_registry() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins"
+
+
+def github_archive_url(raw: str) -> str:
+    """Turn owner/repo or a GitHub page URL into an http(s) zip the installer can fetch."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")) and text.lower().endswith(".zip"):
+        return text
+    match = _GITHUB_REPO_RE.fullmatch(text.rstrip("/"))
+    if match is None:
+        return text
+    ref = match.group("ref") or "main"
+    return f"https://github.com/{match.group('owner')}/{match.group('repo')}/archive/refs/heads/{ref}.zip"
 
 
 class PluginError(Exception):
@@ -391,6 +413,44 @@ class PluginService:
     def list_plugins(self) -> dict[str, Any]:
         return {"plugins": [dict(item) for item in self._index.values()], "root": str(self.root)}
 
+    def _mcp_entries(self, record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        mcp = record.get("manifest", {}).get("mcp") or {}
+        if not isinstance(mcp, dict):
+            return []
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for key, spec in mcp.items():
+            if isinstance(spec, dict) and str(spec.get("command") or "").strip():
+                rows.append((str(key), spec))
+        return rows
+
+    def _publish_mcp(self, record: dict[str, Any]) -> None:
+        if not self.persistent:
+            return
+        from tools.mcp_manager import add_mcp_server
+
+        token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or os.environ.get("GH_TOKEN")
+        for key, spec in self._mcp_entries(record):
+            args = [str(item) for item in (spec.get("args") or []) if isinstance(item, str)]
+            env: dict[str, str] = {}
+            raw_env = spec.get("env")
+            if isinstance(raw_env, dict):
+                for env_key, env_value in raw_env.items():
+                    if isinstance(env_key, str) and isinstance(env_value, str) and env_value:
+                        env[env_key] = env_value
+            if token and "github" in key.lower() and "GITHUB_PERSONAL_ACCESS_TOKEN" not in env:
+                env["GITHUB_PERSONAL_ACCESS_TOKEN"] = token
+            ok, message = add_mcp_server(key, str(spec["command"]), args, env or None)
+            if not ok and "already exists" not in message:
+                raise PluginError("PLUGIN_MCP_PUBLISH_FAILED", message)
+
+    def _retract_mcp(self, record: dict[str, Any]) -> None:
+        if not self.persistent:
+            return
+        from tools.mcp_manager import remove_mcp_server
+
+        for key, _spec in self._mcp_entries(record):
+            remove_mcp_server(key)
+
     def _load_registry(self) -> list[dict[str, Any]]:
         if self.registry is None:
             return []
@@ -500,9 +560,9 @@ class PluginService:
             src = self._source_from_registry(str(name or ""))
             origin = "registry"
         elif kind in {"url", "github"}:
-            loc = str(path or name or "")
+            loc = github_archive_url(str(path or name or ""))
             if not self._is_http(loc):
-                raise PluginError("PLUGIN_SOURCE_INVALID", "github/url install requires an http(s) zip")
+                raise PluginError("PLUGIN_SOURCE_INVALID", "github/url install requires an http(s) zip or owner/repo")
             src = self._fetch_remote_plugin(loc)
             origin = "github" if kind == "github" else "url"
         elif kind == "local":
@@ -549,6 +609,7 @@ class PluginService:
             if dest.exists():
                 shutil.rmtree(dest, ignore_errors=True)
             raise
+        self._publish_mcp(record)
         return {"ok": True, "plugin": record}
 
     def toggle(self, name: str, enabled: object) -> dict[str, Any]:
@@ -562,6 +623,9 @@ class PluginService:
         if enabled is True:
             record["enabled"] = True
             self._save()
+            self._publish_mcp(record)
+        else:
+            self._retract_mcp(record)
         if self._capabilities is not None:
             for cap_id in record.get("capability_ids") or []:
                 try:
@@ -589,6 +653,7 @@ class PluginService:
         if record is None:
             raise PluginError("PLUGIN_NOT_FOUND", f"unknown plugin {plugin_name}")
         cap_ids = [str(item) for item in record.get("capability_ids") or []]
+        self._retract_mcp(record)
         dest = Path(str(record.get("path") or self.root / plugin_name))
         root = canonicalize(self.root)
         try:

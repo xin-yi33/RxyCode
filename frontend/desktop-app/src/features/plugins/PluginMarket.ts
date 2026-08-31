@@ -136,7 +136,7 @@ export function PluginMarket(props: {
       )
     ),
     tab === 'plugins'
-      ? createElement(PluginPane, { client: props.client ?? null, refreshTick })
+      ? createElement(PluginPane, { client: props.client ?? null, refreshTick, addTick })
       : null,
     tab === 'skills'
       ? createElement(SkillPaneView, {
@@ -159,14 +159,18 @@ export function PluginMarket(props: {
   )
 }
 
-function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number }): ReactElement {
+function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number; addTick?: number }): ReactElement {
   const plugins = usePlugins(props.client)
   const [query, setQuery] = useState('')
   const [githubUrl, setGithubUrl] = useState('')
   const [notice, setNotice] = useState('')
+  const [showAdd, setShowAdd] = useState(false)
   useEffect(() => {
     if ((props.refreshTick ?? 0) > 0) void plugins.refresh()
   }, [plugins.refresh, props.refreshTick])
+  useEffect(() => {
+    if ((props.addTick ?? 0) > 0) setShowAdd(true)
+  }, [props.addTick])
   const installed = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return plugins.items.filter((item) => needle === '' || `${item.name} ${item.description}`.toLowerCase().includes(needle))
@@ -225,29 +229,45 @@ function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number
       githubInstalled
         ? createElement('span', { className: 'plugin-installed-badge' }, '已连接')
         : createElement(
-            'div',
-            { className: 'plugin-github-form' },
-            createElement('input', {
-              'data-testid': 'plugin-github-url',
-              placeholder: 'https://github.com/org/plugin/archive/refs/heads/main.zip',
-              value: githubUrl,
-              onChange: (event: { target: { value: string } }) => setGithubUrl(event.target.value)
-            }),
-            createElement(
-              'button',
-              {
-                type: 'button',
-                className: 'plugin-install-btn',
-                'data-testid': 'plugin-github-connect',
-                disabled: githubUrl.trim() === '',
-                onClick: () => {
-                  void plugins.install({ source: 'github', path: githubUrl.trim(), name: 'github' }).then(setNotice)
-                }
-              },
-              '安装'
-            )
+            'button',
+            {
+              type: 'button',
+              className: 'plugin-install-btn',
+              'data-testid': 'plugin-github-connect',
+              onClick: () => {
+                void plugins.install({ source: 'registry', name: 'github' }).then(setNotice)
+              }
+            },
+            '安装'
           )
     ),
+    createElement('p', { className: 'plugin-pane-sub' }, '安装后写入本机 mcpServers.github（stdio）。需要环境变量 GITHUB_PERSONAL_ACCESS_TOKEN。'),
+    showAdd
+      ? createElement(
+          'div',
+          { className: 'plugin-github-form', 'data-testid': 'plugin-add-url' },
+          createElement('p', { className: 'plugin-pane-sub' }, '从 GitHub 仓库或 zip 安装第三方插件包（需含 plugin.json）。'),
+          createElement('input', {
+            'data-testid': 'plugin-github-url',
+            placeholder: 'owner/repo 或 https://github.com/owner/repo',
+            value: githubUrl,
+            onChange: (event: { target: { value: string } }) => setGithubUrl(event.target.value)
+          }),
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'plugin-install-btn',
+              'data-testid': 'plugin-url-install',
+              disabled: githubUrl.trim() === '',
+              onClick: () => {
+                void plugins.install({ source: 'github', path: githubUrl.trim() }).then(setNotice)
+              }
+            },
+            '安装插件包'
+          )
+        )
+      : null,
     notice !== '' ? createElement('p', { role: 'alert', 'data-testid': 'plugin-notice' }, notice) : null,
     plugins.error != null ? createElement('p', { role: 'alert' }, plugins.error) : null
   )

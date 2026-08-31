@@ -52,7 +52,7 @@ from .release import ReleaseService
 from .cli_hub_service import CliHubError, CliHubService
 from .schedule_service import ScheduleError, ScheduleService
 from .trash_service import TrashError, TrashService
-from .plugin_service import PluginError, PluginService
+from .plugin_service import PluginError, PluginService, bundled_plugin_registry
 
 
 class SkillError(Exception):
@@ -256,10 +256,12 @@ class AppServer:
         )
         self._schedule_task: asyncio.Task[Any] | None = None
         self._trash = TrashService(self._sessions)
+        registry = bundled_plugin_registry()
         self._plugins = PluginService(
             persistent=not stub,
             capabilities=self._capabilities,
             permission_store=self._permissions,
+            registry=registry if (registry / "registry.json").is_file() else None,
         )
         self._plugins.attach_to_capabilities()
         self._session_hosts: dict[str, AgentHost] = {}

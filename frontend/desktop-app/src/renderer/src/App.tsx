@@ -459,6 +459,7 @@ function App(): React.JSX.Element {
     // Navigation is independent from the session/new RPC. Close the drawer
     // immediately so a slow server warm cannot make the click look stuck.
     setNavOpen(false)
+    setRailPanel(null)
     showToast(tr('creatingTask'))
     const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
     const created = await conversation.createSession({
@@ -487,6 +488,7 @@ function App(): React.JSX.Element {
     setWorkspaceSettings(next)
     saveWorkspaceSettings(next, window.localStorage)
     setNavOpen(false)
+    setRailPanel(null)
     showToast(tr('creatingTaskInProject'))
     const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
     const created = await conversation.createSession({
@@ -541,6 +543,7 @@ function App(): React.JSX.Element {
 
   const selectTask = (sessionId: string): void => {
     setUnreadIds((current) => current.filter((id) => id !== sessionId))
+    setRailPanel(null)
     conversation.selectSession(sessionId)
   }
 
@@ -711,7 +714,35 @@ function App(): React.JSX.Element {
         </div>
 
         <main className="chat-column task-main" id="task-main" data-testid="task-main">
-          {desktopView === 'board' ? (
+          {railPanel === 'plugins' ? (
+            <div className="plugin-hub-slot" data-testid="plugin-hub-slot">
+              <PluginMarket
+                blocked={false}
+                missing={[]}
+                client={conversation.protocolClient}
+                teams={teams.teams}
+                groups={teams.groups}
+                teamLoading={teams.loading}
+                teamError={teams.error}
+                onClose={() => setRailPanel(null)}
+                onSummonTeam={(teamId) => {
+                  void teams.setActive(teamId).then((ok) => {
+                    if (ok) {
+                      setRailPanel(null)
+                      setComposerPrefill('/team ')
+                      setComposerPrefillNonce((n) => n + 1)
+                      showToast(tr('teamSummoned'))
+                    }
+                  })
+                }}
+                onCreateSkill={(need) => {
+                  setRailPanel(null)
+                  void handleComposerSend(CREATE_SKILL_PROMPT.replace('{need}', need))
+                }}
+              />
+            </div>
+          ) : null}
+          {railPanel !== 'plugins' && desktopView === 'board' ? (
             <BoardView
               threads={sessionsToBoardThreads(
                 conversation.state.sessions,
@@ -749,7 +780,7 @@ function App(): React.JSX.Element {
               }}
             />
           ) : null}
-          {desktopView === 'chat' ? (
+          {railPanel !== 'plugins' && desktopView === 'chat' ? (
           <>
           {activeTimeline.length > 0 ? (
           <TaskHeader
@@ -928,34 +959,6 @@ function App(): React.JSX.Element {
             />
           </div>
         )}
-        {railPanel === 'plugins' ? (
-          <aside className="plugin-hub-slot" data-testid="plugin-hub-slot">
-            <PluginMarket
-              blocked={false}
-              missing={[]}
-              client={conversation.protocolClient}
-              teams={teams.teams}
-              groups={teams.groups}
-              teamLoading={teams.loading}
-              teamError={teams.error}
-              onClose={() => setRailPanel(null)}
-              onSummonTeam={(teamId) => {
-                void teams.setActive(teamId).then((ok) => {
-                  if (ok) {
-                    setRailPanel(null)
-                    setComposerPrefill('/team ')
-                    setComposerPrefillNonce((n) => n + 1)
-                    showToast(tr('teamSummoned'))
-                  }
-                })
-              }}
-              onCreateSkill={(need) => {
-                setRailPanel(null)
-                void handleComposerSend(CREATE_SKILL_PROMPT.replace('{need}', need))
-              }}
-            />
-          </aside>
-        ) : null}
       </div>
       <Statusline
         hasSession={activeSessionId !== null}

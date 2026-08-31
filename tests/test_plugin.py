@@ -10,7 +10,7 @@ import pytest
 
 from appserver.capabilities import CapabilityService
 from appserver.permission import PermissionStore
-from appserver.plugin_service import PluginError, PluginService
+from appserver.plugin_service import PluginError, PluginService, bundled_plugin_registry, github_archive_url
 from protocol.schema import export_schema
 
 
@@ -219,6 +219,30 @@ def test_refuse_symlink_package(tmp_path: Path) -> None:
     with pytest.raises(PluginError) as src_err:
         plugins.install(source="local", path=str(alias))
     assert src_err.value.code == "PLUGIN_PATH_UNSAFE"
+
+
+def test_github_archive_url_accepts_owner_repo() -> None:
+    assert github_archive_url("owner/repo") == "https://github.com/owner/repo/archive/refs/heads/main.zip"
+    assert github_archive_url("https://github.com/owner/repo") == (
+        "https://github.com/owner/repo/archive/refs/heads/main.zip"
+    )
+    assert github_archive_url("https://github.com/owner/repo.git") == (
+        "https://github.com/owner/repo/archive/refs/heads/main.zip"
+    )
+    assert github_archive_url("https://example.com/pkg.zip") == "https://example.com/pkg.zip"
+
+
+def test_install_bundled_github_plugin(tmp_path: Path) -> None:
+    plugins, caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    result = plugins.install(source="registry", name="github")
+    assert result["ok"] is True
+    assert result["plugin"]["name"] == "github"
+    rows = {row["capability_id"]: row for row in caps.list()["capabilities"]}
+    assert "mcp:github.github" in rows
+    overlay = plugins.mcp_overlay()["github.github"]
+    assert overlay["command"] == "npx"
+    assert overlay["args"] == ["-y", "@modelcontextprotocol/server-github"]
 
 
 def test_schema_has_plugin_methods() -> None:

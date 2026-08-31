@@ -1,0 +1,10 @@
+{
+  "plugins": [
+    {
+      "name": "github",
+      "version": "1.0.0",
+      "path": "github",
+      "description": "Connect GitHub repositories, Issues, and Pull Requests"
+    }
+  ]
+}

@@ -69,6 +69,9 @@ DEFAULT_INHERITED_ENV_VARS = (
     )
     if sys.platform == "win32"
     else ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
+) + (
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GH_TOKEN",
 )
 
 

@@ -30,11 +30,13 @@ test('GX24: plugin/* is path A', () => {
   assert.match(html, /class="plugin-hub-add"/)
 })
 
-test('plugin hub uses a fixed right pane and square add controls', () => {
+test('plugin hub replaces the main session pane and keeps square add controls', () => {
   const root = dirname(fileURLToPath(import.meta.url))
   const css = readFileSync(join(root, '../../renderer/src/assets/main.css'), 'utf8')
   const app = readFileSync(join(root, '../../renderer/src/App.tsx'), 'utf8')
   assert.match(app, /data-testid="plugin-hub-slot"/)
+  assert.match(app, /railPanel === 'plugins'[\s\S]*plugin-hub-slot/)
+  assert.doesNotMatch(app, /<aside className="plugin-hub-slot"/)
   assert.doesNotMatch(app, /rail-panel-wide/)
   assert.match(css, /\.plugin-hub-add\s*\{[\s\S]*?border-radius:\s*8px/)
   assert.match(css, /\.plugin-hub-add\s*\{[\s\S]*?background:\s*#fff/)

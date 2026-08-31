@@ -46,8 +46,9 @@ test('desktop CSS shows a 248px left rail and does not globally hide it', () => 
     }),
     'main-layout command-layout plugin-hub-open'
   )
-  assert.match(css, /\.command-layout\.plugin-hub-open\s*\{[\s\S]*?grid-template-columns:\s*248px\s+minmax\(0,\s*1fr\)\s+720px/)
-  assert.match(css, /\.plugin-hub-slot\s*\{[\s\S]*?grid-column:\s*3/)
+  assert.match(css, /\.command-layout\.plugin-hub-open\s*\{\s*grid-template-columns:\s*248px\s+minmax\(0,\s*1fr\);/)
+  assert.doesNotMatch(css, /\.command-layout\.plugin-hub-open\s*\{[^}]*720px/)
+  assert.doesNotMatch(css, /\.plugin-hub-slot\s*\{[^}]*grid-column:\s*3/)
   assert.equal(sessionRailSelector('block'), '.desktop-navigation-panel')
   assert.equal(sessionRailSelector('none'), '.nav-sheet')
   const override = css.split('RxyCode desktop command surface')[1] ?? ''

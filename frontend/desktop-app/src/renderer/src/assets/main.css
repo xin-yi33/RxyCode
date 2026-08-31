@@ -3303,23 +3303,23 @@ details[open] .activity-chevron {
 }
 
 .command-layout.plugin-hub-open {
-  grid-template-columns: 248px minmax(0, 1fr) 720px;
+  grid-template-columns: 248px minmax(0, 1fr);
 }
 
 .command-layout.plugin-hub-open > .task-main {
   grid-column: 2;
+  display: flex;
+  min-height: 0;
 }
 
 .plugin-hub-slot {
-  grid-column: 3;
-  grid-row: 1;
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  border-left: 1px solid var(--cc-border);
   background: var(--cc-canvas);
 }
 
