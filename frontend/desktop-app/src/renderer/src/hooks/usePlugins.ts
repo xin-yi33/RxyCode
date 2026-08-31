@@ -7,7 +7,7 @@ export function usePlugins(client: ProtocolClient | null): {
   loading: boolean
   error: string | null
   refresh(): Promise<void>
-  install(input: { source: string; path?: string; name?: string }): Promise<string>
+  install(input: { source: string; path?: string; name?: string; token?: string }): Promise<string>
   toggle(name: string, enabled: boolean): Promise<void>
 } {
   const [items, setItems] = useState<PluginRecord[]>([])
@@ -38,7 +38,7 @@ export function usePlugins(client: ProtocolClient | null): {
   }, [refresh])
 
   const install = useCallback(
-    async (input: { source: string; path?: string; name?: string }): Promise<string> => {
+    async (input: { source: string; path?: string; name?: string; token?: string }): Promise<string> => {
       if (client == null) return 'no client'
       try {
         await client.requestWithTimeout('plugin/install', input, 30_000)

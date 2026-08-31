@@ -50,6 +50,10 @@ attributes `connected`, `tools_changed`, `protocol_version`, `last_error_type`.
   shell-concatenated. The child inherits only the official SDK-style safe OS
   allowlist plus explicitly configured `env` values. Environment values are
   never returned by `runtime_status()`.
+- The bundled GitHub plugin publishes `mcpServers.github` with the official
+  stdio launcher (`github-mcp-server`, else Docker, else deprecated npx). The
+  PAT stays in the plugin `user.json` (or process env) and is injected at spawn
+  by `mcp/github_auth.py`; it is not written into `config.yaml`.
 - MCP annotations are untrusted. Dynamic names default to `WRITE`; a positive
   `destructiveHint` can only escalate the local minimum to `DANGER`, while a
   remote `readOnlyHint` can never lower it. Normal approval rules still apply.

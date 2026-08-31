@@ -5,6 +5,7 @@ export interface PluginRecord {
   enabled: boolean
   path: string
   description: string
+  auth: string
 }
 
 export function mapPluginRecord(raw: Record<string, unknown>): PluginRecord {
@@ -21,8 +22,17 @@ export function mapPluginRecord(raw: Record<string, unknown>): PluginRecord {
     source: String(raw.source ?? ''),
     enabled: raw.enabled !== false,
     path: String(raw.path ?? ''),
-    description
+    description,
+    auth: typeof raw.auth === 'string' ? raw.auth : ''
   }
+}
+
+export function githubCardState(
+  row?: Pick<PluginRecord, 'name' | 'auth'> | null
+): 'install' | 'connect' | 'connected' {
+  if (row == null || row.name.toLowerCase() !== 'github') return 'install'
+  if (row.auth === 'configured') return 'connected'
+  return 'connect'
 }
 
 export function parsePluginList(raw: unknown): PluginRecord[] {

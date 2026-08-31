@@ -30,6 +30,33 @@ _GITHUB_REPO_RE = re.compile(
     r"^(?:https?://github\.com/)?(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)"
     r"(?:\.git)?(?:/(?:tree|archive/refs/heads)/(?P<ref>[^/]+))?(?:/|\.zip)?$"
 )
+_GITHUB_SECRET_ENV = frozenset({"GITHUB_PERSONAL_ACCESS_TOKEN", "GH_TOKEN"})
+_OFFICIAL_GITHUB_MCP_IMAGE = "ghcr.io/github/github-mcp-server"
+_DEPRECATED_GITHUB_NPM = "@modelcontextprotocol/server-github"
+
+
+def resolve_github_mcp_runtime() -> tuple[str, list[str]]:
+    """Pick the official GitHub MCP stdio launcher that is actually on PATH."""
+    binary = shutil.which("github-mcp-server")
+    if binary:
+        return binary, ["stdio"]
+    docker = shutil.which("docker")
+    if docker:
+        return docker, [
+            "run",
+            "-i",
+            "--rm",
+            "-e",
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            _OFFICIAL_GITHUB_MCP_IMAGE,
+        ]
+    npx = shutil.which("npx")
+    if npx:
+        return npx, ["-y", _DEPRECATED_GITHUB_NPM]
+    raise PluginError(
+        "PLUGIN_MCP_RUNTIME_MISSING",
+        "GitHub MCP 需要 PATH 上的 github-mcp-server、docker 或 npx",
+    )
 
 
 def bundled_plugin_registry() -> Path:
@@ -310,6 +337,7 @@ class PluginService:
             "source": source,
             "enabled": True,
             "capability_ids": self._capability_ids(name, manifest),
+            "description": str(manifest.get("description") or ""),
             "manifest": {
                 "skills": manifest.get("skills") or [],
                 "commands": manifest.get("commands") or [],
@@ -411,7 +439,54 @@ class PluginService:
         return merged
 
     def list_plugins(self) -> dict[str, Any]:
-        return {"plugins": [dict(item) for item in self._index.values()], "root": str(self.root)}
+        return {"plugins": [self._public_record(item) for item in self._index.values()], "root": str(self.root)}
+
+    def _read_user_json(self, dest: Path) -> dict[str, Any]:
+        path = dest / "user.json"
+        if not path.is_file() or path.is_symlink():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _write_user_token(self, dest: Path, token: str) -> None:
+        dest.mkdir(parents=True, exist_ok=True)
+        data = self._read_user_json(dest)
+        data["token"] = token
+        path = dest / "user.json"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            if os.name != "nt":
+                os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def _github_auth_configured(self, dest: Path) -> bool:
+        if (os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or os.environ.get("GH_TOKEN") or "").strip():
+            return True
+        from mcp.github_auth import read_github_user_token
+
+        return bool(read_github_user_token(dest / "user.json"))
+
+    def _public_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        out = {key: value for key, value in record.items() if key not in {"token", "github_token"}}
+        dest = Path(str(record.get("path") or ""))
+        description = str(out.get("description") or "")
+        if not description:
+            description = str((record.get("manifest") or {}).get("description") or "")
+        out["description"] = description
+        if str(record.get("name") or "").lower() == "github":
+            out["auth"] = "configured" if self._github_auth_configured(dest) else "needed"
+        return out
+
+    def _connect_github(self, token: str) -> dict[str, Any]:
+        record = self._index["github"]
+        dest = Path(str(record.get("path") or self.root / "github"))
+        self._write_user_token(dest, token)
+        self._publish_mcp(record)
+        return {"ok": True, "plugin": self._public_record(record)}
 
     def _mcp_entries(self, record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         mcp = record.get("manifest", {}).get("mcp") or {}
@@ -423,24 +498,32 @@ class PluginService:
                 rows.append((str(key), spec))
         return rows
 
+    def _command_for_publish(self, key: str, spec: dict[str, Any]) -> tuple[str, list[str]]:
+        if "github" in key.lower():
+            return resolve_github_mcp_runtime()
+        args = [str(item) for item in (spec.get("args") or []) if isinstance(item, str)]
+        return str(spec["command"]), args
+
     def _publish_mcp(self, record: dict[str, Any]) -> None:
         if not self.persistent:
             return
-        from tools.mcp_manager import add_mcp_server
+        from tools.mcp_manager import upsert_mcp_server
 
-        token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or os.environ.get("GH_TOKEN")
         for key, spec in self._mcp_entries(record):
-            args = [str(item) for item in (spec.get("args") or []) if isinstance(item, str)]
+            command, args = self._command_for_publish(key, spec)
             env: dict[str, str] = {}
             raw_env = spec.get("env")
             if isinstance(raw_env, dict):
                 for env_key, env_value in raw_env.items():
-                    if isinstance(env_key, str) and isinstance(env_value, str) and env_value:
+                    if (
+                        isinstance(env_key, str)
+                        and isinstance(env_value, str)
+                        and env_value
+                        and env_key not in _GITHUB_SECRET_ENV
+                    ):
                         env[env_key] = env_value
-            if token and "github" in key.lower() and "GITHUB_PERSONAL_ACCESS_TOKEN" not in env:
-                env["GITHUB_PERSONAL_ACCESS_TOKEN"] = token
-            ok, message = add_mcp_server(key, str(spec["command"]), args, env or None)
-            if not ok and "already exists" not in message:
+            ok, message = upsert_mcp_server(key, command, args, env or None)
+            if not ok:
                 raise PluginError("PLUGIN_MCP_PUBLISH_FAILED", message)
 
     def _retract_mcp(self, record: dict[str, Any]) -> None:
@@ -553,8 +636,24 @@ class PluginService:
         if callable(saver):
             saver()
 
-    def install(self, *, source: str, path: str | None = None, name: str | None = None) -> dict[str, Any]:
+    def install(
+        self,
+        *,
+        source: str,
+        path: str | None = None,
+        name: str | None = None,
+        token: str | None = None,
+    ) -> dict[str, Any]:
         self._authorize("capability.write")
+        secret = token.strip() if isinstance(token, str) else ""
+        hinted = ""
+        if name:
+            try:
+                hinted = self._safe_name(str(name))
+            except PluginError:
+                hinted = ""
+        if secret and hinted == "github" and hinted in self._index:
+            return self._connect_github(secret)
         kind = (source or "").strip().lower()
         if kind == "registry":
             src = self._source_from_registry(str(name or ""))
@@ -605,12 +704,26 @@ class PluginService:
             raise
         try:
             record = self._record(installed["name"], installed["version"], dest, installed["manifest"], source=origin)
+            if secret and plugin_name == "github":
+                self._write_user_token(dest, secret)
+            self._publish_mcp(record)
         except Exception:
+            self._index.pop(plugin_name, None)
+            try:
+                self._save()
+            except OSError:
+                pass
             if dest.exists():
+                kept_after = None
+                user = dest / "user.json"
+                if user.is_file() and not user.is_symlink():
+                    kept_after = user.read_text(encoding="utf-8")
                 shutil.rmtree(dest, ignore_errors=True)
+                if kept_after is not None:
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "user.json").write_text(kept_after, encoding="utf-8")
             raise
-        self._publish_mcp(record)
-        return {"ok": True, "plugin": record}
+        return {"ok": True, "plugin": self._public_record(record)}
 
     def toggle(self, name: str, enabled: object) -> dict[str, Any]:
         self._authorize("capability.write")

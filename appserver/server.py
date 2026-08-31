@@ -2617,10 +2617,12 @@ class AppServer:
         if method == "plugin/list":
             return hub.list_plugins()
         if method == "plugin/install":
+            token = params.get("token")
             return hub.install(
                 source=str(params.get("source") or ""),
                 path=params.get("path"),
                 name=params.get("name"),
+                token=token if isinstance(token, str) else None,
             )
         if method == "plugin/uninstall":
             from pydantic import ValidationError

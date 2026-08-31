@@ -77,6 +77,10 @@ later tool activity.
 | `subagents/list` | list registered agent definitions |
 | `subagents/capability` | subagent feature flags + capability report |
 | `shutdown` | graceful exit (cancels heartbeat, kills workers) |
+| `plugin/list` | installed plugins; GitHub adds `auth` (`configured` / `needed`), never the token |
+| `plugin/install` | `local` / `registry` / `url` / `github`; optional raw `token` for GitHub PAT (not in `schema.json`) |
+| `plugin/toggle` | enable or disable an installed plugin |
+| `plugin/uninstall` | remove a plugin package |
 
 When the watchdog marks the server **degraded**, new `session/prompt` calls return
 `-32004` until restart.

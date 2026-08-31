@@ -305,6 +305,9 @@ class MCPClient:
         try:
             env = _default_subprocess_environment()
             env.update(self.env)
+            from .github_auth import inject_github_plugin_token
+
+            inject_github_plugin_token(env, self.name)
             popen_kwargs: dict[str, Any] = {
                 "stdin": subprocess.PIPE,
                 "stdout": subprocess.PIPE,

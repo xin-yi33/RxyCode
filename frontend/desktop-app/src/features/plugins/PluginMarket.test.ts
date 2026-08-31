@@ -5,7 +5,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { PluginMarket } from './PluginMarket.ts'
+import { GithubPopularRow, PluginMarket } from './PluginMarket.ts'
 import { probePlugins } from './plugin.probe.ts'
 
 const schema = readFileSync(
@@ -26,6 +26,9 @@ test('GX24: plugin/* is path A', () => {
   assert.match(html, /data-testid="plugin-hub-skills"/)
   assert.match(html, /data-testid="plugin-hub-teams"/)
   assert.match(html, /data-testid="plugin-github"/)
+  assert.match(html, /data-testid="plugin-github-connect"/)
+  assert.match(html, />安装</)
+  assert.doesNotMatch(html, /mcpServers/)
   assert.match(html, /data-testid="plugin-hub-add"/)
   assert.match(html, /class="plugin-hub-add"/)
 })
@@ -43,4 +46,30 @@ test('plugin hub replaces the main session pane and keeps square add controls', 
   assert.match(css, /\.skill-card-add\s*\{[\s\S]*?border-radius:\s*8px/)
   assert.doesNotMatch(css, /\.skill-card-add\s*\{[\s\S]*?border-radius:\s*50%/)
   assert.match(css, /\.skill-card-add\s*\{[\s\S]*?padding:\s*0/)
+})
+
+test('github popular row shows PAT connect then connected', () => {
+  const connect = renderToStaticMarkup(
+    createElement(GithubPopularRow, {
+      state: 'connect',
+      token: '',
+      onToken: () => undefined,
+      onInstall: () => undefined,
+      onConnect: () => undefined
+    })
+  )
+  assert.match(connect, /data-testid="plugin-github-token"/)
+  assert.match(connect, /data-testid="plugin-github-connect"/)
+  assert.match(connect, />连接</)
+  const connected = renderToStaticMarkup(
+    createElement(GithubPopularRow, {
+      state: 'connected',
+      token: '',
+      onToken: () => undefined,
+      onInstall: () => undefined,
+      onConnect: () => undefined
+    })
+  )
+  assert.match(connected, /data-testid="plugin-github-connected"/)
+  assert.match(connected, /已连接/)
 })

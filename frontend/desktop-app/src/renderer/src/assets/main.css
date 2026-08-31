@@ -5100,6 +5100,27 @@ img.team-gallery-avatar {
   color: var(--cc-text);
 }
 
+.plugin-row-auth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-github-token {
+  width: 220px;
+  padding: 6px 8px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: var(--cc-surface);
+  color: var(--cc-text);
+}
+
+.plugin-installed-badge {
+  flex-shrink: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+}
+
 .plugin-github-form input,
 .skill-add input,
 .skill-add textarea {

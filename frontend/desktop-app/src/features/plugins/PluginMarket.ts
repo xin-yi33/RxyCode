@@ -3,7 +3,7 @@ import { createElement, useEffect, useMemo, useState, type ReactElement } from '
 import type { ProtocolClient } from '@rxycode/protocol-client'
 import { TeamGallery } from '../team/TeamGallery.ts'
 import type { TeamGroup, TeamRecord } from '../team/team.visual.ts'
-import { GITHUB_PLUGIN } from './plugin.model.ts'
+import { GITHUB_PLUGIN, githubCardState } from './plugin.model.ts'
 import { pluginPortraitSrc, skillPortraitSrc, type SkillMarketItem } from '../skills/skill.model.ts'
 import { usePlugins } from '../../renderer/src/hooks/usePlugins.ts'
 import { useSkillMarket } from '../../renderer/src/hooks/useSkillMarket.ts'
@@ -159,10 +159,67 @@ export function PluginMarket(props: {
   )
 }
 
+export function GithubPopularRow(props: {
+  state: ReturnType<typeof githubCardState>
+  token: string
+  onToken: (value: string) => void
+  onInstall: () => void
+  onConnect: () => void
+}): ReactElement {
+  return createElement(
+    'article',
+    { className: 'plugin-row', 'data-testid': 'plugin-github' },
+    createElement('img', { className: 'plugin-row-icon', src: pluginPortraitSrc('github'), alt: '' }),
+    createElement(
+      'div',
+      { className: 'plugin-row-copy' },
+      createElement('strong', null, GITHUB_PLUGIN.title),
+      createElement('p', null, GITHUB_PLUGIN.description)
+    ),
+    props.state === 'connected'
+      ? createElement('span', { className: 'plugin-installed-badge', 'data-testid': 'plugin-github-connected' }, '已连接')
+      : props.state === 'connect'
+        ? createElement(
+            'div',
+            { className: 'plugin-row-auth' },
+            createElement('input', {
+              type: 'password',
+              className: 'plugin-github-token',
+              'data-testid': 'plugin-github-token',
+              placeholder: 'GitHub Personal Access Token',
+              autoComplete: 'off',
+              value: props.token,
+              onChange: (event: { target: { value: string } }) => props.onToken(event.target.value)
+            }),
+            createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'plugin-install-btn',
+                'data-testid': 'plugin-github-connect',
+                onClick: props.onConnect
+              },
+              '连接'
+            )
+          )
+        : createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'plugin-install-btn',
+              'data-testid': 'plugin-github-connect',
+              onClick: props.onInstall
+            },
+            '安装'
+          )
+  )
+}
+
 function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number; addTick?: number }): ReactElement {
   const plugins = usePlugins(props.client)
   const [query, setQuery] = useState('')
   const [githubUrl, setGithubUrl] = useState('')
+  const [githubToken, setGithubToken] = useState('')
   const [notice, setNotice] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   useEffect(() => {
@@ -175,7 +232,8 @@ function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number
     const needle = query.trim().toLowerCase()
     return plugins.items.filter((item) => needle === '' || `${item.name} ${item.description}`.toLowerCase().includes(needle))
   }, [plugins.items, query])
-  const githubInstalled = plugins.items.some((item) => item.name.toLowerCase() === 'github')
+  const githubRow = plugins.items.find((item) => item.name.toLowerCase() === 'github') ?? null
+  const githubState = githubCardState(githubRow)
 
   return createElement(
     'div',
@@ -216,32 +274,25 @@ function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number
           )
     ),
     createElement('h4', null, 'Popular'),
-    createElement(
-      'article',
-      { className: 'plugin-row', 'data-testid': 'plugin-github' },
-      createElement('img', { className: 'plugin-row-icon', src: pluginPortraitSrc('github'), alt: '' }),
-      createElement(
-        'div',
-        { className: 'plugin-row-copy' },
-        createElement('strong', null, GITHUB_PLUGIN.title),
-        createElement('p', null, GITHUB_PLUGIN.description)
-      ),
-      githubInstalled
-        ? createElement('span', { className: 'plugin-installed-badge' }, '已连接')
-        : createElement(
-            'button',
-            {
-              type: 'button',
-              className: 'plugin-install-btn',
-              'data-testid': 'plugin-github-connect',
-              onClick: () => {
-                void plugins.install({ source: 'registry', name: 'github' }).then(setNotice)
-              }
-            },
-            '安装'
-          )
-    ),
-    createElement('p', { className: 'plugin-pane-sub' }, '安装后写入本机 mcpServers.github（stdio）。需要环境变量 GITHUB_PERSONAL_ACCESS_TOKEN。'),
+    createElement(GithubPopularRow, {
+      state: githubState,
+      token: githubToken,
+      onToken: setGithubToken,
+      onInstall: () => {
+        void plugins.install({ source: 'registry', name: 'github' }).then(setNotice)
+      },
+      onConnect: () => {
+        const token = githubToken.trim()
+        if (token === '') {
+          setNotice('请先填写 GitHub Personal Access Token')
+          return
+        }
+        void plugins.install({ source: 'registry', name: 'github', token }).then((message) => {
+          setNotice(message)
+          if (message === '') setGithubToken('')
+        })
+      }
+    }),
     showAdd
       ? createElement(
           'div',

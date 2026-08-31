@@ -10,7 +10,13 @@ import pytest
 
 from appserver.capabilities import CapabilityService
 from appserver.permission import PermissionStore
-from appserver.plugin_service import PluginError, PluginService, bundled_plugin_registry, github_archive_url
+from appserver.plugin_service import (
+    PluginError,
+    PluginService,
+    bundled_plugin_registry,
+    github_archive_url,
+    resolve_github_mcp_runtime,
+)
 from protocol.schema import export_schema
 
 
@@ -232,17 +238,149 @@ def test_github_archive_url_accepts_owner_repo() -> None:
     assert github_archive_url("https://example.com/pkg.zip") == "https://example.com/pkg.zip"
 
 
-def test_install_bundled_github_plugin(tmp_path: Path) -> None:
+def test_install_bundled_github_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
     plugins, caps = _service(tmp_path)
     plugins.registry = bundled_plugin_registry()
     result = plugins.install(source="registry", name="github")
     assert result["ok"] is True
     assert result["plugin"]["name"] == "github"
+    assert result["plugin"]["auth"] == "needed"
     rows = {row["capability_id"]: row for row in caps.list()["capabilities"]}
     assert "mcp:github.github" in rows
+    assert "skill:github.github" in rows
     overlay = plugins.mcp_overlay()["github.github"]
     assert overlay["command"] == "npx"
     assert overlay["args"] == ["-y", "@modelcontextprotocol/server-github"]
+    dest = Path(result["plugin"]["path"])
+    assert (dest / "skills" / "github" / "SKILL.md").is_file()
+    listed = plugins.list_plugins()["plugins"][0]
+    assert listed["auth"] == "needed"
+    assert "token" not in listed
+
+
+def test_resolve_github_mcp_runtime_prefers_official_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/usr/bin/github-mcp-server" if name == "github-mcp-server" else None,
+    )
+    command, args = resolve_github_mcp_runtime()
+    assert command.endswith("github-mcp-server")
+    assert args == ["stdio"]
+
+
+def test_resolve_github_mcp_runtime_uses_docker_then_npx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+    command, args = resolve_github_mcp_runtime()
+    assert command.endswith("docker")
+    assert args == [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server",
+    ]
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/usr/bin/npx" if name == "npx" else None,
+    )
+    command, args = resolve_github_mcp_runtime()
+    assert command.endswith("npx")
+    assert args == ["-y", "@modelcontextprotocol/server-github"]
+
+
+def test_resolve_github_mcp_runtime_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("appserver.plugin_service.shutil.which", lambda _name: None)
+    with pytest.raises(PluginError) as err:
+        resolve_github_mcp_runtime()
+    assert err.value.code == "PLUGIN_MCP_RUNTIME_MISSING"
+
+
+def test_github_token_connect_updates_user_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    plugins, _caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    plugins.install(source="registry", name="github")
+    with pytest.raises(PluginError) as already:
+        plugins.install(source="registry", name="github")
+    assert already.value.code == "PLUGIN_ALREADY_INSTALLED"
+    secret = "ghp_test_secret_token"
+    second = plugins.install(source="registry", name="github", token=secret)
+    assert second["ok"] is True
+    assert second["plugin"]["auth"] == "configured"
+    dest = Path(second["plugin"]["path"])
+    user = json.loads((dest / "user.json").read_text(encoding="utf-8"))
+    assert user["token"] == secret
+    public = json.dumps(plugins.list_plugins())
+    assert secret not in public
+    assert "ghp_test" not in public
+    assert plugins.list_plugins()["plugins"][0]["auth"] == "configured"
+
+
+def test_publish_github_mcp_resolves_runtime_and_omits_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_upsert(name, command, args, env):
+        captured.update({"name": name, "command": command, "args": args, "env": env})
+        return True, "ok"
+
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/bin/github-mcp-server" if name == "github-mcp-server" else None,
+    )
+    monkeypatch.setattr("tools.mcp_manager.upsert_mcp_server", fake_upsert)
+    caps = CapabilityService(
+        persistent=False,
+        skill_lister=lambda: [],
+        mcp_lister=lambda: {},
+        review_service=_PassReview(),
+    )
+    perms = PermissionStore(persistent=False)
+    perms.set_profile("workspace_write")
+    plugins = PluginService(
+        root=tmp_path / "plugins",
+        persistent=True,
+        capabilities=caps,
+        permission_store=perms,
+        registry=bundled_plugin_registry(),
+    )
+    secret = "ghp_should_not_be_in_yaml"
+    result = plugins.install(source="registry", name="github", token=secret)
+    assert result["ok"] is True
+    assert captured["command"] == "/bin/github-mcp-server"
+    assert captured["args"] == ["stdio"]
+    env = captured.get("env") or {}
+    assert "GITHUB_PERSONAL_ACCESS_TOKEN" not in env
+    assert secret not in json.dumps(captured, default=str)
+
+
+def test_github_plugin_token_injected_for_mcp_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcp.github_auth import inject_github_plugin_token, read_github_user_token
+
+    user = tmp_path / "user.json"
+    user.write_text(json.dumps({"token": "ghp_from_plugin"}), encoding="utf-8")
+    assert read_github_user_token(user) == "ghp_from_plugin"
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr("config.settings.get_data_dir", lambda: tmp_path)
+    (tmp_path / "plugins" / "github").mkdir(parents=True)
+    (tmp_path / "plugins" / "github" / "user.json").write_text(
+        json.dumps({"token": "ghp_from_plugin"}), encoding="utf-8"
+    )
+    env: dict[str, str] = {}
+    inject_github_plugin_token(env, "github")
+    assert env["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_from_plugin"
+    other: dict[str, str] = {}
+    inject_github_plugin_token(other, "fetch")
+    assert other == {}
 
 
 def test_schema_has_plugin_methods() -> None:
@@ -302,3 +440,44 @@ async def test_protocol_plugin_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     )
     removed = next(item["result"] for item in sent if item.get("id") == 4)
     assert removed["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_protocol_github_token_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    from appserver.server import AppServer
+
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    sent: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        sent.append(message)
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
+    server = AppServer(stub=True)
+    server._initialized = True
+    server._permissions.set_profile("workspace_write")
+    server._plugins.registry = bundled_plugin_registry()
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "plugin/install",
+            "params": {"source": "registry", "name": "github"},
+        }
+    )
+    installed = next(item["result"] for item in sent if item.get("id") == 1)
+    assert installed["plugin"]["auth"] == "needed"
+    sent.clear()
+    secret = "ghp_protocol_secret"
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "plugin/install",
+            "params": {"source": "registry", "name": "github", "token": secret},
+        }
+    )
+    connected = next(item["result"] for item in sent if item.get("id") == 2)
+    assert connected["plugin"]["auth"] == "configured"
+    assert secret not in json.dumps(sent)

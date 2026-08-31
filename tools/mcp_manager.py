@@ -106,6 +106,31 @@ def save_mcp_config(mcp_servers: dict) -> tuple[bool, str]:
         return False, f"Failed to save config: {e}"
 
 
+def upsert_mcp_server(name: str, command: str, args: list[str] = None, env: dict = None) -> tuple[bool, str]:
+    """Add or replace an MCP server in the configuration."""
+    if not is_valid_mcp_server_name(name):
+        return False, (
+            "MCP server name must start with an ASCII letter or digit "
+            f"and contain only letters, digits, '.', '_', '-' (got {name!r})"
+        )
+
+    with _MCP_CONFIG_LOCK:
+        mcp_servers = get_mcp_config()
+        mcp_servers[name] = {
+            "command": command,
+            "args": args or [],
+        }
+        if env:
+            mcp_servers[name]["env"] = env
+        else:
+            mcp_servers[name].pop("env", None)
+
+        success, msg = save_mcp_config(mcp_servers)
+    if success:
+        return True, f"Updated MCP server '{name}' ({command})"
+    return False, msg
+
+
 def add_mcp_server(name: str, command: str, args: list[str] = None, env: dict = None) -> tuple[bool, str]:
     """Add an MCP server to the configuration."""
     if not is_valid_mcp_server_name(name):

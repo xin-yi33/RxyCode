@@ -2,9 +2,9 @@
   "plugins": [
     {
       "name": "github",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "path": "github",
-      "description": "Connect GitHub repositories, Issues, and Pull Requests"
+      "description": "连接 GitHub 仓库、Issues 与 Pull Request"
     }
   ]
 }
