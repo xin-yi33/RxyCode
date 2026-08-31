@@ -213,6 +213,8 @@
   "teamBlockedDetail": "Team & models aligns with PHASE-H H10 three-level fold.",
   "summonTeam": "Summon expert team",
   "summonTeamHint": "Pick a registered team and prefill /team",
+  "recentSummoned": "Recently summoned",
+  "summonOtherExperts": "Summon other experts",
   "createTeam": "Create a new expert team",
   "createTeamHint": "Confirm name, members, and stages in the chat",
   "agentsEnable": "Enable multi-agent expert teams",

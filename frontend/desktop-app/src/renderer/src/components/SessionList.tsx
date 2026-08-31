@@ -18,6 +18,7 @@ import {
   sidebarProjects,
   type ProjectRecord
 } from '../../../features/projects/projectRegistry.ts'
+import { TitleMarquee } from '../../../features/sessions/TitleMarquee.ts'
 import { sessionVisualState } from './sessionVisualState.ts'
 
 export const SESSION_FOLD_STORAGE_KEY = 'rxycode.desktop.sessionFold.v1'
@@ -220,7 +221,7 @@ function SessionList({
               data-chrome={chrome}
             >
               <span className="session-title-row">
-                <span className="session-title">{session.title}</span>
+                <TitleMarquee className="session-title" text={session.title} />
                 {chrome === 'spin' ? <StatusIndicator backend="running" visualState={visual} /> : null}
               </span>
               {childCount > 0 && <span className="session-child-count">{childCount}</span>}

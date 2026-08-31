@@ -103,6 +103,37 @@ async def test_session_prompt_team_slash_runs_coordinator_not_agent(session_work
 
 
 @pytest.mark.asyncio
+async def test_session_prompt_hi_skips_coordinator_when_agents_enabled(
+    session_workspace, monkeypatch
+):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-hi"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-hi").mkdir()
+    save_config({"agents": {"enabled": True, "team": "software_dev", "route_mode": "team"}})
+
+    def _boom(*_a, **_k):
+        raise AssertionError("Coordinator must not run for a greeting")
+
+    monkeypatch.setattr("core.session.Coordinator", _boom)
+    ran: list[str] = []
+
+    class _Tracking(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            ran.append(text)
+            return "hi-ok"
+
+    session = Session(
+        session_id="s-hi",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    result = await session.prompt(_Tracking(), "hi", mode="build", run_id="run-hi")
+    assert result.answer == "hi-ok"
+    assert ran == ["hi"]
+
+
+@pytest.mark.asyncio
 async def test_session_prompt_disabled_keeps_split_prompt_on_solo_agent(
     session_workspace, monkeypatch
 ):

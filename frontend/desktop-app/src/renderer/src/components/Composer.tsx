@@ -34,6 +34,7 @@ interface ComposerProps {
   steerBlocked?: boolean
   onSendIntent?: (intent: SendIntent, text: string) => void
   teams?: readonly TeamRecord[]
+  activeTeamId?: string | null
   onSummonTeam?: (teamId: string) => void
   onCreateTeam?: () => void
   prefillText?: string
@@ -71,6 +72,7 @@ function Composer({
   steerBlocked = false,
   onSendIntent,
   teams = [],
+  activeTeamId = null,
   onSummonTeam,
   onCreateTeam,
   prefillText,
@@ -200,6 +202,7 @@ function Composer({
                 open={plusOpen}
                 planMode={planMode}
                 teams={teams}
+                activeTeamId={activeTeamId}
                 onClose={() => setPlusOpen(false)}
                 onAttachFile={() => fileInputRef.current?.click()}
                 onPickWorkspace={onPickWorkspace}

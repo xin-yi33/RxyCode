@@ -1,6 +1,6 @@
 import { createElement, useMemo, useState, type ReactElement } from 'react'
 import { TeamDetailOverlay } from './TeamPicker.ts'
-import { teamIntro, teamInitials, teamScopeTags, teamCategory } from './team.model.ts'
+import { teamInitials, teamOneLiner, teamScopeTags, teamCategory } from './team.model.ts'
 import { memberPortraitSrc, teamPortraitSrc } from './team.portraits.ts'
 import { gx28VisualState, type TeamGroup, type TeamRecord } from './team.visual.ts'
 
@@ -172,7 +172,7 @@ export function TeamGallery(props: {
       'div',
       { className: 'team-gallery-grid' },
       ...filtered.map((team) => {
-        const intro = teamIntro(team)
+        const line = teamOneLiner(team)
         const scope = teamScopeTags(team)
         return createElement(
           'article',
@@ -187,6 +187,14 @@ export function TeamGallery(props: {
             { className: 'team-gallery-card-head' },
             createElement(Avatar, { src: teamPortraitSrc(team.id), name: team.name, large: true }),
             createElement(
+              'div',
+              { className: 'team-gallery-card-copy' },
+              createElement('h4', { className: 'team-gallery-card-title' }, team.name),
+              line !== ''
+                ? createElement('p', { className: 'team-gallery-card-body', 'data-testid': `team-card-intro-${team.id}` }, line)
+                : null
+            ),
+            createElement(
               'button',
               {
                 type: 'button',
@@ -200,20 +208,10 @@ export function TeamGallery(props: {
               labels.use
             )
           ),
-          createElement('h4', { className: 'team-gallery-card-title' }, team.name),
-          intro !== ''
-            ? createElement(
-                'p',
-                { className: 'team-gallery-card-body', 'data-testid': `team-card-intro-${team.id}` },
-                createElement('span', { className: 'team-gallery-kicker' }, labels.intro),
-                intro
-              )
-            : null,
           scope.length > 0
             ? createElement(
                 'div',
                 { className: 'team-gallery-tags', 'data-testid': `team-card-scope-${team.id}` },
-                createElement('span', { className: 'team-gallery-kicker' }, labels.scope),
                 ...scope.map((tag) => createElement('span', { key: tag, className: 'team-gallery-tag' }, tag))
               )
             : null

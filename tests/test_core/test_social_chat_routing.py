@@ -12,7 +12,7 @@ from RxyCode.RxyCode1_1_0.core.agent_v2 import (
     SOCIAL_CHAT_ROLE_INSTRUCTION,
     _PURE_SOCIAL_GREETING_RE,
 )
-from RxyCode.RxyCode1_1_0.core.request_routing import is_identity_or_meta_chat
+from RxyCode.RxyCode1_1_0.core.request_routing import is_fast_social_turn, is_identity_or_meta_chat
 
 
 def _agent() -> AgentV2:
@@ -57,6 +57,9 @@ def test_create_game_still_complex():
 
 def test_plain_hello_is_social_or_simple():
     assert _simple("你好") is True
+    assert _social("hi") is True
+    assert _social("hello") is True
+    assert is_fast_social_turn("hi") is True
 
 
 def test_what_happened_still_simple():

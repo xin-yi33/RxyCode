@@ -278,6 +278,20 @@ function defaultTitle(sessionId: string): string {
   return `会话 ${sessionId.slice(0, 8)}`
 }
 
+const PLACEHOLDER_TITLES = new Set(['新任务', 'New task', '新对话', 'New chat'])
+
+export function isPlaceholderTitle(title: string): boolean {
+  const text = title.trim()
+  return PLACEHOLDER_TITLES.has(text) || text.startsWith('会话 ')
+}
+
+export function titleFromFirstPrompt(text: string): string {
+  const blob = text.trim()
+  if (blob === '') return ''
+  const first = blob.split(/[。！？.!?\n]/, 1)[0]?.trim() ?? ''
+  return (first === '' ? blob : first).slice(0, 200)
+}
+
 function messagesFor(state: ConversationState, sessionId: string): ChatMessage[] {
   return state.messagesBySession[sessionId] ?? []
 }
@@ -398,8 +412,8 @@ export function addUserMessage(
     ]),
     errorBySession: { ...state.errorBySession, [sessionId]: null },
     sessions: state.sessions.map((session) =>
-      session.sessionId === sessionId && session.title.startsWith('会话 ')
-        ? { ...session, title: text.slice(0, 20) }
+      session.sessionId === sessionId && isPlaceholderTitle(session.title)
+        ? { ...session, title: titleFromFirstPrompt(text) || session.title }
         : session
     )
   }

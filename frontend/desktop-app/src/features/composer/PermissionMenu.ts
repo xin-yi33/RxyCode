@@ -91,12 +91,13 @@ export function PermissionMenu(props: {
         type: 'button',
         className: 'permission-menu-trigger',
         'data-tone': props.value === 'full_auto' ? 'warning' : 'default',
+        'data-mode': props.value,
         'aria-label': props.labels.trigger,
         'aria-expanded': open,
         disabled: props.disabled === true,
         onClick: () => setOpen((current) => !current)
       },
-      createElement(Shield, { size: 14, 'aria-hidden': true }),
+      createElement(ModeIcon, { name: OPTIONS.find((item) => item.value === props.value)?.icon ?? 'shield' }),
       titles[props.value],
       createElement(ChevronDown, { size: 13, 'aria-hidden': true })
     ),
@@ -119,11 +120,11 @@ export function PermissionMenu(props: {
                 role: 'option',
                 className:
                   'permission-menu-option' + (option.value === props.value ? ' is-active' : ''),
+                'data-tone': option.value === 'full_auto' ? 'warning' : 'default',
                 'aria-selected': option.value === props.value,
                 'data-testid': `permission-option-${option.value}`,
                 onClick: () => {
                   props.onChange(option.value)
-                  setOpen(false)
                 }
               },
               createElement('span', { className: 'permission-menu-icon' }, createElement(ModeIcon, { name: option.icon })),

@@ -15,11 +15,13 @@ export function workbenchLayoutClass(input: {
   inspectorOpen: boolean
   runPanelOpen: boolean
   navOpen: boolean
+  pluginHubOpen?: boolean
 }): string {
   const parts = ['main-layout', 'command-layout']
   if (input.inspectorOpen) parts.push('inspector-open')
   if (input.runPanelOpen) parts.push('run-panel-open')
   if (input.navOpen) parts.push('navigation-open')
+  if (input.pluginHubOpen === true) parts.push('plugin-hub-open')
   return parts.join(' ')
 }
 

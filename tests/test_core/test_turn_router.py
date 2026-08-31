@@ -10,6 +10,12 @@ from RxyCode.RxyCode1_1_0.core.request_routing import RoutingDirective
 from RxyCode.RxyCode1_1_0.core.turn_router import route
 
 
+def test_hi_is_chat():
+    d = route("hi", "build", RoutingDirective.AUTO, file_op=None, download=None)
+    assert d.path == "chat"
+    assert d.social is True
+
+
 def test_hello_is_chat():
     d = route("你好", "build", RoutingDirective.AUTO, file_op=None, download=None)
     assert d.path == "chat"

@@ -113,6 +113,15 @@ export function teamIntro(team: TeamRecord): string {
   return text.trim()
 }
 
+export function teamOneLiner(team: TeamRecord): string {
+  const raw = (team.summary ?? team.description ?? '').trim()
+  if (raw === '') return teamCategory(team)
+  const beforeArrow = raw.split(/\s*(?:→|->)\s*/)[0]?.trim() ?? raw
+  const parts = beforeArrow.split('·').map((item) => item.trim()).filter((item) => item !== '')
+  if (parts.length >= 2) return `${parts[0]} · ${parts[1]}`
+  return beforeArrow
+}
+
 export function teamScopeTags(team: TeamRecord): string[] {
   const extra = team.extra ?? {}
   const raw = extra['ecosystem.tags'] ?? extra.tags ?? extra['ecosystem.domains']

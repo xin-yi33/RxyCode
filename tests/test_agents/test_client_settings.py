@@ -59,7 +59,7 @@ def test_route_mode_settings_force_team() -> None:
     original = router_mod._settings_agents
     router_mod._settings_agents = lambda: {"enabled": True, "route_mode": "team"}
     try:
-        decision = router.route("hello?")
+        decision = router.route("重构前后端并迁移多个模块")
         assert decision.mode is ExecutionMode.TEAM
         assert "route_mode=team" in decision.reason
     finally:

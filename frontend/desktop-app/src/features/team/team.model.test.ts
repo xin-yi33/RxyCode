@@ -11,6 +11,7 @@ import {
   teamCategory,
   teamInitials,
   teamIntro,
+  teamOneLiner,
   teamScopeTags
 } from './team.model.ts'
 
@@ -94,6 +95,16 @@ test('WorkBuddy gallery cards expose initials, intro, and scope tags', () => {
   assert.equal(teamInitials(team.name), '软')
   assert.equal(teamCategory(team), '技术工程')
   assert.equal(teamIntro(team), '结构化分工')
+  assert.equal(teamOneLiner(team), '结构化分工')
+  assert.equal(
+    teamOneLiner({
+      id: 'software_dev',
+      name: '软件开发专家团',
+      groupId: 'builtin',
+      description: '10 位角色 · 7 阶段 · 澄清 → 架构 → 实现'
+    }),
+    '10 位角色 · 7 阶段'
+  )
   assert.deepEqual(teamScopeTags(team), ['技术工程'])
   assert.deepEqual(teamCardTags(team), ['主理人', '编码员'])
 })

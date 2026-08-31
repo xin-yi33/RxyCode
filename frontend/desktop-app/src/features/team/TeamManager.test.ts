@@ -84,6 +84,8 @@ test('GX28: team/* path A; picker/install/section exist; team settings unlocked'
   )
   assert.match(plusMenu, /plus-summon-team/)
   assert.match(plusMenu, /plus-create-team/)
+  assert.match(plusMenu, /plus-summon-others/)
+  assert.match(plusMenu, /summon-avatar/)
   const header = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/TaskHeader.tsx'),
     'utf8'
@@ -113,8 +115,7 @@ test('GX28: team/* path A; picker/install/section exist; team settings unlocked'
   assert.match(gallery, /data-testid="team-gallery"/)
   assert.match(gallery, /team-gallery-card/)
   assert.match(gallery, /软件研发团/)
-  assert.match(gallery, /部分简介/)
-  assert.match(gallery, /应用范围/)
+  assert.match(gallery, /结构化分工/)
   assert.match(gallery, /技术工程/)
   assert.match(gallery, />召唤</)
   assert.match(gallery, /data-testid="use-team-software_dev"/)

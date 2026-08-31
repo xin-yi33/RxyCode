@@ -1,4 +1,5 @@
 import { FolderGit2, GitBranch, Sparkles, Users } from 'lucide-react'
+import { TitleMarquee } from '../../../features/sessions/TitleMarquee.ts'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface TaskHeaderProps {
@@ -21,7 +22,7 @@ function TaskHeader({
     <header className="task-header">
       <div>
         <p className="task-kicker">{t('task')}</p>
-        <h1>{title}</h1>
+        <h1><TitleMarquee text={title} /></h1>
       </div>
       <div className="task-metadata" aria-label={t('task')}>
         <span title={workspaceRoot}>

@@ -89,6 +89,20 @@ def test_default_router_why_mode_without_history() -> None:
     assert "solo" in get_default_router().handle_slash("/why-mode")
 
 
+def test_social_greeting_stays_solo_even_when_route_mode_team() -> None:
+    from RxyCode.RxyCode1_1_0.core.agents import router as router_mod
+
+    original = router_mod._settings_agents
+    router_mod._settings_agents = lambda: {"enabled": True, "route_mode": "team"}
+    try:
+        router = ModeRouter(enabled=True)
+        decision = router.route("hi")
+        assert decision.mode is ExecutionMode.SOLO
+        assert decision.reason == "social greeting"
+    finally:
+        router_mod._settings_agents = original
+
+
 def test_legacy_parallel_method_is_gone() -> None:
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 

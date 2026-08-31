@@ -37,7 +37,7 @@ SOCIAL_CHAT_ROLE_INSTRUCTION = (
 )
 PURE_SOCIAL_GREETING_RE = re.compile(
     r"^(?:你好|您好|hello|hi|hey|在吗|谢谢|thank you|thanks)"
-    r"(?:[!！。.\s]*)$",
+    r"(?:[!！。.?？\s]*)$",
     re.IGNORECASE,
 )
 
@@ -178,11 +178,23 @@ def is_identity_or_meta_chat(text: str) -> bool:
     return bool(stripped and _IDENTITY_OR_META_CHAT_RE.match(stripped))
 
 
+def is_fast_social_turn(text: str) -> bool:
+    """Greetings and social chat that must skip ModeRouter / Coordinator."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if PURE_SOCIAL_GREETING_RE.match(stripped):
+        return True
+    return is_social_chat(stripped)
+
+
 def is_social_chat(text: str) -> bool:
     """Narrow emotional/social chat that must not enter LangGraph."""
     text_stripped = text.strip()
     if not text_stripped or len(text_stripped) > 300:
         return False
+    if PURE_SOCIAL_GREETING_RE.match(text_stripped):
+        return True
     text_lower = text_stripped.lower()
     if re.search(r"https?://", text_stripped):
         return False

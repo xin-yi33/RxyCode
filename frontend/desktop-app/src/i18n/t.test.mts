@@ -41,6 +41,8 @@ test('H14: GX22 chrome keys exist in both locales and never rewrite chat', () =>
     'mcp',
     'team',
     'summonTeam',
+    'recentSummoned',
+    'summonOtherExperts',
     'createTeam',
     'agentsEnable',
     'multiModelEnable',

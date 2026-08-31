@@ -20,6 +20,8 @@ import {
   addApprovalRequest,
   addSession,
   addUserMessage,
+  isPlaceholderTitle,
+  titleFromFirstPrompt,
   applyError,
   applyPromptResult,
   applyProtocolNotification,
@@ -815,7 +817,14 @@ export function useConversation(
       }
       return
     }
+    const previousTitle = stateRef.current.sessions.find((session) => session.sessionId === sessionId)?.title ?? ''
     setState((current) => addUserMessage(current, sessionId, displayText))
+    if (isPlaceholderTitle(previousTitle)) {
+      const nextTitle = titleFromFirstPrompt(displayText)
+      if (nextTitle !== '') {
+        void renameTask(sessionId, nextTitle)
+      }
+    }
     setState((current) => beginAssistantMessage(current, sessionId))
     try {
       trace.mark(sessionId, 'rpc_sent')

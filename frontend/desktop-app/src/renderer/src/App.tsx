@@ -634,9 +634,10 @@ function App(): React.JSX.Element {
 
       <div
         className={workbenchLayoutClass({
-          inspectorOpen,
-          runPanelOpen: !inspectorOpen && (runPanel?.open === true),
-          navOpen
+          inspectorOpen: inspectorOpen && railPanel !== 'plugins',
+          runPanelOpen: !inspectorOpen && railPanel !== 'plugins' && (runPanel?.open === true),
+          navOpen,
+          pluginHubOpen: railPanel === 'plugins'
         })}
         data-testid="workbench-layout"
       >
@@ -664,7 +665,10 @@ function App(): React.JSX.Element {
               runningBySession={conversation.state.runningBySession}
               unreadIds={unreadIds}
               onOpenScheduled={() => setRailPanel('schedule')}
-              onOpenPlugins={() => setRailPanel('plugins')}
+              onOpenPlugins={() => {
+                setInspectorOpen(false)
+                setRailPanel((current) => (current === 'plugins' ? null : 'plugins'))
+              }}
               onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
               onTrash={(sessionId) => void handleTrash(sessionId)}
               onRestore={(sessionId) => void handleRestore(sessionId)}
@@ -692,7 +696,10 @@ function App(): React.JSX.Element {
           runningBySession={conversation.state.runningBySession}
           unreadIds={unreadIds}
           onOpenScheduled={() => setRailPanel('schedule')}
-          onOpenPlugins={() => setRailPanel('plugins')}
+          onOpenPlugins={() => {
+            setInspectorOpen(false)
+            setRailPanel((current) => (current === 'plugins' ? null : 'plugins'))
+          }}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
           onTrash={(sessionId) => void handleTrash(sessionId)}
           onRestore={(sessionId) => void handleRestore(sessionId)}
@@ -846,6 +853,7 @@ function App(): React.JSX.Element {
             permissionMode={permissionMode}
             onRequestPermissionModeChange={requestPermissionModeChange}
             teams={teams.teams}
+            activeTeamId={teams.activeTeamId}
             prefillText={composerPrefill}
             prefillNonce={composerPrefillNonce}
             onSummonTeam={(teamId) => {
@@ -920,6 +928,34 @@ function App(): React.JSX.Element {
             />
           </div>
         )}
+        {railPanel === 'plugins' ? (
+          <aside className="plugin-hub-slot" data-testid="plugin-hub-slot">
+            <PluginMarket
+              blocked={false}
+              missing={[]}
+              client={conversation.protocolClient}
+              teams={teams.teams}
+              groups={teams.groups}
+              teamLoading={teams.loading}
+              teamError={teams.error}
+              onClose={() => setRailPanel(null)}
+              onSummonTeam={(teamId) => {
+                void teams.setActive(teamId).then((ok) => {
+                  if (ok) {
+                    setRailPanel(null)
+                    setComposerPrefill('/team ')
+                    setComposerPrefillNonce((n) => n + 1)
+                    showToast(tr('teamSummoned'))
+                  }
+                })
+              }}
+              onCreateSkill={(need) => {
+                setRailPanel(null)
+                void handleComposerSend(CREATE_SKILL_PROMPT.replace('{need}', need))
+              }}
+            />
+          </aside>
+        ) : null}
       </div>
       <Statusline
         hasSession={activeSessionId !== null}
@@ -976,43 +1012,17 @@ function App(): React.JSX.Element {
         onClose={() => setRulesOpen(false)}
         onRevoke={conversation.revokeApprovalRule}
       />
-      {railPanel !== null && (
+      {railPanel === 'schedule' && (
         <div className="settings-overlay" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setRailPanel(null)
         }}>
-          <div className={'settings-page rail-panel' + (railPanel === 'plugins' ? ' rail-panel-wide' : '')} role="dialog" aria-modal="true">
+          <div className="settings-page rail-panel" role="dialog" aria-modal="true">
             <header className="settings-header">
-              <div className="settings-title">{railPanel === 'schedule' ? tr('scheduled') : tr('plugins')}</div>
+              <div className="settings-title">{tr('scheduled')}</div>
               <button type="button" className="settings-close" onClick={() => setRailPanel(null)}>{tr('close')}</button>
             </header>
             <div className="settings-body">
-              {railPanel === 'schedule' ? (
-                <SchedulePanel blocked={false} missing={[]} />
-              ) : (
-                <PluginMarket
-                  blocked={false}
-                  missing={[]}
-                  client={conversation.protocolClient}
-                  teams={teams.teams}
-                  groups={teams.groups}
-                  teamLoading={teams.loading}
-                  teamError={teams.error}
-                  onSummonTeam={(teamId) => {
-                    void teams.setActive(teamId).then((ok) => {
-                      if (ok) {
-                        setRailPanel(null)
-                        setComposerPrefill('/team ')
-                        setComposerPrefillNonce((n) => n + 1)
-                        showToast(tr('teamSummoned'))
-                      }
-                    })
-                  }}
-                  onCreateSkill={(need) => {
-                    setRailPanel(null)
-                    void handleComposerSend(CREATE_SKILL_PROMPT.replace('{need}', need))
-                  }}
-                />
-              )}
+              <SchedulePanel blocked={false} missing={[]} />
             </div>
           </div>
         </div>

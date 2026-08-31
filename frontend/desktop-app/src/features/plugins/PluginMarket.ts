@@ -1,3 +1,4 @@
+import { Check, ChevronDown, Plus, RefreshCw, Search, X } from 'lucide-react'
 import { createElement, useEffect, useMemo, useState, type ReactElement } from 'react'
 import type { ProtocolClient } from '@rxycode/protocol-client'
 import { TeamGallery } from '../team/TeamGallery.ts'
@@ -21,8 +22,12 @@ export function PluginMarket(props: {
   teamError?: string | null
   onSummonTeam?: (teamId: string) => void
   onCreateSkill?: (need: string) => void
+  onClose?: () => void
 }): ReactElement {
   const [tab, setTab] = useState<PluginHubTab>('plugins')
+  const [addOpen, setAddOpen] = useState(false)
+  const [addTick, setAddTick] = useState(0)
+  const [refreshTick, setRefreshTick] = useState(0)
   if (props.blocked) {
     return createElement(
       'section',
@@ -34,27 +39,112 @@ export function PluginMarket(props: {
     'section',
     { className: 'plugin-hub', 'data-testid': 'plugin-market', 'data-blocked': 'false' },
     createElement(
-      'nav',
-      { className: 'plugin-hub-nav', 'data-testid': 'plugin-hub-nav' },
-      ([['plugins', '插件'], ['skills', '技能'], ['teams', '专家团']] as const).map(([id, label]) =>
+      'header',
+      { className: 'plugin-hub-bar' },
+      createElement(
+        'nav',
+        { className: 'plugin-hub-nav', 'data-testid': 'plugin-hub-nav' },
+        ([['plugins', '插件'], ['skills', '技能'], ['teams', '专家团']] as const).map(([id, label]) =>
+          createElement(
+            'button',
+            {
+              key: id,
+              type: 'button',
+              className: 'plugin-hub-tab' + (tab === id ? ' is-active' : ''),
+              'data-testid': `plugin-hub-${id}`,
+              onClick: () => {
+                setTab(id)
+                setAddOpen(false)
+              }
+            },
+            label
+          )
+        )
+      ),
+      createElement(
+        'div',
+        { className: 'plugin-hub-actions' },
         createElement(
           'button',
           {
-            key: id,
             type: 'button',
-            className: 'plugin-hub-tab' + (tab === id ? ' is-active' : ''),
-            'data-testid': `plugin-hub-${id}`,
-            onClick: () => setTab(id)
+            className: 'plugin-hub-icon-btn',
+            'aria-label': '刷新',
+            onClick: () => setRefreshTick((n) => n + 1)
           },
-          label
-        )
+          createElement(RefreshCw, { size: 16, 'aria-hidden': true })
+        ),
+        createElement(
+          'div',
+          { className: 'plugin-hub-add-wrap' },
+          createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'plugin-hub-add',
+              'data-testid': 'plugin-hub-add',
+              onClick: () => {
+                if (tab === 'skills') setAddOpen((open) => !open)
+                else setAddTick((n) => n + 1)
+              }
+            },
+            '添加',
+            createElement(ChevronDown, { size: 14, 'aria-hidden': true })
+          ),
+          addOpen && tab === 'skills'
+            ? createElement(
+                'div',
+                { className: 'plugin-hub-add-menu', 'data-testid': 'plugin-hub-add-menu' },
+                createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: () => {
+                      setAddOpen(false)
+                      setAddTick((n) => n + 1)
+                    }
+                  },
+                  '本地 md / zip'
+                ),
+                createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: () => {
+                      setAddOpen(false)
+                      setAddTick((n) => n + 1)
+                    }
+                  },
+                  '用对话搜索安装'
+                )
+              )
+            : null
+        ),
+        props.onClose != null
+          ? createElement(
+              'button',
+              {
+                type: 'button',
+                className: 'plugin-hub-icon-btn',
+                'aria-label': '关闭',
+                'data-testid': 'plugin-hub-close',
+                onClick: props.onClose
+              },
+              createElement(X, { size: 16, 'aria-hidden': true })
+            )
+          : null
       )
     ),
     tab === 'plugins'
-      ? createElement(PluginPane, { client: props.client ?? null })
+      ? createElement(PluginPane, { client: props.client ?? null, refreshTick })
       : null,
     tab === 'skills'
-      ? createElement(SkillPaneView, { client: props.client ?? null, onCreateSkill: props.onCreateSkill })
+      ? createElement(SkillPaneView, {
+          client: props.client ?? null,
+          onCreateSkill: props.onCreateSkill,
+          addTick,
+          refreshTick
+        })
       : null,
     tab === 'teams'
       ? createElement(TeamGallery, {
@@ -69,11 +159,14 @@ export function PluginMarket(props: {
   )
 }
 
-function PluginPane(props: { client: ProtocolClient | null }): ReactElement {
+function PluginPane(props: { client: ProtocolClient | null; refreshTick?: number }): ReactElement {
   const plugins = usePlugins(props.client)
   const [query, setQuery] = useState('')
   const [githubUrl, setGithubUrl] = useState('')
   const [notice, setNotice] = useState('')
+  useEffect(() => {
+    if ((props.refreshTick ?? 0) > 0) void plugins.refresh()
+  }, [plugins.refresh, props.refreshTick])
   const installed = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return plugins.items.filter((item) => needle === '' || `${item.name} ${item.description}`.toLowerCase().includes(needle))
@@ -84,14 +177,19 @@ function PluginPane(props: { client: ProtocolClient | null }): ReactElement {
     'div',
     { className: 'plugin-pane', 'data-testid': 'plugin-pane' },
     createElement('h3', { className: 'plugin-pane-title' }, '插件'),
-    createElement('p', { className: 'plugin-pane-sub' }, '在常用工具里接上 RxyCode'),
-    createElement('input', {
-      className: 'plugin-search',
-      'data-testid': 'plugin-search',
-      placeholder: '搜索插件',
-      value: query,
-      onChange: (event: { target: { value: string } }) => setQuery(event.target.value)
-    }),
+    createElement('p', { className: 'plugin-pane-sub' }, '在你常用的工具里使用 RxyCode'),
+    createElement(
+      'label',
+      { className: 'plugin-search-wrap' },
+      createElement(Search, { size: 15, 'aria-hidden': true }),
+      createElement('input', {
+        className: 'plugin-search',
+        'data-testid': 'plugin-search',
+        placeholder: '搜索插件',
+        value: query,
+        onChange: (event: { target: { value: string } }) => setQuery(event.target.value)
+      })
+    ),
     createElement('h4', null, '已安装'),
     createElement(
       'div',
@@ -139,13 +237,14 @@ function PluginPane(props: { client: ProtocolClient | null }): ReactElement {
               'button',
               {
                 type: 'button',
+                className: 'plugin-install-btn',
                 'data-testid': 'plugin-github-connect',
                 disabled: githubUrl.trim() === '',
                 onClick: () => {
                   void plugins.install({ source: 'github', path: githubUrl.trim(), name: 'github' }).then(setNotice)
                 }
               },
-              '连接'
+              '安装'
             )
           )
     ),
@@ -157,6 +256,8 @@ function PluginPane(props: { client: ProtocolClient | null }): ReactElement {
 function SkillPaneView(props: {
   client: ProtocolClient | null
   onCreateSkill?: (need: string) => void
+  addTick?: number
+  refreshTick?: number
 }): ReactElement {
   const skills = useSkillMarket(props.client)
   const [pane, setPane] = useState<SkillPane>('market')
@@ -168,6 +269,15 @@ function SkillPaneView(props: {
   const [llmNeed, setLlmNeed] = useState('')
   const [notice, setNotice] = useState('')
   const installedCount = skills.installed.filter((item) => item.installed).length
+  useEffect(() => {
+    if ((props.addTick ?? 0) > 0) setFilter('add')
+  }, [props.addTick])
+  useEffect(() => {
+    if ((props.refreshTick ?? 0) > 0) {
+      void skills.refresh()
+      void skills.search(query, filter === 'hub' ? 'hub' : 'github')
+    }
+  }, [filter, props.refreshTick, query, skills.refresh, skills.search])
 
   useEffect(() => {
     void skills.search('SKILL', 'github')
@@ -194,9 +304,12 @@ function SkillPaneView(props: {
   return createElement(
     'div',
     { className: 'skill-pane', 'data-testid': 'skill-pane' },
+    createElement('h3', { className: 'plugin-pane-title' }, '技能'),
+    createElement('p', { className: 'plugin-pane-sub' }, '用任务专用技能扩展 RxyCode'),
     createElement(
-      'header',
-      { className: 'skill-pane-toolbar' },
+      'label',
+      { className: 'plugin-search-wrap' },
+      createElement(Search, { size: 15, 'aria-hidden': true }),
       createElement('input', {
         className: 'plugin-search',
         'data-testid': 'skill-search',
@@ -380,10 +493,7 @@ function SkillCard(props: {
       { className: 'skill-card-copy' },
       createElement('strong', null, props.item.name),
       props.item.description !== ''
-        ? createElement('p', { className: 'skill-card-intro' }, createElement('span', null, '简介'), props.item.description)
-        : null,
-      props.item.scope !== ''
-        ? createElement('p', { className: 'skill-card-scope' }, createElement('span', null, '适用范围'), props.item.scope)
+        ? createElement('p', { className: 'skill-card-intro' }, props.item.description)
         : null,
       props.item.stars > 0 ? createElement('small', null, `${props.item.stars} stars`) : null
     ),
@@ -398,7 +508,9 @@ function SkillCard(props: {
           props.onAdd()
         }
       },
-      props.item.installed ? '✓' : '+'
+      props.item.installed
+        ? createElement(Check, { size: 14, 'aria-hidden': true })
+        : createElement(Plus, { size: 14, 'aria-hidden': true })
     )
   )
 }

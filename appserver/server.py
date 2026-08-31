@@ -45,7 +45,7 @@ from .needs_input import NeedsInputClassifier
 from .tool_registry_capability import CapabilityDenied, ToolRegistryCapability
 from .side_chat import SideChatError, SideChatService
 from .followup_scanner import FollowupScanner
-from .sessions import SessionStore
+from .sessions import SessionStore, is_placeholder_title, title_from_first_prompt
 from .capabilities import CapabilityError, CapabilityService
 from .recovery import RecoveryError, RecoveryService
 from .release import ReleaseService
@@ -1170,6 +1170,9 @@ class AppServer:
         session_record = self._sessions.get(session_id)
         if session_record is not None:
             session_record.last_user_prompt = text
+            auto_title = title_from_first_prompt(text)
+            if auto_title and is_placeholder_title(session_record.title):
+                self._sessions.rename(session_id, auto_title)
         self._task_store.append_event(
             session_id,
             {

@@ -13,6 +13,7 @@ from ..protocol.notifications import ErrorNotification, FinalAnswer, ProgressUpd
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import BudgetExceeded, Coordinator
 from RxyCode.RxyCode1_1_0.core.agents.router import ExecutionMode, get_default_router
 from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
+from RxyCode.RxyCode1_1_0.core.request_routing import is_fast_social_turn
 from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
@@ -324,7 +325,7 @@ class Session:
         # ModeRouter events or Coordinator setup so stub hangs / concurrent
         # session/prompt overlap keep the previous latency.
         if cmd not in {"/solo", "/team", "/team-multi", "/why-mode", "/agents"}:
-            if not self._agents_enabled():
+            if not self._agents_enabled() or is_fast_social_turn(stripped):
                 return await agent.run(stripped, mode=mode)
 
         router = get_default_router()

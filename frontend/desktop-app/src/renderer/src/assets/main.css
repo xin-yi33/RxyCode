@@ -1300,13 +1300,49 @@ summary:focus-visible {
 }
 
 .session-title-row {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 6px;
+  min-width: 0;
 }
 
 .session-title {
   min-width: 0;
+  flex: 1;
   font-weight: 600;
+}
+
+.title-marquee {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.title-marquee-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 32px;
+}
+
+.title-marquee-item {
+  flex: 0 0 auto;
+}
+
+.title-marquee.is-overflow .title-marquee-track {
+  animation: title-marquee-scroll 9s linear infinite;
+}
+
+@keyframes title-marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-50% - 16px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .title-marquee.is-overflow .title-marquee-track {
+    animation: none;
+  }
 }
 
 .session-state,
@@ -1380,6 +1416,7 @@ summary:focus-visible {
 
 .task-header h1 {
   margin: 0;
+  max-width: min(560px, 46vw);
   color: var(--cc-text);
   font-size: 20px;
   line-height: 1.25;
@@ -2071,6 +2108,12 @@ summary:focus-visible {
   background: transparent;
   color: var(--cc-muted);
   cursor: pointer;
+  line-height: 0;
+}
+
+.composer-icon-button svg,
+.composer-send svg {
+  display: block;
 }
 
 .composer-icon-button:hover:not(:disabled) {
@@ -2206,6 +2249,39 @@ summary:focus-visible {
 .composer-plus-menu button svg:last-child {
   margin-left: auto;
   color: var(--cc-accent);
+}
+
+.composer-plus-menu .summon-entry {
+  align-items: center;
+}
+
+.summon-avatar,
+.summon-avatar-fallback,
+.summon-plus-badge {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.summon-avatar-fallback,
+.summon-plus-badge {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--cc-text);
+  font-size: 13px;
+}
+
+.summon-plus-badge {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.summon-flyout {
+  display: flex;
+  flex-direction: column;
 }
 
 .composer-plus-team-detail {
@@ -3226,6 +3302,27 @@ details[open] .activity-chevron {
   grid-template-columns: 248px minmax(0, 1fr) minmax(280px, 360px);
 }
 
+.command-layout.plugin-hub-open {
+  grid-template-columns: 248px minmax(0, 1fr) 720px;
+}
+
+.command-layout.plugin-hub-open > .task-main {
+  grid-column: 2;
+}
+
+.plugin-hub-slot {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid var(--cc-border);
+  background: var(--cc-canvas);
+}
+
 .desktop-navigation-panel {
   display: block;
   min-width: 0;
@@ -4207,6 +4304,21 @@ optgroup {
   padding-left: 30px;
 }
 
+.session-list-in-project .session-unread-slot {
+  display: none;
+}
+
+.session-list-in-project .session-unread-dot {
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.session-list-in-project .session-item {
+  padding-left: 0;
+}
+
 .session-row {
   align-items: center;
 }
@@ -4392,7 +4504,23 @@ optgroup {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+}
+
+.team-gallery-card-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.team-gallery-card-title {
+  margin: 0 0 4px;
+}
+
+.team-gallery-card-body {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .team-gallery-kicker {
@@ -4610,13 +4738,25 @@ img.team-gallery-avatar {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
+  height: 28px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 8px;
+  outline: none;
+  box-shadow: none;
   background: transparent;
   color: var(--cc-muted);
   cursor: pointer;
   font-size: 12px;
+}
+
+.permission-menu-trigger:focus,
+.permission-menu-trigger:focus-visible,
+.permission-menu-trigger[aria-expanded='true'] {
+  outline: none;
+  outline-offset: 0;
+  box-shadow: none;
+  border: 0;
 }
 
 .permission-menu-trigger:hover:not(:disabled) {
@@ -4668,9 +4808,22 @@ img.team-gallery-avatar {
   cursor: pointer;
 }
 
-.permission-menu-option:hover,
+.permission-menu-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .permission-menu-option.is-active {
-  background: rgba(255, 255, 255, 0.08);
+  background: transparent;
+}
+
+.permission-menu-option.is-active[data-tone='warning'] strong,
+.permission-menu-option.is-active[data-tone='warning'] .permission-menu-check {
+  color: #e8a07a;
+}
+
+.permission-menu-option.is-active:not([data-tone='warning']) strong,
+.permission-menu-option.is-active:not([data-tone='warning']) .permission-menu-check {
+  color: var(--cc-text);
 }
 
 .permission-menu-icon {
@@ -4697,28 +4850,139 @@ img.team-gallery-avatar {
 }
 
 .permission-menu-check {
-  color: #e8a07a;
+  color: var(--cc-text);
   flex: 0 0 auto;
+}
+
+.plugin-hub {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 22px 28px;
+}
+
+.plugin-hub-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 22px;
 }
 
 .plugin-hub-nav {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  align-items: center;
+  gap: 18px;
 }
 
 .plugin-hub-tab {
-  padding: 6px 12px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.plugin-hub-tab.is-active {
+  background: transparent;
+  color: var(--cc-text);
+  font-weight: 600;
+}
+
+.plugin-hub-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-hub-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
   color: var(--cc-muted);
   cursor: pointer;
 }
 
-.plugin-hub-tab.is-active {
-  background: rgba(255, 255, 255, 0.12);
+.plugin-hub-add-wrap {
+  position: relative;
+}
+
+.plugin-hub-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+  color: #111;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.plugin-hub-add svg {
+  display: block;
+}
+
+.plugin-hub-add-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 4;
+  min-width: 160px;
+  padding: 6px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 10px;
+  background: var(--cc-surface-raised);
+}
+
+.plugin-hub-add-menu button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--cc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.plugin-hub-add-menu button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.plugin-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 12px 0 18px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 10px;
+  background: #1a1a1a;
+  color: var(--cc-muted);
+}
+
+.plugin-search-wrap .plugin-search {
+  margin: 0;
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
 }
 
 .plugin-pane-title {
@@ -4781,7 +5045,7 @@ img.team-gallery-avatar {
 .plugin-row,
 .skill-card {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
   padding: 12px;
   border: 1px solid transparent;
@@ -4806,8 +5070,11 @@ img.team-gallery-avatar {
 .skill-card-intro,
 .skill-card-scope {
   margin: 4px 0 0;
+  overflow: hidden;
   color: var(--cc-muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .skill-card-intro span,
@@ -4819,8 +5086,18 @@ img.team-gallery-avatar {
 .plugin-github-form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-width: 280px;
+  gap: 8px;
+  min-width: 180px;
+}
+
+.plugin-install-btn {
+  align-self: flex-end;
+  min-width: auto;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-text);
 }
 
 .plugin-github-form input,
@@ -4847,10 +5124,15 @@ img.team-gallery-avatar {
 .skill-add button {
   padding: 5px 10px;
   border: 1px solid var(--cc-border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: transparent;
   color: var(--cc-muted);
   cursor: pointer;
+}
+
+.plugin-github-form .plugin-install-btn {
+  border: 0;
+  border-radius: 8px;
 }
 
 .skill-subnav button.is-active,
@@ -4861,18 +5143,30 @@ img.team-gallery-avatar {
 
 .skill-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
 .skill-card-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
   width: 28px;
   height: 28px;
+  padding: 0;
+  margin: 0;
+  box-sizing: border-box;
   border: 1px solid var(--cc-border);
-  border-radius: 50%;
+  border-radius: 8px;
   background: transparent;
   color: var(--cc-text);
   cursor: pointer;
+  line-height: 0;
+}
+
+.skill-card-add svg {
+  display: block;
 }
 
 .skill-add {

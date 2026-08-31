@@ -4,6 +4,8 @@ import {
   addSession,
   addApprovalRequest,
   addUserMessage,
+  isPlaceholderTitle,
+  titleFromFirstPrompt,
   applyError,
   applyTransportRecovery,
   applyFinalAnswer,
@@ -122,6 +124,18 @@ test('addUserMessage appends a user message and titles the session from the firs
   assert.equal(state.messagesBySession['s1']?.[0]?.role, 'user')
   assert.equal(state.messagesBySession['s1']?.[0]?.text, '帮我写一个 hello world')
   assert.equal(state.sessions[0]?.title, '帮我写一个 hello world')
+})
+
+test('addUserMessage titles a 新任务 session from the first sentence', () => {
+  const created = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE,
+    title: '新任务'
+  })
+  const state = addUserMessage(created, 's1', '没什么，只是打个招呼。后面还有一句')
+  assert.equal(state.sessions[0]?.title, '没什么，只是打个招呼')
+  assert.equal(isPlaceholderTitle('新任务'), true)
+  assert.equal(titleFromFirstPrompt('hello world! more'), 'hello world')
 })
 
 test('addUserMessage keeps a custom session title unchanged', () => {
