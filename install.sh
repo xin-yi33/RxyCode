@@ -2,7 +2,7 @@
 
 set -eu
 
-DEFAULT_VERSION="1.2.11"
+DEFAULT_VERSION="1.2.12"
 REPOSITORY="https://github.com/xin-yi33/RxyCode.git"
 UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
 BUN_INSTALLER_URL="https://bun.sh/install"

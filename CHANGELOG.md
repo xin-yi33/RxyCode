@@ -11,6 +11,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.12] - 2026-08-31
+
+### Highlights
+
+Muse Spark and HY3 providers land on the existing Chat / Responses /
+Anthropic Messages transports (PR #17, original work by log188). DeepSeek
+and OpenAI Responses keep native reasoning across stream snapshots and
+Executor `/full`. Custom `resource_path` is honored on the async HTTP
+client. GitHub Release **v1.2.12** publishes **one** asset:
+`rxycode-1.2.12.tar.gz`. No new Windows / macOS / Linux Desktop binaries.
+**v1.2.10** stays published. Protocol version stays `1.1.0`.
+
+### Added
+
+- **Muse Spark** — `muse-spark-1.1` / `1.2` / `1.2-contributor`; OpenCode Go
+  uses OpenAI Responses, Meta Chat Completions stays Chat
+  (`core/providers/muse_spark.py`).
+- **HY3** — formal `hy3` identity on OpenCode Go / compatible gateways;
+  Chat Completions transport (`core/providers/hy3.py`).
+- Responses-first probe contracts and exact `resource_path` rewrite for
+  Chat / Responses HTTP clients.
+
+### Fixed
+
+- Anthropic custom `resource_path` is rejected (Messages transport cannot
+  rewrite it). Sonnet 4.5 stays distinct from Sonnet 5; 1h cache TTL is
+  shared with the 5m default.
+- langchain-openai 1.3.3 dropped `response.reasoning_text.delta` and
+  reasoning `output_item.done`; gated conversion brings them back for
+  AgentV2 and Executor `/full` without polluting follow-up requests.
+- Reasoning `output_item.done` is a snapshot, not a delta — later chunks
+  no longer duplicate text. Multi-part `[A, B, AB]` merges prefer the
+  unindexed snapshot.
+- `asyncio.wait_for(anext)` no longer resets a ContextVar token created
+  in a different Task (Linux py3.11/3.12 `llm_stream_error`).
+- P7 lazy-import count stays under 150 after the provider work.
+
+### Changed
+
+- Product version **1.2.12** in `pyproject.toml`, installers, OpenTUI/Ink
+  headers, MCP `clientInfo`, and Desktop package metadata. Protocol
+  (`protocol/version.py` `1.1.0`) is unchanged.
+- Release workflow builds and uploads **sdist only**. No desktop matrix
+  on this tag.
+
+---
+
 ## [1.2.11] - 2026-08-21
 
 ### Highlights
@@ -711,6 +758,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.2.12]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12
 [1.2.11]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11
 [1.2.10]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10
 [1.2.9]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9

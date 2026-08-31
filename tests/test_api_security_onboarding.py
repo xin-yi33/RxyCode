@@ -1,6 +1,7 @@
 """Behavioral security and model-onboarding contracts for the local API."""
 
 import inspect
+import json
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -395,9 +396,185 @@ def test_unsaved_probe_uses_provider_id_and_redacts_provider_errors(monkeypatch)
 
     assert result["success"] is False
     assert credential not in result["error"]
-    assert observed["url"] == "https://provider.example/v1/chat/completions"
+    assert observed["url"] == "https://provider.example/v1/responses"
     assert observed["json"]["model"] == "provider/model-v2"
+    assert observed["json"]["input"] == "Hi"
     assert observed["headers"]["Authorization"] == f"Bearer {credential}"
+
+
+def test_custom_probe_falls_back_to_chat_only_when_responses_endpoint_is_missing(
+    monkeypatch,
+):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    observed = []
+
+    class Response:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = json.dumps(payload)
+
+        def json(self):
+            return self._payload
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            observed.append((url, json))
+            if url.endswith("/responses"):
+                return Response(404, {"error": {"message": "endpoint not found"}})
+            return Response(
+                200,
+                {"choices": [{"message": {"content": "CHAT_OK"}}]},
+            )
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="fake-key",
+        base_url="https://provider.example/v1",
+        provider_model_id="provider/model-v2",
+    )
+
+    assert result["success"] is True
+    assert result["reply"] == "CHAT_OK"
+    assert result["transport"] == "openai_chat"
+    assert result.get("outcome") == "completed"
+    assert [url.rsplit("/", 1)[-1] for url, _ in observed] == [
+        "responses",
+        "completions",
+    ]
+
+
+def test_custom_probe_does_not_hide_responses_policy_403_with_chat_fallback(
+    monkeypatch,
+):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    calls = []
+
+    class Response:
+        status_code = 403
+        text = '{"error":{"message":"DataPolicyError"}}'
+
+        def json(self):
+            return {"error": {"message": "DataPolicyError"}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            calls.append(url)
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="fake-key",
+        base_url="https://provider.example/v1",
+        provider_model_id="provider/model-v2",
+    )
+
+    assert result["success"] is False
+    assert "403" in result["error"]
+    assert calls == ["https://provider.example/v1/responses"]
+
+
+def test_custom_probe_reports_when_neither_api_transport_exists(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    calls = []
+
+    class Response:
+        status_code = 404
+        text = '{"error":{"message":"endpoint not found"}}'
+
+        def json(self):
+            return {"error": {"message": "endpoint not found"}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            calls.append(url)
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="fake-key",
+        base_url="https://provider.example/v1",
+        provider_model_id="provider/model-v2",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == (
+        "No supported LLM API transport; attempted openai_responses, openai_chat"
+    )
+    assert calls == [
+        "https://provider.example/v1/responses",
+        "https://provider.example/v1/chat/completions",
+    ]
+
+
+def test_custom_probe_does_not_switch_interfaces_for_model_not_found_404(
+    monkeypatch,
+):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    calls = []
+
+    class Response:
+        status_code = 404
+        text = '{"error":{"message":"model missing-model does not exist"}}'
+
+        def json(self):
+            return {"error": {"message": "model missing-model does not exist"}}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, *, json, headers):
+            calls.append(url)
+            return Response()
+
+    monkeypatch.setattr(model_manager.httpx, "Client", Client)
+    result = model_manager.probe_model_connection(
+        api_key="fake-key",
+        base_url="https://provider.example/v1",
+        provider_model_id="missing-model",
+    )
+
+    assert result["success"] is False
+    assert "does not exist" in result["error"]
+    assert calls == ["https://provider.example/v1/responses"]
 
 
 def test_probe_surfaces_unsupported_model_instead_of_generic_401(monkeypatch):
@@ -970,4 +1147,3 @@ def test_models_and_inspect_never_leak_generic_secret_fields(monkeypatch):
     assert "sk-stored-secret" not in response.text
     assert "password" not in response.text
     assert "access_token" not in response.text
-

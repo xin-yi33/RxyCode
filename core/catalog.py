@@ -19,8 +19,23 @@ from typing import Any
 #: 契约目录（与 model_catalog.json 同源）。
 _CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "model_catalog.json"
 
+#: Dotted catalog spellings → official API ids.  Sonnet 4.5 is not Sonnet 5.
+_ANTHROPIC_MODEL_ALIASES: dict[str, str] = {
+    "claude-sonnet-4.5": "claude-sonnet-4-5",
+    "claude-haiku-4.5": "claude-haiku-4-5",
+}
+
 #: 模块级缓存：provider:model -> cache_contract（或 None）。
 _contracts: dict[str, dict | None] | None = None
+
+
+def canonical_model_id(provider_id: str, model_id: str) -> str:
+    """Return the runtime/API model id for a catalog or user-facing alias."""
+    pid = str(provider_id or "").strip().casefold()
+    mid = str(model_id or "").strip().casefold()
+    if pid == "anthropic":
+        return _ANTHROPIC_MODEL_ALIASES.get(mid, mid)
+    return mid
 
 
 def _load_contracts() -> dict[str, dict | None]:
@@ -37,7 +52,16 @@ def _load_contracts() -> dict[str, dict | None]:
             contract = record.get("cache_contract")
             if not provider or not model:
                 continue
-            index[f"{provider}:{model}"] = contract if isinstance(contract, dict) else None
+            stored = contract if isinstance(contract, dict) else None
+            keys = {model, canonical_model_id(provider, model)}
+            if provider == "anthropic":
+                canon = canonical_model_id(provider, model)
+                for alias, target in _ANTHROPIC_MODEL_ALIASES.items():
+                    if target == canon or alias == model or target == model:
+                        keys.add(alias)
+                        keys.add(target)
+            for key in keys:
+                index.setdefault(f"{provider}:{key}", stored)
     except (OSError, ValueError, KeyError):
         pass
     _contracts = index
@@ -57,8 +81,11 @@ def get_contract(provider_id: str, model_id: str) -> dict | None:
     """
     if not provider_id or not model_id:
         return None
-    key = f"{provider_id.strip().casefold()}:{model_id.strip().casefold()}"
-    return _load_contracts().get(key)
+    pid = provider_id.strip().casefold()
+    raw = model_id.strip().casefold()
+    index = _load_contracts()
+    canon = canonical_model_id(pid, raw)
+    return index.get(f"{pid}:{canon}") or index.get(f"{pid}:{raw}")
 
 
 def _read_path(usage: dict, path: str | None) -> int:

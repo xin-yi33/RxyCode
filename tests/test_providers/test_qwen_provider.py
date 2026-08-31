@@ -267,6 +267,26 @@ def test_llm_kwargs_enable_thinking():
     assert body.get("enable_thinking") is True
 
 
+def test_chat_fallback_omits_reasoning_effort_even_with_responses_caps():
+    """Chat fallback must not keep Responses-only reasoning.effort."""
+    provider = QwenProvider()
+    responses_cfg = {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model_name": "qwen3.7-plus",
+        "resolved_max_tokens": 32,
+        "api_key": "k",
+        "api_transport": "openai_responses",
+        "effort": "balanced",
+    }
+    chat_cfg = {**responses_cfg, "api_transport": "openai_chat"}
+    stale_caps = provider.capabilities(responses_cfg)
+    kwargs = provider.llm_kwargs(chat_cfg, stale_caps)
+    body = kwargs.get("extra_body") or {}
+    assert "reasoning_effort" not in kwargs
+    assert "enable_thinking" in body
+    assert body.get("enable_thinking") is True
+
+
 # ---- DC1：未知变体保守 ----
 
 

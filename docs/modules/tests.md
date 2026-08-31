@@ -133,15 +133,61 @@ node scripts/plan-goal-screenshots.mts
 Live 测试默认跳过。只有在隔离预算和测试专用凭据准备完成后才应启用：
 
 ```powershell
-$env:RXYCODE_RUN_LIVE_TESTS = "1"
-$env:RXYCODE_LIVE_API_KEY = "<test-only-key>"
-$env:RXYCODE_LIVE_MODEL = "<model-id>"
+# 前置条件：运行环境已通过安全机制注入 RXYCODE_RUN_LIVE_TESTS、
+# RXYCODE_LIVE_API_KEY，以及用例需要的可选模型变量。
 python -m pytest tests/live -m live -v
 ```
 
-不要把 key 写入 fixture、文档、命令历史 artifact、仓库，或 GitHub Actions
-secret。Live 测试只在本机显式启用；CI 不注入 `RXYCODE_LIVE_API_KEY`。本地未显式
-启用 live 或未配置 key 时，用例仍自动报告 skip。
+不要把 key 写入 fixture、YAML 的 `api_key` 字段、文档、命令历史 artifact、仓库或
+日志。Live 临时配置只保存 `api_key_env: RXYCODE_LIVE_API_KEY`，运行时由
+`resolve_model_config()` 解析；不得先展开环境变量再序列化。本地未显式启用 live 或
+未配置 key 时，用例自动报告 skip。
+
+Provider 适配证据必须分开记录：
+
+- 官方资料：只证明文档中公开的模型 ID、端点和政策；
+- mock/wire：证明 RxyCode/SDK 实际构造的 URL、body 和终态处理；
+- 历史 live：保留日期与外部错误，不冒充本轮结果；
+- 本轮 live：只有本轮实际运行且返回成功才标记通过；
+- 外部权限阻塞：DataPolicy/Region 等错误既不是通过，也不能直接归因成代码缺陷。
+
+OpenCode Go 的 HY3/Muse live 测试不得把模型能力、Provider 家族识别和 `/models` 当前
+公开可用性混为一谈。HY3 只验证正式版 Chat 路径；范围外型号不进入本阶段承诺。
+
+通用接口路由的本地门禁位于
+`tests/test_providers/test_transport_routing.py`：覆盖明确 endpoint-not-found 的 Responses 404→Chat、403/DataPolicy
+不回退、部分输出后不回退、双接口均不支持的组合错误，以及预设的 Responses-first / Chat
+审计矩阵。`tests/test_api_security_onboarding.py` 的 custom probe 用例验证配置前探测遵守
+同一分类器且不泄露凭据。`tests/test_providers/test_hy3_provider.py` 只覆盖正式版 `hy3`；
+preview 不进入 Provider 或 catalog 承诺。
+
+负责人 2026-08-25 新增 P0 的确定性门禁为：
+
+- `tests/test_providers/test_transport_routing.py`：三种规范协议、旧值迁移、候选去重、
+  非法/空候选保护和 OpenAI 窄回退；
+- `tests/test_providers/test_model_endpoints.py`：Chat/Responses/Messages 的 API root
+  规范化、完整资源去重、冲突、安全 URL 和持久化/探测共用路径；
+- `tests/test_providers/test_anthropic_transport.py`：通过 `httpx.MockTransport` 驱动真实
+  `ChatAnthropic`/Anthropic SDK，核对 `/v1/messages`、鉴权与版本头、system、图像、
+  tool schema、tool use/result、文本/工具流、usage、stop reason、错误与缺失终态。
+
+可只运行这组三协议专项：
+
+```powershell
+python -m pytest -q -p no:cacheprovider tests/test_providers/test_transport_routing.py tests/test_providers/test_model_endpoints.py tests/test_providers/test_anthropic_transport.py
+```
+
+这些用例使用运行时生成的合成凭据，只断言 header 是否存在，不打印 header 值。它们属于
+mock/wire 证据，不能替代 Anthropic、OpenCode Go、HY3 或 Muse 的本轮 live。
+
+Muse Responses 归一层的本地压力测试不访问公网、不读取 key，可直接运行：
+
+```powershell
+python scripts/stress_muse_provider.py --requests 200 --chunks 32 --concurrency 1 2 4 8 16
+```
+
+输出包含各并发档的成功数、吞吐、P50/P95/P99、本地内存峰值和 pending task
+leak。它只衡量 RxyCode 内部适配器，不能写成真实模型或 OpenCode Go 容量结果。
 
 ## 编写规则
 

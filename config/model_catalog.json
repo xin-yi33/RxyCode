@@ -3,6 +3,64 @@
   "note": "模型能力目录（Phase 3）。数字来自 Phase A §7 调研/审计（core/providers/*.py 的 ModelCapabilities 值），带 source_url + as_of。未找到官方精确值时保留 null，由 unknown_fallback 处理。 B9: 每条 record 追加 cache_contract（per-model 缓存契约：模式/折扣/TTL/断点/usage 路径/reasoning/thinking）。",
   "records": [
     {
+      "provider_id": "muse_spark",
+      "model_id": "muse-spark-1.2-contributor",
+      "model_context_window": null,
+      "model_max_output_tokens": null,
+      "source": "opencode-go:official-endpoint-table",
+      "source_url": "https://opencode.ai/docs/go/",
+      "as_of": "2026-08-24",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.02,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "input_tokens_details.cached_tokens",
+          "cached_alt": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": "output_tokens_details.reasoning_tokens"
+        },
+        "reasoning_contract": "none",
+        "thinking_param": null,
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "hy3",
+      "model_id": "hy3",
+      "model_context_window": 256000,
+      "model_max_output_tokens": 128000,
+      "source": "tencent-tokenhub:official-model-table",
+      "source_url": "https://cloud.tencent.com/document/product/1823/130051",
+      "as_of": "2026-08-25",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": null,
+        "cache_ttl_hours": null,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": null,
+          "cached_alt": null,
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null
+        },
+        "reasoning_contract": "none",
+        "thinking_param": null,
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
       "provider_id": "deepseek",
       "model_id": "deepseek-v4-flash",
       "model_context_window": 1048576,
@@ -289,8 +347,8 @@
     {
       "provider_id": "anthropic",
       "model_id": "claude-sonnet-4.5",
-      "model_context_window": 1000000,
-      "model_max_output_tokens": 128000,
+      "model_context_window": 200000,
+      "model_max_output_tokens": 64000,
       "source": "phase-a:anthropic",
       "source_url": "https://docs.anthropic.com/en/docs/about-claude/models",
       "as_of": "2026-08-14",

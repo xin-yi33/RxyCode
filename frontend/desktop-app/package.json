@@ -1,6 +1,6 @@
 {
   "name": "@rxycode/desktop-app",
-  "version": "1.2.11",
+  "version": "1.2.12",
   "description": "RxyCode Desktop: Electron + Vite + React main window (session list, chat area, composer) wired to @rxycode/protocol-client (Phase4-D2).",
   "main": "./out/main/index.js",
   "author": "RxyCode",

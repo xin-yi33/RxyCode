@@ -276,7 +276,7 @@ total_timeout_s: 3300
 max_delegations: 32
 extra:
   "ecosystem.category": 技术工程
-  "ecosystem.version": "1.2.11"
+  "ecosystem.version": "1.2.12"
   "ecosystem.disable_model_invocation": true
   "ecosystem.provenance": |
     D4 9-stage SOP (2026-08-13 approved) with implement split into

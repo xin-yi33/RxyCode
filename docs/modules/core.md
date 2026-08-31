@@ -108,11 +108,11 @@ Session restoration searches the current date, earlier dated records, and the le
 
 **LLM construction via provider layer (A6/A8/A9):**
 
-- `_build_llm_from_config()` resolves the strategy, derives capabilities, and
-  builds the raw LLM: `provider = providers.resolve(model_config)` →
-  `caps = provider.capabilities(model_config)` →
-  `ChatOpenAI(**provider.llm_kwargs(model_config, caps))` — then wraps it in
-  `UsageTrackingLLM(provider=provider, capabilities=caps)` (see
+- `_build_llm_from_config()` resolves the strategy and derives capabilities, then
+  constructs the raw LLM by protocol: OpenAI Chat/Responses use
+  `ChatOpenAI(**provider.llm_kwargs(model_config, caps))`, while native Anthropic
+  Messages uses `ChatAnthropic(**provider.anthropic_llm_kwargs(...))`. Both are
+  wrapped in `UsageTrackingLLM(provider=provider, capabilities=caps)` (see
   [providers](providers.md) for the strategy layer itself).
 - `UsageTrackingLLM` records usage for every `ainvoke()`/`astream()`; cache-read
   and reasoning extraction are **delegated to the provider's capability map**

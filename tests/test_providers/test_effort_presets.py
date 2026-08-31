@@ -238,7 +238,6 @@ def test_glm52_effort_presets_s74():
 @pytest.mark.parametrize("u,model", [
     ("https://api.minimaxi.com/v1", "MiniMax-M3"),
     ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro"),
-    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus"),
     ("https://api.anthropic.com/v1", "claude-opus-5"),
 ])
 def test_chat_path_no_effort_presets(u, model):
@@ -342,7 +341,6 @@ def test_effort_options_glm52():
 @pytest.mark.parametrize("u,model", [
     ("https://api.minimaxi.com/v1", "MiniMax-M3"),
     ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro"),
-    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus"),
     ("https://api.anthropic.com/v1", "claude-opus-5"),
 ])
 def test_chat_path_no_effort_options(u, model):

@@ -11,6 +11,11 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_role_prompt,
     get_system_prompt,
 )
+from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
+    finalize_responses_reasoning_message,
+    install_langchain_responses_reasoning_patch,
+    native_reasoning_scope,
+)
 from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
@@ -101,6 +106,36 @@ class _ToolRoundLimitMiddleware(AgentMiddleware):
         return self.after_model(state, runtime)
 
 
+class _ResponsesReasoningMiddleware(AgentMiddleware):
+    """Collapse LangChain-merged reasoning before the next Responses request."""
+
+    @staticmethod
+    def _finalize(response):
+        if isinstance(response, AIMessage):
+            return finalize_responses_reasoning_message(response)
+        result = getattr(response, "result", None)
+        if isinstance(result, list):
+            response.result = [
+                finalize_responses_reasoning_message(item)
+                if isinstance(item, AIMessage)
+                else item
+                for item in result
+            ]
+        return response
+
+    def wrap_model_call(self, request, handler):
+        install_langchain_responses_reasoning_patch()
+        with native_reasoning_scope():
+            response = handler(request)
+        return self._finalize(response)
+
+    async def awrap_model_call(self, request, handler):
+        install_langchain_responses_reasoning_patch()
+        with native_reasoning_scope():
+            response = await handler(request)
+        return self._finalize(response)
+
+
 class Executor:
     """Run a task with an agent-local tool-round budget.
 
@@ -159,7 +194,10 @@ class Executor:
                 self._llm,
                 available,
                 system_prompt=get_system_prompt(),
-                middleware=[_ToolRoundLimitMiddleware(max_tool_rounds)],
+                middleware=[
+                    _ResponsesReasoningMiddleware(),
+                    _ToolRoundLimitMiddleware(max_tool_rounds),
+                ],
             )
             result = await agent.ainvoke(
                 {"messages": [("user", prompt)]},

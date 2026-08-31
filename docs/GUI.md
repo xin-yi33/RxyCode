@@ -107,7 +107,7 @@ parent directory.
 - **更新与诊断**: manual check/download/install of updates; crash-report
   consent defaults to off and diagnostic bundles are sanitized.
 - **关于**: shows the product version of that Desktop build
-  (this tree is 1.2.11; packaged v1.2.10 assets still display 1.2.10).
+  (this tree is 1.2.12; packaged v1.2.10 assets still display 1.2.10).
 
 ## Development
 

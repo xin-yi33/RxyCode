@@ -221,7 +221,7 @@ def test_anthropic_per_model_min_block(name, minblock):
     ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus",
      [], [("prompt_tokens_details", "cached_tokens")]),
     ("https://api.anthropic.com/v1", "claude-opus-5",
-     ["cache_read_input_tokens"], []),
+     ["cache_read_input_tokens"], [("input_token_details", "cache_read")]),
 ])
 def test_family_hit_fields(u, model, flat, nested):
     """8 族 cache_params() 命中字段映射与 §7 报告一致。"""

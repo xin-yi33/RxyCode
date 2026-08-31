@@ -221,6 +221,22 @@ def appserver_proc():
             proc.wait(timeout=5)
 
 
+@pytest.fixture
+def concurrent_appserver_proc(tmp_path):
+    barrier_dir = tmp_path / "concurrent-session-barrier"
+    env = _appserver_env()
+    env["RXYCODE_APPSERVER_STUB_BARRIER_DIR"] = str(barrier_dir)
+    proc = _appserver_proc_with_env(env)
+    try:
+        yield proc, barrier_dir
+    finally:
+        barrier_dir.mkdir(parents=True, exist_ok=True)
+        (barrier_dir / "release").touch()
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=10.0)
+
+
 def test_appserver_full_conversation_round_trip(appserver_proc):
     client = AppserverClient(appserver_proc)
     from protocol.version import PROTOCOL_VERSION
@@ -372,8 +388,9 @@ def test_appserver_multiple_sessions(appserver_proc):
     assert r2["text"] == "stub:two"
 
 
-def test_appserver_concurrent_sessions(appserver_proc):
-    """Two sessions prompt in parallel; wall time must beat sequential stubs."""
+def test_appserver_concurrent_sessions(concurrent_appserver_proc):
+    """Two sessions must enter their workers before either prompt is released."""
+    appserver_proc, barrier_dir = concurrent_appserver_proc
     client = AppserverClient(appserver_proc)
     client.request(
         "initialize",
@@ -394,10 +411,7 @@ def test_appserver_concurrent_sessions(appserver_proc):
         timeout=30.0,
     )
 
-    # Sequential baseline on the same warm sessions. Linux CI coverage+xdist
-    # made a 1.75s wall-clock bound flake at 1.76s–1.82s; overlapping the 0.5s
-    # stub sleeps is the actual concurrency invariant.
-    start_seq = time.monotonic()
+    # Sequential baseline on the same warm sessions before the barrier race.
     seq1 = client.request(
         "session/prompt",
         {"session_id": s1["session_id"], "text": "slow:seq-one"},
@@ -408,7 +422,6 @@ def test_appserver_concurrent_sessions(appserver_proc):
         {"session_id": s2["session_id"], "text": "slow:seq-two"},
         timeout=30.0,
     )
-    seq_elapsed = time.monotonic() - start_seq
     assert seq1["text"] == "stub:seq-one"
     assert seq2["text"] == "stub:seq-two"
 
@@ -425,28 +438,39 @@ def test_appserver_concurrent_sessions(appserver_proc):
         except BaseException as exc:
             errors.append(exc)
 
-    start = time.monotonic()
     t1 = threading.Thread(
         target=run_prompt,
-        args=("r1", s1["session_id"], "slow:one"),
+        args=("r1", s1["session_id"], "barrier:one"),
     )
     t2 = threading.Thread(
         target=run_prompt,
-        args=("r2", s2["session_id"], "slow:two"),
+        args=("r2", s2["session_id"], "barrier:two"),
     )
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
-    elapsed = time.monotonic() - start
-
-    assert not errors, errors
-    assert results["r1"]["text"] == "stub:one"
-    assert results["r2"]["text"] == "stub:two"
-    assert elapsed <= seq_elapsed - 0.3, (
-        f"expected concurrent prompts to beat sequential {seq_elapsed:.2f}s "
-        f"by ≥0.3s, got {elapsed:.2f}s"
-    )
+    try:
+        t1.start()
+        t2.start()
+        deadline = time.monotonic() + 15.0
+        ready = (barrier_dir / "one.ready", barrier_dir / "two.ready")
+        while time.monotonic() < deadline and not all(path.exists() for path in ready):
+            assert appserver_proc.poll() is None, "appserver exited before both prompts arrived"
+            time.sleep(0.01)
+        assert all(path.exists() for path in ready), (
+            "both session workers must reach the barrier concurrently"
+        )
+        (barrier_dir / "release").touch()
+        t1.join(timeout=10.0)
+        t2.join(timeout=10.0)
+        assert not t1.is_alive() and not t2.is_alive(), "prompt threads did not finish"
+        assert not errors, errors
+        assert results["r1"]["text"] == "stub:one"
+        assert results["r2"]["text"] == "stub:two"
+    finally:
+        barrier_dir.mkdir(parents=True, exist_ok=True)
+        (barrier_dir / "release").touch()
+        for thread in (t1, t2):
+            if thread.is_alive():
+                thread.join(timeout=2.0)
+        client.close()
 
 
 def test_appserver_bootstrap_timeout():
