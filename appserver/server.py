@@ -30,13 +30,7 @@ from .lifecycle import InstanceLock, mark_incomplete_recovery_required
 from .project_routes import handle_project_rpc
 from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
-from .workspace import (
-    PathBoundaryError,
-    assert_exists,
-    assert_inside_workspace,
-    canonicalize,
-    prepare_session_workspace,
-)
+from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
 from .execution import ExecutionStore
 from .approval_router import ApprovalRouter
 from .permission import PermissionStore
@@ -916,9 +910,8 @@ class AppServer:
             await self._respond_error(request_id, -32602, "workspace_root is required")
             return
         try:
-            workspace_path, register_as_project = prepare_session_workspace(workspace)
-            workspace = str(workspace_path)
-            if register_as_project and self._projects.get(workspace) is None:
+            workspace = str(assert_exists(canonicalize(workspace)))
+            if self._projects.get(workspace) is None:
                 self._projects.add(workspace)
         except PathBoundaryError as exc:
             await self._respond_error(
