@@ -6900,12 +6900,23 @@ class AgentV2:
                     )
                 )
             ]
+            wipe_for_critical = False
             if critical_failures:
+                from RxyCode.RxyCode1_1_0.validation.side_effects import is_supporting_effect
+
                 issues = deterministic_issues(critical_failures)
-                result = f"[evidence failed: {'; '.join(issues)}]"
-                status = "failed"
-                record_failure("tool_error")
-            else:
+                # Read/search/explain tasks must keep the model answer even if a
+                # stray write failed format checks. An empty issue list used to
+                # become ``[evidence failed: ]`` and wipe identifiers such as
+                # UsageTrackingLLM from evals/readcode-usage-tracking.
+                if issues and not is_supporting_effect(
+                    getattr(self, "_task_effect", "auto")
+                ):
+                    result = f"[evidence failed: {'; '.join(issues)}]"
+                    status = "failed"
+                    record_failure("tool_error")
+                    wipe_for_critical = True
+            if not wipe_for_critical:
                 status, _ = classify_agent_result(str(result))
                 if (
                     status == "succeeded"

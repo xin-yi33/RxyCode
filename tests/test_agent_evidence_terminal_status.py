@@ -428,3 +428,52 @@ async def test_declared_write_effect_forces_side_effect_gate():
         "[evidence failed: requested side effect has no verified "
         "WRITE/DANGER tool execution]"
     )
+
+
+@pytest.mark.asyncio
+async def test_empty_evidence_issues_do_not_wipe_read_answer():
+    """A failed helper write with no deterministic issue text must not blank Q&A.
+
+    readcode-usage-tracking died as ``[evidence failed: ]`` after a stray
+    write, wiping UsageTrackingLLM / ainvoke / astream from the answer.
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.execution.evidence import ArtifactEvidence, ToolEvidence
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    agent = object.__new__(AgentV2)
+    answer = (
+        "UsageTrackingLLM wraps ainvoke and astream; token usage goes through "
+        "_record_usage into token_stats; bind_tools re-wraps the new instance."
+    )
+
+    async def explain_run(_user_input: str, _mode: str) -> str:
+        orch = ToolOrchestrator()
+        evidence = ToolEvidence(
+            tool="write",
+            status="failed",
+            executed=True,
+            risk="WRITE",
+            artifacts=[
+                ArtifactEvidence(
+                    path="C:/tmp/_notes.md",
+                    exists=True,
+                    size=12,
+                    valid=False,
+                )
+            ],
+        )
+        orch._record_evidence(evidence)
+        return answer
+
+    agent._run_impl = explain_run
+    result = await agent.run(
+        "说明并解释：UsageTrackingLLM 包装了哪些方法？",
+        effect="read",
+    )
+    assert "evidence failed" not in result
+    assert "UsageTrackingLLM" in result
+    assert "ainvoke" in result
+    assert "astream" in result
+    assert "_record_usage" in result
+    assert "bind_tools" in result
