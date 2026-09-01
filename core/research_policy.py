@@ -45,6 +45,8 @@ _FRESH_RELEASE_EN = re.compile(
 _EXPLICIT_WEB_ZH = (
     "联网搜索", "网络搜索", "网上搜索", "搜索网页", "搜索网络", "搜索互联网",
     "上网查", "联网查", "网上查", "查阅网页", "浏览网页", "浏览网站",
+    "使用 websearch", "用 websearch", "调用 websearch", "websearch 工具",
+    "使用 webfetch", "调用 webfetch", "webfetch 工具",
 )
 _EXPLICIT_WEB_EN = re.compile(
     r"^\s*(?:please\s+)?(?:browse|search|look\s+up)\b|"
@@ -96,11 +98,13 @@ _LOCAL_WORKSPACE_EN = re.compile(
     re.IGNORECASE,
 )
 _LOCAL_WORKSPACE_ZH = (
-    "当前工作区", "本地工作区", "当前目录", "本地目录", "项目目录", "代码库", "仓库",
+    "当前工作区", "本地工作区", "当前工作目录", "当前目录", "本地目录",
+    "工作目录", "项目目录", "代码库", "仓库目录", "仓库",
 )
 _NON_WEB_CURRENT_ZH = (
     "当前时间", "当前日期", "今天日期", "现在时间", "现在几点", "当前时刻",
-    "当前工作区", "本地工作区", "当前目录", "本地目录", "当前项目", "本地项目",
+    "当前工作区", "本地工作区", "当前工作目录", "当前目录", "本地目录",
+    "当前项目", "本地项目", "工作目录",
     # Local application state is not a request for an externally verified
     # current fact.  Without these bounded phrases, a game prompt such as
     # "检查当前范围" leaves the bare word "当前" behind and is routed into
@@ -227,6 +231,7 @@ def get_research_policy(query: str) -> ResearchPolicy:
         (local_workspace_task and not explicit_web_request)
         or (constrained_local_inspection and not explicit_web_request)
         or (explicit_no_web and not explicit_web_request)
+        or (is_local_workspace_file_task(text) and not explicit_web_request)
     ):
         return ResearchPolicy(
             requires_web=False,
@@ -279,10 +284,42 @@ def research_prefetch_failure_note(detail: str = "") -> str:
     )
 
 
+_LOCAL_FILE_TASK_ZH = (
+    "当前工作目录", "当前目录", "本地目录", "工作目录", "仓库目录",
+)
+_LOCAL_FILE_VERBS_ZH = (
+    "新建", "修复", "修改", "创建", "实现", "请修复", "写入", "创建/修改",
+)
+_LOCAL_FILE_VERBS_EN = re.compile(
+    r"\b(fix|create|implement|write|edit|repair)\b",
+    re.IGNORECASE,
+)
+
+
+def is_local_workspace_file_task(text: str) -> bool:
+    """True when the user asks to create/fix files in the local workdir."""
+    local = any(term in text for term in _LOCAL_FILE_TASK_ZH) or bool(
+        _LOCAL_WORKSPACE_EN.search(text)
+    )
+    if not local:
+        return False
+    has_file = ".py" in text.lower() or "文件" in text or bool(
+        re.search(r"\.[A-Za-z0-9]{1,5}\b", text)
+    )
+    has_verb = any(verb in text for verb in _LOCAL_FILE_VERBS_ZH) or bool(
+        _LOCAL_FILE_VERBS_EN.search(text)
+    )
+    return has_file and has_verb
+
+
 def should_abort_on_research_prefetch_failure(user_input: str) -> bool:
-    """Pure Q&A must not guess. A create/build product task must still write files."""
+    """Pure Q&A must not guess. A create/build or local file task must still write files."""
     from RxyCode.RxyCode1_1_0.core.request_routing import has_creation_product_intent
-    return not has_creation_product_intent(user_input)
+    if has_creation_product_intent(user_input):
+        return False
+    if is_local_workspace_file_task(user_input):
+        return False
+    return True
 
 
 def _is_usable_research_query(query: str) -> bool:

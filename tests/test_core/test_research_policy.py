@@ -323,6 +323,43 @@ def test_extract_research_query_prefers_market_assets_over_page_controls():
     assert len(query) <= 120
 
 
+def test_current_working_directory_boilerplate_does_not_force_web():
+    """Eval/harness boilerplate says 当前工作目录; the leftover 当前 must not force web.
+
+    ``当前目录`` is stripped, but ``当前工作目录`` is not a substring of that
+    phrase, so a bare ``当前`` used to keep requires_web True and prefetch
+    websearch before any local write/edit.
+    """
+    query = (
+        "修复 cart.py 的可变默认参数。"
+        "所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录。"
+    )
+    assert get_research_policy(query).requires_web is False
+    assert should_abort_on_research_prefetch_failure(query) is False
+
+
+def test_eval_local_file_prompts_do_not_force_web_or_abort():
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2] / "evals" / "tasks"
+    for name in (
+        "bugfix-mutable-default.yaml",
+        "bugfix-off-by-one.yaml",
+        "bugfix-string-reverse.yaml",
+        "feature-fizzbuzz.yaml",
+        "feature-cli-parser.yaml",
+        "refactor-replace-magic-numbers.yaml",
+        "refactor-extract-function.yaml",
+    ):
+        prompt = yaml.safe_load((root / name).read_text(encoding="utf-8"))["prompt"]
+        assert get_research_policy(prompt).requires_web is False, name
+        assert should_abort_on_research_prefetch_failure(prompt) is False, name
+    web = yaml.safe_load((root / "websearch-summary.yaml").read_text(encoding="utf-8"))["prompt"]
+    assert get_research_policy(web).requires_web is True
+
+
 def test_creation_task_does_not_abort_when_research_prefetch_fails():
     create = (
         "Create T03-company in the current workspace. First call websearch and webfetch "
