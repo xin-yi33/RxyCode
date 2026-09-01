@@ -1,9 +1,24 @@
 """Eval tasks must not share the default ``latest`` memory session."""
 
+from pathlib import Path
+
 from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 
+from evals import _bind_checkout
 from evals.backends import bind_eval_session
+
+
+def test_bind_checkout_points_at_this_worktree() -> None:
+    _bind_checkout()
+    import RxyCode.RxyCode1_1_0 as pkg
+
+    checkout = Path(__file__).resolve().parents[2]
+    assert Path(pkg.__file__).resolve().parent == checkout
+    _bind_checkout()
+    import RxyCode.RxyCode1_1_0 as pkg2
+
+    assert Path(pkg2.__file__).resolve().parent == checkout
 
 
 def test_bind_eval_session_rebinds_memory_manager(isolated_runtime) -> None:

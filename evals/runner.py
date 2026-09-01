@@ -932,6 +932,9 @@ def compare_baseline_pass_rate(current: SuiteReport, baseline_path: Path) -> tup
 
 def main() -> int:
     """CLI entry point: ``python -m evals.run``."""
+    from . import _bind_checkout
+
+    _bind_checkout()
     parser = argparse.ArgumentParser(
         prog="python -m evals.run",
         description="Run RxyCode evaluation suite against eval tasks.",
