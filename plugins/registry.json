@@ -5,6 +5,18 @@
       "version": "1.1.0",
       "path": "github",
       "description": "连接 GitHub 仓库、Issues 与 Pull Request"
+    },
+    {
+      "name": "canva",
+      "version": "1.0.0",
+      "path": "canva",
+      "description": "连接 Canva 设计与素材"
+    },
+    {
+      "name": "computer-use",
+      "version": "1.0.0",
+      "path": "computer-use",
+      "description": "Computer-use 适配器（工具缝，不是截图像素代理）"
     }
   ]
 }

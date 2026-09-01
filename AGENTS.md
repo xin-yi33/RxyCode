@@ -28,6 +28,9 @@
 | [utils](docs/modules/utils.md) | utils/ | Shared utilities - TUI, streaming, i18n, shell helpers |
 | [history](docs/modules/history.md) | history/ | History tracking - command and conversation logging |
 | [mcp](docs/modules/mcp.md) | mcp/ | MCP integration - connect to external MCP servers |
+| [plugins](docs/modules/plugins.md) | plugins/ + appserver/plugin_service.py | Plugin store: catalog, OAuth connect (GitHub/Canva), zip/registry, computer-use adapter — never `core.graph` |
+| [log](docs/modules/log.md) | log/ | Structured process logs with secret redaction |
+| [game](docs/modules/game.md) | game/ | Demo terminal game; not part of the agent loop |
 | [lsp](docs/modules/lsp.md) | lsp/ | LSP integration - code intelligence (experimental) |
 | [scheduler](docs/modules/scheduler.md) | scheduler/ | Scheduled tasks - cron-like prompt scheduling |
 | [frontend](docs/modules/frontend.md) | frontend/opentui-app/ | OpenTUI default TUI (Ink fallback under frontend/) |
@@ -117,9 +120,10 @@ Transport
 
 ## For AI Agents Working on This Codebase
 
-1. **Before modifying a module**: Read its README first
-2. **Cross-module changes**: Check the Dependencies section in each README
-3. **Frontend changes**: Run npx tsc && npx vitest run in frontend/
-4. **Backend changes**: Run the layered pytest suite (entry points in docs/modules/tests.md)
-5. **New features**: Add tests in tests/ and update the relevant README
-6. **Save location**: Files save to ~/.rxycode/output/ (configurable via RXYCODE_OUTPUT_DIR)
+1. **Before modifying a module**: Read `docs/modules/catalog.yaml` and the module README first
+2. **Cross-module changes**: Check inbound/outbound dependencies in the catalog; follow `docs/DEVELOPMENT-ORDER.md` (plugin OAuth waits for the adapter contract)
+3. **New plugins/connectors**: Register in `plugins/catalog.json` + `plugins/<name>/`. Do not edit `core/graph.py`
+4. **Frontend changes**: Run npx tsc && npx vitest run in frontend/; Desktop plugin hub tests in `frontend/desktop-app`
+5. **Backend changes**: Run the layered pytest suite (entry points in docs/modules/tests.md)
+6. **New features**: Add tests in tests/ and update the catalog entry
+7. **Save location**: Files save to ~/.rxycode/output/ (configurable via RXYCODE_OUTPUT_DIR)

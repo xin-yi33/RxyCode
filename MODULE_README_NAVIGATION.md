@@ -22,6 +22,11 @@
 | 通用工具模块 | `utils/README.md` | 提供 CLI/TUI、国际化、输入框、队列、跨平台 Shell、流式输出等基础能力。 |
 | 验证与重规划模块 | `validation/README.md` | 验证任务结果是否满足要求，并在失败时生成补救任务。 |
 | 测试模块 | `tests/README.md` | 保存规划、执行、验证等核心链路的单元测试。 |
+| 模块总目录（机器可读） | `docs/modules/catalog.yaml` | 每个顶层包的职责、公开面、依赖、隔离测试入口。 |
+| 开发顺序 | `docs/DEVELOPMENT-ORDER.md` | 串行门与可并行轨道；插件 OAuth 必须等 adapter 合约。 |
+| 插件商店 | `docs/modules/plugins.md` | catalog + OAuth 连接 + computer-use 适配器，禁止改 graph。 |
+| 日志模块 | `docs/modules/log.md` | 结构化日志与密钥脱敏。 |
+| 示例游戏 | `docs/modules/game.md` | 演示用终端游戏，不是 agent 循环。 |
 | 执行测试模块 | `tests/test_execution/README.md` | 测试 TaskScheduler 的 DAG 调度、依赖判断和取消级联。 |
 | 规划测试模块 | `tests/test_planning/README.md` | 测试 HierarchicalDecomposer 的任务拆解行为。 |
 | 综合测试模块 | `tests/test_synthesis/README.md` | synthesis 测试预留包，目前只有初始化文件。 |
@@ -29,12 +34,13 @@
 
 ## 推荐阅读顺序
 
-1. `core/README.md`：先理解 Agent 主流程和 LangGraph。
-2. `tools/README.md`：再看 Agent 能调用哪些工具。
-3. `memory/README.md`、`cache/README.md`：理解上下文、记忆和缓存如何降低成本。
-4. `planning/README.md`、`execution/README.md`、`validation/README.md`：理解计划-执行-验证闭环。
-5. `scheduler/README.md`、`mcp/README.md`、`lsp/README.md`：阅读扩展能力。
-6. `tests/README.md`：用测试理解关键模块预期行为。
+1. `docs/modules/catalog.yaml` + `docs/DEVELOPMENT-ORDER.md`：先看模块边界和并行/串行门。
+2. `core/README.md`：再理解 Agent 主流程和 LangGraph。
+3. `tools/README.md`：再看 Agent 能调用哪些工具。
+4. `memory/README.md`、`cache/README.md`：理解上下文、记忆和缓存如何降低成本。
+5. `planning/README.md`、`execution/README.md`、`validation/README.md`：理解计划-执行-验证闭环。
+6. `docs/modules/plugins.md`、`mcp/README.md`：扩展能力走插件商店，不改 graph。
+7. `tests/README.md`：用测试理解关键模块预期行为。
 
 ## 说明
 

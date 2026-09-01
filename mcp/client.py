@@ -306,8 +306,10 @@ class MCPClient:
             env = _default_subprocess_environment()
             env.update(self.env)
             from .github_auth import inject_github_plugin_token
+            from .plugin_auth import inject_plugin_token
 
             inject_github_plugin_token(env, self.name)
+            inject_plugin_token(env, self.name, env_key="CANVA_ACCESS_TOKEN", plugin_name="canva")
             popen_kwargs: dict[str, Any] = {
                 "stdin": subprocess.PIPE,
                 "stdout": subprocess.PIPE,

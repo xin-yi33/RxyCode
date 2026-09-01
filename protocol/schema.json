@@ -4953,6 +4953,69 @@
       "title": "PluginToggleRequest",
       "type": "object"
     },
+    "PluginCatalogRequest": {
+      "description": "List the in-repo plugin store catalog.\n\nMaps ``plugin/catalog``.",
+      "properties": {
+        "method": {
+          "const": "plugin/catalog",
+          "default": "plugin/catalog",
+          "title": "Method",
+          "type": "string"
+        }
+      },
+      "title": "PluginCatalogRequest",
+      "type": "object"
+    },
+    "PluginConnectStartRequest": {
+      "description": "Start browser OAuth for a catalog connector.\n\nMaps ``plugin/connect/start``.",
+      "properties": {
+        "method": {
+          "const": "plugin/connect/start",
+          "default": "plugin/connect/start",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PluginConnectStartRequest",
+      "type": "object"
+    },
+    "PluginConnectCallbackRequest": {
+      "description": "Complete OAuth with the provider authorization code.\n\nMaps ``plugin/connect/callback``.",
+      "properties": {
+        "method": {
+          "const": "plugin/connect/callback",
+          "default": "plugin/connect/callback",
+          "title": "Method",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "code",
+        "state"
+      ],
+      "title": "PluginConnectCallbackRequest",
+      "type": "object"
+    },
     "AgentEvent": {
       "description": "Runtime agent event (Phase E4; E-layer bus carries these).\n\nField matrix (PHASE-E §4.1, authoritative):\n  method                | experiment_tag | cache_miss | tokens | budget | source | routing_reason\n  ----------------------|--------------- |------------|--------|--------|--------|---------------\n  agent_started         | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_tool            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_progress        | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_done            | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_paused          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_cancelled       | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_budget_exceeded | opt            | opt        | **req  | **req  | opt    | forbid\n  agent_denied          | opt            | opt        | req*   | req*   | opt    | forbid\n  agent_routed          | **req          | opt        | req*   | req*   | opt    | **req\n  agent_team_created    | forbid         | opt        | req*   | req*   | opt    | forbid\n\n``req*`` = the E3 runtime always writes these (0 at spawn, monotonic);\nthe schema compatibility layer allows them to be absent (historical\nevents).  ``**req`` = hard requirement at this layer; ``forbid`` =\ncarrying the field is rejected.  ``tokens_used``/``budget_used`` are\nstrict ints (bool/str/float rejected) and non-negative cumulative\nsnapshots.  ``source`` distinguishes bridge-replayed events; unknown\nvalues are rejected on construction and deserialization.",
       "properties": {
@@ -8617,6 +8680,15 @@
         },
         {
           "$ref": "#/$defs/PluginToggleRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginCatalogRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginConnectStartRequest"
+        },
+        {
+          "$ref": "#/$defs/PluginConnectCallbackRequest"
         }
       ]
     },

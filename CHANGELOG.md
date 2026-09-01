@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- First-party **module inventory** (`docs/modules/catalog.yaml`) and **development order** (`docs/development-order.yaml`, `docs/DEVELOPMENT-ORDER.md`) with parallel tracks vs must-wait gates. ADR: `docs/decisions/2026-09-01-architecture-inventory.md`. Tracked despite `docs/*` ignore via `.gitignore` exceptions.
+- **Plugin store** catalog (GitHub, Canva) with Grok-web-like 连接/添加 OAuth (`plugin/catalog`, `plugin/connect/start`, `plugin/connect/callback`). Tokens stay in plugin `user.json`, never `config.yaml`. Protocol card: `docs/decisions/G-PROTOCOL-031.md`.
+- **computer-use** adapter plugin on the same install/list contract (adapter seam only; no screenshot GUI-agent kernel).
+
+### Changed
+
+- Desktop plugin hub primary GitHub/Canva actions call `plugin/connect/start` instead of PAT-only connect.
+
 ---
 
 ## [1.2.12] - 2026-08-31

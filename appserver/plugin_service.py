@@ -114,6 +114,7 @@ class PluginService:
         self.registry = registry
         self._index: dict[str, dict[str, Any]] = {}
         self._attached = False
+        self._oauth_pending: dict[str, dict[str, str]] = {}
         self._load()
 
     def _authorize(self, action: str) -> None:
@@ -122,8 +123,15 @@ class PluginService:
             raise PluginError("PLUGIN_PERMISSION_DENIED", "permission_store required")
         scope = str(self.root)
         verdict = store.evaluate(action=action, actor="user", scope=scope, workspace=scope)
-        if verdict != "allow":
-            raise PluginError("PLUGIN_PERMISSION_DENIED", "plugin write denied")
+        if verdict == "allow":
+            return
+        last = store.last_decision() or {}
+        # Plugin hub 上的安装/连接/卸载就是用户批准。默认 ask 档在无 approval
+        # 卡片时会被 evaluate() 记成 reject/ask_required。只放行这一档；
+        # read_only 虽然也带 ask=True，仍要拒绝写入。
+        if last.get("reason") == "ask_required" and store.active_policy() == "ask_for_each_risky_action":
+            return
+        raise PluginError("PLUGIN_PERMISSION_DENIED", "plugin write denied")
 
     def attach_to_capabilities(self) -> None:
         if self._capabilities is None or self._attached:
@@ -338,6 +346,7 @@ class PluginService:
             "enabled": True,
             "capability_ids": self._capability_ids(name, manifest),
             "description": str(manifest.get("description") or ""),
+            "adapter": str(manifest.get("adapter") or ""),
             "manifest": {
                 "skills": manifest.get("skills") or [],
                 "commands": manifest.get("commands") or [],
@@ -441,6 +450,78 @@ class PluginService:
     def list_plugins(self) -> dict[str, Any]:
         return {"plugins": [self._public_record(item) for item in self._index.values()], "root": str(self.root)}
 
+    def catalog(self) -> dict[str, Any]:
+        from .plugin_adapter import load_catalog
+
+        installed = {item["name"]: item for item in self.list_plugins()["plugins"]}
+        rows: list[dict[str, Any]] = []
+        for row in load_catalog():
+            name = str(row.get("name") or "")
+            current = installed.get(name)
+            description = str(row.get("description") or "")
+            if not description and current is not None:
+                description = str(current.get("description") or "")
+            rows.append(
+                {
+                    "name": name,
+                    "title": str(row.get("title") or name),
+                    "description": description,
+                    "connect": str(row.get("connect") or "zip"),
+                    "adapter": str(row.get("adapter") or (current or {}).get("adapter") or ""),
+                    "installed": current is not None,
+                    "enabled": bool((current or {}).get("enabled")) if current else False,
+                    "auth": str((current or {}).get("auth") or "needed"),
+                }
+            )
+        return {"plugins": rows}
+
+    def start_connect(self, name: str) -> dict[str, Any]:
+        from .plugin_adapter import catalog_entry
+        from .plugin_connect import start_oauth_session
+
+        plugin_name = self._safe_name(name)
+        row = catalog_entry(plugin_name)
+        if row is None:
+            raise PluginError("PLUGIN_NOT_FOUND", f"catalog has no plugin {plugin_name}")
+        if str(row.get("connect") or "").lower() != "oauth":
+            raise PluginError("PLUGIN_OAUTH_UNSUPPORTED", f"{plugin_name} is not an oauth connector")
+        if plugin_name not in self._index:
+            if self.registry is None:
+                self.registry = bundled_plugin_registry()
+            self.install(source="registry", name=plugin_name)
+        dest = Path(str(self._index[plugin_name].get("path") or self.root / plugin_name))
+        bundled = bundled_plugin_registry() / plugin_name
+        package_dir = bundled if bundled.is_dir() else dest
+        started = start_oauth_session(plugin_name, package_dir=package_dir, pending=self._oauth_pending)
+        started["plugin"] = self._public_record(self._index[plugin_name])
+        return started
+
+    def complete_connect(
+        self,
+        name: str,
+        code: str,
+        state: str,
+        *,
+        http: Any = None,
+    ) -> dict[str, Any]:
+        from .plugin_connect import exchange_oauth_code
+
+        plugin_name = self._safe_name(name)
+        if plugin_name not in self._index:
+            raise PluginError("PLUGIN_NOT_FOUND", f"unknown plugin {plugin_name}")
+        self._authorize("capability.write")
+        token = exchange_oauth_code(
+            plugin_name,
+            code=code,
+            state=state,
+            pending=self._oauth_pending,
+            http=http,
+        )
+        dest = Path(str(self._index[plugin_name].get("path") or self.root / plugin_name))
+        self._write_user_token(dest, token)
+        self._publish_mcp(self._index[plugin_name])
+        return {"ok": True, "plugin": self._public_record(self._index[plugin_name])}
+
     def _read_user_json(self, dest: Path) -> dict[str, Any]:
         path = dest / "user.json"
         if not path.is_file() or path.is_symlink():
@@ -477,9 +558,17 @@ class PluginService:
         if not description:
             description = str((record.get("manifest") or {}).get("description") or "")
         out["description"] = description
-        if str(record.get("name") or "").lower() == "github":
-            out["auth"] = "configured" if self._github_auth_configured(dest) else "needed"
+        plugin_name = str(record.get("name") or "").lower()
+        if plugin_name in {"github", "canva"}:
+            out["auth"] = "configured" if self._oauth_auth_configured(plugin_name, dest) else "needed"
         return out
+
+    def _oauth_auth_configured(self, name: str, dest: Path) -> bool:
+        if name == "github":
+            return self._github_auth_configured(dest)
+        from mcp.plugin_auth import read_plugin_user_token
+
+        return bool(read_plugin_user_token(dest / "user.json"))
 
     def _connect_github(self, token: str) -> dict[str, Any]:
         record = self._index["github"]

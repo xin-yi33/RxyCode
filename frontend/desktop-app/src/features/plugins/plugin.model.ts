@@ -50,3 +50,21 @@ export const GITHUB_PLUGIN = {
   title: 'GitHub',
   description: '连接 GitHub 仓库、Issues 与 Pull Request'
 }
+
+export const CANVA_PLUGIN = {
+  name: 'canva',
+  title: 'Canva',
+  description: '连接 Canva 设计与素材'
+}
+
+export const CATALOG_CONNECTORS = [GITHUB_PLUGIN, CANVA_PLUGIN] as const
+
+export function connectorCardState(
+  name: string,
+  row?: Pick<PluginRecord, 'name' | 'auth'> | null
+): 'connect' | 'connected' {
+  if (row != null && row.name.toLowerCase() === name.toLowerCase() && row.auth === 'configured') {
+    return 'connected'
+  }
+  return 'connect'
+}

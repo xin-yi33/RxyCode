@@ -1,0 +1,311 @@
+# First-party module inventory (machine-readable).
+# Source of truth for "what each module is" and isolated tests.
+# Scan rule: every repo-root directory that contains __init__.py must appear
+# under modules, except names listed in scan.exclude.
+
+scan:
+  root: "."
+  require_init: true
+  exclude:
+    - _package_root
+    - rxycode.egg-info
+    - __pycache__
+
+modules:
+  appserver:
+    path: appserver/
+    purpose: >
+      Stdio JSON-RPC host for OpenTUI/Desktop. Dispatches protocol methods,
+      owns PluginService, sessions, approvals, and agent worker subprocesses.
+      Surfaces must not grow a second agent loop.
+    public_surface:
+      - appserver.server.AppServer
+      - appserver.plugin_service.PluginService
+      - appserver.plugin_connect.start_connect
+      - python -m appserver
+    dependencies:
+      inbound: [frontend/opentui-app, frontend/desktop-app, frontend/protocol-client]
+      outbound: [protocol, core.session, config, mcp, tools, plugins]
+    how_to_test: pytest tests/test_appserver tests/test_plugin.py tests/test_gx24_plugin_consume.py --timeout=180
+
+  cache:
+    path: cache/
+    purpose: Two-level answer cache (precise hash + semantic similarity) plus prompt-prefix helpers.
+    public_surface:
+      - cache.precise_cache.PreciseCache
+      - cache.semantic_cache.SemanticCache
+    dependencies:
+      inbound: [core]
+      outbound: []
+    how_to_test: pytest tests/test_cache tests/test_core -k cache --timeout=180
+
+  config:
+    path: config/
+    purpose: User data dir, config.yaml, model catalog, credential store. Secrets do not belong in config.yaml.
+    public_surface:
+      - config.settings.get_data_dir
+      - config.settings.settings
+      - config.credential_store
+    dependencies:
+      inbound: [appserver, core, mcp, scheduler]
+      outbound: []
+    how_to_test: pytest tests/test_config tests/test_model_catalog.py --timeout=180
+
+  core:
+    path: core/
+    purpose: >
+      Headless agent brain — Session facade, AgentV2, LangGraph pipeline,
+      turn router, prompts, providers, safety, expert-team (off by default).
+      No TUI/HTTP I/O.
+    public_surface:
+      - core.session.Session
+      - core.agent_v2.AgentV2
+      - core.graph
+      - core.turn_router.route
+    dependencies:
+      inbound: [appserver, api_server.py]
+      outbound: [tools, execution, planning, validation, synthesis, memory, cache, config, mcp, core.safety]
+    how_to_test: pytest tests/test_core tests/test_session.py tests/test_safety_gate.py --timeout=180
+
+  evals:
+    path: evals/
+    purpose: Checkout-only Agent Quality harness (real AgentV2 tasks, judge, baselines). Not shipped in the wheel.
+    public_surface:
+      - evals.run
+      - evals.runner.run_suite
+      - python -m evals.run
+    dependencies:
+      inbound: []
+      outbound: [core, tools, evals/tasks]
+    how_to_test: python -m evals.run --help; pytest tests/test_evals -q --timeout=180
+
+  execution:
+    path: execution/
+    purpose: Task scheduler, ReAct executor, tool orchestrator, evidence and side-effect journal.
+    public_surface:
+      - execution.executor
+      - execution.tool_orchestrator.ToolOrchestrator
+      - execution.scheduler
+    dependencies:
+      inbound: [core.graph]
+      outbound: [tools, validation, recovery]
+    how_to_test: pytest tests/test_execution --timeout=180
+
+  game:
+    path: game/
+    purpose: Sample terminal game used as a demo workload. Not part of the agent product loop.
+    public_surface:
+      - game.main.Game
+      - run_game.py
+    dependencies:
+      inbound: []
+      outbound: []
+    how_to_test: python -c "import game.main; print(game.main.Game)"
+
+  history:
+    path: history/
+    purpose: In-memory file-change tracker with unified diffs for edit/write tools.
+    public_surface:
+      - history.tracker.FileTracker
+      - history.tracker.get_file_tracker
+    dependencies:
+      inbound: [tools]
+      outbound: []
+    how_to_test: pytest tests/test_history tests/test_tools -k tracker --timeout=180
+
+  log:
+    path: log/
+    purpose: Process-level structured logging with run-id, rotation, and secret redaction.
+    public_surface:
+      - log.logger.setup_logging
+      - log.logger.get_logger
+      - log.log_helpers.redact_sensitive
+    dependencies:
+      inbound: [core, appserver, tools]
+      outbound: []
+    how_to_test: pytest tests/test_log tests -k redact --timeout=180
+
+  lsp:
+    path: lsp/
+    purpose: Experimental LSP stdio client (diagnostics only).
+    public_surface:
+      - lsp.client.LSPClient
+      - lsp.client.create_lsp_client
+    dependencies:
+      inbound: [tools.diagnostics]
+      outbound: []
+    how_to_test: pytest tests/test_lsp --timeout=180
+
+  mcp:
+    path: mcp/
+    purpose: MCP stdio client; wraps remote tools as LangChain tools. GitHub/Canva plugin tokens injected at spawn, never written to config.yaml.
+    public_surface:
+      - mcp.client.MCPClient
+      - mcp.client.load_mcp_servers
+      - mcp.github_auth.inject_github_plugin_token
+      - mcp.plugin_auth.inject_plugin_token
+    dependencies:
+      inbound: [core, appserver.plugin_service, tools.mcp_manager]
+      outbound: [config, tools]
+    how_to_test: pytest tests/test_mcp tests/test_plugin.py --timeout=180
+
+  memory:
+    path: memory/
+    purpose: Tiered conversation memory (short-term, long-term, user memory, chat storage, BM25).
+    public_surface:
+      - memory.manager
+      - memory.short_term
+      - memory.long_term
+      - memory.user_memory
+    dependencies:
+      inbound: [core]
+      outbound: [config]
+    how_to_test: pytest tests/test_memory --timeout=180
+
+  planning:
+    path: planning/
+    purpose: Goal analysis and hierarchical task decomposition for the LangGraph pipeline.
+    public_surface:
+      - planning.goal_planner.GoalPlanner
+      - planning.decomposer.HierarchicalDecomposer
+    dependencies:
+      inbound: [core.graph]
+      outbound: [config]
+    how_to_test: pytest tests/test_planning --timeout=180
+
+  protocol:
+    path: protocol/
+    purpose: Versioned pydantic JSON-RPC contract (1.1.0). Single wire for all surfaces. Codegen to frontend/protocol-client.
+    public_surface:
+      - protocol.requests.CLIENT_REQUEST_MODELS
+      - protocol.schema.export_schema
+      - protocol/schema.json
+      - python -m protocol.schema
+    dependencies:
+      inbound: [appserver, frontend/protocol-client]
+      outbound: []
+    how_to_test: pytest tests/test_protocol_schema.py tests/test_protocol tests/test_gx24_plugin_consume.py --timeout=180
+
+  rag:
+    path: rag/
+    purpose: Codebase chunking, embeddings, cosine search, and repo map.
+    public_surface:
+      - rag.search
+      - rag.index
+      - rag.store
+    dependencies:
+      inbound: [core, tools]
+      outbound: [config]
+    how_to_test: pytest tests/test_rag --timeout=180
+
+  recovery:
+    path: recovery/
+    purpose: Execution error classification, retries, and per-agent circuit breaker.
+    public_surface:
+      - recovery.error_recovery.ErrorRecovery
+      - recovery.circuit_breaker.LLMCircuitBreaker
+    dependencies:
+      inbound: [core.graph]
+      outbound: []
+    how_to_test: pytest tests/test_recovery --timeout=180
+
+  scheduler:
+    path: scheduler/
+    purpose: Cron-like scheduled prompts (library). Desktop jobs go through appserver.schedule_service.
+    public_surface:
+      - scheduler.manager.ScheduledTaskManager
+      - scheduler.cron.CronExpression
+    dependencies:
+      inbound: [appserver.schedule_service, config]
+      outbound: []
+    how_to_test: pytest tests/test_scheduler --timeout=180
+
+  synthesis:
+    path: synthesis/
+    purpose: Merge leaf-task results into a grounded final answer before the graph END node.
+    public_surface:
+      - synthesis.synthesizer.OutputSynthesizer
+    dependencies:
+      inbound: [core.graph]
+      outbound: [validation]
+    how_to_test: pytest tests/test_synthesis --timeout=180
+
+  tests:
+    path: tests/
+    purpose: Layered pytest tree (unit/integration/contract/system/live) plus legacy regression.
+    public_surface:
+      - tests/conftest.py
+      - pytest.ini
+    dependencies:
+      inbound: []
+      outbound: [all first-party packages]
+    how_to_test: pytest tests/test_plugin.py tests/test_module_inventory.py -q --timeout=180
+
+  tools:
+    path: tools/
+    purpose: Agent-callable environment tools (fs, shell, git, web, MCP manager, skills). Registered through ToolOrchestrator, not a second loop.
+    public_surface:
+      - tools.registry
+      - tools.mcp_manager
+      - tools.skill_manager
+    dependencies:
+      inbound: [core, execution]
+      outbound: [mcp, history, lsp, config]
+    how_to_test: pytest tests/test_tools tests/test_safety_gate.py --timeout=180
+
+  utils:
+    path: utils/
+    purpose: Shared helpers — TUI sink, i18n, shell executor, streaming stats, safe HTTP.
+    public_surface:
+      - utils.tui.get_tui
+      - utils.shell.ShellExecutor
+      - utils.safe_http
+    dependencies:
+      inbound: [core, tools, appserver]
+      outbound: []
+    how_to_test: pytest tests/test_utils --timeout=180
+
+  validation:
+    path: validation/
+    purpose: Evidence checks, claim grounding, reflection, and re-planning after failed tasks.
+    public_surface:
+      - validation.validator
+      - validation.re_planner.RePlanner
+      - validation.final_output
+    dependencies:
+      inbound: [core.graph, synthesis]
+      outbound: [execution]
+    how_to_test: pytest tests/test_validation --timeout=180
+
+# Non-package first-party trees (not required by the __init__.py scan, still documented).
+extra_modules:
+  frontend:
+    path: frontend/
+    purpose: OpenTUI default TUI, Ink fallback, Desktop Electron, shared protocol-client.
+    public_surface:
+      - frontend/protocol-client
+      - frontend/opentui-app
+      - frontend/desktop-app
+    dependencies:
+      inbound: []
+      outbound: [protocol, appserver]
+    how_to_test: cd frontend/desktop-app; npm test (includes PluginMarket.test.ts)
+  plugins:
+    path: plugins/
+    purpose: Bundled plugin catalog/registry (GitHub, Canva, computer-use). Data + manifests; not an agent graph.
+    public_surface:
+      - plugins/catalog.json
+      - plugins/registry.json
+    dependencies:
+      inbound: [appserver.plugin_service]
+      outbound: []
+    how_to_test: pytest tests/test_plugin.py -q --timeout=180
+  packaging:
+    path: packaging/
+    purpose: Bind/runtime metadata for installers; not the agent loop.
+    public_surface:
+      - packaging/runtimes
+    dependencies:
+      inbound: []
+      outbound: []
+    how_to_test: pytest tests/unit -k packag --timeout=180

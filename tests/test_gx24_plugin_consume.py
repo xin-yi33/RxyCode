@@ -7,6 +7,9 @@ from pathlib import Path
 from appserver.plugin_service import PluginService
 from appserver.server import AppServer
 from protocol.requests import (
+    PluginCatalogRequest,
+    PluginConnectCallbackRequest,
+    PluginConnectStartRequest,
     PluginInstallRequest,
     PluginListRequest,
     PluginToggleRequest,
@@ -19,6 +22,9 @@ def test_plugin_methods_exist() -> None:
     assert PluginInstallRequest.model_fields["method"].default == "plugin/install"
     assert PluginUninstallRequest.model_fields["method"].default == "plugin/uninstall"
     assert PluginToggleRequest.model_fields["method"].default == "plugin/toggle"
+    assert PluginCatalogRequest.model_fields["method"].default == "plugin/catalog"
+    assert PluginConnectStartRequest.model_fields["method"].default == "plugin/connect/start"
+    assert PluginConnectCallbackRequest.model_fields["method"].default == "plugin/connect/callback"
 
 
 def test_toggle_source_calls_capabilities() -> None:

@@ -5,7 +5,14 @@ import {
   type ProbeOutcome
 } from '../gx/schemaProbe.ts'
 
-export const PLUGIN_METHODS = ['plugin/list', 'plugin/install', 'plugin/toggle', 'capability/set_enabled'] as const
+export const PLUGIN_METHODS = [
+  'plugin/list',
+  'plugin/install',
+  'plugin/toggle',
+  'plugin/catalog',
+  'plugin/connect/start',
+  'capability/set_enabled'
+] as const
 
 export function probePlugins(schemaText: string): ProbeOutcome {
   const result = probeMethods(schemaText, PLUGIN_METHODS)

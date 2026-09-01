@@ -27,10 +27,23 @@ test('GX24: plugin/* is path A', () => {
   assert.match(html, /data-testid="plugin-hub-teams"/)
   assert.match(html, /data-testid="plugin-github"/)
   assert.match(html, /data-testid="plugin-github-connect"/)
-  assert.match(html, />安装</)
+  assert.match(html, /data-testid="plugin-github-add"/)
+  assert.match(html, /data-testid="plugin-canva"/)
+  assert.match(html, /data-testid="plugin-canva-connect"/)
+  assert.match(html, /data-testid="plugin-canva-add"/)
+  assert.match(html, />连接</)
+  assert.match(html, />添加</)
+  assert.doesNotMatch(html, /GitHub Personal Access Token/)
+  assert.doesNotMatch(html, /data-testid="plugin-github-token"/)
   assert.doesNotMatch(html, /mcpServers/)
   assert.match(html, /data-testid="plugin-hub-add"/)
   assert.match(html, /class="plugin-hub-add"/)
+  const hook = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/hooks/usePlugins.ts'),
+    'utf8'
+  )
+  assert.match(hook, /plugin\/connect\/start/)
+  assert.match(hook, /plugin\/catalog/)
 })
 
 test('plugin hub replaces the main session pane and keeps square add controls', () => {
@@ -43,30 +56,27 @@ test('plugin hub replaces the main session pane and keeps square add controls', 
   assert.doesNotMatch(app, /rail-panel-wide/)
   assert.match(css, /\.plugin-hub-add\s*\{[\s\S]*?border-radius:\s*8px/)
   assert.match(css, /\.plugin-hub-add\s*\{[\s\S]*?background:\s*#fff/)
-  assert.match(css, /\.skill-card-add\s*\{[\s\S]*?border-radius:\s*8px/)
-  assert.doesNotMatch(css, /\.skill-card-add\s*\{[\s\S]*?border-radius:\s*50%/)
-  assert.match(css, /\.skill-card-add\s*\{[\s\S]*?padding:\s*0/)
+  assert.match(css, /\.skill-card-add\s*\{[^}]*border-radius:\s*8px/)
+  assert.doesNotMatch(css, /\.skill-card-add\s*\{[^}]*border-radius:\s*50%/)
+  assert.match(css, /\.skill-card-add\s*\{[^}]*padding:\s*0/)
 })
 
-test('github popular row shows PAT connect then connected', () => {
+test('github popular row uses oauth connect not PAT', () => {
   const connect = renderToStaticMarkup(
     createElement(GithubPopularRow, {
       state: 'connect',
-      token: '',
-      onToken: () => undefined,
-      onInstall: () => undefined,
       onConnect: () => undefined
     })
   )
-  assert.match(connect, /data-testid="plugin-github-token"/)
+  assert.doesNotMatch(connect, /data-testid="plugin-github-token"/)
+  assert.doesNotMatch(connect, /GitHub Personal Access Token/)
   assert.match(connect, /data-testid="plugin-github-connect"/)
+  assert.match(connect, /data-testid="plugin-github-add"/)
   assert.match(connect, />连接</)
+  assert.match(connect, />添加</)
   const connected = renderToStaticMarkup(
     createElement(GithubPopularRow, {
       state: 'connected',
-      token: '',
-      onToken: () => undefined,
-      onInstall: () => undefined,
       onConnect: () => undefined
     })
   )

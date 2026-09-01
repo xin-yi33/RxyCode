@@ -1,0 +1,35 @@
+{
+  "plugins": [
+    {
+      "name": "github",
+      "title": "GitHub",
+      "description": "连接 GitHub 仓库、Issues 与 Pull Request",
+      "connect": "oauth",
+      "authorize_host": "github.com",
+      "authorize_path": "/login/oauth/authorize",
+      "token_url": "https://github.com/login/oauth/access_token",
+      "scopes": ["repo", "read:user"],
+      "pkce": false,
+      "token_env": "GITHUB_PERSONAL_ACCESS_TOKEN"
+    },
+    {
+      "name": "canva",
+      "title": "Canva",
+      "description": "连接 Canva 设计与素材",
+      "connect": "oauth",
+      "authorize_host": "www.canva.com",
+      "authorize_path": "/api/oauth/authorize",
+      "token_url": "https://api.canva.com/rest/v1/oauth/token",
+      "scopes": ["design:meta:read", "asset:read"],
+      "pkce": true,
+      "token_env": "CANVA_ACCESS_TOKEN"
+    },
+    {
+      "name": "computer-use",
+      "title": "Computer Use",
+      "description": "Computer-use 适配器（工具缝，不是截图像素代理）",
+      "connect": "adapter",
+      "adapter": "computer-use"
+    }
+  ]
+}
