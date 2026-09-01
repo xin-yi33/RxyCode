@@ -26,7 +26,6 @@
 | 开发顺序 | `docs/DEVELOPMENT-ORDER.md` | 串行门与可并行轨道；插件 OAuth 必须等 adapter 合约。 |
 | 插件商店 | `docs/modules/plugins.md` | catalog + OAuth 连接 + computer-use 适配器，禁止改 graph。 |
 | 日志模块 | `docs/modules/log.md` | 结构化日志与密钥脱敏。 |
-| 示例游戏 | `docs/modules/game.md` | 演示用终端游戏，不是 agent 循环。 |
 | 执行测试模块 | `tests/test_execution/README.md` | 测试 TaskScheduler 的 DAG 调度、依赖判断和取消级联。 |
 | 规划测试模块 | `tests/test_planning/README.md` | 测试 HierarchicalDecomposer 的任务拆解行为。 |
 | 综合测试模块 | `tests/test_synthesis/README.md` | synthesis 测试预留包，目前只有初始化文件。 |

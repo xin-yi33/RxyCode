@@ -30,7 +30,6 @@
 | [mcp](docs/modules/mcp.md) | mcp/ | MCP integration - connect to external MCP servers |
 | [plugins](docs/modules/plugins.md) | plugins/ + appserver/plugin_service.py | Plugin store: catalog, OAuth connect (GitHub/Canva), zip/registry, computer-use adapter — never `core.graph` |
 | [log](docs/modules/log.md) | log/ | Structured process logs with secret redaction |
-| [game](docs/modules/game.md) | game/ | Demo terminal game; not part of the agent loop |
 | [lsp](docs/modules/lsp.md) | lsp/ | LSP integration - code intelligence (experimental) |
 | [scheduler](docs/modules/scheduler.md) | scheduler/ | Scheduled tasks - cron-like prompt scheduling |
 | [frontend](docs/modules/frontend.md) | frontend/opentui-app/ | OpenTUI default TUI (Ink fallback under frontend/) |

@@ -149,8 +149,9 @@ def start_oauth_session(
             "redirect_uri": redirect_uri,
             "code_verifier": verifier,
             "token_url": str(row.get("token_url") or ""),
+            "client_id": cid,
         }
-    return {"authorize_url": url, "state": state, "name": name}
+    return {"authorize_url": url, "state": state, "name": name, "client_id": cid}
 
 
 def exchange_oauth_code(
@@ -172,11 +173,14 @@ def exchange_oauth_code(
     token_url = session.get("token_url") or str(row.get("token_url") or "")
     if not token_url.startswith("https://"):
         raise _oauth_error("PLUGIN_OAUTH_CONFIG", "token_url must be https")
+    client_id = str(session.get("client_id") or "").strip()
+    if not client_id:
+        raise _oauth_error("PLUGIN_OAUTH_STATE", "oauth session missing client_id")
     data = {
         "grant_type": "authorization_code",
         "code": trimmed_code,
         "redirect_uri": session.get("redirect_uri") or DEFAULT_REDIRECT,
-        "client_id": client_id_for(name, row),
+        "client_id": client_id,
         "client_secret": client_secret_for(name),
     }
     verifier = session.get("code_verifier") or ""

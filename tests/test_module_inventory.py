@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -17,13 +18,16 @@ def _load_yaml(path: Path) -> dict:
     return payload
 
 
-def _on_disk_packages(exclude: set[str]) -> set[str]:
+def _tracked_root_packages(exclude: set[str]) -> set[str]:
+    """First-party packages = tracked `<name>/__init__.py` at repo root."""
+    raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=REPO_ROOT)
     names: set[str] = set()
-    for child in REPO_ROOT.iterdir():
-        if not child.is_dir() or child.name in exclude:
+    for rel in raw.split(b"\0"):
+        if not rel:
             continue
-        if (child / "__init__.py").is_file():
-            names.add(child.name)
+        parts = Path(rel.decode("utf-8", "replace")).parts
+        if len(parts) == 2 and parts[1] == "__init__.py" and parts[0] not in exclude:
+            names.add(parts[0])
     return names
 
 
@@ -33,12 +37,12 @@ def test_inventory_lists_every_root_package_with_required_fields() -> None:
     assert isinstance(modules, dict) and modules, "catalog.yaml must define modules"
     scan = catalog.get("scan") or {}
     exclude = {str(name) for name in (scan.get("exclude") or [])}
-    on_disk = _on_disk_packages(exclude)
+    on_disk = _tracked_root_packages(exclude)
     listed = set(modules)
     missing = sorted(on_disk - listed)
     extra_init = sorted(listed - on_disk)
-    assert missing == [], f"catalog.yaml missing on-disk packages: {missing}"
-    assert extra_init == [], f"catalog.yaml lists packages with no __init__.py: {extra_init}"
+    assert missing == [], f"catalog.yaml missing tracked packages: {missing}"
+    assert extra_init == [], f"catalog.yaml lists packages with no tracked __init__.py: {extra_init}"
     required = ("purpose", "public_surface", "dependencies", "how_to_test")
     for name, entry in modules.items():
         assert isinstance(entry, dict), f"{name} entry must be a mapping"

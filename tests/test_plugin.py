@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -553,8 +555,6 @@ def test_oauth_start_connect_authorize_hosts(tmp_path: Path, monkeypatch: pytest
     plugins, _caps = _service(tmp_path)
     plugins.registry = bundled_plugin_registry()
     github = plugins.start_connect("github")
-    from urllib.parse import urlparse
-
     github_host = urlparse(str(github["authorize_url"])).hostname
     assert github_host == "github.com"
     assert github["authorize_url"]
@@ -601,6 +601,43 @@ def test_oauth_callback_marks_connected_and_publishes(
     assert canva_calls and "canva.com" in str(canva_calls[0]["url"])
     listed = json.dumps(plugins.list_plugins())
     assert "canva_oauth_secret" not in listed
+
+
+def test_oauth_token_post_reuses_authorize_client_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("RXYCODE_GITHUB_OAUTH_CLIENT_ID", raising=False)
+    distinct = "Iv1.distinct-oauth-client"
+    bundled = tmp_path / "bundled-registry"
+    shutil.copytree(bundled_plugin_registry() / "github", bundled / "github")
+    (bundled / "github" / "oauth.json").write_text(
+        json.dumps({"client_id": distinct}),
+        encoding="utf-8",
+    )
+    (bundled / "registry.json").write_text(
+        json.dumps({"plugins": [{"name": "github", "version": "1.1.0", "path": "github"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("appserver.plugin_service.bundled_plugin_registry", lambda: bundled)
+    plugins, _caps = _service(tmp_path)
+    plugins.registry = bundled
+    started = plugins.start_connect("github")
+    query = parse_qs(urlparse(str(started["authorize_url"])).query)
+    assert query.get("client_id") == [distinct]
+    http, calls = _oauth_http("gho_same_client")
+    done = plugins.complete_connect(
+        "github",
+        code="oauth-code",
+        state=str(started["state"]),
+        http=http,
+    )
+    assert done["ok"] is True
+    assert calls, "fixture transport must see the token POST"
+    posted = calls[0]["data"]
+    assert posted["client_id"] == distinct
+    assert posted["client_id"] != f"rxycode-dev-github-oauth"
 
 
 def test_computer_use_adapter_install_lists_tools(tmp_path: Path) -> None:

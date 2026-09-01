@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Desktop plugin hub primary GitHub/Canva actions call `plugin/connect/start` instead of PAT-only connect.
+- OAuth token exchange POSTs the same `client_id` used to build the authorize URL (stored on the pending session).
+- Module catalog no longer lists the untracked `game/` demo; inventory scan uses git-tracked `<pkg>/__init__.py`.
 
 ---
 

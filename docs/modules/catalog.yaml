@@ -10,6 +10,7 @@ scan:
     - _package_root
     - rxycode.egg-info
     - __pycache__
+    - game
 
 modules:
   appserver:
@@ -90,17 +91,6 @@ modules:
       inbound: [core.graph]
       outbound: [tools, validation, recovery]
     how_to_test: pytest tests/test_execution --timeout=180
-
-  game:
-    path: game/
-    purpose: Sample terminal game used as a demo workload. Not part of the agent product loop.
-    public_surface:
-      - game.main.Game
-      - run_game.py
-    dependencies:
-      inbound: []
-      outbound: []
-    how_to_test: python -c "import game.main; print(game.main.Game)"
 
   history:
     path: history/
