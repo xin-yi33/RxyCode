@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop plugin hub primary GitHub/Canva actions call `plugin/connect/start` instead of PAT-only connect.
 - Local file tasks that mention ``当前工作目录`` / leftover ``现在`` no longer force websearch prefetch or abort the turn when search fails.
 - Read-only tasks no longer replace the answer with empty ``[evidence failed: ]`` after a stray write. Eval ``refactor-replace-magic-numbers`` tests now require DISCOUNT constants so pytest cannot pass without the refactor.
+- Eval AgentV2 factory now calls ``set_session`` so sequential tasks do not share MemoryManager ``latest`` (readcode-safety-levels no longer summarizes counter.py).
 - OAuth token exchange POSTs the same `client_id` used to build the authorize URL (stored on the pending session).
 - Module catalog no longer lists the untracked `game/` demo; inventory scan uses git-tracked `<pkg>/__init__.py`.
 

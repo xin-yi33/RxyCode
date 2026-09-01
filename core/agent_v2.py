@@ -1643,9 +1643,9 @@ def _build_graph_lazily():
 class AgentV2:
     """LangGraph-based agent, drop-in compatible with the old Agent class."""
 
-    def __init__(self, model_name: Optional[str] = None):
+    def __init__(self, model_name: Optional[str] = None, session_id: Optional[str] = None):
         self._cfg = _settings.load_config()
-        self._session_id = "latest"
+        self._session_id = validate_session_id(session_id) if session_id else "latest"
         # F2: None keeps single-agent cache keys byte-identical (FX9 / MC1).
         self._agent_namespace = None
         # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
