@@ -25,7 +25,7 @@
 下面的 GIF 是对 `rxycode gui`（RxyCode Desktop）的实机录屏，不是效果图。
 
 <p align="center">
-  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop 1.3.0：三栏工作台、会话列表、Composer、一次真实回复" width="800">
+  <img src="docs/assets/gui-demo-v1.3.0.gif" alt="RxyCode Desktop 1.3.0：三栏工作台、会话列表、Composer、一次真实回复" width="800">
 </p>
 
 | 系统 | 从 [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) 下什么 |
@@ -45,7 +45,7 @@ rxycode
 ```
 
 <p align="center">
-  <img src="docs/assets/cli-demo.gif" alt="RxyCode OpenTUI：在 cmd 里运行 rxycode，先 /help 再跑一个任务" width="800">
+  <img src="docs/assets/cli-demo-v1.3.0.gif" alt="RxyCode OpenTUI：在 cmd 里运行 rxycode，先 /help 再跑一个任务" width="800">
 </p>
 
 GitHub 翻到这里会自动播放。同一套 `Session`、同一道安全门，只是换了表面。

@@ -9,7 +9,7 @@ or install the packaged Windows / Linux builds from the
 This tag does **not** ship macOS.
 
 <p align="center">
-  <img src="assets/gui-demo.gif" alt="RxyCode Desktop 1.3.0 workbench, live recording" width="800">
+  <img src="assets/gui-demo-v1.3.0.gif" alt="RxyCode Desktop 1.3.0 workbench, live recording" width="800">
 </p>
 
 ## How it launches

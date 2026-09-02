@@ -25,7 +25,7 @@
 The GIF is a live recording of `rxycode gui` (RxyCode Desktop), not a mock.
 
 <p align="center">
-  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop 1.3.0: three-column workbench, sessions, composer, a live turn" width="800">
+  <img src="docs/assets/gui-demo-v1.3.0.gif" alt="RxyCode Desktop 1.3.0: three-column workbench, sessions, composer, a live turn" width="800">
 </p>
 
 | OS | What to download from [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) |
@@ -45,7 +45,7 @@ rxycode
 ```
 
 <p align="center">
-  <img src="docs/assets/cli-demo.gif" alt="RxyCode OpenTUI: type rxycode in cmd, then /help and a live task" width="800">
+  <img src="docs/assets/cli-demo-v1.3.0.gif" alt="RxyCode OpenTUI: type rxycode in cmd, then /help and a live task" width="800">
 </p>
 
 GitHub plays the GIF when you scroll to it. Same `Session`, same safety gate, different surface.
