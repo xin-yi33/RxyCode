@@ -53,7 +53,6 @@ linux:
   executableName: rxycode-desktop
   target:
     - AppImage
-    - deb
   maintainer: RxyCode
   category: Utility
 appImage:

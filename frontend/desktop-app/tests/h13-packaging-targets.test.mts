@@ -13,11 +13,11 @@ const pkg = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8')) 
 const tSource = readFileSync(join(desktopRoot, 'src/i18n/t.ts'), 'utf8')
 const platform = readFileSync(join(desktopRoot, 'src/platform/index.mts'), 'utf8')
 
-test('H13 P3: win/mac/linux targets include nsis, dmg, AppImage, deb', () => {
+test('H13 P3: win/mac/linux targets include nsis, dmg, AppImage', () => {
   assert.match(yaml, /nsis/)
   assert.match(yaml, /^dmg:/m)
   assert.match(yaml, /AppImage/)
-  assert.match(yaml, /\n\s+-\s+deb/)
+  assert.doesNotMatch(yaml, /\n\s+-\s+deb/)
 })
 
 test('Linux electron-builder metadata includes a project homepage', () => {
