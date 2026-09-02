@@ -17,7 +17,7 @@ export function formatMessageLine(msg: ChatMessage): string {
   }
 }
 
-export const APP_VERSION = "1.2.12";
+export const APP_VERSION = "1.3.0";
 
 export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolean): string {
   const base = `RxyCode v${APP_VERSION} · ${mode} · ${model}`;

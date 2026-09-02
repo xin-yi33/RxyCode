@@ -9,20 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.3.0] - 2026-09-02
+
+### Highlights
+
+**This is the Desktop workbench release.** 1.2.10 opened the first Electron
+window. 1.3.0 puts the same headless `Session` behind a Codex-shaped
+three-column shell: pinned / project / recent sessions, running-task
+chrome, permission presets, a plugin hub, side chat, plan / goal, and
+a Windows installer that still lets you pick the directory and a desktop
+shortcut. GitHub Release **v1.3.0** publishes the CLI sdist **and**
+Windows `setup.exe` + portable zip **and** a Linux AppImage. **No macOS
+build** on this tag. Protocol version stays `1.1.0`.
+
 ### Added
 
-- First-party **module inventory** (`docs/modules/catalog.yaml`) and **development order** (`docs/development-order.yaml`, `docs/DEVELOPMENT-ORDER.md`) with parallel tracks vs must-wait gates. ADR: `docs/decisions/2026-09-01-architecture-inventory.md`. Tracked despite `docs/*` ignore via `.gitignore` exceptions.
-- **Plugin store** catalog (GitHub, Canva) with Grok-web-like 连接/添加 OAuth (`plugin/catalog`, `plugin/connect/start`, `plugin/connect/callback`). Tokens stay in plugin `user.json`, never `config.yaml`. Protocol card: `docs/decisions/G-PROTOCOL-031.md`.
-- **computer-use** adapter plugin on the same install/list contract (adapter seam only; no screenshot GUI-agent kernel).
+- **Desktop workbench** — pinned / project / recent session lists, draft
+  tasks, hover title marquee, running spinner before the title, full-row
+  running highlight, three-column sash snap, Files / Browser as top-bar
+  panes, session and project context menus (`frontend/desktop-app/`).
+- **Permission presets in Composer** — 更改前询问 / 自动编辑 / 完全访问,
+  with a confirm step for 完全访问.
+- **Plugin hub as a main pane** — GitHub / Canva connect through
+  `plugin/connect/start` (OAuth). Tokens stay in plugin `user.json`.
+- **computer-use adapter plugin** on the same install/list contract
+  (adapter seam only; no screenshot GUI-agent kernel).
+- **First-party module inventory** (`docs/modules/catalog.yaml`) and
+  **development order** (`docs/DEVELOPMENT-ORDER.md`).
+- Windows NSIS installer still defaults to `%USERPROFILE%\.rxycode\desktop`,
+  with Browse… and a checked-by-default desktop shortcut.
+
+### Fixed
+
+- **Windows worker bootstrap deadlock** — `prompt` no longer shares
+  `stdin.readline` with `langchain_openai` import, so the first `hi`
+  in a new Desktop session does not sit on “Starting Agent worker” until
+  the 600s prompt timeout (`appserver/agent_worker.py`).
+- GLM / OpenCode Go extra fields that 400 the API are dropped
+  (`core/providers/glm.py`).
+- Local file tasks that mention ``当前工作目录`` no longer force
+  websearch prefetch.
+- Read-only answers are no longer replaced with empty
+  ``[evidence failed: ]`` after a stray write.
+- Eval AgentV2 factory calls ``set_session`` so sequential eval tasks
+  do not share MemoryManager ``latest``.
+- OAuth token POST reuses the authorize `client_id`.
 
 ### Changed
 
-- Desktop plugin hub primary GitHub/Canva actions call `plugin/connect/start` instead of PAT-only connect.
-- Local file tasks that mention ``当前工作目录`` / leftover ``现在`` no longer force websearch prefetch or abort the turn when search fails.
-- Read-only tasks no longer replace the answer with empty ``[evidence failed: ]`` after a stray write. Eval ``refactor-replace-magic-numbers`` tests now require DISCOUNT constants so pytest cannot pass without the refactor.
-- Eval AgentV2 factory now calls ``set_session`` so sequential tasks do not share MemoryManager ``latest`` (readcode-safety-levels no longer summarizes counter.py).
-- OAuth token exchange POSTs the same `client_id` used to build the authorize URL (stored on the pending session).
-- Module catalog no longer lists the untracked `game/` demo; inventory scan uses git-tracked `<pkg>/__init__.py`.
+- Product version **1.3.0** in `pyproject.toml`, installers, OpenTUI/Ink
+  headers, MCP `clientInfo`, appserver / runtime manifests, and Desktop
+  package metadata. Protocol (`protocol/version.py` `1.1.0`) is unchanged.
+- Release workflow builds sdist **plus** Windows NSIS/zip and Linux
+  AppImage. macOS is not in the matrix.
+- Desktop plugin hub primary GitHub/Canva actions call
+  `plugin/connect/start` instead of PAT-only connect.
 
 ---
 
@@ -773,6 +816,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.3.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0
 [1.2.12]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12
 [1.2.11]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11
 [1.2.10]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10

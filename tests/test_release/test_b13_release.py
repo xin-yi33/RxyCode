@@ -82,7 +82,7 @@ async def test_real_handshake_includes_package(monkeypatch: pytest.MonkeyPatch) 
     await server._handle_initialize(
         {
             "client_name": "test",
-            "client_version": "1.2.10",
+            "client_version": "1.3.0",
             "protocol_version": PROTOCOL_VERSION,
         },
         1,
@@ -117,7 +117,7 @@ def test_process_handshake(tmp_path: Path) -> None:
         "method": "initialize",
         "params": {
             "client_name": "release-test",
-            "client_version": "1.2.10",
+            "client_version": "1.3.0",
             "protocol_version": PROTOCOL_VERSION,
         },
     }

@@ -12,7 +12,7 @@
  * vendored copy of the RxyCode source tree. RxyCode-master is only READ.
  *
  * The RxyCode version is read from pyproject.toml at staging time (no
- * hard-coded pin), so a 1.2.10 tag bundles 1.2.10 automatically.
+ * hard-coded pin), so a 1.3.0 tag bundles 1.3.0 automatically.
  */
 import { spawnSync } from 'node:child_process'
 import {

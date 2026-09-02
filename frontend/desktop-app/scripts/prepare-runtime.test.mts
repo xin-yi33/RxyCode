@@ -52,7 +52,7 @@ test('win32 filters pip and rxycode dist-info by dynamic version', () => {
   assert.equal(win('C:/Python/Scripts/pip.exe'), true)
   assert.equal(win('C:/Python/Scripts/pip3.12.exe'), true)
   assert.equal(win('C:/Python/Scripts/frobnicate.exe'), false)
-  assert.equal(win('C:/Python/Lib/site-packages/rxycode-1.2.10.dist-info'), false)
+  assert.equal(win('C:/Python/Lib/site-packages/rxycode-1.3.0.dist-info'), false)
   assert.equal(win('C:/Python/Lib/site-packages/rxycode-1.2.6.dist-info'), false)
 })
 

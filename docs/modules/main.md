@@ -11,7 +11,7 @@ and starts the API server.
 - `python -m RxyCode.RxyCode1_1_0`: Versioned module entry point
 - `rxycode --version`: Report the package version without initializing runtime state
 - `rxycode --api`: Start the API server only
-- `rxycode gui`: Launch Desktop if a Desktop build is already installed (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). Accepts a flat install, the portable zip wrapper folder, a macOS `.app`, or a Linux AppImage. For `.AppImage` it sets the execute bit and `APPIMAGE_EXTRACT_AND_RUN=1` so missing FUSE does not block startup. The CLI wheel does not ship Electron; download setup.exe / `RxyCode.Desktop-*-win.zip` / dmg / AppImage from GitHub Releases. A CLI-only install raises a ClickException pointing at that Release page instead of implying `rxycode gui` is enough.
+- `rxycode gui`: Launch Desktop if a Desktop build is already installed (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). Accepts a flat install, the portable zip wrapper folder, or a Linux AppImage. For `.AppImage` it sets the execute bit and `APPIMAGE_EXTRACT_AND_RUN=1` so missing FUSE does not block startup. The CLI sdist does not ship Electron; download setup.exe / `RxyCode.Desktop-*-win.zip` / AppImage from the current GitHub Release (v1.3.0 does not ship macOS). A CLI-only install raises a ClickException pointing at that Release page instead of implying `rxycode gui` is enough.
 - `rxycode config`: Manage model configuration
 - `rxycode config add-model <id> <provider-model-id> --base-url <url>`: Add a model; API key comes from `RXYCODE_API_KEY`
 - `rxycode config model-limits`: Inspect/set per-model output limits (`inspect` / `set-auto`)

@@ -1,11 +1,15 @@
 # RxyCode Desktop GUI
 
 RxyCode ships a desktop application (Electron + React) next to the OpenTUI
-terminal interface. Launch it with a single command, or install the packaged
-Windows/macOS/Linux builds from the [GitHub Release](https://github.com/xin-yi33/RxyCode/releases).
+terminal interface. **v1.3.0 is the workbench release:** the same headless
+`Session` drives a three-column shell (sessions, composer, optional Files /
+Browser), not the leftover 1.2.10 chat window. Launch it with `rxycode gui`,
+or install the packaged Windows / Linux builds from the
+[GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0).
+This tag does **not** ship macOS.
 
 <p align="center">
-  <img src="imgs/gui-shell.png" alt="RxyCode Desktop chat shell" width="800">
+  <img src="assets/gui-demo.gif" alt="RxyCode Desktop 1.3.0 workbench, live recording" width="800">
 </p>
 
 ## How it launches
@@ -48,10 +52,8 @@ folder or its contents into `~/.rxycode/desktop`; `rxycode gui` finds either
 layout. `--desktop-dir` may point at the wrapper folder, the exe, or the
 parent directory.
 
-### Option C — macOS / Linux
+### Option C — Linux
 
-- macOS: mount the `.dmg` and copy **RxyCode Desktop** into Applications
-  (the app is unsigned; right-click → Open the first time).
 - Linux: `chmod +x rxycode-desktop-<version>.AppImage` then run it.
   Modern distros often lack FUSE (`libfuse.so.2`); if the AppImage exits
   immediately, use `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-<version>.AppImage`.
@@ -59,19 +61,17 @@ parent directory.
   the executable bit and extract-and-run for you. The packaged app also
   passes `--no-sandbox` on Linux so the AppImage is not blocked by the
   unsigned chrome-sandbox helper.
+- macOS is **not** in the v1.3.0 GitHub Release. Use OpenTUI, or
+  `npm run dev` from a source checkout.
 
 ## Main window
 
 | Area | What it shows |
 |------|---------------|
-| Session list | Prior chats, saved per workspace |
+| Session list | Pinned / project / recent; `+` new task; running spinner before the title |
 | Chat area | Streaming messages, tool cards, final answer |
-| Composer | Type a natural-language task; `+` opens the action menu |
-| Top bar | Brand, connection state |
-
-<p align="center">
-  <img src="imgs/gui-plan-mode.png" alt="Plan mode" width="800">
-</p>
+| Composer | Natural-language task; `+` opens the action menu; permission preset |
+| Top bar | Brand, connection state, Files / Browser / plugin toggles |
 
 ## Composer `+` menu
 
@@ -82,32 +82,21 @@ parent directory.
 | Goal | Open the Goal dialog (Escape or overlay click closes it) |
 | Plan mode | Toggle Plan mode (agent stays on the plan document) |
 
-<p align="center">
-  <img src="imgs/gui-plus-menu.png" alt="Composer plus menu" width="800">
-</p>
-
 ## Plan, goal and approval
 
 - **Plan mode** keeps the agent on a plan document instead of editing files
   immediately. The plan card offers **Build**, a **Revise** field, and
   **Skip**.
 - **Goal dialog** stores a standing goal for the session.
-- Permission labels are 每次询问 / 自动编辑 / 完全信任; switching to 完全信任
-  asks for confirmation (Escape cancels).
-
-<p align="center">
-  <img src="imgs/gui-plan-card.png" alt="Plan card" width="800">
-</p>
-<p align="center">
-  <img src="imgs/gui-goal-dialog.png" alt="Goal dialog" width="800">
-</p>
+- Permission labels are 更改前询问 / 自动编辑 / 完全访问; switching to
+  完全访问 asks for confirmation (Escape cancels).
 
 ## Settings
 
 - **更新与诊断**: manual check/download/install of updates; crash-report
   consent defaults to off and diagnostic bundles are sanitized.
 - **关于**: shows the product version of that Desktop build
-  (this tree is 1.2.12; packaged v1.2.10 assets still display 1.2.10).
+  (v1.3.0 packaged assets display **1.3.0**).
 
 ## Development
 
@@ -117,6 +106,5 @@ npm install
 npm run dev        # HMR development
 npm run typecheck  # tsc for main/preload/renderer
 npm run build:win  # Windows package (nsis installer + zip) with embedded runtime
-npm run build:mac  # macOS .dmg
 npm run build:linux # Linux AppImage
 ```

@@ -21,7 +21,7 @@ describe("PhaseG-H2 handshake", () => {
     const pending = initializeHandshake(client, {
       method: "initialize",
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: "1.1.0",
       capabilities: { desktop: true },
     });
@@ -60,7 +60,7 @@ describe("PhaseG-H2 handshake", () => {
     const { client, outbound } = createHarness();
     const pending = initializeHandshake(client, {
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: "1.1.0",
     });
     const sent = JSON.parse(outbound[0]!);
@@ -85,7 +85,7 @@ describe("PhaseG-H2 handshake", () => {
       client,
       {
         client_name: "rxycode-desktop",
-        client_version: "1.2.10",
+        client_version: "1.3.0",
         protocol_version: "1.1.0",
       },
       { timeoutMs: 20 },
@@ -101,7 +101,7 @@ describe("PhaseG-H2 handshake", () => {
     const { client, outbound } = createHarness();
     const pending = initializeHandshake(client, {
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: "1.1.0",
     });
     const sent = JSON.parse(outbound[0]!);
@@ -124,7 +124,7 @@ describe("PhaseG-H2 handshake", () => {
     const { client, outbound } = createHarness();
     const pending = initializeHandshake(client, {
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: "1.1.0",
     });
     const sent = JSON.parse(outbound[0]!);
@@ -148,7 +148,7 @@ describe("PhaseG-H2 handshake", () => {
     const { client, outbound } = createHarness();
     const pending = initializeHandshake(client, {
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: "1.1.0",
     });
     const sent = JSON.parse(outbound[0]!);
@@ -185,7 +185,7 @@ describe("PhaseG-H2 handshake", () => {
     const transport = createClientTransport(client);
     const pending = transport.initialize({
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: "1.1.0",
     });
     const sent = JSON.parse(outbound[0]!);

@@ -29,9 +29,9 @@ def test_initialize_request_accepts_unknown_and_optional_fields() -> None:
         {
             "method": "initialize",
             "client_name": "desktop",
-            "client_version": "1.2.10",
+            "client_version": "1.3.0",
             "protocol_version": "1.1.0",
-            "client_info": {"name": "desktop", "title": "RxyCode", "version": "1.2.10"},
+            "client_info": {"name": "desktop", "title": "RxyCode", "version": "1.3.0"},
             "client_capabilities": {"threads": True},
             "requested_features": ["review"],
             "unknown_future_field": {"x": 1},
@@ -87,6 +87,6 @@ def test_schema_contains_b2_models() -> None:
 
 def test_initialized_notification_method() -> None:
     note = InitializedNotification(
-        protocol_version=PROTOCOL_VERSION, server_version="1.2.10"
+        protocol_version=PROTOCOL_VERSION, server_version="1.3.0"
     )
     assert note.method == "initialized"

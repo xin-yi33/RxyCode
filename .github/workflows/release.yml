@@ -225,3 +225,110 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" "${notes_args[@]}"
           fi
           upload_with_retry "${artifacts[0]}"
+
+  desktop:
+    name: Build desktop app (${{ matrix.label }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: win-nsis-zip
+            script: build:win
+            glob: |
+              frontend/desktop-app/dist/*.exe
+              frontend/desktop-app/dist/*.zip
+            find: '-name "*.exe" -o -name "*.zip"'
+          - os: ubuntu-latest
+            label: linux-appimage
+            script: build:linux
+            glob: |
+              frontend/desktop-app/dist/*.AppImage
+            find: '-name "*.AppImage"'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/desktop-app/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install desktop deps
+        working-directory: frontend/desktop-app
+        run: npm ci
+
+      - name: Install Python build backend (setuptools/wheel for offline runtime install)
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+
+      - name: Install uv (standalone POSIX runtime)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          uv --version
+
+      - name: Build desktop app
+        working-directory: frontend/desktop-app
+        env:
+          RXYCODE_REPO_DIR: ${{ github.workspace }}
+        run: npm run ${{ matrix.script }}
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rxycode-desktop-${{ matrix.label }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Attach desktop artifacts to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          upload_with_retry() {
+            file="$1"
+            attempt=1
+            while [ "$attempt" -le 5 ]; do
+              if gh release upload "$GITHUB_REF_NAME" "$file" --clobber; then
+                return 0
+              fi
+              echo "upload failed for $file (attempt $attempt); retrying..." >&2
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
+            echo "upload failed for $file after retries" >&2
+            return 1
+          }
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi
+          found=0
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            found=1
+            upload_with_retry "$f"
+          done < <(find frontend/desktop-app/dist -maxdepth 1 -type f \( ${{ matrix.find }} \) -print)
+          if [ "$found" -eq 0 ]; then
+            echo "No desktop artifacts produced for ${{ matrix.label }}" >&2
+            ls -la frontend/desktop-app/dist/ >&2 || true
+            exit 1
+          fi

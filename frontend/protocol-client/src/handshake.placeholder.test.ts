@@ -21,7 +21,7 @@ describe("PhaseG-H1 handshake placeholder", () => {
     const init: InitializeRequest = {
       method: "initialize",
       client_name: "rxycode-desktop",
-      client_version: "1.2.10",
+      client_version: "1.3.0",
       protocol_version: schema.protocol_version ?? "",
       capabilities: {},
     };

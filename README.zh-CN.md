@@ -1,45 +1,77 @@
-﻿<!-- README_SYNC: source=working-tree; updated=2026-08-31 -->
+﻿<!-- README_SYNC: source=working-tree; updated=2026-09-02 -->
 <div align="center">
 
 [English](./README.md) · **简体中文**
 
 # RxyCode
 
-**给开发者用的本地规划-执行型编程助手：在 cmd 里输入 `rxycode` 就是默认 OpenTUI；也可以开 Desktop GUI。每次工具调用都先过安全门。**
+**给开发者用的本地规划-执行型编程助手：v1.3.0 把 Desktop 做成一等公民工作台；在 cmd 里输入 `rxycode` 仍是 OpenTUI。每次工具调用都先过安全门。**
 
-[⭐ 给仓库点 Star](https://github.com/xin-yi33/RxyCode) —— 方便以后回来，也让同样在找「会规划、会调工具、危险操作会问你」的本地 Agent 的人更容易发现它。
+[⭐ 给仓库点 Star](https://github.com/xin-yi33/RxyCode) —— 方便以后回来，也让同样在找「会规划、会调工具、危险操作会问你」的本地 Agent 的人更容易发现它。这一版 GUI 不再是停在 v1.2.10 的旧窗口。
 
-[![Version](https://img.shields.io/badge/version-1.2.12-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
 [![Issues](https://img.shields.io/github/issues/xin-yi33/RxyCode)](https://github.com/xin-yi33/RxyCode/issues)
 [![Stars](https://img.shields.io/github/stars/xin-yi33/RxyCode?style=social)](https://github.com/xin-yi33/RxyCode/stargazers)
 
-<p>
-  <img src="docs/assets/cli-demo.gif" alt="RxyCode OpenTUI：在 cmd 里运行 rxycode，先 /help 再跑一个任务" width="800">
-</p>
-
 </div>
 
-默认 CLI 就是 **OpenTUI**。在 `cmd`（或任意终端）里：
+## Desktop GUI —— 1.3.0 真正大的那一步
+
+1.2.10 证明 Electron 能拉起 `python -m appserver`。**1.3.0 交出的是工作台：** 置顶 / 项目 / 最近、运行中任务条、权限三档、插件主栏、侧边对话、计划 / 目标，以及和上次一样的 Windows 安装器（可选目录、预览、桌面快捷方式）。Linux 发 AppImage。**本标签不对 macOS 打包。**
+
+下面的 GIF 是对 `rxycode gui`（RxyCode Desktop）的实机录屏，不是效果图。
+
+<p align="center">
+  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop 1.3.0：三栏工作台、会话列表、Composer、一次真实回复" width="800">
+</p>
+
+| 系统 | 从 [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) 下什么 |
+|------|--------|
+| Windows | `rxycode-desktop-1.3.0-setup.exe`（安装包：默认 `%USERPROFILE%\.rxycode\desktop`，可 Browse，桌面快捷方式默认勾选）或 `RxyCode.Desktop-1.3.0-win.zip`（便携包） |
+| Linux | `rxycode-desktop-1.3.0.AppImage`（先 `chmod +x`；立刻退出则加 `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-1.3.0.AppImage`） |
+| macOS | 本版不提供安装包。请用 OpenTUI，或从源码 `npm run dev` |
+
+`rxycode gui` 只会启动已经装好的 Desktop（`~/.rxycode/desktop`、`RXYCODE_DESKTOP_DIR` 或 `--desktop-dir`）。只装 CLI 无法打开桌面端。任务区底部仍是 Composer。点 `+` 仍是：文件和文件夹 / 在项目中使用 / 目标 / 计划模式。计划卡片仍提供 **是，实施此计划**、**补充说明** 和 **跳过**。权限档位：更改前询问 / 自动编辑 / 完全访问。设置「关于」显示 **1.3.0**。完整 GUI 说明：[docs/GUI.md](docs/GUI.md)。
+
+## CLI / OpenTUI
+
+默认 CLI 仍是 **OpenTUI**。在 `cmd`（或任意终端）里：
 
 ```bat
 rxycode
 ```
 
-上面的 GIF 就是这个界面。GitHub 翻到这里会自动播放。Desktop GUI 截图在后面。
+<p align="center">
+  <img src="docs/assets/cli-demo.gif" alt="RxyCode OpenTUI：在 cmd 里运行 rxycode，先 /help 再跑一个任务" width="800">
+</p>
 
-RxyCode 是一个 Python 编程 Agent。核心无界面：`Session`（`core/session.py`）包着 `AgentV2`。前端三条路：**OpenTUI**（默认）、**Desktop**（`rxycode gui`）、**Ink** 回退。复杂任务走 LangGraph：规划 → 拆解 → 执行 → 验证 → 综合；简单问题走快速路径。隔离式子代理、MCP 和 30+ 工具都挂在按风险分级的安全门后面。
+GitHub 翻到这里会自动播放。同一套 `Session`、同一道安全门，只是换了表面。
+
+RxyCode 是一个 Python 编程 Agent。核心无界面：`Session`（`core/session.py`）包着 `AgentV2`。前端三条路：**Desktop**（`rxycode gui`）、**OpenTUI**（默认 CLI）、**Ink** 回退。复杂任务走 LangGraph：规划 → 拆解 → 执行 → 验证 → 综合；简单问题走快速路径。隔离式子代理、MCP 和 30+ 工具都挂在按风险分级的安全门后面。
+
+## 1.3.0 大在哪
+
+| 1.3.0 之前 | 1.3.0 之后 |
+|---|---|
+| 最新 GitHub Release 只有 CLI `tar.gz`；Desktop 停在 v1.2.10 | 本标签同时发 **Desktop + CLI**。Windows setup.exe / zip 和 Linux AppImage 是正式资产 |
+| GUI 还是「能把后端拉起来的聊天窗」 | 三栏工作台：会话分类、运行态整行、sash 吸附、插件主栏、侧边对话 |
+| Windows 新建会话发 `hi` 可能卡在 Starting Agent worker 直到 600s | worker bootstrap 不再和管道 stdin 死锁（`appserver/agent_worker.py`） |
+| 插件连接偏 PAT | GitHub / Canva 走 `plugin/connect/start`；token 只进插件 `user.json` |
+
+仓库里的时延 / 缓存硬门槛没放宽：简单首字 **1s**、复杂首字 **3s**、Primary 前缀缓存 **97%**（Phase L / M）。这是套在同一套 AgentV2 前缀上的门，不是 GUI 宣传数字。
 
 ## 特点与优势
 
 | 特点 | 实际效果 | 代码位置 |
 |---|---|---|
+| Desktop 工作台 | 会话、项目、权限、插件、计划 / 目标走同一套协议 | `frontend/desktop-app/`、`appserver/` |
 | 先验证再报成功 | 验证器对照原始目标检查工具结果 | `validation/` |
 | 先规划再执行 | 分层拆解、按依赖并行执行，再综合答案 | `planning/`、`execution/`、`synthesis/`、`core/graph.py` |
 | 每次工具调用过安全门 | READ / WRITE / DANGER 分级、写入白名单、审批框、审计日志 | `core/safety/` |
-| 两套真实界面 | OpenTUI 走 stdio JSON-RPC；Desktop 有计划 / 目标 / `+` 菜单 | `frontend/opentui-app/`、`frontend/desktop-app/`、`appserver/` |
+| OpenTUI 仍是默认 CLI | cmd 里输入 `rxycode`；stdio JSON-RPC | `frontend/opentui-app/` |
 | 隔离式子代理 | 独立会话、工具、权限和预算 | `core/subagents/` |
 | 可选专家团 | 团长 + SOP；默认关（`settings.agents.enabled`） | `core/agents/` |
 | 无头核心 | `Session.prompt()` 自己不画界面；TUI / GUI 只订阅协议事件 | `core/session.py` |
@@ -55,38 +87,38 @@ RxyCode 是一个 Python 编程 Agent。核心无界面：`Session`（`core/sess
 | Node.js | 20+ | Desktop GUI、Ink 回退（`RXYCODE_TUI=ink`） |
 | OpenAI 兼容 API 密钥 | — | 你配置的任意提供商（OpenAI、DeepSeek、OpenCode Go 等） |
 
-### 方式一：一键安装
+### 方式一：一键安装（CLI / OpenTUI）
 
 **Windows PowerShell：**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.12/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.3.0/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.12/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.3.0/install.sh | sh
 rxycode
 ```
 
-安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.2.12`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
+安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.3.0`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
 
 设置 `RXYCODE_NO_MODIFY_PATH=1` 可跳过改 PATH。PATH 更新失败只警告，安装仍算成功。
 
-**下载说明：** 最新版（**`v1.2.12`**）只发布 **一个** 资源：`rxycode-1.2.12.tar.gz`。不提供 wheel，也不发布新的 Windows / macOS / Linux Desktop 安装包。桌面安装包和便携 zip 仍在未关闭的 **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)**（`RxyCode.Desktop-1.2.10-win.zip`、setup.exe、dmg、AppImage）。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更细的步骤见 [docs/quickstart.md](docs/quickstart.md)。
+**下载说明：** 最新版（**`v1.3.0`**）发布 `rxycode-1.3.0.tar.gz`，以及 Desktop 资源（`rxycode-desktop-1.3.0-setup.exe`、`RxyCode.Desktop-1.3.0-win.zip`、`rxycode-desktop-1.3.0.AppImage`）。不提供 wheel，也不提供 macOS 安装包。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更细的步骤见 [docs/quickstart.md](docs/quickstart.md)。
 
 ### 方式二：一次性运行
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.12" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode
 ```
 
 ### 方式三：永久安装
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.2.12"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0"
 rxycode
 ```
 
@@ -124,40 +156,6 @@ docker compose run --rm tui    # Interactive TUI (needs TTY)
 5. 无界面（`rxycode --api`）：先设置 `RXYCODE_API_KEY`，再运行 `rxycode config add-model <id> <provider-model-id> --base-url <url>`。密钥不会从命令行读取。
 
 OpenTUI 和核心之间是 **stdio JSON-RPC**：前端拉起 `python -m appserver`，后者托管 `Session` → `AgentV2`。你会看到流式输出、工具调用、必要时的审批，以及最终回答。
-
-## Desktop GUI
-
-v1.2.12 **不再**打包 Desktop。请从仍开放的 [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) 下载：
-
-| 系统 | 资源 |
-|------|------|
-| Windows | `rxycode-desktop-1.2.10-setup.exe`（安装包）或 `RxyCode.Desktop-1.2.10-win.zip`（便携包） |
-| macOS | `.dmg`（未签名） |
-| Linux | `.AppImage`（先 `chmod +x`；立刻退出则加 `APPIMAGE_EXTRACT_AND_RUN=1`） |
-
-`rxycode gui` 只会启动已经装好的 Desktop（`~/.rxycode/desktop`、`RXYCODE_DESKTOP_DIR` 或 `--desktop-dir`）。只装 CLI 无法打开桌面端。任务区底部是 Composer。点 `+` 会打开：
-
-| 菜单项 | 作用 |
-|--------|------|
-| 文件和文件夹 | 附加本地文件，路径写入 prompt |
-| 在项目中使用 | 选择工作区并开新聊天 |
-| 目标 | 打开目标对话框（Esc 或点遮罩关闭） |
-| 计划模式 | 开关计划模式（Agent 只生成/改写计划文档） |
-
-计划卡片提供 **是，实施此计划**、**补充说明** 和 **跳过**。权限档位：更改前询问 / 自动编辑 / 完全访问。切到「完全访问」会二次确认（Esc 取消）。v1.2.10 打包的 Desktop 在设置里仍显示 **1.2.10**。完整 GUI 说明：[docs/GUI.md](docs/GUI.md)。
-
-<p align="center">
-  <img src="docs/imgs/gui-shell.png" alt="RxyCode Desktop 聊天主界面" width="800">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-plus-menu.png" alt="Composer + 菜单：附件、工作区、目标、计划" width="800">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-goal-dialog.png" alt="目标对话框" width="800">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-plan-card.png" alt="计划卡片：实施 / 补充说明 / 跳过" width="800">
-</p>
 
 ## 架构
 
@@ -257,9 +255,10 @@ OpenTUI 里用 `/addmodel` 走引导向导。不要把 API key 写进仓库、RE
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | **Desktop 工作台**（会话 / 插件 / 权限 / 计划）；Windows setup.exe + zip 与 Linux AppImage；worker bootstrap 死锁修复；CLI 仍是 OpenTUI；不对 macOS 打包 |
 | [v1.2.12](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.12) | 2026-08 | Muse Spark + HY3；Responses 推理回放；自定义 `resource_path`；GitHub Release 只提供 `rxycode-1.2.12.tar.gz` — Desktop 仍在 v1.2.10 |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 专家团（默认关）；CLI 稳定性；GitHub Release 只提供 `rxycode-1.2.11.tar.gz` — Desktop 仍在 v1.2.10 |
-| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop 计划 / 目标 / `+` 菜单；计划卡片实施/补充/跳过；默认 CLI 仍是 OpenTUI（`rxycode`） |
+| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | 第一次交付 Desktop 计划 / 目标 / `+` 菜单；计划卡片实施/补充/跳过；默认 CLI 仍是 OpenTUI（`rxycode`） |
 | [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | 隔离式子代理（Phase C）：独立 Child 会话；`@agent`、Task 工具、`subtask=true`；OpenTUI 子代理树 |
 | [v1.2.8](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8) | 2026-08 | 模型适配：DeepSeek v4、豆包（ark）、Anthropic Claude 5；能力精确隔离 |
 | [v1.2.7](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7) | 2026-08 | 完成的回答不再被只读探测失败丢掉；搜索词更干净；豆包 provider |

@@ -14,14 +14,14 @@ const { wrapWindowsZip, wrapperNameFromZip } = require('./wrap-win-zip.cjs') as 
 
 test('wrapperNameFromZip strips the .zip suffix', () => {
   assert.equal(
-    wrapperNameFromZip('C:/out/RxyCode.Desktop-1.2.10-win.zip'),
-    'RxyCode.Desktop-1.2.10-win'
+    wrapperNameFromZip('C:/out/RxyCode.Desktop-1.3.0-win.zip'),
+    'RxyCode.Desktop-1.3.0-win'
   )
 })
 
 test('wrapWindowsZip prefixes a flat archive and is idempotent', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rxycode-wrap-zip-'))
-  const zipPath = join(dir, 'RxyCode.Desktop-1.2.10-win.zip')
+  const zipPath = join(dir, 'RxyCode.Desktop-1.3.0-win.zip')
   const python = process.platform === 'win32' ? 'python' : 'python3'
   const makeFlat = spawnSync(
     python,
@@ -40,7 +40,7 @@ test('wrapWindowsZip prefixes a flat archive and is idempotent', () => {
 
   try {
     const wrapper = wrapWindowsZip(zipPath, python)
-    assert.equal(wrapper, 'RxyCode.Desktop-1.2.10-win')
+    assert.equal(wrapper, 'RxyCode.Desktop-1.3.0-win')
     const listed = spawnSync(
       python,
       [
@@ -53,8 +53,8 @@ test('wrapWindowsZip prefixes a flat archive and is idempotent', () => {
     )
     assert.equal(listed.status, 0, listed.stderr)
     const names = listed.stdout.trim().split(/\r?\n/)
-    assert.ok(names.every((name) => name.startsWith('RxyCode.Desktop-1.2.10-win/')))
-    assert.ok(names.includes('RxyCode.Desktop-1.2.10-win/rxycode-desktop.exe'))
+    assert.ok(names.every((name) => name.startsWith('RxyCode.Desktop-1.3.0-win/')))
+    assert.ok(names.includes('RxyCode.Desktop-1.3.0-win/rxycode-desktop.exe'))
 
     wrapWindowsZip(zipPath, python)
     const again = spawnSync(
@@ -71,9 +71,9 @@ test('wrapWindowsZip prefixes a flat archive and is idempotent', () => {
       again.stdout
         .trim()
         .split(/\r?\n/)
-        .every((name) => name.startsWith('RxyCode.Desktop-1.2.10-win/'))
+        .every((name) => name.startsWith('RxyCode.Desktop-1.3.0-win/'))
     )
-    assert.ok(!again.stdout.includes('RxyCode.Desktop-1.2.10-win/RxyCode.Desktop-1.2.10-win/'))
+    assert.ok(!again.stdout.includes('RxyCode.Desktop-1.3.0-win/RxyCode.Desktop-1.3.0-win/'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

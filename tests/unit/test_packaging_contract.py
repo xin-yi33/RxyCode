@@ -30,7 +30,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.2.12"
+    assert project["version"] == "1.3.0"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -158,10 +158,11 @@ def test_release_waits_for_cross_platform_installed_smoke_tests():
     assert workflow["permissions"]["contents"] == "read"
 
     jobs = workflow["jobs"]
-    assert "desktop" not in jobs
+    assert "desktop" in jobs
     assert jobs["smoke-install"]["needs"] == "build"
     assert set(jobs["publish"]["needs"]) == {"build", "smoke-install"}
     assert jobs["publish"]["permissions"]["contents"] == "write"
+    assert jobs["desktop"]["needs"] == "build"
 
     build_commands = "\n".join(
         step.get("run", "") for step in jobs["build"]["steps"]
@@ -172,8 +173,11 @@ def test_release_waits_for_cross_platform_installed_smoke_tests():
     release_text = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
+    assert "macos-latest" not in release_text
     assert "frontend/desktop-app/dist/*.dmg" not in release_text
-    assert "frontend/desktop-app/dist/*.zip" not in release_text
+    assert "frontend/desktop-app/dist/*.zip" in release_text
+    assert "frontend/desktop-app/dist/*.exe" in release_text
+    assert "frontend/desktop-app/dist/*.AppImage" in release_text
     assert "python -m build --sdist" in build_commands
     assert "--no-isolation" in build_commands
     assert "python -m twine check dist/*" in build_commands
@@ -187,7 +191,10 @@ def test_published_desktop_asset_names_match_electron_builder():
     builder = (PROJECT_ROOT / "frontend" / "desktop-app" / "electron-builder.yml").read_text(
         encoding="utf-8"
     )
-    notes = (PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.2.10.md").read_text(
+    notes_1210 = (PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.2.10.md").read_text(
+        encoding="utf-8"
+    )
+    notes_130 = (PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.3.0.md").read_text(
         encoding="utf-8"
     )
     gui = (PROJECT_ROOT / "docs" / "GUI.md").read_text(encoding="utf-8")
@@ -195,12 +202,16 @@ def test_published_desktop_asset_names_match_electron_builder():
 
     assert "artifactName: RxyCode.Desktop-${version}-win.${ext}" in builder
     assert "artifactName: rxycode-desktop-${version}-setup.${ext}" in builder
-    assert "RxyCode.Desktop-1.2.10-win.zip" in notes
-    assert "RxyCode.Desktop-1.2.10-arm64-mac.zip" in notes
-    assert "rxycode-desktop-1.2.10-win.zip" not in notes
+    assert "RxyCode.Desktop-1.2.10-win.zip" in notes_1210
+    assert "RxyCode.Desktop-1.2.10-arm64-mac.zip" in notes_1210
+    assert "rxycode-desktop-1.2.10-win.zip" not in notes_1210
+    assert "RxyCode.Desktop-1.3.0-win.zip" in notes_130
+    assert "rxycode-desktop-1.3.0-setup.exe" in notes_130
+    assert "rxycode-desktop-1.3.0.AppImage" in notes_130
+    assert "RxyCode.Desktop-1.3.0-arm64-mac.zip" not in notes_130
     assert "RxyCode.Desktop-<version>-win.zip" in gui
     assert "rxycode-desktop-<version>-win.zip" not in gui
-    assert "RxyCode.Desktop-1.2.10-win.zip" in readme
+    assert "RxyCode.Desktop-1.3.0-win.zip" in readme
 
 
 def test_tracked_docs_only_contain_the_github_allowlist():
@@ -221,8 +232,9 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         "phase-g",
         "decisions",
         "agents",
+        "specs",
     }
-    allowed_files = {"quickstart.md", "GUI.md"}
+    allowed_files = {"quickstart.md", "GUI.md", "DEVELOPMENT-ORDER.md", "development-order.yaml"}
     unexpected = []
     for line in listed.splitlines():
         rel = line[5:] if line.startswith("docs/") else line
@@ -241,7 +253,7 @@ def test_release_notes_separate_cli_install_from_desktop_gui():
     import re
 
     notes = (
-        PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.2.10.md"
+        PROJECT_ROOT / "docs" / "release-notes" / "RELEASE_NOTES_v1.3.0.md"
     ).read_text(encoding="utf-8")
     assert "不含 Electron" in notes
     assert "需另下本页 Desktop 资产" in notes
