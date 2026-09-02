@@ -7,6 +7,9 @@ import { shouldDisableLinuxSandbox } from '../src/main/linuxStartup.ts'
 
 const desktopRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const yaml = readFileSync(join(desktopRoot, 'electron-builder.yml'), 'utf8')
+const pkg = JSON.parse(readFileSync(join(desktopRoot, 'package.json'), 'utf8')) as {
+  homepage?: string
+}
 const tSource = readFileSync(join(desktopRoot, 'src/i18n/t.ts'), 'utf8')
 const platform = readFileSync(join(desktopRoot, 'src/platform/index.mts'), 'utf8')
 
@@ -15,6 +18,10 @@ test('H13 P3: win/mac/linux targets include nsis, dmg, AppImage, deb', () => {
   assert.match(yaml, /^dmg:/m)
   assert.match(yaml, /AppImage/)
   assert.match(yaml, /\n\s+-\s+deb/)
+})
+
+test('Linux electron-builder metadata includes a project homepage', () => {
+  assert.equal(pkg.homepage, 'https://github.com/xin-yi33/RxyCode')
 })
 
 test('H13 P3: locale JSON exists and is imported into the Desktop bundle', () => {

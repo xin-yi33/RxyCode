@@ -2,6 +2,7 @@
   "name": "@rxycode/desktop-app",
   "version": "1.3.0",
   "description": "RxyCode Desktop: Electron + Vite + React main window (session list, chat area, composer) wired to @rxycode/protocol-client (Phase4-D2).",
+  "homepage": "https://github.com/xin-yi33/RxyCode",
   "main": "./out/main/index.js",
   "author": "RxyCode",
   "scripts": {
