@@ -22,10 +22,13 @@
 
 1.2.10 proved Electron could spawn `python -m appserver`. **1.3.0 is the workbench:** pinned / project / recent sessions, running-task chrome, permission presets, a plugin hub, side chat, plan / goal, and a Windows installer that still lets you pick the folder and a desktop shortcut. Linux gets an AppImage. **This tag does not ship macOS.**
 
-The GIF is a live recording of `rxycode gui` (RxyCode Desktop), not a mock.
+The clip is a live recording of <code>rxycode gui</code> (RxyCode Desktop), not a mock.
 
 <p align="center">
-  <img src="docs/assets/gui-demo-v1.3.0.gif" alt="RxyCode Desktop 1.3.0: three-column workbench, sessions, composer, a live turn" width="800">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/gui-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/gui-demo-v1.3.0.mp4">RxyCode Desktop 1.3.0 live recording (mp4)</a>
+  </video>
 </p>
 
 | OS | What to download from [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) |
@@ -34,7 +37,9 @@ The GIF is a live recording of `rxycode gui` (RxyCode Desktop), not a mock.
 | Linux | `rxycode-desktop-1.3.0.AppImage` (`chmod +x`; if it exits immediately, `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-1.3.0.AppImage`) |
 | macOS | Not packaged. Use OpenTUI, or `npm run dev` from source |
 
-`rxycode gui` only launches an installed Desktop tree (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). A CLI-only install cannot start Electron. Composer still sits at the bottom of the task pane. The `+` button still opens 文件和文件夹 / 在项目中使用 / 目标 / 计划模式. Plan cards still offer **是，实施此计划**, **补充说明**, and **跳过**. Permission labels are 更改前询问 / 自动编辑 / 完全访问. Settings → 关于 shows **1.3.0**. Full GUI notes: [docs/GUI.md](docs/GUI.md).
+<code>rxycode gui</code> only launches an installed Desktop tree
+(<code>~/.rxycode/desktop</code>, <code>RXYCODE_DESKTOP_DIR</code>, or <code>--desktop-dir</code>).
+A CLI-only install cannot start Electron. Composer still sits at the bottom of the task pane. The `+` button still opens 文件和文件夹 / 在项目中使用 / 目标 / 计划模式. Plan cards still offer **是，实施此计划**, **补充说明**, and **跳过**. Permission labels are 更改前询问 / 自动编辑 / 完全访问. Settings → 关于 shows **1.3.0**. Full GUI notes: [docs/GUI.md](docs/GUI.md).
 
 ## CLI / OpenTUI
 
@@ -45,10 +50,13 @@ rxycode
 ```
 
 <p align="center">
-  <img src="docs/assets/cli-demo-v1.3.0.gif" alt="RxyCode OpenTUI: type rxycode in cmd, then /help and a live task" width="800">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/cli-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/cli-demo-v1.3.0.mp4">RxyCode OpenTUI live recording (mp4)</a>
+  </video>
 </p>
 
-GitHub plays the GIF when you scroll to it. Same `Session`, same safety gate, different surface.
+Same <code>Session</code>, same safety gate, different surface. Play the mp4 above.
 
 RxyCode is a Python coding agent. The core is headless: `Session` (`core/session.py`) wraps `AgentV2`. Frontends: **Desktop** (`rxycode gui`), **OpenTUI** (default CLI), and **Ink** fallback. Complex work goes through LangGraph: plan → decompose → execute → validate → synthesize. Simple questions take a fast path. Isolated child agents, MCP, and 30+ tools sit behind a risk-classified safety gate.
 

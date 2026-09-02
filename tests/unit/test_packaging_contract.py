@@ -249,6 +249,35 @@ def test_tracked_docs_only_contain_the_github_allowlist():
     assert not unexpected, f"tracked docs outside GitHub allowlist: {unexpected}"
 
 
+def test_readme_gui_precedes_cli_and_ships_real_videos():
+    """README demos must be mp4 (not screenshots/GIF) and Desktop paths must render."""
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
+        gui = text.find("Desktop GUI")
+        cli = text.find("## CLI / OpenTUI")
+        assert 0 <= gui < cli, f"{name}: GUI section must sit above CLI"
+        assert "<video" in text, name
+        assert "gui-demo-v1.3.0.mp4" in text, name
+        assert "cli-demo-v1.3.0.mp4" in text, name
+        assert "gui-demo-v1.3.0.gif" not in text, name
+        assert "cli-demo-v1.3.0.gif" not in text, name
+        assert "docs/imgs/gui" not in text, name
+        assert "(, , or )" not in text, name
+        assert "~/.rxycode/desktop" in text, name
+        assert "RXYCODE_DESKTOP_DIR" in text, name
+        assert "--desktop-dir" in text, name
+        demo = text[gui:cli]
+        assert "<img" not in demo.lower(), f"{name}: GUI block still embeds an image"
+
+    for rel in (
+        Path("docs") / "assets" / "gui-demo-v1.3.0.mp4",
+        Path("docs") / "assets" / "cli-demo-v1.3.0.mp4",
+    ):
+        path = PROJECT_ROOT / rel
+        assert path.is_file(), rel
+        assert path.stat().st_size > 100_000, f"{rel} is too small to be a real recording"
+
+
 def test_release_notes_separate_cli_install_from_desktop_gui():
     import re
 

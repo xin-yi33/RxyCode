@@ -22,10 +22,13 @@
 
 1.2.10 证明 Electron 能拉起 `python -m appserver`。**1.3.0 交出的是工作台：** 置顶 / 项目 / 最近、运行中任务条、权限三档、插件主栏、侧边对话、计划 / 目标，以及和上次一样的 Windows 安装器（可选目录、预览、桌面快捷方式）。Linux 发 AppImage。**本标签不对 macOS 打包。**
 
-下面的 GIF 是对 `rxycode gui`（RxyCode Desktop）的实机录屏，不是效果图。
+下面是对 <code>rxycode gui</code>（RxyCode Desktop）的实机录屏，不是效果图。
 
 <p align="center">
-  <img src="docs/assets/gui-demo-v1.3.0.gif" alt="RxyCode Desktop 1.3.0：三栏工作台、会话列表、Composer、一次真实回复" width="800">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/gui-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/gui-demo-v1.3.0.mp4">RxyCode Desktop 1.3.0 实机录屏（mp4）</a>
+  </video>
 </p>
 
 | 系统 | 从 [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) 下什么 |
@@ -34,7 +37,9 @@
 | Linux | `rxycode-desktop-1.3.0.AppImage`（先 `chmod +x`；立刻退出则加 `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-1.3.0.AppImage`） |
 | macOS | 本版不提供安装包。请用 OpenTUI，或从源码 `npm run dev` |
 
-`rxycode gui` 只会启动已经装好的 Desktop（`~/.rxycode/desktop`、`RXYCODE_DESKTOP_DIR` 或 `--desktop-dir`）。只装 CLI 无法打开桌面端。任务区底部仍是 Composer。点 `+` 仍是：文件和文件夹 / 在项目中使用 / 目标 / 计划模式。计划卡片仍提供 **是，实施此计划**、**补充说明** 和 **跳过**。权限档位：更改前询问 / 自动编辑 / 完全访问。设置「关于」显示 **1.3.0**。完整 GUI 说明：[docs/GUI.md](docs/GUI.md)。
+<code>rxycode gui</code> 只会启动已经装好的 Desktop
+（<code>~/.rxycode/desktop</code>、<code>RXYCODE_DESKTOP_DIR</code> 或 <code>--desktop-dir</code>）。
+只装 CLI 无法打开桌面端。任务区底部仍是 Composer。点 `+` 仍是：文件和文件夹 / 在项目中使用 / 目标 / 计划模式。计划卡片仍提供 **是，实施此计划**、**补充说明** 和 **跳过**。权限档位：更改前询问 / 自动编辑 / 完全访问。设置「关于」显示 **1.3.0**。完整 GUI 说明：[docs/GUI.md](docs/GUI.md)。
 
 ## CLI / OpenTUI
 
@@ -45,10 +50,13 @@ rxycode
 ```
 
 <p align="center">
-  <img src="docs/assets/cli-demo-v1.3.0.gif" alt="RxyCode OpenTUI：在 cmd 里运行 rxycode，先 /help 再跑一个任务" width="800">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/cli-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/cli-demo-v1.3.0.mp4">RxyCode OpenTUI 实机录屏（mp4）</a>
+  </video>
 </p>
 
-GitHub 翻到这里会自动播放。同一套 `Session`、同一道安全门，只是换了表面。
+同一套 <code>Session</code>、同一道安全门，只是换了表面。请播放上面的 mp4。
 
 RxyCode 是一个 Python 编程 Agent。核心无界面：`Session`（`core/session.py`）包着 `AgentV2`。前端三条路：**Desktop**（`rxycode gui`）、**OpenTUI**（默认 CLI）、**Ink** 回退。复杂任务走 LangGraph：规划 → 拆解 → 执行 → 验证 → 综合；简单问题走快速路径。隔离式子代理、MCP 和 30+ 工具都挂在按风险分级的安全门后面。
 
