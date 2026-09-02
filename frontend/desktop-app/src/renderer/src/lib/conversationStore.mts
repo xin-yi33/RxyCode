@@ -387,6 +387,11 @@ export function selectSession(state: ConversationState, sessionId: string): Conv
   return { ...state, activeSessionId: sessionId }
 }
 
+export function clearActiveSession(state: ConversationState): ConversationState {
+  if (state.activeSessionId === null) return state
+  return { ...state, activeSessionId: null }
+}
+
 export function addUserMessage(
   state: ConversationState,
   sessionId: string,

@@ -68,7 +68,8 @@ test('createAppserverPlatform pickWorkspaceDirectory delegates to the preload br
         pickDirectory: async () => {
           called = true
           return 'D:\\picked'
-        }
+        },
+        reveal: async () => true
       }
     }
   } as unknown as Window
@@ -79,6 +80,45 @@ test('createAppserverPlatform pickWorkspaceDirectory delegates to the preload br
     const platform = createAppserverPlatform()
     assert.equal(await platform.pickWorkspaceDirectory(), 'D:\\picked')
     assert.equal(called, true)
+  } finally {
+    if (previous === undefined) {
+      delete holder.window
+    } else {
+      holder.window = previous
+    }
+  }
+})
+
+test('createAppserverPlatform revealWorkspace delegates to workspace.reveal', async () => {
+  let revealed = ''
+  const fakeWindow = {
+    api: {
+      appserver: {
+        getStatus: async () => 'stopped',
+        start: async () => 'stopped',
+        stop: async () => 'stopped',
+        onStatus: () => () => {},
+        onLog: () => () => {},
+        sendLine: async () => {},
+        onLine: () => () => {},
+        getInfo: async () => INFO
+      },
+      workspace: {
+        pickDirectory: async () => null,
+        reveal: async (cwd: string) => {
+          revealed = cwd
+          return true
+        }
+      }
+    }
+  } as unknown as Window
+  const holder = globalThis as { window?: unknown }
+  const previous = holder.window
+  holder.window = fakeWindow
+  try {
+    const platform = createAppserverPlatform()
+    assert.equal(await platform.revealWorkspace?.('D:\\work'), true)
+    assert.equal(revealed, 'D:\\work')
   } finally {
     if (previous === undefined) {
       delete holder.window

@@ -11,6 +11,11 @@ import {
   removeProject,
   saveProjects,
   sidebarProjects,
+  hideProjectCwd,
+  pinProject,
+  renameProject,
+  removeProjectByCwd,
+  permanentWorktreeDest,
   type ProjectRecord
 } from './projectRegistry.ts'
 import { bindThreadWorkspace, sessionNewParams } from '../workspaces/workspaceBinding.ts'
@@ -89,4 +94,20 @@ test('sidebarProjects keeps registered folders even with no sessions', () => {
   assert.deepEqual(rows.map((row) => row.displayName), ['论文', 'rxy'])
   assert.equal(rows[0]?.empty, true)
   assert.equal(rows[1]?.empty, false)
+})
+
+test('pin rename and removeByCwd never delete files; hidden folders leave the rail', () => {
+  const pinned = pinProject([a, b], a.cwd, true)
+  assert.equal(pinned[0]?.pinned, true)
+  const rows = sidebarProjects(pinned, {})
+  assert.equal(rows[0]?.cwd, a.cwd)
+  const renamed = renameProject(pinned, a.cwd, 'Alpha2')
+  assert.equal(renamed[0]?.displayName, 'Alpha2')
+  const removed = removeProjectByCwd(renamed, a.cwd)
+  assert.equal(removed.deletedFiles, false)
+  assert.equal(removed.next.length, 1)
+  const hidden = hideProjectCwd([], a.cwd)
+  const filtered = sidebarProjects([a, b], { [a.cwd]: ['s1'] }, hidden)
+  assert.equal(filtered.some((row) => row.cwd === a.cwd), false)
+  assert.equal(permanentWorktreeDest('D:\\work\\alpha', 'abc'), 'D:\\work\\alpha/.worktrees/wt-abc')
 })

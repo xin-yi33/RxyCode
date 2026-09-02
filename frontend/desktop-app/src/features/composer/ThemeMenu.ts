@@ -5,6 +5,7 @@ export interface ThemeMenuOption {
   value: string
   label: string
   group?: string
+  disabled?: boolean
 }
 
 export function ThemeMenu(props: {
@@ -44,7 +45,11 @@ export function ThemeMenu(props: {
 
   const nativeChildren = groups.map(([group, items]) => {
     const options = items.map((option) =>
-      createElement('option', { key: option.value, value: option.value }, option.label)
+      createElement(
+        'option',
+        { key: option.value, value: option.value, disabled: option.disabled === true },
+        option.label
+      )
     )
     return group === ''
       ? options
@@ -106,9 +111,13 @@ export function ThemeMenu(props: {
                     type: 'button',
                     role: 'option',
                     className:
-                      'theme-menu-option' + (option.value === props.value ? ' is-active' : ''),
+                      'theme-menu-option' +
+                      (option.value === props.value ? ' is-active' : '') +
+                      (option.disabled === true ? ' is-disabled' : ''),
                     'aria-selected': option.value === props.value,
+                    disabled: option.disabled === true,
                     onClick: () => {
+                      if (option.disabled === true) return
                       props.onChange(option.value)
                       setOpen(false)
                     }

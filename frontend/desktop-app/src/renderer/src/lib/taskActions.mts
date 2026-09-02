@@ -3,9 +3,9 @@ export interface TaskTrashDecision {
   message: string | null
 }
 
-export function canTrashTask(activeSessionId: string | null, targetSessionId: string): TaskTrashDecision {
-  if (activeSessionId === targetSessionId) {
-    return { allowed: false, message: '您正在打开该窗口删不掉' }
+export function canTrashTask(_activeSessionId: string | null, targetSessionId: string): TaskTrashDecision {
+  if (targetSessionId.trim() === '') {
+    return { allowed: false, message: '当前任务无法删除' }
   }
   return { allowed: true, message: null }
 }

@@ -1,5 +1,5 @@
 import { Activity, LayoutGrid, Menu, Settings, ShieldCheck, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { DESKTOP_VIEWS, resolveDesktopView, type DesktopViewId } from '../../app/views/index.ts'
 import { BoardView } from '../../features/board/BoardView.ts'
 import { sessionsToBoardThreads } from '../../features/board/board.selectors.ts'
@@ -8,10 +8,36 @@ import { approvalChannel } from '../../features/approvals/approval.mode.ts'
 import {
   applyTurnEndToPending,
   pushPending,
+  removePending,
   type PendingItem,
   type SendIntent
 } from '../../features/composer/pending.queue.ts'
+import { takePendingById, type QueueMode } from '../../features/composer/queuedFollowup.ts'
 import { steerRequestParams } from '../../features/composer/steer.message.ts'
+import {
+  composerProjectChip,
+  defaultRecentWorkspace,
+  isRecentWorkspace,
+  resolveCreateSessionWorkspace
+} from '../../features/sessions/recentWorkspace.ts'
+import {
+  emptyCreateProjectDraft,
+  projectNameFromFolder,
+  type CreateProjectDraft
+} from '../../features/projects/createProject.ts'
+import { CreateProjectDialog } from '../../features/projects/CreateProjectDialog.ts'
+import { CloseSideChatDialog } from '../../features/sidechat/CloseSideChatDialog.ts'
+import { SideChatPanel, type SideChatTab } from '../../features/sidechat/SideChatPanel.ts'
+import {
+  BottomTerminal,
+  RightPanelMenu,
+  TerminalPane,
+  WorkbenchToggles,
+  type RightPanelDestination,
+  type RightPanelView
+} from '../../features/shell/WorkbenchToggles.ts'
+import { BrowserPane } from '../../features/shell/BrowserPane.ts'
+import { FilesPane, knownFilesFromTimeline } from '../../features/shell/FilesPane.ts'
 import ApprovalModal from './components/ApprovalModal'
 import QuestionModal from './components/QuestionModal'
 import ApprovalRulesModal from './components/ApprovalRulesModal'
@@ -26,6 +52,7 @@ import { useConversation } from './hooks/useConversation'
 import { useModels } from './hooks/useModels'
 import type { TimelineItem } from './lib/conversationStore.mts'
 import { canTrashTask } from './lib/taskActions.mts'
+import { modelHasCredential } from './lib/modelPresentation.mts'
 import { modelStatusLabel } from './lib/taskPresentation.mts'
 import { isClearGoalText, parseComposerCommand } from './lib/composerCommands.mts'
 import { applyGoalToPrompt, loadSessionGoals, saveSessionGoals } from './lib/goalSettings.mts'
@@ -65,6 +92,15 @@ import {
   type Notice
 } from '../../features/notifications/notify.ts'
 import { workbenchLayoutClass } from '../../features/shell/workbenchLayout.ts'
+import { WorkbenchSash } from '../../features/shell/WorkbenchSash.ts'
+import {
+  BOTTOM_SNAP,
+  LEFT_SNAP,
+  RIGHT_SNAP,
+  loadWorkbenchPanes,
+  saveWorkbenchPanes,
+  type WorkbenchPanes
+} from '../../features/shell/snapSash.ts'
 import { RunPanel } from '../../features/runpanel/RunPanel.ts'
 import { projectRunPanel } from '../../features/runpanel/runPanel.model.ts'
 import { Statusline } from '../../components/statusbar/Statusline.ts'
@@ -75,10 +111,22 @@ import { useAgentsSettings } from './hooks/useAgentsSettings'
 import { useTeams } from './hooks/useTeams'
 import {
   addProject,
+  hideProjectCwd,
+  loadHiddenProjectCwds,
   loadProjects,
+  matchProjectCwd,
+  normalizeProjectCwd,
+  permanentWorktreeDest,
+  pinProject,
   projectDisplayName,
-  saveProjects
+  removeProjectByCwd,
+  renameProject,
+  saveHiddenProjectCwds,
+  saveProjects,
+  unhideProjectCwd,
+  type ProjectRecord
 } from '../../features/projects/projectRegistry.ts'
+import type { ProjectContextAction } from '../../features/projects/ProjectContextMenu.ts'
 
 const EMPTY_USAGE = {
   inputTokens: null,
@@ -89,6 +137,12 @@ const EMPTY_USAGE = {
   reportingStatus: 'not_reported' as const
 }
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable
+}
+
 function App(): React.JSX.Element {
   const { platform, info, status } = usePlatform()
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettings>(() =>
@@ -97,6 +151,7 @@ function App(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
   const [projects, setProjects] = useState(() => loadProjects(window.localStorage))
+  const [hiddenCwds, setHiddenCwds] = useState(() => loadHiddenProjectCwds(window.localStorage))
   const [unreadIds, setUnreadIds] = useState<string[]>([])
   const [railPanel, setRailPanel] = useState<null | 'schedule' | 'plugins'>(null)
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
@@ -115,6 +170,91 @@ function App(): React.JSX.Element {
   const [navOpen, setNavOpen] = useState(false)
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [inspectorItem, setInspectorItem] = useState<TimelineItem | null>(null)
+  const [rightOpen, setRightOpen] = useState(false)
+  const [rightView, setRightView] = useState<RightPanelView>('picker')
+  const [bottomOpen, setBottomOpen] = useState(false)
+  const [panes, setPanes] = useState(() => loadWorkbenchPanes(window.localStorage))
+  const [snapping, setSnapping] = useState(false)
+  const snapTimerRef = useRef(0)
+
+  const persistPanes = (patch: Partial<WorkbenchPanes>): void => {
+    setPanes((current) => {
+      const next = { ...current, ...patch }
+      saveWorkbenchPanes(next, window.localStorage)
+      return next
+    })
+  }
+
+  const applySashSize = (key: keyof WorkbenchPanes, size: number, snap: boolean): void => {
+    if (snap) {
+      setSnapping(true)
+      window.clearTimeout(snapTimerRef.current)
+      snapTimerRef.current = window.setTimeout(() => setSnapping(false), 150)
+    } else {
+      setSnapping(false)
+    }
+    persistPanes({ [key]: size })
+    if (key === 'right') setRightOpen(size > 0)
+    if (key === 'bottom') setBottomOpen(size > 0)
+  }
+
+  const toggleRight = (): void => {
+    setRightOpen((open) => {
+      if (open) return false
+      setRailPanel(null)
+      setRightView('picker')
+      setPanes((current) => {
+        if (current.right > 0) return current
+        const next = { ...current, right: RIGHT_SNAP.preferred }
+        saveWorkbenchPanes(next, window.localStorage)
+        return next
+      })
+      return true
+    })
+  }
+
+  const toggleBottom = (): void => {
+    setBottomOpen((open) => {
+      if (open) return false
+      setPanes((current) => {
+        if (current.bottom > 0) return current
+        const next = { ...current, bottom: BOTTOM_SNAP.preferred }
+        saveWorkbenchPanes(next, window.localStorage)
+        return next
+      })
+      return true
+    })
+  }
+
+  const openRightView = (view: RightPanelDestination): void => {
+    setRailPanel(null)
+    setRightView(view)
+    if (view === 'review') setInspectorOpen(true)
+    setRightOpen(true)
+    setPanes((current) => {
+      if (current.right > 0) return current
+      const next = { ...current, right: RIGHT_SNAP.preferred }
+      saveWorkbenchPanes(next, window.localStorage)
+      return next
+    })
+  }
+
+  const [draftWorkspace, setDraftWorkspace] = useState<string | null>(null)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [queueMode, setQueueMode] = useState<QueueMode>('on')
+  const [createProjectOpen, setCreateProjectOpen] = useState(false)
+  const [createProjectDraft, setCreateProjectDraft] = useState<CreateProjectDraft>(emptyCreateProjectDraft)
+  const [sideTabs, setSideTabs] = useState<SideChatTab[]>([])
+  const [activeSideId, setActiveSideId] = useState<string | null>(null)
+  const [closeSideId, setCloseSideId] = useState<string | null>(null)
+  const [skipCloseSideChat, setSkipCloseSideChat] = useState(() => {
+    try {
+      return window.localStorage.getItem('rxycode.desktop.sidechat.skipClose') === '1'
+    } catch {
+      return false
+    }
+  })
+  const [pendingSkipClose, setPendingSkipClose] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [agentModeBySession, setAgentModeBySession] = useState<Record<string, AgentRunMode>>({})
   const [sessionGoals, setSessionGoals] = useState(() => loadSessionGoals(window.localStorage))
@@ -160,9 +300,11 @@ function App(): React.JSX.Element {
   const [composerPrefillNonce, setComposerPrefillNonce] = useState(0)
   const [installPreview, setInstallPreview] = useState<{ message?: string } | null>(null)
   const creatingTeamRef = useRef(false)
-  const selectedTaskModel = activeSession?.modelId ?? models.snapshot?.active ?? ''
+  const [draftModelId, setDraftModelId] = useState<string | null>(null)
+  const selectedTaskModel = activeSession?.modelId ?? draftModelId ?? models.snapshot?.active ?? ''
+  const [draftAgentMode, setDraftAgentMode] = useState<AgentRunMode>('build')
   const agentMode: AgentRunMode =
-    activeSessionId === null ? 'build' : (agentModeBySession[activeSessionId] ?? 'build')
+    activeSessionId === null ? draftAgentMode : (agentModeBySession[activeSessionId] ?? 'build')
   const activeGoal = activeSessionId === null ? '' : (sessionGoals[activeSessionId] ?? '')
   const activeTimeline =
     activeSessionId !== null ? (conversation.state.timelineBySession[activeSessionId] ?? []) : []
@@ -173,7 +315,10 @@ function App(): React.JSX.Element {
     !running
 
   const setAgentMode = (next: AgentRunMode): void => {
-    if (activeSessionId === null) return
+    if (activeSessionId === null) {
+      setDraftAgentMode(next)
+      return
+    }
     setAgentModeBySession((current) => ({ ...current, [activeSessionId]: next }))
   }
 
@@ -191,8 +336,19 @@ function App(): React.JSX.Element {
   }, [projects])
 
   useEffect(() => {
+    saveHiddenProjectCwds(hiddenCwds, window.localStorage)
+  }, [hiddenCwds])
+
+  useEffect(() => {
     window.localStorage.setItem('rxycode.desktop.pinned.v1', JSON.stringify(pinnedIds))
   }, [pinnedIds])
+
+  useEffect(() => {
+    if (!rightOpen || rightView !== 'sidechat' || sideTabs.length > 0) return
+    const id = `side-${Date.now().toString(36)}`
+    setSideTabs([{ id, title: '侧边聊天' }])
+    setActiveSideId(id)
+  }, [rightOpen, rightView, sideTabs.length])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -200,6 +356,35 @@ function App(): React.JSX.Element {
       if (event.key.toLowerCase() === 'k') {
         event.preventDefault()
         setCommandOpen(true)
+      }
+      if (event.altKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault()
+        toggleRight()
+      }
+      if (event.key.toLowerCase() === 'j') {
+        event.preventDefault()
+        toggleBottom()
+      }
+      if (isTypingTarget(event.target)) return
+      if (event.shiftKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault()
+        openRightView('review')
+      }
+      if (!event.shiftKey && !event.altKey && (event.key === '`' || event.code === 'Backquote')) {
+        event.preventDefault()
+        openRightView('terminal')
+      }
+      if (!event.shiftKey && !event.altKey && event.key.toLowerCase() === 't') {
+        event.preventDefault()
+        openRightView('browser')
+      }
+      if (!event.shiftKey && !event.altKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        openRightView('files')
+      }
+      if (event.altKey && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        openRightView('sidechat')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -253,9 +438,74 @@ function App(): React.JSX.Element {
     saveWorkspaceSettings(next, window.localStorage)
   }
 
+  const recentHome = defaultRecentWorkspace(info?.homeDir ?? '')
+
   const openInspector = (item: TimelineItem): void => {
     setInspectorItem(item)
-    setInspectorOpen(true)
+    openRightView('review')
+  }
+
+  const openPlugins = (): void => {
+    setInspectorOpen(false)
+    setRightOpen(false)
+    setRailPanel((current) => (current === 'plugins' ? null : 'plugins'))
+  }
+
+  const startDraftChat = (workspaceRoot: string | null): void => {
+    setDraftWorkspace(workspaceRoot)
+    conversation.clearActiveSession()
+    setNavOpen(false)
+    setRailPanel(null)
+    setDesktopView('chat')
+    setProjectPickerOpen(false)
+  }
+
+  const closeSideTab = (id: string): void => {
+    const client = conversation.protocolClient
+    if (client !== null) {
+      void client.request('thread/side_chat/close', { side_thread_id: id }).catch(() => undefined)
+    }
+    setSideTabs((current) => {
+      const next = current.filter((tab) => tab.id !== id)
+      setActiveSideId((active) => (active === id ? (next[0]?.id ?? null) : active))
+      return next
+    })
+    setCloseSideId(null)
+  }
+
+  const requestCloseSideTab = (id: string): void => {
+    if (skipCloseSideChat) {
+      closeSideTab(id)
+      return
+    }
+    setPendingSkipClose(false)
+    setCloseSideId(id)
+  }
+
+  const openSideChat = async (title: string): Promise<void> => {
+    setRightView('sidechat')
+    setRightOpen(true)
+    setRailPanel(null)
+    const parentId = conversation.state.activeSessionId
+    const client = conversation.protocolClient
+    if (parentId === null || client === null) {
+      const localId = `local-${Date.now()}`
+      setSideTabs((current) => [...current, { id: localId, title }])
+      setActiveSideId(localId)
+      return
+    }
+    try {
+      const created = await client.request<{ side_thread_id: string }>('thread/side_chat/create', {
+        thread_id: parentId
+      })
+      const id = created.side_thread_id
+      setSideTabs((current) => [...current, { id, title }])
+      setActiveSideId(id)
+    } catch {
+      const localId = `local-${Date.now()}`
+      setSideTabs((current) => [...current, { id: localId, title }])
+      setActiveSideId(localId)
+    }
   }
 
   const showToast = (message: string): void => {
@@ -351,7 +601,43 @@ function App(): React.JSX.Element {
     })
   }
 
+  const ensureDraftSession = async (): Promise<string | null> => {
+    if (conversation.state.activeSessionId !== null) {
+      return conversation.state.activeSessionId
+    }
+    const workspace = resolveCreateSessionWorkspace({
+      requested: draftWorkspace,
+      homeDir: info?.homeDir ?? ''
+    })
+    if (workspace === '') {
+      showToast(tr('taskCreateFailed'))
+      return null
+    }
+    if (!isRecentWorkspace(workspace, recentHome === '' ? workspace : recentHome)) {
+      const next: WorkspaceSettings = { workspaceRoot: workspace }
+      setWorkspaceSettings(next)
+      saveWorkspaceSettings(next, window.localStorage)
+      setProjects((current) => addProject(current, workspace))
+    }
+    const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
+    const created = await conversation.createSession({
+      modelId: selectedTaskModel || undefined,
+      providerId: selected?.provider_id ?? null,
+      workspaceRoot: workspace
+    })
+    if (created == null || created === '') {
+      showToast(tr('taskCreateFailed'))
+      return null
+    }
+    return created
+  }
+
   const handleComposerSend = async (text: string): Promise<void> => {
+    const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
+    if (selected != null && !modelHasCredential(selected)) {
+      showToast(selected.warning || tr('modelMissingCredentialHint'))
+      return
+    }
     const command = parseComposerCommand(text)
     if (command?.kind === 'slash_plan') {
       setAgentMode('plan')
@@ -359,6 +645,7 @@ function App(): React.JSX.Element {
         showToast(tr('planModeOn'))
         return
       }
+      if (!(await ensureDraftSession())) return
       await sendTurn(command.rest, 'plan')
       return
     }
@@ -368,6 +655,7 @@ function App(): React.JSX.Element {
         showToast(tr('agentModeOn'))
         return
       }
+      if (!(await ensureDraftSession())) return
       await sendTurn(command.rest, 'build')
       return
     }
@@ -386,6 +674,8 @@ function App(): React.JSX.Element {
       showToast(tr('goalSaved'))
       return
     }
+    if (!(await ensureDraftSession())) return
+    setRailPanel(null)
     await sendTurn(text, agentMode)
   }
 
@@ -419,6 +709,45 @@ function App(): React.JSX.Element {
     }
     await conversation.interrupt()
     if (text.trim() !== '') await handleComposerSend(text)
+  }
+
+  const pendingItems = activeSessionId === null ? [] : (pendingBySession[activeSessionId] ?? [])
+
+  const patchPending = (sessionId: string, next: PendingItem[]): void => {
+    setPendingBySession((current) => {
+      const updated = { ...current, [sessionId]: next }
+      pendingRef.current = updated
+      return updated
+    })
+  }
+
+  const handleQueueSendNow = (id: string): void => {
+    if (activeSessionId === null) return
+    const taken = takePendingById(pendingBySession[activeSessionId] ?? [], id)
+    patchPending(activeSessionId, taken.remaining)
+    if (taken.item !== null) void handleSendIntent('steer', taken.item.text)
+  }
+
+  const handleQueueDelete = (id: string): void => {
+    if (activeSessionId === null) return
+    patchPending(activeSessionId, removePending(pendingBySession[activeSessionId] ?? [], id))
+  }
+
+  const handleQueueEdit = (id: string): void => {
+    if (activeSessionId === null) return
+    const taken = takePendingById(pendingBySession[activeSessionId] ?? [], id)
+    patchPending(activeSessionId, taken.remaining)
+    if (taken.item !== null) {
+      setComposerPrefill(taken.item.text)
+      setComposerPrefillNonce((n) => n + 1)
+    }
+  }
+
+  const handleQueueOpenSideChat = (id: string): void => {
+    if (activeSessionId === null) return
+    const taken = takePendingById(pendingBySession[activeSessionId] ?? [], id)
+    patchPending(activeSessionId, taken.remaining)
+    if (taken.item !== null) void openSideChat(taken.item.text.slice(0, 24) || tr('newTask'))
   }
 
   useEffect(() => {
@@ -455,48 +784,20 @@ function App(): React.JSX.Element {
     }
   }, [activeSessionId, conversation.state.runningBySession])
 
-  const handleCreate = async (): Promise<void> => {
-    // Navigation is independent from the session/new RPC. Close the drawer
-    // immediately so a slow server warm cannot make the click look stuck.
-    setNavOpen(false)
-    setRailPanel(null)
-    showToast(tr('creatingTask'))
-    const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
-    const created = await conversation.createSession({
-      modelId: selectedTaskModel || undefined,
-      providerId: selected?.provider_id ?? null
-    })
-    showToast(created ? tr('taskCreated') : tr('taskCreateFailed'))
+  const handleCreate = (): void => {
+    startDraftChat(null)
   }
 
-  const handleAddProject = async (): Promise<void> => {
-    setPickingWorkspace(true)
-    try {
-      const picked = await platform.pickWorkspaceDirectory()
-      if (picked === null) return
-      const cwd = normalizeWorkspaceRoot(picked)
-      if (cwd === null) return
-      setProjects((current) => addProject(current, cwd))
-    } finally {
-      setPickingWorkspace(false)
-    }
+  const handleAddProject = (): void => {
+    setProjectPickerOpen(false)
+    setCreateProjectDraft(emptyCreateProjectDraft())
+    setCreateProjectOpen(true)
   }
 
-  const handleCreateInProject = async (cwd: string): Promise<void> => {
+  const handleCreateInProject = (cwd: string): void => {
     setProjects((current) => addProject(current, cwd))
-    const next: WorkspaceSettings = { workspaceRoot: cwd }
-    setWorkspaceSettings(next)
-    saveWorkspaceSettings(next, window.localStorage)
-    setNavOpen(false)
-    setRailPanel(null)
-    showToast(tr('creatingTaskInProject'))
-    const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
-    const created = await conversation.createSession({
-      modelId: selectedTaskModel || undefined,
-      providerId: selected?.provider_id || undefined,
-      workspaceRoot: cwd
-    })
-    showToast(created ? tr('taskCreatedInProject') : tr('taskCreatePartialFail'))
+    setHiddenCwds((current) => unhideProjectCwd(current, cwd))
+    startDraftChat(cwd)
   }
 
   const handlePickWorkspaceForChat = async (): Promise<void> => {
@@ -506,22 +807,25 @@ function App(): React.JSX.Element {
       if (picked === null) return
       const workspaceRoot = normalizeWorkspaceRoot(picked)
       if (workspaceRoot === null) return
-      const next: WorkspaceSettings = { workspaceRoot }
-      setWorkspaceSettings(next)
-      saveWorkspaceSettings(next, window.localStorage)
       setProjects((current) => addProject(current, workspaceRoot))
-      setNavOpen(false)
-      showToast(tr('creatingTaskInProject'))
-      const selected = models.snapshot?.models.find((model) => model.id === selectedTaskModel)
-      const created = await conversation.createSession({
-        modelId: selectedTaskModel || undefined,
-        providerId: selected?.provider_id || undefined,
-        workspaceRoot
-      })
-      showToast(created ? tr('taskCreatedInProject') : tr('taskCreatePartialFail'))
+      setHiddenCwds((current) => unhideProjectCwd(current, workspaceRoot))
+      setDraftWorkspace(workspaceRoot)
+      setProjectPickerOpen(false)
     } finally {
       setPickingWorkspace(false)
     }
+  }
+
+  const submitCreateProject = async (): Promise<void> => {
+    const folder = normalizeWorkspaceRoot(createProjectDraft.folder)
+    if (folder === null) return
+    setProjects((current) => addProject(current, folder))
+    setHiddenCwds((current) => unhideProjectCwd(current, folder))
+    setDraftWorkspace(folder)
+    setCreateProjectOpen(false)
+    setCreateProjectDraft(emptyCreateProjectDraft())
+    setProjectPickerOpen(false)
+    if (conversation.state.activeSessionId === null) startDraftChat(folder)
   }
 
   const handleTrash = async (sessionId: string): Promise<void> => {
@@ -530,9 +834,74 @@ function App(): React.JSX.Element {
       showToast(decision.message ?? tr('cannotDeleteTask'))
       return
     }
+    const remaining = conversation.state.sessions.filter(
+      (session) => session.trashedAt === null && session.sessionId !== sessionId
+    )
     const operation = conversation.trashSession(sessionId)
     showToast(tr('taskDeleted'))
+    if (remaining.length === 0) startDraftChat(null)
     if (!(await operation)) showToast(tr('deleteNotSaved'))
+  }
+
+  const ensureRegisteredProject = (cwd: string, mutate: (projects: ProjectRecord[]) => ReturnType<typeof pinProject>): void => {
+    setProjects((current) => {
+      const base = matchProjectCwd(current, cwd) === undefined ? addProject(current, cwd) : current
+      return mutate(base)
+    })
+    setHiddenCwds((current) => unhideProjectCwd(current, cwd))
+  }
+
+  const handleProjectAction = (cwd: string, action: ProjectContextAction): void => {
+    if (action.kind === 'pin') {
+      const currentlyPinned = matchProjectCwd(projects, cwd)?.pinned === true
+      ensureRegisteredProject(cwd, (list) => pinProject(list, cwd, !currentlyPinned))
+      return
+    }
+    if (action.kind === 'section') {
+      ensureRegisteredProject(cwd, (list) => pinProject(list, cwd, action.section === 'pinned'))
+      return
+    }
+    if (action.kind === 'edit' && action.name !== undefined) {
+      ensureRegisteredProject(cwd, (list) => renameProject(list, cwd, action.name ?? ''))
+      return
+    }
+    if (action.kind === 'reveal') {
+      void platform.revealWorkspace?.(cwd)
+      return
+    }
+    if (action.kind === 'worktree') {
+      const session = conversation.state.sessions.find(
+        (item) => item.trashedAt === null && normalizeProjectCwd(item.workspaceRoot) === normalizeProjectCwd(cwd)
+      )
+      const client = conversation.protocolClient
+      if (session === undefined || client === null) {
+        showToast(tr('taskCreateFailed'))
+        return
+      }
+      const dest = permanentWorktreeDest(cwd, Date.now().toString(36))
+      void client
+        .request('worktree/create', { session_id: session.sessionId, dest })
+        .then(() => showToast(tr('createPermanentWorktree')))
+        .catch((error: unknown) => showToast(error instanceof Error ? error.message : String(error)))
+      return
+    }
+    if (action.kind === 'archive-chats') {
+      const ids = conversation.state.sessions
+        .filter(
+          (session) =>
+            session.trashedAt === null &&
+            normalizeProjectCwd(session.workspaceRoot) === normalizeProjectCwd(cwd)
+        )
+        .map((session) => session.sessionId)
+      void (async () => {
+        for (const sessionId of ids) await handleTrash(sessionId)
+      })()
+      return
+    }
+    if (action.kind === 'remove') {
+      setProjects((current) => removeProjectByCwd(current, cwd).next)
+      setHiddenCwds((current) => hideProjectCwd(current, cwd))
+    }
   }
 
   const handleRestore = async (sessionId: string): Promise<void> => {
@@ -570,6 +939,9 @@ function App(): React.JSX.Element {
   const runPanel = activeSessionId === null
     ? null
     : projectRunPanel(conversation.state, activeSessionId)
+  const leftWidth = panes.left
+  const rightWidth = rightOpen ? (panes.right > 0 ? panes.right : RIGHT_SNAP.preferred) : 0
+  const bottomHeight = bottomOpen ? (panes.bottom > 0 ? panes.bottom : BOTTOM_SNAP.preferred) : 0
 
   const handlePurgeRecycle = async (): Promise<void> => {
     const ids = recycleModel.items.map((item) => item.id)
@@ -623,6 +995,12 @@ function App(): React.JSX.Element {
           >
             <ShieldCheck aria-hidden="true" size={17} />
           </button>
+          <WorkbenchToggles
+            rightOpen={rightOpen}
+            bottomOpen={bottomOpen}
+            onToggleRight={toggleRight}
+            onToggleBottom={toggleBottom}
+          />
           <button
             type="button"
             className="icon-button settings-button"
@@ -637,13 +1015,49 @@ function App(): React.JSX.Element {
 
       <div
         className={workbenchLayoutClass({
-          inspectorOpen: inspectorOpen && railPanel !== 'plugins',
-          runPanelOpen: !inspectorOpen && railPanel !== 'plugins' && (runPanel?.open === true),
+          inspectorOpen: rightWidth > 0 && railPanel !== 'plugins',
+          runPanelOpen: false,
           navOpen,
-          pluginHubOpen: railPanel === 'plugins'
+          pluginHubOpen: railPanel === 'plugins',
+          bottomPanelOpen: bottomHeight > 0,
+          snapping
         })}
         data-testid="workbench-layout"
+        data-left-size={leftWidth}
+        data-right-size={rightWidth}
+        data-bottom-size={bottomHeight}
+        style={{
+          '--wb-left': `${leftWidth}px`,
+          '--wb-right': `${rightWidth}px`,
+          '--wb-bottom': `${bottomHeight}px`
+        } as CSSProperties}
       >
+        <WorkbenchSash
+          axis="vertical"
+          spec={LEFT_SNAP}
+          size={leftWidth}
+          testId="sash-left"
+          className="workbench-sash-left"
+          onSize={(size, snap) => applySashSize('left', size, snap)}
+        />
+        <WorkbenchSash
+          axis="vertical"
+          spec={RIGHT_SNAP}
+          size={rightWidth}
+          invert
+          testId="sash-right"
+          className="workbench-sash-right"
+          onSize={(size, snap) => applySashSize('right', size, snap)}
+        />
+        <WorkbenchSash
+          axis="horizontal"
+          spec={BOTTOM_SNAP}
+          size={bottomHeight}
+          invert
+          testId="sash-bottom"
+          className="workbench-sash-bottom"
+          onSize={(size, snap) => applySashSize('bottom', size, snap)}
+        />
         <div className={'mobile-sheet nav-sheet' + (navOpen ? ' open' : '')}>
           <button type="button" className="sheet-backdrop" aria-label={tr('closeNav')} onClick={() => setNavOpen(false)} />
           <div className="sheet-panel">
@@ -667,17 +1081,22 @@ function App(): React.JSX.Element {
               }}
               runningBySession={conversation.state.runningBySession}
               unreadIds={unreadIds}
-              onOpenScheduled={() => setRailPanel('schedule')}
-              onOpenPlugins={() => {
-                setInspectorOpen(false)
-                setRailPanel((current) => (current === 'plugins' ? null : 'plugins'))
+              onMarkUnread={(sessionId, unread) => {
+                setUnreadIds((current) =>
+                  unread ? [...new Set([...current, sessionId])] : current.filter((id) => id !== sessionId)
+                )
               }}
+              onOpenScheduled={() => setRailPanel('schedule')}
+              onOpenPlugins={navOpen ? openPlugins : undefined}
+              pluginsOpen={railPanel === 'plugins'}
               onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
               onTrash={(sessionId) => void handleTrash(sessionId)}
               onRestore={(sessionId) => void handleRestore(sessionId)}
               onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
               pinnedIds={effectivePinnedIds}
               onPin={handlePin}
+              hiddenCwds={hiddenCwds}
+              onProjectAction={handleProjectAction}
               onOpenSettings={() => setSettingsOpen(true)}
             />
           </div>
@@ -692,23 +1111,28 @@ function App(): React.JSX.Element {
           listDeletedAvailable
           projects={projects}
           disabled={!sessionListEnabled || status !== 'running' || conversation.protocolClient === null}
-          onCreate={() => void handleCreate()}
-          onAddProject={() => void handleAddProject()}
-          onCreateInProject={(cwd) => void handleCreateInProject(cwd)}
+          onCreate={handleCreate}
+          onAddProject={handleAddProject}
+          onCreateInProject={handleCreateInProject}
           onSelect={selectTask}
           runningBySession={conversation.state.runningBySession}
           unreadIds={unreadIds}
-          onOpenScheduled={() => setRailPanel('schedule')}
-          onOpenPlugins={() => {
-            setInspectorOpen(false)
-            setRailPanel((current) => (current === 'plugins' ? null : 'plugins'))
+          onMarkUnread={(sessionId, unread) => {
+            setUnreadIds((current) =>
+              unread ? [...new Set([...current, sessionId])] : current.filter((id) => id !== sessionId)
+            )
           }}
+          onOpenScheduled={() => setRailPanel('schedule')}
+          onOpenPlugins={openPlugins}
+          pluginsOpen={railPanel === 'plugins'}
           onRename={(sessionId, title) => void conversation.renameSession(sessionId, title)}
           onTrash={(sessionId) => void handleTrash(sessionId)}
           onRestore={(sessionId) => void handleRestore(sessionId)}
           onPurge={(sessionId) => void conversation.purgeSession(sessionId)}
           pinnedIds={effectivePinnedIds}
           onPin={handlePin}
+          hiddenCwds={hiddenCwds}
+          onProjectAction={handleProjectAction}
           onOpenSettings={() => setSettingsOpen(true)}
         />
         </div>
@@ -726,14 +1150,17 @@ function App(): React.JSX.Element {
                 teamError={teams.error}
                 onClose={() => setRailPanel(null)}
                 onSummonTeam={(teamId) => {
-                  void teams.setActive(teamId).then((ok) => {
+                  void (async () => {
+                    const sessionId = await ensureDraftSession()
+                    if (sessionId == null) return
+                    const ok = await teams.setActive(teamId, sessionId)
                     if (ok) {
                       setRailPanel(null)
                       setComposerPrefill('/team ')
                       setComposerPrefillNonce((n) => n + 1)
                       showToast(tr('teamSummoned'))
                     }
-                  })
+                  })()
                 }}
                 onCreateSkill={(need) => {
                   setRailPanel(null)
@@ -777,6 +1204,14 @@ function App(): React.JSX.Element {
                 conversation.selectSession(sessionId)
                 setDesktopView('chat')
                 setInspectorOpen(true)
+                setRightView('review')
+                setPanes((current) => {
+                  if (current.right > 0) return current
+                  const next = { ...current, right: RIGHT_SNAP.preferred }
+                  saveWorkbenchPanes(next, window.localStorage)
+                  return next
+                })
+                setRightOpen(true)
               }}
             />
           ) : null}
@@ -805,6 +1240,7 @@ function App(): React.JSX.Element {
             running={running}
             error={activeSessionId !== null ? (conversation.state.errorBySession[activeSessionId] ?? null) : null}
             progress={activeSessionId !== null ? (conversation.state.progressBySession[activeSessionId] ?? null) : null}
+            teamEvents={activeSessionId !== null ? (conversation.state.teamEventsBySession[activeSessionId] ?? []) : []}
             onOpenInspector={openInspector}
             activePlan={latestPlan === null ? null : { ...latestPlan, showActions: showPlanActions }}
             onBuildPlan={() => {
@@ -850,16 +1286,34 @@ function App(): React.JSX.Element {
             />
           ) : null}
           <Composer
-            disabled={status !== 'running' || activeSessionId === null}
+            disabled={status !== 'running'}
             running={running}
             agentMode={agentMode}
             goal={activeGoal}
             hasPlan={latestPlan !== null && skippedPlanIds[latestPlan.itemId] !== true}
             onSend={(text) => void handleComposerSend(text)}
             onStop={() => void conversation.interrupt()}
-            pendingCount={activeSessionId === null ? 0 : (pendingBySession[activeSessionId] ?? []).length}
+            pendingCount={pendingItems.length}
+            pendingItems={pendingItems}
+            queueMode={queueMode}
             steerBlocked={false}
             onSendIntent={(intent, text) => void handleSendIntent(intent, text)}
+            onQueueSendNow={handleQueueSendNow}
+            onQueueDelete={handleQueueDelete}
+            onQueueEdit={handleQueueEdit}
+            onQueueOpenSideChat={handleQueueOpenSideChat}
+            onQueueTurnOff={() => setQueueMode('off')}
+            projects={projects.map((project) => ({
+              cwd: project.cwd,
+              displayName: projectDisplayName(project.cwd)
+            }))}
+            onSelectProject={(cwd) => {
+              setDraftWorkspace(cwd)
+              setProjectPickerOpen(false)
+            }}
+            onCreateProject={handleAddProject}
+            projectPickerOpen={projectPickerOpen}
+            onToggleProjectPicker={() => setProjectPickerOpen((open) => !open)}
             onTogglePlanMode={() => {
               const next: AgentRunMode = agentMode === 'plan' ? 'build' : 'plan'
               setAgentMode(next)
@@ -867,15 +1321,26 @@ function App(): React.JSX.Element {
             }}
             onOpenGoal={openGoalDialog}
             onPickWorkspace={() => void handlePickWorkspaceForChat()}
-            projectLabel={
-              activeSession?.workspaceRoot
-                ? projectDisplayName(activeSession.workspaceRoot)
-                : undefined
+            showProjectChip={
+              composerProjectChip({
+                hasActiveSession: conversation.state.activeSessionId !== null,
+                activeWorkspace: activeSession?.workspaceRoot ?? '',
+                draftWorkspace
+              }).visible
             }
+            projectLabel={(() => {
+              const chip = composerProjectChip({
+                hasActiveSession: conversation.state.activeSessionId !== null,
+                activeWorkspace: activeSession?.workspaceRoot ?? '',
+                draftWorkspace
+              })
+              return chip.projectRoot === undefined ? undefined : projectDisplayName(chip.projectRoot)
+            })()}
             models={models.snapshot?.models ?? []}
             modelsLoading={models.loading || (conversation.protocolClient !== null && models.snapshot === null)}
             selectedModelId={selectedTaskModel}
             onSelectModel={(modelId) => {
+              setDraftModelId(modelId)
               if (activeSessionId !== null) {
                 const selected = models.snapshot?.models.find((model) => model.id === modelId)
                 void conversation.setSessionModel(activeSessionId, modelId, selected?.provider_id ?? null)
@@ -888,18 +1353,25 @@ function App(): React.JSX.Element {
             prefillText={composerPrefill}
             prefillNonce={composerPrefillNonce}
             onSummonTeam={(teamId) => {
-              void teams.setActive(teamId).then((ok) => {
+              void (async () => {
+                const sessionId = await ensureDraftSession()
+                if (sessionId == null) return
+                const ok = await teams.setActive(teamId, sessionId)
                 if (ok) {
                   setComposerPrefill('/team ')
                   setComposerPrefillNonce((n) => n + 1)
                   showToast(tr('teamSummoned'))
                 }
-              })
+              })()
             }}
             onCreateTeam={() => {
               creatingTeamRef.current = true
               void handleComposerSend(CREATE_TEAM_PROMPT)
             }}
+          />
+          <BottomTerminal
+            cwd={activeSession?.workspaceRoot || effectiveWorkspace || undefined}
+            onClose={toggleBottom}
           />
           </>
           ) : null}
@@ -926,39 +1398,82 @@ function App(): React.JSX.Element {
           </div>
         ) : null}
 
-        {!inspectorOpen && runPanel?.open === true ? (
-          <RunPanel
-            model={runPanel.model}
-            open={runPanel.open}
-            usageAvailable={runPanel.usageAvailable}
-            dark={theme === 'dark'}
-          />
-        ) : null}
-        {inspectorOpen && (
-          <div className="contextual-inspector-slot">
-            <TaskInspector
-              focusItem={inspectorItem}
-              usage={activeSessionId !== null ? (conversation.state.usageBySession[activeSessionId] ?? EMPTY_USAGE) : EMPTY_USAGE}
-              childSessions={activeChildSessions}
-              teamEvents={activeSessionId !== null ? (conversation.state.teamEventsBySession[activeSessionId] ?? []) : []}
-              capabilities={conversation.handshakeCapabilities}
-              onClose={() => { setInspectorOpen(false); setInspectorItem(null) }}
-              onSelectChild={(sessionId) => {
-                const child = activeChildSessions.find((entry) => entry.sessionId === sessionId)
-                if (child !== undefined) {
-                  setInspectorItem({
-                    kind: 'child_agent',
-                    id: `${activeSessionId ?? 'task'}:child:${child.sessionId}`,
-                    sessionId: child.sessionId,
-                    agentId: child.agentId,
-                    title: `@${child.agentId}`,
-                    state: child.state
-                  })
+        {rightOpen && railPanel !== 'plugins' ? (
+          <div className="contextual-inspector-slot right-workbench">
+            {rightView === 'picker' ? <RightPanelMenu onChange={openRightView} /> : null}
+            {rightView === 'review' ? (
+              <section className="right-pane" data-testid="right-view-review">
+                {runPanel?.open === true ? (
+                  <RunPanel
+                    model={runPanel.model}
+                    open={runPanel.open}
+                    usageAvailable={runPanel.usageAvailable}
+                    dark={theme === 'dark'}
+                  />
+                ) : null}
+                <TaskInspector
+                  focusItem={inspectorItem}
+                  usage={activeSessionId !== null ? (conversation.state.usageBySession[activeSessionId] ?? EMPTY_USAGE) : EMPTY_USAGE}
+                  childSessions={activeChildSessions}
+                  teamEvents={activeSessionId !== null ? (conversation.state.teamEventsBySession[activeSessionId] ?? []) : []}
+                  capabilities={conversation.handshakeCapabilities}
+                  onClose={() => { setInspectorOpen(false); setInspectorItem(null) }}
+                  onSelectChild={(sessionId) => {
+                    const child = activeChildSessions.find((entry) => entry.sessionId === sessionId)
+                    if (child !== undefined) {
+                      setInspectorItem({
+                        kind: 'child_agent',
+                        id: `${activeSessionId ?? 'task'}:child:${child.sessionId}`,
+                        sessionId: child.sessionId,
+                        agentId: child.agentId,
+                        title: `@${child.agentId}`,
+                        state: child.state
+                      })
+                    }
+                  }}
+                />
+              </section>
+            ) : null}
+            {rightView === 'terminal' ? <TerminalPane /> : null}
+            {rightView === 'browser' ? <BrowserPane /> : null}
+            {rightView === 'files' ? (
+              <FilesPane
+                workspaceRoot={activeSession?.workspaceRoot || effectiveWorkspace || null}
+                files={knownFilesFromTimeline(activeTimeline)}
+                onReveal={() => {
+                  const root = activeSession?.workspaceRoot || effectiveWorkspace
+                  if (root) void platform.revealWorkspace?.(root)
+                }}
+              />
+            ) : null}
+            {rightView === 'sidechat' ? (
+              <section className="right-pane" data-testid="right-view-sidechat">
+              <SideChatPanel
+                tabs={sideTabs}
+                activeId={activeSideId}
+                messages={
+                  activeSideId === null
+                    ? []
+                    : (conversation.state.timelineBySession[activeSideId] ?? [])
+                      .filter((item) => item.kind === 'user_prompt' || item.kind === 'final_answer')
+                      .map((item) => ({
+                        role: item.kind === 'user_prompt' ? 'user' as const : 'assistant' as const,
+                        text: 'text' in item ? String(item.text ?? '') : ''
+                      }))
                 }
-              }}
-            />
+                onSelect={setActiveSideId}
+                onRequestClose={requestCloseSideTab}
+                onAdd={() => void openSideChat(tr('newTask'))}
+                onSend={(text) => {
+                  if (activeSideId !== null) conversation.selectSession(activeSideId)
+                  void handleComposerSend(text)
+                }}
+                running={activeSideId !== null && conversation.state.runningBySession[activeSideId] === true}
+              />
+              </section>
+            ) : null}
           </div>
-        )}
+        ) : null}
       </div>
       <Statusline
         hasSession={activeSessionId !== null}
@@ -1041,6 +1556,7 @@ function App(): React.JSX.Element {
           onPickWorkspace={() => void pickWorkspace()}
           onClearWorkspace={clearWorkspace}
           onModelSelected={(modelId) => {
+            setDraftModelId(modelId)
             const selected = models.snapshot?.models.find((model) => model.id === modelId)
             if (activeSessionId !== null) {
               void conversation.setSessionModel(activeSessionId, modelId, selected?.provider_id ?? null)
@@ -1143,6 +1659,42 @@ function App(): React.JSX.Element {
           </div>
         </div>
       )}
+      {createProjectOpen ? (
+        <CreateProjectDialog
+          draft={createProjectDraft}
+          onChange={setCreateProjectDraft}
+          onPickFolder={() => {
+            void platform.pickWorkspaceDirectory().then((picked) => {
+              if (picked === null) return
+              const folder = normalizeWorkspaceRoot(picked) ?? picked
+              setCreateProjectDraft((current) => ({
+                ...current,
+                folder,
+                name: current.name.trim() === '' ? projectNameFromFolder(folder) : current.name
+              }))
+            })
+          }}
+          onCancel={() => {
+            setCreateProjectOpen(false)
+            setCreateProjectDraft(emptyCreateProjectDraft())
+          }}
+          onSubmit={() => void submitCreateProject()}
+        />
+      ) : null}
+      {closeSideId !== null ? (
+        <CloseSideChatDialog
+          dontAskAgain={pendingSkipClose}
+          onDontAskAgain={setPendingSkipClose}
+          onCancel={() => setCloseSideId(null)}
+          onConfirm={() => {
+            if (pendingSkipClose) {
+              setSkipCloseSideChat(true)
+              window.localStorage.setItem('rxycode.desktop.sidechat.skipClose', '1')
+            }
+            closeSideTab(closeSideId)
+          }}
+        />
+      ) : null}
       {toast !== null && <div className="task-toast" role="status" aria-live="polite" data-testid="task-toast">{toast}</div>}
       {runBanner !== null && (
         <div className="task-toast" role="status" aria-live="polite" data-testid="os-fallback-banner">

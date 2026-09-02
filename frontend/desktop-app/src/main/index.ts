@@ -18,6 +18,7 @@ import { isSafeExternalUrl } from './external-url'
 import { registerAllowedHandle } from './ipc-allowlist'
 import { isAllowedNavigation } from './navigation'
 import { pickWorkspaceDirectory } from './workspace-dialog'
+import { revealDirectory } from './workspace-reveal'
 import { shouldDisableLinuxSandbox } from './linuxStartup'
 import { shouldQuitSecondInstance } from './window-policy'
 import { webPreferencesSafe } from './web-preferences'
@@ -70,8 +71,8 @@ function windowSizeFromEnv(): { width: number; height: number } {
   const width = rawWidth !== undefined && rawWidth.trim() !== '' ? Number(rawWidth) : NaN
   const height = rawHeight !== undefined && rawHeight.trim() !== '' ? Number(rawHeight) : NaN
   return {
-    width: Number.isFinite(width) ? width : 900,
-    height: Number.isFinite(height) ? height : 670
+    width: Number.isFinite(width) ? width : 1280,
+    height: Number.isFinite(height) ? height : 800
   }
 }
 
@@ -203,6 +204,8 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width,
     height,
+    minWidth: 880,
+    minHeight: 600,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -410,6 +413,7 @@ app.whenReady().then(() => {
     getManager().sendLine(String(line))
   })
   registerAllowedHandle(ipcMain, 'workspace:pick-directory', () => pickWorkspaceDirectory(dialog))
+  registerAllowedHandle(ipcMain, 'workspace:reveal', (_event, cwd: unknown) => revealDirectory(shell, String(cwd)))
   registerAllowedHandle(ipcMain, 'update:get-status', () => getUpdateManager().snapshot())
   registerAllowedHandle(ipcMain, 'update:check', async () => {
     await getUpdateManager().check()
@@ -443,7 +447,8 @@ app.whenReady().then(() => {
       appserverStatus: manager.status,
       appserverStartedAt: manager.startedAt,
       appserverLastExit: manager.lastExit,
-      systemLocale: app.getLocale()
+      systemLocale: app.getLocale(),
+      homeDir: app.getPath('home')
     }
   })
 

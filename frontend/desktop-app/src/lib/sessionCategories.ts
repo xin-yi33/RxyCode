@@ -16,9 +16,28 @@ export interface CategoryBuckets {
   recycleBlocked: boolean
 }
 
+export function looksRecentWorkspace(root: string): boolean {
+  const normalized = root.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return normalized === '' || normalized.endsWith('/.rxycode')
+}
+
 export const HOVER_LIGHT = 'rgba(0,0,0,0.06)'
 export const HOVER_DARK = 'rgba(255,255,255,0.08)'
 export const CHEVRON_GAP_PX = 4
+export const PROJECT_SESSION_PREVIEW = 5
+
+export function projectNeedsExpand(count: number, limit = PROJECT_SESSION_PREVIEW): boolean {
+  return count > limit
+}
+
+export function visibleProjectSessions<T>(
+  items: readonly T[],
+  expanded: boolean,
+  limit = PROJECT_SESSION_PREVIEW
+): T[] {
+  if (expanded || items.length <= limit) return [...items]
+  return items.slice(0, limit)
+}
 
 export function projectCategories(
   sessions: readonly CategorizedSession[],
@@ -33,10 +52,11 @@ export function projectCategories(
       pinned.push(session)
       continue
     }
-    if (session.projectId) {
-      const list = projects[session.projectId] ?? []
+    const projectKey = (session.projectId ?? session.workspaceRoot ?? '').trim()
+    if (projectKey !== '' && !looksRecentWorkspace(projectKey)) {
+      const list = projects[projectKey] ?? []
       list.push(session)
-      projects[session.projectId] = list
+      projects[projectKey] = list
       continue
     }
     recent.push(session)

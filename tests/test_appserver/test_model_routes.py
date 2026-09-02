@@ -180,3 +180,51 @@ def test_list_models_exposes_effort_key(isolated_config):
     """models/list 返回 effort 键（全局档位），未设置时为 None。"""
     result = model_routes.list_models()
     assert "effort" in result
+
+
+def test_list_models_warns_when_credential_missing(isolated_config, monkeypatch):
+    """Keyless catalog entries stay visible but carry a warning; keys never echo."""
+    from RxyCode.RxyCode1_1_0.config import model_manager, settings
+
+    cfg = {
+        "active_model": "ark/glm-5.2",
+        "models": {
+            "ark/glm-5.2": {
+                "model_name": "glm-5.2",
+                "nickname": "glm-5.2",
+                "base_url": "https://ark.example/v1",
+                "api_key_env": "ARK_API_KEY",
+                "provider_id": "ark",
+                "provider_name": "Volcano ARK",
+            },
+            "opencode-go/glm-5.2": {
+                "model_name": "glm-5.2",
+                "nickname": "glm-5.2",
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "api_key_secret": "dummy-ref",
+                "provider_id": "opencode-go",
+                "provider_name": "OpenCode Go",
+            },
+        },
+    }
+    monkeypatch.setattr(settings, "load_config", lambda: cfg)
+    monkeypatch.setattr(model_manager, "ensure_models_provider_metadata", lambda c, persist=False: c)
+    monkeypatch.setattr(model_manager, "prune_recent_models", lambda c: [])
+    monkeypatch.setattr(model_manager, "get_effort", lambda: None)
+
+    def fake_resolve(entry: dict) -> dict:
+        resolved = dict(entry)
+        resolved["api_key"] = "sk-present" if entry.get("api_key_secret") else ""
+        return resolved
+
+    monkeypatch.setattr(settings, "resolve_model_config", fake_resolve)
+
+    result = model_routes.list_models()
+    by_id = {item["id"]: item for item in result["models"]}
+    missing = by_id["ark/glm-5.2"]["warning"] or ""
+    ready = by_id["opencode-go/glm-5.2"]["warning"]
+    assert "API credential is unavailable" in missing
+    assert "ARK_API_KEY" in missing
+    assert "api_key" not in by_id["ark/glm-5.2"]
+    assert "sk-present" not in str(result)
+    assert ready in (None, "")

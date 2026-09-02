@@ -114,7 +114,7 @@ rollback via `RXYCODE_TUI=ink`.
 
 ## Desktop (Electron)
 
-`frontend/desktop-app/` is the Codex-style GUI. Composer `+` 菜单提供：文件和文件夹、在项目中使用 Work（选工作区并开新聊天）、目标 `/goal`（按 session 记住持续目标）、计划模式 `/plan`（`session/prompt` 传 `mode: "plan"`，只输出 `#` / `## Summary` / `## Steps` 计划文档）。计划文档下方「是，实施此计划」切到 Agent/`build` 并按文档执行；「请你补充说明哪里需要改进」回车仍留在 plan 模式改写文档。主输入框在计划模式下同样继续改计划。`/build` 切回 Agent 模式。设置页只有在 `models/list` 真的返回 method-not-found 时才显示「旧版 appserver」；后端未连接或运行时失败会显示真实原因，不再误报 BLOCKED_PREREQUISITE。
+`frontend/desktop-app/` is the Codex-style GUI. Composer 模型菜单在同名模型上显示完整 id；没有密钥的条目带「未配置密钥」且不可选，发送会被拦住，避免再走到 `Starting Agent worker…` 后才报 `ARK_API_KEY`。Composer `+` 菜单提供：文件和文件夹、在项目中使用 Work（选工作区并开新聊天）、目标 `/goal`（按 session 记住持续目标）、计划模式 `/plan`（`session/prompt` 传 `mode: "plan"`，只输出 `#` / `## Summary` / `## Steps` 计划文档）。计划文档下方「是，实施此计划」切到 Agent/`build` 并按文档执行；「请你补充说明哪里需要改进」回车仍留在 plan 模式改写文档。主输入框在计划模式下同样继续改计划。`/build` 切回 Agent 模式。设置页只有在 `models/list` 真的返回 method-not-found 时才显示「旧版 appserver」；后端未连接或运行时失败会显示真实原因，不再误报 BLOCKED_PREREQUISITE。侧栏项目夹只在悬停时显示「…」与添加会话；三点菜单与右键共用置顶 / 编辑 / 分区 / 资源管理器 / 永久工作树 / 归档聊天 / 移除项目。审查、终端、浏览器、文件、侧边聊天是右侧栏拉开后的居中入口（`right-panel-menu`，含快捷键）；点一项才进入对应 pane。顶栏只保留拉开右栏 / 底栏的开关。底部栏是带标签页的终端（`bottom-terminal-tab` / `+` / 关闭），占主栏下方、左侧栏通高。关闭审查不再收起整栏。
 
 ## Environment (OpenTUI)
 

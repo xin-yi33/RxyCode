@@ -97,7 +97,13 @@ export function PermissionMenu(props: {
         disabled: props.disabled === true,
         onClick: () => setOpen((current) => !current)
       },
-      createElement(ModeIcon, { name: OPTIONS.find((item) => item.value === props.value)?.icon ?? 'shield' }),
+      props.value === 'full_auto'
+        ? createElement(
+            'span',
+            { className: 'permission-full-mark', 'aria-hidden': true },
+            createElement(Check, { size: 11 })
+          )
+        : createElement(ModeIcon, { name: OPTIONS.find((item) => item.value === props.value)?.icon ?? 'shield' }),
       titles[props.value],
       createElement(ChevronDown, { size: 13, 'aria-hidden': true })
     ),

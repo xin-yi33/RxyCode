@@ -1,4 +1,5 @@
 import { FolderGit2, GitBranch, Sparkles, Users } from 'lucide-react'
+import { looksRecentWorkspace } from '../../../features/sessions/recentWorkspace.ts'
 import { TitleMarquee } from '../../../features/sessions/TitleMarquee.ts'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 
@@ -18,6 +19,7 @@ function TaskHeader({
   activeTeamLabel
 }: TaskHeaderProps): React.JSX.Element {
   const { t } = useI18n()
+  const showWorkspace = !looksRecentWorkspace(workspaceRoot)
   return (
     <header className="task-header">
       <div>
@@ -25,14 +27,18 @@ function TaskHeader({
         <h1><TitleMarquee text={title} /></h1>
       </div>
       <div className="task-metadata" aria-label={t('task')}>
-        <span title={workspaceRoot}>
-          <FolderGit2 aria-hidden="true" size={14} />
-          {workspaceRoot === '' ? t('noWorkspace') : workspaceRoot}
-        </span>
-        <span>
-          <GitBranch aria-hidden="true" size={14} />
-          workspace
-        </span>
+        {showWorkspace ? (
+          <span title={workspaceRoot} data-testid="task-workspace">
+            <FolderGit2 aria-hidden="true" size={14} />
+            {workspaceRoot === '' ? t('noWorkspace') : workspaceRoot}
+          </span>
+        ) : null}
+        {showWorkspace ? (
+          <span>
+            <GitBranch aria-hidden="true" size={14} />
+            workspace
+          </span>
+        ) : null}
         <span>
           <Sparkles aria-hidden="true" size={14} />
           {modelLabel}

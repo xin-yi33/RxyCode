@@ -10,6 +10,7 @@ export const IPC_INVOKE_CHANNELS = [
   'appserver:send-line',
   'appserver:get-info',
   'workspace:pick-directory',
+  'workspace:reveal',
   'update:get-status',
   'update:check',
   'update:download',
@@ -61,6 +62,11 @@ export function validateIpcInvoke(channel: string, args: unknown[]): IpcValidati
     case 'crash-report:set-consent':
       if (args.length !== 1 || typeof args[0] !== 'boolean') {
         return { ok: false, code: 'invalid_params', message: 'crash-report:set-consent requires a boolean' }
+      }
+      return { ok: true }
+    case 'workspace:reveal':
+      if (args.length !== 1 || typeof args[0] !== 'string' || args[0].trim() === '') {
+        return { ok: false, code: 'invalid_params', message: 'workspace:reveal requires a path' }
       }
       return { ok: true }
     default:

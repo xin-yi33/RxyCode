@@ -2,11 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { canTrashTask, isRecoverableConnectionError } from './taskActions.mts'
 
-test('the open task cannot be moved to recently deleted', () => {
+test('the open task can be deleted; an empty id cannot', () => {
   assert.deepEqual(canTrashTask('open-session', 'open-session'), {
-    allowed: false,
-    message: '您正在打开该窗口删不掉'
+    allowed: true,
+    message: null
   })
+  assert.equal(canTrashTask('open-session', '').allowed, false)
 })
 
 test('a different task can be moved to recently deleted', () => {

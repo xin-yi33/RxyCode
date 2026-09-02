@@ -24,6 +24,7 @@ import {
   removeApprovalRequest,
   removeApprovalRequestsForSession,
   selectSession,
+  clearActiveSession,
   setRunning,
   timelineFor,
   parseLeadingAgentMentions,
@@ -70,6 +71,14 @@ test('addSession adds a session and activates the first one', () => {
   assert.equal(state.sessions[0]?.sessionId, 's1')
   assert.equal(state.activeSessionId, 's1')
   assert.equal(state.messagesBySession['s1']?.length, 0)
+})
+
+test('clearActiveSession leaves a draft with no open chat', () => {
+  const state = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE
+  })
+  assert.equal(clearActiveSession(state).activeSessionId, null)
 })
 
 test('addSession activates a newly created session', () => {

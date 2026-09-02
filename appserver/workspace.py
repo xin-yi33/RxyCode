@@ -30,6 +30,26 @@ def assert_exists(path: Path) -> Path:
     return path
 
 
+def is_recent_data_dir(path: Path) -> bool:
+    return path.name.lower() == ".rxycode"
+
+
+def prepare_session_workspace(raw: str | Path) -> tuple[Path, bool]:
+    """Canonicalize a session workspace.
+
+    ``~/.RxyCode`` (the Recent inbox) is created on demand and must not be
+    registered as a named project. Real project folders still have to exist.
+    """
+    path = canonicalize(raw)
+    if is_recent_data_dir(path):
+        path.mkdir(parents=True, exist_ok=True)
+        if not os.access(path, os.R_OK):
+            raise PathBoundaryError("PATH_NOT_ACCESSIBLE", f"path not readable: {path}")
+        return path, False
+    return assert_exists(path), True
+
+
+
 def is_inside(root: Path, target: Path) -> bool:
     """True when ``target`` is ``root`` or a descendant. Uses OS case rules.
 

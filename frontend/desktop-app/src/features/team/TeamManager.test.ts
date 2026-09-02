@@ -85,6 +85,12 @@ test('GX28: team/* path A; picker/install/section exist; team settings unlocked'
   assert.match(plusMenu, /plus-summon-team/)
   assert.match(plusMenu, /plus-create-team/)
   assert.match(plusMenu, /plus-summon-others/)
+  const app = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/App.tsx'),
+    'utf8'
+  )
+  assert.match(app, /ensureDraftSession\(\)/)
+  assert.match(app, /teams\.setActive\(teamId, sessionId\)/)
   assert.match(plusMenu, /summon-avatar/)
   const header = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '../../renderer/src/components/TaskHeader.tsx'),

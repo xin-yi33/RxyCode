@@ -10,7 +10,7 @@ export interface UseTeamsResult {
   loading: boolean
   error: string | null
   refresh(): Promise<void>
-  setActive(teamId: string): Promise<boolean>
+  setActive(teamId: string, sessionOverride?: string | null): Promise<boolean>
   renameGroup(oldId: string, nextName: string): Promise<boolean>
   install(input: { name: string; url?: string; confirm?: boolean; group?: string }): Promise<string>
   activateGroup(groupId: string): Promise<boolean>
@@ -58,11 +58,12 @@ export function useTeams(
   }, [refresh])
 
   const setActive = useCallback(
-    async (teamId: string): Promise<boolean> => {
-      if (client == null || sessionId == null || sessionId === '') return false
+    async (teamId: string, sessionOverride?: string | null): Promise<boolean> => {
+      const bound = (sessionOverride ?? sessionId ?? '').trim()
+      if (client == null || bound === '') return false
       const result = await client.requestWithTimeout<{ ok?: boolean; active?: string }>(
         'team/set_active',
-        { session_id: sessionId, team_id: teamId },
+        { session_id: bound, team_id: teamId },
         10_000
       )
       if (result.ok === false) return false

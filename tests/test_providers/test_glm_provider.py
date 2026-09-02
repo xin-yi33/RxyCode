@@ -96,6 +96,16 @@ def test_glm52_effort_presets():
     assert caps.effort_presets == {"fast": "low", "balanced": "high", "deep": "max"}
 
 
+def test_glm_opencode_go_strips_vendor_extras():
+    """Console Go rejects GLM-native extras as Extra inputs are not permitted."""
+    p, cfg = _resolve("glm-5.2", "https://opencode.ai/zen/go/v1")
+    kwargs = p.llm_kwargs({**cfg, "api_key": "sk-test", "effort": "balanced"}, _caps("glm-5.2"))
+    assert "reasoning_effort" not in kwargs
+    body = kwargs.get("extra_body") or {}
+    assert "clear_thinking" not in body
+    assert "thinking" not in body
+
+
 def test_glm_keeps_temperature():
     """§7.4 问 5：未找到 thinking 拒绝 temperature 明文 → accepts_temperature=True。"""
     caps = _caps("glm-5.2")

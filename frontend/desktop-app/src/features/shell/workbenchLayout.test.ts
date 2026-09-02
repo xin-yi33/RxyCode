@@ -46,18 +46,18 @@ test('desktop CSS shows a 248px left rail and does not globally hide it', () => 
     }),
     'main-layout command-layout plugin-hub-open'
   )
-  assert.match(css, /\.command-layout\.plugin-hub-open\s*\{\s*grid-template-columns:\s*248px\s+minmax\(0,\s*1fr\);/)
+  assert.match(css, /\.command-layout\.plugin-hub-open\s*\{\s*grid-template-columns:\s*var\(--wb-left,\s*248px\)\s+minmax\(0,\s*1fr\)\s+var\(--wb-right,\s*0px\);/)
   assert.doesNotMatch(css, /\.command-layout\.plugin-hub-open\s*\{[^}]*720px/)
   assert.doesNotMatch(css, /\.plugin-hub-slot\s*\{[^}]*grid-column:\s*3/)
   assert.equal(sessionRailSelector('block'), '.desktop-navigation-panel')
   assert.equal(sessionRailSelector('none'), '.nav-sheet')
   const override = css.split('RxyCode desktop command surface')[1] ?? ''
   const desktopDefault = override.split('@media')[0]
-  assert.match(desktopDefault, /\.command-layout \{[\s\S]*?grid-template-columns:\s*248px\s+minmax\(0,\s*1fr\);/)
+  assert.match(desktopDefault, /\.command-layout \{[\s\S]*?grid-template-columns:\s*var\(--wb-left,\s*248px\)\s+minmax\(0,\s*1fr\)\s+var\(--wb-right,\s*0px\);/)
   assert.doesNotMatch(desktopDefault, /\.desktop-navigation-panel\s*\{[^}]*display:\s*none/)
   assert.match(desktopDefault, /\.desktop-navigation-panel\s*\{[^}]*display:\s*block/)
   assert.match(desktopDefault, /\.nav-toggle\s*\{[\s\S]*?display:\s*none/)
-  assert.match(css, /@media \(max-width:\s*1279px\)[\s\S]*\.desktop-navigation-panel\s*\{[\s\S]*?display:\s*none/)
+  assert.doesNotMatch(css, /@media \(max-width:\s*1279px\)[\s\S]*\.desktop-navigation-panel\s*\{[\s\S]*?display:\s*none/)
 })
 
 test('App ships a persistent desktop-navigation-panel SessionList', () => {
@@ -65,7 +65,41 @@ test('App ships a persistent desktop-navigation-panel SessionList', () => {
   assert.match(app, /className="desktop-navigation-panel"/)
   assert.match(app, /data-testid="workbench-layout"/)
   assert.match(app, /workbenchLayoutClass/)
+  assert.match(app, /testId="sash-left"/)
+  assert.match(app, /testId="sash-right"/)
+  assert.match(app, /testId="sash-bottom"/)
   assert.doesNotMatch(app, /PermissionModeSwitcher/)
+})
+
+test('App mounts Codex queue, workbench toggles, and project wizard', () => {
+  const app = readFileSync(join(root, 'src/renderer/src/App.tsx'), 'utf8')
+  const composer = readFileSync(join(root, 'src/renderer/src/components/Composer.tsx'), 'utf8')
+  const toggles = readFileSync(join(root, 'src/features/shell/WorkbenchToggles.ts'), 'utf8')
+  assert.match(app, /WorkbenchToggles/)
+  assert.match(app, /CreateProjectDialog/)
+  assert.match(app, /CloseSideChatDialog/)
+  assert.match(app, /TerminalPane/)
+  assert.match(app, /BrowserPane/)
+  assert.match(app, /FilesPane/)
+  assert.match(app, /onProjectAction=\{handleProjectAction\}/)
+  assert.match(app, /RightPanelMenu/)
+  assert.match(app, /rightView === 'picker'/)
+  assert.match(toggles, /right-panel-menu/)
+  assert.doesNotMatch(toggles, /right-tool-strip/)
+  assert.match(css, /\.right-panel-menu \{/)
+  assert.doesNotMatch(css, /\.right-panel-menu \{\s*display:\s*none/)
+  assert.match(app, /data-testid="right-view-review"/)
+  assert.match(toggles, /right-view-terminal/)
+  assert.match(app, /data-testid="right-view-sidechat"/)
+  assert.match(app, /openRightView\('review'\)/)
+  assert.doesNotMatch(app, /onClose=\{\(\) => \{ setInspectorOpen\(false\); setInspectorItem\(null\); setRightOpen\(false\) \}\}/)
+  assert.match(app, /startDraftChat/)
+  assert.match(app, /defaultRecentWorkspace/)
+  assert.match(app, /onOpenPlugins=\{navOpen \? openPlugins : undefined\}/)
+  assert.doesNotMatch(composer, /SendDropdown/)
+  assert.doesNotMatch(composer, /Add to Queue/)
+  assert.match(composer, /QueuedFollowups/)
+  assert.match(composer, /composer-project-picker/)
 })
 
 test('App mounts Statusline, PromptSuggestions, and review scope', () => {

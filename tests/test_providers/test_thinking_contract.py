@@ -289,6 +289,18 @@ def test_glm_sends_clear_thinking_false_and_no_thinking_object():
     assert "thinking" not in body  # GLM's live contract uses clear_thinking only
 
 
+def test_glm_opencode_go_does_not_send_vendor_extras():
+    from RxyCode.RxyCode1_1_0.core.providers.glm import GLMProvider
+
+    kwargs = _provider_llm_kwargs(
+        GLMProvider, "glm-5.2", {"base_url": "https://opencode.ai/zen/go/v1"}
+    )
+    assert "reasoning_effort" not in kwargs
+    body = kwargs.get("extra_body") or {}
+    assert "clear_thinking" not in body
+    assert "thinking" not in body
+
+
 def test_glm_51_sends_no_reasoning_effort():
     from RxyCode.RxyCode1_1_0.core.providers.glm import GLMProvider
 

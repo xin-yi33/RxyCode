@@ -8,6 +8,7 @@
  * "running", and torn down when it leaves that state.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { resolveCreateSessionWorkspace } from '../../../features/sessions/recentWorkspace.ts'
 import type {
   ApprovalRequest,
   ApprovalResponse,
@@ -40,6 +41,7 @@ import {
   removeApprovalRequest,
   restoreSession,
   selectSession as selectSessionReducer,
+  clearActiveSession as clearActiveSessionReducer,
   setSessionModel,
   trashSession,
   updateApprovalRequestStatus,
@@ -84,8 +86,9 @@ export interface UseConversationResult {
   protocolClient: ProtocolClient | null
   handshakeCapabilities: Record<string, unknown>
   approvalRules: ApprovalRule[]
-  createSession: (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }) => Promise<boolean>
+  createSession: (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }) => Promise<string | null>
   selectSession: (sessionId: string) => void
+  clearActiveSession: () => void
   renameSession: (sessionId: string, title: string) => Promise<boolean>
   trashSession: (sessionId: string) => Promise<boolean>
   restoreSession: (sessionId: string) => Promise<boolean>
@@ -559,12 +562,17 @@ export function useConversation(
     }
   }, [])
 
-  const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }): Promise<boolean> => {
+  const createSession = useCallback(async (model?: { modelId?: string; providerId?: string | null; workspaceRoot?: string }): Promise<string | null> => {
     const ready = connectionReadyRef.current
-    if (ready !== null && !(await ready)) return false
+    if (ready !== null && !(await ready)) return null
     const client = await ensureClient()
     const currentInfo = infoRef.current
-    if (client === null || client === undefined || currentInfo === null) return false
+    if (client === null || client === undefined || currentInfo === null) return null
+    const workspace = resolveCreateSessionWorkspace({
+      requested: model?.workspaceRoot,
+      homeDir: typeof currentInfo.homeDir === 'string' ? currentInfo.homeDir : ''
+    })
+    if (workspace === '') return null
     try {
       const created = await client.requestWithTimeout<{
         session_id: string
@@ -572,27 +580,37 @@ export function useConversation(
         model_id?: string | null
         provider_id?: string | null
       }>('session/new', {
-        workspace_root: model?.workspaceRoot ?? workspaceRootOverride ?? currentInfo.repoRoot,
+        workspace_root: workspace,
         ...(model?.modelId ? { model: model.modelId } : {}),
         ...(model?.providerId ? { provider_id: model.providerId } : {})
       }, 10_000)
-      setState((current) =>
-        addSession(current, {
+      setState((current) => {
+        const next = addSession(current, {
           sessionId: created.session_id,
           workspaceRoot: created.workspace_root,
           modelId: created.model_id ?? null,
           providerId: created.provider_id ?? null
         })
-      )
-      return true
+        stateRef.current = next
+        return next
+      })
+      return created.session_id
     } catch (error) {
       console.error('session/new failed', error)
-      return false
+      return null
     }
   }, [info, workspaceRootOverride])
 
   const selectSession = useCallback((sessionId: string): void => {
     setState((current) => selectSessionReducer(current, sessionId))
+  }, [])
+
+  const clearActiveSession = useCallback((): void => {
+    setState((current) => {
+      const next = clearActiveSessionReducer(current)
+      stateRef.current = next
+      return next
+    })
   }, [])
 
   const renameTask = useCallback(async (sessionId: string, title: string): Promise<boolean> => {
@@ -901,6 +919,7 @@ export function useConversation(
     approvalRules,
     createSession,
     selectSession,
+    clearActiveSession,
     renameSession: renameTask,
     trashSession: trashTask,
     restoreSession: restoreTask,

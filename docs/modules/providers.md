@@ -76,7 +76,7 @@ Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()
 > | OpenAI | §7.2 | OpenAIProvider（A12：兜底 + 显式能力） | 已注册 |
 > | DeepSeek | §7.1 | DeepSeekProvider（A22 v4 适配） | 已注册 |
 > | Kimi | §7.3 | KimiProvider | 已注册 |
-> | GLM | §7.4 | GLMProvider | 已注册 |
+> | GLM | §7.4 | GLMProvider（官方/Ark 走 `clear_thinking`；`opencode.ai` 网关剥掉该字段和 `reasoning_effort`，避免 Console Go `Extra inputs` 400） | 已注册 |
 > | MiniMax | §7.5 | MiniMaxProvider | 已注册 |
 > | MIMO | §7.6 | MIMOProvider | 已注册 |
 > | Anthropic | §7.8 + 2026-08-25 三协议专项 | AnthropicProvider（官方 Host 走原生 Messages，兼容代理保持其 OpenAI 契约） | 已注册 |

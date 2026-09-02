@@ -56,6 +56,19 @@ except ImportError:
 
 _logger = logging.getLogger(__name__)
 
+# Prompt/interrupt must keep reading stdin so the parent can cancel an
+# in-flight turn.  Bootstrap (and other one-shot RPCs) must not: on
+# Windows the CRT stdin lock plus a concurrent `sys.stdin.readline` in
+# the default executor deadlocks `import langchain_openai` in
+# `asyncio.to_thread` (Desktop stays on "Starting Agent worker" until the
+# 300s bootstrap RPC timeout).
+_STDIN_CONCURRENT_METHODS = frozenset({"prompt", "interrupt"})
+
+
+def dispatch_overlaps_stdin_readline(method: str) -> bool:
+    return str(method or "") in _STDIN_CONCURRENT_METHODS
+
+
 
 def configure_agent_workspace(
     agent: Any,
@@ -1318,7 +1331,11 @@ class AgentWorker:
                         }
                     )
                     break
-                if message.get("method") == "prompt":
+                method = str(message.get("method") or "")
+                if not dispatch_overlaps_stdin_readline(method):
+                    await self._dispatch_safe(message)
+                    continue
+                if method == "prompt":
                     self._run_task = loop.create_task(self._dispatch_safe(message))
                     task = self._run_task
 

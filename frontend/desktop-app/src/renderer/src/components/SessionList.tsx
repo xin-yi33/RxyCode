@@ -1,12 +1,15 @@
-import { Archive, Clock, Folder, MoreHorizontal, Pencil, Pin, Plus, Puzzle, Search, Settings } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Archive, Clock, Folder, MoreHorizontal, Pin, Plus, Puzzle, Search, Settings } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../../../i18n/I18nContext.tsx'
 import {
   CHEVRON_GAP_PX,
   chevron,
   HOVER_DARK,
   HOVER_LIGHT,
+  looksRecentWorkspace,
   projectCategories,
+  projectNeedsExpand,
+  visibleProjectSessions,
   type CategorizedSession
 } from '../../../lib/sessionCategories.ts'
 import type { RunState, SessionEntry } from '../lib/conversationStore.mts'
@@ -19,6 +22,9 @@ import {
   type ProjectRecord
 } from '../../../features/projects/projectRegistry.ts'
 import { TitleMarquee } from '../../../features/sessions/TitleMarquee.ts'
+import { sharedMarqueePxPerSec } from '../../../features/sessions/titleMarqueeMath.ts'
+import { SessionContextMenu, type SessionContextAction } from '../../../features/sessions/SessionContextMenu.ts'
+import { ProjectContextMenu, type ProjectContextAction } from '../../../features/projects/ProjectContextMenu.ts'
 import { sessionVisualState } from './sessionVisualState.ts'
 
 export const SESSION_FOLD_STORAGE_KEY = 'rxycode.desktop.sessionFold.v1'
@@ -45,9 +51,13 @@ interface SessionListProps {
   onAddProject?: () => void
   onCreateInProject?: (cwd: string) => void
   onPin?: (sessionId: string, pinned: boolean) => void
+  onMarkUnread?: (sessionId: string, unread: boolean) => void
   onOpenSettings?: () => void
   onOpenScheduled?: () => void
   onOpenPlugins?: () => void
+  pluginsOpen?: boolean
+  hiddenCwds?: readonly string[]
+  onProjectAction?: (cwd: string, action: ProjectContextAction) => void
 }
 
 interface FoldState {
@@ -85,7 +95,7 @@ function toCategorized(
     workspaceRoot: session.workspaceRoot,
     pinned: session.pinned || pinned.has(session.sessionId),
     deletedAt: session.trashedAt === null ? null : String(session.trashedAt),
-    projectId: session.workspaceRoot === '' ? null : session.workspaceRoot
+    projectId: looksRecentWorkspace(session.workspaceRoot) ? null : session.workspaceRoot
   }))
 }
 
@@ -109,13 +119,18 @@ function SessionList({
   onAddProject,
   onCreateInProject,
   onPin,
+  onMarkUnread,
   onOpenSettings,
   onOpenScheduled,
-  onOpenPlugins
+  onOpenPlugins,
+  pluginsOpen = false,
+  hiddenCwds = [],
+  onProjectAction
 }: SessionListProps): React.JSX.Element {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [fold, setFold] = useState<FoldState>(() => loadFold(typeof window === 'undefined' ? undefined : window.localStorage))
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({})
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -146,9 +161,53 @@ function SessionList({
     window.localStorage.setItem(SESSION_FOLD_STORAGE_KEY, JSON.stringify(fold))
   }, [fold])
 
+  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null)
+  const [projectMenu, setProjectMenu] = useState<{ cwd: string; x: number; y: number } | null>(null)
+  const [renamingProject, setRenamingProject] = useState<string | null>(null)
+  const [projectRenameValue, setProjectRenameValue] = useState('')
+  const [overflowById, setOverflowById] = useState<Record<string, number>>({})
+  const reportOverflow = useCallback((sessionId: string, overflowPx: number) => {
+    setOverflowById((current) =>
+      current[sessionId] === overflowPx ? current : { ...current, [sessionId]: overflowPx }
+    )
+  }, [])
+  const titlePxPerSec = useMemo(
+    () => sharedMarqueePxPerSec(Object.values(overflowById)),
+    [overflowById]
+  )
+
   useEffect(() => {
     if (renamingId !== null) renameInputRef.current?.focus()
   }, [renamingId])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (activeSessionId === null || renamingId !== null) return
+      const target = event.target as HTMLElement | null
+      if (target !== null && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      const session = sessionById.get(activeSessionId)
+      if (session === undefined) return
+      const pinned = session.pinned || pinnedIds.includes(session.sessionId)
+      if (event.altKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        onPin?.(session.sessionId, !pinned)
+      }
+      if (event.altKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r') {
+        event.preventDefault()
+        requestRename(session)
+      }
+      if (event.shiftKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'u') {
+        event.preventDefault()
+        onMarkUnread?.(session.sessionId, !unreadIds.includes(session.sessionId))
+      }
+      if (event.shiftKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+        event.preventDefault()
+        onTrash?.(session.sessionId)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [activeSessionId, renamingId, sessionById, pinnedIds, unreadIds, onPin, onMarkUnread, onTrash])
 
   const requestRename = (session: SessionEntry): void => {
     if (onRename === undefined) return
@@ -177,7 +236,20 @@ function SessionList({
       unread: unreadIds.includes(session.sessionId)
     })
     return (
-      <li key={session.sessionId} className={'session-row' + (chrome === 'unread' ? ' has-unread' : '')}>
+      <li
+        key={session.sessionId}
+        className={
+          'session-row' +
+          (chrome === 'unread' ? ' has-unread' : '') +
+          (session.sessionId === activeSessionId ? ' is-active' : '') +
+          (chrome === 'spin' ? ' is-running' : '')
+        }
+        onContextMenu={(event) => {
+          if (trashed) return
+          event.preventDefault()
+          setMenu({ sessionId: session.sessionId, x: event.clientX, y: event.clientY })
+        }}
+      >
         {chrome === 'unread' ? (
           <span className="session-unread-dot" data-testid={`unread-task-${session.sessionId}`} aria-hidden="true" />
         ) : (
@@ -221,8 +293,14 @@ function SessionList({
               data-chrome={chrome}
             >
               <span className="session-title-row">
-                <TitleMarquee className="session-title" text={session.title} />
                 {chrome === 'spin' ? <StatusIndicator backend="running" visualState={visual} /> : null}
+                <TitleMarquee
+                  className="session-title"
+                  text={session.title}
+                  testId={`title-${session.sessionId}`}
+                  pxPerSec={titlePxPerSec}
+                  onOverflow={(overflowPx) => reportOverflow(session.sessionId, overflowPx)}
+                />
               </span>
               {childCount > 0 && <span className="session-child-count">{childCount}</span>}
             </button>
@@ -243,9 +321,6 @@ function SessionList({
                 <Pin aria-hidden="true" size={14} fill={pinned ? 'currentColor' : 'none'} strokeWidth={1.75} />
               </button>
             ) : null}
-            <button type="button" className="icon-button" title={t('rename')} aria-label={t('rename')} data-testid={`rename-task-${session.sessionId}`} onClick={() => requestRename(session)}>
-              <Pencil aria-hidden="true" size={14} />
-            </button>
             <button type="button" className="icon-button" title={t('archiveChat')} aria-label={t('archiveChat')} data-testid={`trash-task-${session.sessionId}`} onClick={() => onTrash?.(session.sessionId)}>
               <Archive aria-hidden="true" size={14} />
             </button>
@@ -304,28 +379,98 @@ function SessionList({
     projects,
     Object.fromEntries(
       Object.entries(buckets.projects).map(([cwd, entries]) => [cwd, entries.map((entry) => entry.sessionId)])
-    )
+    ),
+    hiddenCwds
   )
   const projectSections = projectRows.map((row) => (
     <section key={row.cwd} className="session-project" data-testid={`session-project-${row.cwd}`}>
-      <div className="session-project-head">
+      <div
+        className="session-project-head"
+        onContextMenu={(event) => {
+          event.preventDefault()
+          setProjectMenu({ cwd: row.cwd, x: event.clientX, y: event.clientY })
+        }}
+      >
         <Folder className="session-project-folder" aria-hidden="true" size={14} />
-        <p className="session-project-title" title={row.cwd}>{row.displayName}</p>
-        {onCreateInProject !== undefined ? (
+        {renamingProject === row.cwd ? (
+          <form
+            className="session-rename-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const next = projectRenameValue.trim()
+              if (next !== '') onProjectAction?.(row.cwd, { kind: 'edit', name: next })
+              setRenamingProject(null)
+            }}
+          >
+            <input
+              autoFocus
+              value={projectRenameValue}
+              onChange={(event) => setProjectRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setRenamingProject(null)
+                }
+              }}
+              aria-label={`${t('editProject')} ${row.displayName}`}
+              data-testid={`rename-project-${row.cwd}`}
+            />
+          </form>
+        ) : (
+          <p className="session-project-title" title={row.cwd}>{row.displayName}</p>
+        )}
+        <div className="session-project-actions">
           <button
             type="button"
             className="session-head-action"
-            data-testid={`new-in-project-${row.cwd}`}
-            title={t('newInProject')}
-            aria-label={t('newInProject')}
-            onClick={() => onCreateInProject(row.cwd)}
-            disabled={disabled}
+            data-testid={`project-more-${row.cwd}`}
+            title={t('projectMore')}
+            aria-label={t('projectMore')}
+            onClick={(event) => {
+              event.stopPropagation()
+              const box = event.currentTarget.getBoundingClientRect()
+              setProjectMenu({ cwd: row.cwd, x: box.right, y: box.bottom })
+            }}
           >
-            <Plus aria-hidden="true" size={14} />
+            <MoreHorizontal aria-hidden="true" size={14} />
           </button>
-        ) : null}
+          {onCreateInProject !== undefined ? (
+            <button
+              type="button"
+              className="session-head-action"
+              data-testid={`new-in-project-${row.cwd}`}
+              title={t('newInProject')}
+              aria-label={t('newInProject')}
+              onClick={() => {
+                onCreateInProject(row.cwd)
+              }}
+              disabled={disabled}
+            >
+              <Plus aria-hidden="true" size={14} />
+            </button>
+          ) : null}
+        </div>
       </div>
-      <ul className="session-list session-list-in-project">{sessionsForCwd(row.cwd).map((session) => renderTask(session, false))}</ul>
+      {(() => {
+        const all = sessionsForCwd(row.cwd)
+        const expanded = normalizedQuery !== '' || expandedProjects[row.cwd] === true
+        const shown = visibleProjectSessions(all, expanded)
+        return (
+          <>
+            <ul className="session-list session-list-in-project">{shown.map((session) => renderTask(session, false))}</ul>
+            {projectNeedsExpand(all.length) && !expanded ? (
+              <button
+                type="button"
+                className="session-project-expand"
+                data-testid={`expand-project-${row.cwd}`}
+                onClick={() => setExpandedProjects((current) => ({ ...current, [row.cwd]: true }))}
+              >
+                {t('expandShow')}
+              </button>
+            ) : null}
+          </>
+        )
+      })()}
     </section>
   ))
 
@@ -350,7 +495,9 @@ function SessionList({
         <input type="search" placeholder={t('searchTasks')} aria-label={t('searchTasks')} value={query} onChange={(event) => setQuery(event.target.value)} />
       </label>
       <nav className="session-shortcuts" aria-label={t('tasks')}>
-        <button type="button" className="session-shortcut" data-testid="sidebar-new" onClick={onCreate} disabled={disabled}>
+        <button type="button" className="session-shortcut" data-testid="sidebar-new" onClick={() => {
+          onCreate()
+        }} disabled={disabled}>
           <Plus aria-hidden="true" size={14} />
           <span>{t('newTask')}</span>
         </button>
@@ -358,10 +505,18 @@ function SessionList({
           <Clock aria-hidden="true" size={14} />
           <span>{t('scheduled')}</span>
         </button>
-        <button type="button" className="session-shortcut" data-testid="sidebar-plugins" onClick={onOpenPlugins}>
-          <Puzzle aria-hidden="true" size={14} />
-          <span>{t('plugins')}</span>
-        </button>
+        {onOpenPlugins !== undefined ? (
+          <button
+            type="button"
+            className={'session-shortcut' + (pluginsOpen ? ' is-active' : '')}
+            data-testid="sidebar-plugins"
+            aria-pressed={pluginsOpen}
+            onClick={onOpenPlugins}
+          >
+            <Puzzle aria-hidden="true" size={14} />
+            <span>{t('plugins')}</span>
+          </button>
+        ) : null}
         {onOpenSettings !== undefined ? (
           <button type="button" className="session-shortcut" data-testid="sidebar-more" onClick={onOpenSettings}>
             <MoreHorizontal aria-hidden="true" size={14} />
@@ -419,7 +574,9 @@ function SessionList({
               data-testid="new-in-recent"
               title={t('newTask')}
               aria-label={t('newTask')}
-              onClick={onCreate}
+              onClick={() => {
+                onCreate()
+              }}
               disabled={disabled}
             >
               <Plus aria-hidden="true" size={14} />
@@ -441,6 +598,79 @@ function SessionList({
           <span>{t('settings')}</span>
         </button>
       )}
+      {menu !== null && sessionById.get(menu.sessionId) !== undefined ? (
+        <SessionContextMenu
+          x={menu.x}
+          y={menu.y}
+          sessionId={menu.sessionId}
+          title={sessionById.get(menu.sessionId)?.title ?? ''}
+          pinned={sessionById.get(menu.sessionId)?.pinned === true || pinnedIds.includes(menu.sessionId)}
+          unread={unreadIds.includes(menu.sessionId)}
+          currentProject={
+            looksRecentWorkspace(sessionById.get(menu.sessionId)?.workspaceRoot ?? '')
+              ? null
+              : (sessionById.get(menu.sessionId)?.workspaceRoot ?? null)
+          }
+          projects={projectRows.map((row) => ({ cwd: row.cwd, displayName: row.displayName }))}
+          labels={{
+            pin: t('pinTask'),
+            unpin: t('unpinTask'),
+            rename: t('renameChat'),
+            unread: t('markUnread'),
+            archive: t('archiveChat'),
+            project: t('projects'),
+            section: t('section'),
+            share: t('share'),
+            copy: t('copy'),
+            copyTitle: t('copyTitle'),
+            copyId: t('copyId'),
+            openInNewWindow: t('openInNewWindow'),
+            recent: t('recent')
+          }}
+          onClose={() => setMenu(null)}
+          onAction={(action: SessionContextAction) => {
+            const session = sessionById.get(menu.sessionId)
+            if (session === undefined) return
+            if (action.kind === 'pin') onPin?.(session.sessionId, !(session.pinned || pinnedIds.includes(session.sessionId)))
+            if (action.kind === 'rename') requestRename(session)
+            if (action.kind === 'unread') onMarkUnread?.(session.sessionId, !unreadIds.includes(session.sessionId))
+            if (action.kind === 'archive') onTrash?.(session.sessionId)
+            if (action.kind === 'section') onPin?.(session.sessionId, action.section === 'pinned')
+            if (action.kind === 'share' || (action.kind === 'copy' && action.field === 'title')) {
+              void navigator.clipboard?.writeText(session.title)
+            }
+            if (action.kind === 'copy' && action.field === 'id') void navigator.clipboard?.writeText(session.sessionId)
+          }}
+        />
+      ) : null}
+      {projectMenu !== null ? (
+        <ProjectContextMenu
+          x={projectMenu.x}
+          y={projectMenu.y}
+          pinned={projectRows.find((row) => row.cwd === projectMenu.cwd)?.pinned === true}
+          labels={{
+            pin: t('pinTask'),
+            unpin: t('unpinTask'),
+            edit: t('editProject'),
+            section: t('section'),
+            reveal: t('openInExplorer'),
+            createWorktree: t('createPermanentWorktree'),
+            archiveChats: t('archiveProjectChats'),
+            removeProject: t('removeProject'),
+            recent: t('recent')
+          }}
+          onClose={() => setProjectMenu(null)}
+          onAction={(action: ProjectContextAction) => {
+            if (action.kind === 'edit' && action.name === undefined) {
+              const row = projectRows.find((row) => row.cwd === projectMenu.cwd)
+              setRenamingProject(projectMenu.cwd)
+              setProjectRenameValue(row?.displayName ?? '')
+              return
+            }
+            onProjectAction?.(projectMenu.cwd, action)
+          }}
+        />
+      ) : null}
     </aside>
   )
 }

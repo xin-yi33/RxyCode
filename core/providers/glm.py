@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from urllib.parse import urlsplit
 
 try:
     from ...config.model_capabilities import (
@@ -98,6 +99,13 @@ def _family(model_name: str) -> tuple[str, int, bool, bool] | None:
     return _GLM_FAMILY.get(model_name.lower())
 
 
+def _host(base_url: str) -> str:
+    try:
+        return (urlsplit(base_url).hostname or "").casefold()
+    except ValueError:
+        return ""
+
+
 def _prompt_variant(model_name: str) -> str:
     # 未调研变体保持 DEFAULT_CAPABILITIES.prompt_variant（"default"），与 A12/A13 一致
     family = _family(model_name)
@@ -129,6 +137,25 @@ class GLMProvider(BaseProvider):
             body = kwargs.setdefault("extra_body", {})
             body.pop("thinking", None)
             body.setdefault("clear_thinking", False)
+        # OpenCode Go / Console Go is an OpenAI-compatible gateway. Vendor
+        # extras (clear_thinking, reasoning_effort) become
+        # "Extra inputs are not permitted" 400s upstream.
+        if _host(str(model_config.get("base_url") or "")) == "opencode.ai":
+            kwargs.pop("reasoning_effort", None)
+            body = dict(kwargs.get("extra_body") or {})
+            for key in (
+                "thinking",
+                "clear_thinking",
+                "reasoning_effort",
+                "reasoning_content",
+                "mandatory_echo",
+                "previous_response_id",
+            ):
+                body.pop(key, None)
+            if body:
+                kwargs["extra_body"] = body
+            else:
+                kwargs.pop("extra_body", None)
         return kwargs
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:

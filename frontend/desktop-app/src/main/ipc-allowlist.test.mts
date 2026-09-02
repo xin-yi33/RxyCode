@@ -21,6 +21,10 @@ test('H3: known IPC with invalid params is rejected', () => {
   assert.equal(validateIpcInvoke('crash-report:set-consent', ['yes']).ok, false)
   assert.equal(validateIpcInvoke('appserver:send-line', ['{"jsonrpc":"2.0"}']).ok, true)
   assert.equal(validateIpcInvoke('crash-report:set-consent', [true]).ok, true)
+  assert.equal(validateIpcInvoke('workspace:reveal', ['D:\\work']).ok, true)
+  assert.equal(validateIpcInvoke('workspace:reveal', ['']).ok, false)
+  assert.equal(validateIpcInvoke('workspace:reveal', []).ok, false)
+  assert.throws(() => assertIpcInvoke('shell:openPath', ['D:\\work']), IpcAllowlistError)
 })
 
 test('H3: allowlist does not include Node/fs/child_process channels', () => {

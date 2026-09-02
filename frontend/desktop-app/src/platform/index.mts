@@ -30,6 +30,7 @@ export interface AppserverInfo {
   appserverPid?: number | null
   appserverStatus?: string
   systemLocale?: string
+  homeDir?: string
 }
 
 export interface AppserverPlatform {
@@ -39,6 +40,7 @@ export interface AppserverPlatform {
   stop(): void
   restart?: () => Promise<void>
   pickWorkspaceDirectory(): Promise<string | null>
+  revealWorkspace?(cwd: string): Promise<boolean>
   onStatus(callback: (status: AppserverStatus) => void): () => void
   sendLine(line: string): void
   onLine(callback: (line: string) => void): () => void
@@ -59,6 +61,7 @@ export function createAppserverPlatform(): AppserverPlatform {
       await window.api.appserver.start()
     },
     pickWorkspaceDirectory: () => window.api.workspace.pickDirectory(),
+    revealWorkspace: (cwd: string) => window.api.workspace.reveal(cwd),
     onStatus: (callback) =>
       window.api.appserver.onStatus((status) => callback(status as AppserverStatus)),
     sendLine: (line) => {

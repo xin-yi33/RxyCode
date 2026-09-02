@@ -33,6 +33,7 @@ const api = {
       appVersion: string
       appserverPid: number | null
       appserverStatus: string
+      homeDir?: string
     }> => ipcRenderer.invoke('appserver:get-info'),
     onLifecycle: (callback: (event: unknown) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, payload: unknown): void => callback(payload)
@@ -68,9 +69,10 @@ const api = {
       }
     }
   },
-  workspace: {
-    pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('workspace:pick-directory')
-  }
+      workspace: {
+        pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('workspace:pick-directory'),
+        reveal: (cwd: string): Promise<boolean> => ipcRenderer.invoke('workspace:reveal', cwd)
+      }
 }
 
 if (process.contextIsolated) {

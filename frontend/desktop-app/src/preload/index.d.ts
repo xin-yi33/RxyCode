@@ -51,6 +51,7 @@ declare global {
           appserverPid: number | null
           appserverStatus: string
           systemLocale?: string
+          homeDir?: string
         }>
       }
       update: {
@@ -68,6 +69,7 @@ declare global {
       }
       workspace: {
         pickDirectory: () => Promise<string | null>
+        reveal: (cwd: string) => Promise<boolean>
       }
     }
   }
