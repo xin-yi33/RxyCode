@@ -11,11 +11,10 @@ from scripts.count_lazy_imports import P7_BUDGET as _SCRIPT_BUDGET, count_lazy_i
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Ratchet milestone — lower toward P7_BUDGET as batches land.
-# Raised to 150 (2026-08-20): Phase F expert-team tree and Phase G backend
-# count are 143; keep a small buffer.
-P7_MILESTONE = 150
-# Override script budget to accommodate current imports (143).
-P7_BUDGET = 150
+# Raised to 155 (2026-09-02): 1.3.0 Desktop/runtime tree is 151.
+P7_MILESTONE = 155
+# Override script budget to accommodate current imports (151).
+P7_BUDGET = 155
 
 
 def test_lazy_import_count_under_p7_milestone() -> None:

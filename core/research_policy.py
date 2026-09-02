@@ -128,9 +128,13 @@ _LOCAL_TOOL_CALL = re.compile(
 # sequence.  This does not apply to a bare "do not use web" factual question:
 # a local inspection tool must also be named.
 _NEGATED_WEB_TOOL_CONSTRAINT = re.compile(
+    r"(?:"
     r"\b(?:do\s+not|don't|never)\s+"
     r"(?:call|use|run|execute|invoke|browse|search)\b[^.\n]*\b"
-    r"(?:websearch|web|internet|online)\b",
+    r"(?:websearch|web|internet|online)\b"
+    r"|"
+    r"(?:不要|别|禁止)(?:调用|使用|用)\s*(?:websearch|webfetch|联网搜索|网络搜索)"
+    r")",
     re.IGNORECASE,
 )
 

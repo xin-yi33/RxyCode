@@ -126,6 +126,11 @@ def test_local_artifact_repair_prompt_does_not_force_web_research():
     assert get_research_policy(query).requires_web is False
 
 
+def test_chinese_do_not_use_websearch_keeps_git_status_local():
+    query = "必须调用 git 工具，operation=status，不要用 websearch"
+    assert get_research_policy(query).requires_web is False
+
+
 def test_current_price_still_requires_web_research():
     assert get_research_policy("Check the current price of gold before advising me.").requires_web is True
 
