@@ -1,6 +1,5 @@
 appId: com.rxycode.desktop
 productName: RxyCode Desktop
-homepage: https://github.com/xin-yi33/RxyCode
 directories:
   buildResources: build
 electronDist: node_modules/electron/dist

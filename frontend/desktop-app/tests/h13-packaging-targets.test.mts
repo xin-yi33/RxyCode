@@ -22,6 +22,7 @@ test('H13 P3: win/mac/linux targets include nsis, dmg, AppImage, deb', () => {
 
 test('Linux electron-builder metadata includes a project homepage', () => {
   assert.equal(pkg.homepage, 'https://github.com/xin-yi33/RxyCode')
+  assert.doesNotMatch(yaml, /^homepage:/m)
 })
 
 test('H13 P3: locale JSON exists and is imported into the Desktop bundle', () => {
