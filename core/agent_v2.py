@@ -4432,6 +4432,29 @@ class AgentV2:
             return "fast"
         return "balanced"
 
+    def _apply_turn_effort(self, mode: str, text: str) -> str:
+        """A21: pick this turn's effort. Implicit LLM-build default
+        ``balanced`` must not skip simple→fast routing.
+
+        Explicit ``/effort`` (get_effort) wins. Otherwise ``_effort_for``.
+        """
+        if getattr(self, "model_config", None) is None:
+            self.model_config = {}
+        self.model_config = dict(self.model_config)
+        explicit = None
+        try:
+            from RxyCode.RxyCode1_1_0.config.model_manager import get_effort
+
+            explicit = get_effort()
+        except Exception:
+            explicit = None
+        if explicit:
+            effort = str(explicit)
+        else:
+            effort = self._effort_for(mode, text)
+        self.model_config["effort"] = effort
+        return effort
+
     def _detect_download_intent(self, text: str) -> tuple[str, str, str] | None:
         return detect_download_intent(text)
 
@@ -4741,8 +4764,7 @@ class AgentV2:
         if getattr(self, "model_config", None) is None:
             self.model_config = {}
         self.model_config = dict(self.model_config)
-        if not self.model_config.get("effort"):
-            self.model_config["effort"] = self._effort_for(mode, user_input)
+        self._apply_turn_effort(mode, user_input)
         system = get_system_prompt(variant=self._prompt_variant())
         prefix_live = self._agent_prefix_is_live(system)
         if (
