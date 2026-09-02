@@ -134,7 +134,7 @@ function keepPythonFile(
       const third = parts[2]
       if (third === 'site-packages') return keepSitePackages(parts, name)
       // Keep stdlib modules but prune tests/docs/caches.
-      if (third === 'test' || third === 'idlelib' || third === 'turtledemo' || third === 'venv') {
+      if (third === 'test' || third === 'idlelib' || third === 'turtledemo') {
         return false
       }
       return true
@@ -147,7 +147,7 @@ function keepPythonFile(
 
 function keepStdLib(parts: string[], name: string): boolean {
   const second = parts[1]
-  if (second === 'test' || second === 'idlelib' || second === 'turtledemo' || second === 'venv') {
+  if (second === 'test' || second === 'idlelib' || second === 'turtledemo') {
     return false
   }
   if (second === 'site-packages') return keepSitePackages(parts, name)
@@ -681,7 +681,7 @@ async function main(argv: string[]): Promise<void> {
     pythonExe,
     [
       '-c',
-      'import pydantic, yaml, jsonschema, fastapi, uvicorn, langchain, langchain_openai, langgraph, psutil, tenacity, pybreaker, numpy, httpx, aiosqlite, tiktoken, click, rich; print("deps-ok")'
+      'import pydantic, yaml, jsonschema, fastapi, uvicorn, langchain, langchain_openai, langgraph, psutil, tenacity, pybreaker, numpy, httpx, aiosqlite, tiktoken, click, rich, venv; print("deps-ok")'
     ],
     appDirStaged
   )

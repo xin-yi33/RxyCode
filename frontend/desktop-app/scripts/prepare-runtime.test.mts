@@ -43,6 +43,8 @@ test('win32 keeps interpreter + stdlib, drops debug/Docs/test', () => {
   assert.equal(win('C:/Python/python_d.exe'), false) // debug interpreter dropped
   assert.equal(win('C:/Python/Lib/site-packages/pydantic'), true)
   assert.equal(win('C:/Python/Lib/test'), false)
+  assert.equal(win('C:/Python/Lib/venv'), true)
+  assert.equal(winDir('C:/Python/Lib/venv'), true)
   assert.equal(win('C:/Python/Lib/site-packages/pytest'), false)
   assert.equal(win('C:/Python/Lib/site-packages/scipy'), false)
   assert.equal(win('C:/Python/Doc'), false)
@@ -73,6 +75,7 @@ test('POSIX keeps bin/python3 + lib/pythonX.Y stdlib, drops pip wrappers beyond 
   assert.equal(posix('/opt/python/lib/pkgconfig'), true)
   assert.equal(posix('/opt/python/lib/python3.14/site-packages/pydantic'), true)
   assert.equal(posix('/opt/python/lib/python3.14/site-packages/pytest'), false)
+  assert.equal(posix('/opt/python/lib/python3.14/venv'), true)
   assert.equal(posix('/opt/python/lib/python3.14/test'), false)
   assert.equal(posix('/opt/python/Doc'), false)
 })
