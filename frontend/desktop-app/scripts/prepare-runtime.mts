@@ -91,6 +91,9 @@ function keepPythonFile(
       // Keep the directory itself; per-package pruning happens on children.
       return true
     }
+    if (parts.includes('site-packages')) {
+      return keepSitePackages(parts, name)
+    }
     if (top === 'bin' || top === 'lib' || top === 'DLLs' || top === 'Lib' || top === 'Scripts') {
       return true
     }
@@ -161,6 +164,7 @@ function keepSitePackages(parts: string[], name: string): boolean {
   ) {
     return false
   }
+  if (/^rxycode/i.test(pkgName)) return false
   if (name.endsWith('.dist-info') && /^rxycode-/.test(name)) return false
   if (name.startsWith('__editable__')) return false
   return true
@@ -381,7 +385,14 @@ function copyTree(
         // keep predicate was already applied to the link itself, and the
         // target may live outside pythonRoot (macOS setup-python links
         // bin/python3 to the framework), so do not re-filter the target.
+        // Directory junctions cannot be copyFileSync'd; skip them. Host
+        // RxyCode installs are already pruned by keepSitePackages.
         const resolved = resolve(src, readlinkSync(full))
+        if (!existsSync(resolved)) continue
+        const targetStat = lstatSync(resolved)
+        if (targetStat.isDirectory()) {
+          continue
+        }
         if (keep(full, false)) {
           copyFileSync(resolved, target)
         }

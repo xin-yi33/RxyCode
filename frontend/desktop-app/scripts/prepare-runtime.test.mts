@@ -56,6 +56,13 @@ test('win32 filters pip and rxycode dist-info by dynamic version', () => {
   assert.equal(win('C:/Python/Lib/site-packages/rxycode-1.2.6.dist-info'), false)
 })
 
+test('win32 drops host RxyCode installs so junctions cannot break staging', () => {
+  assert.equal(win('C:/Python/Lib/site-packages/RxyCode'), false)
+  assert.equal(winDir('C:/Python/Lib/site-packages/RxyCode'), false)
+  assert.equal(winDir('C:/Python/Lib/site-packages/RxyCode.old-broken-install'), false)
+  assert.equal(winDir('C:/Python/Lib/site-packages/pydantic'), true)
+})
+
 test('POSIX keeps bin/python3 + lib/pythonX.Y stdlib, drops pip wrappers beyond pip3', () => {
   assert.equal(posix('/opt/python/bin/python3'), true)
   assert.equal(posix('/opt/python/bin/python3.14'), true)
@@ -89,7 +96,7 @@ test('directory roots (bin/lib/Lib/DLLs) are always traversed', () => {
   assert.equal(winDir('C:/Python/Scripts'), true)
   // Pruned subtrees stay pruned even as directories.
   assert.equal(posixDir('/opt/python/lib/python3.14/test'), false)
-  assert.equal(winDir('C:/Python/Lib/site-packages/pytest'), true)
+  assert.equal(winDir('C:/Python/Lib/site-packages/pytest'), false)
 })
 
 test('rewritePosixConsoleScript replaces CI shebangs with a relocatable wrapper', () => {
