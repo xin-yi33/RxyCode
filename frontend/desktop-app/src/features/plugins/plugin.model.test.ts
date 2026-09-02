@@ -19,7 +19,7 @@ test('parsePluginList keeps github auth without inventing a token', () => {
   assert.equal(rows[0]?.auth, 'needed')
   assert.equal(githubCardState(rows[0]), 'connect')
   assert.equal(
-    githubCardState({ name: 'github', version: '', source: '', enabled: true, path: '', description: '', auth: 'configured' }),
+    githubCardState({ name: 'github', auth: 'configured' }),
     'connected'
   )
   assert.equal(githubCardState(null), 'install')

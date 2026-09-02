@@ -1,7 +1,7 @@
 import { createElement, useMemo, useState, type ReactElement } from 'react'
 import { TeamDetailOverlay } from './TeamPicker.ts'
 import { teamInitials, teamOneLiner, teamScopeTags, teamCategory } from './team.model.ts'
-import { memberPortraitSrc, teamPortraitSrc } from './team.portraits.ts'
+import { teamPortraitSrc } from './team.portraits.ts'
 import { gx28VisualState, type TeamGroup, type TeamRecord } from './team.visual.ts'
 
 function Avatar(props: { src: string | null; name: string; large?: boolean }): ReactElement {

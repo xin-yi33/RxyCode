@@ -77,8 +77,10 @@ test('buildSteer params satisfy schema and keep session_id', () => {
   assert.deepEqual(probe.missing, [])
   assert.equal(probe.stopMethod, 'session/interrupt')
   const steer = buildSteer(schema, 'nudge', 'sess-1')
+  if (!('method' in steer) || steer.method !== 'turn/steer') {
+    throw new Error('steer blocked')
+  }
   assert.equal(steer.method, 'turn/steer')
-  if (!('params' in steer)) throw new Error('steer blocked')
   assert.equal(steer.params.session_id, 'sess-1')
   assert.equal(steer.params.text, 'nudge')
   const required = (JSON.parse(schema) as {

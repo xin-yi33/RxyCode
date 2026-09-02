@@ -17,9 +17,6 @@ test('projectRunPanel maps plan/files/usage and opens while running', () => {
         s1: {
           inputTokens: 10,
           outputTokens: 5,
-          cacheHitTokens: null,
-          cacheWriteTokens: null,
-          cacheHitRate: null,
           reportingStatus: 'reported'
         }
       },
@@ -27,10 +24,7 @@ test('projectRunPanel maps plan/files/usage and opens while running', () => {
         s1: [
           {
             kind: 'tool_activity',
-            id: 't1',
-            callId: 'c1',
             toolName: 'write',
-            status: 'ok',
             arguments: { path: 'a.ts' }
           }
         ]

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import type { ModelEntry } from '../hooks/useModels'
 import {
   duplicateModelNicknames,
   groupModelsByProvider,
@@ -8,7 +9,7 @@ import {
   modelPickerLabel
 } from './modelPresentation.mts'
 
-const model = (overrides: Record<string, unknown> = {}) => ({
+const model = (overrides: Partial<ModelEntry> = {}): ModelEntry => ({
   id: 'model-1',
   name: 'model-1',
   nickname: '',

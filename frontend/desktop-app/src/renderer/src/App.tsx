@@ -168,7 +168,7 @@ function App(): React.JSX.Element {
   const { theme, permissionMode, language } = preferences
   const [pendingFullAuto, setPendingFullAuto] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
-  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [, setInspectorOpen] = useState(false)
   const [inspectorItem, setInspectorItem] = useState<TimelineItem | null>(null)
   const [rightOpen, setRightOpen] = useState(false)
   const [rightView, setRightView] = useState<RightPanelView>('picker')

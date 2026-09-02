@@ -351,7 +351,7 @@ def test_github_token_connect_updates_user_json(tmp_path: Path, monkeypatch: pyt
     with pytest.raises(PluginError) as already:
         plugins.install(source="registry", name="github")
     assert already.value.code == "PLUGIN_ALREADY_INSTALLED"
-    secret = "ghp_test_secret_token"
+    secret = "ghp_test-secret_token"
     second = plugins.install(source="registry", name="github", token=secret)
     assert second["ok"] is True
     assert second["plugin"]["auth"] == "configured"
@@ -393,7 +393,7 @@ def test_publish_github_mcp_resolves_runtime_and_omits_token(
         permission_store=perms,
         registry=bundled_plugin_registry(),
     )
-    secret = "ghp_should_not_be_in_yaml"
+    secret = "ghp_test-secret_not_in_yaml"
     result = plugins.install(source="registry", name="github", token=secret)
     assert result["ok"] is True
     assert captured["command"] == "/bin/github-mcp-server"
@@ -637,7 +637,7 @@ def test_oauth_token_post_reuses_authorize_client_id(
     assert calls, "fixture transport must see the token POST"
     posted = calls[0]["data"]
     assert posted["client_id"] == distinct
-    assert posted["client_id"] != f"rxycode-dev-github-oauth"
+    assert posted["client_id"] != "rxycode-dev-github-oauth"
 
 
 def test_computer_use_adapter_install_lists_tools(tmp_path: Path) -> None:
