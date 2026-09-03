@@ -1,4 +1,4 @@
-﻿<!-- README_SYNC: source=working-tree; updated=2026-09-02 -->
+﻿<!-- README_SYNC: source=working-tree; updated=2026-09-03 -->
 <div align="center">
 
 [English](./README.md) · **简体中文**
