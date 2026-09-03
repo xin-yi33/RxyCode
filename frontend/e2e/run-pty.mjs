@@ -257,18 +257,28 @@ function observePty(pty) {
   };
 }
 
-async function waitForChatOrResubmit({ send, observed, api, predicate, label }) {
+async function waitForChatOrResubmit({ send, observed, api, predicate, label, retype }) {
   await observed.waitForIdle(`${label} to settle`, SETTLE_MS);
   send('\r');
+  const firstWait = HOSTED_WINDOWS ? 15000 : TIMEOUT_MS;
   try {
-    return await api.waitForChatRequest(predicate);
+    return await api.waitForChatRequest(predicate, firstWait);
   } catch {
+    if (retype) {
+      const mark = observed.mark();
+      send(retype);
+      await observed.waitFor(
+        (output) => plain(output.slice(mark)).includes(retype),
+        `${label} retype`,
+      );
+      await observed.waitForIdle(`${label} retype settle`, SETTLE_MS);
+    }
     send('\r');
     try {
       return await api.waitForChatRequest(predicate);
     } catch (second) {
       const tail = plain(observed.output.slice(-800)).replace(/\s+/g, ' ').trim();
-      throw new Error(`${second.message} (${label}, retried Enter); output tail: ${tail}`);
+      throw new Error(`${second.message} (${label}, retyped prompt); output tail: ${tail}`);
     }
   }
 }
@@ -413,6 +423,14 @@ async function main() {
       `${COLS}x${ROWS} -> ${NARROW_COLS}x${NARROW_ROWS} -> ${COLS}x${ROWS}`,
     );
 
+    await observed.waitForIdle('post-resize settle', SETTLE_MS);
+    mark = observed.mark();
+    send('X');
+    await waitSince(mark, /X/, 'composer focus after resize');
+    mark = observed.mark();
+    send('\x7f');
+    await waitSince(mark, /输入指令或需求/, 'composer clear after resize');
+
     mark = observed.mark();
     send('PTY_CANCEL_ME');
     await waitSince(mark, /PTY_CANCEL_ME/, 'cancellation prompt input');
@@ -422,6 +440,7 @@ async function main() {
       api,
       predicate: (body) => body.message === 'PTY_CANCEL_ME',
       label: 'PTY_CANCEL_ME submit',
+      retype: 'PTY_CANCEL_ME',
     });
     await waitSince(mark, /PTYWAITING|Processing/, 'cancellable stream');
     const cancelMark = observed.mark();
@@ -508,6 +527,7 @@ async function main() {
       api,
       predicate: (body) => body.message === 'PTY_LONG_STREAM',
       label: 'PTY_LONG_STREAM submit',
+      retype: 'PTY_LONG_STREAM',
     });
     await waitSince(mark, /LONGASSISTANT079/, 'long stream final response');
     await observed.waitForIdle('long stream to settle', 120);
