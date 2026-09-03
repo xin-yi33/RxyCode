@@ -24,6 +24,8 @@ const NARROW_ROWS = 18;
 // and mock request even though the process is healthy. Keep local failures
 // fast while allowing CI enough time for that scheduling variance.
 const TIMEOUT_MS = process.env.CI === 'true' ? 45000 : 8000;
+const HOSTED_WINDOWS = process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true';
+const SETTLE_MS = HOSTED_WINDOWS ? 300 : 50;
 const SGR_MOUSE = /\x1b\[<\d+;\d+;\d+[Mm]/;
 const ANSI_CONTROL = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const plain = (value) => value.replace(ANSI_CONTROL, '');
@@ -255,6 +257,22 @@ function observePty(pty) {
   };
 }
 
+async function waitForChatOrResubmit({ send, observed, api, predicate, label }) {
+  await observed.waitForIdle(`${label} to settle`, SETTLE_MS);
+  send('\r');
+  try {
+    return await api.waitForChatRequest(predicate);
+  } catch {
+    send('\r');
+    try {
+      return await api.waitForChatRequest(predicate);
+    } catch (second) {
+      const tail = plain(observed.output.slice(-800)).replace(/\s+/g, ' ').trim();
+      throw new Error(`${second.message} (${label}, retried Enter); output tail: ${tail}`);
+    }
+  }
+}
+
 async function verifyCrashRestoration(apiUrl) {
   const crashEnv = {
     ...process.env,
@@ -398,9 +416,13 @@ async function main() {
     mark = observed.mark();
     send('PTY_CANCEL_ME');
     await waitSince(mark, /PTY_CANCEL_ME/, 'cancellation prompt input');
-    await observed.waitForIdle('cancel prompt to settle');
-    send('\r');
-    await api.waitForChatRequest((body) => body.message === 'PTY_CANCEL_ME');
+    await waitForChatOrResubmit({
+      send,
+      observed,
+      api,
+      predicate: (body) => body.message === 'PTY_CANCEL_ME',
+      label: 'PTY_CANCEL_ME submit',
+    });
     await waitSince(mark, /PTYWAITING|Processing/, 'cancellable stream');
     const cancelMark = observed.mark();
     send('\x03');
@@ -456,9 +478,13 @@ async function main() {
     mark = observed.mark();
     send('\x1b[200~PASTE_FIRST\r\nPASTE_SECOND\x1b[201~');
     await waitSince(mark, /PASTE_FIRST[\s\S]*PASTE_SECOND/, 'multi-line paste render');
-    await observed.waitForIdle('multi-line paste to settle');
-    send('\r');
-    const chatRequest = await api.waitForChatRequest((body) => body.message === 'PASTE_FIRST\nPASTE_SECOND');
+    const chatRequest = await waitForChatOrResubmit({
+      send,
+      observed,
+      api,
+      predicate: (body) => body.message === 'PASTE_FIRST\nPASTE_SECOND',
+      label: 'multi-line paste submit',
+    });
     check(
       'Mock API receives one multi-line prompt',
       api.chatRequests.filter((body) => body.message === 'PASTE_FIRST\nPASTE_SECOND').length === 1
@@ -476,8 +502,13 @@ async function main() {
     mark = observed.mark();
     send('PTY_LONG_STREAM');
     await waitSince(mark, /PTY_LONG_STREAM/, 'long stream prompt input');
-    send('\r');
-    await api.waitForChatRequest((body) => body.message === 'PTY_LONG_STREAM');
+    await waitForChatOrResubmit({
+      send,
+      observed,
+      api,
+      predicate: (body) => body.message === 'PTY_LONG_STREAM',
+      label: 'PTY_LONG_STREAM submit',
+    });
     await waitSince(mark, /LONGASSISTANT079/, 'long stream final response');
     await observed.waitForIdle('long stream to settle', 120);
     const longOutput = plain(observed.output.slice(mark));
