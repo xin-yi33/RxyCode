@@ -81,8 +81,23 @@ The in-repo latency / cache floors are unchanged: simple first token **1s**, com
 | Safety gate on every tool | READ / WRITE / DANGER, write whitelist, approval dialogs, audit log | `core/safety/` |
 | OpenTUI still default CLI | Type `rxycode` in cmd; stdio JSON-RPC | `frontend/opentui-app/` |
 | Isolated child agents | Own session, tools, permissions, and budget | `core/subagents/` |
-| Optional expert teams | Coordinator + SOP; **off** unless `settings.agents.enabled` | `core/agents/` |
+| Optional expert teams | Coordinator + SOP; **off** unless you turn it on | `core/agents/` · [docs/agent/README.md](docs/agent/README.md) |
 | Headless core | `Session.prompt()` has no UI of its own; TUI and GUI only subscribe to protocol events | `core/session.py` |
+
+## Expert teams
+
+Everyday coding stays a single AgentV2 loop. For work you can split (plan, implement two surfaces, then a mechanical check), turn on a coordinator-led team:
+
+```text
+/agents on
+/team <task>
+```
+
+Default is **off** (`settings.agents.enabled=false`). Leave it off for one-file fixes and read-only questions.
+
+The one builtin pack is `software_dev` (`core/agents/teams/software_dev/team.yaml`: 10 roles, 7 SOP stages). Members do not talk to each other; the coordinator assigns, relays, and closes. In-repo notes put teams at about **3.0× tokens** and **2.5× wall time** without a completion-rate gain (`evals/baselines/f14-e0-matrix.md`).
+
+How it works, when not to use it, and how to add another team: **[docs/agent/README.md](docs/agent/README.md)**.
 
 ## Quick start
 
