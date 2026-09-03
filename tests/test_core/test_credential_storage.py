@@ -279,6 +279,23 @@ def test_windows_permission_command_uses_only_trusted_principals(
     assert "*S-1-5-18:(F)" in command
     assert "*S-1-5-32-544:(F)" in command
 
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows SID lookup")
+def test_windows_sid_lookup_survives_whoami_dll_init_failure(monkeypatch):
+    """Hosted Windows runners can fail to start whoami.exe (0xC0000142)."""
+    from RxyCode.RxyCode1_1_0.config import credential_store
+
+    monkeypatch.setattr(credential_store, "_cached_windows_sid", None)
+
+    def boom(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(
+            3221225794, ["whoami", "/user", "/fo", "csv", "/nh"]
+        )
+
+    monkeypatch.setattr(credential_store.subprocess, "run", boom)
+    sid = credential_store._windows_current_sid()
+    assert credential_store._SID_PATTERN.fullmatch(sid)
+
 def test_resolve_falls_back_to_secret_when_api_key_env_empty(tmp_path, monkeypatch):
     """OpenTUI/appserver children often lack the operator shell env var."""
     from RxyCode.RxyCode1_1_0.config.credential_store import store_credential

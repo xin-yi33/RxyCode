@@ -18,6 +18,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 
 import yaml
@@ -32,7 +33,80 @@ _SID_PATTERN = re.compile(r"^S-\d(?:-\d+)+$")
 _os_name = os.name
 
 
-def _windows_current_sid() -> str:
+_cached_windows_sid: str | None = None
+
+
+def _windows_current_sid_from_token() -> str:
+    """Read the process token SID in-process.
+
+    Hosted Windows runners sometimes fail to *start* ``whoami.exe``
+    (``STATUS_DLL_INIT_FAILED`` / 3221225794) after many subprocesses.
+    The token is already in this process, so no extra executable is required.
+    """
+    token_query = 0x0008
+    token_user = 1
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_USER(ctypes.Structure):
+        _fields_ = [("User", SID_AND_ATTRIBUTES)]
+
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), token_query, ctypes.byref(token)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        needed = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, token_user, None, 0, ctypes.byref(needed))
+        buf = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(
+            token, token_user, buf, needed.value, ctypes.byref(needed)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        info = ctypes.cast(buf, ctypes.POINTER(TOKEN_USER)).contents
+        string_sid = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(info.User.Sid, ctypes.byref(string_sid)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            sid = string_sid.value or ""
+        finally:
+            kernel32.LocalFree(string_sid)
+    finally:
+        kernel32.CloseHandle(token)
+    if not _SID_PATTERN.fullmatch(sid):
+        raise OSError("Unable to determine the current Windows user SID")
+    return sid
+
+
+def _windows_current_sid_from_whoami() -> str:
     result = subprocess.run(
         ["whoami", "/user", "/fo", "csv", "/nh"],
         check=True,
@@ -46,6 +120,27 @@ def _windows_current_sid() -> str:
     sid = row[-1].strip()
     if not _SID_PATTERN.fullmatch(sid):
         raise OSError("Unable to determine the current Windows user SID")
+    return sid
+
+
+def _windows_current_sid() -> str:
+    global _cached_windows_sid
+    if _cached_windows_sid:
+        return _cached_windows_sid
+    try:
+        sid = _windows_current_sid_from_token()
+    except OSError:
+        last: BaseException | None = None
+        for attempt in range(3):
+            try:
+                sid = _windows_current_sid_from_whoami()
+                break
+            except (OSError, subprocess.SubprocessError) as exc:
+                last = exc
+                time.sleep(0.2 * (attempt + 1))
+        else:
+            raise OSError("Unable to determine the current Windows user SID") from last
+    _cached_windows_sid = sid
     return sid
 
 

@@ -81,8 +81,23 @@ RxyCode 是一个 Python 编程 Agent。核心无界面：`Session`（`core/sess
 | 每次工具调用过安全门 | READ / WRITE / DANGER 分级、写入白名单、审批框、审计日志 | `core/safety/` |
 | OpenTUI 仍是默认 CLI | cmd 里输入 `rxycode`；stdio JSON-RPC | `frontend/opentui-app/` |
 | 隔离式子代理 | 独立会话、工具、权限和预算 | `core/subagents/` |
-| 可选专家团 | 团长 + SOP；默认关（`settings.agents.enabled`） | `core/agents/` |
+| 可选专家团 | 团长 + SOP；默认关，打开才走团 | `core/agents/` · [docs/agent/README.md](docs/agent/README.md) |
 | 无头核心 | `Session.prompt()` 自己不画界面；TUI / GUI 只订阅协议事件 | `core/session.py` |
+
+## 专家团
+
+日常改文件仍是单人 AgentV2。活能拆开时（先规格、前后端分头写、再过机械验证），可以打开团长带 SOP 的专家团：
+
+```text
+/agents on
+/team <任务>
+```
+
+**默认关**（`settings.agents.enabled=false`）。单文件修补、只读问答不要开。
+
+内置目前只有 `software_dev`（`core/agents/teams/software_dev/team.yaml`：10 个角色、7 个阶段）。成员不直连，团长派活、中转、收口。仓库里的成本记录大约是 **3.0× token**、**2.5× 墙钟**，完成率没有抬上去（`evals/baselines/f14-e0-matrix.md`）。
+
+怎么跑、什么时候不该用、怎么加第二个团，看专家团专属说明：**[docs/agent/README.md](docs/agent/README.md)**。
 
 ## 快速开始
 
