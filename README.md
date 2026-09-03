@@ -1,4 +1,4 @@
-﻿<!-- README_SYNC: source=working-tree; updated=2026-09-02 -->
+﻿<!-- README_SYNC: source=working-tree; updated=2026-09-03 -->
 <div align="center">
 
 **English** · [简体中文](./README.zh-CN.md)
@@ -39,7 +39,7 @@ The clip is a live recording of <code>rxycode gui</code> (RxyCode Desktop), not 
 
 <code>rxycode gui</code> only launches an installed Desktop tree
 (<code>~/.rxycode/desktop</code>, <code>RXYCODE_DESKTOP_DIR</code>, or <code>--desktop-dir</code>).
-A CLI-only install cannot start Electron. Composer still sits at the bottom of the task pane. The `+` button still opens 文件和文件夹 / 在项目中使用 / 目标 / 计划模式. Plan cards still offer **是，实施此计划**, **补充说明**, and **跳过**. Permission labels are 更改前询问 / 自动编辑 / 完全访问. Settings → 关于 shows **1.3.0**. Full GUI notes: [docs/GUI.md](docs/GUI.md).
+A CLI-only install cannot start Electron. Composer still sits at the bottom of the task pane. The packaged Desktop chrome is Chinese; this README uses English names for those controls. The `+` button opens Files and folders / Use in this project / Goal / Plan mode. Plan cards offer **Yes, implement this plan**, **Add notes**, and **Skip**. Permission labels are Ask before changes / Auto-edit / Full access. Settings → About shows **1.3.0**. Full GUI notes: [docs/GUI.md](docs/GUI.md).
 
 ## CLI / OpenTUI
 
@@ -197,7 +197,7 @@ Ink fallback: RXYCODE_TUI=ink → api_server.py (HTTP + SSE) → same Session
 | Surface | How | Behavior |
 |---------|-----|----------|
 | Build | `/build` (TUI) or Desktop default | Plan → decompose → execute → validate → synthesize |
-| Plan | `/plan` or Desktop 计划模式 | Read-only analysis and a plan document; no file edits until you Build |
+| Plan | `/plan` or Desktop Plan mode | Read-only analysis and a plan document; no file edits until you Build |
 | Compose | `/compose` | Plan + build with a shorter pipeline |
 
 ## Configuration
@@ -232,7 +232,7 @@ Before a tool runs, `core/safety/` classifies it:
 - **WRITE** — reversible side effects (`write`, `edit`, most `bash`)
 - **DANGER** — destructive or installer-like commands; bash can escalate by pattern (`rm -rf /`, `git push --force`, …)
 
-Writes outside the whitelist are blocked. The TUI and Desktop raise an approval dialog; the audit log is `~/.RxyCode/logs/audit.jsonl` with sensitive keys redacted. Default Desktop permission is 更改前询问.
+Writes outside the whitelist are blocked. The TUI and Desktop raise an approval dialog; the audit log is `~/.RxyCode/logs/audit.jsonl` with sensitive keys redacted. Default Desktop permission is Ask before changes.
 
 ## Commands and shortcuts (OpenTUI)
 
