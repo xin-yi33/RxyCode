@@ -7,7 +7,7 @@
 
 **Open-source local AI coding agent. Choose your model, keep your code on your machine.**
 
-[![Version](https://img.shields.io/badge/version-1.2.11-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -24,7 +24,7 @@
 RxyCode is an autonomous coding agent running locally on your hardware. Bring an API key for any OpenAI-compatible model (DeepSeek, Qwen, Kimi, Claude, GPT, GLM, Doubao, or custom endpoints), and RxyCode takes over: decompose tasks, code solutions, execute commands, research the web, and mechanically verify the outcome. Terminal TUI out-of-the-box, optional Desktop GUI, and extensible with MCP and Skills.
 
 > 💡 **Want a quick test drive?** Run instantly without installation if you have Python 3.10+:  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode`  
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode`  
 > See [⚡ Quick Start & Deployment](#-quick-start--deployment) for complete install options, Desktop app, Docker, and Node.js frontend builds.
 
 ---
@@ -133,7 +133,7 @@ Choose the installation or deployment method that best fits your workflow:
 Requires only Python 3.10+. No global installation, instant execution:
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode
 ```
 
 ### 2. One-Command Installer (CLI)
@@ -142,11 +142,11 @@ The installer bootstraps `uv` (if missing) and configures an isolated runtime wi
 
 - **Windows (PowerShell)**:
   ```powershell
-  powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.ps1 | iex"
+  powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.3.0/install.ps1 | iex"
   ```
 - **macOS / Linux**:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.3.0/install.sh | sh
   ```
 
 Launch anytime by running `rxycode`.
@@ -207,7 +207,10 @@ RxyCode features decoupled frontend surfaces communicating via stdio JSON-RPC:
   npm run dev       # Start development mode
   npm run build     # Package installers (Windows / macOS / Linux)
   ```
-  > Everyday users do not need to compile the desktop client manually. Grab prebuilt installers from the [v1.2.10 Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) and launch via `rxycode gui`.
+  > Everyday users do not need to compile the desktop client manually. Grab prebuilt installers from the [v1.3.0 Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0):
+  > - **Windows**: Run `rxycode-desktop-1.3.0-setup.exe` or extract portable `RxyCode.Desktop-1.3.0-win.zip`.
+  > - **Linux**: Run `rxycode-desktop-1.3.0.AppImage` (after `chmod +x`).
+  > - Launch anytime via `rxycode gui` once installed. *(Note: macOS prebuilt binary is omitted for v1.3.0; please use the CLI or run from source).*
 
 ### 5. Python Source Installation
 
@@ -375,6 +378,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 | Version | Release Date | Key Features |
 |---|---|---|
+| [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | Major Desktop workbench release: 3-column session & project workspace, plugin rail, permission tiers; Windows installer & portable zip, Linux AppImage; fixes Windows worker bootstrap deadlock |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 10-role 7-stage SOP expert teams; Windows encoding improvements; 8MB stdio JSON-RPC throughput |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Electron desktop app (`rxycode gui`), Plan mode, Goal dialog, Composer plus menu |
 | [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Phase C isolated child agents: `@agent` dispatch, Task tool, OpenTUI subagent tree |

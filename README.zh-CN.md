@@ -7,7 +7,7 @@
 
 **开源本地 AI 编程智能体。模型你挑，代码不出你的电脑。**
 
-[![Version](https://img.shields.io/badge/version-1.2.11-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -24,7 +24,7 @@
 RxyCode 是一个跑在本地的编程 Agent。你给一个 OpenAI 兼容的 API Key（DeepSeek、通义千问、Kimi、Claude、GPT、GLM、豆包……随便哪家），它就能帮你拆任务、写代码、跑命令、搜网页，做完了还会自己验一遍。终端 TUI 开箱即用，桌面 GUI 可选装，MCP 和 Skill 想扩展就扩展。
 
 > 💡 **想立刻试试？** 有 Python 环境直接免安装运行：  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode`  
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode`  
 > 完整安装、桌面客户端、Docker 容器化与 Node.js 前端构建见下文 [⚡ 快速开始与部署](#-快速开始与部署)。
 
 ---
@@ -132,7 +132,7 @@ MCP 工具和内置工具走同一套安全门，挂了自动退避重连，不�
 只要本地有 Python 3.10+，无需全局安装任何文件，即开即用：
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode
 ```
 
 ### 2. 一键脚本安装 (CLI 推荐)
@@ -141,11 +141,11 @@ uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.2.11" rxycode
 
 - **Windows (PowerShell)**:
   ```powershell
-  powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.ps1 | iex"
+  powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.3.0/install.ps1 | iex"
   ```
 - **macOS / Linux**:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.2.11/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.3.0/install.sh | sh
   ```
 
 安装成功后，在任意终端输入 `rxycode` 即可启动。
@@ -206,7 +206,10 @@ RxyCode 拥有独立的前端体系，核心协议通过 stdio JSON-RPC 与后�
   npm run dev       # 启动开发调试
   npm run build     # 打包生成安装包（Win / macOS / Linux）
   ```
-  > 普通用户无需自行编译桌面端，可直接在 [v1.2.10 Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) 下载打包好的客户端，安装后终端运行 `rxycode gui` 即可。
+  > 普通用户无需自行编译桌面端，可直接在 [v1.3.0 Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) 下载打包好的客户端：
+  > - **Windows**：运行安装向导 `rxycode-desktop-1.3.0-setup.exe` 或解压便携版 `RxyCode.Desktop-1.3.0-win.zip`。
+  > - **Linux**：赋予执行权限后直接运行 `rxycode-desktop-1.3.0.AppImage`。
+  > - 安装到桌面后，终端运行 `rxycode gui` 也可以直接拉起。*(注：v1.3.0 暂未提供预编译 macOS 桌面包，macOS 用户请用 CLI 或源码调试模式)*
 
 ### 5. Python 源码安装
 
@@ -375,6 +378,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 | 版本 | 发布时间 | 主要更新亮点 |
 |---|---|---|
+| [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | 桌面客户端主版本：三栏会话项目工作台、插件主栏、权限三档；Windows 安装器与便携版、Linux AppImage 发布；解决 Windows worker 假死 |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 推出 10 角色 7 阶段 SOP 专家团队；提升 CLI 稳定性与 Windows 编码兼容；stdio 吞吐升至 8MB |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | 推出 Electron 桌面客户端 (`rxycode gui`)，集成 Plan 模式、Goal 弹窗与 Composer `+` 菜单 |
 | [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | 隔离子代理（Phase C）：支持 `@agent` 语法分派、Task 工具及 OpenTUI 子代理层级树 |
