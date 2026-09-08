@@ -297,7 +297,7 @@ rxycode
 安装桌面版后，在命令行执行 `rxycode gui` 启动。
 
 <p align="center">
-  <img src="docs/imgs/gui-shell.png" alt="RxyCode Desktop 桌面主界面" width="700">
+  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop 桌面端演示" width="800">
 </p>
 
 - **Plan 计划卡片**：展示多步分解计划，提供“实施此计划”、“补充说明”、“跳过”等交互。

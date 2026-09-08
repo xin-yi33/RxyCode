@@ -298,7 +298,7 @@ Key Shortcuts:
 Install the desktop build and run `rxycode gui`.
 
 <p align="center">
-  <img src="docs/imgs/gui-shell.png" alt="RxyCode Desktop Shell" width="700">
+  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop Demo" width="800">
 </p>
 
 - **Plan Cards**: Visual step-by-step implementation breakdown with "Build", "Revise", and "Skip" actions.
