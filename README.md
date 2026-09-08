@@ -255,29 +255,63 @@ Configuration resides in `~/.RxyCode/config.yaml`. Manage models anytime via `rx
 
 ---
 
-## 🖥️ How to Use
-
-### Terminal Workflow (OpenTUI Default)
-
-Launch with `rxycode` and submit natural language prompts:
-
+## 🖥️ Surfaces & Experience
+ 
+### Desktop GUI
+ 
+v1.3.0 delivers a complete 3-column desktop workbench: session organization (pinned/project/recent), full-row running-task chrome, snapping sashes, permission presets, side chat, and plan / goal modes.
+ 
+Here is a live recording of <code>rxycode gui</code> (RxyCode Desktop):
+ 
+<p align="center">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/gui-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/gui-demo-v1.3.0.mp4">RxyCode Desktop 1.3.0 Live Recording (mp4)</a>
+  </video>
+</p>
+ 
+| OS | Assets from [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) |
+|----|---------------------------------------------------------------------------------|
+| Windows | `rxycode-desktop-1.3.0-setup.exe` (installer wizard) or `RxyCode.Desktop-1.3.0-win.zip` (portable) |
+| Linux | `rxycode-desktop-1.3.0.AppImage` (`chmod +x` then run) |
+| macOS | Not packaged for v1.3.0. Use terminal CLI or `npm run dev` from source |
+ 
+<code>rxycode gui</code> only launches an installed Desktop tree (recognizes <code>~/.rxycode/desktop</code>, <code>RXYCODE_DESKTOP_DIR</code>, or <code>--desktop-dir</code>). Composer sits at the bottom; clicking `+` attaches files, opens workspaces, or toggles plan mode. Plan cards offer "Build", "Revise", and "Skip". Permissions support Ask Before Change / Auto Edit / Full Access. See [docs/GUI.md](docs/GUI.md) for full details.
+ 
+## CLI / OpenTUI
+ 
+The default terminal interface is **OpenTUI**. In any terminal:
+ 
+```bash
+rxycode
+```
+ 
+<p align="center">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/cli-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/cli-demo-v1.3.0.mp4">RxyCode OpenTUI Live Recording (mp4)</a>
+  </video>
+</p>
+ 
+Submit natural language prompts:
+ 
 - `"Refactor auth service from session cookies to JWT with refresh tokens"`
 - `"Audit this repository for SQL injection or unsafe path traversal vulnerabilities"`
 - `"Generate a comprehensive test suite for user service using pytest"`
 - `"Summarize Python 3.13 free-threaded GIL changes and output to docs/python313.md"`
-
+ 
 Key Shortcuts:
-
+ 
 | Key | Action |
 |---|---|
 | `Tab` | Toggle working mode (Build / Plan / Compose) |
 | `Ctrl+P` | Open command palette |
 | `Ctrl+T` | Toggle thinking / reasoning panel |
 | `Esc` | Cancel running operation / dismiss dialogs |
-
+ 
 <details>
 <summary>Common Slash Commands</summary>
-
+ 
 | Command | Action |
 |---|---|
 | `/build` | Plan → execute → verify (default autonomous mode) |
@@ -291,33 +325,6 @@ Key Shortcuts:
 | `/children` `/child` `/parent` | Inspect and navigate child agent tree |
 | `/language` | Switch UI language (`zh` / `en`) |
 | `/help` | Display comprehensive command reference |
-</details>
-
-### 🖥️ Desktop Client (Desktop GUI)
-
-Install the desktop build and run `rxycode gui`.
-
-<p align="center">
-  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop Demo" width="800">
-</p>
-
-- **Plan Cards**: Visual step-by-step implementation breakdown with "Build", "Revise", and "Skip" actions.
-- **Goal Dialog**: Persistent objective tracking to keep long-running tasks focused.
-- **Composer `+` Menu**: Quick attachment of local files/folders and workspace selection.
-- **Granular Permissions**: Ask Before Change / Auto Edit / Full Access.
-
-<details>
-<summary>Desktop Screenshots</summary>
-
-<p align="center">
-  <img src="docs/imgs/gui-plus-menu.png" alt="Composer Plus Menu" width="700">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-goal-dialog.png" alt="Goal Dialog" width="700">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-plan-card.png" alt="Plan Card" width="700">
-</p>
 </details>
 
 ### Headless API Service

@@ -254,11 +254,45 @@ rxycode
 
 ---
 
-## 🖥️ 怎么用
+## 🖥️ 使用界面与体验
 
-### 终端交互 (默认 OpenTUI)
+### 桌面客户端 (Desktop GUI)
 
-输入 `rxycode` 启动，直接用自然语言吩咐任务：
+v1.3.0 带来完整的三栏桌面工作台：会话分类（置顶/项目/最近）、任务运行态整行展示、sash 边缘吸附、权限三档以及侧边对话与计划模式。
+
+以下为 <code>rxycode gui</code>（RxyCode Desktop）的实机录屏：
+
+<p align="center">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/gui-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/gui-demo-v1.3.0.mp4">RxyCode Desktop 1.3.0 实机录屏（mp4）</a>
+  </video>
+</p>
+
+| 系统 | [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) 资源下载 |
+|------|----------------------------------------------------------------------------|
+| Windows | `rxycode-desktop-1.3.0-setup.exe`（安装向导）或 `RxyCode.Desktop-1.3.0-win.zip`（便携版） |
+| Linux | `rxycode-desktop-1.3.0.AppImage`（`chmod +x` 后运行） |
+| macOS | 本版本未打包 macOS 桌面应用，请使用终端 CLI 或从源码 `npm run dev` 运行 |
+
+<code>rxycode gui</code> 仅在检测到本地已安装桌面工作台（目录路径识别 <code>~/.rxycode/desktop</code>、环境变量 <code>RXYCODE_DESKTOP_DIR</code> 或启动参数 <code>--desktop-dir</code>）时打开。界面底部为 Composer 区域，点击 `+` 可弹出文件关联、项目选择与计划模式；任务执行中 Plan 卡片支持“是，实施此计划”、“补充说明”与“跳过”；权限档位分为“更改前询问 / 自动编辑 / 完全访问”。完整桌面端说明详见 [docs/GUI.md](docs/GUI.md)。
+
+## CLI / OpenTUI
+
+默认终端交互界面为 **OpenTUI**。在任意终端输入即可启动：
+
+```bash
+rxycode
+```
+
+<p align="center">
+  <video width="800" controls muted playsinline preload="metadata">
+    <source src="docs/assets/cli-demo-v1.3.0.mp4" type="video/mp4">
+    <a href="docs/assets/cli-demo-v1.3.0.mp4">RxyCode OpenTUI 实机录屏（mp4）</a>
+  </video>
+</p>
+
+直接用自然语言吩咐任务：
 
 - `"把 auth 模块从 session 改成 JWT 鉴权"`
 - `"检查当前项目里有没有 SQL 注入或敏感文件读取漏洞"`
@@ -290,33 +324,6 @@ rxycode
 | `/children` `/child` `/parent` | 查看子代理树与层级切换 |
 | `/language` | 切换界面语言（支持中文 / 英文） |
 | `/help` | 查看所有指令与帮助 |
-</details>
-
-### 🖥️ 桌面客户端 (Desktop GUI)
-
-安装桌面版后，在命令行执行 `rxycode gui` 启动。
-
-<p align="center">
-  <img src="docs/assets/gui-demo.gif" alt="RxyCode Desktop 桌面端演示" width="800">
-</p>
-
-- **Plan 计划卡片**：展示多步分解计划，提供“实施此计划”、“补充说明”、“跳过”等交互。
-- **目标对话框 (Goal Dialog)**：常驻显示当前任务目标，随时调整方向。
-- **Composer `+` 菜单**：一键关联本地文件/文件夹、切换项目工作区。
-- **三档安全权限**：更改前询问 / 自动编辑 / 完全访问。
-
-<details>
-<summary>桌面端功能截图</summary>
-
-<p align="center">
-  <img src="docs/imgs/gui-plus-menu.png" alt="加号菜单" width="700">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-goal-dialog.png" alt="目标对话框" width="700">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-plan-card.png" alt="计划卡片" width="700">
-</p>
 </details>
 
 ### 无头 API 服务
