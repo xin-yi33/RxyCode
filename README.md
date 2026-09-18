@@ -5,7 +5,7 @@
 
 # 🚀 RxyCode
 
-**Open-source local AI coding agent. Choose your model, keep your code on your machine.**
+**Open-source local AI coding agent. The app runs on your machine; model traffic follows the endpoint you configure.**
 
 [![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
@@ -79,9 +79,20 @@ Every tool invocation passes through a policy gate before touching your system:
 - **Dry-Run Mode**: Set `RXYCODE_DRY_RUN=1` to simulate actions without disk or network side effects.
 - **Audit Logging**: All actions append to `~/.RxyCode/logs/audit.jsonl` with credentials and API tokens masked.
 
-### 🏠 100% Local & Privacy-First
+### 🏠 Local Runtime vs Model Traffic
 
-Claude Code requires an Anthropic subscription; Codex runs entirely on external servers. RxyCode is MIT licensed and runs locally. Your code stays strictly on your machine. Bring your own keys—native support for DeepSeek, Qwen, Kimi, Doubao, GLM, SiliconFlow, OpenAI, and Anthropic proxies with zero middleware lock-in.
+Claude Code requires an Anthropic subscription; Codex runs the agent loop on remote servers. RxyCode is MIT licensed: **the program, the git workspace, and encrypted API keys stay on your machine.** That is not the same as “no code ever leaves this computer.”
+
+| Stays on this machine | Leaves this machine when you use a cloud model |
+|---|---|
+| Desktop / TUI / CLI process | Current prompt and system instructions |
+| Files on disk until a tool reads them | Recent turns still in the context window |
+| Keys in `~/.RxyCode/` (Windows DPAPI / POSIX `0600`) | File excerpts, diffs, and command output already returned by tools this session |
+| Audit log `~/.RxyCode/logs/audit.jsonl` | Images, if you use vision |
+
+The whole repository is **not** uploaded automatically. Only content the agent actually read or produced, then placed into the model messages, is sent. `websearch` sends the query to DDGS; `webfetch` contacts the target URL; MCP servers see whatever those tools return. Bring your own keys—DeepSeek, Qwen, Kimi, Doubao, GLM, SiliconFlow, OpenAI, Anthropic proxies—with no middleware lock-in.
+
+**Local-only inference:** in `/addmodel`, set `base_url` to an OpenAI-compatible server on loopback (Ollama `http://127.0.0.1:11434/v1`, LM Studio, or vLLM). Prompts and tool results then go to that local process instead of a cloud API. If that local server still forwards to a hosted model, data follows that hop; RxyCode cannot hide it.
 
 ### 🔧 30+ Built-in Tools & MCP Extensibility
 

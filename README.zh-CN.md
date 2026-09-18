@@ -5,7 +5,7 @@
 
 # 🚀 RxyCode
 
-**开源本地 AI 编程智能体。模型你挑，代码不出你的电脑。**
+**开源本地 AI 编程智能体。程序在你电脑上跑；模型请求发往你配置的接口。**
 
 [![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
@@ -78,9 +78,20 @@ Shell 命令会被动态重新分级——普通 `bash` 是 WRITE，但里面出
 
 还有个演练模式：`RXYCODE_DRY_RUN=1`，所有写操作只预览不执行。
 
-### 🏠 本地运行，模型自选
+### 🏠 本机运行 ≠ 数据不出网
 
-Claude Code 绑 Claude 订阅，Codex 跑在 OpenAI 的服务器上。RxyCode 是 MIT 开源、跑在你自己机器上，代码不出本地。用什么模型你说了算——DeepSeek、千问、Kimi、豆包、硅基流动这些国内厂商原生支持，不用套壳、不用中转。
+Claude Code 绑 Claude 订阅，Codex 把 agent 循环跑在远端。RxyCode 是 MIT 开源：**程序、工作区磁盘上的文件、加密后的 API Key 留在本机。** 这不等于「任何配置下代码都不会外发」。
+
+| 留在本机 | 使用云端模型时会发往该供应商 |
+|---|---|
+| Desktop / TUI / CLI 进程 | 当前提示词和系统指令 |
+| 尚未被工具读过的仓库文件 | 仍在上下文窗口里的近期对话 |
+| `~/.RxyCode/` 里的密钥（Windows DPAPI / POSIX `0600`） | 本会话里工具已经返回的文件摘录、diff、命令输出 |
+| 审计日志 `~/.RxyCode/logs/audit.jsonl` | 若开启视觉，还会发送图片 |
+
+仓库**不会**整包上传。只有 Agent 实际读过或产出、并放进模型消息里的内容才会发送。`websearch` 会把查询发给 DDGS；`webfetch` 会访问目标网址；MCP 能看到对应工具的返回。用什么模型你说了算——DeepSeek、千问、Kimi、豆包、硅基流动原生支持，不用套壳、不用中转。
+
+**纯本地推理：** 在 `/addmodel` 把 `base_url` 指到本机的 OpenAI 兼容服务，例如 Ollama（`http://127.0.0.1:11434/v1`）、LM Studio 或 vLLM。此时提示词和工具结果走这个本地进程，而不是云端 API。若该本地服务背后仍转发到托管模型，数据会跟着那一跳走，RxyCode 挡不住。
 
 ### 🔧 30+ 内置工具 & MCP 扩展
 
