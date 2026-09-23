@@ -56,6 +56,7 @@ def test_unknown_fallback_forces_default_variant_in_raw_stream():
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 
@@ -114,6 +115,7 @@ def test_unknown_model_wire_payload_has_no_cache_control_or_key():
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 
@@ -266,6 +268,7 @@ def test_unknown_model_five_points_on_raw_stream_path():
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 
@@ -335,6 +338,7 @@ def test_unknown_model_full_wire_has_no_key_or_control():
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 

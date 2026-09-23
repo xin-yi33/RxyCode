@@ -230,7 +230,7 @@ class StreamCoalescer:
         merged: list[tuple[str, str]] = []
         merged_seqs: list[int] = []
         for seq, kind, text in pending:
-            if merged and merged[-1][0] == kind:
+            if merged and merged[-1][0] == kind and kind != "progress":
                 merged[-1] = (kind, merged[-1][1] + text)
             else:
                 merged.append((kind, text))
@@ -282,7 +282,7 @@ class StreamCoalescer:
         merged: list[tuple[str, str]] = []
         merged_seqs: list[int] = []
         for seq, kind, text in pending:
-            if merged and merged[-1][0] == kind:
+            if merged and merged[-1][0] == kind and kind != "progress":
                 merged[-1] = (kind, merged[-1][1] + text)
             else:
                 merged.append((kind, text))

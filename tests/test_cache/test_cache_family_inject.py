@@ -114,6 +114,7 @@ def _capture_raw_stream(model_name: str, provider: str, tools):
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 

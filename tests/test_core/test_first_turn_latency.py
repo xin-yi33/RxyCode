@@ -209,7 +209,7 @@ def test_worker_idle_prefix_warm_after_bootstrap():
 
 
 def test_run_does_not_await_mcp_refresh():
-    src = inspect.getsource(AgentV2.run) + inspect.getsource(AgentV2._run_user_turn_body)
+    src = inspect.getsource(AgentV2.run)
     assert "_schedule_mcp_refresh" in src
     assert "asyncio.to_thread" not in src
 

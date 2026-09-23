@@ -397,6 +397,7 @@ def test_integrated_qwen_raw_stream_never_echoes_reasoning():
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 
@@ -473,6 +474,7 @@ def _capture_raw_stream(model_name, provider, tools):
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 
@@ -579,6 +581,7 @@ def _integrated_reasoning(model_name, provider, reasoning_text):
 
     class FakeClient:
         def create(self, **payload):
+            payload.pop("timeout", None)
             captured["payload"] = payload
             raise RuntimeError("stop-after-capture")
 

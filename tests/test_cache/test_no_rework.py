@@ -198,7 +198,7 @@ def test_tool_error_state_reset_per_request():
 
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-    src = inspect.getsource(AgentV2._run_user_turn_body)
+    src = inspect.getsource(AgentV2.run)
     # run() 入口在 _task_effect 设置后重置 _tool_error_occurred
     assert "_tool_error_occurred = False" in src
     # 且位于 _task_effect 赋值之后

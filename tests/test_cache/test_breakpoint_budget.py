@@ -352,6 +352,7 @@ class TestApplyCacheControlDispatch:
 
         class FakeClient:
             def create(self, **payload):
+                payload.pop("timeout", None)
                 captured["payload"] = payload
                 raise RuntimeError("stop-after-capture")
 
@@ -406,6 +407,7 @@ class TestApplyCacheControlDispatch:
 
         class FakeClient:
             def create(self, **payload):
+                payload.pop("timeout", None)
                 captured["payload"] = payload
                 raise RuntimeError("stop-after-capture")
 

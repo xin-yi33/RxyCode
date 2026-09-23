@@ -75,7 +75,10 @@ def test_e2e_ss_05_list_keybinds_dispatch_rpc():
     assert "pendingDelete" in body or body.find("delete-pending") < body.find("delete-confirm")
     assert "rename" in body and "pin" in body and "fork" in body
     assert "ctrl+shift" in body or "shift: true" in body or "shift === true" in body
-    phase = (REPO / "docs/plans/opus5-plan/rxycode/PHASE-UPDATE-01.md").read_text(encoding="utf-8")
+    phase_path = REPO / "docs/plans/opus5-plan/rxycode/PHASE-UPDATE-01.md"
+    if not phase_path.is_file():
+        pytest.skip("plan tree is not part of the published checkout")
+    phase = phase_path.read_text(encoding="utf-8")
     for needle in ("SESSION_LIST_KEY_RENAME", "ctrl+r", "ctrl+d", "ctrl+f", "ctrl+shift+f"):
         assert needle in phase, needle
 

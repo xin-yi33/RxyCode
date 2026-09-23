@@ -1404,6 +1404,37 @@ class PluginToggleRequest(BaseModel):
         return value
 
 
+class PluginCatalogRequest(BaseModel):
+    """List the connector catalog, including plugins that are not installed.
+
+    Maps ``plugin/catalog``.
+    """
+
+    method: Literal["plugin/catalog"] = "plugin/catalog"
+
+
+class PluginConnectStartRequest(BaseModel):
+    """Start an OAuth connect session for a catalog plugin.
+
+    Maps ``plugin/connect/start``.
+    """
+
+    method: Literal["plugin/connect/start"] = "plugin/connect/start"
+    name: str
+
+
+class PluginConnectCallbackRequest(BaseModel):
+    """Finish an OAuth connect session with the provider code and state.
+
+    Maps ``plugin/connect/callback``.
+    """
+
+    method: Literal["plugin/connect/callback"] = "plugin/connect/callback"
+    name: str
+    code: str
+    state: str
+
+
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     InitializeRequest,
     NewSessionRequest,
@@ -1538,6 +1569,9 @@ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
     PluginInstallRequest,
     PluginUninstallRequest,
     PluginToggleRequest,
+    PluginCatalogRequest,
+    PluginConnectStartRequest,
+    PluginConnectCallbackRequest,
 )
 
 ClientRequest = Annotated[
@@ -1604,6 +1638,9 @@ ClientRequest = Annotated[
         PluginInstallRequest,
         PluginUninstallRequest,
         PluginToggleRequest,
+        PluginCatalogRequest,
+        PluginConnectStartRequest,
+        PluginConnectCallbackRequest,
     ],
     Field(discriminator="method"),
 ]

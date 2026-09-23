@@ -49,7 +49,9 @@ describe("model → effort overlay wiring", () => {
     expect(src).not.toMatch(/showCursor=\{false\}/);
     expect(src).not.toMatch(/Focus sink last/);
     expect(src).not.toMatch(/drawnBlockCursor: true/);
-    expect(src).toMatch(/interceptPrintable: false/);
+    expect(src).toMatch(/Do not intercept printable/);
+    expect(src).not.toMatch(/left:\s*-10000/);
+    expect(src).toMatch(/cursorColor/);
     expect(src.includes("d.slice(0, -1)")).toBe(false);
     expect(src).toMatch(/<input/);
   });

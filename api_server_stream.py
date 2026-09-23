@@ -324,9 +324,10 @@ class StreamTUI:
     )
 
     # progress / plan / steps / tools / streamed tokens
-    def write_progress(self, text):
+    def write_progress(self, text, *, record_thinking: bool = True):
         text = str(text)
-        if self.recorder: self.recorder.add_thinking(text)
+        if record_thinking and self.recorder:
+            self.recorder.add_thinking(text)
         # Gating (B2, 问题5/6): with thinking off, only short single-line
         # status updates pass (frontend loading phrase); internal monologue,
         # multi-line or long content is suppressed from SSE.
@@ -373,7 +374,9 @@ class StreamTUI:
             from core.progress_labels import tool_wait_progress
         label = tool_wait_progress(str(name))
         if label:
-            self.write_progress(label)
+            # Wait labels are live status, not chain-of-thought. Recording
+            # them would append "等待终端返回…" onto the thinking transcript.
+            self.write_progress(label, record_thinking=False)
         return call_id
     def _truncate_for_sse(self, text: str) -> tuple[str, bool]:
         """Cap tool output on the SSE channel (B3); full output stays in recorder."""

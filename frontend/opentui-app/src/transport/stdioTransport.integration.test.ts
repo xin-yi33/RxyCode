@@ -27,6 +27,7 @@ describe("stdio transport integration", () => {
       process.env.RXYCODE_APPSERVER_PYTHON ??
       process.env.PYTHON ??
       "python";
+    resetChatTransportForTests();
 
     const transport = getChatTransport();
     expect(transport.kind).toBe("stdio");

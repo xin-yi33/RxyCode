@@ -21,10 +21,12 @@ describe("DialogSessionList data source", () => {
     expect(footerBlock).toContain("fg={C.text}");
     expect(footerBlock).not.toMatch(/item\.keys[\s\S]{0,80}SELECT_BG/);
   });
-  it("rename prompt hides the native caret off-screen", () => {
+  it("rename prompt keeps a visible native caret", () => {
     const prompt = readFileSync(resolve(__dirname, "DialogPrompt.tsx"), "utf8");
-    expect(prompt).toContain("left: -10000");
-    expect(prompt).not.toContain("left: 0");
+    expect(prompt).toContain("<input");
+    expect(prompt).toContain("cursorColor");
+    expect(prompt).not.toContain("left: -10000");
+    expect(prompt).toMatch(/Do not intercept printable/);
   });
   it("keeps esc close", () => {
     expect(bodyIncludesEsc()).toBe(true);

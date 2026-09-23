@@ -292,9 +292,10 @@ class ProtocolTui:
         self._model_name = str(model_name)
 
     def write_progress(self, text: str) -> None:
-        # Status lines replace; flush first so coalescer cannot glue
-        # "思考中（第 N 轮）" onto "等待模型返回…".
-        self._flush_pending_stream()
+        # Progress is a replacement status line. StreamCoalescer does not
+        # concatenate progress segments, so "思考中（第 N 轮）…" cannot glue
+        # onto "等待模型返回…". Flushing here would raise a barrier before
+        # the following status line is queued.
         self._push_async("progress", text)
 
     def write_turn_liveness(self, text: str = "思考中...") -> None:

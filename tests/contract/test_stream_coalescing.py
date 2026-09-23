@@ -1589,13 +1589,19 @@ async def test_real_tui_mixed_kinds_preserve_order():
     from appserver.jsonrpc import StreamCoalescer
     from appserver.tui import ProtocolTui
 
-    queue: list[tuple[str, str]] = []
+    wire: list[tuple[str, str]] = []
 
     def sync_sink(kind: str, text: str) -> None:
-        queue.append((kind, text))
+        wire.append((kind, text))
+
+    def emit(model: object) -> None:
+        # Reasoning bypasses the coalescer and is emitted directly after the
+        # ordering barrier, so the chain is not stuck behind the batcher.
+        if type(model).__name__ == "ReasoningSnapshot":
+            wire.append(("reasoning", str(getattr(model, "text", ""))))
 
     c = StreamCoalescer(sync_sink)
-    tui = ProtocolTui("s1", lambda m: None)
+    tui = ProtocolTui("s1", emit)
     tui.set_coalescer(c)
     await c.start()
     try:
@@ -1609,10 +1615,11 @@ async def test_real_tui_mixed_kinds_preserve_order():
         await c.flush()
     finally:
         await c.stop()
-    kinds = [k for k, _ in queue]
+    kinds = [k for k, _ in wire]
     assert kinds == ["token", "reasoning", "progress", "token"], kinds
-    assert queue[0] == ("token", "T1"), queue
-    assert queue[3] == ("token", "T2T3"), queue
+    assert wire[0] == ("token", "T1"), wire
+    assert wire[1] == ("reasoning", "R1"), wire
+    assert wire[3] == ("token", "T2T3"), wire
 
 
 @pytest.mark.asyncio
@@ -1844,6 +1851,7 @@ async def test_switch_0_mixed_kinds_keep_legacy_direct_order():
         "ReasoningSnapshot",
         "ProgressUpdate",
         "ToolBegin",
+        "ProgressUpdate",  # tool wait label, after the tool card opens
         "ToolEnd",
         "MessageDelta",
     ], emitted

@@ -320,6 +320,6 @@ def render_index(report: dict[str, Any]) -> str:
     )
 
 
-# 废弃代码（2026-09-23）：没有任何调用方。评测报告走 render_final。
-# def render_matrix(report: dict[str, Any]) -> str:
-#     return render_final(report)
+def render_matrix(report: dict[str, Any]) -> str:
+    """Public-bench scorecard. Tests and the report CLI both call this."""
+    return render_final(report)
