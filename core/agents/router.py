@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Literal
 
-from RxyCode.RxyCode1_1_0.core.request_routing import is_fast_social_turn
 from RxyCode.RxyCode1_1_0.protocol.notifications import AgentEvent, ExperimentTag
 
 _CMD_RE = re.compile(

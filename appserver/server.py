@@ -33,7 +33,6 @@ from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
 from .workspace import (
     PathBoundaryError,
-    assert_exists,
     assert_inside_workspace,
     canonicalize,
     prepare_session_workspace,
@@ -1072,7 +1071,7 @@ class AppServer:
                         task.cancel()
                         with contextlib.suppress(asyncio.CancelledError, Exception):
                             await task
-                        raise asyncio.TimeoutError
+                        raise asyncio.TimeoutError from None
         finally:
             if not task.done():
                 task.cancel()

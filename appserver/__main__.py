@@ -51,13 +51,13 @@ def main() -> None:
     stub = os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
     try:
         server = AppServer(stub=stub)
-    except Exception as exc:
+    except Exception:
         raise
     try:
         asyncio.run(server.run())
     except KeyboardInterrupt:
         pass
-    except Exception as exc:
+    except Exception:
         raise
 
 

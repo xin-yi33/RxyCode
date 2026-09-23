@@ -28,7 +28,7 @@ def _replace_with_retry(source: str, dest: str, attempts: int = 8) -> None:
     """os.replace, with Windows sharing/access retries."""
     delay = 0.02
     last: OSError | None = None
-    for attempt in range(attempts):
+    for _attempt in range(attempts):
         try:
             os.replace(source, dest)
             return

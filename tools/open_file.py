@@ -245,7 +245,7 @@ def _open_on_windows(path: Path) -> None:
     detached = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
     new_group = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
     try:
-        proc = subprocess.Popen(
+        subprocess.Popen(
             argv,
             cwd=str(Path(file_name).parent),
             stdin=subprocess.DEVNULL,
@@ -254,7 +254,7 @@ def _open_on_windows(path: Path) -> None:
             close_fds=True,
             creationflags=detached | new_group,
         )
-    except OSError as exc:
+    except OSError:
         os.startfile(file_name)
 
 

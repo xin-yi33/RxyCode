@@ -1358,10 +1358,6 @@ class ShellExecutor:
                         idle_cpu_percent=idle_cpu_percent,
                         prev_cpu=cpu1,
                     )
-                    io_moved = io2 >= last_io + WATCHDOG_BUSY_IO_BYTES
-                    sustained = (
-                        cpu1 >= idle_cpu_percent and cpu2 >= idle_cpu_percent
-                    )
                     last_io = max(last_io, io2)
                     line = (
                         f"bash {elapsed}s: cpu={cpu1:.1f}%->{cpu2:.1f}% "

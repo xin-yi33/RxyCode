@@ -459,7 +459,7 @@ def test_final_answer_result_overrides_streamed_meta_commentary():
     """
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-    agent = object.__new__(AgentV2)
+    _agent = object.__new__(AgentV2)
     fa_result = "**最终结果：** ✅ **通过 (PASS)** — 两个文件都已按原样落在磁盘上。"
     streamed_meta = "pytest 真实运行成功，3 个用例全部通过。给出最终结果。"
     executed = [

@@ -966,7 +966,7 @@ async def reflection_node(state: AgentState) -> dict:
 async def compressor_node(state: AgentState) -> dict:
     """Bound graph context while preserving full task results as artifacts."""
     memory: MemoryManager = state["_memory"]
-    session_id = state["session_id"]
+    _ = state["session_id"]
     memory_ctx = memory.get_context_for_prompt()
     cfg = _settings.load_config() or {}
     context_cfg = cfg.get("context", {})

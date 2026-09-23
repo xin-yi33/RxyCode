@@ -70,7 +70,6 @@ from RxyCode.RxyCode1_1_0.core.research_policy import (
 )
 from RxyCode.RxyCode1_1_0.core.loop_exit import (
     ERROR_LIMIT,
-    ReactExit,
     SPIN_ERROR_MESSAGE,
     bump_consecutive_errors,
     claimed_final_answer,
@@ -133,20 +132,21 @@ class _TransportExhaustion:
 
     def __init__(self) -> None:
         self._var: _contextvars.ContextVar[list[str]] = _contextvars.ContextVar(
-            "rxycode_transport_exhaustion", default=[]
+            "rxycode_transport_exhaustion", default=None
         )
 
     def push(self, error_kind: str) -> None:
-        self._var.set([*self._var.get(), str(error_kind)])
+        current = self._var.get() or []
+        self._var.set([*current, str(error_kind)])
 
     def drain(self) -> list[str]:
-        kinds = self._var.get()
+        kinds = self._var.get() or []
         if kinds:
             self._var.set([])
         return list(kinds)
 
     def peek(self) -> list[str]:
-        return list(self._var.get())
+        return list(self._var.get() or [])
 
 
 _last_transport_exhaustion = _TransportExhaustion()
@@ -5220,9 +5220,7 @@ class AgentV2:
         if mode is None:
             mode = "build"
         approved_implement = mode == "build" and _is_approved_plan_implement(user_input)
-        prefix_was_live = False
         if approved_implement:
-            prefix_was_live = bool(getattr(self, "_agent_prefix_messages", None))
             user_input, role_instruction, prep_meta = self._prepare_approved_implement(
                 user_input
             )
@@ -5546,7 +5544,6 @@ class AgentV2:
             write_nudge_count = 0
             file_write_succeeded = False
             consecutive_error_count = 0
-            error_limit_hit = False
             last_round_had_success = False
 
             # 废弃代码（2026-09-21）：for round_num in range(max_rounds):
@@ -5575,7 +5572,6 @@ class AgentV2:
                         if tui and hasattr(tui, "write_progress"):
                             tui.write_progress(f"steer: {_steer_text}")
                 if consecutive_error_count >= ERROR_LIMIT:
-                    error_limit_hit = True
                     stuck_triggered = True
                     break
                 if round_num >= max_rounds and not last_round_had_success:
@@ -5584,7 +5580,6 @@ class AgentV2:
                     )
                     messages.append(HumanMessage(content=SPIN_ERROR_MESSAGE))
                     if consecutive_error_count >= ERROR_LIMIT:
-                        error_limit_hit = True
                         stuck_triggered = True
                         break
                 last_round_had_success = False
@@ -5942,7 +5937,6 @@ class AgentV2:
                     messages.append(AIMessage(content=answer or ""))
                     messages.append(HumanMessage(content=SPIN_ERROR_MESSAGE))
                     if consecutive_error_count >= ERROR_LIMIT:
-                        error_limit_hit = True
                         stuck_triggered = True
                         break
                     continue
@@ -6127,7 +6121,6 @@ class AgentV2:
                     snapshot = getattr(self, "_git_snapshot", None)
                     if snapshot is not None and snapshot.captured:
                         snapshot.restore()
-                    error_limit_hit = True
                     stuck_triggered = True
                     break
             # 废弃代码（2026-09-21）：for-else 在 max_tool_rounds 触顶后

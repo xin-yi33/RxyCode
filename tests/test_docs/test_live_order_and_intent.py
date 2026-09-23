@@ -141,7 +141,7 @@ def test_cli_and_gui_appear_as_pairs() -> None:
     mapping = _coverage_destinations()
     text = _read(ARCH / "PHASE-P-PRODUCT-INTENT.md")
     assert "CLI" in text and "GUI" in text
-    for wish, dest in mapping.items():
+    for _wish, _dest in mapping.items():
         # coverage table has CLI/GUI columns in PHASE-P
         pass
     chunk_start = text.find("覆盖表")

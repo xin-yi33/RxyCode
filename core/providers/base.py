@@ -18,6 +18,10 @@ from ._compat import (
     LLMTransport,
     OPENAI_CHAT_TRANSPORT,
     OPENAI_RESPONSES_TRANSPORT,
+    ensure_resource_path_rewritable,
+    infer_transport_from_resource_path,
+    normalize_api_transport,
+    normalize_resource_path,
 )
 
 try:
@@ -30,6 +34,147 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
 
 CHAT_TRANSPORT: LLMTransport = OPENAI_CHAT_TRANSPORT
 RESPONSES_TRANSPORT: LLMTransport = OPENAI_RESPONSES_TRANSPORT
+
+_RESPONSES_FIRST_PRESET_IDS = frozenset({"openrouter", "groq", "dashscope"})
+
+
+class _TransportErrorClass(str, Enum):
+    TRANSPORT_UNSUPPORTED = "TRANSPORT_UNSUPPORTED"
+    MODEL_ERROR = "MODEL_ERROR"
+    REQUEST_VALIDATION = "REQUEST_VALIDATION"
+    AUTH_OR_POLICY = "AUTH_OR_POLICY"
+    TRANSIENT_ERROR = "TRANSIENT_ERROR"
+    UNKNOWN = "UNKNOWN"
+
+
+_MODEL_ERROR_RE = re.compile(
+    r"\bno such model\b"
+    r"|\b(?:unknown|invalid|unsupported)\s+model\b"
+    r"|\b(?:requested\s+)?model(?:\s+[\w./:-]+){0,4}\s+"
+    r"(?:(?:is|was)\s+)?(?:not found|does not exist)\b"
+    r"|\b(?:requested\s+)?model(?:\s+[\w./:-]+){0,4}\s+"
+    r"(?:could not|cannot|can't|was not)\s+(?:be\s+)?found\b",
+    flags=re.IGNORECASE,
+)
+_REQUEST_VALIDATION_RE = re.compile(
+    r"\b(?:invalid|unsupported|malformed|missing|unknown|unexpected|"
+    r"unrecognized|bad)\s+(?:endpoint\s+|request\s+)?"
+    r"(?:parameter|param|argument|field|tool(?:\s+schema)?|schema|object)\b"
+    r"|\b(?:parameter|param|argument|field|tool(?:\s+schema)?|schema|object)"
+    r"(?:\s+[\w./:-]+){0,4}\s+(?:(?:is|was)\s+)?"
+    r"(?:invalid|malformed|missing|unknown|not found|does not exist|"
+    r"not supported|unsupported)\b"
+    r"|\b(?:does not|doesn't|cannot|can't)\s+support\s+(?:the\s+)?"
+    r"(?:parameter|param|argument|field|tool(?:\s+schema)?|schema)\b",
+    flags=re.IGNORECASE,
+)
+_TRANSPORT_UNSUPPORTED_RE = re.compile(
+    r"(?:\b(?:api\s+(?:endpoint|route)|responses\s+api|"
+    r"chat[ _-]?completions\s+api|endpoint|route|protocol"
+    r")\b|/(?:v\d+/)?(?:responses|chat/completions))\s+"
+    r"(?:(?:is|was)\s+)?(?:not supported|unsupported|not found|unavailable|"
+    r"does not exist)\b"
+    r"|\bunsupported\s+(?:api\s+(?:endpoint|route)|responses\s+api|"
+    r"chat[ _-]?completions\s+api|endpoint|route|protocol)\b",
+    flags=re.IGNORECASE,
+)
+_TRANSPORT_SWITCH_RE = re.compile(
+    r"\buse\s+/(?:v\d+/)?(?:chat/completions|responses)\s+instead\b"
+    r"|\bswitch\s+to\s+(?:the\s+)?(?:responses\s+api|"
+    r"chat[ _-]?completions\s+api|/(?:v\d+/)?(?:responses|chat/completions))\b",
+    flags=re.IGNORECASE,
+)
+_MODEL_TRANSPORT_UNSUPPORTED_RE = re.compile(
+    r"\bmodel\b.{0,120}\b(?:does not|doesn't|cannot|can't)\s+support\b"
+    r".{0,40}\b(?:responses api|chat[ _-]?completions api)\b",
+    flags=re.IGNORECASE,
+)
+_GENERIC_NOT_FOUND_RE = re.compile(
+    r"(?<!resource )(?<!object )(?<!model )(?<!requested )\bnot found\b"
+    r"|\binvalid url\b",
+    flags=re.IGNORECASE,
+)
+_AUTH_OR_POLICY_RE = re.compile(
+    r"\b(?:api\s+key|credential|authentication|authorization|datapolicy|"
+    r"data\s+policy|region|regional|content\s+policy|content\s+safety|"
+    r"safety\s+policy)\b",
+    flags=re.IGNORECASE,
+)
+_TRANSIENT_ERROR_RE = re.compile(
+    r"\b(?:timed?\s*out|timeout|network\s+error|connection\s+"
+    r"(?:error|failed|refused|reset)|dns\s+(?:error|failure))\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _transport_error_status(exc: BaseException) -> int | None:
+    """Return an HTTP status without depending on one SDK exception class."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _transport_error_text(exc: BaseException) -> str:
+    """Collect bounded provider error metadata for classification only."""
+    parts = [str(exc)]
+    body = getattr(exc, "body", None)
+    if body is not None:
+        parts.append(str(body))
+    response = getattr(exc, "response", None)
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        parts.append(text[:1000])
+    return " ".join(parts)[:3000]
+
+
+def _transport_error_request_url(exc: BaseException) -> str:
+    """Return the attempted request URL when an SDK exposes it."""
+    explicit = getattr(exc, "request_url", None)
+    if explicit:
+        return str(explicit)
+    request = getattr(exc, "request", None)
+    if request is None:
+        response = getattr(exc, "response", None)
+        request = getattr(response, "request", None)
+    return str(getattr(request, "url", "") or "")
+
+
+def _classify_transport_error(exc: BaseException) -> _TransportErrorClass:
+    """Classify a provider failure using complete error phrases."""
+    status = _transport_error_status(exc)
+    text = _transport_error_text(exc)
+
+    if status in {401, 403}:
+        return _TransportErrorClass.AUTH_OR_POLICY
+    if (
+        status in {408, 429}
+        or (isinstance(status, int) and status >= 500)
+        or isinstance(exc, (TimeoutError, ConnectionError))
+        or _TRANSIENT_ERROR_RE.search(text)
+    ):
+        return _TransportErrorClass.TRANSIENT_ERROR
+    if _AUTH_OR_POLICY_RE.search(text):
+        return _TransportErrorClass.AUTH_OR_POLICY
+    if _MODEL_ERROR_RE.search(text):
+        return _TransportErrorClass.MODEL_ERROR
+    if status in {400, 404, 405, 422} and _MODEL_TRANSPORT_UNSUPPORTED_RE.search(text):
+        return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+    if _REQUEST_VALIDATION_RE.search(text):
+        return _TransportErrorClass.REQUEST_VALIDATION
+    if status not in {400, 404, 405, 422}:
+        return _TransportErrorClass.UNKNOWN
+    if _TRANSPORT_UNSUPPORTED_RE.search(text) or _TRANSPORT_SWITCH_RE.search(text):
+        return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+    request_url = _transport_error_request_url(exc).casefold()
+    if request_url and _GENERIC_NOT_FOUND_RE.search(text):
+        if re.search(r"/(?:v\d+/)?responses(?:$|[/?])", request_url):
+            return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+        if re.search(r"/chat/completions(?:$|[/?])", request_url):
+            return _TransportErrorClass.TRANSPORT_UNSUPPORTED
+    return _TransportErrorClass.UNKNOWN
 
 
 class BaseProvider:

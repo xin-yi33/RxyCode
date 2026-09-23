@@ -48,6 +48,9 @@ def _extract_error_detail(raw: str) -> str:
     lowered = text.lower()
     if any(marker in lowered for marker in _GROUNDING_MARKERS):
         return ""
+    # 含 grounded/manifest 的行同样是内部术语，不附
+    if "grounded" in lowered or "manifest" in lowered:
+        return ""
     # 取第一行（通常包含错误类型和描述）
     first_line = text.split("\n")[0].strip()
     # 去掉常见的内部前缀
