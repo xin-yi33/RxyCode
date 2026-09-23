@@ -186,20 +186,16 @@ def test_fast_reply_still_forbids_thinking_off() -> None:
 
 
 def test_stream_max_tokens_cap_is_ttft_friendly() -> None:
-    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
-        CHAT_STREAM_MAX_TOKENS_CAP,
-        TOOL_ROUND_MAX_TOKENS_CAP,
-        TTFT_FIRST_MAX_TOKENS,
-        TTFT_STREAM_MAX_TOKENS_CAP,
-        _resolve_fast_build_round_max_tokens,
-    )
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _resolve_fast_build_round_max_tokens
 
-    assert CHAT_STREAM_MAX_TOKENS_CAP == 4096
-    assert TTFT_FIRST_MAX_TOKENS == 4096
-    assert TTFT_STREAM_MAX_TOKENS_CAP == 8192
-    assert TOOL_ROUND_MAX_TOKENS_CAP == 32768
-    assert _resolve_fast_build_round_max_tokens({}, 384000) == 32768
+    # A fixed 4096 round cap truncated valid writes. The live budget follows
+    # the model limit unless an operator sets a smaller override.
     assert _resolve_fast_build_round_max_tokens({}, 8192) == 8192
+    assert _resolve_fast_build_round_max_tokens(
+        {"fast_build_tool_round_max_tokens": 2048},
+        8192,
+    ) == 2048
+    assert _resolve_fast_build_round_max_tokens({}, 384000) == 384000
 
 
 def test_tool_wire_schema_shrinks_bytes_without_rotating_names() -> None:

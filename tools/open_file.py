@@ -254,7 +254,9 @@ def _open_on_windows(path: Path) -> None:
             close_fds=True,
             creationflags=detached | new_group,
         )
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError: creationflags is rejected when the process is not
+        # actually Windows (tests spoof sys.platform). Fall back to startfile.
         os.startfile(file_name)
 
 

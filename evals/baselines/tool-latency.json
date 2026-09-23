@@ -1,1 +1,8 @@
-
+{
+  "required_after": {
+    "tool_parallel_default": true,
+    "graph_task_parallel_default": false,
+    "bash_timeout_s": 1800,
+    "raw_stream_load_config": false
+  }
+}

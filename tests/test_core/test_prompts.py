@@ -26,20 +26,19 @@ class TestUnifiedSystemPrompt:
 
     def test_mentions_capabilities(self):
         from RxyCode.RxyCode1_1_0.core.prompts import UNIFIED_SYSTEM_PROMPT
-        assert "Code generation" in UNIFIED_SYSTEM_PROMPT
-        assert "Debugging" in UNIFIED_SYSTEM_PROMPT
-        assert "File operations" in UNIFIED_SYSTEM_PROMPT
+        assert "write tool" in UNIFIED_SYSTEM_PROMPT
+        assert "open_file" in UNIFIED_SYSTEM_PROMPT
+        assert "inspect" in UNIFIED_SYSTEM_PROMPT
 
     def test_defines_general_agent_identity(self):
         from RxyCode.RxyCode1_1_0.core.prompts import UNIFIED_SYSTEM_PROMPT
-        assert "general-purpose AI agent" in UNIFIED_SYSTEM_PROMPT
-        assert "Research and analysis" in UNIFIED_SYSTEM_PROMPT
-        assert "General task execution" in UNIFIED_SYSTEM_PROMPT
-        assert "coding assistant" not in UNIFIED_SYSTEM_PROMPT.lower()
+        assert "You are RxyCode" in UNIFIED_SYSTEM_PROMPT
+        assert "Plan, execute, and validate software tasks" in UNIFIED_SYSTEM_PROMPT
 
     def test_uses_markdown(self):
         from RxyCode.RxyCode1_1_0.core.prompts import UNIFIED_SYSTEM_PROMPT
-        assert "Markdown" in UNIFIED_SYSTEM_PROMPT
+        assert "<LANGUAGE>" in UNIFIED_SYSTEM_PROMPT
+        assert "<TOOLS>" in UNIFIED_SYSTEM_PROMPT
 
     def test_has_language_requirement(self):
         from RxyCode.RxyCode1_1_0.core.prompts import UNIFIED_SYSTEM_PROMPT

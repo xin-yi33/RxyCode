@@ -192,6 +192,9 @@ def is_social_chat(text: str) -> bool:
         return False
     if is_identity_or_meta_chat(text_stripped):
         return True
+    # Whole-message greetings only. A substring check would treat "this" as "hi".
+    if re.fullmatch(r"(?i)(?:hi|hello|hey|yo)[\s!！。.?？~～]*", text_stripped):
+        return True
 
     social_signals = (
         "伤心", "难过", "不理我", "陪我", "你好", "您好", "谢谢", "在吗",

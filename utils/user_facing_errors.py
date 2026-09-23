@@ -44,8 +44,10 @@ def _extract_error_detail(raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
-    # grounding/synthesizer 类错误的原始信息全是内部术语，不附
+    # grounding/synthesizer / evidence 门的原文是内部术语，不附给用户。
     lowered = text.lower()
+    if lowered.startswith("[evidence failed") or "evidence failed" in lowered:
+        return ""
     if any(marker in lowered for marker in _GROUNDING_MARKERS):
         return ""
     # 含 grounded/manifest 的行同样是内部术语，不附

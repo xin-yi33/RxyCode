@@ -1,0 +1,15 @@
+{
+  "thinking": {
+    "required": true,
+    "disable_to_buy_ttft": false
+  },
+  "clock": {
+    "not_a_pass": ["first ProgressUpdate", "liveness 思考中"]
+  },
+  "gates": {
+    "simple_ttft_s": {"upper_s": 1.5},
+    "complex_ttft_s": {"upper_s": 3.2},
+    "harness_overhead_s": 1.5,
+    "cache_hit_floor": 0.97
+  }
+}

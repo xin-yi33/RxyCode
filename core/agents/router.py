@@ -342,6 +342,18 @@ class ModeRouter:
                 session_id,
             )
         if route_mode == "team":
+            # A saved team preference must not turn "hi" into a seven-stage team.
+            if _GREETING_RE.search((task or text or "").strip()):
+                return self._commit(
+                    RoutingDecision(
+                        mode=ExecutionMode.SOLO,
+                        decided_by="heuristic",
+                        reason="social greeting",
+                        experiment_tag=tag,
+                        task=task or text,
+                    ),
+                    session_id,
+                )
             return self._commit(
                 RoutingDecision(
                     mode=ExecutionMode.TEAM,
