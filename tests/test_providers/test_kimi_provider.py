@@ -196,3 +196,47 @@ def test_unknown_model_falls_back_to_defaults():
     p = providers.resolve(cfg)
     caps = p.capabilities(cfg)
     assert caps == DEFAULT_CAPABILITIES
+
+
+# ---- 2026-09-23 流式思维链缺失回归 --------------------------------------
+
+
+def test_k3_stream_reasoning_content_extracted():
+    """2026-09-23 回归：kimi-k3 流式轮次思维链缺失。
+
+    根因：_KIMI_USAGE.reasoning=() 导致 BaseProvider.extract_reasoning 的
+    字段循环为空，流式 delta 里的 reasoning_content 永远取不到
+    （探针证据：tui.reasoning.emit 缺失 + session.final.thinking thinking_len=0）。
+    Kimi 官方 API 的 reasoning 就在 delta/message 的 reasoning_content 字段
+    （见 core/providers/kimi.py 模块 docstring §7.3），usage_fields.reasoning
+    是**内容**字段映射（config/model_capabilities.py UsageFieldMap.reasoning：
+    「推理/思考内容所在字段（在 delta 或 message 上）」），不是 usage 计数路径。
+    """
+    from types import SimpleNamespace
+
+    p = providers.resolve({"base_url": _MOONSHOT_CN, "model_name": "kimi-k3"})
+    caps = p.capabilities({"base_url": _MOONSHOT_CN, "model_name": "kimi-k3"})
+    # 字段映射必须包含 reasoning_content（否则流式提取恒为空）
+    assert "reasoning_content" in caps.usage_fields.reasoning
+    # delta 携带 reasoning_content 时必须取出
+    delta = SimpleNamespace(reasoning_content="让我想想…", content=None, tool_calls=None)
+    assert p.extract_reasoning(delta, caps) == "让我想想…"
+    # 无 reasoning 的 delta 返回空串（不误判）
+    empty = SimpleNamespace(reasoning_content="", content="你好", tool_calls=None)
+    assert p.extract_reasoning(empty, caps) == ""
+
+
+def test_k3_via_third_party_relay_also_extracts():
+    """kimi 模型经第三方中转（如 api.arc-bench.com）时同样命中提取。
+
+    用户实际链路：custom-api-arc-bench-com/kimi-k3 → matches() 按模型名命中
+    KimiProvider → 同一份 capabilities → 同一个 bug/同一个修复。
+    """
+    from types import SimpleNamespace
+
+    cfg = {"base_url": "https://api.arc-bench.com/v1", "model_name": "kimi-k3"}
+    p = providers.resolve(cfg)
+    assert isinstance(p, KimiProvider)
+    caps = p.capabilities(cfg)
+    delta = SimpleNamespace(reasoning_content="中转站的思维链", content=None, tool_calls=None)
+    assert p.extract_reasoning(delta, caps) == "中转站的思维链"

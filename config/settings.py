@@ -226,6 +226,14 @@ def _default_config() -> dict:
             "tool_output_max_chars": 2000,
         },
         "mcpServers": {},
+        # PP40 Computer Use (open-codex-computer-use MCP). Default off.
+        # Enabling is L1: restart the session after flipping. Try-path:
+        # RXYCODE_COMPUTER_USE=1 (implies first-run approval).
+        "computer_use": {
+            "enabled": False,
+            "approved": False,
+            "browser": True,
+        },
         "lsp": {},
         "autoCompact": True,
         "scheduler": {
@@ -241,6 +249,9 @@ def _default_config() -> dict:
         "pricing": {},
         "recovery": {
             "circuit_breaker_enabled": True,
+        },
+        "llm": {
+            "transport_retries": 2,  # extra 429/connect attempts; not idle/first-token
         },
         "agents": {
             "enabled": False,
@@ -286,15 +297,15 @@ def _default_config() -> dict:
             "catalog_max_age_days": 90,
         },
         "execution": {
-            "parallel_enabled": False,  # default off, gradual rollout
+            "parallel_enabled": False,  # graph task fan-out; tool reads use tool_parallel_enabled
+            "tool_parallel_enabled": True,
             "max_parallel": 3,          # Semaphore limit to prevent API rate limits
             "max_graph_steps": 60,      # hard state-machine step budget
-            "max_tool_rounds": 10,      # hard fast-path tool loop budget
+            "max_tool_rounds": 200,     # ReAct tool-loop ceiling; stuck detector still stops repeats
             # Creation/build turns may be overridden for unusually large
-            # projects, but the default must fail/recover promptly. A larger
-            # value multiplies model latency and token use when the model is
-            # stuck validating the same artifact.
-            "fast_build_max_tool_rounds": 10,
+            # projects. The stuck detector, not this ceiling, is the primary
+            # guard against a model retrying the same failing tool.
+            "fast_build_max_tool_rounds": 200,
             # Fast build turns follow the active model's resolved output limit
             # by default. Set an explicit integer only when an operator wants
             # a smaller tool-call budget for a particular deployment.

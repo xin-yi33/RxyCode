@@ -809,6 +809,7 @@ export function useConversation(
       }>('session/prompt', {
         session_id: sessionId,
         text: rpcText,
+        request_id: crypto.randomUUID(),
         ...(options.mode === undefined ? {} : { mode: options.mode }),
         ...(options.permissionMode === undefined ? {} : { permission_mode: options.permissionMode })
       }, 15 * 60_000)

@@ -146,8 +146,8 @@ def test_auto_resolves_to_positive_integer_through_resolver():
 def test_model_limit_error_not_retryable():
     """M4.6：ModelLimitError 不属于可重试的传输错误，不会被静默重试吞掉。
 
-    agent_v2 的 transport retry 只对 httpx.TransportError / ConnectionError /
-    TimeoutError 重试（_is_transport_retryable）。ModelLimitError（如
+    agent_v2 的 transport retry 只对短 connect / 429 / connection-reset
+    重试（_is_transport_retryable）。ModelLimitError（如
     MODEL_CONTEXT_BUDGET_EXHAUSTED）是业务错误，不在重试白名单内。
     """
     from RxyCode.RxyCode1_1_0.core.agent_v2 import _is_transport_retryable
@@ -164,7 +164,7 @@ def test_model_limit_error_not_retryable():
     # 对照：传输错误应可重试
     import httpx
     assert _is_transport_retryable(httpx.ConnectError("boom"))
-    assert _is_transport_retryable(TimeoutError("slow"))
+    assert not _is_transport_retryable(TimeoutError("slow"))
 
 
 def test_llm_transport_retry_emits_structured_recovery_and_resolves(monkeypatch):

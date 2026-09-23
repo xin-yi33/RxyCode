@@ -26,6 +26,7 @@ from protocol.subagents import (
     PermissionVerdict,
     TaskPermissionSpec,
     TaskRequest,
+    TaskResult,
     ToolPermission,
     TriggerKind,
     WorkspaceMode,
@@ -224,6 +225,60 @@ class TestScenario4_ParallelRead:
         assert r1.child_session_id != r2.child_session_id
         assert r1.status in (ChildStatus.COMPLETED, ChildStatus.FAILED)
         assert r2.status in (ChildStatus.COMPLETED, ChildStatus.FAILED)
+
+    def test_parallel_dispatches_keep_distinct_prompts(self, enabled_manager, monkeypatch):
+        """Two concurrent task() calls must not swap prompts or session ids."""
+        seen: list[tuple[str, str]] = []
+
+        class _FakeChild:
+            def __init__(self, definition, session, *args, **kwargs):
+                self.session = session
+
+            async def execute(self, task_prompt: str):
+                seen.append((self.session.session_id, task_prompt))
+                await asyncio.sleep(0.05)
+                return TaskResult(
+                    request_id="",
+                    child_session_id=self.session.session_id,
+                    status=ChildStatus.COMPLETED,
+                    summary=task_prompt,
+                )
+
+            def shutdown(self):
+                return None
+
+            def cancel(self):
+                return True
+
+        def _factory(definition, session, *args, **kwargs):
+            child = _FakeChild(definition, session, *args, **kwargs)
+            session._cancel_callback = child.cancel
+            return child
+
+        monkeypatch.setattr(
+            "RxyCode.RxyCode1_1_0.core.subagents.manager.create_child_runtime",
+            _factory,
+        )
+        reqs = [
+            _req("explore", prompt="探索 core/"),
+            _req("explore", prompt="探索 protocol/"),
+        ]
+
+        async def _run():
+            return await asyncio.gather(
+                enabled_manager.dispatch(reqs[0]),
+                enabled_manager.dispatch(reqs[1]),
+            )
+
+        r1, r2 = asyncio.run(_run())
+        assert r1.status is ChildStatus.COMPLETED
+        assert r2.status is ChildStatus.COMPLETED
+        assert r1.child_session_id != r2.child_session_id
+        assert r1.summary == "探索 core/"
+        assert r2.summary == "探索 protocol/"
+        by_session = dict(seen)
+        assert by_session[r1.child_session_id] == "探索 core/"
+        assert by_session[r2.child_session_id] == "探索 protocol/"
 
     def test_read_only_children_share_no_state(self, enabled_manager):
         """Read-only children run concurrently without conflicts."""

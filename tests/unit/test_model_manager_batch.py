@@ -172,8 +172,8 @@ def test_infer_provider_group_from_url():
     assert zen["name"] == "OpenCode Zen"
 
     unknown = model_manager.infer_provider_group("https://custom.example.com/v1")
-    assert unknown["id"] == "custom"
-    assert unknown["name"] == "其他"
+    assert unknown["id"] == "custom-custom-example-com"
+    assert unknown["name"] == "custom.example.com"
 
 
 def test_onboard_models_batch_allows_same_id_on_different_endpoint(monkeypatch):

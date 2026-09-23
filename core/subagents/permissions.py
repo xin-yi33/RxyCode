@@ -25,6 +25,8 @@ from protocol.subagents import (
     PermissionVerdict,
 )
 
+from ..safety.policy import canonical_tool_name
+
 
 # ---------------------------------------------------------------------------
 # Pattern matching
@@ -134,6 +136,7 @@ def is_system_hard_denied(tool: str, value: str) -> str | None:
 
     System hard-reject rules always win over agent permissions.
     """
+    tool = canonical_tool_name(tool)
     path_mode = tool in ("read", "edit", "open_file")
     patterns = _SYSTEM_HARD_DENY_TOOLS.get(tool, ())
     for pattern in patterns:
@@ -185,6 +188,7 @@ class PermissionPolicy:
           3. agent rule matching (last matching rule wins)
           4. default deny
         """
+        tool = canonical_tool_name(tool)
         # 1. System hard-reject
         hard = is_system_hard_denied(tool, value)
         if hard is not None:
@@ -251,6 +255,7 @@ class PermissionPolicy:
 
     def _touches_external_path(self, tool: str, value: str) -> bool:
         """Check whether a tool call references a path outside the workspace."""
+        tool = canonical_tool_name(tool)
         if tool not in ("read", "edit", "bash", "open_file"):
             return False
         if not value:

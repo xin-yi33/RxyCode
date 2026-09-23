@@ -15,6 +15,7 @@ include frontend/protocol-client/package.json
 include frontend/protocol-client/tsconfig.json
 include core/agents/teams/*.yaml
 recursive-include core/agents/teams *.yaml *.md
+include core/prompts/*.md
 global-exclude *.py[cod]
 global-exclude *.log
 global-exclude *.key

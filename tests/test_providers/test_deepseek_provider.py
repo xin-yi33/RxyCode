@@ -53,12 +53,11 @@ def test_cache_read_uses_flat_field_only():
     p = providers.resolve({"model_name": "deepseek-chat"})
     caps = p.capabilities({"model_name": "deepseek-chat"})
     assert p.extract_cache_read({"prompt_cache_hit_tokens": 42}, caps) == 42
-    # DeepSeek Chat Completions 不用嵌套形式，即使出现也不该被误读
     assert (
         p.extract_cache_read(
             {"prompt_tokens_details": {"cached_tokens": 99}}, caps
         )
-        == 0
+        == 99
     )
 
 

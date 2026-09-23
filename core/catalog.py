@@ -19,8 +19,23 @@ from typing import Any
 #: 契约目录（与 model_catalog.json 同源）。
 _CATALOG_PATH = Path(__file__).resolve().parents[1] / "config" / "model_catalog.json"
 
+#: Dotted catalog spellings → official API ids.  Sonnet 4.5 is not Sonnet 5.
+_ANTHROPIC_MODEL_ALIASES: dict[str, str] = {
+    "claude-sonnet-4.5": "claude-sonnet-4-5",
+    "claude-haiku-4.5": "claude-haiku-4-5",
+}
+
 #: 模块级缓存：provider:model -> cache_contract（或 None）。
 _contracts: dict[str, dict | None] | None = None
+
+
+def canonical_model_id(provider_id: str, model_id: str) -> str:
+    """Return the runtime/API model id for a catalog or user-facing alias."""
+    pid = str(provider_id or "").strip().casefold()
+    mid = str(model_id or "").strip().casefold()
+    if pid == "anthropic":
+        return _ANTHROPIC_MODEL_ALIASES.get(mid, mid)
+    return mid
 
 
 def _load_contracts() -> dict[str, dict | None]:

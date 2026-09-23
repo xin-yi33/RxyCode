@@ -6,10 +6,15 @@
  * 档位随当前模型动态变化）；当前档位 footer 标记；上下键 + 回车确认。
  * 模型无档位（effort_options 空）→ 显示"当前模型不支持档位选择"。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DialogSelect } from "./DialogSelect.tsx";
 import { sendCommand } from "../chatApi.ts";
 import { fetchEffortOptions, type ModelInfo } from "./api.ts";
+import {
+  DEFAULT_EFFORT_VALUE,
+  SELECT_EFFORT_TITLE,
+  buildEffortPickerOptions,
+} from "./effortPicker.ts";
 
 /** 档位 → 中文说明（opencode 风格：英文档位 + 中文释义；未知档位保留原文）。 */
 export const EFFORT_DESCRIPTIONS: Record<string, string> = {
@@ -67,6 +72,7 @@ export function DialogEffort({
   const [loadError, setLoadError] = useState("");
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState("");
+  const committedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     const result = await fetchEffortOptions();
@@ -76,9 +82,9 @@ export function DialogEffort({
       return;
     }
     const built = buildOptions(result.models, result.active);
-    setOptions(built.options);
+    setOptions(buildEffortPickerOptions(built.options));
     setModelName(built.modelName);
-    setCurrent(result.effort || "");
+    setCurrent(result.effort || DEFAULT_EFFORT_VALUE);
   }, []);
 
   useEffect(() => {
@@ -87,19 +93,39 @@ export function DialogEffort({
 
   const footerHint = switchError
     ? switchError
-    : options.length === 0
-      ? "当前模型不支持档位选择"
-      : modelName
-        ? `模型 ${modelName} · 当前: ${current || "balanced"}`
-        : undefined;
+    : loadError
+      ? `加载失败: ${loadError}`
+      : options.length === 0
+        ? "当前模型不支持档位选择"
+        : modelName
+          ? `模型 ${modelName} · 当前: ${current || DEFAULT_EFFORT_VALUE}`
+          : undefined;
+
+  const dismiss = useCallback(() => {
+    if (committedRef.current) {
+      onClose();
+      return;
+    }
+    committedRef.current = true;
+    void (async () => {
+      const result = await sendCommand(`/effort ${DEFAULT_EFFORT_VALUE}`);
+      if (result.ok) {
+        onChanged(
+          DEFAULT_EFFORT_VALUE,
+          result.message || `思考强度已切换: ${DEFAULT_EFFORT_VALUE}`,
+        );
+      }
+      onClose();
+    })();
+  }, [onChanged, onClose]);
 
   return (
     <DialogSelect
-      title="选择思考强度"
+      title={SELECT_EFFORT_TITLE}
       options={options}
       placeholder="搜索档位"
       currentId={current}
-      onClose={onClose}
+      onClose={dismiss}
       footerHint={footerHint}
       onSelect={(opt) => {
         if (switching) return;
@@ -112,6 +138,7 @@ export function DialogEffort({
               setSwitchError(result.error || result.message || "无法连接 API 服务");
               return;
             }
+            committedRef.current = true;
             setCurrent(opt.value);
             onChanged(opt.value, result.message || `思考强度已切换: ${opt.value}`);
             onClose();

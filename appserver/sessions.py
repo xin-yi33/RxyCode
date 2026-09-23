@@ -40,6 +40,10 @@ class AppSessionRecord:
     permission_snapshot: dict[str, object] = field(default_factory=dict)
     lease_id: str | None = None
     orphan_reason: str | None = None
+    generated_title: str | None = None
+    title_is_manual: bool = False
+    title_source: str = "default"
+    title_llm_pass: int = 0
     created_at: str = ""
     updated_at: str = ""
     usage: dict[str, object] = field(
@@ -334,6 +338,54 @@ class SessionStore:
         if not clean:
             raise ValueError("title is required")
         record.title = clean
+        record.title_is_manual = True
+        record.title_source = "manual"
+        self._touch(record)
+        self._persist(record)
+        return record
+
+    def note_user_prompt(self, session_id: str, text: str) -> AppSessionRecord | None:
+        """First user turn: persist prompt + fallback title so the row is not stuck on 新任务."""
+        record = self._sessions.get(session_id)
+        if record is None:
+            return None
+        blob = str(text or "")
+        record.last_user_prompt = blob
+        if not record.title_is_manual and not str(record.generated_title or "").strip():
+            try:
+                from RxyCode.RxyCode1_1_0.core.session_title import fallback_title
+            except ImportError:
+                from core.session_title import fallback_title
+
+            title = fallback_title(blob)
+            default_titles = {"", "新任务", "New task"}
+            if title and str(record.title or "").strip() in default_titles:
+                record.title = title
+                record.title_source = "fallback"
+        self._touch(record)
+        self._persist(record)
+        return record
+
+    def apply_generated_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        source: str = "fallback",
+        title_llm_pass: int | None = None,
+    ) -> AppSessionRecord | None:
+        record = self._sessions.get(session_id)
+        if record is None or record.title_is_manual:
+            return record
+        clean = str(title or "").strip()
+        if not clean:
+            return record
+        record.generated_title = clean
+        record.title_source = source if source in {"llm", "fallback"} else "fallback"
+        if source == "llm" or str(record.title or "").strip() in {"", "新任务", "New task"}:
+            record.title = clean
+        if title_llm_pass is not None:
+            record.title_llm_pass = max(int(record.title_llm_pass or 0), int(title_llm_pass))
         self._touch(record)
         self._persist(record)
         return record
@@ -462,10 +514,16 @@ class SessionStore:
             associated_files=list(task.get("associated_files") or []),
             list_category=task.get("list_category"),
             archived_at=task.get("archived_at"),
+            pinned=bool(task.get("pinned", False)),
+            generated_title=task.get("generated_title"),
+            title_is_manual=bool(task.get("title_is_manual", False)),
+            title_source=str(task.get("title_source") or ("manual" if task.get("title_is_manual") else "default")),
+            title_llm_pass=int(task.get("title_llm_pass") or 0),
             forked_from=task.get("forked_from"),
             parent_session_id=task.get("parent_session_id"),
             root_session_id=task.get("root_session_id") or str(task["session_id"]),
             last_turn_request_id=task.get("last_turn_request_id"),
+            last_user_prompt=task.get("last_user_prompt"),
             last_turn_result=task.get("last_turn_result"),
             turn_results=dict(task.get("turn_results") or {}),
             agent_id=task.get("agent_id"),
@@ -510,6 +568,7 @@ class SessionStore:
             parent_session_id=record.parent_session_id,
             root_session_id=record.root_session_id or record.session_id,
             last_turn_request_id=record.last_turn_request_id,
+            last_user_prompt=record.last_user_prompt,
             last_turn_result=record.last_turn_result,
             turn_results=record.turn_results,
             agent_id=record.agent_id,
@@ -518,6 +577,11 @@ class SessionStore:
             permission_snapshot=record.permission_snapshot,
             lease_id=record.lease_id,
             orphan_reason=record.orphan_reason,
+            pinned=record.pinned,
+            generated_title=record.generated_title,
+            title_is_manual=record.title_is_manual,
+            title_source=record.title_source,
+            title_llm_pass=record.title_llm_pass,
         )
 
 

@@ -11,6 +11,7 @@
  */
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
+import { appendFileSync } from "node:fs";
 import App from "./App.tsx";
 import {
   consumeSgrMouseInput,
@@ -27,6 +28,25 @@ if (!process.stdin.isTTY && process.env.RXYCODE_E2E_BYPASS_TTY !== "1") {
   console.log("RxyCode OpenTUI requires an interactive terminal (TTY).");
   console.log("Please run this directly in a terminal, not piped.");
   process.exit(1);
+}
+
+// Foreign stderr (Node warnings, GUI apps that AttachConsole) paints over
+// the alternate screen. Keep the TTY for OpenTUI stdout only.
+{
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding | ((err?: Error | null) => void),
+    cb?: (err?: Error | null) => void,
+  ) => {
+    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    if (process.env.RXYCODE_TUI_STDERR === "1") {
+      return origWrite(chunk as never, encoding as never, cb as never);
+    }
+    if (typeof encoding === "function") encoding();
+    else if (typeof cb === "function") cb();
+    return true;
+  }) as typeof process.stderr.write;
 }
 
 // Spawn / initialize appserver before the renderer so first paint overlaps warm.

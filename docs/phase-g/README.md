@@ -10,6 +10,6 @@ Phase G 所有施工与基线文档集中在这里，避免主链 / 增强 / 前
 | [`frontend/PHASE-G-FRONTEND.md`](./frontend/PHASE-G-FRONTEND.md) | 主链 H1–H13 + P3 H14–H19 | `feat/phase-g-frontend` |
 | [`frontend/PHASE-G-FRONTEND-GX.md`](./frontend/PHASE-G-FRONTEND-GX.md) | 增强 GX*-H | `feat/phase-g-frontend` |
 | [`PHASE-G-CONFLICT-AUDIT.md`](./PHASE-G-CONFLICT-AUDIT.md) | 登记表 | 谁改谁提交 |
-| [`BRANCHING.md`](./BRANCHING.md) | 分支怎么走 | 两端都遵守 |
+| [`SESSION-RESTORE-ABC.md`](./SESSION-RESTORE-ABC.md) | 轨 H 落地补丁：首轮标题 / 重进还原 / 空窗口不进列表 | 当前工作区 |
 
 旧路径 `docs/plans/opus5-plan/rxycode/PHASE-G-*.md` 只留跳转。

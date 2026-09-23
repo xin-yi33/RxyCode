@@ -42,15 +42,20 @@ def _find_tesseract() -> str | None:
 class VisionInput(BaseModel):
     operation: str = Field(
         default="describe",
-        description="Operation: 'describe' (get image info), 'ocr' (extract text), 'screenshot' (capture screen)"
+        description=(
+            "Operation: 'describe' (file metadata only — size/dimensions, "
+            "NOT a multimodal caption, cannot tell portraits), "
+            "'ocr' (extract text, 15s cap), "
+            "'screenshot' (capture screen)"
+        ),
     )
     filePath: str = Field(
         default="",
         description="Absolute or session-relative image path (for describe/ocr)"
     )
     prompt: str = Field(
-        default="What do you see in this image?",
-        description="Optional prompt for describing the image"
+        default="",
+        description="Ignored. This tool does not call a vision LLM.",
     )
 
 
@@ -107,9 +112,13 @@ async def run_vision_async(
 
 
 def _describe_image(file_path: str) -> str:
-    """Get image metadata and return formatted description."""
+    """Return file metadata only. Does not caption or classify the photo.
+
+    Auto-OCR used to run here and could block for many minutes on large
+    screenshots. OCR is ``operation=ocr`` only, with a 15s cap.
+    """
     from PIL import Image
-    
+
     img = Image.open(file_path)
     filename = os.path.basename(file_path)
     ext = os.path.splitext(filename)[1].upper()
@@ -117,46 +126,34 @@ def _describe_image(file_path: str) -> str:
     width, height = img.size
     mode = img.mode
     fmt = img.format or ext
-    
-    # Size in human-readable format
+
     if size_bytes < 1024:
         size_str = f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
         size_str = f"{size_bytes / 1024:.1f} KB"
     else:
         size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
-    
-    result = [
-        f"File: {filename}",
-        f"Format: {fmt}",
-        f"Dimensions: {width}x{height} pixels",
-        f"Size: {size_str}",
-        f"Color Mode: {mode}",
-    ]
-    
-    # Try OCR by default if image has text-like content
-    try:
-        import pytesseract
-        _tesseract_cmd = _find_tesseract()
-        if _tesseract_cmd:
-            pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
-        text = pytesseract.image_to_string(img)
-        if text.strip():
-            result.append(f"\nExtracted Text (OCR):\n{text.strip()}")
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    
-    return "\n".join(result)
+
+    return "\n".join(
+        [
+            f"File: {filename}",
+            f"Format: {fmt}",
+            f"Dimensions: {width}x{height} pixels",
+            f"Size: {size_str}",
+            f"Color Mode: {mode}",
+            "Note: metadata only — this tool cannot tell if the image is a "
+            "portrait or describe its contents. Use operation=ocr for text, "
+            "or a vision-capable chat model to inspect the picture.",
+        ]
+    )
 
 
 def _ocr_image(file_path: str) -> str:
-    """Extract text from image using OCR."""
+    """Extract text from image using OCR with a hard 15s cap."""
     from PIL import Image
-    
+
     img = Image.open(file_path)
-    
+
     try:
         import pytesseract
         _tesseract_cmd = _find_tesseract()
@@ -164,40 +161,17 @@ def _ocr_image(file_path: str) -> str:
             pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
     except ImportError:
         return "[error: pytesseract not installed. Install with: pip install pytesseract]"
-    
-    # Try multiple OCR configurations for better results
-    results = []
-    
-    # Standard OCR
-    text = pytesseract.image_to_string(img, lang='eng+chi_sim')
-    if text.strip():
-        results.append("Standard OCR:")
-        results.append(text.strip())
-    
-    # Try with preprocessing for better accuracy
+
     try:
-        # Convert to grayscale and enhance contrast
-        gray = img.convert('L')
-        text_gray = pytesseract.image_to_string(gray, lang='eng+chi_sim')
-        if text_gray.strip() and text_gray.strip() != text.strip():
-            results.append("\nEnhanced OCR:")
-            results.append(text_gray.strip())
-    except Exception:
-        pass
-    
-    if not results:
+        text = pytesseract.image_to_string(img, lang="eng+chi_sim", timeout=15)
+    except RuntimeError as exc:
+        return f"[error: OCR timed out or failed: {exc}]"
+    except Exception as exc:
+        return f"[error: OCR failed: {exc}]"
+
+    if not str(text).strip():
         return "[no text detected in image]"
-    
-    # Try to get bounding box info
-    try:
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-        word_count = sum(1 for t in data['text'] if t.strip())
-        if word_count > 0:
-            results.append(f"\nDetected {word_count} words/text blocks")
-    except Exception:
-        pass
-    
-    return "\n".join(results)
+    return f"Standard OCR:\n{str(text).strip()}"
 
 
 def _interactive_desktop_available() -> bool:
@@ -340,9 +314,11 @@ async def _capture_screenshot_async() -> str:
 
 vision_tool = StructuredTool(
     name="vision",
-    description="Read/analyze images, extract text (OCR), and capture screenshots. "
-                "Use 'describe' for image metadata, 'ocr' for text extraction, "
-                "'screenshot' to capture the screen.",
+    description=(
+        "Inspect an image file's metadata (size, dimensions) or OCR its text. "
+        "describe does NOT see people/portraits and does not call a vision LLM. "
+        "ocr extracts text (15s cap). screenshot captures the screen."
+    ),
     func=run_vision,
     coroutine=run_vision_async,
     args_schema=VisionInput,

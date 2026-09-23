@@ -92,11 +92,24 @@ async def test_prompt_heartbeat_emits_user_visible_waiting_progress(monkeypatch)
 
     methods = [message["method"] for message in messages]
     assert "event/heartbeat" in methods
-    progress = [
-        message for message in messages if message["method"] == "event/progress"
-    ]
-    assert progress
-    assert progress[0]["params"] == {
-        "session_id": "s1",
-        "text": "正在等待模型响应…",
-    }
+    assert not any(message["method"] == "event/progress" for message in messages)
+
+
+def test_watchdog_stall_requires_missed_heartbeat_not_model_silence():
+    server = AppServer(stub=True)
+    server._watchdog = WatchdogState()
+    server._watchdog.register_job("job-1", "s1", request_id=1)
+    job = server._watchdog.jobs["job-1"]
+    job.last_progress_at = time.monotonic() - 50.0
+    assert server._watchdog.stalled_jobs() == []
+    server._emit_host_notification(
+        {
+            "jsonrpc": "2.0",
+            "method": "event/heartbeat",
+            "params": {"session_id": "s1"},
+        }
+    )
+    assert server._watchdog.stalled_jobs() == []
+    job.last_progress_at = time.monotonic() - 1000.0
+    stalled = server._watchdog.stalled_jobs()
+    assert [item.job_id for item in stalled] == ["job-1"]

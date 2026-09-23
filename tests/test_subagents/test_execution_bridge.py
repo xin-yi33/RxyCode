@@ -153,3 +153,20 @@ def test_manager_cancel_reaches_active_agent():
 
     assert runtime.cancel_token.is_cancelled is True
     assert fake.cancelled is True
+
+
+def test_child_final_answer_is_allowed_as_exit_signal():
+    """2026-09-23 回归：子代理调 final_answer 不得被权限层拦截。
+
+    现场：专家团子代理按系统提示词调 final_answer 收尾，但 PermissionSpec
+    没有该类别（_rules_for 只映射 read/edit/bash/webfetch/websearch/task），
+    默认 deny → 返回 [blocked: child permission denied final_answer] →
+    decide_react_turn 只认成功调用 → 子代理空转继续调工具（最终答案之后
+    又出现 ls）。final_answer 是纯退出信号、无副作用，子代理层直接放行。
+    """
+    runtime = _runtime()  # 默认权限：read allow / edit deny / bash deny
+    assert runtime.check_tool("final_answer", {"result": "done"}) is True
+    # 别名形态也放行（canonical_tool_name 折叠 final-answer → final_answer）
+    assert runtime.check_tool("final-answer", {"result": "done"}) is True
+    # 其余未声明类别仍然默认 deny（不被本次放行波及）
+    assert runtime.check_tool("open_file", {"path": "x.txt"}) is False

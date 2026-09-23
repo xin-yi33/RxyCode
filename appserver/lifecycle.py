@@ -100,7 +100,7 @@ class InstanceLock:
     """Single-instance lock. Closing one client must not kill a shared server.
 
     Policy: one appserver process per data dir. A live lock holder is not
-    preempted unless ``RXYCODE_APPSERVER_PREEMPT=1`` (Desktop stdio child).
+    preempted unless ``RXYCODE_APPSERVER_PREEMPT=1`` (Desktop / OpenTUI stdio child).
     A stale lock (dead pid) is stolen.
     """
 
@@ -144,6 +144,20 @@ class InstanceLock:
                 other = 0
         mine = int(pid if pid is not None else os.getpid())
         if other and other != mine and _pid_alive(other):
+            started = 0.0
+            try:
+                started = float((self.payload or {}).get("started_at") or 0)
+            except (TypeError, ValueError):
+                started = 0.0
+            try:
+                grace = float(os.environ.get("RXYCODE_APPSERVER_PREEMPT_GRACE", "45") or 0)
+            except (TypeError, ValueError):
+                grace = 45.0
+            # Fresh live holders are other TUI/Desktop children. Killing them
+            # starts a preempt war (new spawn every ~10s). Steal day-old
+            # leftovers; refuse to preempt a lock younger than the grace.
+            if started > 0 and grace > 0 and (time.time() - started) < grace:
+                return False, f"appserver already running (pid {other})"
             _terminate_pid_tree(other)
             deadline = time.time() + 8.0
             while _pid_alive(other) and time.time() < deadline:

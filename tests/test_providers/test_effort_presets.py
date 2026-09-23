@@ -101,22 +101,21 @@ def test_fast_path_preserves_explicit_effort():
     assert effort == "deep"
 
 
-def test_fast_local_tool_turn_disables_deepseek_thinking_for_latency():
-    """Fast local builds must not grow a DeepSeek reasoning echo chain."""
+def test_fast_local_tool_turn_keeps_thinking_enabled():
+    """Display is client-side; adapter owns thinking. Fast builds keep the chain."""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
     source = inspect.getsource(AgentV2._fast_reply_with_tools)
-    assert "_thinking_disabled_this_turn = bool" in source
-    assert "and not research_policy.requires_web" in source
+    assert "_thinking_disabled_this_turn = False" in source
+    assert "_thinking_disabled_this_turn = bool" not in source
 
 
 def test_fast_research_keeps_deepseek_thinking_enabled():
-    """Web research must retain reasoning for source selection quality."""
+    """Web research and local builds both keep thinking on the wire."""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
     source = inspect.getsource(AgentV2._fast_reply_with_tools)
-    assert "mode == \"build\"" in source
-    assert "not research_policy.requires_web" in source
+    assert "_thinking_disabled_this_turn = False" in source
 
 
 def test_tool_call_argument_stream_emits_sparse_safe_liveness():
@@ -126,7 +125,7 @@ def test_tool_call_argument_stream_emits_sparse_safe_liveness():
     source = inspect.getsource(AgentV2._fast_reply_with_tools)
     assert "tool_call_delta_chunks" in source
     assert "tool_call_liveness_at" in source
-    assert "Preparing {label} tool call" in source
+    assert "preparing_tool" in source
     assert "tool_call_delta_chars" in source
 
 
@@ -152,14 +151,15 @@ def test_fast_build_does_not_append_source_with_shell_fragments():
     assert "do not write _probe.py" in instruction
 
 
-def test_fast_build_tool_rounds_keep_tool_calls_concise():
-    """Tool rounds must not spend the latency budget streaming prose before calls."""
+def test_fast_build_tool_rounds_must_speak_after_tool_results():
+    """After a tool returns, the model must narrate instead of stacking silently."""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import FAST_LOCAL_BUILD_INSTRUCTION
     from RxyCode.RxyCode1_1_0.core.prompts.templates import SYSTEM_PROMPT_TEMPLATE
 
-    assert "issue tool calls directly" in FAST_LOCAL_BUILD_INSTRUCTION
-    assert "do not narrate" in FAST_LOCAL_BUILD_INSTRUCTION
-    assert "issue tool calls directly" in SYSTEM_PROMPT_TEMPLATE
+    assert "after each tool result" in FAST_LOCAL_BUILD_INSTRUCTION.lower()
+    assert "do not stack" in FAST_LOCAL_BUILD_INSTRUCTION.lower()
+    assert "after each tool result" in SYSTEM_PROMPT_TEMPLATE.lower()
+    assert "never stay silent between tools" in SYSTEM_PROMPT_TEMPLATE.lower()
 
 
 def test_fast_build_round_budget_follows_model_limit_by_default():

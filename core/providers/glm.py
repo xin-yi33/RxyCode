@@ -3,10 +3,10 @@
 与 OpenAI 默认行为的差异以 A0 批 4 调研报告（§7.4，2026-08-02 三方审计通过）为准：
   - 缓存命中字段：``usage.prompt_tokens_details.cached_tokens``（嵌套路径，非平铺）
   - reasoning 内容在 message/delta 层（非 usage 嵌套字段）
-  - glm-5.2：官方表述 1M（精确整数未找到，项目侧启发式 1_048_576）；
+  - glm-5.2 / glm-5.3 / glm-5.3-flash：官方表述 1M（精确整数未找到，项目侧启发式 1_048_576）；
     5.x/4.7/4.6 系 200K；4.5 系 128K——皆项目侧启发式，非官方精确值
   - thinking：GLM 全系适配 → supports_reasoning=True + thinking_default_on=True；
-    reasoning_effort 仅 glm-5.2+（max/xhigh/high/medium/low/minimal/none）
+    reasoning_effort 仅 glm-5.2+（含 5.3；max/xhigh/high/medium/low/minimal/none）
   - 采样参数：未找到「thinking 拒绝 temperature」明文 → accepts_temperature 保持 True
   - 无官方 tiktoken → 用 ``chars:1.5`` 估算（§7.4 问 6 启发式）
 
@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider
+from .base import BaseProvider, _get_attr_or_key
 
 _GLM_USAGE = UsageFieldMap(
     # §7.4 问 4：官方 usage.prompt_tokens_details.cached_tokens（嵌套），无平铺主字段
@@ -67,6 +67,8 @@ _COMPACTION = {
 #: 调研覆盖的型号（§7.4 问 1/2）。取值：(窗口档位, max_output_tokens, supports_vision, 是否 glm-5.2+)
 #: max_output 为 G6 可证实的精确 max_tokens 上限；窗口为项目侧启发式。
 _GLM_FAMILY: dict[str, tuple[str, int, bool, bool]] = {
+    "glm-5.3-flash": ("1m", 131_072, True, True),
+    "glm-5.3": ("1m", 131_072, False, True),
     "glm-5.2": ("1m", 131_072, False, True),
     "glm-5.1": ("200k", 131_072, False, False),
     "glm-5": ("200k", 131_072, False, False),
@@ -106,6 +108,22 @@ def _prompt_variant(model_name: str) -> str:
 
 class GLMProvider(BaseProvider):
     name = "glm"
+
+    def extract_reasoning(self, payload, caps: ModelCapabilities) -> str:
+        """Thinking lives on message/delta, not usage (§7.4).
+
+        ``usage_fields.reasoning`` stays empty so usage parsers do not
+        look for a token count that GLM does not publish. The TTFT
+        clock still needs the text on ``reasoning_content``.
+        """
+        text = super().extract_reasoning(payload, caps)
+        if text:
+            return text
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            value = _get_attr_or_key(payload, key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
 
     def matches(self, base_url: str, model_name: str) -> bool:
         url = base_url.lower()

@@ -20,8 +20,9 @@ def _install_bootstrap_fakes(monkeypatch) -> None:
             return None
 
     class FakeAgent:
-        def __init__(self, model_name=None):
+        def __init__(self, model_name=None, session_id=None):
             self.model_name = model_name
+            self.session_id = session_id
 
     monkeypatch.setitem(
         sys.modules, "config.settings", types.SimpleNamespace(load_config=FakeSettings.load_config)

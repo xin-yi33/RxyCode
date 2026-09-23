@@ -1,4 +1,4 @@
-﻿"""Modern UI components for RxyCode - strict MiMo alignment.
+"""Modern UI components for RxyCode - strict MiMo alignment.
 
 Color system:
   + Thought: X.Xs  ->  pure yellow (#FFD700)
@@ -67,6 +67,7 @@ class TokenStats:
         # Real provider-side usage (DeepSeek/OpenAI context caching)
         self.prompt_tokens = 0          # total prompt tokens billed
         self.cache_hit_tokens = 0       # prompt tokens served from provider cache
+        self.cache_write_tokens = 0     # prompt tokens written into provider cache
         # FX-CB7: Primary-only counters. Child usage_scopes with
         # count_as_primary=False must not dilute cache_hit_rate.
         self.primary_input_tokens = 0
@@ -86,14 +87,22 @@ class TokenStats:
         # B8: 首 token 时耗（TTFT，毫秒）。首个内容 chunk 到达时记录；
         # 命中缓存应显著低于冷写（同前缀、同模型、同后端采样）。
         self.ttft_ms: Optional[float] = None
+        # User clock: Session.prompt → first thinking/reasoning delta (ms).
+        self.thinking_ttft_ms: Optional[float] = None
 
     def record_ttft(self, ttft_ms: float) -> None:
         """B8: 记录一次请求的首 token 时耗（毫秒）。"""
         self.ttft_ms = float(ttft_ms)
 
+    def record_thinking_ttft(self, ttft_ms: float) -> None:
+        """User clock: first thinking/reasoning token, not routing progress."""
+        if self.thinking_ttft_ms is None:
+            self.thinking_ttft_ms = float(ttft_ms)
+
     def reset_ttft(self) -> None:
         """B8: 重置 TTFT（新请求开始 / 测试隔离）。"""
         self.ttft_ms = None
+        self.thinking_ttft_ms = None
 
     def set_model(self, model_name: Optional[str]) -> None:
         """Set the active model name used for pricing lookups."""
@@ -341,6 +350,7 @@ class TokenStats:
         self.cache_size = 0
         self.prompt_tokens = 0
         self.cache_hit_tokens = 0
+        self.cache_write_tokens = 0
         self.primary_input_tokens = 0
         self.primary_output_tokens = 0
         self.primary_prompt_tokens = 0

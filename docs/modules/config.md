@@ -63,11 +63,12 @@ entry behind. `test_model_connection()` remains the persisted-model wrapper.
 - lifecycle: {hook_timeout_seconds}
 - pricing: per-model $/M token prices (for billing display)
 - recovery: error-recovery policy defaults
+- llm: {transport_retries} extra 429/connect attempts on the stream path (default **2**; not applied to idle/first-token clocks)
 - lsp: {enabled, servers}
 - autoCompact: {enabled, threshold}
 - rag: {index_delay_seconds, retrieval settings}
 - evals: eval harness defaults
-- execution: {parallel_enabled, max_parallel, max_graph_steps, max_tool_rounds, max_replan_rounds, tool_timeout_seconds, pipeline_soft_budget_seconds, task_stall_timeout_seconds, task_max_time_seconds, heartbeat_interval_seconds, checkpoint_enabled, checkpoint_retention, tool_journal_enabled, tool_journal_retention, tool_journal_max_result_chars, sandbox_mode, workspace_root, docker_image, docker_network, max_memory_mb, max_cpus, max_processes, tool_retry_max_attempts, tool_retry_backoff}. `tool_timeout_seconds` defaults to `1800`, `task_stall_timeout_seconds` defaults to `0`, `task_max_time_seconds` defaults to `7200`, `max_tool_rounds` defaults to `10`, `max_replan_rounds` defaults to `8`. A legitimate silent task is therefore not killed at 600 seconds, while explicit tool and total-task ceilings still apply.
+- execution: {parallel_enabled, tool_parallel_enabled, max_parallel, max_graph_steps, max_tool_rounds, max_replan_rounds, tool_timeout_seconds, pipeline_soft_budget_seconds, task_stall_timeout_seconds, task_max_time_seconds, heartbeat_interval_seconds, checkpoint_enabled, checkpoint_retention, tool_journal_enabled, tool_journal_retention, tool_journal_max_result_chars, sandbox_mode, workspace_root, docker_image, docker_network, max_memory_mb, max_cpus, max_processes, tool_retry_max_attempts, tool_retry_backoff}. `parallel_enabled` defaults **false** (graph TaskTree fan-out). `tool_parallel_enabled` defaults **true** (consecutive read tools). `tool_timeout_seconds` defaults to `1800`, `task_stall_timeout_seconds` defaults to `0`, `task_max_time_seconds` defaults to `7200`, `max_tool_rounds` defaults to `10`, `max_replan_rounds` defaults to `8`. A legitimate silent task is therefore not killed at 600 seconds, while explicit tool and total-task ceilings still apply.
 
 `execution.tool_timeout_seconds` is the unified per-tool wall-clock deadline
 used by fast-path, graph, and workflow calls. Setting it to `0` explicitly
@@ -90,6 +91,10 @@ Each entry under `models:` is a dict keyed by model name. Recognized fields
 | `api_key` | Explicit inline key (migrated off on load by `_sanitize_model_credentials`) |
 | `max_tokens` | Output token ceiling (default `8192` in `llm_kwargs`) |
 | `temperature` | Sampling temperature (default `0.7` in `llm_kwargs`) |
+| `timeout` | Optional short override for stream idle / HTTP read (seconds). Default idle is **180s**, cap **300s**; connect handshake is **20s**. Do not rely on the OpenAI SDK 600s default. |
+| `stream_idle_timeout` | Parsed-chunk idle (thinking/keepalive). Keepalives reset this clock. |
+| `connect_timeout` | HTTP handshake only (max 20s). |
+| `first_token_timeout` | First useful chunk budget; defaults to idle, not a 30s cap. |
 | `provider_id` / `provider_name` | Grouping metadata for `/model` (see `add_model()`) |
 | `provider` | **Explicit** provider name; bypasses `matches()` probing (short-circuits in `providers.resolve()`) |
 

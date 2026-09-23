@@ -79,7 +79,7 @@ async def test_retry_with_backoff_notifies_only_transient_failures() -> None:
         nonlocal transient_attempts
         transient_attempts += 1
         if transient_attempts < 3:
-            raise TimeoutError("temporary")
+            raise ConnectionError("temporary")
         return "ok"
 
     result = await retry_with_backoff(
@@ -91,7 +91,7 @@ async def test_retry_with_backoff_notifies_only_transient_failures() -> None:
         ),
     )
     assert result == "ok"
-    assert transient_notifications == [(1, "TimeoutError"), (2, "TimeoutError")]
+    assert transient_notifications == [(1, "ConnectionError"), (2, "ConnectionError")]
 
     permanent_notifications: list[tuple[int, str]] = []
 

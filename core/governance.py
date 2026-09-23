@@ -26,6 +26,7 @@ from .safety.policy import (
     classify_tool_risk,
     is_dry_run,
     is_write_allowed,
+    is_write_path_gate_exempt,
 )
 
 
@@ -601,14 +602,15 @@ class SensitiveActionPolicy:
             return decision(PolicyOutcome.ALLOW, "safety_disabled", "safety_disabled")
 
         if risk >= RiskLevel.WRITE and isinstance(args, dict):
-            for key in self._PATH_ARG_KEYS:
-                path = args.get(key)
-                if isinstance(path, str) and path and not is_write_allowed(path, config):
-                    return decision(
-                        PolicyOutcome.DENY,
-                        "write_path_not_allowed",
-                        "rejected",
-                    )
+            if not is_write_path_gate_exempt(action, args):
+                for key in self._PATH_ARG_KEYS:
+                    path = args.get(key)
+                    if isinstance(path, str) and path and not is_write_allowed(path, config):
+                        return decision(
+                            PolicyOutcome.DENY,
+                            "write_path_not_allowed",
+                            "rejected",
+                        )
 
         if risk >= RiskLevel.WRITE and is_dry_run(config):
             return decision(PolicyOutcome.DRY_RUN, "dry_run", "dry_run")

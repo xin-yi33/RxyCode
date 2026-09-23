@@ -3,6 +3,8 @@
  * Known preset hosts map to their display name; unknown -> other.
  */
 
+import { appendFileSync } from "node:fs";
+
 export type InferredProvider = { id: string; name: string };
 
 const HOST_GROUPS: Array<{ match: RegExp; id: string; name: string }> = [
@@ -26,6 +28,11 @@ export function inferProviderFromUrl(baseUrl: string): InferredProvider {
       if (row.match.test(host)) {
         return { id: row.id, name: row.name };
       }
+    }
+    if (host) {
+      const slug = host.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const inferred = { id: slug ? `custom-${slug}` : "custom", name: host };
+      return inferred;
     }
   } catch {
     // ignore parse errors

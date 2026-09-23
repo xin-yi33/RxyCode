@@ -41,11 +41,12 @@ def _new_agent():
 
 
 def test_parallel_default_disabled():
-    """parallel_enabled 默认 False（CB8：默认行为不变）。"""
+    """graph task fan-out stays off; read tools default on."""
     from RxyCode.RxyCode1_1_0.config.settings import _default_config
 
     exec_cfg = _default_config()["execution"]
     assert exec_cfg["parallel_enabled"] is False
+    assert exec_cfg["tool_parallel_enabled"] is True
     assert exec_cfg["max_parallel"] >= 2
 
 
@@ -162,11 +163,11 @@ def test_mixed_read_write_parallel_read_only():
 
 
 def test_parallel_disabled_serial_all():
-    """parallel_enabled=False 时全部串行（CB8 默认路径）。"""
+    """tool_parallel_enabled=False 时全部串行（显式关闭读并行）。"""
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
     agent = _new_agent()
-    agent._cfg = {"execution": {"parallel_enabled": False}}
+    agent._cfg = {"execution": {"tool_parallel_enabled": False}}
     agent._stuck_detector = None
 
     async def fake_execute_tool(name, args, mode=None, call_id=None):
@@ -197,7 +198,13 @@ def test_fast_build_enables_read_parallelism_without_changing_default():
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
     agent = _new_agent()
-    agent._cfg = {"execution": {"parallel_enabled": False, "max_parallel": 3}}
+    agent._cfg = {
+        "execution": {
+            "tool_parallel_enabled": False,
+            "parallel_enabled": False,
+            "max_parallel": 3,
+        }
+    }
     agent.model_config = {"effort": "fast"}
 
     enabled, limit = agent._parallel_tool_config(mode="build")
@@ -506,3 +513,168 @@ def test_parallel_cancellation_propagates():
 
     result = asyncio.run(run())
     assert result == "cancelled"  # 取消传播，未被吞
+
+
+def test_empty_cfg_enables_read_tool_parallel():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = _new_agent()
+    enabled, _limit = agent._parallel_tool_config()
+    assert enabled is True
+
+
+def test_graph_serial_does_not_disable_read_tool_parallel():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = _new_agent()
+    agent._cfg = {"execution": {"parallel_enabled": False}}
+    enabled, _limit = agent._parallel_tool_config()
+    assert enabled is True
+
+
+def test_git_snapshot_skipped_for_read_only_batch():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = _new_agent()
+    calls = {"n": 0}
+
+    async def capture():
+        calls["n"] += 1
+        return True
+
+    async def fake_execute_tool(name, args, mode=None, call_id=None):
+        return f"ok:{name}"
+
+    agent._capture_git_snapshot_async = capture
+    agent._execute_tool = fake_execute_tool
+    asyncio.run(
+        agent._execute_tools_parallel(
+            [
+                {"name": "read", "args": {}, "id": "r1"},
+                {"name": "grep", "args": {}, "id": "g1"},
+            ]
+        )
+    )
+    assert calls["n"] == 0
+
+
+def test_git_snapshot_taken_once_before_write():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = _new_agent()
+    calls = {"n": 0}
+
+    async def capture():
+        calls["n"] += 1
+        return True
+
+    async def fake_execute_tool(name, args, mode=None, call_id=None):
+        return f"ok:{name}"
+
+    agent._capture_git_snapshot_async = capture
+    agent._execute_tool = fake_execute_tool
+    asyncio.run(
+        agent._execute_tools_parallel(
+            [
+                {"name": "read", "args": {}, "id": "r1"},
+                {"name": "write", "args": {"path": "a.py"}, "id": "w1"},
+                {"name": "edit", "args": {"path": "a.py"}, "id": "e1"},
+            ]
+        )
+    )
+    assert calls["n"] == 1
+
+
+def test_bash_default_timeout_is_1800():
+    from inspect import signature
+
+    from RxyCode.RxyCode1_1_0.tools.bash import BashInput, run_bash, run_bash_async
+    from RxyCode.RxyCode1_1_0.utils.shell import DEFAULT_SHELL_TIMEOUT, ShellExecutor
+
+    assert BashInput.model_fields["timeout"].default == 1800
+    assert run_bash.__defaults__[-1] == 1800
+    assert run_bash_async.__defaults__[-1] == 1800
+    assert signature(ShellExecutor.execute).parameters["timeout"].default == 1800
+    assert signature(ShellExecutor.execute_async).parameters["timeout"].default == 1800
+    assert (
+        signature(ShellExecutor.execute_argv_async).parameters["timeout"].default
+        == DEFAULT_SHELL_TIMEOUT
+        == 1800
+    )
+
+
+def test_raw_stream_hot_path_does_not_reload_config(monkeypatch):
+    import inspect
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, UsageTrackingLLM
+
+    source = inspect.getsource(AgentV2._raw_stream)
+    assert "load_config()" not in source
+    assert "load_config" not in inspect.getsource(AgentV2._resolve_request_max_tokens)
+    assert "load_config" not in inspect.getsource(UsageTrackingLLM._ensure_cache_flag)
+    assert "load_config" not in inspect.getsource(UsageTrackingLLM._transport_retry_max)
+
+    calls = {"n": 0}
+
+    def boom(*_a, **_k):
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr("config.settings.load_config", boom)
+    monkeypatch.setattr("RxyCode.RxyCode1_1_0.config.settings.load_config", boom)
+
+    agent = _new_agent()
+    agent.model_config = {"model_name": "x"}
+    agent._cfg = {"model_limits": {}}
+    agent._resolved_limits = None
+    agent._capabilities = None
+    agent._resolve_request_max_tokens(10)
+
+    llm = object.__new__(UsageTrackingLLM)
+    llm._cache_enabled = None
+    llm._transport_retries = None
+    llm._cfg = {"cache": {"prompt_prefix_cache": True}, "llm": {"transport_retries": 2}}
+    assert llm._ensure_cache_flag() is True
+    assert llm._transport_retry_max() == 2
+    assert calls["n"] == 0
+
+
+def test_synthesis_with_tools_uses_parallel_path_and_write_snapshot():
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = _new_agent()
+    agent._tool_error_occurred = False
+    snaps = {"n": 0}
+
+    async def capture():
+        snaps["n"] += 1
+        return True
+
+    async def fake_execute_tool(name, args, mode=None, call_id=None):
+        return f"ok:{name}"
+
+    async def fake_stream(messages, tools=None, *, max_tokens=None):
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="fin"))]
+        )
+
+    agent._capture_git_snapshot_async = capture
+    agent._execute_tool = fake_execute_tool
+    agent._raw_stream = fake_stream
+    agent._tool_result_message_content = lambda name, result: result
+
+    asyncio.run(
+        agent._synthesis_with_tools(
+            [],
+            [
+                {"name": "read", "args": {}, "id": "r1"},
+                {"name": "write", "args": {"path": "a.py"}, "id": "w1"},
+            ],
+            mode="build",
+            tui=None,
+            fallback_answer="fb",
+        )
+    )
+    assert snaps["n"] == 1

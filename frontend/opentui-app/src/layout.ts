@@ -60,6 +60,14 @@ export function wrapLine(line: string, wrapW: number): string[] {
 }
 
 /** Split content into display lines (hard newlines + soft wrap). */
+/** Pad with spaces so a terminal bg fill covers a full row. */
+export function padToWidth(text: string, width: number): string {
+  const w = Math.max(1, width);
+  const used = stringWidth(text);
+  if (used >= w) return text;
+  return text + " ".repeat(w - used);
+}
+
 export function wrapContentLines(content: string, wrapW: number): string[] {
   const logical = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   const out: string[] = [];

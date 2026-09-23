@@ -118,6 +118,9 @@ def list_models() -> dict[str, Any]:
             providers = _load_module("..core.providers", "core.providers")
             caps = providers.resolve(mcfg).capabilities(mcfg)
             item["effort_options"] = list(caps.effort_options or ())
+            cap_ctx = getattr(caps, "context_window", None)
+            if isinstance(cap_ctx, int) and cap_ctx > 0:
+                item["context_window"] = cap_ctx
         except Exception:
             item["effort_options"] = []
         result.append(item)

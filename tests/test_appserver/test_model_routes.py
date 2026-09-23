@@ -180,3 +180,35 @@ def test_list_models_exposes_effort_key(isolated_config):
     """models/list 返回 effort 键（全局档位），未设置时为 None。"""
     result = model_routes.list_models()
     assert "effort" in result
+
+
+def test_list_models_deepseek_flash_window_is_1m(isolated_config, monkeypatch):
+    """Official wire id deepseek-flash must expose the 1M v4 window, not 256k."""
+    from RxyCode.RxyCode1_1_0.config import model_manager, settings
+
+    cfg = {
+        "active_model": "deepseek/deepseek-v4.1-flash",
+        "models": {
+            "deepseek/deepseek-v4.1-flash": {
+                "model_name": "deepseek-flash",
+                "nickname": "deepseek-flash",
+                "base_url": "https://api.deepseek.com/v1",
+                "provider_id": "deepseek",
+            }
+        },
+    }
+    monkeypatch.setattr(settings, "load_config", lambda: cfg)
+    monkeypatch.setattr(
+        model_manager, "ensure_models_provider_metadata", lambda c, persist=False: c
+    )
+    monkeypatch.setattr(
+        model_manager,
+        "infer_provider_group",
+        lambda url: {"id": "deepseek", "name": "DeepSeek"},
+    )
+    monkeypatch.setattr(model_manager, "prune_recent_models", lambda c: [])
+    monkeypatch.setattr(model_manager, "get_effort", lambda: None)
+
+    result = model_routes.list_models()
+    item = result["models"][0]
+    assert item["context_window"] == 1048576

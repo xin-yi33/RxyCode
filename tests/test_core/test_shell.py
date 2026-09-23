@@ -138,6 +138,11 @@ class TestShellExecutor:
         assert "Get-ChildItem" in cmd2
         assert "ls -l" not in cmd2
 
+        one_col, _ = executor.translate_command("pwd && ls -1 | head -20")
+        assert "Get-ChildItem" in one_col
+        assert "ls -1" not in one_col
+        assert "Select-Object -First 20" in one_col
+
     def test_powershell_translates_posix_grep(self):
         """POSIX grep → Select-String（B7：模型高频输出 grep 语法）。"""
         executor = self._make_executor()

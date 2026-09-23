@@ -7,7 +7,9 @@ risk model + confirmation mode + audit trail; design ported, no vendoring.
 from .policy import (
     RiskLevel,
     TOOL_RISK_TABLE,
+    TOOL_NAME_ALIASES,
     DANGEROUS_COMMAND_PATTERNS,
+    canonical_tool_name,
     classify_bash_command,
     classify_tool_risk,
     get_tool_risk,
@@ -31,7 +33,9 @@ from .audit import AuditLogger, get_audit_logger, sanitize_args
 __all__ = [
     "RiskLevel",
     "TOOL_RISK_TABLE",
+    "TOOL_NAME_ALIASES",
     "DANGEROUS_COMMAND_PATTERNS",
+    "canonical_tool_name",
     "classify_bash_command",
     "classify_tool_risk",
     "get_tool_risk",

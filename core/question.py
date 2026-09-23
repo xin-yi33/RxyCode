@@ -99,7 +99,10 @@ class SseQuestionBroker:
             self._requests.pop(question_id, None)
             return QuestionResponse(question_id=question_id, unavailable=True)
         try:
-            await asyncio.wait_for(event.wait(), timeout=self.timeout)
+            if self.timeout and self.timeout > 0:
+                await asyncio.wait_for(event.wait(), timeout=self.timeout)
+            else:
+                await event.wait()
         except asyncio.TimeoutError:
             return QuestionResponse(question_id=question_id, timed_out=True)
         else:

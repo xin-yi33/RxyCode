@@ -8,6 +8,19 @@ from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from ..core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+    except Exception:
+        try:
+            from core.runtime_probe import probe as _probe
+        except Exception:
+            def _probe(event, **fields):
+                return None
+
 
 class Option(BaseModel):
     label: str = Field(description="Option display label")
@@ -87,6 +100,14 @@ async def _ask_via_question_broker(questions: list[dict]) -> str | None:
             ],
         )
         response = await broker.ask(request)
+        # PROBE-20260923: question tool 看到的 broker 响应状态（自问自答/空串定位）
+        _probe(
+            "question_tool.response",
+            unavailable=response.unavailable,
+            timed_out=response.timed_out,
+            cancelled=response.cancelled,
+            answer_len=len(response.answer or ""),
+        )
         if response.unavailable:
             answers.append("[no input: question channel unavailable]")
             break
@@ -177,7 +198,13 @@ question_tool = StructuredTool(
     name="question",
     description=(
         "Ask the user questions and wait for responses. "
-        "Supports multiple choice and free text."
+        "Supports multiple choice and free text. "
+        "When a decision belongs to the user (requirements, preferences, "
+        "ambiguous scope), you MUST call this tool and wait for the answer — "
+        "in every permission mode, including full_auto. NEVER list questions "
+        "in your reply text and then answer them yourself or proceed with "
+        "assumed defaults; either call this tool, or state your plan and "
+        "proceed without asking."
     ),
     func=ask_questions,
     coroutine=ask_questions_async,

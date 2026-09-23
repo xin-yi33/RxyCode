@@ -7,6 +7,7 @@ import {
   parseStdioAdminCommand,
   shouldRestartStdioSessionOnModelSwitch,
   statusFromModelsList,
+  statusModelLabel,
 } from "./stdioCommands.ts";
 
 describe("stdio admin commands", () => {
@@ -57,6 +58,49 @@ describe("stdio admin commands", () => {
     expect(status.cache_size).toBe("800");
     expect(status.cache_rate).toBe("12.5%");
   });
+
+  test("copies persisted effort into the status chip", () => {
+    const status = statusFromModelsList({
+      active: "deepseek/deepseek-v4-flash",
+      effort: "max",
+      models: [
+        {
+          id: "deepseek/deepseek-v4-flash",
+          name: "deepseek-v4-flash",
+          nickname: "deepseek-flash",
+          active: true,
+          effort_options: ["low", "high", "max"],
+        },
+      ],
+    });
+    expect(status.model).toBe("deepseek-flash");
+    expect(status.effort).toBe("max");
+  });
+
+  test("duplicate nicknames include the endpoint host on the status chip", () => {
+    const listed = {
+      active: "custom-api-arc-bench-com/kimi-k3",
+      models: [
+        {
+          id: "opencode-go/kimi-k3",
+          name: "kimi-k3",
+          nickname: "kimi-k3",
+          category: "OpenCode Go",
+          base_url: "https://opencode.ai/zen/go/v1",
+        },
+        {
+          id: "custom-api-arc-bench-com/kimi-k3",
+          name: "kimi-k3",
+          nickname: "kimi-k3",
+          category: "api.arc-bench.com",
+          base_url: "https://api.arc-bench.com/v1",
+          active: true,
+        },
+      ],
+    };
+    expect(statusModelLabel(listed)).toBe("kimi-k3 · api.arc-bench.com");
+    expect(statusFromModelsList(listed).model).toBe("kimi-k3 · api.arc-bench.com");
+  });
 });
 
 describe("applyTokenUsageToStatus", () => {
@@ -68,6 +112,7 @@ describe("applyTokenUsageToStatus", () => {
         output_tokens: 300,
         cache_hit_tokens: 800,
         cache_hit_rate: 66.7,
+        context_used: 1500,
         reporting_status: "reported",
       },
     );
@@ -75,6 +120,51 @@ describe("applyTokenUsageToStatus", () => {
     expect(status.cache_size).toBe("800");
     expect(status.cache_rate).toBe("66.7%");
     expect(status.model).toBe("deepseek-v4-flash");
+  });
+
+  test("does not treat cached billing input as occupancy", () => {
+    const status = applyTokenUsageToStatus(
+      { model: "m", context_used_k: 23.4, context_max_k: 1049 },
+      {
+        input_tokens: 208248,
+        output_tokens: 1729,
+        cache_hit_tokens: 205696,
+        cache_hit_rate: 98.8,
+        reporting_status: "reported",
+      },
+    );
+    expect(status.context_used_k).toBe(23.4);
+    expect(status.cache_size).toBe("205.7K");
+    expect(status.cache_rate).toBe("98.8%");
+  });
+
+  test("billing-only payload does not invent occupancy", () => {
+    const status = applyTokenUsageToStatus(
+      { model: "m", context_max_k: 1049 },
+      {
+        input_tokens: 3703115,
+        output_tokens: 16935,
+        cache_hit_tokens: 3656832,
+        cache_hit_rate: 98.8,
+        reporting_status: "reported",
+      },
+    );
+    expect(status.context_used_k ?? 0).toBe(0);
+    expect(status.cache_size).toBe("3.66M");
+    expect(status.cache_rate).toBe("98.8%");
+  });
+
+  test("prefers context_used window occupancy over last-turn delta", () => {
+    const status = applyTokenUsageToStatus(
+      { model: "m", context_used_k: 2.4, context_max_k: 256 },
+      {
+        input_tokens: 800,
+        output_tokens: 200,
+        context_used: 58600,
+        reporting_status: "reported",
+      },
+    );
+    expect(status.context_used_k).toBe(58.6);
   });
 
   test("ignores not_reported payloads so zeros do not wipe a live bar", () => {

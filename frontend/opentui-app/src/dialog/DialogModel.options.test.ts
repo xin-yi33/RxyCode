@@ -82,6 +82,12 @@ describe("buildModelListOptions", () => {
     );
     expect(options.filter((o) => o.category === "DeepSeek")).toHaveLength(1);
     expect(options.filter((o) => o.category === "OpenCode Go")).toHaveLength(1);
+    expect(options.find((o) => o.id === "deepseek/deepseek-v4-flash")?.title).toBe(
+      "deepseek-v4-flash · api.deepseek.com",
+    );
+    expect(options.find((o) => o.id === "opencode-go/deepseek-v4-flash")?.title).toBe(
+      "deepseek-v4-flash · opencode.ai",
+    );
   });
 });
 
@@ -93,10 +99,10 @@ describe("inferProviderFromUrl", () => {
     });
   });
 
-  test("falls back to 其他 for unknown hosts", () => {
+  test("unknown hosts group by hostname so /model is findable", () => {
     expect(inferProviderFromUrl("https://weird.example/v1")).toEqual({
-      id: "custom",
-      name: "其他",
+      id: "custom-weird-example",
+      name: "weird.example",
     });
   });
 });

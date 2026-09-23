@@ -24,6 +24,28 @@ class RiskLevel(IntEnum):
     DANGER = 2  # OpenHands HIGH — potentially destructive / irreversible
 
 
+#: Canonical tool names for aliases. Orchestrator, risk, and subagent
+#: permissions must share this table so ``open``/``shell`` cannot miss
+#: ``open_file``/``bash`` policy.
+TOOL_NAME_ALIASES: dict[str, str] = {
+    "web_search": "websearch",
+    "search_web": "websearch",
+    "web_fetch": "webfetch",
+    "fetch_url": "webfetch",
+    "open": "open_file",
+    "browser": "open_file",
+    "shell": "bash",
+    "final-answer": "final_answer",
+    "finalanswer": "final_answer",
+}
+
+
+def canonical_tool_name(name: str) -> str:
+    """Return the registered tool name for an alias or mixed-case label."""
+    lowered = (name or "").strip().lower()
+    return TOOL_NAME_ALIASES.get(lowered, lowered)
+
+
 #: Static risk table for built-in tools. Missing entries default to WRITE
 #: (fail-safe: unknown tools are treated as side-effecting).
 TOOL_RISK_TABLE: dict[str, RiskLevel] = {
@@ -36,6 +58,7 @@ TOOL_RISK_TABLE: dict[str, RiskLevel] = {
     "webfetch": RiskLevel.READ,
     "websearch": RiskLevel.READ,
     "datetime": RiskLevel.READ,
+    "final_answer": RiskLevel.READ,
     "history": RiskLevel.READ,
     "diagnostics": RiskLevel.READ,
     "vision": RiskLevel.READ,
@@ -73,6 +96,9 @@ def register_tool_risk(name: str, level: RiskLevel) -> None:
 
 def get_tool_risk(name: str) -> RiskLevel:
     """Return the static risk level for a tool; unknown tools default WRITE."""
+    canonical = canonical_tool_name(name)
+    if canonical in TOOL_RISK_TABLE:
+        return TOOL_RISK_TABLE[canonical]
     return TOOL_RISK_TABLE.get(name, RiskLevel.WRITE)
 
 
@@ -204,6 +230,7 @@ def classify_tool_risk(name: str, args: Any = None) -> RiskLevel:
     downgraded. Missing or future operations retain the conservative static
     WRITE/DANGER classification.
     """
+    name = canonical_tool_name(name)
     operation = ""
     if isinstance(args, dict):
         operation = str(args.get("operation", "")).strip().lower()
@@ -224,6 +251,9 @@ def classify_tool_risk(name: str, args: Any = None) -> RiskLevel:
         return RiskLevel.DANGER
 
     risk = get_tool_risk(name)
+    # 废弃代码（2026-09-21）：if name in {"bash", "shell"} — shell 已由
+    # canonical_tool_name 归一到 bash，禁止再按双名分支。
+    # if name in {"bash", "shell"} and isinstance(args, dict):
     if name == "bash" and isinstance(args, dict):
         command_risk = classify_bash_command(str(args.get("command", "")))
         # Bash is statically WRITE, but a complete, allow-listed probe is
@@ -315,6 +345,54 @@ def is_write_allowed(path: str, config: dict) -> bool:
             pass
 
     return any(_is_within(target, root) for root in roots)
+
+
+#: git 只读子命令：无写副作用，不应被“写路径白名单”拦截。
+READONLY_GIT_OPS = frozenset(
+    {
+        "status",
+        "diff",
+        "log",
+        "branch",
+        "show",
+        "blame",
+        "ls-files",
+        "rev-parse",
+        "remote",
+        "describe",
+        "shortlog",
+        "grep",
+    }
+)
+
+_CD_TOOL_NAMES = frozenset({"cd", "change_directory"})
+
+
+def is_write_path_gate_exempt(tool_name: str, args: Any) -> bool:
+    """WRITE/DANGER 工具的写路径闸豁免（2026-09-23）。
+
+    - ``cd``/``change_directory`` 只切换会话 cwd，本身不写文件；切换后
+      的写操作仍会按新 cwd 逐个过闸。旧行为把 cd 也拦下，工作区被降级
+      到 scratch 时 agent 连自救都做不到（"被环境阻塞、无法推进"）。
+    - 只读 ``git`` 子命令（status/diff/log/…）没有写副作用，拦在
+      *写* 路径白名单上属于误伤。
+    """
+    name = str(tool_name or "").strip().lower()
+    if name in _CD_TOOL_NAMES:
+        return True
+    if name == "git" and isinstance(args, dict):
+        op = str(args.get("operation") or "status").strip().lower()
+        return op in READONLY_GIT_OPS
+    return False
+
+
+#: 写路径闸拒绝文案的可操作指引：告诉 agent 如何自救，而不是让它得出
+#: “环境阻塞、重试无用”的结论。
+WRITE_PATH_BLOCKED_HINT = (
+    "hint: use the cd tool to switch into the target directory first (cd "
+    "is exempt from this gate), or add the directory to "
+    "safety.allowed_write_paths in the config."
+)
 
 
 # Absolute path literals that often appear in shell write/delete probes.

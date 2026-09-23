@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from appserver.tui import ProtocolTui
-from protocol.notifications import ProgressUpdate, ReasoningSnapshot
+from protocol.notifications import ReasoningSnapshot
 
 
 def test_write_turn_liveness_emits_reasoning_snapshot() -> None:
@@ -19,18 +19,16 @@ def test_write_turn_liveness_emits_reasoning_snapshot() -> None:
     assert emitted[0].snapshot is False
 
 
-def test_write_reasoning_silent_when_collapsed() -> None:
+def test_write_reasoning_always_emits_chain() -> None:
     emitted: list[object] = []
     tui = ProtocolTui("s1", emitted.append)
     tui.set_thinking_expanded(False)
     tui.write_reasoning("hidden thought")
-    # Body stays collapsed, but the first reasoning chunk must still produce a
-    # liveness event so the 120s watchdog does not treat thinking as a stall.
-    assert len(emitted) == 1
-    assert isinstance(emitted[0], ProgressUpdate)
-    assert "思考" in emitted[0].text
+    snapshots = [item for item in emitted if isinstance(item, ReasoningSnapshot)]
+    assert snapshots and snapshots[0].text == "hidden thought"
     tui.write_reasoning(" more")
-    assert len(emitted) == 1
+    snapshots = [item for item in emitted if isinstance(item, ReasoningSnapshot)]
+    assert [item.text for item in snapshots] == ["hidden thought", " more"]
 
 
 def test_write_reasoning_emits_when_expanded() -> None:
@@ -44,35 +42,31 @@ def test_write_reasoning_emits_when_expanded() -> None:
     assert emitted[0].snapshot is False
 
 
-def test_expand_mid_run_pushes_accumulated_snapshot() -> None:
+def test_expand_mid_run_still_has_live_chain() -> None:
     emitted: list[object] = []
     tui = ProtocolTui("s1", emitted.append)
     tui.set_thinking_expanded(False)
     tui.write_reasoning("part1")
     tui.write_reasoning(" part2")
-    assert all(not isinstance(item, ReasoningSnapshot) for item in emitted)
+    snapshots = [item for item in emitted if isinstance(item, ReasoningSnapshot)]
+    assert [item.text for item in snapshots] == ["part1", " part2"]
 
     tui.set_thinking_expanded(True)
     snapshots = [item for item in emitted if isinstance(item, ReasoningSnapshot)]
-    assert len(snapshots) == 1
-    assert snapshots[0].text == "part1 part2"
-    assert snapshots[0].snapshot is True
+    assert snapshots[-1].text == "part1 part2"
+    assert snapshots[-1].snapshot is True
 
 
-def test_collapsed_reasoning_emits_sparse_liveness_without_text() -> None:
+def test_collapsed_reasoning_still_streams_chain_chunks() -> None:
     emitted: list[object] = []
     tui = ProtocolTui("s1", emitted.append)
     tui.set_thinking_expanded(False)
     tui.write_reasoning("first")
-    assert len(emitted) == 1
-
     for _ in range(63):
         tui.write_reasoning("chunk")
-
-    progress = [item for item in emitted if isinstance(item, ProgressUpdate)]
-    assert len(progress) == 2
-    assert "reasoning active" in progress[-1].text
-    assert "first" not in progress[-1].text
+    snapshots = [item for item in emitted if isinstance(item, ReasoningSnapshot)]
+    assert snapshots[0].text == "first"
+    assert len(snapshots) >= 64
 
 
 def test_collapsed_reasoning_time_liveness_is_rate_limited(monkeypatch) -> None:
@@ -86,5 +80,5 @@ def test_collapsed_reasoning_time_liveness_is_rate_limited(monkeypatch) -> None:
     tui.write_reasoning("second")
     tui.write_reasoning("third")
 
-    progress = [item for item in emitted if isinstance(item, ProgressUpdate)]
-    assert len(progress) == 2
+    snapshots = [item for item in emitted if isinstance(item, ReasoningSnapshot)]
+    assert [item.text for item in snapshots] == ["first", "second", "third"]

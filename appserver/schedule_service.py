@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,7 +60,13 @@ class ScheduleService:
         self._audit: list[dict[str, Any]] = []
         self._sem = asyncio.Semaphore(self.max_parallel)
         self._load()
-        self.restore_after_restart()
+        # 废弃代码（2026-09-22）：多窗口时构造函数无条件 restore_after_restart。
+        # 第二扇窗口会把第一扇正在跑的 /loop 标成 recovery_required。
+        # self.restore_after_restart()
+        if os.environ.get("RXYCODE_APPSERVER_MULTI") != "1":
+            self.restore_after_restart()
+        # None: this process may fire every job. A set: only this window's sessions.
+        self.local_session_ids: set[str] | None = None
 
     def _load(self) -> None:
         if not self.persistent or not self.path.is_file():
@@ -234,9 +241,17 @@ class ScheduleService:
             return {"ok": False, "queued": True, "id": job_id, "queue": list(self._queue)}
         return await self._execute_async(job, now or _now())
 
+    def _job_is_local(self, job_id: str) -> bool:
+        owned = self.local_session_ids
+        if owned is None:
+            return True
+        job = self._jobs.get(job_id) or {}
+        session_id = str((job.get("action") or {}).get("session_id") or "")
+        return session_id in owned
+
     async def tick_async(self, now: datetime | None = None) -> list[dict[str, Any]]:
         stamp = now or _now()
-        due_ids = [job_id for job_id in self.due(stamp) if job_id not in self._queue and job_id not in self._running]
+        due_ids = [job_id for job_id in self.due(stamp) if job_id not in self._queue and job_id not in self._running and self._job_is_local(job_id)]
         ready = due_ids[: self.max_parallel]
         for extra in due_ids[self.max_parallel :]:
             if extra not in self._queue:
@@ -245,7 +260,9 @@ class ScheduleService:
         started = [asyncio.create_task(self.fire_async(job_id, now=stamp)) for job_id in ready]
         drain: list[str] = []
         while self._queue and len(drain) + len(self._running) + len(started) < self.max_parallel:
-            drain.append(self._queue.pop(0))
+            nxt = self._queue.pop(0)
+            if self._job_is_local(nxt):
+                drain.append(nxt)
         started.extend(asyncio.create_task(self.fire_async(job_id, now=stamp)) for job_id in drain)
         if started:
             return list(await asyncio.gather(*started))
@@ -332,7 +349,11 @@ class ScheduleService:
 
 
 async def schedule_loop(service: ScheduleService, sleep: Callable[[float], Awaitable[None]], interval_s: float = 1.0) -> None:
-    service.reclaim_orphans()
+    # 废弃代码（2026-09-22）：每个窗口的循环一启动就 reclaim_orphans。
+    # 多窗口时那会把另一扇窗口正在跑的 /loop 标成孤儿再重跑。
+    # service.reclaim_orphans()
+    if service.local_session_ids is None:
+        service.reclaim_orphans()
     while True:
         try:
             await service.tick_async()

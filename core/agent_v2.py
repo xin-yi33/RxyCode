@@ -23,12 +23,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Sequence
 import re as _re
 from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 # 2026-08-13: ChatOpenAI 改为懒导入——顶层 `from langchain_openai import ChatOpenAI`
 # 会传递导入 torch/transformers（实测 6.5s），拖慢 worker bootstrap（切换模型/
 # 会话重建时的"agent 重启"等待）。使用点在 _build_llm_from_config 内局部导入。
@@ -66,12 +68,31 @@ from RxyCode.RxyCode1_1_0.core.research_policy import (
     research_prefetch_failure_note,
     should_abort_on_research_prefetch_failure,
 )
-from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
+from RxyCode.RxyCode1_1_0.core.loop_exit import (
+    ERROR_LIMIT,
+    ReactExit,
+    SPIN_ERROR_MESSAGE,
+    bump_consecutive_errors,
+    claimed_final_answer,
+    decide_react_turn,
+    drop_tools_after_final_answer,
+    has_final_answer_call,
+    is_final_answer_tool,
+    llm_requests_exit,
+    quoted_tool_result,
+)
+from RxyCode.RxyCode1_1_0.core.safety.policy import (
+    RiskLevel,
+    canonical_tool_name,
+    classify_tool_risk,
+)
 from RxyCode.RxyCode1_1_0.core.session_runtime import (
     bind_session,
+    bind_turn_user_text,
     clear_session_runtime,
     current_working_directory,
     reset_session_binding,
+    reset_turn_user_text,
 )
 from RxyCode.RxyCode1_1_0.core.state import TaskTree
 from RxyCode.RxyCode1_1_0.core.tracing import Tracer
@@ -93,39 +114,211 @@ from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
 from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as _circuit_breaker
+
+# Set while an outer LLMCircuitBreaker.call (ainvoke/astream) is in flight.
+# The inner stream-connect path checks this and skips its own breaker.call,
+# so one logical LLM call counts once — previously every inner transport
+# retry also counted, letting a single user turn trip fail_max in <1s.
+import contextvars as _contextvars
+
+_OUTER_BREAKER_HELD: "_contextvars.ContextVar[bool]" = _contextvars.ContextVar(
+    "rxycode_outer_breaker_held", default=False
+)
+
+# 2026-09-23：当前请求是否遭遇过传输恢复耗尽（网络断）。证据门据此不把
+# 「网络断导致没写文件」误报成「requested side effect has no verified WRITE」。
+# 用 ContextVar 而不是实例属性：并发会话各自独立，且 run() 入口重置。
+class _TransportExhaustion:
+    """轻量记录器：push 记一次，drain 取出并清空（每次 run 只报一次）。"""
+
+    def __init__(self) -> None:
+        self._var: _contextvars.ContextVar[list[str]] = _contextvars.ContextVar(
+            "rxycode_transport_exhaustion", default=[]
+        )
+
+    def push(self, error_kind: str) -> None:
+        self._var.set([*self._var.get(), str(error_kind)])
+
+    def drain(self) -> list[str]:
+        kinds = self._var.get()
+        if kinds:
+            self._var.set([])
+        return list(kinds)
+
+    def peek(self) -> list[str]:
+        return list(self._var.get())
+
+
+_last_transport_exhaustion = _TransportExhaustion()
+
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from core.runtime_probe import probe as _probe
+    except Exception:
+        def _probe(event, **fields):
+            return None
+
+
+def apply_mid_turn_steers(messages: list, drain) -> list[str]:
+    """Deliver queued user steers into the running turn.
+
+    Each queued steer is appended as a HumanMessage right after the latest
+    tool results, so the next LLM call in the SAME turn sees it. The queued
+    message no longer waits for the whole turn to finish (queue「立即发送」
+    的长时间延迟), and one turn keeps producing exactly one final answer
+    instead of one per queued item.
+    """
+    if not callable(drain):
+        return []
+    try:
+        items = drain() or []
+    except Exception:
+        return []
+    applied: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        messages.append(HumanMessage(content=text))
+        applied.append(text)
+    return applied
 from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
 from RxyCode.RxyCode1_1_0.tools.registry import default_registry
 from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
 from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX, token_stats
 from RxyCode.RxyCode1_1_0.utils.tui import get_tui
+from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
 from RxyCode.RxyCode1_1_0.validation.side_effects import (
     has_verified_side_effect,
     task_requires_side_effect_evidence,
 )
 
 from . import providers
-from .providers.base import BaseProvider
+from .providers.base import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
+    BaseProvider,
+    CHAT_TRANSPORT,
+    LLMTransport,
+    RESPONSES_TRANSPORT,
+)
+from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds
+from .providers._compat import (
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+    ensure_resource_path_rewritable,
+    normalize_llm_endpoint,
+    normalize_resource_path,
+    normalize_transport_candidates,
+    resource_path_request_hook,
+)
+from .providers.responses_adapter import (
+    accumulate_reasoning_items,
+    assistant_content_for_responses_replay,
+    astream_with_native_reasoning_events,
+    install_langchain_responses_reasoning_patch,
+    responses_stream_as_chat_chunks,
+)
+from .progress_labels import FIRST_TOKEN_WAIT, MODEL_STREAMING
 from .providers.tokenizers import count_tokens
 
 _logger = logging.getLogger(__name__)
 
 
-# The GUI acceptance contract treats a request with no first model event for
-# more than 30 seconds as a provider/runtime failure.  This is deliberately a
-# hard upper bound: a per-model override may make the deadline shorter, but it
-# may not turn a visibly stalled request back into an unbounded wait.
-FIRST_TOKEN_TIMEOUT_CAP_SECONDS = 30.0
-# A stream that has already produced data must still make progress.  Without
-# a separate idle deadline, a provider can send a partial assistant message
-# and then leave ``__anext__`` pending forever; the appserver watchdog only
-# sees a live job and cannot tell this from useful work.
-# Large write/tool-call argument streams routinely pause 15-20s between
-# chunks on OpenCode Go. 15s default aborted T01 mid-game.js; keep a
-# longer default and a higher cap so a slow but live stream can finish.
-STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS = 30.0
-STREAM_IDLE_TIMEOUT_CAP_SECONDS = 90.0
+# Stream clocks (Card A): three layers, no 30s first-token cap, no SDK 600s.
+# Connect is handshake only. Idle is thinking/keepalive. Appserver stall is
+# worker death (heartbeat), not model silence.
+STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS = 20.0
+STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS = 180.0
+STREAM_IDLE_TIMEOUT_CAP_SECONDS = 300.0
+# Large write/tool-call argument streams pause 15-20s between chunks on
+# OpenCode Go; keep a floor, then raise to the resolved idle budget.
 TOOL_ARGUMENT_STREAM_IDLE_SECONDS = 60.0
+# Backward-compatible alias: first useful chunk uses the idle budget.
+FIRST_TOKEN_TIMEOUT_CAP_SECONDS = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
+
+
+def _iter_closeable_stream_handles(stream_obj):
+    """Walk stream, OpenAI client, and httpx handles for force-close."""
+    if stream_obj is None:
+        return
+    seen: set[int] = set()
+    stack = [stream_obj]
+    child_attrs = (
+        "response",
+        "_response",
+        "http_response",
+        "_client",
+        "client",
+        "async_client",
+        "http_client",
+        "_http_client",
+    )
+    while stack:
+        obj = stack.pop()
+        if obj is None:
+            continue
+        ident = id(obj)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        yield obj
+        for name in child_attrs:
+            try:
+                child = getattr(obj, name, None)
+            except Exception:
+                child = None
+            if child is not None and id(child) not in seen:
+                stack.append(child)
+
+
+def _schedule_or_call_closer(closer, loop) -> bool:
+    """Run a sync close immediately; schedule async close on the stream loop."""
+    try:
+        if inspect.iscoroutinefunction(closer):
+            if loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(closer(), loop)
+                return True
+            return False
+        result = closer()
+        if inspect.isawaitable(result):
+            if loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(result, loop)
+                return True
+            result.close()
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _force_close_provider_stream(stream_obj, loop=None) -> bool:
+    """Close the HTTP client/response from any thread so a stuck read unblocks.
+
+    ``asyncio.wait_for`` cannot cancel a blocked socket read. OpenAI
+    ``AsyncOpenAI.close`` and ``httpx.AsyncClient.aclose`` are coroutines;
+    the timer thread must schedule them on the stream's event loop. During
+    ``create()`` the handle is the client itself; after create returns it is
+    the stream.
+    """
+    if loop is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+    closed = False
+    for obj in _iter_closeable_stream_handles(stream_obj):
+        aclose = getattr(obj, "aclose", None)
+        if callable(aclose) and _schedule_or_call_closer(aclose, loop):
+            closed = True
+            continue
+        closer = getattr(obj, "close", None)
+        if callable(closer) and _schedule_or_call_closer(closer, loop):
+            closed = True
+    return closed
 
 # Fast local builds are still real tool-driven work, but they should not spend
 # model rounds re-probing the host or serializing avoidable documentation and
@@ -143,9 +336,9 @@ FAST_LOCAL_BUILD_INSTRUCTION = (
     "continue. Group independent small file writes in one model turn, finish "
     "required documentation before validation, and run one focused "
     "compile/smoke check after all dependent files are present. "
-    "Use the write/edit tools for source files. When a tool is needed, issue "
-    "tool calls directly; do not narrate intermediate reasoning or repeat the "
-    "request between tool calls. Keep the preamble to one short sentence. "
+    "Use the write/edit tools for source files. After each tool result, "
+    "tell the user in the chat what happened, whether it failed and why, "
+    "and the next step; do not stack silent tool calls. "
     "Do not write _probe.py or use bash to probe python, node, pip, pandas, "
     "Yahoo Finance, or network connectivity. Do not pip show or pip install. "
     "Use the stdlib unless the user named a framework. Do not import jwt, flask, "
@@ -182,44 +375,99 @@ class StreamIdleTimeoutError(FirstTokenTimeoutError):
     """The provider stopped producing chunks after a stream had started."""
 
 
-def _resolve_first_token_timeout(
+class StreamConnectTimeoutError(TimeoutError):
+    """HTTP handshake exceeded the short connect clock. Retryable."""
+
+
+#: Extra attempts for 429 / connect / connection-reset before first useful chunk.
+#: Total attempts = this value + 1. Do not apply this budget to idle/first-token.
+STREAM_TRANSPORT_RETRY_MAX = 2
+
+
+def _clamp_stream_timeout(value: float, *, hi: float, lo: float = 1.0) -> float:
+    return max(lo, min(float(value), hi))
+
+
+def _optional_timeout(value) -> float | None:
+    if value is None or value is False:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _resolve_connect_timeout(
     request_timeout: float | None,
     configured_timeout: float | None = None,
 ) -> float:
-    """Resolve a bounded first-token deadline for one model request."""
-    try:
-        total_timeout = float(request_timeout or 90.0)
-    except (TypeError, ValueError):
-        total_timeout = 90.0
-    try:
-        first_timeout = float(configured_timeout or FIRST_TOKEN_TIMEOUT_CAP_SECONDS)
-    except (TypeError, ValueError):
-        first_timeout = FIRST_TOKEN_TIMEOUT_CAP_SECONDS
-    return max(
-        1.0,
-        min(total_timeout, first_timeout, FIRST_TOKEN_TIMEOUT_CAP_SECONDS),
-    )
+    """HTTP handshake deadline. Independent of thinking idle."""
+    configured = _optional_timeout(configured_timeout)
+    if configured is not None:
+        return _clamp_stream_timeout(
+            configured, hi=STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS
+        )
+    total = _optional_timeout(request_timeout)
+    if total is not None and total < STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS:
+        return _clamp_stream_timeout(
+            total, hi=STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS
+        )
+    return STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS
 
 
 def _resolve_stream_idle_timeout(
     request_timeout: float | None,
     configured_timeout: float | None = None,
 ) -> float:
-    """Resolve the bounded idle gap allowed after the first stream chunk."""
-    try:
-        total_timeout = float(request_timeout or 90.0)
-    except (TypeError, ValueError):
-        total_timeout = 90.0
-    try:
-        idle_timeout = float(
-            configured_timeout or STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
-        )
-    except (TypeError, ValueError):
-        idle_timeout = STREAM_IDLE_TIMEOUT_CAP_SECONDS
-    return max(
-        1.0,
-        min(total_timeout, idle_timeout, STREAM_IDLE_TIMEOUT_CAP_SECONDS),
+    """Parsed-chunk idle for thinking and half-open streams.
+
+    SSE keepalives reset this clock. The old 30s cap is gone. An explicit
+    short ``timeout`` (tests / operators) may shrink idle; the production
+    ChatOpenAI 90s default is no longer used as this budget.
+    """
+    configured = _optional_timeout(configured_timeout)
+    if configured is not None:
+        return _clamp_stream_timeout(configured, hi=STREAM_IDLE_TIMEOUT_CAP_SECONDS)
+    total = _optional_timeout(request_timeout)
+    if total is not None and total < STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS:
+        return _clamp_stream_timeout(total, hi=STREAM_IDLE_TIMEOUT_CAP_SECONDS)
+    return STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
+
+
+def _resolve_first_token_timeout(
+    request_timeout: float | None,
+    configured_timeout: float | None = None,
+) -> float:
+    """First useful chunk uses the thinking idle budget, not a 30s cap."""
+    return _resolve_stream_idle_timeout(request_timeout, configured_timeout)
+
+
+def _provider_http_timeout(connect: float, idle: float) -> httpx.Timeout:
+    """Per-request timeout so the OpenAI SDK cannot fall back to 600s."""
+    return httpx.Timeout(connect=connect, read=idle, write=idle, pool=connect)
+
+
+def _resolve_stream_clocks(
+    model_config: dict | None,
+) -> tuple[float, float, float, httpx.Timeout]:
+    cfg = model_config or {}
+    request_timeout = cfg.get("timeout")
+    connect = _resolve_connect_timeout(request_timeout, cfg.get("connect_timeout"))
+    idle = _resolve_stream_idle_timeout(
+        request_timeout, cfg.get("stream_idle_timeout")
     )
+    if cfg.get("first_token_timeout") is not None:
+        first_useful = _resolve_first_token_timeout(
+            request_timeout, cfg.get("first_token_timeout")
+        )
+    else:
+        first_useful = idle
+    return connect, idle, first_useful, _provider_http_timeout(connect, idle)
+
+
 def _should_echo_reasoning(
     reasoning_contract: str | None,
     provider_id: str | None,
@@ -337,6 +585,9 @@ def _exhaust_llm_transport_recovery(error_kind: str) -> None:
             active.recovery_id,
             final_error=f"Model transport recovery exhausted ({error_kind})",
         )
+    # 2026-09-23：传输恢复耗尽时记录到当前 AgentV2 实例，证据门据此不把
+    # 「网络断导致没写文件」误报成「requested side effect has no verified WRITE」。
+    _last_transport_exhaustion.push(error_kind)
 
 VALID_AGENT_MODES = frozenset({"build", "plan", "compose"})
 PLAN_READONLY_TOOL_NAMES = frozenset({
@@ -348,6 +599,7 @@ PLAN_READONLY_TOOL_NAMES = frozenset({
     "websearch",
     "webfetch",
     "datetime",
+    "final_answer",
 })
 from RxyCode.RxyCode1_1_0.core.request_routing import (
     GIT_FORCE_RE as _GIT_FORCE_RE,
@@ -486,6 +738,29 @@ def _extract_cache_read(resp) -> int:
     )
 
 
+_APPROVED_PLAN_PREFIXES = (
+    "按已批准的计划开始实施",
+    "已批准计划，开始实施",
+)
+_APPROVED_IMPLEMENT_ROLE = (
+    "你当前处于 BUILD，必须按用户消息和 plan.md 中的已批准计划实施。"
+    "禁止继续或复用工作区里与该计划无关的旧游戏/旧 HTML（例如上一版贪吃蛇）。"
+    "计划是新项目就按计划新建或覆盖指定文件，不要在旧文件上改出另一个游戏。"
+    "第一轮就必须调用工具（ls/read/write/edit），不要只在思维链里写完整实现。"
+)
+
+
+def _is_approved_plan_implement(text: str) -> bool:
+    head = (text or "").lstrip()
+    return any(head.startswith(prefix) for prefix in _APPROVED_PLAN_PREFIXES)
+
+
+def _session_plan_md_path(session_id: str | None) -> Path:
+    raw = str(session_id or "default")
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw)[:80] or "default"
+    return _settings.get_data_dir() / "sessions" / safe / "plan.md"
+
+
 def _usage_obj_to_dict(raw_usage) -> dict:
     """Serialize a raw usage object into the dict shape the provider expects.
 
@@ -493,9 +768,21 @@ def _usage_obj_to_dict(raw_usage) -> dict:
     (e.g. SimpleNamespace-style chunks) are converted recursively so nested
     attributes become nested dicts the provider can look up.
     """
+    extra = getattr(raw_usage, "model_extra", None)
+    extra = extra if isinstance(extra, dict) else {}
     if hasattr(raw_usage, "model_dump"):
-        return raw_usage.model_dump()
-    result: dict = {}
+        dumped = raw_usage.model_dump()
+        if not isinstance(dumped, dict):
+            dumped = {}
+        # OpenAI SDK CompletionUsage often parks DeepSeek cache fields in extra.
+        result = {**dumped, **extra}
+        for key in ("prompt_cache_hit_tokens", "cached_tokens"):
+            if result.get(key) in (None, 0):
+                val = getattr(raw_usage, key, None)
+                if isinstance(val, int) and val > 0:
+                    result[key] = val
+        return result
+    result: dict = dict(extra)
     for key, value in vars(raw_usage).items():
         if isinstance(value, dict):
             result[key] = {
@@ -731,6 +1018,27 @@ def _should_nudge_build_to_write(
         return False
     text = str(user_input or "")
     if re.search(r"不要改任何文件|不要写文件|用一句话介绍", text):
+        return False
+    if claimed_final_answer(answer) or quoted_tool_result(answer) or llm_requests_exit(answer):
+        return False
+    from RxyCode.RxyCode1_1_0.core.agents.router import is_open_only_preview_task
+
+    if is_open_only_preview_task(text):
+        return False
+    # 废弃代码（2026-09-22）：只要 task_requires_side_effect_evidence 为真
+    # （执行/打开/删除也算）且还没 write，就 nudge。echo 和删文件因此被推进去写源码。
+    # if text.strip() and not task_requires_side_effect_evidence(...): return False
+    # if not file_write_succeeded: return nudge_count < max_nudges
+    asked_write = bool(
+        re.search(
+            r"写入|写文件|写源码|新建|创建文件|落地|实现|tests/|\b(?:write|create)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if text.strip() and not asked_write and not _missing_named_pytest_files(
+        user_input, workspace_root
+    ):
         return False
     if text.strip() and not task_requires_side_effect_evidence(
         title=text, result="", effect="auto"
@@ -1022,11 +1330,28 @@ def _record_usage(
     um = getattr(resp, "usage_metadata", None)
     if um:
         usage = _merged_usage_dict(resp)
-        token_stats.add_real_usage(
-            usage.get("input_tokens", 0),
-            usage.get("output_tokens", 0),
-            provider.extract_cache_read(usage, caps),
+        cache_read = provider.extract_cache_read(usage, caps)
+        cache_write_extractor = getattr(provider, "extract_cache_write", None)
+        cache_write = (
+            cache_write_extractor(usage, caps)
+            if callable(cache_write_extractor)
+            else 0
         )
+        # Keep the historical three-argument call shape when there is no
+        # cache-write usage to report.  Besides preserving older embedders,
+        # this avoids needlessly changing the public call contract for the
+        # common path; the fourth argument is reserved for real cache writes.
+        if cache_write:
+            token_stats.add_real_usage(
+                usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0),
+                cache_read,
+                cache_write,
+            )
+        else:
+            token_stats.add_real_usage(
+                usage.get("input_tokens", 0), usage.get("output_tokens", 0), cache_read
+            )
         return int(usage.get("input_tokens", 0) or 0), int(
             usage.get("output_tokens", 0) or 0
         )
@@ -1038,8 +1363,19 @@ def _record_usage(
         completion_toks = int(getattr(raw_usage, "completion_tokens", 0) or 0)
         usage_dict = _usage_obj_to_dict(raw_usage)
         cache_read = provider.extract_cache_read(usage_dict, caps)
+        cache_write_extractor = getattr(provider, "extract_cache_write", None)
+        cache_write = (
+            cache_write_extractor(usage_dict, caps)
+            if callable(cache_write_extractor)
+            else 0
+        )
         if prompt_toks > 0 or completion_toks > 0:
-            token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
+            if cache_write:
+                token_stats.add_real_usage(
+                    prompt_toks, completion_toks, cache_read, cache_write
+                )
+            else:
+                token_stats.add_real_usage(prompt_toks, completion_toks, cache_read)
             # B3 (CB3): DeepSeek 自动前缀验证——不注入 cache_control，用
             # prompt_cache_hit_tokens 验证前缀是否生效，失败记录警告而非静默。
             if getattr(provider, "name", "") == "deepseek":
@@ -1073,21 +1409,35 @@ def _extract_and_save_code(response: str, user_input: str) -> str | None:
 
 
 def _is_transport_retryable(exc: BaseException) -> bool:
-    """Return True for transient network/transport errors worth retrying.
+    """Return True for short transport blips (429 / connect / reset).
 
-    Covers ``httpx.ReadError`` (a ``ProtocolError`` subclass) and friends that
-    occur when an LLM provider connection resets mid-stream.  SDK wrappers
-    (e.g. openai/anthropic ``APIConnectionError``) often embed the underlying
-    transport error as ``__cause__``/``__context__``, so we unwrap those too.
+    Fired idle clocks and generic read timeouts are not retried: a mid-stream
+    retry would duplicate already-emitted content.  Circuit-breaker rejections
+    must propagate so the cooldown is observed.
+
+    2026-09-23: ``FirstTokenTimeoutError`` (exact type) IS retryable — the
+    first-token clock by definition fires before any content was emitted, so
+    a retry duplicates nothing (the ``_raw_stream`` retry loop double-checks
+    ``not got_useful``).  On a flaky network this turns an instant failure
+    into a visible automatic reconnect (用户报告：网络不好时模型超时，
+    不确定有没有 retry).  ``StreamIdleTimeoutError`` stays vetoed even though
+    it subclasses ``FirstTokenTimeoutError`` — the name check is exact-type.
+    SDK wrappers often embed the underlying transport error as
+    ``__cause__``/``__context__``, so we unwrap those too — but never through
+    a fired clock type.
     """
-    if isinstance(exc, FirstTokenTimeoutError):
+    from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind, classify_error
+
+    exc_name = type(exc).__name__
+    if exc_name in {
+        "StreamIdleTimeoutError",
+        "CircuitBreakerError",
+    }:
         return False
-    try:
-        if isinstance(exc, httpx.TransportError):
-            return True
-    except ImportError:  # pragma: no cover - httpx is always present in this app
-        pass
-    if isinstance(exc, (ConnectionError, TimeoutError)):
+    if exc_name == "FirstTokenTimeoutError":
+        # Exact-type only (see docstring): nothing emitted yet, retry is safe.
+        return True
+    if classify_error(exc) == ErrorKind.TRANSIENT:
         return True
     seen: set[int] = set()
     for chained in (getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
@@ -1174,12 +1524,14 @@ class UsageTrackingLLM:
         reserved_output_tokens: int = 0,
         provider=None,
         capabilities=None,
-        llm_timeout: float = 90.0,
+        llm_timeout: float = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
         first_token_timeout: float | None = None,
+        cache_cfg: dict | None = None,
     ):
         self._llm = llm
         self._provider = provider
         self._capabilities = capabilities
+        self._cfg = dict(cache_cfg or {})
         # Cache the prompt_prefix_cache decision so we don't re-read config
         # on every single LLM call.
         self._cache_enabled = None
@@ -1190,8 +1542,10 @@ class UsageTrackingLLM:
         self._reserved_output_tokens = max(0, int(reserved_output_tokens or 0))
         # Transient transport-error retry budget (cached from config on first use).
         self._transport_retries: int | None = None
-        # 2026-08-13: LLM 单次调用/流式建立期总超时（默认 90s，须 < watchdog 120s）
-        self._llm_timeout = max(1.0, float(llm_timeout or 90.0))
+        # HTTP/read timeout aligned with stream idle. Connect is shorter.
+        self._llm_timeout = max(
+            1.0, float(llm_timeout or STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS)
+        )
         self._first_token_timeout = _resolve_first_token_timeout(
             self._llm_timeout,
             first_token_timeout,
@@ -1241,10 +1595,9 @@ class UsageTrackingLLM:
     def _ensure_cache_flag(self):
         if self._cache_enabled is None:
             try:
-
-                cfg = _settings.load_config() or {}
+                cfg = getattr(self, "_cfg", None) or {}
                 self._cache_enabled = bool(
-                    cfg.get("cache", {}).get("prompt_prefix_cache", False)
+                    (cfg.get("cache") or {}).get("prompt_prefix_cache", False)
                 )
             except Exception:
                 self._cache_enabled = False
@@ -1298,6 +1651,7 @@ class UsageTrackingLLM:
                 resp = await self._call_with_transport_retry(messages, kwargs)
             else:
                 breaker = _circuit_breaker.get_default_breaker()
+                _breaker_token = _OUTER_BREAKER_HELD.set(True)
                 try:
                     resp = await breaker.call(
                         self._call_with_transport_retry, messages, kwargs
@@ -1306,8 +1660,18 @@ class UsageTrackingLLM:
                     import pybreaker
                     if isinstance(exc, pybreaker.CircuitBreakerError):
                         # Fast path: honest hint instead of cascading failure.
-                        return AIMessage(content=_circuit_breaker.SERVICE_UNAVAILABLE_MESSAGE)
+                        _probe(  # PROBE-20260923: 熔断"模型调用已暂停"反复卡死定位
+                            "agent.breaker.fast_fail",
+                            path="ainvoke",
+                            state=str(getattr(breaker, "state", "unknown")),
+                            fail_counter=getattr(breaker, "fail_counter", None),
+                        )
+                        return AIMessage(
+                            content=_circuit_breaker.service_unavailable_detail(breaker)
+                        )
                     raise
+                finally:
+                    _OUTER_BREAKER_HELD.reset(_breaker_token)
             usage = _record_usage(
                 resp, messages, provider=self._provider, capabilities=self._capabilities
             )
@@ -1343,6 +1707,7 @@ class UsageTrackingLLM:
                     yield chunk
             else:
                 breaker = _circuit_breaker.get_default_breaker()
+                _breaker_token = _OUTER_BREAKER_HELD.set(True)
                 try:
                     # Only stream *establishment* goes through the breaker;
                     # subsequent chunks flow through normally to keep streaming.
@@ -1352,9 +1717,19 @@ class UsageTrackingLLM:
                 except Exception as exc:
                     import pybreaker
                     if isinstance(exc, pybreaker.CircuitBreakerError):
-                        yield AIMessage(content=_circuit_breaker.SERVICE_UNAVAILABLE_MESSAGE)
+                        _probe(  # PROBE-20260923: 熔断 fast-fail（astream 路径）
+                            "agent.breaker.fast_fail",
+                            path="astream",
+                            state=str(getattr(breaker, "state", "unknown")),
+                            fail_counter=getattr(breaker, "fail_counter", None),
+                        )
+                        yield AIMessage(
+                            content=_circuit_breaker.service_unavailable_detail(breaker)
+                        )
                         return
                     raise
+                finally:
+                    _OUTER_BREAKER_HELD.reset(_breaker_token)
                 first, rest = agen
                 if first is not None:
                     last_chunk = first
@@ -1395,9 +1770,9 @@ class UsageTrackingLLM:
         Returns (first_chunk, remaining_async_iterator). Used so the
         circuit breaker only guards stream establishment, not every token.
 
-        2026-08-13: 首 chunk 等待加总超时（_llm_call_timeout，默认 90s）——
-        流式建立期挂起（上游无响应）此前会无限等待，watchdog 120s 先杀，
-        用户看到 "job stalled" 而非真实超时错误。
+        2026-08-13 / Card A: 首 chunk 等待用 idle 预算（默认 180s，
+        不是 ChatOpenAI 90s，也不是 30s 硬顶）。流式建立期挂起必须
+        在模型钟上失败，不能先被 appserver watchdog 当成 worker stall。
         """
         ait = self._llm.astream(messages, **kwargs).__aiter__()
         try:
@@ -1413,16 +1788,18 @@ class UsageTrackingLLM:
         return first, ait
 
     def _transport_retry_max(self) -> int:
-        """Cached budget for transient transport-error retries (default 3)."""
+        """Cached budget for transient transport-error retries (default 2 extra)."""
         if self._transport_retries is None:
             try:
-
-                cfg = _settings.load_config() or {}
+                cfg = getattr(self, "_cfg", None) or {}
                 self._transport_retries = int(
-                    (cfg.get("llm") or {}).get("transport_retries", 3) or 3
+                    (cfg.get("llm") or {}).get(
+                        "transport_retries", STREAM_TRANSPORT_RETRY_MAX
+                    )
+                    or STREAM_TRANSPORT_RETRY_MAX
                 )
             except Exception:
-                self._transport_retries = 3
+                self._transport_retries = STREAM_TRANSPORT_RETRY_MAX
         return self._transport_retries
 
     async def _call_with_transport_retry(self, messages, kwargs):
@@ -1513,7 +1890,11 @@ class UsageTrackingLLM:
                 "model does not support function calling; tools were requested but "
                 "capabilities.supports_function_calling is False"
             )
-        bound = self._llm.bind_tools(tools, **kwargs)
+        tool_list = list(tools)
+        tool_validator = getattr(self._provider, "validate_tool_payloads", None)
+        if callable(tool_validator):
+            tool_validator([convert_to_openai_tool(tool) for tool in tool_list])
+        bound = self._llm.bind_tools(tool_list, **kwargs)
         return UsageTrackingLLM(
             bound,
             rate_limiter=self._rate_limiter,
@@ -1525,6 +1906,7 @@ class UsageTrackingLLM:
             capabilities=self._capabilities,
             llm_timeout=self._llm_timeout,
             first_token_timeout=self._first_token_timeout,
+            cache_cfg=getattr(self, "_cfg", None),
         )
 
     def with_structured_output(self, schema, **kwargs):
@@ -1541,6 +1923,7 @@ class UsageTrackingLLM:
             capabilities=self._capabilities,
             llm_timeout=self._llm_timeout,
             first_token_timeout=self._first_token_timeout,
+            cache_cfg=getattr(self, "_cfg", None),
         )
 
     def __getattr__(self, name):
@@ -1582,9 +1965,9 @@ def _build_graph_lazily():
 class AgentV2:
     """LangGraph-based agent, drop-in compatible with the old Agent class."""
 
-    def __init__(self, model_name: Optional[str] = None):
+    def __init__(self, model_name: Optional[str] = None, session_id: Optional[str] = None):
         self._cfg = _settings.load_config()
-        self._session_id = "latest"
+        self._session_id = validate_session_id(session_id) if session_id else "latest"
         # F2: None keeps single-agent cache keys byte-identical (FX9 / MC1).
         self._agent_namespace = None
         # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
@@ -1706,6 +2089,7 @@ class AgentV2:
         self._agent_prefix_messages: list | None = None
         # Register tools
         self._tool_orchestrator = ToolOrchestrator(tool_registry=None)
+        self._tool_orchestrator._owner_agent = self
         self._mcp_lock = threading.RLock()
         self._mcp_clients: dict[str, object] = {}
         self._mcp_tool_names: set[str] = set()
@@ -1782,7 +2166,9 @@ class AgentV2:
 
     def _tokenizer_spec(self) -> str:
         caps = getattr(self, "_capabilities", None)
-        return caps.tokenizer if caps else "tiktoken:o200k_base"
+        if caps is None:
+            return "tiktoken:o200k_base"
+        return getattr(caps, "tokenizer", None) or "tiktoken:o200k_base"
 
     def _context_window(self) -> int:
         caps = getattr(self, "_capabilities", None)
@@ -1791,18 +2177,13 @@ class AgentV2:
         return DEFAULT_CONTEXT_MAX
 
     def _estimate_tokens(self, messages) -> int:
-        """按当前模型的分词规格估算 token 数。
-
-        改造前这里对所有模型硬用 gpt-4o 的编码，DeepSeek / Qwen 的偏差可达
-        20% 以上，会让压缩时机和计费一起偏。
-        """
+        """当前窗口占用：与 compact 触发共用 occupancy_tokens（UPDATE-01 OU2）。"""
         spec = self._tokenizer_spec()
-        total = 0
-        for m in messages or []:
-            content = getattr(m, "content", "") or ""
-            if isinstance(content, str):
-                total += count_tokens(content, spec)
-        return total
+        from .compaction import occupancy_tokens
+
+        return occupancy_tokens(
+            messages, count=lambda text: count_tokens(text, spec)
+        )
 
     def _sync_token_stats_context(self) -> None:
         caps = getattr(self, "_capabilities", None)
@@ -2190,6 +2571,27 @@ class AgentV2:
                 "API credential is unavailable; "
                 f"set {env_name} or re-add the model with its API key."
             )
+        candidate_resolver = getattr(provider, "transport_candidates", None)
+        resolved_candidates = (
+            candidate_resolver(model_config)
+            if callable(candidate_resolver)
+            else (CHAT_TRANSPORT,)
+        )
+        primary_transport = normalize_transport_candidates(resolved_candidates)[0]
+        endpoint = str(model_config.get("base_url") or "")
+        try:
+            sig = inspect.signature(normalize_llm_endpoint)
+            kwargs = {}
+            args: list[object] = [endpoint]
+            params = list(sig.parameters.values())
+            if len(params) >= 2:
+                args.append(primary_transport)
+            if "require_https" in sig.parameters:
+                kwargs["require_https"] = True
+            model_config["base_url"] = normalize_llm_endpoint(*args, **kwargs)
+        except TypeError:
+            model_config["base_url"] = endpoint.strip()
+        self._llm_base_url = model_config["base_url"]
         try:
             resolution = resolve_configured_max_tokens(
                 model_config=model_config,
@@ -2214,31 +2616,73 @@ class AgentV2:
         self._stuck_detector: StuckDetector = StuckDetector(threshold=3)
         # B7: Git 快照（LLM 调用前捕获，坏结局回滚）。
         self._git_snapshot = None
+        self._cache_cfg = cfg or {}
         # B3 (CB2): TTL 档位写入 model_config（供 Anthropic provider 注入请求）。
         try:
-            from .cache_policy import resolve_ttl_seconds
-
             model_config["cache_ttl"] = resolve_ttl_seconds(cfg or {})
         except Exception:  # pragma: no cover
             pass
 
-        # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
+        if primary_transport == ANTHROPIC_MESSAGES_TRANSPORT:
+            try:
+                ChatAnthropic = __import__(
+                    "langchain_anthropic", fromlist=["ChatAnthropic"]
+                ).ChatAnthropic
+            except ImportError as exc:  # pragma: no cover - dependency gate
+                raise RuntimeError(
+                    "anthropic_messages requires langchain-anthropic; "
+                    "install the project requirements"
+                ) from exc
+            kwargs_builder = getattr(provider, "anthropic_llm_kwargs", None)
+            if not callable(kwargs_builder):
+                raise RuntimeError(
+                    "provider selected anthropic_messages without an "
+                    "Anthropic client configuration"
+                )
+            exact_resource = normalize_resource_path(
+                model_config.get("resource_path")
+            )
+            if exact_resource:
+                ensure_resource_path_rewritable(
+                    exact_resource, ANTHROPIC_MESSAGES_TRANSPORT
+                )
+            raw_llm = ChatAnthropic(**kwargs_builder(model_config, caps))
+        else:
+            # 2026-08-13: ChatOpenAI 懒导入（顶层导入拖慢 worker bootstrap 6.5s）
+            from langchain_openai import ChatOpenAI  # noqa: PLC0415 - 懒导入避免 torch 链
 
-        llm_kwargs = provider.llm_kwargs(model_config, caps)
-        # FXC4: session affinity headers keep gateway cache hits on one replica
-        # (opencode.ai/zen/go gateways) and X-Session-Id on direct endpoints.
-        headers = build_session_headers(
-            str(model_config.get("base_url") or ""),
-            str(self._session_id or ""),
-        )
-        if headers:
-            llm_kwargs["default_headers"] = {
-                **(llm_kwargs.get("default_headers") or {}),
-                **headers,
-            }
-
-        raw_llm = ChatOpenAI(**llm_kwargs)
+            llm_kwargs = provider.llm_kwargs(model_config, caps)
+            connect, idle, _first_useful, http_timeout = _resolve_stream_clocks(
+                model_config
+            )
+            llm_kwargs["timeout"] = http_timeout
+            llm_kwargs["max_retries"] = 0
+            llm_kwargs["stream_chunk_timeout"] = idle
+            # FXC4: session affinity headers keep gateway cache hits on one replica
+            # (opencode.ai/zen/go gateways) and X-Session-Id on direct endpoints.
+            headers = build_session_headers(
+                str(model_config.get("base_url") or ""),
+                str(self._session_id or ""),
+            )
+            if headers:
+                llm_kwargs["default_headers"] = {
+                    **(llm_kwargs.get("default_headers") or {}),
+                    **headers,
+                }
+            exact_resource = normalize_resource_path(
+                model_config.get("resource_path")
+            )
+            if exact_resource:
+                llm_kwargs["http_async_client"] = httpx.AsyncClient(
+                    event_hooks={
+                        "request": [
+                            resource_path_request_hook(
+                                exact_resource, primary_transport
+                            )
+                        ]
+                    }
+                )
+            raw_llm = ChatOpenAI(**llm_kwargs)
 
         return UsageTrackingLLM(
             raw_llm,
@@ -2249,8 +2693,12 @@ class AgentV2:
             reserved_output_tokens=self._rate_reserved_output_tokens,
             provider=provider,
             capabilities=caps,
-            llm_timeout=float(model_config.get('timeout', 90.0) or 90.0),
+            llm_timeout=_resolve_stream_idle_timeout(
+                model_config.get("timeout"),
+                model_config.get("stream_idle_timeout"),
+            ),
             first_token_timeout=model_config.get("first_token_timeout"),
+            cache_cfg=cfg or {},
         )
 
     def _build_llm(self):
@@ -2317,22 +2765,43 @@ class AgentV2:
         """
         llm = self._llm
         client = getattr(llm, "async_client", None)
+        if client is None:
+            inner = vars(llm).get("_llm") if llm is not None else None
+            client = getattr(inner, "async_client", None)
         if client is not None:
             return client
-        # Match LangChain's ChatOpenAI default request timeout so the
-        # fallback path does not silently switch to a different (shorter)
-        # timeout than the primary async_client path. An empty api_key
-        # string (not None) lets the SDK fall back to the OPENAI_API_KEY
-        # environment variable instead of raising on None.
-        return AsyncOpenAI(
-            api_key=self.model_config.get("api_key") or "",
-            base_url=self.model_config.get("base_url"),
-            # 2026-08-13: 默认超时 600 → 90s（对齐 _llm_call_timeout 与 watchdog
-            # 120s 层级：LLM 单次调用超时必须先于 watchdog 触发，否则挂起被
-            # 伪装成 "job stalled"）。httpx read timeout 覆盖流式消费期块间等待；
-            # 流式建立期由 _open_stream/_open_stream_with_retry 的 wait_for 兜底。
-            timeout=self.model_config.get("timeout", 90.0),
+        # Fallback AsyncOpenAI uses the same Card A HTTP timeout as ChatOpenAI.
+        # Empty api_key string lets the SDK read OPENAI_API_KEY instead of raising.
+        connect, idle, _first_useful, http_timeout = _resolve_stream_clocks(
+            self.model_config
         )
+        client_kwargs = {
+            "api_key": self.model_config.get("api_key") or "",
+            "base_url": getattr(
+                self, "_llm_base_url", self.model_config.get("base_url")
+            ),
+            "timeout": http_timeout,
+            "max_retries": 0,
+        }
+        exact_resource = normalize_resource_path(
+            (self.model_config or {}).get("resource_path")
+        )
+        if exact_resource:
+            transport = OPENAI_CHAT_TRANSPORT
+            provider = getattr(self, "_provider", None)
+            if provider is not None and getattr(
+                provider, "uses_responses_api", lambda _c: False
+            )(self.model_config or {}):
+                transport = OPENAI_RESPONSES_TRANSPORT
+            client_kwargs["http_client"] = httpx.AsyncClient(
+                timeout=http_timeout,
+                event_hooks={
+                    "request": [
+                        resource_path_request_hook(exact_resource, transport)
+                    ]
+                },
+            )
+        return AsyncOpenAI(**client_kwargs)
 
     @staticmethod
     def _to_openai_messages(
@@ -2447,6 +2916,40 @@ class AgentV2:
         return out
 
     @staticmethod
+    def _to_anthropic_messages(messages) -> list:
+        """Promote cache metadata into native Anthropic content blocks.
+
+        ``cache_control`` stored on ``additional_kwargs`` is convenient for
+        the shared OpenAI converter, but ChatAnthropic sends native Messages
+        and expects the field on a text content block.  Keep this conversion
+        local to the native transport so the legacy Chat wire is unchanged.
+        """
+        converted = []
+        for message in messages:
+            ak = dict(getattr(message, "additional_kwargs", None) or {})
+            cache_control = ak.pop("cache_control", None)
+            if not cache_control or not isinstance(
+                message, (SystemMessage, HumanMessage)
+            ):
+                converted.append(message)
+                continue
+            content = getattr(message, "content", "")
+            if isinstance(content, str):
+                blocks = [{"type": "text", "text": content, "cache_control": dict(cache_control)}]
+            elif isinstance(content, list):
+                blocks = [dict(block) if isinstance(block, dict) else block for block in content]
+                text_blocks = [block for block in blocks if isinstance(block, dict) and block.get("type") == "text"]
+                if text_blocks:
+                    text_blocks[-1]["cache_control"] = dict(cache_control)
+                else:
+                    blocks.append({"type": "text", "text": "", "cache_control": dict(cache_control)})
+            else:
+                blocks = [{"type": "text", "text": str(content), "cache_control": dict(cache_control)}]
+            cls = SystemMessage if isinstance(message, SystemMessage) else HumanMessage
+            converted.append(cls(content=blocks, additional_kwargs=ak))
+        return converted
+
+    @staticmethod
     def _tool_to_openai(tool) -> dict:
         """Convert a LangChain tool to an OpenAI function-tool dict."""
         schema = None
@@ -2468,6 +2971,35 @@ class AgentV2:
             },
         }
 
+    @staticmethod
+    def _to_anthropic_tools(tools: list[dict]) -> list[dict]:
+        """Convert shared OpenAI tool dicts to native Anthropic definitions.
+
+        ``ChatAnthropic.bind_tools`` preserves ``cache_control`` only when it
+        receives an Anthropic-shaped definition.  The shared tool loop stores
+        OpenAI-shaped definitions, so translate them at the native transport
+        boundary instead of losing a tools breakpoint during conversion.
+        """
+        converted = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                converted.append(tool)
+                continue
+            function = tool.get("function")
+            if tool.get("type") == "function" and isinstance(function, dict):
+                native = {
+                    "name": function.get("name", "tool"),
+                    "description": function.get("description", "") or "",
+                    "input_schema": function.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+                if "cache_control" in tool:
+                    native["cache_control"] = dict(tool["cache_control"])
+                converted.append(native)
+            else:
+                converted.append(tool)
+        return converted
+
     def _provider_reasoning(self, delta) -> str:
         """Delegate reasoning extraction to the provider layer (A8).
 
@@ -2487,9 +3019,8 @@ class AgentV2:
     def _stream_chunk_is_useful(self, chunk) -> bool:
         """True when a stream chunk can surface thinking, text, or a tool call.
 
-        Empty SSE keepalives must not count as the first packet: they used to
-        cancel the 90s wait_for, after which a hang never timed out and the
-        CLI thinking panel stayed empty until the 120s watchdog killed the job.
+        Empty SSE keepalives must not count as the first *useful* packet, but
+        they do count as liveness and reset the idle clock.
         """
         choices = getattr(chunk, "choices", None) or []
         if not choices:
@@ -2507,6 +3038,148 @@ class AgentV2:
         if extra:
             return True
         return False
+
+    @staticmethod
+    def _stream_chunk_is_alive(chunk) -> bool:
+        """Any parsed stream event keeps the idle clock from firing."""
+        return chunk is not None
+
+    @staticmethod
+    async def _responses_stream_as_chat_chunks(stream):
+        """Translate LangChain Responses chunks to the legacy raw-chat shape."""
+        async for chunk in responses_stream_as_chat_chunks(stream):
+            yield chunk
+
+    @staticmethod
+    async def _anthropic_stream_as_chat_chunks(stream):
+        """Normalize public ``ChatAnthropic`` chunks to the internal stream."""
+        saw_legal_terminal = False
+        async for item in stream:
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            native_reasoning_blocks: list[dict] = []
+            content = getattr(item, "content", "")
+            if isinstance(content, str):
+                if content:
+                    text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        if isinstance(block, str):
+                            text_parts.append(block)
+                        continue
+                    block_type = str(block.get("type") or "")
+                    if block_type == "text":
+                        text_parts.append(str(block.get("text") or ""))
+                    elif block_type == "thinking":
+                        reasoning_parts.append(
+                            str(block.get("thinking") or "")
+                        )
+                        native_reasoning_blocks.append(dict(block))
+                    elif block_type == "redacted_thinking":
+                        native_reasoning_blocks.append(dict(block))
+
+            tool_deltas = []
+            for call in getattr(item, "tool_call_chunks", None) or []:
+                if not isinstance(call, dict):
+                    continue
+                tool_deltas.append(
+                    SimpleNamespace(
+                        index=call.get("index", 0),
+                        id=call.get("id"),
+                        function=SimpleNamespace(
+                            name=call.get("name"),
+                            arguments=call.get("args") or "",
+                        ),
+                    )
+                )
+
+            usage = None
+            usage_metadata = getattr(item, "usage_metadata", None)
+            if isinstance(usage_metadata, dict):
+                input_details = usage_metadata.get("input_token_details") or {}
+                output_details = usage_metadata.get("output_token_details") or {}
+                cached_tokens = int(input_details.get("cache_read", 0) or 0)
+                cache_write_tokens = int(
+                    input_details.get("cache_creation", 0)
+                    or input_details.get("cache_creation_input_tokens", 0)
+                    or usage_metadata.get("cache_creation_input_tokens", 0)
+                    or 0
+                )
+                reasoning_tokens = int(output_details.get("reasoning", 0) or 0)
+                usage = SimpleNamespace(
+                    prompt_tokens=int(usage_metadata.get("input_tokens", 0) or 0),
+                    completion_tokens=int(
+                        usage_metadata.get("output_tokens", 0) or 0
+                    ),
+                    # Keep the official LangChain Anthropic shape so the
+                    # provider usage map can distinguish cache reads from
+                    # cache creation.  The plural fields below remain for
+                    # the existing internal/OpenAI-shaped assertions.
+                    input_token_details=SimpleNamespace(
+                        cache_read=cached_tokens,
+                        cache_creation=cache_write_tokens,
+                    ),
+                    cache_creation_input_tokens=cache_write_tokens,
+                    input_tokens_details=SimpleNamespace(
+                        cached_tokens=cached_tokens
+                    ),
+                    prompt_tokens_details=SimpleNamespace(
+                        cached_tokens=cached_tokens
+                    ),
+                    completion_tokens_details=SimpleNamespace(
+                        reasoning_tokens=reasoning_tokens
+                    ),
+                    output_tokens_details=SimpleNamespace(
+                        reasoning_tokens=reasoning_tokens
+                    ),
+                )
+
+            terminal = getattr(item, "chunk_position", None) == "last"
+            finish_reason = None
+            if terminal:
+                metadata = getattr(item, "response_metadata", None)
+                metadata = metadata if isinstance(metadata, dict) else {}
+                stop_reason = str(
+                    metadata.get("stop_reason") or ""
+                ).strip().casefold()
+                if stop_reason in {"end_turn", "stop_sequence"}:
+                    finish_reason = "stop"
+                elif stop_reason == "tool_use":
+                    finish_reason = "tool_calls"
+                elif stop_reason in {
+                    "max_tokens",
+                    "model_context_window_exceeded",
+                }:
+                    finish_reason = "length"
+                elif stop_reason == "refusal":
+                    finish_reason = "content_filter"
+                else:
+                    raise RuntimeError(
+                        "Anthropic Messages stream ended without a supported "
+                        "stop_reason"
+                    )
+                saw_legal_terminal = True
+
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="".join(text_parts),
+                            reasoning_content="".join(reasoning_parts),
+                            tool_calls=tool_deltas,
+                        ),
+                        finish_reason=finish_reason,
+                    )
+                ],
+                usage=usage,
+                _rxy_anthropic_terminal=terminal,
+                _rxy_anthropic_native_blocks=native_reasoning_blocks,
+            )
+        if not saw_legal_terminal:
+            raise RuntimeError(
+                "Anthropic Messages stream ended without a legal terminal"
+            )
 
     def _prompt_variant(self) -> str:
         """A9: variant selector from current model capabilities.
@@ -2914,8 +3587,40 @@ class AgentV2:
             self._dedupe_tool_output(tool_name, str(result))
         )
         if _tool_output_is_error(str(result)):
-            return raw + "\n\n" + self._error_feedback_message(tool_name, str(result))
-        return raw
+            raw = raw + "\n\n" + self._error_feedback_message(tool_name, str(result))
+        return (
+            raw
+            + "\n[对用户说：这个工具返回了什么、是否报错、下一步做什么。"
+            "禁止静默连打下一个工具。]"
+        )
+
+    def _emit_tool_outcome_to_user(
+        self,
+        tui: object,
+        tool_name: str,
+        result: str,
+        is_error: bool,
+    ) -> None:
+        """Show tool outcome in the chat status/thinking without waiting on the model."""
+        # 2026-09-23：final_answer 的 result 就是最终答案本身，不走 liveness
+        # （否则被截断成 180 字符的 snippet 塞进 Thought，真正的答案反而看不到）。
+        if str(tool_name).lower().replace("-", "_") == "final_answer":
+            return
+        snippet = " ".join(str(result or "").split())[:180]
+        if is_error:
+            line = f"{tool_name} 报错：{snippet or '失败'}。先说明原因再决定下一步。"
+        else:
+            line = f"{tool_name} 返回：{snippet or '（无输出）'}"
+        if hasattr(tui, "write_turn_liveness"):
+            try:
+                tui.write_turn_liveness(line)
+            except Exception:
+                pass
+        if hasattr(tui, "write_progress"):
+            try:
+                tui.write_progress(line)
+            except Exception:
+                pass
 
     def _stuck_feedback_message(self, reason: str | None) -> str:
         """B7: 死循环干预引导语（追加在断点之后）。"""
@@ -2960,8 +3665,7 @@ class AgentV2:
     def _capture_git_snapshot(self) -> bool:
         """B7: LLM 调用前捕获 Git 快照（opencode snapshot 语义）。
 
-        每轮 LLM 调用前调用；git 不可用/非仓库时容错（返回 False，
-        不阻断主流程）。快照存于 ``self._git_snapshot`` 供坏结局回滚。
+        每轮 LLM 调用前不再打 Git 税。只在即将执行写工具时捕获。
         """
         from RxyCode.RxyCode1_1_0.core.snapshot import GitSnapshot
 
@@ -3008,28 +3712,20 @@ class AgentV2:
             tool_calls=tool_calls,
             additional_kwargs=ai_kwargs,
         ))
-        for tc in tool_calls:
-            tool_name = tc.get("name", "") if isinstance(tc, dict) else tc.name
-            tool_args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
-            tool_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
-            result = await self._execute_tool(
-                tool_name,
-                tool_args,
-                mode=mode,
-                call_id=tool_id or None,
-            )
+        executed = await self._execute_tools_parallel(tool_calls, mode=mode)
+        for item in executed:
+            tool_name = item.get("name", "") if isinstance(item, dict) else ""
+            tool_id = item.get("id", "") if isinstance(item, dict) else ""
+            result = item.get("result", "") if isinstance(item, dict) else ""
             messages.append(
                 ToolMessage(
                     content=self._tool_result_message_content(tool_name, str(result)),
                     tool_call_id=tool_id or tool_name,
                 )
             )
-            is_error = _tool_output_is_error(str(result))
-            if is_error:
+            if _tool_output_is_error(str(result)):
                 # luna R9-1: synthesis 阶段的工具错误也记录（缓存防护）。
                 self._tool_error_occurred = True
-        # 再给一次 synthesis（无工具）；LLM 调用前捕获 Git 快照（luna R1-3）。
-        await self._capture_git_snapshot_async()
         parts: list[str] = []
         async for chunk in self._raw_stream(messages):
             if not getattr(chunk, "choices", None):
@@ -3042,6 +3738,15 @@ class AgentV2:
                     tui.stream_token(token)
         out = "".join(parts)
         return _strip_dsml_tool_markup(out or fallback_answer)
+
+    def _stream_transient_retry_max(self) -> int:
+        """Extra 429/connect attempts on `_raw_stream` (default 2)."""
+        cfg = getattr(self, "_cfg", None) or getattr(self, "_cache_cfg", None) or {}
+        raw = (cfg.get("llm") or {}).get("transport_retries", STREAM_TRANSPORT_RETRY_MAX)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return STREAM_TRANSPORT_RETRY_MAX
 
     def _resolve_request_max_tokens(self, input_tokens: int) -> int:
         """Phase 3 M4：请求层解析最终 max_tokens（含 context 钳制）。
@@ -3056,16 +3761,13 @@ class AgentV2:
         from RxyCode.RxyCode1_1_0.config.model_limits import (
             resolve_configured_max_tokens,
         )
-        from RxyCode.RxyCode1_1_0.config.settings import load_config as _load_cfg
 
         resolved = getattr(self, "_resolved_limits", None)
         if resolved is not None and resolved.context_window is None:
             return resolved.resolved_max_tokens
 
-        cfg = {}
-        try:
-            cfg = _load_cfg() or {}
-        except Exception:
+        cfg = getattr(self, "_cfg", None) or getattr(self, "_cache_cfg", None) or {}
+        if not isinstance(cfg, dict):
             cfg = {}
         caps = getattr(self, "_capabilities", None)
         resolution = resolve_configured_max_tokens(
@@ -3080,11 +3782,19 @@ class AgentV2:
         # ModelLimitError（预算耗尽）向上传播：调用方必须阻止 SDK 请求。
         return resolution.resolved_max_tokens
 
-    async def _raw_stream(self, messages, tools=None, *, max_tokens=None):
-        """Stream from the raw OpenAI client, yielding native chunks.
+    async def _raw_stream(
+        self,
+        messages,
+        tools=None,
+        *,
+        max_tokens=None,
+        through_breaker: bool = True,
+    ):
+        """Stream through the Provider-selected transport as internal chunks.
 
-        Unlike LangChain's astream, this preserves `reasoning_content` so the
-        agent can surface the model's thinking in real time.
+        OpenAI Chat keeps the raw SDK path that preserves ``reasoning_content``.
+        OpenAI Responses and Anthropic Messages use their LangChain integrations
+        and are normalized from public ``AIMessageChunk`` fields.
 
         P2 fix: apply _apply_cache_control before converting to dicts so
         the ephemeral cache breakpoint is injected into messages[0] (system
@@ -3092,16 +3802,43 @@ class AgentV2:
         output dict, so the OpenAI API receives it and provider-side KV
         caching is activated even in streaming mode.
         """
+        # 后台预热 / keep-alive 由调用方传 through_breaker=False。
+        # 它们若拿了半开探测，失败会把冷却重新计时。
+        # 废弃代码（2026-09-22）：用 max_tokens==1 或预热标记猜测后台调用。
+        # 用户轮次若撞上预热标记，会绕开熔断。
+        # background_llm = max_tokens == 1 or bool(
+        #     getattr(self, "_prewarm_request_active", False)
+        # )
+        background_llm = not through_breaker
         if max_tokens != 1:
+            self._prewarm_request_active = False
             await self._cancel_background_prewarm()
-        client = self._openai_client()
+        provider = getattr(self, "_provider", None)
+        candidate_resolver = getattr(provider, "transport_candidates", None)
+        resolved_candidates = (
+            candidate_resolver(self.model_config)
+            if callable(candidate_resolver)
+            else (CHAT_TRANSPORT,)
+        )
+        # Canonicalization accepts migration aliases but fails closed for an
+        # empty/unknown Provider sequence. Stable de-duplication prevents the
+        # same billable endpoint from being tried twice.
+        transport_candidates: tuple[LLMTransport, ...] = (
+            normalize_transport_candidates(resolved_candidates)
+        )
+        transport_index = 0
+        active_transport = transport_candidates[transport_index]
+        client = None
         # Apply cache_control before conversion (was missing: _raw_stream
         # bypassed _apply_cache_control, so streaming calls never got the
         # cache breakpoint, resulting in ~0% provider cache hit rate)
         if hasattr(self._llm, '_apply_cache_control'):
             messages = self._llm._apply_cache_control(messages, tools=tools)
+        tokenizer_spec = self._tokenizer_spec()
         input_tokens = sum(
-            _estimate_tokens(getattr(message, "content", "") or "")
+            _estimate_tokens(
+                getattr(message, "content", "") or "", tokenizer_spec
+            )
             for message in messages
         )
         rate_grant = None
@@ -3181,10 +3918,21 @@ class AgentV2:
         # thinking: that is why OpenCode/Claude can answer 你好 immediately
         # while a thinking-default model looks stalled until first token.
         if getattr(self, "_thinking_disabled_this_turn", False):
-            body = payload.get("extra_body")
-            if isinstance(body, dict) and "thinking" in body:
+            body = payload.setdefault("extra_body", {})
+            if isinstance(body, dict):
                 body["thinking"] = {"type": "disabled"}
-            payload.pop("reasoning_effort", None)
+            disabled_effort_resolver = getattr(
+                provider, "reasoning_effort_when_disabled", None
+            )
+            disabled_effort = (
+                disabled_effort_resolver(self.model_config)
+                if callable(disabled_effort_resolver)
+                else None
+            )
+            if disabled_effort:
+                payload["reasoning_effort"] = disabled_effort
+            else:
+                payload.pop("reasoning_effort", None)
         # FXC2: prompt_cache_key 只信 injects_prompt_cache_key(contract)。
         # 未知模型默认不发 key（§15.3）；禁止 caps.provider==openai 启发式。
         from .catalog import injects_prompt_cache_key
@@ -3240,13 +3988,22 @@ class AgentV2:
                     "capabilities.supports_function_calling is False"
                 )
             payload["tools"] = [self._tool_to_openai(t) for t in tools]
+            tool_validator = getattr(provider, "validate_tool_payloads", None)
+            if callable(tool_validator):
+                tool_validator(payload["tools"])
             # FXC2: 显式族只给最后一个 tool 打点；隐式/未知绝不打 cache_control。
             from .catalog import injects_cache_control
 
             if injects_cache_control(contract) and payload["tools"]:
                 last_tool = payload["tools"][-1]
                 if isinstance(last_tool, dict):
-                    last_tool["cache_control"] = {"type": "ephemeral"}
+                    last_tool["cache_control"] = cache_control_for_ttl(
+                        resolve_ttl_seconds(
+                            getattr(self, "_cache_cfg", None)
+                            or getattr(self, "_cfg", None)
+                            or {}
+                        )
+                    )
 
         # Keep provider latency diagnosable without logging prompt text,
         # credentials, workspace paths, or tool arguments.  An HTTP 200 can
@@ -3294,7 +4051,7 @@ class AgentV2:
             (payload.get("extra_body") or {}).get("thinking"),
             payload.get("reasoning_effort"),
             _resolve_first_token_timeout(
-                self.model_config.get("timeout", 90.0),
+                self.model_config.get("timeout"),
                 self.model_config.get("first_token_timeout"),
             ),
         )
@@ -3310,25 +4067,39 @@ class AgentV2:
         _stream_reasoning_chars = 0
         _stream_tool_argument_chars = 0
         _stream_completed = False
-        first_chunk_timeout = _resolve_first_token_timeout(
-            self.model_config.get("timeout", 90.0),
-            self.model_config.get("first_token_timeout"),
+        connect_timeout, stream_idle_timeout, first_chunk_timeout, http_timeout = (
+            _resolve_stream_clocks(self.model_config)
         )
-        stream_idle_timeout = _resolve_stream_idle_timeout(
-            self.model_config.get("timeout", 90.0),
-            self.model_config.get("stream_idle_timeout"),
-        )
-        tool_arg_idle = max(
-            stream_idle_timeout,
-            min(
-                TOOL_ARGUMENT_STREAM_IDLE_SECONDS,
-                STREAM_IDLE_TIMEOUT_CAP_SECONDS,
-            ),
-        )
+        tool_arg_idle = stream_idle_timeout  # never inflate a short timeout to TOOL_ARGUMENT_STREAM_IDLE_SECONDS
         pending_idle = stream_idle_timeout
         stream_obj = None
+        stream_loop = asyncio.get_running_loop()
+        _hard_deadline_reason: str | None = None
+        _hard_timer: threading.Timer | None = None
+
+        def _cancel_hard_deadline() -> None:
+            nonlocal _hard_timer
+            if _hard_timer is not None:
+                _hard_timer.cancel()
+                _hard_timer = None
+
+        def _arm_hard_deadline(seconds: float, reason: str) -> None:
+            nonlocal _hard_timer, _hard_deadline_reason
+            _cancel_hard_deadline()
+
+            def _fire() -> None:
+                nonlocal _hard_deadline_reason
+                _hard_deadline_reason = reason
+                _force_close_provider_stream(stream_obj, loop=stream_loop)
+
+            timer = threading.Timer(max(0.2, float(seconds)), _fire)
+            timer.daemon = True
+            timer.start()
+            _hard_timer = timer
+
         tui = get_tui()
-        if tui and hasattr(tui, "write_progress"):
+        user_turn = bool(getattr(self, "_user_turn_active", False))
+        if user_turn and tui and hasattr(tui, "write_progress"):
             tui.write_progress("正在连接模型…")
         _logger.info(
             "llm_stream_policy seq=%d idle_timeout=%.1fs",
@@ -3340,12 +4111,109 @@ class AgentV2:
             # B8/luna R1-4/R2-1: TTFT 起点 = 请求实际发出前（不含 client 初始化/
             # 缓存控制/消息转换）。局部计时 + 局部已记录标志，每请求独立，
             # 不依赖全局 is None（避免多请求/并发污染）。
-            nonlocal _ttft_start
+            nonlocal _ttft_start, client, stream_obj
             _ttft_start = time.monotonic()
-            resp = client.create(**payload)
+            # Rebuild provider-dependent kwargs for every attempt.  A
+            # Responses-first failure must not carry its (possibly stripped)
+            # fields into the Chat fallback, and vice versa.
+            attempt_payload = dict(payload)
+            attempt_extra = {}
+            original_extra = payload.get("extra_body") or {}
+            if isinstance(original_extra, dict) and "prompt_cache_key" in original_extra:
+                attempt_extra["prompt_cache_key"] = original_extra["prompt_cache_key"]
+            if provider is not None and caps is not None:
+                attempt_cfg = dict(self.model_config)
+                attempt_cfg["api_transport"] = active_transport
+                attempt_cfg.setdefault("resolved_max_tokens", payload["max_tokens"])
+                attempt_cfg.setdefault("api_key", "raw-stream")
+                attempt_cfg.setdefault("effort", str(self.model_config.get("effort") or "balanced"))
+                attempt_caps = caps
+                caps_resolver = getattr(provider, "capabilities", None)
+                if callable(caps_resolver):
+                    attempt_caps = caps_resolver(attempt_cfg)
+                attempt_kwargs = provider.llm_kwargs(attempt_cfg, attempt_caps)
+                if isinstance(attempt_kwargs.get("extra_body"), dict):
+                    attempt_extra.update(attempt_kwargs["extra_body"])
+                attempt_payload.pop("reasoning_effort", None)
+                if attempt_kwargs.get("reasoning_effort") is not None:
+                    attempt_payload["reasoning_effort"] = attempt_kwargs["reasoning_effort"]
+                if "temperature" in attempt_kwargs:
+                    attempt_payload["temperature"] = attempt_kwargs["temperature"]
+                else:
+                    attempt_payload.pop("temperature", None)
+                # A greeting/no-tool turn can explicitly disable thinking for
+                # this request.  Rebuilding provider kwargs per fallback
+                # attempt must not resurrect the normal effort value (or its
+                # ``None`` placeholder) that the first payload removed.
+                if getattr(self, "_thinking_disabled_this_turn", False):
+                    attempt_payload.pop("reasoning_effort", None)
+                    attempt_extra["thinking"] = {"type": "disabled"}
+            if attempt_extra:
+                attempt_payload["extra_body"] = attempt_extra
+            else:
+                attempt_payload.pop("extra_body", None)
+            if active_transport == RESPONSES_TRANSPORT:
+                # ChatOpenAI builds the Responses payload. langchain-openai
+                # 1.3.3 drops response.reasoning_text.delta and reasoning
+                # output_item.done; patch those events back in before astream.
+                raw_llm = vars(self._llm).get("_llm", self._llm)
+                invoke_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
+                # Never pass a ``None`` effort: langchain-openai serializes the
+                # mere presence of this key as ``reasoning: {effort: null}``.
+                effort = attempt_payload.get("reasoning_effort")
+                if effort is not None:
+                    invoke_kwargs["reasoning_effort"] = effort
+                if "temperature" in attempt_payload:
+                    invoke_kwargs["temperature"] = attempt_payload["temperature"]
+                if attempt_payload.get("extra_body"):
+                    invoke_kwargs["extra_body"] = attempt_payload["extra_body"]
+                if attempt_payload.get("tools"):
+                    invoke_kwargs["tools"] = attempt_payload["tools"]
+                install_langchain_responses_reasoning_patch()
+                stream_obj = raw_llm
+                response_stream = astream_with_native_reasoning_events(
+                    raw_llm.astream(messages, **invoke_kwargs)
+                )
+                resp = self._responses_stream_as_chat_chunks(response_stream)
+            elif active_transport == ANTHROPIC_MESSAGES_TRANSPORT:
+                raw_llm = vars(self._llm).get("_llm", self._llm)
+                if attempt_payload.get("tools"):
+                    raw_llm = raw_llm.bind_tools(
+                        self._to_anthropic_tools(attempt_payload["tools"])
+                    )
+                astream_kwargs = {"max_tokens": attempt_payload["max_tokens"]}
+                if getattr(self, "_thinking_disabled_this_turn", False):
+                    astream_kwargs["thinking"] = {"type": "disabled"}
+                stream_obj = raw_llm
+                response_stream = raw_llm.astream(
+                    self._to_anthropic_messages(messages),
+                    **astream_kwargs,
+                )
+                resp = self._anthropic_stream_as_chat_chunks(response_stream)
+            elif active_transport == CHAT_TRANSPORT:
+                if client is None:
+                    client = self._openai_client()
+                attempt_payload.pop("timeout", None)
+                stream_obj = client
+                create = getattr(client, "create", None)
+                if not callable(create):
+                    completions = getattr(
+                        getattr(client, "chat", None), "completions", None
+                    )
+                    create = getattr(completions, "create", None)
+                if not callable(create):
+                    raise RuntimeError(
+                        "OpenAI client has no chat.completions.create"
+                    )
+                resp = create(**attempt_payload, timeout=http_timeout)
+            else:
+                raise RuntimeError(
+                    f"LLM transport execution is not configured: {active_transport}"
+                )
             # Some openai SDK versions declare create() as `async def`
             # (resolving to AsyncStream); others return the stream directly.
             stream = resp if hasattr(resp, "__aiter__") else await resp
+            stream_obj = stream
             _logger.info(
                 "llm_stream_open seq=%d elapsed_ms=%.0f",
                 request_seq,
@@ -3355,134 +4223,242 @@ class AgentV2:
 
         async def _connect_provider_stream():
             nonlocal stream_obj
-            if _circuit_breaker.circuit_breaker_enabled():
-                agen = await asyncio.wait_for(
-                    _circuit_breaker.get_default_breaker().call(_open_provider_stream),
-                    timeout=first_chunk_timeout,
-                )
-            else:
-                agen = await asyncio.wait_for(
-                    _open_provider_stream(), timeout=first_chunk_timeout
-                )
+            _arm_hard_deadline(connect_timeout, "connect")
+            try:
+                if (
+                    not background_llm
+                    and _circuit_breaker.circuit_breaker_enabled()
+                    # 外层 astream/ainvoke 已经过熔断计数时，内层不再计。
+                    # 废弃代码（2026-09-23）：内层每次 transport 重试都过
+                    # breaker.call，一轮用户回合的内部重试即可打满 fail_max，
+                    # 熔断被误开（"0.6 秒内连续失败 5 次"的根因之一）。
+                    and not _OUTER_BREAKER_HELD.get()
+                ):
+                    agen = await asyncio.wait_for(
+                        _circuit_breaker.get_default_breaker().call(_open_provider_stream),
+                        timeout=connect_timeout,
+                    )
+                else:
+                    agen = await asyncio.wait_for(
+                        _open_provider_stream(), timeout=connect_timeout
+                    )
+            except asyncio.TimeoutError as exc:
+                raise StreamConnectTimeoutError(
+                    "provider connect handshake exceeded the connect deadline"
+                ) from exc
             stream_obj = agen
+            if user_turn and tui and hasattr(tui, "write_progress"):
+                tui.write_progress(FIRST_TOKEN_WAIT)
             return agen.__aiter__()
 
         try:
-            ait = await _connect_provider_stream()
-            useful_deadline = time.monotonic() + first_chunk_timeout
-            got_useful = False
-            first_token_retries_left = 1
+            transport_failures: list[LLMTransport] = []
+            retry_max = self._stream_transient_retry_max()
+            transient_retries_left = retry_max
             while True:
+                got_useful = False
                 try:
-                    if got_useful:
-                        # A provider may send a partial assistant/tool-call
-                        # response and then stop yielding without closing the
-                        # SSE stream. Bound every subsequent gap as well; the
-                        # first-chunk timeout alone cannot protect the user
-                        # from this half-open response. Tool-argument
-                        # streaming (large write payloads) is allowed a
-                        # longer gap than ordinary tokens.
-                        chunk = await asyncio.wait_for(
-                            ait.__anext__(), timeout=pending_idle
+                    ait = await _connect_provider_stream()
+                    pending_idle = first_chunk_timeout
+                    _arm_hard_deadline(pending_idle, "first_token")
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(
+                                ait.__anext__(), timeout=pending_idle
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError as exc:
+                            if got_useful:
+                                raise StreamIdleTimeoutError(
+                                    "provider stopped producing stream events before the idle deadline"
+                                ) from exc
+                            raise FirstTokenTimeoutError(
+                                "provider produced no first response event before the deadline"
+                            ) from exc
+                        _stream_chunks += 1
+                        # First useful packet = reasoning, visible text, or tool_calls.
+                        # Keepalives reset idle but do not count as useful.
+                        if self._stream_chunk_is_useful(chunk):
+                            if _ttft_start is not None and not _ttft_recorded:
+                                _ttft_recorded = True
+                                token_stats.record_ttft(
+                                    (time.monotonic() - _ttft_start) * 1000
+                                )
+                            if not got_useful and user_turn and tui and hasattr(tui, "write_progress"):
+                                tui.write_progress(MODEL_STREAMING)
+                            got_useful = True
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices:
+                            delta = getattr(choices[0], "delta", None)
+                            content = getattr(delta, "content", "") or ""
+                            _stream_content_chars += len(content)
+                            reasoning_text = self._provider_reasoning(delta) or ""
+                            _stream_reasoning_chars += len(reasoning_text)
+                            before_args = _stream_tool_argument_chars
+                            for tc_delta in getattr(delta, "tool_calls", None) or []:
+                                fn = getattr(tc_delta, "function", None)
+                                if fn is not None:
+                                    _stream_tool_argument_chars += len(
+                                        str(getattr(fn, "arguments", "") or "")
+                                    )
+                            if _stream_tool_argument_chars > before_args:
+                                pending_idle = tool_arg_idle
+                            elif self._stream_chunk_is_useful(chunk):
+                                pending_idle = stream_idle_timeout
+                        if self._stream_chunk_is_alive(chunk):
+                            _arm_hard_deadline(
+                                pending_idle,
+                                "idle" if got_useful else "first_token",
+                            )
+                        if _ttft_start is not None and not _first_stream_event_logged:
+                            _logger.info(
+                                "llm_first_stream_event seq=%d elapsed_ms=%.0f has_choices=%s",
+                                request_seq,
+                                (time.monotonic() - _ttft_start) * 1000,
+                                bool(getattr(chunk, "choices", None)),
+                            )
+                            _first_stream_event_logged = True
+                        last_chunk = chunk
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices:
+                            delta = getattr(choices[0], "delta", None)
+                            partial_output_tokens += _estimate_tokens(
+                                (getattr(delta, "content", "") or "")
+                                + (self._provider_reasoning(delta) or ""),
+                                tokenizer_spec,
+                            )
+                        yield chunk
+                    if last_chunk is not None:
+                        reported = _usage_counts(last_chunk, messages)
+                        usage = (
+                            reported[0] or input_tokens,
+                            reported[1] or partial_output_tokens,
                         )
                     else:
-                        remaining = useful_deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise asyncio.TimeoutError(
-                                "timed out waiting for first useful stream chunk"
-                            )
-                        chunk = await asyncio.wait_for(
-                            ait.__anext__(), timeout=remaining
-                        )
-                except StopAsyncIteration:
+                        usage = (input_tokens, 0)
+                    _stream_completed = True
+                    _resolve_llm_transport_recovery()
                     break
-                except asyncio.TimeoutError as exc:
-                    if got_useful:
-                        raise StreamIdleTimeoutError(
-                            "provider stopped producing stream events before the idle deadline"
-                        ) from exc
-                    if first_token_retries_left > 0:
-                        first_token_retries_left -= 1
+                except Exception as exc:
+                    next_index = transport_index + 1
+                    next_transport = (
+                        transport_candidates[next_index]
+                        if next_index < len(transport_candidates)
+                        else None
+                    )
+                    fallback_check = getattr(
+                        provider, "should_fallback_transport", None
+                    )
+                    unsupported = bool(
+                        not got_useful
+                        and callable(fallback_check)
+                        and fallback_check(
+                            exc,
+                            from_transport=active_transport,
+                            to_transport=next_transport or active_transport,
+                        )
+                    )
+                    if unsupported and next_transport is not None:
+                        transport_failures.append(active_transport)
                         closer = getattr(stream_obj, "aclose", None)
                         if callable(closer):
                             try:
                                 await closer()
                             except Exception:
                                 _logger.debug(
-                                    "provider stream aclose failed before first-token retry",
+                                    "provider stream aclose failed before transport fallback",
                                     exc_info=True,
                                 )
                         stream_obj = None
+                        previous_transport = active_transport
+                        transport_index = next_index
+                        active_transport = next_transport
+                        last_chunk = None
+                        partial_output_tokens = 0
+                        pending_idle = stream_idle_timeout
+                        _first_stream_event_logged = False
                         _logger.warning(
-                            "llm_stream first-token timeout; retrying once seq=%d",
+                            "llm_transport_fallback seq=%d provider=%s from=%s to=%s",
                             request_seq,
+                            getattr(provider, "name", "unknown"),
+                            previous_transport,
+                            active_transport,
+                        )
+                        continue
+                    if unsupported and transport_failures:
+                        attempted = ", ".join(
+                            [*transport_failures, active_transport]
+                        )
+                        raise RuntimeError(
+                            "No supported LLM API transport for this provider/model; "
+                            f"attempted: {attempted}"
+                        ) from exc
+                    if (
+                        not got_useful
+                        and transient_retries_left > 0
+                        and _is_transport_retryable(exc)
+                    ):
+                        transient_retries_left -= 1
+                        closer = getattr(stream_obj, "aclose", None)
+                        if callable(closer):
+                            try:
+                                await closer()
+                            except Exception:
+                                _logger.debug(
+                                    "provider stream aclose failed before transient retry",
+                                    exc_info=True,
+                                )
+                        stream_obj = None
+                        attempt_no = retry_max - transient_retries_left
+                        _notify_llm_transport_retry(
+                            attempt_no,
+                            retry_max + 1,
+                            type(exc).__name__,
+                        )
+                        _logger.warning(
+                            "llm_stream transient error; retrying seq=%d attempt=%d/%d %s",
+                            request_seq,
+                            attempt_no,
+                            retry_max + 1,
+                            type(exc).__name__,
                         )
                         await asyncio.sleep(0.5)
-                        ait = await _connect_provider_stream()
-                        useful_deadline = time.monotonic() + first_chunk_timeout
                         continue
+                    if not _is_transport_retryable(exc):
+                        _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
-                _stream_chunks += 1
-                # First useful packet = reasoning, visible text, or tool_calls.
-                # Empty keepalives must not start the idle-timeout window.
-                if self._stream_chunk_is_useful(chunk):
-                    if _ttft_start is not None and not _ttft_recorded:
-                        _ttft_recorded = True
-                        token_stats.record_ttft(
-                            (time.monotonic() - _ttft_start) * 1000
-                        )
-                    got_useful = True
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = getattr(choices[0], "delta", None)
-                    content = getattr(delta, "content", "") or ""
-                    _stream_content_chars += len(content)
-                    reasoning_text = self._provider_reasoning(delta) or ""
-                    _stream_reasoning_chars += len(reasoning_text)
-                    before_args = _stream_tool_argument_chars
-                    for tc_delta in getattr(delta, "tool_calls", None) or []:
-                        fn = getattr(tc_delta, "function", None)
-                        if fn is not None:
-                            _stream_tool_argument_chars += len(
-                                str(getattr(fn, "arguments", "") or "")
-                            )
-                    if _stream_tool_argument_chars > before_args:
-                        pending_idle = tool_arg_idle
-                    elif self._stream_chunk_is_useful(chunk):
-                        pending_idle = stream_idle_timeout
-                if _ttft_start is not None and not _first_stream_event_logged:
-                    _logger.info(
-                        "llm_first_stream_event seq=%d elapsed_ms=%.0f has_choices=%s",
-                        request_seq,
-                        (time.monotonic() - _ttft_start) * 1000,
-                        bool(getattr(chunk, "choices", None)),
-                    )
-                    _first_stream_event_logged = True
-                last_chunk = chunk
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = getattr(choices[0], "delta", None)
-                    partial_output_tokens += _estimate_tokens(
-                        (getattr(delta, "content", "") or "")
-                        + (self._provider_reasoning(delta) or "")
-                    )
-                yield chunk
-            if last_chunk is not None:
-                reported = _usage_counts(last_chunk, messages)
-                usage = (
-                    reported[0] or input_tokens,
-                    reported[1] or partial_output_tokens,
-                )
-            else:
-                usage = (input_tokens, 0)
-            _stream_completed = True
         except StreamIdleTimeoutError:
+            raise
+        except StreamConnectTimeoutError:
+            raise
+        except FirstTokenTimeoutError:
             raise
         except asyncio.TimeoutError as exc:
             raise FirstTokenTimeoutError(
                 "provider produced no first response event before the deadline"
             ) from exc
         except Exception as exc:  # noqa: BLE001 - preserve provider exception semantics
+            # 熔断拒绝不是握手超时。禁止改写成 provider connect handshake。
+            # 废弃代码（2026-09-22）：冷却中的 CircuitBreakerError 被改写成握手超时。
+            try:
+                import pybreaker
+                if isinstance(exc, pybreaker.CircuitBreakerError):
+                    raise
+            except ImportError:
+                pass
+            if _hard_deadline_reason == "connect":
+                raise StreamConnectTimeoutError(
+                    "provider connect handshake exceeded the connect deadline"
+                ) from exc
+            if _hard_deadline_reason == "first_token":
+                raise FirstTokenTimeoutError(
+                    "provider produced no first response event before the deadline"
+                ) from exc
+            if _hard_deadline_reason == "idle":
+                raise StreamIdleTimeoutError(
+                    "provider stopped producing stream events before the idle deadline"
+                ) from exc
             # Keep the provider's structured error available in diagnostics.
             # Without this, a final 4xx is reduced to a generic failed tool
             # result and the root cause cannot be distinguished from a slow
@@ -3498,21 +4474,25 @@ class AgentV2:
             )
             raise
         finally:
+            _cancel_hard_deadline()
             closer = getattr(stream_obj, "aclose", None)
             if callable(closer):
                 try:
                     await closer()
                 except Exception:
                     _logger.debug("provider stream aclose failed", exc_info=True)
+            _elapsed_ms = (
+                ((time.monotonic() - _ttft_start) * 1000)
+                if _ttft_start is not None
+                else 0.0
+            )
             _logger.info(
                 "llm_stream_end seq=%d completed=%s elapsed_ms=%.0f chunks=%d "
                 "content_chars=%d reasoning_chars=%d tool_argument_chars=%d "
                 "usage_input=%s usage_output=%s",
                 request_seq,
                 _stream_completed,
-                ((time.monotonic() - _ttft_start) * 1000)
-                if _ttft_start is not None
-                else 0.0,
+                _elapsed_ms,
                 _stream_chunks,
                 _stream_content_chars,
                 _stream_reasoning_chars,
@@ -3565,6 +4545,14 @@ class AgentV2:
                 .get("run_official_agent_enabled", False)
             ),
         )
+        # 废弃代码（2026-09-22）：sync_agent_computer_use 已写好，AgentV2 从未调用，
+        # computer_use 打开后 browser_open 也不会进 schema。
+        try:
+            from RxyCode.RxyCode1_1_0.core.cu.bind import sync_agent_computer_use
+
+            sync_agent_computer_use(self)
+        except Exception:
+            pass
 
     @staticmethod
     def _fingerprint_mcp_config(config: dict) -> str:
@@ -3898,6 +4886,7 @@ class AgentV2:
 
         - plan → balanced
         - build + 简单查询 → fast（快路径）
+        - 有厂商 effort_presets 的模型（如 DeepSeek V4）工具型 build 也走 fast
         - 其余 → balanced（现状）
         - deep 只由显式配置（effort=deep）触发，本方法不自动返回 deep（贵且慢）。
         """
@@ -3988,6 +4977,14 @@ class AgentV2:
         """
         if getattr(self, "_llm", None) is None:
             return
+        if getattr(self, "_user_turn_active", False):
+            return
+        # 熔断打开时不要后台预热。预热会抢走半开后的那一次真实连接。
+        # 废弃代码（2026-09-22）：这里再 import pybreaker 读 current_state。
+        # if _get_breaker().breaker.current_state == _pybreaker.STATE_OPEN:
+        #     return
+        if _circuit_breaker.breaker_is_open():
+            return
         now = time.monotonic()
         last = getattr(self, "_prewarm_last_attempt_at", None)
         if last is not None and now - last < 60.0:
@@ -4046,6 +5043,7 @@ class AgentV2:
                 keepalive_messages(self),
                 tools=core_tools_for(self, "agent"),
                 max_tokens=1,
+                through_breaker=False,
             ):
                 break  # 只消费首个 chunk
             _logger.info("B5 keep-alive sent (background)")
@@ -4175,7 +5173,8 @@ class AgentV2:
         """F14/PHASE-FIX: keep S1 + prior turns; only the new user suffix is unique."""
         new_human = HumanMessage(content=user_msg)
         if self._agent_prefix_is_live(system):
-            return list(self._agent_prefix_messages) + [new_human]
+            prior = list(self._agent_prefix_messages)
+            return prior + [new_human]
         return [SystemMessage(content=system), new_human]
 
     def _remember_agent_prefix(self, messages, answer: str) -> None:
@@ -4220,6 +5219,13 @@ class AgentV2:
         # 用户显式配置的 effort（如 deep）优先，不被 fast path 覆盖。
         if mode is None:
             mode = "build"
+        approved_implement = mode == "build" and _is_approved_plan_implement(user_input)
+        prefix_was_live = False
+        if approved_implement:
+            prefix_was_live = bool(getattr(self, "_agent_prefix_messages", None))
+            user_input, role_instruction, prep_meta = self._prepare_approved_implement(
+                user_input
+            )
         if getattr(self, "model_config", None) is None:
             self.model_config = {}
         self.model_config = dict(self.model_config)
@@ -4227,13 +5233,12 @@ class AgentV2:
             self.model_config["effort"] = self._effort_for(mode, user_input)
         system = get_system_prompt(variant=self._prompt_variant())
         prefix_live = self._agent_prefix_is_live(system)
+        # 废弃代码（2026-09-21）：曾在 effort=fast 时也注入 FAST_LOCAL_BUILD_INSTRUCTION。
+        # 带 fast 档的厂商会把「必须写 tests/test_lru_cache.py」灌进打开文件任务。
         if (
             not prefix_live
             and mode == "build"
-            and (
-                self.model_config.get("effort") == "fast"
-                or self._has_creation_product_intent(user_input)
-            )
+            and self._has_creation_product_intent(user_input)
         ):
             role_instruction = (
                 f"{role_instruction.strip()}\n\n{FAST_LOCAL_BUILD_INSTRUCTION}"
@@ -4286,11 +5291,15 @@ class AgentV2:
         # deliberate reasoning; explicit ``balanced``/``deep`` also preserve
         # the existing thinking contract. ``_raw_stream`` remains the single
         # place that applies the provider-specific wire override.
-        self._thinking_disabled_this_turn = bool(
-            mode == "build"
-            and self.model_config.get("effort") == "fast"
-            and not research_policy.requires_web
-        )
+        implement_after_plan = approved_implement or _is_approved_plan_implement(user_input)
+        # Approved-plan implement must not inherit Plan-mode thinking. A live
+        # prefix + thinking_default_on lets DeepSeek spend the whole prompt
+        # timeout in CoT with zero tool_calls (user-confirmed 2026-09-19).
+        # 废弃代码（2026-09-21）：曾在 effort=fast 且非 web 的整轮 build 上关 thought。
+        # 带 fast 档的厂商打开缺文件时首位 Thought 消失。关 thought 只保留批准计划后实施。
+        self._thinking_disabled_this_turn = False
+        if mode == "build" and implement_after_plan:
+            self._thinking_disabled_this_turn = True
 
         memory_fingerprint = None
         if memory_ctx:
@@ -4301,7 +5310,7 @@ class AgentV2:
             separators=(",", ":"),
         )
         cache_namespace = self._application_cache_namespace()
-        if research_policy.cache_read_allowed:
+        if research_policy.cache_read_allowed and not implement_after_plan:
             cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
             precise_hit = bool(cached and cached.get("response"))
             token_stats.record_application_cache("precise", hit=precise_hit)
@@ -4345,7 +5354,13 @@ class AgentV2:
             messages.append(SystemMessage(content=research_prefetch_failure_note(detail)))
             return None
 
-        if research_policy.requires_web:
+        research_prefetch_done = False
+
+        async def _run_research_prefetch() -> str | None:
+            nonlocal research_prefetch_done
+            if research_prefetch_done or not research_policy.requires_web:
+                return None
+            research_prefetch_done = True
             search_query = extract_research_query(user_input)
             search_call = {
                 "name": "websearch",
@@ -4469,6 +5484,7 @@ class AgentV2:
                             ),
                             tool_call_id=fetch_call["id"],
                         ))
+            return None
 
         # FX6: the tools schema is the frozen FULL core set — never cropped,
         # not even by explicit allowlists. Per-turn schema mutation shatters
@@ -4530,29 +5546,87 @@ class AgentV2:
             malformed_dsml_retried = 0
             write_nudge_count = 0
             file_write_succeeded = False
+            consecutive_error_count = 0
+            error_limit_hit = False
+            last_round_had_success = False
 
-            for round_num in range(max_rounds):
+            # 废弃代码（2026-09-21）：for round_num in range(max_rounds):
+            # 触顶后走 for-else synthesis 并停止。单次 user turn 的
+            # max_tool_rounds 现在只把空转降级为 [error] 回喂 LLM。
+            round_num = -1
+            while True:
+                round_num += 1
                 round_received_real_usage = False
                 stuck_triggered = False
+                final_answer_called = False
+                # queue「立即发送」（turn/steer）：用户在运行中插入的消息。
+                # 在本回合的下一轮 LLM 调用前注入对话历史——同一回合内响应，
+                # 不再等整回合结束后逐条另开新回合（旧行为：N 条队列消息
+                # 产生 N 个「最终结果」，且延迟=整个回合时长）。
+                if round_num > 0:
+                    _applied_steers = apply_mid_turn_steers(
+                        messages, getattr(self, "_drain_steers", None)
+                    )
+                    if _applied_steers:
+                        _probe(  # PROBE-20260923: steer 同回合注入（queue 延迟/多最终结果定位）
+                            "agent.steer.injected",
+                            round=round_num,
+                            count=len(_applied_steers),
+                        )
+                    for _steer_text in _applied_steers:
+                        _logger.info(
+                            "steer injected mid-turn round=%d len=%d",
+                            round_num,
+                            len(_steer_text),
+                        )
+                        if tui and hasattr(tui, "write_progress"):
+                            tui.write_progress(f"steer: {_steer_text}")
+                if consecutive_error_count >= ERROR_LIMIT:
+                    error_limit_hit = True
+                    stuck_triggered = True
+                    break
+                if round_num >= max_rounds and not last_round_had_success:
+                    consecutive_error_count = bump_consecutive_errors(
+                        consecutive_error_count, failed=True
+                    )
+                    messages.append(HumanMessage(content=SPIN_ERROR_MESSAGE))
+                    if consecutive_error_count >= ERROR_LIMIT:
+                        error_limit_hit = True
+                        stuck_triggered = True
+                        break
+                last_round_had_success = False
                 if tui and hasattr(tui, "write_progress"):
                     tui.write_progress(f"Thinking... (round {round_num + 1})")
 
                 # Keep the in-loop context within budget (Codex/Claude-style
                 # proactive compression) so very long tool-driven turns don't
                 # blow the model context window.
-                await self._maybe_compress_context(messages)
+                # First round: skip compression so tiktoken/summaries cannot
+                # occupy the thinking-TTFT clock.
+                if round_num > 0:
+                    if (
+                        mode == "build"
+                        and not self._thinking_disabled_this_turn
+                        and not research_policy.requires_web
+                    ):
+                        self._thinking_disabled_this_turn = True
+                    await self._maybe_compress_context(messages)
 
                 # Use streaming for final round, non-streaming for tool-call rounds
                 # ALWAYS stream for real-time token display
                 answer_parts = []
                 _reasoning_buffer = []
+                # Native Anthropic thinking blocks (including signatures) must
+                # be replayed verbatim on the next tool round.  The public
+                # stream normalizer exposes these blocks without making the
+                # generic OpenAI-shaped chunk contract depend on them.
+                _native_anthropic_blocks: list[dict] = []
+                _responses_reasoning_items: list[dict] = []
+
                 tool_calls_acc: dict = {}
                 tool_call_delta_chunks = 0
                 tool_call_delta_chars = 0
                 tool_call_liveness_at = 0.0
-
-                # B7: LLM 调用前捕获 Git 快照（坏结局可回滚到快照点）。
-                await self._capture_git_snapshot_async()
 
                 if fast_build_round_max_tokens is None:
                     stream = self._raw_stream(messages, core_tools)
@@ -4587,6 +5661,30 @@ class AgentV2:
                                 pass
                         continue
                     delta = chunk.choices[0].delta
+
+                    accumulate_reasoning_items(
+                        _responses_reasoning_items,
+                        getattr(chunk, "_rxy_reasoning_items", None) or [],
+                    )
+                    for native_block in (
+                        getattr(chunk, "_rxy_anthropic_native_blocks", None) or []
+                    ):
+                        if not isinstance(native_block, dict):
+                            continue
+                        block = dict(native_block)
+                        if (
+                            block.get("type") == "thinking"
+                            and _native_anthropic_blocks
+                            and _native_anthropic_blocks[-1].get("type") == "thinking"
+                        ):
+                            previous = _native_anthropic_blocks[-1]
+                            previous["thinking"] = str(previous.get("thinking") or "") + str(
+                                block.get("thinking") or ""
+                            )
+                            if block.get("signature"):
+                                previous["signature"] = block["signature"]
+                        else:
+                            _native_anthropic_blocks.append(block)
 
                     # Capture reasoning content (thinking) - stream live to the UI
                     reasoning = self._provider_reasoning(delta)
@@ -4711,6 +5809,26 @@ class AgentV2:
                     # tool_calls → 兜底解析，避免文本直接进答案。
                     tool_calls = _parse_dsml_tool_calls(answer) or []
 
+                incomplete_dsml = (
+                    not tool_calls
+                    and _contains_dsml_tool_markup(answer)
+                    and malformed_dsml_retried < 2
+                )
+                react_decision = decide_react_turn(
+                    tool_calls=tool_calls,
+                    answer=answer,
+                    incomplete_dsml=incomplete_dsml,
+                    error_count=consecutive_error_count,
+                    file_write_succeeded=file_write_succeeded,
+                    user_input=user_input,
+                )
+                if react_decision.drop_tools:
+                    tool_calls = []
+                if react_decision.exit is not None:
+                    break
+                if has_final_answer_call(tool_calls):
+                    tool_calls = drop_tools_after_final_answer(tool_calls)
+
                 if not tool_calls:
                     if (
                         _contains_dsml_tool_markup(answer)
@@ -4803,20 +5921,38 @@ class AgentV2:
                         messages.append(
                             HumanMessage(
                                 content=(
-                                    "上一轮没有调用 write/edit，不能把文件名表格当作完成。"
-                                    "请立即调用 write 写入用户要求的源码和点名测试。"
-                                    "题目点名的路径必须原样落地（lru_cache.py 不是 backend/app.py；"
-                                    "tests/test_calc.py / tests/test_login.py 必须在 tests/ 下）。"
-                                    "用标准库实现；不要 pip show/install，不要 Flask/FastAPI 除非用户点名。"
-                                    "不要发明 Java/Spring/Maven/pom.xml 或 Flyway，除非用户点名。"
-                                    "如果用户只要解释或聊天、明确不要改文件，则不要写文件，直接给出答案。"
-                                    "不要提前给出空的 Final Answer。"
+                                    "上一轮没有调用 write/edit，用户点名要落地的文件还没写。"
+                                    "请只写入用户点名的路径。用户没提到的文件不要写。"
+                                    "如果任务只是执行命令、打开或删除文件，不要调用 write，直接结束。"
                                 )
                             )
                         )
+                        # 废弃代码（2026-09-22）：nudge 文案写死 lru_cache.py /
+                        # tests/test_calc.py / tests/test_login.py。echo、删文件被推进后
+                        # 会去写这些无关文件。禁止再引用。
+                        # "请立即调用 write 写入用户要求的源码和点名测试。"
+                        # "题目点名的路径必须原样落地（lru_cache.py 不是 backend/app.py；"
+                        # "tests/test_calc.py / tests/test_login.py 必须在 tests/ 下）。"
                         continue
-                    # No tool calls - tokens already streamed in real-time, done
-                    break
+                    # Mandatory web research used to prefetch before the first
+                    # thinking token. Stream Thought first; inject search/fetch
+                    # only if this turn skipped network tools.
+                    if research_policy.requires_web and not research_prefetch_done:
+                        abort = await _run_research_prefetch()
+                        if abort is not None:
+                            return abort
+                        continue
+                    # 本轮没有工具调用不是退出。空转/无进展降级为 [error] 回喂 LLM。
+                    consecutive_error_count = bump_consecutive_errors(
+                        consecutive_error_count, failed=True
+                    )
+                    messages.append(AIMessage(content=answer or ""))
+                    messages.append(HumanMessage(content=SPIN_ERROR_MESSAGE))
+                    if consecutive_error_count >= ERROR_LIMIT:
+                        error_limit_hit = True
+                        stuck_triggered = True
+                        break
+                    continue
 
                 tools_invoked = True
                 # Execute tool calls
@@ -4827,10 +5963,38 @@ class AgentV2:
                 # back to the API."). Carry it in additional_kwargs so
                 # _to_openai_messages can preserve it on the wire.
                 ai_kwargs = {}
-                if _reasoning_buffer:
+                if _reasoning_buffer and not _native_anthropic_blocks:
                     ai_kwargs["reasoning_content"] = "".join(_reasoning_buffer)
+                assistant_content = answer
+                if _native_anthropic_blocks and getattr(getattr(self, "_provider", None), "name", "") == "anthropic":
+                    assistant_content = [*(_native_anthropic_blocks)]
+                    if answer:
+                        assistant_content.append({"type": "text", "text": answer})
+                elif _responses_reasoning_items or (
+                    _reasoning_buffer
+                    and getattr(self._provider, "uses_responses_api", lambda _c: False)(
+                        self.model_config or {}
+                    )
+                ):
+                    items = list(_responses_reasoning_items)
+                    if not items and _reasoning_buffer:
+                        items = [
+                            {
+                                "type": "reasoning",
+                                "content": [
+                                    {
+                                        "type": "reasoning_text",
+                                        "text": "".join(_reasoning_buffer),
+                                    }
+                                ],
+                            }
+                        ]
+                    ai_kwargs["responses_reasoning_items"] = items
+                    assistant_content = assistant_content_for_responses_replay(
+                        items, answer
+                    )
                 messages.append(AIMessage(
-                    content=answer,
+                    content=assistant_content,
                     tool_calls=tool_calls,
                     additional_kwargs=ai_kwargs,
                 ))
@@ -4871,6 +6035,9 @@ class AgentV2:
                             )
                         )
                         self._tool_error_occurred = True
+                        consecutive_error_count = bump_consecutive_errors(
+                            consecutive_error_count, failed=True
+                        )
                         if tui and hasattr(tui, "write_progress"):
                             tui.write_progress(
                                 "Tool arguments were incomplete; asking the model to split the operation."
@@ -4892,6 +6059,11 @@ class AgentV2:
                     tool_id = item["id"]
                     result = item["result"]
 
+                    if research_policy.requires_web and tool_name.lower() in {
+                        "websearch",
+                        "webfetch",
+                    }:
+                        research_prefetch_done = True
                     if (
                         research_policy.requires_web
                         and tool_name.lower() == "webfetch"
@@ -4905,6 +6077,10 @@ class AgentV2:
                     is_error = _tool_output_is_error(str(result))
                     if not is_error and str(tool_name).lower() in {"write", "edit"}:
                         file_write_succeeded = True
+                    if tui is not None:
+                        self._emit_tool_outcome_to_user(
+                            tui, str(tool_name), str(result), is_error
+                        )
                     messages.append(
                         ToolMessage(
                             content=self._tool_result_message_content(tool_name, str(result)),
@@ -4912,10 +6088,17 @@ class AgentV2:
                         )
                     )
 
-                    # B7: 错误回喂 + 死循环检测（错误消息追加在断点之后）。
+                    # B7: 错误回喂。退出只认连续错误 >= ERROR_LIMIT（5），
+                    # 一次成功清零；不是第一次 [error]，也不是会话累计。
+                    consecutive_error_count = bump_consecutive_errors(
+                        consecutive_error_count, failed=is_error
+                    )
                     if is_error:
-                        # luna R8-2: 记录本轮发生工具错误（用于缓存防护）。
                         self._tool_error_occurred = True
+                    else:
+                        last_round_had_success = True
+                    if is_final_answer_tool(str(tool_name)):
+                        final_answer_called = True
                     stuck = self._stuck_detector.record(
                         tool_name,
                         tool_args,
@@ -4931,117 +6114,35 @@ class AgentV2:
                             )
                         )
                         _logger.warning(
-                            "B7 stuck detection tripped: %s",
+                            "B7 stuck hint (not an exit until errors >= %s): %s",
+                            ERROR_LIMIT,
                             self._stuck_detector.stuck_reason,
                         )
-                        # B7: 坏结局回滚到快照点（luna R5：快照的 restore 调用链）。
-                        snapshot = getattr(self, "_git_snapshot", None)
-                        if snapshot is not None and snapshot.captured:
-                            snapshot.restore()
-                        stuck_triggered = True
-                        break
-                if stuck_triggered:
-                    # luna R1-2: break 只跳内层 for tc；需真正终止外层工具轮，
-                    # 避免下一轮继续发起 LLM 调用。
+                if final_answer_called:
+                    # 2026-09-23：final_answer 的 result 就是模型写的最终答案，
+                    # 优先于流式文本（此前只在 answer 为空时才用，导致模型写了
+                    # 元评论「给出最终结果。」后，真正的答案被丢弃、只在 Thought
+                    # 里可见）。
+                    for item in executed:
+                        if is_final_answer_tool(str(item.get("name") or "")):
+                            fa_result = str(item.get("result") or "").strip()
+                            if fa_result:
+                                answer = fa_result
+                            break
                     break
-            else:
-                # Exceeded max rounds - give LLM one tool-free synthesis pass
-                if tui and hasattr(tui, "write_progress"):
-                    tui.write_progress("Synthesizing results...")
-                synthesis_max_tokens = None
-                if fast_build_round_max_tokens is not None:
-                    # A fast local build must finish with a concise, visible
-                    # hand-off.  Without an explicit finalization instruction
-                    # the model could spend another large hidden-reasoning
-                    # pass after the tool budget was already exhausted, then
-                    # stream a future-tense plan as if it were a Final Answer.
-                    messages.append(
-                        HumanMessage(
-                            content=(
-                                "Finalize this task now. Do not call tools. "
-                                "Return only a concise Final Answer describing "
-                                "what was actually completed, the files and "
-                                "commands actually verified, and any remaining "
-                                "incomplete requirement. Never promise a future "
-                                "action or claim an unrun validation succeeded."
-                            )
-                        )
-                    )
-                    synthesis_max_tokens = min(fast_build_round_max_tokens, 1024)
-                synthesis_messages = self._build_synthesis_messages(messages)
-                synthesis_parts: list[str] = []
-                _synth_reasoning: list[str] = []
-                synthesis_received_real_usage = False
-                if synthesis_max_tokens is None:
-                    synthesis_stream = self._raw_stream(synthesis_messages)
-                else:
-                    synthesis_stream = self._raw_stream(
-                        synthesis_messages, max_tokens=synthesis_max_tokens
-                    )
-                async for chunk in synthesis_stream:
-                    if not getattr(chunk, "choices", None):
-                        usage = getattr(chunk, "usage", None)
-                        if usage is not None:
-                            try:
-                                _record_usage(
-                                    chunk,
-                                    messages,
-                                    provider=getattr(self, "_provider", None),
-                                    capabilities=getattr(self, "_capabilities", None),
-                                )
-                                synthesis_received_real_usage = True
-                            except Exception:
-                                pass
-                        continue
-                    delta = chunk.choices[0].delta
-                    reasoning = self._provider_reasoning(delta)
-                    if reasoning:
-                        _synth_reasoning.append(reasoning)
-                        if tui and hasattr(tui, "write_reasoning"):
-                            tui.write_reasoning(reasoning)
-                    token = getattr(delta, "content", "") or ""
-                    if token:
-                        synthesis_parts.append(token)
-                        if tui and hasattr(tui, "stream_token"):
-                            tui.stream_token(token)
-                    usage = getattr(chunk, "usage", None)
-                    if usage is not None:
-                        try:
-                            _record_usage(
-                                chunk,
-                                messages,
-                                provider=getattr(self, "_provider", None),
-                                capabilities=getattr(self, "_capabilities", None),
-                            )
-                            synthesis_received_real_usage = True
-                        except Exception:
-                            pass
-                answer = "".join(synthesis_parts)
-                if not synthesis_received_real_usage:
-                    synthesis_input = sum(
-                        _estimate_tokens(getattr(message, "content", "") or "")
-                        for message in synthesis_messages
-                    )
-                    token_stats.add_real_usage(
-                        synthesis_input, _estimate_tokens(answer), 0
-                    )
-                if _synth_reasoning:
-                    self._last_thinking = "".join(_synth_reasoning)
-                    self._thinking_history.append(self._last_thinking)
-                # B7: 合成轮也可能输出 DSML（max_rounds 耗尽后模型仍想调工具）。
-                # 解析出工具调用 → 追加执行 + 再给一次 synthesis；最多一轮，
-                # 防死循环。解析失败 → 原样保留文本。
-                synth_tool_calls = _parse_dsml_tool_calls(answer) or []
-                if synth_tool_calls and answer:
-                    answer = await self._synthesis_with_tools(
-                        messages,
-                        synth_tool_calls,
-                        mode=mode,
-                        tui=tui,
-                        fallback_answer=answer,
-                    )
-                if not answer:
-                    answer = "[max tool-call rounds reached]"
+                if consecutive_error_count >= ERROR_LIMIT:
+                    snapshot = getattr(self, "_git_snapshot", None)
+                    if snapshot is not None and snapshot.captured:
+                        snapshot.restore()
+                    error_limit_hit = True
+                    stuck_triggered = True
+                    break
+            # 废弃代码（2026-09-21）：for-else 在 max_tool_rounds 触顶后
+            # synthesis 并停止（ReactExit.MAX_ROUNDS）。单次 user turn 触顶
+            # 已改为 [error] 回喂 LLM，连续错误满 5 才退出。整段不再执行。
+            # 废弃代码（2026-09-21）：if False / for-else MAX_ROUNDS synthesis。
+            # 旧行为：触顶后 tool-free synthesis，answer = "[max tool-call rounds reached]"。
+            # 现：触顶只 [error] 回喂 LLM，连续错误满 5 才退出。禁止再执行这段。
 
             if stuck_triggered:
                 # luna R6-3: stuck 跳出后执行一次 tool-free synthesis 保证
@@ -5094,41 +6195,34 @@ class AgentV2:
             # final user-facing answer, even on that fallback path.
             answer = _strip_dsml_tool_markup(answer)
 
-            self._memory.add_interaction(user_input, answer)
-            self._memory.save_session()
-            self._remember_agent_prefix(messages, answer)
+            try:
+                self._memory.add_interaction(user_input, answer)
+                self._memory.save_session()
+                self._remember_agent_prefix(messages, answer)
 
-            if (
-                research_policy.cache_write_allowed
-                and not tools_invoked
-                and _should_cache_answer(
-                    answer,
-                    tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+                if (
+                    research_policy.cache_write_allowed
+                    and not tools_invoked
+                    and _should_cache_answer(
+                        answer,
+                        tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+                    )
+                ):
+                    precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+                    if not memory_ctx:
+                        semantic_cache.put(user_input, answer, namespace=cache_namespace)
+
+                # Context tracking uses the final assembled turn. Usage accounting is
+                # handled per model round above so mixed real/estimated rounds are not
+                # dropped or double-counted.
+                token_stats.update_context(
+                    self._estimate_tokens(messages), self._context_window()
                 )
-            ):
-                precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
-                if not memory_ctx:
-                    semantic_cache.put(user_input, answer, namespace=cache_namespace)
-
-            # Context tracking uses the final assembled turn. Usage accounting is
-            # handled per model round above so mixed real/estimated rounds are not
-            # dropped or double-counted.
-            _input = self._estimate_tokens(messages)
-            _output = _estimate_tokens(answer, self._tokenizer_spec())
-            token_stats.update_context(_input + _output, self._context_window())
-
-            # Auto-compress if context is getting large (honours config autoCompact)
-            auto_compact = bool(
-                (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
-            )
-            if auto_compact and token_stats.context_used > token_stats.context_max * 0.85:
-                try:
-                    await self._memory.compress_if_needed(self._session_id)
-                    if tui and hasattr(tui, "write_progress"):
-                        tui.write_progress("Context compressed to save space")
-                except Exception:
-                    pass
-
+            except Exception as _bookkeeping_exc:
+                _logger.warning(
+                    "post-answer bookkeeping failed after streamed result: %s",
+                    _bookkeeping_exc,
+                )
             return answer
         except Exception:
             raise
@@ -5182,13 +6276,9 @@ class AgentV2:
     ) -> list:
         """Select a stable, task-scoped tool schema for the current LLM turn.
 
-        The execution registry remains authoritative: this method only filters
-        the already registered tools and never creates an alternate execution
-        path.  Explicit allowlists (plan mode, social mode, or a caller) win.
-        Unknown names are retained so configured MCP tools are not silently
-        hidden.  Built-in tools that are unrelated to a local build are
-        omitted from the wire schema, reducing both request size and model
-        tool-selection latency while preserving the existing safety gate.
+        废弃代码（2026-09-21）：live OpenTUI 路径不调用本方法。
+        ``_fast_reply_with_tools`` 只用 ``_get_core_tools()`` 全量冻结 schema
+        （FX6）。此处仅测试 / 历史裁剪入口仍引用。禁止当成线上绑工具路径。
         """
         available = {
             str(getattr(tool, "name", "")).strip().lower(): tool
@@ -5208,7 +6298,7 @@ class AgentV2:
         # ordering is normalized later so the provider cache prefix is stable.
         selected_names = {
             "bash", "datetime", "edit", "format", "git", "glob", "grep",
-            "ls", "open_file", "patch", "read", "skill", "write",
+            "ls", "open_file", "patch", "read", "skill", "write", "final_answer",
         }
         if requires_web:
             selected_names.update({"webfetch", "websearch"})
@@ -5232,7 +6322,7 @@ class AgentV2:
         builtin_names = {
             "agent", "bash", "cd", "change_directory", "datetime",
             "diagnostics", "download_file", "download_mcp", "download_skill",
-            "edit", "file_download", "format", "git", "glob", "grep",
+            "edit", "file_download", "final_answer", "format", "git", "glob", "grep",
             "history", "ls", "memory", "open_file", "patch", "question",
             "read", "skill", "task", "view", "vision", "webfetch",
             "websearch", "write",
@@ -5361,71 +6451,60 @@ class AgentV2:
     # ------------------------------------------------------------------
     # Context management (Codex/Claude-style in-loop compression)
     # ------------------------------------------------------------------
-    async def _maybe_compress_context(self, messages) -> None:
-        """Keep the in-loop message list inside a soft token budget.
+    async def compact_now(self) -> str:
+        """Manual /compact: same occupancy ladder as the automatic knife."""
+        messages = list(getattr(self, "_agent_prefix_messages", None) or [])
+        if not messages:
+            return "当前没有可压缩的对话上下文。"
+        before = self._estimate_tokens(messages)
+        await self._maybe_compress_context(messages, force=True)
+        self._agent_prefix_messages = list(messages)
+        after = self._estimate_tokens(messages)
+        if after < before:
+            return f"已压缩上下文：约 {before} → {after} tokens。"
+        return f"占用约 {after} tokens。已走压缩入口，窗口未明显下降。"
 
-        B4: 压缩不再原位改写旧消息（G2 修复）——统一走 core/compaction.py
-        的唯一入口：断点前不可变、折叠断点后的 assistant/tool 中间段为
-        摘要消息（Objective/Work State/Next Move）追加到断点之后，保留
-        尾部轮次，绝不改写已发送消息（CB1/CB4）。
+    async def _maybe_compress_context(self, messages, *, force: bool = False) -> None:
+        """Keep the in-loop message list inside window − reserved.
 
-        触发阈值读 ModelCapabilities.compaction_threshold（Phase A 已接线）；
-        输出预留（reserved 20k）计入可用空间（原则 4，P0-4）。
+        The only automatic compact knife is core/compaction.py
+        ``run_compaction_ladder``. /compact uses the same entry with force=True.
         """
-        caps = getattr(self, "_capabilities", None)
-        threshold = (
-            getattr(caps, "compaction_threshold", None)
-            if caps is not None
-            else None
-        )
+        from .compaction import DEFAULT_RESERVED_TOKENS, run_compaction_ladder
+
         context_window = self._context_window()
-        if not threshold:
-            threshold = int(context_window * 0.9)
-        budget = threshold
-        total = self._estimate_tokens(messages)
-        # 输出预留：usable = context − reserved（原则 4，P0-4）。
-        from .compaction import DEFAULT_RESERVED_TOKENS
-
         reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
-        usable = budget - reserved
-        if total <= usable:
-            return
-
-        # B4: 唯一压缩入口——compact_messages 构造摘要追加到断点之后，
-        # 不改写任何断点前消息；配对校验失败自动回退。
-        from .compaction import compact_messages
-
+        total = self._estimate_tokens(messages)
+        token_stats.update_context(total, context_window)
         try:
-            compacted, telemetry = compact_messages(
+            compacted, telemetry = run_compaction_ladder(
                 messages,
-                tail_turns=2,
-                return_telemetry=True,
+                force=force,
+                occupancy=total,
+                context_window=context_window,
+                reserved=reserved,
+                count=lambda text: count_tokens(text, self._tokenizer_spec()),
             )
         except Exception as exc:  # pragma: no cover - 压缩失败不阻断请求
             _logger.warning("B4 compaction failed: %s", exc)
             return
-        if telemetry.get("compacted"):
-            messages[:] = compacted
-            _logger.info(
-                "B4 compaction: tokens_before=%d tokens_after=%d tail_turns=%d",
-                telemetry["tokens_before"],
-                telemetry["tokens_after"],
-                telemetry["tail_turns"],
-            )
-            tui = get_tui()
+        if not telemetry.get("did_compact"):
+            return
+        messages[:] = compacted
+        token_stats.update_context(self._estimate_tokens(messages), context_window)
+        tui = get_tui()
+        if telemetry.get("rung") == "microcompact":
             if tui and hasattr(tui, "write_progress"):
-                tui.write_progress("Context compressed (prefix preserved)")
-
-        # Persist a compressed session for the next turn once we are really full.
-        auto_compact = bool(
-            (getattr(self, "_cfg", {}) or {}).get("autoCompact", True)
+                tui.write_progress("已清旧工具输出，未做 LLM 摘要。")
+            return
+        _logger.info(
+            "B4 compaction: occupancy=%s usable=%s rung=%s",
+            telemetry.get("occupancy"),
+            telemetry.get("usable"),
+            telemetry.get("rung"),
         )
-        total_after = self._estimate_tokens(messages)
-        if auto_compact and total_after > usable and getattr(self, "_memory", None):
-            try:
-                await self._memory.compress_if_needed(self._session_id)
-            except Exception:
-                pass
+        if tui and hasattr(tui, "write_progress"):
+            tui.write_progress("Context compressed (prefix preserved)")
 
     def _tool_is_read_only(self, tool_name: str, tool_args) -> bool:
         """B8: 工具是否只读（读/搜索类可并行；写/危险类串行）。
@@ -5444,10 +6523,12 @@ class AgentV2:
             return False  # 分类失败保守串行
 
     def _parallel_tool_config(self, *, mode: str | None = None) -> tuple[bool, int]:
-        """B8: 读取 execution.parallel_enabled / max_parallel（默认关/3，CB8）。"""
+        """B8: 读取 execution.tool_parallel_enabled（默认开）/ max_parallel。"""
         exec_cfg = (getattr(self, "_cfg", {}) or {}).get("execution", {})
+        # Graph TaskTree (`parallel_enabled`, default off) is a different
+        # switch. Read-tool fan-out defaults on unless explicitly disabled.
         enabled = bool(
-            exec_cfg.get("parallel_enabled", False)
+            exec_cfg.get("tool_parallel_enabled", True)
             or (
                 mode == "build"
                 and str((getattr(self, "model_config", {}) or {}).get("effort") or "")
@@ -5475,6 +6556,14 @@ class AgentV2:
         n = len(tool_calls)
         results: list[str | None] = [None] * n
         semaphore = asyncio.Semaphore(max_parallel)
+        write_snapshot_taken = False
+
+        async def ensure_write_snapshot() -> None:
+            nonlocal write_snapshot_taken
+            if write_snapshot_taken:
+                return
+            await self._capture_git_snapshot_async()
+            write_snapshot_taken = True
 
         async def run_at(index: int) -> None:
             tc = tool_calls[index]
@@ -5516,10 +6605,16 @@ class AgentV2:
                     await run_parallel_segment(segment)
                     i = j
                 else:
+                    await ensure_write_snapshot()
                     await run_at(i)
                     i += 1
         else:
             for i in range(n):
+                tc = tool_calls[i]
+                name = tc.get("name", "") if isinstance(tc, dict) else tc.name
+                args = tc.get("args", {}) if isinstance(tc, dict) else tc.args
+                if not self._tool_is_read_only(name, args):
+                    await ensure_write_snapshot()
                 await run_at(i)
 
         # 按原序组装（含名称/参数/id）。
@@ -5565,6 +6660,29 @@ class AgentV2:
                 return None
 
         return asyncio.create_task(_run())
+
+    def _prepare_approved_implement(self, user_input: str) -> tuple[str, str, dict]:
+        """Drop a live Plan-mode AgentPrefix and pin the session plan.md."""
+        self._agent_prefix_messages = None
+        disk = ""
+        try:
+            path = _session_plan_md_path(getattr(self, "_session_id", None))
+            if path.is_file():
+                disk = path.read_text(encoding="utf-8")
+        except Exception:
+            disk = ""
+        text = user_input or ""
+        if disk.strip() and disk.strip() not in text:
+            text = f"{text.rstrip()}\n\n---\n会话 plan.md（以这份为准）：\n\n{disk}"
+        heading = next(
+            (line[1:].strip() for line in disk.splitlines() if line.startswith("# ")),
+            "",
+        )
+        return text, _APPROVED_IMPLEMENT_ROLE, {
+            "disk_chars": len(disk),
+            "out_chars": len(text),
+            "title": heading[:40],
+        }
 
     async def _run_plan_only(self, user_input: str) -> str:
         """Produce a plan with an explicit read-only tool allowlist."""
@@ -5688,7 +6806,8 @@ class AgentV2:
 
             _reasoning_buffer = []
             received_real_usage = False
-            self._thinking_disabled_this_turn = True
+            # 废弃代码（2026-09-21）：ChatPrefix 曾整轮关掉 thought，导致首位 Thought 消失。
+            self._thinking_disabled_this_turn = False
             async for chunk in self._raw_stream(messages):
                 if not getattr(chunk, "choices", None):
                     usage = getattr(chunk, "usage", None)
@@ -5768,29 +6887,37 @@ class AgentV2:
                 self._last_thinking = ''.join(_reasoning_buffer)
                 self._thinking_history.append(self._last_thinking)
 
-            # B7 (共性 8): 失败结果不缓存——空答案 / [error ...] 错误串 /
-            # 本轮发生工具错误（luna R8-2）一律不写入应用缓存。
-            if _should_cache_answer(
-                answer,
-                tool_error_occurred=getattr(self, "_tool_error_occurred", False),
-            ):
-                precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
-                if not memory_ctx:
-                    semantic_cache.put(user_input, answer, namespace=cache_namespace)
-            self._memory.add_interaction(user_input, answer)
-            self._memory.save_session()
+            try:
+                # B7 (共性 8): 失败结果不缓存——空答案 / [error ...] 错误串 /
+                # 本轮发生工具错误（luna R8-2）一律不写入应用缓存。
+                if _should_cache_answer(
+                    answer,
+                    tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+                ):
+                    precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+                    if not memory_ctx:
+                        semantic_cache.put(user_input, answer, namespace=cache_namespace)
+                self._memory.add_interaction(user_input, answer)
+                self._memory.save_session()
 
-            # Estimate for context tracking, but prefer provider usage for
-            # accounting whenever the stream supplied it.
-            _input = self._estimate_tokens(messages)
-            _output = _estimate_tokens(answer, self._tokenizer_spec())
-            if answer and not received_real_usage:
-                token_stats.add_real_usage(_input, _output, 0)
-            # Update context window tracking
-            token_stats.update_context(_input + _output, self._context_window())
+                # Estimate for context tracking, but prefer provider usage for
+                # accounting whenever the stream supplied it.
+                _input = self._estimate_tokens(messages)
+                _output = _estimate_tokens(answer, self._tokenizer_spec())
+                if answer and not received_real_usage:
+                    token_stats.add_real_usage(_input, _output, 0)
+                # Update context window tracking
+                token_stats.update_context(_input, self._context_window())
+            except Exception as _bookkeeping_exc:
+                _logger.warning(
+                    "post-answer bookkeeping failed after streamed result: %s",
+                    _bookkeeping_exc,
+                )
 
             return answer
         except Exception as e:
+            if answer_parts:
+                return "".join(answer_parts)
             return "[error: " + str(e) + "]"
         finally:
             self._thinking_disabled_this_turn = False
@@ -5901,8 +7028,8 @@ class AgentV2:
             except Exception:
                 pass
 
-    @staticmethod
-    def _evidence_is_critical(item) -> bool:
+    @classmethod
+    def _evidence_is_critical(cls, item) -> bool:
         """Return True when a failed evidence record is task-critical.
 
         WRITE/DANGER tools mutate state, so their failure is authoritative.
@@ -5934,6 +7061,18 @@ class AgentV2:
             "timed out after" in result
             or "timeout after" in result
             or "cancelled: tool" in result
+        ):
+            return False
+        tool = canonical_tool_name(cls._evidence_tool_name(item))
+        if tool == "open_file" and any(
+            marker in result
+            for marker in (
+                "file not found",
+                "refused to open",
+                "[blocked:",
+                "unsupported preview",
+                "not a regular file",
+            )
         ):
             return False
         # Artifact validation against a path that was never required should not
@@ -5999,7 +7138,13 @@ class AgentV2:
         # 挂起不得阻塞当前请求（2026-08-13 与预热同步修复）。
         try:
             last_call = getattr(self, "_keep_alive_last_call", None)
-            if last_call is not None and self._maybe_keep_alive(last_call_at=last_call):
+            # 废弃代码（2026-09-22）：保活不看熔断，打开时仍去抢半开探测。
+            # if last_call is not None and self._maybe_keep_alive(last_call_at=last_call):
+            if (
+                not _circuit_breaker.breaker_is_open()
+                and last_call is not None
+                and self._maybe_keep_alive(last_call_at=last_call)
+            ):
                 req = (self._keep_alive_state or {}).get("request")
                 if req and getattr(self, "_llm", None) is not None:
                     _logger.info("B5 keep-alive request scheduled (background)")
@@ -6233,9 +7378,11 @@ class AgentV2:
         token_start = (token_stats.input_tokens, token_stats.output_tokens)
         # A19: 缓存命中 token 快照基线（run 级），用于 run.finished 的 cache_read 落盘
         cache_start = token_stats.cache_hit_tokens
+        cache_write_start = token_stats.cache_write_tokens
         status = "failed"
         evidence = []
         session_token = bind_session(session_id)
+        turn_text_token = bind_turn_user_text(user_input)
 
         def record_failure(category: str) -> None:
             failures = dict(getattr(self, "_last_failure_attribution", {}) or {})
@@ -6322,15 +7469,42 @@ class AgentV2:
                     )
                 )
             ]
+            # Later successful write/edit/patch records ride along so a failed
+            # write of the same file is superseded instead of reported.
+            # 废弃代码（2026-09-22）：issues = deterministic_issues(critical_failures)
+            # 只看失败记录，成功的 edit 被丢掉，校验失败的 write 仍算最后一次写入。
+            later_mutations = [
+                item
+                for item in evidence
+                if item.status == "succeeded"
+                and str(item.tool or "").lower() in {"write", "edit", "patch"}
+            ]
+            wipe_for_critical = False
             if critical_failures:
-                issues = deterministic_issues(critical_failures)
-                result = f"[evidence failed: {'; '.join(issues)}]"
-                status = "failed"
-                record_failure("tool_error")
-            else:
+                from RxyCode.RxyCode1_1_0.validation.side_effects import is_supporting_effect
+
+                issues = deterministic_issues(critical_failures + later_mutations)
+                # Read/search/explain tasks must keep the model answer even if a
+                # stray write failed format checks. An empty issue list used to
+                # become ``[evidence failed: ]`` and wipe identifiers such as
+                # UsageTrackingLLM from evals/readcode-usage-tracking.
+                if issues and not is_supporting_effect(
+                    getattr(self, "_task_effect", "auto")
+                ):
+                    result = f"[evidence failed: {'; '.join(issues)}]"
+                    status = "failed"
+                    record_failure("tool_error")
+                    wipe_for_critical = True
+            if not wipe_for_critical:
                 status, _ = classify_agent_result(str(result))
+                # 2026-09-23：传输恢复耗尽（网络断）导致的「没写文件」不是
+                # 「没干活」——证据门不得把网络错误覆盖成「no verified WRITE」。
+                # 现场：模型 API 504 → 重试耗尽 → 循环结束 → 证据门触发 →
+                # 用户看到「工具执行中断」而不是「网络超时」。
+                transport_exhausted = bool(_last_transport_exhaustion.peek())
                 if (
                     status == "succeeded"
+                    and not transport_exhausted
                     and mode in {"build", "compose"}
                     and task_requires_side_effect_evidence(
                         title=user_input,
@@ -6394,22 +7568,26 @@ class AgentV2:
             # lock-contention ``journal_unavailable`` on the SSE real-link
             # path remains fixed by the bounded reserve()/complete() retry,
             # not by sealing on failure.
-            if status == "succeeded":
-                journal = getattr(self, "_tool_journal", None)
-                journal_pending = bool(
-                    journal is not None and journal.has_pending(attempt_id)
-                )
-                if not journal_pending:
-                    if attempt_store is not None and checkpoint_id is not None:
-                        current_checkpoint = attempt_store.load(checkpoint_id)
-                        if not (
-                            current_checkpoint and current_checkpoint.get("completed")
-                        ):
-                            attempt_store.mark_complete(checkpoint_id)
-                    # mark_attempt_complete() itself refuses to seal while a
-                    # side effect has an unknown (pending) outcome.
-                    if journal is not None:
-                        journal.mark_attempt_complete(attempt_id)
+            # 这一轮已经正常返回，每个工具的结果都看到了。把 attempt 封上，
+            # 下一次同样的提示词拿新的 attempt。
+            # 废弃代码（2026-09-22）：只在 succeeded 且没有 pending 时封。
+            # bash 失败留下 pending，checkpoint 一直不封；两小时后用户再发
+            # 同一句，write 被 journal 当成已执行（journal_reuse），文件没写，
+            # 校验失败，模型再把文件改回错的。日志 audit.jsonl 18:32:32。
+            # if status == "succeeded":
+            #     journal_pending = journal is not None and journal.has_pending(attempt_id)
+            #     if not journal_pending: mark_complete / mark_attempt_complete
+            journal = getattr(self, "_tool_journal", None)
+            if journal is not None:
+                sealed = journal.mark_attempt_complete(attempt_id)
+                if not sealed:
+                    journal.settle_attempt(attempt_id)
+            if attempt_store is not None and checkpoint_id is not None:
+                current_checkpoint = attempt_store.load(checkpoint_id)
+                if not (
+                    current_checkpoint and current_checkpoint.get("completed")
+                ):
+                    attempt_store.mark_complete(checkpoint_id)
             trajectory.record(
                 "run.result",
                 {"status": status, "final_response": result},
@@ -6437,6 +7615,7 @@ class AgentV2:
             output_tokens = max(0, token_stats.output_tokens - token_start[1])
             # A19: 本 run 缓存命中 token（可观测，供 evals/trajectory 计算命中率）
             cache_read = max(0, token_stats.cache_hit_tokens - cache_start)
+            cache_write = max(0, token_stats.cache_write_tokens - cache_write_start)
             trajectory.record(
                 "run.finished",
                 {
@@ -6456,6 +7635,7 @@ class AgentV2:
                         "output_tokens": output_tokens,
                         "total_tokens": input_tokens + output_tokens,
                         "cache_read": cache_read,
+                        "cache_write": cache_write,
                     },
                     "tool_evidence_count": len(evidence),
                     "hook_event_count": len(self._active_hook_audit),
@@ -6492,6 +7672,7 @@ class AgentV2:
             self._active_trajectory = None
             self._active_attempt_id = None
             self._cancelled = False
+            reset_turn_user_text(turn_text_token)
             reset_session_binding(session_token)
 
     def cancel(self) -> bool:
@@ -6524,6 +7705,9 @@ class AgentV2:
         # It is intentionally reset once per top-level request, not per tool
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
+        # 2026-09-23：每次顶层请求清空传输耗尽记录，避免上一次的网络断
+        # 污染本次的证据门判定。
+        _last_transport_exhaustion.drain()
         run_impl_started = time.monotonic()
 
         routing_directive, user_input = parse_routing_directive(user_input)
@@ -6574,9 +7758,15 @@ class AgentV2:
         if decision.path == "file_op":
             try:
                 result = await self._handle_file_operation(file_op, mode=mode)
-                self._memory.add_interaction(user_input, result)
-                self._memory.save_session()
-                return result
+                direct_error = isinstance(result, str) and result.lstrip().startswith("[error]")
+                if direct_error:
+                    # 废弃代码（2026-09-22）：return result 把 ls/read 错误当成整轮答案，
+                    # 模型看不到，也不会出 thought。失败必须回到 agent 循环。
+                    decision = route(user_input, mode, routing_directive)
+                else:
+                    self._memory.add_interaction(user_input, result)
+                    self._memory.save_session()
+                    return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -6651,6 +7841,13 @@ class AgentV2:
                         "刚才没能完整回复你，我在这儿听着呢。"
                         "你可以再说一次，或者换个说法。"
                     )
+                # 熔断不是「核实不了当前信息」。写文件被误判成联网时，
+                # 用户看到的是研究失败，重试也像模型拒绝。
+                # 废弃代码（2026-09-22）：CircuitBreakerError 走 research_failure_message。
+                # if research_policy.requires_web:
+                #     return research_failure_message(str(exc))
+                if type(exc).__name__ == "CircuitBreakerError":
+                    return to_user_facing_error(f"{type(exc).__name__}: {exc}")
                 if research_policy.requires_web:
                     return research_failure_message(str(exc))
                 if self._side_effecting_tool_attempted:
@@ -6659,7 +7856,7 @@ class AgentV2:
                     "tool-aware fast path failed (no graph fallback): %s",
                     exc,
                 )
-                return f"[error] {type(exc).__name__}: {str(exc)[:200]}"
+                return to_user_facing_error(f"{type(exc).__name__}: {exc}")
 
         if decision.path == "compose":
             try:
@@ -6741,7 +7938,27 @@ class AgentV2:
                     break
                 elapsed = time.time() - pipeline_start
                 if pipeline_tui and hasattr(pipeline_tui, "write_progress"):
-                    pipeline_tui.write_progress(build_progress_message(elapsed))
+                    # 2026-09-23: a progress-emit failure must never kill the
+                    # heartbeat loop — without heartbeats the TUI status line
+                    # freezes while the build keeps running (用户报告：log 显示
+                    # 在运行，TUI 看不见在运行).  Probe every fire so a future
+                    # freeze shows exactly where the beats stopped.
+                    try:
+                        pipeline_tui.write_progress(build_progress_message(elapsed))
+                    except Exception as hb_exc:  # pragma: no cover - defensive
+                        _logger.warning("build heartbeat emit failed: %s", hb_exc)
+                        _probe(  # PROBE-20260923
+                            "agent.build.heartbeat",
+                            session_id=self._session_id,
+                            elapsed=round(elapsed, 1),
+                            error=type(hb_exc).__name__,
+                        )
+                    else:
+                        _probe(  # PROBE-20260923
+                            "agent.build.heartbeat",
+                            session_id=self._session_id,
+                            elapsed=round(elapsed, 1),
+                        )
                 _logger.debug("build pipeline running elapsed=%.0fs", elapsed)
 
                 if soft_budget > 0 and elapsed >= soft_budget and not graph_task.done():
@@ -6844,8 +8061,3 @@ class AgentV2:
         """Compatibility: flush thinking to TUI."""
         if tui and hasattr(tui, "write_progress") and self._last_thinking:
             tui.write_progress(self._last_thinking)
-
-
-
-
-

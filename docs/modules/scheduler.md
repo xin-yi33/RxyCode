@@ -20,6 +20,8 @@ Implements cron-like scheduled task execution. Users can schedule prompts to run
 - Persistent storage in `~/.RxyCode/scheduler_tasks.json` (path provided by
   `config.get_data_dir() / "scheduler_tasks.json"`)
 
+OpenTUI `/loop` 的进程外时钟权威是 `appserver/schedule_service.py`（`schedule/create` + `restore_after_restart`，UPDATE-01 **U66**）。本包 `scheduler/` 是 Ink / `api_server.py` 的 cron 实现。禁止第三套 scheduler。禁止 `while True`。禁止把 Windows 任务计划当 P0。关窗后续跑 = 时钟恢复，不是复活被杀前台 bash。
+
 **Key Methods:**
 - add_task(cron_expr, prompt) -> Task: Create a scheduled task
 - list_tasks() -> list[Task]: List all tasks

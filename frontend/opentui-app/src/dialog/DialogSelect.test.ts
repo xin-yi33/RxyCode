@@ -54,6 +54,17 @@ describe("buildSelectRows", () => {
     { id: "3", title: "/addmodel", description: "添加新模型", category: "Agent", value: "/addmodel" },
   ];
 
+  test("empty filter preserves caller order not alphabetical title", () => {
+    const recency: DialogSelectOption[] = [
+      { id: "1", title: "pdf格式转换", footer: "now", category: "Today", value: "1" },
+      { id: "2", title: "hi", footer: "3h", category: "Today", value: "2" },
+      { id: "3", title: "hi", footer: "10h", category: "Today", value: "3" },
+    ];
+    const { rows } = buildSelectRows(recency, "", ["Today"]);
+    const titles = rows.filter((r) => r.kind === "item").map((r) => (r.kind === "item" ? r.option.title : ""));
+    expect(titles).toEqual(["pdf格式转换", "hi", "hi"]);
+  });
+
   test("empty filter keeps category headers on own rows", () => {
     const { rows } = buildSelectRows(opts, "", ["会话", "Agent"]);
     expect(rows[0]).toEqual({ kind: "header", category: "会话", key: "h-会话" });
@@ -65,6 +76,26 @@ describe("buildSelectRows", () => {
     const { rows } = buildSelectRows(opts, "build", ["会话", "Agent"]);
     expect(rows.every((r) => r.kind === "item")).toBe(true);
     expect(rows[0]?.kind === "item" && rows[0].option.title).toBe("/build");
+  });
+
+  test("grouped flat order matches visual rows so Enter selects the highlighted model", () => {
+    const mixed: DialogSelectOption[] = [
+      { id: "go/glm", title: "glm · opencode.ai", category: "OpenCode Go", value: "go/glm" },
+      { id: "arc/glm", title: "glm · api.arc-bench.com", category: "api.arc-bench.com", value: "arc/glm" },
+      { id: "go/kimi", title: "kimi · opencode.ai", category: "OpenCode Go", value: "go/kimi" },
+      { id: "arc/kimi", title: "kimi · api.arc-bench.com", category: "api.arc-bench.com", value: "arc/kimi" },
+    ];
+    const { flat, rows } = buildSelectRows(mixed, "", ["api.arc-bench.com", "OpenCode Go"]);
+    const visual = rows.filter((r) => r.kind === "item").map((r) => r.kind === "item" ? r.option.value : "");
+    expect(flat.map((o) => o.value)).toEqual(visual);
+    expect(flat.map((o) => o.value)).toEqual([
+      "arc/glm",
+      "arc/kimi",
+      "go/glm",
+      "go/kimi",
+    ]);
+    expect(flat[0]?.value).toBe("arc/glm");
+    expect(flat[2]?.value).toBe("go/glm");
   });
 
   test("filter 'model' ranks /model before /addmodel", () => {

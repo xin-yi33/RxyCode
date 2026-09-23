@@ -381,22 +381,24 @@ async def test_fast_path_timeout_has_one_failed_correlated_lifecycle(
     expected = "[error: tool 'read' timed out after 0.01s]"
     assert started.is_set()
     assert cancelled.is_set()
-    assert result == expected
-    assert events == [
-        ("call", "fast-call-1", "read", {"filePath": "a.txt"}),
-        ("result", "fast-call-1", "timeout", expected),
-    ]
+    assert result.startswith(expected)
+    assert "still running" in result
+    assert events[0] == ("call", "fast-call-1", "read", {"filePath": "a.txt"})
+    assert events[1][0] == "result"
+    assert events[1][1] == "fast-call-1"
+    assert events[1][2] == "timeout"
+    assert str(events[1][3]).startswith(expected)
     assert len(evidence) == 1
     assert evidence[0].status == "failed"
     assert evidence[0].executed is True
-    assert evidence[0].detail == expected
+    assert str(evidence[0].detail).startswith(expected)
     records = [
         json.loads(line)
         for line in audit_path.read_text(encoding="utf-8").splitlines()
     ]
     assert len(records) == 1
     assert records[0]["approval"] == "safety_disabled"
-    assert records[0]["result"] == expected
+    assert str(records[0]["result"]).startswith(expected)
 
 
 @pytest.mark.asyncio

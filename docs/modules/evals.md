@@ -153,6 +153,31 @@ python -m evals.run --dry
 - `1` — one or more tasks failed
 - `2` — pass rate regressed vs baseline
 
+## Auto-route gates (solo / 专家团 / explore)
+
+Cheap L2 routing is evaluated **without a live LLM**. That is **not** the
+product TTFT clock. The user red line is **first thinking/reasoning token with
+thinking ON** (`evals/baselines/thinking-ttft.json`):
+
+| Gate | Clock | Pass |
+|------|--------|------|
+| Simple 1.0s ± 0.5s | Session.prompt → first reasoning delta | **upper** 1.5s |
+| Complex 3.0s ± 0.2s | same clock for encoding / explore-scale prompts | **upper** 3.2s |
+| Cache 97% | warm-turn Primary prefix identity with thinking ON | `tools_digest` frozen |
+
+```powershell
+python -m pytest tests/test_core/test_thinking_ttft_clock.py tests/test_agents/test_auto_route_e2e.py tests/test_agents/test_auto_route_cache.py -q
+python -m evals.probe_thinking_ttft
+```
+
+Routing-only milliseconds (ModeRouter / first `ProgressUpdate` / stub
+`session/prompt`) do **not** count as a pass. Historical provider numbers live
+in `evals/baselines/latency-ttft.json`.
+
+Fixtures: `evals/baselines/thinking-ttft.json`,
+`evals/baselines/auto-route-explore-team.json`,
+`evals/baselines/auto-route-cache-hit.json`.
+
 ## Baselines
 
 Baselines live in `evals/baselines/` as JSON snapshots from `SuiteReport.to_dict()`.
@@ -169,6 +194,28 @@ Baselines live in `evals/baselines/` as JSON snapshots from `SuiteReport.to_dict
 | When | What runs |
 |------|-----------|
 | Every PR | `python scripts/lint_eval_tasks.py` (in `lint` job) |
+
+## Public benchmarks (release gate)
+
+Internal YAML tasks measure coding-agent work. They do **not** replace public
+protocols. Every **major version** must run the public suites **and** the
+internal suite before calling the release an improvement:
+
+```powershell
+python -m evals.public --model zhipu/glm-5.3-flash --tag YYYY-MM-DD-public --task-timeout 180
+python -m evals.run --backend agent --model zhipu/glm-5.3-flash --compare-baseline evals\baselines\latest-agent.json
+```
+
+| Suite | Protocol | What it measures | Official corpus |
+|---|---|---|---|
+| `evals/public` BFCL | Gorilla BFCL v4 Python AST | Tool selection + `possible_answer` | 1240 JSONL items |
+| `evals/public` GAIA | GAIA 2023 validation | General assistant + attachments | 165 (L1=53/L2=86/L3=26) |
+| `evals/public` ChatEval | ChatEval 3-judge debate | Open-ended quality | LMSYS MT-Bench 80 |
+| `evals/tasks` | Internal coding | Bugfix / refactor / feature / readcode | Internal only |
+
+The number that matters is the **RxyCode Agent** score, compared with **other published agents** (OpenHands, Magentic-One, Aider, Cline, …) on the same public protocol when those numbers exist. Do **not** compare Agent vs a naked model / native FC as if that were a product delta.
+
+HTTP 429 / Zhipu 1305 retries the **same item** until the provider accepts it. It is **not** a task failure.
 
 Evals with real LLM calls are **not** in GitHub Actions (they need a local API
 key). Run them on a machine you control:

@@ -112,4 +112,4 @@ async def test_prompt_skips_starting_worker_progress_when_already_warm(monkeypat
         timeout_seconds=5.0,
     )
     assert not any("Starting Agent worker" in text for text in progress)
-    assert any("Waiting for model response" in text for text in progress)
+    assert any("思考中" in text for text in progress)

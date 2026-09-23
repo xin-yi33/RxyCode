@@ -24,6 +24,42 @@ def _caps(model_name: str):
 # ---- 完成判据 2：v4 识别 / 能力 / effort / thinking 与 §7.1 一致 ------------
 
 
+def test_gateway_prefixed_v41_flash_is_thinking_model():
+    """OpenCode Go ids must not fall through as unknown variants (no thinking)."""
+    caps = _caps("opencode-go/deepseek-v4.1-flash")
+    assert caps.supports_reasoning is True
+    assert caps.thinking_default_on is True
+    assert caps.effort_presets["fast"] == "low"
+    p = DeepSeekProvider()
+    kwargs = p.llm_kwargs(
+        {
+            "model_name": "opencode-go/deepseek-v4.1-flash",
+            "resolved_max_tokens": 8192,
+            "effort": "fast",
+        },
+        caps,
+    )
+    assert (kwargs.get("extra_body") or {}).get("thinking", {}).get("type") == "enabled"
+    assert kwargs.get("reasoning_effort") == "low"
+
+
+def test_extract_reasoning_keeps_wire_chain_when_caps_say_no():
+    """A mis-classified variant must still surface reasoning_content from the wire."""
+    from dataclasses import replace
+
+    from config.model_capabilities import UsageFieldMap
+
+    caps = replace(
+        DEFAULT_CAPABILITIES,
+        supports_reasoning=False,
+        usage_fields=UsageFieldMap(reasoning=("reasoning_content",)),
+    )
+    assert (
+        DeepSeekProvider().extract_reasoning({"reasoning_content": "why search"}, caps)
+        == "why search"
+    )
+
+
 @pytest.mark.parametrize("name", ["deepseek-v4-flash", "deepseek-v4-pro"])
 def test_v4_matches(name):
     p = providers.resolve({"base_url": "https://api.deepseek.com", "model_name": name})

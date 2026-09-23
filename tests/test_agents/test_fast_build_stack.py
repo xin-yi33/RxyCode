@@ -30,6 +30,28 @@ def test_explain_prompts_are_not_nudged_to_write_java() -> None:
         _should_nudge_build_to_write("build", False, 0, user_input="/solo 用一句话介绍你自己")
         is False
     )
+    assert (
+        _should_nudge_build_to_write(
+            "build",
+            False,
+            0,
+            user_input=(
+                "请打开当前目录下这个不存在的文件：open_e2e_missing_no_such_file.docx。"
+                "如果打不开，把工具返回的错误原文告诉我，然后给出最终结果。"
+                "不要静默重试超过两次。"
+            ),
+        )
+        is False
+    )
+    assert (
+        _should_nudge_build_to_write(
+            "build",
+            False,
+            0,
+            user_input="在当前工作目录新建 open_e2e_demo.html，写完后立刻用系统默认程序打开",
+        )
+        is True
+    )
 
 
 def test_nudge_continues_until_named_pytest_file_exists(tmp_path) -> None:
@@ -66,8 +88,8 @@ def test_fast_build_instruction_follows_user_stack() -> None:
     text = FAST_LOCAL_BUILD_INSTRUCTION
     lowered = text.lower()
     assert "use the write/edit tools for source files" in lowered
-    assert "issue tool calls directly" in lowered
-    assert "do not narrate" in lowered
+    assert "after each tool result" in lowered
+    assert "do not stack" in lowered
     assert "do not write _probe.py" in lowered
     assert "replace the complete file" in lowered
     assert "do not invent java/spring/maven/pom.xml" in lowered

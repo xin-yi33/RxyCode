@@ -14,7 +14,7 @@ export interface ApprovalInfo {
 const OPTIONS: Array<{ key: string; label: string; decision: ApprovalDecision }> = [
   { key: "a", label: "Approve (允许本次)", decision: "approved" },
   { key: "r", label: "Reject (拒绝)", decision: "rejected" },
-  { key: "l", label: "Always allow this level (本会话同级别放行)", decision: "always_allow_level" },
+  { key: "l", label: "Approve all (full_auto / 本会话全部放行)", decision: "always_allow_level" },
 ];
 
 const RISK_COLOR: Record<string, string> = {

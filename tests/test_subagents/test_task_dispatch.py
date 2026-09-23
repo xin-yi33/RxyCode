@@ -540,6 +540,53 @@ class TestTaskToolAdapter:
         assert isinstance(result, str)
         reset_manager()
 
+    @pytest.mark.asyncio
+    async def test_dispatch_envelope_task_prefers_prompt_over_description(
+        self, monkeypatch
+    ):
+        captured: dict[str, str] = {}
+
+        class _Mgr:
+            def primary_session_id(self) -> str:
+                return "p1"
+
+            async def dispatch(self, request):
+                captured["prompt"] = request.prompt
+                captured["task"] = request.context.task if request.context else ""
+                return type(
+                    "R",
+                    (),
+                    {
+                        "status": ChildStatus.COMPLETED,
+                        "error": None,
+                        "summary": "ok",
+                    },
+                )()
+
+        monkeypatch.setattr(
+            "RxyCode.RxyCode1_1_0.core.subagents.registry_provider.get_manager",
+            lambda: _Mgr(),
+        )
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import dispatch_subagent_task
+
+        out = await dispatch_subagent_task(
+            agent_id="explore",
+            prompt="打开 notes.md 给我预览",
+            description="explore codebase",
+        )
+        assert captured["prompt"] == "打开 notes.md 给我预览"
+        assert captured["task"] == "打开 notes.md 给我预览"
+        assert "[task completed]" in out
+
+        captured.clear()
+        out = await dispatch_subagent_task(
+            agent_id="explore",
+            prompt="",
+            description="explore codebase",
+        )
+        assert captured["prompt"] == ""
+        assert captured["task"] == ""
+
 
 # ============================================================================
 # Registry provider

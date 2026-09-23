@@ -21,11 +21,68 @@ a stack of cascading failures.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Awaitable, Callable, TypeVar
 
 import pybreaker
 
 _logger = logging.getLogger(__name__)
+
+# 本机时钟（握手/首包/空闲）不是模型宕机，也不是 429。
+# 算进熔断会让一轮内部重试就把整个窗口停死。
+# 废弃代码（2026-09-22）：任何异常都计一次失败，满 5 次后本窗口不再连接模型。
+_LOCAL_DEADLINE_NAMES = frozenset(
+    {
+        "FirstTokenTimeoutError",
+        "StreamIdleTimeoutError",
+        "StreamConnectTimeoutError",
+        "TimeoutError",
+        "CancelledError",
+    }
+)
+_LOCAL_DEADLINE_TEXT = (
+    "provider connect handshake exceeded",
+    "provider produced no first response",
+    "provider stopped producing stream events",
+)
+
+
+def _is_local_deadline(exc: BaseException) -> bool:
+    if type(exc).__name__ in _LOCAL_DEADLINE_NAMES:
+        return True
+    text = str(exc).lower()
+    return any(piece in text for piece in _LOCAL_DEADLINE_TEXT)
+
+
+class _OpenedClock(pybreaker.CircuitBreakerListener):
+    """Wall clock for the open state. datetime comparison must not stick forever."""
+
+    def __init__(self) -> None:
+        self.mono: float | None = None
+        self.reopen_streak: int = 0
+
+    def state_change(self, cb, old_state, new_state) -> None:
+        new_name = getattr(new_state, "name", "")
+        old_name = getattr(old_state, "name", "")
+        if new_name == pybreaker.STATE_OPEN:
+            self.mono = time.monotonic()
+            if old_name == pybreaker.STATE_HALF_OPEN:
+                # The half-open probe failed again: keep backing off.
+                self.reopen_streak += 1
+            else:
+                self.reopen_streak = 0
+            _logger.warning(
+                "circuit_breaker opened name=%s reopen_streak=%d",
+                getattr(cb, "name", ""),
+                self.reopen_streak,
+            )
+        elif new_name == pybreaker.STATE_CLOSED:
+            self.mono = None
+            self.reopen_streak = 0
+            _logger.info(
+                "circuit_breaker closed name=%s", getattr(cb, "name", "")
+            )
+
 
 T = TypeVar("T")
 
@@ -34,6 +91,30 @@ SERVICE_UNAVAILABLE_MESSAGE = (
     "[model unavailable] 服务暂时不可用，请稍后重试。"
     "(LLM service temporarily unavailable)"
 )
+
+
+def service_unavailable_detail(breaker: "LLMCircuitBreaker") -> str:
+    """2026-09-23：熔断打开时返回带具体信息的用户可读消息。
+
+    此前只返回一句「服务暂时不可用」，用户不知道发生了什么、要等多久、
+    能不能自动恢复。现在带上：连续失败次数、冷却剩余秒数、下一步建议。
+    """
+    fail_count = getattr(breaker.breaker, "fail_counter", 0) or 0
+    cooldown = breaker._current_cooldown()
+    mono = breaker._opened_clock.mono
+    remaining = 0
+    if mono is not None:
+        import time as _time
+        remaining = max(0, int(cooldown - (_time.monotonic() - mono)))
+    parts = [
+        f"[model unavailable] 模型服务连接失败（已连续失败 {fail_count} 次）。",
+    ]
+    if remaining > 0:
+        parts.append(f"冷却中，约 {remaining} 秒后自动重试。")
+    else:
+        parts.append("冷却已结束，下一次请求会自动尝试重连。")
+    parts.append("如果持续失败，请检查网络连接或切换模型。")
+    return " ".join(parts)
 
 
 def load_config() -> dict:
@@ -61,12 +142,71 @@ class LLMCircuitBreaker:
     a running asyncio event loop.
     """
 
-    def __init__(self, fail_max: int = 5, reset_timeout: int = 60, name: str = "llm"):
+    def __init__(
+        self,
+        fail_max: int = 5,
+        reset_timeout: int = 60,
+        name: str = "llm",
+        max_reset_timeout: int = 300,
+    ):
+        self._opened_clock = _OpenedClock()
+        self._base_reset_timeout = float(reset_timeout)
+        self._max_reset_timeout = float(max_reset_timeout)
         self.breaker = pybreaker.CircuitBreaker(
             fail_max=fail_max,
             reset_timeout=reset_timeout,
             name=name,
+            exclude=[_is_local_deadline],
+            listeners=[self._opened_clock],
         )
+
+    def _current_cooldown(self) -> float:
+        """Cooldown for the current open episode.
+
+        A failed half-open probe re-opens the breaker; without backoff that
+        re-interrupts the user every ``reset_timeout`` seconds for as long
+        as the provider is down. Each consecutive re-trip doubles the wait,
+        capped at ``max_reset_timeout``. Closing resets the streak.
+        """
+        streak = self._opened_clock.reopen_streak
+        return min(
+            self._base_reset_timeout * (2.0 ** max(streak, 0)),
+            self._max_reset_timeout,
+        )
+
+    def _is_cooled(self) -> bool:
+        """True when the current open episode has outlived its cooldown."""
+        if self._opened_clock.mono is not None:
+            if (time.monotonic() - self._opened_clock.mono) >= self._current_cooldown():
+                return True
+        opened_at = self.breaker._state_storage.opened_at
+        if opened_at:
+            from datetime import datetime, timedelta
+            from pybreaker import UTC
+
+            return datetime.now(UTC) >= opened_at + timedelta(
+                seconds=self._current_cooldown()
+            )
+        return False
+
+    def is_blocking(self) -> bool:
+        """True when calls should fast-fail right now.
+
+        Self-healing: an open breaker whose cooldown has elapsed is no
+        longer blocking — it is moved to half-open here so the next real
+        call becomes the probe. Read-only callers (prewarm / keep-alive
+        guards) use this so a cooled breaker never wedges the window
+        until process restart.
+        """
+        try:
+            if self.breaker.current_state != pybreaker.STATE_OPEN:
+                return False
+            if self._is_cooled():
+                self.breaker.half_open()
+                return False
+            return True
+        except Exception:
+            return False
 
     async def call(self, fn: Callable[..., Awaitable[T]], *args: Any, **kwargs: Any) -> T:
         """Await ``fn(*args, **kwargs)`` through the breaker.
@@ -88,14 +228,9 @@ class LLMCircuitBreaker:
         # producing an un-awaited coroutine. Instead, replicate the timeout
         # check and drive the open -> half-open transition ourselves.
         if self.breaker.current_state == pybreaker.STATE_OPEN:
-            from datetime import datetime, timedelta
-            from pybreaker import UTC
-
-            opened_at = self.breaker._state_storage.opened_at
-            timeout = timedelta(seconds=self.breaker.reset_timeout)
-            if opened_at and datetime.now(UTC) < opened_at + timeout:
+            if not self._is_cooled():
                 raise pybreaker.CircuitBreakerError(
-                    "Timeout not elapsed yet, circuit breaker still open"
+                    "model calls paused, circuit breaker still open"
                 )
             self.breaker.half_open()
 
@@ -113,13 +248,27 @@ class LLMCircuitBreaker:
             return captured["result"]
 
         try:
-            return self.breaker.call(_record)
+            out = self.breaker.call(_record)
         except Exception as exc:
             # CircuitBreakerError from threshold crossing should surface as
             # the original error for the caller's current attempt.
             if "exc" in captured and exc is not captured["exc"]:
                 raise captured["exc"] from exc
             raise
+        if "exc" in captured:
+            # Permanent observability (replaces the 2026-09-22 ad-hoc
+            # debug probes): every counted failure names its exception so
+            # the next "window stuck on cooldown" report is diagnosable
+            # from rxycode.log instead of guesswork.
+            exc = captured["exc"]
+            detail = str(exc).replace("\n", " ")[:200]
+            _logger.warning(
+                "circuit_breaker failure counted name=%s type=%s detail=%s",
+                getattr(self.breaker, "name", ""),
+                type(exc).__name__,
+                detail,
+            )
+        return out
 
 
 #: Keyed breakers. Single-agent path uses ``"default"``.
@@ -148,6 +297,19 @@ def get_default_breaker() -> LLMCircuitBreaker:
         _BREAKERS.setdefault("default", _default_breaker)
         return _default_breaker
     return get_breaker("default")
+
+
+def breaker_is_open() -> bool:
+    """True when the single-agent breaker should fast-fail right now.
+
+    Goes through ``LLMCircuitBreaker.is_blocking``: a cooled breaker is
+    moved to half-open and reported as not blocking, so guards that share
+    this check can never wedge the window open until process restart.
+    """
+    try:
+        return get_default_breaker().is_blocking()
+    except Exception:
+        return False
 
 
 def reset_all_breakers() -> None:

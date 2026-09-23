@@ -7,6 +7,21 @@ import { type ModelInfo } from "./api.ts";
  * - Recent switches are *also* listed under 最近常用 (duplicates, same value id)
  * - Display title = nickname || vendor model id (not namespaced config key)
  */
+function modelDisplayTitle(m: ModelInfo, collide: boolean): string {
+  const base = m.nickname || m.provider_model_id || m.name || m.id;
+  if (!collide) return base;
+  const provider = m.category || m.provider_name || "";
+  const host = (() => {
+    try {
+      return m.base_url ? new URL(m.base_url).host : "";
+    } catch {
+      return "";
+    }
+  })();
+  const tag = host || provider;
+  return tag && !base.includes(tag) ? `${base} · ${tag}` : base;
+}
+
 export function buildModelListOptions(
   models: ModelInfo[],
   recent: string[],
@@ -15,6 +30,11 @@ export function buildModelListOptions(
   const recentIds = recent;
   const providerNames = new Set<string>();
   const opts: DialogSelectOption<string>[] = [];
+  const titleCount = new Map<string, number>();
+  for (const m of models) {
+    const base = m.nickname || m.provider_model_id || m.name || m.id;
+    titleCount.set(base, (titleCount.get(base) || 0) + 1);
+  }
 
   for (const m of models) {
     const provider =
@@ -22,7 +42,8 @@ export function buildModelListOptions(
     if (provider !== "其他") {
       providerNames.add(provider);
     }
-    const title = m.nickname || m.provider_model_id || m.name || m.id;
+    const rawTitle = m.nickname || m.provider_model_id || m.name || m.id;
+    const title = modelDisplayTitle(m, (titleCount.get(rawTitle) || 0) > 1);
     const vendor = m.provider_model_id || m.name || "";
     const host = (() => {
       try {
@@ -55,7 +76,8 @@ export function buildModelListOptions(
     const m = models.find((item) => item.id === recentId);
     if (!m) continue;
     const provider = m.category || m.provider_name || "其他";
-    const title = m.nickname || m.provider_model_id || m.name || m.id;
+    const rawTitle = m.nickname || m.provider_model_id || m.name || m.id;
+    const title = modelDisplayTitle(m, (titleCount.get(rawTitle) || 0) > 1);
     const host = (() => {
       try {
         return m.base_url ? new URL(m.base_url).host : "";

@@ -77,11 +77,16 @@ async def dispatch_subagent_task(
 
     parent_session_id = manager.primary_session_id()
 
+    # description is the task-tool UI label only. Never copy it into
+    # ContextEnvelope.task — that string was often "explore codebase".
+    # 废弃代码（2026-09-21）：
+    # if references or description:
+    #     context = ContextEnvelope(..., task=description or prompt, ...)
     context = None
-    if references or description:
+    if prompt or references:
         context = ContextEnvelope(
             parent_session_id=parent_session_id,
-            task=description or prompt,
+            task=prompt,
             references=references,
         )
 
@@ -157,9 +162,12 @@ def dispatch_subagent_task_sync(
 subagent_task_tool = StructuredTool(
     name="task",
     description=(
-        "Dispatch a task to a child subagent (isolated session, own permissions "
-        "and budget). Use for complex searches, analysis, or tasks that benefit "
-        "from a fresh context. Returns a structured result summary."
+        "Spawn an isolated child subagent (own context, permissions, budget). "
+        "Use agent_id='explore' for read-only codebase investigation: find files, "
+        "grep symbols, explain how a module works; explore cannot edit. "
+        "Use general/scout/reviewer for other delegated analysis. "
+        "Do not spawn for greetings or a single-file bugfix the parent can do. "
+        "Returns a structured result summary."
     ),
     func=dispatch_subagent_task_sync,
     coroutine=dispatch_subagent_task_async,

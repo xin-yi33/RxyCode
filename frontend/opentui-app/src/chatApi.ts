@@ -5,6 +5,7 @@ import type { CommandResult } from "./transport/httpAdmin.ts";
 import type { ChatApiCallbacks, MessageUpdater } from "./transport/types.ts";
 import type { Mode, StatusInfo } from "./types.ts";
 
+export { getChatTransport };
 export type { ChatApiCallbacks, MessageUpdater };
 
 export async function fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
@@ -17,6 +18,10 @@ export async function sendCommand(command: string): Promise<CommandResult> {
 
 export async function cancelActiveRequest(): Promise<void> {
   return getChatTransport().cancelActiveRequest();
+}
+
+export async function steerTurn(text: string, mode?: Mode) {
+  return getChatTransport().steerTurn(text, mode);
 }
 
 export async function respondApproval(
@@ -38,8 +43,9 @@ export async function sendChatMessage(
   mode: Mode,
   callbacks: ChatApiCallbacks,
   signal?: AbortSignal,
+  displayContent?: string,
 ): Promise<void> {
-  return getChatTransport().sendChatMessage(content, mode, callbacks, signal);
+  return getChatTransport().sendChatMessage(content, mode, callbacks, signal, displayContent);
 }
 
 export async function invokeSubagent(agentId: string, prompt: string) {

@@ -61,11 +61,11 @@ class TestMemoryManager:
         ctx = mm.get_context_for_prompt()
         assert "remembered context" in ctx
 
-    def test_get_context_for_prompt_truncates_long_term(self, tmp_path, monkeypatch):
+    def test_get_context_for_prompt_keeps_long_term(self, tmp_path, monkeypatch):
         mm = self._make(tmp_path, monkeypatch)
         mm.long_term.save_session_context("x" * 3000)
         ctx = mm.get_context_for_prompt()
-        assert "..." in ctx
+        assert "x" * 3000 in ctx
 
     def test_save_session(self, tmp_path, monkeypatch):
         mm = self._make(tmp_path, monkeypatch)
@@ -202,7 +202,7 @@ class TestMemoryManager:
         assert mm.short_term.window_size == 4
         assert mm.threshold == 8
 
-    def test_message_threshold_compacts_and_persists_old_context(
+    def test_message_threshold_does_not_archive_on_add(
         self, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
@@ -216,11 +216,11 @@ class TestMemoryManager:
         for index in range(4):
             mm.add_interaction(f"question {index}", f"answer {index}")
 
-        assert mm.short_term.message_count < mm.threshold
-        assert "question 0" in mm.long_term.load_session_context()
+        assert mm.short_term.message_count == 8
+        assert "question 0" in mm.get_context_for_prompt()
         assert "question 3" in mm.get_context_for_prompt()
 
-    def test_minimum_window_archives_without_deque_data_loss(
+    def test_minimum_window_keeps_latest_turn(
         self, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
@@ -233,10 +233,10 @@ class TestMemoryManager:
         mm = MemoryManager()
         mm.add_interaction("minimum-window question", "minimum-window answer")
 
-        assert mm.short_term.message_count == 0
-        archived = mm.long_term.load_session_context()
-        assert "minimum-window question" in archived
-        assert "minimum-window answer" in archived
+        assert mm.short_term.message_count == 2
+        ctx = mm.get_context_for_prompt()
+        assert "minimum-window question" in ctx
+        assert "minimum-window answer" in ctx
 
     def test_verified_and_failed_experiences_are_persisted_and_retrieved(
         self, tmp_path, monkeypatch,

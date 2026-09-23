@@ -17,11 +17,13 @@ def test_protocol_tui_keeps_recovery_events_in_tool_order() -> None:
     methods = [item.method for item in emitted]
     assert methods == [
         "event/tool_begin",
+        "event/progress",
         "event/tool_end",
         "event/recovery_started",
         "event/recovery_analyzing",
         "event/recovery_attempt",
         "event/tool_begin",
+        "event/progress",
         "event/tool_end",
         "event/recovery_resolved",
     ]
@@ -56,3 +58,12 @@ def test_protocol_tui_redacts_and_bounds_recovery_and_tool_summaries() -> None:
     assert "super-secret" not in str(tool_end)
     assert "super-secret" not in str(exhausted)
     assert len(str(tool_end.summary)) < 5000
+
+
+def test_tool_error_is_not_event_error() -> None:
+    emitted: list[BaseModel] = []
+    tui = ProtocolTui("session-biz", emitted.append, run_id="run-biz")
+    tui.write_tool_call("bash", {"command": "false"}, "call-biz")
+    tui.write_tool_result("[error: exit 1]", "error", "call-biz")
+    assert any(item.method == "event/tool_end" for item in emitted)
+    assert not any(item.method == "event/error" for item in emitted)

@@ -103,6 +103,13 @@ class ContextCompressor:
     ) -> tuple[list[dict], str, bool]:
         """Async compression: full Tier 1 + 2 + 3 (may call LLM).
 
+        废弃标注（2026-09-23）：生产链路无调用者（grep 全仓库仅
+        tests/test_core/test_compressor.py 引用）。下方旧 docstring 声称的
+        "MemoryManager.compress_if_needed() / LangGraph compressor_node"
+        链路已不存在——compress_if_needed 现仅代理 get_context_for_prompt，
+        occupancy 压缩在 core/compaction.py 的 run_compaction_ladder。
+        保留原因：测试仍守卫 Tier 3（LLM 摘要）行为，删除需同步移除测试。
+
         Used by MemoryManager.compress_if_needed() which is called
         from the LangGraph compressor_node.
 

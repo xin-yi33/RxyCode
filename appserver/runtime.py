@@ -7,6 +7,9 @@ from typing import Any
 
 _session_id: ContextVar[str] = ContextVar("appserver_session_id", default="latest")
 _tui: ContextVar[Any | None] = ContextVar("appserver_tui", default=None)
+#: 2026-09-23（P0 answer-last）：子代理执行期间深度 +1。ProtocolTui 打标
+#: 时读取：depth>=1 的流式文本/进度是中间输出，不得渲染成最终答复。
+_delegate_depth: ContextVar[int] = ContextVar("appserver_delegate_depth", default=0)
 
 
 def bind_prompt_context(session_id: str, tui: Any) -> tuple[Token[str], Token[Any | None]]:
@@ -24,6 +27,20 @@ def get_bound_session_id() -> str:
 
 def get_bound_tui() -> Any | None:
     return _tui.get()
+
+
+def bind_delegate_depth() -> Token[int]:
+    """进入子代理执行：深度 +1。返回 token 供 reset_delegate_depth。"""
+    return _delegate_depth.set(_delegate_depth.get() + 1)
+
+
+def reset_delegate_depth(token: Token[int]) -> None:
+    _delegate_depth.reset(token)
+
+
+def current_delegate_depth() -> int:
+    """0 = 主代理；>=1 = 子代理（专家团角色 / task 子代理）。"""
+    return _delegate_depth.get()
 
 
 def install_tui_context_hook() -> None:

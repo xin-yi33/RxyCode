@@ -12,7 +12,7 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 | File | Role |
 |------|------|
 | `__init__.py` | Package marker；产品包 `__init__.py` 把裸名 `protocol`（以及 `core` / `utils` 等）统一到 `RxyCode.RxyCode1_1_0.*`，避免两套 class |
-| `version.py` | `PROTOCOL_VERSION` (currently `1.0.0`) |
+| `version.py` | `PROTOCOL_VERSION` (currently `1.1.0`; `PROTOCOL_VERSION_MIN` `1.0.0`) |
 | `requests.py` | Client -> server (`initialize`, `session/*` incl. `set_thinking_expanded` / `warm`, `shutdown`, `models/*` incl. `ModelsSetActiveRequest.effort`（2026-08-12：optional_field，全局思考强度档位）） |
 | `notifications.py` | Server -> client one-way events |
 | `server_requests.py` | Server -> client messages that need a reply (approval, question) |

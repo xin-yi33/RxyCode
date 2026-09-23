@@ -420,22 +420,27 @@ class TestSafeToolProxies:
         expected = "[error: tool 'read' timed out after 0.01s]"
         assert started.is_set()
         assert cancelled.is_set()
-        assert result == expected
+        assert result.startswith(expected)
+        assert "still running" in result
+        assert "call=read(" in result
         assert len(events) == 2
         assert events[0][0] == "call"
         assert events[0][1]
-        assert events[1] == ("result", events[0][1], "timeout", expected)
+        assert events[1][0] == "result"
+        assert events[1][1] == events[0][1]
+        assert events[1][2] == "timeout"
+        assert str(events[1][3]).startswith(expected)
         assert len(evidence) == 1
         assert evidence[0].status == "failed"
         assert evidence[0].executed is True
-        assert evidence[0].detail == expected
+        assert str(evidence[0].detail).startswith(expected)
         records = [
             json.loads(line)
             for line in audit_path.read_text(encoding="utf-8").splitlines()
         ]
         assert len(records) == 1
         assert records[0]["approval"] == "auto"
-        assert records[0]["result"] == expected
+        assert str(records[0]["result"]).startswith(expected)
 
 
 class TestEvidenceCapture:
@@ -669,3 +674,45 @@ class TestAuditIntegration:
         orch = ToolOrchestrator()
         result = await orch.execute_tool("ghost", {}, config={"safety": {"enabled": True}})
         assert "not found" in result
+
+
+def test_vision_stall_timeout_returns_sooner_than_bash():
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    cfg = {"execution": {"tool_timeout_seconds": 1800}}
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "vision") == 30.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "read") == 60.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "bash") == 1800.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "shell") == 1800.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "web_search") == 30.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "unknown") == 120.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "question") == 0.0
+    assert ToolOrchestrator._tool_timeout_seconds(cfg, "browser_navigate") == 600.0
+
+
+def test_shell_alias_routes_to_bash():
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    assert ToolOrchestrator._canonical_name("shell") == "bash"
+    assert ToolOrchestrator._canonical_name("BASH") == "bash"
+    orch = ToolOrchestrator()
+    marker = object()
+    orch.register("bash", marker)
+    assert orch.get("shell") is marker
+    assert orch.get("bash") is marker
+
+
+def test_open_alias_routes_to_open_file():
+    from RxyCode.RxyCode1_1_0.core.safety.policy import canonical_tool_name
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    assert canonical_tool_name("open") == "open_file"
+    assert canonical_tool_name("browser") == "open_file"
+    assert ToolOrchestrator._canonical_name("open") == "open_file"
+    assert ToolOrchestrator._canonical_name("BROWSER") == "open_file"
+    orch = ToolOrchestrator()
+    marker = object()
+    orch.register("open_file", marker)
+    assert orch.get("open") is marker
+    assert orch.get("browser") is marker
+    assert orch.get("open_file") is marker

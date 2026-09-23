@@ -49,6 +49,14 @@ describe("filterAndGroup", () => {
     const clear = flat.find((c) => c.name === "/clear");
     expect(clear?.description).toBe("清除对话上下文");
     expect(clear?.category).toBe("会话");
+
+    const explore = flat.find((c) => c.name === "/explore");
+    expect(explore?.description).toBe("本轮强制只读 explore 子代理");
+    expect(explore?.category).toBe("Agent");
+
+    const why = flat.find((c) => c.name === "/why-mode");
+    expect(why?.description).toBe("上次为何是 solo / team / explore");
+    expect(why?.category).toBe("Agent");
   });
 
   test("flatIndex is contiguous across items only", () => {

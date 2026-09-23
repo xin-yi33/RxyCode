@@ -20,7 +20,7 @@ provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状�
 | compaction_threshold | 压缩阈值 | `232_000` | 同上（DeepSeek `943_718` ≈ 1M 的 90%） |
 | tokenizer | 估算方式（tiktoken:xxx / chars:ratio） | `"tiktoken:o200k_base"` | 同上（DeepSeek/Doubao 用 `"chars:2.0"`） |
 | supports_function_calling | 原生 FC | `True` | 同上 |
-| supports_reasoning | 推理模型 | `False` | 同上（DeepSeek 按模型名决定；Doubao `True`） |
+| supports_reasoning | 推理模型 | `False` | 同上（DeepSeek 按模型名决定，含 `deepseek-v4.1-flash`；Doubao `True`） |
 | accepts_temperature | 是否接受 temperature | `True` | 同上（DeepSeek thinking 模式下 `False`） |
 | supports_vision | 多模态输入 | `False` | 同上 |
 | supports_prompt_cache | 前缀缓存 | `True` | 同上 |
@@ -40,6 +40,13 @@ provider 描述"这一族模型和 OpenAI 默认行为有什么不同"，无状�
 | cache_read_flat | `("prompt_cache_hit_tokens",)` |
 | cache_read_nested | `(("prompt_tokens_details", "cached_tokens"), ("input_token_details", "cache_read"))` |
 | reasoning | `("reasoning_content",)` |
+
+> **`usage_fields.reasoning` 是内容字段映射（delta/message 上的 `reasoning_content`），不是
+> usage 计数路径**（计数路径是 `reasoning_nested`）。2026-09-23 修复：KimiProvider 曾把
+> `reasoning` 误置为 `()`（与 `reasoning_nested` 混淆），导致 kimi 流式轮次
+> `extract_reasoning` 恒返回空串、思维链全部丢失（探针证据：`tui.reasoning.emit` 缺失 +
+> `session.final.thinking thinking_len=0`）。GLM 同样 `reasoning=()` 但覆写了
+> `extract_reasoning` 带 fallback 链，不受影响。
 
 能力优先级（`model_capabilities.py` 模块 docstring）：用户在模型配置里显式写的字段 >
 Provider 探测结果 > Provider 默认值。所有 provider 的 `capabilities()` 都基于

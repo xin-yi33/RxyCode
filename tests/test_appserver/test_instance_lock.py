@@ -51,6 +51,26 @@ def test_unreaped_killed_holder_lock_is_stolen(tmp_path: Path) -> None:
         holder.wait(timeout=5)
 
 
+def test_preempt_skips_fresh_live_holder(tmp_path: Path) -> None:
+    path = tmp_path / "appserver.lock"
+    holder = _live_holder(tmp_path)
+    path.write_text(
+        json.dumps({"pid": holder.pid, "started_at": __import__("time").time()}),
+        encoding="utf-8",
+    )
+    try:
+        lock = InstanceLock(path)
+        ok, reason = lock.acquire()
+        assert ok is False
+        ok, reason = lock.preempt_and_acquire()
+        assert ok is False
+        assert "already running" in reason
+        assert holder.poll() is None
+    finally:
+        holder.kill()
+        holder.wait(timeout=5)
+
+
 def test_preempt_kills_live_holder_then_acquires(tmp_path: Path) -> None:
     path = tmp_path / "appserver.lock"
     holder = _live_holder(tmp_path)
@@ -64,6 +84,21 @@ def test_preempt_kills_live_holder_then_acquires(tmp_path: Path) -> None:
         holder.wait(timeout=5)
         assert holder.poll() is not None
         lock.release()
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+
+
+def test_multi_stdio_keeps_the_other_window(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RXYCODE_APPSERVER_LOCK", str(tmp_path / "appserver.lock"))
+    monkeypatch.setenv("RXYCODE_APPSERVER_MULTI", "1")
+    monkeypatch.delenv("RXYCODE_APPSERVER_PREEMPT", raising=False)
+    holder = _live_holder(tmp_path)
+    try:
+        server = AppServer(stub=True)
+        assert server._instance_blocked is None
+        assert holder.poll() is None
     finally:
         if holder.poll() is None:
             holder.kill()

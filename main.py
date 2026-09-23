@@ -578,7 +578,18 @@ def _launch_opentui_tui(model, port):
     env["RXYCODE_TRANSPORT"] = transport
     env["RXYCODE_PROJECT_ROOT"] = _repo_root()
     env["RXYCODE_APPSERVER_PYTHON"] = sys.executable
-    env["RXYCODE_WORKSPACE_ROOT"] = os.getcwd()
+    # 废弃代码（2026-09-22）：env["RXYCODE_APPSERVER_PREEMPT"] = "1"
+    # 第二扇 OpenTUI 会因 appserver.lock 启动失败。
+    env["RXYCODE_APPSERVER_MULTI"] = "1"
+    env["RXYCODE_APPSERVER_PREEMPT"] = "0"
+    try:
+        from .appserver.workspace import resolve_launch_workspace
+    except ImportError:
+        from RxyCode.RxyCode1_1_0.appserver.workspace import resolve_launch_workspace
+
+    launch_cwd = os.getcwd()
+    workspace_root = str(resolve_launch_workspace(launch_cwd))
+    env["RXYCODE_WORKSPACE_ROOT"] = workspace_root
     if model:
         env["RXYCODE_MODEL"] = str(model)
 
@@ -713,6 +724,12 @@ def cli(ctx, model, api, api_port, log_level, print_logs):
             os._exit(1)
 
         # 初始化应用级日志（对标 opencode 日志模式，key=value 结构化格式）
+        import warnings
+        os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
+        warnings.filterwarnings(
+            "ignore",
+            message=r"langchain-openai injected a custom httpx transport.*",
+        )
         from .log.logger import setup_logging
         _log = setup_logging(level=log_level, print_logs=print_logs)
 

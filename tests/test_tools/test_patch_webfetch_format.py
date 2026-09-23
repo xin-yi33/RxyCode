@@ -290,3 +290,31 @@ class TestRunFormat:
         f.write_text("content", encoding="utf-8")
         result = self._format(filePath=str(f))
         assert "no formatter" in result.lower() or "supported" in result.lower()
+
+
+class TestWebfetchUnwrap:
+    def test_unwraps_baidu_click_wrapper(self):
+        from RxyCode.RxyCode1_1_0.tools.webfetch import unwrap_click_url
+
+        wrapped = "https://www.baidu.com/link?url=https%3A%2F%2Fexample.com%2Fpage&wd=q"
+        assert unwrap_click_url(wrapped) == "https://example.com/page"
+
+    def test_leaves_normal_url(self):
+        from RxyCode.RxyCode1_1_0.tools.webfetch import unwrap_click_url
+
+        assert unwrap_click_url("https://example.com/a") == "https://example.com/a"
+
+    def test_strips_iframe_ads(self):
+        from RxyCode.RxyCode1_1_0.tools.webfetch import _html_to_text, strip_boilerplate_html
+
+        html = "<p>正文</p><iframe src='ad'>前列腺广告</iframe><div class='ads'>买药</div>"
+        cleaned = strip_boilerplate_html(html)
+        text = _html_to_text(cleaned)
+        assert "正文" in text
+        assert "前列腺广告" not in text
+
+    def test_decode_gb18030(self):
+        from RxyCode.RxyCode1_1_0.tools.webfetch import decode_response_body
+
+        raw = "你好".encode("gb18030")
+        assert "你好" in decode_response_body(raw, "text/html; charset=gb18030")

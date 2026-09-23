@@ -172,6 +172,10 @@ export type ThinkingExpanded = boolean | null;
  * GX14 Ask/Edit/Agent hard tool boundary (default full).
  */
 export type Capability = ("no_tools" | "edit_only" | "full") | null;
+/**
+ * Client turn UUID for idempotent retries. Never the JSON-RPC message id.
+ */
+export type RequestId = string | null;
 export type Method3 = "session/interrupt";
 export type SessionId1 = string;
 export type Method4 = "session/set_thinking_expanded";
@@ -247,7 +251,7 @@ export type Limit = number;
 export type Method26 = "turn/start";
 export type SessionId18 = string;
 export type Text1 = string;
-export type RequestId = string | null;
+export type RequestId1 = string | null;
 export type TimeoutSeconds2 = number | null;
 export type Method27 = "turn/steer";
 export type SessionId19 = string;
@@ -256,7 +260,7 @@ export type Method28 = "turn/interrupt";
 export type SessionId20 = string;
 export type Method29 = "turn/retry";
 export type SessionId21 = string;
-export type RequestId1 = string;
+export type RequestId2 = string;
 export type Text3 = string | null;
 export type Method30 = "command/start";
 export type SessionId22 = string;
@@ -314,7 +318,7 @@ export type Method40 = "approval/full_access_enable";
 export type Actor2 = string;
 export type Source = string;
 export type Method41 = "review/start";
-export type RequestId2 = string;
+export type RequestId3 = string;
 export type SessionId28 = string | null;
 export type ThreadId3 = string | null;
 export type TurnId1 = string | null;
@@ -435,7 +439,7 @@ export type RootSessionId1 = string;
 export type Method69 = "agent/invoke";
 export type RootSessionId2 = string;
 export type ParentSessionId1 = string | null;
-export type RequestId3 = string | null;
+export type RequestId4 = string | null;
 export type AgentId = string;
 export type Prompt = string;
 export type OutputSchema = string | null;
@@ -449,7 +453,7 @@ export type Capability1 = ("no_tools" | "edit_only" | "full") | null;
 export type Method70 = "task/start";
 export type RootSessionId3 = string;
 export type ParentSessionId2 = string | null;
-export type RequestId4 = string | null;
+export type RequestId5 = string | null;
 export type AgentId1 = string;
 export type Prompt1 = string;
 export type OutputSchema1 = string | null;
@@ -470,7 +474,7 @@ export type SessionId48 = string | null;
 export type Method74 = "child_sessions/retry";
 export type RootSessionId7 = string;
 export type SessionId49 = string;
-export type RequestId5 = string | null;
+export type RequestId6 = string | null;
 export type Method75 = "shutdown";
 export type Reason2 = string | null;
 export type Method76 = "models/list";
@@ -713,13 +717,16 @@ export type RoutingReason = string | null;
 export type Method134 = "event/message_delta";
 export type SessionId66 = string;
 export type Text4 = string;
+export type Intermediate = boolean;
 export type Method135 = "event/progress";
 export type SessionId67 = string;
 export type Text5 = string;
+export type Intermediate1 = boolean;
 export type Method136 = "event/reasoning_snapshot";
 export type SessionId68 = string;
 export type Text6 = string;
 export type Snapshot = boolean;
+export type Intermediate2 = boolean;
 export type Method137 = "event/plan";
 export type SessionId69 = string;
 export type Steps1 = string[];
@@ -770,6 +777,7 @@ export type CacheHitTokens = number | null;
 export type CacheWriteTokens = number | null;
 export type CacheHitRate = number | null;
 export type ReportingStatus = "reported" | "partial" | "not_reported";
+export type ContextUsed = number | null;
 export type Method145 = "event/agent_usage";
 export type SessionId77 = string;
 export type Seq1 = number;
@@ -779,7 +787,7 @@ export type CacheHitTokens1 = number | null;
 export type CacheWriteTokens1 = number | null;
 export type CacheHitRate1 = number | null;
 export type ReportingStatus1 = ("reported" | "partial" | "not_reported") | null;
-export type ContextUsed = number | null;
+export type ContextUsed1 = number | null;
 export type ContextWindow = number | null;
 export type UsedPct = number | null;
 export type Cost = number | null;
@@ -788,7 +796,7 @@ export type CostAvailable = boolean;
 export type Reason4 = string | null;
 export type Method146 = "event/agent_needs_input";
 export type SessionId78 = string | null;
-export type RequestId6 = string | null;
+export type RequestId7 = string | null;
 export type Kind2 = "needs_input";
 export type Preview = string | null;
 export type Method147 = "event/final";
@@ -892,10 +900,10 @@ export type DisplayName1 = string;
 export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
 export type Method163 = "approval/request";
 export type SessionId89 = string;
-export type RequestId7 = string;
+export type RequestId8 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action4 = string;
-export type RequestId8 = string;
+export type RequestId9 = string;
 export type Decision1 = "approved" | "rejected" | "allow_once" | "always_allow_level";
 export type Method164 = "question/request";
 export type SessionId90 = string;
@@ -966,14 +974,14 @@ export type TotalTimeoutS = number;
 export type MaxDelegations = number;
 export type Method165 = "agents/delegate";
 export type SessionId91 = string;
-export type RequestId9 = string;
+export type RequestId10 = string;
 export type ToRole = string;
 export type Stage1 = string;
 export type Task = string;
 export type ExpectedOutput1 = string;
 export type ContextKeys1 = string[];
 export type Depth = number;
-export type RequestId10 = string;
+export type RequestId11 = string;
 export type Role2 = string;
 export type Ok2 = boolean;
 export type Answer1 = string;
@@ -983,7 +991,7 @@ export type TokensUsed1 = number;
 export type DurationS = number;
 export type Method166 = "agents/consult";
 export type SessionId92 = string;
-export type RequestId11 = string;
+export type RequestId12 = string;
 export type FromRole = string;
 export type ToRole1 = string;
 export type Question1 = string;
@@ -1008,7 +1016,7 @@ export type Phase =
   | "budget_exceeded"
   | "team_completed";
 export type Detail = string;
-export type Mode1 = "solo" | "team" | "team_multi";
+export type Mode1 = "solo" | "team" | "team_multi" | "explore";
 export type DecidedBy = "user" | "heuristic" | "llm" | "default";
 export type Reason7 = string;
 export type TokensUsed2 = number;
@@ -1199,6 +1207,7 @@ export interface PromptRequest {
   mode?: Mode;
   thinking_expanded?: ThinkingExpanded;
   capability?: Capability;
+  request_id?: RequestId;
   [k: string]: unknown;
 }
 /**
@@ -1433,7 +1442,7 @@ export interface TurnStartRequest {
   method?: Method26;
   session_id: SessionId18;
   text: Text1;
-  request_id?: RequestId;
+  request_id?: RequestId1;
   timeout_seconds?: TimeoutSeconds2;
   [k: string]: unknown;
 }
@@ -1460,7 +1469,7 @@ export interface TurnInterruptRequest {
 export interface TurnRetryRequest {
   method?: Method29;
   session_id: SessionId21;
-  request_id: RequestId1;
+  request_id: RequestId2;
   text?: Text3;
   [k: string]: unknown;
 }
@@ -1596,7 +1605,7 @@ export interface ApprovalFullAccessEnableRequest {
  */
 export interface ReviewStartRequest {
   method?: Method41;
-  request_id: RequestId2;
+  request_id: RequestId3;
   session_id?: SessionId28;
   thread_id?: ThreadId3;
   turn_id?: TurnId1;
@@ -1883,7 +1892,7 @@ export interface AgentInvokeRequest {
   method?: Method69;
   root_session_id: RootSessionId2;
   parent_session_id?: ParentSessionId1;
-  request_id?: RequestId3;
+  request_id?: RequestId4;
   agent_id: AgentId;
   prompt: Prompt;
   output_schema?: OutputSchema;
@@ -1899,7 +1908,7 @@ export interface TaskStartRequest {
   method?: Method70;
   root_session_id: RootSessionId3;
   parent_session_id?: ParentSessionId2;
-  request_id?: RequestId4;
+  request_id?: RequestId5;
   agent_id: AgentId1;
   prompt: Prompt1;
   output_schema?: OutputSchema1;
@@ -1940,7 +1949,7 @@ export interface ChildSessionRetryRequest {
   method?: Method74;
   root_session_id: RootSessionId7;
   session_id: SessionId49;
-  request_id?: RequestId5;
+  request_id?: RequestId6;
   [k: string]: unknown;
 }
 /**
@@ -2637,6 +2646,7 @@ export interface MessageDelta {
   method?: Method134;
   session_id: SessionId66;
   text: Text4;
+  intermediate?: Intermediate;
   [k: string]: unknown;
 }
 /**
@@ -2646,6 +2656,7 @@ export interface ProgressUpdate {
   method?: Method135;
   session_id: SessionId67;
   text: Text5;
+  intermediate?: Intermediate1;
   [k: string]: unknown;
 }
 /**
@@ -2656,6 +2667,7 @@ export interface ReasoningSnapshot {
   session_id: SessionId68;
   text: Text6;
   snapshot?: Snapshot;
+  intermediate?: Intermediate2;
   [k: string]: unknown;
 }
 /**
@@ -2756,6 +2768,7 @@ export interface TokenUsage {
   cache_write_tokens?: CacheWriteTokens;
   cache_hit_rate?: CacheHitRate;
   reporting_status?: ReportingStatus;
+  context_used?: ContextUsed;
   [k: string]: unknown;
 }
 /**
@@ -2771,7 +2784,7 @@ export interface AgentUsage {
   cache_write_tokens?: CacheWriteTokens1;
   cache_hit_rate?: CacheHitRate1;
   reporting_status?: ReportingStatus1;
-  context_used?: ContextUsed;
+  context_used?: ContextUsed1;
   context_window?: ContextWindow;
   used_pct?: UsedPct;
   cost?: Cost;
@@ -2786,7 +2799,7 @@ export interface AgentUsage {
 export interface AgentNeedsInput {
   method?: Method146;
   session_id?: SessionId78;
-  request_id?: RequestId6;
+  request_id?: RequestId7;
   kind?: Kind2;
   preview?: Preview;
   [k: string]: unknown;
@@ -2990,7 +3003,7 @@ export interface WorkspaceChanged {
 export interface ApprovalRequest {
   method?: Method163;
   session_id: SessionId89;
-  request_id: RequestId7;
+  request_id: RequestId8;
   risk_level: RiskLevel;
   action: Action4;
   details?: Details;
@@ -3003,7 +3016,7 @@ export interface Details {
  * Reply consumed by ``POST /approve`` (api_server.py) / ``SseApproval``.
  */
 export interface ApprovalResponse {
-  request_id: RequestId8;
+  request_id: RequestId9;
   decision: Decision1;
   [k: string]: unknown;
 }
@@ -3114,7 +3127,7 @@ export interface Extra1 {
 export interface DelegateRequest {
   method?: Method165;
   session_id: SessionId91;
-  request_id: RequestId9;
+  request_id: RequestId10;
   to_role: ToRole;
   stage: Stage1;
   task: Task;
@@ -3127,7 +3140,7 @@ export interface DelegateRequest {
  * 成员 → 团长：一次委派的产出。
  */
 export interface DelegateResult {
-  request_id: RequestId10;
+  request_id: RequestId11;
   role: Role2;
   ok: Ok2;
   answer?: Answer1;
@@ -3146,7 +3159,7 @@ export interface DelegateResult {
 export interface ConsultRequest {
   method?: Method166;
   session_id: SessionId92;
-  request_id: RequestId11;
+  request_id: RequestId12;
   from_role: FromRole;
   to_role: ToRole1;
   question: Question1;

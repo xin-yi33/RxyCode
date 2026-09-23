@@ -1,6 +1,7 @@
 import type { Mode } from "./types.ts";
 import { MODE_LABELS } from "./types.ts";
 import { C } from "./theme.ts";
+import { stringWidth } from "./layout.ts";
 
 export interface StatusBarInput {
   connected: boolean;
@@ -66,7 +67,8 @@ export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
     const joined = candidate
       .map((k) => all.find((s) => s.key === k)!.text)
       .join(" │ ");
-    if (joined.length <= contentWidth) visible.add(key);
+    // CJK status labels are 2 columns; JS string.length would overflow the row.
+    if (stringWidth(joined) <= contentWidth) visible.add(key);
   }
 
   return order.filter((k) => visible.has(k)).map((k) => all.find((s) => s.key === k)!);

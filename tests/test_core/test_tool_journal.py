@@ -433,12 +433,15 @@ async def test_agent_resume_reuses_completed_call_but_new_run_gets_new_attempt(
 
 
 @pytest.mark.asyncio
-async def test_succeeded_run_with_pending_bash_does_not_rotate_attempt(tmp_path):
-    """A succeeded answer must not complete the checkpoint while bash is pending.
+async def test_returned_run_with_failed_bash_seals_attempt_and_reruns_writes(tmp_path):
+    """A run that returned seals its attempt even when a bash probe failed.
 
-    T09 repair turns reused the same prompt after a failed mysql/maven probe.
-    Completing the checkpoint rotated attempt_id; the orphan guard then
-    blocked later writes as journal_unavailable.
+    T09 repair turns reused the same prompt after a failed mysql/maven probe;
+    later writes must not be blocked as journal_unavailable. E14 showed the
+    other half: an unsealed attempt made the next identical prompt reuse a
+    completed ``write`` result instead of writing the file (journal_reuse).
+    废弃（2026-09-22）：旧断言 completed is False / has_pending True /
+    attempt_id 相同。
     """
     from langchain_core.tools import StructuredTool
 
@@ -494,11 +497,18 @@ async def test_succeeded_run_with_pending_bash_does_not_rotate_attempt(tmp_path)
     assert await agent._run_observed(
         "same request", "build", "journal-pending-bash"
     ) == "Coffee shop ready."
+    sealed_checkpoint = agent._checkpoint_store.load(
+        agent._checkpoint_store.checkpoint_id(
+            "journal-session", "same request", "build"
+        )
+    )
+    assert sealed_checkpoint["completed"] is True
+    first_attempt_id = sealed_checkpoint["attempt_id"]
+    assert agent._tool_journal.has_pending(first_attempt_id) is False
     first_attempt = agent._checkpoint_store.begin_attempt(
         "journal-session", "same request", "build"
     )
-    assert first_attempt["completed"] is False
-    assert agent._tool_journal.has_pending(first_attempt["attempt_id"]) is True
+    assert first_attempt["attempt_id"] != first_attempt_id
 
     later_writes = {"calls": 0}
 
@@ -531,7 +541,21 @@ async def test_succeeded_run_with_pending_bash_does_not_rotate_attempt(tmp_path)
     assert "journal unavailable" not in result
     assert result == "formatted: index.html"
     assert later_writes["calls"] == 1
-    assert resumed["attempt_id"] == first_attempt["attempt_id"]
+    assert resumed["attempt_id"] != first_attempt_id
+
+    # The same write again, on the same prompt, must execute again. The
+    # journal only replays inside one crashed attempt.
+    async def same_write_again(_user_input: str, _mode: str) -> str:
+        return await orchestrator.execute_tool(
+            "format", {"value": "index.html"}, config=config
+        )
+
+    agent._run_impl = same_write_again
+    repeated = await agent._run_observed(
+        "same request", "build", "journal-repeat-write"
+    )
+    assert repeated == "formatted: index.html"
+    assert later_writes["calls"] == 2
 
 
 def test_journal_retention_prunes_completed_but_never_pending_attempts(tmp_path):

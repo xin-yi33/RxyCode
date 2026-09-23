@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -11,13 +12,39 @@ from pydantic import BaseModel
 from ..protocol.notifications import ErrorNotification, FinalAnswer, ProgressUpdate, TokenUsage
 
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import BudgetExceeded, Coordinator
-from RxyCode.RxyCode1_1_0.core.agents.router import ExecutionMode, get_default_router
+from RxyCode.RxyCode1_1_0.core.agents.router import (
+    ExecutionMode,
+    get_default_router,
+    parse_route_intent,
+)
 from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
+from RxyCode.RxyCode1_1_0.recovery.error_recovery import should_emit_event_error
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
 
 
 EmitCallback = Callable[[BaseModel], None]
+
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from .runtime_probe import probe as _probe
+    except Exception:
+        def _probe(event, **fields):
+            return None
+
+_APPROVED_PLAN_IMPLEMENT_PREFIXES = (
+    "按已批准的计划开始实施",
+    "已批准计划，开始实施",
+)
+
+
+def _is_approved_plan_implement(text: str) -> bool:
+    head = (text or "").lstrip()
+    return any(head.startswith(prefix) for prefix in _APPROVED_PLAN_IMPLEMENT_PREFIXES)
 
 
 def primary_usage_counters() -> dict[str, int | float]:
@@ -75,6 +102,7 @@ class PromptResult:
     cache_write_tokens: int | None = None
     cache_hit_rate: float | None = None
     reporting_status: str = "not_reported"
+    context_used: int | None = None
 
 
 def thinking_cursor(agent: Any) -> tuple[tuple[str, ...], str]:
@@ -160,6 +188,15 @@ class Session:
         # is zero or one role="default" entry; prompt() still runs AgentV2.
         self.agent_runtimes: dict[str, Any] = {}
         self._shared_agent_memory: dict[str, Any] = {}
+        # Natural-language 开专家团 / 用子代理 persist for later turns.
+        self._session_route_enabled = False
+        self._session_subagents_opt_in = False
+        self.drain_steers: Callable[[], list[str]] | None = None
+        self._agents_enabled_cached = None
+        try:
+            self._agents_enabled_cached = self._read_agents_enabled()
+        except Exception:
+            self._agents_enabled_cached = False
 
     async def prompt(
         self,
@@ -172,14 +209,51 @@ class Session:
         permission_mode: str | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
+        try:
+            from .ttft_clock import (
+                bind_prompt_clock,
+                mark_reasoning,
+                reset_prompt_clock,
+            )
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.ttft_clock import (
+                bind_prompt_clock,
+                mark_reasoning,
+                reset_prompt_clock,
+            )
+        from RxyCode.RxyCode1_1_0.protocol.notifications import ReasoningSnapshot
+
+        clock_token = bind_prompt_clock()
         previous = primary_usage_counters()
         cursor = thinking_cursor(agent)
-        workspace = Path(self.workspace_root).expanduser().resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
-        if hasattr(agent, "_session_id"):
+        outer_emit = self.emit
+
+        def _emit_with_thinking_clock(notification: BaseModel) -> None:
+            if isinstance(notification, ReasoningSnapshot):
+                mark_reasoning(notification.text, kind="protocol")
+            outer_emit(notification)
+
+        self.emit = _emit_with_thinking_clock
+        if tui is not None:
+            tui._streamed_answer_chars = 0
+        workspace = getattr(self, "_resolved_workspace", None)
+        if workspace is None:
+            workspace = Path(self.workspace_root).expanduser().resolve()
+            self._resolved_workspace = workspace
+            if not workspace.exists():
+                workspace.mkdir(parents=True, exist_ok=True)
+        # 2026-09-23: prefer set_session() over bare attribute assignment so a
+        # session switch also rebuilds MemoryManager (bare assignment used to
+        # leave memory bound to the previous/"latest" bucket).  Same-session
+        # calls are a no-op inside set_session.
+        _set_session = getattr(agent, "set_session", None)
+        if callable(_set_session):
+            _set_session(self.session_id)
+        elif hasattr(agent, "_session_id"):
             agent._session_id = self.session_id
         if hasattr(agent, "_workspace_root"):
             agent._workspace_root = workspace
+        agent._drain_steers = self.drain_steers
 
         from RxyCode.RxyCode1_1_0.core.session_runtime import (
             bind_session,
@@ -189,7 +263,7 @@ class Session:
 
         session_token = bind_session(self.session_id)
         try:
-            set_working_directory(workspace)
+            set_working_directory(workspace, persist=False)
             try:
                 if permission_mode is None:
                     answer = await self._dispatch_user_turn(agent, text, mode)
@@ -201,17 +275,27 @@ class Session:
             except BudgetExceeded as exc:
                 answer = str(exc) or "team budget exceeded"
             except Exception as exc:
-                detail = str(exc)
+                raw = f"{type(exc).__name__}: {exc}"
+                detail = to_user_facing_error(raw)
+                # 2026-09-23：exhaust_active_recovery 只在有活跃恢复记录时才发，
+                # 避免和 ErrorNotification 重复显示同一条消息。
+                recovery_had_active = False
                 if tui is not None and hasattr(tui, "exhaust_active_recovery"):
-                    tui.exhaust_active_recovery(detail)
-                self.emit(
-                    ErrorNotification(
-                        session_id=self.session_id,
-                        run_id=run_id,
-                        message=detail,
-                        status="failed",
+                    tracker = getattr(tui, "_recovery", None)
+                    recovery_had_active = (
+                        tracker is not None
+                        and getattr(tracker, "active", None) is not None
                     )
-                )
+                    tui.exhaust_active_recovery(detail)
+                if should_emit_event_error(exc, retries_exhausted=True) and not recovery_had_active:
+                    self.emit(
+                        ErrorNotification(
+                            session_id=self.session_id,
+                            run_id=run_id,
+                            message=detail,
+                            status="failed",
+                        )
+                    )
                 return PromptResult(answer="", status="failed", detail=detail)
 
             status, detail = classify_agent_result(answer)
@@ -227,8 +311,35 @@ class Session:
                 else 0.0
             )
             thinking = thinking_since(agent, cursor)
+            # PROBE-20260923: event/final 携带的 thinking 长度——hydrate 后
+            # Thought 能否恢复完全取决于它（reasoning chunk 不持久化）。
+            _probe(
+                "session.final.thinking",
+                session_id=self.session_id,
+                thinking_len=len(thinking or ""),
+            )
 
             usage_reported = bool(delta_input or delta_output or delta_cache_hit_tokens)
+            latest = token_stats.latest_request
+            # Occupancy is the same tiktoken window compact uses. Billing
+            # prompt_tokens / turn deltas include cached prefix and must not
+            # drive the status bar.
+            occupancy = 0
+            occupancy_src = "token_stats"
+            msgs = getattr(agent, "_agent_prefix_messages", None)
+            est = getattr(agent, "_estimate_tokens", None)
+            if callable(est) and msgs:
+                try:
+                    occupancy = int(est(list(msgs)) or 0)
+                    occupancy_src = "estimate_tokens"
+                except Exception:
+                    occupancy = 0
+            if occupancy <= 0:
+                occupancy = int(getattr(token_stats, "context_used", 0) or 0)
+                occupancy_src = "token_stats"
+            latest_prompt = int(latest.get("prompt_tokens") or 0)
+            window_used = occupancy
+            streamed = int(getattr(tui, "_streamed_answer_chars", 0) or 0)
             usage_kwargs = {
                 "input_tokens": max(delta_input, 0) if usage_reported else None,
                 "output_tokens": max(delta_output, 0) if usage_reported else None,
@@ -236,7 +347,19 @@ class Session:
                 "cache_hit_rate": cache_hit_rate if usage_reported else None,
                 "reporting_status": "reported" if usage_reported else "not_reported",
             }
-            self.emit(TokenUsage(session_id=self.session_id, **usage_kwargs))
+            occupancy_kwargs = {"context_used": window_used or None}
+            self.emit(
+                TokenUsage(
+                    session_id=self.session_id,
+                    **occupancy_kwargs,
+                    **usage_kwargs,
+                )
+            )
+
+            if status == "failed" and streamed > 0:
+                # Tokens already reached the TUI (HTML/files already shown).
+                # A trailing [error]/empty classify must not paint MSG_DEFAULT.
+                status = "succeeded"
 
             if status == "succeeded":
                 if tui is not None and hasattr(tui, "resolve_active_recovery"):
@@ -256,37 +379,63 @@ class Session:
                     status=status,
                     detail=detail,
                     thinking=thinking,
+                    **occupancy_kwargs,
                     **usage_kwargs,
                 )
 
+            # 2026-09-23：exhaust_active_recovery 只在有活跃恢复记录时才发事件，
+            # 避免和下面的 ErrorNotification 重复显示同一条消息（用户现场：
+            # 「模型调用已暂停」在界面上出现两次）。
+            recovery_had_active = False
             if tui is not None and hasattr(tui, "exhaust_active_recovery"):
-                tui.exhaust_active_recovery(detail)
-            self.emit(
-                ErrorNotification(
-                    session_id=self.session_id,
-                    run_id=run_id,
-                    message=detail,
-                    status=status,
+                tracker = getattr(tui, "_recovery", None)
+                recovery_had_active = (
+                    tracker is not None and getattr(tracker, "active", None) is not None
                 )
-            )
+                tui.exhaust_active_recovery(detail)
+            visible = to_user_facing_error(detail)
+            # 如果 recovery tracker 刚发了 RecoveryExhausted（带着同一条错误），
+            # ErrorNotification 不再重复发。
+            if not recovery_had_active:
+                self.emit(
+                    ErrorNotification(
+                        session_id=self.session_id,
+                        run_id=run_id,
+                        message=visible,
+                        status=status,
+                    )
+                )
             return PromptResult(
                 answer=answer,
                 status=status,
                 detail=detail,
                 thinking=thinking,
+                **occupancy_kwargs,
                 **usage_kwargs,
             )
         finally:
+            self.emit = outer_emit
+            reset_prompt_clock(clock_token)
             reset_session_binding(session_token)
 
-    @staticmethod
-    def _agents_enabled() -> bool:
+    def _agents_enabled(self) -> bool:
         """Cheap read of agents.enabled. Missing config means the default (off).
 
         Avoid ``load_config()`` here: it creates a file on first use and would
         delay stub hangs / ``session/interrupt`` on a cold worker. Parse the
-        YAML text without importing yaml (lazy-import budget).
+        YAML text without importing yaml (lazy-import budget). Cached per
+        Session so the thinking-TTFT clock is not charged a config-file read
+        on every prompt.
         """
+        cached = getattr(self, "_agents_enabled_cached", None)
+        if cached is not None:
+            return cached
+        value = self._read_agents_enabled()
+        self._agents_enabled_cached = value
+        return value
+
+    @staticmethod
+    def _read_agents_enabled() -> bool:
         try:
             from RxyCode.RxyCode1_1_0.config.settings import get_config_path
 
@@ -304,11 +453,47 @@ class Session:
                     continue
                 stripped = line.lstrip()
                 if stripped.startswith("enabled:"):
-                    value = stripped.split(":", 1)[1].split("#", 1)[0].strip().lower()
-                    return value in {"true", "yes", "1"}
+                    raw = stripped.split(":", 1)[1].split("#", 1)[0].strip().lower()
+                    return raw in {"true", "yes", "1"}
             return False
         except Exception:
             return False
+
+    @staticmethod
+    def _appserver_stub() -> bool:
+        """Harness-only: stdio E2E measures routing, not live child LLM."""
+        return os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
+
+    async def _run_explore(self, prompt: str) -> str:
+        """Dispatch the builtin explore subagent (Grok Build spawn_subagent analogue)."""
+        self.emit(
+            ProgressUpdate(
+                session_id=self.session_id,
+                text="正在用 explore 子代理探索代码库...",
+            )
+        )
+        if self._appserver_stub():
+            return f"explore:{prompt}"
+        from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import dispatch_subagent_task
+
+        # 废弃代码（2026-09-21）：
+        # return await dispatch_subagent_task(
+        #     agent_id="explore", prompt=prompt, description="explore codebase",
+        # )
+        # description 曾写入 ContextEnvelope.task，子代理 Task: 变成这句展示文案。
+        return await dispatch_subagent_task(agent_id="explore", prompt=prompt)
+
+    def _apply_session_route_flags(self, agent: Any, text: str):
+        intent = parse_route_intent(text)
+        if intent.persist_route:
+            self._session_route_enabled = True
+        if intent.persist_subagents:
+            self._session_subagents_opt_in = True
+            try:
+                agent._session_subagents_opt_in = True
+            except Exception:
+                pass
+        return intent
 
     async def _dispatch_user_turn(self, agent: Any, text: str, mode: str) -> str:
         """Route slash commands and expert-team vs solo before AgentV2."""
@@ -320,12 +505,55 @@ class Session:
             cmd = head.lower()
             rest = tail.strip()
 
+        intent = self._apply_session_route_flags(agent, stripped)
+        if self._session_subagents_opt_in:
+            try:
+                agent._session_subagents_opt_in = True
+            except Exception:
+                pass
+
+        routing_cmds = {
+            "/solo",
+            "/team",
+            "/team-multi",
+            "/explore",
+            "/why-mode",
+            "/agents",
+        }
+        # 「用子代理」with no remainder only unhides `task` and records the
+        # session flag. Return before the router so we do not run AgentV2
+        # on the opt-in phrase itself.
+        if (
+            cmd not in routing_cmds
+            and intent.mode is None
+            and intent.persist_subagents
+            and not intent.remainder
+        ):
+            return (
+                "已为本会话打开子代理。下一条可以直接说需求；"
+                "只读查代码会走 explore，也可 @explore。"
+            )
         # Default product: agents.enabled=false. Stay on AgentV2 without
         # ModeRouter events or Coordinator setup so stub hangs / concurrent
-        # session/prompt overlap keep the previous latency.
-        if cmd not in {"/solo", "/team", "/team-multi", "/why-mode", "/agents"}:
-            if not self._agents_enabled():
-                return await agent.run(stripped, mode=mode)
+        # session/prompt overlap keep the previous latency. Natural-language
+        # 开专家团 / 用explore still enter the router. After 用子代理, skip
+        # the cheap path so allow_explore can actually dispatch builtin explore.
+        if cmd == "/compact":
+            compact = getattr(agent, "compact_now", None)
+            if compact is not None:
+                return await compact()
+            return "当前会话不支持 /compact。"
+        cheap = (
+            cmd not in routing_cmds
+            and intent.mode is None
+            and not intent.persist_route
+            and not self._session_route_enabled
+            and not self._session_subagents_opt_in
+            and not self._agents_enabled()
+        )
+        if cheap:
+            run_text = intent.remainder or stripped
+            return await agent.run(run_text, mode=mode)
 
         router = get_default_router()
         previous_emit = router._emit
@@ -344,15 +572,45 @@ class Session:
             if cmd == "/solo" and not rest:
                 return router.handle_slash(stripped)
 
-            decision = router.route(stripped)
-            if cmd in {"/solo", "/team", "/team-multi"}:
+            decision = router.route(
+                stripped,
+                session_id=self.session_id,
+                session_enabled=self._session_route_enabled,
+                allow_explore=self._session_subagents_opt_in,
+            )
+            self.emit(ProgressUpdate(session_id=self.session_id, text="思考中..."))
+            if cmd in {"/solo", "/team", "/team-multi", "/explore"}:
                 task = rest
+            elif intent.mode or intent.persist_route or intent.persist_subagents:
+                # NL 开专家团/用explore consumed the trigger; do not fall back
+                # to the raw phrase or Session would dispatch on the flag itself.
+                task = (decision.task or intent.remainder or "").strip()
             else:
                 task = (decision.task or stripped).strip()
 
-            if decision.mode in (ExecutionMode.TEAM, ExecutionMode.TEAM_MULTI_MODEL):
+            if decision.mode is ExecutionMode.EXPLORE:
                 if not task:
-                    return router.handle_slash(stripped)
+                    if cmd == "/explore":
+                        return router.handle_slash(stripped)
+                    return (
+                        "已为本会话记下 explore。下一条只读探索会派给 explore 子代理；"
+                        "也可直接 @explore。"
+                    )
+                return await self._run_explore(task)
+
+            if decision.mode in (ExecutionMode.TEAM, ExecutionMode.TEAM_MULTI_MODEL):
+                # Approved plan already exists; do not restart SOP at clarify.
+                if _is_approved_plan_implement(task):
+                    return await agent.run(task, mode=mode)
+                if not task:
+                    if cmd in {"/team", "/team-multi"}:
+                        return router.handle_slash(stripped)
+                    return (
+                        "已为本会话打开专家团自动路由。下一条可拆任务会走专家团；"
+                        "/why-mode 查看原因。"
+                    )
+                if self._appserver_stub():
+                    return f"team:{task}"
                 if decision.mode is ExecutionMode.TEAM_MULTI_MODEL:
                     self.emit(
                         ProgressUpdate(
@@ -380,7 +638,7 @@ class Session:
                 finally:
                     self._active_agent = None
 
-            run_text = rest if cmd == "/solo" and rest else stripped
+            run_text = rest if cmd == "/solo" and rest else (task or stripped)
             return await agent.run(run_text, mode=mode)
         finally:
             router._emit = previous_emit

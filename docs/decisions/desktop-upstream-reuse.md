@@ -123,7 +123,7 @@ reviewers:
 | 生成类型流程 | 已确认 | `frontend/protocol-client`：`bun run generate`（`json2ts -i ../../protocol/schema.json`） |
 | Phase 3 resolver | 已确认 | `config/model_limits.py` `resolve_output_limit`；未知模型 `UNKNOWN_MODEL_FALLBACK = 32768`，不是 8192 |
 | Phase F 消费面 | 已确认 | `appserver/team_routes.py` + `protocol` `team/*` + `tests/test_protocol/test_team_rpc.py`（F18b） |
-| Desktop 壳 | 已确认 | `frontend/desktop-app` `@rxycode/desktop-app@1.2.10`；Main spawn `python -m appserver` |
+| Desktop 壳 | 已确认 | `frontend/desktop-app` `@rxycode/desktop-app@1.4.0`；Main spawn `python -m appserver` |
 | protocol-client 边界 | 已确认 | Renderer / platform 经 `@rxycode/protocol-client`；Main `appserver.ts` 只转发 NDJSON，不自造 request id |
 | BrowserWindow 安全 | 已确认 | `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true` |
 | `appserver/handlers/` | 不得创建 | PHASE-M M2：映射到 `appserver/<x>_routes.py` |

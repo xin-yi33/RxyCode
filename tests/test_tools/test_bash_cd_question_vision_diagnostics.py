@@ -16,7 +16,7 @@ class TestBashInput:
         assert bi.command == "echo"
         assert bi.description == ""
         assert bi.workdir == ""
-        assert bi.timeout == 60
+        assert bi.timeout == 1800
 
     def test_custom_values(self):
         from RxyCode.RxyCode1_1_0.tools.bash import BashInput
@@ -143,7 +143,7 @@ class TestBashTool:
             result = await bash_mod.bash_tool.ainvoke({"command": "echo ignored"})
 
         assert result == "async-ok"
-        execute_async.assert_awaited_once_with("echo ignored", "", 60)
+        execute_async.assert_awaited_once_with("echo ignored", "", 1800)
 
 
 class TestChangeDirectory:
@@ -325,7 +325,7 @@ class TestVisionInput:
         vi = VisionInput()
         assert vi.operation == "describe"
         assert vi.filePath == ""
-        assert vi.prompt == "What do you see in this image?"
+        assert vi.prompt == ""
 
     def test_custom_values(self):
         from RxyCode.RxyCode1_1_0.tools.vision import VisionInput
@@ -393,6 +393,25 @@ class TestRunVision:
         result = _find_tesseract()
         # Returns path if found, None if not
         assert result is None or isinstance(result, str)
+
+    def test_describe_is_metadata_and_skips_ocr(self, tmp_path, monkeypatch):
+        from PIL import Image
+
+        from RxyCode.RxyCode1_1_0.tools import vision as vision_mod
+
+        img_path = tmp_path / "face.png"
+        Image.new("RGB", (8, 8), color="red").save(img_path)
+
+        def _boom(*_a, **_k):
+            raise AssertionError("describe must not run OCR")
+
+        monkeypatch.setattr(
+            "pytesseract.image_to_string", _boom, raising=False
+        )
+        out = vision_mod.run_vision("describe", str(img_path))
+        assert "8x8" in out
+        assert "metadata only" in out.lower()
+        assert "Extracted Text" not in out
 
 
 class TestVisionTool:

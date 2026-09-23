@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode"
-version = "1.2.11"
+version = "1.4.0"
 description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +47,7 @@ packages = [
   "RxyCode.RxyCode1_1_0.core.agents.teams",
   "RxyCode.RxyCode1_1_0.core.bridge",
   "RxyCode.RxyCode1_1_0.core.prompts",
+  "RxyCode.RxyCode1_1_0.core.cu",
   "RxyCode.RxyCode1_1_0.core.providers",
   "RxyCode.RxyCode1_1_0.core.safety",
   "RxyCode.RxyCode1_1_0.core.subagents",
@@ -85,14 +86,14 @@ dependencies = { file = ["requirements.txt"] }
   "frontend/opentui-app/package.json",
   "frontend/opentui-app/tsconfig.json",
   "frontend/opentui-app/bun.lock",
-  "frontend/opentui-app/src/**/*.ts",
-  "frontend/opentui-app/src/**/*.tsx",
+  "frontend/opentui-app/src/**/*",
   "frontend/protocol-client/package.json",
   "frontend/protocol-client/tsconfig.json",
-  "frontend/protocol-client/src/**/*.ts",
+  "frontend/protocol-client/src/**/*",
   "core/agents/teams/*.yaml",
   "core/agents/teams/**/*.yaml",
   "core/agents/teams/**/*.md",
+  "core/prompts/*.md",
 ]
 
 [tool.setuptools.exclude-package-data]

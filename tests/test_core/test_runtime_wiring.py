@@ -352,7 +352,7 @@ async def test_tool_entry_emits_hooks_and_retries_only_transient_read_failure():
         nonlocal attempts
         attempts += 1
         if attempts < 3:
-            raise TimeoutError("temporary")
+            raise ConnectionError("temporary")
         return f"read {path}"
 
     tool = StructuredTool.from_function(

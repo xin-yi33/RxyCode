@@ -10,11 +10,18 @@ export interface ChatMessage {
   /** Mode at send time — user frame color must not follow live Tab switches. */
   mode?: Mode;
   toolName?: string;
+  toolCallId?: string;
   toolStatus?: ToolStatus;
-  /** tool 消息：默认收起；为 true 时展开显示参数/结果。 */
+  /** Raw tool arguments; kept after the result arrives so diffs/commands stay visible. */
+  toolArgs?: string;
+  /** Tool card body open. Default true; click the title to fold. */
   toolExpanded?: boolean;
   done?: boolean;
   live?: boolean;
+  /** Per-thought display. Ctrl+T only seeds the next thought; click overrides this id. */
+  expanded?: boolean;
+  endedAt?: number;
+  hasReasoning?: boolean;
   /** child_session 专用字段 */
   childSessionId?: string;
   childStatus?: string;

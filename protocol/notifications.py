@@ -142,6 +142,9 @@ class MessageDelta(BaseModel):
     method: Literal["event/message_delta"] = "event/message_delta"
     session_id: str
     text: str
+    #: 2026-09-23（P0 answer-last）：子代理（专家团各阶段）的流式文本标记为
+    #: 中间输出，TUI 不得用最终答复样式渲染。主代理恒为 False（默认）。
+    intermediate: bool = False
 
 
 class ProgressUpdate(BaseModel):
@@ -150,6 +153,8 @@ class ProgressUpdate(BaseModel):
     method: Literal["event/progress"] = "event/progress"
     session_id: str
     text: str
+    #: 2026-09-23（P0 answer-last）：同 MessageDelta.intermediate。
+    intermediate: bool = False
 
 
 class ReasoningSnapshot(BaseModel):
@@ -159,6 +164,8 @@ class ReasoningSnapshot(BaseModel):
     session_id: str
     text: str
     snapshot: bool = True
+    #: 2026-09-23（P0 answer-last）：同 MessageDelta.intermediate。
+    intermediate: bool = False
 
 
 class PlanUpdate(BaseModel):
@@ -248,6 +255,7 @@ class TokenUsage(BaseModel):
     cache_write_tokens: int | None = None
     cache_hit_rate: float | None = None
     reporting_status: Literal["reported", "partial", "not_reported"] = "reported"
+    context_used: int | None = None
 
 
 class AgentNeedsInput(BaseModel):

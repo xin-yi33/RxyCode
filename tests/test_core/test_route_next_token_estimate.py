@@ -139,7 +139,7 @@ async def test_compressor_archives_full_result_and_bounds_graph_copy(
         if task.result_artifact
     )
     assert len(compacted.result) < 1200
-    assert "context compacted" in compacted.result
+    assert "overflow archived" in compacted.result
     assert compacted.result_artifact
     assert open(compacted.result_artifact, encoding="utf-8").read() == "r" * 6000
     assert update["compression_count"] == 1

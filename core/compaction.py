@@ -15,8 +15,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from .cache_policy import tool_pair_integrity
 
@@ -30,6 +31,77 @@ TAIL_BUDGET_RATIO = 0.25
 
 #: 输出预留（opencode overflow.ts:22-33 的 reserved，默认 20k）。
 DEFAULT_RESERVED_TOKENS = 20_000
+
+#: UPDATE-01 U3：旧 tool result 墓碑。文件仍在磁盘，模型可再 Read。
+TOOL_RESULT_TOMBSTONE = "[tool result cleared]"
+KEEP_RECENT_TOOL_RESULTS = 2
+
+
+def occupancy_tokens(
+    messages,
+    *,
+    count: Callable[[str], int] | None = None,
+) -> int:
+    """Current window occupancy for TUI and compact (UPDATE-01 OU2 / UPI-2).
+
+    Counts message content **and** assistant tool_call argument JSON. Compact
+    used to skip tool_calls, so the status bar and the trigger disagreed.
+    """
+    estimate = count or (lambda text: len(text or "") // 3)
+    total = 0
+    for message in messages or []:
+        content = getattr(message, "content", "") or ""
+        if isinstance(content, str):
+            total += estimate(content)
+        else:
+            total += estimate(json.dumps(content, ensure_ascii=False, default=str))
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            extra = getattr(message, "additional_kwargs", None) or {}
+            if isinstance(extra, dict):
+                tool_calls = extra.get("tool_calls")
+        for call in tool_calls or []:
+            total += estimate(json.dumps(call, ensure_ascii=False, default=str))
+    return total
+
+
+def _is_tool_result(message) -> bool:
+    return getattr(message, "type", None) == "tool"
+
+
+def microcompact_messages(
+    messages: list,
+    *,
+    keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+) -> tuple[list, dict]:
+    """Tombstone old tool **results**. Keep humans and assistant tool_calls.
+
+    UPDATE-01 U3 / UPI-3: do not delete user messages or tool_call skeletons.
+    """
+    keep_recent = max(0, int(keep_recent or 0))
+    tool_indexes = [index for index, message in enumerate(messages or []) if _is_tool_result(message)]
+    keep = set(tool_indexes[-keep_recent:]) if keep_recent else set()
+    out: list = []
+    tombstoned = 0
+    for index, message in enumerate(messages or []):
+        if not _is_tool_result(message) or index in keep:
+            out.append(message)
+            continue
+        content = getattr(message, "content", "") or ""
+        if str(content).strip() == TOOL_RESULT_TOMBSTONE:
+            out.append(message)
+            continue
+        if hasattr(message, "model_copy"):
+            out.append(message.model_copy(update={"content": TOOL_RESULT_TOMBSTONE}))
+        else:
+            out.append(
+                type(message)(
+                    content=TOOL_RESULT_TOMBSTONE,
+                    tool_call_id=getattr(message, "tool_call_id", "") or "",
+                )
+            )
+        tombstoned += 1
+    return out, {"tombstoned": tombstoned, "did_microcompact": tombstoned > 0}
 
 
 def build_summary_message(
@@ -362,3 +434,65 @@ def compact_messages(
     if return_telemetry:
         return result, telemetry
     return result
+
+
+def usable_tokens(
+    context_window: int,
+    reserved: int = DEFAULT_RESERVED_TOKENS,
+) -> int:
+    """Occupancy may grow until window − reserved; that is the only auto trigger."""
+    return max(0, int(context_window) - max(0, int(reserved)))
+
+
+def run_compaction_ladder(
+    messages: list,
+    *,
+    force: bool = False,
+    occupancy: int | None = None,
+    context_window: int,
+    reserved: int = DEFAULT_RESERVED_TOKENS,
+    count: Callable[[str], int] | None = None,
+) -> tuple[list, dict]:
+    """Single auto/manual compact entry: microcompact, then fold if still over.
+
+    Auto compact fires only when occupancy > (window − reserved), unless
+    ``force`` (``/compact``). Count archival, 85% passes, and history clipping
+    do not belong here.
+    """
+    occ = (
+        int(occupancy)
+        if occupancy is not None
+        else occupancy_tokens(messages, count=count)
+    )
+    usable = usable_tokens(context_window, reserved)
+    telemetry: dict = {
+        "occupancy": occ,
+        "usable": usable,
+        "window": int(context_window),
+        "reserved": max(0, int(reserved)),
+        "force": bool(force),
+        "did_compact": False,
+        "rung": "none",
+    }
+    if occ <= usable and not force:
+        return list(messages), telemetry
+
+    micro, micro_tel = microcompact_messages(list(messages))
+    occ_micro = occupancy_tokens(micro, count=count)
+    telemetry["occupancy_after_micro"] = occ_micro
+    telemetry["tombstoned"] = micro_tel.get("tombstoned", 0)
+    if occ_micro <= usable and not force:
+        telemetry["did_compact"] = bool(micro_tel.get("did_microcompact"))
+        telemetry["rung"] = "microcompact"
+        return micro, telemetry
+
+    folded, fold_tel = compact_messages(
+        micro, tail_turns=DEFAULT_TAIL_TURNS, return_telemetry=True
+    )
+    telemetry["did_compact"] = bool(
+        fold_tel.get("compacted") or micro_tel.get("did_microcompact")
+    )
+    telemetry["rung"] = "fold"
+    telemetry["tokens_before"] = fold_tel.get("tokens_before")
+    telemetry["tokens_after"] = fold_tel.get("tokens_after")
+    return folded, telemetry

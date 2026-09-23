@@ -1,16 +1,16 @@
 /**
  * Single-line prompt layer for dialog wizards (push on stack).
  *
- * Cursor is shown at the end of the draft (not locked to the first cell).
- * Credential fields use plaintext echo so the caret tracks typing correctly.
+ * Visible native <input> owns the caret (left/right/home/end/mouse).
+ * Do not intercept printable/backspace — that pinned the cursor at the end.
  */
 
 import { useEffect, useRef, useState } from "react";
+import { appendFileSync } from "node:fs";
 import { useKeyboard } from "@opentui/react";
 import type { InputRenderable } from "@opentui/core";
 import { C } from "../theme.ts";
-import { SELECT_BG, SELECT_FG } from "./colors.ts";
-import { textFromKeyEvent } from "./DialogSelect.tsx";
+import { SELECT_BG } from "./colors.ts";
 
 export function DialogPrompt({
   title,
@@ -39,58 +39,21 @@ export function DialogPrompt({
     setDraft(initial);
     try {
       focusRef.current?.focus();
-      if (focusRef.current) focusRef.current.value = initial;
+      if (focusRef.current) {
+        focusRef.current.value = initial;
+      }
     } catch {
       /* */
     }
-  }, [initial]);
+  }, [initial, title]);
 
   useKeyboard((key) => {
-    if (key.name === "escape") {
+    const name = key.name || "";
+    if (name === "escape") {
       key.preventDefault?.();
       onCancel();
-      return;
-    }
-    if (key.name === "return" || key.name === "linefeed") {
-      key.preventDefault?.();
-      onSubmit(draft.trim());
-      return;
-    }
-    if (key.name === "backspace" || key.name === "delete") {
-      key.preventDefault?.();
-      setDraft((d) => {
-        const next = d.slice(0, -1);
-        try {
-          if (focusRef.current) focusRef.current.value = next;
-        } catch {
-          /* */
-        }
-        return next;
-      });
-      return;
-    }
-    const parsed = textFromKeyEvent(key);
-    if (!parsed) return;
-    if (parsed.text) {
-      key.preventDefault?.();
-      setDraft((d) => {
-        const next = d + parsed.text;
-        try {
-          if (focusRef.current) focusRef.current.value = next;
-        } catch {
-          /* */
-        }
-        return next;
-      });
-    }
-    if (parsed.submit) {
-      key.preventDefault?.();
-      onSubmit((draft + (parsed.text || "")).trim());
     }
   });
-
-  const shown = draft || placeholder;
-  const isPlaceholder = !draft;
 
   return (
     <box
@@ -115,18 +78,19 @@ export function DialogPrompt({
         <text fg={C.overlay2}>esc </text>
       </box>
       <box style={{ flexDirection: "row", height: 1, width: "100%" }}>
-        <text fg={isPlaceholder ? C.overlay2 : C.text}> {shown}</text>
-        {/* Block cursor after the text so it tracks typing */}
-        <text fg={SELECT_FG} bg={SELECT_BG}>
-          {" "}
-        </text>
-        <box style={{ flexGrow: 1, height: 1 }} />
         <input
           ref={focusRef}
           focused
+          value={draft}
+          placeholder={placeholder}
+          cursorColor={SELECT_BG}
           onInput={(v) => setDraft(String(v ?? ""))}
-          onSubmit={() => onSubmit(draft.trim())}
-          style={{ position: "absolute", width: 0, left: 0, top: 0 }}
+          onSubmit={(v) => onSubmit(String(v ?? draft).trim())}
+          style={{
+            flexGrow: 1,
+            height: 1,
+            backgroundColor: C.bg,
+          }}
         />
       </box>
       {hint ? (

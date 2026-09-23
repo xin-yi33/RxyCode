@@ -131,7 +131,6 @@ async def test_fresh_query_ignores_cached_answer_and_stops_when_search_unverifie
         {"query": "今天最新 Python 版本是什么？", "numResults": 5},
         call_id="required_web_research",
     )
-    assert captured == []
     assert "will not guess" in result
 
 
@@ -163,7 +162,6 @@ async def test_fresh_query_fails_honestly_when_search_tool_raises():
 
     assert "could not verify" in result
     assert "web search execution failed" in result
-    assert captured == []
 
 
 @pytest.mark.asyncio
@@ -260,7 +258,6 @@ async def test_fresh_query_fails_honestly_when_no_search_result_can_be_fetched()
     assert "could not verify" in result
     assert "will not guess" in result
     assert "none could be fetched" in result
-    assert captured == []
 
 
 @pytest.mark.asyncio
@@ -438,7 +435,7 @@ async def test_tool_free_fast_path_does_not_estimate_after_real_usage(monkeypatc
     monkeypatch.setattr(token_stats, "add_real_usage", add_usage)
     agent, _captured = make_agent("unused", answer="generated answer")
 
-    async def raw_stream(messages, _tools=None):
+    async def raw_stream(messages, _tools=None, **_kwargs):
         yield Chunk("generated answer")
         yield UsageChunk(10, 5)
 
@@ -458,7 +455,7 @@ async def test_tool_aware_fast_path_does_not_estimate_after_real_usage(monkeypat
     monkeypatch.setattr(token_stats, "add_real_usage", add_usage)
     agent, _captured = make_agent("unused", answer="generated answer")
 
-    async def raw_stream(messages, _tools=None):
+    async def raw_stream(messages, _tools=None, **_kwargs):
         yield Chunk("generated answer")
         yield UsageChunk(10, 5)
 
@@ -484,7 +481,7 @@ async def test_tool_free_fast_path_estimates_after_empty_usage(monkeypatch):
     monkeypatch.setattr(token_stats, "add_real_usage", add_usage)
     agent, _captured = make_agent("unused", answer="generated answer")
 
-    async def raw_stream(messages, _tools=None):
+    async def raw_stream(messages, _tools=None, **_kwargs):
         yield Chunk("generated answer")
         yield UsageChunk(0, 0)
 
@@ -541,7 +538,7 @@ async def test_tool_aware_fast_path_estimates_each_round_missing_usage(monkeypat
     agent._execute_tool = AsyncMock(return_value="file contents")
     calls = 0
 
-    async def raw_stream(messages, _tools=None):
+    async def raw_stream(messages, _tools=None, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:

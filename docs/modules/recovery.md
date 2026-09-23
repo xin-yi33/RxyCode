@@ -24,11 +24,23 @@ Handles errors during task execution with retry logic and error summarization.
 - get_error_summary(tree) -> str: Collect all errors for reporting
 
 **Error Classification (ErrorKind / classify_error):**
-- TRANSIENT: network blips, timeouts, connection errors, HTTP 429 / 5xx
+- TRANSIENT: network blips, **short connect** timeouts, HTTP 429 / 5xx
   (httpx + openai SDK exceptions mapped; status semantics adapted from
-  config/model_manager.py:50-60)
-- PERMANENT: logic / parse / validation errors, HTTP 4xx (except 429)
+  config/model_manager.py:50-60). Generic read/idle ``TimeoutError``,
+  ``httpx.ReadTimeout``, and ``openai.APITimeoutError`` are **not**
+  retried — those clocks already spent the budget. Surface: `event/retry`
+  until retries exhaust.
+- BUSINESS: tool/result failures (`classify_tool_status`). Surface: `tool_result`.
+  The turn continues; do not emit `event/error`.
+- PERMANENT: logic / parse / validation errors, HTTP 4xx (except 429), fired
+  stream clocks (`FirstTokenTimeoutError` / `StreamIdleTimeoutError`), and
+  long read/idle timeouts. Surface: `event/error`.
+- Short connect handshake (`StreamConnectTimeoutError`) is TRANSIENT and may
+  use `STREAM_TRANSPORT_RETRY_MAX` extra attempts (default 2). Daily
+  `_raw_stream` does **not** retry first-token/idle 180s. Appserver stall
+  recycles a dead worker; it is not an LLM retry.
 - Unknown errors default to PERMANENT (conservative: no blind retries)
+- `should_emit_event_error` is the session/TUI gate for `event/error`.
 
 **Backoff (retry_with_backoff):**
 - Adapted from tenacity: TRANSIENT errors retried with

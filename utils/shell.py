@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 
 import psutil
@@ -28,6 +29,20 @@ from ..core.session_runtime import (
 
 _MONITOR_INTERVAL_SECONDS = 0.05
 _DOCKER_CID_PATTERN = re.compile(r"^[a-fA-F0-9]{12,64}$")
+DEFAULT_SHELL_TIMEOUT = 1800
+# 检查点把 CPU/IO 交回模型判断。模型能区分长进程和卡住。
+# 废弃代码（2026-09-22）：30 秒一查、连续空闲 60 秒就结束进程树。
+# 机械门看不出编译/下载/测试还要不要留。
+# WATCHDOG_CHECKPOINTS = (30.0, 60.0, 120.0, 180.0, 300.0, 600.0)
+# WATCHDOG_IDLE_KILL_AFTER = 60.0
+WATCHDOG_CHECKPOINTS = (180.0, 300.0, 600.0)
+WATCHDOG_IDLE_CPU_PERCENT = 5.0
+WATCHDOG_IDLE_KILL_AFTER = 180.0
+WATCHDOG_OBSERVE_SECONDS = 3.0
+# 废弃代码（2026-09-22）：内存涨过 4MB 就当成仍在工作。
+# 启动解释器本身就会涨，CPU 已经是 0% 时模型仍收到「仍在工作」。
+# WATCHDOG_BUSY_RSS_BYTES = 4 * 1024 * 1024
+WATCHDOG_BUSY_IO_BYTES = 2 * 1024 * 1024
 
 # POSIX heredoc: `python - <<'PY'` ... `PY`. The `head` group keeps any
 # leading command prefix (e.g. `cd /d X && python - <<'PY'`), the `prog`
@@ -86,6 +101,116 @@ def _failure(
     if resource_limit is not None:
         result["resource_limit"] = resource_limit
     return result
+
+
+def sample_process_tree(pid: int | None) -> tuple[float, int, int, int]:
+    """One-shot sample. Prefer ``ProcessTreeSampler`` while a job is running."""
+    sampler = ProcessTreeSampler(pid)
+    sampler.sample()
+    return sampler.sample()
+
+
+class ProcessTreeSampler:
+    """Keep psutil Process objects so cpu_percent(None) is an interval sample.
+
+    Creating a new Process on every probe makes every reading 0.0, which
+    falsely looks idle.
+    """
+
+    def __init__(self, pid: int | None):
+        self.pid = pid
+        self._procs: dict[int, psutil.Process] = {}
+
+    def sample(self) -> tuple[float, int, int, int]:
+        if not self.pid:
+            return 0.0, 0, 0, 0
+        try:
+            root = self._procs.get(self.pid)
+            if root is None:
+                root = psutil.Process(self.pid)
+                self._procs[self.pid] = root
+            children = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+            return 0.0, 0, 0, 0
+        seen = {self.pid}
+        for child in children:
+            seen.add(int(child.pid))
+            self._procs.setdefault(int(child.pid), child)
+        for stale in [key for key in self._procs if key not in seen]:
+            self._procs.pop(stale, None)
+        cpu = 0.0
+        rss = 0
+        live = 0
+        io_bytes = 0
+        for proc in list(self._procs.values()):
+            try:
+                if not proc.is_running():
+                    continue
+                cpu += float(proc.cpu_percent(None) or 0.0)
+                rss += int(proc.memory_info().rss)
+                live += 1
+                try:
+                    counters = proc.io_counters()
+                    io_bytes += int(counters.read_bytes) + int(counters.write_bytes)
+                except (AttributeError, OSError, psutil.AccessDenied):
+                    pass
+            except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+                continue
+        return cpu, rss, live, io_bytes
+
+
+def watchdog_is_busy(
+    *,
+    cpu: float,
+    rss: int,
+    last_rss: int,
+    io_bytes: int,
+    last_io: int,
+    live: int,
+    last_live: int,
+    idle_cpu_percent: float = WATCHDOG_IDLE_CPU_PERCENT,
+    prev_cpu: float | None = None,
+) -> bool:
+    """True when CPU stayed hot across the 3s window, or IO grew.
+
+    ``prev_cpu`` is the earlier sample. One hot sample with the other near
+    zero is oscillation. RSS growth and a new child process are not work.
+    """
+    io_moved = io_bytes >= last_io + WATCHDOG_BUSY_IO_BYTES
+    # 废弃代码（2026-09-22）：内存上涨或子进程变多就算仍在工作。
+    # 检查点不再走这里。CPU 0% 时这两项仍会让模型留下卡住的 bash。
+    # rss_moved = rss >= last_rss + WATCHDOG_BUSY_RSS_BYTES
+    # spawned = live > last_live
+    del rss, last_rss, live, last_live
+    cpu_hot = cpu >= float(idle_cpu_percent)
+    if prev_cpu is not None:
+        earlier_hot = prev_cpu >= float(idle_cpu_percent)
+        cpu_hot = cpu_hot and earlier_hot
+    if cpu_hot or io_moved:
+        return True
+    return False
+
+
+def _emit_bash_watchdog(message: str) -> None:
+    try:
+        from .tui import get_tui
+
+        tui = get_tui()
+    except Exception:
+        return
+    if tui is None:
+        return
+    # 思考通道和进度行都给模型看。是否结束由模型判断。
+    if hasattr(tui, "write_turn_liveness"):
+        try:
+            tui.write_turn_liveness(message)
+        except Exception:
+            pass
+    if hasattr(tui, "write_progress"):
+        try:
+            tui.write_progress(message)
+        except Exception:
+            return
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -155,12 +280,38 @@ def _is_within(candidate: Path, root: Path) -> bool:
     return True
 
 
+_PYTHON_C_RE = re.compile(
+    r"""^\s*(?:python3?|py)(?:\.exe)?\s+-c\s+(?P<quote>['"])(?P<code>.*)(?P=quote)\s*$""",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def direct_python_c_argv(command: str) -> list[str] | None:
+    """Run ``python -c`` with this interpreter, not through PowerShell.
+
+    The e14 command ``python -c "from e14_tiny import ..."`` stayed alive
+    inside the agent until the tool timeout (60s, and earlier 300s at CPU 0%).
+    The same text finishes immediately when ``sys.executable -c`` is used.
+    """
+    match = _PYTHON_C_RE.match(command or "")
+    if match is None:
+        return None
+    code = match.group("code")
+    if not code.strip():
+        return None
+    return [sys.executable, "-c", code]
+
+
 class ShellExecutor:
     def __init__(self):
         self.os_name = sys.platform
         self.shell_type = self._detect_shell()
         self.user_home = str(Path.home())
         self.desktop_path = self._detect_desktop()
+        self.watchdog_checkpoints = WATCHDOG_CHECKPOINTS
+        self.watchdog_idle_cpu_percent = WATCHDOG_IDLE_CPU_PERCENT
+        self.watchdog_idle_kill_after = WATCHDOG_IDLE_KILL_AFTER
+        self.watchdog_observe_seconds = WATCHDOG_OBSERVE_SECONDS
 
     def _detect_shell(self) -> str:
         if self.os_name == "win32":
@@ -232,6 +383,12 @@ class ShellExecutor:
         head = re.sub(
             r"\bcd\s+/d\s+",
             "Set-Location ",
+            head,
+            flags=re.IGNORECASE,
+        )
+        head = re.sub(
+            r"(?<![\w-])\bls\s+(-1)(?=\s|[;&|]|$)",
+            "Get-ChildItem",
             head,
             flags=re.IGNORECASE,
         )
@@ -543,8 +700,15 @@ class ShellExecutor:
             command,
             flags=re.IGNORECASE,
         )
-        # POSIX `ls -la` / `ls -l` / `ls -a` → PowerShell Get-ChildItem,
-        # whose aliased `ls` rejects the GNU-style `-la` flag bundles.
+        # POSIX `ls -la` / `ls -l` / `ls -a` / `ls -1` → PowerShell Get-ChildItem.
+        # Aliased `ls` treats GNU `-1` as a path (`-1`), which is the
+        # `C:\Users\...\-1` failure the agent hit on Windows.
+        command = re.sub(
+            r"(?<![\w-])\bls\s+(-1)(?=\s|[;&|]|$)",
+            "Get-ChildItem",
+            command,
+            flags=re.IGNORECASE,
+        )
         command = re.sub(
             r"(?<![\w-])\bls\s+(-[alAR]+)(?=\s|[;&|]|$)",
             lambda m: "Get-ChildItem"
@@ -953,6 +1117,10 @@ class ShellExecutor:
         kwargs: dict[str, Any] = {
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
+            # 不要继承 worker 的 stdin。那条管道是 JSON-RPC，不会结束。
+            # 子进程若去读它，就会停在 CPU 0%，直到本次 timeout。
+            # 废弃代码（2026-09-22）：不传 stdin，子进程继承父进程管道。
+            "stdin": asyncio.subprocess.DEVNULL,
             "cwd": str(cwd) if cwd is not None else None,
         }
         if os_name == "win32":
@@ -963,7 +1131,8 @@ class ShellExecutor:
             kwargs["start_new_session"] = True
         return kwargs
 
-    def execute(self, command: str, workdir: str = "", timeout: int = 60) -> dict:
+    def execute(self, command: str, workdir: str = "", timeout: int = DEFAULT_SHELL_TIMEOUT) -> dict:
+        # 废弃代码（2026-09-20）：timeout: int = 60  # 旧前台一刀切，禁止再引用。
         """Run the same controlled async implementation from synchronous callers."""
 
         def run() -> dict:
@@ -984,10 +1153,16 @@ class ShellExecutor:
         self,
         command: str,
         workdir: str = "",
-        timeout: float = 60,
+        timeout: float = DEFAULT_SHELL_TIMEOUT,
     ) -> dict:
+        # 废弃代码（2026-09-20）：timeout: float = 60  # 旧前台一刀切，禁止再引用。
+        # python -c 不经 PowerShell。agent 里同一条命令会停到 timeout
+        # （e14：timeout 60 整段耗尽；更早一次 CPU 0% 停到 300s）。
+        # 直接用当前解释器时，同一条命令马上输出 E14_OK。
+        direct = direct_python_c_argv(command)
+        argv = direct if direct is not None else self._build_command(command)
         return await self._execute_controlled(
-            self._build_command(command),
+            argv,
             workdir=workdir,
             timeout=timeout,
             shell_command=command,
@@ -997,7 +1172,8 @@ class ShellExecutor:
         self,
         argv: list[str],
         workdir: str = "",
-        timeout: float = 60,
+        # timeout: float = 60,  # 废弃代码（2026-09-20）：旧前台 60s 一刀切。Git/format 等短命令必须显式传 timeout。
+        timeout: float = DEFAULT_SHELL_TIMEOUT,
     ) -> dict:
         """Run an argv command without ever enabling subprocess shell mode."""
         if not isinstance(argv, list) or not argv or not all(
@@ -1055,6 +1231,10 @@ class ShellExecutor:
                 *spawn_argv,
                 **self._process_kwargs(spawn_cwd, self.os_name),
             )
+            # GUI apps as the direct child keep pipes open until the window
+            # closes (OpenCode-class hang). Opening Word/Notepad/Typora is
+            # intercepted in tools/bash.py via launch_intent.
+            # 废弃代码（2026-09-21）：对打开类命令在这里 communicate() 等到 GUI 退出。
             communicate_task = asyncio.create_task(process.communicate())
             if policy.mode in {"host", "workspace"} and (
                 policy.max_memory_mb > 0 or policy.max_processes > 0
@@ -1066,32 +1246,157 @@ class ShellExecutor:
             waiters = {communicate_task}
             if monitor_task is not None:
                 waiters.add(monitor_task)
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=max(0, timeout),
-                return_when=asyncio.FIRST_COMPLETED,
+            started = time.monotonic()
+            deadline = started + max(0.0, float(timeout))
+            checkpoint_marks = getattr(
+                self, "watchdog_checkpoints", WATCHDOG_CHECKPOINTS
             )
-            # A completed monitor_task does NOT mean the command finished: it
-            # may have returned early (root exited, orphaned children still
-            # hold the pipes).  Only communicate_task completing counts as
-            # normal completion; anything else after the deadline is a timeout
-            # (or a resource violation).
-            if monitor_task is not None and monitor_task in done:
-                violation = monitor_task.result()
-                if violation is not None:
+            checkpoints = [
+                started + float(mark)
+                for mark in checkpoint_marks
+                if started + float(mark) < deadline
+            ]
+            idle_kill_at = started + float(
+                getattr(
+                    self,
+                    "watchdog_idle_kill_after",
+                    WATCHDOG_IDLE_KILL_AFTER,
+                )
+            )
+            idle_cpu_percent = float(
+                getattr(
+                    self,
+                    "watchdog_idle_cpu_percent",
+                    WATCHDOG_IDLE_CPU_PERCENT,
+                )
+            )
+            sampler: ProcessTreeSampler | None = None
+            # 废弃代码（2026-09-22）：last_rss / last_live 参与忙闲判断。
+            # last_rss = last_live = last_io = 0
+            last_io = 0
+            probes: list[str] = []
+            observe_seconds = float(
+                getattr(
+                    self,
+                    "watchdog_observe_seconds",
+                    WATCHDOG_OBSERVE_SECONDS,
+                )
+            )
+            await asyncio.sleep(0)
+            if checkpoints and not communicate_task.done():
+                sampler = ProcessTreeSampler(process.pid)
+                sampler.sample()
+                # 废弃代码（2026-09-22）：把启动时的内存和进程数当作仍在工作的基线。
+                # _, last_rss, last_live, last_io = sampler.sample()
+                _, _, _, last_io = sampler.sample()
+
+            while True:
+                now = time.monotonic()
+                if communicate_task.done():
+                    break
+                if now >= deadline:
                     await self._cleanup_process(process, cidfile)
                     await self._cancel_task(communicate_task)
+                    trail = ("\n" + "\n".join(probes)) if probes else ""
                     return _failure(
-                        violation.message(),
-                        error_type="resource_limit",
-                        resource_limit=violation.resource,
+                        f"[timeout after {timeout}s]{trail}",
+                        error_type="timeout",
                     )
-            if communicate_task not in done:
-                await self._cleanup_process(process, cidfile)
-                await self._cancel_task(communicate_task)
-                return _failure(
-                    f"[timeout after {timeout}s]", error_type="timeout"
+                next_wake = deadline
+                if checkpoints:
+                    next_wake = min(next_wake, checkpoints[0])
+                slice_timeout = max(0.0, next_wake - now)
+                done, _ = await asyncio.wait(
+                    waiters,
+                    timeout=slice_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                if monitor_task is not None and monitor_task in done:
+                    violation = monitor_task.result()
+                    if violation is not None:
+                        await self._cleanup_process(process, cidfile)
+                        await self._cancel_task(communicate_task)
+                        return _failure(
+                            violation.message(),
+                            error_type="resource_limit",
+                            resource_limit=violation.resource,
+                        )
+                if communicate_task in done:
+                    break
+                now = time.monotonic()
+                if checkpoints and sampler is not None and now + 0.05 >= checkpoints[0]:
+                    checkpoints.pop(0)
+                    cpu1, rss1, live1, io1 = sampler.sample()
+                    if (
+                        observe_seconds > 0
+                        and not communicate_task.done()
+                    ):
+                        await asyncio.wait(
+                            {communicate_task},
+                            timeout=observe_seconds,
+                        )
+                    if communicate_task.done():
+                        break
+                    cpu2, rss2, live2, io2 = sampler.sample()
+                    elapsed = int(time.monotonic() - started)
+                    # 忙闲只走 watchdog_is_busy。IO 对比上一检查点，CPU 用这 3 秒两次读数。
+                    # 废弃代码（2026-09-22）：检查点内再写一套 io_moved / sustained，
+                    # 和 watchdog_is_busy 各判一次。
+                    # io_moved = io2 >= last_io + WATCHDOG_BUSY_IO_BYTES
+                    # sustained = cpu1 >= idle_cpu_percent and cpu2 >= idle_cpu_percent
+                    # busy = bool(sustained or io_moved)
+                    # last_rss = max(last_rss, rss2)
+                    # last_live = max(last_live, live2)
+                    busy = watchdog_is_busy(
+                        cpu=cpu2,
+                        rss=rss2,
+                        last_rss=rss1,
+                        io_bytes=io2,
+                        last_io=last_io,
+                        live=live2,
+                        last_live=live1,
+                        idle_cpu_percent=idle_cpu_percent,
+                        prev_cpu=cpu1,
+                    )
+                    io_moved = io2 >= last_io + WATCHDOG_BUSY_IO_BYTES
+                    sustained = (
+                        cpu1 >= idle_cpu_percent and cpu2 >= idle_cpu_percent
+                    )
+                    last_io = max(last_io, io2)
+                    line = (
+                        f"bash {elapsed}s: cpu={cpu1:.1f}%->{cpu2:.1f}% "
+                        f"rss={rss2 // 1024}KB io={io2 // 1024}KB procs={live2} "
+                        f"{'working' if busy else 'idle-cpu'}"
+                    )
+                    probes.append(line)
+                    note = (
+                        f"bash 已运行 {elapsed}s。先观察 {observe_seconds:.0f} 秒："
+                        f"CPU {cpu1:.1f}% → {cpu2:.1f}%，"
+                        f"IO {io1 // 1024}KB → {io2 // 1024}KB，"
+                        f"进程 {live1} → {live2}。"
+                        "单次 CPU 冲高且 IO 不涨是震荡，不要据此当成还在工作。"
+                    )
+                    if busy:
+                        _emit_bash_watchdog(
+                            note
+                            + "这 3 秒里 CPU 持续偏高或 IO 在涨，未杀死。"
+                            "若这是编译、下载、测试等长进程，就留到硬超时。"
+                        )
+                        continue
+                    if time.monotonic() + 0.05 >= idle_kill_at:
+                        await self._cleanup_process(process, cidfile)
+                        await self._cancel_task(communicate_task)
+                        return _failure(
+                            "[watchdog idle after "
+                            f"{elapsed}s] {note}"
+                            "两次都接近空闲。由你判断：长进程就用更大的 timeout 再跑；"
+                            "已经卡住就换更窄的命令或跳过。"
+                            "这不是解释器损坏。",
+                            error_type="timeout",
+                        )
+                    _emit_bash_watchdog(
+                        note + "还没到交回模型的检查点，先继续等。"
+                    )
 
             stdout, stderr = await communicate_task
             # Decode subprocess output as UTF-8 first. Python 3.6+ on Windows
@@ -1270,7 +1575,11 @@ class ShellExecutor:
                 # start_new_session=True makes the child a group leader whose
                 # group id == its pid; the group persists while any child in
                 # it is alive, so this reaches orphaned descendants too.
-                os.killpg(pid, signal.SIGTERM)
+                killpg = getattr(os, "killpg", None)
+                if killpg is not None:
+                    killpg(pid, signal.SIGTERM)
+                elif process.returncode is None:
+                    process.terminate()
             except (ProcessLookupError, PermissionError, OSError):
                 if process.returncode is None:
                     process.terminate()
@@ -1280,14 +1589,16 @@ class ShellExecutor:
         except asyncio.TimeoutError:
             if self.os_name != "win32":
                 try:
-                    os.killpg(pid, signal.SIGKILL)
+                    killpg = getattr(os, "killpg", None)
+                    if killpg is not None:
+                        killpg(pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             if process.returncode is None:
                 process.kill()
             await process.wait()
 
-        if self.os_name != "win32":
+        if self.os_name != "win32" and hasattr(os, "getpgid"):
             await self._posix_ensure_group_gone(pid)
 
     async def _posix_ensure_group_gone(self, group_id: int) -> None:

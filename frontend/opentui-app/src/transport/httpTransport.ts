@@ -19,7 +19,11 @@ import {
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
+import { applyThoughtExpandedOverride, nextThoughtExpanded } from "../lib/thinkingDisplay.ts";
+import { liveProgressText } from "./notifyToStreamEvent.ts";
+import { spliceTurnMessages } from "./streamLifecycle.ts";
 import { applyTokenUsageToStatus } from "./stdioCommands.ts";
+import { looksLikePlanDocument, parsePlanDoc } from "../planDoc.ts";
 import type {
   ChatApiCallbacks,
   ChatTransport,
@@ -31,6 +35,8 @@ import type {
 function newId(suffix: string): string {
   return `${Date.now()}-${suffix}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
+let httpPromptEpoch = 0;
 
 export const httpTransport: ChatTransport = {
   kind: "http",
@@ -45,6 +51,13 @@ export const httpTransport: ChatTransport = {
 
   async cancelActiveRequest(): Promise<void> {
     return httpCancelActiveRequest();
+  },
+
+  async steerTurn(_text: string, _mode?: import("../types.ts").Mode) {
+    return {
+      ok: false as const,
+      message: "HTTP 传输不支持立即发送（请等当前回合结束，或改用默认 stdio）",
+    };
   },
 
   async respondApproval(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
@@ -112,14 +125,17 @@ export const httpTransport: ChatTransport = {
     mode: Mode,
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
+    displayContent?: string,
   ): Promise<void> {
     const userMsg = {
       id: newId("user"),
       role: "user" as const,
-      content,
+      content: displayContent?.trim() ? displayContent : content,
       timestamp: Date.now(),
       mode,
     };
+    httpPromptEpoch += 1;
+    const epoch = httpPromptEpoch;
     callbacks.onMessages((prev) => [...prev, userMsg]);
     callbacks.onStreaming(true);
     callbacks.onProgress?.("Connecting...");
@@ -136,6 +152,7 @@ export const httpTransport: ChatTransport = {
           timestamp: Date.now(),
           live: true,
           done: false,
+          expanded: nextThoughtExpanded(),
         },
       ],
       thinkingId,
@@ -149,22 +166,31 @@ export const httpTransport: ChatTransport = {
     callbacks.onMessages((prev) => [...prev, ...state.messages]);
 
     const publish = (next: StreamReduceState) => {
-      state = next;
-      callbacks.onMessages((prev) => {
-        const idx = prev.findIndex((m) => m.id === userMsg.id);
-        if (idx < 0) return [...prev, ...next.messages];
-        return [...prev.slice(0, idx + 1), ...next.messages];
-      });
+      if (httpPromptEpoch !== epoch) return;
+      state = {
+        ...next,
+        messages: next.messages.map(applyThoughtExpandedOverride),
+      };
+      callbacks.onMessages((prev) => spliceTurnMessages(prev, userMsg.id, state.messages));
     };
 
     let lastStatus: StatusInfo | null = null;
+    let lastLive = "";
     const handleEvent = (event: StreamEvent) => {
       if (event.type === "token_usage" || event.type === "final") {
         lastStatus = applyTokenUsageToStatus(lastStatus, event);
         callbacks.onStatus(lastStatus);
       }
-      if (event.type === "progress" && !state.hasReasoning) {
-        callbacks.onProgress?.(event.message || event.text || "Working...");
+      if (event.type === "plan") {
+        callbacks.onPlan?.(parsePlanDoc(String(event.text || ""), event.steps));
+      }
+      if (event.type === "final" && mode === "plan" && event.text && looksLikePlanDocument(event.text)) {
+        callbacks.onPlan?.(parsePlanDoc(event.text));
+      }
+      const live = liveProgressText(event);
+      if (live && live !== lastLive) {
+        lastLive = live;
+        callbacks.onProgress?.(live);
       }
       if (event.type === "approval_request") {
         const args = event.args;
@@ -187,6 +213,8 @@ export const httpTransport: ChatTransport = {
         );
       }
       if (event.type === "tool_result") {
+        lastLive = "";
+        callbacks.onProgress?.("");
         callbacks.onApprovalRequest?.(null);
       }
       const next = applyStreamEvent(state, event, newId);
@@ -260,5 +288,36 @@ export const httpTransport: ChatTransport = {
       callbacks.onProgress?.("");
       void httpTransport.fetchStatus(callbacks.onStatus);
     }
+  },
+
+  async listSessions() {
+    return [];
+  },
+
+  async attachSession(sessionId: string) {
+    return { session_id: sessionId, messages: [] };
+  },
+
+  async renameSession(sessionId: string, title: string) {
+    return {
+      session_id: sessionId,
+      title,
+      display_title: title,
+      age_label: "now",
+      date_group: "Today",
+      title_is_manual: true,
+    };
+  },
+
+  async trashSession() {
+    return;
+  },
+
+  async pinSession() {
+    return;
+  },
+
+  async forkSession(sessionId: string) {
+    return { session_id: sessionId, display_title: "新任务" };
   },
 };

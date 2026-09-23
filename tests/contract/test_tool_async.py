@@ -192,7 +192,7 @@ async def test_process_class_wrappers_map_timeout_to_error(monkeypatch):
     shot_out = await _capture_screenshot_async()
     assert "[error" in shot_out and "timed out" in shot_out, shot_out
 
-    # open_file (POSIX opener path only; Windows uses os.startfile)
+    # open_file (POSIX opener path only; Windows uses ShellExecuteEx)
     if sys.platform != "win32":
         from RxyCode.RxyCode1_1_0.tools.open_file import open_file_async
 
@@ -207,10 +207,13 @@ async def test_process_class_wrappers_map_timeout_to_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_open_file_async_windows_startfile_fire_and_forget(monkeypatch):
-    """On Windows open_file_async is a fire-and-forget ShellExecute: it must
-    NOT go through the shell executor (no tracked subprocess to terminate)
-    and must map a startfile failure to an error string (never raise)."""
+    """On Windows open_file_async uses split ``cmd /c start "RxyCode Open" <path>``.
+
+    ``os.startfile`` remains the OSError fallback only.
+    """
     import tempfile as _tf
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
 
     import RxyCode.RxyCode1_1_0.tools.open_file as of_mod
     from RxyCode.RxyCode1_1_0.tools.open_file import open_file_async
@@ -222,23 +225,26 @@ async def test_open_file_async_windows_startfile_fire_and_forget(monkeypatch):
         f.write(b"x\n")
         tmp = f.name
     try:
-        calls: list[str] = []
-
-        def fake_startfile(path):
-            calls.append(str(path))
-
-        monkeypatch.setattr(of_mod.os, "startfile", fake_startfile)
+        popen = MagicMock(return_value=SimpleNamespace(pid=4242))
+        startfile = MagicMock()
+        monkeypatch.setattr(of_mod.subprocess, "Popen", popen)
+        monkeypatch.setattr(of_mod.os, "startfile", startfile, raising=False)
         out = await open_file_async(tmp)
-        # The tool resolves the path (realpath), which on Windows can expand
-        # to the 8.3 short name (C:\Users\RUNNER~1\...) for long profile
-        # names; compare against the resolved form instead of the raw tmp.
         resolved = str(Path(tmp).resolve())
         assert out == f"[opened {resolved}]"
-        assert calls == [resolved], "startfile must receive the resolved path"
+        popen.assert_called_once()
+        argv = popen.call_args[0][0]
+        assert argv[:4] == ["cmd.exe", "/c", "start", "RxyCode Open"]
+        assert argv[4] == of_mod._windows_shell_path(Path(resolved))
+        startfile.assert_not_called()
 
-        def failing_startfile(path):
+        def boom(*_args, **_kwargs):
+            raise OSError("cannot spawn")
+
+        def failing_startfile(_path):
             raise OSError("no handler")
 
+        monkeypatch.setattr(of_mod.subprocess, "Popen", boom)
         monkeypatch.setattr(of_mod.os, "startfile", failing_startfile)
         out = await open_file_async(tmp)
         assert out == "[error opening file: no handler]"

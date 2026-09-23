@@ -18,6 +18,7 @@ F8 MechanicalVerifier 是默认机械门；F9 BudgetGuard 仍可注入（缺省 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,7 +30,8 @@ from RxyCode.RxyCode1_1_0.core.agents.mailbox import Mailbox
 from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
 from RxyCode.RxyCode1_1_0.core.agents.team_prompt import compact_summary
 from RxyCode.RxyCode1_1_0.core.prompts.templates import DELEGATE_REQUEST_TEMPLATE
-from RxyCode.RxyCode1_1_0.protocol.subagents import ContextEnvelope
+# 废弃代码（2026-09-21）：from protocol.subagents import ContextEnvelope
+# 误造未赋值的 ContextEnvelope，DispatchPacket.context 实际是 blackboard dict。
 from RxyCode.RxyCode1_1_0.core.agents.sop import SopMachine, StageRecord
 from RxyCode.RxyCode1_1_0.core.agents.spec import AgentSpecError, validate_team
 from RxyCode.RxyCode1_1_0.core.agents.verifier import (
@@ -427,13 +429,20 @@ class Coordinator:
         # Never walk the RxyCode source tree when a test/session pointed here.
         if (root / "core" / "agents").is_dir() and (root / "pyproject.toml").is_file():
             return found
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            parts = path.parts
-            if any(part in {".git", "__pycache__", ".venv", "node_modules"} for part in parts):
-                continue
-            found.append(path.relative_to(root).as_posix())
+        skip = {".git", "__pycache__", ".venv", "node_modules", ".pnpm", "AppData"}
+        try:
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                dirnames[:] = [name for name in dirnames if name not in skip]
+                for name in filenames:
+                    path = Path(dirpath) / name
+                    try:
+                        if not path.is_file() or path.is_symlink():
+                            continue
+                    except OSError:
+                        continue
+                    found.append(path.relative_to(root).as_posix())
+        except OSError:
+            pass
         return found
 
     @staticmethod
@@ -657,11 +666,14 @@ class Coordinator:
                     "    blob = capsys.readouterr().out.lower()\n"
                     "    assert 'done' in blob or 'completed' in blob or '完成' in blob\n"
                 )
-        ContextEnvelope(
-            parent_session_id=self._session.session_id,
-            task=stage.expected_output,
-            attachments=tuple(refs),
-        )
+        # 废弃代码（2026-09-21）：
+        # ContextEnvelope(
+        #     parent_session_id=self._session.session_id,
+        #     task=stage.expected_output,
+        #     attachments=tuple(refs),
+        # )
+        # DispatchPacket.context 是 blackboard dict，不是 ContextEnvelope。
+        # 构造后未赋值，子代理任务正文从未读到它。禁止再引用。
         return DispatchPacket(
             to_role=target,
             goal=goal,

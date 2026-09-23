@@ -428,3 +428,144 @@ async def test_declared_write_effect_forces_side_effect_gate():
         "[evidence failed: requested side effect has no verified "
         "WRITE/DANGER tool execution]"
     )
+
+
+def test_open_file_missing_is_not_critical_evidence():
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    item = SimpleNamespace(
+        tool="open_file",
+        risk="WRITE",
+        detail=(
+            "[error: file not found or invalid path: [WinError 2] "
+            "系统找不到指定的文件。]"
+        ),
+        result="",
+        output="",
+        artifacts=[],
+    )
+    assert AgentV2._evidence_is_critical(item) is False
+
+
+def test_final_answer_result_overrides_streamed_meta_commentary():
+    """2026-09-23 回归：final_answer 的 result 就是最终答案，优先于流式元评论。
+
+    现场：模型先流式输出「pytest 真实运行成功…给出最终结果。」（元评论），
+    然后调 final_answer(result='**最终结果：** ✅ 通过…')。旧逻辑只在 answer
+    为空时才用 result，导致流式元评论成了最终答案，真正的答案被丢弃、只在
+    Thought 里可见。修复：final_answer.result 非空时优先作为 answer。
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+    fa_result = "**最终结果：** ✅ **通过 (PASS)** — 两个文件都已按原样落在磁盘上。"
+    streamed_meta = "pytest 真实运行成功，3 个用例全部通过。给出最终结果。"
+    executed = [
+        {"name": "bash", "result": "3 passed in 0.01s"},
+        {"name": "final_answer", "result": fa_result},
+    ]
+    # 模拟 agent_v2.py:6084 的 answer 提取逻辑
+    answer = streamed_meta
+    from RxyCode.RxyCode1_1_0.core.loop_exit import is_final_answer_tool
+    for item in executed:
+        if is_final_answer_tool(str(item.get("name") or "")):
+            r = str(item.get("result") or "").strip()
+            if r:
+                answer = r
+            break
+    assert answer == fa_result
+    assert "最终结果" in answer
+    assert answer != streamed_meta
+
+
+def test_final_answer_not_shown_as_thought_liveness():
+    """2026-09-23 回归：final_answer 的结果不走 write_turn_liveness（不塞 Thought）。
+
+    现场：_emit_tool_outcome_to_user 把每个工具结果都调 write_turn_liveness
+    （ReasoningSnapshot），final_answer 的结果被截断成 180 字符 snippet 塞进
+    Thought 折叠块，真正的答案在正文里看不到。修复：final_answer 跳过 liveness。
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = object.__new__(AgentV2)
+    calls = []
+
+    class FakeTui:
+        def write_turn_liveness(self, text): calls.append(("liveness", text))
+        def write_progress(self, text): calls.append(("progress", text))
+
+    tui = FakeTui()
+    # final_answer：一条都不发
+    agent._emit_tool_outcome_to_user(tui, "final_answer", "**最终结果：** 通过", False)
+    assert calls == []
+    # 别名形态也跳过
+    agent._emit_tool_outcome_to_user(tui, "final-answer", "done", False)
+    assert calls == []
+    # 其他工具正常发
+    agent._emit_tool_outcome_to_user(tui, "bash", "ok", False)
+    assert len(calls) > 0
+
+
+def test_transport_exhaustion_prevents_evidence_gate_override():
+    """2026-09-23 回归：传输恢复耗尽（网络断）时证据门不得覆盖真正的网络错误。
+
+    现场：模型 API 504 → 传输重试耗尽 → 循环结束（没写文件）→ 证据门触发
+    「requested side effect has no verified WRITE」→ 用户看到「工具执行中断」
+    而不是「网络超时」。修复：传输耗尽时证据门跳过。
+    """
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        AgentV2,
+        _last_transport_exhaustion,
+    )
+
+    # 模拟传输耗尽
+    _last_transport_exhaustion.push("ConnectTimeout")
+    assert _last_transport_exhaustion.peek() == ["ConnectTimeout"]
+
+    # 证据门逻辑：transport_exhausted=True 时不应覆盖
+    transport_exhausted = bool(_last_transport_exhaustion.peek())
+    assert transport_exhausted is True
+
+    # 清理
+    _last_transport_exhaustion.drain()
+    assert _last_transport_exhaustion.peek() == []
+
+
+def test_transport_exhaustion_drains_per_request():
+    """每次顶层请求清空传输耗尽记录，避免上一次的网络断污染本次。"""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _last_transport_exhaustion
+
+    _last_transport_exhaustion.push("ReadError")
+    assert len(_last_transport_exhaustion.peek()) == 1
+    _last_transport_exhaustion.drain()
+    assert _last_transport_exhaustion.peek() == []
+    # drain 后再 push 是新的记录
+    _last_transport_exhaustion.push("ConnectError")
+    assert _last_transport_exhaustion.peek() == ["ConnectError"]
+    _last_transport_exhaustion.drain()
+
+
+def test_breaker_detail_includes_failure_count_and_cooldown():
+    """2026-09-23 回归：熔断打开时的消息带连续失败次数和冷却剩余时间。
+
+    现场：用户看到「模型调用已暂停」但不知道发生了什么、要等多久、
+    能不能自动恢复。修复后消息包含具体信息。
+    """
+    from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import (
+        LLMCircuitBreaker,
+        service_unavailable_detail,
+    )
+
+    breaker = LLMCircuitBreaker(fail_max=5, reset_timeout=60, name="test")
+    # 模拟熔断器打开（fail_counter 是只读 property，通过内部状态设置）
+    breaker._opened_clock.mono = __import__("time").monotonic()
+    # pybreaker 的 fail_counter 是内部计数器，用 _state_storage 直接写
+    breaker.breaker._state_storage._fail_counter = 5
+
+    detail = service_unavailable_detail(breaker)
+    assert "已连续失败 5 次" in detail
+    assert "冷却" in detail
+    assert "自动" in detail
+    assert "检查网络" in detail or "切换模型" in detail

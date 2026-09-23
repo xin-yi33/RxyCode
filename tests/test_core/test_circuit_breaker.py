@@ -197,6 +197,7 @@ async def test_raw_stream_opens_breaker_and_stops_calling_provider():
         "temperature": 0,
         "max_tokens": 32,
     }
+    agent._cfg = {"llm": {"transport_retries": 0}}
     breaker = cb_mod.LLMCircuitBreaker(fail_max=5, reset_timeout=60)
 
     async def consume_raw_stream():
@@ -268,7 +269,10 @@ async def test_service_unavailable_does_not_complete_checkpoint_and_is_model_err
     checkpoint = store.load(checkpoint_id)
     assert result == SERVICE_UNAVAILABLE_MESSAGE
     assert checkpoint is not None
-    assert checkpoint["completed"] is False
+    # A run that returned is sealed. Journal replay is for crashed attempts
+    # only; the next identical prompt starts fresh and re-executes writes.
+    # 废弃（2026-09-22）：assert checkpoint["completed"] is False
+    assert checkpoint["completed"] is True
     assert agent._last_failure_attribution == {"model_error": 1}
     snapshot = run_monitor.snapshot()
     assert snapshot["status_counts"] == {"failed": 1}
@@ -288,3 +292,133 @@ class TestConfigSwitch:
             return_value={"recovery": {"circuit_breaker_enabled": False}},
         ):
             assert cb_mod.circuit_breaker_enabled() is False
+
+
+class FirstTokenTimeoutError(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_local_deadline_does_not_open_the_window_breaker():
+    import pybreaker
+
+    from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import LLMCircuitBreaker
+
+    async def _slow():
+        raise FirstTokenTimeoutError("provider produced no first response event")
+
+    cb = LLMCircuitBreaker(fail_max=2, reset_timeout=60)
+    for _ in range(4):
+        with pytest.raises(FirstTokenTimeoutError):
+            await cb.call(_slow)
+    assert cb.breaker.current_state == pybreaker.STATE_CLOSED
+
+
+def test_breaker_pause_is_not_called_a_request_timeout():
+    from RxyCode.RxyCode1_1_0.utils.user_facing_errors import (
+        MSG_MODEL_PAUSED,
+        MSG_TIMEOUT,
+        to_user_facing_error,
+    )
+
+    text = to_user_facing_error(
+        "CircuitBreakerError: Timeout not elapsed yet, circuit breaker still open"
+    )
+    assert text == MSG_MODEL_PAUSED
+    assert text != MSG_TIMEOUT
+    assert to_user_facing_error("connection timeout after 30s") == MSG_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_half_open_retrip_backs_off_cooldown_exponentially():
+    """A failed half-open probe re-opens the breaker; the next cooldown must
+    double (capped) instead of re-interrupting the user every reset_timeout."""
+    import pybreaker
+
+    from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import LLMCircuitBreaker
+
+    cb = LLMCircuitBreaker(fail_max=1, reset_timeout=60, max_reset_timeout=150)
+
+    async def _fail():
+        raise ConnectionError("provider down")
+
+    with pytest.raises(ConnectionError):
+        await cb.call(_fail)
+    assert cb.breaker.current_state == pybreaker.STATE_OPEN
+    assert cb._current_cooldown() == 60.0
+
+    # Cool down, probe fails again -> re-open with doubled cooldown.
+    cb._opened_clock.mono -= 61.0
+    with pytest.raises(ConnectionError):
+        await cb.call(_fail)
+    assert cb.breaker.current_state == pybreaker.STATE_OPEN
+    assert cb._opened_clock.reopen_streak == 1
+    assert cb._current_cooldown() == 120.0
+
+    # Another failed probe -> cooldown capped at max_reset_timeout.
+    cb._opened_clock.mono -= 121.0
+    with pytest.raises(ConnectionError):
+        await cb.call(_fail)
+    assert cb._opened_clock.reopen_streak == 2
+    assert cb._current_cooldown() == 150.0
+
+    # A successful probe closes and resets the backoff.
+    cb._opened_clock.mono -= 151.0
+
+    async def _ok():
+        return "ok"
+
+    assert await cb.call(_ok) == "ok"
+    assert cb.breaker.current_state == pybreaker.STATE_CLOSED
+    assert cb._opened_clock.reopen_streak == 0
+    assert cb._current_cooldown() == 60.0
+
+
+@pytest.mark.asyncio
+async def test_breaker_is_open_self_heals_after_cooldown():
+    """breaker_is_open() must not report open forever: once the cooldown has
+    elapsed it moves the breaker to half-open and returns False, so guards
+    (prewarm/keep-alive/fast-path) can never wedge the window until the
+    process is restarted."""
+    import pybreaker
+
+    from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as cb_mod
+
+    cb_mod.reset_all_breakers()
+    try:
+        cb = cb_mod.get_default_breaker()
+
+        async def _fail():
+            raise ConnectionError("provider down")
+
+        for _ in range(5):
+            with pytest.raises(ConnectionError):
+                await cb.call(_fail)
+        assert cb.breaker.current_state == pybreaker.STATE_OPEN
+        assert cb_mod.breaker_is_open() is True
+
+        # Still cooling: no state change.
+        assert cb.breaker.current_state == pybreaker.STATE_OPEN
+
+        # Cooldown elapsed -> guard reports not-blocking and half-opens.
+        cb._opened_clock.mono -= 61.0
+        assert cb_mod.breaker_is_open() is False
+        assert cb.breaker.current_state == pybreaker.STATE_HALF_OPEN
+    finally:
+        cb_mod.reset_all_breakers()
+
+
+@pytest.mark.asyncio
+async def test_inner_stream_connect_skips_breaker_when_outer_holds_it():
+    """One logical LLM call must count once: when ainvoke/astream already
+    went through the breaker (outer), the inner stream-connect retry loop
+    must not wrap each transport attempt in another breaker.call."""
+    from RxyCode.RxyCode1_1_0.core import agent_v2
+
+    assert agent_v2._OUTER_BREAKER_HELD.get() is False
+    token = agent_v2._OUTER_BREAKER_HELD.set(True)
+    try:
+        assert agent_v2._OUTER_BREAKER_HELD.get() is True
+    finally:
+        agent_v2._OUTER_BREAKER_HELD.reset(token)
+    assert agent_v2._OUTER_BREAKER_HELD.get() is False

@@ -55,6 +55,7 @@
 不该用的时候：
 
 - 单文件 bugfix / 小 refactor / 只读问答（当前评测集的主体）
+- 打开/预览本地文件（含「不存在的文件，报告错误」）——`ModeRouter` 的 host preview，禁止派 explore，也禁止把 `tests/test_lru_cache.py` 快构建合同灌进这一轮
 - 强依赖串行、必须同一份上下文的任务
 - 你还没有为这次运行单独准备 token 预算
 
@@ -63,7 +64,9 @@
 - 可拆的结构化分工（前后端、多模块、独立审计）
 - 机械验证门能挡住假完成，且你接受至少 3x token
 
-`settings.agents.enabled` 保持 **false**。F10 启发式 `min_files_for_team` 已回写为 4。
+`settings.agents.enabled` 保持 **false**（DC7）。用户打开或本会话说「开专家团」后，`ModeRouter` 在 `{solo, team, explore}` 间自动选：问候/单文件修 bug/短问答 → solo；查代码/代码在哪/为什么这样工作且不写文件 → 真正派发 builtin `explore` 子代理；「不要改文件」单独不是 explore（打开 notes.md / 打开不存在的 docx 预览仍走 solo / `open_file`）；前后端/多模块/完整功能、≥2 个源文件且要改代码、重构/迁移/设计 → 专家团。`min_files_for_team` 现为 **2**（只在有实现信号时计文件数）。`execution.parallel_enabled` 仍是图内 TaskTree 开关，与 explore 无关。
+
+评测门禁（harness first-progress，不是 thinking 开着时的模型 TTFT）：简单路径 ≤ 1.5s，explore/team 分发 ≤ 3.2s，warm 前缀命中 ≥ 97%。命令见 [`docs/modules/evals.md`](evals.md)「Auto-route gates」。Thinking 不得关掉。`evals/baselines/latency-ttft.json` 的 4–12s 是模型首 token，与路由开销不是同一口钟。
 
 ### 效能比门禁（红绿灯）
 

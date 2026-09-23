@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { DialogSelect, type DialogSelectOption } from "./DialogSelect.tsx";
 import { listFromCommandResult, sendCommand } from "./api.ts";
 import { PERMISSION_ITEMS } from "../Modal.tsx";
+import { cycleToolCardsDefault, toolCardsDefaultExpanded } from "../lib/toolCardDisplay.ts";
+import { composerMarkdownEnabled, cycleComposerMarkdown } from "../lib/markdownDisplay.ts";
 
 export function DialogPermission({
   onClose,
@@ -93,8 +95,24 @@ export function DialogSettings({
     void (async () => {
       const result = await sendCommand("/settings");
       const items = Array.isArray(result?.items) ? result.items : [];
-      setOptions(
-        items.map((raw) => {
+      setOptions([
+        {
+          id: "tool_cards",
+          title: "工具结果默认展开",
+          description: toolCardsDefaultExpanded() ? "当前：展开（点击工具名可单独折叠）" : "当前：折叠（点击工具名可单独展开）",
+          category: "设置",
+          value: "tool_cards",
+        },
+        {
+          id: "composer_markdown",
+          title: "对话 Markdown 渲染",
+          description: composerMarkdownEnabled()
+            ? "当前：开启（消息按 Markdown 呈现，输入框保持一行编辑）"
+            : "当前：关闭（普通纯文本对话）",
+          category: "设置",
+          value: "composer_markdown",
+        },
+        ...items.map((raw) => {
           const item = raw as {
             id?: string;
             label?: string;
@@ -109,7 +127,7 @@ export function DialogSettings({
             value: String(item.id || ""),
           };
         }),
-      );
+      ]);
     })();
   }, []);
 
@@ -139,7 +157,13 @@ export function DialogSettings({
       showSearch={false}
       onClose={onClose}
       onSelect={(opt) => {
-        if (opt.value === "permission") onOpenPermission();
+        if (opt.value === "tool_cards") {
+          cycleToolCardsDefault();
+          onClose();
+        } else if (opt.value === "composer_markdown") {
+          cycleComposerMarkdown();
+          onClose();
+        } else if (opt.value === "permission") onOpenPermission();
         else if (opt.value === "language") onOpenLanguage();
         else if (opt.value === "agents_enabled") {
           void (async () => {

@@ -24,7 +24,16 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `question.py` | `PipeQuestionBroker` (bidirectional `question/request`) |
 | `runtime.py` | Per-prompt context vars for concurrent session isolation |
 | `tui.py` | `ProtocolTui` maps AgentV2 TUI calls to protocol notifications |
-| `sessions.py` | Multi-session registry |
+| `runtime.py` | Per-prompt asyncio context（session/TUI 绑定）+ **委托深度追踪**（2026-09-23 P0） |
+
+**2026-09-23（P0 answer-last）**：`MessageDelta` / `ProgressUpdate` / `ReasoningSnapshot`
+新增 `intermediate` 字段。子代理执行期间（`bind_delegate_depth` 深度 ≥1）
+`ProtocolTui` 的流式输出打标 `intermediate=True`；前端 streamReducer 据此把
+中间输出挡在主聊流外，保证「最终答复是本轮最后一个面向用户的事件」。
+契约测试：`tests/test_appserver/test_answer_last_contract.py`。
+| `sessions.py` | Multi-session registry。首轮 `session/prompt` 写 `last_user_prompt` + fallback 标题；`sessions/list` 隐藏无用户对话的空窗口 |
+| `schedule_service.py` | OpenTUI `/loop` 磁盘作业 + `restore_after_restart`（UPDATE-01 U66）。boot 把 `running` 标 `recovery_required`，不复活被杀 bash |
+| `task_store.py` | Desktop/OpenTUI 会话目录 `tasks.json`。catalog 可带 `last_user_prompt` 供标题回填；transcript 是 `session/events`（tool_begin/end、`event/final` 的 thinking+text），不是 compact 摘要当 UI |
 | `bootstrap.py` | AgentV2 initialization (or stub in tests); `workspace_root` chdir |
 | `stub.py` | Deterministic agent when `RXYCODE_APPSERVER_STUB=1` |
 | `emitter.py` | pydantic notification -> JSON-RPC notification |
@@ -67,11 +76,12 @@ later tool activity.
 | method | maps to |
 |--------|---------|
 | `initialize` | handshake |
-| `session/new` | create workspace-bound session (`workspace_root` passed to worker) |
-| `session/prompt` | one user turn via worker `Session` (supports `timeout_seconds`) |
+| `session/new` | create workspace-bound session (`workspace_root` passed to worker). OpenTUI `/session` **catalog** is `sessions/list` of these records（UPDATE-01 轨 H），不是 `memory/chat_storage` |
+| `sessions/list` | list persisted sessions（additive 行字段：`display_title` / `age_label` / `date_group` / `title_is_manual`）。无用户消息的空 `session/new` 窗口不出现 |
+| `session/prompt` | one user turn via worker `Session` (supports `timeout_seconds`)。首轮立刻 fallback 占位；隐藏 LLM 取名；第三轮用三轮对话再总结。命名过程不进 transcript |
 | `session/interrupt` | worker `Session.interrupt` |
 | `session/set_thinking_expanded` | toggle expanded thinking rendering |
-| `session/warm` | pre-warm a session |
+| `session/warm` | bootstrap the worker **and** wait for thinking-on prefix prewarm |
 | `agent/invoke` | user `@agent` mention dispatch (server.py:536-552) |
 | `task/start` | explicit subagent task dispatch |
 | `subagents/list` | list registered agent definitions |

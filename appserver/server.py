@@ -11,6 +11,7 @@ import re
 import time
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,13 @@ from .lifecycle import InstanceLock, mark_incomplete_recovery_required
 from .project_routes import handle_project_rpc
 from .project_store import ProjectStore
 from .runtime import install_tui_context_hook
-from .workspace import PathBoundaryError, assert_exists, assert_inside_workspace, canonicalize
+from .workspace import (
+    PathBoundaryError,
+    assert_exists,
+    assert_inside_workspace,
+    canonicalize,
+    prepare_session_workspace,
+)
 from .execution import ExecutionStore
 from .approval_router import ApprovalRouter
 from .permission import PermissionStore
@@ -119,7 +126,8 @@ except ImportError:
 
 _logger = logging.getLogger(__name__)
 
-_DEFAULT_PROMPT_TIMEOUT_SECONDS = 600.0
+# Default prompt has no wall clock; stall watchdog is the idle killer.
+# Clients may still pass timeout_seconds for an explicit hard cap.
 _DEFAULT_WARM_TIMEOUT_SECONDS = 180.0
 _MAX_CONCURRENT_PROMPTS = 256
 
@@ -202,7 +210,14 @@ class AppServer:
         self._instance_blocked: str | None = None
         self._recovered_sessions: list[tuple[str, str]] = []
         should_lock = (not stub) or bool(os.environ.get("RXYCODE_APPSERVER_LOCK"))
-        if should_lock:
+        multi = os.environ.get("RXYCODE_APPSERVER_MULTI") == "1"
+        if multi:
+            # 每个 OpenTUI 窗口自带一个 stdio appserver。不抢 data-dir 锁，
+            # 也不把另一扇窗口里还在跑的任务标成 recovery_required。
+            # 废弃代码（2026-09-22）：OpenTUI 默认 RXYCODE_APPSERVER_PREEMPT=1，
+            # 第二扇窗口在锁龄 < 45s 时直接 INSTANCE_IN_USE。禁止再走这条。
+            ok, reason = True, "multi-stdio"
+        elif should_lock:
             ok, reason = self._instance_lock.acquire()
             if not ok and os.environ.get("RXYCODE_APPSERVER_PREEMPT") == "1":
                 ok, reason = self._instance_lock.preempt_and_acquire()
@@ -247,6 +262,10 @@ class AppServer:
             permissions=self._permissions,
             task_store=self._task_store,
         )
+        self._window_sessions: set[str] = set()
+        if os.environ.get("RXYCODE_APPSERVER_MULTI") == "1":
+            # Only fire /loop jobs for sessions this window created or attached.
+            self._schedule.local_session_ids = self._window_sessions
         self._schedule_task: asyncio.Task[Any] | None = None
         self._trash = TrashService(self._sessions)
         self._plugins = PluginService(
@@ -274,6 +293,8 @@ class AppServer:
         self._notification_write_failures: list[BaseException] = []
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._resolved_jobs: set[str] = set()
+        self._title_jobs: set[str] = set()
+        self._title_tasks: set[asyncio.Task[Any]] = set()
         self._thinking_expanded = False
         self._inflight_turns: dict[str, str] = {}
 
@@ -381,6 +402,11 @@ class AppServer:
             lock = asyncio.Lock()
             self._session_locks[session_id] = lock
         return lock
+
+    def _claim_window_session(self, session_id: str) -> None:
+        """This window may run tools and schedules for this session only."""
+        if session_id and session_id != "latest":
+            self._window_sessions.add(session_id)
 
     async def _host_for_session(self, session_id: str) -> AgentHost:
         host = self._session_hosts.get(session_id)
@@ -642,7 +668,21 @@ class AppServer:
                 if child is not None:
                     child.orphan_reason = str(safe_params["reason"])
                     self._sessions._persist(child)
-        elif method in {"event/token_usage", "event/final"}:
+        elif method == "event/token_usage":
+            usage = {
+                "input_tokens": safe_params.get("input_tokens"),
+                "output_tokens": safe_params.get("output_tokens"),
+                "cache_hit_tokens": safe_params.get("cache_hit_tokens"),
+                "cache_write_tokens": safe_params.get("cache_write_tokens"),
+                "cache_hit_rate": safe_params.get("cache_hit_rate"),
+                "reporting_status": safe_params.get("reporting_status", "not_reported"),
+                "context_used": safe_params.get("context_used"),
+            }
+            self._sessions.update_usage(session_id, usage)
+            self._emit_agent_usage(session_id, usage, reason="token_usage")
+        elif method == "event/final":
+            # Billing fields only. FinalAnswer has no occupancy; do not
+            # clobber context_used with None or fall back to input+output.
             usage = {
                 "input_tokens": safe_params.get("input_tokens"),
                 "output_tokens": safe_params.get("output_tokens"),
@@ -652,7 +692,7 @@ class AppServer:
                 "reporting_status": safe_params.get("reporting_status", "not_reported"),
             }
             self._sessions.update_usage(session_id, usage)
-            self._emit_agent_usage(session_id, usage, reason="token_usage")
+            self._emit_agent_usage(session_id, usage, reason="final")
         if method == "event/tool_end":
             self._emit_agent_usage(session_id, {}, reason="tool")
 
@@ -794,6 +834,7 @@ class AppServer:
         reason = (
             f"job stalled >{stall_timeout_seconds()}s (session {stalled.session_id})"
         )
+        # Worker-dead only: no heartbeat/progress. Model idle is StreamIdleTimeoutError.
         # Save the task *before* _fail_job (which pops it from _job_tasks).
         task = self._job_tasks.get(stalled.job_id)
         await self._fail_job(
@@ -845,10 +886,20 @@ class AppServer:
             return
         self._initialized = True
         recovery_ok = True
+        multi = os.environ.get("RXYCODE_APPSERVER_MULTI") == "1"
         try:
-            self._recovery.restore_after_restart(self._task_store)
-            self._recovery.reclaim_orphans(set(self._sessions._sessions))
-            self._schedule.reclaim_orphans()
+            if multi:
+                # 废弃代码（2026-09-22）：每个窗口 initialize 都
+                # restore_after_restart + reclaim_orphans。第二扇窗口会把
+                # 第一扇还在跑的任务标成 recovery_required，并抢走定时任务。
+                # self._recovery.restore_after_restart(self._task_store)
+                # self._recovery.reclaim_orphans(set(self._sessions._sessions))
+                # self._schedule.reclaim_orphans()
+                pass
+            else:
+                self._recovery.restore_after_restart(self._task_store)
+                self._recovery.reclaim_orphans(set(self._sessions._sessions))
+                self._schedule.reclaim_orphans()
             if self._schedule_task is None or self._schedule_task.done():
                 from .schedule_service import schedule_loop
 
@@ -899,8 +950,9 @@ class AppServer:
             await self._respond_error(request_id, -32602, "workspace_root is required")
             return
         try:
-            workspace = str(assert_exists(canonicalize(workspace)))
-            if self._projects.get(workspace) is None:
+            path, register_as_project = prepare_session_workspace(workspace)
+            workspace = str(path)
+            if register_as_project and self._projects.get(workspace) is None:
                 self._projects.add(workspace)
         except PathBoundaryError as exc:
             await self._respond_error(
@@ -923,6 +975,7 @@ class AppServer:
         record = self._sessions.create(
             Path(workspace), model_id=model_id, provider_id=provider_id
         )
+        self._claim_window_session(record.session_id)
         self._active_session_id = record.session_id
         await self._respond(
             request_id,
@@ -968,6 +1021,51 @@ class AppServer:
             # authoritative error path and can create a fresh worker.
             _logger.warning("background worker warm failed for %s", session_id, exc_info=True)
 
+    async def _await_prompt_activity(
+        self,
+        awaitable,
+        *,
+        job_id: str,
+        wall_timeout: float | None,
+    ):
+        """Wait for a prompt. Explicit timeout_seconds is a hard wall.
+
+        The default path has no 600s wall: heartbeats / tool progress keep the
+        job alive. Only a stall (no watchdog touch) cancels it.
+        """
+        task = asyncio.ensure_future(awaitable)
+        stall = stall_timeout_seconds()
+        started = time.monotonic()
+        try:
+            while True:
+                slice_timeout = stall
+                if wall_timeout is not None:
+                    remaining = wall_timeout - (time.monotonic() - started)
+                    if remaining <= 0:
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await task
+                        raise asyncio.TimeoutError
+                    slice_timeout = max(0.05, min(slice_timeout, remaining))
+                try:
+                    return await asyncio.wait_for(asyncio.shield(task), timeout=slice_timeout)
+                except asyncio.TimeoutError:
+                    if task.done():
+                        return task.result()
+                    job = self._watchdog.jobs.get(job_id)
+                    last = job.last_progress_at if job is not None else started
+                    idle = time.monotonic() - last
+                    if job is None:
+                        continue
+                    if idle > stall:
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await task
+                        raise asyncio.TimeoutError
+        finally:
+            if not task.done():
+                task.cancel()
+
     async def _run_prompt(
         self,
         *,
@@ -989,7 +1087,7 @@ class AppServer:
         wall_timeout = (
             float(timeout_seconds)
             if timeout_seconds is not None
-            else _DEFAULT_PROMPT_TIMEOUT_SECONDS
+            else None
         )
         expand = (
             self._thinking_expanded
@@ -1040,11 +1138,14 @@ class AppServer:
 
                 async def _execute_prompt() -> dict[str, Any]:
                     host._emit = emit_message
-                    await host.ensure_bootstrapped(timeout=wall_timeout)
+                    bootstrap_timeout = (
+                        min(wall_timeout, 60.0) if wall_timeout is not None else 60.0
+                    )
+                    await host.ensure_bootstrapped(timeout=bootstrap_timeout)
                     await self._emit_model(
                         ProgressUpdate(
                             session_id=session_id,
-                            text="Waiting for model response…",
+                            text="思考中...",
                         )
                     )
                     # Bootstrap is a separate cold-start phase. It has the
@@ -1063,20 +1164,26 @@ class AppServer:
                     )
 
                 try:
-                    payload = await asyncio.wait_for(
-                        _execute_prompt(), timeout=wall_timeout
+                    payload = await self._await_prompt_activity(
+                        _execute_prompt(),
+                        job_id=job_id,
+                        wall_timeout=wall_timeout,
                     )
                 except asyncio.TimeoutError:
+                    timeout_note = (
+                        f"prompt timed out after {wall_timeout}s"
+                        if wall_timeout is not None
+                        else f"prompt stalled after {stall_timeout_seconds()}s"
+                    )
                     await self._fail_job(
                         session_id=session_id,
                         job_id=job_id,
                         request_id=request_id,
                         code=-32000,
-                        message=f"prompt timed out after {wall_timeout}s",
+                        message=timeout_note,
                         kill_host=True,
                         degrade_reason=(
-                            f"prompt timed out after {wall_timeout}s "
-                            f"(session {session_id})"
+                            f"{timeout_note} (session {session_id})"
                         ),
                     )
                     return
@@ -1138,6 +1245,8 @@ class AppServer:
                 }
                 remembered = str(turn_key or request_id)
                 self._sessions.remember_turn(session_id, remembered, result)
+                if status == "succeeded":
+                    self._schedule_session_title_for_events(session_id, after_success=True)
                 await self._respond(request_id, result)
                 self._resolved_jobs.add(job_id)
         finally:
@@ -1152,6 +1261,7 @@ class AppServer:
         if self._sessions.get(session_id) is None:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        self._claim_window_session(session_id)
         if "capability" in params:
             try:
                 self._tool_capability.set_session(session_id, params.get("capability"))
@@ -1161,6 +1271,7 @@ class AppServer:
         session_record = self._sessions.get(session_id)
         if session_record is not None:
             session_record.last_user_prompt = text
+            self._sessions.note_user_prompt(session_id, text)
         self._task_store.append_event(
             session_id,
             {
@@ -1168,8 +1279,16 @@ class AppServer:
                 "params": {"session_id": session_id, "text": text, "role": "user"},
             },
         )
-        turn_key = str(params.get("request_id") or request_id)
-        stored = self._sessions.turn_result(session_id, turn_key)
+        self._schedule_session_title_for_events(session_id, after_success=False)
+        # Turn idempotency is a client UUID, never the JSON-RPC message id.
+        # ProtocolClient restarts nextId at 1 every TUI launch; persisted
+        # turn_results keyed by those ids would replay a previous answer
+        # without calling the worker (first send after attach dumps old text).
+        client_turn_id = str(params.get("request_id") or "").strip()
+        turn_key = client_turn_id or f"turn-{uuid.uuid4()}"
+        stored = (
+            self._sessions.turn_result(session_id, turn_key) if client_turn_id else None
+        )
         if stored is not None:
             await self._respond(request_id, dict(stored))
             return
@@ -1293,13 +1412,25 @@ class AppServer:
             return
         try:
             host = await self._host_for_session(session_id)
+            started = time.monotonic()
             await host.ensure_bootstrapped(timeout=timeout)
+            remaining = max(5.0, timeout - (time.monotonic() - started))
+            prefix = await host.prefix_warm(timeout=remaining)
         except Exception as exc:
             await self._respond_error(request_id, -32000, str(exc))
             return
         await self._respond(
             request_id,
-            {"ok": True, "session_id": session_id, "warmed": True},
+            {
+                "ok": True,
+                "session_id": session_id,
+                "warmed": True,
+                "prefix_warmed": bool(
+                    (prefix or {}).get("prefix_warmed")
+                    if isinstance(prefix, dict)
+                    else False
+                ),
+            },
         )
 
     async def _handle_interrupt(self, params: dict[str, Any], request_id: Any) -> None:
@@ -1480,7 +1611,140 @@ class AppServer:
             return
         await self._respond(request_id, result)
 
+    def _schedule_session_title_for_events(
+        self, session_id: str, *, after_success: bool
+    ) -> None:
+        try:
+            from core.session_title import TITLE_REFRESH_TURN, user_turn_count
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.session_title import (
+                TITLE_REFRESH_TURN,
+                user_turn_count,
+            )
+
+        events, _, _ = self._task_store.events(session_id, 0)
+        turns = user_turn_count(events)
+        record = self._sessions.get(session_id)
+        current_pass = int(getattr(record, "title_llm_pass", 0) or 0)
+        pass_n = 0
+        # Third user prompt starts the refresh immediately, in parallel with
+        # the in-flight job. Do not wait for that turn to succeed.
+        if turns >= TITLE_REFRESH_TURN and current_pass < TITLE_REFRESH_TURN:
+            pass_n = TITLE_REFRESH_TURN
+        elif turns == 1 and current_pass < 1:
+            pass_n = 1
+        if pass_n:
+            self._schedule_session_title(session_id, pass_n)
+        _ = after_success
+
+    def _schedule_session_title(self, session_id: str, pass_n: int) -> None:
+        key = f"{session_id}:{pass_n}"
+        if key in self._title_jobs:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._title_jobs.add(key)
+        try:
+            task = loop.create_task(
+                self._maybe_title_session(session_id, pass_n),
+                name=f"session-title-{key}",
+            )
+        except Exception:
+            self._title_jobs.discard(key)
+            return
+        self._title_tasks.add(task)
+
+        def _title_task_done(done: asyncio.Task[Any]) -> None:
+            self._title_tasks.discard(done)
+            self._title_jobs.discard(key)
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                done.exception()
+
+        task.add_done_callback(_title_task_done)
+
+    async def _maybe_title_session(self, session_id: str, pass_n: int = 1) -> None:
+        try:
+            from core.session_title import (
+                TITLE_REFRESH_TURN,
+                format_title_dialogue,
+                maybe_generate_session_title,
+            )
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.session_title import (
+                TITLE_REFRESH_TURN,
+                format_title_dialogue,
+                maybe_generate_session_title,
+            )
+
+        key = f"{session_id}:{pass_n}"
+        try:
+            record = self._sessions.get(session_id)
+            if record is None or record.title_is_manual:
+                return
+            current_pass = int(getattr(record, "title_llm_pass", 0) or 0)
+            if pass_n <= current_pass:
+                return
+            events, _, _ = self._task_store.events(session_id, 0)
+            force = pass_n >= TITLE_REFRESH_TURN
+            if force:
+                payload = format_title_dialogue(events)
+            else:
+                payload = self._task_store.first_user_text(session_id) or str(
+                    record.last_user_prompt or ""
+                )
+            if not payload.strip():
+                return
+            try:
+                title = await asyncio.to_thread(
+                    maybe_generate_session_title,
+                    title_is_manual=record.title_is_manual,
+                    generated_title=None if force else record.generated_title,
+                    first_user=payload,
+                    complete=self._session_title_complete,
+                    force=force,
+                )
+            except Exception:
+                return
+            if not title:
+                return
+            record = self._sessions.get(session_id)
+            if record is None or record.title_is_manual:
+                return
+            if pass_n < int(getattr(record, "title_llm_pass", 0) or 0):
+                return
+            self._sessions.apply_generated_title(
+                session_id, title, source="llm", title_llm_pass=pass_n
+            )
+        finally:
+            self._title_jobs.discard(key)
+
+    def _session_title_complete(self, system: str, user: str) -> str:
+        """Hidden one-shot complete. Stub/tests stay silent; live chat never sees this."""
+        if self._stub:
+            return ""
+        try:
+            from core.session_title import complete_session_title
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.session_title import complete_session_title
+
+        try:
+            return complete_session_title(system, user)
+        except Exception:
+            return ""
+
     def _session_summary(self, record: Any) -> dict[str, Any]:
+        try:
+            from core.session_list import session_list_row
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.session_list import session_list_row
+
+        if not str(getattr(record, "last_user_prompt", None) or "").strip():
+            prompt = self._task_store.first_user_text(record.session_id)
+            if prompt:
+                record.last_user_prompt = prompt
+        extra = session_list_row(record, now=datetime.now(timezone.utc))
         return {
             "session_id": record.session_id,
             "title": record.title,
@@ -1503,6 +1767,12 @@ class AppServer:
             "orphan_reason": getattr(record, "orphan_reason", None),
             "last_turn_request_id": getattr(record, "last_turn_request_id", None),
             "usage": dict(record.usage),
+            "display_title": extra["display_title"],
+            "generated_title": extra["generated_title"],
+            "title_is_manual": extra["title_is_manual"],
+            "title_source": extra["title_source"],
+            "age_label": extra["age_label"],
+            "date_group": extra["date_group"],
         }
 
     async def _handle_sessions_list(self, params: dict[str, Any], request_id: Any) -> None:
@@ -1525,9 +1795,21 @@ class AppServer:
             created_before=params.get("created_before"),
             parent_session_id=params.get("parent_session_id"),
         )
+        try:
+            from core.session_list import session_list_visible
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.session_list import session_list_visible
+
+        visible = []
+        for record in records:
+            has_turn = bool(str(getattr(record, "last_user_prompt", None) or "").strip())
+            if not has_turn:
+                has_turn = self._task_store.has_user_turn(record.session_id)
+            if session_list_visible(record, has_user_turn=has_turn):
+                visible.append(record)
         await self._respond(
             request_id,
-            {"sessions": [self._session_summary(record) for record in records]},
+            {"sessions": [self._session_summary(record) for record in visible]},
         )
 
     async def _handle_session_events(self, params: dict[str, Any], request_id: Any) -> None:
@@ -1535,6 +1817,7 @@ class AppServer:
         if self._sessions.get(session_id) is None:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        self._claim_window_session(session_id)
         cursor = int(params.get("cursor", 0) or 0)
         events, next_cursor, gap = self._task_store.events(session_id, cursor)
         events = self._project_session_items(session_id, events)
@@ -1554,7 +1837,8 @@ class AppServer:
         except ValueError as exc:
             await self._respond_error(request_id, -32602, str(exc))
             return
-        await self._respond(request_id, self._session_summary(record))
+        summary = self._session_summary(record)
+        await self._respond(request_id, summary)
 
     async def _handle_session_trash(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))

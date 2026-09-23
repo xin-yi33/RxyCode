@@ -50,6 +50,21 @@ class TestToUserFacingError:
         friendly = self._map(raw)
         _assert_friendly(raw, friendly)
 
+    def test_side_effect_evidence_is_not_a_user_rejection(self):
+        raw = (
+            "[evidence failed: requested side effect has no verified "
+            "WRITE/DANGER tool execution]"
+        )
+        friendly = self._map(raw)
+        _assert_friendly(raw, friendly)
+        assert "工具执行中断" in friendly
+        assert "拒绝" not in friendly
+
+    def test_real_user_rejection_stays_rejection(self):
+        raw = "[rejected by user: bash] 用户拒绝了该命令，未执行。"
+        friendly = self._map(raw)
+        assert "拒绝" in friendly
+
     def test_evidence_failed(self):
         raw = "[evidence failed: Tool bash did not complete: failed]"
         friendly = self._map(raw)

@@ -13,8 +13,15 @@ def bootstrap_agent(
     stub: bool = False,
     workspace_root: Path | str | None = None,
     model_name: str | None = None,
+    session_id: str | None = None,
 ) -> Any:
-    """Initialize AgentV2 (or stub) for stdio appserver."""
+    """Initialize AgentV2 (or stub) for stdio appserver.
+
+    ``session_id`` must be the owning session's real id.  AgentV2 defaults to
+    the compatibility bucket ``"latest"``; every worker in the same data dir
+    shares that bucket, so hydrating/saving under it both forgets per-session
+    history on restart and leaks context across windows (2026-09-23 fix).
+    """
     import logging
 
     log = logging.getLogger(__name__)
@@ -62,6 +69,16 @@ def bootstrap_agent(
     # finished booting.  Pass that selection into the first AgentV2
     # construction so the cold worker never initializes the old global active
     # model only to rebuild it a moment later.
-    agent = Agent(model_name=model_name)
+    # session_id: bind memory to THIS session before the hydrate below, so
+    # load_session reads the per-session bucket instead of the shared
+    # "latest" compatibility bucket (cross-window contamination fix).
+    agent = Agent(model_name=model_name, session_id=session_id)
+    try:
+        memory = getattr(agent, "_memory", None)
+        if memory is not None and hasattr(memory, "load_session"):
+            memory.load_session(append_only=True)
+            agent._session_loaded = True
+    except Exception as exc:
+        log.warning("bootstrap_agent: session hydrate failed: %s", exc)
     log.info("bootstrap_agent: AgentV2 ready")
     return agent

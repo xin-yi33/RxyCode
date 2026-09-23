@@ -10,14 +10,20 @@ The core module is the brain of RxyCode. It contains the main agent logic, the L
 | File | Purpose |
 |------|---------|
 | session.py | Headless `Session` facade over AgentV2; terminal events via `emit()` protocol models |
+| session_list.py | UPDATE-01 轨 H：`format_session_age` / `session_date_group` / `display_title`（OpenTUI `/session` 行 DTO）。无用户对话的空窗口不进列表。**不是** `Session` 假面，**不是** chat_storage |
+| session_title.py | UPDATE-01 轨 H：`maybe_generate_session_title`。首轮 prompt **立刻** fallback 占位；隐藏 LLM 命名真正的 title；第三轮用三轮 user+assistant 再总结。`title_is_manual` 不得覆盖。禁止用 compact PE，禁止把命名过程写进 transcript |
 
-`Session` is the strangler entry point for `api_server.py` and future `appserver/`.
-It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to legacy event dicts.
+`Session` is the strangler entry point for `appserver/` (stdio JSON-RPC) and
+`api_server.py` (HTTP/SSE adapter). It performs no I/O — surfaces map
+`emit()` protocol events; SSE adapters use `notification_to_sse_event()`.
 
 ### Key Files
 | File | Purpose |
 |------|---------|
 | agent_v2.py | Main agent class (AgentV2) - entry point for all user requests |
+| cu/ | PP40 Computer Use adapter. Independent MCP (open-codex-computer-use). Default off. Routed into ToolOrchestrator; never a pixel-click loop here. **Not** Playwright browser-use (that is U24 `browser_use`). |
+| web_intent.py | UPDATE-01 轨 F: `classify_web_intent` → search/fetch/browse. Browse **explicitly off** returns `BROWSE_OFF_HINT`; must not silent-webfetch. Does not own Playwright MCP (U24). **U46** 把 `browser_use` 缺省改为 True. |
+| web_escalate.py | UPDATE-01 **U46**: `escalate_web` Search→Fetch→Playwright→`chrome_attach`；canvas / 「用电脑控制」→ `COMPUTER_USE`. 无 URL 的 search 不升级. CDP 失败不自动转 CU. `research` job = 多次一条 query 的 websearch；`search_calls` 不升浏览器. 25s/30s 是单次 tool 墙. |
 | graph.py | LangGraph state machine - orchestrates the multi-step pipeline |
 | prompts/ | Prompt registry package - all system & role prompts (single source) |
 | state.py | AgentState TypedDict - shared state across graph nodes |
@@ -38,7 +44,7 @@ It performs no I/O — HTTP/SSE adapters map `notification_to_sse_event()` to le
 | agents/blackboard.py | Phase F append-only blackboard with authorized `context_keys` and a 1 MB cap. |
 | agents/verifier.py | Phase F mechanical gate (no LLM). Eight low-level checks plus high-level `goal_satisfied`. Verdicts bind `subject_hash`. |
 | agents/budget.py | Phase F `BudgetGuard`: token / wall-clock / delegation fuses. Over-budget returns a truncated partial answer. |
-| agents/router.py | Phase F `ModeRouter`: /solo /team /team-multi /why-mode, then heuristics, then optional LLM. Default `agents.enabled=false`. |
+| agents/router.py | Phase F `ModeRouter`: /solo /team /team-multi /explore /why-mode, NL 开专家团/用explore/用子代理, then heuristics `{solo, team, explore}`, then optional LLM. Default `agents.enabled=false`. **2026-09-23（P1a 复杂度闸门）**：点名文件全在 `tests/` 下的任务（实现文件 + 它的测试）不再命中 `multiple files` 进团队；只有 tests/ 外 ≥2 个产品文件才算多文件。依据：E26 现场——小函数+一条测试走了完整七阶段 SOP。 |
 | agents/teams/software_dev/ | Builtin software_dev Team Pack (pm → architect → frontend/backend → tester → verify → 3-way audit → doc). Tool names: `read`/`ls`. |
 | tracing.py | Node spans plus team tree (`replay --show-team`). J3 `LlmCallRecord` is opt-in via `settings.distillation.collect`. |
 | agents/client_settings.py | F13 settings projection: nested expert-team fields hidden until `agents.enabled`. |
@@ -68,16 +74,27 @@ Session restoration searches the current date, earlier dated records, and the le
   Final Answer. A build turn that never successfully calls write/edit, or
   that stops after a partial write to say "now the controllers" / "请继续",
   is nudged to keep writing instead of emitting a filename table as the
-  Final Answer. `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
+  Final Answer. The ReAct exit diamond lives in `core/loop_exit.py`: stop
+  when ANY of (1) 任务完成 (2) `final_answer` 调用 / labeled Final Answer
+  (3) consecutive errors >= 5 (a success resets the streak; not session
+  totals; StuckDetector@3 is a hint, not an exit) (4) LLM 返回要求退出.
+  「本轮无工具」和单次 turn 的 `max_tool_rounds` 都不是退出：触顶降级为
+  `[error]` 回喂。Trailing tool calls on 1/2/4 are dropped.
+  **2026-09-23**：`final_answer` 的 `result` 优先于流式元评论作为最终答案
+  （此前只在 answer 为空时才用 result，导致模型写了「给出最终结果。」后
+  真正的答案被丢弃）；`final_answer` 的结果不再走 `write_turn_liveness`
+  （不塞 Thought 折叠块）。
+  `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
 - AgentV2 (line ~747): The main agent. Handles user input routing, fast-path optimization, compose mode, and the full LangGraph pipeline. Also owns session lifecycle (`set_session`/`reset_session`/`switch_model`/`list_checkpoints`), hooks, trajectory and checkpoint/journal integration. A succeeded run does not mark the durable checkpoint complete while the side-effect journal still has pending WRITE/DANGER rows; otherwise an identical retry rotates `attempt_id` and later writes are blocked as `journal_unavailable`.
+- **2026-09-23 首包超时重试策略变更：** `_is_transport_retryable` 对精确类型 `FirstTokenTimeoutError` 返回 True（首包时钟触发时尚未发出任何内容，重试零重复；`_raw_stream` 重试分支另有 `not got_useful` 双保险），走既有 transport 重试循环（`_call_with_transport_retry` / `_open_stream_with_retry` / `_raw_stream` transient 分支，默认预算 2 次 + 恢复 UI 通知）。`StreamIdleTimeoutError` 仍禁止重试（流中段重试会重复已发内容）。超时类用户文案统一进 `MSG_TIMEOUT`（含 "deadline" 时钟文案，曾漏映射成 MSG_DEFAULT 造成「报错不固定」）。测试：`tests/unit/test_failure_taxonomy.py` / `test_retry_policy.py` / fixture `evals/baselines/failure-taxonomy.json`。
 **How a Request Flows:**
 1. AgentV2.run(user_input, mode) is called
 2. Plan mode uses a dedicated read-only tool loop and never enters the execution graph
 3. Download intent check (_detect_download_intent) for build/compose requests that are not create/build product prompts. A long “create a website” request that mentions an isolated Skill directory must not collapse into `download_skill`. Create/build product requests that also ask for websearch continue after research prefetch failure; pure freshness Q&A still aborts instead of guessing.
 4. Fast path: simple queries go directly to _fast_reply() (with 2-level cache: exact + semantic)
-5. Parallel path: `request_routing.should_use_subagents()` sets `parallel_requested` on graph state. LangGraph then runs **the same AgentV2** TaskTree leaves concurrently (`asyncio.gather`). Isolated child agents live in `core/subagents/` (Phase D `task` / `@agent`). Expert-team vs solo is `ModeRouter` (`core/agents/router.py`); `settings.agents.enabled` defaults to false (always SOLO, no L2/L3).
+5. Parallel path: `request_routing.should_use_subagents()` sets `parallel_requested` on graph state. LangGraph then runs **the same AgentV2** TaskTree leaves concurrently (`asyncio.gather`). Isolated child agents live in `core/subagents/` (Phase D `task` / `@agent`). Expert-team vs solo vs explore is `ModeRouter` (`core/agents/router.py`); `settings.agents.enabled` defaults to false (always SOLO unless slash / 开专家团 / session flag). When the router chooses explore, `Session` dispatches the builtin explore child (not just a keyword). The `task` tool stays in the turn schema when subagents are on or the user said 用子代理 this session.
 6. Compose path: plan+build mode uses _run_compose()
 7. Full pipeline: complex build tasks go through the LangGraph pipeline in graph.py
 
@@ -313,6 +330,11 @@ The subagent system is a separate package under `core/`:
   **independent `AgentV2`** bound to a child session id, installs a child permission
   guard before `AgentV2`'s tool gate, and normalizes result/usage/telemetry/errors
   into `TaskResult`. Parent cancel propagates to the active child AgentV2.
+  **2026-09-23**：`check_tool` 对 `final_answer` 直接放行（纯退出信号、无副作用）。
+  此前子代理权限规范无该类别 → 默认 deny → 子代理按系统提示词调它收尾被拦 →
+  退出判定只认成功调用 → 子代理空转继续调工具（「最终答案之后又调工具」现场）。
+  同时 `DELEGATE_REQUEST_TEMPLATE`（core/prompts/templates.py）加了工具边界说明
+  与 ENDING 段（「完成后直接输出文本，不要调 final_answer」）双保险。
 - `sessions.py` — `ChildSession` lifecycle state machine + `SessionTree` (recursive
   parent cancellation).
 - `definitions.py` / `config_loader.py` — `AgentDefinitionRegistry` and
@@ -362,12 +384,24 @@ Dispatch entry points: `tools/subagent_task_tool.py` (`task` tool),
   `route()` is the single decision table (path, profile_kind, skip_await).
   `_run_impl` must not contain `is_social_chat(` / `PURE_SOCIAL_GREETING_RE`
   / `declines_tools(` probes.
-- **ChatPrefix vs AgentPrefix**: greetings/social ride the frozen empty-tool
-  chat archive (thinking off, session load skipped); encoding turns keep the
-  frozen full core tool list and live reasoning. Tool schema must never be
-  cropped per turn (FX6 ToolsFreeze).
+- **ChatPrefix vs AgentPrefix**: greetings/social skip memory/MCP (local
+  latency) but send the frozen core tool list with **thinking ON** so the
+  first reasoning token hits the same provider prefix as encoding turns.
+  Tool schema must never be cropped per turn (FX6 ToolsFreeze).
+  Gateway ids such as `opencode-go/deepseek-v4.1-flash` must still resolve
+  as DeepSeek v4 (thinking enabled + effort). Git snapshot waits until
+  mutating tools run so it cannot occupy the user thinking-TTFT clock.
+  Tool **names/order stay frozen**; wire descriptions/schemas are compacted
+  so zen/go prefix bytes stay small. `_run_observed` defers checkpoint
+  disk I/O and hook `before` off the first-thinking-token path. Raw
+  streams send OpenCode session-affinity headers so prefix cache can stick.
 - **Prewarm/keep-alive are isomorphic** to the archive they serve
-  (`core/prewarm.py`); keep-alive always carries system + core tools.
+  (`core/prewarm.py`): thinking ON, frozen core tools, `effort=fast`,
+  `max_tokens=4096` (same as first `Session.prompt` / `_fast_reply`), user
+  suffix wrapped like `_fast_reply` via `build_user_message`. Consume until
+  the first reasoning token. `session/warm` (OpenTUI
+  `startStdioWarmOnOpen`) waits for that prefix, not just Agent ctor.
+  Keep-alive still uses max_tokens=1 on the same system + core tools.
 - **Turn context** (`append_turn_context`) only appends to the user suffix
   after the memory context; `system`/`tools` kinds are rejected.
 - **Handoff** may never carry transcripts (`HandoffEnvelope`).

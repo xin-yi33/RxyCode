@@ -32,15 +32,49 @@ def change_directory(path: str) -> str:
         if mode in {"workspace", "docker"}:
             try:
                 target.relative_to(workspace_root)
+                inside_root = True
             except (ValueError, OSError):
-                return (
-                    "[error: directory escapes execution.workspace_root: "
-                    f"{target}]"
-                )
+                inside_root = False
+            if not inside_root:
+                # 自救通道（2026-09-23）：启动目录不是项目时工作区会被降级
+                # 到 ~/.rxycode/workspace，agent 需要能 cd 到真实项目目录
+                # 继续工作，而不是报「被环境阻塞」。允许 cd 到项目目录
+                # （.git/package.json 等标记）或用户 home 之下的目录；其余
+                # 目标（如系统目录）仍然拒绝。cd 之后的写操作仍按新 cwd
+                # 逐个过写路径闸。
+                if not (_looks_like_project(target) or _is_under_home(target)):
+                    return (
+                        "[error: directory escapes execution.workspace_root: "
+                        f"{target}]"
+                    )
         resolved = set_working_directory(target)
         return f"Changed directory to: {resolved}"
     except Exception as e:
         return f"[error changing directory: {e}]"
+
+
+_CD_PROJECT_MARKERS = (
+    ".git",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "composer.json",
+    ".rxycode-project",
+)
+
+
+def _looks_like_project(path: Path) -> bool:
+    return any((path / marker).exists() for marker in _CD_PROJECT_MARKERS)
+
+
+def _is_under_home(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(Path.home().resolve())
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 async def change_directory_async(path: str) -> str:

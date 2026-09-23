@@ -17,6 +17,10 @@ _ACTIVE_SESSION_ID: ContextVar[str] = ContextVar(
     "rxycode_active_session_id",
     default="latest",
 )
+_TURN_USER_TEXT: ContextVar[str] = ContextVar(
+    "rxycode_turn_user_text",
+    default="",
+)
 _SESSION_CWDS: dict[tuple[str, str], Path] = {}
 _SESSION_LOCK = threading.RLock()
 
@@ -38,6 +42,19 @@ def bind_session(session_id: str) -> Token:
 
 def reset_session_binding(token: Token) -> None:
     _ACTIVE_SESSION_ID.reset(token)
+
+
+def bind_turn_user_text(text: str) -> Token:
+    """Bind this turn's user prompt so tools can pin named files."""
+    return _TURN_USER_TEXT.set(text or "")
+
+
+def reset_turn_user_text(token: Token) -> None:
+    _TURN_USER_TEXT.reset(token)
+
+
+def current_turn_user_text() -> str:
+    return _TURN_USER_TEXT.get() or ""
 
 
 def _state_path(session_id: str) -> Path:
@@ -205,34 +222,52 @@ def resolve_write_path(value: str | os.PathLike[str]) -> Path:
     return (output_dir / relative).resolve()
 
 
-def set_working_directory(path: str | Path) -> Path:
-    """Persist the active session's cwd atomically without calling os.chdir()."""
+def set_working_directory(path: str | Path, *, persist: bool = True) -> Path:
+    """Bind the active session's cwd without calling os.chdir().
+
+    Disk persist is skipped when the RAM cache already matches, or when
+    ``persist=False`` (Session.prompt thinking-TTFT path). Worker bootstrap
+    still persists once before the user clock starts.
+    """
     session_id = current_session_id()
     candidate = Path(path).expanduser().resolve()
     if not candidate.exists() or not candidate.is_dir():
         raise ValueError(f"working directory is not a directory: {candidate}")
-    state_path = _state_path(session_id)
-    project_path = _project_path(session_id)
-    project_document = {
-        "session_id": session_id,
-        "working_directory": str(candidate),
-    }
-    session_document = {
-        **project_document,
-        "project_file": str(project_path),
-    }
+    cache_key = _cache_key(session_id)
     with _SESSION_LOCK:
+        cached = _SESSION_CWDS.get(cache_key)
+        if cached == candidate:
+            if persist:
+                return candidate
+            _SESSION_CWDS[cache_key] = candidate
+            return candidate
+        _SESSION_CWDS[cache_key] = candidate
+        if not persist:
+            return candidate
+        state_path = _state_path(session_id)
+        project_path = _project_path(session_id)
+        project_document = {
+            "session_id": session_id,
+            "working_directory": str(candidate),
+        }
+        session_document = {
+            **project_document,
+            "project_file": str(project_path),
+        }
         project_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(
-            project_path,
-            json.dumps(project_document, ensure_ascii=False, separators=(",", ":")),
-        )
-        atomic_write_text(
-            state_path,
-            json.dumps(session_document, ensure_ascii=False, separators=(",", ":")),
-        )
-        _SESSION_CWDS[_cache_key(session_id)] = candidate
+        try:
+            atomic_write_text(
+                project_path,
+                json.dumps(project_document, ensure_ascii=False, separators=(",", ":")),
+            )
+            atomic_write_text(
+                state_path,
+                json.dumps(session_document, ensure_ascii=False, separators=(",", ":")),
+            )
+        except OSError:
+            # Persist must not fail the first user turn (Windows WinError 5).
+            pass
     return candidate
 
 
@@ -256,11 +291,14 @@ def clear_session_runtime(session_id: str) -> int:
 
 __all__ = [
     "bind_session",
+    "bind_turn_user_text",
     "clear_session_runtime",
     "current_session_id",
+    "current_turn_user_text",
     "current_working_directory",
     "initial_working_directory",
     "reset_session_binding",
+    "reset_turn_user_text",
     "resolve_session_path",
     "resolve_write_path",
     "set_working_directory",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -102,6 +103,59 @@ async def test_retry_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     assert results[1]["text"] == "once"
     after, _, _ = server._task_store.events(record.session_id, 0)
     assert len(after) == len(before)
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_id_is_not_turn_idempotency_key(tmp_path: Path) -> None:
+    """TUI ProtocolClient restarts ids at 1; persisted '3' must not dump old text."""
+    server = AppServer(stub=True)
+    server._initialized = True
+    record = server._sessions.create(tmp_path, title="t")
+    server._sessions.remember_turn(
+        record.session_id,
+        "3",
+        {"status": "succeeded", "text": "OLD ESSAY from previous TUI launch"},
+    )
+    server._respond = AsyncMock()
+    server._run_prompt = AsyncMock(return_value=None)
+    await server._handle_prompt(
+        {"session_id": record.session_id, "text": "不是，这不对啊这个文档"},
+        3,
+    )
+    server._run_prompt.assert_awaited()
+    replayed = [
+        call
+        for call in server._respond.await_args_list
+        if len(call.args) > 1
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("text") == "OLD ESSAY from previous TUI launch"
+    ]
+    assert replayed == []
+
+
+@pytest.mark.asyncio
+async def test_client_request_id_still_replays_stored_turn(tmp_path: Path) -> None:
+    server = AppServer(stub=True)
+    server._initialized = True
+    record = server._sessions.create(tmp_path, title="t")
+    server._sessions.remember_turn(
+        record.session_id,
+        "turn-uuid-1",
+        {"status": "succeeded", "text": "once"},
+    )
+    server._respond = AsyncMock()
+    server._run_prompt = AsyncMock(return_value=None)
+    await server._handle_prompt(
+        {
+            "session_id": record.session_id,
+            "text": "retry same turn",
+            "request_id": "turn-uuid-1",
+        },
+        3,
+    )
+    server._run_prompt.assert_not_awaited()
+    result = server._respond.await_args.args[1]
+    assert result["text"] == "once"
 
 
 @pytest.mark.asyncio
@@ -465,7 +519,10 @@ def test_worker_consumes_steer_queue() -> None:
     text = source.read_text(encoding="utf-8")
     assert "while self._steer_queue:" in text
     assert "self._steer_queue.pop(0)" in text
-    assert "session.prompt(self._agent, extra" in text
+    # 残留 steer 合并为一条消息跑一个兜底回合（不多发「最终结果」）。
+    assert "session.prompt(self._agent, combined" in text
+    assert "def _take_steers" in text
+    assert "session.drain_steers = self._take_steers" in text
 
 
 def test_thread_fork_capability_is_honest() -> None:

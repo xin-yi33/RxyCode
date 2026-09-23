@@ -28,3 +28,10 @@ changes and produce unified diffs.
 There is no `log_command` / `log_tool_call` / `get_history` API and no
 `~/.rxycode/history/` storage — this module is a lightweight in-memory diff
 tracker, not a command/conversation history store.
+
+User-visible Undo of files+messages is UPDATE-01 轨 J `session/revert` (git
+best-effort) **while the process is alive**. Crash-safe before-images are
+UPDATE-01 轨 K2 disk snapshots (`workspace_snapshot_store_is_durable()==True`).
+`FileTracker` stays a process-local cache (`file_tracker_is_durable()==False`)
+and must not keep unbounded full-file copies. See
+[`../plans/opus5-plan/rxycode/research/2026-09-15-session-durability-snapshots-loop-timeout.md`](../plans/opus5-plan/rxycode/research/2026-09-15-session-durability-snapshots-loop-timeout.md).

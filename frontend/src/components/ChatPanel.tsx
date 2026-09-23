@@ -111,7 +111,6 @@ const ThinkingMessage = React.memo(function ThinkingMessage({ content, startTime
       <Box>
         <ThinkingSpinner done={done} />
         <Text color={C.yellow} bold> Thought{stepLabel}</Text>
-        <Text color={C.overlay2}> (/thinking {expanded ? 'collapse' : 'expand'})</Text>
       </Box>
       {showExpand && (
         <Box paddingLeft={4} flexDirection="column" minHeight={1}>

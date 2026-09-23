@@ -580,6 +580,28 @@ test('applyProtocolNotification routes tool and done notifications into state', 
   assert.equal(state.runningBySession['s1'], false)
 })
 
+test('applyProtocolNotification does not pin routing labels as live progress', () => {
+  let state = addSession(createInitialState(), { sessionId: 's1', workspaceRoot: WORKSPACE })
+  state = applyProtocolNotification(state, 'event/agent_routed', {
+    session_id: 's1',
+    routing_reason: 'default heuristic',
+    payload: { mode: 'solo' }
+  })
+  assert.equal(state.progressBySession.s1, undefined)
+  state = applyProtocolNotification(state, 'event/progress', {
+    session_id: 's1',
+    text: '正在连接模型…'
+  })
+  assert.equal(state.progressBySession.s1, '等待模型返回…')
+  state = applyProtocolNotification(state, 'event/progress', {
+    session_id: 's1',
+    text: '正在等待模型响应…'
+  })
+  assert.equal(state.progressBySession.s1, '等待模型返回…')
+  state = applyProtocolNotification(state, 'event/tool_begin', toolBegin('call-route', 'write'))
+  assert.equal(state.progressBySession.s1, '等待工具 write 返回…')
+})
+
 test('applyProtocolNotification maps event/team to a role progress line', () => {
   let state = addSession(createInitialState(), { sessionId: 's1', workspaceRoot: WORKSPACE })
   state = applyProtocolNotification(state, 'event/team', {

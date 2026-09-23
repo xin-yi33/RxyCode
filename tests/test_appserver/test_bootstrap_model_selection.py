@@ -29,8 +29,9 @@ def test_bootstrap_agent_forwards_task_model(monkeypatch, tmp_path):
     fake_agent_module = types.SimpleNamespace(AgentV2=None)
 
     class FakeAgentClass:
-        def __init__(self, model_name=None):
+        def __init__(self, model_name=None, session_id=None):
             captured["model_name"] = model_name
+            captured["session_id"] = session_id
 
     fake_agent_module.AgentV2 = FakeAgentClass
     for name in (
@@ -46,7 +47,9 @@ def test_bootstrap_agent_forwards_task_model(monkeypatch, tmp_path):
         stub=False,
         workspace_root=tmp_path,
         model_name="deepseek/deepseek-v4-flash",
+        session_id="ses-real-123",
     )
 
     assert isinstance(result, FakeAgentClass)
     assert captured["model_name"] == "deepseek/deepseek-v4-flash"
+    assert captured["session_id"] == "ses-real-123"

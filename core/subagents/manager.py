@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from threading import RLock
 from typing import Callable
 
 from protocol.subagents import (
@@ -155,6 +156,7 @@ class ChildSessionManager:
     _request_ids_by_session: dict[str, str] = field(default_factory=dict, repr=False)
     _requests_by_session: dict[str, TaskRequest] = field(default_factory=dict, repr=False)
     _lease_manager: LeaseManager = field(default_factory=LeaseManager, repr=False)
+    _book_lock: RLock = field(default_factory=RLock, repr=False)
 
     # -- event wiring --------------------------------------------------------
 
@@ -380,10 +382,11 @@ class ChildSessionManager:
             self._root_for_parent(request.parent_session_id) or session.session_id
         )
 
-        tree = self._tree_for(session.root_session_id)
-        tree.add(session)
-        self._request_ids_by_session[session.session_id] = request.request_id
-        self._requests_by_session[session.session_id] = request
+        with self._book_lock:
+            tree = self._tree_for(session.root_session_id)
+            tree.add(session)
+            self._request_ids_by_session[session.session_id] = request.request_id
+            self._requests_by_session[session.session_id] = request
 
         self._emit("child_session/created", {
             "session_id": session.session_id,
@@ -611,39 +614,45 @@ class ChildSessionManager:
         context: ContextEnvelope,
     ) -> TaskResult:
         """Run a child session through its runtime to a terminal result."""
-        # Transition to RUNNING
-        try:
-            transition(session, ChildStatus.RUNNING)
-        except Exception:
-            # Session was cancelled while queued
-            return self._terminal_result(request, session, ChildStatus.CANCELLED, "Cancelled before start")
+        from protocol.subagents import ErrorRecord
 
-        active_siblings = [
-            child
-            for child in self._tree_for(session.root_session_id).list_active()
-            if child.session_id != session.session_id
-        ]
-        concurrent_limit = session.policy.budget.max_concurrent_children
-        if len(active_siblings) >= concurrent_limit:
-            from protocol.subagents import ErrorRecord
-
-            message = (
-                f"Concurrency limit exceeded: {len(active_siblings)}/"
-                f"{concurrent_limit} active"
-            )
-            transition(session, ChildStatus.FAILED)
-            self._emit("child_session/failed", {
-                "session_id": session.session_id,
-                "status": "failed",
-                "error": {"code": "budget.concurrency", "message": message},
-            })
-            return self._terminal_result(
-                request,
-                session,
-                ChildStatus.FAILED,
-                message,
-                error=ErrorRecord(code="budget.concurrency", message=message),
-            )
+        with self._book_lock:
+            try:
+                transition(session, ChildStatus.RUNNING)
+            except Exception:
+                # Session was cancelled while queued
+                return self._terminal_result(
+                    request, session, ChildStatus.CANCELLED, "Cancelled before start"
+                )
+            # 废弃代码（2026-09-21）：
+            # active_siblings = [child for child in tree.list_active() if child.session_id != session]
+            # QUEUED 兄弟会被算进并发槽，两个 task 同时派发时第一个会误杀。
+            # 只统计已经 RUNNING 的兄弟，并在同一把锁里升到 RUNNING。
+            running_siblings = [
+                child
+                for child in self._tree_for(session.root_session_id).list_active()
+                if child.session_id != session.session_id
+                and child.status == ChildStatus.RUNNING
+            ]
+            concurrent_limit = session.policy.budget.max_concurrent_children
+            if len(running_siblings) >= concurrent_limit:
+                message = (
+                    f"Concurrency limit exceeded: {len(running_siblings)}/"
+                    f"{concurrent_limit} active"
+                )
+                transition(session, ChildStatus.FAILED)
+                self._emit("child_session/failed", {
+                    "session_id": session.session_id,
+                    "status": "failed",
+                    "error": {"code": "budget.concurrency", "message": message},
+                })
+                return self._terminal_result(
+                    request,
+                    session,
+                    ChildStatus.FAILED,
+                    message,
+                    error=ErrorRecord(code="budget.concurrency", message=message),
+                )
 
         self._emit("child_session/started", {"session_id": session.session_id})
 
@@ -689,8 +698,14 @@ class ChildSessionManager:
         )
 
         try:
-            # Construct prompt from the context task
-            task_prompt = context.task if context else ""
+            # 废弃代码（2026-09-21）：task_prompt = context.task if context else ""
+            # 废弃代码（2026-09-21）：
+            # task_prompt = (request.prompt or "").strip() or (
+            #     context.task if context else ""
+            # )
+            # 有 ContextEnvelope 时曾丢弃 request.prompt，或在 prompt 为空时
+            # 回退到 description（explore codebase）。禁止再引用 context.task。
+            task_prompt = (request.prompt or "").strip()
 
             # Execute (placeholder — B7 wires the real provider loop)
             result = await child_rt.execute(task_prompt)

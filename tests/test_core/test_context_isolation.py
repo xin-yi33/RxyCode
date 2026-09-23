@@ -73,14 +73,12 @@ class TestGetTaskContext:
         assert "Long-term memory" in result
         assert "important long-term context" in result
 
-    def test_long_term_memory_truncated_to_2000_chars(self, tmp_path, monkeypatch):
+    def test_long_term_memory_not_clipped_at_2000_chars(self, tmp_path, monkeypatch):
         mm = self._make_manager(tmp_path, monkeypatch)
         long_text = "A" * 3000
         mm.long_term.save_session_context(long_text)
         result = asyncio.run(mm.get_task_context("s1", "t1"))
-        # Should be truncated
-        assert len(result) < 3000
-        assert "..." in result
+        assert "A" * 3000 in result
 
     # ------------------------------------------------------------------
     # TaskTree ancestor chain tests

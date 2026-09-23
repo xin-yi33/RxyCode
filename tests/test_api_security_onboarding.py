@@ -302,10 +302,10 @@ def test_successful_onboarding_preserves_nickname_provider_mapping(monkeypatch):
     payload = response.json()
     # Config key is provider-namespaced so the same vendor id can live under
     # multiple endpoints; nickname remains the display alias.
-    assert payload["model"]["id"] == "custom/provider/model-v2"
+    assert payload["model"]["id"] == "custom-provider-example/provider/model-v2"
     assert payload["model"]["nickname"] == "daily-coder"
     assert payload["model"]["provider_model_id"] == "provider/model-v2"
-    assert payload["model"]["provider_name"] == "其他"
+    assert payload["model"]["provider_name"] == "provider.example"
     assert "sk-mapping-secret" not in response.text
     probe.assert_called_once_with(
         api_key="sk-mapping-secret",
@@ -313,15 +313,15 @@ def test_successful_onboarding_preserves_nickname_provider_mapping(monkeypatch):
         provider_model_id="provider/model-v2",
     )
     add.assert_called_once_with(
-        "custom/provider/model-v2",
+        "custom-provider-example/provider/model-v2",
         "sk-mapping-secret",
         "https://provider.example/v1",
         model_name="provider/model-v2",
-        provider_id="custom",
-        provider_name="其他",
+        provider_id="custom-provider-example",
+        provider_name="provider.example",
         nickname="daily-coder",
     )
-    activate.assert_called_once_with("custom/provider/model-v2")
+    activate.assert_called_once_with("custom-provider-example/provider/model-v2")
 
 
 @pytest.mark.parametrize(
@@ -748,7 +748,7 @@ def test_model_listing_includes_category_from_provider_name(monkeypatch):
     assert response.status_code == 200
     models = {item["id"]: item for item in response.json()["models"]}
     assert models["deepseek-chat"]["category"] == "DeepSeek"
-    assert models["legacy-model"]["category"] == "其他"
+    assert models["legacy-model"]["category"] == "legacy.example"
 
 
 def test_batch_onboarding_adds_models_without_probe(monkeypatch):

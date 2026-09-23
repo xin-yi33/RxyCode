@@ -3,6 +3,8 @@ export const C = {
   bg: "#000000",
   surface0: "#111111",
   surface1: "#222222",
+  /** OpenCode-style user/panel field — slightly above true black. */
+  userBubble: "#161616",
   overlay2: "#555555",
   subtext: "#aaaaaa",
   text: "#ffffff",
@@ -10,6 +12,9 @@ export const C = {
   accent: "#FFB6C1",
   mauve: "#cba6f7",
   green: "#a6e3a1",
+  red: "#f38ba8",
+  diffAddBg: "#1a4a32",
+  diffDelBg: "#6b3038",
   teal: "#94e2d5",
   yellow: "#f9e2af",
   border: "#FF69B4",

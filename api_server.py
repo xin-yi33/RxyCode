@@ -1,4 +1,4 @@
-﻿"""RxyCode API Server - FastAPI backend for the Ink TUI."""
+"""RxyCode API Server - FastAPI backend for the Ink TUI."""
 
 import sys
 import concurrent.futures
@@ -540,8 +540,10 @@ async def startup(_app: FastAPI | None = None):
         )
 
         _state["previous_question_broker"] = get_question_broker()
+        # question 等用户回答，默认不限时（<=0）。废弃代码（2026-09-23）：
+        # 默认跟随 approval_timeout=120，用户无操作 120 秒被自动提交空答案。
         question_timeout = float(
-            (cfg.get("safety") or {}).get("question_timeout", interaction_timeout)
+            (cfg.get("safety") or {}).get("question_timeout", 0)
         )
         set_question_broker(SseQuestionBroker(timeout=question_timeout))
     except Exception:
@@ -1251,7 +1253,7 @@ async def _execute_command(req: CommandRequest):
             "message": message,
         }
 
-    if c in {"/solo", "/team", "/team-multi", "/why-mode"}:
+    if c in {"/solo", "/team", "/team-multi", "/explore", "/why-mode"}:
         from RxyCode.RxyCode1_1_0.core.agents.router import get_default_router
 
         raw = c if not args else f"{c} {args}"
@@ -1826,7 +1828,7 @@ async def _execute_command(req: CommandRequest):
     # 模糊匹配命令
     known_commands = [
         "/help", "/clear", "/models", "/model", "/addmodel", "/effort",
-        "/solo", "/team", "/team-multi", "/why-mode", "/agents",
+        "/solo", "/team", "/team-multi", "/explore", "/why-mode", "/agents",
         "/plan", "/build", "/compose", "/language", "/memory",
         "/session", "/list-chats", "/save-chat", "/load-chat", "/copy", "/queue",
         "/schedule", "/cache", "/thinking", "/mode", "/exit",

@@ -10,6 +10,7 @@ def test_help_explains_expert_team_default_and_how_to_invoke() -> None:
     assert "/team <可拆任务>" in text
     assert "/agents on|off" in text
     assert "/why-mode" in text
+    assert "/explore" in text
     assert "子代理" in text
     assert "/children" in text
     assert "子代理（默认开启" in text
@@ -17,6 +18,9 @@ def test_help_explains_expert_team_default_and_how_to_invoke() -> None:
     assert "密钥不写入命令" in text
     assert "<key>" not in text
     assert "/permission" in text
+    assert "list_apps" in text
+    assert "browser_snapshot" in text
+    assert "RXYCODE_COMPUTER_USE=1" in text
 
 
 def test_help_text_has_no_credential_placeholders() -> None:

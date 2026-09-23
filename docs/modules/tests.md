@@ -119,6 +119,14 @@ npm run e2e
 
 Desktop GUI 真实业务与确定性套件在 `frontend/desktop-app/`，走真实 Electron + CDP，不进入普通 CI。验收记录见 `docs/RXYCODE-GUI-REAL-E2E-REPORT-2026-08-13.md`。
 
+会话恢复三张卡（[`docs/phase-g/SESSION-RESTORE-ABC.md`](../phase-g/SESSION-RESTORE-ABC.md)）：
+
+```powershell
+python -m pytest tests/test_core/test_session_title.py tests/test_core/test_session_list.py tests/test_appserver/test_session_title_hook.py tests/test_appserver/test_session_replay_contract.py tests/e2e/update01_session/test_card_a_title.py tests/e2e/update01_session/test_card_b_replay.py tests/e2e/update01_session/test_card_c_empty.py -q --timeout=60
+Set-Location frontend/opentui-app
+bun test src/dialog/sessionEventsToMessages.test.ts
+```
+
 ```powershell
 Set-Location frontend/desktop-app
 node --test scripts/real-business-suite.test.mts scripts/cdp-harness.test.mts

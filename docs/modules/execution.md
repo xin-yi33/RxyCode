@@ -31,6 +31,14 @@ are expressed at the graph layer via LangGraph's `recursion_limit`.)
 - Handles tool_call -> tool_result -> LLM -> tool_call cycles
 - Includes progress tracking and error handling
 
+**2026-09-23 思维链导出：** `execute_with_evidence` 走非流式 `agent.ainvoke`，
+结果消息里的模型推理（DeepSeek/Qwen/Kimi `additional_kwargs.reasoning_content`、
+Anthropic 风格 thinking content blocks）曾在此边界被丢弃——graph/团队轮次 TUI
+无 Thought（用户报告：thought 不是没有而是无法导出）。现在
+`_extract_thinking_from_messages` 提取后经 `event_tui.write_reasoning` 导出到
+会话 TUI（纯观察性，失败不影响任务；探针 `executor.thinking.exported`）。
+测试：`tests/test_execution/test_executor_thinking_export.py`。
+
 ## Core Code: tool_orchestrator.py (ToolOrchestrator)
 
 **Responsibilities:**

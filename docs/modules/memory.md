@@ -76,6 +76,12 @@ Reusable-experience vector store used by MemoryManager:
 - ChatStorage.load(name) -> list: Load conversation
 - ChatStorage.list_chats() -> list: List all saved conversations
 
+OpenTUI `/session` **不是**这张表。默认 TUI 的会话目录权威是 appserver `sessions/list`（UPDATE-01 轨 H）。`chat_storage` 只服务手动 `/save-chat` 与 Ink HTTP `/session`。禁止把 OpenTUI 列表改回 `list_chats()`。
+
+隔夜对话 hydrate 走 `save_session` / `load_session(append_only=True)`（dated `sessions/*/memory/<id>`）。**列表在 `tasks.json` 里不等于 transcript 在。** 换模型、快照、`/goal`/`/loop` 续跑、bash timeout：UPDATE-01 **轨 K U63–U68**；对照 [`../plans/opus5-plan/rxycode/research/2026-09-15-session-durability-snapshots-loop-timeout.md`](../plans/opus5-plan/rxycode/research/2026-09-15-session-durability-snapshots-loop-timeout.md)。
+
+2026-09-23 修复：appserver worker 的 `bootstrap_agent` 现在把**真实 session_id** 传进 `AgentV2` 构造（此前不传，MemoryManager 永远绑兼容桶 `"latest"` → 重启后模型"遗忘"、多窗口互串）。`configure_agent_workspace` 与 `Session.prompt` 改走 `AgentV2.set_session()` 重绑（含 memory 重建），同 session 调用为 no-op。存量会话历史仍在 `"latest"` 桶、不做自动迁移（该桶可能混有多窗口内容）；修复后各 session 桶独立累积。注：`add_interaction` 溢出归档（`_compress_and_store`）维持**未接线**——两条未提交测试锁定"add 时不归档"（归档改写 short_term 前缀形态，违反 B5 append-only/缓存键稳定）；超窗口历史仍由 deque 截断，occupancy 压缩走 core/compaction.py。
+
 ## Core Code: manager.py - Task-Level Context Isolation
 
 **`get_task_context(session_id, task_id, parent_id, tree) -> str`**

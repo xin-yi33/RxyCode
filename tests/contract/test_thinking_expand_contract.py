@@ -66,7 +66,7 @@ async def test_thinking_expand_mid_run_emits_recorder_snapshot(monkeypatch):
     stream_tui.write_reasoning("hidden chain of thought part1")
     stream_tui.write_reasoning(" part2")
     stream_tui.flush_stream_buffers()
-    assert not [e for e in _drain(queue) if e["type"] == "reasoning"]
+    assert [e for e in _drain(queue) if e["type"] == "reasoning"]
     assert "hidden chain of thought part1 part2" in recorder.thinking_content
 
     proxy = api_server.APIProxyTUI()
@@ -136,7 +136,7 @@ def test_stream_tui_expand_emits_snapshot_directly():
     tui.set_thinking_expanded(False)
     tui.write_reasoning("accumulated-only-in-recorder")
     tui.flush_stream_buffers()
-    _drain(queue)
+    assert [e for e in _drain(queue) if e.get("type") == "reasoning"]
 
     tui.set_thinking_expanded(True)
     events = _drain(queue)

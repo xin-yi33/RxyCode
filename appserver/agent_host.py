@@ -35,6 +35,19 @@ EmitFn = Callable[[dict[str, Any]], None]
 ForwardServerRequest = Callable[[str, dict[str, Any]], Any]
 WORKER_SERVER_REQUESTS = frozenset({"approval/request", "question/request"})
 
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from ..core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+    except Exception:
+        try:
+            from core.runtime_probe import probe as _probe
+        except Exception:
+            def _probe(event, **fields):
+                return None
+
 #: Inner bootstrap RPC budget. Waiters may time out sooner; the in-flight
 #: bootstrap must keep running so a later prompt can join it instead of
 #: spawning a second AgentV2 constructor.
@@ -443,7 +456,7 @@ class AsyncRpcPipe:
             raise
 
     async def request(
-        self, method: str, params: dict[str, Any], *, timeout: float
+        self, method: str, params: dict[str, Any], *, timeout: float | None
     ) -> dict[str, Any]:
         """One RPC round-trip; timeout/cancel clean up without leaking a Future.
 
@@ -700,11 +713,26 @@ class AgentHost:
                         self._forward_server_request(method, params),
                         self._main_loop,
                     )
-                    result = future.result(timeout=125.0)
+                    # question/request 等用户回答，不能设上限：超时会变成
+                    # worker 侧的 channel-unavailable 空答案。废弃代码
+                    # （2026-09-23）：统一 125s 超时，question 也被砍掉。
+                    wait_s = None if method == "question/request" else 125.0
+                    # PROBE-20260923: host 转发 question/request 到前端（起）
+                    _probe("host.forward.start", method=method, wait_s=wait_s)
+                    result = future.result(timeout=wait_s)
+                    # PROBE-20260923: host 转发 question/request 到前端（止）
+                    _probe("host.forward.end", method=method, ok=True)
                     self._outgoing.put(
                         {"jsonrpc": "2.0", "id": rid, "result": result}
                     )
                 except Exception as exc:
+                    # PROBE-20260923: host 转发异常（含 question 被砍/超时）
+                    _probe(
+                        "host.forward.end",
+                        method=method,
+                        ok=False,
+                        error=type(exc).__name__,
+                    )
                     self._outgoing.put(
                         {
                             "jsonrpc": "2.0",
@@ -766,7 +794,7 @@ class AgentHost:
             )
 
     async def _pipe_request(
-        self, method: str, params: dict[str, Any], *, timeout: float
+        self, method: str, params: dict[str, Any], *, timeout: float | None
     ) -> dict[str, Any]:
         """Route a host-initiated RPC to the active transport.
 
@@ -782,7 +810,7 @@ class AgentHost:
             return await self._pipe.request(method, params, timeout=timeout)
         return await asyncio.to_thread(self._request, method, params, timeout=timeout)
 
-    def _request(self, method: str, params: dict[str, Any], *, timeout: float) -> dict:
+    def _request(self, method: str, params: dict[str, Any], *, timeout: float | None) -> dict:
         with self._send_lock:
             request_id = self._next_id
             self._next_id += 1
@@ -852,12 +880,30 @@ class AgentHost:
         )
         self._bootstrapped = True
 
+    async def prefix_warm(self, *, timeout: float = 45.0) -> dict[str, Any]:
+        """Wait for thinking-on prefix prewarm after bootstrap.
+
+        session/warm used to return after Agent ctor only; the LLM prefix
+        then raced (and lost to) the first prompt cancel. Joining this RPC
+        makes OpenTUI startStdioWarmOnOpen actually warm thinking-TTFT.
+        """
+        if not self.alive():
+            return {"ok": False, "prefix_warmed": False}
+        try:
+            return await self._pipe_request(
+                "prefix_warm",
+                {"timeout_seconds": timeout},
+                timeout=timeout,
+            )
+        except Exception:
+            return {"ok": False, "prefix_warmed": False}
+
     async def run_prompt(
         self,
         *,
         text: str,
         run_id: str,
-        timeout: float,
+        timeout: float | None,
         emit: EmitFn,
         mode: str = "build",
         thinking_expanded: bool = False,

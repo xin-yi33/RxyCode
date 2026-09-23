@@ -967,14 +967,8 @@ async def compressor_node(state: AgentState) -> dict:
     """Bound graph context while preserving full task results as artifacts."""
     memory: MemoryManager = state["_memory"]
     session_id = state["session_id"]
+    memory_ctx = memory.get_context_for_prompt()
     cfg = _settings.load_config() or {}
-    auto_compact = cfg.get("autoCompact", True)
-    if isinstance(auto_compact, str):
-        auto_compact = auto_compact.strip().casefold() in {"1", "true", "yes", "on"}
-    if auto_compact:
-        memory_ctx = await memory.compress_if_needed(session_id)
-    else:
-        memory_ctx = memory.get_context_for_prompt()
     context_cfg = cfg.get("context", {})
     configured_result_chars = max(
         1000,
@@ -1003,7 +997,7 @@ async def compressor_node(state: AgentState) -> dict:
             archive_dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(path, full_result)
         marker = (
-            "\n\n[context compacted; full result: "
+            "\n\n[overflow archived; full result: "
             + str(path)
             + f"; sha256={digest}]\n\n"
         )
@@ -1015,14 +1009,6 @@ async def compressor_node(state: AgentState) -> dict:
         task.touch()
 
     history = list(state.get("conversation_history", []))
-    if len(history) > 20:
-        history = history[-20:]
-    for message in history:
-        if not isinstance(message, dict):
-            continue
-        content = str(message.get("content", ""))
-        if len(content) > 2000:
-            message["content"] = content[:1300] + "\n[history compacted]\n" + content[-700:]
 
     return {
         "task_tree": tree,

@@ -2,7 +2,7 @@
 
 RxyCode is a local plan-and-execute coding agent. Type `rxycode` in a terminal to open OpenTUI. Protocol version stays `1.1.0`.
 
-> **v1.2.11 is the current CLI release.** This GitHub Release publishes **one** installable asset: `rxycode-1.2.11.tar.gz`. It does **not** add Windows, macOS, or Linux Desktop binaries. The **v1.2.10** Desktop release remains published.
+> **v1.2.11 was the CLI release.** Current product version is **v1.4.0**. This GitHub Release publishes **one** installable asset: `rxycode-1.2.11.tar.gz`. It does **not** add Windows, macOS, or Linux Desktop binaries. The **v1.2.10** Desktop release remains published.
 
 ## What changed
 

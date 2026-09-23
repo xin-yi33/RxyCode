@@ -27,6 +27,14 @@ TTL_TIER_1H = 3600
 DEFAULT_TTL_SECONDS = TTL_TIER_5M
 
 
+def cache_control_for_ttl(ttl_seconds: int) -> dict:
+    """Anthropic cache_control block for a resolved TTL."""
+    control = {"type": "ephemeral"}
+    if int(ttl_seconds) == TTL_TIER_1H:
+        control["ttl"] = "1h"
+    return control
+
+
 def resolve_ttl_seconds(cfg: Optional[dict]) -> int:
     """解析 cache.ttl 配置为秒。
 

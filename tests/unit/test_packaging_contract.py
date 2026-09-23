@@ -25,12 +25,31 @@ def _workflow(name: str) -> dict:
     )
 
 
+def test_installer_ships_playwright_package_not_the_browser_binary():
+    req = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "playwright>=" in req
+    script = (
+        PROJECT_ROOT / "frontend" / "desktop-app" / "scripts" / "prepare-runtime.mts"
+    ).read_text(encoding="utf-8")
+    live_install = [
+        line
+        for line in script.splitlines()
+        if "playwright install" in line and not line.lstrip().startswith("//")
+    ]
+    assert live_install == []
+    browser = (PROJECT_ROOT / "tools" / "virtual_browser.py").read_text(encoding="utf-8")
+    launch = browser.split("def _launch_browser", 1)[1].split("def _ensure_page", 1)[0]
+    assert "chromium.launch(headless=True)" in launch
+    assert "channel=" not in launch
+    assert "_install_bundled_chromium" in launch
+
+
 def test_pyproject_exposes_the_versioned_console_entrypoint():
     config = _pyproject()
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.2.11"
+    assert project["version"] == "1.4.0"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -207,7 +226,7 @@ def test_tracked_docs_only_contain_the_github_allowlist():
     import subprocess
 
     listed = subprocess.check_output(
-        ["git", "ls-files", "docs"],
+        ["git", "-c", "core.quotepath=false", "ls-files", "docs"],
         cwd=PROJECT_ROOT,
         text=True,
         encoding="utf-8",

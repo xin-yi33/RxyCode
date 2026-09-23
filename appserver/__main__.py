@@ -11,6 +11,14 @@ from .server import AppServer
 
 
 def _configure_logging() -> None:
+    import warnings
+
+    # Keep langchain-openai from painting the TUI via stderr UserWarning.
+    os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
+    warnings.filterwarnings(
+        "ignore",
+        message=r"langchain-openai injected a custom httpx transport.*",
+    )
     logging.basicConfig(
         level=logging.INFO,
         stream=sys.stderr,
@@ -41,11 +49,16 @@ def main() -> None:
     _configure_logging()
     _configure_event_loop()
     stub = os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
-    server = AppServer(stub=stub)
+    try:
+        server = AppServer(stub=stub)
+    except Exception as exc:
+        raise
     try:
         asyncio.run(server.run())
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        raise
 
 
 if __name__ == "__main__":

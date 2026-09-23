@@ -17,7 +17,7 @@ def test_agent_init_does_not_block_on_mcp_connect():
 
 
 def test_run_does_not_await_mcp_on_user_turn():
-    src = inspect.getsource(AgentV2.run)
+    src = inspect.getsource(AgentV2.run) + inspect.getsource(AgentV2._run_user_turn_body)
     assert "asyncio.to_thread" not in src
     assert "_schedule_mcp_refresh" in src
 

@@ -43,6 +43,36 @@ def test_memory_and_experience_retrieval_are_isolated_by_session(
     assert "private PostgreSQL" in first.get_retrieval_context("migration")
 
 
+def test_memory_restart_recovers_own_session_history(tmp_path, monkeypatch):
+    """E2E reboot scenario (2026-09-23): the appserver worker for window A
+    dies (machine reboot / watchdog) -> a new worker bootstraps with the SAME
+    real session_id -> hydrate must recover THIS session's history, while a
+    sibling window's worker must stay clean.
+
+    This is the wiring the 2026-09-23 bootstrap fix enables: workers now
+    construct AgentV2/MemoryManager with the real session id instead of the
+    shared "latest" bucket.
+    """
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
+
+    # Window A worker: talks, persists, dies.
+    worker_a = MemoryManager(session_id="session-a")
+    worker_a.add_interaction("我的数据库密码是什么", "密码是 s3cret-a")
+    worker_a.save_session()
+
+    # Window B worker (concurrent): hydrate must NOT pull in A's content.
+    worker_b = MemoryManager(session_id="session-b")
+    worker_b.load_session(append_only=True)
+    assert "s3cret-a" not in worker_b.get_context_for_prompt("数据库")
+
+    # Machine reboot -> worker A rebuilt with the same session id -> hydrate.
+    rebooted_a = MemoryManager(session_id="session-a")
+    rebooted_a.load_session(append_only=True)
+    ctx = rebooted_a.get_context_for_prompt("数据库")
+    assert "s3cret-a" in ctx
+
+
 def test_agent_reset_removes_session_memory_experience_and_checkpoints(
     tmp_path, monkeypatch
 ):

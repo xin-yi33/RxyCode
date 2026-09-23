@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { appendFileSync } from "node:fs";
 import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { C } from "../theme.ts";
@@ -118,28 +119,29 @@ export function buildSelectRows<T>(
     })
     .filter((x) => x.score > 0);
 
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (categoryOrder) {
-      const ca = categoryOrder.indexOf(a.option.category || "");
-      const cb = categoryOrder.indexOf(b.option.category || "");
-      if (ca !== cb) return (ca < 0 ? 99 : ca) - (cb < 0 ? 99 : cb);
-    }
-    return a.option.title.localeCompare(b.option.title);
-  });
+  // Empty filter keeps caller order (sessions/list is updated_at desc).
+  // Searching still ranks by score, then title.
+  if (q) {
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const byTitle = a.option.title.localeCompare(b.option.title);
+      if (byTitle !== 0) return byTitle;
+      return (a.option.category || "").localeCompare(b.option.category || "");
+    });
+  }
 
-  const flat = scored.map((x) => x.option);
+  const source = scored.map((x) => x.option);
   const rows: DisplayRow<T>[] = [];
 
   if (q) {
-    flat.forEach((option, flatIndex) => {
+    source.forEach((option, flatIndex) => {
       rows.push({ kind: "item", option, flatIndex, key: `i-${option.id}` });
     });
-    return { flat, rows };
+    return { flat: source, rows };
   }
 
   const groups = new Map<string, DialogSelectOption<T>[]>();
-  for (const option of flat) {
+  for (const option of source) {
     const cat = option.category || "";
     if (!groups.has(cat)) groups.set(cat, []);
     groups.get(cat)!.push(option);
@@ -149,7 +151,11 @@ export function buildSelectRows<T>(
     ? [...categoryOrder, ...[...groups.keys()].filter((c) => !categoryOrder.includes(c))]
     : [...groups.keys()];
 
-  let flatIndex = 0;
+  // Confirm/keyboard use `flat[idx]`. That array MUST be visual group order.
+  // 废弃代码（2026-09-22）：const flat = source 按 YAML/调用方顺序。
+  // 分组画面第 N 行回车会选到另一条同名模型（OpenCode Go 而不是
+  // api.arc-bench.com）。禁止再把 confirm 下标对到 source。
+  const flat: DialogSelectOption<T>[] = [];
   const seen = new Set<string>();
   for (const cat of order) {
     if (seen.has(cat)) continue;
@@ -158,8 +164,8 @@ export function buildSelectRows<T>(
     if (!items?.length) continue;
     if (cat) rows.push({ kind: "header", category: cat, key: `h-${cat}` });
     for (const option of items) {
-      rows.push({ kind: "item", option, flatIndex, key: `i-${option.id}` });
-      flatIndex += 1;
+      rows.push({ kind: "item", option, flatIndex: flat.length, key: `i-${option.id}` });
+      flat.push(option);
     }
   }
   return { flat, rows };
@@ -230,9 +236,11 @@ export function DialogSelect<T>({
   maxVisible,
   showSearch = true,
   footerHint,
+  footerHintItems,
   multi = false,
   defaultSelectedIds,
   onConfirm,
+  onKeybind,
 }: {
   title: string;
   options: DialogSelectOption<T>[];
@@ -244,9 +252,14 @@ export function DialogSelect<T>({
   maxVisible?: number;
   showSearch?: boolean;
   footerHint?: string;
+  footerHintItems?: Array<{ label: string; keys: string }>;
   multi?: boolean;
   defaultSelectedIds?: string[];
   onConfirm?: (selectedIds: string[], meta: { highlightedId: string }) => void;
+  onKeybind?: (
+    key: { name?: string; ctrl?: boolean; shift?: boolean; meta?: boolean },
+    option: DialogSelectOption<T>,
+  ) => boolean;
 }) {
   const { height: termRows, width: termCols } = useTerminalDimensions();
   const cols = termCols || 80;
@@ -257,7 +270,13 @@ export function DialogSelect<T>({
   );
 
   const [filter, setFilter] = useState("");
-  const [idx, setIdx] = useState(0);
+  const [idx, setIdx] = useState(() => {
+    if (!currentId) return 0;
+    const start = options.findIndex(
+      (o) => !o.disabled && (o.id === currentId || o.value === currentId),
+    );
+    return start < 0 ? 0 : start;
+  });
   const [inputMode, setInputMode] = useState<"keyboard" | "mouse">("keyboard");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const scrollRef = useRef<ScrollBoxRenderable>(null);
@@ -300,6 +319,12 @@ export function DialogSelect<T>({
     setInputMode("keyboard");
     setIdx(0);
   }, [filter]);
+
+  useEffect(() => {
+    if (!currentId || filter) return;
+    const i = flat.findIndex((o) => o.id === currentId || o.value === currentId);
+    if (i >= 0) setIdx(i);
+  }, [currentId, selectableIdsKey, filter]);
 
   const safeIdx = flat.length === 0 ? 0 : Math.min(Math.max(0, idx), flat.length - 1);
 
@@ -347,8 +372,8 @@ export function DialogSelect<T>({
     setIdx(flatIndex);
   };
 
-  const confirm = (flatIndex = safeIdx) => {
-    const opt = flat[flatIndex];
+  const confirm = (flatIndex = safeIdx, painted?: DialogSelectOption<T>) => {
+    const opt = painted ?? flat[flatIndex];
     if (!opt) return;
     if (multi) {
       const highlightedId = opt.id;
@@ -450,6 +475,13 @@ export function DialogSelect<T>({
       toggleSelected();
       return;
     }
+    if (onKeybind) {
+      const opt = flat[safeIdx];
+      if (opt && onKeybind(key, opt)) {
+        key.preventDefault?.();
+        return;
+      }
+    }
     if (!showSearch) return;
     if (key.name === "backspace" || key.name === "delete") {
       key.preventDefault?.();
@@ -489,7 +521,7 @@ export function DialogSelect<T>({
   });
 
   const nameCol = Math.min(
-    28,
+    42,
     Math.max(14, ...flat.map((o) => stringWidth(o.title) + 4), 14),
   );
 
@@ -573,7 +605,9 @@ export function DialogSelect<T>({
           }
 
           const sel = row.flatIndex === safeIdx;
-          const isCurrent = currentId != null && row.option.id === currentId;
+          const isCurrent =
+            currentId != null &&
+            (row.option.id === currentId || String(row.option.value) === currentId);
           const checked = multi && selectedIds.has(row.option.id);
           const prefix = multi
             ? `${sel ? " ❯ " : "   "}${checked ? "✓ " : "  "}`
@@ -597,9 +631,10 @@ export function DialogSelect<T>({
               onMouseDown={() => {
                 setInputMode("mouse");
                 moveTo(row.flatIndex);
-                // scrollbox often swallows mouseup; confirm on mousedown for single-select.
+                // Confirm the painted row's option, not flat[index] from a
+                // mismatched source order.
                 if (!multi) {
-                  confirm(row.flatIndex);
+                  confirm(row.flatIndex, row.option);
                 }
               }}
               onMouseUp={() => {
@@ -618,7 +653,27 @@ export function DialogSelect<T>({
       </scrollbox>
 
       <RowShell>
-        <text fg={C.overlay2}>{resolvedFooterHint}</text>
+        {footerHintItems?.length ? (
+          <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+            {footerHint && footerHint.trim() ? (
+              <text fg={SELECT_FG} bg={SELECT_BG}>
+                {" "}
+                {footerHint.trim()}{" "}
+              </text>
+            ) : null}
+            {footerHintItems.map((item, i) => (
+              <box key={`${item.label}-${item.keys}`} style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                <text fg={C.text}>
+                  {i === 0 && !(footerHint && footerHint.trim()) ? " " : "  "}
+                  {item.label}{" "}
+                  {item.keys}
+                </text>
+              </box>
+            ))}
+          </box>
+        ) : (
+          <text fg={C.overlay2}>{resolvedFooterHint}</text>
+        )}
         <box style={{ flexGrow: 1, height: 1 }} />
         <text fg={C.overlay2}>
           {flat.length ? safeIdx + 1 : 0}/{flat.length}{" "}

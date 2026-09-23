@@ -62,6 +62,12 @@ attributes `connected`, `tools_changed`, `protocol_version`, `last_error_type`.
   `next_retry_seconds`. It does not expose config fingerprints, commands,
   arguments, environment values, or server content.
 
+**Computer Use (PP40):** `core/cu/` launches `open-computer-use-mcp` as a
+dedicated stdio client (not a row in the user's empty `mcpServers` unless they
+add one). Tool names stay the ocu originals (`list_apps`, `get_app_state`,
+`click`, …) plus `browser_open` / `browser_snapshot` / `browser_act`. Default
+`computer_use.enabled: false`. Worker `close_mcp` kills the CU process tree.
+
 The wire implementation follows the current
 [MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 and mirrors the lifecycle ownership shown by the official

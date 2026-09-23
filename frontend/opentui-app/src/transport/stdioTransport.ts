@@ -17,11 +17,16 @@ import {
   httpSendCommand,
   type CommandResult,
 } from "./httpAdmin.ts";
-import { notifyToStreamEvent } from "./notifyToStreamEvent.ts";
+import { applyThoughtExpandedOverride, nextThoughtExpanded, resetThinkingDisplay } from "../lib/thinkingDisplay.ts";
+import { looksLikePlanDocument, parsePlanDoc } from "../planDoc.ts";
+import { liveProgressText, notifyToStreamEvent, toolWaitText } from "./notifyToStreamEvent.ts";
 import {
+  composeTurnWithSteers,
   raceWithAbort,
   shouldClearStreamingOnNotify,
   shouldClearStreamingOnUserCancel,
+  spliceTurnMessages,
+  type SteerMark,
 } from "./streamLifecycle.ts";
 import {
   applyTokenUsageToStatus,
@@ -31,12 +36,16 @@ import {
 } from "./stdioCommands.ts";
 import { resolveChildTarget } from "../childNavigation.ts";
 import type {
+  AttachSessionResult,
   ChatApiCallbacks,
   ChatTransport,
   ChildNavigationEntry,
   ChildNavigationResult,
+  SessionListRow,
+  SteerTurnResult,
   SubagentResult,
 } from "./types.ts";
+import { sessionEventsToMessages } from "../dialog/sessionEventsToMessages.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 60_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
@@ -66,6 +75,7 @@ type PromptResult = {
   cache_hit_tokens?: number;
   cache_hit_rate?: number;
   reporting_status?: string;
+  context_used?: number | null;
 };
 
 let pythonCmdOverride: string[] | null = null;
@@ -89,10 +99,18 @@ class StdioAppserverSession {
   >();
   private approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingQuestions = new Map<string, (reply: QuestionReply) => void>();
-  private questionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activePromptAbort: AbortController | null = null;
   private activeCallbacks: ChatApiCallbacks | null = null;
+  private promptEpoch = 0;
   private childViewSessionId: string | null = null;
+  private lastProcessFailed: string | null = null;
+  private steerMarks: SteerMark[] = [];
+  private liveTurn: {
+    epoch: number;
+    mode: Mode;
+    getState: () => StreamReduceState;
+    publish: (next: StreamReduceState) => void;
+  } | null = null;
 
   private projectRoot(): string {
     return process.env.RXYCODE_PROJECT_ROOT ?? process.cwd();
@@ -120,10 +138,6 @@ class StdioAppserverSession {
   }
 
   private clearPendingQuestions(reply: QuestionReply = { cancelled: true }): void {
-    for (const timer of this.questionTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.questionTimers.clear();
     for (const resolve of this.pendingQuestions.values()) {
       resolve(reply);
     }
@@ -148,6 +162,12 @@ class StdioAppserverSession {
     this.sessionId = null;
     this.childViewSessionId = null;
     this.ready = null;
+    this.lastProcessFailed = null;
+  }
+
+  private closedError(fallback: string): Error {
+    const reason = this.lastProcessFailed?.trim();
+    return new Error(reason || fallback);
   }
 
   async ensureReady(): Promise<ProtocolClient> {
@@ -182,10 +202,16 @@ class StdioAppserverSession {
       ),
       PYTHONIOENCODING: "utf-8",
       PYTHONPATH: this.projectRoot(),
+      // 每个窗口一个 stdio appserver。不要抢同一把 data-dir 锁。
+      RXYCODE_APPSERVER_MULTI: "1",
+      RXYCODE_APPSERVER_PREEMPT: "0",
+      // 废弃代码（2026-09-22）：默认抢锁，45 秒内第二扇窗口启动失败。
+      // RXYCODE_APPSERVER_PREEMPT: process.env.RXYCODE_APPSERVER_PREEMPT ?? "1",
     };
     if (process.env.RXYCODE_APPSERVER_STUB === "1") {
       env.RXYCODE_APPSERVER_STUB = "1";
     }
+    this.lastProcessFailed = null;
 
     this.proc = Bun.spawn(this.pythonCmd(), {
       cwd: this.projectRoot(),
@@ -212,15 +238,10 @@ class StdioAppserverSession {
       const payload = (params ?? {}) as Record<string, unknown>;
       if (method === "question/request") {
         const info = questionInfoFromParams(payload);
+        // question 等用户回答，永不自动超时提交空答案（approval 的 120s
+        // 超时不适用于 question；后端同样不限时）。
         const reply = await new Promise<QuestionReply>((resolve) => {
           this.pendingQuestions.set(info.questionId, resolve);
-          const timer = setTimeout(() => {
-            if (!this.pendingQuestions.has(info.questionId)) return;
-            this.questionTimers.delete(info.questionId);
-            this.pendingQuestions.delete(info.questionId);
-            resolve({ timedOut: true });
-          }, 120_000);
-          this.questionTimers.set(info.questionId, timer);
           this.activeCallbacks?.onQuestionRequest?.(info);
         });
         this.activeCallbacks?.onQuestionRequest?.(null);
@@ -285,8 +306,8 @@ class StdioAppserverSession {
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            client.rejectAllPending(new Error("appserver stdout closed"));
-            this.resetSession(new Error("appserver stdout closed"));
+            client.rejectAllPending(this.closedError("appserver stdout closed"));
+            this.resetSession(this.closedError("appserver stdout closed"));
             break;
           }
           buffer += decoder.decode(value, { stream: true });
@@ -311,9 +332,9 @@ class StdioAppserverSession {
       const proc = this.proc;
       if (!proc) return;
       const exitCode = await proc.exited;
-      client.rejectAllPending(new Error(`appserver exited (${exitCode})`));
+      client.rejectAllPending(this.closedError(`appserver exited (${exitCode})`));
       if (this.proc === proc) {
-        this.resetSession(new Error(`appserver exited (${exitCode})`));
+        this.resetSession(this.closedError(`appserver exited (${exitCode})`));
       }
     })();
 
@@ -321,7 +342,7 @@ class StdioAppserverSession {
       "initialize",
       {
         client_name: "opentui",
-        client_version: "1.2.11",
+        client_version: "1.4.0",
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),
@@ -383,14 +404,18 @@ class StdioAppserverSession {
       const message = active?.message || `切换失败: ${modelId}`;
       return { ok: false, action: "error", error: message, message };
     }
+    let sessionSet: "ok" | "skipped" | "error" = "skipped";
+    let sessionErr = "";
     if (this.sessionId) {
       try {
         await client.request("session/set_model", {
           session_id: this.sessionId,
           model_id: modelId,
         });
-      } catch {
-        // Worker may still be warming; persisted active_model is enough.
+        sessionSet = "ok";
+      } catch (e) {
+        sessionSet = "error";
+        sessionErr = e instanceof Error ? e.message : String(e);
       }
     }
     try {
@@ -460,11 +485,6 @@ class StdioAppserverSession {
   resolveQuestion(questionId: string, reply: QuestionReply): boolean {
     const resolve = this.pendingQuestions.get(questionId);
     if (!resolve) return false;
-    const timer = this.questionTimers.get(questionId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.questionTimers.delete(questionId);
-    }
     this.pendingQuestions.delete(questionId);
     resolve(reply);
     return true;
@@ -483,6 +503,36 @@ class StdioAppserverSession {
       .catch(() => {
         // best-effort; UI already left Processing
       });
+  }
+
+  async steerTurn(text: string, mode?: Mode): Promise<SteerTurnResult> {
+    const trimmed = text.trim();
+    if (!trimmed) return { ok: false, message: "空内容无法立即发送" };
+    if (!this.sessionId) return { ok: false, message: "会话未就绪" };
+    const sessionId = this.sessionId;
+    try {
+      const client = await this.ensureReady();
+      await client.request("turn/steer", { session_id: sessionId, text: trimmed });
+      const live = this.liveTurn;
+      if (live && this.promptEpoch === live.epoch) {
+        const at = live.getState().messages.length;
+        this.steerMarks.push({
+          at,
+          msg: {
+            id: newId("user"),
+            role: "user",
+            content: trimmed,
+            timestamp: Date.now(),
+            mode: mode ?? live.mode,
+          },
+        });
+        live.publish(live.getState());
+        return { ok: true, injected: true };
+      }
+      return { ok: true, injected: false };
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
@@ -536,14 +586,18 @@ class StdioAppserverSession {
     mode: Mode,
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
+    displayContent?: string,
   ): Promise<void> {
     const userMsg = {
       id: newId("user"),
       role: "user" as const,
-      content,
+      content: displayContent?.trim() ? displayContent : content,
       timestamp: Date.now(),
       mode,
     };
+    this.promptEpoch += 1;
+    const epoch = this.promptEpoch;
+    const turnRequestId = newId("turn");
     callbacks.onMessages((prev) => [...prev, userMsg]);
     callbacks.onStreaming(true);
     callbacks.onProgress?.("收到，正在回复…");
@@ -562,6 +616,7 @@ class StdioAppserverSession {
           timestamp: Date.now(),
           live: true,
           done: false,
+          expanded: nextThoughtExpanded(),
         },
       ],
       thinkingId,
@@ -575,13 +630,18 @@ class StdioAppserverSession {
     callbacks.onMessages((prev) => [...prev, ...state.messages]);
 
     const publish = (next: StreamReduceState) => {
-      state = next;
-      callbacks.onMessages((prev) => {
-        const idx = prev.findIndex((m) => m.id === userMsg.id);
-        if (idx < 0) return [...prev, ...next.messages];
-        return [...prev.slice(0, idx + 1), ...next.messages];
-      });
+      if (this.promptEpoch !== epoch) {
+        return;
+      }
+      state = {
+        ...next,
+        messages: next.messages.map(applyThoughtExpandedOverride),
+      };
+      const composed = composeTurnWithSteers(state.messages, this.steerMarks);
+      callbacks.onMessages((prev) => spliceTurnMessages(prev, userMsg.id, composed));
     };
+    this.steerMarks = [];
+    this.liveTurn = { epoch, mode, getState: () => state, publish };
 
     try {
       const client = await this.ensureReady();
@@ -595,7 +655,19 @@ class StdioAppserverSession {
 
       const priorOnNotification = client.onNotification;
       let sawStreamActivity = false;
+      let lastLiveProgress = "";
       let streamingCleared = false;
+      let streamOutChars = 0;
+      const baselineUsed = Math.round((this.lastStatus?.context_used_k ?? 0) * 1000);
+      const publishLiveUsage = () => {
+        const est = Math.max(baselineUsed, 0) + Math.ceil(streamOutChars / 4);
+        if (est <= 0) return;
+        this.lastStatus = applyTokenUsageToStatus(this.lastStatus, {
+          reporting_status: "partial",
+          context_used: est,
+        });
+        callbacks.onStatus(this.lastStatus);
+      };
       const clearStreamingEarly = () => {
         if (streamingCleared) return;
         streamingCleared = true;
@@ -603,24 +675,48 @@ class StdioAppserverSession {
         callbacks.onProgress?.("");
       };
       client.onNotification = (method, params) => {
-        priorOnNotification?.(method, params);
+        if (this.promptEpoch !== epoch) return;
         const event = notifyToStreamEvent(method, params);
         if (event?.type === "token_usage" || event?.type === "final") {
           this.lastStatus = applyTokenUsageToStatus(this.lastStatus, event);
           callbacks.onStatus(this.lastStatus);
+        }
+        if (event?.type === "plan") {
+          callbacks.onPlan?.(parsePlanDoc(String(event.text || ""), event.steps));
+        }
+        if (event?.type === "token" || event?.type === "reasoning") {
+          streamOutChars += String(event.text || event.thinking || "").length;
+          if (streamOutChars > 0 && streamOutChars % 200 < 24) {
+            publishLiveUsage();
+          }
         }
         if (!event) return;
         if (!sawStreamActivity) {
           sawStreamActivity = true;
           callbacks.onProgress?.("");
         }
-        if (event.type === "progress" && !state.hasReasoning) {
-          callbacks.onProgress?.(event.message || event.text || "Working...");
-        }
-        if (event.type === "tool_result") {
-          callbacks.onApprovalRequest?.(null);
+        const live = liveProgressText(event);
+        if (live && live !== lastLiveProgress && event.type !== "tool_call") {
+          lastLiveProgress = live;
+          callbacks.onProgress?.(live);
         }
         const next = applyStreamEvent(state, event, newId);
+        if (event.type === "tool_call" || event.type === "tool_result") {
+          const running = next.messages.filter(
+            (m) => m.role === "tool" && m.toolStatus === "running",
+          );
+          if (running.length) {
+            const wait = toolWaitText(running[0].toolName || "tool");
+            lastLiveProgress = wait;
+            callbacks.onProgress?.(wait);
+          } else {
+            lastLiveProgress = "";
+            callbacks.onProgress?.("");
+          }
+          if (event.type === "tool_result") {
+            callbacks.onApprovalRequest?.(null);
+          }
+        }
         if (next !== state) publish(next);
         if (shouldClearStreamingOnNotify(method)) {
           publish({
@@ -645,7 +741,7 @@ class StdioAppserverSession {
             text: content,
             mode,
             thinking_expanded: thinkingExpandedPref,
-            timeout_seconds: 600,
+            request_id: turnRequestId,
           }),
           signal,
           abort.signal,
@@ -654,19 +750,32 @@ class StdioAppserverSession {
         if (
           result.input_tokens != null ||
           result.output_tokens != null ||
-          result.cache_hit_tokens != null
+          result.cache_hit_tokens != null ||
+          result.context_used != null
         ) {
           this.lastStatus = applyTokenUsageToStatus(this.lastStatus, result);
           callbacks.onStatus(this.lastStatus);
         }
 
+        if (!state.hasReasoning && result.thinking?.trim()) {
+          publish(
+            applyStreamEvent(
+              state,
+              { type: "reasoning", thinking: result.thinking },
+              newId,
+            ),
+          );
+        }
         if (result.text) {
           const finalEvent = applyStreamEvent(
             state,
-            { type: "final", text: result.text },
+            { type: "final", text: result.text, thinking: result.thinking },
             newId,
           );
           publish(finalEvent);
+          if (mode === "plan" && looksLikePlanDocument(result.text)) {
+            callbacks.onPlan?.(parsePlanDoc(result.text));
+          }
         }
 
         publish({
@@ -722,7 +831,9 @@ class StdioAppserverSession {
           });
         }
       } finally {
-        client.onNotification = priorOnNotification;
+        if (this.promptEpoch === epoch) {
+          client.onNotification = priorOnNotification;
+        }
         this.activeCallbacks = null;
         this.activePromptAbort = null;
         signal?.removeEventListener("abort", onAbort);
@@ -761,6 +872,8 @@ class StdioAppserverSession {
         ]);
       }
     } finally {
+      if (this.liveTurn?.epoch === epoch) this.liveTurn = null;
+      this.steerMarks = [];
       callbacks.onStreaming(false);
       callbacks.onProgress?.("");
       try {
@@ -782,6 +895,78 @@ class StdioAppserverSession {
     }
     this.resetSession();
   }
+
+  async listSessions(): Promise<SessionListRow[]> {
+    const client = await this.ensureReady();
+    const listed = (await client.request<{ sessions?: SessionListRow[] }>("sessions/list", {})) as {
+      sessions?: SessionListRow[];
+    };
+    return Array.isArray(listed.sessions) ? listed.sessions : [];
+  }
+
+  async attachSession(sessionId: string): Promise<AttachSessionResult> {
+    const client = await this.ensureReady();
+    if (this.sessionId && this.sessionId !== sessionId) {
+      try {
+        await this.interrupt();
+      } catch {
+        // switching away from a live turn is best-effort
+      }
+    }
+    this.sessionId = sessionId;
+    let replay = (await client.request<{
+      events?: Array<{ method?: string; params?: Record<string, unknown> }>;
+      gap_detected?: boolean;
+    }>("session/events", { session_id: sessionId, cursor: 0 })) as {
+      events?: Array<{ method?: string; params?: Record<string, unknown> }>;
+      gap_detected?: boolean;
+    };
+    if (replay.gap_detected) {
+      replay = (await client.request("session/events", {
+        session_id: sessionId,
+        cursor: 0,
+      })) as typeof replay;
+    }
+    void this.warmBootstrap().catch(() => {
+      // first prompt will bootstrap
+    });
+    return {
+      session_id: sessionId,
+      messages: sessionEventsToMessages(replay.events || []),
+    };
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<SessionListRow> {
+    const client = await this.ensureReady();
+    return (await client.request<SessionListRow>("session/rename", { session_id: sessionId, title })) as SessionListRow;
+  }
+
+  async trashSession(sessionId: string): Promise<void> {
+    const client = await this.ensureReady();
+    await client.request("session/trash", { session_id: sessionId });
+    if (this.sessionId === sessionId) {
+      const created = (await client.request<{ session_id: string }>("session/new", {
+        workspace_root: this.workspaceRoot(),
+      })) as { session_id: string };
+      this.sessionId = created.session_id;
+    }
+  }
+
+  async pinSession(sessionId: string, pinned: boolean): Promise<void> {
+    const client = await this.ensureReady();
+    await client.request("thread/pin", {
+      session_id: sessionId,
+      thread_id: sessionId,
+      pinned,
+    });
+  }
+
+  async forkSession(sessionId: string): Promise<SessionListRow> {
+    const client = await this.ensureReady();
+    return (await client.request<SessionListRow>("session/fork", {
+      session_id: sessionId,
+    })) as SessionListRow;
+  }
 }
 
 let sharedSession = new StdioAppserverSession();
@@ -796,20 +981,14 @@ export const stdioTransport: ChatTransport = {
   async sendCommand(command: string): Promise<CommandResult> {
     const parsed = parseStdioAdminCommand(command);
     if (parsed.kind === "thinking") {
-      try {
-        const result = await sharedSession.toggleThinkingExpanded();
-        return {
-          ok: true,
-          action: result.action ?? "thinking_toggled",
-          message: result.message,
-          expanded: result.expanded,
-        };
-      } catch (e) {
-        return {
-          ok: false,
-          message: e instanceof Error ? e.message : String(e),
-        };
-      }
+      const { cycleThinkingDisplay } = await import("../lib/thinkingDisplay.ts");
+      const result = cycleThinkingDisplay();
+      return {
+        ok: true,
+        action: "thinking_toggled",
+        message: "思考过程: " + (result.expanded ? "展开" : "折叠"),
+        expanded: result.expanded,
+      };
     }
     if (parsed.kind === "model") {
       try {
@@ -823,11 +1002,23 @@ export const stdioTransport: ChatTransport = {
         };
       }
     }
+    const raw = String(parsed.command || command).trim();
+    if (/^\/(session|save-chat|load-chat|list-chats)(\s|$)/.test(raw)) {
+      return {
+        ok: true,
+        action: "session_auto",
+        message: "会话已自动保存，请用 /session 打开列表",
+      };
+    }
     return httpSendCommand(parsed.command);
   },
 
   async cancelActiveRequest(): Promise<void> {
     await sharedSession.interrupt();
+  },
+
+  async steerTurn(text: string) {
+    return sharedSession.steerTurn(text);
   },
 
   async invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult> {
@@ -859,8 +1050,33 @@ export const stdioTransport: ChatTransport = {
     mode: Mode,
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
+    displayContent?: string,
   ): Promise<void> {
-    await sharedSession.sendChatMessage(content, mode, callbacks, signal);
+    await sharedSession.sendChatMessage(content, mode, callbacks, signal, displayContent);
+  },
+
+  async listSessions() {
+    return sharedSession.listSessions();
+  },
+
+  async attachSession(sessionId: string) {
+    return sharedSession.attachSession(sessionId);
+  },
+
+  async renameSession(sessionId: string, title: string) {
+    return sharedSession.renameSession(sessionId, title);
+  },
+
+  async trashSession(sessionId: string) {
+    return sharedSession.trashSession(sessionId);
+  },
+
+  async pinSession(sessionId: string, pinned: boolean) {
+    return sharedSession.pinSession(sessionId, pinned);
+  },
+
+  async forkSession(sessionId: string) {
+    return sharedSession.forkSession(sessionId);
   },
 
   async shutdown(): Promise<void> {
@@ -897,5 +1113,6 @@ export function __resetStdioSessionForTests(): void {
   sharedSession = new StdioAppserverSession();
   pythonCmdOverride = null;
   thinkingExpandedPref = false;
+  resetThinkingDisplay();
   warmOnOpenStarted = false;
 }

@@ -13,25 +13,26 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | File | Purpose |
 |------|---------|
 | registry.py | ToolRegistry - per-agent injectable catalog (F2). `default_registry` is the process default; a Coordinator member gets a scoped copy, not the process table. `registry` is a compat alias |
-| bash.py | BashTool - execute shell commands with timeout and output capture |
+| bash.py | BashTool - execute shell commands with timeout and output capture. Default **hard cap 1800s**. Runtime probes CPU/IO at **180/300/600s** and reports to the user and the model; busy search/traversal is not killed; idle-CPU/IO jobs yield at that checkpoint so the model decides. Git argv still uses 60s. |
 | read.py | ReadTool - read file contents with line range support |
 | write.py | WriteTool - write/create files with directory auto-creation |
 | edit.py | EditTool - surgical text replacements in files |
 | grep_tool.py | GrepTool - search files by regex pattern |
 | glob_tool.py | GlobTool - find files by glob pattern |
 | git_tool.py | GitTool - git operations (status, diff, commit, etc.) |
-| webfetch.py | WebFetchTool - fetch URL content with size limits |
-| websearch.py | WebSearchTool - web search (free, no API key; DDGS official metasearch + multi-engine fallback) |
+| webfetch.py | HTTP GET fetch (no JS). Not a browser. Track F U34/U35: description + `FETCH_NO_JS_NOTE`. Name stays `webfetch`. |
+| websearch.py | Search snippets (DDGS/Baidu/Bing/Google). Not page content. Track F U34: `[search_snippet non-authoritative]` / `[sponsored]`. **U46**: one `query` per call; long research is multiple calls. `TOTAL_BUDGET=25s` is per call, not per research job. |
 | file_download.py | FileDownloadTool - download files from URLs to ~/.RxyCode/output/ |
 | download_tool.py | `download_skill` / `download_mcp` module-level functions + `download_skill_tool` / `download_mcp_tool` (DANGER risk) |
 | open_file.py | OpenFileTool - open allowlisted preview files with the host default application |
 | vision.py | VisionTool - image analysis using multimodal LLM |
-| subagent_task_tool.py | `task` tool - the isolated subagent dispatch entry (via `ChildSessionManager`) when `subagents_enabled` |
+| subagent_task_tool.py | `task` tool - isolated subagent dispatch (`ChildSessionManager`) when `subagents_enabled`. Schema stays visible whenever subagents are on or the session said 用子代理; `agent_id=explore` is the Grok-style readonly codebase worker. |
 | task_manage.py | `task_manage` tool - task-list management (legacy `task` when subagents disabled) |
 | agent_invoke.py | `@agent` mention parsing + dispatch (`parse_mention` / `invoke_mention` / `list_mentionable_agents`) |
 | memory_tool.py | MemoryTool - interact with the memory system |
 | history_tool.py | HistoryTool - access memory/session history |
 | datetime_tool.py | DateTimeTool - current date/time queries |
+| final_answer.py | `final_answer` - ReAct finish action; calling it is an exit |
 | diagnostics.py | DiagnosticsTool - system diagnostics and health checks |
 | format_tool.py | FormatTool - code formatting |
 | question_tool.py | QuestionTool - ask user for clarification |
@@ -41,6 +42,8 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | patch.py | PatchTool - apply unified diff patches |
 | skill_manager.py | `find_and_download_skill` / `install_skill_from_url` / `remove_skill` / `list_installed_skills` / `search_github_skills` (module-level functions) |
 | skill_tool.py | SkillTool - execute installed skills |
+| (Computer Use) | `core/cu/` — ocu OS-window MCP: `list_apps` `get_app_state` `click` `type_text` `press_key` `set_value` `scroll` `drag` `perform_secondary_action`. Bound only when `computer_use.enabled`. Not registered by `register_builtin_tools`. `cli_list`/`cli_run` remain a separate CLI-Anything pair. **Not** Playwright browser-use. |
+| (Browser Use) | Playwright MCP via UPDATE-01 **U24** 三名 + **U46** 默认开（惰性进本轮 tools）：`browser_navigate` / `browser_snapshot` / `browser_click`. 用户 Chrome：**U46** `chrome_attach`（CDP 9222，默认开）. bundled MCP 或用户插件，同一能力键。Search/Fetch/Browse routing is U33–U36; escalate ladder is U46 (CU may operate a browser window only with a task signal). If `core/cu` currently also exposes `browser_open`/`browser_act` under `computer_use`, that is the CU channel (`cu:`), not this row. |
 | mcp_manager.py | `add_mcp_server` / `remove_mcp_server` / `list_mcp_servers` / `install_mcp_from_npm` / `install_mcp_from_pip` (module-level functions) |
 | workflow_tool.py | WorkflowTool - multi-step workflow execution |
 | installer.py | ToolInstaller - install packages (npm, pip, etc.) |
@@ -72,7 +75,26 @@ HTML, and PDF are supported. Executables, scripts, shortcuts, directories,
 extensionless files, unknown extensions, ambiguous names, and double-extension
 names containing an executable/script suffix fail closed. The tool remains a
 `WRITE`-risk action, so the orchestrator's workspace write-path check and
-approval policy still run before this per-tool validation.
+approval policy still run before this per-tool validation. Tool aliases
+`open` and `browser` canonicalize to `open_file` via
+`core.safety.policy.canonical_tool_name` (same table as `shell` → `bash`);
+do not look up risk or bind a second `open` tool. On Windows the opener is
+``cmd /c start "RxyCode Open" <abs-path>`` as separate argv tokens (not one
+quoted `/c` string). The dummy title contains a space so `start` cannot
+treat `RxyCode` as `rxycode.exe` on PATH. Electron hosts therefore do not
+need `AttachConsole` on this TTY, and `start \"\"` cannot collapse the path
+into a file named `\\`. Success is the OS
+accepting the launch, not the user closing the window. `bash` must not wait
+for Word/Notepad/Typora: `tools/launch_intent.py` classifies `start` /
+`xdg-open` / `open` / `Start-Process` / GUI bins. Previewable files opened
+via a launcher go to `open_file`; `notepad` / `typora` / `winword` detach
+without waiting. `start /wait` and `start /b` stay foreground. Spawn
+failure returns an error so the model can retry, then stream the Final Answer.
+When the current user turn names previewable files, `open_file` (and bash
+`start`/`open` that rewrite into it) refuse a different basename: missing
+named files stay `[error: file not found…]` instead of opening leftover
+workspace files such as `notes.md`. The pin is basename-only and inactive
+when the turn named no previewable file.
 
 The current allowlist is intentionally reviewable in `PREVIEWABLE_EXTENSIONS`:
 - text/data: `.txt`, `.log`, `.md`, `.markdown`, `.rst`, `.tex`, `.bib`,
@@ -92,7 +114,12 @@ global `execution.tool_timeout_seconds` budget of 1800 seconds. A positive
 workflow deadline is clamped to the global tool budget. Explicit
 `timeout_seconds=0` disables only the workflow-specific deadline and falls
 back to the configured global tool deadline; if both are disabled, task
-cancellation remains available. In Docker mode, temporary scripts are created
+cancellation remains available. Foreground `bash` hard cap is **1800s**; runtime
+probes CPU/IO at 180/300/600s and yields idle jobs to the model. Do not cite
+the old 60s/120s schema defaults — those are deprecated as of 2026-09-20.
+Git argv still uses an explicit 60s. Long scripted jobs may still use this
+workflow tool or a per-call timeout. Contrast:
+[`../plans/opus5-plan/rxycode/research/2026-09-15-session-durability-snapshots-loop-timeout.md`](../plans/opus5-plan/rxycode/research/2026-09-15-session-durability-snapshots-loop-timeout.md). In Docker mode, temporary scripts are created
 beneath the configured mounted workspace and invoked with the container's
 `python` command and a workdir-relative path. Docker/sandbox startup failures
 are returned as workflow failures and are never retried on the host. Script
@@ -114,7 +141,7 @@ controlled executor and waits for process-tree cleanup before unwinding.
 Every tool carries a static risk level in `core/safety/policy.py`
 `TOOL_RISK_TABLE` (READ/WRITE/DANGER, default WRITE for unknown tools):
 - READ: read, view, grep, glob, ls, webfetch, websearch, datetime, history,
-  diagnostics, vision, question, skill, and read-only composite operations
+  diagnostics, vision, question, skill, final_answer, and read-only composite operations
 - WRITE: write, edit, patch, open_file, bash, format, change_directory,
   memory, task, file_download
 - DANGER: installer, git, workflow `run`, **download_skill, download_mcp**

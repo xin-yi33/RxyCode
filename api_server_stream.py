@@ -336,8 +336,7 @@ class StreamTUI:
         self._buffer("progress", text + "\n")
     def write_reasoning(self, text):
         if self.recorder: self.recorder.add_thinking(str(text))
-        if self._expand_thinking:
-            self._buffer("reasoning", str(text))
+        self._buffer("reasoning", str(text))
     def write(self, text, color=""): self.write_progress(text)
     def write_info(self, text): self.write_progress(text)
     def write_success(self, text): self.write_progress(text)
@@ -368,6 +367,13 @@ class StreamTUI:
             "message_id": call_id,
             "timestamp": message.get("timestamp") if message else None,
         })
+        try:
+            from RxyCode.RxyCode1_1_0.core.progress_labels import tool_wait_progress
+        except ImportError:
+            from core.progress_labels import tool_wait_progress
+        label = tool_wait_progress(str(name))
+        if label:
+            self.write_progress(label)
         return call_id
     def _truncate_for_sse(self, text: str) -> tuple[str, bool]:
         """Cap tool output on the SSE channel (B3); full output stays in recorder."""

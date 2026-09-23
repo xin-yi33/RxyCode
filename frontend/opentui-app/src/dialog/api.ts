@@ -49,45 +49,12 @@ export async function probeModels(): Promise<{
   }
 }
 
-export async function fetchEffortOptions(): Promise<{
-  ok: boolean;
-  models: ModelInfo[];
-  active: string;
-  effort: string | null;
-  error?: string;
-}> {
-  try {
-    const resp = await axios.get(`${API_BASE}/models`, {
-      timeout: 8000,
-      headers: authorizationHeaders(),
-    });
-    const data = resp.data as {
-      models?: ModelInfo[];
-      active?: string;
-      effort?: string | null;
-    };
-    return {
-      ok: true,
-      models: data.models ?? [],
-      active: data.active ?? "",
-      effort: typeof data.effort === "string" && data.effort ? data.effort : null,
-    };
-  } catch (err: unknown) {
-    return {
-      ok: false,
-      models: [],
-      active: "",
-      effort: null,
-      error: err instanceof Error ? err.message : "无法连接 API 服务",
-    };
-  }
-}
-
 export async function fetchModels(): Promise<{
   ok: boolean;
   models: ModelInfo[];
   active: string;
   recent: string[];
+  effort: string | null;
   error?: string;
 }> {
   try {
@@ -98,11 +65,13 @@ export async function fetchModels(): Promise<{
       );
       if (isStdioSessionReady()) {
         const listed = await listStdioModels();
+        const effortRaw = typeof listed.effort === "string" ? listed.effort.trim() : "";
         return {
           ok: true,
           models: (listed.models ?? []) as ModelInfo[],
           active: listed.active ?? "",
           recent: Array.isArray(listed.recent) ? listed.recent : [],
+          effort: effortRaw || null,
         };
       }
     }
@@ -114,12 +83,19 @@ export async function fetchModels(): Promise<{
       timeout: 8000,
       headers: authorizationHeaders(),
     });
-    const data = resp.data as { models?: ModelInfo[]; active?: string; recent?: string[] };
+    const data = resp.data as {
+      models?: ModelInfo[];
+      active?: string;
+      recent?: string[];
+      effort?: string | null;
+    };
+    const effortRaw = typeof data.effort === "string" ? data.effort.trim() : "";
     return {
       ok: true,
       models: data.models ?? [],
       active: data.active ?? "",
       recent: Array.isArray(data.recent) ? data.recent : [],
+      effort: effortRaw || null,
     };
   } catch (err: unknown) {
     return {
@@ -127,10 +103,73 @@ export async function fetchModels(): Promise<{
       models: [],
       active: "",
       recent: [],
+      effort: null,
       error: err instanceof Error ? err.message : "无法连接 API 服务",
     };
   }
 }
+
+/** Same list as fetchModels, plus the persisted effort chip value. */
+export async function fetchEffortOptions(): Promise<{
+  ok: boolean;
+  models: ModelInfo[];
+  active: string;
+  effort: string | null;
+  error?: string;
+}> {
+  const listed = await fetchModels();
+  if (!listed.ok) {
+    return {
+      ok: false,
+      models: [],
+      active: "",
+      effort: null,
+      error: listed.error,
+    };
+  }
+  return {
+    ok: true,
+    models: listed.models,
+    active: listed.active,
+    effort: listed.effort,
+  };
+}
+
+// 废弃代码（2026-09-21）：fetchEffortOptions 旧实现只打 HTTP GET /models，
+// stdio TUI 会读到另一进程、档位列表空。禁止再作为主路径引用。
+// export async function fetchEffortOptions(): Promise<{
+//   ok: boolean;
+//   models: ModelInfo[];
+//   active: string;
+//   effort: string | null;
+//   error?: string;
+// }> {
+//   try {
+//     const resp = await axios.get(`${API_BASE}/models`, {
+//       timeout: 8000,
+//       headers: authorizationHeaders(),
+//     });
+//     const data = resp.data as {
+//       models?: ModelInfo[];
+//       active?: string;
+//       effort?: string | null;
+//     };
+//     return {
+//       ok: true,
+//       models: data.models ?? [],
+//       active: data.active ?? "",
+//       effort: typeof data.effort === "string" && data.effort ? data.effort : null,
+//     };
+//   } catch (err: unknown) {
+//     return {
+//       ok: false,
+//       models: [],
+//       active: "",
+//       effort: null,
+//       error: err instanceof Error ? err.message : "无法连接 API 服务",
+//     };
+//   }
+// }
 
 /**
  * A connection preset: provider + base URL only.

@@ -1,7 +1,9 @@
 /**
- * OpenTUI Markdown renderer — local copy of Ink Markdown capabilities
- * (headings, lists, code, tables, quotes). Does NOT import frontend/src.
+ * Chat markdown uses OpenTUI MarkdownRenderable — same path as OpenCode
+ * (`<markdown tableOptions={{ style: "grid" }}>`).
+ * parseBlocks / formatBoxedTable stay for detection and grid-shape tests.
  */
+import { SyntaxStyle } from "@opentui/core";
 import { C } from "./theme.ts";
 
 type Align = "left" | "center" | "right";
@@ -22,6 +24,36 @@ function displayWidth(s: string): number {
     w += code > 0xff ? 2 : 1;
   }
   return w;
+}
+
+function isTableStart(lines: string[], i: number): boolean {
+  const line = lines[i] ?? "";
+  const sep = lines[i + 1] ?? "";
+  return (
+    line.includes("|") &&
+    /^\s*\|?[\s:|-]+\|?\s*$/.test(sep) &&
+    sep.includes("-")
+  );
+}
+
+function wrapDisplay(s: string, maxW: number): string[] {
+  const limit = Math.max(1, maxW);
+  const out: string[] = [];
+  let cur = "";
+  let w = 0;
+  for (const ch of s) {
+    const cw = (ch.codePointAt(0) ?? 0) > 0xff ? 2 : 1;
+    if (w + cw > limit && cur) {
+      out.push(cur);
+      cur = ch;
+      w = cw;
+    } else {
+      cur += ch;
+      w += cw;
+    }
+  }
+  if (cur) out.push(cur);
+  return out.length ? out : [""];
 }
 
 export function parseBlocks(text: string): Block[] {
@@ -84,12 +116,7 @@ export function parseBlocks(text: string): Block[] {
       continue;
     }
 
-    if (
-      line.includes("|") &&
-      i + 1 < lines.length &&
-      /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) &&
-      lines[i + 1].includes("-")
-    ) {
+    if (isTableStart(lines, i)) {
       const rawHeaders = line
         .split("|")
         .map((s) => s.trim())
@@ -131,7 +158,8 @@ export function parseBlocks(text: string): Block[] {
       !/^#{1,6}\s/.test(lines[i]) &&
       !lines[i].startsWith(">") &&
       !/^\s*([-*+]|\d+\.)\s/.test(lines[i]) &&
-      !/^(\s*[-*_]){3,}\s*$/.test(lines[i])
+      !/^(\s*[-*_]){3,}\s*$/.test(lines[i]) &&
+      !isTableStart(lines, i)
     ) {
       plines.push(lines[i]);
       i++;
@@ -141,8 +169,6 @@ export function parseBlocks(text: string): Block[] {
 
   return blocks;
 }
-
-const HEADING_COLORS = [C.primary, C.yellow, C.mauve, C.teal, C.subtext, C.overlay2];
 
 function stripInline(md: string): string {
   return md
@@ -161,138 +187,154 @@ function padCell(s: string, w: number, align: Align): string {
   return s + " ".repeat(padN);
 }
 
-/** Render markdown to colored OpenTUI nodes. Only call when message is done (stable). */
-export function MarkdownView({ content }: { content: string }) {
-  const blocks = parseBlocks(content || "");
-  if (blocks.length === 0) {
-    return (
-      <text fg={C.text} selectable>
-        {content}
-      </text>
-    );
+function fitColumnWidths(desired: number[], mins: number[], budget: number): number[] {
+  const widths = desired.map((w, i) => Math.max(mins[i] ?? 3, w));
+  let extra = widths.reduce((a, n) => a + n, 0) - budget;
+  if (extra <= 0) return widths;
+  const order = widths
+    .map((w, i) => ({ i, slack: w - (mins[i] ?? 3) }))
+    .filter((x) => x.slack > 0)
+    .sort((a, b) => b.slack - a.slack);
+  for (const item of order) {
+    if (extra <= 0) break;
+    const take = Math.min(item.slack, extra);
+    widths[item.i] -= take;
+    extra -= take;
   }
+  if (extra > 0) {
+    const order2 = widths
+      .map((w, i) => ({ i, slack: w - 3 }))
+      .filter((x) => x.slack > 0)
+      .sort((a, b) => b.slack - a.slack);
+    for (const item of order2) {
+      if (extra <= 0) break;
+      const take = Math.min(item.slack, extra);
+      widths[item.i] -= take;
+      extra -= take;
+    }
+  }
+  return widths.map((w) => Math.max(3, w));
+}
 
-  return (
-    <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.bg }}>
-      {blocks.map((b, idx) => {
-        switch (b.type) {
-          case "heading": {
-            const color = HEADING_COLORS[Math.min(b.level - 1, 5)];
-            return (
-              <text key={idx} selectable>
-                <span fg={color} attributes={1}>
-                  {"  "}
-                  {stripInline(b.content)}
-                </span>
-              </text>
-            );
-          }
-          case "code":
-            return (
-              <box key={idx} style={{ flexDirection: "column", paddingLeft: 2, backgroundColor: C.surface0 }}>
-                {b.lang ? (
-                  <text fg={C.overlay2} selectable>
-                    {b.lang}
-                  </text>
-                ) : null}
-                {b.content.split("\n").map((line, li) => (
-                  <text key={li} fg={C.teal} selectable>
-                    {line || " "}
-                  </text>
-                ))}
-              </box>
-            );
-          case "list":
-            return (
-              <box key={idx} style={{ flexDirection: "column" }}>
-                {b.items.map((item, ii) => {
-                  const bullet =
-                    item.checked === true
-                      ? "☑"
-                      : item.checked === false
-                        ? "☐"
-                        : b.ordered
-                          ? `${ii + 1}.`
-                          : "•";
-                  return (
-                    <text key={ii} selectable>
-                      <span fg={C.yellow}>
-                        {" ".repeat(item.depth * 2 + 2)}
-                        {bullet}{" "}
-                      </span>
-                      <span fg={C.text}>{stripInline(item.content)}</span>
-                    </text>
-                  );
-                })}
-              </box>
-            );
-          case "blockquote":
-            return (
-              <box key={idx} style={{ flexDirection: "column", paddingLeft: 2 }}>
-                {b.lines.map((ql, qi) => (
-                  <text key={qi} selectable>
-                    <span fg={C.mauve}>{"│ "}</span>
-                    <span fg={C.subtext}>{stripInline(ql)}</span>
-                  </text>
-                ))}
-              </box>
-            );
-          case "table": {
-            const colCount = Math.max(b.headers.length, ...b.rows.map((r) => r.length), 1);
-            const widths: number[] = [];
-            for (let c = 0; c < colCount; c++) {
-              const hw = displayWidth(b.headers[c] ?? "");
-              const rw = b.rows.reduce((mx, r) => Math.max(mx, displayWidth(r[c] ?? "")), 0);
-              widths.push(Math.max(hw, rw, 3));
-            }
-            const fmt = (cells: string[], bold: boolean) =>
-              cells
-                .map((cell, c) => padCell(stripInline(cell ?? ""), widths[c] ?? 3, b.aligns[c] ?? "left"))
-                .join(" │ ");
-            const headerLine = fmt(
-              Array.from({ length: colCount }, (_, c) => b.headers[c] ?? ""),
-              true,
-            );
-            const rule = widths.map((w) => "─".repeat(w)).join("─┼─");
-            return (
-              <box key={idx} style={{ flexDirection: "column", paddingLeft: 2 }}>
-                <text fg={BRAND_TABLE_HEADER} attributes={1} selectable>
-                  {headerLine}
-                </text>
-                <text fg={C.borderDim} selectable>
-                  {rule}
-                </text>
-                {b.rows.map((row, ri) => (
-                  <text key={ri} fg={C.text} selectable>
-                    {fmt(
-                      Array.from({ length: colCount }, (_, c) => row[c] ?? ""),
-                      false,
-                    )}
-                  </text>
-                ))}
-              </box>
-            );
-          }
-          case "hr":
-            return (
-              <text key={idx} fg={C.borderDim} selectable>
-                {"  "}
-                {"─".repeat(40)}
-              </text>
-            );
-          case "paragraph":
-            return (
-              <text key={idx} fg={C.text} selectable>
-                {"  "}
-                {stripInline(b.content)}
-              </text>
-            );
-          default:
-            return null;
-        }
-      })}
-    </box>
+/** OpenCode-style boxed table: full grid, wrap inside cells, keep columns aligned. */
+export function formatBoxedTable(
+  headers: string[],
+  rows: string[][],
+  aligns: Align[],
+  wrapW = 80,
+): string[] {
+  const colCount = Math.max(headers.length, ...rows.map((r) => r.length), 1);
+  const cleanHeaders = Array.from({ length: colCount }, (_, c) => stripInline(headers[c] ?? ""));
+  const cleanRows = rows.map((row) =>
+    Array.from({ length: colCount }, (_, c) => stripInline(row[c] ?? "")),
+  );
+  const mins = cleanHeaders.map((h) => Math.max(3, Math.min(displayWidth(h), 16)));
+  const desired: number[] = [];
+  for (let c = 0; c < colCount; c++) {
+    const hw = displayWidth(cleanHeaders[c] ?? "");
+    const rw = cleanRows.reduce((mx, r) => Math.max(mx, displayWidth(r[c] ?? "")), 0);
+    desired.push(Math.max(mins[c] ?? 3, hw, Math.min(rw, 36)));
+  }
+  const borderOverhead = colCount + 1 + colCount * 2;
+  const budget = Math.max(colCount * 3, wrapW - borderOverhead);
+  const widths = fitColumnWidths(desired, mins, budget);
+  const cell = (text: string, c: number) => ` ${padCell(text, widths[c] ?? 3, aligns[c] ?? "left")} `;
+  const join = (parts: string[], left: string, mid: string, right: string) =>
+    `${left}${parts.join(mid)}${right}`;
+  const top = join(widths.map((w) => "─".repeat(w + 2)), "┌", "┬", "┐");
+  const mid = join(widths.map((w) => "─".repeat(w + 2)), "├", "┼", "┤");
+  const bot = join(widths.map((w) => "─".repeat(w + 2)), "└", "┴", "┘");
+  const out: string[] = [top];
+  const pushLogical = (cells: string[]) => {
+    const wrapped = cells.map((value, c) => wrapDisplay(value, widths[c] ?? 3));
+    const height = Math.max(1, ...wrapped.map((parts) => parts.length));
+    for (let line = 0; line < height; line++) {
+      out.push(join(wrapped.map((parts, c) => cell(parts[line] ?? "", c)), "│", "│", "│"));
+    }
+  };
+  pushLogical(cleanHeaders);
+  out.push(mid);
+  cleanRows.forEach((row, i) => {
+    pushLogical(row);
+    if (i < cleanRows.length - 1) out.push(mid);
+  });
+  out.push(bot);
+  return out;
+}
+
+export function looksLikeMarkdown(text: string): boolean {
+  const src = text || "";
+  return /(?:^|\n)#{1,6}\s+\S|(?:^|\n)```|(?:^|\n)\s*([-*+]|\d+\.)\s|\*\*[^*]+\*\*|`[^`]+`|(?:^|\n)>\s|(?:^|\n)\s*\|.+\|\s*\n\s*\|?[\s:|-]+\|/m.test(
+    src,
   );
 }
 
-const BRAND_TABLE_HEADER = C.primary;
+let mdSyntax: ReturnType<typeof SyntaxStyle.fromStyles> | null = null;
+
+function markdownSyntaxStyle() {
+  if (!mdSyntax) {
+    mdSyntax = SyntaxStyle.fromStyles({
+      default: { fg: C.text },
+      "markup.heading": { fg: C.yellow, bold: true },
+      "markup.heading.1": { fg: C.yellow, bold: true },
+      "markup.heading.2": { fg: C.yellow, bold: true },
+      "markup.heading.3": { fg: C.yellow, bold: true },
+      "markup.heading.4": { fg: C.yellow, bold: true },
+      "markup.heading.5": { fg: C.yellow, bold: true },
+      "markup.heading.6": { fg: C.yellow, bold: true },
+      "markup.list": { fg: C.yellow },
+      "markup.raw": { fg: C.teal },
+      "markup.bold": { fg: C.text, bold: true },
+      "markup.strong": { fg: C.text, bold: true },
+      "markup.italic": { fg: C.subtext, italic: true },
+      "markup.link": { fg: C.primary, underline: true },
+      "markup.link.label": { fg: C.teal, underline: true },
+      "markup.link.url": { fg: C.primary, underline: true },
+      conceal: { fg: C.overlay2 },
+    });
+  }
+  return mdSyntax;
+}
+
+const GRID_TABLE_OPTIONS = {
+  style: "grid" as const,
+  widthMode: "full" as const,
+  columnFitter: "balanced" as const,
+  wrapMode: "word" as const,
+  cellPaddingX: 1,
+  cellPaddingY: 0,
+  borders: true,
+  outerBorder: true,
+  borderStyle: "single" as const,
+  borderColor: C.overlay2,
+  selectable: true,
+};
+
+/** Same renderer OpenCode uses: OpenTUI MarkdownRenderable + grid tables. */
+export function MarkdownView({
+  content,
+  backgroundColor,
+  wrapW,
+}: {
+  content: string;
+  backgroundColor?: string;
+  wrapW?: number;
+}) {
+  const bg = backgroundColor || C.bg;
+  // 废弃代码（2026-09-23）：const blocks = parseBlocks(content || "");
+  // 该局部变量从未被引用——实际渲染完全交给 OpenTUI MarkdownRenderable
+  // （<markdown content={...}>），parseBlocks 每次渲染白算一遍全量文本，
+  // 流式增量渲染下开销随内容增长。parseBlocks / formatBoxedTable 函数本身
+  // 保留：Markdown.test.ts 的检测与网格表格测试仍在引用。
+  return (
+    <markdown
+      content={content || " "}
+      syntaxStyle={markdownSyntaxStyle()}
+      conceal
+      fg={C.text}
+      bg={bg}
+      width="100%"
+      tableOptions={GRID_TABLE_OPTIONS}
+    />
+  );
+}

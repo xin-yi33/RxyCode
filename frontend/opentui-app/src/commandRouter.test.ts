@@ -40,6 +40,13 @@ describe("filterCommands", () => {
     const names = filterCommands("/mo").map((c) => c.name);
     expect(names.some((n) => n.includes("model"))).toBe(true);
   });
+
+  test("/explore and /why-mode are catalogued as Agent commands", () => {
+    const explore = filterCommands("/explore");
+    expect(explore.some((c) => c.name === "/explore")).toBe(true);
+    const why = filterCommands("/why-mode");
+    expect(why.some((c) => c.name === "/why-mode")).toBe(true);
+  });
 });
 
 describe("resolveSlashSubmit", () => {

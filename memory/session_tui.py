@@ -1,4 +1,11 @@
-"""TUI adapter that records complete, versioned native CLI sessions."""
+"""TUI adapter that records complete, versioned native CLI sessions.
+
+废弃标注（2026-09-23）：仅 tests/integration/test_agent_main_chain.py 引用，
+生产链路（OpenTUI/appserver 与 Ink/api_server）均不使用——OpenTUI 的
+transcript 持久化走 appserver ``task_store``（event 回放），Ink 走
+``api_server._state["chat_history"]``。保留原因：集成测试仍以其校验
+chat_storage 版本化记录格式。
+"""
 
 from __future__ import annotations
 

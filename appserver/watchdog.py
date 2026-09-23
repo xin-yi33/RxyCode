@@ -71,6 +71,12 @@ class WatchdogState:
         self.degrade_reason = ""
 
     def stalled_jobs(self) -> list[ActiveJob]:
+        """Jobs whose worker stopped heartbeating.
+
+        Model-stream silence is not a stall: a live worker keeps
+        ``last_progress_at`` fresh via ``event/heartbeat``. This fires when
+        the worker process, event loop, or emit path is dead.
+        """
         limit = stall_timeout_seconds()
         now = time.monotonic()
         return [j for j in self.jobs.values() if now - j.last_progress_at > limit]

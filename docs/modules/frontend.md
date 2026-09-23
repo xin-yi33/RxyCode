@@ -13,30 +13,36 @@ rollback via `RXYCODE_TUI=ink`.
 - Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
 - **Chat transport** (P5): `RXYCODE_TRANSPORT=stdio|http` (default `stdio`)
   - `stdio` (default): spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
+  - `/session` attach 走 `session/events` → `sessionEventsToMessages`：恢复 thought（`event/final.thinking`）、已结束的 tool card、`done` 的 assistant（Markdown 编译后展示）。禁止把加载消息剥成只有 role/content（会让 tool 一直 `[running]`、MD 变源码）
   - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`) — fallback via `RXYCODE_TRANSPORT=http`
   - Status bar 上下文/缓存: stdio 消费 `event/token_usage` + `models/list.context_window`（不再依赖 HTTP `/status`）
   - Esc 立即结束 Processing，后台再发 `session/interrupt`
-- Settings dialogs (models, MCP, memory) still use HTTP API in both modes
+- Settings dialogs (models, MCP, memory) still use HTTP API in both modes。**例外（UPDATE-01 轨 H）**：`/session` 列表走 stdio JSON-RPC `sessions/list`，不走 HTTP `sendCommand("/session")`。**例外（UPDATE-01 轨 I）**：`/effort` overlay 标题锁定 `Select effort`；`/model` 换模型与 `/addmodel` 后弹出同一 overlay；esc = `default`。禁止把命令改名为 `/variant`。**例外（UPDATE-01 轨 J）**：已发送 **user** 气泡右键弹出 `Message Actions`（命中=灰底；**运行中仍弹**）。Revert/Copy/Fork。Copy/Fork 不 interrupt；Revert busy 先 `session/interrupt`。禁止 `session/fork` 当 Fork。**例外（UPDATE-01 轨 K）**：换模型不新开 session；隔夜 attach 同一 `session_id` 后 hydrate dated memory。禁止把列表当 transcript
 - Expert-team settings are layered (F13): hidden until `agents.enabled`; then team / route / router model / budget appear. Multi-model stays disabled until Phase H.
 - OpenTUI: `bun run src/index.tsx`; Ink: Node.js process — both launched by `main.py`
 
 ## Key Files (OpenTUI — default)
 | File | Purpose |
 |------|---------|
-| opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing |
+| opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing。composer 元信息行：`{mode} · {model} · {effortChip}`（UPDATE-01 U54）；禁止改 `formatHeaderLine` 三参换芯片。已发送 user 气泡右键 Message Actions（U58）；Revert 横幅（U59） |
+| opentui-app/src/followupQueue.ts | Processing 时 follow-up 队列（FIFO，上限 10）；立即发送走 `turn/steer` |
+| opentui-app/src/FollowupQueueBar.tsx | 队列行：立即发送 / 编辑 / 删除 |
 | opentui-app/src/index.tsx | OpenTUI entry — CliRenderer alternate screen + lifecycle |
 | opentui-app/src/chatApi.ts | Transport facade — delegates to `transport/` (http or stdio) |
 | opentui-app/src/transport/ | P5 transport layer: `httpTransport`, `stdioTransport`, `httpAdmin.ts`, `notifyToStreamEvent.ts`, `sseParser.ts` |
 | opentui-app/src/mention.ts | `@agent` mention autocomplete + dispatch over stdio `agent/invoke` |
-| opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs |
+| opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs。`/session` 默认走 `DialogSessionList` + JSON-RPC `sessions/list`（UPDATE-01 轨 H）；禁止 HTTP `sendCommand("/session")` 读 `chat_storage`。Esc 关闭不变。`/effort` 走 `DialogEffort` + `effortPicker.ts`（UPDATE-01 轨 I；标题 `Select effort`） |
 | opentui-app/src/CommandPalette.tsx | Ctrl+P command palette |
 | opentui-app/src/ApprovalDialog.tsx | Tool approval UI |
 | opentui-app/src/QuestionDialog.tsx | Interactive `question` tool (choice / free text) |
 | opentui-app/src/questionInfo.ts | Parse `question/request` params and summarize tool args |
 | opentui-app/src/Markdown.tsx | Markdown rendering |
 | opentui-app/src/streamReducer.ts | Streaming message state |
-| opentui-app/src/commands.ts / commandRouter.ts | Slash-command parsing/routing（含 `/effort`：2026-08-12，选择思考强度，档位随当前模型，local 命令） |
-| opentui-app/src/dialog/DialogEffort.tsx | `/effort` 档位选择对话框（复用 DialogSelect，档位来自 `models/list` 的 `effort_options`） |
+| opentui-app/src/commands.ts / commandRouter.ts | Slash-command parsing/routing（含 `/effort`：2026-08-12；UPDATE-01 轨 I 不改命令名、不加 `/variant` 别名） |
+| opentui-app/src/dialog/effortPicker.ts | UPDATE-01 轨 I：`SELECT_EFFORT_TITLE` / `buildEffortPickerOptions` / `shouldOpenEffortPicker` / `formatComposerEffortChip`。Default 首行；esc=`default`。**不**改现网 `buildOptions` |
+| opentui-app/src/dialog/DialogEffort.tsx | `/effort` overlay（复用 DialogSelect）。标题锁定 `Select effort`；选项 = `[Default] + effort_options`。禁止把 Default 塞进 `buildOptions` |
+| opentui-app/src/dialog/messageActions.ts | UPDATE-01 轨 J：`shouldOpenMessageActions` / `pointInUserBubble` / overlay 文案。右键 `button===2`。**busy 仍弹 overlay**。Fork 方法锁定 `thread/fork`。Revert busy 走 `revertNeedsAbort` → `session/interrupt` |
+| opentui-app/src/dialog/DialogMessageActions.tsx | 用户气泡 Message Actions overlay（Revert / Copy / Fork）。复用 DialogSelect，禁止重写导航 |
 | opentui-app/src/Modal.tsx / brand.ts / statusBar.ts | Shared UI primitives |
 
 ## Key Files (Ink — fallback)
@@ -111,6 +117,14 @@ rollback via `RXYCODE_TUI=ink`.
 - Tab: Cycle mode (Plan/Build/Compose)
 - Esc: Cancel current operation
 - Enter: Submit input
+- Shift+Enter / Ctrl+Enter: Insert newline（2026-09-23：Ctrl+Enter 补进
+  `promptKeyBindings.ts` 绑定表与 `promptSubmitKey.ts` 纯函数；此前 Ctrl+Enter
+  无绑定落空，什么都不发生）
+
+**2026-09-23（P0/P1b 验证内联）**：子代理（专家团各阶段）的流式 token/reasoning
+带 `intermediate` 标记，`streamReducer` 不再把它们追加进主聊流；专家团阶段
+分隔线（「──────── stage · role ────────」）不再渲染成主聊流 system 消息，
+阶段信息只走状态行。主代理输出不受影响。
 
 ## Desktop (Electron)
 

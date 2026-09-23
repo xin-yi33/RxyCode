@@ -73,13 +73,13 @@ def test_discrete_event_forces_flush_before_it():
 # ---------------------------------------------------------------- B2 thinking 门控
 
 
-def test_reasoning_suppressed_when_thinking_disabled():
+def test_reasoning_emitted_when_thinking_display_collapsed():
     tui, queue = _make_tui()
     tui.set_thinking_expanded(False)
     tui.write_reasoning("internal chain of thought")
     tui.flush_stream_buffers()
 
-    assert not [e for e in _drain(queue) if e["type"] == "reasoning"]
+    assert [e for e in _drain(queue) if e["type"] == "reasoning"]
 
 
 def test_reasoning_still_recorded_when_thinking_disabled():

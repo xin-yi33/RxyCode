@@ -354,6 +354,8 @@ class ToolExecutionJournal:
             if entry is not None:
                 if entry["status"] == "completed":
                     return JournalReservation("reuse", str(entry["result"]))
+                # ``failed`` only exists in sealed attempts; a sealed attempt
+                # is never reserved against again, so both stay uncertain.
                 return JournalReservation("uncertain")
             if any(
                 candidate.get("status") == "pending"
@@ -400,6 +402,33 @@ class ToolExecutionJournal:
             document["updated_at"] = now
             self._write(path, document)
             return cleaned
+
+    def settle_attempt(self, attempt_id: str) -> bool:
+        """Seal an attempt whose run returned normally.
+
+        A mutating call that came back with an error keeps ``pending`` during
+        the run so a same-run retry is blocked. Once the run has returned, the
+        outcome was observed in-process: it is ``failed``, not unknown. Only a
+        crash leaves real unknowns, and a crashed run never reaches here.
+        Sealing lets the next identical user prompt start a fresh attempt
+        instead of replaying a two-hour-old ``write`` result.
+        """
+        path = self._path(attempt_id)
+        with _JOURNAL_LOCK, _interprocess_lock(self.directory):
+            document = self._read(path)
+            if document is None:
+                return False
+            now = _utc_timestamp()
+            for entry in document["entries"].values():
+                if entry.get("status") == "pending":
+                    entry["status"] = "failed"
+                    entry["completed_at"] = now
+            document["completed"] = True
+            document["completed_at"] = now
+            document["updated_at"] = now
+            self._write(path, document)
+            self._prune_locked()
+            return True
 
     def mark_attempt_complete(self, attempt_id: str) -> bool:
         """Seal an attempt only when no side effect has an unknown outcome."""
@@ -502,6 +531,7 @@ class ToolExecutionJournal:
             if not isinstance(entry, dict) or entry.get("status") not in {
                 "pending",
                 "completed",
+                "failed",
             }:
                 raise ValueError("invalid journal entry")
             if not isinstance(entry.get("tool"), str):

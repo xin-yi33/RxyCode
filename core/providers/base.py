@@ -11,6 +11,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._compat import (
+    ANTHROPIC_MESSAGES_TRANSPORT,
+    LLMTransport,
+    OPENAI_CHAT_TRANSPORT,
+    OPENAI_RESPONSES_TRANSPORT,
+)
+
 try:
     from ...config.model_capabilities import (
         DEFAULT_CAPABILITIES,
@@ -18,6 +25,9 @@ try:
     )
 except ImportError:  # pragma: no cover - repo-root layout (tests)
     from config.model_capabilities import DEFAULT_CAPABILITIES, ModelCapabilities
+
+CHAT_TRANSPORT: LLMTransport = OPENAI_CHAT_TRANSPORT
+RESPONSES_TRANSPORT: LLMTransport = OPENAI_RESPONSES_TRANSPORT
 
 
 class BaseProvider:
@@ -70,9 +80,11 @@ class BaseProvider:
         return 0
 
     def extract_reasoning(self, payload: Any, caps: ModelCapabilities) -> str:
-        """从 delta / message 里取推理内容。取代 _extract_reasoning。"""
-        if not caps.supports_reasoning:
-            return ""
+        """从 delta / message 里取推理内容。取代 _extract_reasoning。
+
+        线上有 reasoning 字段就提取。不要因为 ``supports_reasoning=False``
+        丢掉真实思维链——未调研变体（如 deepseek-v4.1-flash）曾被误判。
+        """
         for key in caps.usage_fields.reasoning:
             value = _get_attr_or_key(payload, key)
             if isinstance(value, str) and value:

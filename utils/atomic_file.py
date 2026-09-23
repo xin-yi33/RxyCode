@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
+
+# Windows: AV / indexer often holds the dest for a moment (WinError 5 / 32).
+_WIN_RETRY_ERRORS = {5, 32}
 
 
 def _normalize_script_line_endings(path: Path, content: str) -> str:
@@ -18,6 +22,25 @@ def _normalize_script_line_endings(path: Path, content: str) -> str:
     if path.suffix.lower() not in {".bat", ".cmd"}:
         return content
     return content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
+def _replace_with_retry(source: str, dest: str, attempts: int = 8) -> None:
+    """os.replace, with Windows sharing/access retries."""
+    delay = 0.02
+    last: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            os.replace(source, dest)
+            return
+        except OSError as exc:
+            last = exc
+            winerr = getattr(exc, "winerror", None)
+            if os.name != "nt" or winerr not in _WIN_RETRY_ERRORS:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+    if last is not None:
+        raise last
 
 
 def atomic_write_text(path: str | Path, content: str) -> None:
@@ -35,7 +58,10 @@ def atomic_write_text(path: str | Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        _replace_with_retry(temporary, str(target))
     finally:
         if os.path.exists(temporary):
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass

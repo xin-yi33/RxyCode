@@ -19,3 +19,6 @@ pybreaker>=1.0
 numpy>=1.26
 keyring>=25.0
 uvloop>=0.21.0; platform_system != 'Windows'
+# 虚拟浏览器只带 Python 包。废弃代码（2026-09-22）：把 chrome-headless-shell
+# 打进 NSIS / electron-builder。浏览器在用户缓存，第一次 navigate 再下载。
+playwright>=1.49.0

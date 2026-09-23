@@ -5,14 +5,20 @@ import {
 } from "./cliRendererOptions.ts";
 
 describe("resolveCliRendererMouseOptions", () => {
-  test("win32 keeps clicks/wheel/drag and disables all-motion", () => {
+  test("win32 keeps clicks/wheel/drag and hover movement for button highlight", () => {
     expect(
       resolveCliRendererMouseOptions({ WT_SESSION: "1" }, "win32"),
-    ).toEqual({ useMouse: true, enableMouseMovement: false });
+    ).toEqual({ useMouse: true, enableMouseMovement: true });
     expect(resolveCliRendererMouseOptions({}, "win32")).toEqual({
       useMouse: true,
-      enableMouseMovement: false,
+      enableMouseMovement: true,
     });
+  });
+
+  test("RXYCODE_MOUSE_MOVE=0 turns hover tracking off", () => {
+    expect(
+      resolveCliRendererMouseOptions({ RXYCODE_MOUSE_MOVE: "0" }, "win32"),
+    ).toEqual({ useMouse: true, enableMouseMovement: false });
   });
 
   test("RXYCODE_MOUSE=0 disables tracking", () => {

@@ -56,10 +56,27 @@ def test_bare_algorithm_search_does_not_force_web_research():
     assert get_research_policy("Convert one to two fields").requires_web is False
 
 
+def test_local_search_then_delete_does_not_force_web_research():
+    """Leading 搜索 is filesystem intent when the user also says 制作过/删掉."""
+    assert get_research_policy(
+        "搜索一下之前制作过的一些小游戏，然后删掉"
+    ).requires_web is False
+    assert get_research_policy("查找认证模块在哪个文件").requires_web is False
+    assert get_research_policy("帮我搜索 Python 官方文档").requires_web is True
+    assert get_research_policy("请联网搜索之前制作过的游戏").requires_web is True
+
+
+def test_now_first_write_counter_does_not_force_web_research():
+    """Discourse 现在先… is sequencing, not a freshness/news request."""
+    assert get_research_policy("现在先写一个计数器 py 文件给我").requires_web is False
+    assert get_research_policy("今天 Python 最新版本是什么？").requires_web is True
+
+
 @pytest.mark.parametrize(
     "query",
     [
         "请检查当前工作区和当前时间，然后创建一个离线 HTML 游戏。",
+        "在当前工作目录用 write 新建 e14_tiny.py，内容必须是 def add(a, b): return a - b",
         "查询当前时间并使用 Java Swing 编写数字游戏。",
         "Check the current time, then build the local offline demo.",
     ],

@@ -54,6 +54,10 @@ def executor() -> ShellExecutor:
     instance.shell_type = "bash"
     instance.user_home = ""
     instance.desktop_path = ""
+    instance.watchdog_checkpoints = shell_module.WATCHDOG_CHECKPOINTS
+    instance.watchdog_idle_cpu_percent = shell_module.WATCHDOG_IDLE_CPU_PERCENT
+    instance.watchdog_idle_kill_after = shell_module.WATCHDOG_IDLE_KILL_AFTER
+    instance.watchdog_observe_seconds = shell_module.WATCHDOG_OBSERVE_SECONDS
     return instance
 
 

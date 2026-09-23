@@ -4,11 +4,13 @@ Tests for LLM call timeout guard (2026-08-13 fix).
 Root cause fixed: LLM streaming establishment (`first = await ait.__anext__()`)
 and the raw OpenAI client had no effective first-response deadline, so an
 upstream hang produced 0-token stalls that appserver's watchdog killed first.
-Now the total request timeout remains configurable, while the first response
-deadline is independently bounded to 30 seconds (or a shorter model setting):
-  - UsageTrackingLLM gains `llm_timeout` and a bounded first-token timeout
+Now the total request timeout remains configurable. First useful chunk
+follows the stream idle budget (default 180s, cap 300s), not a 30s cap.
+Connect handshake is a separate ~20s clock. A hard-deadline timer
+force-closes the OpenAI/httpx handle even while ``create()`` is blocked.
+  - UsageTrackingLLM uses the idle budget, not ChatOpenAI's 90s default
   - `_open_stream` / `_open_stream_with_retry` wrap first-chunk wait
-  - `AgentV2._raw_stream` uses the same bounded deadline
+  - `AgentV2._raw_stream` arms connect before create and idle after
   - a first-token timeout is not retried as a blind transport retry
 """
 import asyncio
@@ -16,11 +18,17 @@ import pytest
 from unittest.mock import MagicMock
 
 
-def _make_usage_llm(timeout=90.0):
-    from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+def _make_usage_llm(timeout=None):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+        UsageTrackingLLM,
+        _resolve_first_token_timeout,
+    )
+    if timeout is None:
+        timeout = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
     llm = object.__new__(UsageTrackingLLM)
     llm._llm_timeout = max(1.0, float(timeout))
-    llm._first_token_timeout = min(llm._llm_timeout, 30.0)
+    llm._first_token_timeout = _resolve_first_token_timeout(timeout)
     return llm
 
 
@@ -68,9 +76,12 @@ class StreamHolder:
 
 
 class TestLlmCallTimeout:
-    def test_default_is_90(self):
+    def test_default_is_idle_budget(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+            STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+        )
         llm = _make_usage_llm()
-        assert llm._llm_call_timeout() == 90.0
+        assert llm._llm_call_timeout() == STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
 
     def test_config_override(self):
         llm = _make_usage_llm(timeout=25)
@@ -80,22 +91,40 @@ class TestLlmCallTimeout:
         llm = _make_usage_llm(timeout=0)
         assert llm._llm_call_timeout() == 1.0
 
-    def test_first_token_timeout_is_bounded_and_can_only_be_shorter(self):
-        from RxyCode.RxyCode1_1_0.core.agent_v2 import _resolve_first_token_timeout
+    def test_first_token_timeout_follows_idle_not_thirty(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+            STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+            _resolve_first_token_timeout,
+        )
 
-        assert _resolve_first_token_timeout(90) == 30.0
+        assert _resolve_first_token_timeout(None) == STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
+        assert _resolve_first_token_timeout(90) == 90.0
         assert _resolve_first_token_timeout(90, 12) == 12.0
-        assert _resolve_first_token_timeout(90, 45) == 30.0
+        assert _resolve_first_token_timeout(90, 45) == 45.0
         assert _resolve_first_token_timeout(10) == 10.0
 
-    def test_stream_idle_timeout_is_bounded_and_can_only_be_shorter(self):
-        from RxyCode.RxyCode1_1_0.core.agent_v2 import _resolve_stream_idle_timeout
+    def test_stream_idle_timeout_ignores_thirty_cap(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+            STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+            _resolve_stream_idle_timeout,
+        )
 
-        assert _resolve_stream_idle_timeout(90) == 30.0
+        assert _resolve_stream_idle_timeout(None) == STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
         assert _resolve_stream_idle_timeout(90, 12) == 12.0
         assert _resolve_stream_idle_timeout(90, 45) == 45.0
-        assert _resolve_stream_idle_timeout(90, 120) == 90.0
+        assert _resolve_stream_idle_timeout(90, 120) == 120.0
         assert _resolve_stream_idle_timeout(10) == 10.0
+
+    def test_connect_timeout_is_handshake_only(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+            STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS,
+            _resolve_connect_timeout,
+        )
+
+        assert _resolve_connect_timeout(None) == STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS
+        assert _resolve_connect_timeout(5) == 5.0
+        assert _resolve_connect_timeout(90) == STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS
+        assert _resolve_connect_timeout(90, 8) == 8.0
 
     def test_legacy_worker_popen_replaces_undecodable_stderr(self):
         import inspect
@@ -174,14 +203,25 @@ class TestOpenStreamWithRetryTimeout:
 
 
 class TestOpenAIClientTimeout:
-    def test_default_timeout_90(self):
+    def test_default_timeout_matches_idle_not_sdk_600(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+            STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+        )
+
         agent = _make_agent({})
         agent._llm = None
         agent.model_config["api_key"] = "k"
         agent.model_config["base_url"] = "https://example.com/v1"
         client = agent._openai_client()
         value = getattr(client.timeout, "read", client.timeout)
-        assert float(value) == 90.0
+        assert float(value) == STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS
+        connect = getattr(client.timeout, "connect", None)
+        if connect is not None:
+            assert float(connect) <= 20.0
+        create = getattr(client, "create", None)
+        if not callable(create):
+            create = client.chat.completions.create
+        assert callable(create)
 
     def test_config_timeout_respected(self):
         agent = _make_agent({"timeout": 45})
@@ -248,6 +288,275 @@ class TestRawStreamFirstChunkTimeout:
         elapsed = asyncio.get_event_loop().time() - start
         assert elapsed < 6.0
 
+    async def test_hanging_create_times_out_at_connect_not_sdk_600(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, FirstTokenTimeoutError
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+        seen_timeout = {}
+
+        class HangingCreate:
+            async def create(self, **kwargs):
+                seen_timeout["timeout"] = kwargs.get("timeout")
+                await asyncio.Event().wait()
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {
+            "timeout": 1.0,
+            "connect_timeout": 1.0,
+            "model_name": "x",
+            "temperature": 0,
+        }
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: HangingCreate()
+
+        async def drain() -> None:
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+
+        start = asyncio.get_event_loop().time()
+        with pytest.raises((asyncio.TimeoutError, TimeoutError, FirstTokenTimeoutError)):
+            await asyncio.wait_for(drain(), timeout=8.0)
+        elapsed = asyncio.get_event_loop().time() - start
+        assert elapsed < 6.0
+        assert seen_timeout.get("timeout") is not None
+
+    async def test_raw_stream_retries_429_then_succeeds(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import httpx
+        from langchain_core.messages import HumanMessage
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+        async def _no_sleep(_delay):
+            return None
+        monkeypatch.setattr(agent_v2.asyncio, "sleep", _no_sleep)
+
+        useful = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="ok", reasoning_content="", tool_calls=None
+                    )
+                )
+            ]
+        )
+
+        class OnceThenOk:
+            def __init__(self):
+                self.n = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.n:
+                    raise StopAsyncIteration
+                self.n += 1
+                return useful
+
+        class FlakyCreate:
+            def __init__(self):
+                self.calls = 0
+
+            async def create(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    req = httpx.Request("POST", "http://x")
+                    raise httpx.HTTPStatusError(
+                        "rate",
+                        request=req,
+                        response=httpx.Response(429, request=req),
+                    )
+                return OnceThenOk()
+
+        client = FlakyCreate()
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 5.0, "model_name": "x", "temperature": 0}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: client
+        agent._user_turn_active = False
+
+        got = []
+        async for chunk in agent._raw_stream(
+            [HumanMessage(content="hi")], max_tokens=1
+        ):
+            got.append(chunk)
+        assert client.calls == 2
+        assert len(got) == 1
+
+    async def test_raw_stream_does_not_retry_read_timeout(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import httpx
+        from langchain_core.messages import HumanMessage
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        class Once:
+            def __init__(self):
+                self.calls = 0
+
+            async def create(self, **_kwargs):
+                self.calls += 1
+                raise httpx.ReadTimeout("idle")
+
+        client = Once()
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 1.0, "model_name": "x", "temperature": 0}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: client
+        agent._user_turn_active = False
+
+        with pytest.raises(httpx.ReadTimeout):
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+        assert client.calls == 1
+
+    async def test_raw_stream_first_token_hang_does_not_reconnect(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from langchain_core.messages import HumanMessage
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, FirstTokenTimeoutError
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        class HangStream:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                await asyncio.Event().wait()
+
+        class Completions:
+            def __init__(self):
+                self.calls = 0
+
+            async def create(self, **_kwargs):
+                self.calls += 1
+                return HangStream()
+
+        client = Completions()
+        agent = object.__new__(AgentV2)
+        agent.model_config = {
+            "timeout": 1.0,
+            "connect_timeout": 5.0,
+            "first_token_timeout": 1.0,
+            "model_name": "x",
+            "temperature": 0,
+        }
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: client
+        agent._user_turn_active = False
+
+        with pytest.raises(FirstTokenTimeoutError):
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+        assert client.calls == 1
+
+    async def test_blocked_create_timer_closes_client_not_wait_for(self, monkeypatch):
+        """Connect hang must close the HTTP client; wait_for cannot cancel sockets."""
+        import threading
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, FirstTokenTimeoutError
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+
+        class BlockedSocketCreate:
+            def __init__(self):
+                self.close_calls = 0
+                self._released = threading.Event()
+
+            def close(self):
+                raise AssertionError("OpenAI/httpx close is async; timer must use aclose")
+
+            async def aclose(self):
+                self.close_calls += 1
+                self._released.set()
+
+            async def create(self, **_kwargs):
+                loop = asyncio.get_running_loop()
+                while not self._released.is_set():
+                    try:
+                        await loop.run_in_executor(
+                            None, lambda: self._released.wait(0.05)
+                        )
+                    except asyncio.CancelledError:
+                        # Blocked socket reads ignore task cancellation.
+                        continue
+                raise ConnectionError("socket closed by hard deadline")
+
+        blocked = BlockedSocketCreate()
+        agent = object.__new__(AgentV2)
+        agent.model_config = {
+            "timeout": 1.0,
+            "connect_timeout": 1.0,
+            "model_name": "x",
+            "temperature": 0,
+        }
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = None
+        agent._capabilities = None
+        agent._openai_client = lambda: blocked
+
+        async def drain() -> None:
+            async for _chunk in agent._raw_stream(
+                [HumanMessage(content="hi")], max_tokens=1
+            ):
+                pass
+
+        start = asyncio.get_event_loop().time()
+        with pytest.raises(
+            (asyncio.TimeoutError, TimeoutError, FirstTokenTimeoutError, ConnectionError)
+        ):
+            await asyncio.wait_for(drain(), timeout=8.0)
+        elapsed = asyncio.get_event_loop().time() - start
+        assert elapsed < 6.0
+        assert blocked.close_calls >= 1
+
     async def test_empty_keepalive_then_hang_times_out(self, monkeypatch):
         from types import SimpleNamespace
 
@@ -296,6 +605,7 @@ class TestRawStreamFirstChunkTimeout:
         agent._provider = None
         agent._capabilities = None
         agent._openai_client = lambda: Completions()
+        agent._user_turn_active = True
 
         async def drain() -> None:
             async for _chunk in agent._raw_stream(
@@ -313,7 +623,8 @@ class TestRawStreamFirstChunkTimeout:
                 pytest.fail("hang after empty chunk was unbounded")
         elapsed = asyncio.get_event_loop().time() - start
         assert elapsed < 6.0
-        assert tui.progress and tui.progress[0] == "正在连接模型…"
+        assert "正在连接模型…" in tui.progress
+        assert "等待模型返回…" in tui.progress
 
     async def test_reasoning_counts_as_useful_and_records_ttft(self, monkeypatch):
         from types import SimpleNamespace
@@ -390,6 +701,7 @@ class TestRawStreamFirstChunkTimeout:
         agent._provider = None
         agent._capabilities = None
         agent._openai_client = lambda: Completions()
+        agent._user_turn_active = True
 
         got = []
         async for chunk in agent._raw_stream(
@@ -400,7 +712,9 @@ class TestRawStreamFirstChunkTimeout:
         assert recorded, "TTFT must record on first reasoning chunk"
         assert agent._stream_chunk_is_useful(chunks[0]) is False
         assert agent._stream_chunk_is_useful(chunks[1]) is True
-        assert tui.progress and tui.progress[0] == "正在连接模型…"
+        assert "正在连接模型…" in tui.progress
+        assert "等待模型返回…" in tui.progress
+        assert "模型输出中…" in tui.progress
 
     async def test_partial_stream_cannot_wait_forever_for_next_chunk(self, monkeypatch):
         """A response that starts and then goes silent has its own deadline."""
@@ -668,6 +982,56 @@ class TestFastReplyDisablesThinking:
             pass
         assert captured["extra_body"]["thinking"] == {"type": "disabled"}
 
+    async def test_raw_stream_disables_thinking_without_existing_key(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import DEFAULT_CAPABILITIES
+        from RxyCode.RxyCode1_1_0.core import agent_v2
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from langchain_core.messages import HumanMessage
+
+        monkeypatch.setattr(
+            agent_v2._circuit_breaker, "circuit_breaker_enabled", lambda: False
+        )
+        captured: dict = {}
+
+        class Completions:
+            async def create(self, **kwargs):
+                captured.update(kwargs)
+
+                class Stream:
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self):
+                        raise StopAsyncIteration
+
+                return Stream()
+
+        class Provider:
+            def llm_kwargs(self, model_config, caps):
+                return {}
+
+        tui = _FakeTui()
+        monkeypatch.setattr(agent_v2, "get_tui", lambda: tui)
+
+        agent = object.__new__(AgentV2)
+        agent.model_config = {"timeout": 5.0, "model_name": "deepseek-v4.1-flash"}
+        agent._llm = SimpleNamespace()
+        agent._rate_limiter = None
+        agent._provider = Provider()
+        agent._capabilities = DEFAULT_CAPABILITIES
+        agent._thinking_disabled_this_turn = True
+        agent._user_turn_active = False
+        agent._openai_client = lambda: Completions()
+
+        async for _chunk in agent._raw_stream(
+            [HumanMessage(content="hi")], max_tokens=1
+        ):
+            pass
+        assert captured["extra_body"]["thinking"] == {"type": "disabled"}
+        assert tui.progress == []
+
 
 class TestPrewarmNonBlocking:
     """2026-08-13: 预热必须非阻塞——用户请求绝不被预热请求拖慢。
@@ -727,6 +1091,17 @@ class TestPrewarmNonBlocking:
         agent._schedule_prewarm()  # 无 llm → 直接返回，不创建任务
         assert agent._prewarm_last_attempt_at is None
 
+    def test_user_turn_skips_prewarm(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+        agent = object.__new__(AgentV2)
+        agent._llm = object()
+        agent._prewarm_last_attempt_at = None
+        agent._user_turn_active = True
+        agent._schedule_prewarm()
+        assert agent._prewarm_last_attempt_at is None
+        assert getattr(agent, "_prewarm_task", None) is None
+
     async def test_user_stream_cancels_inflight_prewarm(self):
         import asyncio
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
@@ -751,3 +1126,5 @@ class TestPrewarmNonBlocking:
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2 as AgentCls
 
         assert "_cancel_background_prewarm" in inspect.getsource(AgentCls._raw_stream)
+        src = inspect.getsource(AgentCls._raw_stream)
+        assert "_prewarm_request_active" in src

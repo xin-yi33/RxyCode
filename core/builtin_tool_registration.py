@@ -18,6 +18,7 @@ from RxyCode.RxyCode1_1_0.tools.webfetch import webfetch_tool
 from RxyCode.RxyCode1_1_0.tools.websearch import websearch_tool
 from RxyCode.RxyCode1_1_0.tools.git_tool import git_tool
 from RxyCode.RxyCode1_1_0.tools.datetime_tool import datetime_tool
+from RxyCode.RxyCode1_1_0.tools.final_answer import final_answer_tool
 from RxyCode.RxyCode1_1_0.tools.history_tool import history_tool
 from RxyCode.RxyCode1_1_0.tools.question_tool import question_tool
 from RxyCode.RxyCode1_1_0.tools.skill_tool import skill_tool
@@ -31,6 +32,11 @@ from RxyCode.RxyCode1_1_0.tools.task_tool import task_tool
 from RxyCode.RxyCode1_1_0.tools.patch import patch_tool
 from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
 from RxyCode.RxyCode1_1_0.tools.open_file import open_file_tool
+from RxyCode.RxyCode1_1_0.tools.virtual_browser import (
+    browser_click_tool,
+    browser_navigate_tool,
+    browser_snapshot_tool,
+)
 from RxyCode.RxyCode1_1_0.tools.download_tool import download_mcp_tool, download_skill_tool
 from RxyCode.RxyCode1_1_0.tools.team_install_tool import team_install_tool
 from RxyCode.RxyCode1_1_0.tools.file_download import file_download_tool
@@ -75,11 +81,20 @@ def register_builtin_tools(
         ls_tool,
         view_tool,
         datetime_tool,
+        final_answer_tool,
         websearch_tool,
         webfetch_tool,
         history_tool,
         diagnostics_tool,
         format_tool,
+        # 虚拟浏览器进本轮 tools。废弃代码（2026-09-22）：以前只写在文档里，
+        # 没有 register，模型只能回答「虚拟浏览器未进本轮」。
+        browser_navigate_tool,
+        browser_snapshot_tool,
+        # question 是用户交互不是危险操作（policy.py 早已分类 READ）。
+        # 废弃代码（2026-09-23）：注册为 danger，confirm_all/full_auto 下
+        # 前置审批弹窗被自动批准吞掉，question 弹窗体验受损。
+        question_tool,
     ]
     write_tools = [
         write_tool,
@@ -94,8 +109,9 @@ def register_builtin_tools(
         # (legacy, subagents off) or the subagent dispatch tool (subagents on).
         task_manage_tool if subagents_enabled else task_tool,
         vision_tool,
+        browser_click_tool,
     ]
-    danger_tools = [bash_tool, git_tool, question_tool, team_install_tool]
+    danger_tools = [bash_tool, git_tool, team_install_tool]
 
     for tool in read_tools:
         registry.register(tool, risk="read")

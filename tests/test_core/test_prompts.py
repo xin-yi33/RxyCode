@@ -457,6 +457,31 @@ class TestOpenDeliverableGuidance:
         lowered = prompt.lower()
         assert "open_file" in lowered
         assert "open" in lowered
+        assert "os accepts the launch" in lowered or "do not wait" in lowered
+        assert "bash" in lowered
+
+    def test_system_prompt_does_not_bash_wait_gui(self):
+        from RxyCode.RxyCode1_1_0.core.prompts.templates import SYSTEM_PROMPT_TEMPLATE
+
+        lowered = SYSTEM_PROMPT_TEMPLATE.lower()
+        assert "open_file" in lowered
+        assert "bash-wait" in lowered
+        assert "final answer" in lowered
+        assert "exact path" in lowered
+        assert "different existing file" in lowered
+        assert "exit this turn when any" in lowered
+        assert "do not call more tools after any of (1)-(4)" in lowered
+        assert "consecutive errors have reached 5" in lowered
+        assert "a round with no tool call is not an exit" in lowered
+        assert "final_answer" in lowered
+
+    def test_bash_tool_description_routes_documents_to_open_file(self):
+        from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
+
+        lowered = bash_tool.description.lower()
+        assert "open_file" in lowered
+        assert "not the user closing" in lowered
+
 
 
 class TestAgentV2Migration:

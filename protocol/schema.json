@@ -193,6 +193,19 @@
           "default": null,
           "description": "GX14 Ask/Edit/Agent hard tool boundary (default full).",
           "title": "Capability"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
+          "title": "Request Id"
         }
       },
       "required": [
@@ -4951,6 +4964,11 @@
         "text": {
           "title": "Text",
           "type": "string"
+        },
+        "intermediate": {
+          "default": false,
+          "title": "Intermediate",
+          "type": "boolean"
         }
       },
       "required": [
@@ -4976,6 +4994,11 @@
         "text": {
           "title": "Text",
           "type": "string"
+        },
+        "intermediate": {
+          "default": false,
+          "title": "Intermediate",
+          "type": "boolean"
         }
       },
       "required": [
@@ -5005,6 +5028,11 @@
         "snapshot": {
           "default": true,
           "title": "Snapshot",
+          "type": "boolean"
+        },
+        "intermediate": {
+          "default": false,
+          "title": "Intermediate",
           "type": "boolean"
         }
       },
@@ -5420,6 +5448,18 @@
           ],
           "title": "Reporting Status",
           "type": "string"
+        },
+        "context_used": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Used"
         }
       },
       "required": [
@@ -7112,7 +7152,8 @@
           "enum": [
             "solo",
             "team",
-            "team_multi"
+            "team_multi",
+            "explore"
           ],
           "title": "Mode",
           "type": "string"
@@ -7888,7 +7929,7 @@
           "type": "string"
         },
         "server_version": {
-          "default": "1.2.10",
+          "default": "1.4.0",
           "title": "Server Version",
           "type": "string"
         },

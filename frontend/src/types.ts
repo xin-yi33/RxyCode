@@ -67,9 +67,10 @@ export const AVAILABLE_COMMANDS: Command[] = [
   { name: '/build', description: '进入构建模式', category: 'Agent', keywords: 'mode 模式' },
   { name: '/compose', description: '进入编排模式', category: 'Agent', keywords: 'mode 模式' },
   { name: '/solo', description: '本轮强制单 Agent', args: '<任务>', category: 'Agent', keywords: 'mode solo 单' },
-  { name: '/team', description: '本轮强制专家团（普通 coding 默认不走）', args: '<任务>', category: 'Agent', keywords: 'mode team 专家团' },
+  { name: '/team', description: '本轮强制专家团（auto 时跨层实现也会走）', args: '<任务>', category: 'Agent', keywords: 'mode team 专家团' },
+  { name: '/explore', description: '本轮强制只读 explore 子代理', args: '<只读问题>', category: 'Agent', keywords: 'mode explore 子代理 查代码' },
   { name: '/team-multi', description: '强制专家团（多模型尚未启用）', args: '<任务>', category: 'Agent', keywords: 'mode team-multi' },
-  { name: '/why-mode', description: '上次为何是 solo 或 team', category: 'Agent', keywords: 'route why' },
+  { name: '/why-mode', description: '上次为何是 solo / team / explore', category: 'Agent', keywords: 'route why' },
   { name: '/agents', description: '专家团开关（默认关）与预算', args: '[on|off|team|route|router-model|budget|timeout]', category: 'Agent', keywords: 'agents 专家团 设置' },
   { name: '/thinking', description: '展开/折叠思考过程', category: 'Agent', keywords: 'think reason' },
   // Memory

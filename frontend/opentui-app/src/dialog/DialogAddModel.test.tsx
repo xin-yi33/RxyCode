@@ -184,7 +184,10 @@ describe("DialogAddModel (headless mockInput)", () => {
       await act(async () => {
         mockInput.pressEnter();
       });
-      await waitForFrame((frame) => frame.includes("批量保存"));
+      const doneScreen = await waitForFrame((frame) => frame.includes("添加成功"));
+      expect(doneScreen).toContain("deepseek-chat");
+      expect(doneScreen).toContain("DeepSeek");
+      expect(doneScreen).toContain("打开模型列表");
 
       const batchCall = axiosPost.mock.calls.find((call) =>
         String(call[0]).endsWith("/models/onboard/batch"),
@@ -362,7 +365,8 @@ describe("DialogAddModel (headless mockInput)", () => {
       await act(async () => {
         mockInput.pressEnter();
       });
-      await waitForFrame((frame) => frame.includes("批量保存"));
+      const done = await waitForFrame((frame) => frame.includes("添加成功"));
+      expect(done).toContain("deepseek-chat");
 
       const batchCall = axiosPost.mock.calls.find((call) =>
         String(call[0]).endsWith("/models/onboard/batch"),

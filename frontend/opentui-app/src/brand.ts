@@ -58,47 +58,47 @@ export const WELCOME_ROWS: WelcomeRow[] = [
   { parts: [{ text: "  你好！我是 RxyCode，可以帮你分析、规划并执行各类任务", fg: "#FFB6C1" }] },
   {
     parts: [
-      { text: "  · ", fg: "#666666" },
+      { text: "  · ", fg: "#aaaaaa" },
       { text: "代码开发", fg: "#FF69B4", bold: true },
       { text: " - 编写、调试、重构代码", fg: "#aaaaaa" },
     ],
   },
   {
     parts: [
-      { text: "  · ", fg: "#666666" },
+      { text: "  · ", fg: "#aaaaaa" },
       { text: "文件操作", fg: "#FF69B4", bold: true },
       { text: " - 读写、检索、编辑文件", fg: "#aaaaaa" },
     ],
   },
   {
     parts: [
-      { text: "  · ", fg: "#666666" },
+      { text: "  · ", fg: "#aaaaaa" },
       { text: "项目管理", fg: "#FF69B4", bold: true },
       { text: " - Git、测试运行、依赖管理", fg: "#aaaaaa" },
     ],
   },
   {
     parts: [
-      { text: "  · ", fg: "#666666" },
+      { text: "  · ", fg: "#aaaaaa" },
       { text: "问题排查", fg: "#FF69B4", bold: true },
       { text: " - 分析错误、定位 bug、修复方案", fg: "#aaaaaa" },
     ],
   },
   {
     parts: [
-      { text: "  · ", fg: "#666666" },
+      { text: "  · ", fg: "#aaaaaa" },
       { text: "研究分析", fg: "#FF69B4", bold: true },
       { text: " - 检索来源、比较方案、整理结论", fg: "#aaaaaa" },
     ],
   },
   {
     parts: [
-      { text: "  · ", fg: "#666666" },
+      { text: "  · ", fg: "#aaaaaa" },
       { text: "通用任务", fg: "#FF69B4", bold: true },
       { text: " - 信息整理、计划执行、多步协作", fg: "#aaaaaa" },
     ],
   },
-  { parts: [{ text: "  有什么我可以帮你的？", fg: "#888888" }] },
+  { parts: [{ text: "  有什么我可以帮你的？", fg: "#aaaaaa" }] },
 ];
 
 export function welcomeRowsForSetup(needsSetup: boolean): WelcomeRow[] {

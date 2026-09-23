@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-09-22
+
+### Changed
+
+- Product version **1.4.0** in `pyproject.toml`, installers, OpenTUI/Ink
+  headers, MCP `clientInfo`, Desktop package metadata, and
+  `APPSERVER_VERSION`. Protocol version stays `1.1.0`.
+
+---
+
 ## [1.2.11] - 2026-08-21
 
 ### Highlights
@@ -711,6 +721,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.4.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0
 [1.2.11]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11
 [1.2.10]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10
 [1.2.9]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9

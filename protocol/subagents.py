@@ -260,7 +260,7 @@ class ContextEnvelope:
     """
 
     parent_session_id: str
-    task: str                              # Human-readable task description
+    task: str                              # Child execution prompt (never a UI label)
     references: tuple[ContextReference, ...] = ()
     attachments: tuple[str, ...] = ()      # Content block ids
     redactions: tuple[str, ...] = ("secret", "api_key", "authorization")

@@ -40,6 +40,11 @@ _TIMEOUT_VARIANTS = (
     "Request timed out waiting for synthesizer",
     "connection timeout after 30s",
     "TIMEOUT: executor stalled",
+    # 2026-09-23: 内部时钟文案不含 "timeout" 字样，曾漏映射成 MSG_DEFAULT，
+    # 造成「报错不固定」（用户报告）。三条时钟文案统一进 MSG_TIMEOUT。
+    "provider produced no first response event before the deadline",
+    "provider stopped producing stream events before the idle deadline",
+    "provider connect handshake exceeded the connect deadline",
 )
 
 _CANCEL_VARIANTS = (

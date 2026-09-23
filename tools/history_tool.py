@@ -117,7 +117,11 @@ def search_history(operation: str = "search", query: str = "", limit: int = 10) 
 
 history_tool = StructuredTool(
     name="history",
-    description="Search conversation history files. Supports search and around operations.",
+    description=(
+        "Search saved memory markdown only when the user explicitly asked to "
+        "recall a stored note. Conversation already in context — do not call "
+        "this speculatively. Prefer the memory tool."
+    ),
     func=search_history,
     args_schema=HistoryInput,
 )

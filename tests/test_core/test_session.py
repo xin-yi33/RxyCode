@@ -103,6 +103,40 @@ async def test_session_prompt_team_slash_runs_coordinator_not_agent(session_work
 
 
 @pytest.mark.asyncio
+async def test_approved_plan_implement_skips_expert_team(session_workspace, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-ap"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-ap").mkdir()
+    save_config({"agents": {"enabled": True, "team": "software_dev", "route_mode": "team"}})
+
+    class _Coord:
+        def __init__(self, *_a, **_k):
+            raise AssertionError("approved plan must not start expert team")
+
+        async def run_team(self, *_a, **_k):
+            raise AssertionError("run_team")
+
+    monkeypatch.setattr("core.session.Coordinator", _Coord)
+    ran: list[tuple[str, str]] = []
+
+    class _Tracking(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            ran.append((text.startswith("按已批准的计划开始实施"), mode))
+            return "building"
+
+    session = Session(
+        session_id="s-ap",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    text = "按已批准的计划开始实施，不要重新规划。\n\n# Todo\n实现 frontend 与 backend"
+    result = await session.prompt(_Tracking(), text, mode="build", run_id="run-ap")
+    assert result.answer == "building"
+    assert ran == [(True, "build")]
+
+
+@pytest.mark.asyncio
 async def test_session_prompt_disabled_keeps_split_prompt_on_solo_agent(
     session_workspace, monkeypatch
 ):
@@ -169,6 +203,133 @@ async def test_session_prompt_disabled_skips_router_and_coordinator(
     )
     assert result.answer == "hung-ok"
     assert ran == ["hang:forever"]
+
+
+@pytest.mark.asyncio
+async def test_session_nl_open_team_runs_coordinator_when_disabled(
+    session_workspace, monkeypatch
+):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-nl-team"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-nl-team").mkdir()
+    save_config({"agents": {"enabled": False, "team": "software_dev", "route_mode": "auto"}})
+    called: list[str] = []
+
+    class _Coord:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def run_team(self, team, user_input, **_k):
+            called.append(user_input)
+            return "team-nl-ok"
+
+    monkeypatch.setattr("core.session.Coordinator", _Coord)
+    session = Session(
+        session_id="s-nl-team",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    result = await session.prompt(
+        _FakeAgent("solo-should-not-run"),
+        "开专家团 实现登录前后端",
+        mode="build",
+        run_id="run-nl-team",
+    )
+    assert result.answer == "team-nl-ok"
+    assert called == ["实现登录前后端"]
+
+
+@pytest.mark.asyncio
+async def test_session_nl_explore_dispatches_explore(session_workspace, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-nl-ex"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-nl-ex").mkdir()
+    save_config({"agents": {"enabled": True, "route_mode": "auto"}})
+    seen: list[str] = []
+
+    async def _fake_explore(prompt: str) -> str:
+        seen.append(prompt)
+        return "explore-ok"
+
+    session = Session(
+        session_id="s-nl-ex",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    monkeypatch.setattr(session, "_run_explore", _fake_explore)
+    result = await session.prompt(
+        _FakeAgent("solo-should-not-run"),
+        "查找认证模块在哪个文件",
+        mode="build",
+        run_id="run-nl-ex",
+    )
+    assert result.answer == "explore-ok"
+    assert seen == ["查找认证模块在哪个文件"]
+
+
+@pytest.mark.asyncio
+async def test_session_open_notes_preview_stays_solo(session_workspace, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-open-notes"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-open-notes").mkdir()
+    save_config({"agents": {"enabled": True, "route_mode": "auto"}})
+    explore_calls: list[str] = []
+
+    async def _fake_explore(prompt: str) -> str:
+        explore_calls.append(prompt)
+        return "explore-should-not-run"
+
+    session = Session(
+        session_id="s-open-notes",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    monkeypatch.setattr(session, "_run_explore", _fake_explore)
+    agent = _FakeAgent("opened-notes")
+    result = await session.prompt(
+        agent,
+        "当前目录已经有 notes.md。请用系统默认程序打开 notes.md 给我预览。"
+        "成功后立刻最终回答，写明工具名和返回原文。不要等我关闭 Typora/记事本。"
+        "不要改文件内容",
+        mode="build",
+        run_id="run-open-notes",
+    )
+    assert result.answer == "opened-notes"
+    assert explore_calls == []
+
+
+@pytest.mark.asyncio
+async def test_session_opt_in_subagents_persists_and_unhides_task(
+    session_workspace, monkeypatch
+):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(session_workspace / "data-opt"))
+    from RxyCode.RxyCode1_1_0.config.settings import save_config
+
+    (session_workspace / "data-opt").mkdir()
+    save_config({"agents": {"enabled": False}})
+    ran: list[str] = []
+
+    class _Tracking(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            ran.append(text)
+            return "solo"
+
+    agent = _Tracking()
+    session = Session(
+        session_id="s-opt",
+        workspace_root=session_workspace,
+        emit=lambda _n: None,
+    )
+    first = await session.prompt(agent, "用子代理", mode="build", run_id="run-opt-1")
+    assert "打开子代理" in first.answer
+    assert session._session_subagents_opt_in is True
+    second = await session.prompt(agent, "修一下 foo.py", mode="build", run_id="run-opt-2")
+    assert second.answer == "solo"
+    assert ran == ["修一下 foo.py"]
+    assert getattr(agent, "_session_subagents_opt_in", False) is True
 
 
 @pytest.mark.asyncio
@@ -260,6 +421,124 @@ async def test_session_prompt_emits_error_on_exception(session_workspace):
         mode="build",
         run_id="run-2",
     )
+    assert result.status == "failed"
+    assert any(isinstance(item, ErrorNotification) for item in emitted)
+
+
+class _StreamedTui:
+    _streamed_answer_chars = 400
+
+    def resolve_active_recovery(self) -> None:
+        return None
+
+    def exhaust_active_recovery(self, detail: str) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_occupancy_ignores_cached_prompt_tokens(session_workspace):
+    token_stats.reset()
+    try:
+        emitted: list[BaseModel] = []
+        session = Session(
+            session_id="s-occ",
+            workspace_root=session_workspace,
+            emit=emitted.append,
+        )
+
+        class _OccAgent(_FakeAgent):
+            async def run(self, text: str, mode: str = "build") -> str:
+                token_stats.add_real_usage(208248, 1729, cache_read_tokens=205696)
+                token_stats._latest_prompt_tokens = 2_284_300
+                token_stats.update_context(23418, 1048576)
+                return "ok"
+
+        result = await session.prompt(
+            _OccAgent("ok"),
+            "hi",
+            mode="build",
+            run_id="run-occ",
+        )
+        usage = next(item for item in emitted if isinstance(item, TokenUsage))
+        assert result.status == "succeeded"
+        assert usage.context_used == 23418
+        assert result.context_used == 23418
+        assert result.input_tokens == 208248
+        assert usage.input_tokens == 208248
+        assert usage.input_tokens != usage.context_used
+    finally:
+        token_stats.reset()
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_skips_default_error_after_streamed_answer(session_workspace):
+    emitted: list[BaseModel] = []
+    session = Session(
+        session_id="s-stream",
+        workspace_root=session_workspace,
+        emit=emitted.append,
+    )
+    tui = _StreamedTui()
+
+    class _StreamAgent(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            tui._streamed_answer_chars = 400
+            return self._answer
+
+    result = await session.prompt(
+        _StreamAgent(
+            "[error: execution stopped after a side-effecting tool was attempted. Detail: boom]"
+        ),
+        "hi",
+        mode="build",
+        run_id="run-stream",
+        tui=tui,
+    )
+    assert result.status == "succeeded"
+    assert not any(isinstance(item, ErrorNotification) for item in emitted)
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_timeout_emits_event_error(session_workspace):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import FirstTokenTimeoutError
+    from RxyCode.RxyCode1_1_0.utils.user_facing_errors import MSG_TIMEOUT
+
+    class _TimeoutAgent(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            raise FirstTokenTimeoutError("provider produced no first response")
+
+    emitted: list[BaseModel] = []
+    session = Session(
+        session_id="s-timeout",
+        workspace_root=session_workspace,
+        emit=emitted.append,
+    )
+    result = await session.prompt(_TimeoutAgent(), "hi", mode="build", run_id="run-t")
+    assert result.status == "failed"
+    errors = [item for item in emitted if isinstance(item, ErrorNotification)]
+    assert errors
+    assert errors[0].message == MSG_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_429_emits_error_only_when_exhausted(session_workspace):
+    emitted: list[BaseModel] = []
+    session = Session(
+        session_id="s-429",
+        workspace_root=session_workspace,
+        emit=emitted.append,
+    )
+
+    class _RateAgent(_FakeAgent):
+        async def run(self, text: str, mode: str = "build") -> str:
+            resp = __import__("httpx").Response(
+                429, request=__import__("httpx").Request("POST", "http://x")
+            )
+            raise __import__("httpx").HTTPStatusError(
+                "rate", request=resp.request, response=resp
+            )
+
+    result = await session.prompt(_RateAgent(), "hi", mode="build", run_id="run-429")
     assert result.status == "failed"
     assert any(isinstance(item, ErrorNotification) for item in emitted)
 

@@ -104,6 +104,8 @@ test-results-*.xml
 TEST_MILESTONE.md
 # Eval-generated test residue (agent-generated tests that never landed in source)
 tests/test_llm_stream_resilience.py
+tests/e2e/update01_durability/.artifacts/
+tests/e2e/update01_snapshots/.artifacts/
 
 # --- 压力测试环境（不入库；tests/stress_test/ 为测试代码，artifacts/stress-* 为运行产物）---
 tests/stress_test/
@@ -153,6 +155,7 @@ tmp-*.txt
 
 # --- Eval run artifacts (baselines in evals/baselines/ stay tracked) ---
 evals/results/
+evals/public/official/gaia/files/
 # One-off per-model matrix outputs and dated comparison reports (keep latest-*.json)
 evals/baselines/20*-agent-*.json
 evals/baselines/models-comparison-*.md

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, hook_config
 from langchain_core.messages import AIMessage, ToolMessage
@@ -15,8 +17,58 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from ..core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+    except Exception:
+        try:
+            from core.runtime_probe import probe as _probe
+        except Exception:
+            def _probe(event, **fields):
+                return None
 
-_DEFAULT_MAX_TOOL_ROUNDS = 10
+_logger = logging.getLogger(__name__)
+
+#: Content-block types that carry model chain-of-thought (mirrors
+#: agent_v2._THINKING_BLOCK_TYPES; duplicated locally to avoid a circular
+#: import — agent_v2 already imports execution.tool_orchestrator).
+_THINKING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "reasoning_content"})
+
+
+def _extract_thinking_from_messages(messages: list) -> list[str]:
+    """Collect model chain-of-thought from an ainvoke result message list.
+
+    2026-09-23: the graph/team executor consumes ``agent.ainvoke`` whose
+    result messages carry the model's reasoning (DeepSeek/Qwen/Kimi
+    ``additional_kwargs.reasoning_content``; Anthropic-style thinking content
+    blocks), but only ``content`` was read — the chain silently vanished from
+    the TUI (用户报告：thought 不是没有，而是无法导出).  Pure helper, no I/O.
+    """
+    blocks: list[str] = []
+    for message in messages or []:
+        if not isinstance(message, AIMessage):
+            continue
+        extra = getattr(message, "additional_kwargs", None) or {}
+        reasoning = extra.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            blocks.append(reasoning)
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if str(block.get("type") or "") not in _THINKING_BLOCK_TYPES:
+                    continue
+                text = block.get("thinking") or block.get("text") or ""
+                if isinstance(text, str) and text.strip():
+                    blocks.append(text)
+    return blocks
+
+
+_DEFAULT_MAX_TOOL_ROUNDS = 200
 
 
 def _configured_max_tool_rounds(config: dict) -> int:
@@ -166,6 +218,28 @@ class Executor:
                 {"recursion_limit": _internal_recursion_limit(max_tool_rounds)},
             )
             answer = result["messages"][-1].content
+            # 2026-09-23: export chain-of-thought dropped at this non-streaming
+            # ainvoke boundary — graph/team turns showed zero Thought rows even
+            # though the model reasoned (用户报告：thought 无法导出).  Export is
+            # observational only; it must never fail or delay the task.
+            if self._event_tui is not None:
+                try:
+                    thinking_blocks = _extract_thinking_from_messages(
+                        result.get("messages") or []
+                    )
+                    write_reasoning = getattr(
+                        self._event_tui, "write_reasoning", None
+                    )
+                    if callable(write_reasoning):
+                        for block in thinking_blocks:
+                            write_reasoning(block)
+                    _probe(  # PROBE-20260923: thought 导出验证——blocks>0 而界面无 Thought → 前端/传输问题
+                        "executor.thinking.exported",
+                        blocks=len(thinking_blocks),
+                        total_len=sum(len(b) for b in thinking_blocks),
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    _logger.warning("thinking export failed (ignored): %s", exc)
         finally:
             evidence = self._tools.end_evidence_capture(token)
             if event_token is not None:

@@ -4,9 +4,13 @@
  */
 
 import { useCallback, useRef } from "react";
+import { appendFileSync } from "node:fs";
 import type { Command } from "../commands.ts";
 import type { ChatMessage } from "../types.ts";
+import { normalizeLoadedMessages } from "./sessionEventsToMessages.ts";
 import { CommandPalette } from "../CommandPalette.tsx";
+import { fetchModels } from "./api.ts";
+import { planAfterModelSwitch } from "./effortPicker.ts";
 import {
   useDialog,
   DialogSession,
@@ -39,24 +43,7 @@ export type SettingsDialogCallbacks = {
 };
 
 function mapLoadedMessages(raw: unknown[]): ChatMessage[] {
-  return raw.map((m, i) => {
-    const row = m as { role?: string; content?: string; text?: string };
-    const roleRaw = row.role || "assistant";
-    const role: ChatMessage["role"] =
-      roleRaw === "user" ||
-      roleRaw === "assistant" ||
-      roleRaw === "system" ||
-      roleRaw === "thinking" ||
-      roleRaw === "tool"
-        ? roleRaw
-        : "system";
-    return {
-      id: `loaded-${i}-${Date.now()}`,
-      role,
-      content: String(row.content ?? row.text ?? ""),
-      timestamp: Date.now(),
-    };
-  });
+  return normalizeLoadedMessages(raw);
 }
 
 export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
@@ -105,6 +92,31 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
     );
   }, [dialog, close, openPermission, openLanguage]);
 
+  const openEffort = useCallback(() => {
+    dialog.replace(
+      <DialogEffort
+        onClose={close}
+        onChanged={(_effort, message) => {
+          shortMsg(message);
+          cbRef.current.fetchStatus();
+        }}
+      />,
+    );
+  }, [dialog, close, shortMsg]);
+
+  const continueAfterModelChange = useCallback(
+    (effortOptions?: string[]) => {
+      if (planAfterModelSwitch(effortOptions) === "effort") {
+        openEffort();
+        return;
+      }
+      close();
+    },
+    [openEffort, close],
+  );
+
+  const openModelRef = useRef<() => void>(() => {});
+
   const openAddModel = useCallback(() => {
     dialog.replace(
       <DialogAddModel
@@ -113,6 +125,7 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
           shortMsg(message);
           cbRef.current.fetchStatus();
           void cbRef.current.onModelsChanged?.();
+          openModelRef.current();
         }}
       />,
     );
@@ -123,29 +136,30 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
       <DialogModel
         activeModel={cbRef.current.activeModel}
         onClose={close}
-        onSwitched={(modelId, message) => {
+        onSwitched={(modelId, message, effortOptions) => {
           if (modelId === "__add__") {
             openAddModel();
             return;
           }
           shortMsg(message);
           cbRef.current.fetchStatus();
+          if (effortOptions === undefined) {
+            void (async () => {
+              const result = await fetchModels();
+              const active =
+                result.models.find((item) => item.id === modelId) ??
+                result.models.find((item) => item.id === result.active) ??
+                result.models[0];
+              continueAfterModelChange(active?.effort_options);
+            })();
+            return;
+          }
+          continueAfterModelChange(effortOptions);
         }}
       />,
     );
-  }, [dialog, close, openAddModel, shortMsg]);
-
-  const openEffort = useCallback(() => {
-    dialog.replace(
-      <DialogEffort
-        onClose={close}
-        onChanged={(effort, message) => {
-          shortMsg(message);
-          cbRef.current.fetchStatus();
-        }}
-      />,
-    );
-  }, [dialog, close, shortMsg]);
+  }, [dialog, close, openAddModel, shortMsg, continueAfterModelChange]);
+  openModelRef.current = openModel;
 
   const openSession = useCallback(() => {
     dialog.replace(
@@ -307,6 +321,7 @@ export function useSettingsDialogs(cb: SettingsDialogCallbacks) {
       openLanguage,
       openSession,
       openModel,
+      openEffort,
       openAddModel,
       openMemory,
       openSkills,

@@ -56,6 +56,19 @@ except ImportError:
 
 _logger = logging.getLogger(__name__)
 
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from ..core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+    except Exception:
+        try:
+            from core.runtime_probe import probe as _probe
+        except Exception:
+            def _probe(event: str, **fields: Any) -> None:
+                return None
+
 
 def configure_agent_workspace(
     agent: Any,
@@ -76,7 +89,16 @@ def configure_agent_workspace(
     resolved_session_id = str(session_id)
     resolved_workspace = Path(workspace_root).resolve()
     resolved_workspace.mkdir(parents=True, exist_ok=True)
-    agent._session_id = resolved_session_id
+    # Bind via set_session() so the MemoryManager is rebuilt for this session
+    # (a bare ``agent._session_id = ...`` used to leave memory on the shared
+    # "latest" bucket -> restart amnesia + cross-window leaks, 2026-09-23).
+    # No-op when bootstrap_agent already constructed with this session id.
+    # StubAgent (tests) has no set_session -> fall back to the attribute.
+    set_session = getattr(agent, "set_session", None)
+    if callable(set_session):
+        set_session(resolved_session_id)
+    else:
+        agent._session_id = resolved_session_id
     agent._workspace_root = resolved_workspace
     try:
         from ..core.session_runtime import (
@@ -93,7 +115,10 @@ def configure_agent_workspace(
 
     token = bind_session(resolved_session_id)
     try:
-        set_working_directory(resolved_workspace)
+        try:
+            set_working_directory(resolved_workspace)
+        except OSError:
+            set_working_directory(resolved_workspace, persist=False)
     finally:
         reset_session_binding(token)
     return agent
@@ -213,6 +238,27 @@ class _PipeApproval(ApprovalBroker):
             return ApprovalDecision.REJECTED
 
 
+def _question_timeout_from_config() -> float | None:
+    """``safety.question_timeout`` in seconds; missing/<=0 means unlimited.
+
+    The OpenTUI stdio path never used to read this setting at all, so a
+    user-configured "no limit" only worked on the Ink/api_server surface.
+    """
+    try:
+        try:
+            from RxyCode.RxyCode1_1_0.config.settings import load_config
+        except ImportError:
+            from config.settings import load_config
+        cfg = load_config() or {}
+        value = (cfg.get("safety") or {}).get("question_timeout")
+        if value is None:
+            return None
+        value = float(value)
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
 class AgentWorker:
     def __init__(self) -> None:
         install_tui_context_hook()
@@ -225,7 +271,9 @@ class AgentWorker:
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 1
         self._approval = _PipeApproval(self._send_parent_request)
-        self._question = PipeQuestionBroker(self._send_parent_request, timeout=120.0)
+        self._question = PipeQuestionBroker(
+            self._send_parent_request, timeout=_question_timeout_from_config()
+        )
         self._thinking_expanded = False
         self._active_tui: Any | None = None
         self._steer_queue: list[str] = []
@@ -263,6 +311,7 @@ class AgentWorker:
             == Path(workspace_root).resolve()
         ):
             existing.emit = emit
+            existing.drain_steers = self._take_steers
             return existing
         session = Session(
             session_id=session_id,
@@ -270,7 +319,13 @@ class AgentWorker:
             emit=emit,
         )
         self._core_session = session
+        session.drain_steers = self._take_steers
         return session
+
+    def _take_steers(self) -> list[str]:
+        taken = [str(item).strip() for item in self._steer_queue if str(item).strip()]
+        self._steer_queue.clear()
+        return taken
 
     def _mark_answered(self, request_id: int) -> None:
         self._answered_request_ids.add(request_id)
@@ -371,16 +426,6 @@ class AgentWorker:
                     "jsonrpc": "2.0",
                     "method": "event/heartbeat",
                     "params": {"session_id": session_id},
-                }
-            )
-            self._schedule_write(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "event/progress",
-                    "params": {
-                        "session_id": session_id,
-                        "text": "正在等待模型响应…",
-                    },
                 }
             )
 
@@ -497,17 +542,15 @@ class AgentWorker:
                 stub=stub,
                 workspace_root=self._workspace_root,
                 model_name=model_id,
+                session_id=self._session_id,
             )
             self._agent = configure_agent_workspace(
                 self._agent,
                 session_id=self._session_id,
                 workspace_root=self._workspace_root,
             )
-            # Warm chat+agent prefixes on open, never on the first user turn.
-            # Scheduling from run() races the greeting LLM call (90s hang).
-            schedule = getattr(self._agent, "_schedule_prewarm", None)
-            if callable(schedule):
-                schedule()
+            # Do not LLM-prewarm on open. session/new used to fire a no-tools
+            # warm that raced the first user turn on the same provider slot.
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -518,6 +561,55 @@ class AgentWorker:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {"ok": True, "workspace_root": str(self._workspace_root)},
+            }
+        )
+        self._arm_idle_prefix_warm()
+
+    def _arm_idle_prefix_warm(self) -> None:
+        """After bootstrap RPC returns: TCP preconnect + thinking-on prefix.
+
+        Must not live inside the bootstrap body before the reply — that used
+        to race the first prompt. Prompt still cancels an in-flight prewarm.
+        """
+        agent = self._agent
+        if agent is None:
+            return
+        preconnect = getattr(agent, "_preconnect_provider", None)
+        if callable(preconnect):
+            try:
+                asyncio.get_running_loop().create_task(preconnect())
+            except Exception:
+                pass
+        schedule = getattr(agent, "_schedule_prewarm", None)
+        if callable(schedule):
+            schedule()
+
+    async def _handle_prefix_warm(self, params: dict[str, Any], request_id: int) -> None:
+        """Join thinking-on prefix prewarm so session/warm is not ctor-only."""
+        if self._agent is None:
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32002, "message": "bootstrap first"},
+                }
+            )
+            return
+        self._arm_idle_prefix_warm()
+        await_fn = getattr(self._agent, "await_prefix_warm", None)
+        timeout = float(params.get("timeout_seconds") or 45.0)
+        prefix_warmed = True
+        if callable(await_fn):
+            try:
+                prefix_warmed = bool(await await_fn(timeout=timeout))
+            except Exception as exc:
+                _logger.warning("prefix_warm failed: %s", exc)
+                prefix_warmed = False
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"ok": True, "prefix_warmed": prefix_warmed},
             }
         )
 
@@ -541,6 +633,12 @@ class AgentWorker:
             # matches TUI callback order for ALL notification kinds (not just
             # tool begin/end).
             tui._flush_pending_stream()
+            if type(notification).__name__ in {
+                "ReasoningSnapshot",
+                "MessageDelta",
+                "ToolBegin",
+            }:
+                self._prompt_model_active = True
             self._schedule_write(model_to_notification(notification))
 
         tui = ProtocolTui(session_id, emit, run_id=run_id)
@@ -560,6 +658,8 @@ class AgentWorker:
         # buffered stream content before plain emits.
         def make_stream_sink(sid: str) -> Callable[[str, str], None]:
             def sink(kind: str, text: str) -> None:
+                if kind in ("token", "reasoning"):
+                    self._prompt_model_active = True
                 if kind == "token":
                     message = model_to_notification(
                         MessageDelta(session_id=sid, text=str(text))
@@ -580,7 +680,11 @@ class AgentWorker:
 
         coalescer: StreamCoalescer | None = None
         heartbeat_task: asyncio.Task[Any] | None = None
+        self._prompt_model_active = False
         try:
+            cancel_prewarm = getattr(self._agent, "_cancel_background_prewarm", None)
+            if callable(cancel_prewarm):
+                await cancel_prewarm()
             heartbeat_task = asyncio.create_task(self._prompt_heartbeat(session_id))
             if stream_coalesce_enabled():
                 coalescer = StreamCoalescer(make_stream_sink(session_id))
@@ -614,9 +718,22 @@ class AgentWorker:
                 if not accepts_permission_mode:
                     prompt_kwargs.pop("permission_mode", None)
                 result = await session.prompt(self._agent, text, **prompt_kwargs)
+                # turn 结束后才到达的 steer（agent 主循环没来得及 drain）：
+                # 合并为一条消息开一个兜底新回合，避免每条各产出一个
+                # 「最终结果」（多 final_answer 业务 bug，2026-09-23）。
                 while self._steer_queue:
-                    extra = self._steer_queue.pop(0)
-                    result = await session.prompt(self._agent, extra, **prompt_kwargs)
+                    extras: list[str] = []
+                    while self._steer_queue:
+                        extra = str(self._steer_queue.pop(0)).strip()
+                        if extra:
+                            extras.append(extra)
+                    if not extras:
+                        break
+                    combined = "\n\n".join(extras)
+                    result = await session.prompt(self._agent, combined, **prompt_kwargs)
+                schedule = getattr(self._agent, "_schedule_prewarm", None)
+                if callable(schedule):
+                    schedule()
             except asyncio.CancelledError:
                 # Interrupt RPC cancelled this prompt task (C1): report the
                 # cancellation to the host so the pending request resolves
@@ -690,6 +807,7 @@ class AgentWorker:
                         "cache_write_tokens": getattr(result, "cache_write_tokens", None),
                         "cache_hit_rate": getattr(result, "cache_hit_rate", None),
                         "reporting_status": getattr(result, "reporting_status", "not_reported"),
+                        "context_used": getattr(result, "context_used", None),
                     },
                 }
             )
@@ -800,6 +918,13 @@ class AgentWorker:
             )
             return
         self._steer_queue.append(text)
+        # PROBE-20260923: steer queued — queue"立刻发送"延迟定位
+        _probe(
+            "worker.steer.queued",
+            session_id=self._session_id,
+            text_len=len(text),
+            pending=len(self._steer_queue),
+        )
         self._schedule_write(
             model_to_notification(
                 ProgressUpdate(session_id=self._session_id, text=f"steer: {text}")
@@ -1211,6 +1336,8 @@ class AgentWorker:
         method = str(message.get("method", ""))
         if method == "bootstrap":
             await self._handle_bootstrap(params, int(request_id))
+        elif method == "prefix_warm":
+            await self._handle_prefix_warm(params, int(request_id))
         elif method == "model/switch":
             await self._handle_model_switch(params, int(request_id))
         elif method == "prompt":
@@ -1387,6 +1514,13 @@ class AgentWorker:
             # Futures (e.g. an approval awaiting a parent response) instead of
             # leaving them pending forever.
             self._fail_all_parent_pending(RuntimeError("worker shutdown"))
+            agent = getattr(self, "_agent", None)
+            close_mcp = getattr(agent, "close_mcp", None) if agent is not None else None
+            if callable(close_mcp):
+                try:
+                    close_mcp()
+                except Exception:
+                    _logger.warning("worker close_mcp failed", exc_info=True)
 
 
 def _configure_event_loop() -> None:
@@ -1409,6 +1543,13 @@ def _configure_event_loop() -> None:
 
 
 def main() -> None:
+    import warnings
+
+    os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
+    warnings.filterwarnings(
+        "ignore",
+        message=r"langchain-openai injected a custom httpx transport.*",
+    )
     logging.basicConfig(
         level=logging.INFO,
         stream=sys.stderr,

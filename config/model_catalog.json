@@ -36,6 +36,70 @@
     },
     {
       "provider_id": "deepseek",
+      "model_id": "deepseek-flash",
+      "model_context_window": 1048576,
+      "model_max_output_tokens": 384000,
+      "source": "phase-a:deepseek",
+      "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
+      "as_of": "2026-08-14",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.02,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null,
+          "cached_alt": "prompt_cache_hit_tokens"
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "deepseek",
+      "model_id": "deepseek-v4.1-flash",
+      "model_context_window": 1048576,
+      "model_max_output_tokens": 384000,
+      "source": "phase-a:deepseek",
+      "source_url": "https://api-docs.deepseek.com/guides/thinking_mode",
+      "as_of": "2026-08-14",
+      "cache_contract": {
+        "cache_mode": "auto",
+        "cache_hit_discount": 0.02,
+        "cache_ttl_hours": 24,
+        "min_cache_tokens": null,
+        "breakpoints_max": 0,
+        "breakpoint_lookback": 0,
+        "usage_fields": {
+          "cached": "prompt_tokens_details.cached_tokens",
+          "cache_read": null,
+          "cache_creation": null,
+          "cost_ticks": null,
+          "reasoning": null,
+          "cached_alt": "prompt_cache_hit_tokens"
+        },
+        "reasoning_contract": "mandatory_echo",
+        "thinking_param": {
+          "type": "object",
+          "sample": "thinking: {type: enabled}"
+        },
+        "temperature_override": null,
+        "prompt_cache_key_required": false
+      }
+    },
+    {
+      "provider_id": "deepseek",
       "model_id": "deepseek-v4-pro",
       "model_context_window": 1048576,
       "model_max_output_tokens": 384000,

@@ -60,6 +60,14 @@ _EXPLICIT_WEB_EN = re.compile(
 _EXPLICIT_WEB_ZH_COMMAND = re.compile(
     r"^\s*(?:(?:请|帮我|麻烦)(?:你)?\s*)?(?:搜一下|搜索|查一下|查找|浏览)"
 )
+# Leading 搜索/查找 is not enough: "搜索一下之前制作过的小游戏然后删掉"
+# is a local filesystem job. A qualified 联网/网上/网页 request still wins.
+_LOCAL_INSPECT_DELETE_ZH = (
+    "删掉", "删除", "清掉", "清理掉",
+    "制作过", "写过", "自己写", "之前做", "以前做", "做过的",
+    "本地文件", "本地目录", "电脑上", "磁盘上",
+    "哪个文件", "哪个目录", "工作区里", "文件夹里",
+)
 
 # These subjects can change without the wording containing "latest".  A
 # deterministic policy is safer than relying on a model to remember when its
@@ -106,6 +114,13 @@ _NON_WEB_CURRENT_ZH = (
     # "检查当前范围" leaves the bare word "当前" behind and is routed into
     # the synchronous web-research path before local tools can run.
     "当前范围", "当前状态", "当前环境", "当前任务", "当前窗口", "当前输出",
+    # 「当前工作目录」不是「当前目录」的子串。不剥掉的话，裸词「当前」
+    # 会把写文件判成联网核实。日志：e14 的 requires_web 为 true。
+    "当前工作目录",
+    # Discourse "现在" ("now, first write…") is not a freshness request.
+    # Bare "现在" in _FRESH_ZH used to prefetch websearch before the first Thought.
+    "现在先", "现在就", "现在马上", "现在立刻",
+    "现在帮我", "现在给我", "现在写", "现在做",
 )
 _NON_WEB_CURRENT_EN = re.compile(
     r"\b(?:current|local)\s+(?:time|date|workspace|worktree|repository|repo|"
@@ -211,12 +226,18 @@ def get_research_policy(query: str) -> ResearchPolicy:
         _NEGATED_WEB_TOOL_CONSTRAINT.search(text)
     )
     explicit_no_web = bool(_NEGATED_WEB_TOOL_CONSTRAINT.search(text))
+    explicit_web_qualified = any(term in text for term in _EXPLICIT_WEB_ZH) or bool(
+        _EXPLICIT_WEB_EN.search(text)
+    )
+    local_file_task = any(term in text for term in _LOCAL_INSPECT_DELETE_ZH)
     explicit_web_request = (
         not explicit_no_web
         and (
-            any(term in text for term in _EXPLICIT_WEB_ZH)
-            or bool(_EXPLICIT_WEB_ZH_COMMAND.search(text))
-            or bool(_EXPLICIT_WEB_EN.search(text))
+            explicit_web_qualified
+            or (
+                bool(_EXPLICIT_WEB_ZH_COMMAND.search(text))
+                and not local_file_task
+            )
         )
     )
     # Explicit websearch/webfetch instructions must win over generic local
@@ -252,12 +273,13 @@ def get_research_policy(query: str) -> ResearchPolicy:
         or bool(_VOLATILE_EN.search(freshness_text))
         or bool(_CURRENCY_PAIR_EN.search(text))
     )
-    return ResearchPolicy(
+    policy = ResearchPolicy(
         requires_web=requires_web,
         cache_read_allowed=not requires_web,
         cache_write_allowed=not requires_web,
         citations_required=requires_web,
     )
+    return policy
 
 
 def research_failure_message(detail: str = "") -> str:

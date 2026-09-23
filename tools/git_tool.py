@@ -113,7 +113,7 @@ async def run_git_async(
     if isinstance(command, str):
         return command
     result = await shell_executor.execute_argv_async(
-        command, workdir=repo_path, timeout=60
+        command, workdir=repo_path, timeout=60  # git 快照短命令，不是已废弃的 bash 60s 默认
     )
     return _format_git_result(
         result["stdout"], result["stderr"], result["success"]

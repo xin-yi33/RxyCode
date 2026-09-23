@@ -107,7 +107,7 @@ def test_agent_turn_tools_use_local_build_subset_for_creation_tasks():
             "download_mcp", "download_skill", "edit", "file_download", "format",
             "git", "glob", "grep", "history", "ls", "memory", "open_file",
             "patch", "question", "read", "skill", "task", "view", "webfetch",
-            "websearch", "write",
+            "websearch", "write", "final_answer",
         )
     ])
 
@@ -119,11 +119,65 @@ def test_agent_turn_tools_use_local_build_subset_for_creation_tasks():
     )
 
     assert {tool.name for tool in selected} == {
-        "bash", "datetime", "edit", "format", "git", "glob", "grep", "ls",
+        "bash", "datetime", "edit", "final_answer", "format", "git", "glob", "grep", "ls",
         "open_file", "patch", "read", "skill", "write",
     }
     assert "websearch" not in {tool.name for tool in selected}
     assert "diagnostics" not in {tool.name for tool in selected}
+
+
+def test_agent_turn_tools_offer_task_when_subagents_enabled():
+    """Grok Build keeps spawn_subagent in the schema whenever subagents are on."""
+    agent = _new_agent(DEFAULT_CAPABILITIES, [
+        SimpleNamespace(name=name)
+        for name in ("bash", "edit", "read", "task", "write")
+    ])
+    agent._subagents_enabled = True
+    selected = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "Create a Java Swing number bomb game in the current workspace.",
+        requires_web=False,
+        allowed_tool_names=None,
+    )
+    assert "task" in {tool.name for tool in selected}
+
+
+def test_agent_turn_tools_offer_task_after_session_opt_in():
+    agent = _new_agent(DEFAULT_CAPABILITIES, [
+        SimpleNamespace(name=name)
+        for name in ("bash", "edit", "read", "task", "write")
+    ])
+    agent._session_subagents_opt_in = True
+    ordinary = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "fix the typo in readme",
+        requires_web=False,
+        allowed_tool_names=None,
+    )
+    assert "task" in {tool.name for tool in ordinary}
+
+
+def test_agent_turn_tools_do_not_offer_history_for_ordinary_or_history_worded_tasks():
+    """history is an internal memory-file search, not a Codex/Grok-style tool."""
+    agent = _new_agent(DEFAULT_CAPABILITIES, [
+        SimpleNamespace(name=name)
+        for name in ("bash", "edit", "history", "memory", "read", "write")
+    ])
+    ordinary = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "Create a page about world history.",
+        requires_web=False,
+        allowed_tool_names=None,
+    )
+    remember = agent._select_turn_tools(
+        agent._get_core_tools(),
+        "Remember my name is Ada.",
+        requires_web=False,
+        allowed_tool_names=None,
+    )
+    assert "history" not in {tool.name for tool in ordinary}
+    assert "history" not in {tool.name for tool in remember}
+    assert "memory" in {tool.name for tool in remember}
 
 
 def test_agent_turn_tools_keep_research_tools_for_web_tasks():

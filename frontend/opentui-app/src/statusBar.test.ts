@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { formatStatusBarText } from "./statusBar.ts";
+import { stringWidth } from "./layout.ts";
 
 describe("status bar formatting", () => {
   test("includes online, context, cache, mode, thinking hints", () => {
@@ -54,5 +55,21 @@ describe("status bar formatting", () => {
     });
     expect(text).toContain("[architect]");
     expect(text).toContain("187k/500k");
+  });
+
+  test("fits CJK segments to display width so the bar stays one row", () => {
+    const text = formatStatusBarText({
+      connected: true,
+      contextUsedK: 41.1,
+      contextMaxK: 1049,
+      cacheSize: "907.0k",
+      cacheRate: "96.2%",
+      mode: "build",
+      thinkingExpanded: false,
+      width: 80,
+      modeColor: "#FF69B4",
+    });
+    expect(stringWidth(text)).toBeLessThanOrEqual(78);
+    expect(text.includes("\n")).toBe(false);
   });
 });

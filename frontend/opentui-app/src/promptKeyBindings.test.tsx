@@ -27,6 +27,7 @@ describe("CHAT_PROMPT_KEY_BINDINGS", () => {
       shift: true,
       action: "newline",
     });
+    expect(CHAT_PROMPT_KEY_BINDINGS).toContainEqual({ name: "linefeed", action: "newline" });
   });
 
   test("Enter submits /model instead of inserting newline", async () => {

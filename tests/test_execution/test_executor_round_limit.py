@@ -159,8 +159,8 @@ async def test_executor_wires_config_to_agent_local_limit(monkeypatch):
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
-        ({}, 10),
-        ({"execution": {}}, 10),
+        ({}, 200),
+        ({"execution": {}}, 200),
         ({"execution": {"max_tool_rounds": 1}}, 1),
         ({"execution": {"max_tool_rounds": "4"}}, 4),
     ],

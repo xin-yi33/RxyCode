@@ -569,6 +569,8 @@ async function main(argv: string[]): Promise<void> {
   // the runtime uses a *different* interpreter, so install the deps into the
   // staged runtime itself (idempotent, network available in CI).
   const reqPath = join(repo, 'requirements.txt')
+  // 废弃代码（2026-09-22）：打包时执行 `python -m playwright install chromium`。
+  // 那会把 chrome-headless-shell 塞进安装包。只 pip install playwright 包。
   if (existsSync(reqPath)) {
     const deps = spawnSync(
       pythonExe,

@@ -237,7 +237,7 @@ class RoutingDecision(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mode: Literal["solo", "team", "team_multi"]
+    mode: Literal["solo", "team", "team_multi", "explore"]
     decided_by: Literal["user", "heuristic", "llm", "default"]
     reason: str
     tokens_used: int = 0

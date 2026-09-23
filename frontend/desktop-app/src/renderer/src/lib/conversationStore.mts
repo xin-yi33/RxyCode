@@ -16,6 +16,21 @@ import type {
   ToolEnd
 } from '@rxycode/protocol-client'
 
+function toolWaitLabel(name: string, elapsedSec?: number): string {
+  const key = String(name || 'tool').trim() || 'tool'
+  const lowered = key.toLowerCase()
+  const label =
+    lowered === 'bash' || lowered === 'shell'
+      ? '等待终端返回…'
+      : lowered === 'vision'
+        ? '等待视觉识别返回…'
+        : `等待工具 ${key} 返回…`
+  if (elapsedSec != null && elapsedSec >= 1) {
+    return `${label.replace(/…$/, '')}（${elapsedSec}s）…`
+  }
+  return label
+}
+
 export type MessageRole = 'user' | 'assistant'
 export type MessageStatus = 'streaming' | 'complete' | 'error'
 export type ToolCallStatus = 'running' | 'ok' | 'error' | 'recovering'
@@ -1554,7 +1569,14 @@ export function applyProtocolNotification(
     }
     case 'event/tool_begin': {
       const tool = params as ToolBegin
-      return applyToolBegin(state, tool.session_id, tool)
+      const next = applyToolBegin(state, tool.session_id, tool)
+      return {
+        ...next,
+        progressBySession: {
+          ...next.progressBySession,
+          [tool.session_id]: toolWaitLabel(tool.tool_name)
+        }
+      }
     }
     case 'event/tool_end': {
       const tool = params as ToolEnd
@@ -1583,9 +1605,13 @@ export function applyProtocolNotification(
     }
     case 'event/progress': {
       const progress = params as { session_id: string; text: string }
+      const text = String(progress.text ?? '').trim()
+      if (!text || /^mode=/.test(text)) return state
+      if (/正在等待模型响应|Waiting for model response/i.test(text)) return state
+      const shown = /正在连接模型|等待模型首包/.test(text) ? '等待模型返回…' : text
       return {
         ...state,
-        progressBySession: { ...state.progressBySession, [progress.session_id]: progress.text }
+        progressBySession: { ...state.progressBySession, [progress.session_id]: shown }
       }
     }
     case 'event/team': {
@@ -1599,14 +1625,7 @@ export function applyProtocolNotification(
       }
     }
     case 'event/agent_routed': {
-      const routed = params as { session_id: string; routing_reason?: string; payload?: { mode?: string } }
-      const mode = String(routed.payload?.mode ?? '')
-      const reason = String(routed.routing_reason ?? '')
-      const label = [mode && `mode=${mode}`, reason].filter(Boolean).join(' ')
-      return {
-        ...state,
-        progressBySession: { ...state.progressBySession, [routed.session_id]: label || 'routed' }
-      }
+      return state
     }
     case 'event/task_started': {
       const task = params as { session_id: string }

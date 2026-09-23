@@ -1,4 +1,12 @@
-﻿"""Automatic memory extraction from conversations."""
+﻿"""Automatic memory extraction from conversations.
+
+废弃标注（2026-09-23）：生产链路无任何调用者（grep 全仓库仅测试与
+``memory/__init__`` 的 re-export 引用）。事实抽取的职责已由
+``user_memory`` + ``ExperienceVectorMemory``（manager.py store_execution）
+承担。保留原因：tests/test_memory/test_auto_memory.py 与
+tests/test_core/test_auto_memory_llm.py 仍在守卫其行为；删除需同步移除
+``memory/__init__.py`` 的导出与这两个测试文件。
+"""
 
 import re
 import json

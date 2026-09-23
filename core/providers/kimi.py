@@ -43,11 +43,16 @@ _KIMI_USAGE = UsageFieldMap(
     # §7.3 问 4：官方 OpenAPI 用顶层 cached_tokens（不嵌套）
     cache_read_flat=("cached_tokens",),
     cache_read_nested=(),
-    # §7.3 问 4/5：缓存写入单价官方未找到；reasoning 在 message.reasoning_content，
-    # 非 usage 嵌套字段——显式清空 A12 承载的全局默认嵌套路径，避免误导
+    # §7.3 问 4/5：缓存写入单价官方未找到；reasoning **token 计数**官方未找到
+    # → 嵌套计数路径 reasoning_nested 显式清空，避免误导
     cache_write_nested=(),
     reasoning_nested=(),
-    reasoning=(),  # reasoning 在 message.reasoning_content，非 usage 嵌套字段
+    # 2026-09-23 修复：reasoning 是**内容**字段映射（delta/message 上的
+    # reasoning_content，见 UsageFieldMap.reasoning 注释与本文件模块 docstring
+    # §7.3「reasoning 内容在 message/delta 层」），不是 usage 计数路径。
+    # 此前误置 () → BaseProvider.extract_reasoning 字段循环为空 → 流式轮次
+    # 思维链全部丢失（探针：tui.reasoning.emit 缺失 + final thinking_len=0）。
+    reasoning=("reasoning_content",),
 )
 
 # §7.3 问 2：定价页精确 context（非营销「1M / 256k」近似）

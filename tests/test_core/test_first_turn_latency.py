@@ -73,13 +73,12 @@ def _run_agent() -> AgentV2:
     return agent
 
 
-def test_fast_reply_disables_extended_thinking():
-    """FX7: thinking is disabled ONLY on the ChatPrefix path (_fast_reply);
-    the AgentPrefix path (_fast_reply_with_tools) must never set the flag."""
-    fast_reply_src = inspect.getsource(AgentV2._fast_reply)
-    assert "_thinking_disabled_this_turn" in fast_reply_src
+def test_fast_reply_does_not_force_thinking_off():
+    """First-round tool thinking stays on unless this is approved-plan implement."""
     tools_src = inspect.getsource(AgentV2._fast_reply_with_tools)
-    assert "_thinking_disabled_this_turn = True" not in tools_src
+    assert "_thinking_disabled_this_turn = False" in tools_src
+    live_gate = tools_src.split("# 废弃代码")[0]
+    assert 'model_config.get("effort") == "fast"' not in live_gate
 
 
 def test_chengdu_itinerary_declines_tools():
@@ -184,15 +183,33 @@ def test_run_does_not_schedule_competing_prewarm():
     assert "_schedule_prewarm" not in src
 
 
-def test_worker_bootstrap_schedules_prewarm_on_open():
+def test_worker_bootstrap_does_not_prewarm_on_open():
     from appserver.agent_worker import AgentWorker
 
     src = inspect.getsource(AgentWorker._handle_bootstrap)
+    assert "_schedule_prewarm" not in src
+
+
+def test_worker_schedules_prewarm_after_first_prompt():
+    from appserver.agent_worker import AgentWorker
+
+    src = inspect.getsource(AgentWorker._handle_prompt)
+    assert "_cancel_background_prewarm" in src
     assert "_schedule_prewarm" in src
 
 
+def test_worker_idle_prefix_warm_after_bootstrap():
+    from appserver.agent_worker import AgentWorker
+
+    src = inspect.getsource(AgentWorker._handle_bootstrap)
+    assert "_arm_idle_prefix_warm" in src
+    arm = inspect.getsource(AgentWorker._arm_idle_prefix_warm)
+    assert "_schedule_prewarm" in arm
+    assert "_preconnect_provider" in arm
+
+
 def test_run_does_not_await_mcp_refresh():
-    src = inspect.getsource(AgentV2.run)
+    src = inspect.getsource(AgentV2.run) + inspect.getsource(AgentV2._run_user_turn_body)
     assert "_schedule_mcp_refresh" in src
     assert "asyncio.to_thread" not in src
 

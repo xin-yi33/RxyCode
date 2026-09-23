@@ -18,6 +18,10 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
 
 TurnPath = Literal["chat", "agent", "graph", "plan", "compose", "file_op", "download"]
 
+# 现网默认：Session 便宜路径 -> AgentV2.run -> 本函数。
+# 专家团 / explore 才进 core.agents.router.ModeRouter。
+# 废弃代码（2026-09-21）：不要在 AgentV2._run_impl 里再写第二层 if 瀑布。
+
 
 @dataclass(frozen=True, slots=True)
 class TurnDecision:
@@ -58,15 +62,15 @@ def route(
     social = is_social_chat(text)
 
     if mode in ("build", "plan") and not force_full and declines_tools(text):
-        return TurnDecision("chat", "chat", chat_skip, False, social=social)
+        return TurnDecision("chat", "chat", chat_skip, True, social=social)
 
     # FX6: wide social (incl. "你好啊") rides the frozen empty-tool ChatPrefix
-    # archive — never datetime-cropped AgentPrefix schemas.
+    # archive — thinking stays ON (user clock is first reasoning token).
     if mode in ("build", "plan") and not force_full and social:
-        return TurnDecision("chat", "chat", chat_skip, False, social=True)
+        return TurnDecision("chat", "chat", chat_skip, True, social=True)
 
     if mode == "compose" and social:
-        return TurnDecision("chat", "chat", chat_skip, False, social=True)
+        return TurnDecision("chat", "chat", chat_skip, True, social=True)
 
     if mode in ("build", "plan") and not force_full:
         return TurnDecision("agent", "agent", empty_skip, True, social=social)

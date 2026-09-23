@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from ..core.session_runtime import resolve_session_path
+from ..core.session_runtime import current_turn_user_text, resolve_session_path
 
 
 # ``open_file`` delegates to a host application, so its input contract must be
@@ -121,9 +122,53 @@ EXECUTABLE_EXTENSIONS = frozenset(
 )
 
 
+_PREVIEW_EXT_ALT = "|".join(
+    sorted(
+        (re.escape(ext.lstrip(".")) for ext in PREVIEWABLE_EXTENSIONS),
+        key=len,
+        reverse=True,
+    )
+)
+_PREVIEW_NAME_RE = re.compile(
+    rf"(?<![\w.])((?:[\w.-]+[/\\])*[\w.-]+\.(?:{_PREVIEW_EXT_ALT}))",
+    re.IGNORECASE,
+)
+
+
 class OpenFileInput(BaseModel):
     filePath: str = Field(
         description="Absolute or session-relative previewable file path"
+    )
+
+
+def named_preview_files(user_text: str) -> tuple[str, ...]:
+    """Previewable filenames the user named this turn (basename-unique)."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _PREVIEW_NAME_RE.findall(user_text or ""):
+        name = str(raw).replace("\\", "/")
+        key = Path(name).name.casefold()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        found.append(name)
+    return tuple(found)
+
+
+def mismatched_open_error(file_path: str, user_text: str | None = None) -> str | None:
+    """Refuse to preview a different file than the ones the user named."""
+    text = current_turn_user_text() if user_text is None else user_text
+    named = named_preview_files(text)
+    requested = Path(str(file_path or "")).name
+    if not named or not requested:
+        return None
+    allowed = {Path(name).name.casefold() for name in named}
+    if requested.casefold() in allowed:
+        return None
+    named_list = ", ".join(named)
+    return (
+        f"[error: file not found or invalid path: refused to open {requested}; "
+        f"user named {named_list}]"
     )
 
 
@@ -176,7 +221,47 @@ def _validate_previewable_file(file_path: str) -> tuple[Path | None, str | None]
     return path, None
 
 
+def _windows_shell_path(path: Path | str) -> str:
+    """Drop the ``\\\\?\\`` prefix so the shell does not treat the path as UNC."""
+    raw = os.fspath(path)
+    if raw.startswith("\\\\?\\UNC\\"):
+        return "\\" + raw[7:]
+    if raw.startswith("\\\\?\\"):
+        return raw[4:]
+    return raw
+
+
+def _open_on_windows(path: Path) -> None:
+    """Open with the default app without attaching it to this console.
+
+    Pass ``start`` as separate argv tokens. A single ``/c`` string like
+    ``start "" "C:\\…"`` is rewritten by list2cmdline into ``start \\"\\"``,
+    and Windows then looks for a file named ``\\\\``. The dummy title must
+    contain a space so ``start`` quotes it; an unquoted ``RxyCode`` matches
+    ``rxycode.exe`` on PATH and never opens the file.
+    """
+    file_name = _windows_shell_path(path)
+    argv = ["cmd.exe", "/c", "start", "RxyCode Open", file_name]
+    detached = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+    new_group = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(Path(file_name).parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=detached | new_group,
+        )
+    except OSError as exc:
+        os.startfile(file_name)
+
+
 def open_file(filePath: str) -> str:
+    mismatch = mismatched_open_error(filePath)
+    if mismatch is not None:
+        return mismatch
     path, error = _validate_previewable_file(filePath)
     if error is not None:
         return error
@@ -185,7 +270,7 @@ def open_file(filePath: str) -> str:
 
     try:
         if sys.platform == "win32":
-            os.startfile(str(path))
+            _open_on_windows(path)
         else:
             command = (
                 ["open", str(path)]
@@ -212,13 +297,16 @@ def open_file(filePath: str) -> str:
 async def open_file_async(filePath: str) -> str:
     """Open a file without leaving a blocking opener process after cancel.
 
-    Windows uses ``os.startfile`` — fire-and-forget ShellExecute that returns
-    immediately; there is no tracked subprocess to terminate, so the
-    process-class timeout contract does not apply there.  On POSIX the opener
+    Windows uses ``cmd /c start "RxyCode Open" <path>`` as separate argv
+    tokens so list2cmdline cannot turn the path into ``\\\\``, and the
+    quoted title cannot be mistaken for ``rxycode.exe`` on PATH. On POSIX the opener
     (open/xdg-open) runs through the controlled shell executor so a hung
     opener process tree is terminated on timeout (C2).  Note: a GUI app that
     the opener detaches and hands the document to is out of scope — the
     executor only guarantees the opener process tree itself is cleaned up."""
+    mismatch = mismatched_open_error(filePath)
+    if mismatch is not None:
+        return mismatch
     path, error = _validate_previewable_file(filePath)
     if error is not None:
         return error
@@ -227,7 +315,7 @@ async def open_file_async(filePath: str) -> str:
 
     if sys.platform == "win32":
         try:
-            os.startfile(str(path))
+            _open_on_windows(path)
         except Exception as exc:
             return f"[error opening file: {exc}]"
         return f"[opened {path}]"
@@ -250,8 +338,15 @@ open_file_tool = StructuredTool.from_function(
     name="open_file",
     description=(
         "Open an existing previewable document, text file, image, HTML page, "
-        "or PDF with the operating system's default application. Executables, "
-        "scripts, shortcuts, directories, and unknown extensions are rejected."
+        "or PDF with the operating system's default application. When the "
+        "user names a file, pass that exact path; do not ls and open a "
+        "different existing file. A missing named file must return "
+        "[error: file not found] — quote that error, do not claim success. "
+        "Returns as soon as the OS accepts the launch; does not wait for "
+        "the user to close the window. Use this instead of bash start/open/"
+        "notepad/typora. Spawn failure is an error so you can retry, then "
+        "continue with the Final Answer. Executables, scripts, shortcuts, "
+        "directories, and unknown extensions are rejected."
     ),
     args_schema=OpenFileInput,
 )

@@ -33,12 +33,21 @@ class TestRiskLevel:
 
 class TestStaticToolRisk:
     def test_readonly_tools_are_read(self):
-        for name in ("read", "view", "grep", "glob", "ls", "webfetch", "websearch"):
+        for name in ("read", "view", "grep", "glob", "ls", "webfetch", "websearch", "final_answer"):
             assert get_tool_risk(name) == RiskLevel.READ, name
 
     def test_write_tools_are_write(self):
-        for name in ("write", "edit", "patch", "bash", "format"):
+        for name in ("write", "edit", "patch", "bash", "format", "open_file"):
             assert get_tool_risk(name) == RiskLevel.WRITE, name
+
+    def test_open_and_browser_aliases_use_open_file_risk(self):
+        from RxyCode.RxyCode1_1_0.core.safety.policy import canonical_tool_name
+
+        assert canonical_tool_name("open") == "open_file"
+        assert canonical_tool_name("browser") == "open_file"
+        assert get_tool_risk("open") == RiskLevel.WRITE
+        assert get_tool_risk("browser") == RiskLevel.WRITE
+        assert classify_tool_risk("open", {"filePath": "a.docx"}) == RiskLevel.WRITE
 
     def test_danger_tools(self):
         for name in ("installer", "git"):
@@ -219,6 +228,7 @@ class TestArgumentAwareToolRisk:
         assert classify_tool_risk("bash", {"command": "echo ok"}) == RiskLevel.READ
         assert classify_tool_risk("bash", {"command": "npm install"}) == RiskLevel.WRITE
         assert classify_tool_risk("bash", {"command": "shutdown now"}) == RiskLevel.DANGER
+        assert classify_tool_risk("shell", {"command": "shutdown now"}) == RiskLevel.DANGER
 
 
 class TestWritePathWhitelist:

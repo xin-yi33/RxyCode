@@ -10,10 +10,23 @@ from RxyCode.RxyCode1_1_0.core.request_routing import (
     ROUTING_INVENTORY,
     RoutingDirective,
     detect_download_intent,
+    detect_file_operation,
     has_structured_pipeline_signal,
     is_simple_query,
     parse_routing_directive,
 )
+
+
+def test_https_url_is_not_a_windows_drive_list() -> None:
+    text = (
+        "请用虚拟浏览器打开 https://example.com：先 browser_navigate，"
+        "再 browser_snapshot，列出页面标题和主要链接。"
+    )
+    assert detect_file_operation(text) is None
+    assert detect_file_operation("列出 C:\\temp 里的文件") == {
+        "op": "list",
+        "path": "C:\\temp",
+    }
 
 
 class _Memory:

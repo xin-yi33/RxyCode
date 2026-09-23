@@ -90,7 +90,7 @@ class ShortTermMemory:
         for msg in recent:
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
             # Truncate long messages to prevent context overflow
-            content = msg.content[:500] + "..." if len(msg.content) > 500 else msg.content
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
             parts.append(f"{role}: {content}")
         return "\n".join(parts)
 
@@ -114,6 +114,11 @@ class ShortTermMemory:
         return len(self._messages) >= threshold
 
     def pop_oldest_pair(self) -> tuple[str, str] | None:
+        # 废弃标注（2026-09-23）：生产链路无调用者（grep 全仓库仅
+        # tests/test_memory/test_short_term.py 引用）。溢出处理已由
+        # MemoryManager.add_interaction 的 autoCompact 归档（is_overflow
+        # -> _compress_and_store）接管，不再逐对弹出。保留原因：测试仍
+        # 守卫其弹出语义，删除需同步移除测试。
         if len(self._messages) < 2:
             return None
         user_msg = self._messages.popleft()
@@ -173,7 +178,7 @@ class ShortTermMemory:
         parts = []
         for _, msg in relevant:
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
-            content = msg.content[:300] + "..." if len(msg.content) > 300 else msg.content
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
             parts.append(f"{role}: {content}")
         
         return "\n".join(parts)

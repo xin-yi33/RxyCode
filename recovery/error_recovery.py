@@ -1,4 +1,4 @@
-﻿"""ErrorRecovery: exception handling, classification and retry logic.
+"""ErrorRecovery: exception handling, classification and retry logic.
 
 Handles runtime errors during execution (not validation failures —
 those go through Validator → RePlanner).
@@ -33,10 +33,11 @@ from RxyCode.RxyCode1_1_0.core.state import TaskStatus, TaskTree
 # ---------------------------------------------------------------------------
 
 class ErrorKind(str, Enum):
-    """Whether an error is worth retrying."""
+    """Whether an error is worth retrying, feeding the model, or ending the turn."""
 
     TRANSIENT = "transient"    # network blip / rate limit / timeout / 5xx
-    PERMANENT = "permanent"    # logic / parse / validation / 4xx
+    BUSINESS = "business"      # tool/result failure; continue the turn
+    PERMANENT = "permanent"    # logic / parse / validation / 4xx / fired clocks
 
 
 def _http_status_of(exc: BaseException) -> int | None:
@@ -53,37 +54,62 @@ def _http_status_of(exc: BaseException) -> int | None:
 
 
 def classify_error(exc: BaseException) -> ErrorKind:
-    """Map an exception to TRANSIENT or PERMANENT.
+    """Map an exception to TRANSIENT, BUSINESS, or PERMANENT.
 
-    Transient (worth retrying):
-    - timeouts, connection errors (httpx / builtin / openai APIConnectionError)
-    - HTTP 429 (rate limit) and 5xx (server errors)
+    Transient (worth retrying, not ``event/error`` until exhausted):
+    - connection errors, HTTP 429/5xx, short connect handshake timeouts
+    - not generic read/idle timeouts (those clocks already consumed the budget)
 
-    Permanent (fail fast):
-    - HTTP 4xx other than 429 (bad request, auth, not found, ...)
-    - ValueError / JSONDecodeError / parse & validation errors
-    - anything unknown (conservative: do not retry blindly)
+    Business (tool card may be yellow; the turn continues):
+    - not used for raw exceptions; see ``classify_tool_status``
+
+    Permanent (fail fast / ``event/error``):
+    - HTTP 4xx other than 429
+    - fired stream clocks (``FirstTokenTimeoutError`` / ``StreamIdleTimeoutError``)
+    - generic ``TimeoutError`` / HTTP read timeouts / ``APITimeoutError``
+    - parse & validation errors
+    - unknown errors
     """
-    # --- builtin transient signals -------------------------------------
-    if isinstance(exc, (TimeoutError, ConnectionError)):
+    # Fired stream clocks are TimeoutError subclasses but are not transport
+    # blips. Short connect handshake failures stay retryable; once idle /
+    # first-token types escape, the turn is over.
+    exc_name = type(exc).__name__
+    if exc_name in {
+        "FirstTokenTimeoutError",
+        "StreamIdleTimeoutError",
+        "CircuitBreakerError",
+    }:
+        return ErrorKind.PERMANENT
+    if exc_name == "StreamConnectTimeoutError":
         return ErrorKind.TRANSIENT
+
+    # --- builtin signals -----------------------------------------------
+    if isinstance(exc, ConnectionError):
+        return ErrorKind.TRANSIENT
+    if isinstance(exc, TimeoutError):
+        return ErrorKind.PERMANENT
 
     # --- httpx transport-level errors ----------------------------------
     try:
         import httpx
-        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError,
-                            httpx.ConnectTimeout, httpx.ReadTimeout,
-                            httpx.WriteTimeout, httpx.PoolTimeout,
+        if isinstance(exc, httpx.ReadTimeout):
+            return ErrorKind.PERMANENT
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout,
+                            httpx.PoolTimeout, httpx.WriteTimeout,
                             httpx.NetworkError, httpx.RemoteProtocolError)):
             return ErrorKind.TRANSIENT
+        if isinstance(exc, httpx.TimeoutException):
+            return ErrorKind.PERMANENT
     except ImportError:  # pragma: no cover - httpx is a hard dependency
         pass
 
     # --- openai SDK errors ---------------------------------------------
     try:
         import openai
-        if isinstance(exc, (openai.APITimeoutError, openai.APIConnectionError,
-                            openai.RateLimitError, openai.InternalServerError)):
+        if isinstance(exc, openai.APITimeoutError):
+            return ErrorKind.PERMANENT
+        if isinstance(exc, (openai.APIConnectionError, openai.RateLimitError,
+                            openai.InternalServerError)):
             return ErrorKind.TRANSIENT
         if isinstance(exc, openai.APIStatusError):
             status = _http_status_of(exc)
@@ -109,6 +135,56 @@ def classify_error(exc: BaseException) -> ErrorKind:
 
     # Unknown: conservative default — do not retry blindly.
     return ErrorKind.PERMANENT
+
+
+def classify_tool_status(status: str | None) -> ErrorKind:
+    """Tool card outcomes are BUSINESS unless the user cancelled."""
+    normalized = str(status or "").strip().lower()
+    if normalized in {"success", "ok", ""}:
+        return ErrorKind.BUSINESS
+    if normalized in {"cancelled", "canceled"}:
+        return ErrorKind.PERMANENT
+    return ErrorKind.BUSINESS
+
+
+def failure_surface(
+    *,
+    exc: BaseException | None = None,
+    tool_status: str | None = None,
+) -> str:
+    """Where this failure may appear: event/retry, tool_result, or event/error."""
+    if tool_status is not None:
+        kind = classify_tool_status(tool_status)
+        if str(tool_status).strip().lower() in {"success", "ok", ""}:
+            return "none"
+        if kind == ErrorKind.BUSINESS:
+            return "tool_result"
+        return "event/error"
+    if exc is None:
+        return "none"
+    kind = classify_error(exc)
+    if kind == ErrorKind.TRANSIENT:
+        return "event/retry"
+    if kind == ErrorKind.BUSINESS:
+        return "tool_result"
+    return "event/error"
+
+
+def should_emit_event_error(
+    exc: BaseException | None = None,
+    *,
+    tool_status: str | None = None,
+    retries_exhausted: bool = True,
+) -> bool:
+    """``event/error`` ends the turn. Transient failures stay quiet until exhausted."""
+    surface = failure_surface(exc=exc, tool_status=tool_status)
+    if surface == "tool_result" or surface == "none":
+        return False
+    if surface == "event/retry" and not retries_exhausted:
+        return False
+    return surface == "event/error" or (
+        surface == "event/retry" and retries_exhausted
+    )
 
 
 # ---------------------------------------------------------------------------

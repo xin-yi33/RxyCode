@@ -4,7 +4,7 @@
 1. 错误回喂消息出现在断点之后且有引导语
 2. 死循环 4 连相同动作被截断（阈值 3）
 3. 失败结果不缓存
-4. Git 快照在 LLM 调用前捕获
+4. Git 快照在执行突变工具前捕获（不得挡住 thinking 首字）
 5. reviewer 重试默认关闭、开启时有预算保护
 """
 
@@ -198,7 +198,7 @@ def test_tool_error_state_reset_per_request():
 
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-    src = inspect.getsource(AgentV2.run)
+    src = inspect.getsource(AgentV2._run_user_turn_body)
     # run() 入口在 _task_effect 设置后重置 _tool_error_occurred
     assert "_tool_error_occurred = False" in src
     # 且位于 _task_effect 赋值之后
@@ -282,11 +282,10 @@ def test_git_snapshot_restore_without_capture_safe():
     snap.restore()  # 不抛异常
 
 
-def test_capture_called_before_llm_stream(monkeypatch):
-    """LLM 调用（_raw_stream）前调用 _capture_git_snapshot（B7 判据 4）。"""
+def test_capture_called_before_tool_execution(monkeypatch):
+    """B7 snapshot must exist before mutating tools, not before first thinking."""
     import asyncio
 
-    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_v2_mod
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
     from RxyCode.RxyCode1_1_0.core import snapshot as snapshot_mod
 
@@ -330,7 +329,6 @@ def test_capture_called_before_llm_stream(monkeypatch):
     monkeypatch.setattr(agent, "_get_core_tools", lambda: [])
     monkeypatch.setattr(agent, "_maybe_compress_context", lambda msgs: asyncio.sleep(0))
     monkeypatch.setattr(agent, "_tokenizer_spec", lambda: "tiktoken:o200k_base")
-    from RxyCode.RxyCode1_1_0.core.agent_v2 import _record_usage
 
     async def run():
         await agent._fast_reply_with_tools(
@@ -339,9 +337,9 @@ def test_capture_called_before_llm_stream(monkeypatch):
         return order
 
     result_order = asyncio.run(run())
-    assert "snapshot" in result_order
-    assert result_order.index("snapshot") < result_order.index("llm")
-    assert agent._git_snapshot is not None
+    assert "llm" in result_order
+    assert "snapshot" not in result_order
+    assert agent._git_snapshot is None
 
 
 @pytest.mark.asyncio

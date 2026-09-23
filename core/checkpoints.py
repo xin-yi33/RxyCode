@@ -220,6 +220,7 @@ class CheckpointStore:
         session_id: str,
         user_input: str,
         mode: str,
+        attempt_id: str | None = None,
     ) -> dict[str, Any]:
         """Return one durable attempt for a top-level request.
 
@@ -240,7 +241,7 @@ class CheckpointStore:
             document: dict[str, Any] = {
                 "version": CHECKPOINT_VERSION,
                 "checkpoint_id": checkpoint_id,
-                "attempt_id": new_attempt_id(),
+                "attempt_id": attempt_id or new_attempt_id(),
                 "session_id": session_id,
                 "user_input": user_input,
                 "mode": mode,

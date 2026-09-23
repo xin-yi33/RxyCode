@@ -37,8 +37,10 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
 from .base import BaseProvider
 
 _DEEPSEEK_USAGE = UsageFieldMap(
-    cache_read_flat=("prompt_cache_hit_tokens",),
-    cache_read_nested=(),  # Chat Completions 主路径不用嵌套形式
+    cache_read_flat=("prompt_cache_hit_tokens", "cached_tokens"),
+    # Direct DeepSeek uses the flat field; OpenCode zen/go reports OpenAI
+    # prompt_tokens_details.cached_tokens on the same model id.
+    cache_read_nested=(("prompt_tokens_details", "cached_tokens"),),
     reasoning=("reasoning_content",),
 )
 
@@ -82,30 +84,57 @@ _DEFAULT_DEEPSEEK_PRICING = ModelPricing(
 )
 
 
+# Official GET /models currently publishes ``deepseek-flash``.
+# capabilities() reads model_name, not the local config key.
+_V4_FLASH_IDS = frozenset({
+    "deepseek-v4-flash",
+    "deepseek-v4.1-flash",
+    "deepseek-flash",
+})
+_V4_PRO_IDS = frozenset({"deepseek-v4-pro", "deepseek-v4.1-pro"})
+
+
+def _bare_model_id(model_name: str) -> str:
+    """Strip gateway prefixes such as ``opencode-go/deepseek-v4.1-flash``."""
+    name = str(model_name or "").strip().lower()
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    return name
+
+
+def _canonical_v4(model_name: str) -> str | None:
+    """Map a known v4-family id to the researched flash/pro canonical name."""
+    name = _bare_model_id(model_name)
+    if name in _V4_FLASH_IDS:
+        return "deepseek-v4-flash"
+    if name in _V4_PRO_IDS:
+        return "deepseek-v4-pro"
+    return None
+
+
 def _pricing_for(model_name: str) -> ModelPricing:
     """§7.1 问 7：精确匹配 v4-flash/v4-pro；未知/旧型号 → 显式 None（DC1，
     不子串匹配，避免 deepseek-v4-flash-foo 等变体继承定价）。"""
-    name = model_name.lower()
-    if _is_v4(name):
-        return _DEEPSEEK_PRICING[name]
+    canon = _canonical_v4(model_name)
+    if canon:
+        return _DEEPSEEK_PRICING[canon]
     return _DEFAULT_DEEPSEEK_PRICING
 
 
 def _is_v4(model_name: str) -> bool:
-    """精确识别 v4-flash / v4-pro（§7.1）；不泛化 `"v4" in name`。"""
-    name = model_name.lower()
-    return name in ("deepseek-v4-flash", "deepseek-v4-pro")
+    """识别已调研的 v4 家族（含 v4.1-flash / v4.1-pro）；不泛化 ``"v4" in name``。"""
+    return _canonical_v4(model_name) is not None
 
 
 def _thinking_default_on(model_name: str) -> bool:
     """Whether this model id runs with thinking enabled by default (§7.1).
 
-    - v4-flash / v4-pro：默认开启（§7.1 问 5）
+    - v4-flash / v4-pro / v4.1-flash / v4.1-pro：默认开启
     - deepseek-chat（过渡期 non-thinking 别名）：关闭
     - deepseek-reasoner（过渡期 thinking 别名）：开启
     - 未知变体：保守 False（DC1，不套用 v4 默认）
     """
-    name = model_name.lower()
+    name = _bare_model_id(model_name)
     if _is_v4(name):
         return True
     if name in ("deepseek-reasoner",):
@@ -114,10 +143,10 @@ def _thinking_default_on(model_name: str) -> bool:
 
 
 def _prompt_variant(model_name: str) -> str:
-    name = model_name.lower()
-    if name == "deepseek-v4-pro":
+    canon = _canonical_v4(model_name)
+    if canon == "deepseek-v4-pro":
         return "deepseek-v4-pro"
-    if name == "deepseek-v4-flash":
+    if canon == "deepseek-v4-flash":
         return "deepseek-v4-flash"
     # 旧型号（chat/reasoner 过渡期）与未知变体：保持 A3 通用 variant，不套 v4。
     return "deepseek"
@@ -125,7 +154,7 @@ def _prompt_variant(model_name: str) -> str:
 
 def _known_deepseek(model_name: str) -> bool:
     """§7.1 覆盖或过渡期别名的型号；未知变体返回 False（DC1 保守）。"""
-    name = model_name.lower()
+    name = _bare_model_id(model_name)
     return _is_v4(name) or name in ("deepseek-chat", "deepseek-reasoner")
 
 

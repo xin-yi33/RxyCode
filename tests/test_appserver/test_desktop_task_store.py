@@ -34,6 +34,20 @@ def test_task_store_persists_rename_trash_restore_and_purge(tmp_path: Path):
     assert reloaded.list(include_trashed=True) == []
 
 
+def test_second_window_save_keeps_the_first_windows_session(tmp_path: Path):
+    path = tmp_path / "tasks.json"
+    first = DesktopTaskStore(path)
+    first.upsert(session_id="winA", title="A", workspace_root=tmp_path, status="running")
+    first.append_event("winA", {"method": "event/message", "params": {"text": "only-A"}})
+    second = DesktopTaskStore(path)
+    second.upsert(session_id="winB", title="B", workspace_root=tmp_path, status="running")
+    first.append_event("winA", {"method": "event/message", "params": {"text": "A-again"}})
+    disk = json.loads(path.read_text(encoding="utf-8"))
+    assert set(disk["tasks"]) == {"winA", "winB"}
+    assert len(disk["events"]["winA"]) == 2
+    assert disk["events"].get("winB", []) == []
+
+
 def test_session_store_hydrates_persistent_tasks_and_updates_them(tmp_path: Path):
     task_store = DesktopTaskStore(tmp_path / "tasks.json")
     first = SessionStore(task_store=task_store)
@@ -63,6 +77,7 @@ def test_server_task_lifecycle_routes_keep_workspace_intact(monkeypatch, tmp_pat
         AsyncMock(side_effect=lambda _request_id, payload: responses.append(payload)),
     )
 
+    server._sessions.note_user_prompt(record.session_id, "audit the workspace")
     asyncio.run(server._handle_sessions_list({"include_trashed": False}, 1))
     assert responses[-1]["sessions"][0]["session_id"] == record.session_id
 

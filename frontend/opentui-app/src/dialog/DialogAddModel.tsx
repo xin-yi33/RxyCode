@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { appendFileSync } from "node:fs";
 import { DialogSelect, type DialogSelectOption } from "./DialogSelect.tsx";
 import { DialogPrompt } from "./DialogPrompt.tsx";
 import { DialogError, DialogLoading } from "./DialogStates.tsx";
@@ -30,7 +31,16 @@ type Stage =
   | "model_multi"
   | "manual_model"
   | "nickname"
-  | "saving";
+  | "saving"
+  | "done";
+
+type DoneInfo = {
+  added: string[];
+  skipped: string[];
+  active: string;
+  providerName: string;
+  message: string;
+};
 
 /** Build the provider list: backend presets, grouped, plus a custom escape hatch. */
 export function buildProviderOptions(
@@ -100,6 +110,7 @@ export function DialogAddModel({
   const [discovered, setDiscovered] = useState<DiscoveredModel[]>([]);
   const [modelId, setModelId] = useState("");
   const [error, setError] = useState("");
+  const [doneInfo, setDoneInfo] = useState<DoneInfo | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -170,11 +181,17 @@ export function DialogAddModel({
       return;
     }
     const active = result.active || activeModelId;
-    onDone(
+    const message =
       result.message ||
-        `已添加 ${result.added.length} 个模型，当前: ${active}`,
-    );
-    onClose();
+      `已添加 ${result.added.length} 个模型到「${pname || "其他"}」，当前: ${active}`;
+    setDoneInfo({
+      added: result.added,
+      skipped: result.skipped,
+      active,
+      providerName: pname || "其他",
+      message,
+    });
+    setStage("done");
   };
 
   const save = async (nickname: string) => {
@@ -191,8 +208,16 @@ export function DialogAddModel({
       setStage("nickname");
       return;
     }
-    onDone(String(result.message || `模型已添加: ${nickname || modelId}`));
-    onClose();
+    const addedId = nickname || modelId;
+    const message = String(result.message || `模型已添加: ${addedId}`);
+    setDoneInfo({
+      added: [addedId],
+      skipped: [],
+      active: addedId,
+      providerName: providerName || "其他",
+      message,
+    });
+    setStage("done");
   };
 
   if (stage === "provider") {
@@ -347,6 +372,47 @@ export function DialogAddModel({
 
   if (stage === "saving") {
     return <DialogLoading text="正在批量保存模型…" />;
+  }
+
+  if (stage === "done" && doneInfo) {
+    const finish = () => onDone(doneInfo.message);
+    const addedOptions = [
+      {
+        id: "__view__",
+        title: "打开模型列表",
+        description: `在 /model 的「${doneInfo.providerName}」分组下查找`,
+        category: "操作",
+        value: "__view__",
+      },
+      ...doneInfo.added.map((id) => ({
+        id,
+        title: id,
+        description: id === doneInfo.active ? "当前使用" : "已入库",
+        category: doneInfo.providerName,
+        value: id,
+      })),
+    ];
+    if (doneInfo.skipped.length) {
+      for (const id of doneInfo.skipped) {
+        addedOptions.push({
+          id: `skip:${id}`,
+          title: id,
+          description: "已存在，已跳过",
+          category: "已跳过",
+          value: id,
+        });
+      }
+    }
+    return (
+      <DialogSelect
+        title={`添加成功 · ${doneInfo.added.length} 个模型`}
+        options={addedOptions}
+        categoryOrder={["操作", doneInfo.providerName, "已跳过"]}
+        placeholder="搜索已添加的模型"
+        onClose={finish}
+        onSelect={finish}
+      />
+    );
   }
 
   return (

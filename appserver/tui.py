@@ -14,6 +14,7 @@ from pydantic import BaseModel
 try:
     from ..protocol.notifications import (
         MessageDelta,
+        PlanUpdate,
         ProgressUpdate,
         RecoveryAnalyzing,
         RecoveryAttempt,
@@ -28,6 +29,7 @@ try:
 except ImportError:
     from protocol.notifications import (
         MessageDelta,
+        PlanUpdate,
         ProgressUpdate,
         RecoveryAnalyzing,
         RecoveryAttempt,
@@ -41,6 +43,32 @@ except ImportError:
     from recovery.tracker import RecoveryKind, RecoveryTracker
 
 EmitCallback = Callable[[BaseModel], None]
+
+# 2026-09-23（P0 answer-last）：委托深度读取，打标 intermediate 用。
+# 非 appserver 环境（单测/CLI 直跑）导入失败时深度恒 0（主代理语义）。
+try:
+    from .runtime import current_delegate_depth as _current_delegate_depth
+except Exception:
+    try:
+        from RxyCode.RxyCode1_1_0.appserver.runtime import (
+            current_delegate_depth as _current_delegate_depth,
+        )
+    except Exception:
+        def _current_delegate_depth() -> int:
+            return 0
+
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from ..core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+    except Exception:
+        try:
+            from core.runtime_probe import probe as _probe
+        except Exception:
+            def _probe(event, **fields):
+                return None
 
 
 def _user_safe_text(value: Any, *, limit: int = 4000) -> str:
@@ -84,6 +112,7 @@ class ProtocolTui:
         self._coalescer: Any = None
         self._push_tasks: set[asyncio.Task[Any]] = set()
         self._push_failures: list[BaseException] = []
+        self._streamed_answer_chars = 0
         self._recovery = RecoveryTracker(self._emit_recovery_record)
 
     def set_run_id(self, run_id: str) -> None:
@@ -224,18 +253,32 @@ class ProtocolTui:
     def _emit_direct(self, kind: str, text: str) -> None:
         """Single kind→notification mapping used by both the async push()
         fallback and the sync _push_async() legacy path (switch 0)."""
+        intermediate = _current_delegate_depth() > 0
         if kind == "token":
-            self._emit(MessageDelta(session_id=self.session_id, text=str(text)))
+            self._emit(
+                MessageDelta(
+                    session_id=self.session_id,
+                    text=str(text),
+                    intermediate=intermediate,
+                )
+            )
         elif kind == "reasoning":
             self._emit(
                 ReasoningSnapshot(
                     session_id=self.session_id,
                     text=str(text),
                     snapshot=False,
+                    intermediate=intermediate,
                 )
             )
         elif kind == "progress":
-            self._emit(ProgressUpdate(session_id=self.session_id, text=str(text)))
+            self._emit(
+                ProgressUpdate(
+                    session_id=self.session_id,
+                    text=str(text),
+                    intermediate=intermediate,
+                )
+            )
 
     def set_thinking_expanded(self, expanded: bool) -> None:
         was = self._expand_thinking
@@ -263,6 +306,9 @@ class ProtocolTui:
         self._model_name = str(model_name)
 
     def write_progress(self, text: str) -> None:
+        # Status lines replace; flush first so coalescer cannot glue
+        # "思考中（第 N 轮）" onto "等待模型返回…".
+        self._flush_pending_stream()
         self._push_async("progress", text)
 
     def write_turn_liveness(self, text: str = "思考中...") -> None:
@@ -279,6 +325,7 @@ class ProtocolTui:
                 session_id=self.session_id,
                 text=chunk,
                 snapshot=False,
+                intermediate=_current_delegate_depth() > 0,
             )
         )
 
@@ -302,14 +349,46 @@ class ProtocolTui:
         started = not self._thinking_acc
         self._thinking_acc += chunk
         self._reasoning_chunks += 1
-        if self._expand_thinking:
-            self._push_async("reasoning", chunk)
-        elif started and chunk.strip():
-            # Collapsed Thought still needs a liveness event. Otherwise the
-            # appserver watchdog treats silent thinking as a dead job.
-            self.write_progress("思考中...")
+        # Do not send the chain through StreamCoalescer. Runtime logs showed
+        # hundreds of write_reasoning calls while the TUI only received the
+        # "思考中..." liveness snapshot. Liveness already uses _emit and
+        # arrives; keep the real chain on that same path.
+        try:
+            try:
+                from ..core.ttft_clock import mark_reasoning
+            except Exception:
+                from RxyCode.RxyCode1_1_0.core.ttft_clock import mark_reasoning
 
-        self._emit_reasoning_liveness(chunk, started)
+            mark_reasoning(chunk, kind="tui")
+        except Exception:
+            pass
+        self._flush_pending_stream()
+        # INVARIANT: always emit the reasoning chunk. Collapse is the TUI's
+        # job, and the default is expanded. Do not wrap this emit in
+        # `if self._expand_thinking`.
+        # 废弃代码（2026-09-22）：未展开时不发 ReasoningSnapshot，界面只剩
+        # 「思考中...」，思考一结束首位 Thought 被收掉。
+        # ⚠️ 勿轻易修改本方法（2026-09-23 重申）：首位 Thought 丢失风险。
+        # 运行时排查看 probe 日志 tui.reasoning.emit：有 emit 而界面无内容
+        # → 丢在前端/传输；无 emit → 模型本轮没产 reasoning（占位行按设计收起）。
+        _probe(  # PROBE-20260923: 首位 Thought 消失定位——reasoning 是否真发出
+            "tui.reasoning.emit",
+            session_id=self.session_id,
+            chunk_len=len(chunk),
+            acc_len=len(self._thinking_acc),
+            chunks=self._reasoning_chunks,
+            started=started,
+        )
+        self._emit(
+            ReasoningSnapshot(
+                session_id=self.session_id,
+                text=chunk,
+                snapshot=False,
+                intermediate=_current_delegate_depth() > 0,
+            )
+        )
+        if started and chunk.strip() and not self._expand_thinking:
+            self.write_progress("思考中...")
 
     def _emit_reasoning_liveness(self, chunk: str, started: bool) -> None:
         """Emit sparse liveness without exposing collapsed reasoning text."""
@@ -330,6 +409,9 @@ class ProtocolTui:
             self._reasoning_last_liveness_at = now
 
     def stream_token(self, token: str) -> None:
+        self._streamed_answer_chars = int(
+            getattr(self, "_streamed_answer_chars", 0) or 0
+        ) + len(token or "")
         self._push_async("token", token)
 
     def _push_async(self, kind: str, text: str) -> None:
@@ -360,7 +442,16 @@ class ProtocolTui:
             self._push_failures.append(exc)
 
     def write_plan(self, steps: Any) -> None:
-        self.write_progress(f"plan: {steps}")
+        if isinstance(steps, str):
+            lines = [line for line in steps.splitlines()]
+        elif isinstance(steps, (list, tuple)):
+            lines = [str(item) for item in steps]
+        else:
+            lines = [str(steps)]
+        if not lines:
+            lines = ["（空计划）"]
+        self._flush_pending_stream()
+        self._emit(PlanUpdate(session_id=self.session_id, steps=lines[:2000]))
 
     def write_step(self, num: int, total: int, desc: str) -> None:
         self.write_progress(f"step {num}/{total}: {desc}")
@@ -394,6 +485,13 @@ class ProtocolTui:
                 arguments=arguments,
             )
         )
+        try:
+            from ..core.progress_labels import tool_wait_progress
+        except ImportError:
+            from core.progress_labels import tool_wait_progress
+        label = tool_wait_progress(str(name))
+        if label:
+            self.write_progress(label)
         return resolved_id
 
     def write_tool_result(

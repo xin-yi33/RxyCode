@@ -40,11 +40,13 @@ def _prewarm_agent() -> AgentV2:
 
     calls = []
 
-    async def _raw(msgs, tools=None, max_tokens=1):
+    async def _raw(msgs, tools=None, max_tokens=1, through_breaker=True):
         calls.append(
             {
                 "msgs": msgs,
                 "tools": tools,
+                "max_tokens": max_tokens,
+                "through_breaker": through_breaker,
                 "thinking_disabled": agent._thinking_disabled_this_turn,
             }
         )
@@ -75,22 +77,27 @@ def _profile(kind: str, tools_digest: str, thinking: bool, variant: str = "defau
 
 
 @pytest.mark.asyncio
-async def test_chat_slot_writes_no_tools_thinking_off_warm():
+async def test_chat_slot_writes_core_tools_thinking_on():
+    """Greeting prewarm must match the live turn: tools on, thinking ON."""
     agent = _prewarm_agent()
     from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_archive
 
     await prewarm_archive(agent, "chat")
     call = agent._captured_calls[0]
-    assert call["tools"] is None
-    assert call["thinking_disabled"] is True
+    assert call["tools"] is not None
+    assert [t.name for t in call["tools"]] == ["bash", "read"]
+    assert call["thinking_disabled"] is False
     from langchain_core.messages import HumanMessage, SystemMessage
 
     assert any(
         isinstance(m, SystemMessage) for m in call["msgs"]
     ), "chat prewarm must carry system"
     assert any(
-        isinstance(m, HumanMessage) and m.content == "warm" for m in call["msgs"]
-    ), "user text must be warm"
+        isinstance(m, HumanMessage) and str(m.content).endswith("warm")
+        for m in call["msgs"]
+    ), "user text must be warm (same wrapping as _fast_reply)"
+    assert call["max_tokens"] == 4096, "prewarm must match first-turn max_tokens"
+    assert call["through_breaker"] is False
 
 
 @pytest.mark.asyncio
@@ -103,40 +110,28 @@ async def test_agent_slot_writes_core_tools_thinking_on():
     assert call["tools"] is not None
     assert [t.name for t in call["tools"]] == ["bash", "read"]
     assert call["thinking_disabled"] is False
+    assert call["max_tokens"] == 4096
 
 
 @pytest.mark.asyncio
-async def test_two_slots_write_different_system_shapes():
-    """chat system (tools=False) must differ from agent system (tools=True)."""
-    from langchain_core.tools import StructuredTool
+async def test_two_slots_share_frozen_system_and_tools():
+    """Both slots send the same S1 + core tools so greeting hits encoding prefix."""
+    agent = _prewarm_agent()
+    from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_archive
 
-    from RxyCode.RxyCode1_1_0.tools.registry import registry
-
-    if "fx4-test-tool" not in registry.get_names():
-        registry.register(
-            StructuredTool.from_function(
-                func=lambda x: x,
-                name="fx4-test-tool",
-                description="FX4 test tool",
-            )
-        )
-    try:
-        agent = _prewarm_agent()
-        from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_archive
-
-        await prewarm_archive(agent, "chat")
-        await prewarm_archive(agent, "agent")
-        chat_call, agent_call = agent._captured_calls
-        chat_sys = next(
-            m.content for m in chat_call["msgs"] if m.__class__.__name__ == "SystemMessage"
-        )
-        agent_sys = next(
-            m.content for m in agent_call["msgs"] if m.__class__.__name__ == "SystemMessage"
-        )
-        assert "fx4-test-tool" in agent_sys
-        assert "fx4-test-tool" not in chat_sys
-    finally:
-        registry.remove("fx4-test-tool")
+    await prewarm_archive(agent, "chat")
+    await prewarm_archive(agent, "agent")
+    chat_call, agent_call = agent._captured_calls
+    chat_sys = next(
+        m.content for m in chat_call["msgs"] if m.__class__.__name__ == "SystemMessage"
+    )
+    agent_sys = next(
+        m.content for m in agent_call["msgs"] if m.__class__.__name__ == "SystemMessage"
+    )
+    assert chat_sys == agent_sys
+    assert digest_tools(chat_call["tools"]) == digest_tools(agent_call["tools"])
+    assert chat_call["thinking_disabled"] is False
+    assert agent_call["thinking_disabled"] is False
 
 
 @pytest.mark.asyncio
@@ -145,10 +140,8 @@ async def test_prewarm_async_fires_both_slots_and_confirms_both():
     await agent._prewarm_async()
     calls = agent._captured_calls
     assert len(calls) == 2
-    tools_by_slot = {calls[0]["tools"] is None, calls[1]["tools"] is None}
-    assert tools_by_slot == {True, False}
-    thinking_by_slot = {calls[0]["thinking_disabled"], calls[1]["thinking_disabled"]}
-    assert thinking_by_slot == {True, False}
+    assert all(c["tools"] is not None for c in calls)
+    assert all(c["thinking_disabled"] is False for c in calls)
     assert agent._prewarm.warmed_at is not None  # agent slot
     assert agent._prewarm_chat.warmed_at is not None  # chat slot
     assert agent._thinking_disabled_this_turn is False  # restored after swap
@@ -156,20 +149,16 @@ async def test_prewarm_async_fires_both_slots_and_confirms_both():
 
 @pytest.mark.asyncio
 async def test_chat_prewarm_profile_matches_real_chat_turn_params():
-    """Both profiles derive from actual parameters: the captured prewarm
-    call (tools=None, thinking off, variant) vs the real greeting-turn
-    parameters (same tools/thinking/variant rules)."""
+    """Greeting now uses thinking ON + frozen core tools (same as encoding)."""
     agent = _prewarm_agent()
     from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_archive
 
     await prewarm_archive(agent, "chat")
     call = agent._captured_calls[0]
-    prewarm_p = _profile("chat", digest_tools(call["tools"]), thinking=False)
-    # Real chat turn: no tools, thinking disabled via the greeting switch,
-    # same variant the system prompt used.
-    real_p = _profile("chat", digest_tools(None), thinking=False)
+    prewarm_p = _profile("chat", digest_tools(call["tools"]), thinking=True)
+    real_p = _profile("chat", digest_tools(list(CORE_TOOLS)), thinking=True)
     assert profiles_compatible(prewarm_p, real_p) is True
-    assert profiles_compatible(prewarm_p, _profile("agent", digest_tools(None), False)) is False
+    assert profiles_compatible(prewarm_p, _profile("chat", digest_tools(None), True)) is False
 
 
 @pytest.mark.asyncio
@@ -199,7 +188,7 @@ async def test_prewarm_signature_equals_real_request_signature():
     chat_sig = prewarm_signature(agent, "chat")
     chat_real = build_prewarm_signature(
         model="test-model", cwd="/w", mcp="", kind="chat",
-        thinking_enabled=False, tools_digest=digest_tools(None),
+        thinking_enabled=True, tools_digest=_core_tools_digest(),
     )
     assert chat_sig == chat_real
 
@@ -239,6 +228,7 @@ async def test_keep_alive_rides_agent_prefix_shape():
     assert call["tools"] is not None
     assert [t.name for t in call["tools"]] == ["bash", "read"]
     assert call["thinking_disabled"] is False
+    assert call["max_tokens"] == 1
 
 
 @pytest.mark.asyncio
@@ -281,3 +271,31 @@ def test_signature_includes_kind_thinking_tools():
         thinking_enabled=True, tools_digest=digest_tools(None),
     )
     assert sig_agent != sig_agent_no_tools
+
+
+@pytest.mark.asyncio
+async def test_await_prefix_warm_confirms_when_rebuild_needed():
+    agent = _prewarm_agent()
+    agent._llm = object()
+    ok = await agent.await_prefix_warm(timeout=2.0)
+    assert ok is True
+    assert agent._prewarm.warmed_at is not None
+    assert agent._prewarm_chat.warmed_at is not None
+    assert all(c["max_tokens"] == 4096 for c in agent._captured_calls)
+
+
+def test_worker_prefix_warm_rpc_exists():
+    from appserver.agent_worker import AgentWorker
+    import inspect
+
+    worker_src = inspect.getsource(AgentWorker)
+    assert "_handle_prefix_warm" in worker_src
+    assert '"prefix_warm"' in worker_src
+
+
+def test_session_warm_joins_prefix():
+    import inspect
+    from appserver.server import AppServer
+
+    src = inspect.getsource(AppServer._handle_warm)
+    assert "prefix_warm" in src

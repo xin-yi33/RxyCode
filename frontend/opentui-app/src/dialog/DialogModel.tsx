@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { appendFileSync } from "node:fs";
 import { DialogSelect } from "./DialogSelect.tsx";
 import { fetchModels, sendCommand } from "./api.ts";
 import { buildModelListOptions } from "./DialogModel.options.ts";
@@ -18,6 +19,7 @@ async function loadModelDialogState(activeModel?: string) {
       options: [] as ReturnType<typeof buildModelListOptions>["options"],
       categoryOrder: [] as string[],
       current: activeModel || "",
+      models: [] as Awaited<ReturnType<typeof fetchModels>>["models"],
     };
   }
   const built = buildModelListOptions(result.models, result.recent, result.active);
@@ -27,6 +29,7 @@ async function loadModelDialogState(activeModel?: string) {
     options: built.options,
     categoryOrder: built.categoryOrder,
     current: result.active || activeModel || "",
+    models: result.models,
   };
 }
 
@@ -36,11 +39,12 @@ export function DialogModel({
   activeModel,
 }: {
   onClose: () => void;
-  onSwitched: (modelId: string, message: string) => void;
+  onSwitched: (modelId: string, message: string, effortOptions?: string[]) => void;
   activeModel?: string;
 }) {
   const [options, setOptions] = useState<ReturnType<typeof buildModelListOptions>["options"]>([]);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
+  const [models, setModels] = useState<Awaited<ReturnType<typeof fetchModels>>["models"]>([]);
   const [current, setCurrent] = useState(activeModel || "");
   const [loadError, setLoadError] = useState("");
   const [switchError, setSwitchError] = useState("");
@@ -52,12 +56,14 @@ export function DialogModel({
       setLoadError(state.error);
       setOptions([]);
       setCategoryOrder([]);
+      setModels([]);
       return;
     }
     setLoadError("");
     setCurrent(state.current);
     setOptions(state.options);
     setCategoryOrder(state.categoryOrder);
+    setModels(state.models);
   }, [activeModel]);
 
   useEffect(() => {
@@ -88,6 +94,14 @@ export function DialogModel({
         }
         if (switching) return;
         void (async () => {
+          const selected = models.find((item) => item.id === opt.value);
+          const host = (() => {
+            try {
+              return selected?.base_url ? new URL(selected.base_url).host : "";
+            } catch {
+              return "";
+            }
+          })();
           setSwitching(true);
           setSwitchError("");
           const result = await sendCommand(modelSwitchCommand(opt.value));
@@ -99,8 +113,8 @@ export function DialogModel({
             return;
           }
           setCurrent(opt.value);
-          onSwitched(outcome.modelId, outcome.message);
-          onClose();
+          const applied = models.find((item) => item.id === outcome.modelId);
+          onSwitched(outcome.modelId, outcome.message, applied?.effort_options);
         })();
       }}
     />

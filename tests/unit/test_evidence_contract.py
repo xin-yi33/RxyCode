@@ -206,3 +206,33 @@ def test_successful_empty_queries_are_not_misclassified(result):
 
     assert evidence.status == "succeeded"
     assert evidence.passed is True
+
+
+def test_later_edit_supersedes_a_failed_write(tmp_path: Path):
+    artifact = tmp_path / "e14_tiny.py"
+    artifact.write_text("def add(a, b): return a + b\n", encoding="utf-8")
+    failed_write = build_tool_evidence(
+        "write",
+        {"filePath": str(artifact), "content": "def add(a, b): return a - b\n"},
+        "[wrote 40 bytes]",
+        executed=True,
+        approval="auto",
+    )
+    edit = build_tool_evidence(
+        "edit",
+        {
+            "filePath": str(artifact),
+            "oldString": "return a - b",
+            "newString": "return a + b",
+        },
+        "[edited e14_tiny.py]",
+        executed=True,
+        approval="auto",
+    )
+    assert failed_write.passed is False
+    assert edit.passed is True
+    assert deterministic_issues([failed_write, edit]) == []
+    assert any(
+        "did not complete" in issue
+        for issue in deterministic_issues([failed_write])
+    )

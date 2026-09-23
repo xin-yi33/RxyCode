@@ -18,6 +18,7 @@ class TestErrorKind:
     def test_enum_values(self):
         from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
         assert ErrorKind.TRANSIENT.value == "transient"
+        assert ErrorKind.BUSINESS.value == "business"
         assert ErrorKind.PERMANENT.value == "permanent"
 
 
@@ -26,10 +27,16 @@ class TestClassifyError:
         from RxyCode.RxyCode1_1_0.recovery.error_recovery import classify_error
         return classify_error(exc)
 
-    def test_httpx_timeout_is_transient(self):
+    def test_httpx_read_timeout_is_permanent(self):
         import httpx
         from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
-        assert self._classify(httpx.TimeoutException("t")) == ErrorKind.TRANSIENT
+        assert self._classify(httpx.ReadTimeout("t")) == ErrorKind.PERMANENT
+        assert self._classify(httpx.TimeoutException("t")) == ErrorKind.PERMANENT
+
+    def test_httpx_connect_timeout_is_transient(self):
+        import httpx
+        from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
+        assert self._classify(httpx.ConnectTimeout("c")) == ErrorKind.TRANSIENT
 
     def test_httpx_connect_error_is_transient(self):
         import httpx
@@ -111,13 +118,28 @@ class TestClassifyError:
 
         assert self._classify(Weird("?")) == ErrorKind.PERMANENT
 
-    def test_timeout_error_builtin_is_transient(self):
+    def test_timeout_error_builtin_is_permanent(self):
         from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
-        assert self._classify(TimeoutError("t")) == ErrorKind.TRANSIENT
+        assert self._classify(TimeoutError("t")) == ErrorKind.PERMANENT
+
+    def test_stream_connect_timeout_is_transient(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import StreamConnectTimeoutError
+        from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
+        assert self._classify(StreamConnectTimeoutError("handshake")) == ErrorKind.TRANSIENT
 
     def test_connection_error_builtin_is_transient(self):
         from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
         assert self._classify(ConnectionError("c")) == ErrorKind.TRANSIENT
+
+    def test_fired_stream_clock_is_permanent(self):
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+            FirstTokenTimeoutError,
+            StreamIdleTimeoutError,
+        )
+        from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind
+
+        assert self._classify(FirstTokenTimeoutError("ttft")) == ErrorKind.PERMANENT
+        assert self._classify(StreamIdleTimeoutError("idle")) == ErrorKind.PERMANENT
 
 
 class TestRetryWithBackoff:

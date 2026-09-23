@@ -333,6 +333,47 @@ def test_sensitive_policy_enforces_plan_boundary_and_write_paths(tmp_path):
     assert path_denial.reason == "write_path_not_allowed"
 
 
+def test_sensitive_policy_write_path_gate_exemptions(tmp_path):
+    """cd 与只读 git 子命令豁免写路径闸（2026-09-23 自救通道）。
+
+    工作区被降级到 scratch 时，agent 必须能 cd 到真实项目目录、跑
+    git status/diff，而不是被写路径白名单堵死报「环境阻塞」。
+    """
+    from RxyCode.RxyCode1_1_0.core.governance import (
+        PolicyOutcome,
+        SensitiveActionPolicy,
+    )
+
+    policy = SensitiveActionPolicy()
+    enabled = {"safety": {"enabled": True}}
+    outside = str(tmp_path / "proj")
+
+    cd_decision = policy.decide("cd", {"path": outside}, enabled)
+    assert cd_decision.reason != "write_path_not_allowed"
+    assert cd_decision.outcome is not PolicyOutcome.DENY
+
+    git_status = policy.decide(
+        "git", {"operation": "status", "path": outside}, enabled
+    )
+    assert git_status.reason != "write_path_not_allowed"
+
+    git_diff = policy.decide(
+        "git", {"operation": "diff", "path": outside}, enabled
+    )
+    assert git_diff.reason != "write_path_not_allowed"
+
+    # 写类 git 子命令与写工具仍然被闸。
+    git_push = policy.decide(
+        "git", {"operation": "push", "path": outside}, enabled
+    )
+    assert git_push.outcome is PolicyOutcome.DENY
+    assert git_push.reason == "write_path_not_allowed"
+
+    write = policy.decide("write", {"path": outside}, enabled)
+    assert write.outcome is PolicyOutcome.DENY
+    assert write.reason == "write_path_not_allowed"
+
+
 def test_sensitive_policy_supports_dry_run_auto_and_explicit_approval():
     from RxyCode.RxyCode1_1_0.core.governance import (
         PolicyOutcome,

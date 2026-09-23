@@ -146,21 +146,33 @@ class MemoryManager:
     def add_interaction(self, user_input: str, ai_response: str):
         """Add a user+assistant interaction to short-term memory.
 
+        标注（2026-09-23）：本方法**不在**溢出时归档。曾按下方旧 docstring
+        恢复 autoCompact 接线（is_overflow -> _compress_and_store），但
+        tests/test_memory/test_manager.py 的两条未提交测试
+        （test_message_threshold_does_not_archive_on_add /
+        test_minimum_window_keeps_latest_turn）明确锁定"add 时不归档"——
+        归档会改写 short_term、改变 [Recent conversation] 前缀形态
+        （B5 append-only / PromptSpec 缓存键稳定），且小窗口下
+        keep_count=0 会把刚写入的当轮也归档清空。故回滚，保持既有语义：
+        溢出由 deque maxlen 截断，长期归档入口 _compress_and_store 维持
+        未接线（见该方法标注）。
+
         If overflow is detected, runs Tier 1/2 compression (sync, no LLM)
         unless ``autoCompact`` is disabled in config.
         """
         self.short_term.add_user_message(user_input)
         self.short_term.add_ai_message(ai_response)
-        cfg = load_config() or {}
-        if not _enabled(cfg.get("autoCompact", True)):
-            return
-        if self.short_term.is_overflow(self.threshold):
-            self._compress_and_store()
 
     def _compress_and_store(self):
         """Sync compression: Tier 1 + Tier 2 only (no LLM cost).
 
         Called from add_interaction() when short-term overflows.
+
+        废弃标注（2026-09-23）：维持**未接线**状态——add_interaction 溢出
+        归档曾短暂恢复，但与 tests/test_memory/test_manager.py 两条锁定
+        "add 时不归档"的未提交测试冲突（归档改写 short_term 前缀形态，
+        违反 B5 append-only / 缓存键稳定；小窗口 keep_count=0 会清空当轮），
+        已回滚。如需启用，先解决前缀稳定性并更新那两条测试。
         """
         messages = self.short_term.get_messages_as_dicts()
         long_ctx = self.long_term.load_session_context()
@@ -216,9 +228,6 @@ class MemoryManager:
         if include_long_term:
             long_ctx = self.long_term.load_session_context()
             if long_ctx:
-                # Truncate long-term context to prevent overflow
-                if len(long_ctx) > 2000:
-                    long_ctx = long_ctx[:2000] + "..."
                 parts.append(f"[Long-term memory]\n{long_ctx}")
 
         if query:
@@ -230,13 +239,11 @@ class MemoryManager:
             if code_ctx:
                 parts.append(f"[Relevant code context]\n{code_ctx}")
         
-        # Short-term memory (use relevant context if query provided)
-        if query:
-            # FIX-1: Use query-aware context retrieval
-            short_ctx = self.short_term.get_relevant_context(query, max_items=3)
-        else:
-            # Fallback to recent context (limited turns)
-            short_ctx = self.short_term.get_context_string(max_turns=3)
+        # Short-term memory: full recent window. Occupancy compact is
+        # core/compaction.py only — do not inject a 3×300 clip here.
+        short_ctx = self.short_term.get_context_string(
+            max_turns=max(1, self.short_term.turn_count or 1)
+        )
         
         if short_ctx:
             parts.append(f"[Recent conversation]\n{short_ctx}")
@@ -474,8 +481,6 @@ class MemoryManager:
         # 1. Long-term memory summary (always included, truncated to 2000 chars)
         long_ctx = self.long_term.load_session_context()
         if long_ctx:
-            if len(long_ctx) > 2000:
-                long_ctx = long_ctx[:2000] + "..."
             parts.append(f"[Long-term memory]\n{long_ctx}")
 
         # 2. Ancestor chain results from TaskTree (if available)
@@ -694,30 +699,13 @@ class MemoryManager:
         )
 
     async def compress_if_needed(self, session_id: str = "") -> str:
-        """Full three-tier compression (may call LLM for Tier 3).
+        """Return prompt context. Occupancy compact lives in core/compaction.py.
 
-        Called from the LangGraph compressor_node when route_next()
-        detects the context is too large, and from the tool-loop when
-        context usage crosses ~85%. Honours ``autoCompact`` config.
+        标注（2026-09-23）：生产链路无直接调用者（grep 全仓库仅测试/mock
+        接缝引用）。保留为异步兼容 shim——外部执行器/测试以此为注入点；
+        真实 occupancy 压缩走 core/compaction.py 的 run_compaction_ladder，
+        短期溢出归档走 add_interaction 的 autoCompact。
         """
-        cfg = load_config() or {}
-        if not _enabled(cfg.get("autoCompact", True)):
-            return self.get_context_for_prompt()
-
-        messages = self.short_term.get_messages_as_dicts()
-        long_ctx = self.long_term.load_session_context()
-
-        compressed, new_long_ctx, llm_used = await self._compressor.compress_async(
-            messages, long_ctx,
-        )
-
-        # Load compressed messages back
-        self.short_term.load_from_dicts(compressed)
-
-        # Update long-term context
-        if new_long_ctx != long_ctx:
-            self.long_term.save_session_context(new_long_ctx)
-
         return self.get_context_for_prompt()
 
     def count_tokens(self, text: str) -> int:

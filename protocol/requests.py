@@ -71,6 +71,10 @@ class PromptRequest(BaseModel):
         default=None,
         description="GX14 Ask/Edit/Agent hard tool boundary (default full).",
     )
+    request_id: str | None = Field(
+        default=None,
+        description="Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
+    )
 
 
 class InterruptRequest(BaseModel):

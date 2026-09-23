@@ -504,6 +504,7 @@ async def test_mcp_failure_backoff_preserves_healthy_server(fake_server):
     script, healthy_log = fake_server
     bad_log = healthy_log.with_name("bad-wire.jsonl")
     config = load_config()
+    previous_mcp = dict(config.get("mcpServers") or {})
     config["mcpServers"] = {
         "healthy": {
             "command": sys.executable,
@@ -517,28 +518,32 @@ async def test_mcp_failure_backoff_preserves_healthy_server(fake_server):
         },
     }
     save_config(config)
-
     agent = _bare_agent()
-    assert agent._refresh_mcp_tools(force=True) is True
-    healthy_client = agent._mcp_clients["healthy"]
-    initial_healthy_messages = len(_messages(healthy_log))
-    initial_bad_messages = len(_messages(bad_log))
-    assert initial_bad_messages >= 1
+    try:
+        assert agent._refresh_mcp_tools(force=True) is True
+        healthy_client = agent._mcp_clients["healthy"]
+        initial_healthy_messages = len(_messages(healthy_log))
+        initial_bad_messages = len(_messages(bad_log))
+        assert initial_bad_messages >= 1
 
-    started = time.perf_counter()
-    assert agent._refresh_mcp_tools() is False
-    elapsed = time.perf_counter() - started
+        started = time.perf_counter()
+        assert agent._refresh_mcp_tools() is False
+        elapsed = time.perf_counter() - started
 
-    assert elapsed < 0.25
-    assert agent._mcp_clients["healthy"] is healthy_client
-    assert len(_messages(healthy_log)) == initial_healthy_messages
-    assert len(_messages(bad_log)) == initial_bad_messages
-    status = agent.runtime_status()["mcp"]
-    assert status["connected_servers"] == 1
-    assert status["error_count"] == 1
-    assert status["backoff_servers"] == 1
-    assert status["next_retry_seconds"] >= 1
-    agent.close_mcp()
+        assert elapsed < 0.25
+        assert agent._mcp_clients["healthy"] is healthy_client
+        assert len(_messages(healthy_log)) == initial_healthy_messages
+        assert len(_messages(bad_log)) == initial_bad_messages
+        status = agent.runtime_status()["mcp"]
+        assert status["connected_servers"] == 1
+        assert status["error_count"] == 1
+        assert status["backoff_servers"] == 1
+        assert status["next_retry_seconds"] >= 1
+    finally:
+        agent.close_mcp()
+        restored = load_config()
+        restored["mcpServers"] = previous_mcp
+        save_config(restored)
 
 
 def test_orchestrator_unregister_removes_dynamic_tool():

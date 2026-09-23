@@ -42,4 +42,9 @@ describe("buildOptions", () => {
     const built = buildOptions([model("custom", ["custom-x"])] as never, "custom");
     expect(built.options[0].description).toBe("自定义档位");
   });
+
+  test("vendor builder still does not inject Default", () => {
+    const built = buildOptions([model("deepseek", ["low", "max"])] as never, "deepseek");
+    expect(built.options.map((o) => o.value)).toEqual(["low", "max"]);
+  });
 });

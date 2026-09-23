@@ -56,9 +56,15 @@ class UsageTracker:
             "cache_write_tokens",
             "cache_hit_rate",
             "reporting_status",
+            "context_used",
         ):
-            if key in usage:
-                row[key] = usage[key]
+            if key not in usage:
+                continue
+            value = usage[key]
+            # None must not wipe occupancy; billing events often omit it.
+            if key == "context_used" and value is None:
+                continue
+            row[key] = value
         window = context_window
         if window is None and self._context_window_lookup is not None:
             window = self._context_window_lookup(session_id)
@@ -87,10 +93,15 @@ class UsageTracker:
                 "seq": 0,
                 "cost_available": False,
             }
-        used = int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0)
+        occupancy = row.get("context_used")
+        used = (
+            int(occupancy)
+            if isinstance(occupancy, int) and occupancy > 0
+            else None
+        )
         window = row.get("context_window")
         used_pct = None
-        if isinstance(window, int) and window > 0:
+        if used is not None and isinstance(window, int) and window > 0:
             used_pct = min(100.0, max(0.0, used * 100.0 / window))
         payload = {
             "method": "event/agent_usage",

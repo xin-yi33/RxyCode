@@ -165,12 +165,12 @@ class TestShortTermMemory:
         # Should still return something (maybe empty or low-scored)
         assert isinstance(ctx, str)
 
-    def test_get_context_string_truncation(self):
+    def test_get_context_string_keeps_long_messages(self):
         stm = self._make()
         long_msg = "x" * 600
         stm.add_user_message(long_msg)
         ctx = stm.get_context_string()
-        assert "..." in ctx
+        assert long_msg in ctx
 
     def test_turn_count_increments_on_user_only(self):
         stm = self._make()

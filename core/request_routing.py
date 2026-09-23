@@ -429,8 +429,12 @@ def detect_file_operation(text: str) -> dict | None:
     if any(ind in text_lower for ind in code_gen_indicators):
         return None
 
-    path_match = re.search(r"[A-Za-z]:[\\\/][^\s]+", text_stripped)
+    # 废弃代码（2026-09-22）：r"[A-Za-z]:[\\\/][^\s]+" 把 https://example.com
+    # 里的 s: 当成盘符，路径变成 s:\example.com：先，再因句中「列出」直接 ls。
+    path_match = re.search(r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s]+", text_stripped)
     detected_path = path_match.group(0) if path_match else None
+    if detected_path and "://" in detected_path:
+        detected_path = None
 
     list_kw = ["list", "ls", "列出", "显示文件", "查看文件"]
     if any(k in text_lower for k in list_kw) and detected_path:

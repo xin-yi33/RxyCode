@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -34,10 +35,14 @@ from RxyCode.RxyCode1_1_0.core.safety.approval import (
 from RxyCode.RxyCode1_1_0.core.safety.audit import get_audit_logger
 from RxyCode.RxyCode1_1_0.core.safety.policy import (
     RiskLevel,
+    TOOL_NAME_ALIASES,
+    WRITE_PATH_BLOCKED_HINT,
+    canonical_tool_name,
     find_bash_disallowed_write_paths,
     get_tool_risk,
     is_dry_run,
     is_write_allowed,
+    is_write_path_gate_exempt,
     summarize_args,
 )
 from RxyCode.RxyCode1_1_0.log.log_helpers import (
@@ -45,6 +50,16 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
     trace_status_for_result,
 )
 from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
+
+# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
+try:
+    from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
+except Exception:
+    try:
+        from core.runtime_probe import probe as _probe
+    except Exception:
+        def _probe(event, **fields):
+            return None
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import retry_with_backoff
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
@@ -80,6 +95,10 @@ _tool_journal_binding: ContextVar[Any | None] = ContextVar(
 )
 _live_tool_dedup: ContextVar[dict[str, str] | None] = ContextVar(
     "live_tool_dedup",
+    default=None,
+)
+_inflight_tools: ContextVar[dict[str, str] | None] = ContextVar(
+    "tool_inflight_names",
     default=None,
 )
 _permission_mode_override: ContextVar[str | None] = ContextVar(
@@ -129,14 +148,18 @@ class ToolOrchestrator:
         "read", "view", "grep", "glob", "ls", "datetime",
         "websearch", "webfetch",
     })
-    TOOL_ALIASES = {
-        "web_search": "websearch",
-        "search_web": "websearch",
-        "web_fetch": "webfetch",
-        "fetch_url": "webfetch",
-        "open": "open_file",
-        "browser": "open_file",
-    }
+    # 废弃代码（2026-09-21）：本地 TOOL_ALIASES 与 policy 双份会漂移，
+    # 别名以 core.safety.policy.TOOL_NAME_ALIASES / canonical_tool_name 为准。
+    # TOOL_ALIASES = {
+    #     "web_search": "websearch",
+    #     "search_web": "websearch",
+    #     "web_fetch": "webfetch",
+    #     "fetch_url": "webfetch",
+    #     "open": "open_file",
+    #     "browser": "open_file",
+    #     "shell": "bash",
+    # }
+    TOOL_ALIASES = TOOL_NAME_ALIASES
 
     def __init__(
         self,
@@ -414,8 +437,7 @@ class ToolOrchestrator:
 
     @classmethod
     def _canonical_name(cls, name: str) -> str:
-        lowered = name.strip().lower()
-        return cls.TOOL_ALIASES.get(lowered, lowered)
+        return canonical_tool_name(name)
 
     def register(self, name: str, tool: Any, *, risk: Any | None = None) -> None:
         """Register a tool and an optional Agent-local minimum risk."""
@@ -551,21 +573,81 @@ class ToolOrchestrator:
         "filename",
     )
 
+    #: bash/workflow may legitimately run longer; others stall back to the LLM.
+    _LONG_RUNNING_TOOLS = frozenset({"bash", "workflow"})
+    # 废弃代码（2026-09-20）："shell" 曾当作独立长耗时工具名。现网未注册 shell，
+    # 未归一时会掉进 120s stall，把 bash 别名一刀切。已改为 TOOL_ALIASES["shell"]="bash"。
+    # _LONG_RUNNING_TOOLS = frozenset({"bash", "shell", "workflow"})
+    # question 等用户作答，不设时限。
+    _USER_WAIT_TOOLS = frozenset({"question"})
+    _DEFAULT_STALL_SECONDS = 120.0
+    _TOOL_STALL_SECONDS = {
+        "vision": 30.0,
+        "read": 60.0,
+        "view": 60.0,
+        "ls": 30.0,
+        "websearch": 30.0,
+        "webfetch": 30.0,
+    }
+    # First virtual-browser call may download Chromium. The map above only
+    # shortens the 120s stall (min). These floors lengthen it. Do not route
+    # that download through bash: the bash idle watchdog kills a quiet
+    # download at 300s.
+    # 废弃代码（2026-09-22）：browser_navigate 没有地板，掉进 120s stall。
+    _SLOW_START_TOOLS = {
+        "browser_navigate": 600.0,
+        "browser_snapshot": 180.0,
+        "browser_click": 180.0,
+    }
+
     @staticmethod
-    def _tool_timeout_seconds(config: dict | None) -> float:
-        """Return the configured tool deadline, or zero when disabled/invalid."""
+    def _tool_timeout_seconds(config: dict | None, name: str = "") -> float:
+        """Return the per-call deadline, or zero when disabled/invalid.
+
+        Global ``execution.tool_timeout_seconds`` (default 1800) is the hard
+        ceiling. Read/vision-like tools use a shorter stall (default 120s,
+        vision 30s) so a hung call returns ``[error: timed out]`` to the LLM
+        instead of spinning for half an hour. Names are canonicalized first so
+        ``shell``/``web_search`` cannot pick the unknown-tool 120s bucket.
+        """
         if not isinstance(config, dict):
             return 0.0
         execution = config.get("execution") or {}
         if not isinstance(execution, dict):
             return 0.0
         try:
-            return max(
+            global_timeout = max(
                 0.0,
                 float(execution.get("tool_timeout_seconds", 1800) or 0),
             )
         except (TypeError, ValueError):
             return 0.0
+        if global_timeout <= 0:
+            return 0.0
+        key = ToolOrchestrator._canonical_name(name)
+        if key in ToolOrchestrator._USER_WAIT_TOOLS:
+            # 废弃代码（2026-09-22）：question 掉进默认 120s stall，用户还没选就超时。
+            return 0.0
+        if key in ToolOrchestrator._LONG_RUNNING_TOOLS:
+            return global_timeout
+        try:
+            stall = float(
+                execution.get("tool_stall_timeout_seconds", 120) or 120
+            )
+        except (TypeError, ValueError):
+            stall = ToolOrchestrator._DEFAULT_STALL_SECONDS
+        if stall <= 0:
+            stall = ToolOrchestrator._DEFAULT_STALL_SECONDS
+        stall = min(
+            stall,
+            ToolOrchestrator._TOOL_STALL_SECONDS.get(
+                key, ToolOrchestrator._DEFAULT_STALL_SECONDS
+            ),
+        )
+        floor = ToolOrchestrator._SLOW_START_TOOLS.get(key)
+        if floor is not None:
+            stall = max(stall, floor)
+        return min(global_timeout, stall)
 
     async def _invoke_and_finish(
         self,
@@ -580,7 +662,7 @@ class ToolOrchestrator:
         call_id: str | None = None,
     ) -> str:
         """Invoke once, applying the shared deadline and terminal recording."""
-        timeout = self._tool_timeout_seconds(config)
+        timeout = self._tool_timeout_seconds(config, name)
         execution_cfg = (config or {}).get("execution", {})
         try:
             retry_attempts = max(
@@ -688,10 +770,20 @@ class ToolOrchestrator:
             else:
                 result = await invocation
         except asyncio.TimeoutError:
+            arg_preview = str(
+                summarize_args(args) if args is not None else ""
+            )[:400]
+            timeout_msg = (
+                f"[error: tool '{name}' timed out after {timeout:g}s]\n"
+                f"elapsed={timeout:g}s status=still running\n"
+                f"call={name}({arg_preview[:400]})\n"
+                "The tool did not return a result. Decide whether to skip it, "
+                "retry with different arguments, or continue without it."
+            )
             return self._finish(
                 name,
                 args,
-                f"[error: tool '{name}' timed out after {timeout:g}s]",
+                timeout_msg,
                 executed=True,
                 approval=approval,
                 risk=risk,
@@ -776,6 +868,7 @@ class ToolOrchestrator:
         never change the underlying safety-gate result.
         """
         tui = event_tui if event_tui is not None else self.get_event_tui()
+        name = self._canonical_name(name)
         resolved_call_id = str(call_id or uuid.uuid4().hex)
         await self._emit_event_hooks(
             "before",
@@ -856,14 +949,70 @@ class ToolOrchestrator:
                     finish_span("ok")
                     return skipped
 
-            result = await self._execute_tool_gated(
-                name,
-                args,
-                config,
-                approval_source=approval_source,
-                mode=mode,
-                call_id=resolved_call_id,
-            )
+            wait_mono = time.monotonic()
+            inflight = _inflight_tools.get()
+            if inflight is None:
+                inflight = {}
+                _inflight_tools.set(inflight)
+            inflight[resolved_call_id] = str(name)
+            stop_liveness = asyncio.Event()
+
+            async def _refresh_tool_wait() -> None:
+                try:
+                    from RxyCode.RxyCode1_1_0.core.progress_labels import tool_wait_progress
+                except ImportError:
+                    from core.progress_labels import tool_wait_progress
+
+                while True:
+                    try:
+                        await asyncio.wait_for(stop_liveness.wait(), timeout=1.0)
+                        return
+                    except asyncio.TimeoutError:
+                        live = _inflight_tools.get() or {}
+                        if resolved_call_id not in live:
+                            return
+                        remaining = list(dict.fromkeys(live.values()))
+                        label_name = remaining[0] if remaining else name
+                        elapsed = int(time.monotonic() - wait_mono)
+                        if tui is not None and hasattr(tui, "write_progress"):
+                            try:
+                                label = tool_wait_progress(label_name, elapsed)
+                                if label:
+                                    tui.write_progress(label)
+                            except Exception:
+                                pass
+
+            liveness_task = asyncio.create_task(_refresh_tool_wait())
+            try:
+                result = await self._execute_tool_gated(
+                    name,
+                    args,
+                    config,
+                    approval_source=approval_source,
+                    mode=mode,
+                    call_id=resolved_call_id,
+                )
+            finally:
+                live = _inflight_tools.get() or {}
+                live.pop(resolved_call_id, None)
+                remaining = list(dict.fromkeys(live.values()))
+                stop_liveness.set()
+                liveness_task.cancel()
+                try:
+                    await liveness_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                if remaining and tui is not None and hasattr(tui, "write_progress"):
+                    try:
+                        from RxyCode.RxyCode1_1_0.core.progress_labels import tool_wait_progress
+                    except ImportError:
+                        from core.progress_labels import tool_wait_progress
+                    try:
+                        label = tool_wait_progress(remaining[0])
+                        if label:
+                            tui.write_progress(label)
+                    except Exception:
+                        pass
             if cache is not None:
                 cache[key] = str(result)
         except asyncio.CancelledError:
@@ -951,6 +1100,65 @@ class ToolOrchestrator:
                 pass
         return result
 
+    async def _enable_computer_use_for_call(self, name: str, config: dict) -> str | None:
+        """Visible CU tools stay callable while the feature is off.
+
+        full_auto turns it on and continues. Other modes ask once.
+        Returns an error string when the user refuses or no broker exists.
+        """
+        tool = self.get(name)
+        meta = getattr(tool, "metadata", None) or {}
+        if meta.get("cu_kind") != "disabled":
+            return None
+        mode = str(
+            _permission_mode_override.get()
+            or (config.get("safety") or {}).get("permission_mode")
+            or "confirm_all"
+        ).strip().lower()
+        if mode != "full_auto":
+            from RxyCode.RxyCode1_1_0.core.safety.approval import (
+                ApprovalDecision,
+                ApprovalRequest,
+                get_approval_broker,
+            )
+
+            broker = get_approval_broker()
+            if broker is None:
+                return (
+                    "[error: Computer Use 未打开，当前没有审批窗口。"
+                    "请告诉用户在设置中打开 Computer Use。]"
+                )
+            decision = await broker.request_approval(
+                ApprovalRequest(
+                    tool_name="computer_use",
+                    args_summary="Computer Use 未打开。允许打开并执行这次桌面操作？",
+                    risk=RiskLevel.DANGER,
+                )
+            )
+            if decision == ApprovalDecision.REJECTED:
+                return (
+                    "[error: Computer Use 未打开，用户拒绝打开。"
+                    "请告诉用户需要打开 Computer Use。]"
+                )
+        agent = getattr(self, "_owner_agent", None)
+        try:
+            from RxyCode.RxyCode1_1_0.config.settings import load_config, save_config
+
+            cfg = load_config()
+            section = dict(cfg.get("computer_use") or {})
+            section["enabled"] = True
+            section["approved"] = True
+            cfg["computer_use"] = section
+            save_config(cfg)
+            if agent is not None:
+                agent._cfg = cfg
+                from RxyCode.RxyCode1_1_0.core.cu.bind import sync_agent_computer_use
+
+                sync_agent_computer_use(agent, force=True)
+        except Exception as exc:
+            return f"[error: 打开 Computer Use 失败: {type(exc).__name__}: {exc}]"
+        return None
+
     async def _execute_tool_gated(
         self,
         name: str,
@@ -973,6 +1181,8 @@ class ToolOrchestrator:
         """
         config = config or {}
         safety = (config.get("safety") or {})
+        name = self._canonical_name(name)
+        canonical = name
 
         tool = self.get(name)
         if tool is None:
@@ -980,16 +1190,22 @@ class ToolOrchestrator:
                 name, args, f"[error: tool '{name}' not found]",
                 executed=False, approval="not_found", config=config,
             )
+        blocked = await self._enable_computer_use_for_call(name, config)
+        if blocked:
+            return self._finish(
+                name, args, blocked, executed=False, approval="rejected", config=config,
+            )
+        tool = self.get(name) or tool
 
         # The shared governance policy is the authoritative first decision;
         # the existing gate below performs approval and execution.
         policy_decision = SensitiveActionPolicy().decide(
-            name,
+            canonical,
             args,
             config,
             approval_source=approval_source,
             mode=mode,
-            minimum_risk=self._risk_overrides.get(self._canonical_name(name)),
+            minimum_risk=self._risk_overrides.get(canonical),
         )
         risk = policy_decision.risk
         if policy_decision.outcome is PolicyOutcome.DENY:
@@ -1053,14 +1269,28 @@ class ToolOrchestrator:
         # 2. write-path whitelist (only for tools that take a path arg and
         #    can write — i.e. WRITE/DANGER level)
         if risk >= RiskLevel.WRITE and isinstance(args, dict):
-            for key in self._PATH_ARG_KEYS:
-                p = args.get(key)
-                if isinstance(p, str) and p and not is_write_allowed(p, config):
-                    msg = f"[blocked: write path not allowed: {p}]"
-                    return self._finish(
-                        name, args, msg, executed=False, approval="rejected",
-                        risk=risk, audit=audit,
-                    )
+            if not is_write_path_gate_exempt(name, args):
+                for key in self._PATH_ARG_KEYS:
+                    p = args.get(key)
+                    if isinstance(p, str) and p and not is_write_allowed(p, config):
+                        _probe(  # PROBE-20260923: 写路径闸拦截（D:\ 项目被拦定位）
+                            "tool.write_gate.blocked",
+                            tool=name,
+                            path=p,
+                        )
+                        msg = (
+                            f"[blocked: write path not allowed: {p}] "
+                            + WRITE_PATH_BLOCKED_HINT
+                        )
+                        return self._finish(
+                            name, args, msg, executed=False, approval="rejected",
+                            risk=risk, audit=audit,
+                        )
+            else:
+                _probe(  # PROBE-20260923: 写路径闸豁免放行
+                    "tool.write_gate.exempt",
+                    tool=name,
+                )
             # Bash has no path arg; still block absolute mutating targets that
             # escape the workspace write whitelist (workspace sandbox gap).
             if self._canonical_name(name) == "bash":

@@ -110,6 +110,11 @@ def test_log_chat_error_logs_detail():
             "I could not verify the requested current information from external sources, so I will not guess.",
             "failed",
         ),
+        (
+            "这一窗口的模型调用已暂停：连续连接失败后进入冷却，不是限流 429。"
+            "冷却结束会自动再连，不用关掉窗口。",
+            "failed",
+        ),
     ],
 )
 def test_classify_agent_result_distinguishes_terminal_states(result, expected_status):

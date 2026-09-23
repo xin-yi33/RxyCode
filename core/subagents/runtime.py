@@ -37,6 +37,8 @@ from protocol.subagents import (
 )
 
 from .permissions import DecisionKind, PermissionPolicy
+from ..safety.policy import canonical_tool_name
+
 try:
     from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_session_binding
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
@@ -347,6 +349,15 @@ class ChildRuntime:
     def check_tool(self, name: str, args: dict[str, Any] | None = None) -> bool:
         """Apply the child policy before a tool reaches AgentV2's gate."""
 
+        name = canonical_tool_name(name)
+        # 2026-09-23：final_answer 是纯退出信号（无任何副作用）。子代理权限规范
+        # 没有该类别（_rules_for 只映射 read/edit/bash/webfetch/websearch/task），
+        # 此前一律默认 deny → 子代理按系统提示词调它收尾时被拦 → 退出判定
+        # （decide_react_turn）只认成功调用，被拦的不算 → 子代理空转继续调
+        # 工具（用户现场：final_answer 被拦后又出现 ls）。这里直接放行。
+        if name == "final_answer":
+            self.audit.permission_decision(name, "allow", "builtin:exit-signal")
+            return True
         value = ""
         args = args or {}
         if name in {"read", "edit", "open_file", "write", "patch"}:
@@ -452,6 +463,19 @@ class ChildRuntime:
                 agent._execute_tool = guarded_execute
 
             binding = bind_session(self.session_id)
+            # 2026-09-23（P0 answer-last）：子代理执行期间委托深度 +1，
+            # ProtocolTui 据此把它的流式输出打标为 intermediate。
+            try:
+                from ..appserver.runtime import (
+                    bind_delegate_depth,
+                    reset_delegate_depth,
+                )
+            except ImportError:  # pragma: no cover - 非 appserver 环境
+                bind_delegate_depth = None
+                reset_delegate_depth = None
+            depth_token = (
+                bind_delegate_depth() if callable(bind_delegate_depth) else None
+            )
             try:
                 wall_limit = self._runtime.budget.budget.max_wall_time_seconds
                 role_prompt = (self.definition.prompt or self.definition.description).strip()
@@ -489,6 +513,8 @@ class ChildRuntime:
                     )
             finally:
                 reset_session_binding(binding)
+                if depth_token is not None and callable(reset_delegate_depth):
+                    reset_delegate_depth(depth_token)
 
             self._runtime.cancel_token.throw_if_cancelled()
             input_tokens = max(0, scoped_usage["input_tokens"])

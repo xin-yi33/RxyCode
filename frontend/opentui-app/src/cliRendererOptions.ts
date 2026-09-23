@@ -1,10 +1,10 @@
 /**
- * OpenTUI mouse tracking on Windows.
+ * OpenTUI mouse tracking.
  *
- * Scroll, copy, and edge auto-scroll need useMouse (1000/1002 + SGR 1006).
- * All-motion 1003 emits ESC [ < 35 ; x ; y M on every hover; cmd/ConPTY
- * paints those as [[<35;46;17M^. Keep clicks/drag/wheel on, movement off.
- * RXYCODE_MOUSE=0 disables tracking; RXYCODE_MOUSE_MOVE=1 opts into 1003.
+ * Scroll, copy, and hover highlight need useMouse. All-motion 1003 emits
+ * ESC [ < 35 ; x ; y M; consumeSgrMouseInput eats those so they never
+ * leak into the composer. Hover is on by default; RXYCODE_MOUSE_MOVE=0
+ * turns it off. RXYCODE_MOUSE=0 disables tracking.
  */
 export type CliRendererMouseOptions = {
   useMouse: boolean;
@@ -26,13 +26,15 @@ export function resolveCliRendererMouseOptions(
   platform: NodeJS.Platform = process.platform,
 ): CliRendererMouseOptions {
   const forceOff = env.RXYCODE_MOUSE === "0";
-  const forceMove = env.RXYCODE_MOUSE_MOVE === "1";
+  const forceMoveOff = env.RXYCODE_MOUSE_MOVE === "0";
   if (forceOff) {
     return { useMouse: false, enableMouseMovement: false };
   }
   return {
     useMouse: true,
-    enableMouseMovement: forceMove || !isWindowsHost(platform),
+    // Hover highlight (plan buttons) needs movement. Hover SGR is eaten by
+    // consumeSgrMouseInput so it does not leak into the composer.
+    enableMouseMovement: !forceMoveOff,
   };
 }
 

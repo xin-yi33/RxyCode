@@ -101,6 +101,10 @@ def classify_agent_result(answer: str) -> tuple[str, str]:
         if "timed out" in lowered:
             return "timed_out", stripped
         return "failed", stripped
+    # 熔断暂停是失败。把它当成成功时，写文件任务会再被改写成
+    # 「没有核实到写入」，界面显示工具执行中断。
+    if "模型调用已暂停" in stripped or "circuit breaker" in lowered:
+        return "failed", stripped
     return "succeeded", answer
 
 

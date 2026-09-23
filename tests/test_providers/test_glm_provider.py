@@ -129,6 +129,33 @@ def test_5v_turbo_is_vision():
     assert caps.supports_vision is True
 
 
+def test_glm53_flash_is_52plus_family():
+    caps = _caps("glm-5.3-flash")
+    assert caps.context_window == 1_048_576
+    assert caps.supports_vision is True
+    assert caps.supports_function_calling is True
+    assert caps.supports_reasoning is True
+    assert caps.thinking_default_on is True
+    assert caps.effort_presets == {"fast": "low", "balanced": "high", "deep": "max"}
+    assert "max" in caps.effort_options
+
+
+def test_glm_extracts_delta_reasoning_content():
+    """TTFT clock reads GLM thinking from delta, not usage."""
+    p, cfg = _resolve("glm-5.3-flash")
+    caps = p.capabilities(cfg)
+    assert caps.usage_fields.reasoning == ()
+    assert (
+        p.extract_reasoning({"reasoning_content": "先看登录入口"}, caps)
+        == "先看登录入口"
+    )
+
+    class _Delta:
+        reasoning_content = "用户要修 foo.py"
+
+    assert p.extract_reasoning(_Delta(), caps) == "用户要修 foo.py"
+
+
 def test_non_52_has_no_effort_presets():
     """§7.4 ③：reasoning_effort 仅 glm-5.2+。"""
     for name in ["glm-5.1", "glm-4.7"]:

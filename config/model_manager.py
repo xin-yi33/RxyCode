@@ -96,10 +96,12 @@ def list_provider_presets() -> list[dict]:
 
 
 def infer_provider_group(base_url: str) -> dict:
-    """Map a base URL to a provider group via preset host match, else 其他.
+    """Map a base URL to a provider group via preset host match, else the hostname.
 
     Host matching is exact / parent-domain only — never loose substring (that
     incorrectly collapsed distinct providers into one /model group).
+    Unknown hosts keep a dedicated /model section named after the hostname so
+    custom onboardings are findable; empty/invalid URLs still fall back to 其他.
     """
     try:
         normalized = normalize_provider_base_url(base_url, require_https=False)
@@ -123,7 +125,8 @@ def infer_provider_group(base_url: str) -> dict:
             request_path = urlsplit(normalized).path.rstrip("/")
             if request_path == preset_path or request_path.startswith(preset_path + "/"):
                 return {"id": preset["id"], "name": preset["name"]}
-    return {"id": "custom", "name": "其他"}
+    slug = re.sub(r"[^a-z0-9]+", "-", host).strip("-")
+    return {"id": f"custom-{slug}" if slug else "custom", "name": host}
 
 
 def resolve_provider_meta(
@@ -375,7 +378,8 @@ def onboard_models_batch(
         set_active_model(active)
 
     count = len(added)
-    message = f"已添加 {count} 个模型，请到 /model 查看"
+    group = provider_name or "其他"
+    message = f"已添加 {count} 个模型到「{group}」，当前: {active or ''}。请到 /model 查看"
     return {
         "added": added,
         "skipped": skipped,
