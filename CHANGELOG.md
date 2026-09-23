@@ -13,30 +13,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - 2026-09-22
 
-CLI / OpenTUI only. This tag does not publish a new Desktop installer.
-Desktop binaries stay on v1.3.0. Protocol version stays `1.1.0`.
+CLI / OpenTUI only. This tag publishes `rxycode-1.4.0.tar.gz` and does not
+publish a new Desktop installer. Desktop binaries stay on v1.3.0. Protocol
+version stays `1.1.0`. A drafting note once labeled this cut 1.3.1; the
+product version is **1.4.0**.
+
+The long Chinese write-up used on the GitHub Release is
+`docs/release-notes/RELEASE_NOTES_v1.4.0.md`.
 
 ### Highlights
 
-- Context occupancy, microcompact, and LLM compact share one clock. `/compact` and `/effort` are wired.
-- Session list and automatic titles. Shift+Enter / Ctrl+Enter insert a newline; Enter still sends.
-- Model and read-tool retries use the same budget: 5 extra attempts, 2s / 4s / 8s / 16s / 30s.
-- Plan mode opens the approval pane. Negated “don’t write a file” no longer trips the write evidence gate.
-- Computer Use, `final_answer`, virtual browser, and launch-and-return live on the fast path.
-- Repeated provider paragraphs are dropped instead of painted four times.
+- Context occupancy, microcompact, and LLM compact share one clock in
+  `core/compaction.py`. `/compact` and `/effort` are wired. A compact
+  boundary is not compacted a second time.
+- CapabilityRegistry, three scopes (global / project / session), an allowlist
+  so disabled capabilities stay out of the tool prefix, and `rxy plugin`.
+- Team Pack v2, thirteen preset teams, and an E0 → E1 → E2 degradation
+  compiler. Ordinary chat stays on one agent when teams are off.
+- `run/*` persistent runs, server-side goals reinjected on reconnect, and
+  Computer Use as the sixth built-in capability.
+- `vision` passes structured images through. MCP images are kept.
+- OpenTUI tool cards, plan pane, follow-up queue, green/red edit diffs, and
+  reasoning that streams while the turn is still running.
+- Session list and automatic titles. Shift+Enter / Ctrl+Enter insert a
+  newline; Enter still sends.
+- Model and read-tool retries share one budget: 5 extra attempts,
+  2s / 4s / 8s / 16s / 30s. Idle timeouts after content has started are not
+  retried.
+- Plan text gets a markdown heading so the approval pane can open. Negated
+  “don’t write a file” no longer trips the write evidence gate.
 
 ### Added
 
-- `core/compaction.py` occupancy, microcompact, and the compaction ladder.
-- `core/session_list.py`, `core/session_title.py`, `core/loop_exit.py`, `core/cu/`.
-- `tools/final_answer.py`, `tools/virtual_browser.py`, `tools/launch_intent.py`.
-- OpenTUI ToolCard, PlanPane, follow-up queue, and session list.
+- **Context and sessions** — `occupancy_tokens` / `usable_tokens`,
+  `microcompact_messages`, `run_compaction_ladder`, `compact_messages`,
+  `/compact`, `/effort` (`core/providers/base.py`, `openai.py`,
+  `core/agent_v2.py`), `core/session_list.py`, `core/session_title.py`.
+- **Engine** — stream connect timeout, chunk liveness, and a hard deadline
+  in `core/agent_v2.py` (`StreamConnectTimeoutError`,
+  `_resolve_connect_timeout`, `_stream_chunk_is_alive`,
+  `_arm_hard_deadline`). Mid-turn steers (`apply_mid_turn_steers`) and
+  approved-plan implement (`_prepare_approved_implement`,
+  `_session_plan_md_path`). `RouteIntent` in `core/agents/router.py`.
+  Cross-process claim and event merge in `appserver/task_store.py`.
+  Circuit-breaker cooldown in `recovery/circuit_breaker.py`.
+- **New modules** — `core/cu/`, `core/progress_labels.py`,
+  `core/loop_exit.py`, `core/ttft_clock.py`, `tools/final_answer.py`,
+  `tools/virtual_browser.py`, `tools/launch_intent.py`.
+- **Harness** — plan, execute, and validate are the repository’s own
+  control flow (`PlanPane`, approved implement, `validation/`). The
+  LangChain SDK stays a dependency. A default turn uses this harness.
+- **Plugins (Phase K)** — CapabilityRegistry and default table,
+  `PrefixProfile.capability_digest`, L0 allowlist, three-scope state,
+  `appserver/capability_routes.py`, OpenTUI `/capability` with a confirm
+  diff, Bun sidecar, a pi ExtensionAPI subset, external-agent subagent
+  provider, `rxy plugin`, trust tiers, minimal vs standard prefix profiles.
+  `plugin/catalog`, `plugin/connect/start`, and `plugin/connect/callback`
+  are on the protocol. OAuth tokens stay in the user directory.
+- **Teams (Phase L)** — Team Pack v2 parser, two-level route index,
+  role-level `ecosystem.*` on `AgentSpec.extra`, `/team-new`, thirteen
+  preset teams, `rxycode-teams` and `rxycode-minimal`, E0 → E1 → E2
+  degradation. Ordinary chat stays on one agent when teams are off.
+- **Long runs (Phase N)** — `run/*`, server-side goals (localStorage goal
+  store removed), CLI settings sections, `/plugin`, `/profile`, `/usage`,
+  `/diff`, recycle bin, inline approval, Computer Use as builtin capability
+  six, fixed `cli_list` / `cli_run` tool surface. `/loop` clocks resume on
+  appserver boot. A paused `/goal` does not auto-resume. A killed bash does
+  not come back.
+- **Multimodal (Phase I)** — `vision` rewritten off the string contract,
+  MCP images kept, images referenced on later turns, multimodal cache keys,
+  Desktop attachment UI in the source tree (no new Desktop installer on
+  this tag).
+- **Multi-model (Phase H)** — handoff, `core/agents/client_settings.py`,
+  settings and CLI model-mix configuration, an eval matrix, bridge into the
+  multi-agent runtime.
+- **Persona and skills (Phase J)** — skill frontmatter, reserved `persona`
+  protocol namespace, distillation hooks, skill trust boundary, stable
+  `AgentSpec` construction.
+- **OpenTUI** — about 50 new files, including `ToolCard.tsx` (status,
+  `durationMs`, collapse to `✓ name`), `lib/toolDisplay.ts` green/red
+  diffs, `PlanPane.tsx`, follow-up queue, `DialogSessionList.tsx`.
+  Reasoning chunks emit while the turn is running. `/help` scrolls.
+  Isolated subagents default on.
+- **Desktop source (Phase M)** — not shipped as an installer here. Composer
+  `+` menu gains plugin and team entries, plugin page becomes top-level
+  navigation, `features/` is 39 modules. Use the v1.3.0 Desktop assets for
+  a prebuilt app.
+- **Muse Spark (Phase O)** — `MuseSparkProvider` registered without
+  changing the existing fallback. Platform features of the external Spark
+  agent product (knowledge base, workflow Q&A nodes, one-sentence agent
+  creation) are not claimed here.
+- **Transport and surfaces (UPDATE-02)** — `TransportContext` and
+  ClientFactory, `session_id` through primary/child/eval, short-term CLI
+  double-open via a private AppServer and an isolated data dir, socket /
+  named-pipe lease for several CLI clients, `STABLE_PREFIX_CORE`, lazy
+  skills, Todo and Activity Shelf, DeerFlow context middleware /
+  SkillPackage / channel contracts, final answers through a restricted
+  Markdown AST.
+- **FIX3** — redaction of known key copies (`sk-` / `ark-` shapes) out of
+  logs and artifacts; `main.py` import no longer launches the app; wheel
+  package list deduped; tighter `.dockerignore`; stdio JSON-RPC documented
+  as the default with HTTP-SSE as fallback; local “current directory” tasks
+  no longer forced through web search; GAIA prefers local attachments;
+  BFCL optional args and repeated same-tool calls; eval journals isolated
+  per session.
 
 ### Fixed
 
-- Shift+Enter on Windows ConPTY (`\r\n`) no longer sends the prompt.
-- Closing `/effort` on a model with no tiers no longer switches the level to `default`.
-- Requests that need a subagent or Skill are not routed to read-only explore.
+- Windows worker bootstrap no longer shares `stdin.readline` with import,
+  so a new session does not stick on “Starting Agent worker”
+  (`appserver/agent_worker.py`).
+- GLM / OpenCode Go 400s: `core/providers/glm.py` drops unknown extra fields.
+- A finished read-only answer is no longer replaced by an empty
+  `[evidence failed]`. User-facing text for that failure stays the Chinese
+  interruption message and does not append the internal evidence suffix.
+- Eval tasks no longer share `MemoryManager.latest`; the AgentV2 factory
+  calls `set_session`.
+- OAuth token POST reuses the `client_id` from the authorize URL.
+- Desktop can preempt the appserver lock (source only; no new Desktop
+  binary on this tag).
+- GX4 rewind hides only the truncated window and keeps later prompts.
+- Identity chat stays off the tool loop.
+- Shift+Enter on Windows ConPTY (`\r\n`) inserts a newline. Bare `\r` still
+  submits. Ctrl+Enter also inserts a newline.
+- Negated writes (“不要写入文件”, “do not write a file”) are stripped before
+  the evidence heuristic. A later affirmative write in the same request
+  still requires write evidence.
+- Requests that need a subagent, parallel work, or a Skill are not routed
+  to read-only explore.
+- Closing `/effort` on a model with no tiers no longer switches the level
+  to `default`.
+- An exact replay of the current assistant tail (stripped token at least 40
+  characters) or a cumulative snapshot is reduced to the new suffix, on the
+  tool loop, the plain answer, and stuck-synthesis.
+- Bind digest is rebound across CRLF versus LF checkouts.
+
+### Changed
+
+- Product version **1.4.0** in `pyproject.toml`, installers, OpenTUI header,
+  MCP `clientInfo`, and the appserver version. Protocol `1.1.0` is unchanged.
+  Unimplemented capabilities are exposed as `False` rather than omitted.
+- Tests are layered as `unit / integration / contract / e2e / live /
+  stress_test / system / fixtures`, about 415 Python files under `tests/`.
+  That count is the tree size, not a claim that every test is green.
+- `appserver/` is about 52 modules. `core/` is about 105 modules.
+- Phase plans live under `docs/plans/opus5-plan/rxycode/`, which is not part
+  of the published sdist.
+- GitHub Release **v1.4.0** uploads one asset: `rxycode-1.4.0.tar.gz`.
 
 ---
 
