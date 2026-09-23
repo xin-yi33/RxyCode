@@ -517,7 +517,9 @@ async def test_session_prompt_timeout_emits_event_error(session_workspace):
     assert result.status == "failed"
     errors = [item for item in emitted if isinstance(item, ErrorNotification)]
     assert errors
-    assert errors[0].message == MSG_TIMEOUT
+    # 2026-09-23：消息带「\n原因：...」后缀（原始错误关键信息）。
+    assert errors[0].message.startswith(MSG_TIMEOUT)
+    assert "FirstTokenTimeoutError" in errors[0].message
 
 
 @pytest.mark.asyncio

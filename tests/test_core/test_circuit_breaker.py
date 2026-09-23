@@ -328,7 +328,7 @@ def test_breaker_pause_is_not_called_a_request_timeout():
     assert text.startswith(MSG_MODEL_PAUSED)
     assert not text.startswith(MSG_TIMEOUT)
     assert "CircuitBreakerError" in text
-    assert to_user_facing_error("connection timeout after 30s") == MSG_TIMEOUT
+    assert to_user_facing_error("connection timeout after 30s").startswith(MSG_TIMEOUT)
 
 
 @pytest.mark.asyncio
