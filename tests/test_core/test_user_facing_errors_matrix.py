@@ -75,14 +75,21 @@ def _assert_friendly(raw: str, friendly: str) -> None:
     assert not _FORBIDDEN.search(friendly), friendly
     assert "manifest" not in friendly.lower()
     assert "grounded" not in friendly.lower()
-    assert friendly in {
+    # 2026-09-23：消息可以带「\n原因：...」后缀（原始错误关键信息），
+    # 不再要求精确匹配。
+    known = (
         ufe.MSG_BUILD_INCOMPLETE,
         ufe.MSG_GROUNDING,
         ufe.MSG_TOOL_INTERRUPTED,
         ufe.MSG_TIMEOUT,
         ufe.MSG_CANCELLED,
         ufe.MSG_DEFAULT,
-    }
+        ufe.MSG_MODEL_PAUSED,
+        ufe.MSG_TOOL_REJECTED,
+    )
+    assert any(friendly.startswith(msg) for msg in known), (
+        f"消息不以任何已知模板开头: {friendly!r}"
+    )
 
 
 @pytest.mark.parametrize("raw", _BUILD_CASES)
@@ -90,10 +97,11 @@ def test_build_incomplete_matrix(raw: str):
     friendly = _map(raw)
     _assert_friendly(raw, friendly)
     lowered = raw.lower()
+    # 2026-09-23：消息可以带「\n原因：...」后缀，用 startswith 判断。
     if any(marker in lowered for marker in ufe._GROUNDING_MARKERS):
-        assert friendly == ufe.MSG_GROUNDING
+        assert friendly.startswith(ufe.MSG_GROUNDING)
     else:
-        assert friendly == ufe.MSG_BUILD_INCOMPLETE
+        assert friendly.startswith(ufe.MSG_BUILD_INCOMPLETE)
 
 
 @pytest.mark.parametrize("raw", _EVIDENCE_CASES)
@@ -101,9 +109,9 @@ def test_evidence_failed_matrix(raw: str):
     friendly = _map(raw)
     _assert_friendly(raw, friendly)
     if "timeout" in raw.lower():
-        assert friendly == ufe.MSG_TIMEOUT
+        assert friendly.startswith(ufe.MSG_TIMEOUT)
     else:
-        assert friendly == ufe.MSG_TOOL_INTERRUPTED
+        assert friendly.startswith(ufe.MSG_TOOL_INTERRUPTED)
 
 
 @pytest.mark.parametrize("raw", _GROUNDING_CASES)

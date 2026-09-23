@@ -35,19 +35,6 @@ EmitFn = Callable[[dict[str, Any]], None]
 ForwardServerRequest = Callable[[str, dict[str, Any]], Any]
 WORKER_SERVER_REQUESTS = frozenset({"approval/request", "question/request"})
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from ..core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-    except Exception:
-        try:
-            from core.runtime_probe import probe as _probe
-        except Exception:
-            def _probe(event, **fields):
-                return None
-
 #: Inner bootstrap RPC budget. Waiters may time out sooner; the in-flight
 #: bootstrap must keep running so a later prompt can join it instead of
 #: spawning a second AgentV2 constructor.
@@ -717,22 +704,11 @@ class AgentHost:
                     # worker 侧的 channel-unavailable 空答案。废弃代码
                     # （2026-09-23）：统一 125s 超时，question 也被砍掉。
                     wait_s = None if method == "question/request" else 125.0
-                    # PROBE-20260923: host 转发 question/request 到前端（起）
-                    _probe("host.forward.start", method=method, wait_s=wait_s)
                     result = future.result(timeout=wait_s)
-                    # PROBE-20260923: host 转发 question/request 到前端（止）
-                    _probe("host.forward.end", method=method, ok=True)
                     self._outgoing.put(
                         {"jsonrpc": "2.0", "id": rid, "result": result}
                     )
                 except Exception as exc:
-                    # PROBE-20260923: host 转发异常（含 question 被砍/超时）
-                    _probe(
-                        "host.forward.end",
-                        method=method,
-                        ok=False,
-                        error=type(exc).__name__,
-                    )
                     self._outgoing.put(
                         {
                             "jsonrpc": "2.0",

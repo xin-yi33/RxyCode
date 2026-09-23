@@ -51,15 +51,6 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
 )
 from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from core.runtime_probe import probe as _probe
-    except Exception:
-        def _probe(event, **fields):
-            return None
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import retry_with_backoff
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
@@ -1273,11 +1264,6 @@ class ToolOrchestrator:
                 for key in self._PATH_ARG_KEYS:
                     p = args.get(key)
                     if isinstance(p, str) and p and not is_write_allowed(p, config):
-                        _probe(  # PROBE-20260923: 写路径闸拦截（D:\ 项目被拦定位）
-                            "tool.write_gate.blocked",
-                            tool=name,
-                            path=p,
-                        )
                         msg = (
                             f"[blocked: write path not allowed: {p}] "
                             + WRITE_PATH_BLOCKED_HINT
@@ -1286,11 +1272,6 @@ class ToolOrchestrator:
                             name, args, msg, executed=False, approval="rejected",
                             risk=risk, audit=audit,
                         )
-            else:
-                _probe(  # PROBE-20260923: 写路径闸豁免放行
-                    "tool.write_gate.exempt",
-                    tool=name,
-                )
             # Bash has no path arg; still block absolute mutating targets that
             # escape the workspace write whitelist (workspace sandbox gap).
             if self._canonical_name(name) == "bash":

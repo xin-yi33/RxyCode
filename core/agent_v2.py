@@ -151,17 +151,6 @@ class _TransportExhaustion:
 
 _last_transport_exhaustion = _TransportExhaustion()
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from core.runtime_probe import probe as _probe
-    except Exception:
-        def _probe(event, **fields):
-            return None
-
-
 def apply_mid_turn_steers(messages: list, drain) -> list[str]:
     """Deliver queued user steers into the running turn.
 
@@ -1660,12 +1649,6 @@ class UsageTrackingLLM:
                     import pybreaker
                     if isinstance(exc, pybreaker.CircuitBreakerError):
                         # Fast path: honest hint instead of cascading failure.
-                        _probe(  # PROBE-20260923: 熔断"模型调用已暂停"反复卡死定位
-                            "agent.breaker.fast_fail",
-                            path="ainvoke",
-                            state=str(getattr(breaker, "state", "unknown")),
-                            fail_counter=getattr(breaker, "fail_counter", None),
-                        )
                         return AIMessage(
                             content=_circuit_breaker.service_unavailable_detail(breaker)
                         )
@@ -1717,12 +1700,6 @@ class UsageTrackingLLM:
                 except Exception as exc:
                     import pybreaker
                     if isinstance(exc, pybreaker.CircuitBreakerError):
-                        _probe(  # PROBE-20260923: 熔断 fast-fail（astream 路径）
-                            "agent.breaker.fast_fail",
-                            path="astream",
-                            state=str(getattr(breaker, "state", "unknown")),
-                            fail_counter=getattr(breaker, "fail_counter", None),
-                        )
                         yield AIMessage(
                             content=_circuit_breaker.service_unavailable_detail(breaker)
                         )
@@ -5567,12 +5544,6 @@ class AgentV2:
                     _applied_steers = apply_mid_turn_steers(
                         messages, getattr(self, "_drain_steers", None)
                     )
-                    if _applied_steers:
-                        _probe(  # PROBE-20260923: steer 同回合注入（queue 延迟/多最终结果定位）
-                            "agent.steer.injected",
-                            round=round_num,
-                            count=len(_applied_steers),
-                        )
                     for _steer_text in _applied_steers:
                         _logger.info(
                             "steer injected mid-turn round=%d len=%d",
@@ -7947,18 +7918,6 @@ class AgentV2:
                         pipeline_tui.write_progress(build_progress_message(elapsed))
                     except Exception as hb_exc:  # pragma: no cover - defensive
                         _logger.warning("build heartbeat emit failed: %s", hb_exc)
-                        _probe(  # PROBE-20260923
-                            "agent.build.heartbeat",
-                            session_id=self._session_id,
-                            elapsed=round(elapsed, 1),
-                            error=type(hb_exc).__name__,
-                        )
-                    else:
-                        _probe(  # PROBE-20260923
-                            "agent.build.heartbeat",
-                            session_id=self._session_id,
-                            elapsed=round(elapsed, 1),
-                        )
                 _logger.debug("build pipeline running elapsed=%.0fs", elapsed)
 
                 if soft_budget > 0 and elapsed >= soft_budget and not graph_task.done():

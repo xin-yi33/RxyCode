@@ -57,20 +57,6 @@ except Exception:
         def _current_delegate_depth() -> int:
             return 0
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from ..core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-    except Exception:
-        try:
-            from core.runtime_probe import probe as _probe
-        except Exception:
-            def _probe(event, **fields):
-                return None
-
-
 def _user_safe_text(value: Any, *, limit: int = 4000) -> str:
     """Bound tool/recovery summaries and remove common secret-shaped values."""
     text = str(value)
@@ -369,16 +355,8 @@ class ProtocolTui:
         # 废弃代码（2026-09-22）：未展开时不发 ReasoningSnapshot，界面只剩
         # 「思考中...」，思考一结束首位 Thought 被收掉。
         # ⚠️ 勿轻易修改本方法（2026-09-23 重申）：首位 Thought 丢失风险。
-        # 运行时排查看 probe 日志 tui.reasoning.emit：有 emit 而界面无内容
-        # → 丢在前端/传输；无 emit → 模型本轮没产 reasoning（占位行按设计收起）。
-        _probe(  # PROBE-20260923: 首位 Thought 消失定位——reasoning 是否真发出
-            "tui.reasoning.emit",
-            session_id=self.session_id,
-            chunk_len=len(chunk),
-            acc_len=len(self._thinking_acc),
-            chunks=self._reasoning_chunks,
-            started=started,
-        )
+        # 思考内容必须从这里发出。界面没有 Thought 时，先看模型有没有
+        # reasoning，再看前端有没有把这条 ReasoningSnapshot 画出来。
         self._emit(
             ReasoningSnapshot(
                 session_id=self.session_id,

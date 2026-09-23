@@ -17,19 +17,6 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from ..core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-    except Exception:
-        try:
-            from core.runtime_probe import probe as _probe
-        except Exception:
-            def _probe(event, **fields):
-                return None
-
 _logger = logging.getLogger(__name__)
 
 #: Content-block types that carry model chain-of-thought (mirrors
@@ -233,11 +220,6 @@ class Executor:
                     if callable(write_reasoning):
                         for block in thinking_blocks:
                             write_reasoning(block)
-                    _probe(  # PROBE-20260923: thought 导出验证——blocks>0 而界面无 Thought → 前端/传输问题
-                        "executor.thinking.exported",
-                        blocks=len(thinking_blocks),
-                        total_len=sum(len(b) for b in thinking_blocks),
-                    )
                 except Exception as exc:  # pragma: no cover - defensive
                     _logger.warning("thinking export failed (ignored): %s", exc)
         finally:

@@ -26,16 +26,6 @@ from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
 
 EmitCallback = Callable[[BaseModel], None]
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from .runtime_probe import probe as _probe
-    except Exception:
-        def _probe(event, **fields):
-            return None
-
 _APPROVED_PLAN_IMPLEMENT_PREFIXES = (
     "按已批准的计划开始实施",
     "已批准计划，开始实施",
@@ -311,13 +301,6 @@ class Session:
                 else 0.0
             )
             thinking = thinking_since(agent, cursor)
-            # PROBE-20260923: event/final 携带的 thinking 长度——hydrate 后
-            # Thought 能否恢复完全取决于它（reasoning chunk 不持久化）。
-            _probe(
-                "session.final.thinking",
-                session_id=self.session_id,
-                thinking_len=len(thinking or ""),
-            )
 
             usage_reported = bool(delta_input or delta_output or delta_cache_hit_tokens)
             latest = token_stats.latest_request

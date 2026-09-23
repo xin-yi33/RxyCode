@@ -56,19 +56,6 @@ except ImportError:
 
 _logger = logging.getLogger(__name__)
 
-# PROBE-20260923: runtime probe (one-grep removal; see D:\tmp-cursor-probe\PROBE-MANIFEST.md)
-try:
-    from ..core.runtime_probe import probe as _probe
-except Exception:
-    try:
-        from RxyCode.RxyCode1_1_0.core.runtime_probe import probe as _probe
-    except Exception:
-        try:
-            from core.runtime_probe import probe as _probe
-        except Exception:
-            def _probe(event: str, **fields: Any) -> None:
-                return None
-
 
 def configure_agent_workspace(
     agent: Any,
@@ -918,13 +905,6 @@ class AgentWorker:
             )
             return
         self._steer_queue.append(text)
-        # PROBE-20260923: steer queued — queue"立刻发送"延迟定位
-        _probe(
-            "worker.steer.queued",
-            session_id=self._session_id,
-            text_len=len(text),
-            pending=len(self._steer_queue),
-        )
         self._schedule_write(
             model_to_notification(
                 ProgressUpdate(session_id=self._session_id, text=f"steer: {text}")
