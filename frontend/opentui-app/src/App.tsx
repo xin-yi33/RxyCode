@@ -1571,6 +1571,12 @@ export default function App() {
       void toggleThinking();
       return;
     }
+    if (isPromptNewlineKey(key)) {
+      key.preventDefault?.();
+      textareaRef.current?.newLine?.();
+      setInputValue(textareaRef.current?.plainText ?? `${inputValue}\n`);
+      return;
+    }
     const promptText = textareaRef.current?.plainText ?? inputValue;
     if (isPromptSubmitKey(key) && !promptText.trim()) {
       key.preventDefault();

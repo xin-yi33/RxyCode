@@ -13,11 +13,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] - 2026-09-22
 
-### Changed
+CLI / OpenTUI only. This tag does not publish a new Desktop installer.
+Desktop binaries stay on v1.3.0. Protocol version stays `1.1.0`.
 
-- Product version **1.4.0** in `pyproject.toml`, installers, OpenTUI/Ink
-  headers, MCP `clientInfo`, Desktop package metadata, and
-  `APPSERVER_VERSION`. Protocol version stays `1.1.0`.
+### Highlights
+
+- Context occupancy, microcompact, and LLM compact share one clock. `/compact` and `/effort` are wired.
+- Session list and automatic titles. Shift+Enter / Ctrl+Enter insert a newline; Enter still sends.
+- Model and read-tool retries use the same budget: 5 extra attempts, 2s / 4s / 8s / 16s / 30s.
+- Plan mode opens the approval pane. Negated “don’t write a file” no longer trips the write evidence gate.
+- Computer Use, `final_answer`, virtual browser, and launch-and-return live on the fast path.
+- Repeated provider paragraphs are dropped instead of painted four times.
+
+### Added
+
+- `core/compaction.py` occupancy, microcompact, and the compaction ladder.
+- `core/session_list.py`, `core/session_title.py`, `core/loop_exit.py`, `core/cu/`.
+- `tools/final_answer.py`, `tools/virtual_browser.py`, `tools/launch_intent.py`.
+- OpenTUI ToolCard, PlanPane, follow-up queue, and session list.
+
+### Fixed
+
+- Shift+Enter on Windows ConPTY (`\r\n`) no longer sends the prompt.
+- Closing `/effort` on a model with no tiers no longer switches the level to `default`.
+- Requests that need a subagent or Skill are not routed to read-only explore.
 
 ---
 

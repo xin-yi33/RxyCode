@@ -25,8 +25,10 @@
 
 RxyCode is an autonomous coding agent running locally on your hardware. Bring an API key for any OpenAI-compatible model (DeepSeek, Qwen, Kimi, Claude, GPT, GLM, Doubao, or custom endpoints), and RxyCode takes over: decompose tasks, code solutions, execute commands, research the web, and mechanically verify the outcome. Terminal TUI out-of-the-box, optional Desktop GUI, and extensible with MCP and Skills.
 
+**v1.4.0 is a CLI release.** `rxycode` in a terminal is the product: sessions that title themselves, `/effort`, a plan you can approve, and the same retry clock for flaky model calls and read tools. Shift+Enter (or Ctrl+Enter) breaks a line; Enter sends. A new Desktop installer is not in this tag — the GUI packages remain on v1.3.0.
+
 > 💡 **Want a quick test drive?** Run instantly without installation if you have Python 3.10+:  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode`  
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.0" rxycode`  
 > See [⚡ Quick Start & Deployment](#-quick-start--deployment) for complete install options, Desktop app, Docker, and Node.js frontend builds.
 
 ---
@@ -415,6 +417,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 | Version | Release Date | Key Features |
 |---|---|---|
+| [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | CLI / OpenTUI only: sessions, `/effort`, plan approval, shared model/tool retry, Shift+Enter newline. No new Desktop installer |
 | [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | Major Desktop workbench release: 3-column session & project workspace, plugin rail, permission tiers; Windows installer & portable zip, Linux AppImage; fixes Windows worker bootstrap deadlock |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 10-role 7-stage SOP expert teams; Windows encoding improvements; 8MB stdio JSON-RPC throughput |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Electron desktop app (`rxycode gui`), Plan mode, Goal dialog, Composer plus menu |
@@ -458,6 +461,8 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 | `Tab` | Switch work mode |
 | `Ctrl+P` | Command palette |
 | `Ctrl+T` | Toggle thinking |
+| `Enter` | Send the prompt |
+| `Shift+Enter` / `Ctrl+Enter` | Insert a newline (Windows ConPTY Shift+Enter arrives as CRLF and is not sent) |
 | `Esc` | Cancel |
 | `Ctrl+C` | Copy / cancel stream / clear input; twice within 2s to quit |
 

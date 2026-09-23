@@ -8,10 +8,11 @@ describe("isPromptSubmitKey", () => {
     expect(isPromptSubmitKey({ name: "linefeed" })).toBe(false);
   });
 
-  test("matches bare CR (ConPTY Enter), not LF (Shift+Enter)", () => {
+  test("matches bare CR (ConPTY Enter), not LF or CRLF (Shift+Enter)", () => {
     expect(isPromptSubmitKey({ name: "", sequence: "\r" })).toBe(true);
     expect(isPromptSubmitKey({ name: "", sequence: "\n" })).toBe(false);
-    expect(isPromptSubmitKey({ name: "", raw: "\r\n" })).toBe(true);
+    expect(isPromptSubmitKey({ name: "", raw: "\r\n" })).toBe(false);
+    expect(isPromptNewlineKey({ name: "", raw: "\r\n" })).toBe(true);
   });
 
   test("ignores Shift/Meta/Ctrl Enter", () => {

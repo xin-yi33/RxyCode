@@ -25,8 +25,10 @@
 
 RxyCode 是一个跑在本地的编程 Agent。你给一个 OpenAI 兼容的 API Key（DeepSeek、通义千问、Kimi、Claude、GPT、GLM、豆包……随便哪家），它就能帮你拆任务、写代码、跑命令、搜网页，做完了还会自己验一遍。终端 TUI 开箱即用，桌面 GUI 可选装，MCP 和 Skill 想扩展就扩展。
 
+**1.4.0 这次只发命令行。** 打开终端敲 `rxycode`，就是这一版：会话会自己起标题，`/effort` 选思考强度，`/plan` 出来的计划能批准再动手，模型网络抖一下和读工具失败走同一套重试。Shift+Enter 或 Ctrl+Enter 换行，Enter 才发送。桌面安装包没有进这个 tag，还停在 v1.3.0。
+
 > 💡 **想立刻试试？** 有 Python 环境直接免安装运行：  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.3.0" rxycode`  
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.0" rxycode`  
 > 完整安装、桌面客户端、Docker 容器化与 Node.js 前端构建见下文 [⚡ 快速开始与部署](#-快速开始与部署)。
 
 ---
@@ -371,6 +373,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 | 版本 | 发布时间 | 主要更新亮点 |
 |---|---|---|
+| [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | 只发 CLI：会话、`/effort`、计划审批、模型和读工具同一套重试、Shift+Enter 换行。没有新的桌面安装包 |
 | [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | 桌面客户端主版本：三栏会话项目工作台、插件主栏、权限三档；Windows 安装器与便携版、Linux AppImage 发布；解决 Windows worker 假死 |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 推出 10 角色 7 阶段 SOP 专家团队；提升 CLI 稳定性与 Windows 编码兼容；stdio 吞吐升至 8MB |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | 推出 Electron 桌面客户端 (`rxycode gui`)，集成 Plan 模式、Goal 弹窗与 Composer `+` 菜单 |

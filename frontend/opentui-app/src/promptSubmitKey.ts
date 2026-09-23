@@ -22,7 +22,8 @@ export function isPromptNewlineKey(key: {
   const name = (key.name || "").toLowerCase();
   if (name === "linefeed") return true;
   const seq = key.sequence ?? key.raw ?? "";
-  return seq === "\n";
+  // Windows ConPTY 常把 Shift+Enter 的 LF 收成 CRLF。裸 CR 仍是发送。
+  return seq === "\n" || seq === "\r\n" || seq === "\x1b\n";
 }
 
 /**
@@ -45,7 +46,7 @@ export function isPromptSubmitKey(key: {
     return true;
   }
   const seq = key.sequence ?? key.raw ?? "";
-  return seq === "\r" || seq === "\r\n";
+  return seq === "\r";
 }
 
 /** Trim trailing CR/LF that a prior failed Enter may have inserted. */
