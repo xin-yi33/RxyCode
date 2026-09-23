@@ -2,12 +2,29 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .task_store import DesktopTaskStore
+
+_PLACEHOLDER_TITLES = frozenset({"新任务", "New task", "新对话", "New chat"})
+_FIRST_SENTENCE_RE = re.compile(r"[。！？.!?\n]")
+
+
+def is_placeholder_title(title: str) -> bool:
+    text = (title or "").strip()
+    return text in _PLACEHOLDER_TITLES or text.startswith("会话 ")
+
+
+def title_from_first_prompt(text: str) -> str:
+    blob = (text or "").strip()
+    if not blob:
+        return ""
+    first = _FIRST_SENTENCE_RE.split(blob, maxsplit=1)[0].strip()
+    return (first or blob)[:200]
 
 
 @dataclass

@@ -240,14 +240,28 @@ class AgentBackend:
             clear_session_runtime("latest")
 
 
+def bind_eval_session(agent, session_id: str) -> None:
+    """Point AgentV2 *and* MemoryManager at an isolated eval session.
+
+    Assigning ``agent._session_id`` alone leaves MemoryManager on ``latest``,
+    so sequential eval tasks inherit prior answers (counter.py leaking into
+    readcode-safety-levels as a fake "任务完成总结").
+    """
+    setter = getattr(agent, "set_session", None)
+    if callable(setter):
+        setter(session_id)
+        return
+    agent._session_id = session_id
+
+
 def make_agent_factory(model_name: Optional[str] = None):
     """Return a factory that builds a fresh AgentV2 per eval task."""
 
     def _factory(*, session_id: str):
         from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
-        agent = AgentV2(model_name=model_name)
-        agent._session_id = session_id
+        agent = AgentV2(model_name=model_name, session_id=session_id)
+        bind_eval_session(agent, session_id)
         return agent
 
     return _factory

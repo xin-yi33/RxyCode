@@ -1,10 +1,22 @@
-import { ArrowUp, ChevronDown, Mic, Plus, Square } from 'lucide-react'
+import { ArrowUp, Folder, Mic, Plus, Square } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 import type { ModelEntry } from '../hooks/useModels'
-import { groupModelsByProvider } from '../lib/modelPresentation.mts'
+import {
+  duplicateModelNicknames,
+  groupModelsByProvider,
+  modelHasCredential,
+  modelPickerLabel
+} from '../lib/modelPresentation.mts'
 import type { PermissionMode } from '../lib/desktopPreferences.mts'
 import type { AgentRunMode } from '../lib/planDocument.mts'
 import { canSubmitComposer, promptWithAttachment, shouldSubmitOnKey } from '../lib/composerBehavior.mts'
+import { QueuedFollowups } from '../../../features/composer/QueuedFollowups.ts'
+import type { PendingItem, SendIntent } from '../../../features/composer/pending.queue.ts'
+import { queueOnEnter, type QueueMode } from '../../../features/composer/queuedFollowup.ts'
+import type { TeamRecord } from '../../../features/team/team.visual.ts'
+import { ThemeMenu } from '../../../features/composer/ThemeMenu.ts'
+import { PermissionMenu } from '../../../features/composer/PermissionMenu.ts'
 import ComposerPlusMenu from './ComposerPlusMenu'
 
 interface ComposerProps {
@@ -24,12 +36,29 @@ interface ComposerProps {
   onSelectModel: (modelId: string) => void
   permissionMode: PermissionMode
   onRequestPermissionModeChange: (mode: PermissionMode) => void
-}
-
-const MODE_LABELS: Record<PermissionMode, string> = {
-  confirm_all: '更改前询问',
-  auto_edit: '自动编辑',
-  full_auto: '完全访问'
+  pendingCount?: number
+  pendingItems?: readonly PendingItem[]
+  queueMode?: QueueMode
+  steerBlocked?: boolean
+  onSendIntent?: (intent: SendIntent, text: string) => void
+  onQueueSendNow?: (id: string) => void
+  onQueueDelete?: (id: string) => void
+  onQueueEdit?: (id: string) => void
+  onQueueOpenSideChat?: (id: string) => void
+  onQueueTurnOff?: () => void
+  projects?: readonly { cwd: string; displayName: string }[]
+  onSelectProject?: (cwd: string | null) => void
+  onCreateProject?: () => void
+  projectPickerOpen?: boolean
+  onToggleProjectPicker?: () => void
+  teams?: readonly TeamRecord[]
+  activeTeamId?: string | null
+  onSummonTeam?: (teamId: string) => void
+  onCreateTeam?: () => void
+  prefillText?: string
+  prefillNonce?: number
+  projectLabel?: string
+  showProjectChip?: boolean
 }
 
 type FileWithPath = File & { path?: string }
@@ -57,23 +86,75 @@ function Composer({
   selectedModelId,
   onSelectModel,
   permissionMode,
-  onRequestPermissionModeChange
+  onRequestPermissionModeChange,
+  pendingCount: _pendingCount = 0,
+  pendingItems = [],
+  queueMode = 'on',
+  steerBlocked: _steerBlocked = false,
+  onSendIntent,
+  onQueueSendNow,
+  onQueueDelete,
+  onQueueEdit,
+  onQueueOpenSideChat,
+  onQueueTurnOff,
+  projects = [],
+  onSelectProject,
+  onCreateProject,
+  projectPickerOpen = false,
+  onToggleProjectPicker,
+  teams = [],
+  activeTeamId = null,
+  onSummonTeam,
+  onCreateTeam,
+  prefillText,
+  prefillNonce = 0,
+  projectLabel,
+  showProjectChip = true
 }: ComposerProps): React.JSX.Element {
+  const { t } = useI18n()
   const [text, setText] = useState('')
+  const [projectQuery, setProjectQuery] = useState('')
   const [attachment, setAttachment] = useState<{ name: string; path: string } | null>(null)
   const [plusOpen, setPlusOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const plusRef = useRef<HTMLDivElement | null>(null)
-  const canSend = canSubmitComposer({ disabled, running, text, hasAttachment: attachment !== null })
+  const projectWrapRef = useRef<HTMLDivElement | null>(null)
+  const selectedModel = models.find((model) => model.id === selectedModelId)
+  const modelReady = selectedModel == null || modelHasCredential(selectedModel)
+  const canSend = canSubmitComposer({
+    disabled,
+    running,
+    text,
+    hasAttachment: attachment !== null,
+    modelReady
+  })
   const groups = groupModelsByProvider(models)
+  const duplicateNicks = duplicateModelNicknames(models)
   const planMode = agentMode === 'plan'
 
   const submit = (): void => {
     if (!canSend) return
-    onSend(promptWithAttachment(text, attachment))
+    const payload = promptWithAttachment(text, attachment)
+    if (running && onSendIntent != null && queueOnEnter(running, queueMode)) {
+      onSendIntent('queue', payload)
+      setText('')
+      setAttachment(null)
+      return
+    }
+    if (running && onSendIntent != null) {
+      onSendIntent('steer', payload)
+      setText('')
+      setAttachment(null)
+      return
+    }
+    onSend(payload)
     setText('')
     setAttachment(null)
   }
+
+  useEffect(() => {
+    if (prefillText != null && prefillText !== '') setText(prefillText)
+  }, [prefillText, prefillNonce])
 
   useEffect(() => {
     if (!plusOpen) return
@@ -86,37 +167,107 @@ function Composer({
     return () => window.removeEventListener('mousedown', onPointer)
   }, [plusOpen])
 
+  useEffect(() => {
+    if (!projectPickerOpen) return
+    const onPointer = (event: MouseEvent): void => {
+      if (projectWrapRef.current !== null && !projectWrapRef.current.contains(event.target as Node)) {
+        onToggleProjectPicker?.()
+      }
+    }
+    window.addEventListener('mousedown', onPointer)
+    return () => window.removeEventListener('mousedown', onPointer)
+  }, [projectPickerOpen, onToggleProjectPicker])
+
   const placeholder = disabled
-    ? 'Waiting for appserver…'
-    : running
-      ? 'Running — press Stop to cancel'
-      : planMode
-        ? (hasPlan ? '请你补充说明哪里需要改进' : '描述你想规划的任务…')
-        : '随心输入'
+    ? t('composerWaiting')
+    : planMode
+        ? (hasPlan ? t('composerPlanRevise') : t('composerPlanNew'))
+        : t('composerIdle')
 
   return (
     <footer className="composer" data-testid="composer">
       <form className="composer-surface" data-testid="composer-surface" onSubmit={(event) => { event.preventDefault(); submit() }}>
+        <QueuedFollowups
+          items={pendingItems}
+          onSendNow={(id) => onQueueSendNow?.(id)}
+          onDelete={(id) => onQueueDelete?.(id)}
+          onEdit={(id) => onQueueEdit?.(id)}
+          onOpenSideChat={(id) => onQueueOpenSideChat?.(id)}
+          onTurnOff={() => onQueueTurnOff?.()}
+        />
         {attachment !== null && (
           <div className="composer-attachment" data-testid="composer-attachment">
             <span title={attachment.path}>{attachment.name}</span>
             <button
               type="button"
               className="composer-attachment-remove"
-              aria-label="Remove attachment"
+              aria-label={t('removeAttachment')}
               onClick={() => setAttachment(null)}
             >
               ×
             </button>
           </div>
         )}
+        {showProjectChip ? (
+        <div className="composer-project-wrap" ref={projectWrapRef}>
+          <button
+            type="button"
+            className="composer-project-chip"
+            data-testid="composer-project"
+            onClick={() => {
+              if (onToggleProjectPicker !== undefined) onToggleProjectPicker()
+              else onPickWorkspace()
+            }}
+            disabled={disabled}
+          >
+            <Folder aria-hidden="true" size={14} />
+            {projectLabel === undefined || projectLabel === '' ? t('selectProject') : projectLabel}
+          </button>
+          {projectPickerOpen ? (
+            <div className="composer-project-picker" data-testid="composer-project-picker">
+              <input
+                type="search"
+                placeholder={t('searchProjects')}
+                aria-label={t('searchProjects')}
+                data-testid="composer-project-search"
+                value={projectQuery}
+                onChange={(event) => setProjectQuery(event.target.value)}
+              />
+              <ul>
+                {projects
+                  .filter((project) =>
+                    projectQuery.trim() === '' ||
+                    `${project.displayName} ${project.cwd}`.toLowerCase().includes(projectQuery.trim().toLowerCase())
+                  )
+                  .map((project) => (
+                    <li key={project.cwd}>
+                      <button
+                        type="button"
+                        data-testid={`composer-project-option-${project.cwd}`}
+                        onClick={() => onSelectProject?.(project.cwd)}
+                      >
+                        {project.displayName}
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+              <button type="button" data-testid="composer-project-new" onClick={() => onCreateProject?.()}>
+                + {t('newProject')}
+              </button>
+              <button type="button" data-testid="composer-project-choose" onClick={onPickWorkspace}>
+                {t('chooseProject')}
+              </button>
+            </div>
+          ) : null}
+        </div>
+        ) : null}
         {goal !== '' && (
           <button type="button" className="composer-goal-chip" data-testid="composer-goal-chip" onClick={onOpenGoal}>
-            目标 · {goal}
+            {t('goal')} · {goal}
           </button>
         )}
         <textarea
-          aria-label="Task prompt"
+          aria-label={t('task')}
           data-testid="composer-input"
           value={text}
           placeholder={placeholder}
@@ -136,6 +287,11 @@ function Composer({
           rows={1}
           disabled={disabled}
         />
+        {!modelReady && (
+          <p className="composer-model-error" data-testid="composer-model-error" role="alert">
+            {selectedModel?.warning ?? t('modelMissingCredentialHint')}
+          </p>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -154,10 +310,10 @@ function Composer({
               <button
                 type="button"
                 className={'composer-icon-button' + (plusOpen ? ' is-open' : '')}
-                aria-label="添加"
+                aria-label={t('composerAdd')}
                 aria-expanded={plusOpen}
                 data-testid="composer-plus"
-                title="添加"
+                title={t('composerAdd')}
                 onClick={() => setPlusOpen((open) => !open)}
                 disabled={disabled || running}
               >
@@ -166,11 +322,15 @@ function Composer({
               <ComposerPlusMenu
                 open={plusOpen}
                 planMode={planMode}
+                teams={teams}
+                activeTeamId={activeTeamId}
                 onClose={() => setPlusOpen(false)}
                 onAttachFile={() => fileInputRef.current?.click()}
                 onPickWorkspace={onPickWorkspace}
                 onOpenGoal={onOpenGoal}
                 onTogglePlanMode={onTogglePlanMode}
+                onSummonTeam={onSummonTeam}
+                onCreateTeam={onCreateTeam}
               />
             </div>
             {planMode && (
@@ -178,60 +338,59 @@ function Composer({
                 type="button"
                 className="composer-mode-chip"
                 data-testid="composer-plan-chip"
-                title="关闭计划模式"
+                title={t('planModeOff')}
                 onClick={onTogglePlanMode}
               >
-                计划
+                {t('planMode')}
               </button>
             )}
-            <label className="composer-permission-control">
-              <span className="sr-only">Permission mode for this task</span>
-              <select
-                aria-label="Permission mode for this task"
-                data-testid="composer-permission-mode"
-                value={permissionMode}
-                disabled={disabled || running}
-                onChange={(event) => onRequestPermissionModeChange(event.target.value as PermissionMode)}
-              >
-                {(Object.keys(MODE_LABELS) as PermissionMode[]).map((mode) => (
-                  <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
-                ))}
-              </select>
-              <ChevronDown aria-hidden="true" size={13} />
-            </label>
+            <PermissionMenu
+              value={permissionMode}
+              onChange={(value) => onRequestPermissionModeChange(value)}
+              disabled={disabled || running}
+              testId="composer-permission-mode"
+              labels={{
+                header: t('permissionHeader'),
+                learnMore: t('permissionLearnMore'),
+                confirmAll: t('permissionConfirmAll'),
+                confirmAllHint: t('permissionConfirmAllHint'),
+                autoEdit: t('permissionAutoEdit'),
+                autoEditHint: t('permissionAutoEditHint'),
+                fullAuto: t('permissionFullAuto'),
+                fullAutoHint: t('permissionFullAutoHint'),
+                trigger: t('permissionMode')
+              }}
+            />
           </div>
           <div className="composer-toolbar-right">
-            <label className="composer-model-control">
-              <span className="sr-only">Task model</span>
-              <select
-                id="composer-model"
-                aria-label="Task model"
-                data-testid="composer-model"
-                value={selectedModelId}
-                disabled={disabled || running || models.length === 0}
-                onChange={(event) => onSelectModel(event.target.value)}
-              >
-                {models.length === 0 ? (
-                  <option value="">{modelsLoading ? 'Loading models…' : 'No configured models'}</option>
-                ) : (
-                  groups.map(([group, entries]) => (
-                    <optgroup key={group} label={group}>
-                      {entries.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.nickname || model.name || model.provider_model_id}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))
-                )}
-              </select>
-              <ChevronDown aria-hidden="true" size={13} />
-            </label>
+            <ThemeMenu
+              value={selectedModelId}
+              options={
+                models.length === 0
+                  ? [{ value: '', label: modelsLoading ? t('loadingModels') : t('noConfiguredModels') }]
+                  : groups.flatMap(([group, entries]) =>
+                      entries.map((model) => ({
+                        value: model.id,
+                        label: modelPickerLabel(model, duplicateNicks, t('modelMissingCredential')),
+                        group,
+                        disabled: !modelHasCredential(model)
+                      }))
+                    )
+              }
+              onChange={onSelectModel}
+              disabled={disabled || running || models.length === 0}
+              testId="composer-model"
+              ariaLabel={t('taskModel')}
+              title={!modelReady ? (selectedModel?.warning ?? t('modelMissingCredentialHint')) : t('taskModelHint')}
+              tone={!modelReady ? 'warning' : 'default'}
+              placement="up"
+              align="end"
+            />
             <button
               type="button"
               className="composer-icon-button composer-mic"
-              aria-label="Voice input unavailable"
-              title="Voice input is not configured"
+              aria-label={t('voiceUnavailable')}
+              title={t('voiceUnavailable')}
               disabled
             >
               <Mic aria-hidden="true" size={16} />
@@ -240,7 +399,7 @@ function Composer({
               type={running ? 'button' : 'submit'}
               className={running ? 'composer-send composer-stop stop' : 'composer-send send'}
               data-testid={running ? 'composer-stop' : 'composer-send'}
-              aria-label={running ? 'Stop task' : 'Send task'}
+              aria-label={running ? t('stopTask') : t('sendTask')}
               onClick={running ? onStop : undefined}
               disabled={!running && !canSend}
             >

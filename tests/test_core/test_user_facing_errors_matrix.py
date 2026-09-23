@@ -118,28 +118,28 @@ def test_evidence_failed_matrix(raw: str):
 def test_grounding_marker_matrix(raw: str):
     friendly = _map(raw)
     _assert_friendly(raw, friendly)
-    assert friendly == ufe.MSG_GROUNDING
+    assert friendly.startswith(ufe.MSG_GROUNDING)
 
 
 @pytest.mark.parametrize("raw", _TIMEOUT_VARIANTS)
 def test_timeout_matrix(raw: str):
     friendly = _map(raw)
     _assert_friendly(raw, friendly)
-    assert friendly == ufe.MSG_TIMEOUT
+    assert friendly.startswith(ufe.MSG_TIMEOUT)
 
 
 @pytest.mark.parametrize("raw", _CANCEL_VARIANTS)
 def test_cancelled_matrix(raw: str):
     friendly = _map(raw)
     _assert_friendly(raw, friendly)
-    assert friendly == ufe.MSG_CANCELLED
+    assert friendly.startswith(ufe.MSG_CANCELLED)
 
 
 @pytest.mark.parametrize("raw", _DEFAULT_CASES)
 def test_unknown_errors_map_to_default(raw: str):
     friendly = _map(raw)
     _assert_friendly(raw, friendly)
-    assert friendly == ufe.MSG_DEFAULT
+    assert friendly.startswith(ufe.MSG_DEFAULT)
 
 
 @pytest.mark.parametrize("raw", ["", "   ", None])

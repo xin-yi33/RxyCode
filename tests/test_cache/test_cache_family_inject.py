@@ -156,7 +156,7 @@ def test_raw_stream_marks_only_last_tool():
     tools = payload.get("tools") or []
     assert len(tools) == 2
     assert "cache_control" not in tools[0]
-    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+    assert tools[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert json.dumps(payload["tools"]).count("cache_control") == 1
 
 

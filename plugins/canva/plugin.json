@@ -1,0 +1,12 @@
+{
+  "name": "canva",
+  "version": "1.0.0",
+  "description": "连接 Canva 设计与素材",
+  "adapter": "oauth",
+  "mcp": {
+    "canva": {
+      "command": "npx",
+      "args": ["-y", "@rxycode/canva-mcp"]
+    }
+  }
+}

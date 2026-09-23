@@ -29,7 +29,8 @@ def test_settings_show_nested_items_when_enabled() -> None:
     assert "agents_router_model" in ids
     assert "agents_multi_model" in ids
     multi = next(item for item in items if item["id"] == "agents_multi_model")
-    assert multi.get("disabled") is True
+    assert multi.get("disabled") is not True
+    assert "Phase H 才可用" not in str(multi.get("desc") or "")
 
 
 def test_agents_command_sets_router_model() -> None:
@@ -43,6 +44,10 @@ def test_agents_command_sets_router_model() -> None:
     assert cfg["agents"]["router_model"] is None
     apply_agents_args(cfg, "route team")
     assert cfg["agents"]["route_mode"] == "team"
+    apply_agents_args(cfg, "multi-model on")
+    assert cfg["agents"]["multi_model"]["enabled"] is True
+    apply_agents_args(cfg, "role-model architect deepseek-v4")
+    assert cfg["agents"]["multi_model"]["role_models"]["architect"] == "deepseek-v4"
 
 
 def test_route_mode_settings_force_team() -> None:
@@ -54,7 +59,7 @@ def test_route_mode_settings_force_team() -> None:
     original = router_mod._settings_agents
     router_mod._settings_agents = lambda: {"enabled": True, "route_mode": "team"}
     try:
-        decision = router.route("hello?")
+        decision = router.route("重构前后端并迁移多个模块")
         assert decision.mode is ExecutionMode.TEAM
         assert "route_mode=team" in decision.reason
     finally:

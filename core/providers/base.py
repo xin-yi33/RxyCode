@@ -9,6 +9,8 @@ docs/plans/opus5-plan/PHASE-A-MODEL-ADAPTATION-LAYER.md §5。
 
 from __future__ import annotations
 
+import re
+from enum import Enum
 from typing import Any
 
 from ._compat import (
@@ -50,6 +52,114 @@ class BaseProvider:
         """
         return False
 
+    def _resource_path_candidates(
+        self, model_config: dict
+    ) -> tuple[LLMTransport, ...] | None:
+        resource_path = normalize_resource_path(model_config.get("resource_path"))
+        if not resource_path:
+            return None
+        inferred = infer_transport_from_resource_path(resource_path)
+        requested = normalize_api_transport(
+            model_config.get("api_transport"), allow_auto=True
+        )
+        if requested != "auto" and requested != inferred:
+            raise ValueError(
+                "resource_path does not match api_transport: "
+                f"{resource_path} != {requested}"
+            )
+        ensure_resource_path_rewritable(resource_path, inferred)
+        return (inferred,)
+
+    def transport_candidates(
+        self, model_config: dict
+    ) -> tuple[LLMTransport, ...]:
+        """Return API transports in the order the provider wants them tried.
+
+        Chat remains the compatibility default.  A model added through the
+        UI's ``Other``/custom provider is deliberately probed Responses-first,
+        then Chat, because its Base URL carries no trustworthy preset policy.
+        Providers with an official Responses contract override this method.
+
+        ``api_transport`` is an expert escape hatch for imported configs.  It
+        chooses the first transport but keeps the other as a safe endpoint-
+        mismatch fallback; runtime fallback is still restricted to explicit
+        endpoint/protocol unsupported errors before any useful output.
+        """
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
+
+        explicit = self.explicit_transport_candidates(model_config)
+        if explicit is not None:
+            return explicit
+
+        provider_id = str(model_config.get("provider_id") or "").casefold()
+        if provider_id in _RESPONSES_FIRST_PRESET_IDS | {"custom", "other"}:
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        return (CHAT_TRANSPORT,)
+
+    def explicit_transport_candidates(
+        self, model_config: dict
+    ) -> tuple[LLMTransport, ...] | None:
+        """Return a canonical explicit override, or ``None`` for auto mode."""
+        requested = normalize_api_transport(
+            model_config.get("api_transport"), allow_auto=True
+        )
+        if requested == "auto":
+            return None
+        if requested == CHAT_TRANSPORT:
+            # Explicit Chat is also the emergency compatibility switch.  Do
+            # not silently undo an operator's deliberate choice.
+            return (CHAT_TRANSPORT,)
+        if requested == RESPONSES_TRANSPORT:
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        if requested == ANTHROPIC_MESSAGES_TRANSPORT:
+            return (ANTHROPIC_MESSAGES_TRANSPORT,)
+        raise ValueError(f"unsupported api_transport: {requested}")
+
+    def uses_responses_api(self, model_config: dict) -> bool:
+        """Compatibility helper: whether the preferred transport is Responses."""
+        candidates = self.transport_candidates(model_config)
+        return bool(candidates and candidates[0] == RESPONSES_TRANSPORT)
+
+    def should_fallback_transport(
+        self,
+        exc: BaseException,
+        *,
+        from_transport: LLMTransport,
+        to_transport: LLMTransport,
+    ) -> bool:
+        """Whether an untouched request may try the alternate API endpoint.
+
+        Only endpoint/protocol mismatch is eligible.  Authentication, policy,
+        rate-limit, timeout, server, content-safety, and ordinary request-body
+        failures must retain their original error instead of being hidden by a
+        second billable request.  AgentV2 separately guarantees that fallback
+        is never attempted after text/reasoning/tool output is observed.
+        """
+        del from_transport, to_transport
+        return (
+            _classify_transport_error(exc)
+            is _TransportErrorClass.TRANSPORT_UNSUPPORTED
+        )
+
+    def reasoning_effort_when_disabled(self, model_config: dict) -> str | None:
+        """Wire effort for a turn that asks to disable thinking.
+
+        Most models omit the parameter.  Always-reasoning families may return
+        their lowest supported effort instead.
+        """
+        return None
+
+    def validate_tool_payloads(self, tools: list[dict]) -> None:
+        """Validate provider-specific function-tool wire constraints.
+
+        The default OpenAI-compatible path imposes no additional policy here.
+        Providers should fail before network I/O when an upstream-only limit is
+        known; silently truncating a name would break tool-result dispatch.
+        """
+        return None
+
     # ---- 能力 ----------------------------------------------------------
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
@@ -72,6 +182,20 @@ class BaseProvider:
             if isinstance(value, int) and value >= 0:
                 return value
         for outer, inner in caps.usage_fields.cache_read_nested:
+            nested = usage.get(outer)
+            if isinstance(nested, dict):
+                value = nested.get(inner)
+                if isinstance(value, int) and value >= 0:
+                    return value
+        return 0
+
+    def extract_cache_write(self, usage: dict, caps: ModelCapabilities) -> int:
+        """Extract provider-reported prompt-cache creation tokens."""
+        for key in caps.usage_fields.cache_write_flat:
+            value = usage.get(key)
+            if isinstance(value, int) and value >= 0:
+                return value
+        for outer, inner in caps.usage_fields.cache_write_nested:
             nested = usage.get(outer)
             if isinstance(nested, dict):
                 value = nested.get(inner)
@@ -133,6 +257,10 @@ class BaseProvider:
             kwargs["temperature"] = model_config.get("temperature", 0.7)
         if caps.extra_body:
             kwargs["extra_body"] = dict(caps.extra_body)
+        if self.uses_responses_api(model_config):
+            # ChatOpenAI owns Responses request construction and SSE parsing.
+            # RxyCode only selects the transport and normalizes public chunks.
+            kwargs["use_responses_api"] = True
         # A21: thinking 适配判断——supports_reasoning + thinking_default_on 的模型
         # 默认注入 thinking enabled（extra_body）；effort_presets 非空时按档位注入
         # reasoning_effort（顶层）。各 provider 覆写传输位置时调用 super() 继承；
@@ -141,9 +269,14 @@ class BaseProvider:
         # 档位全集，用户经 /effort 直接选择）时**直接透传**该值；否则仍走
         # effort_presets 抽象映射（fast/balanced/deep，Phase F 难度路由用）。
         if caps.supports_reasoning and caps.thinking_default_on:
-            body = kwargs.setdefault("extra_body", {})
-            if "thinking" not in body:
-                body["thinking"] = {"type": "enabled"}
+            # ``thinking`` is a Chat-Completions-only compatibility field.
+            # Responses uses the standard top-level ``reasoning_effort``;
+            # keep that mapping below even when the preferred transport is
+            # Responses-first.
+            if not self.uses_responses_api(model_config):
+                body = kwargs.setdefault("extra_body", {})
+                if "thinking" not in body:
+                    body["thinking"] = {"type": "enabled"}
             effort = str(model_config.get("effort") or "balanced")
             options = caps.effort_options or ()
             if effort in options:

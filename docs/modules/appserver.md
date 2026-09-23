@@ -87,6 +87,10 @@ later tool activity.
 | `subagents/list` | list registered agent definitions |
 | `subagents/capability` | subagent feature flags + capability report |
 | `shutdown` | graceful exit (cancels heartbeat, kills workers) |
+| `models/list` | configured models; `warning` includes a missing-credential note when the resolved API key is empty. The raw key is never returned |
+| `plugin/install` | `local` / `registry` / `url` / `github`; optional raw `token` for GitHub PAT (not in `schema.json`). Hub clicks count as approval only under `ask_for_each_risky_action`; `read_only` still denies writes |
+| `plugin/toggle` | enable or disable an installed plugin |
+| `plugin/uninstall` | remove a plugin package |
 
 When the watchdog marks the server **degraded**, new `session/prompt` calls return
 `-32004` until restart.

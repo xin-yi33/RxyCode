@@ -1,5 +1,5 @@
 export type PermissionMode = 'confirm_all' | 'auto_edit' | 'full_auto'
-export type ThemePreference = 'system' | 'light' | 'dark'
+export type ThemePreference = 'system' | 'light' | 'dark' | 'high-contrast'
 export type DesktopLanguage = 'zh-CN' | 'en-US'
 
 export interface DesktopPreferences {
@@ -26,7 +26,10 @@ export function loadDesktopPreferences(storage: Pick<Storage, 'getItem'>): Deskt
       (candidate.permissionMode !== 'confirm_all' &&
         candidate.permissionMode !== 'auto_edit' &&
         candidate.permissionMode !== 'full_auto') ||
-      (candidate.theme !== 'system' && candidate.theme !== 'light' && candidate.theme !== 'dark') ||
+      (candidate.theme !== 'system' &&
+        candidate.theme !== 'light' &&
+        candidate.theme !== 'dark' &&
+        candidate.theme !== 'high-contrast') ||
       (candidate.language !== 'zh-CN' && candidate.language !== 'en-US')
     ) throw new Error('invalid preferences')
     return {

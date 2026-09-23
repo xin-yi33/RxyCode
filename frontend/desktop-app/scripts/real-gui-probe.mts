@@ -114,21 +114,24 @@ async function main(): Promise<void> {
       window.api.appserver.onLog((line) => window.__rxyProbeLogs.push('stderr: ' + line));
       window.api.appserver.onLine((line) => window.__rxyProbeLogs.push('stdout: ' + line));
     })()`)
-    await waitFor(async () => (await has('.new-session:not(:disabled)')) ? true : null, 90_000, 'renderer readiness')
-    await evaluate(`document.querySelector('.new-session').click()`)
-    await waitFor(async () => (await has('.composer textarea:not(:disabled)')) ? true : null, 20_000, 'new session')
+    await waitFor(async () => (await has('[data-testid="composer-input"]:not(:disabled)')) ? true : null, 90_000, 'composer ready')
+    const needsSession = await evaluate(`document.querySelector('[data-testid="composer-input"]:not(:disabled)') === null`)
+    if (needsSession) {
+      await evaluate(`document.querySelector('.new-session, [data-testid="new-session"]')?.click()`)
+      await waitFor(async () => (await has('[data-testid="composer-input"]:not(:disabled)')) ? true : null, 20_000, 'new session')
+    }
     await evaluate(`(() => {
-      const textarea = document.querySelector('.composer textarea');
+      const textarea = document.querySelector('[data-testid="composer-input"]');
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
       setter.call(textarea, ${JSON.stringify(prompt)});
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
     })()`)
-    await waitFor(async () => (await has('.send:not(:disabled)')) ? true : null, 5_000, 'enabled send button')
-    await evaluate(`document.querySelector('.send').click()`)
-    await waitFor(async () => (await has('.running-indicator')) ? true : null, 20_000, 'run start')
+    await waitFor(async () => (await has('[data-testid="composer-send"]:not(:disabled), .send:not(:disabled)')) ? true : null, 5_000, 'enabled send button')
+    await evaluate(`document.querySelector('[data-testid="composer-send"], .send').click()`)
+    await waitFor(async () => (await has('[data-testid="composer-stop"], [data-testid="running-indicator"], .tool-activity')) ? true : null, 30_000, 'run start')
     if (approvePendingRequest) {
       try {
-        await waitFor(async () => (await has('.approval-dialog .approve')) ? true : null, 60_000, 'real approval request')
+        await waitFor(async () => (await has('.approval-dialog .approve, [data-testid="approval-card"] [data-action="allow"]')) ? true : null, 60_000, 'real approval request')
       } catch (error) {
         await screenshot('01-approval-timeout.png')
         const diagnostics = await evaluate(`({
@@ -139,11 +142,11 @@ async function main(): Promise<void> {
         throw error
       }
       await screenshot('01-approval-real.png')
-      await evaluate(`document.querySelector('.approval-dialog .approve').click()`)
-      await waitFor(async () => !(await has('.approval-dialog')) ? true : null, 30_000, 'real approval resolution')
+      await evaluate(`document.querySelector('.approval-dialog .approve, [data-testid="approval-card"] [data-action="allow"]').click()`)
+      await waitFor(async () => !(await has('.approval-dialog .approve, [data-testid="approval-card"] [data-action="allow"]')) ? true : null, 30_000, 'real approval resolution')
     }
     try {
-      await waitFor(async () => (await has('.tool-card')) ? true : null, 45_000, 'first real tool card')
+      await waitFor(async () => (await has('.tool-activity, .tool-card, [data-testid="final-answer"]')) ? true : null, 90_000, 'first real tool card or final')
     } catch (error) {
       const status = await evaluate('window.api.appserver.getStatus()')
       const diagnostics = await evaluate(`JSON.stringify({
@@ -183,16 +186,16 @@ async function main(): Promise<void> {
       return
     }
     await screenshot('01-loading-real.png')
-    await waitFor(async () => !(await has('.running-indicator')) ? true : null, 90_000, 'real completion')
+    await waitFor(async () => (await has('[data-testid="final-answer"]')) && !(await has('[data-testid="composer-stop"]')) ? true : null, 120_000, 'real completion')
     await delay(300)
     await screenshot('02-final-real.png')
     const snapshot = await evaluate(`(() => ({
-      prompt: document.querySelector('.message.user .message-text')?.textContent ?? '',
-      final: Array.from(document.querySelectorAll('.message.assistant .message-text')).at(-1)?.textContent ?? '',
-      tools: Array.from(document.querySelectorAll('.tool-card')).map((card) => ({
-        name: card.querySelector('.tool-name')?.textContent ?? '', className: card.className
+      prompt: document.querySelector('.timeline .user-turn, [data-testid="task-timeline"]')?.textContent ?? '',
+      final: document.querySelector('[data-testid="final-answer"]')?.textContent ?? '',
+      tools: Array.from(document.querySelectorAll('.tool-activity')).map((card) => ({
+        name: card.querySelector('.activity-label, .tool-name')?.textContent ?? '', className: card.className
       })),
-      error: document.querySelector('.error-banner, .message.error')?.textContent ?? '',
+      error: document.querySelector('.error-banner, .timeline-error')?.textContent ?? '',
       viewport: { width: innerWidth, height: innerHeight },
       shellScroll: { y: scrollY, height: document.documentElement.scrollHeight }
     }))()`)

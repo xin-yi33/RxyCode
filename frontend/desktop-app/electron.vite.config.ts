@@ -26,6 +26,7 @@ export default defineConfig({
     }
   },
   renderer: {
+    publicDir: resolve('src/renderer/public'),
     // Inline (empty) PostCSS config so Vite does not walk up to
     // frontend/package.json, which carries a UTF-8 BOM and breaks
     // postcss-load-config (baseline issue; fixed in-scope only).

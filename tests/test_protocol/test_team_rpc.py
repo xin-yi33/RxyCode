@@ -31,8 +31,9 @@ def test_team_list_is_l1_summary(tmp_path: Path, monkeypatch) -> None:
     row = payload["teams"][0]
     assert "summary" in row
     assert "位角色" in row["summary"]
-    assert "members" not in row
-    assert "stages" not in row
+    assert isinstance(row.get("members"), list)
+    assert isinstance(row.get("stages"), list)
+    assert isinstance(row.get("extra"), dict)
 
 
 def test_install_reuses_f18_two_step(tmp_path: Path, monkeypatch) -> None:

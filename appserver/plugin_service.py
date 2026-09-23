@@ -26,6 +26,55 @@ except ImportError:
 
 NAME_OK = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$")
+_GITHUB_REPO_RE = re.compile(
+    r"^(?:https?://github\.com/)?(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)"
+    r"(?:\.git)?(?:/(?:tree|archive/refs/heads)/(?P<ref>[^/]+))?(?:/|\.zip)?$"
+)
+_GITHUB_SECRET_ENV = frozenset({"GITHUB_PERSONAL_ACCESS_TOKEN", "GH_TOKEN"})
+_OFFICIAL_GITHUB_MCP_IMAGE = "ghcr.io/github/github-mcp-server"
+_DEPRECATED_GITHUB_NPM = "@modelcontextprotocol/server-github"
+
+
+def resolve_github_mcp_runtime() -> tuple[str, list[str]]:
+    """Pick the official GitHub MCP stdio launcher that is actually on PATH."""
+    binary = shutil.which("github-mcp-server")
+    if binary:
+        return binary, ["stdio"]
+    docker = shutil.which("docker")
+    if docker:
+        return docker, [
+            "run",
+            "-i",
+            "--rm",
+            "-e",
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            _OFFICIAL_GITHUB_MCP_IMAGE,
+        ]
+    npx = shutil.which("npx")
+    if npx:
+        return npx, ["-y", _DEPRECATED_GITHUB_NPM]
+    raise PluginError(
+        "PLUGIN_MCP_RUNTIME_MISSING",
+        "GitHub MCP 需要 PATH 上的 github-mcp-server、docker 或 npx",
+    )
+
+
+def bundled_plugin_registry() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins"
+
+
+def github_archive_url(raw: str) -> str:
+    """Turn owner/repo or a GitHub page URL into an http(s) zip the installer can fetch."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")) and text.lower().endswith(".zip"):
+        return text
+    match = _GITHUB_REPO_RE.fullmatch(text.rstrip("/"))
+    if match is None:
+        return text
+    ref = match.group("ref") or "main"
+    return f"https://github.com/{match.group('owner')}/{match.group('repo')}/archive/refs/heads/{ref}.zip"
 
 
 class PluginError(Exception):
@@ -65,6 +114,7 @@ class PluginService:
         self.registry = registry
         self._index: dict[str, dict[str, Any]] = {}
         self._attached = False
+        self._oauth_pending: dict[str, dict[str, str]] = {}
         self._load()
 
     def _authorize(self, action: str) -> None:
@@ -73,8 +123,15 @@ class PluginService:
             raise PluginError("PLUGIN_PERMISSION_DENIED", "permission_store required")
         scope = str(self.root)
         verdict = store.evaluate(action=action, actor="user", scope=scope, workspace=scope)
-        if verdict != "allow":
-            raise PluginError("PLUGIN_PERMISSION_DENIED", "plugin write denied")
+        if verdict == "allow":
+            return
+        last = store.last_decision() or {}
+        # Plugin hub 上的安装/连接/卸载就是用户批准。默认 ask 档在无 approval
+        # 卡片时会被 evaluate() 记成 reject/ask_required。只放行这一档；
+        # read_only 虽然也带 ask=True，仍要拒绝写入。
+        if last.get("reason") == "ask_required" and store.active_policy() == "ask_for_each_risky_action":
+            return
+        raise PluginError("PLUGIN_PERMISSION_DENIED", "plugin write denied")
 
     def attach_to_capabilities(self) -> None:
         if self._capabilities is None or self._attached:
@@ -288,6 +345,8 @@ class PluginService:
             "source": source,
             "enabled": True,
             "capability_ids": self._capability_ids(name, manifest),
+            "description": str(manifest.get("description") or ""),
+            "adapter": str(manifest.get("adapter") or ""),
             "manifest": {
                 "skills": manifest.get("skills") or [],
                 "commands": manifest.get("commands") or [],
@@ -389,7 +448,180 @@ class PluginService:
         return merged
 
     def list_plugins(self) -> dict[str, Any]:
-        return {"plugins": [dict(item) for item in self._index.values()], "root": str(self.root)}
+        return {"plugins": [self._public_record(item) for item in self._index.values()], "root": str(self.root)}
+
+    def catalog(self) -> dict[str, Any]:
+        from .plugin_adapter import load_catalog
+
+        installed = {item["name"]: item for item in self.list_plugins()["plugins"]}
+        rows: list[dict[str, Any]] = []
+        for row in load_catalog():
+            name = str(row.get("name") or "")
+            current = installed.get(name)
+            description = str(row.get("description") or "")
+            if not description and current is not None:
+                description = str(current.get("description") or "")
+            rows.append(
+                {
+                    "name": name,
+                    "title": str(row.get("title") or name),
+                    "description": description,
+                    "connect": str(row.get("connect") or "zip"),
+                    "adapter": str(row.get("adapter") or (current or {}).get("adapter") or ""),
+                    "installed": current is not None,
+                    "enabled": bool((current or {}).get("enabled")) if current else False,
+                    "auth": str((current or {}).get("auth") or "needed"),
+                }
+            )
+        return {"plugins": rows}
+
+    def start_connect(self, name: str) -> dict[str, Any]:
+        from .plugin_adapter import catalog_entry
+        from .plugin_connect import start_oauth_session
+
+        plugin_name = self._safe_name(name)
+        row = catalog_entry(plugin_name)
+        if row is None:
+            raise PluginError("PLUGIN_NOT_FOUND", f"catalog has no plugin {plugin_name}")
+        if str(row.get("connect") or "").lower() != "oauth":
+            raise PluginError("PLUGIN_OAUTH_UNSUPPORTED", f"{plugin_name} is not an oauth connector")
+        if plugin_name not in self._index:
+            if self.registry is None:
+                self.registry = bundled_plugin_registry()
+            self.install(source="registry", name=plugin_name)
+        dest = Path(str(self._index[plugin_name].get("path") or self.root / plugin_name))
+        bundled = bundled_plugin_registry() / plugin_name
+        package_dir = bundled if bundled.is_dir() else dest
+        started = start_oauth_session(plugin_name, package_dir=package_dir, pending=self._oauth_pending)
+        started["plugin"] = self._public_record(self._index[plugin_name])
+        return started
+
+    def complete_connect(
+        self,
+        name: str,
+        code: str,
+        state: str,
+        *,
+        http: Any = None,
+    ) -> dict[str, Any]:
+        from .plugin_connect import exchange_oauth_code
+
+        plugin_name = self._safe_name(name)
+        if plugin_name not in self._index:
+            raise PluginError("PLUGIN_NOT_FOUND", f"unknown plugin {plugin_name}")
+        self._authorize("capability.write")
+        token = exchange_oauth_code(
+            plugin_name,
+            code=code,
+            state=state,
+            pending=self._oauth_pending,
+            http=http,
+        )
+        dest = Path(str(self._index[plugin_name].get("path") or self.root / plugin_name))
+        self._write_user_token(dest, token)
+        self._publish_mcp(self._index[plugin_name])
+        return {"ok": True, "plugin": self._public_record(self._index[plugin_name])}
+
+    def _read_user_json(self, dest: Path) -> dict[str, Any]:
+        path = dest / "user.json"
+        if not path.is_file() or path.is_symlink():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _write_user_token(self, dest: Path, token: str) -> None:
+        dest.mkdir(parents=True, exist_ok=True)
+        data = self._read_user_json(dest)
+        data["token"] = token
+        path = dest / "user.json"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            if os.name != "nt":
+                os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def _github_auth_configured(self, dest: Path) -> bool:
+        if (os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or os.environ.get("GH_TOKEN") or "").strip():
+            return True
+        from mcp.github_auth import read_github_user_token
+
+        return bool(read_github_user_token(dest / "user.json"))
+
+    def _public_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        out = {key: value for key, value in record.items() if key not in {"token", "github_token"}}
+        dest = Path(str(record.get("path") or ""))
+        description = str(out.get("description") or "")
+        if not description:
+            description = str((record.get("manifest") or {}).get("description") or "")
+        out["description"] = description
+        plugin_name = str(record.get("name") or "").lower()
+        if plugin_name in {"github", "canva"}:
+            out["auth"] = "configured" if self._oauth_auth_configured(plugin_name, dest) else "needed"
+        return out
+
+    def _oauth_auth_configured(self, name: str, dest: Path) -> bool:
+        if name == "github":
+            return self._github_auth_configured(dest)
+        from mcp.plugin_auth import read_plugin_user_token
+
+        return bool(read_plugin_user_token(dest / "user.json"))
+
+    def _connect_github(self, token: str) -> dict[str, Any]:
+        record = self._index["github"]
+        dest = Path(str(record.get("path") or self.root / "github"))
+        self._write_user_token(dest, token)
+        self._publish_mcp(record)
+        return {"ok": True, "plugin": self._public_record(record)}
+
+    def _mcp_entries(self, record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        mcp = record.get("manifest", {}).get("mcp") or {}
+        if not isinstance(mcp, dict):
+            return []
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for key, spec in mcp.items():
+            if isinstance(spec, dict) and str(spec.get("command") or "").strip():
+                rows.append((str(key), spec))
+        return rows
+
+    def _command_for_publish(self, key: str, spec: dict[str, Any]) -> tuple[str, list[str]]:
+        if "github" in key.lower():
+            return resolve_github_mcp_runtime()
+        args = [str(item) for item in (spec.get("args") or []) if isinstance(item, str)]
+        return str(spec["command"]), args
+
+    def _publish_mcp(self, record: dict[str, Any]) -> None:
+        if not self.persistent:
+            return
+        from tools.mcp_manager import upsert_mcp_server
+
+        for key, spec in self._mcp_entries(record):
+            command, args = self._command_for_publish(key, spec)
+            env: dict[str, str] = {}
+            raw_env = spec.get("env")
+            if isinstance(raw_env, dict):
+                for env_key, env_value in raw_env.items():
+                    if (
+                        isinstance(env_key, str)
+                        and isinstance(env_value, str)
+                        and env_value
+                        and env_key not in _GITHUB_SECRET_ENV
+                    ):
+                        env[env_key] = env_value
+            ok, message = upsert_mcp_server(key, command, args, env or None)
+            if not ok:
+                raise PluginError("PLUGIN_MCP_PUBLISH_FAILED", message)
+
+    def _retract_mcp(self, record: dict[str, Any]) -> None:
+        if not self.persistent:
+            return
+        from tools.mcp_manager import remove_mcp_server
+
+        for key, _spec in self._mcp_entries(record):
+            remove_mcp_server(key)
 
     def _load_registry(self) -> list[dict[str, Any]]:
         if self.registry is None:
@@ -493,12 +725,34 @@ class PluginService:
         if callable(saver):
             saver()
 
-    def install(self, *, source: str, path: str | None = None, name: str | None = None) -> dict[str, Any]:
+    def install(
+        self,
+        *,
+        source: str,
+        path: str | None = None,
+        name: str | None = None,
+        token: str | None = None,
+    ) -> dict[str, Any]:
         self._authorize("capability.write")
+        secret = token.strip() if isinstance(token, str) else ""
+        hinted = ""
+        if name:
+            try:
+                hinted = self._safe_name(str(name))
+            except PluginError:
+                hinted = ""
+        if secret and hinted == "github" and hinted in self._index:
+            return self._connect_github(secret)
         kind = (source or "").strip().lower()
         if kind == "registry":
             src = self._source_from_registry(str(name or ""))
             origin = "registry"
+        elif kind in {"url", "github"}:
+            loc = github_archive_url(str(path or name or ""))
+            if not self._is_http(loc):
+                raise PluginError("PLUGIN_SOURCE_INVALID", "github/url install requires an http(s) zip or owner/repo")
+            src = self._fetch_remote_plugin(loc)
+            origin = "github" if kind == "github" else "url"
         elif kind == "local":
             if not path:
                 raise PluginError("PLUGIN_SOURCE_INVALID", "local install requires path")
@@ -508,7 +762,7 @@ class PluginService:
             src = self._open_package(canonicalize(raw))
             origin = "local"
         else:
-            raise PluginError("PLUGIN_SOURCE_INVALID", "source must be local or registry")
+            raise PluginError("PLUGIN_SOURCE_INVALID", "source must be local, registry, url, or github")
         if src.is_symlink() or not src.is_dir():
             raise PluginError("PLUGIN_PATH_UNSAFE", "plugin source must be a real directory")
         checked = self.validate_manifest(src)
@@ -539,11 +793,26 @@ class PluginService:
             raise
         try:
             record = self._record(installed["name"], installed["version"], dest, installed["manifest"], source=origin)
+            if secret and plugin_name == "github":
+                self._write_user_token(dest, secret)
+            self._publish_mcp(record)
         except Exception:
+            self._index.pop(plugin_name, None)
+            try:
+                self._save()
+            except OSError:
+                pass
             if dest.exists():
+                kept_after = None
+                user = dest / "user.json"
+                if user.is_file() and not user.is_symlink():
+                    kept_after = user.read_text(encoding="utf-8")
                 shutil.rmtree(dest, ignore_errors=True)
+                if kept_after is not None:
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "user.json").write_text(kept_after, encoding="utf-8")
             raise
-        return {"ok": True, "plugin": record}
+        return {"ok": True, "plugin": self._public_record(record)}
 
     def toggle(self, name: str, enabled: object) -> dict[str, Any]:
         self._authorize("capability.write")
@@ -556,6 +825,9 @@ class PluginService:
         if enabled is True:
             record["enabled"] = True
             self._save()
+            self._publish_mcp(record)
+        else:
+            self._retract_mcp(record)
         if self._capabilities is not None:
             for cap_id in record.get("capability_ids") or []:
                 try:
@@ -583,6 +855,7 @@ class PluginService:
         if record is None:
             raise PluginError("PLUGIN_NOT_FOUND", f"unknown plugin {plugin_name}")
         cap_ids = [str(item) for item in record.get("capability_ids") or []]
+        self._retract_mcp(record)
         dest = Path(str(record.get("path") or self.root / plugin_name))
         root = canonicalize(self.root)
         try:

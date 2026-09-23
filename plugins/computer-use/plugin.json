@@ -1,0 +1,12 @@
+{
+  "name": "computer-use",
+  "version": "1.0.0",
+  "description": "Computer-use 适配器（工具缝，不是截图像素代理）",
+  "adapter": "computer-use",
+  "tools": [
+    {
+      "name": "computer_use",
+      "path": "tools/computer_use"
+    }
+  ]
+}

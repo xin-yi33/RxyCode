@@ -13,6 +13,10 @@
 import { useEffect, useState } from 'react'
 import {
   ProtocolClient,
+  PROTOCOL_VERSION_MAX,
+  PROTOCOL_VERSION_MIN,
+  initializeHandshake,
+  type HandshakeState,
   type NotificationHandler,
   type ServerRequestHandler
 } from '@rxycode/protocol-client'
@@ -25,6 +29,8 @@ export interface AppserverInfo {
   appVersion: string
   appserverPid?: number | null
   appserverStatus?: string
+  systemLocale?: string
+  homeDir?: string
 }
 
 export interface AppserverPlatform {
@@ -34,6 +40,7 @@ export interface AppserverPlatform {
   stop(): void
   restart?: () => Promise<void>
   pickWorkspaceDirectory(): Promise<string | null>
+  revealWorkspace?(cwd: string): Promise<boolean>
   onStatus(callback: (status: AppserverStatus) => void): () => void
   sendLine(line: string): void
   onLine(callback: (line: string) => void): () => void
@@ -54,6 +61,7 @@ export function createAppserverPlatform(): AppserverPlatform {
       await window.api.appserver.start()
     },
     pickWorkspaceDirectory: () => window.api.workspace.pickDirectory(),
+    revealWorkspace: (cwd: string) => window.api.workspace.reveal(cwd),
     onStatus: (callback) =>
       window.api.appserver.onStatus((status) => callback(status as AppserverStatus)),
     sendLine: (line) => {
@@ -107,6 +115,7 @@ export interface ConversationConnectionOptions {
 
 export interface ConversationConnection {
   readonly client: ProtocolClient | null
+  readonly handshake: HandshakeState
   attach(info: AppserverInfo): Promise<void>
   reconnect(info: AppserverInfo): Promise<void>
   detach(reason: string): void
@@ -123,10 +132,14 @@ export function createConversationConnection(
 ): ConversationConnection {
   let client: ProtocolClient | null = null
   let offLine: (() => void) | null = null
+  let handshake: HandshakeState = { status: 'pending' }
 
   return {
     get client() {
       return client
+    },
+    get handshake() {
+      return handshake
     },
     async attach(info: AppserverInfo): Promise<void> {
       if (client !== null) return
@@ -138,31 +151,44 @@ export function createConversationConnection(
       })
       client = next
       offLine = unsubscribe
+      handshake = { status: 'started' }
       const maxAttempts = options.initializeMaxAttempts ?? 3
       const retryDelayMs = options.initializeRetryDelayMs ?? 250
       try {
         let lastError: Error = new Error('initialize failed')
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
           if (client !== next) throw lastError
-          try {
-            await next.requestWithTimeout(
-              'initialize',
-              {
-                client_name: 'rxycode-desktop',
-                client_version: info.appVersion,
-                protocol_version: info.protocolVersion,
-                capabilities: {}
-              },
-              options.initializeTimeoutMs ?? 10_000
-            )
-            return
-          } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error))
-            if (client !== next) throw lastError
-            if (attempt < maxAttempts - 1) {
-              await new Promise((resolveWait) => setTimeout(resolveWait, retryDelayMs))
+          const state = await initializeHandshake(
+            next,
+            {
+              client_name: 'rxycode-desktop',
+              client_version: info.appVersion,
+              protocol_version: info.protocolVersion,
+              capabilities: { desktop: true }
+            },
+            {
+              timeoutMs: options.initializeTimeoutMs ?? 10_000,
+              versionRange: {
+                min: PROTOCOL_VERSION_MIN,
+                max: PROTOCOL_VERSION_MAX
+              }
             }
+          )
+          handshake = state
+          if (state.status === 'completed') {
+            return
           }
+          if (state.status !== 'failed') {
+            lastError = new Error('initialize failed')
+            throw lastError
+          }
+          lastError = new Error(state.error.message)
+          if (client !== next) throw lastError
+          const retry = state.error.handling === 'retry' && attempt < maxAttempts - 1
+          if (!retry) {
+            throw lastError
+          }
+          await new Promise((resolveWait) => setTimeout(resolveWait, retryDelayMs))
         }
         throw lastError
       } catch (error) {
@@ -172,6 +198,9 @@ export function createConversationConnection(
           client = null
           offLine = null
           const wrapped = error instanceof Error ? error : new Error(String(error))
+          if (handshake.status !== 'failed') {
+            handshake = { status: 'failed', error: { code: 'rpc_error', handling: 'retry', message: wrapped.message } }
+          }
           options.onConnectionError?.(wrapped)
           options.onServerRequestAborted?.(wrapped)
           throw wrapped

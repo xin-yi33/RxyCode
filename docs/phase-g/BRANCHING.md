@@ -16,6 +16,7 @@ master
 
 - **不要** `git merge feat/phase-g-frontend` 进 backend，反过来也不要。
 - **不要**为每张 GX 再开 `feat/gxN`。
+- 联调只用 `feat/phase-g-integrate`（从 master 开，先合 backend 再合 frontend）。不要把 frontend merge 进 backend。
 - 两端各自 PR 进 master。schema 由后端先合；前端等 schema 在 master（或 cherry-pick 那一次协议 commit）后再接 UI。
 - 公共基线 `PHASE-G-DESKTOP.md` 当只读。真要改产品定义，单独一个文档 PR，不要夹在施工 commit 里。
 

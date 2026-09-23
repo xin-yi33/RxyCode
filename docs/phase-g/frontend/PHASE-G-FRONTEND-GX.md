@@ -71,9 +71,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -159,12 +159,12 @@ npm run test -- --run
 ```
 
 **完成判据**：
-- [ ] 四列看板正确投影（4 条状态映射断言通过）
-- [ ] Ready 列卡片带"审查"入口（打开主链 diff review）
-- [ ] 拖拽仅限 Drafts↔Active；Ready/Done 不可手动拖
-- [ ] 空/加载/错误/窄窗/深色五态测试通过
-- [ ] 协议零变更（本卡纯前端投影）
-- [ ] 单 commit（批次 baseline 按 §1-12/§2 出口执行）
+- [x] 四列看板正确投影（4 条状态映射断言通过）
+- [x] Ready 列卡片带"审查"入口（打开主链 diff review）
+- [x] 拖拽仅限 Drafts↔Active；Ready/Done 不可手动拖
+- [x] 空/加载/错误/窄窗/深色五态测试通过
+- [x] 协议零变更（本卡纯前端投影）
+- [x] 单 commit（批次 baseline 按 §1-12/§2 出口执行）
 
 **Commit**：
 ```
@@ -208,9 +208,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 探针路径 B：`approval/mode_set` 缺失，mode 切换为 `BLOCKED_PREREQUISITE`（未 mock）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -327,9 +328,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 探针路径 B：`review/comment/add|resolve` 缺失，评论 RPC 为 `BLOCKED_PREREQUISITE`
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -458,9 +460,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 探针路径 B：`checkpoint/rewind|snapshot/create` 缺失，rewind RPC 为 `BLOCKED_PREREQUISITE`
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -581,9 +584,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 探针：`turn/steer` 缺失（路径 B）；`session/interrupt` 存在，stop_and_send 可消费
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -693,9 +697,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -796,9 +800,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 路径 A 消费 `event/token_usage`；`event/agent_usage` 缺失；cost=`PENDING_PRICING`
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -912,9 +917,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 路径 A：`session/rename`；路径 B：`thread/fork|pin|archive` BLOCKED
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1030,9 +1036,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1142,9 +1148,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1245,9 +1251,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1340,9 +1346,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1434,9 +1440,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1549,9 +1555,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1684,9 +1690,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1788,9 +1794,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1893,9 +1899,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -1997,9 +2003,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2110,9 +2116,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2229,9 +2235,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2331,14 +2337,10 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
-
-<details>
-<summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
-
-## GX21 · 回收站 UI
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- 探针路径 B：B17 `thread/list_deleted|restore|purge` 缺失；session/* 不能替代。PurgeConfirmDialog + confirm_purge 已落地，RPC 不 mock。
 
 **借鉴来源**：Codex 会话删除映射（删映射不删文件）；用户规格（垃圾桶图标入口、点击恢复、清空弹窗确认风险操作）。
 **优先级/工时**：P1 / 2–3d / 依赖：B17（回收站后端）+ H15（三分类投影）/ **owner: frontend**
@@ -2433,9 +2435,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2517,9 +2519,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2601,9 +2603,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2686,9 +2688,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2798,9 +2800,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2897,9 +2899,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>
@@ -2984,9 +2986,9 @@ npm run test -- --run
 后端 pytest 不在本卡。
 
 **本端完成判据**：
-- [ ] UI/投影/五态落地
-- [ ] typecheck + 组件测试通过
-- [ ] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
+- [x] UI/投影/五态落地
+- [x] typecheck + 组件测试通过
+- [x] 单 commit 到 `feat/phase-g-frontend`（不要开 `feat/gxN`，不要跟后端分支互合并）
 
 <details>
 <summary>产品卡原文（验收细节以原文为准，本端只做本端条目）</summary>

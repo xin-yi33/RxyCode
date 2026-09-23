@@ -29,7 +29,7 @@ def test_resolve_desktop_exe_explicit_dir(tmp_path, monkeypatch):
 
 def test_resolve_desktop_exe_inside_portable_zip_wrapper(tmp_path):
     """Official win.zip extracts to RxyCode.Desktop-<ver>-win/rxycode-desktop.exe."""
-    wrapper = tmp_path / "RxyCode.Desktop-1.2.10-win"
+    wrapper = tmp_path / "RxyCode.Desktop-1.3.0-win"
     wrapper.mkdir()
     exe = wrapper / "rxycode-desktop.exe"
     exe.write_text("", encoding="utf-8")
@@ -72,8 +72,8 @@ def test_resolve_desktop_exe_posix_name(monkeypatch, tmp_path):
 
 
 def test_resolve_desktop_exe_portable_zip_wrapper(tmp_path):
-    """v1.2.10 win zip extracts to RxyCode.Desktop-<ver>-win/rxycode-desktop.exe."""
-    wrapper = tmp_path / "RxyCode.Desktop-1.2.10-win"
+    """v1.3.0 win zip extracts to RxyCode.Desktop-<ver>-win/rxycode-desktop.exe."""
+    wrapper = tmp_path / "RxyCode.Desktop-1.3.0-win"
     wrapper.mkdir()
     exe = wrapper / "rxycode-desktop.exe"
     exe.write_text("", encoding="utf-8")
@@ -81,7 +81,7 @@ def test_resolve_desktop_exe_portable_zip_wrapper(tmp_path):
     assert main._resolve_desktop_executable(desktop_dir=str(wrapper)) == str(exe)
     dropped = tmp_path / "desktop"
     dropped.mkdir()
-    nested = dropped / "RxyCode.Desktop-1.2.10-win"
+    nested = dropped / "RxyCode.Desktop-1.3.0-win"
     nested.mkdir()
     nested_exe = nested / "rxycode-desktop.exe"
     nested_exe.write_text("", encoding="utf-8")
@@ -106,7 +106,7 @@ def test_resolve_desktop_exe_macos_app_bundle(tmp_path):
 
 
 def test_resolve_desktop_exe_appimage_and_direct_file(tmp_path):
-    image = tmp_path / "rxycode-desktop-1.2.10.AppImage"
+    image = tmp_path / "rxycode-desktop-1.3.0.AppImage"
     image.write_text("", encoding="utf-8")
     image.chmod(0o644)
     assert main._resolve_desktop_executable(desktop_dir=str(tmp_path)) == str(image)
@@ -114,7 +114,7 @@ def test_resolve_desktop_exe_appimage_and_direct_file(tmp_path):
 
 
 def test_packaged_desktop_popen_spec_prepares_linux_appimage(tmp_path, monkeypatch):
-    image = tmp_path / "rxycode-desktop-1.2.10.AppImage"
+    image = tmp_path / "rxycode-desktop-1.3.0.AppImage"
     image.write_text("", encoding="utf-8")
     image.chmod(0o644)
     monkeypatch.delenv("APPIMAGE_EXTRACT_AND_RUN", raising=False)

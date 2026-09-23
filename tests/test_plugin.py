@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import json
+import shutil
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from appserver.capabilities import CapabilityService
 from appserver.permission import PermissionStore
-from appserver.plugin_service import PluginError, PluginService
+from appserver.plugin_service import (
+    PluginError,
+    PluginService,
+    bundled_plugin_registry,
+    github_archive_url,
+    resolve_github_mcp_runtime,
+)
 from protocol.schema import export_schema
 
 
@@ -53,6 +61,45 @@ def _service(tmp_path: Path) -> tuple[PluginService, CapabilityService]:
     )
     plugins.attach_to_capabilities()
     return plugins, caps
+
+
+def test_hub_install_allowed_when_ask_profile(tmp_path: Path) -> None:
+    caps = CapabilityService(
+        persistent=False,
+        skill_lister=lambda: [],
+        mcp_lister=lambda: {},
+        review_service=_PassReview(),
+    )
+    perms = PermissionStore(persistent=False)
+    assert perms.active_policy() == "ask_for_each_risky_action"
+    plugins = PluginService(
+        root=tmp_path / "plugins-ask",
+        persistent=False,
+        capabilities=caps,
+        permission_store=perms,
+    )
+    result = plugins.install(source="local", path=str(_plugin_pkg(tmp_path, name="ask-plug")))
+    assert result["ok"] is True
+
+
+def test_hub_install_rejected_when_read_only(tmp_path: Path) -> None:
+    caps = CapabilityService(
+        persistent=False,
+        skill_lister=lambda: [],
+        mcp_lister=lambda: {},
+        review_service=_PassReview(),
+    )
+    perms = PermissionStore(persistent=False)
+    perms.set_profile("read_only")
+    plugins = PluginService(
+        root=tmp_path / "plugins-ro",
+        persistent=False,
+        capabilities=caps,
+        permission_store=perms,
+    )
+    with pytest.raises(PluginError) as denied:
+        plugins.install(source="local", path=str(_plugin_pkg(tmp_path, name="ro-plug")))
+    assert denied.value.code == "PLUGIN_PERMISSION_DENIED"
 
 
 def test_manifest_rejects_missing_and_traversal(tmp_path: Path) -> None:
@@ -221,15 +268,177 @@ def test_refuse_symlink_package(tmp_path: Path) -> None:
     assert src_err.value.code == "PLUGIN_PATH_UNSAFE"
 
 
+def test_github_archive_url_accepts_owner_repo() -> None:
+    assert github_archive_url("owner/repo") == "https://github.com/owner/repo/archive/refs/heads/main.zip"
+    assert github_archive_url("https://github.com/owner/repo") == (
+        "https://github.com/owner/repo/archive/refs/heads/main.zip"
+    )
+    assert github_archive_url("https://github.com/owner/repo.git") == (
+        "https://github.com/owner/repo/archive/refs/heads/main.zip"
+    )
+    assert github_archive_url("https://example.com/pkg.zip") == "https://example.com/pkg.zip"
+
+
+def test_install_bundled_github_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    plugins, caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    result = plugins.install(source="registry", name="github")
+    assert result["ok"] is True
+    assert result["plugin"]["name"] == "github"
+    assert result["plugin"]["auth"] == "needed"
+    rows = {row["capability_id"]: row for row in caps.list()["capabilities"]}
+    assert "mcp:github.github" in rows
+    assert "skill:github.github" in rows
+    overlay = plugins.mcp_overlay()["github.github"]
+    assert overlay["command"] == "npx"
+    assert overlay["args"] == ["-y", "@modelcontextprotocol/server-github"]
+    dest = Path(result["plugin"]["path"])
+    assert (dest / "skills" / "github" / "SKILL.md").is_file()
+    listed = plugins.list_plugins()["plugins"][0]
+    assert listed["auth"] == "needed"
+    assert "token" not in listed
+
+
+def test_resolve_github_mcp_runtime_prefers_official_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/usr/bin/github-mcp-server" if name == "github-mcp-server" else None,
+    )
+    command, args = resolve_github_mcp_runtime()
+    assert command.endswith("github-mcp-server")
+    assert args == ["stdio"]
+
+
+def test_resolve_github_mcp_runtime_uses_docker_then_npx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+    command, args = resolve_github_mcp_runtime()
+    assert command.endswith("docker")
+    assert args == [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server",
+    ]
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/usr/bin/npx" if name == "npx" else None,
+    )
+    command, args = resolve_github_mcp_runtime()
+    assert command.endswith("npx")
+    assert args == ["-y", "@modelcontextprotocol/server-github"]
+
+
+def test_resolve_github_mcp_runtime_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("appserver.plugin_service.shutil.which", lambda _name: None)
+    with pytest.raises(PluginError) as err:
+        resolve_github_mcp_runtime()
+    assert err.value.code == "PLUGIN_MCP_RUNTIME_MISSING"
+
+
+def test_github_token_connect_updates_user_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    plugins, _caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    plugins.install(source="registry", name="github")
+    with pytest.raises(PluginError) as already:
+        plugins.install(source="registry", name="github")
+    assert already.value.code == "PLUGIN_ALREADY_INSTALLED"
+    secret = "ghp_test-secret_token"
+    second = plugins.install(source="registry", name="github", token=secret)
+    assert second["ok"] is True
+    assert second["plugin"]["auth"] == "configured"
+    dest = Path(second["plugin"]["path"])
+    user = json.loads((dest / "user.json").read_text(encoding="utf-8"))
+    assert user["token"] == secret
+    public = json.dumps(plugins.list_plugins())
+    assert secret not in public
+    assert "ghp_test" not in public
+    assert plugins.list_plugins()["plugins"][0]["auth"] == "configured"
+
+
+def test_publish_github_mcp_resolves_runtime_and_omits_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_upsert(name, command, args, env):
+        captured.update({"name": name, "command": command, "args": args, "env": env})
+        return True, "ok"
+
+    monkeypatch.setattr(
+        "appserver.plugin_service.shutil.which",
+        lambda name: "/bin/github-mcp-server" if name == "github-mcp-server" else None,
+    )
+    monkeypatch.setattr("tools.mcp_manager.upsert_mcp_server", fake_upsert)
+    caps = CapabilityService(
+        persistent=False,
+        skill_lister=lambda: [],
+        mcp_lister=lambda: {},
+        review_service=_PassReview(),
+    )
+    perms = PermissionStore(persistent=False)
+    perms.set_profile("workspace_write")
+    plugins = PluginService(
+        root=tmp_path / "plugins",
+        persistent=True,
+        capabilities=caps,
+        permission_store=perms,
+        registry=bundled_plugin_registry(),
+    )
+    secret = "ghp_test-secret_not_in_yaml"
+    result = plugins.install(source="registry", name="github", token=secret)
+    assert result["ok"] is True
+    assert captured["command"] == "/bin/github-mcp-server"
+    assert captured["args"] == ["stdio"]
+    env = captured.get("env") or {}
+    assert "GITHUB_PERSONAL_ACCESS_TOKEN" not in env
+    assert secret not in json.dumps(captured, default=str)
+
+
+def test_github_plugin_token_injected_for_mcp_spawn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcp.github_auth import inject_github_plugin_token, read_github_user_token
+
+    user = tmp_path / "user.json"
+    user.write_text(json.dumps({"token": "ghp_from_plugin"}), encoding="utf-8")
+    assert read_github_user_token(user) == "ghp_from_plugin"
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr("config.settings.get_data_dir", lambda: tmp_path)
+    (tmp_path / "plugins" / "github").mkdir(parents=True)
+    (tmp_path / "plugins" / "github" / "user.json").write_text(
+        json.dumps({"token": "ghp_from_plugin"}), encoding="utf-8"
+    )
+    env: dict[str, str] = {}
+    inject_github_plugin_token(env, "github")
+    assert env["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_from_plugin"
+    other: dict[str, str] = {}
+    inject_github_plugin_token(other, "fetch")
+    assert other == {}
+
+
 def test_schema_has_plugin_methods() -> None:
     defs = export_schema()["$defs"]
     assert "PluginListRequest" in defs
     assert "PluginInstallRequest" in defs
     assert "PluginUninstallRequest" in defs
     assert "PluginToggleRequest" in defs
+    assert "PluginCatalogRequest" in defs
+    assert "PluginConnectStartRequest" in defs
+    assert "PluginConnectCallbackRequest" in defs
     refs = [item.get("$ref") for item in export_schema()["$defs"]["ClientRequest"]["oneOf"]]
     assert "#/$defs/PluginListRequest" in refs
     assert "#/$defs/PluginInstallRequest" in refs
+    assert "#/$defs/PluginCatalogRequest" in refs
+    assert "#/$defs/PluginConnectStartRequest" in refs
+    assert "#/$defs/PluginConnectCallbackRequest" in refs
     assert Path("appserver/handlers").exists() is False
     from pydantic import ValidationError
     from protocol.requests import PluginToggleRequest
@@ -278,3 +487,214 @@ async def test_protocol_plugin_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     )
     removed = next(item["result"] for item in sent if item.get("id") == 4)
     assert removed["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_protocol_github_token_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    from appserver.server import AppServer
+
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    sent: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        sent.append(message)
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
+    server = AppServer(stub=True)
+    server._initialized = True
+    server._permissions.set_profile("workspace_write")
+    server._plugins.registry = bundled_plugin_registry()
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "plugin/install",
+            "params": {"source": "registry", "name": "github"},
+        }
+    )
+    installed = next(item["result"] for item in sent if item.get("id") == 1)
+    assert installed["plugin"]["auth"] == "needed"
+    sent.clear()
+    secret = "ghp_protocol_secret"
+    await server._dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "plugin/install",
+            "params": {"source": "registry", "name": "github", "token": secret},
+        }
+    )
+    connected = next(item["result"] for item in sent if item.get("id") == 2)
+    assert connected["plugin"]["auth"] == "configured"
+    assert secret not in json.dumps(sent)
+
+
+def _oauth_http(token: str = "gho_fixture_token"):
+    calls: list[dict[str, object]] = []
+
+    class FixtureHttp:
+        def post(self, url: str, data: dict, headers: dict | None = None) -> dict:
+            calls.append({"url": url, "data": dict(data), "headers": dict(headers or {})})
+            return {"access_token": token, "token_type": "bearer"}
+
+    return FixtureHttp(), calls
+
+
+def test_catalog_includes_github_and_canva(tmp_path: Path) -> None:
+    plugins, _caps = _service(tmp_path)
+    catalog = plugins.catalog()
+    names = {row["name"] for row in catalog["plugins"]}
+    assert "github" in names
+    assert "canva" in names
+
+
+def test_oauth_start_connect_authorize_hosts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    plugins, _caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    github = plugins.start_connect("github")
+    github_host = urlparse(str(github["authorize_url"])).hostname
+    assert github_host == "github.com"
+    assert github["authorize_url"]
+    canva = plugins.start_connect("canva")
+    canva_host = urlparse(str(canva["authorize_url"])).hostname
+    assert canva_host == "www.canva.com"
+
+
+def test_oauth_callback_marks_connected_and_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    plugins, caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    started = plugins.start_connect("github")
+    http, calls = _oauth_http("gho_oauth_secret")
+    done = plugins.complete_connect(
+        "github",
+        code="splendid-code",
+        state=str(started["state"]),
+        http=http,
+    )
+    assert done["ok"] is True
+    assert done["plugin"]["auth"] == "configured"
+    assert "mcp:github.github" in {row["capability_id"] for row in caps.list()["capabilities"]}
+    overlay = plugins.mcp_overlay()
+    assert "github.github" in overlay
+    public = json.dumps(plugins.list_plugins())
+    assert "gho_oauth_secret" not in public
+    assert calls and "github.com" in str(calls[0]["url"])
+    canva_start = plugins.start_connect("canva")
+    canva_http, canva_calls = _oauth_http("canva_oauth_secret")
+    canva_done = plugins.complete_connect(
+        "canva",
+        code="canva-code",
+        state=str(canva_start["state"]),
+        http=canva_http,
+    )
+    assert canva_done["plugin"]["auth"] == "configured"
+    assert "canva" in plugins.mcp_overlay() or any(
+        "canva" in row["capability_id"] for row in caps.list()["capabilities"]
+    )
+    assert canva_calls and "canva.com" in str(canva_calls[0]["url"])
+    listed = json.dumps(plugins.list_plugins())
+    assert "canva_oauth_secret" not in listed
+
+
+def test_oauth_token_post_reuses_authorize_client_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("RXYCODE_GITHUB_OAUTH_CLIENT_ID", raising=False)
+    distinct = "Iv1.distinct-oauth-client"
+    bundled = tmp_path / "bundled-registry"
+    shutil.copytree(bundled_plugin_registry() / "github", bundled / "github")
+    (bundled / "github" / "oauth.json").write_text(
+        json.dumps({"client_id": distinct}),
+        encoding="utf-8",
+    )
+    (bundled / "registry.json").write_text(
+        json.dumps({"plugins": [{"name": "github", "version": "1.1.0", "path": "github"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("appserver.plugin_service.bundled_plugin_registry", lambda: bundled)
+    plugins, _caps = _service(tmp_path)
+    plugins.registry = bundled
+    started = plugins.start_connect("github")
+    query = parse_qs(urlparse(str(started["authorize_url"])).query)
+    assert query.get("client_id") == [distinct]
+    http, calls = _oauth_http("gho_same_client")
+    done = plugins.complete_connect(
+        "github",
+        code="oauth-code",
+        state=str(started["state"]),
+        http=http,
+    )
+    assert done["ok"] is True
+    assert calls, "fixture transport must see the token POST"
+    posted = calls[0]["data"]
+    assert posted["client_id"] == distinct
+    assert posted["client_id"] != "rxycode-dev-github-oauth"
+
+
+def test_computer_use_adapter_install_lists_tools(tmp_path: Path) -> None:
+    plugins, caps = _service(tmp_path)
+    plugins.registry = bundled_plugin_registry()
+    result = plugins.install(source="registry", name="computer-use")
+    assert result["ok"] is True
+    names = [row["name"] for row in plugins.list_plugins()["plugins"]]
+    assert "computer-use" in names
+    tool_ids = [
+        row["capability_id"]
+        for row in plugins.extra_rows()
+        if row.get("kind") == "tool" and "computer-use" in str(row.get("capability_id"))
+    ]
+    assert tool_ids
+    assert any(row["capability_id"] in tool_ids for row in caps.list()["capabilities"])
+
+
+def test_adapter_connect_does_not_import_graph() -> None:
+    import ast
+
+    root = Path(__file__).resolve().parents[1] / "appserver"
+    for name in ("plugin_connect.py", "plugin_adapter.py", "plugin_service.py"):
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith("core.graph")
+                    assert alias.name != "core.graph"
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                assert not mod.startswith("core.graph")
+                assert not (mod == "core" and any(alias.name == "graph" for alias in node.names))
+
+
+@pytest.mark.asyncio
+async def test_protocol_oauth_start_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    from appserver.server import AppServer
+    from urllib.parse import urlparse
+
+    sent: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        sent.append(message)
+
+    monkeypatch.setattr("appserver.server.write_message", capture)
+    server = AppServer(stub=True)
+    server._initialized = True
+    server._permissions.set_profile("workspace_write")
+    server._plugins.registry = bundled_plugin_registry()
+    await server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "plugin/catalog", "params": {}})
+    catalog = next(item["result"] for item in sent if item.get("id") == 1)
+    names = {row["name"] for row in catalog["plugins"]}
+    assert "github" in names and "canva" in names
+    sent.clear()
+    await server._dispatch(
+        {"jsonrpc": "2.0", "id": 2, "method": "plugin/connect/start", "params": {"name": "github"}}
+    )
+    started = next(item["result"] for item in sent if item.get("id") == 2)
+    assert urlparse(str(started["authorize_url"])).hostname == "github.com"

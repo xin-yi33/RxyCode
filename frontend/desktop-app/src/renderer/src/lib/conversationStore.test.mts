@@ -4,6 +4,8 @@ import {
   addSession,
   addApprovalRequest,
   addUserMessage,
+  isPlaceholderTitle,
+  titleFromFirstPrompt,
   applyError,
   applyTransportRecovery,
   applyFinalAnswer,
@@ -22,6 +24,7 @@ import {
   removeApprovalRequest,
   removeApprovalRequestsForSession,
   selectSession,
+  clearActiveSession,
   setRunning,
   timelineFor,
   parseLeadingAgentMentions,
@@ -32,6 +35,7 @@ import {
   updateApprovalRequestStatus,
   setSessionModel,
   trashSession,
+  pinSession,
   type ConversationState
 } from './conversationStore.mts'
 import type { ApprovalRequest, RunComplete, ToolBegin, ToolEnd } from '@rxycode/protocol-client'
@@ -67,6 +71,14 @@ test('addSession adds a session and activates the first one', () => {
   assert.equal(state.sessions[0]?.sessionId, 's1')
   assert.equal(state.activeSessionId, 's1')
   assert.equal(state.messagesBySession['s1']?.length, 0)
+})
+
+test('clearActiveSession leaves a draft with no open chat', () => {
+  const state = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE
+  })
+  assert.equal(clearActiveSession(state).activeSessionId, null)
 })
 
 test('addSession activates a newly created session', () => {
@@ -121,6 +133,18 @@ test('addUserMessage appends a user message and titles the session from the firs
   assert.equal(state.messagesBySession['s1']?.[0]?.role, 'user')
   assert.equal(state.messagesBySession['s1']?.[0]?.text, '帮我写一个 hello world')
   assert.equal(state.sessions[0]?.title, '帮我写一个 hello world')
+})
+
+test('addUserMessage titles a 新任务 session from the first sentence', () => {
+  const created = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE,
+    title: '新任务'
+  })
+  const state = addUserMessage(created, 's1', '没什么，只是打个招呼。后面还有一句')
+  assert.equal(state.sessions[0]?.title, '没什么，只是打个招呼')
+  assert.equal(isPlaceholderTitle('新任务'), true)
+  assert.equal(titleFromFirstPrompt('hello world! more'), 'hello world')
 })
 
 test('addUserMessage keeps a custom session title unchanged', () => {
@@ -243,6 +267,19 @@ test('applyFinalAnswer finalizes tool cards that never received a tool_end event
       { status: 'ok', summary: 'completed with final answer' }
     ]
   )
+  assert.deepEqual(
+    timelineFor(state, 's1')
+      .filter((item) => item.kind === 'tool_activity')
+      .map((item) => ({ status: item.status, summary: item.summary })),
+    [
+      { status: 'ok', summary: 'completed with final answer' },
+      { status: 'ok', summary: 'completed with final answer' }
+    ]
+  )
+  assert.equal(
+    timelineFor(state, 's1').some((item) => item.kind === 'tool_activity' && item.status === 'running'),
+    false
+  )
 })
 
 test('applyPromptResult records the final answer when no final event arrived', () => {
@@ -344,6 +381,19 @@ test('task metadata supports model selection and reversible deletion', () => {
   assert.equal(state.sessions[0]?.trashedAt, null)
   state = purgeSession(state, 's1')
   assert.equal(state.sessions.length, 0)
+})
+
+test('pinSession toggles pinned without deleting the task', () => {
+  let state = addSession(createInitialState(), {
+    sessionId: 's1',
+    workspaceRoot: WORKSPACE
+  })
+  assert.equal(state.sessions[0]?.pinned, false)
+  state = pinSession(state, 's1', true)
+  assert.equal(state.sessions[0]?.pinned, true)
+  state = pinSession(state, 's1', false)
+  assert.equal(state.sessions[0]?.pinned, false)
+  assert.equal(state.sessions.length, 1)
 })
 
 test('hydrated task status restores active and terminal state without re-running the task', () => {
@@ -608,9 +658,13 @@ test('applyProtocolNotification maps event/team to a role progress line', () => 
     session_id: 's1',
     role: 'architect',
     stage: 'plan',
-    phase: 'stage_started'
+    phase: 'stage_started',
+    detail: 'design'
   })
   assert.equal(state.progressBySession.s1, '[architect] plan')
+  assert.equal(state.teamEventsBySession.s1?.length, 1)
+  assert.equal(state.teamEventsBySession.s1?.[0]?.phase, 'stage_started')
+  assert.equal(state.teamEventsBySession.s1?.[0]?.detail, 'design')
 })
 
 test('applyProtocolNotification ignores unknown methods without changing state', () => {

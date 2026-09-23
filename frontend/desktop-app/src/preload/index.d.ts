@@ -43,12 +43,15 @@ declare global {
         onLog: (callback: (line: string) => void) => () => void
         sendLine: (line: string) => Promise<void>
         onLine: (callback: (line: string) => void) => () => void
+        onLifecycle: (callback: (event: unknown) => void) => () => void
         getInfo: () => Promise<{
           repoRoot: string
           protocolVersion: string
           appVersion: string
           appserverPid: number | null
           appserverStatus: string
+          systemLocale?: string
+          homeDir?: string
         }>
       }
       update: {
@@ -66,6 +69,7 @@ declare global {
       }
       workspace: {
         pickDirectory: () => Promise<string | null>
+        reveal: (cwd: string) => Promise<boolean>
       }
     }
   }

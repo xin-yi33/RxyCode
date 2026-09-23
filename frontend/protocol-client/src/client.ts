@@ -20,6 +20,22 @@ export class ProtocolRpcError extends Error {
   }
 }
 
+/** Client-local timeout. Not a schema field; uses JSON-RPC implementation range. */
+export class ProtocolTimeoutError extends ProtocolRpcError {
+  constructor(method: string) {
+    super({ code: -32000, message: `RPC timeout: ${method}` });
+    this.name = "ProtocolTimeoutError";
+  }
+}
+
+/** Client-local closed transport. Not a schema field. */
+export class ProtocolDisconnectError extends ProtocolRpcError {
+  constructor(reason = "connection closed") {
+    super({ code: -32000, message: reason });
+    this.name = "ProtocolDisconnectError";
+  }
+}
+
 export type ServerRequestHandler = (
   method: string,
   params: unknown,
@@ -39,9 +55,15 @@ export class ProtocolClient {
   private nextId = 1;
   private readonly pending = new Map<JsonRpcId, PendingEntry>();
   private readonly writeLine: (line: string) => void;
+  private closed = false;
+  private closeReason = "connection closed";
 
   onServerRequest?: ServerRequestHandler;
   onNotification?: NotificationHandler;
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
 
   /** Read-only diagnostics; never exposes prompts, params, ids, or secrets. */
   get pendingRequestCount(): number {
@@ -56,7 +78,14 @@ export class ProtocolClient {
     this.writeLine(JSON.stringify(message));
   }
 
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new ProtocolDisconnectError(this.closeReason);
+    }
+  }
+
   notify(method: string, params?: unknown): void {
+    this.assertOpen();
     const message: Record<string, unknown> = { jsonrpc: "2.0", method };
     if (params !== undefined) {
       message.params = params;
@@ -65,6 +94,9 @@ export class ProtocolClient {
   }
 
   request<T = unknown>(method: string, params?: unknown): Promise<T> {
+    if (this.closed) {
+      return Promise.reject(new ProtocolDisconnectError(this.closeReason));
+    }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
@@ -88,17 +120,15 @@ export class ProtocolClient {
     params?: unknown,
     timeoutMs = 10_000,
   ): Promise<T> {
+    if (this.closed) {
+      return Promise.reject(new ProtocolDisconnectError(this.closeReason));
+    }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
-        reject(
-          new ProtocolRpcError({
-            code: -32000,
-            message: `RPC timeout: ${method}`,
-          }),
-        );
+        reject(new ProtocolTimeoutError(method));
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -129,6 +159,19 @@ export class ProtocolClient {
       entry.reject(reason);
     }
     this.pending.clear();
+  }
+
+  cancel(id: JsonRpcId, reason = "RPC cancelled"): void {
+    const entry = this.pending.get(id);
+    if (!entry) return;
+    this.pending.delete(id);
+    entry.reject(new ProtocolTimeoutError(reason));
+  }
+
+  close(reason = "connection closed"): void {
+    this.closed = true;
+    this.closeReason = reason;
+    this.rejectAllPending(new ProtocolDisconnectError(reason));
   }
 
   respond(id: JsonRpcId, result: unknown): void {

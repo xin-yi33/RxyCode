@@ -10,10 +10,13 @@ import {
 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import PlanDocumentCard from './PlanDocumentCard'
-import type { TimelineItem } from '../lib/conversationStore.mts'
+import type { TeamEventRecord, TimelineItem } from '../lib/conversationStore.mts'
 import { looksLikePlanDocument, parsePlanDocument, type PlanDocument } from '../lib/planDocument.mts'
 import { hasLaterPlanFinal } from '../lib/planTimeline.mts'
 import { shouldShowStartupProgress, visibleRunProgress } from '../lib/taskPresentation.mts'
+import { PreviewGallery } from '../../../features/preview/previewGallery.ts'
+import { artifactsFromTool, toolSourceLabel } from '../../../features/preview/previewArtifacts.ts'
+import { useI18n } from '../../../i18n/I18nContext.tsx'
 
 interface ChatAreaProps {
   timeline: TimelineItem[]
@@ -25,6 +28,7 @@ interface ChatAreaProps {
   onBuildPlan?: () => void
   onRevisePlan?: (feedback: string) => void
   onSkipPlan?: () => void
+  teamEvents?: readonly TeamEventRecord[]
 }
 
 function ToolActivity({ item, onOpenInspector }: {
@@ -39,6 +43,7 @@ function ToolActivity({ item, onOpenInspector }: {
       <summary className="activity-summary">
         {isRunning || isRecovering ? <CircleDashed className="activity-spinner" aria-hidden="true" size={15} /> : item.status === 'ok' ? <Check aria-hidden="true" size={15} /> : <X aria-hidden="true" size={15} />}
         <span className="activity-label">{verb} {item.toolName}</span>
+        <span className="tool-source" data-tool-source={toolSourceLabel(item.toolName)}>{toolSourceLabel(item.toolName)}</span>
         {item.summary !== undefined && <span className="activity-result">· {item.summary}</span>}
         <ChevronDown className="activity-chevron" aria-hidden="true" size={14} />
       </summary>
@@ -53,6 +58,7 @@ function ToolActivity({ item, onOpenInspector }: {
           {item.arguments !== undefined && <div><dt>参数</dt><dd><pre>{JSON.stringify(item.arguments, null, 2)}</pre></dd></div>}
           {item.summary !== undefined && <div><dt>结果摘要</dt><dd>{item.summary}</dd></div>}
         </dl>
+        <PreviewGallery artifacts={artifactsFromTool(item.toolName, item.arguments)} />
       </div>
     </details>
   )
@@ -174,8 +180,10 @@ function ChatArea({
   activePlan = null,
   onBuildPlan,
   onRevisePlan,
-  onSkipPlan
+  onSkipPlan,
+  teamEvents = []
 }: ChatAreaProps): React.JSX.Element {
+  const { t } = useI18n()
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
   const runProgress = visibleRunProgress({ progress, timelineLength: timeline.length })
@@ -197,7 +205,7 @@ function ChatArea({
     >
       {timeline.length === 0 ? (
         <div className="chat-empty">
-          <p>新建任务后，在下方输入你的需求。</p>
+          <p className="chat-empty-hero">{t('emptyChatGreeting')}</p>
           {shouldShowStartupProgress({
             timelineLength: 0,
             running,
@@ -211,6 +219,21 @@ function ChatArea({
         </div>
       ) : (
         <div className="timeline" data-testid="task-timeline">
+          {teamEvents.length > 0 ? (
+            <aside className="chat-team-lane" data-testid="chat-team-lane">
+              <p className="chat-team-lane-title">{t('teamHubGallery')}</p>
+              <ol>
+                {teamEvents.slice(-8).map((event, index) => (
+                  <li key={`${event.role}-${event.phase}-${index}`}>
+                    <strong>{event.role || 'team'}</strong>
+                    {event.stage !== '' ? <span> · {event.stage}</span> : null}
+                    {event.phase !== '' ? <span> · {event.phase}</span> : null}
+                    {event.detail !== '' ? <small>{event.detail}</small> : null}
+                  </li>
+                ))}
+              </ol>
+            </aside>
+          ) : null}
           {timeline.map((item) => (
             <TimelineEntry
               key={item.id}

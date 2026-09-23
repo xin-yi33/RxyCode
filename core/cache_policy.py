@@ -89,7 +89,7 @@ def allocate_breakpoints(
     return ordered[:budget]
 
 
-def mark_last_user_breakpoint(messages: list) -> list:
+def mark_last_user_breakpoint(messages: list, cache_control: dict | None = None) -> list:
     """末条 user 断点（P0-2 cline 语义）。
 
     只标记最后一条 user 消息的 cache_control ephemeral——单轮工具循环内
@@ -110,7 +110,7 @@ def mark_last_user_breakpoint(messages: list) -> list:
     ak = dict(getattr(target, "additional_kwargs", None) or {})
     if "cache_control" in ak:
         return result
-    ak["cache_control"] = {"type": "ephemeral"}
+    ak["cache_control"] = dict(cache_control or {"type": "ephemeral"})
     try:
         from langchain_core.messages import HumanMessage
 
@@ -238,12 +238,13 @@ def apply_breakpoint_budget(
     ttl = resolve_ttl_seconds(cfg)
 
     result = list(messages)
+    cache_control = cache_control_for_ttl(ttl)
     for block in allocated:
         if block == "system":
             first = result[0]
             ak = dict(getattr(first, "additional_kwargs", None) or {})
             if "cache_control" not in ak:
-                ak["cache_control"] = {"type": "ephemeral"}
+                ak["cache_control"] = dict(cache_control)
                 try:
                     from langchain_core.messages import SystemMessage
 
@@ -261,7 +262,7 @@ def apply_breakpoint_budget(
                 )
         elif block in ("messages", "tail"):
             # FXC2: 仅显式族走到这里（调用方 / contract 门控 injects_cache_control）。
-            result = mark_last_user_breakpoint(result)
+            result = mark_last_user_breakpoint(result, cache_control)
         # tools 块：Anthropic 断点在 tools 定义上（B3 步骤 3 由 provider
         # 层处理——tools 定义随请求体注入 cache_control，本层不操作消息）。
     # 防拆对校验：打点后断言 assistant↔tool 配对完整（孤儿 tool → API 400）。

@@ -90,15 +90,33 @@ def test_deep_only_via_explicit_effort():
     assert agent._effort_for("plan", "x") != "deep"
 
 
-def test_fast_path_preserves_explicit_effort():
+def test_fast_path_preserves_explicit_effort(monkeypatch):
     """fast path 不覆盖用户显式 effort=deep（_effort_for 只在未显式配置时生效）。"""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    monkeypatch.setattr(model_manager, "get_effort", lambda: "deep")
     agent = _new_agent()
-    agent.model_config = {"effort": "deep"}
-    if agent.model_config.get("effort"):
-        effort = agent.model_config["effort"]
-    else:
-        effort = agent._effort_for("build", "x")
-    assert effort == "deep"
+    agent.model_config = {"effort": "balanced"}
+    assert AgentV2._apply_turn_effort(agent, "build", "what is 2+2?") == "deep"
+    assert agent.model_config["effort"] == "deep"
+
+
+def test_implicit_balanced_does_not_block_simple_fast_effort(monkeypatch):
+    """_build_llm_from_config writes effort=balanced when /effort is unset.
+
+    That implicit default must not skip A21 simple→fast. Otherwise
+    thinking_default_on models keep silent thinking on 'pong' and miss
+    the 1s first-token bar.
+    """
+    from RxyCode.RxyCode1_1_0.config import model_manager
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    monkeypatch.setattr(model_manager, "get_effort", lambda: None)
+    agent = _new_agent()
+    agent.model_config = {"effort": "balanced"}
+    assert AgentV2._apply_turn_effort(agent, "build", "what is 2+2?") == "fast"
+    assert agent.model_config["effort"] == "fast"
 
 
 def test_fast_local_tool_turn_keeps_thinking_enabled():
@@ -238,7 +256,6 @@ def test_glm52_effort_presets_s74():
 @pytest.mark.parametrize("u,model", [
     ("https://api.minimaxi.com/v1", "MiniMax-M3"),
     ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro"),
-    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus"),
     ("https://api.anthropic.com/v1", "claude-opus-5"),
 ])
 def test_chat_path_no_effort_presets(u, model):
@@ -342,7 +359,6 @@ def test_effort_options_glm52():
 @pytest.mark.parametrize("u,model", [
     ("https://api.minimaxi.com/v1", "MiniMax-M3"),
     ("https://api.xiaomimimo.com/v1", "mimo-v2.5-pro"),
-    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.7-plus"),
     ("https://api.anthropic.com/v1", "claude-opus-5"),
 ])
 def test_chat_path_no_effort_options(u, model):

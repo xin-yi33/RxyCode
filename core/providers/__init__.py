@@ -15,9 +15,11 @@ from .base import BaseProvider
 from .deepseek import DeepSeekProvider
 from .doubao import DoubaoProvider
 from .glm import GLMProvider
+from .hy3 import Hy3Provider
 from .kimi import KimiProvider
 from .minimax import MiniMaxProvider
 from .mimo import MIMOProvider
+from .muse_spark import MuseSparkProvider
 from .openai import OpenAIProvider
 from .qwen import QwenProvider
 
@@ -36,6 +38,8 @@ _PROVIDERS: list[BaseProvider] = [
     DoubaoProvider(),
     AnthropicProvider(),
     QwenProvider(),
+    MuseSparkProvider(),
+    Hy3Provider(),
     OpenAIProvider(),
 ]
 

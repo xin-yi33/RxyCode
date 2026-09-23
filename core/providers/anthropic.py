@@ -1,4 +1,4 @@
-"""Anthropic Claude provider（A18 补全：OpenAI 兼容端点路径 + 五主力）。
+"""Anthropic Claude provider（原生 Messages + 兼容代理策略）。
 
 与 OpenAI 默认行为的差异以 A0 批 8 调研报告（§7.8，2026-08-02 三方审计通过）为准：
   - prompt 缓存需显式 ``cache_control``（ephemeral / automatic），与 OpenAI 的
@@ -11,11 +11,10 @@
     extended（显式 enabled + budget_tokens）
   - 无官方 tiktoken → 用 ``chars:3.0`` 启发式（精确走 messages.count_tokens；A5 前）
 
-限制说明：本项目走 OpenAI 兼容端点（MA4 禁止引入 anthropic SDK），因此
-cache_control 断点与 thinking block 的原生语义在兼容端点上可能不完整透传；
-capabilities 按原生 Messages 能力声明（生产主路径），兼容端点的能力边界
-（无 prompt caching / thinking 细节不完整）由 A19 的缓存卡按真实端点行为处理，
-OpenAI 兼容层仅作评测用。
+传输边界：精确的 Anthropic 官方 Host 使用 ``langchain-anthropic`` 原生 Messages；
+其他 Claude 代理仍由其公开的 OpenAI-compatible 契约决定，默认保持 Chat。原生路径
+由成熟集成负责鉴权、content block、tool use 和 SSE，RxyCode 只归一公开 chunk。
+兼容端点的能力边界（无 prompt caching / thinking 细节不完整）仍按真实端点行为处理。
 
 **端点边界（A18 判据 3，可核验说明）**：
 - 原生端点 ``https://api.anthropic.com``（hostname 精确匹配、仅 HTTPS）→
@@ -58,22 +57,33 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider
+from .base import ANTHROPIC_MESSAGES_TRANSPORT, BaseProvider
+
+from ._compat import canonical_model_id, llm_client_base_url
 
 _ANTHROPIC_USAGE = UsageFieldMap(
-    # §7.8 ③：顶层 usage 字段（非嵌套）
+    # §7.8 ③：原始 SDK usage 是顶层字段；LangChain UsageMetadata 将
+    # cache_read/cache_creation 放入 input_token_details。
     cache_read_flat=("cache_read_input_tokens",),
-    cache_read_nested=(),
+    cache_read_nested=(("input_token_details", "cache_read"),),
     cache_write_flat=("cache_creation_input_tokens",),
-    reasoning=(),  # thinking 在 content blocks，非 delta.reasoning_content
+    cache_write_nested=(
+        ("input_token_details", "cache_creation"),
+        ("input_token_details", "cache_creation_input_tokens"),
+    ),
+    # Native thinking blocks are normalized by AgentV2 to the stable internal
+    # ``delta.reasoning_content`` field consumed by the TUI and tool loop.
+    reasoning=("reasoning_content",),
 )
 
-# §7.8 A1：Opus/Sonnet/Fable/Opus 4.8 为 1M；Haiku 4.5 为 200k
+# §7.8 A1：Opus/Sonnet 5/Fable/Opus 4.8 为 1M；Haiku 4.5 / Sonnet 4.5 为 200k
 _CONTEXT_WINDOW_DEFAULT = 1_000_000
-_CONTEXT_WINDOW_HAIKU = 200_000
-# §7.8 A1：输出 128k（Haiku 64k）
+_CONTEXT_WINDOW_200K = 200_000
+_CONTEXT_WINDOW_HAIKU = _CONTEXT_WINDOW_200K
+# §7.8 A1：输出 128k（Haiku 64k）；Sonnet 4.5 不继承 Sonnet 5 的 128k
 _MAX_OUTPUT_DEFAULT = 128_000
 _MAX_OUTPUT_HAIKU = 64_000
+_MAX_OUTPUT_SONNET_45 = 64_000
 # RxyCode 项目约定：compaction_threshold ≈ context 的 90%（同 A3 §7.1 / DeepSeek 卡；
 # 非 Anthropic 官方文档数值）
 _COMPACTION_RATIO = 0.9
@@ -123,6 +133,15 @@ _ANTHROPIC_PRICING: dict[str, ModelPricing] = {
         as_of="2026-08-02",
         source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
     ),
+    # Distinct from Sonnet 5.  Leave prices unset until this id is re-audited.
+    "claude-sonnet-4-5": ModelPricing(
+        input_per_mtok=None,
+        output_per_mtok=None,
+        cached_input_per_mtok=None,
+        cache_write_per_mtok=None,
+        as_of="2026-08-02",
+        source_url="https://docs.anthropic.com/en/docs/about-claude/pricing",
+    ),
 }
 
 #: 未调研型号 → 价格显式 None（来源 URL 仍在），不得静默当 0。
@@ -139,6 +158,7 @@ _DEFAULT_ANTHROPIC_PRICING = ModelPricing(
 _ANTHROPIC_FAMILY = {
     "claude-opus-5",
     "claude-sonnet-5",
+    "claude-sonnet-4-5",
     "claude-fable-5",
     "claude-opus-4-8",
     "claude-haiku-4-5",
@@ -167,23 +187,29 @@ _SAMPLING_RESTRICTED = frozenset(
 def _sampling_restricted(model_name: str) -> bool:
     """§7.8 问 5（A4）：该型号是否受"非默认采样一律 400"契约约束。
     仅报告明确列出的型号；旧代（claude-opus-3）与未调研变体不受限（DC1）。"""
-    return model_name.lower() in _SAMPLING_RESTRICTED
+    return canonical_model_id("anthropic", model_name) in _SAMPLING_RESTRICTED
 
 
 def _family(model_name: str) -> str | None:
     """返回调研覆盖的型号规范名；未覆盖返回 None。"""
-    name = model_name.lower()
+    name = canonical_model_id("anthropic", model_name)
     if name in _ANTHROPIC_FAMILY:
         return name
     return None
 
 
 def _context_window(family: str) -> int:
-    return _CONTEXT_WINDOW_HAIKU if family == "claude-haiku-4-5" else _CONTEXT_WINDOW_DEFAULT
+    if family in {"claude-haiku-4-5", "claude-sonnet-4-5"}:
+        return _CONTEXT_WINDOW_200K
+    return _CONTEXT_WINDOW_DEFAULT
 
 
 def _max_output(family: str) -> int:
-    return _MAX_OUTPUT_HAIKU if family == "claude-haiku-4-5" else _MAX_OUTPUT_DEFAULT
+    if family == "claude-haiku-4-5":
+        return _MAX_OUTPUT_HAIKU
+    if family == "claude-sonnet-4-5":
+        return _MAX_OUTPUT_SONNET_45
+    return _MAX_OUTPUT_DEFAULT
 
 
 def _thinking_default_on(family: str) -> bool:
@@ -205,7 +231,7 @@ def _cache_min_block(family: str) -> int:
 def _pricing_for(family: str | None) -> ModelPricing:
     if family is None:
         return _DEFAULT_ANTHROPIC_PRICING
-    return _ANTHROPIC_PRICING[family]
+    return _ANTHROPIC_PRICING.get(family, _DEFAULT_ANTHROPIC_PRICING)
 
 
 def _prompt_variant(model_name: str) -> str:
@@ -234,6 +260,52 @@ def _is_native_anthropic_host(base_url: str) -> bool:
 
 class AnthropicProvider(BaseProvider):
     name = "anthropic"
+
+    def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        """Use native Messages only for Anthropic's exact official host."""
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
+        if _is_native_anthropic_host(
+            str(model_config.get("base_url") or "")
+        ):
+            explicit = self.explicit_transport_candidates(model_config)
+            if explicit is None:
+                return (ANTHROPIC_MESSAGES_TRANSPORT,)
+            if explicit != (ANTHROPIC_MESSAGES_TRANSPORT,):
+                raise ValueError(
+                    "native Anthropic endpoints require "
+                    "api_transport=anthropic_messages"
+                )
+            return explicit
+        return super().transport_candidates(model_config)
+
+    def anthropic_llm_kwargs(
+        self, model_config: dict, caps: ModelCapabilities
+    ) -> dict:
+        """Translate Provider policy into ``ChatAnthropic`` constructor args."""
+        policy = self.llm_kwargs(model_config, caps)
+        kwargs = {
+            "model": policy["model"],
+            "api_key": policy.get("api_key"),
+            "base_url": llm_client_base_url(
+                str(policy.get("base_url") or ""),
+                ANTHROPIC_MESSAGES_TRANSPORT,
+            ),
+            "max_tokens": policy["max_tokens"],
+            "max_retries": policy.get("max_retries", 3),
+            "streaming": True,
+            "stream_usage": True,
+        }
+        if "temperature" in policy:
+            kwargs["temperature"] = policy["temperature"]
+
+        body = policy.get("extra_body") or {}
+        if isinstance(body, dict):
+            for key in ("thinking", "top_k", "top_p", "output_config"):
+                if key in body:
+                    kwargs[key] = body[key]
+        return kwargs
 
     def llm_kwargs(self, model_config: dict, caps: ModelCapabilities) -> dict:
         """§7.8 问 5 / A21：Anthropic 的 thinking 在 content blocks（含 signature），
@@ -336,13 +408,9 @@ class AnthropicProvider(BaseProvider):
                 kwargs["extra_body"] = body
             else:
                 kwargs.pop("extra_body", None)
-        # B3 (CB2): TTL 档位随请求生效——model_config["cache_ttl"]（秒，由调用方
-        # 从 config.cache.ttl 解析注入）写入 extra_body.cache_ttl；未设置不注入。
-        ttl = model_config.get("cache_ttl")
-        if isinstance(ttl, (int, float)) and ttl > 0:
-            body = dict(kwargs.get("extra_body") or {})
-            body["cache_ttl"] = int(ttl)
-            kwargs["extra_body"] = body
+        # Native TTL is expressed on content-block cache_control, never as a
+        # Chat Completions extra_body field.  OpenAI-compatible Claude proxies
+        # reject unknown cache_ttl and do not support prompt caching.
         return kwargs
 
     def matches(self, base_url: str, model_name: str) -> bool:

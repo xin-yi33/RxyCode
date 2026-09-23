@@ -1,13 +1,28 @@
 import { Bot, Check, ChevronLeft, CircleDashed, FileText, Terminal, X } from 'lucide-react'
-import type { ChildSessionView, RunState, TimelineItem, UsageSnapshot } from '../lib/conversationStore.mts'
+import { useState } from 'react'
+import { AgentActivity } from '../../../features/agents/AgentActivity.ts'
+import type { AgentEvent } from '../../../lib/agentEvents.ts'
+import type { ChildSessionView, RunState, TeamEventRecord, TimelineItem, UsageSnapshot } from '../lib/conversationStore.mts'
 import { formatTokenCount, formatUsageRate } from '../lib/taskPresentation.mts'
+import { ReviewScopeSelector } from '../../../features/review/ReviewScopeSelector.ts'
+import { type ReviewScope } from '../../../features/review/review.comments.ts'
+import { emptyDiffState } from '../../../features/git/diffView.ts'
 
 interface TaskInspectorProps {
   focusItem: TimelineItem | null
   usage: UsageSnapshot
   childSessions: ChildSessionView[]
+  teamEvents?: readonly TeamEventRecord[]
+  capabilities?: Record<string, unknown> | null
   onClose: () => void
   onSelectChild?: (sessionId: string) => void
+}
+
+function teamEventsToAgentEvents(events: readonly TeamEventRecord[]): AgentEvent[] {
+  return events.map((event) => ({
+    method: 'agent_progress',
+    agentId: event.role || event.stage || 'team'
+  }))
 }
 
 function RunStateIcon({ state }: { state: RunState }): React.JSX.Element {
@@ -36,7 +51,8 @@ function UsagePanel({ usage }: { usage: UsageSnapshot }): React.JSX.Element {
   )
 }
 
-function TaskInspector({ focusItem, usage, childSessions, onClose, onSelectChild }: TaskInspectorProps): React.JSX.Element {
+function TaskInspector({ focusItem, usage, childSessions, teamEvents = [], capabilities = null, onClose, onSelectChild }: TaskInspectorProps): React.JSX.Element {
+  const [reviewScope, setReviewScope] = useState<ReviewScope>('last_turn')
   const focusedChild = focusItem?.kind === 'child_agent'
     ? childSessions.find((child) => child.sessionId === focusItem.sessionId)
     : undefined
@@ -47,6 +63,13 @@ function TaskInspector({ focusItem, usage, childSessions, onClose, onSelectChild
         <div><p className="inspector-eyebrow">INSPECTOR</p><h2>{focusItem?.kind === 'child_agent' ? 'Child agent' : focusItem?.kind === 'tool_activity' ? 'Tool activity' : focusItem?.kind === 'recovery' ? 'Automatic recovery' : 'Task usage'}</h2></div>
       </header>
       <div className="inspector-content">
+        <section className="inspector-section">
+          <p className="inspector-eyebrow">REVIEW SCOPE</p>
+          <ReviewScopeSelector value={reviewScope} onChange={setReviewScope} />
+          {emptyDiffState() === 'empty' ? (
+            <p className="inspector-muted" data-testid="review-diff-empty">No diff on this branch</p>
+          ) : null}
+        </section>
         {focusItem?.kind === 'child_agent' && (
           <section className="inspector-section child-inspector">
             <div className="inspector-title-row"><Bot aria-hidden="true" size={18} /><strong>@{focusItem.agentId}</strong><span className={`state-${focusItem.state}`}>{focusItem.state}</span></div>
@@ -88,6 +111,24 @@ function TaskInspector({ focusItem, usage, childSessions, onClose, onSelectChild
         )}
         {focusItem?.kind === 'final_answer' && <section className="inspector-section"><div className="inspector-title-row"><FileText aria-hidden="true" size={17} /><strong>Final Answer</strong></div><p className="inspector-muted">{focusItem.status}</p></section>}
         <UsagePanel usage={usage} />
+        <section className="inspector-section" data-testid="team-activity">
+          <p className="inspector-eyebrow">TEAM ACTIVITY</p>
+          {teamEvents.length === 0 ? (
+            <p className="inspector-muted">{'No team events'}</p>
+          ) : (
+            <ol className="inspector-events" data-testid="team-event-list">
+              {teamEvents.map((event, index) => (
+                <li key={`${event.role}-${event.phase}-${index}`}>
+                  <strong>{event.role || 'team'}</strong>
+                  {event.stage !== '' && <span> · {event.stage}</span>}
+                  {event.phase !== '' && <span> · {event.phase}</span>}
+                  {event.detail !== '' && <p>{event.detail}</p>}
+                </li>
+              ))}
+            </ol>
+          )}
+          <AgentActivity capabilities={capabilities} events={teamEventsToAgentEvents(teamEvents)} />
+        </section>
         {childSessions.length > 0 && (
           <section className="inspector-section">
             <p className="inspector-eyebrow">CHILD SESSIONS</p>

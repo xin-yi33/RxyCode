@@ -18,6 +18,7 @@
 数值来源（A0 §7.7）：
   - https://help.aliyun.com/zh/model-studio/text-generation-model/
   - https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope
+  - https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses
   - https://help.aliyun.com/zh/model-studio/deep-thinking
   - https://help.aliyun.com/zh/model-studio/context-cache
   - https://help.aliyun.com/zh/model-studio/qwen3-7-plus
@@ -44,7 +45,8 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider
+from .base import BaseProvider, CHAT_TRANSPORT, RESPONSES_TRANSPORT
+from ..catalog import get_contract
 
 _QWEN_USAGE = UsageFieldMap(
     cache_read_flat=(),
@@ -166,6 +168,26 @@ def _supports_reasoning(model_name: str) -> bool:
     return _family(model_name) is not None
 
 
+def _is_official_dashscope_host(url: str) -> bool:
+    """Whether *url* uses an official DashScope/Model Studio hostname."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        if parsed.username or parsed.password:
+            return False
+        host = (parsed.hostname or "").casefold()
+    except (TypeError, ValueError):
+        return False
+
+    return host in {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+    } or host.endswith(".maas.aliyuncs.com")
+
+
 class QwenProvider(BaseProvider):
     name = "qwen"
 
@@ -182,6 +204,24 @@ class QwenProvider(BaseProvider):
             or "token-plan" in url
         )
 
+    def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        """Prefer Responses only on Alibaba's documented official hosts.
+
+        The preset policy in ``BaseProvider`` handles saved DashScope entries.
+        This host check also covers imported/legacy configurations that have no
+        ``provider_id``.  Model-name matching alone is deliberately insufficient:
+        a Qwen model may be served by a third-party Chat-only gateway.
+        """
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
+        explicit = self.explicit_transport_candidates(model_config)
+        if explicit is not None:
+            return explicit
+        if _is_official_dashscope_host(str(model_config.get("base_url") or "")):
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        return super().transport_candidates(model_config)
+
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()
         family = _family(model_name)
@@ -196,6 +236,7 @@ class QwenProvider(BaseProvider):
         if family is not None:
             context_window = _context_window(family)
             is_38 = family == "qwen3.8-max-preview"
+            responses = self.uses_responses_api(model_config)
             caps = replace(
                 caps,
                 context_window=context_window,
@@ -225,9 +266,19 @@ class QwenProvider(BaseProvider):
                 accepts_temperature=True,
                 # §7.7 问 6：官方无 tiktoken → chars:0.7 启发式（100 万 token ≈ 70 万汉字）
                 tokenizer="chars:0.7",
-                # §7.7 ③：Chat 路径无 reasoning.effort（Responses 用 reasoning.effort，
-                # 由 A21 处理）→ 不设 effort_presets
-                effort_presets={},
+                # Responses supports seven effort values, but xhigh/max are
+                # region-limited.  Keep automatic presets within the five
+                # values documented for every region; Chat stays parameter-free.
+                effort_presets=(
+                    {"fast": "minimal", "balanced": "medium", "deep": "high"}
+                    if responses
+                    else {}
+                ),
+                effort_options=(
+                    ("none", "minimal", "low", "medium", "high")
+                    if responses
+                    else ()
+                ),
                 # §7.7 问 4：显式 cache_control（最小 1024 / TTL 5min=300s）+ 隐式
                 # （最小 256，Qwen3.7 系列约 2000）；两者互斥（§7.7 问 4）。
                 # cache_min_block_tokens 单值字段承载显式 cache_control 阈值（与
@@ -245,12 +296,17 @@ class QwenProvider(BaseProvider):
         # model-name heuristic. Qwen sample is "enable_thinking: true|false"
         # (3.8-preview: false forbidden) — so we set true when thinking is on
         # and never emit a {type:disabled} thinking object.
-        from RxyCode.RxyCode1_1_0.core.catalog import get_contract
-
         contract = get_contract("qwen", str(model_config.get("model_name") or ""))
         sample = str(((contract or {}).get("thinking_param") or {}).get("sample") or "")
         body = kwargs.setdefault("extra_body", {})
         body.pop("thinking", None)  # DashScope uses enable_thinking, not {type}
+        if self.uses_responses_api(model_config):
+            # The Responses contract prefers reasoning.effort and documents
+            # enable_thinking as a deprecated, non-standard compatibility field.
+            body.pop("enable_thinking", None)
+            return kwargs
+        kwargs.pop("reasoning_effort", None)
+        body.pop("reasoning", None)
         # FXC5/FX-CB11: strictly catalog-driven — a Qwen variant without a
         # catalog record gets NO thinking parameter (unknown-model fallback,
         # FXC6: never invent params from capabilities).

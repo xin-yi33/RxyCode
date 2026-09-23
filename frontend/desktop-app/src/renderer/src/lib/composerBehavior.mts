@@ -3,8 +3,13 @@ export function canSubmitComposer(input: {
   running: boolean
   text: string
   hasAttachment?: boolean
+  modelReady?: boolean
 }): boolean {
-  return !input.disabled && !input.running && (input.text.trim() !== '' || input.hasAttachment === true)
+  return (
+    !input.disabled &&
+    input.modelReady !== false &&
+    (input.text.trim() !== '' || input.hasAttachment === true)
+  )
 }
 
 export function promptWithAttachment(
@@ -22,5 +27,5 @@ export function shouldSubmitOnKey(input: {
   shiftKey: boolean
   running: boolean
 }): boolean {
-  return input.key === 'Enter' && !input.shiftKey && !input.running
+  return input.key === 'Enter' && !input.shiftKey
 }

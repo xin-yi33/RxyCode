@@ -140,3 +140,36 @@ def test_bundled_catalog_contains_zen_luna_with_provider_specific_limits():
     assert record.provider_id == "zen"
     assert record.model_id == "gpt-5.6-luna"
     assert record.model_max_output_tokens == 128000
+
+
+def test_muse_catalog_only_claims_verified_go_contributor_metadata():
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+
+    for model in ("muse-spark-1.1", "muse-spark-1.2"):
+        record, _, _ = catalog.lookup("muse_spark", model)
+        assert record is None
+
+    contributor, _, _ = catalog.lookup(
+        "muse_spark", "muse-spark-1.2-contributor"
+    )
+    assert contributor is not None
+    assert contributor.model_context_window is None
+    assert contributor.model_max_output_tokens is None
+
+
+def test_hy3_catalog_contains_only_the_formal_model_limits():
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+
+    formal, _, _ = catalog.lookup("hy3", "hy3")
+    assert formal is not None
+    assert formal.model_context_window == 256_000
+    assert formal.model_max_output_tokens == 128_000
+
+    preview, _, _ = catalog.lookup("hy3", "hy3-preview")
+    assert preview is None
+
+    raw = json.loads(Path(DEFAULT_CATALOG_PATH).read_text(encoding="utf-8"))
+    record = next(item for item in raw["records"] if item["provider_id"] == "hy3")
+    assert record["cache_contract"]["cache_mode"] == "auto"
+    assert record["cache_contract"]["breakpoints_max"] == 0
+    assert record["cache_contract"]["prompt_cache_key_required"] is False

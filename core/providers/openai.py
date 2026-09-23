@@ -17,6 +17,7 @@ DC1 保持方式：本类同时承担"兜底"与"显式 OpenAI"两个角色。
 from __future__ import annotations
 
 from dataclasses import replace
+from urllib.parse import urlsplit
 
 try:
     from ...config.model_capabilities import (
@@ -30,7 +31,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelCapabilities,
         ModelPricing,
     )
-from .base import BaseProvider
+from .base import BaseProvider, CHAT_TRANSPORT, RESPONSES_TRANSPORT
 
 #: gpt-5.6 三档定价（USD/1M，Short context Standard；§7.2 问 7 / ③，定价按型号分条）。
 #: cache_write 按 uncached input × 1.25 计费（§7.2 问 4）。
@@ -106,6 +107,25 @@ class OpenAIProvider(BaseProvider):
         url = base_url.lower()
         name = model_name.lower()
         return "openai.com" in url or name.startswith(("gpt-", "o1-", "o3-", "o4-"))
+
+    def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
+        explicit = self.explicit_transport_candidates(model_config)
+        if explicit is not None:
+            return explicit
+        try:
+            host = (
+                urlsplit(str(model_config.get("base_url") or "")).hostname or ""
+            ).casefold()
+        except ValueError:
+            host = ""
+        if host == "openai.com" or host.endswith(".openai.com"):
+            # Official OpenAI guidance prefers Responses for reasoning,
+            # tool-calling and multi-turn workflows; Chat remains fallback.
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        return super().transport_candidates(model_config)
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         base_url = str(model_config.get("base_url") or "")

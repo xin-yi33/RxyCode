@@ -114,7 +114,13 @@ class TokenStats:
         self._default_context_max = resolved
         self.context_max = resolved
 
-    def add_real_usage(self, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0):
+    def add_real_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ):
         """Record real token usage reported by the LLM provider.
 
         cache_read_tokens are the prompt tokens that hit the provider's
@@ -124,10 +130,12 @@ class TokenStats:
         inp = int(input_tokens or 0)
         out = int(output_tokens or 0)
         cache = int(cache_read_tokens or 0)
+        cache_write = int(cache_write_tokens or 0)
         self.input_tokens += inp
         self.output_tokens += out
         self.prompt_tokens += inp
         self.cache_hit_tokens += cache
+        self.cache_write_tokens += cache_write
         if cache:
             self.cache_hits += 1
         else:

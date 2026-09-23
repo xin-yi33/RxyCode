@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - repo-root layout (tests)
         ModelPricing,
         UsageFieldMap,
     )
-from .base import BaseProvider
+from .base import BaseProvider, CHAT_TRANSPORT, RESPONSES_TRANSPORT
 
 _DOUBAO_USAGE = UsageFieldMap(
     cache_read_flat=("prompt_cache_hit_tokens",),
@@ -148,6 +148,17 @@ class DoubaoProvider(BaseProvider):
         # 避免抢走 ark 上其他模型（minimax/glm）或误配任意含 "ark"/"volces" 子串的 URL。
         # 用 hostname 精确校验，不用子串泛化（Luna rev1）。
         return is_ark_coding_hostname(url)
+
+    def transport_candidates(self, model_config: dict) -> tuple[str, ...]:
+        pinned = self._resource_path_candidates(model_config)
+        if pinned is not None:
+            return pinned
+        explicit = self.explicit_transport_candidates(model_config)
+        if explicit is not None:
+            return explicit
+        if is_ark_coding_hostname(str(model_config.get("base_url") or "")):
+            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+        return super().transport_candidates(model_config)
 
     def capabilities(self, model_config: dict) -> ModelCapabilities:
         model_name = str(model_config.get("model_name") or "").lower()

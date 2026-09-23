@@ -52,7 +52,16 @@ def _load_contracts() -> dict[str, dict | None]:
             contract = record.get("cache_contract")
             if not provider or not model:
                 continue
-            index[f"{provider}:{model}"] = contract if isinstance(contract, dict) else None
+            stored = contract if isinstance(contract, dict) else None
+            keys = {model, canonical_model_id(provider, model)}
+            if provider == "anthropic":
+                canon = canonical_model_id(provider, model)
+                for alias, target in _ANTHROPIC_MODEL_ALIASES.items():
+                    if target == canon or alias == model or target == model:
+                        keys.add(alias)
+                        keys.add(target)
+            for key in keys:
+                index.setdefault(f"{provider}:{key}", stored)
     except (OSError, ValueError, KeyError):
         pass
     _contracts = index
@@ -72,8 +81,11 @@ def get_contract(provider_id: str, model_id: str) -> dict | None:
     """
     if not provider_id or not model_id:
         return None
-    key = f"{provider_id.strip().casefold()}:{model_id.strip().casefold()}"
-    return _load_contracts().get(key)
+    pid = provider_id.strip().casefold()
+    raw = model_id.strip().casefold()
+    index = _load_contracts()
+    canon = canonical_model_id(pid, raw)
+    return index.get(f"{pid}:{canon}") or index.get(f"{pid}:{raw}")
 
 
 def _read_path(usage: dict, path: str | None) -> int:

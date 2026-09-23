@@ -78,7 +78,7 @@ async def test_cache_control_injected_when_enabled(monkeypatch):
     recv = wrapper._llm.received
     assert isinstance(recv[0], SystemMessage)
     ak = getattr(recv[0], "additional_kwargs", {}) or {}
-    assert ak.get("cache_control") == {"type": "ephemeral"}, (
+    assert ak.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}, (
         f"expected cache_control on system message, got {ak}"
     )
 
@@ -105,4 +105,4 @@ async def test_cache_control_injected_on_astream_too(monkeypatch):
 
     recv = wrapper._llm.received
     ak = getattr(recv[0], "additional_kwargs", {}) or {}
-    assert ak.get("cache_control") == {"type": "ephemeral"}
+    assert ak.get("cache_control") == {"type": "ephemeral", "ttl": "1h"}

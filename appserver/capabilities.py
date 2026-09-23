@@ -157,6 +157,31 @@ class CapabilityService:
             return False
         return bool(flags[capability_id])
 
+    def _skill_meta(self, skill_md: Path) -> tuple[str, str, str]:
+        if not skill_md.is_file():
+            return "", "", ""
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+        description = ""
+        scope = ""
+        if text.startswith("---"):
+            end = text.find("\n---", 3)
+            if end != -1:
+                for line in text[3:end].splitlines():
+                    key, _, value = line.partition(":")
+                    key = key.strip().lower()
+                    value = value.strip().strip('"').strip("'")
+                    if key == "description" and value:
+                        description = value
+                    if key in {"tags", "scope", "license"} and value and not scope:
+                        scope = value
+        if not description:
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and stripped != "---":
+                    description = stripped
+                    break
+        return description, scope, text[:8000]
+
     def _project_skills(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for item in self._skill_lister() or []:
@@ -172,6 +197,7 @@ class CapabilityService:
             authorized = self._authorized_flag(cap_id)
             available = installed and enabled and authorized
             locator = str(item.get("path") or "")
+            description, scope, body = self._skill_meta(skill_md)
             rows.append(
                 {
                     "capability_id": cap_id,
@@ -187,6 +213,9 @@ class CapabilityService:
                     "origin": locator,
                     "locator": f"skill:{name}/SKILL.md",
                     "error": None if installed else "skill missing SKILL.md",
+                    "description": description,
+                    "scope": scope,
+                    "body": body,
                     "cancellable": True,
                     "copyable": True,
                     "collapsible": True,

@@ -1,0 +1,5 @@
+{
+  "name": "computer_use",
+  "kind": "adapter",
+  "description": "CLI/desktop computer-use seam. Not a screenshot GUI-agent kernel."
+}

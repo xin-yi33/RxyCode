@@ -163,6 +163,7 @@ export interface SessionEntry {
   modelId: string | null
   providerId: string | null
   trashedAt: number | null
+  pinned: boolean
 }
 
 export interface ConversationState {
@@ -183,10 +184,19 @@ export interface ConversationState {
   sessionEventGapBySession: Record<string, boolean>
   childLastSeqBySession: Record<string, number>
   mentionDispatchBySession: Record<string, MentionDispatchState>
+  teamEventsBySession: Record<string, TeamEventRecord[]>
   runningBySession: Record<string, boolean>
   runStateBySession: Record<string, RunState>
   errorBySession: Record<string, string | null>
   approvals: ApprovalRequestItem[]
+}
+
+export interface TeamEventRecord {
+  sessionId: string
+  role: string
+  stage: string
+  phase: string
+  detail: string
 }
 
 export type ApprovalRequestStatus = 'pending' | 'submitting' | 'error'
@@ -210,6 +220,7 @@ export interface NewSessionInput {
   modelId?: string | null
   providerId?: string | null
   trashedAt?: number | null
+  pinned?: boolean
 }
 
 export interface TaskSummaryInput {
@@ -222,6 +233,7 @@ export interface TaskSummaryInput {
   created_at?: string
   updated_at?: string
   trashed_at?: string | null
+  pinned?: boolean
 }
 
 export interface PromptResult {
@@ -249,6 +261,7 @@ export function createInitialState(): ConversationState {
     sessionEventGapBySession: {},
     childLastSeqBySession: {},
     mentionDispatchBySession: {},
+    teamEventsBySession: {},
     runningBySession: {},
     runStateBySession: {},
     errorBySession: {},
@@ -278,6 +291,20 @@ export function parseLeadingAgentMentions(text: string): ParsedAgentMentions | n
 
 function defaultTitle(sessionId: string): string {
   return `会话 ${sessionId.slice(0, 8)}`
+}
+
+const PLACEHOLDER_TITLES = new Set(['新任务', 'New task', '新对话', 'New chat'])
+
+export function isPlaceholderTitle(title: string): boolean {
+  const text = title.trim()
+  return PLACEHOLDER_TITLES.has(text) || text.startsWith('会话 ')
+}
+
+export function titleFromFirstPrompt(text: string): string {
+  const blob = text.trim()
+  if (blob === '') return ''
+  const first = blob.split(/[。！？.!?\n]/, 1)[0]?.trim() ?? ''
+  return (first === '' ? blob : first).slice(0, 200)
 }
 
 function messagesFor(state: ConversationState, sessionId: string): ChatMessage[] {
@@ -342,7 +369,8 @@ export function addSession(state: ConversationState, input: NewSessionInput): Co
     updatedAt: input.updatedAt ?? input.createdAt ?? Date.now(),
     modelId: input.modelId ?? null,
     providerId: input.providerId ?? null,
-    trashedAt: input.trashedAt ?? null
+    trashedAt: input.trashedAt ?? null,
+    pinned: input.pinned === true
   }
   return {
     ...state,
@@ -374,6 +402,11 @@ export function selectSession(state: ConversationState, sessionId: string): Conv
   return { ...state, activeSessionId: sessionId }
 }
 
+export function clearActiveSession(state: ConversationState): ConversationState {
+  if (state.activeSessionId === null) return state
+  return { ...state, activeSessionId: null }
+}
+
 export function addUserMessage(
   state: ConversationState,
   sessionId: string,
@@ -399,8 +432,8 @@ export function addUserMessage(
     ]),
     errorBySession: { ...state.errorBySession, [sessionId]: null },
     sessions: state.sessions.map((session) =>
-      session.sessionId === sessionId && session.title.startsWith('会话 ')
-        ? { ...session, title: text.slice(0, 20) }
+      session.sessionId === sessionId && isPlaceholderTitle(session.title)
+        ? { ...session, title: titleFromFirstPrompt(text) || session.title }
         : session
     )
   }
@@ -517,13 +550,21 @@ function completeAssistant(
           }
         ]
   const tools = toolsFor(state, sessionId).map((tool) => {
-    if (tool.status !== 'running') return tool
+    if (tool.status !== 'running' && tool.status !== 'recovering') return tool
     return succeeded
       ? { ...tool, status: 'ok' as const, summary: 'completed with final answer' }
       : { ...tool, status: 'error' as const, summary: `run ${resultStatus}` }
   })
+  const finalizedTimeline = nextTimeline.map((item) => {
+    if (item.kind !== 'tool_activity' || (item.status !== 'running' && item.status !== 'recovering')) {
+      return item
+    }
+    return succeeded
+      ? { ...item, status: 'ok' as const, summary: 'completed with final answer' }
+      : { ...item, status: 'error' as const, summary: `run ${resultStatus}` }
+  })
   return {
-    ...withTimeline(withMessages(state, sessionId, next), sessionId, nextTimeline),
+    ...withTimeline(withMessages(state, sessionId, next), sessionId, finalizedTimeline),
     toolsBySession: { ...state.toolsBySession, [sessionId]: tools },
     runningBySession: { ...state.runningBySession, [sessionId]: false },
     runStateBySession: { ...state.runStateBySession, [sessionId]: runState },
@@ -574,7 +615,8 @@ export function hydrateSessions(
       providerId: summary.provider_id ?? null,
       trashedAt: summary.trashed_at === null || summary.trashed_at === undefined
         ? null
-        : timeFromProtocol(summary.trashed_at, now)
+        : timeFromProtocol(summary.trashed_at, now),
+      pinned: summary.pinned === true
     })
     if (current !== undefined) {
       next = {
@@ -593,7 +635,8 @@ export function hydrateSessions(
                     ? session.trashedAt
                     : summary.trashed_at === null
                       ? null
-                      : timeFromProtocol(summary.trashed_at, session.trashedAt ?? now)
+                      : timeFromProtocol(summary.trashed_at, session.trashedAt ?? now),
+                pinned: summary.pinned === undefined ? session.pinned : summary.pinned === true
               }
             : session
         )
@@ -647,6 +690,19 @@ export function setSessionModel(
       session.sessionId === sessionId
         ? { ...session, modelId, providerId, updatedAt: Date.now() }
         : session
+    )
+  }
+}
+
+export function pinSession(
+  state: ConversationState,
+  sessionId: string,
+  pinned: boolean
+): ConversationState {
+  return {
+    ...state,
+    sessions: state.sessions.map((session) =>
+      session.sessionId === sessionId ? { ...session, pinned, updatedAt: Date.now() } : session
     )
   }
 }
@@ -1615,13 +1671,33 @@ export function applyProtocolNotification(
       }
     }
     case 'event/team': {
-      const team = params as { session_id: string; role?: string; stage?: string; phase?: string }
+      const team = params as {
+        session_id: string
+        role?: string
+        stage?: string
+        phase?: string
+        detail?: string
+      }
       const role = String(team.role ?? '')
       const stage = String(team.stage ?? '')
       const label = role && stage ? `[${role}] ${stage}` : role || stage || 'team'
+      const previous = state.teamEventsBySession[team.session_id] ?? []
       return {
         ...state,
-        progressBySession: { ...state.progressBySession, [team.session_id]: label }
+        progressBySession: { ...state.progressBySession, [team.session_id]: label },
+        teamEventsBySession: {
+          ...state.teamEventsBySession,
+          [team.session_id]: [
+            ...previous,
+            {
+              sessionId: team.session_id,
+              role,
+              stage,
+              phase: String(team.phase ?? ''),
+              detail: String(team.detail ?? '')
+            }
+          ]
+        }
       }
     }
     case 'event/agent_routed': {

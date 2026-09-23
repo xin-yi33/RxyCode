@@ -1,0 +1,41 @@
+handoff_id: D-F-HANDOFF-H1
+card: PhaseG-H1
+source_baseline: PHASE-G-DESKTOP.md#G1
+branch: feat/phase-g-frontend
+commit: "789c2d5"
+protocol_version: "1.1.0"
+capabilities_consumed:
+  - initialize
+generated_types:
+  path: frontend/protocol-client/src/generated/types.ts
+  source_commit: af0adee0d43ae1b239990383a24a3ee491d2f96e
+  generate_command: bun run generate
+  frontend_submitted_generate_diff: false
+fixtures:
+  success: tests/test_protocol (6 passed)
+  denied: none (H1 does not exercise deny paths)
+  reconnect: none (H2/H3)
+files_changed:
+  - frontend/desktop-app/src/protocol/handshakePlaceholder.ts
+  - frontend/desktop-app/tests/h1-baseline.test.mts
+  - frontend/desktop-app/package.json
+  - frontend/desktop-app/tsconfig.web.json
+  - frontend/desktop-app/docs/handoffs/PHASE-G-H1-BASELINE.md
+  - frontend/desktop-app/docs/handoffs/PHASE-G-H1-HANDOFF.yaml
+  - frontend/protocol-client/src/handshake.placeholder.test.ts
+tests:
+  - "Test-Path frontend\\desktop-app -> True"
+  - "Test-Path frontend\\protocol-client -> True"
+  - "python -m pytest tests/test_protocol -q -> 6 passed"
+  - "cd frontend/protocol-client; bun test src/handshake.placeholder.test.ts"
+  - "cd frontend/desktop-app; node --test tests/h1-baseline.test.mts"
+visual_evidence: none
+known_limitations:
+  - H2 owns full initialize error projection; H1 only placeholder
+  - Desktop child_session UI still missing (documented, not marked done)
+  - docs/plans is gitignored; tracked handoff lives here
+backend_questions: []
+rollback: "789c2d5"
+owner: composer-2.5
+protocol_change: none
+grok: none

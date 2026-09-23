@@ -1,0 +1,116 @@
+# Concrete development order for RxyCode.
+# Tracks in the same parallel_group may run together after their wait_for
+# predecessors complete. Tracks with wait_for must not start earlier.
+
+tracks:
+  - id: architecture-inventory
+    title: Module catalog, ADRs, development-order docs
+    owner: spec-author
+    wait_for: []
+    parallel_group: docs
+    deliverables:
+      - docs/modules/catalog.yaml
+      - docs/development-order.yaml
+      - docs/decisions/
+
+  - id: adapter-contract
+    title: Plugin adapter contract (register without editing graph.py)
+    owner: agent-core-boundaries
+    wait_for:
+      - architecture-inventory
+    parallel_group: protocol-core
+    deliverables:
+      - appserver/plugin_adapter.py
+      - plugins/catalog.json
+      - protocol plugin/catalog
+
+  - id: oauth-github
+    title: GitHub OAuth connect (authorize URL + fixture callback)
+    owner: agent-core-boundaries
+    wait_for:
+      - adapter-contract
+    parallel_group: oauth-connectors
+    deliverables:
+      - appserver/plugin_connect.py
+      - plugin/connect/start
+      - plugin/connect/callback
+      - plugins/github
+
+  - id: oauth-canva
+    title: Canva OAuth connect (same adapter/connect contract as GitHub)
+    owner: agent-core-boundaries
+    wait_for:
+      - adapter-contract
+    parallel_group: oauth-connectors
+    deliverables:
+      - plugins/canva
+      - catalog row canva
+
+  - id: computer-use-adapter
+    title: Computer-use adapter plugin (no screenshot GUI-agent kernel)
+    owner: agent-core-boundaries
+    wait_for:
+      - adapter-contract
+    parallel_group: oauth-connectors
+    deliverables:
+      - plugins/computer-use
+      - install via PluginService.install
+
+  - id: oauth-secrets-mcp
+    title: Token storage + MCP publish (no config.yaml, no logs)
+    owner: local-agent-process-isolation
+    wait_for:
+      - adapter-contract
+    parallel_group: oauth-connectors
+    deliverables:
+      - mcp/plugin_auth.py
+      - user.json tokens
+
+  - id: desktop-plugin-hub
+    title: Desktop 连接/添加 → start-connect (GitHub + Canva)
+    owner: agent-surface
+    wait_for:
+      - adapter-contract
+    parallel_group: surfaces
+    notes: >
+      UI may be implemented in parallel with oauth-github/oauth-canva once
+      the connect method names exist. Must wait for adapter-contract.
+    deliverables:
+      - frontend/desktop-app PluginMarket / usePlugins
+
+  - id: tests-quality
+    title: Modular plugin + inventory tests (agent-quality gate)
+    owner: agent-quality
+    wait_for:
+      - oauth-github
+      - oauth-canva
+      - computer-use-adapter
+      - oauth-secrets-mcp
+      - desktop-plugin-hub
+    parallel_group: quality
+    deliverables:
+      - tests/test_plugin.py
+      - tests/test_module_inventory.py
+      - tests/test_gx24_plugin_consume.py
+
+must_wait:
+  - track: adapter-contract
+    predecessor: architecture-inventory
+    reason: Adapter/protocol changes need the module map so new plugins do not land in graph.py.
+  - track: oauth-github
+    predecessor: adapter-contract
+    reason: Plugin OAuth is data + connect state machine on the adapter contract.
+  - track: oauth-canva
+    predecessor: adapter-contract
+    reason: Same as GitHub; do not fork a second connect path.
+  - track: tests-quality
+    predecessor: oauth-github
+    reason: Quality gate runs after shipped connect/adapter functions exist.
+
+parallel:
+  - group: oauth-connectors
+    tracks: [oauth-github, oauth-canva, computer-use-adapter, oauth-secrets-mcp]
+    reason: Distinct catalog rows / secret injection share the adapter contract only.
+  - group: surfaces
+    tracks: [desktop-plugin-hub]
+    reason: Desktop hub can land against the protocol names in parallel with connector bodies.

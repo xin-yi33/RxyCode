@@ -59,7 +59,14 @@ from .release import ReleaseService
 from .cli_hub_service import CliHubError, CliHubService
 from .schedule_service import ScheduleError, ScheduleService
 from .trash_service import TrashError, TrashService
-from .plugin_service import PluginError, PluginService
+from .plugin_service import PluginError, PluginService, bundled_plugin_registry
+
+
+class SkillError(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -268,10 +275,12 @@ class AppServer:
             self._schedule.local_session_ids = self._window_sessions
         self._schedule_task: asyncio.Task[Any] | None = None
         self._trash = TrashService(self._sessions)
+        registry = bundled_plugin_registry()
         self._plugins = PluginService(
             persistent=not stub,
             capabilities=self._capabilities,
             permission_store=self._permissions,
+            registry=registry if (registry / "registry.json").is_file() else None,
         )
         self._plugins.attach_to_capabilities()
         self._session_hosts: dict[str, AgentHost] = {}
@@ -918,8 +927,10 @@ class AppServer:
                 "recovery": True,
                 "notifications": True,
                 "recovery_restore_ok": recovery_ok,
+                "multi_agent": True,
+                "multi_model": True,
             },
-            capability_snapshot=CapabilitySnapshot(thread_fork=True),
+            capability_snapshot=CapabilitySnapshot(thread_fork=True, multi_agent=True, multi_model=True),
             model_providers=_model_provider_summaries(),
             permission_profiles=_permission_profiles(),
             package=PackageCompatibility(**{
@@ -2886,11 +2897,23 @@ class AppServer:
         hub = self._plugins
         if method == "plugin/list":
             return hub.list_plugins()
+        if method == "plugin/catalog":
+            return hub.catalog()
+        if method == "plugin/connect/start":
+            return hub.start_connect(str(params.get("name") or ""))
+        if method == "plugin/connect/callback":
+            return hub.complete_connect(
+                str(params.get("name") or ""),
+                str(params.get("code") or ""),
+                str(params.get("state") or ""),
+            )
         if method == "plugin/install":
+            token = params.get("token")
             return hub.install(
                 source=str(params.get("source") or ""),
                 path=params.get("path"),
                 name=params.get("name"),
+                token=token if isinstance(token, str) else None,
             )
         if method == "plugin/uninstall":
             from pydantic import ValidationError
@@ -2911,6 +2934,52 @@ class AppServer:
                 raise PluginError("PLUGIN_TOGGLE_INVALID", "enabled must be boolean") from exc
             return hub.toggle(req.name, req.enabled)
         raise PluginError("PLUGIN_METHOD_UNKNOWN", f"unknown plugin method: {method}")
+
+    async def _handle_skill(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        from tools.skill_manager import (
+            KNOWN_SKILLS,
+            find_and_download_skill_async,
+            install_skill_from_local,
+            install_skill_from_url_async,
+            list_installed_skills,
+            search_github_skills,
+        )
+
+        if method == "skill/list":
+            return {"skills": list_installed_skills()}
+        if method == "skill/search":
+            source = str(params.get("source") or "github")
+            query = str(params.get("query") or "SKILL")
+            if source == "hub":
+                rows = [
+                    {
+                        "name": name,
+                        "repo": repo,
+                        "path": path,
+                        "source": "hub",
+                        "stars": 0,
+                        "description": "",
+                        "scope": repo,
+                    }
+                    for name, (repo, path) in KNOWN_SKILLS.items()
+                ]
+                return {"skills": rows}
+            return {"skills": search_github_skills(query)}
+        if method == "skill/install":
+            source = str(params.get("source") or "github").lower()
+            name = str(params.get("name") or params.get("query") or "").strip()
+            if source in {"github", "query", "llm"}:
+                ok, message = await find_and_download_skill_async(str(params.get("query") or name))
+            elif source == "url":
+                ok, message = await install_skill_from_url_async(str(params.get("url") or params.get("path") or ""), name or "skill")
+            elif source == "local":
+                ok, message = install_skill_from_local(str(params.get("path") or ""), name or "skill")
+            else:
+                raise SkillError("SKILL_SOURCE_INVALID", "source must be github, url, or local")
+            if not ok:
+                raise SkillError("SKILL_INSTALL_FAILED", message)
+            return {"ok": True, "message": message}
+        raise SkillError("SKILL_METHOD_UNKNOWN", f"unknown skill method: {method}")
 
     def _handle_thread_trash(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("session_id") or "")
@@ -3278,6 +3347,13 @@ class AppServer:
                 await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
                 return
             await self._respond(request_id, result)
+        elif method.startswith("skill/"):
+            try:
+                result = await self._handle_skill(method, params or {})
+            except SkillError as exc:
+                await self._respond_error(request_id, -32003, exc.message, {"error_code": exc.code})
+                return
+            await self._respond(request_id, result)
         elif method == "notifications/cursor":
             try:
                 result = self._recovery.save_cursor(
@@ -3379,6 +3455,14 @@ class AppServer:
             from .team_routes import team_set_active
 
             await self._respond(request_id, team_set_active(params))
+        elif method == "agents/settings_get":
+            from .agents_routes import agents_settings_get
+
+            await self._respond(request_id, agents_settings_get())
+        elif method == "agents/settings_set":
+            from .agents_routes import agents_settings_set
+
+            await self._respond(request_id, agents_settings_set(params))
         elif method in {
             "project/list",
             "project/add",

@@ -60,7 +60,32 @@ const onlyIds = new Set(
 const selectedScenarios = onlyIds.size === 0
   ? desktopCdScenarios
   : desktopCdScenarios.filter((scenario) => onlyIds.has(scenario.id))
-const RUNNING_TOOL_SELECTOR = '[data-testid^="timeline-tool-"].running, [data-testid^="timeline-tool-"].recovering'
+const RUNNING_TOOL_SELECTOR = '[data-testid^="timeline-tool-"].running, [data-testid^="timeline-tool-"].recovering, .tool-activity.running, .tool-activity.recovering'
+const SEND_READY_SELECTOR = '[data-testid="composer-send"]:not(:disabled), .send:not(:disabled)'
+const SEND_CLICK_SELECTOR = '[data-testid="composer-send"], .send'
+const STOP_CLICK_SELECTOR = '[data-testid="composer-stop"], .composer-send.stop, .composer .stop'
+const APPROVE_SELECTOR = '.approval-dialog .approve, [data-testid="approval-card"] [data-action="allow"]'
+const REJECT_SELECTOR = '.approval-dialog .reject, [data-testid="approval-card"] [data-action="deny"]'
+const ACTIVE_RUN_STATES = new Set(['queued', 'running', 'approval'])
+
+function sessionRunStateScript(sessionId?: string): string {
+  const item =
+    sessionId === undefined
+      ? `document.querySelector('.session-item.active')`
+      : `document.querySelector('[data-testid="session-${sessionId}"]')`
+  return `(() => {
+    const item = ${item};
+    const run = item?.getAttribute('data-run-state');
+    if (typeof run === 'string' && run !== '') return run;
+    const visual = item?.querySelector('.status-indicator')?.getAttribute('data-status');
+    if (visual === 'spin') return 'running';
+    if (visual === 'dot') return 'succeeded';
+    if (visual === 'error') return 'failed';
+    if (visual === 'idle') return 'cancelled';
+    const legacy = item?.querySelector('.session-state')?.className.match(/state-(queued|running|approval|succeeded|failed|cancelled|timed_out)/);
+    return legacy?.[1] ?? null;
+  })()`
+}
 const artifactRoot = resolve(
   process.argv.find((arg) => arg.startsWith('--artifacts='))?.slice('--artifacts='.length) ??
   join(defaultArtifactRoot, `desktop-cd-suite-${timestamp}`)
@@ -193,12 +218,12 @@ async function createSessionAndSubmit(
     return count > prior ? true : null
   }, 20_000, 'new task session')
   const sessionId = await harness.evaluate<string>(
-    `document.querySelector('.session-item.active .session-id')?.textContent ?? ''`
+    `(document.querySelector('.session-item.active')?.getAttribute('data-testid') ?? '').replace(/^session-/, '')`
   )
   await harness.typePrompt(prompt)
-  await waitFor(async () => (await harness.has('.send:not(:disabled)')) ? true : null, 5_000, 'enabled send')
-  await harness.evaluate(`document.querySelector('.send:not(:disabled)')?.click()`)
-  await waitFor(async () => (await harness.has('.running-indicator')) ? true : null, 20_000, 'run start')
+  await waitFor(async () => (await harness.has(SEND_READY_SELECTOR)) ? true : null, 5_000, 'enabled send')
+  await harness.evaluate(`document.querySelector(${JSON.stringify(SEND_CLICK_SELECTOR)})?.click()`)
+  await waitFor(async () => (await harness.has('.running-indicator') || await harness.has(RUNNING_TOOL_SELECTOR)) ? true : null, 20_000, 'run start')
   return sessionId
 }
 
@@ -209,7 +234,7 @@ async function createSessionOnly(harness: DesktopCdpHarness): Promise<string> {
     const count = await harness.evaluate<number>('document.querySelectorAll(".session-item").length')
     return count > prior ? true : null
   }, 20_000, 'new parallel task')
-  return harness.evaluate<string>('document.querySelector(".session-item.active .session-id")?.textContent ?? ""')
+  return harness.evaluate<string>("(document.querySelector('.session-item.active')?.getAttribute('data-testid') ?? '').replace(/^session-/, '')")
 }
 
 async function submitExistingSession(
@@ -219,8 +244,8 @@ async function submitExistingSession(
 ): Promise<void> {
   await selectSession(harness, sessionId)
   await harness.typePrompt(prompt)
-  await waitFor(async () => (await harness.has('.send:not(:disabled)')) ? true : null, 5_000, 'enabled parallel send')
-  await harness.evaluate('document.querySelector(".send:not(:disabled)")?.click()')
+  await waitFor(async () => (await harness.has(SEND_READY_SELECTOR)) ? true : null, 5_000, 'enabled parallel send')
+  await harness.evaluate(`document.querySelector(${JSON.stringify(SEND_CLICK_SELECTOR)})?.click()`)
   await waitFor(async () => (await harness.has('.running-indicator') || await harness.has(RUNNING_TOOL_SELECTOR)) ? true : null, 20_000, 'parallel run start')
 }
 
@@ -235,14 +260,20 @@ async function waitForSessionsTerminal(
     // to exercise writes (for example, a bash command classified as WRITE).
     // Reject unexpected approvals so the runner never waits forever. The
     // terminal-state assertion below records the scenario as a failure.
-    if (await harness.has('.approval-dialog .reject')) {
-      await harness.evaluate(`document.querySelector('.approval-dialog .reject')?.click()`)
+    if (await harness.has(REJECT_SELECTOR)) {
+      await harness.evaluate(`document.querySelector(${JSON.stringify(REJECT_SELECTOR)})?.click()`)
       return null
     }
     return (await harness.evaluate<boolean>(`(() => {
       const ids = ${JSON.stringify(sessionIds)};
+      const active = ${JSON.stringify([...ACTIVE_RUN_STATES])};
       return ids.every((id) => {
         const item = document.querySelector('[data-testid="session-' + id + '"]');
+        const run = item?.getAttribute('data-run-state');
+        if (typeof run === 'string' && run !== '') return !active.includes(run);
+        const visual = item?.querySelector('.status-indicator')?.getAttribute('data-status');
+        if (visual === 'spin') return false;
+        if (visual === 'dot' || visual === 'error' || visual === 'idle') return true;
         const state = item?.querySelector('.session-state');
         return state !== null && !state.classList.contains('state-running') &&
           !state.classList.contains('state-queued') && !state.classList.contains('state-approval');
@@ -254,7 +285,7 @@ async function waitForSessionsTerminal(
 async function selectSession(harness: DesktopCdpHarness, sessionId: string): Promise<void> {
   await harness.evaluate(`document.querySelector('[data-testid="session-${sessionId}"]')?.click()`)
   await waitFor(async () => (await harness.evaluate<boolean>(
-    `document.querySelector('.session-item.active .session-id')?.textContent === ${JSON.stringify(sessionId)}`
+    `(document.querySelector('.session-item.active')?.getAttribute('data-testid') ?? '') === ${JSON.stringify(`session-${sessionId}`)}`
   )) ? true : null, 5_000, `select session ${sessionId}`)
 }
 
@@ -298,18 +329,18 @@ async function runOne(
         : prompt
       sessionIds.push(await createSessionAndSubmit(harness, executionPrompt))
       if (scenario.kind === 'approval' || scenario.kind === 'child-approval') {
-        await harness.waitForSelector('.approval-dialog .approve', mode === 'real' ? 120_000 : 30_000)
+        await waitFor(async () => (await harness.has(APPROVE_SELECTOR)) ? true : null, mode === 'real' ? 120_000 : 30_000, `${scenario.id} approval`)
         screenshots.push(await harness.screenshot(`screenshots/round-${round}/${scenario.id}/approval.png`))
-        await harness.evaluate(`document.querySelector('.approval-dialog .approve')?.click()`)
+        await harness.evaluate(`document.querySelector(${JSON.stringify(APPROVE_SELECTOR)})?.click()`)
       } else if (scenario.kind === 'cancel' || scenario.kind === 'child-cancel') {
         await harness.waitForSelector(RUNNING_TOOL_SELECTOR, 30_000)
         screenshots.push(await harness.screenshot(`screenshots/round-${round}/${scenario.id}/running.png`))
         cancelStarted = Date.now()
-        await harness.evaluate(`document.querySelector('.composer .stop')?.click()`)
+        await harness.evaluate(`document.querySelector(${JSON.stringify(STOP_CLICK_SELECTOR)})?.click()`)
         status = 'cancelled'
       } else if (scenario.kind === 'busy') {
         await harness.typePrompt('duplicate submission must remain blocked')
-        const hasSend = await harness.has('.send:not(:disabled)')
+        const hasSend = await harness.has(SEND_READY_SELECTOR)
         if (hasSend) throw new Error('duplicate send became enabled while the session was busy')
       }
       await waitForSessionsTerminal(
@@ -353,11 +384,19 @@ async function runOne(
       const replacementTaskId = await createSessionOnly(harness)
       sessionIds.push(replacementTaskId)
       await harness.evaluate(`document.querySelector('[data-testid="trash-task-${taskId}"]')?.click()`)
-      await waitFor(async () => (await harness.has('.trash-toggle')) ? true : null, 5_000, 'recently deleted section')
-      await harness.evaluate(`document.querySelector('.trash-toggle')?.click()`)
-      await harness.waitForSelector(`[data-testid="restore-task-${taskId}"]`, 5_000)
-      await harness.evaluate(`document.querySelector('[data-testid="restore-task-${taskId}"]')?.click()`)
-      await harness.waitForSelector(`[data-testid="session-${taskId}"]`, 5_000)
+      await harness.evaluate(`document.querySelector('[data-testid="open-settings"]')?.click()`)
+      await harness.waitForSelector('[data-testid="settings-recycle"]', 5_000)
+      await harness.evaluate(`document.querySelector('[data-tab="recycle"]')?.click()`)
+      await waitFor(async () => (
+        await harness.has(`[data-testid="restore-task-${taskId}"]`)
+      ) ? true : null, 5_000, 'archived chats section')
+      await harness.evaluate(
+        `document.querySelector('[data-testid="restore-task-${taskId}"]')?.click()`
+      )
+      await harness.evaluate(`document.querySelector('.settings-close')?.click()`)
+      await waitFor(async () => (
+        await harness.has(`[data-testid="session-${taskId}"]:not([disabled])`)
+      ) ? true : null, 5_000, 'restored task visible')
       await selectSession(harness, taskId)
     }
     if (scenario.kind.includes('child')) {
@@ -406,7 +445,7 @@ async function runOne(
     status = 'failed'
     error = caught instanceof Error ? caught.message : String(caught)
     if (await harness.has('.running-indicator') || await harness.has(RUNNING_TOOL_SELECTOR)) {
-      await harness.evaluate(`document.querySelector('.composer .stop')?.click()`)
+      await harness.evaluate(`document.querySelector(${JSON.stringify(STOP_CLICK_SELECTOR)})?.click()`)
       try {
         await waitFor(async () => (!(await harness.has('.running-indicator')) && !(await harness.has(RUNNING_TOOL_SELECTOR))) ? true : null,
           15_000, `${scenario.id} failure cleanup`)
@@ -430,12 +469,7 @@ async function runOne(
     // truth for the current timeline.
     final: document.querySelector('[data-testid="final-answer"] .timeline-prose')?.textContent ??
       document.querySelector('.message.assistant .message-text')?.textContent ?? '',
-    terminalState: (() => {
-      const node = document.querySelector('.session-item.active .session-state')
-      const className = node?.className ?? ''
-      const match = className.match(/state-(queued|running|approval|succeeded|failed|cancelled|timed_out)/)
-      return match?.[1] ?? null
-    })(),
+    terminalState: ${sessionRunStateScript()},
     tools: Array.from(document.querySelectorAll('[data-testid^="timeline-tool-"]')).map((card) => ({
       name: card.querySelector('.activity-label')?.textContent ?? '',
       status: card.classList.contains('running') || card.classList.contains('recovering') ? 'running' : card.classList.contains('error') ? 'error' : 'ok',

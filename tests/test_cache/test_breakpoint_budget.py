@@ -143,6 +143,41 @@ class TestApplyCacheControlDispatch:
         out = agent._apply_cache_control(self._msgs())
         assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
 
+    def test_ttl_1h_is_shared_across_system_user_and_tools(self):
+        from dataclasses import replace
+
+        from RxyCode.RxyCode1_1_0.config.model_capabilities import (
+            DEFAULT_CAPABILITIES,
+        )
+        from RxyCode.RxyCode1_1_0.core.cache_policy import (
+            apply_breakpoint_budget,
+            cache_control_for_ttl,
+        )
+
+        hour = cache_control_for_ttl(3600)
+        assert hour == {"type": "ephemeral", "ttl": "1h"}
+        caps = replace(
+            DEFAULT_CAPABILITIES,
+            provider="anthropic",
+            supports_prompt_cache=True,
+            cache_breakpoints=("tools", "system", "tail"),
+        )
+        agent = self._make_agent("anthropic", caps)
+        agent._cfg = {"cache": {"ttl": 3600}}
+        out = agent._apply_cache_control(self._msgs())
+        assert out[0].additional_kwargs.get("cache_control") == hour
+        assert out[1].additional_kwargs.get("cache_control") == hour
+        msgs, _allocated, ttl = apply_breakpoint_budget(
+            self._msgs(),
+            tools=["read", "bash"],
+            caps=caps,
+            cfg={"cache": {"ttl": 3600}},
+            contract={"cache_mode": "explicit_breakpoints", "breakpoints_max": 4},
+        )
+        assert ttl == 3600
+        assert msgs[0].additional_kwargs.get("cache_control") == hour
+        assert msgs[1].additional_kwargs.get("cache_control") == hour
+
     def test_openai_gets_no_cache_control(self):
         """OpenAI 系：不注入 cache_control（B2 走 prompt_cache_key，CB3）。"""
         from dataclasses import replace
@@ -280,7 +315,7 @@ class TestApplyCacheControlDispatch:
         assert allocated == ["tools", "system", "messages"]
 
     def test_anthropic_llm_kwargs_injects_cache_ttl(self):
-        """luna 阻断项 1：TTL 注入 Anthropic 请求 extra_body.cache_ttl。"""
+        """TTL is not a Chat Completions extra_body field on Anthropic."""
         from RxyCode.RxyCode1_1_0.config.model_capabilities import (
             DEFAULT_CAPABILITIES,
         )
@@ -293,12 +328,12 @@ class TestApplyCacheControlDispatch:
                 "cache_ttl": 3600,
                 "resolved_max_tokens": 2048,
                 "api_key": "test-key",
-                "base_url": "https://api.anthropic.com/v1",
+                "base_url": "https://relay.example/v1",
             },
             DEFAULT_CAPABILITIES,
         )
         extra = kwargs.get("extra_body") or {}
-        assert extra.get("cache_ttl") == 3600
+        assert "cache_ttl" not in extra
 
     def test_anthropic_tools_breakpoint_in_raw_stream(self):
         """luna 阻断项 2：Anthropic tools 断点注入真实 _raw_stream payload。"""
@@ -349,7 +384,10 @@ class TestApplyCacheControlDispatch:
         tools = payload.get("tools") or []
         assert tools, "tools missing from payload"
         for tool_def in tools:
-            assert tool_def.get("cache_control") == {"type": "ephemeral"}
+            assert tool_def.get("cache_control") == {
+                "type": "ephemeral",
+                "ttl": "1h",
+            }
 
     def test_openai_tools_no_breakpoint(self):
         """luna 阻断项 1：OpenAI 系 tools 不注入 cache_control（CB3）。"""
@@ -477,8 +515,14 @@ class TestLastUserBreakpoint:
         )
         assert allocated == ["system", "messages"]
         assert ttl == 3600
-        assert out[0].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
-        assert out[1].additional_kwargs.get("cache_control") == {"type": "ephemeral"}
+        assert out[0].additional_kwargs.get("cache_control") == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
+        assert out[1].additional_kwargs.get("cache_control") == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
 
     def test_consecutive_tool_results_merged_not_split(self):
         """合并连续 tool_result：不拆 assistant↔tool 配对（kimi 语义）。"""
