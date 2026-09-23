@@ -145,6 +145,13 @@ def test_codebase_question_goes_explore() -> None:
     assert "explore" in decision.reason
 
 
+def test_subagent_request_is_not_sent_to_explore() -> None:
+    """E34: 要子代理或 Skill 时留在父代理，explore 没有 task/skill。"""
+    router = ModeRouter(enabled=True)
+    decision = router.route("查找认证模块在哪个文件，并用并行子代理加载 skill")
+    assert decision.mode is not ExecutionMode.EXPLORE
+
+
 def test_why_it_works_without_write_goes_explore() -> None:
     router = ModeRouter(enabled=True)
     decision = router.route("这个登录流程为什么这样工作")

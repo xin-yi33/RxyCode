@@ -82,7 +82,9 @@ export function DialogEffort({
       return;
     }
     const built = buildOptions(result.models, result.active);
-    setOptions(buildEffortPickerOptions(built.options));
+    setOptions(
+      built.options.length === 0 ? [] : buildEffortPickerOptions(built.options),
+    );
     setModelName(built.modelName);
     setCurrent(result.effort || DEFAULT_EFFORT_VALUE);
   }, []);
@@ -102,22 +104,10 @@ export function DialogEffort({
           : undefined;
 
   const dismiss = useCallback(() => {
-    if (committedRef.current) {
-      onClose();
-      return;
-    }
+    // Esc 只关闭。不支持档位时不能改成 default，也不能把取消说成已切换。
     committedRef.current = true;
-    void (async () => {
-      const result = await sendCommand(`/effort ${DEFAULT_EFFORT_VALUE}`);
-      if (result.ok) {
-        onChanged(
-          DEFAULT_EFFORT_VALUE,
-          result.message || `思考强度已切换: ${DEFAULT_EFFORT_VALUE}`,
-        );
-      }
-      onClose();
-    })();
-  }, [onChanged, onClose]);
+    onClose();
+  }, [onClose]);
 
   return (
     <DialogSelect

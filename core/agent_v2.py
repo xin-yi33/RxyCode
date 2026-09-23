@@ -379,6 +379,14 @@ from RxyCode.RxyCode1_1_0.recovery.error_recovery import (  # noqa: E402
 STREAM_TRANSPORT_RETRY_MAX = MODEL_RETRY_MAX
 
 
+def _ensure_plan_heading(text: str) -> str:
+    """Give a plan-mode answer the heading the approval pane already requires."""
+    body = (text or "").strip() or "（空计划）"
+    if re.search(r"^#{1,3}\s+\S", body, re.M):
+        return body
+    return "# 计划\n\n" + body
+
+
 def _clamp_stream_timeout(value: float, *, hi: float, lo: float = 1.0) -> float:
     return max(lo, min(float(value), hi))
 
@@ -6697,6 +6705,9 @@ class AgentV2:
             role_instruction=plan_contract,
             mode="plan",
         )
+        # stdio/http 的 onPlan 只认带 Markdown 标题的计划正文。没有标题时
+        # 前端会把它当成普通 Final Answer，审批条不会出现。
+        answer = _ensure_plan_heading(answer)
         # Always append a concrete next-step hint (LLM often omits how-to).
         locale = str((getattr(self, "_cfg", {}) or {}).get("language") or "zh")
         if locale.lower().startswith("zh"):

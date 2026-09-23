@@ -82,15 +82,27 @@ _EXPLICIT_EXPLANATION_RE = re.compile(
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 
 # Tool allow/deny lists are execution constraints, not an instruction to perform
-# every verb they happen to contain.  In particular, a read-only prompt often
-# says "Do not call ... write ..."; treating that quoted verb as a requested
-# write would incorrectly require WRITE/DANGER evidence from a Skill or review
-# workflow.  Limit the removal to an explicit negative *tool invocation*
-# clause so ordinary requests such as "do not write a file" keep their normal
-# intent semantics.
+# every verb they happen to contain.  A read-only prompt often says
+# "Do not call ... write ..." or "不要写入文件".  Those negated spans are not
+# a request to mutate.  Positive actions later in the same request stay visible.
 _NEGATED_TOOL_CONSTRAINT_RE = re.compile(
     r"\b(?:do\s+not|don't|never)\s+"
     r"(?:call|use|run|execute|invoke)\b[^.\n]*",
+    re.IGNORECASE,
+)
+
+# Affirmative side-effect intent only.  "不要写入文件" / "do not write a file"
+# mention both a verb and an artifact, but the negation is the instruction.
+# Stop at a clause boundary so "不要写入文件，但是要创建 report.md" still gates.
+_NEGATED_SIDE_EFFECT_RE = re.compile(
+    r"(?:不要|别|禁止|不得|不能|无需|不许|勿)(?:再|去)?"
+    r"(?:调用工具(?:或者|或)?)?"
+    r"(?:写入|写|创建|新建|生成|修改|编辑|保存)"
+    r"(?:任何|一个)?"
+    r"(?:文件|目录)?"
+    r"[^。；;，,\n]*|"
+    r"\b(?:do\s+not|don't|never)\s+"
+    r"(?:write|create|edit|modify|save|delete)\b[^.;\n]*",
     re.IGNORECASE,
 )
 
@@ -186,6 +198,7 @@ def task_requires_side_effect_evidence(
     # prohibiting them.  Classify the actual task intent after removing those
     # constraints, while preserving all positive task text.
     intent_request = _NEGATED_TOOL_CONSTRAINT_RE.sub("", request)
+    intent_request = _NEGATED_SIDE_EFFECT_RE.sub("", intent_request)
     intent_request = _READ_ONLY_SKILL_INVOCATION_RE.sub("", intent_request)
     intent_request = _READ_ONLY_INSPECTION_RE.sub("", intent_request)
     intent_request = _READ_ONLY_TOOL_SEQUENCE_RE.sub("", intent_request)

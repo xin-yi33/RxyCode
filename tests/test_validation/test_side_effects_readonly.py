@@ -120,6 +120,28 @@ def test_anchored_explanation_overrides_strong_action():
     ) is False
 
 
+def test_negated_write_file_is_not_a_side_effect_request():
+    """E32/E35: 否定范围里的「写入」+「文件」不是写任务。"""
+    assert task_requires_side_effect_evidence(
+        title="请记住这个偏好。不要写入文件。", result="", effect="auto"
+    ) is False
+    assert task_requires_side_effect_evidence(
+        title="现在不要调用工具或写文件", result="", effect="auto"
+    ) is False
+    assert task_requires_side_effect_evidence(
+        title="禁止创建文件", result="", effect="auto"
+    ) is False
+    assert task_requires_side_effect_evidence(
+        title="Do not write a file. Just answer in chat.", result="", effect="auto"
+    ) is False
+
+
+def test_negated_write_does_not_hide_a_later_positive_write():
+    assert task_requires_side_effect_evidence(
+        title="不要写入临时文件，但是要创建文件 report.md", result="", effect="auto"
+    ) is True
+
+
 def test_s3_explain_code_snippet_is_not_side_effecting():
     """Plan S3：只读问「这段代码干什么」+ fenced ``def add`` 不得判 WRITE。"""
     title = (

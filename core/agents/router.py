@@ -115,6 +115,12 @@ _NL_SUBAGENT_RE = re.compile(
     r"(?:use|enable|start)\s+(?:a\s+)?subagents?",
     re.IGNORECASE,
 )
+# 需要父代理自己持有 task / skill 的请求。只读 explore 子代理没有这些工具，
+# 也不能再派子团队。命中时不得再走 explore。
+_PARENT_CAPABILITY_RE = re.compile(
+    r"子代理|subagent|并行|in parallel|simultaneously|\bskill\b|技能",
+    re.IGNORECASE,
+)
 
 
 class ExecutionMode(str, Enum):
@@ -387,7 +393,7 @@ class ModeRouter:
             return RoutingDecision(ExecutionMode.SOLO, "heuristic", "greeting", task=blob)
         if _HOST_OPEN_RE.search(blob):
             return RoutingDecision(ExecutionMode.SOLO, "heuristic", "host preview", task=blob)
-        if explore and not write:
+        if explore and not write and not _PARENT_CAPABILITY_RE.search(blob):
             return RoutingDecision(ExecutionMode.EXPLORE, "heuristic", "readonly explore", task=blob)
         if readonly_hint and not write:
             return RoutingDecision(ExecutionMode.SOLO, "heuristic", "readonly task", task=blob)
