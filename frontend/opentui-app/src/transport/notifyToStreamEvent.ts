@@ -68,7 +68,7 @@ export function notifyToStreamEvent(method: string, params: unknown): StreamEven
       const mode = String(payload.mode ?? p.mode ?? "");
       const reason = String(p.routing_reason ?? "");
       const label = [mode && `mode=${mode}`, reason].filter(Boolean).join(" ");
-      return { type: "progress", message: label, text: label, routed: true };
+      return { type: "progress", message: label, text: label };
     }
     case "event/reasoning_snapshot":
       return {

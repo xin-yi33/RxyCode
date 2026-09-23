@@ -88,7 +88,6 @@ export function DialogPrompt({
           onSubmit={(v) => onSubmit(String(v ?? draft).trim())}
           style={{
             flexGrow: 1,
-            height: 1,
             backgroundColor: C.bg,
           }}
         />

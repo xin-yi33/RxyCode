@@ -242,8 +242,14 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         "phase-g",
         "decisions",
         "agents",
+        "specs",
     }
-    allowed_files = {"quickstart.md", "GUI.md"}
+    allowed_files = {
+        "quickstart.md",
+        "GUI.md",
+        "DEVELOPMENT-ORDER.md",
+        "development-order.yaml",
+    }
     unexpected = []
     for line in listed.splitlines():
         rel = line[5:] if line.startswith("docs/") else line

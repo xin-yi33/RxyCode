@@ -15,7 +15,10 @@ from typing import Any, Optional
 
 from .cases import bfcl_cases, chateval_cases, gaia_cases
 from .chateval import debate, lexical_value_hit
-from .reports import render_bfcl, render_chateval, render_final, render_gaia, render_index, render_matrix
+from .reports import render_bfcl, render_chateval, render_final, render_gaia, render_index
+# 废弃代码（2026-09-23）：render_matrix 没有任何调用方。评测入口只用
+# render_bfcl / render_chateval / render_gaia / render_final / render_index。
+# from .reports import render_matrix
 from .score import canonicalize_func_name, parse_tool_calls, score_bfcl, score_gaia
 
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
