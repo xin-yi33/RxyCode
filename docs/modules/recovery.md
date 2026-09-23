@@ -36,7 +36,7 @@ Handles errors during task execution with retry logic and error summarization.
   stream clocks (`FirstTokenTimeoutError` / `StreamIdleTimeoutError`), and
   long read/idle timeouts. Surface: `event/error`.
 - Short connect handshake (`StreamConnectTimeoutError`) is TRANSIENT and may
-  use `STREAM_TRANSPORT_RETRY_MAX` extra attempts (default 2). Daily
+  use `STREAM_TRANSPORT_RETRY_MAX` extra attempts (default 5). Daily
   `_raw_stream` does **not** retry first-token/idle 180s. Appserver stall
   recycles a dead worker; it is not an LLM retry.
 - Unknown errors default to PERMANENT (conservative: no blind retries)

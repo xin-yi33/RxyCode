@@ -162,9 +162,12 @@ class TestRetryWithBackoff:
         assert calls["n"] == 3
 
     @pytest.mark.asyncio
-    async def test_transient_gives_up_after_3_attempts(self):
+    async def test_transient_gives_up_after_shared_retry_budget(self):
         import httpx
-        from RxyCode.RxyCode1_1_0.recovery.error_recovery import retry_with_backoff
+        from RxyCode.RxyCode1_1_0.recovery.error_recovery import (
+            MODEL_RETRY_ATTEMPTS,
+            retry_with_backoff,
+        )
 
         calls = {"n": 0}
 
@@ -174,7 +177,7 @@ class TestRetryWithBackoff:
 
         with pytest.raises(httpx.ConnectError):
             await retry_with_backoff(always_fail, wait_multiplier=0.01)
-        assert calls["n"] == 3
+        assert calls["n"] == MODEL_RETRY_ATTEMPTS
 
     @pytest.mark.asyncio
     async def test_permanent_not_retried(self):

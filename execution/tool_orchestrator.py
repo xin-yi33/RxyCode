@@ -658,7 +658,7 @@ class ToolOrchestrator:
         try:
             retry_attempts = max(
                 1,
-                int(execution_cfg.get("tool_retry_attempts", 3) or 3),
+                int(execution_cfg.get("tool_retry_attempts", 6) or 6),
             )
             retry_wait = max(
                 0.0,

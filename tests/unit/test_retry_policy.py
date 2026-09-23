@@ -19,8 +19,26 @@ from RxyCode.RxyCode1_1_0.core.agent_v2 import (
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import ErrorKind, classify_error
 
 
+def test_model_and_tool_retry_share_opencode_clock():
+    from RxyCode.RxyCode1_1_0.recovery.error_recovery import (
+        MODEL_RETRY_ATTEMPTS,
+        MODEL_RETRY_MAX,
+        opencode_retry_delay_seconds,
+    )
+
+    assert MODEL_RETRY_MAX == STREAM_TRANSPORT_RETRY_MAX == 5
+    assert MODEL_RETRY_ATTEMPTS == 6
+    assert opencode_retry_delay_seconds(1, random_unit=lambda: 0) == 2.0
+    assert opencode_retry_delay_seconds(2, random_unit=lambda: 0) == 4.0
+    assert opencode_retry_delay_seconds(3, random_unit=lambda: 0) == 8.0
+    assert opencode_retry_delay_seconds(4, random_unit=lambda: 0) == 16.0
+    assert opencode_retry_delay_seconds(5, random_unit=lambda: 0) == 30.0
+    assert opencode_retry_delay_seconds(1, random_unit=lambda: 1) == 2.5
+    assert opencode_retry_delay_seconds(1, multiplier=0.01, random_unit=lambda: 0) == 0.02
+
+
 def test_short_connect_is_retryable_idle_is_not():
-    assert STREAM_TRANSPORT_RETRY_MAX == 2
+    assert STREAM_TRANSPORT_RETRY_MAX == 5
     assert classify_error(StreamConnectTimeoutError("handshake")) == ErrorKind.TRANSIENT
     assert _is_transport_retryable(StreamConnectTimeoutError("handshake")) is True
     assert _is_transport_retryable(httpx.ConnectTimeout("handshake")) is True

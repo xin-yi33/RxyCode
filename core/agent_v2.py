@@ -369,8 +369,14 @@ class StreamConnectTimeoutError(TimeoutError):
 
 
 #: Extra attempts for 429 / connect / connection-reset before first useful chunk.
-#: Total attempts = this value + 1. Do not apply this budget to idle/first-token.
-STREAM_TRANSPORT_RETRY_MAX = 2
+#: Same budget as OpenCode RETRY_MAX_RETRIES and as READ-tool retries.
+#: Total attempts = this value + 1. Idle clocks after content started are not retried.
+from RxyCode.RxyCode1_1_0.recovery.error_recovery import (  # noqa: E402
+    MODEL_RETRY_MAX,
+    opencode_retry_delay_seconds,
+)
+
+STREAM_TRANSPORT_RETRY_MAX = MODEL_RETRY_MAX
 
 
 def _clamp_stream_timeout(value: float, *, hi: float, lo: float = 1.0) -> float:
@@ -1788,7 +1794,6 @@ class UsageTrackingLLM:
         single flaky network blip from failing an otherwise-successful build.
         """
         max_retries = self._transport_retry_max()
-        delay = 0.5
         last_exc: BaseException | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -1800,6 +1805,7 @@ class UsageTrackingLLM:
                 if attempt >= max_retries or not _is_transport_retryable(exc):
                     _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
+                delay = opencode_retry_delay_seconds(attempt + 1)
                 _notify_llm_transport_retry(
                     attempt + 1, max_retries + 1, type(exc).__name__
                 )
@@ -1811,7 +1817,6 @@ class UsageTrackingLLM:
                     delay,
                 )
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, 8.0)
         # Unreachable: the loop either returns or raises. Keeps type checkers calm.
         assert last_exc is not None
         raise last_exc
@@ -1820,7 +1825,6 @@ class UsageTrackingLLM:
         """Open the underlying stream and pull the first chunk, retrying transport
         errors during establishment (mirrors ``_call_with_transport_retry``)."""
         max_retries = self._transport_retry_max()
-        delay = 0.5
         last_exc: BaseException | None = None
         for attempt in range(max_retries + 1):
             try:
@@ -1845,6 +1849,7 @@ class UsageTrackingLLM:
                 if attempt >= max_retries or not _is_transport_retryable(exc):
                     _exhaust_llm_transport_recovery(type(exc).__name__)
                     raise
+                delay = opencode_retry_delay_seconds(attempt + 1)
                 _notify_llm_transport_retry(
                     attempt + 1, max_retries + 1, type(exc).__name__
                 )
@@ -1856,7 +1861,6 @@ class UsageTrackingLLM:
                     delay,
                 )
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, 8.0)
         assert last_exc is not None
         raise last_exc
 
@@ -4400,7 +4404,7 @@ class AgentV2:
                             retry_max + 1,
                             type(exc).__name__,
                         )
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(opencode_retry_delay_seconds(attempt_no))
                         continue
                     if not _is_transport_retryable(exc):
                         _exhaust_llm_transport_recovery(type(exc).__name__)

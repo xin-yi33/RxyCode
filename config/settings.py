@@ -257,7 +257,7 @@ def _default_config() -> dict:
             "circuit_breaker_enabled": True,
         },
         "llm": {
-            "transport_retries": 2,  # extra 429/connect attempts; not idle/first-token
+            "transport_retries": 5,  # extra 429/connect attempts; same as tool retries
         },
         "agents": {
             "enabled": False,
@@ -344,7 +344,7 @@ def _default_config() -> dict:
             "max_memory_mb": 4096,
             "max_cpus": 2.0,
             "max_processes": 128,
-            "tool_retry_attempts": 3,  # transient failures, READ tools only
+            "tool_retry_attempts": 6,  # 1 try + 5 retries; same clock as model transport
             "tool_retry_wait_multiplier": 1.0,
             "tool_timeout_seconds": 1800,
             "pipeline_soft_budget_seconds": 3600,

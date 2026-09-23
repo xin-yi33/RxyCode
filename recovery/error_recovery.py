@@ -22,8 +22,44 @@ Adapted from:
 from __future__ import annotations
 
 import json
+import random
 from enum import Enum
 from typing import Awaitable, Callable, TypeVar
+
+# OpenCode packages/opencode/src/session/retry.ts
+# RETRY_MAX_RETRIES / RETRY_INITIAL_DELAY / RETRY_BACKOFF_FACTOR /
+# RETRY_JITTER_FACTOR / RETRY_MAX_DELAY_NO_HEADERS.
+# Every model-network retry and every tool retry uses this schedule.
+MODEL_RETRY_MAX = 5
+MODEL_RETRY_INITIAL_SECONDS = 2.0
+MODEL_RETRY_BACKOFF_FACTOR = 2.0
+MODEL_RETRY_JITTER_FACTOR = 0.25
+MODEL_RETRY_MAX_DELAY_SECONDS = 30.0
+MODEL_RETRY_ATTEMPTS = MODEL_RETRY_MAX + 1
+
+
+def opencode_retry_delay_seconds(
+    attempt: int,
+    *,
+    multiplier: float = 1.0,
+    random_unit: Callable[[], float] | None = None,
+) -> float:
+    """Seconds to wait before retry number ``attempt`` (1 = first retry).
+
+    ``2s * 2^(attempt-1)``, plus up to 25% jitter, never above 30s.
+    ``multiplier`` scales the base and the cap together.
+    """
+    step = max(1, int(attempt))
+    scale = max(0.0, float(multiplier))
+    base = (
+        MODEL_RETRY_INITIAL_SECONDS
+        * scale
+        * (MODEL_RETRY_BACKOFF_FACTOR ** (step - 1))
+    )
+    roll = random.random() if random_unit is None else float(random_unit())
+    roll = min(1.0, max(0.0, roll))
+    delayed = base + base * MODEL_RETRY_JITTER_FACTOR * roll
+    return min(delayed, MODEL_RETRY_MAX_DELAY_SECONDS * scale)
 
 from RxyCode.RxyCode1_1_0.core.state import TaskStatus, TaskTree
 
@@ -197,7 +233,7 @@ T = TypeVar("T")
 async def retry_with_backoff(
     fn: Callable[[], Awaitable[T]],
     *,
-    max_attempts: int = 3,
+    max_attempts: int = MODEL_RETRY_ATTEMPTS,
     wait_multiplier: float = 1.0,
     on_retry: Callable[[int, BaseException], None] | None = None,
 ) -> T:
@@ -212,14 +248,17 @@ async def retry_with_backoff(
         AsyncRetrying,
         retry_if_exception,
         stop_after_attempt,
-        wait_exponential_jitter,
     )
 
     def _is_transient(exc: BaseException) -> bool:
         return classify_error(exc) == ErrorKind.TRANSIENT
 
-    initial = max(0.0, 2.0 * wait_multiplier)
-    max_wait = max(initial, 30.0 * wait_multiplier)
+    class _OpenCodeWait:
+        def __call__(self, retry_state: object) -> float:
+            attempt_number = int(getattr(retry_state, "attempt_number", 1))
+            return opencode_retry_delay_seconds(
+                attempt_number, multiplier=wait_multiplier
+            )
 
     def _before_sleep(state: object) -> None:
         if on_retry is None:
@@ -232,7 +271,7 @@ async def retry_with_backoff(
 
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_transient),
-        wait=wait_exponential_jitter(initial=initial, max=max_wait),
+        wait=_OpenCodeWait(),
         stop=stop_after_attempt(max_attempts),
         before_sleep=_before_sleep,
         reraise=True,

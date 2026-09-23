@@ -161,7 +161,7 @@ class TestOpenStreamFirstChunkTimeout:
 class TestOpenStreamWithRetryTimeout:
     async def test_first_token_hang_does_not_repeat_the_same_stall(self):
         llm = _make_usage_llm(timeout=2)
-        llm._transport_retries = 1  # total 2 attempts
+        llm._transport_retries = 0
         llm._llm = MagicMock()
         llm._llm.astream.return_value = FakeHangingStream()
         calls = {"n": 0}
@@ -263,6 +263,7 @@ class TestRawStreamFirstChunkTimeout:
 
         agent = object.__new__(AgentV2)
         agent.model_config = {"timeout": 1.0, "model_name": "x", "temperature": 0}
+        agent._cfg = {"llm": {"transport_retries": 0}}
         agent._llm = SimpleNamespace()
         agent._rate_limiter = None
         agent._provider = None
@@ -312,6 +313,7 @@ class TestRawStreamFirstChunkTimeout:
             "model_name": "x",
             "temperature": 0,
         }
+        agent._cfg = {"llm": {"transport_retries": 0}}
         agent._llm = SimpleNamespace()
         agent._rate_limiter = None
         agent._provider = None
@@ -483,6 +485,7 @@ class TestRawStreamFirstChunkTimeout:
         agent._capabilities = None
         agent._openai_client = lambda: client
         agent._user_turn_active = False
+        agent._cfg = {"llm": {"transport_retries": 0}}
 
         with pytest.raises(FirstTokenTimeoutError):
             async for _chunk in agent._raw_stream(
@@ -536,6 +539,7 @@ class TestRawStreamFirstChunkTimeout:
             "model_name": "x",
             "temperature": 0,
         }
+        agent._cfg = {"llm": {"transport_retries": 0}}
         agent._llm = SimpleNamespace()
         agent._rate_limiter = None
         agent._provider = None
@@ -600,6 +604,7 @@ class TestRawStreamFirstChunkTimeout:
 
         agent = object.__new__(AgentV2)
         agent.model_config = {"timeout": 1.0, "model_name": "x", "temperature": 0}
+        agent._cfg = {"llm": {"transport_retries": 0}}
         agent._llm = SimpleNamespace()
         agent._rate_limiter = None
         agent._provider = None

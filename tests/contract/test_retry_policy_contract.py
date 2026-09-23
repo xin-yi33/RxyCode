@@ -16,6 +16,6 @@ def test_raw_stream_does_not_retry_first_token_clock():
     assert "first_token_retries_left" not in source
     assert "StreamConnectTimeoutError" in source
     assert "_stream_transient_retry_max" in source
-    assert STREAM_TRANSPORT_RETRY_MAX == 2
+    assert STREAM_TRANSPORT_RETRY_MAX == 5
     assert "_is_transport_retryable(exc)" in source
     assert "CircuitBreakerError" in inspect.getsource(_is_transport_retryable)

@@ -74,7 +74,7 @@ remains the persisted-model wrapper.
 - lifecycle: {hook_timeout_seconds}
 - pricing: per-model $/M token prices (for billing display)
 - recovery: error-recovery policy defaults
-- llm: {transport_retries} extra 429/connect attempts on the stream path (default **2**; not applied to idle/first-token clocks)
+- llm: {transport_retries} extra 429/connect attempts on the stream path (default **5**, same 2s/4s/8s/16s/30s clock as READ-tool retries; not applied after a stream has already produced content)
 - lsp: {enabled, servers}
 - autoCompact: {enabled, threshold}
 - rag: {index_delay_seconds, retrieval settings}
