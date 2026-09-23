@@ -379,6 +379,25 @@ from RxyCode.RxyCode1_1_0.recovery.error_recovery import (  # noqa: E402
 STREAM_TRANSPORT_RETRY_MAX = MODEL_RETRY_MAX
 
 
+def _novel_stream_text(accumulated: str, token: str) -> str:
+    """Return only the part of a provider chunk that is not already on screen.
+
+    Chat deltas are usually a few new characters. Some gateways, including
+    the DeepSeek-compatible proxy, also resend a whole paragraph or the full
+    text so far as the next ``delta.content``. Appending that paints the same
+    paragraph again. A cumulative snapshot contributes only its new suffix.
+    An exact replay of the current tail is dropped.
+    """
+    if not token:
+        return ""
+    if accumulated and token.startswith(accumulated):
+        return token[len(accumulated) :]
+    stripped = token.strip()
+    if len(stripped) >= 40 and accumulated.rstrip().endswith(stripped):
+        return ""
+    return token
+
+
 def _ensure_plan_heading(text: str) -> str:
     """Give a plan-mode answer the heading the approval pane already requires."""
     body = (text or "").strip() or "（空计划）"
@@ -5695,6 +5714,9 @@ class AgentV2:
 
                     # Answer tokens -> stream to frontend in real time
                     token = getattr(delta, "content", "") or ""
+                    if not isinstance(token, str):
+                        token = str(token)
+                    token = _novel_stream_text("".join(answer_parts), token)
                     if token:
                         answer_parts.append(token)
                         if tui and hasattr(tui, "stream_token"):
@@ -6153,6 +6175,9 @@ class AgentV2:
                         continue
                     delta = chunk.choices[0].delta
                     token = getattr(delta, "content", "") or ""
+                    if not isinstance(token, str):
+                        token = str(token)
+                    token = _novel_stream_text("".join(parts), token)
                     if token:
                         parts.append(token)
                         if tui and hasattr(tui, "stream_token"):
@@ -6833,6 +6858,9 @@ class AgentV2:
                     if tui and hasattr(tui, 'write_reasoning'):
                         tui.write_reasoning(reasoning)
                 token = getattr(delta, 'content', '') or ''
+                if not isinstance(token, str):
+                    token = str(token)
+                token = _novel_stream_text(''.join(answer_parts), token)
                 if token:
                     answer_parts.append(token)
                     full_response_buffer.append(token)
