@@ -87,6 +87,10 @@ class _OpenedClock(pybreaker.CircuitBreakerListener):
 T = TypeVar("T")
 
 #: Machine-classifiable message returned while the breaker is open (fast path).
+#: 废弃标注（2026-09-23）：生产路径已改用 `service_unavailable_detail()`
+#: （带失败次数和冷却时间）。本常量仅被测试引用（`test_circuit_breaker.py`
+#: 里验证 classify_agent_result 对旧格式消息的兼容）。彻底删除时需同步移除
+#: 那两条测试。
 SERVICE_UNAVAILABLE_MESSAGE = (
     "[model unavailable] 服务暂时不可用，请稍后重试。"
     "(LLM service temporarily unavailable)"

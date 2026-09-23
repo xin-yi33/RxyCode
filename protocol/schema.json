@@ -3339,156 +3339,6 @@
       "title": "TeamSetActiveRequest",
       "type": "object"
     },
-    "AgentsSettingsGetRequest": {
-      "description": "Read persisted agents.* including multi_model.",
-      "properties": {
-        "method": {
-          "const": "agents/settings_get",
-          "default": "agents/settings_get",
-          "title": "Method",
-          "type": "string"
-        }
-      },
-      "title": "AgentsSettingsGetRequest",
-      "type": "object"
-    },
-    "AgentsMultiModelSettings": {
-      "description": "Phase H · per-role model assignment for expert teams.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "master_model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Master Model"
-        },
-        "role_models": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "title": "Role Models",
-          "type": "object"
-        }
-      },
-      "title": "AgentsMultiModelSettings",
-      "type": "object"
-    },
-    "AgentsSettingsSetRequest": {
-      "description": "Partial update of agents.* including multi_model.",
-      "properties": {
-        "method": {
-          "const": "agents/settings_set",
-          "default": "agents/settings_set",
-          "title": "Method",
-          "type": "string"
-        },
-        "enabled": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Enabled"
-        },
-        "team": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Team"
-        },
-        "route_mode": {
-          "anyOf": [
-            {
-              "enum": [
-                "solo",
-                "auto",
-                "team"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Route Mode"
-        },
-        "router_model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Router Model"
-        },
-        "clear_router_model": {
-          "default": false,
-          "title": "Clear Router Model",
-          "type": "boolean"
-        },
-        "total_token_budget": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Total Token Budget"
-        },
-        "total_timeout_s": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Total Timeout S"
-        },
-        "multi_model": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AgentsMultiModelSettings"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        }
-      },
-      "title": "AgentsSettingsSetRequest",
-      "type": "object"
-    },
     "ProjectListRequest": {
       "description": "PhaseG-B4 list recent projects.",
       "properties": {
@@ -4964,69 +4814,6 @@
         "enabled"
       ],
       "title": "PluginToggleRequest",
-      "type": "object"
-    },
-    "PluginCatalogRequest": {
-      "description": "List the in-repo plugin store catalog.\n\nMaps ``plugin/catalog``.",
-      "properties": {
-        "method": {
-          "const": "plugin/catalog",
-          "default": "plugin/catalog",
-          "title": "Method",
-          "type": "string"
-        }
-      },
-      "title": "PluginCatalogRequest",
-      "type": "object"
-    },
-    "PluginConnectStartRequest": {
-      "description": "Start browser OAuth for a catalog connector.\n\nMaps ``plugin/connect/start``.",
-      "properties": {
-        "method": {
-          "const": "plugin/connect/start",
-          "default": "plugin/connect/start",
-          "title": "Method",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name"
-      ],
-      "title": "PluginConnectStartRequest",
-      "type": "object"
-    },
-    "PluginConnectCallbackRequest": {
-      "description": "Complete OAuth with the provider authorization code.\n\nMaps ``plugin/connect/callback``.",
-      "properties": {
-        "method": {
-          "const": "plugin/connect/callback",
-          "default": "plugin/connect/callback",
-          "title": "Method",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "code": {
-          "title": "Code",
-          "type": "string"
-        },
-        "state": {
-          "title": "State",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "code",
-        "state"
-      ],
-      "title": "PluginConnectCallbackRequest",
       "type": "object"
     },
     "AgentEvent": {
@@ -8591,12 +8378,6 @@
           "$ref": "#/$defs/TeamSetActiveRequest"
         },
         {
-          "$ref": "#/$defs/AgentsSettingsGetRequest"
-        },
-        {
-          "$ref": "#/$defs/AgentsSettingsSetRequest"
-        },
-        {
           "$ref": "#/$defs/ProjectListRequest"
         },
         {
@@ -8721,15 +8502,6 @@
         },
         {
           "$ref": "#/$defs/PluginToggleRequest"
-        },
-        {
-          "$ref": "#/$defs/PluginCatalogRequest"
-        },
-        {
-          "$ref": "#/$defs/PluginConnectStartRequest"
-        },
-        {
-          "$ref": "#/$defs/PluginConnectCallbackRequest"
         }
       ]
     },

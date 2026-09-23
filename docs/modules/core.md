@@ -84,6 +84,11 @@ Session restoration searches the current date, earlier dated records, and the le
   （此前只在 answer 为空时才用 result，导致模型写了「给出最终结果。」后
   真正的答案被丢弃）；`final_answer` 的结果不再走 `write_turn_liveness`
   （不塞 Thought 折叠块）。
+  **2026-09-23**：传输恢复耗尽（网络断）时证据门不再把「没写文件」误报成
+  「no verified WRITE」——`_last_transport_exhaustion` 记录当前请求的传输
+  耗尽状态，证据门据此跳过覆盖。熔断打开时的消息带连续失败次数和冷却
+  剩余时间（`service_unavailable_detail`）。错误消息附原始错误关键信息
+  （`to_user_facing_error` 的「原因：」后缀，grounding 类除外）。
   `ainvoke()` and `astream()` call. It re-wraps `bind_tools()` and
   `with_structured_output()` so fast path, graph, and sub-agent calls retain
   both behaviors.
