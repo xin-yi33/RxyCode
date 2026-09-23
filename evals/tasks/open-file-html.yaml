@@ -1,0 +1,22 @@
+id: open-file-html
+category: feature
+effect: write
+prompt: |
+  在当前工作目录新建 open_e2e_demo.html，页面标题和正文都写「打开测试E1」。
+  写完后立刻用 open_file 工具、用系统默认程序打开这个文件。
+  打开成功后马上给出最终结果，不要等窗口关掉。
+  最终回答里写明用了哪个工具、工具返回了什么、文件路径。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
+setup:
+  files:
+    .keep: ""
+checks:
+  - type: file_exists
+    path: open_e2e_demo.html
+  - type: file_contains
+    path: open_e2e_demo.html
+    pattern: "打开测试E1"
+  - type: tool_used
+    tool: open_file
+  - type: output_contains
+    pattern: "opened"

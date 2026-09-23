@@ -324,8 +324,10 @@ def test_breaker_pause_is_not_called_a_request_timeout():
     text = to_user_facing_error(
         "CircuitBreakerError: Timeout not elapsed yet, circuit breaker still open"
     )
-    assert text == MSG_MODEL_PAUSED
-    assert text != MSG_TIMEOUT
+    # 2026-09-23：消息带「\n原因：...」后缀，用 startswith 判断。
+    assert text.startswith(MSG_MODEL_PAUSED)
+    assert not text.startswith(MSG_TIMEOUT)
+    assert "CircuitBreakerError" in text
     assert to_user_facing_error("connection timeout after 30s") == MSG_TIMEOUT
 
 

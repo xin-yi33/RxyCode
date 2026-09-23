@@ -1,0 +1,68 @@
+{
+  "suite": "gaia",
+  "protocol": "GAIA-style Level-1 general assistant",
+  "official": false,
+  "note": "Original Level-1 style items. Official GAIA is gated and not submitted here.",
+  "cases": [
+    {
+      "id": "gaia-l1-table-sum",
+      "level": 1,
+      "prompt": "Open sales.csv in the workspace. What is the total of the amount column? Reply with only the integer.",
+      "expected": "42",
+      "aliases": ["42.0"],
+      "setup": {
+        "files": {
+          "sales.csv": "item,amount\nwidget,10\ngadget,15\nsprocket,17\n"
+        }
+      }
+    },
+    {
+      "id": "gaia-l1-file-lookup",
+      "level": 1,
+      "prompt": "Read notes/alpha.txt. What city is listed as HQ? Reply with only the city name.",
+      "expected": "Hangzhou",
+      "setup": {
+        "files": {
+          "notes/alpha.txt": "Project: River\nHQ: Hangzhou\nOwner: Lin\n"
+        }
+      }
+    },
+    {
+      "id": "gaia-l1-multihop",
+      "level": 1,
+      "prompt": "Read roster.json and rooms.md. Which room is assigned to the person whose id is 7? Reply with only the room name.",
+      "expected": "Orchid",
+      "setup": {
+        "files": {
+          "roster.json": "{\"people\": [{\"id\": 3, \"name\": \"Ada\"}, {\"id\": 7, \"name\": \"Grace\"}]}\n",
+          "rooms.md": "- Ada -> Maple\n- Grace -> Orchid\n"
+        }
+      }
+    },
+    {
+      "id": "gaia-l1-unit",
+      "level": 1,
+      "prompt": "A crate weighs 3.5 kg. How many grams is that? Reply with only the integer.",
+      "expected": "3500",
+      "aliases": ["3,500"]
+    },
+    {
+      "id": "gaia-l1-date",
+      "level": 1,
+      "prompt": "If today is Tuesday 8 September 2026, what weekday is 10 days later? Reply with one English weekday name.",
+      "expected": "Friday",
+      "aliases": ["fri"]
+    },
+    {
+      "id": "gaia-l1-filter-count",
+      "level": 1,
+      "prompt": "Read log.txt. How many lines contain the word ERROR? Reply with only the integer.",
+      "expected": "3",
+      "setup": {
+        "files": {
+          "log.txt": "INFO start\nERROR disk\nINFO ok\nERROR timeout\nWARN slow\nERROR auth\n"
+        }
+      }
+    }
+  ]
+}

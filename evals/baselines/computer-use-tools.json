@@ -1,0 +1,26 @@
+{
+  "id": "computer-use-tools-2026-09-13",
+  "kind": "trace-fixture",
+  "claim": "When computer_use.enabled is on, the agent schema exposes ocu names plus browser_open/snapshot/act. Default-off must not list them.",
+  "required_tools_when_enabled": [
+    "list_apps",
+    "get_app_state",
+    "click",
+    "type_text",
+    "press_key",
+    "browser_open",
+    "browser_snapshot",
+    "browser_act"
+  ],
+  "forbidden_when_disabled": [
+    "list_apps",
+    "get_app_state",
+    "browser_snapshot"
+  ],
+  "forbidden_aliases": ["computer_use_1", "cli_run as computer use"],
+  "cheap_checks": [
+    "observe payload source=accessibility",
+    "screenshots stripped from get_app_state / browser_snapshot",
+    "unbind kills MCP process tree"
+  ]
+}

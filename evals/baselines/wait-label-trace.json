@@ -1,0 +1,24 @@
+{
+  "id": "wait-label-trace-2026-09-12",
+  "kind": "trace-fixture",
+  "claim": "Yellow status names the actual waiter: model first-token vs tool/script.",
+  "observed_before": {
+    "greeting_seq": 1,
+    "ttft_ms": 3075,
+    "first_useful_kind": "reasoning",
+    "decode_ms": 723,
+    "task_wall_ms": 212361,
+    "vision_gap_ms": 155449,
+    "sticky_progress": ["正在连接模型…", "Thinking... (round N)正在连接模型…", "工具 vision"]
+  },
+  "required_after": {
+    "chat_thinking_wire": {"type": "disabled"},
+    "prewarm_progress": [],
+    "tool_wait_labels": [
+      "等待终端返回…",
+      "等待视觉识别返回…",
+      "等待工具 ls 返回…"
+    ],
+    "model_wait_labels": ["等待模型返回…", "模型输出中…"]
+  }
+}

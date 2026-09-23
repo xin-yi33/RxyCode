@@ -1,0 +1,20 @@
+id: open-file-existing-md
+category: feature
+effect: write
+prompt: |
+  当前目录已经有 notes.md。请用 open_file 工具、用系统默认程序打开 notes.md 给我预览。
+  成功后立刻最终回答，写明工具名和返回原文。不要等窗口关闭。不要改文件内容。
+  重要：所有文件必须创建/修改在【当前工作目录】内；禁止把文件写入仓库目录，也禁止使用仓库内文件的绝对路径。
+setup:
+  files:
+    notes.md: |
+      # E2 notes
+      open-file existing markdown
+checks:
+  - type: file_contains
+    path: notes.md
+    pattern: "open-file existing markdown"
+  - type: tool_used
+    tool: open_file
+  - type: output_contains
+    pattern: "opened"

@@ -1,0 +1,54 @@
+{
+  "id": "auto-route-explore-team-2026-09-13",
+  "kind": "trace-fixture",
+  "claim": "Cheap L2 auto-router chooses solo vs team vs explore without an extra LLM, copying Grok Build's explore=readonly-codebase vs parent-implementation split. Session must actually dispatch builtin explore, not only keyword-match.",
+  "copied_from": "Grok Build spawn_subagent types: explore (read-only codebase investigation) vs general-purpose; RxyCode maps team to Coordinator SOP instead of a second spawn type.",
+  "clocks": {
+    "route_decision": "ModeRouter.route() only. Cheap L2, no extra LLM.",
+    "first_progress": "Session.prompt → first ProgressUpdate/AgentEvent. This is the 1s/3s harness gate (stub/appserver stub).",
+    "harness_complete": "session/prompt return with StubAgent. Not full feature generation.",
+    "product_ttft": "provider first useful chunk with thinking ON. Historical latency-ttft.json 4–12s. Cannot meet 1s while thinking is required; see auto-route-cache-hit.json."
+  },
+  "gates": {
+    "simple_ttft_s": {
+      "target": 1.0,
+      "tolerance": 0.5,
+      "upper_s": 1.5,
+      "definition": "Harness first-progress UPPER bound for greeting / single-file bugfix. Stub may be faster than 0.5s; that is not a fail. Lower 0.5s is the product-latency band, not a must-be-slower gate."
+    },
+    "complex_ttft_s": {
+      "target": 3.0,
+      "tolerance": 0.2,
+      "upper_s": 3.2,
+      "definition": "Harness first-progress UPPER bound for explore dispatch or team Coordinator setup. Stub may be faster than 2.8s."
+    },
+    "cache_hit_floor": 0.97,
+    "cache_definition": "R7 warm-turn Primary prefix/identity cache 97% with thinking ON. Tool schema order stays sorted; task stays in prefix when subagents are on so opt-in does not rotate tools_digest mid-session. Cold-start aggregate (cache-hit-rate.json 91.22%) is not this gate."
+  },
+  "required_after": {
+    "cases": [
+      {"prompt": "你好", "mode": "solo"},
+      {"prompt": "修一下 foo.py 里的空指针", "mode": "solo"},
+      {"prompt": "查找认证模块在哪个文件", "mode": "explore"},
+      {"prompt": "这个登录流程为什么这样工作", "mode": "explore"},
+      {"prompt": "查代码", "mode": "explore"},
+      {"prompt": "代码在哪", "mode": "explore"},
+      {"prompt": "当前目录已经有 notes.md。请用系统默认程序打开 notes.md 给我预览。不要改文件内容", "mode": "solo"},
+      {"prompt": "实现一个完整的登录功能，前后端都要", "mode": "team"},
+      {"prompt": "开专家团 做前后端登录", "mode": "team", "decided_by": "user"},
+      {"prompt": "用explore 找认证", "mode": "explore", "decided_by": "user"}
+    ],
+    "session_dispatch": [
+      {"prompt": "你好", "path": "solo", "agents_enabled": true, "why_contains": "greeting"},
+      {"prompt": "修一下 foo.py 里的空指针", "path": "solo", "agents_enabled": true},
+      {"prompt": "当前目录已经有 notes.md。请用系统默认程序打开 notes.md 给我预览。不要改文件内容", "path": "solo", "agents_enabled": true},
+      {"prompt": "查找认证模块在哪个文件", "path": "explore", "agents_enabled": true, "dispatch": "builtin_explore"},
+      {"prompt": "查代码 登录怎么工作", "path": "explore", "agents_enabled": true, "dispatch": "builtin_explore"},
+      {"prompt": "代码在哪", "path": "explore", "agents_enabled": true, "dispatch": "builtin_explore"},
+      {"prompt": "实现一个完整的登录功能，前后端都要", "path": "team", "agents_enabled": true},
+      {"prompt": "查找认证模块在哪个文件", "path": "solo", "agents_enabled": false},
+      {"setup": "用子代理", "prompt": "查找认证模块在哪个文件", "path": "explore", "agents_enabled": false, "dispatch": "builtin_explore"},
+      {"setup": "开专家团", "prompt": "实现一个完整的登录功能，前后端都要", "path": "team", "agents_enabled": false}
+    ]
+  }
+}

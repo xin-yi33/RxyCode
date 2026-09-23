@@ -1,0 +1,36 @@
+{
+  "id": "auto-route-cache-hit-2026-09-13",
+  "kind": "trace-fixture",
+  "claim": "Auto-route (solo/team/explore) must not rotate AgentPrefix. Warm-turn Primary prefix hit rate stays at or above 97% when thinking stays ON.",
+  "copied_from": "PC0 prefix freeze: OpenCode/Claude Code/Pi keep tool schema order and system bytes stable; Grok Build keeps spawn_subagent in the schema whenever subagents are on rather than toggling per prompt.",
+  "clocks": {
+    "route_decision": "ModeRouter.route() wall time (no LLM). Must stay << product TTFT.",
+    "first_progress": "time to first ProgressUpdate or AgentEvent after Session.prompt starts. This is the 1s/3s harness gate.",
+    "harness_complete": "Session.prompt / appserver session/prompt return with stub agent (no live generation).",
+    "product_ttft": "provider first useful stream chunk with thinking ON. Historical: latency-ttft.json cold 11.8s / hit 5.2s; wait-label-trace.json greeting 3075ms. NOT asserted at 1s while thinking is required."
+  },
+  "gates": {
+    "warm_prefix_hit_floor": 0.97,
+    "thinking_enabled": true,
+    "identity_must_match_across": [
+      "你好",
+      "修一下 foo.py 里的空指针",
+      "查找认证模块在哪个文件",
+      "实现一个完整的登录功能，前后端都要"
+    ]
+  },
+  "historical_live": {
+    "source": "evals/baselines/cache-hit-rate.json",
+    "hit_rate": 91.22,
+    "note": "Two-turn aggregate including cold start on opencode-go, 2026-08-09. Not the warm-prefix 97% floor."
+  },
+  "product_ttft_conflict": {
+    "thinking_required": true,
+    "latency_ttft_json": {
+      "ttft_cold_ms": 11844.9,
+      "ttft_hit_ms": 5218.6
+    },
+    "wait_label_greeting_ttft_ms": 3075,
+    "cannot_meet_simple_1s_with_thinking": true
+  }
+}

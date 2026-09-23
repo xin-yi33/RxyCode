@@ -1,0 +1,20 @@
+{
+  "id": "open-file-launch-2026-09-21",
+  "kind": "trace-fixture",
+  "claim": "Opening a document is OS launch accept, not waiting for the GUI window to close. Previewable files use open_file; bash start/open/xdg-open is intercepted. Spawn failure returns an error so the model can retry, then Final Answer streams.",
+  "required_after": {
+    "preview_tool": "open_file",
+    "success": "OS accepted the start request",
+    "must_not_wait": "Word/Notepad/Typora window close",
+    "spawn_failure": "[error launching command:"
+  },
+  "cheap_checks": [
+    "classify start \"\" file.docx -> open_preview",
+    "classify xdg-open file.pdf -> open_preview",
+    "classify notepad file.txt -> detach (no communicate wait)",
+    "classify start /wait -> None (foreground)",
+    "classify python app.py -> None",
+    "SYSTEM_PROMPT: do not bash-wait for the GUI window",
+    "run_bash start docx does not call shell_executor.execute"
+  ]
+}

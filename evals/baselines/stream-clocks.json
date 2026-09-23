@@ -1,0 +1,13 @@
+{
+  "id": "stream-clocks-card-a-2026-09-20",
+  "kind": "trace-fixture",
+  "claim": "Model silence uses connect+idle clocks; appserver stall is worker death only; OpenAI SDK 600s is not the daily path.",
+  "required_after": {
+    "connect_s": 20.0,
+    "idle_default_s": 180.0,
+    "idle_cap_s": 300.0,
+    "sdk_default_s_forbidden": 600.0,
+    "first_token_cap_s_forbidden": 30.0,
+    "stall_means": "worker_heartbeat_dead"
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "suite": "bfcl",
+  "protocol": "BFCL-v1-style AST match",
+  "official": false,
+  "note": "Same-day slice. Categories follow BFCL v1: simple / multiple / parallel / irrelevance.",
+  "cases": [
+    {
+      "id": "bfcl-simple-weather",
+      "category": "simple",
+      "prompt": "What is the weather in Tokyo in celsius?",
+      "functions": [
+        {
+          "name": "get_weather",
+          "description": "Get current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string"},
+              "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+            },
+            "required": ["city"]
+          }
+        }
+      ],
+      "expected_calls": [
+        {"name": "get_weather", "arguments": {"city": "Tokyo"}}
+      ]
+    },
+    {
+      "id": "bfcl-simple-calc",
+      "category": "simple",
+      "prompt": "Calculate 17 * 23 + 8.",
+      "functions": [
+        {
+          "name": "calculate",
+          "description": "Evaluate a numeric expression.",
+          "parameters": {
+            "type": "object",
+            "properties": {"expression": {"type": "string"}},
+            "required": ["expression"]
+          }
+        }
+      ],
+      "expected_calls": [
+        {"name": "calculate", "arguments": {"expression": "17 * 23 + 8"}}
+      ]
+    },
+    {
+      "id": "bfcl-multiple-email",
+      "category": "multiple",
+      "prompt": "Send an email to ada@example.com with subject 'Launch' and body 'Ready'.",
+      "functions": [
+        {
+          "name": "search_emails",
+          "description": "Search the inbox.",
+          "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"]
+          }
+        },
+        {
+          "name": "send_email",
+          "description": "Send an email.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "to": {"type": "string"},
+              "subject": {"type": "string"},
+              "body": {"type": "string"}
+            },
+            "required": ["to", "subject", "body"]
+          }
+        }
+      ],
+      "expected_calls": [
+        {
+          "name": "send_email",
+          "arguments": {"to": "ada@example.com", "subject": "Launch", "body": "Ready"}
+        }
+      ]
+    },
+    {
+      "id": "bfcl-multiple-search",
+      "category": "multiple",
+      "prompt": "Find emails about invoices from last week. Do not send anything.",
+      "functions": [
+        {
+          "name": "search_emails",
+          "description": "Search the inbox.",
+          "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"]
+          }
+        },
+        {
+          "name": "send_email",
+          "description": "Send an email.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "to": {"type": "string"},
+              "subject": {"type": "string"},
+              "body": {"type": "string"}
+            },
+            "required": ["to", "subject", "body"]
+          }
+        }
+      ],
+      "expected_calls": [
+        {"name": "search_emails", "arguments": {"query": "invoices"}}
+      ]
+    },
+    {
+      "id": "bfcl-parallel-weather",
+      "category": "parallel",
+      "prompt": "Get the weather in Paris and in Berlin, both in celsius.",
+      "functions": [
+        {
+          "name": "get_weather",
+          "description": "Get current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string"},
+              "unit": {"type": "string"}
+            },
+            "required": ["city"]
+          }
+        }
+      ],
+      "expected_calls": [
+        {"name": "get_weather", "arguments": {"city": "Paris", "unit": "celsius"}},
+        {"name": "get_weather", "arguments": {"city": "Berlin", "unit": "celsius"}}
+      ]
+    },
+    {
+      "id": "bfcl-parallel-book",
+      "category": "parallel",
+      "prompt": "Book a flight from PVG to NRT on 2026-09-20 and also reserve a hotel in Tokyo for the same night.",
+      "functions": [
+        {
+          "name": "book_flight",
+          "description": "Book a flight.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "origin": {"type": "string"},
+              "destination": {"type": "string"},
+              "date": {"type": "string"}
+            },
+            "required": ["origin", "destination", "date"]
+          }
+        },
+        {
+          "name": "book_hotel",
+          "description": "Reserve a hotel.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string"},
+              "date": {"type": "string"}
+            },
+            "required": ["city", "date"]
+          }
+        }
+      ],
+      "expected_calls": [
+        {"name": "book_flight", "arguments": {"origin": "PVG", "destination": "NRT", "date": "2026-09-20"}},
+        {"name": "book_hotel", "arguments": {"city": "Tokyo", "date": "2026-09-20"}}
+      ]
+    },
+    {
+      "id": "bfcl-irrelevance-chat",
+      "category": "irrelevance",
+      "prompt": "Tell me a short joke about compilers. Do not use any tools.",
+      "functions": [
+        {
+          "name": "get_weather",
+          "description": "Get current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"]
+          }
+        }
+      ],
+      "expected_calls": []
+    },
+    {
+      "id": "bfcl-irrelevance-opinion",
+      "category": "irrelevance",
+      "prompt": "In one sentence, is recursion always better than iteration? This is an opinion question; do not call tools.",
+      "functions": [
+        {
+          "name": "calculate",
+          "description": "Evaluate a numeric expression.",
+          "parameters": {
+            "type": "object",
+            "properties": {"expression": {"type": "string"}},
+            "required": ["expression"]
+          }
+        }
+      ],
+      "expected_calls": []
+    }
+  ]
+}
