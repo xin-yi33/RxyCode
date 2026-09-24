@@ -4,7 +4,8 @@
  */
 
 import { useCallback, useRef } from "react";
-import { appendFileSync } from "node:fs";
+// 废弃代码（2026-09-24）：appendFileSync 在本文件没有调用，只是残留导入。
+// import { appendFileSync } from "node:fs";
 import type { Command } from "../commands.ts";
 import type { ChatMessage } from "../types.ts";
 import { normalizeLoadedMessages } from "./sessionEventsToMessages.ts";

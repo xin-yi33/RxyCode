@@ -3,7 +3,8 @@
  * Known preset hosts map to their display name; unknown -> other.
  */
 
-import { appendFileSync } from "node:fs";
+// 废弃代码（2026-09-24）：appendFileSync 在本文件没有调用，只是残留导入。
+// import { appendFileSync } from "node:fs";
 
 export type InferredProvider = { id: string; name: string };
 

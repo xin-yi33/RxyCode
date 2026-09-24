@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { appendFileSync } from "node:fs";
+// 废弃代码（2026-09-24）：appendFileSync 在本文件没有调用，只是残留导入。
+// import { appendFileSync } from "node:fs";
 import { DialogSelect } from "./DialogSelect.tsx";
 import { fetchModels, sendCommand } from "./api.ts";
 import { buildModelListOptions } from "./DialogModel.options.ts";

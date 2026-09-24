@@ -7,7 +7,8 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { appendFileSync } from "node:fs";
+// 废弃代码（2026-09-24）：appendFileSync 在本文件没有调用，只是残留导入。
+// import { appendFileSync } from "node:fs";
 import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { stripSgrHoverReports } from "../cliRendererOptions.ts";

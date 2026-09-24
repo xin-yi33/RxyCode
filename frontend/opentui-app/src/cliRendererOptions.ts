@@ -17,9 +17,11 @@ export const DISABLE_MOUSE_TRACKING = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?10
 /** Hover-only SGR (button 35). Must not match click / drag / wheel. */
 const SGR_HOVER = /(?:\x1b)?\[<35;\d+;\d+[Mm]/;
 
-export function isWindowsHost(platform: NodeJS.Platform = process.platform): boolean {
-  return platform === "win32";
-}
+// 废弃代码（2026-09-24）：没有任何调用方。Windows 判断已经写在
+// resolveCliRendererMouseOptions 里，直接比较 platform === "win32"。
+// export function isWindowsHost(platform: NodeJS.Platform = process.platform): boolean {
+//   return platform === "win32";
+// }
 
 export function resolveCliRendererMouseOptions(
   env: NodeJS.ProcessEnv = process.env,
