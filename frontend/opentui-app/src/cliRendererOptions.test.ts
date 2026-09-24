@@ -5,13 +5,13 @@ import {
 } from "./cliRendererOptions.ts";
 
 describe("resolveCliRendererMouseOptions", () => {
-  test("win32 keeps clicks/wheel/drag and hover movement for button highlight", () => {
+  test("win32 keeps clicks/wheel/drag and leaves all-motion off", () => {
     expect(
       resolveCliRendererMouseOptions({ WT_SESSION: "1" }, "win32"),
-    ).toEqual({ useMouse: true, enableMouseMovement: true });
+    ).toEqual({ useMouse: true, enableMouseMovement: false });
     expect(resolveCliRendererMouseOptions({}, "win32")).toEqual({
       useMouse: true,
-      enableMouseMovement: true,
+      enableMouseMovement: false,
     });
   });
 
@@ -49,5 +49,7 @@ describe("consumeSgrMouseInput", () => {
     expect(consumeSgrMouseInput("\x1b[<32;10;12M")).toBe(false);
     expect(consumeSgrMouseInput("\x1b[<64;10;12M")).toBe(false);
     expect(consumeSgrMouseInput("hello")).toBe(false);
+    expect(consumeSgrMouseInput("\x1b[<35;50")).toBe(true);
+    expect(consumeSgrMouseInput("[<35;50;19")).toBe(true);
   });
 });

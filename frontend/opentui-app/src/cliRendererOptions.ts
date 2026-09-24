@@ -32,9 +32,15 @@ export function resolveCliRendererMouseOptions(
   }
   return {
     useMouse: true,
-    // Hover highlight (plan buttons) needs movement. Hover SGR is eaten by
-    // consumeSgrMouseInput so it does not leak into the composer.
-    enableMouseMovement: !forceMoveOff,
+    // All-motion (DEC 1003, SGR button 35) on Windows ConPTY floods the
+    // Bun heap until JavaScriptCore aborts with STATUS_STACK_BUFFER_OVERRUN
+    // (3221226505). Clicks, wheel, and drag stay on. Set
+    // RXYCODE_MOUSE_MOVE=1 to opt into hover tracking.
+    enableMouseMovement: forceMoveOff
+      ? false
+      : env.RXYCODE_MOUSE_MOVE === "1"
+        ? true
+        : platform !== "win32",
   };
 }
 
@@ -60,5 +66,13 @@ export function writeDisableMouseTracking(
 
 /** Eat leftover hover reports so they never reach the textarea as text. */
 export function consumeSgrMouseInput(sequence: string): boolean {
-  return SGR_HOVER.test(sequence);
+  if (!sequence) return false;
+  if (SGR_HOVER.test(sequence)) return true;
+  // A split ConPTY chunk can be `[<35;50` before the terminating M.
+  return /^(?:\x1b)?\[<35;/.test(sequence);
+}
+
+/** Drop hover reports that already landed in an input value. */
+export function stripSgrHoverReports(text: string): string {
+  return text.replace(/(?:\x1b)?\[<35;\d+;\d+[Mm]?/g, "");
 }

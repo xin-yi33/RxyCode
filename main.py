@@ -558,6 +558,20 @@ def _launch_ink_tui(model, port):
             _log.info("Ink TUI terminated in finally")
 
 
+# DECSET 1003/1002/1000/1006. Bun abort (JSC OOM, 0xC0000409) skips the
+# frontend's own cleanup, so the parent must turn tracking off or the
+# console prints raw SGR `[<35;x;yM` for every mouse move.
+_DISABLE_TERMINAL_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l"
+
+
+def _disable_terminal_mouse() -> None:
+    try:
+        sys.stdout.write(_DISABLE_TERMINAL_MOUSE)
+        sys.stdout.flush()
+    except Exception:
+        return
+
+
 def _launch_opentui_tui(model, port):
     """Launch the Bun + OpenTUI dual-entry shell (ScrollBox + native textarea)."""
     import subprocess
@@ -617,6 +631,7 @@ def _launch_opentui_tui(model, port):
         )
         returncode = proc.wait()
         _log.info("OpenTUI exited", extra={"returncode": returncode})
+        _disable_terminal_mouse()
         if returncode != 0:
             raise click.ClickException(
                 f"OpenTUI frontend exited with status {returncode}."
@@ -632,6 +647,7 @@ def _launch_opentui_tui(model, port):
         _log.error(f"OpenTUI launch failed: {e}", exc_info=True)
         raise click.ClickException(f"OpenTUI frontend failed to launch: {e}") from e
     finally:
+        _disable_terminal_mouse()
         if proc and proc.poll() is None:
             proc.terminate()
             _log.info("OpenTUI terminated in finally")

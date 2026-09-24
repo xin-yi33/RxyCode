@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { appendFileSync } from "node:fs";
 import { useKeyboard, usePaste, useTerminalDimensions } from "@opentui/react";
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
+import { stripSgrHoverReports } from "../cliRendererOptions.ts";
 import { C } from "../theme.ts";
 import { stringWidth } from "../layout.ts";
 import { createScrollAcceleration, SCROLLBAR_TRACK } from "../scroll.ts";
@@ -368,7 +369,7 @@ export function DialogSelect<T>({
   };
 
   const moveTo = (flatIndex: number) => {
-    if (flatIndex < 0 || flatIndex >= flat.length) return;
+    if (flatIndex < 0 || flatIndex >= flat.length || flatIndex === idx) return;
     setIdx(flatIndex);
   };
 
@@ -541,7 +542,9 @@ export function DialogSelect<T>({
         paddingRight: 1,
         backgroundColor: C.bg,
       }}
-      onMouseMove={() => setInputMode("mouse")}
+      onMouseMove={() => {
+        if (inputMode !== "mouse") setInputMode("mouse");
+      }}
     >
       <RowShell>
         <text fg={C.text} attributes={1}>
@@ -686,8 +689,17 @@ export function DialogSelect<T>({
         value={filter}
         onInput={(v) => {
           if (!showSearch) return;
+          const raw = String(v ?? "");
+          const next = stripSgrHoverReports(raw);
+          if (next !== raw) {
+            try {
+              if (focusRef.current) focusRef.current.value = next;
+            } catch {
+              // ignore
+            }
+          }
           setInputMode("keyboard");
-          setFilter(String(v ?? ""));
+          setFilter(next);
         }}
         onSubmit={() => confirm()}
         style={{
