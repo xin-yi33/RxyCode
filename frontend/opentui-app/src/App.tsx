@@ -82,8 +82,7 @@ import { ToolCard } from "./ToolCard.tsx";
 import { isPlanMdPath, shouldHideToolCard } from "./lib/toolDisplay.ts";
 import {
   inputVisibleLines,
-  needsInputScroll,
-  numInputLines,
+
   stringWidth,
   wrapContentLines,
 } from "./layout.ts";
@@ -1463,7 +1462,6 @@ export default function App() {
 
   const inputWrapW = Math.max(20, cols - 6);
   const inputHeight = inputVisibleLines(inputValue, inputWrapW);
-  const inputScroll = needsInputScroll(inputValue, inputWrapW);
 
   useKeyboard((key) => {
     ctrlHeldRef.current = Boolean(key.ctrl);
@@ -1892,59 +1890,25 @@ export default function App() {
             <text fg={modeColor} attributes={1}>
               {"> "}
             </text>
-            {inputScroll ? (
-              <scrollbox
-                style={{
-                  rootOptions: {
-                    flexGrow: 1,
-                    height: inputHeight,
-                    border: false,
-                    backgroundColor: C.bg,
-                  },
-                  viewportOptions: { flexGrow: 1, backgroundColor: C.bg },
-                  contentOptions: { backgroundColor: C.bg },
-                  verticalScrollbarOptions: {
-                    showArrows: false,
-                    trackOptions: {
-                      foregroundColor: SCROLLBAR_TRACK.foregroundColor,
-                      backgroundColor: SCROLLBAR_TRACK.backgroundColor,
-                    },
-                  },
-                }}
-              >
-                <textarea
-                  ref={textareaRef}
-                  focused={!dialogOpen}
-                  placeholder={isStreaming ? "处理中，回车加入队列..." : "输入指令或需求..."}
-                  initialValue={inputValue}
-                  keyBindings={CHAT_PROMPT_KEY_BINDINGS}
-                  onKeyDown={onPromptKeyDown}
-                  onContentChange={() => {
-                    const next = textareaRef.current?.plainText ?? "";
-                    setInputValue(next);
-                    if (next.trimStart().startsWith("/")) setPaletteIdx(0);
-                  }}
-                  onSubmit={submitFromInput}
-                  style={{ flexGrow: 1, height: Math.max(inputHeight, numInputLines(inputValue, inputWrapW)), backgroundColor: C.bg }}
-                />
-              </scrollbox>
-            ) : (
-              <textarea
-                ref={textareaRef}
-                focused={!dialogOpen}
-                placeholder={isStreaming ? "处理中，回车加入队列..." : "输入指令或需求..."}
-                initialValue={inputValue}
-                keyBindings={CHAT_PROMPT_KEY_BINDINGS}
-                onKeyDown={onPromptKeyDown}
-                onContentChange={() => {
-                  const next = textareaRef.current?.plainText ?? "";
-                  setInputValue(next);
-                  if (next.trimStart().startsWith("/")) setPaletteIdx(0);
-                }}
-                onSubmit={submitFromInput}
-                style={{ flexGrow: 1, height: inputHeight, backgroundColor: C.bg }}
-              />
-            )}
+            {/* Height stays the visible cap. A full-height textarea inside a
+                scrollbox moves the hardware cursor with scrollY, so wheel-down
+                walks the caret up and out of this box. The textarea viewport
+                scrolls on its own and keeps visualRow inside the widget. */}
+            <textarea
+              ref={textareaRef}
+              focused={!dialogOpen}
+              placeholder={isStreaming ? "处理中，回车加入队列..." : "输入指令或需求..."}
+              initialValue={inputValue}
+              keyBindings={CHAT_PROMPT_KEY_BINDINGS}
+              onKeyDown={onPromptKeyDown}
+              onContentChange={() => {
+                const next = textareaRef.current?.plainText ?? "";
+                setInputValue(next);
+                if (next.trimStart().startsWith("/")) setPaletteIdx(0);
+              }}
+              onSubmit={submitFromInput}
+              style={{ flexGrow: 1, height: inputHeight, backgroundColor: C.bg }}
+            />
           </box>
         </box>
       </box>

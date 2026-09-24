@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 import {
   inputVisibleLines,
@@ -30,5 +33,17 @@ describe("layout stringWidth / wrap", () => {
     const many = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
     expect(inputVisibleLines(many, 80)).toBe(10);
     expect(needsInputScroll(many, 80)).toBe(true);
+  });
+
+  test("composer textarea is viewport-sized, not scrolled by a parent scrollbox", () => {
+    const app = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), "App.tsx"),
+      "utf8",
+    );
+    const composer = app.slice(app.indexOf("minHeight: 2 + inputHeight"));
+    expect(composer.includes("<textarea")).toBe(true);
+    expect(composer.includes("<scrollbox")).toBe(false);
+    expect(composer.includes("numInputLines")).toBe(false);
+    expect(composer.includes("height: inputHeight")).toBe(true);
   });
 });
