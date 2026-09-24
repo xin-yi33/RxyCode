@@ -162,6 +162,19 @@ def test_commentary_plus_tools_is_not_exit() -> None:
     assert decision.reason == "acting"
 
 
+def test_claimed_final_does_not_stop_a_write_that_has_not_happened() -> None:
+    assert (
+        _should_nudge_build_to_write(
+            "build",
+            False,
+            0,
+            answer="**最终结果**\n\n目录已经看过，接下来再写文件。",
+            user_input="请创建文件 index.html，用 write 写入看板。",
+        )
+        is True
+    )
+
+
 def test_write_nudge_does_not_override_claimed_final() -> None:
     assert (
         _should_nudge_build_to_write(

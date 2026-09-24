@@ -1041,7 +1041,19 @@ def _should_nudge_build_to_write(
     text = str(user_input or "")
     if re.search(r"不要改任何文件|不要写文件|用一句话介绍", text):
         return False
-    if claimed_final_answer(answer) or quoted_tool_result(answer) or llm_requests_exit(answer):
+    if quoted_tool_result(answer) or llm_requests_exit(answer):
+        return False
+    asked_write = bool(
+        re.search(
+            r"写入|写文件|写源码|新建|创建文件|落地|实现|tests/|\b(?:write|create)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    # 模型在 ls 之后写一句「最终结果」时，旧逻辑立刻停止催写。
+    # 同一句有时被模型说成最终结果（证据门失败），有时直接调用 write（成功）。
+    # 用户点名要写文件、文件还没写出来时，这句话不能结束回合。
+    if claimed_final_answer(answer) and (file_write_succeeded or not asked_write):
         return False
     from RxyCode.RxyCode1_1_0.core.agents.router import is_open_only_preview_task
 
@@ -1051,13 +1063,6 @@ def _should_nudge_build_to_write(
     # （执行/打开/删除也算）且还没 write，就 nudge。echo 和删文件因此被推进去写源码。
     # if text.strip() and not task_requires_side_effect_evidence(...): return False
     # if not file_write_succeeded: return nudge_count < max_nudges
-    asked_write = bool(
-        re.search(
-            r"写入|写文件|写源码|新建|创建文件|落地|实现|tests/|\b(?:write|create)\b",
-            text,
-            re.IGNORECASE,
-        )
-    )
     if text.strip() and not asked_write and not _missing_named_pytest_files(
         user_input, workspace_root
     ):
