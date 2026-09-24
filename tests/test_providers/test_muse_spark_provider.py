@@ -362,16 +362,30 @@ async def test_real_langchain_failure_stream_never_becomes_success(
         }
 
     llm, client = _mock_responses_llm(monkeypatch, created, failed)
+    collected = []
     try:
-        with pytest.raises(RuntimeError, match="valid terminal response status"):
-            _ = [
-                chunk
-                async for chunk in AgentV2._responses_stream_as_chat_chunks(
-                    llm.astream([HumanMessage(content="test")])
-                )
-            ]
+        # LangChain used to drop error/response.failed and emit a synthetic
+        # last chunk. The adapter then refuses to treat that as success.
+        # Current LangChain raises the provider error instead. Either way
+        # the stream must not finish as a normal stop.
+        with pytest.raises((RuntimeError, ValueError)) as caught:
+            async for chunk in AgentV2._responses_stream_as_chat_chunks(
+                llm.astream([HumanMessage(content="test")])
+            ):
+                collected.append(chunk)
     finally:
         await client.aclose()
+    message = str(caught.value)
+    assert (
+        "valid terminal response status" in message
+        or "failed status" in message
+        or "provider failed" in message
+        or "server_error" in message
+    ), message
+    assert not any(
+        getattr(chunk.choices[0], "finish_reason", None) == "stop"
+        for chunk in collected
+    )
 
 
 @pytest.mark.asyncio
