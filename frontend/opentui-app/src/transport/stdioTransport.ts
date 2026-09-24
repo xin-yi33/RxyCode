@@ -170,25 +170,33 @@ class StdioAppserverSession {
     return new Error(reason || fallback);
   }
 
+  private appserverAlive(): boolean {
+    const proc = this.proc;
+    if (!this.client || !proc) return false;
+    return proc.exitCode === null;
+  }
+
   async ensureReady(): Promise<ProtocolClient> {
     if (this.ready) {
       try {
         await this.ready;
       } catch (err) {
         this.resetSession(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    // A dead child used to stay dead: /session then rendered
+    // "appserver stdout closed" and an empty list, while tasks.json
+    // was still on disk.
+    if (!this.appserverAlive()) {
+      this.resetSession();
+      this.ready = this.start();
+      try {
+        await this.ready;
+      } catch (err) {
+        this.resetSession(err instanceof Error ? err : new Error(String(err)));
         throw err;
       }
-      if (this.client) return this.client;
     }
-
-    this.ready = this.start();
-    try {
-      await this.ready;
-    } catch (err) {
-      this.resetSession(err instanceof Error ? err : new Error(String(err)));
-      throw err;
-    }
-
     if (!this.client) {
       throw new Error("appserver stdio client failed to start");
     }
@@ -896,12 +904,25 @@ class StdioAppserverSession {
     this.resetSession();
   }
 
-  async listSessions(): Promise<SessionListRow[]> {
+  private async requestSessionList(): Promise<SessionListRow[]> {
     const client = await this.ensureReady();
     const listed = (await client.request<{ sessions?: SessionListRow[] }>("sessions/list", {})) as {
       sessions?: SessionListRow[];
     };
     return Array.isArray(listed.sessions) ? listed.sessions : [];
+  }
+
+  async listSessions(): Promise<SessionListRow[]> {
+    try {
+      return await this.requestSessionList();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("appserver stdout closed") && !message.includes("appserver exited")) {
+        throw err;
+      }
+      this.resetSession(err instanceof Error ? err : new Error(message));
+      return await this.requestSessionList();
+    }
   }
 
   async attachSession(sessionId: string): Promise<AttachSessionResult> {

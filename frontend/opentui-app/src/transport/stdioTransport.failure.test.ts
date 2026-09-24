@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -66,6 +68,48 @@ describe("stdio transport startup failures", () => {
     });
     expect(result.streaming).toBe(false);
     expect(result.progress).toBe("");
+  }, 20_000);
+
+  test("listSessions restarts a dead appserver and still returns the catalog", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "rxy-appserver-restart-"));
+    const marker = path.join(dir, "seen");
+    const script = path.join(dir, "stub_appserver.py");
+    writeFileSync(
+      script,
+      [
+        "import json, os, sys",
+        "marker = sys.argv[1]",
+        "if not os.path.exists(marker):",
+        "    open(marker, 'w', encoding='utf-8').write('1')",
+        "    raise SystemExit(1)",
+        "for line in sys.stdin:",
+        "    msg = json.loads(line)",
+        "    mid = msg.get('id')",
+        "    method = msg.get('method')",
+        "    if method == 'initialize':",
+        "        result = {'protocol_version': '1.1.0', 'protocol_min': '1.0.0', 'protocol_max': '1.1.0', 'server_name': 'rxycode-appserver', 'server_version': '1.4.0', 'capabilities': {}}",
+        "    elif method == 'session/new':",
+        "        result = {'session_id': 's1', 'workspace_root': '.'}",
+        "    elif method == 'sessions/list':",
+        "        result = {'sessions': [{'session_id': 'kept', 'title': 'kept', 'display_title': 'kept', 'workspace_root': '.'}]}",
+        "    elif method == 'shutdown':",
+        "        result = {'ok': True}",
+        "    else:",
+        "        continue",
+        "    sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': mid, 'result': result}) + '\\n')",
+        "    sys.stdout.flush()",
+        "    if method == 'shutdown':",
+        "        break",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.env.RXYCODE_TRANSPORT = "stdio";
+    process.env.RXYCODE_PROJECT_ROOT = repoRoot;
+    __setPythonCmdForTests([python, script, marker]);
+    const rows = await getChatTransport().listSessions();
+    expect(rows.map((row) => row.session_id)).toEqual(["kept"]);
+    await getChatTransport().shutdown?.();
   }, 20_000);
 
   test("appserver immediate exit does not stay Connecting", async () => {
