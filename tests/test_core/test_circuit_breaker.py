@@ -226,6 +226,19 @@ async def test_raw_stream_opens_breaker_and_stops_calling_provider():
     assert reconcile.call_count == 6
 
 
+def test_verification_failure_closes_an_open_breaker():
+    """A missing WRITE must not pause the next message until process restart."""
+    from RxyCode.RxyCode1_1_0.recovery import circuit_breaker as cb_mod
+
+    cb_mod.reset_all_breakers()
+    breaker = cb_mod.get_default_breaker()
+    breaker.breaker.open()
+    assert breaker.is_blocking()
+    cb_mod.release_after_verification_failure()
+    assert breaker.breaker.current_state == "closed"
+    assert breaker.is_blocking() is False
+
+
 def test_service_unavailable_message_is_a_failed_terminal_result():
     from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
     from RxyCode.RxyCode1_1_0.recovery.circuit_breaker import (

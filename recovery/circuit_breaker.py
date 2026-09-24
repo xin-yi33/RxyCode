@@ -316,6 +316,27 @@ def breaker_is_open() -> bool:
         return False
 
 
+def release_after_verification_failure() -> None:
+    """A missing write is not a dead model.
+
+    The evidence gate can finish a turn with "no verified WRITE" after the
+    provider already answered. Those turns still counted stream failures
+    into the process-wide breaker, and the next message then raised
+    ``CircuitBreakerError: model calls paused`` until the process restarted.
+    Closing here lets the following user message call the model again.
+    """
+    try:
+        breaker = get_default_breaker()
+    except Exception:
+        return
+    try:
+        breaker.breaker.close()
+    except Exception:
+        return
+    breaker._opened_clock.mono = None
+    breaker._opened_clock.reopen_streak = 0
+
+
 def reset_all_breakers() -> None:
     """Close and drop every keyed breaker. Tests only."""
     global _default_breaker

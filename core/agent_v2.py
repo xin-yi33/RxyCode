@@ -7495,6 +7495,8 @@ class AgentV2:
             failures = dict(getattr(self, "_last_failure_attribution", {}) or {})
             failures[category] = int(failures.get(category, 0) or 0) + 1
             self._last_failure_attribution = failures
+            if category == "verification_error":
+                _circuit_breaker.release_after_verification_failure()
 
         def classify_exception_failure(exc: BaseException) -> str:
             text = f"{type(exc).__name__} {exc}".lower()
