@@ -11,7 +11,8 @@ from scripts.count_lazy_imports import P7_BUDGET as _SCRIPT_BUDGET, count_lazy_i
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Ratchet milestone — lower toward the script budget as batches land.
-# Raised to 181 (2026-09-24): 1.4.0 harness tree measures 180.
+# 2026-09-24: get_data_dir is a module-level import in core/cu/bind.py.
+# Measured total is 179. The gate stays 181; do not raise it to absorb new imports.
 P7_MILESTONE = 181
 P7_BUDGET = 181
 

@@ -395,6 +395,9 @@ class TestRunVision:
         assert result is None or isinstance(result, str)
 
     def test_describe_is_metadata_and_skips_ocr(self, tmp_path, monkeypatch):
+        import sys
+        import types
+
         from PIL import Image
 
         from RxyCode.RxyCode1_1_0.tools import vision as vision_mod
@@ -405,9 +408,9 @@ class TestRunVision:
         def _boom(*_a, **_k):
             raise AssertionError("describe must not run OCR")
 
-        monkeypatch.setattr(
-            "pytesseract.image_to_string", _boom, raising=False
-        )
+        fake = types.ModuleType("pytesseract")
+        fake.image_to_string = _boom
+        monkeypatch.setitem(sys.modules, "pytesseract", fake)
         out = vision_mod.run_vision("describe", str(img_path))
         assert "8x8" in out
         assert "metadata only" in out.lower()

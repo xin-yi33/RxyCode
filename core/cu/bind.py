@@ -31,6 +31,8 @@ from .spec import (
     TOOL_RISK,
 )
 
+from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+
 logger = logging.getLogger(__name__)
 
 _cu_local = threading.Lock()
@@ -54,10 +56,6 @@ def _cu_call_lock() -> Iterator[bool]:
     handle = None
     held = False
     try:
-        try:
-            from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
-        except ImportError:
-            from config.settings import get_data_dir
         path = get_data_dir() / "desktop" / "computer-use.lock"
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = open(path, "a+b")
