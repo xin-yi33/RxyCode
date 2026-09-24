@@ -180,6 +180,30 @@ def is_incomplete_build_continuation(answer: str) -> bool:
     return bool(_INCOMPLETE_BUILD_CONTINUATION_RE.search(text))
 
 
+def react_exit_should_stop(
+    decision: ReactTurnDecision,
+    *,
+    write_still_required: bool,
+) -> bool:
+    """Whether this exit ends the turn.
+
+    A labeled 最终结果 / 任务完成 stops a read-only turn. It must not stop a
+    build that asked for a file write and has not written one yet: the same
+    prompt otherwise exits on the first prose reply and the evidence gate
+    reports "no verified WRITE" with no tool cards.
+    """
+    if decision.exit is None:
+        return False
+    if decision.exit == ReactExit.ERROR_LIMIT:
+        return True
+    if write_still_required and decision.exit in {
+        ReactExit.FINAL_ANSWER_CALL,
+        ReactExit.TASK_COMPLETE,
+    }:
+        return False
+    return True
+
+
 def decide_react_turn(
     *,
     tool_calls: list | tuple,

@@ -75,6 +75,7 @@ from RxyCode.RxyCode1_1_0.core.loop_exit import (
     claimed_final_answer,
     decide_react_turn,
     drop_tools_after_final_answer,
+    react_exit_should_stop,
     has_final_answer_call,
     is_final_answer_tool,
     llm_requests_exit,
@@ -5906,7 +5907,23 @@ class AgentV2:
                 )
                 if react_decision.drop_tools:
                     tool_calls = []
-                if react_decision.exit is not None:
+                write_still_required = _should_nudge_build_to_write(
+                    mode,
+                    file_write_succeeded,
+                    write_nudge_count,
+                    answer=answer,
+                    has_write_tool=any(
+                        str(getattr(tool, "name", "") or "").lower()
+                        in {"write", "edit"}
+                        for tool in (core_tools or [])
+                    ),
+                    user_input=user_input,
+                    workspace_root=getattr(self, "_workspace_root", None),
+                )
+                if react_exit_should_stop(
+                    react_decision,
+                    write_still_required=write_still_required,
+                ):
                     break
                 if has_final_answer_call(tool_calls):
                     tool_calls = drop_tools_after_final_answer(tool_calls)

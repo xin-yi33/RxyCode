@@ -6,7 +6,9 @@ from RxyCode.RxyCode1_1_0.core.agent_v2 import _should_nudge_build_to_write
 from RxyCode.RxyCode1_1_0.core.loop_exit import (
     ERROR_LIMIT,
     ReactExit,
+    ReactTurnDecision,
     bump_consecutive_errors,
+    react_exit_should_stop,
     claimed_final_answer,
     decide_react_turn,
     drop_tools_after_final_answer,
@@ -160,6 +162,22 @@ def test_commentary_plus_tools_is_not_exit() -> None:
     assert decision.exit is None
     assert decision.drop_tools is False
     assert decision.reason == "acting"
+
+
+def test_final_answer_exit_does_not_stop_while_a_write_is_still_required() -> None:
+    decision = ReactTurnDecision(
+        exit=ReactExit.FINAL_ANSWER_CALL,
+        drop_tools=False,
+        reason="claimed Final Answer / 最终结果",
+    )
+    assert react_exit_should_stop(decision, write_still_required=True) is False
+    assert react_exit_should_stop(decision, write_still_required=False) is True
+    limited = ReactTurnDecision(
+        exit=ReactExit.ERROR_LIMIT,
+        drop_tools=False,
+        reason="consecutive errors >= 5",
+    )
+    assert react_exit_should_stop(limited, write_still_required=True) is True
 
 
 def test_claimed_final_does_not_stop_a_write_that_has_not_happened() -> None:
