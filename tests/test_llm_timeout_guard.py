@@ -897,7 +897,7 @@ class TestRawStreamFirstChunkTimeout:
                 choices=[
                     SimpleNamespace(
                         delta=SimpleNamespace(
-                            content="好的",
+                            content="最终结果：好的",
                             reasoning_content="",
                             tool_calls=None,
                         )
@@ -935,7 +935,7 @@ class TestRawStreamFirstChunkTimeout:
         result = await agent._fast_reply_with_tools(
             "帮我重构整个项目的认证模块，把代码整理干净。"
         )
-        assert result == "好的"
+        assert result == "最终结果：好的"
         assert tui.reasoning == ["先看需求"]
         assert "好的" in "".join(tui.tokens)
 

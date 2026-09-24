@@ -388,10 +388,7 @@ async def test_native_messages_wire_and_agent_normalization(
     assert body["tools"][0]["name"] == "read"
     assert body["tools"][0]["description"] == "Read a file"
     assert body["tools"][0]["input_schema"] == tool_parameters
-    assert body["tools"][0]["cache_control"] == {
-        "type": "ephemeral",
-        "ttl": "1h",
-    }
+    assert body["tools"][0]["cache_control"] == {"type": "ephemeral"}
     assert any(
         block.get("type") == "image"
         for message in body["messages"]

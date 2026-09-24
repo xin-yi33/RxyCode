@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 
 # The top-level ``python -m appserver`` entrypoint binds the canonical project
 # package in appserver.__init__.  Use that identity first so the deterministic
@@ -56,6 +58,19 @@ class StubAgent:
             if tui is not None and hasattr(tui, "write_reasoning"):
                 tui.write_reasoning(thought)
             return f"stub:{thought}"
+        if text.startswith("barrier:"):
+            label = text.split(":", 1)[1]
+            barrier = os.environ.get("RXYCODE_APPSERVER_STUB_BARRIER_DIR")
+            if barrier:
+                root = Path(barrier)
+                root.mkdir(parents=True, exist_ok=True)
+                (root / f"{label}.ready").write_text("ready", encoding="utf-8")
+                release = root / "release"
+                for _ in range(400):
+                    if release.exists():
+                        break
+                    await asyncio.sleep(0.05)
+            return f"stub:{label}"
         if text.startswith("slow:"):
             await asyncio.sleep(0.5)
             return f"stub:{text[5:]}"

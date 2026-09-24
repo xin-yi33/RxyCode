@@ -152,10 +152,11 @@ def test_fast_build_synthesis_is_explicit_and_bounded():
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
     source = inspect.getsource(AgentV2._fast_reply_with_tools)
-    assert "Finalize this task now. Do not call tools." in source
-    assert "synthesis_max_tokens = min(fast_build_round_max_tokens, 1024)" in source
-    assert "Never promise a future" in source
-    assert "action or claim" in source
+    # Max-round tool-free synthesis is retired. A stuck turn still ends
+    # with one tool-free recovery stream.
+    assert "Synthesizing results (stuck recovery)" in source
+    assert "stuck_triggered" in source
+    assert "禁止再执行" in source
 
 
 def test_fast_build_does_not_append_source_with_shell_fragments():

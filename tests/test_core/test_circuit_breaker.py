@@ -129,6 +129,10 @@ class TestUsageTrackingLLMIntegration:
         cb_mod.reset_breakers()
         inner = _make_failing_llm()
         wrapper = self._make_wrapper(inner)
+        # ConnectionError is transport-retryable. This case trips the breaker,
+        # so each logical call must count as one failure instead of sleeping
+        # through the 2/4/8/16/30s budget.
+        wrapper._transport_retries = 0
         with patch.object(cb_mod, "circuit_breaker_enabled", return_value=True):
             # Trip the breaker (default fail_max=5)
             for _ in range(5):

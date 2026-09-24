@@ -22,6 +22,7 @@ from ._compat import (
     infer_transport_from_resource_path,
     normalize_api_transport,
     normalize_resource_path,
+    normalize_transport_candidates,
 )
 
 try:
@@ -240,8 +241,10 @@ class BaseProvider:
 
         provider_id = str(model_config.get("provider_id") or "").casefold()
         if provider_id in _RESPONSES_FIRST_PRESET_IDS | {"custom", "other"}:
-            return (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
-        return (CHAT_TRANSPORT,)
+            return normalize_transport_candidates(
+                (RESPONSES_TRANSPORT, CHAT_TRANSPORT)
+            )
+        return normalize_transport_candidates((CHAT_TRANSPORT,))
 
     def explicit_transport_candidates(
         self, model_config: dict

@@ -78,8 +78,18 @@ def test_stream_recorder_and_sse_correlate_interleaved_tool_results():
     assert tools[second_id]["toolStdout"] == "second-result"
     assert tools[second_id]["toolStatus"] == "error"
 
-    events = [queue.get_nowait() for _ in range(4)]
-    assert [event["message_id"] for event in events] == [
+    events = []
+    while True:
+        try:
+            events.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    tool_events = [
+        event
+        for event in events
+        if event.get("type") in {"tool_call", "tool_result"}
+    ]
+    assert [event["message_id"] for event in tool_events] == [
         first_id,
         second_id,
         first_id,

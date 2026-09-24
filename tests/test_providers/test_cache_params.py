@@ -206,7 +206,8 @@ def test_anthropic_per_model_min_block(name, minblock):
 
 @pytest.mark.parametrize("u,model,flat,nested", [
     ("https://api.deepseek.com/v1", "deepseek-v4-flash",
-     ["prompt_cache_hit_tokens"], []),
+     ["prompt_cache_hit_tokens", "cached_tokens"],
+     [("prompt_tokens_details", "cached_tokens")]),
     ("https://api.openai.com/v1", "gpt-5.6-sol",
      ["prompt_cache_hit_tokens"],
      [("prompt_tokens_details", "cached_tokens"), ("input_token_details", "cache_read")]),

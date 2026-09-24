@@ -235,6 +235,9 @@ async def test_raw_stream_refunds_unused_output_reservation(terminal):
         "temperature": 0,
         "max_tokens": 32,
     }
+    # A chunk already left the provider. This case checks the refund on the
+    # terminal error, not the connect-retry budget.
+    agent._cfg = {"llm": {"transport_retries": 0}}
 
     async def consume():
         return [chunk async for chunk in AgentV2._raw_stream(agent, [])]

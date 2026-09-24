@@ -1,1 +1,27 @@
-
+{
+  "suite": "chateval",
+  "protocol": "ChatEval-style pairwise preference",
+  "official": false,
+  "note": "Three homemade items. The 80-question MT-Bench set is the official loader.",
+  "cases": [
+    {
+      "id": "chateval-home-1",
+      "category": "writing",
+      "prompt": "Write one sentence welcoming a new teammate.",
+      "official": false
+    },
+    {
+      "id": "chateval-home-2",
+      "category": "reasoning",
+      "prompt": "Which is larger, 3 or 7? Reply with only the number.",
+      "expected": "7",
+      "official": false
+    },
+    {
+      "id": "chateval-home-3",
+      "category": "coding",
+      "prompt": "Name a Python type used for a sequence of bytes.",
+      "official": false
+    }
+  ]
+}

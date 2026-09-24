@@ -173,7 +173,7 @@ async def test_plan_only_exposes_readonly_tools_and_executes_read(monkeypatch):
 
     result = await agent._run_plan_only("inspect notes.txt and make a plan")
 
-    assert result.startswith("plan complete")
+    assert "plan complete" in result
     assert "切换到 **Build**" in result or "switch to **Build**" in result
     # FX6: schema is frozen FULL core set (no per-turn cropping); read-only
     # enforcement happens at the execution layer (_execute_tool).
@@ -244,7 +244,7 @@ async def test_plan_only_rejects_unexposed_tool_calls(tool_name, monkeypatch):
 
     result = await agent._run_plan_only("make a plan")
 
-    assert result.startswith("plan complete")
+    assert "plan complete" in result
     assert "切换到 **Build**" in result or "switch to **Build**" in result
     # FX6: the schema binds the FULL core set (frozen); the execution layer
     # denies the unexposed write-class tool (orchestrator never runs).

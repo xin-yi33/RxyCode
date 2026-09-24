@@ -101,7 +101,10 @@ def test_v4_usage_fields_s71():
     """§7.1 问 4：缓存命中顶层 prompt_cache_hit_tokens；reasoning_content 平铺。"""
     for name in ("deepseek-v4-flash", "deepseek-v4-pro"):
         caps = _caps(name)
-        assert caps.usage_fields.cache_read_flat == ("prompt_cache_hit_tokens",)
+        assert caps.usage_fields.cache_read_flat == (
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+        )
         assert caps.usage_fields.reasoning == ("reasoning_content",)
 
 
@@ -238,7 +241,10 @@ def test_unknown_deepseek_variant_conservative():
     assert caps.pricing.output_per_mtok is None
     assert caps.pricing.cached_input_per_mtok is None
     assert caps.tokenizer == DEFAULT_CAPABILITIES.tokenizer
-    assert caps.usage_fields.cache_read_flat == ("prompt_cache_hit_tokens",)
+    assert caps.usage_fields.cache_read_flat == (
+        "prompt_cache_hit_tokens",
+        "cached_tokens",
+    )
 
     # 系统性对比：除 provider/pricing/prompt_variant/usage_fields 四个有意覆盖字段外，
     # 未知变体必须逐字段等于 DEFAULT_CAPABILITIES（DC1 严格兜底）。

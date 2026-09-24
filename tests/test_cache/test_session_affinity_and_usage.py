@@ -214,6 +214,12 @@ def test_v4_compaction_behaviour_triggers_near_97pct(monkeypatch):
         }
 
     monkeypatch.setattr("RxyCode.RxyCode1_1_0.core.compaction.compact_messages", fake_compact)
+    # The ladder recounts the message list after microcompact. Keep that
+    # recount above the usable window so the fold rung still runs.
+    monkeypatch.setattr(
+        "RxyCode.RxyCode1_1_0.core.compaction.occupancy_tokens",
+        lambda messages, count=None: 1_050_000,
+    )
 
     import asyncio
 
@@ -734,7 +740,7 @@ def test_explicit_raw_stream_marks_only_last_tool():
     tools = payload.get("tools") or []
     assert len(tools) == 2
     assert "cache_control" not in tools[0]
-    assert tools[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert tools[-1]["cache_control"] == {"type": "ephemeral"}
     assert json.dumps(payload["tools"]).count("cache_control") == 1
 
 

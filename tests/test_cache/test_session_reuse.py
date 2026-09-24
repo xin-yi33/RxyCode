@@ -591,7 +591,7 @@ async def test_second_agent_turn_appends_to_frozen_prefix(monkeypatch):
         yield SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    delta=SimpleNamespace(content="done", tool_calls=None),
+                    delta=SimpleNamespace(content="最终结果：done", tool_calls=None),
                 )
             ],
             usage=None,
@@ -622,8 +622,8 @@ async def test_second_agent_turn_appends_to_frozen_prefix(monkeypatch):
         role_instruction="",
         mode="build",
     )
-    assert first == "done"
-    assert second == "done"
+    assert first == "最终结果：done"
+    assert second == "最终结果：done"
     assert len(captured) == 2
     first_msgs, second_msgs = captured
     assert isinstance(first_msgs[0], SystemMessage)
@@ -634,6 +634,6 @@ async def test_second_agent_turn_appends_to_frozen_prefix(monkeypatch):
     assert isinstance(second_msgs[1], HumanMessage)
     assert "warmup LRU cache" in second_msgs[1].content
     assert isinstance(second_msgs[2], AIMessage)
-    assert second_msgs[2].content == "done"
+    assert second_msgs[2].content == "最终结果：done"
     assert "H3 TTL LRU cache" in second_msgs[-1].content
     assert len(second_msgs) == 4

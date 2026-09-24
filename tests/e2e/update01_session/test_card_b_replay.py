@@ -154,7 +154,8 @@ def test_e2e_card_b_session_events_restore_thought_tool_final(tmp_path):
 
 def _bun_executable() -> str:
     found = shutil.which("bun") or shutil.which("bun.cmd") or shutil.which("bun.exe")
-    assert found, "bun executable not found"
+    if not found:
+        pytest.skip("bun executable not found")
     nested = Path(found).parent / "node_modules" / "bun" / "bin" / "bun.exe"
     if nested.is_file():
         return str(nested)

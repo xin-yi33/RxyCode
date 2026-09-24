@@ -2960,6 +2960,42 @@ class AgentV2:
     @staticmethod
     def _tool_to_openai(tool) -> dict:
         """Convert a LangChain tool to an OpenAI function-tool dict."""
+
+        def _shrink_tool_description(text: str) -> str:
+            raw = str(text or "")
+            if "never use it" not in raw.lower() and len(raw) <= 140:
+                return raw
+            kept: list[str] = []
+            for piece in raw.split(". "):
+                sentence = piece.strip()
+                if not sentence:
+                    continue
+                if sentence.lower().startswith("never use it"):
+                    continue
+                if not sentence.endswith("."):
+                    sentence += "."
+                kept.append(sentence)
+            cleaned = " ".join(kept).strip()
+            if len(cleaned) <= 140:
+                return cleaned
+            cut = cleaned[:140]
+            dot = cut.rfind(". ")
+            if dot > 40:
+                return cut[: dot + 1]
+            return cut.rstrip()
+
+        def _shrink_tool_schema(node):
+            drop = {"title", "examples"}
+            if isinstance(node, dict):
+                return {
+                    key: _shrink_tool_schema(value)
+                    for key, value in node.items()
+                    if key not in drop
+                }
+            if isinstance(node, list):
+                return [_shrink_tool_schema(value) for value in node]
+            return node
+
         schema = None
         tcs = getattr(tool, "tool_call_schema", None)
         if tcs is not None:
@@ -2970,11 +3006,14 @@ class AgentV2:
         if not schema:
             args = getattr(tool, "args", {}) or {}
             schema = {"type": "object", "properties": args, "required": list(args.keys())}
+        schema = _shrink_tool_schema(schema)
         return {
             "type": "function",
             "function": {
                 "name": getattr(tool, "name", "tool"),
-                "description": getattr(tool, "description", "") or "",
+                "description": _shrink_tool_description(
+                    getattr(tool, "description", "") or ""
+                ),
                 "parameters": schema or {"type": "object", "properties": {}},
             },
         }
@@ -5043,6 +5082,19 @@ class AgentV2:
         self._prewarm_task = None
         return True
 
+    async def await_prefix_warm(self, timeout: float = 2.0) -> bool:
+        """Warm chat and agent prefix slots and report whether both confirmed."""
+        try:
+            await asyncio.wait_for(self._prewarm_async(), timeout=float(timeout))
+        except (asyncio.TimeoutError, Exception):
+            return False
+        agent_slot = self._prewarm_state("agent")
+        chat_slot = self._prewarm_state("chat")
+        return (
+            getattr(agent_slot, "warmed_at", None) is not None
+            and getattr(chat_slot, "warmed_at", None) is not None
+        )
+
     async def _prewarm_async(self) -> None:
         """B5: 后台预热——FX4 双槽（chat/agent）并行写新前缀；成功 confirm。
 
@@ -5756,9 +5808,12 @@ class AgentV2:
                                     if item.get("name")
                                 ]
                                 label = ", ".join(dict.fromkeys(names)) or "tool"
+                                from RxyCode.RxyCode1_1_0.core.progress_labels import (
+                                    preparing_tool,
+                                )
+
                                 tui.write_progress(
-                                    f"Preparing {label} tool call... "
-                                    f"({tool_call_delta_chunks} stream chunks)"
+                                    preparing_tool(label, tool_call_delta_chunks)
                                 )
                                 tool_call_liveness_at = now
                     # record usage from a usage-bearing chunk
@@ -5964,6 +6019,20 @@ class AgentV2:
                         if abort is not None:
                             return abort
                         continue
+                    # A finished non-creation answer is the turn. Counting it
+                    # as five consecutive failures replays the same usage.
+                    try:
+                        creation_intent = bool(
+                            self._has_creation_product_intent(user_input)
+                        )
+                    except Exception:
+                        creation_intent = False
+                    if answer.strip() and not creation_intent:
+                        break
+                    # Plan mode ends when the model returns the plan text.
+                    # Build mode still treats a tool-free round as non-exit.
+                    if mode == "plan" and answer.strip():
+                        break
                     # 本轮没有工具调用不是退出。空转/无进展降级为 [error] 回喂 LLM。
                     consecutive_error_count = bump_consecutive_errors(
                         consecutive_error_count, failed=True
@@ -6170,7 +6239,7 @@ class AgentV2:
                 if tui and hasattr(tui, "write_progress"):
                     tui.write_progress("Synthesizing results (stuck recovery)...")
                 parts: list[str] = []
-                async for chunk in self._raw_stream(messages):
+                async for chunk in self._raw_stream(messages, core_tools):
                     if not getattr(chunk, "choices", None):
                         continue
                     delta = chunk.choices[0].delta
@@ -6329,12 +6398,21 @@ class AgentV2:
             selected_names.update({"download_file", "file_download", "download_skill"})
         if any(marker in text for marker in ("mcp", "model context protocol")):
             selected_names.add("download_mcp")
-        if any(marker in text for marker in ("subagent", "child agent", "子代理", "并行", "parallel")):
-            selected_names.update({"task"})
+        if (
+            getattr(self, "_subagents_enabled", False)
+            or getattr(self, "_session_subagents_opt_in", False)
+            or any(
+                marker in text
+                for marker in ("subagent", "child agent", "子代理", "并行", "parallel")
+            )
+        ):
+            selected_names.add("task")
         if any(marker in text for marker in ("ask me", "question", "询问", "让我选择")):
             selected_names.add("question")
-        if any(marker in text for marker in ("memory", "记忆", "remember", "history", "历史")):
-            selected_names.update({"memory", "history"})
+        # "history" / "历史" in ordinary prose is not the memory-file tool.
+        # "remember" keeps memory, and does not also open history.
+        if any(marker in text for marker in ("memory", "记忆", "remember")):
+            selected_names.add("memory")
         if any(marker in text for marker in ("image", "screenshot", "图片", "截图", "视觉")):
             selected_names.add("vision")
 

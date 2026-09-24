@@ -390,7 +390,7 @@ async def test_agent_next_run_hot_loads_executes_and_unloads_downloaded_mcp(
                 choices=[
                     SimpleNamespace(
                         delta=SimpleNamespace(
-                            content="model complete",
+                            content="最终结果：model complete",
                             reasoning_content="",
                             tool_calls=None,
                         )
@@ -403,7 +403,7 @@ async def test_agent_next_run_hot_loads_executes_and_unloads_downloaded_mcp(
     fast_result = await agent._fast_reply_with_tools(
         "Use the MCP echo tool", mode="build"
     )
-    assert fast_result == "model complete"
+    assert fast_result == "最终结果：model complete"
     assert all(tool_name in names for names in bound_names)
     assert any(
         message.get("method") == "tools/call"

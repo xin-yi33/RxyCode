@@ -385,10 +385,7 @@ class TestApplyCacheControlDispatch:
         tools = payload.get("tools") or []
         assert tools, "tools missing from payload"
         for tool_def in tools:
-            assert tool_def.get("cache_control") == {
-                "type": "ephemeral",
-                "ttl": "1h",
-            }
+            assert tool_def.get("cache_control") == {"type": "ephemeral"}
 
     def test_openai_tools_no_breakpoint(self):
         """luna 阻断项 1：OpenAI 系 tools 不注入 cache_control（CB3）。"""
