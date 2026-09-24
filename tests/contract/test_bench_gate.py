@@ -32,6 +32,29 @@ def _run_bench(*args: str, timeout: float = 300) -> subprocess.CompletedProcess:
     )
 
 
+def test_win_port_listener_sees_a_real_socket():
+    """The Windows listener lookup must see a socket this process opened.
+
+    This drives ``_win_port_listener`` itself. A subprocess timeout inside
+    that helper used to fail the bench contract on windows-latest.
+    """
+    import os
+    import socket
+
+    if sys.platform != "win32":
+        pytest.skip("netstat listener lookup is Windows-only")
+    from RxyCode.RxyCode1_1_0.scripts.bench_async import _win_port_listener
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    port = int(sock.getsockname()[1])
+    try:
+        assert os.getpid() in _win_port_listener(port)
+    finally:
+        sock.close()
+
+
 def test_bench_requires_out(tmp_path):
     result = _run_bench("--rounds", "1")
     assert result.returncode != 0

@@ -130,20 +130,35 @@ def _allocate_free_port() -> int:
 
 
 def _win_port_listener(port: int) -> set[int]:
-    """PIDs listening on *port* (base64-encoded so no self-match)."""
-    import base64
+    """PIDs listening on *port*.
 
-    ps = (
-        "Get-NetTCPConnection -LocalPort {port} -State Listen "
-        "-ErrorAction SilentlyContinue | "
-        "ForEach-Object {{ $_.OwningProcess }}"
-    ).format(port=port)
-    encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-EncodedCommand", encoded],
-        capture_output=True, text=True, timeout=10,
-    ).stdout
-    return {int(line) for line in out.split() if line.strip().isdigit()}
+    ``Get-NetTCPConnection`` loads NetTCPIP and exceeded the 10s subprocess
+    budget on windows-latest (CI run 35959167174). ``netstat -ano`` reads the
+    same TCP table without that module. netstat is not the listener, so its
+    own command line cannot be recorded as the workload.
+    """
+    wanted = str(int(port))
+    # Bytes, not text=: a GBK console makes the UTF-8 reader thread throw
+    # and leaves stdout None. LISTENING/TCP/PID are ASCII either way.
+    raw = subprocess.run(
+        ["netstat", "-ano", "-p", "tcp"],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    ).stdout or b""
+    out = raw.decode("utf-8", errors="replace")
+    pids: set[int] = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        if parts[3].upper() != "LISTENING":
+            continue
+        _host, sep, local_port = parts[1].rpartition(":")
+        if sep != ":" or local_port != wanted or not parts[4].isdigit():
+            continue
+        pids.add(int(parts[4]))
+    return pids
 
 
 def _sleep_pgids() -> set[int]:
