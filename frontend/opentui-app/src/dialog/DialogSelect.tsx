@@ -35,6 +35,16 @@ export function shouldApplyMouseHover(inputMode: "keyboard" | "mouse"): boolean 
   return inputMode === "mouse";
 }
 
+/** Run after the native mouse dispatch returns.
+
+OpenTUI keeps the hit renderable on the stack (autofocus walks `parent`).
+setState inside onMouseDown rebuilds the 348-row session list and frees that
+node; Bun then segfaults at 0x20. queueMicrotask runs once this call returns.
+*/
+export function scheduleAfterMouse(fn: () => void): void {
+  queueMicrotask(fn);
+}
+
 /** Search row: block cursor after typed text (not locked on first cell). */
 export function formatSearchFieldDisplay(
   filter: string,
@@ -543,7 +553,8 @@ export function DialogSelect<T>({
         backgroundColor: C.bg,
       }}
       onMouseMove={() => {
-        if (inputMode !== "mouse") setInputMode("mouse");
+        if (inputMode === "mouse") return;
+        scheduleAfterMouse(() => setInputMode("mouse"));
       }}
     >
       <RowShell>
@@ -628,24 +639,31 @@ export function DialogSelect<T>({
               key={row.key}
               bg={sel ? SELECT_BG : C.bg}
               onMouseOver={() => {
-                setInputMode("mouse");
-                moveTo(row.flatIndex);
+                const index = row.flatIndex;
+                scheduleAfterMouse(() => {
+                  setInputMode("mouse");
+                  moveTo(index);
+                });
               }}
               onMouseDown={() => {
-                setInputMode("mouse");
-                moveTo(row.flatIndex);
+                const index = row.flatIndex;
+                const option = row.option;
                 // Confirm the painted row's option, not flat[index] from a
-                // mismatched source order.
-                if (!multi) {
-                  confirm(row.flatIndex, row.option);
-                }
+                // mismatched source order. Deferred so the native mouse
+                // walk finishes before this row is destroyed.
+                scheduleAfterMouse(() => {
+                  setInputMode("mouse");
+                  moveTo(index);
+                  if (!multi) confirm(index, option);
+                });
               }}
               onMouseUp={() => {
-                setInputMode("mouse");
-                moveTo(row.flatIndex);
-                if (multi) {
-                  toggleSelected(row.flatIndex);
-                }
+                const index = row.flatIndex;
+                scheduleAfterMouse(() => {
+                  setInputMode("mouse");
+                  moveTo(index);
+                  if (multi) toggleSelected(index);
+                });
               }}
             >
               <text fg={sel ? SELECT_FG : C.text}>{namePart}</text>

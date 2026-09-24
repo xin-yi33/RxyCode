@@ -2,10 +2,23 @@ import { describe, expect, test } from "bun:test";
 import {
   buildSelectRows,
   formatSearchFieldDisplay,
+  scheduleAfterMouse,
   shouldApplyMouseHover,
   textFromKeyEvent,
   type DialogSelectOption,
 } from "./DialogSelect.tsx";
+
+describe("scheduleAfterMouse", () => {
+  test("does not run inside the mouse handler", async () => {
+    let ran = false;
+    scheduleAfterMouse(() => {
+      ran = true;
+    });
+    expect(ran).toBe(false);
+    await Promise.resolve();
+    expect(ran).toBe(true);
+  });
+});
 
 describe("shouldApplyMouseHover", () => {
   test("keyboard mode blocks hover (clear→build snap-back fix)", () => {
