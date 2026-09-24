@@ -1316,7 +1316,16 @@ class AppServer:
         if (
             self._watchdog.degraded
             and self._watchdog.degrade_reason.startswith(
-                ("job stalled", "transport degraded", "prompt timed out")
+                (
+                    "job stalled",
+                    "transport degraded",
+                    "prompt timed out",
+                    # _await_prompt_activity uses this wording when the prompt
+                    # has no client wall clock. It is the same isolated stall
+                    # as "prompt timed out"; leaving it latched blocks every
+                    # later session (CI py3.11, run 35960083542).
+                    "prompt stalled",
+                )
             )
         ):
             # Timeout/stall handling kills the affected worker before returning

@@ -38,6 +38,34 @@ def _host(tmp_path) -> AgentHost:
 
 
 @pytest.mark.asyncio
+async def test_prompt_stalled_wording_admits_the_next_session(tmp_path, monkeypatch):
+    """A stall without a client wall clock must not latch the whole appserver.
+
+    ``_await_prompt_activity`` records ``prompt stalled after …``, which is
+    the same isolated failure as ``prompt timed out``. The next session's
+    prompt has to reach ``_run_prompt``.
+    """
+    monkeypatch.setattr("appserver.server.write_message", AsyncMock())
+    server = AppServer(stub=True)
+    server._initialized = True
+    record = server._sessions.create(tmp_path)
+    server._watchdog.degrade("prompt stalled after 2.0s (session old)")
+    seen: dict[str, str] = {}
+
+    async def _run_prompt(**kwargs):
+        seen["text"] = kwargs["text"]
+        await server._respond(kwargs["request_id"], {"status": "succeeded", "text": "ok"})
+
+    server._run_prompt = _run_prompt  # type: ignore[method-assign]
+    await server._handle_prompt(
+        {"session_id": record.session_id, "text": "hello while sibling is stalled"},
+        7,
+    )
+    assert seen["text"] == "hello while sibling is stalled"
+    assert server._watchdog.degraded is False
+
+
+@pytest.mark.asyncio
 async def test_subagent_rpc_does_not_replace_live_prompt_emit(tmp_path, monkeypatch):
     host = _host(tmp_path)
     prompt_emit = object()
