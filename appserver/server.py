@@ -1098,10 +1098,10 @@ class AppServer:
                     if job is None:
                         continue
                     if idle > stall:
-                        task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError, Exception):
-                            await task
-                        raise asyncio.TimeoutError from None
+                        # 废弃代码（2026-10-08 版）：这里直接 cancel 并抛 TimeoutError，
+                        # 再由 _run_prompt 标 failed。已路由到 watchdog 的
+                        # escalate_stalled_job。这条等待只守显式 wall timeout。
+                        continue
         finally:
             if not task.done():
                 task.cancel()
@@ -1261,10 +1261,14 @@ class AppServer:
                     return
 
                 status = str(payload.get("status", "failed"))
-                if status != "succeeded":
-                    await self._emit_job_state(session_id, job_id, "failed")
-                else:
+                if status == "succeeded":
                     self._sessions.update_status(session_id, "succeeded")
+                elif status == "cancelled":
+                    # 废弃代码（2026-10-08 版）：凡非 succeeded 都标 failed。
+                    # 已路由到 cancelled。turn 级取消不是 stall kill。
+                    await self._emit_job_state(session_id, job_id, "cancelled")
+                else:
+                    await self._emit_job_state(session_id, job_id, "failed")
 
                 # Order the result after all already-emitted notifications so
                 # the client never observes the result arrive before them, and

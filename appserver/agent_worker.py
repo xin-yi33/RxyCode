@@ -936,6 +936,11 @@ class AgentWorker:
             }
         )
 
+    async def _await_cancelled_prompt(self, run_task: asyncio.Task) -> None:
+        """Keep a cancelled prompt task from being destroyed while it winds down."""
+        with contextlib.suppress(BaseException):
+            await run_task
+
     async def _handle_interrupt(self, request_id: int) -> None:
         """Cancel the running prompt task (C1: run_task.cancel()).
 
@@ -955,16 +960,14 @@ class AgentWorker:
             cancelled = True
         run_task = self._run_task
         if run_task is not None and not run_task.done():
-            # We cancelled a running prompt task: report the cancel intent.
-            # Even if the prompt's own cancellation cleanup (flush/write) fails
-            # and replaces the CancelledError with a write exception, the task
-            # was genuinely interrupted — so report cancelled, not "not
-            # cancelled".  (A task that already finished before the cancel
-            # never enters this branch.)
+            # Report the cancel intent before the prompt task finishes.
+            # Awaiting it here made the parent's stall grace start only after
+            # the job was already gone, so a 1s grace and a long grace both
+            # looked like kept. The task still runs; its terminal write is
+            # what removes the watchdog job.
             run_task.cancel()
-            with contextlib.suppress(BaseException):
-                await run_task
             cancelled = True
+            asyncio.create_task(self._await_cancelled_prompt(run_task))
         elif self._agent is not None:
             session = Session(
                 session_id=self._session_id,

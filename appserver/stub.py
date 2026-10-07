@@ -82,8 +82,20 @@ class StubAgent:
             await asyncio.sleep(seconds)
             return "stub:silent-complete"
         if text.startswith("hang:"):
-            while not self._cancelled:
-                await asyncio.sleep(0.05)
+            # Stall grace has to observe this job. task.cancel() would otherwise
+            # end the turn in the same tick as interrupt, and both a 1s grace
+            # and a long grace would be kept. Stay past one 1s grace poll, then
+            # surface the cancel so a long grace still sees the job leave.
+            try:
+                while not self._cancelled:
+                    await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    current.uncancel()
+                await asyncio.sleep(1.25)
+                raise
+            await asyncio.sleep(1.25)
             raise asyncio.CancelledError
         if text.startswith("fail:"):
             return f"[agent error] {text[5:]}"

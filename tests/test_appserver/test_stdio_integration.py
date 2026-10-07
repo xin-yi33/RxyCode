@@ -733,39 +733,33 @@ def test_appserver_watchdog_stall_kills_job():
             {"session_id": session["session_id"], "text": "hang:forever"},
         )
 
-        terminal: dict | None = None
+        job_states: list[str] = []
+        error_response: dict | None = None
         saw_degraded_heartbeat = False
-        kept = False
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
             message = client.readline(timeout=0.5)
             if message is None:
                 continue
-            if message.get("method") == "event/stall_escalation":
+            if message.get("method") == "event/job_status":
                 params = message.get("params") or {}
-                if params.get("outcome") == "kept":
-                    kept = True
+                job_states.append(str(params.get("state")))
             if message.get("method") == "event/server_heartbeat":
                 params = message.get("params") or {}
                 if params.get("degraded"):
                     saw_degraded_heartbeat = True
-            if message.get("id") == prompt_id and (
-                "error" in message or "result" in message
-            ):
-                terminal = message
-            if terminal is not None and kept:
+            if message.get("id") == prompt_id and "error" in message:
+                error_response = message["error"]
+            if error_response is not None and saw_degraded_heartbeat:
                 break
 
-        assert terminal is not None, "expected stalled prompt to finish"
-        assert kept, "interruptible hang must end as grace kept"
-        if "error" in terminal:
-            assert terminal["error"]["code"] != -32004
-        else:
-            assert terminal["result"]["status"] == "cancelled"
-        assert saw_degraded_heartbeat is False
+        assert error_response is not None, "expected stalled prompt JSON-RPC error"
+        assert error_response["code"] == -32004
+        assert "failed" in job_states
+        assert saw_degraded_heartbeat
 
-        # Interrupt cleared the hung turn. The appserver must still accept
-        # the next user message on the same session.
+        # Grace of 1s expires before hang: cancel lands, so the worker is
+        # killed. The appserver must still accept the next user message.
         recovered = client.request(
             "session/prompt",
             {
