@@ -43,6 +43,14 @@
 
 ## 变更
 
+- **产品版本与发布文档**：`pyproject.toml`、`__init__.py`、安装脚本、
+  `protocol/version.py`、MCP clientInfo、前端元数据/锁文件/终端标题统一到 1.4.1。
+  frozen schema 默认值与三个 runtime manifest 的 SHA-256 同步，TS 重新生成，
+  Ink 分发 bundle 重新构建。Python 命名空间和 JSON-RPC 1.1.0 保持不变。
+  README 中英文、quickstart、GUI 版本说明和根 CHANGELOG 同步；新增
+  `RELEASE_NOTES_v1.4.1.md`，历史版本文档不重命名。
+  `test_product_version_is_consistent_without_bumping_wire_protocol` 防止入口版本漂移。
+
 - **连接重试 5 → 7 次，延迟翻倍末次 128s**（`recovery/error_recovery.py`）：
   `MODEL_RETRY_MAX=7`、`MODEL_RETRY_MAX_DELAY_SECONDS=128.0`（序列 2→4→8→16→32→
   64→128s，≤25% 抖动）——原因：5 次/30s 封顶对慢网/弱代理恢复窗口太窄。
@@ -150,8 +158,8 @@
 - 日志保留策略默认 72h；`RXYCODE_DATA_DIR` 重定向与既有测试隔离约定兼容。
 - 熔断对齐不改变任何对外语义（重试计数语义修正：同一逻辑拉流计一次）。
 - 重试 7 次/128s 对默认安装生效（`transport_retries` 本地覆盖键仍有效）。
-- **OS 沙箱默认关闭**（`execution.os_sandbox.enabled=false` 时行为与 v1.4.0 逐字节
-  一致）；开启后仅影响 bash 子进程执行面；write/edit/patch 仍由写白名单管；MCP /
+- **OS 沙箱默认关闭**（`execution.os_sandbox.enabled=false` 时保持原有 shell 执行
+  策略）；开启后仅影响 bash 子进程执行面；write/edit/patch 仍由写白名单管；MCP /
   Playwright / Desktop GUI 子进程 v1.4.1 未纳入（后续登记项）。
 - **平台差异**：Linux 需 bwrap、macOS 需 sandbox-exec、Windows 走内核 Job Object；
   后端不可用且 downgrade 时命令仍执行但不在沙箱内（响亮警告）；fail_closed 时拒绝。
@@ -165,6 +173,12 @@
 以下全量计数保留实现阶段的复跑记录；发布验收的新结果单列在发布说明中，
 不将历史计数冒充本次独立复测。Linux/macOS 套件验证参数与策略契约，
 不代表已经在对应平台完成原生沙箱安全验收。
+
+2026-10-07 独立发布复验：核心 8270 passed / 4 skipped；分层与工具 2808 passed；
+其余模块 2169 passed / 26 skipped；干净源码 system 8 passed、serial 8 passed。
+源码包构建、安装、Twine、全库 lint、凭据扫描、终端前端与版本一致性检查通过。
+安装树内真实 venv Python 经生产 ShellExecutor + Windows Job 连续三次成功。
+详细命令、路径假设与未验证边界见 [发布说明](RELEASE_NOTES_v1.4.1.md)。
 
 
 - 沙箱四套件全绿：Windows **22 条**（真实内核语义：birth-binding 后 venv

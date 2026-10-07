@@ -91,8 +91,46 @@ CLI 包不含 Electron。不要把 `rxycode gui` 当作本版本安装后的桌�
 文档依赖与会话 catalog，共 **78 passed / 6 skipped**（19.93 秒）。六项跳过仅
 对应本地被 Git 忽略且缺失或为空的计划文档，不代表运行时能力通过。
 
-后续发布门禁结果在完成后补充。未完成的检查不标记为通过；GitHub Release
-工作流仅在 Linux/Windows 分发安装冒烟通过后上传源码包。
+其余独立发布检查如下；各行有重复覆盖，不把它们相加冒充唯一测试数量：
+
+| 检查范围 | 本轮结果 |
+|---|---|
+| appserver / bridge / cache / core | 8,270 passed / 4 skipped，177.21 秒 |
+| integration / contract / unit / log / providers / tools | 2,808 passed，165.63 秒 |
+| 其余非 live / 非 PTY / 非 serial 模块（干净 checkout） | 2,169 passed / 26 skipped，76.40 秒 |
+| system（干净 checkout，含 wheel/sdist 安装） | 8 passed，12.57 秒 |
+| serial（干净 checkout，标准命名空间目录布局） | 8 passed，25.36 秒 |
+| 安装树的真实 venv Python 经生产 ShellExecutor + Windows Job 执行 | 3/3 成功；实际模块来自 venv 的 site-packages |
+| 版本 / 安装器 / frozen schema 专项 | 37 passed，6.97 秒 |
+| OpenTUI | 303 passed；TypeScript typecheck 通过 |
+| Ink 回退 | 1,502 passed；typecheck + 构建通过 |
+| protocol-client | 29 passed；codegen + typecheck 通过 |
+| 全库 ruff / 凭据扫描 / eval 定义 / 中英文 README 同步 | 全部通过；22 个 eval 定义无问题 |
+| 懒导入预算 | 179 < 181，没有提高预算 |
+| 发布源码包 | `python -m build --sdist --no-isolation` 与 `twine check` 通过 |
+
+首轮 serial 在扁平 `D:\\临时目录` 下触发测试自身的 `project_root.parents[1]`
+目录层级假设，在调用生产 API 前就失败。换成标准
+`.../RxyCode/RxyCode1_1_0` 布局后，干净源码的 system 和 serial 全部通过；
+没有通过扩大超时或修改生产代码绕过该失败。这一测试的路径可移植性限制仍存在。
+
+30 项 skipped 出现在核心与其余模块两组：26 项是被 Git 忽略的开发计划文档
+检查，另 4 项是既有缓存条件或未启用真实 Provider 的检查。未运行的 live/PTY
+测试、跨平台原生沙箱安全验收和新 Desktop 发布均不列作已通过。
+
+可复现的后端门禁（从 checkout 根执行，临时路径须在 workspace 外）：
+
+```sh
+python -m pytest tests/test_appserver tests/test_bridge tests/test_cache tests/test_core -m "not live and not pty and not serial" -n 2 --dist loadscope -q
+python -m pytest tests/integration tests/contract tests/unit tests/test_log tests/test_providers tests/test_tools -m "not live and not pty and not serial" -n 2 --dist loadscope -q
+python -m pytest tests/system -q
+python -m pytest tests -m "serial and not live and not pty" -n 0 -q
+python scripts/count_lazy_imports.py --budget 181
+python scripts/scan_secrets.py .
+```
+
+GitHub Release 工作流在 Linux/Windows 分发安装冒烟通过后才上传源码包。
+原始 JUnit 放在本机未跟踪的 `artifacts/v141-release-*.xml`，不进入分发包。
 
 实现阶段的完整修复原因和复跑记录见
 [CHANGELOG_v1.4.1.md](CHANGELOG_v1.4.1.md)，概要见 [根 CHANGELOG](../../CHANGELOG.md)。
