@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,10 @@ from utils.atomic_file import atomic_write_text
 
 ACTIONS = ("session", "command", "skill")
 MAX_PARALLEL = 2
+# F4-6：无消费窗口时的 execution 标记（测试包钉死唯一真值）。
+# "turn" 只表示投递给了已附着的消费窗口，由该窗口既有消费链执行。
+# 本模块不构造无人窗口的 prompt。
+SCHEDULED_PENDING = "scheduled_pending"
 
 
 class ScheduleError(Exception):
@@ -31,6 +36,38 @@ def _now() -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def schedule_tick_seconds(default: float = 30.0) -> float:
+    """Read ``RXYCODE_APPSERVER_SCHEDULE_TICK_SECONDS``.
+
+    废弃代码（2026-10-08 版）：appserver 把 30 秒写死传给 schedule_loop。
+    已路由到该环境变量；未设置、无法解析、非有限数或非正数时仍用调用方默认值。
+    这是调度节拍，不是 config.timeouts 注册表里的用户时钟。
+    """
+    raw = os.environ.get("RXYCODE_APPSERVER_SCHEDULE_TICK_SECONDS", "")
+    if not str(raw).strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return value
+
+
+def _revive_orphans_on_restore() -> bool:
+    """None 形参走 config。缺省 False，与重启后只标记 orphan 的旧行为一致。"""
+    try:
+        from config.settings import load_config
+    except ImportError:
+        from RxyCode.RxyCode1_1_0.config.settings import load_config
+    cfg = load_config() or {}
+    schedule = cfg.get("schedule") if isinstance(cfg, dict) else None
+    if not isinstance(schedule, dict):
+        return False
+    return bool(schedule.get("revive_orphans_on_restore", False))
 
 
 class ScheduleService:
@@ -108,7 +145,12 @@ class ScheduleService:
             raise ScheduleError("SCHEDULE_ACTION_INVALID", "action requires session_id for B5 Thread")
         return dict(action)
 
-    def restore_after_restart(self) -> list[dict[str, Any]]:
+    def restore_after_restart(self, *, revive_orphans: bool | None = None) -> list[dict[str, Any]]:
+        # 废弃代码（2026-10-08 版）：重启只把 running 标成 recovery_required，不补发。
+        # 已路由到 revive_orphans。None 读 schedule.revive_orphans_on_restore，默认 False，
+        # 该路径与旧行为逐字节一致。True 时对每个仍启用的 orphan fire-once，不补积压。
+        if revive_orphans is None:
+            revive_orphans = _revive_orphans_on_restore()
         orphans = []
         for job in self._jobs.values():
             if job.get("run_status") == "running":
@@ -119,6 +161,17 @@ class ScheduleService:
         self._running.clear()
         self._queue = []
         self._save()
+        if revive_orphans:
+            for orphan_job in orphans:
+                job_id = str(orphan_job["id"])
+                live = self._jobs.get(job_id) or {}
+                if not live.get("enabled", True):
+                    self._audit_row(action="revive", job_id=job_id, status="skipped")
+                    continue
+                try:
+                    self.revive_orphan(job_id)
+                except ScheduleError:
+                    self._audit_row(action="revive", job_id=job_id, status="skipped")
         return orphans
 
     def reclaim_orphans(self) -> list[dict[str, Any]]:
@@ -131,6 +184,44 @@ class ScheduleService:
                 self._audit_row(action="reclaim", job_id=job["id"], status="idle")
         self._save()
         return [{"id": job_id} for job_id in reclaimed]
+
+    def revive_orphan(self, job_id: str, *, now=None) -> dict[str, Any]:
+        """复活单个 orphan：立即 fire-once（本轮只跑一次，不补积压），清除 orphan。
+
+        非 orphan → raise ScheduleError("SCHEDULE_NOT_ORPHAN", "job is not an orphan")
+        （message 含小写 "orphan"，pytest match 锚）。
+        ``execution == "turn"`` 只表示补发进了已附着窗口的队列。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise ScheduleError("SCHEDULE_NOT_FOUND", f"unknown schedule: {job_id}")
+        if not (job.get("orphan") or job.get("run_status") == "recovery_required"):
+            raise ScheduleError("SCHEDULE_NOT_ORPHAN", "job is not an orphan")
+        if not job.get("enabled", True):
+            raise ScheduleError("SCHEDULE_DISABLED", f"{job_id} is disabled")
+        stamp = now or _now()
+        # 同步补投。不走 fire()/_sync：在已有事件循环里会留下未 await 的协程，
+        # 并且失败时已经把 orphan 清掉。失败必须原样抛出，让 restore 记 skipped。
+        result = self._run_action(job)
+        if inspect.isawaitable(result):
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+            raise ScheduleError("SCHEDULE_ASYNC", "revive dispatch must be synchronous")
+        job["orphan"] = False
+        job["run_status"] = "idle"
+        self._running.discard(job_id)
+        if (job.get("rule") or {}).get("once"):
+            job["enabled"] = False
+            job["next_fire"] = None
+        else:
+            # 从 now 重算，不回填已经错过的 interval。
+            job["next_fire"] = _iso(next_fire(job["rule"], stamp))
+        job["last_result"] = result
+        self._audit_row(action="fire", job_id=job_id, status="ok", result=result)
+        self._audit_row(action="revive", job_id=job_id, status="revived")
+        self._save()
+        return {"id": job_id, "ok": True, "orphan": False, "dispatch": result}
 
     def list_jobs(self) -> dict[str, Any]:
         return {"jobs": list(self._jobs.values()), "queue": list(self._queue), "running": sorted(self._running)}
@@ -323,15 +414,6 @@ class ScheduleService:
         if getattr(session, "trashed_at", None):
             session = self.sessions.restore(session_id)
         workspace = str(getattr(session, "workspace_root", None) or ".")
-        verdict = self.permissions.evaluate(
-            action="session.prompt",
-            actor="scheduler",
-            session_id=session.session_id,
-            workspace=workspace,
-            scope=workspace,
-        )
-        if verdict != "allow":
-            raise ScheduleError("SCHEDULE_DENIED", "B5 permission denied scheduled action")
         usage = getattr(session, "usage", None) or {}
         budget = getattr(session, "budget", None) or {}
         if int(usage.get("budget_exhausted") or 0):
@@ -340,9 +422,45 @@ class ScheduleService:
         limit = int(budget.get("max_tokens") or 0)
         if limit and used >= limit:
             raise ScheduleError("SCHEDULE_BUDGET", "session token budget exhausted")
+        # 裁定 2026-10-08：没有 delivery_approval_id 时照旧询问权限档。
+        # 默认 ask 档因此仍是 SCHEDULE_DENIED。批准只来自 schedule/create 记下的显式 allow，
+        # 用一次就消费，成功后再签下一轮，避免 interval 第二次被误拒。
+        approval_id = str(job.get("delivery_approval_id") or "").strip() or None
+        verdict = self.permissions.evaluate(
+            action="session.prompt",
+            actor="scheduler",
+            session_id=session.session_id,
+            workspace=workspace,
+            scope=workspace,
+            approval_id=approval_id,
+        )
+        if verdict != "allow":
+            raise ScheduleError("SCHEDULE_DENIED", "B5 permission denied scheduled action")
+        if approval_id is not None and hasattr(self.permissions, "decide"):
+            renewed = self.permissions.decide(
+                session_id=session.session_id,
+                action="session.prompt",
+                actor="scheduler",
+                scope=workspace,
+                decision="allow",
+                reason="schedule_delivery_next",
+                consumed=False,
+            )
+            job["delivery_approval_id"] = str(renewed.get("approval_id") or "")
         text = str(action.get("message") or action.get("command") or action.get("skill") or "")
+        # enqueue_scheduled 签名不动。去重沿用持久化 next_fire 与 session/events cursor。
         delivered = self.sessions.enqueue_scheduled(session.session_id, kind=kind, text=text)
-        return {"kind": kind, "delivered": True, **delivered}
+        probe = getattr(self.sessions, "is_consumer_attached", None)
+        attached = bool(probe(session.session_id)) if callable(probe) else False
+        # 废弃代码（2026-10-08 版）：成功入队只返回 delivered，看不出有没有消费窗口。
+        # 已路由到 execution。turn = 投递给已附着窗口；scheduled_pending = 已入队但无窗口。
+        # 这里不发起 prompt。
+        return {
+            "kind": kind,
+            "delivered": True,
+            **delivered,
+            "execution": "turn" if attached else SCHEDULED_PENDING,
+        }
 
     def audit(self) -> list[dict[str, Any]]:
         return list(self._audit)

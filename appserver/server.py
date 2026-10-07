@@ -415,6 +415,9 @@ class AppServer:
         """This window may run tools and schedules for this session only."""
         if session_id and session_id != "latest":
             self._window_sessions.add(session_id)
+            attached = getattr(self._sessions, "_attached_consumers", None)
+            if isinstance(attached, set):
+                attached.add(session_id)
 
     async def _host_for_session(self, session_id: str) -> AgentHost:
         host = self._session_hosts.get(session_id)
@@ -939,9 +942,11 @@ class AppServer:
                 self._recovery.reclaim_orphans(set(self._sessions._sessions))
                 self._schedule.reclaim_orphans()
             if self._schedule_task is None or self._schedule_task.done():
-                from .schedule_service import schedule_loop
+                from .schedule_service import schedule_loop, schedule_tick_seconds
 
-                self._schedule_task = asyncio.create_task(schedule_loop(self._schedule, asyncio.sleep, 30.0))
+                self._schedule_task = asyncio.create_task(
+                    schedule_loop(self._schedule, asyncio.sleep, schedule_tick_seconds())
+                )
         except Exception as exc:
             recovery_ok = False
             _logger.error("recovery restore failed: %s", exc)
@@ -3043,16 +3048,45 @@ class AppServer:
             return hub.schema(name)
         raise CliHubError("CLI_METHOD_UNKNOWN", f"unknown cli method: {method}")
 
+    def _grant_schedule_delivery(self, job: dict[str, Any]) -> None:
+        """schedule/create 是用户发出的显式投递批准，不是默认档放行。
+
+        裁定 2026-10-08：只给这次调用记下 actor=scheduler、action=session.prompt 的 allow。
+        不带这张批准的 ScheduleService（默认 ask 档）仍然 SCHEDULE_DENIED。
+        """
+        action = job.get("action") if isinstance(job.get("action"), dict) else {}
+        session_id = str(action.get("session_id") or "")
+        record = self._sessions.get(session_id)
+        job_id = str(job.get("id") or "")
+        live = self._schedule._jobs.get(job_id)
+        if record is None or live is None:
+            return
+        granted = self._permissions.decide(
+            session_id=session_id,
+            action="session.prompt",
+            actor="scheduler",
+            scope=str(record.workspace_root),
+            decision="allow",
+            reason="schedule_create",
+            consumed=False,
+        )
+        approval_id = str(granted.get("approval_id") or "")
+        live["delivery_approval_id"] = approval_id
+        job["delivery_approval_id"] = approval_id
+        self._schedule._save()
+
     def _handle_schedule(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         sched = self._schedule
         if method == "schedule/list":
             return sched.list_jobs()
         if method == "schedule/create":
-            return sched.create(
+            job = sched.create(
                 rule=params.get("rule") if isinstance(params.get("rule"), dict) else {},
                 action=params.get("action") if isinstance(params.get("action"), dict) else {},
                 enabled=bool(params.get("enabled", True)),
             )
+            self._grant_schedule_delivery(job)
+            return job
         if method == "schedule/update":
             return sched.update(
                 str(params.get("job_id") or ""),

@@ -81,6 +81,8 @@ class SessionStore:
     def __init__(self, *, task_store: DesktopTaskStore | None = None) -> None:
         self._sessions: dict[str, AppSessionRecord] = {}
         self._task_store = task_store
+        # 本进程里已经 claim 过的窗口 session。不是第二套活跃度时钟。
+        self._attached_consumers: set[str] = set()
         if task_store is not None:
             for task in task_store.list(include_trashed=True):
                 self._sessions[str(task["session_id"])] = self._from_task(task)
@@ -449,6 +451,14 @@ class SessionStore:
         self._touch(record)
         self._persist(record)
         return {"session_id": record.session_id, "seq": seq, "method": method, "channel": "b5-thread"}
+
+    def is_consumer_attached(self, session_id: str) -> bool:
+        """F4-6：该 session 是否已有消费窗口。
+
+        True 只说明 scheduled 文本可以交给这扇窗口的既有消费链。
+        本方法不发起 prompt，也不判断窗口是否仍在心跳。
+        """
+        return str(session_id) in self._attached_consumers
 
     def restore(self, session_id: str) -> AppSessionRecord:
         record = self._require(session_id)
