@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from RxyCode.RxyCode1_1_0.core.sandbox.linux import build_bwrap_command
 from RxyCode.RxyCode1_1_0.core.sandbox.policy import SandboxPolicy
+
+
+def test_windows_native_suite_skips_before_platform_imports():
+    """The Linux/macOS collector must never load Windows ctypes bindings."""
+    suite = Path(__file__).with_name("test_sandbox_windows.py")
+    code = """
+import builtins, importlib.util, sys, pytest, psutil
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name.endswith('sandbox.windows'):
+        raise AssertionError('platform binding imported before module skip')
+    return original_import(name, *args, **kwargs)
+sys.platform = 'linux'
+builtins.__import__ = guarded_import
+spec = importlib.util.spec_from_file_location('windows_native_suite', sys.argv[1])
+try:
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+except pytest.skip.Exception as exc:
+    assert exc.allow_module_level
+    print('NATIVE_SUITE_SKIPPED_BEFORE_IMPORT')
+else:
+    raise AssertionError('Windows native suite was not skipped')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(suite)],
+        capture_output=True, text=True, encoding="utf-8", timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "NATIVE_SUITE_SKIPPED_BEFORE_IMPORT" in result.stdout
 
 
 @pytest.fixture

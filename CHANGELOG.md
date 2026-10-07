@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Test infrastructure: skip the native Windows sandbox suite before importing
+  Windows-only bindings during Linux/macOS collection. Add a subprocess
+  regression that fails if those bindings are imported first. This corrects
+  the post-release v1.4.1 Linux CI collector error; published CLI distributions
+  do not contain tests and their runtime content is unchanged.
+
 ---
 
 ## [1.4.1] - 2026-10-07

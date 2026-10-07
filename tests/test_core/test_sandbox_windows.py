@@ -13,18 +13,24 @@ import time
 from pathlib import Path
 from unittest import mock
 
-import psutil
 import pytest
 
-from RxyCode.RxyCode1_1_0.core.sandbox.errors import SandboxUnavailableError
-from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+# A skipif marker is evaluated after collection imports. Skip this native
+# suite before importing Windows-only ctypes bindings on Linux/macOS.
+if sys.platform != "win32":
+    pytest.skip("Windows 专属后端", allow_module_level=True)
+
+import psutil  # noqa: E402
+
+from RxyCode.RxyCode1_1_0.core.sandbox.errors import SandboxUnavailableError  # noqa: E402
+from RxyCode.RxyCode1_1_0.core.sandbox.manager import (  # noqa: E402
     JobPlan,
     bind_spawned_process,
     open_sandbox_job,
     wrap_command,
 )
-from RxyCode.RxyCode1_1_0.core.sandbox.policy import SandboxPolicy, from_config
-from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
+from RxyCode.RxyCode1_1_0.core.sandbox.policy import SandboxPolicy, from_config  # noqa: E402
+from RxyCode.RxyCode1_1_0.core.sandbox.windows import (  # noqa: E402
     LOW_INTEGRITY_SID,
     _close_handle,
     apply_job_to_pid,
@@ -39,7 +45,8 @@ from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
     unenforced_constraints,
 )
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows 专属后端")
+# Deprecated (2026-10-07): a module-wide skipif here was too late to prevent
+# importing ctypes.windll during Linux collection; use the import-time gate.
 
 
 def _policy(**overrides) -> SandboxPolicy:

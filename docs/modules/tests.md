@@ -204,6 +204,10 @@ leak。它只衡量 RxyCode 内部适配器，不能写成真实模型或 OpenCo
 - 网络、模型、时间、ID、token/cost 等不确定数据必须脚本化或规范化。
 - 测试应断言外部行为和协议顺序；不得通过弱化断言、无理由 `skip/xfail` 或吞掉异常制造绿色结果。
 - 子进程和 PTY 必须在 `finally` 中终止并等待退出；失败 artifact 不得包含 secret。
+- 平台专属测试须在导入原生绑定前执行 module-level skip（`allow_module_level=True`）。
+  `pytestmark = skipif(...)` 不能阻止 collection 阶段导入 `ctypes.windll`。
+  Linux 套件包含独立子进程回归，确认 Windows 原生测试在绑定导入前跳过；Windows
+  主机仍实际执行全部内核测试。此规则不跳过 Linux/macOS 的策略与参数测试。
 - 新分层测试放入对应目录；只有仍未迁移的旧回归测试保留在 legacy 位置。
 
 ## 覆盖率策略
