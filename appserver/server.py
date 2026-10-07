@@ -2457,6 +2457,134 @@ class AppServer:
             return
         await self._respond(request_id, result)
 
+    def _prefix_rewinder_for_session(self, session_id: str):
+        """Closure for an in-process AgentV2. No new worker pipe method.
+
+        The live prefix is owned by the worker. This process only truncates
+        when a session agent is already attached. Otherwise conversation and
+        both fail closed inside rewind, and code does not need a rewinder.
+        """
+        agents = getattr(self, "_session_agents", None) or {}
+        agent = agents.get(session_id)
+        if agent is None or not hasattr(agent, "_rewind_agent_prefix"):
+            return None
+
+        def rewinder(target, agent=agent, session_id=session_id):
+            keep = self._keep_human_messages_for_checkpoint(session_id, target, agent)
+            if keep is None:
+                raise CheckpointRewindError(
+                    "cannot determine rewind conversation boundary",
+                    code="prefix_boundary_unknown",
+                )
+            return agent._rewind_agent_prefix(keep_human_messages=keep)
+
+        return rewinder
+
+    def _keep_human_messages_for_checkpoint(self, session_id: str, target, agent=None) -> int | None:
+        """Map a checkpoint onto the humans still present in the live prefix.
+
+        Folded or previously hidden turns are not counted. Duplicate texts
+        and a missing items_seq are not a reliable map, so the caller fails
+        closed instead of guessing one turn.
+        """
+        if not isinstance(target, dict):
+            return None
+        if "items_seq" not in target or target.get("items_seq") is None:
+            explicit = target.get("keep_human_messages")
+            if explicit is None:
+                return None
+            try:
+                return max(0, int(explicit))
+            except (TypeError, ValueError):
+                return None
+        try:
+            limit = int(target["items_seq"])
+        except (TypeError, ValueError):
+            return None
+        record = self._sessions.get(session_id)
+        until = getattr(record, "projection_until_seq", None) if record is not None else None
+        hidden_until = getattr(record, "projection_hidden_until_seq", None) if record is not None else None
+
+        def _hidden(seq: int) -> bool:
+            if until is None:
+                return False
+            if hidden_until is None:
+                return seq > int(until)
+            return int(until) < seq <= int(hidden_until)
+
+        allowed: list[str] = []
+        after: list[str] = []
+        hidden_texts: set[str] = set()
+        every_text: list[str] = []
+        for item in self._checkpoint_rewind._items(session_id):
+            if item.get("method") != "session/prompt":
+                continue
+            text = str((item.get("params") or {}).get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                seq = int(item.get("seq") or 0)
+            except (TypeError, ValueError):
+                return None
+            every_text.append(text)
+            if _hidden(seq):
+                hidden_texts.add(text)
+                continue
+            if seq > limit:
+                after.append(text)
+                continue
+            allowed.append(text)
+        if len(every_text) != len(set(every_text)):
+            return None
+        known = set(every_text)
+        prefix = list(getattr(agent, "_agent_prefix_messages", None) or [])
+        humans: list[str] = []
+        for message in prefix:
+            if getattr(message, "type", "") != "human" and message.__class__.__name__ != "HumanMessage":
+                continue
+            plain = self._plain_user_text(getattr(message, "content", "") or "", known)
+            if plain is None:
+                return None
+            humans.append(plain)
+        if len(humans) != len(set(humans)):
+            return None
+        if any(text in hidden_texts for text in humans):
+            return None
+        allowed_set = set(allowed)
+        after_set = set(after)
+        matched = 0
+        for text in humans:
+            if text in allowed_set:
+                matched += 1
+                continue
+            if text in after_set:
+                break
+            return None
+        else:
+            return matched
+        if any(text not in after_set for text in humans[matched:]):
+            return None
+        return matched
+
+    @staticmethod
+    def _plain_user_text(content: str, known: set[str]) -> str | None:
+        """Match a prefix human to a stored prompt without cutting the user body.
+
+        A raw prompt wins even when it contains the wrapper separator. A wrapped
+        message matches the longest known prompt that is its full suffix.
+        """
+        text = str(content or "").strip()
+        if not text:
+            return None
+        if text in known:
+            return text
+        marker = "\n\n---\n\n"
+        found = [prompt for prompt in known if text.endswith(marker + prompt)]
+        if not found:
+            return None
+        found.sort(key=len, reverse=True)
+        return found[0]
+
     async def _handle_checkpoint_rewind(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id") or "")
         record = self._sessions.get(session_id)
@@ -2466,10 +2594,13 @@ class AppServer:
         if await self._deny_write(params | {"session_id": session_id}, request_id, "checkpoint_restore", str(record.workspace_root)):
             return
         try:
+            scope = "code" if "scope" not in params else params.get("scope")
             result = self._checkpoint_rewind.rewind(
                 checkpoint_id=str(params.get("checkpoint_id") or ""),
                 confirm=params.get("confirm"),
                 session_id=session_id,
+                scope=scope,
+                prefix_rewinder=self._prefix_rewinder_for_session(session_id),
             )
         except CheckpointRewindError as exc:
             code = -32602 if exc.code == "confirm_required" else -32001

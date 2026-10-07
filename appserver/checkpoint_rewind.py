@@ -34,6 +34,9 @@ def project_session_items(
     return visible
 
 
+REWIND_SCOPES = ("code", "conversation", "both")
+
+
 class CheckpointRewindError(Exception):
     def __init__(self, message: str, *, code: str = "checkpoint_rewind") -> None:
         super().__init__(message)
@@ -96,13 +99,25 @@ class CheckpointRewindService:
         checkpoint_id: str,
         confirm: bool,
         session_id: str,
+        scope: str = "code",
+        prefix_rewinder=None,
     ) -> dict[str, Any]:
         if confirm is not True:
             raise CheckpointRewindError("rewind requires explicit confirm=true", code="confirm_required")
+        if scope not in REWIND_SCOPES:
+            raise CheckpointRewindError(f"invalid rewind scope: {scope}", code="invalid_scope")
         record = self._sessions.get(session_id)
         if record is None:
             raise CheckpointRewindError(f"unknown session: {session_id}", code="unknown_session")
         target = self._reviews.read_checkpoint(checkpoint_id, session_id=session_id)
+        prefix_truncated = 0
+        if scope in {"conversation", "both"}:
+            if not callable(prefix_rewinder):
+                raise CheckpointRewindError(
+                    "prefix_rewinder required for conversation scope",
+                    code="prefix_rewinder_required",
+                )
+            prefix_truncated = int(prefix_rewinder(target) or 0)
         restore_point = self._reviews.create_checkpoint(
             session_id=session_id,
             workspace=Path(str(target.get("workspace") or record.workspace_root)),
@@ -111,7 +126,9 @@ class CheckpointRewindService:
             user_prompt=None,
             items_seq=self._last_items_seq(session_id),
         )
-        restored = self._reviews.restore_checkpoint(checkpoint_id, session_id=session_id)
+        restored: dict[str, Any] = {}
+        if scope in {"code", "both"}:
+            restored = self._reviews.restore_checkpoint(checkpoint_id, session_id=session_id)
         before = self.visible_items(session_id)
         target_seq = int(target.get("items_seq") or 0)
         seq_at_rewind = self._last_items_seq(session_id)
@@ -124,11 +141,15 @@ class CheckpointRewindService:
         truncated = max(0, len(before) - len(after))
         return {
             "restore_point": restore_point["checkpoint_id"],
-            "restored_files": int(target.get("file_count") or 0),
+            "restored_files": (
+                int(target.get("file_count") or 0) if scope in {"code", "both"} else 0
+            ),
             "truncated_messages": truncated,
             "refill_prompt": target.get("user_prompt"),
             "checkpoint_id": checkpoint_id,
             "diff_hash": restored.get("diff_hash"),
             "previous_diff_hash": restored.get("previous_diff_hash"),
             "stale_reviews": restored.get("stale_reviews") or [],
+            "scope": scope,
+            "prefix_truncated_messages": prefix_truncated,
         }

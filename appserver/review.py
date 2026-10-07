@@ -666,7 +666,10 @@ class ReviewService:
         for rel, content in item["files"].items():
             target = assert_inside_workspace(root, root / rel)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            # write_text on Windows translates \n again. The snapshot already
+            # holds the file's text, including a captured CRLF, so a second
+            # translation turns "v1\n" into "v1\n\n" after read_text.
+            target.write_bytes(content.encode("utf-8"))
         scope_files = set(item["file_list"])
         stale: list[str] = []
         root_key = str(canonicalize(root))

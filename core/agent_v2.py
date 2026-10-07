@@ -201,7 +201,7 @@ from .providers.base import (
     LLMTransport,
     RESPONSES_TRANSPORT,
 )
-from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds
+from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds, tool_pair_integrity
 from .providers._compat import (
     OPENAI_CHAT_TRANSPORT,
     OPENAI_RESPONSES_TRANSPORT,
@@ -5327,6 +5327,29 @@ class AgentV2:
                 ai_kwargs["reasoning_content"] = thinking
             prefix.append(AIMessage(content=answer, additional_kwargs=ai_kwargs))
         self._agent_prefix_messages = prefix
+
+    def _rewind_agent_prefix(self, *, keep_human_messages: int) -> int:
+        """截断 _agent_prefix_messages 到第 N 条 human 之后最近的完整 turn 边界。
+
+        返回截掉的消息条数。S1 SystemMessage 永远保留；切点破坏
+        assistant↔tool 配对或让末尾 human 失去应答时，向前收缩到配对完整处。
+        """
+        prefix = list(getattr(self, "_agent_prefix_messages", None) or [])
+        humans = [idx for idx, message in enumerate(prefix) if isinstance(message, HumanMessage)]
+        keep_n = max(0, int(keep_human_messages))
+        if not prefix or keep_n >= len(humans):
+            return 0
+        cut = humans[keep_n]
+        while cut > 1 and (
+            not tool_pair_integrity(prefix[:cut])
+            or isinstance(prefix[cut - 1], HumanMessage)
+        ):
+            cut -= 1
+        dropped = len(prefix) - cut
+        if dropped <= 0:
+            return 0
+        self._agent_prefix_messages = prefix[:cut]
+        return dropped
 
     async def _fast_reply_with_tools(
         self,
