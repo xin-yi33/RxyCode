@@ -31,7 +31,7 @@ class TestGraphContextTokenLimit:
         from tests.test_core.test_route_next_token_estimate import _make_state
 
         caps = ModelCapabilities(compaction_threshold=28_800)
-        big = "x" * (28_801 * 3)
+        big = "x" * (28_801 * 8)
         state = _make_state(memory_ctx=big)
         state["_capabilities"] = caps
 

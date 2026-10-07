@@ -46,6 +46,7 @@ from RxyCode.RxyCode1_1_0.validation.final_output import verify_grounded_synthes
 from RxyCode.RxyCode1_1_0.validation import re_planner as _re_planner_module
 from RxyCode.RxyCode1_1_0.validation.reflection import Reflector
 from RxyCode.RxyCode1_1_0.validation import validator as _validator_module
+from .providers.tokenizers import count_tokens
 from .state import AgentState, TaskNode, TaskStatus, TaskTree
 from RxyCode.RxyCode1_1_0.execution.scheduler import TaskScheduler
 
@@ -1223,6 +1224,21 @@ async def final_verifier_node(state: AgentState) -> dict:
 # Routing functions (pure deterministic logic, no LLM calls)
 # ---------------------------------------------------------------------------
 
+def _resolve_tokenizer_spec(capabilities: object) -> str:
+    """Same field as AgentV2._tokenizer_spec. Missing caps stay on o200k_base."""
+    if capabilities is None:
+        return "tiktoken:o200k_base"
+    return getattr(capabilities, "tokenizer", None) or "tiktoken:o200k_base"
+
+
+def _estimate_text_tokens(text: str, *, spec: str) -> int:
+    """graph 侧 token 估算唯一入口：转调 core.providers.tokenizers.count_tokens。
+
+    不得再出现旧的三路长度整除。未知 spec 的字符比回退留在 count_tokens。
+    """
+    return count_tokens(text, spec)
+
+
 def route_next(state: AgentState) -> str:
     """Main scheduling router: decide what to do next.
 
@@ -1249,9 +1265,10 @@ def route_next(state: AgentState) -> str:
         int(context_cfg.get("max_context_compressions", 2) or 2),
     )
 
-    # Check context size - use token estimate (~3 chars/token for mixed content).
     # The estimate covers ALL text that flows into the next LLM call:
     # memory_context + every task node's result text + conversation_history.
+    # 废弃代码（2026-10-08 版）：三路文本长度整除三。
+    # 已路由到 _estimate_text_tokens（count_tokens，与 fast 侧同一把尺）。
     memory_ctx = state.get("memory_context", "")
     results_text = "".join(
         (n.result or "") for n in tree.nodes.values()
@@ -1260,7 +1277,12 @@ def route_next(state: AgentState) -> str:
         str(m.get("content", "")) if isinstance(m, dict) else str(m)
         for m in state.get("conversation_history", [])
     )
-    estimated_tokens = (len(memory_ctx) + len(results_text) + len(history_text)) // 3
+    spec = _resolve_tokenizer_spec(state.get("_capabilities"))
+    estimated_tokens = (
+        _estimate_text_tokens(memory_ctx, spec=spec)
+        + _estimate_text_tokens(results_text, spec=spec)
+        + _estimate_text_tokens(history_text, spec=spec)
+    )
     if estimated_tokens > token_limit:
         if int(state.get("compression_count", 0) or 0) >= max_compressions:
             state["error"] = (

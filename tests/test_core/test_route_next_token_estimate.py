@@ -2,7 +2,8 @@
 Tests for core/graph.py route_next() token estimation.
 
 The estimate must account for memory_context + all task node result text
-+ conversation_history text (total chars // 3), not just memory_context.
++ conversation_history text, using the same tokenizer as the fast loop,
+not just memory_context. Fixture lengths cross that token limit.
 """
 import pytest
 from unittest.mock import AsyncMock
@@ -69,7 +70,7 @@ class TestRouteNextTokenEstimate:
     def test_large_memory_context_triggers_compress(self):
         from RxyCode.RxyCode1_1_0.core.graph import route_next
 
-        big = "x" * (232_001 * 3)
+        big = "x" * (232_001 * 8)
         state = _make_state(memory_ctx=big)
         assert route_next(state) == "compress"
 
@@ -77,14 +78,14 @@ class TestRouteNextTokenEstimate:
         """memory_context alone is small, but task results push it over."""
         from RxyCode.RxyCode1_1_0.core.graph import route_next
 
-        big_result = "r" * (232_001 * 3)
+        big_result = "r" * (232_001 * 8)
         state = _make_state(memory_ctx="tiny", results=[big_result])
         assert route_next(state) == "compress"
 
     def test_large_conversation_history_triggers_compress(self):
         from RxyCode.RxyCode1_1_0.core.graph import route_next
 
-        big_msg = "h" * (232_001 * 3)
+        big_msg = "h" * (232_001 * 8)
         state = _make_state(
             memory_ctx="tiny",
             history=[{"role": "user", "content": big_msg}],
@@ -95,7 +96,7 @@ class TestRouteNextTokenEstimate:
         """Each source is below threshold alone; combined they exceed it."""
         from RxyCode.RxyCode1_1_0.core.graph import route_next
 
-        part = "y" * (100_000 * 3)  # ~100k tokens each
+        part = "y" * (100_000 * 4)  # ~100k tokens each under o200k
         state = _make_state(
             memory_ctx=part,
             results=[part],
@@ -106,7 +107,7 @@ class TestRouteNextTokenEstimate:
     def test_repeated_no_progress_compression_fails_honestly(self):
         from RxyCode.RxyCode1_1_0.core.graph import route_next
 
-        state = _make_state(memory_ctx="x" * (232_001 * 3))
+        state = _make_state(memory_ctx="x" * (232_001 * 8))
         state["compression_count"] = 2
 
         assert route_next(state) == "error"
