@@ -6704,6 +6704,11 @@ class AgentV2:
             def _summary_provider(_folded):
                 return prefetched
 
+            try:
+                self._memory.flush_before_compaction(messages)
+            except Exception as exc:
+                _logger.warning("F4-3 pre-fold flush failed: %s", exc)
+
             compacted, telemetry = run_compaction_ladder(
                 messages,
                 force=force,

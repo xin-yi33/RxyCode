@@ -87,6 +87,13 @@ class ExperienceVectorMemory:
     DEFAULT_MAX_ENTRIES = 2000
     MAX_TOP_K = 20
     MAX_TEXT_CHARS = 12_000
+    # Low feature-hash collisions with no shared token cluster near 0.05.
+    # The weakest search this repo already requires is a stored plan record
+    # at about 0.18. Shared-token hits sit near 0.36 or higher.
+    # A best score below this band is noise and the result is empty.
+    # A best score at or above it keeps weaker siblings, including score 0,
+    # so a ranked list can still show the non-matching neighbor.
+    NOISE_BAND_BEST_SCORE = 0.12
 
     def __init__(
         self,
@@ -147,6 +154,7 @@ class ExperienceVectorMemory:
         outcome: str,
         session: str,
         timestamp: str | None = None,
+        source: str = "manual",
     ) -> bool:
         """Persist one experience; return False for empty or duplicate text."""
         clean_text = _redact(str(text)).strip()[:self.MAX_TEXT_CHARS]
@@ -155,6 +163,7 @@ class ExperienceVectorMemory:
         kind = str(kind).strip()[:64] or "experience"
         outcome = str(outcome).strip()[:64] or "unknown"
         session = str(session).strip()[:256]
+        source = str(source).strip()[:64] or "manual"
         timestamp = timestamp or datetime.now(timezone.utc).isoformat()
         fingerprint_source = "\0".join(
             (self.project, session, kind, outcome, clean_text)
@@ -170,6 +179,7 @@ class ExperienceVectorMemory:
             "outcome": outcome,
             "project": self.project,
             "session": session,
+            "source": source,
             "timestamp": timestamp,
             "dimension": self.dimension,
             "vector": feature_hash_vector(clean_text, self.dimension),
@@ -226,6 +236,8 @@ class ExperienceVectorMemory:
                 score=score,
             ))
         matches.sort(key=lambda item: (item.score, item.timestamp), reverse=True)
+        if matches and matches[0].score < self.NOISE_BAND_BEST_SCORE:
+            return []
         return matches[:bounded_k]
 
     def retrieve_context(

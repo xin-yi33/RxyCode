@@ -1,7 +1,9 @@
 ﻿from typing import Optional
 from pathlib import Path
 from collections import OrderedDict
+import logging
 import math
+import re
 import threading
 import time
 from typing import Any
@@ -11,7 +13,74 @@ from RxyCode.RxyCode1_1_0.config.settings import load_config
 from .short_term import ShortTermMemory
 from .long_term import LongTermMemory
 from .compressor import ContextCompressor
+from .user_memory import UserMemory
 from .vector_memory import ExperienceVectorMemory
+
+_logger = logging.getLogger(__name__)
+
+# F4-3：[User memory] excerpt 上限与段头（测试包 §1.5 唯一真值）。
+USER_MEMORY_EXCERPT_MAX_CHARS = 800
+USER_MEMORY_SECTION_HEADER = "[User memory]"
+PREFERENCE_MAX_CHARS = 200
+
+_PREFERENCE_MARKERS = ("我喜欢", "以后都", "都用", "prefer", "always")
+_SENSITIVE_MARKERS = ("password", "passwd", "token", "secret", "api_key", "sk-")
+_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|\\|/|~/")
+
+
+def _confirmed_preference_fact(text: str) -> str | None:
+    """Return a short first-person preference, or None when it must not be stored."""
+    clean = str(text or "").strip()
+    if not clean or len(clean) > PREFERENCE_MAX_CHARS:
+        return None
+    folded = clean.casefold()
+    if not any(marker.casefold() in folded for marker in _PREFERENCE_MARKERS):
+        return None
+    if _PATH_RE.search(clean) or any(marker in folded for marker in _SENSITIVE_MARKERS):
+        return None
+    return clean
+
+
+def _write_arg_path(args: dict) -> str:
+    """Production write uses filePath. Fixtures also pass path or file_path."""
+    for key in ("filePath", "path", "file_path"):
+        value = args.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _write_succeeded_paths(messages) -> list[str]:
+    """Paths whose write* tool result confirmed success. Args alone never count."""
+    from RxyCode.RxyCode1_1_0.core.compaction import TOOL_RESULT_TOMBSTONE
+
+    pending: dict[str, str] = {}
+    confirmed: list[str] = []
+    for message in messages or []:
+        if getattr(message, "type", None) == "ai":
+            for call in getattr(message, "tool_calls", None) or []:
+                name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+                if not str(name or "").startswith("write"):
+                    continue
+                args = call.get("args") if isinstance(call, dict) else getattr(call, "args", None)
+                if not isinstance(args, dict):
+                    continue
+                path = _write_arg_path(args)
+                call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+                if path and call_id:
+                    pending[str(call_id)] = path
+            continue
+        if getattr(message, "type", None) != "tool":
+            continue
+        call_id = str(getattr(message, "tool_call_id", "") or "")
+        path = pending.pop(call_id, "")
+        if not path:
+            continue
+        content = str(getattr(message, "content", "") or "").strip()
+        if content == TOOL_RESULT_TOMBSTONE or content.startswith("[error"):
+            continue
+        confirmed.append(path)
+    return confirmed
 
 
 def _positive_int(value, default: int, maximum: int) -> int:
@@ -111,6 +180,8 @@ class MemoryManager:
             dimension=dimension,
             max_entries=max_entries,
         )
+        # F4-3：读取面。UserMemory 只接受用户手写，flush 不写这里。
+        self.user_memory = UserMemory()
         self._rag_enabled = _enabled(rag_cfg.get("enabled", False))
         self._rag_top_k = _positive_int(rag_cfg.get("top_k", 6), 6, 20)
         rag_max_chars = rag_cfg.get(
@@ -214,6 +285,60 @@ class MemoryManager:
         if new_long_ctx != long_ctx:
             self.long_term.save_session_context(new_long_ctx)
 
+    def flush_before_compaction(self, messages: list) -> dict:
+        """Fold 前把经确认的短事实写入 project 级 experience。不写 UserMemory。"""
+        added = {"preference_added": 0, "artifact_added": 0}
+        try:
+            for message in messages or []:
+                if getattr(message, "type", None) != "human":
+                    continue
+                fact = _confirmed_preference_fact(getattr(message, "content", "") or "")
+                if fact is None:
+                    continue
+                wrote = self.experience.add(
+                    fact,
+                    kind="preference",
+                    outcome="stated",
+                    session=self.session_id,
+                    source="flush_before_compaction",
+                )
+                if wrote:
+                    added["preference_added"] += 1
+            files = sorted(set(_write_succeeded_paths(messages)))[:20]
+            if files:
+                wrote = self.experience.add(
+                    "Files written before compaction: " + ", ".join(files),
+                    kind="artifact",
+                    outcome="written",
+                    session=self.session_id,
+                    source="flush_before_compaction",
+                )
+                if wrote:
+                    added["artifact_added"] += 1
+        except Exception as exc:
+            _logger.warning("F4-3 pre-fold flush failed: %s", exc)
+        return added
+
+    def _user_memory_excerpt(self, *, limit: int, long_ctx: str) -> str:
+        """Newest handwritten global entries, whole entries only, within the cap."""
+        entries = list(self.user_memory.list_all() or [])
+        entries.sort(key=lambda entry: int(entry.get("id") or 0), reverse=True)
+        # 段体在标题后还有换行，后面的段还会再加一个空行。预算留给这些字符。
+        budget = max(0, int(limit) - 3)
+        chosen: list[str] = []
+        used = 0
+        known = long_ctx or ""
+        for entry in entries:
+            text = str(entry.get("text") or "").strip()
+            if not text or text in known:
+                continue
+            extra = len(text) if not chosen else len(text) + 1
+            if used + extra > budget:
+                break
+            chosen.append(text)
+            used += extra
+        return "\n".join(chosen)
+
     def get_context_for_prompt(self, query: str = "", *, include_long_term: bool = True) -> str:
         """Get context for prompt injection.
         
@@ -225,10 +350,21 @@ class MemoryManager:
         self._current_query = query
         
         # Long-term memory (always include, but truncate if too long)
+        long_ctx = ""
         if include_long_term:
-            long_ctx = self.long_term.load_session_context()
+            long_ctx = self.long_term.load_session_context() or ""
             if long_ctx:
                 parts.append(f"[Long-term memory]\n{long_ctx}")
+
+        try:
+            user_excerpt = self._user_memory_excerpt(
+                limit=USER_MEMORY_EXCERPT_MAX_CHARS,
+                long_ctx=long_ctx if include_long_term else "",
+            )
+            if user_excerpt:
+                parts.append(f"{USER_MEMORY_SECTION_HEADER}\n{user_excerpt}")
+        except Exception as exc:
+            _logger.warning("F4-3 user memory excerpt failed: %s", exc)
 
         if query:
             experience_ctx = self.get_retrieval_context(query)
