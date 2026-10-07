@@ -838,26 +838,56 @@ class AppServer:
         if kill_host:
             await self._kill_session_host(session_id)
 
+    async def _restart_worker_continue(self, stalled: ActiveJob) -> None:
+        """F4-1 外壳唯一重启点。P5 在这里真正拉起 worker 并续跑。
+
+        废弃代码（2026-10-08 版）：stall 没有续跑。default_decision_hook 恒返回
+        None，生产路径不会进入本方法。
+        """
+        _logger.info(
+            "stall restart_requested for job %s is reserved for Phase P",
+            stalled.job_id,
+        )
+
+    async def _emit_stall_event(self, message: dict) -> None:
+        """Stall 分级事件走与 event/job_status 相同的通知通道。"""
+        note = {
+            "jsonrpc": "2.0",
+            "method": message.get("method"),
+            "params": message.get("params") or {},
+        }
+        self._persist_notification(note)
+        self._schedule_notification(note)
+        await self._drain_emit_writes()
+
     async def _handle_stalled_job(self, stalled: ActiveJob) -> None:
-        reason = (
-            f"job stalled >{stall_timeout_seconds()}s (session {stalled.session_id})"
-        )
-        # Worker-dead only: no heartbeat/progress. Model idle is StreamIdleTimeoutError.
-        # Save the task *before* _fail_job (which pops it from _job_tasks).
+        # 废弃代码（2026-10-08 版）：此处直接 _fail_job(code=-32004, kill_host=True)。
+        # 已路由到 stall_grading.escalate_stalled_job。残余 task cancel 留在外壳。
+        from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout
+
+        from .stall_grading import default_decision_hook, escalate_stalled_job
+
         task = self._job_tasks.get(stalled.job_id)
-        await self._fail_job(
-            session_id=stalled.session_id,
-            job_id=stalled.job_id,
-            request_id=stalled.request_id,
-            code=-32004,
-            message=reason,
-            kill_host=True,
-            degrade_reason=reason,
+        # 不把 _default_config 的镜像 20 当成用户 cfg，否则 env 永远盖不过默认值。
+        # 缺键时 resolve_timeout 走 env，再走注册表默认 20。
+        result = await escalate_stalled_job(
+            watchdog=self._watchdog,
+            host=self._session_hosts.get(stalled.session_id),
+            job=stalled,
+            fail_job=self._fail_job,
+            emit=self._emit_stall_event,
+            stall_seconds=stall_timeout_seconds(),
+            grace_seconds=resolve_timeout("appserver.stall_grace_seconds"),
+            decision_hook=default_decision_hook,
         )
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        if result.get("action") == "restart_requested":
+            await self._restart_worker_continue(stalled)
+            return
+        if result.get("action") in {"legacy_kill", "killed"}:
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     async def _handle_initialize(self, params: dict[str, Any], request_id: Any) -> None:
         if self._shutdown:

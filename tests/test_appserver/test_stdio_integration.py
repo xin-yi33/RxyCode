@@ -714,6 +714,8 @@ def test_appserver_watchdog_stall_kills_job():
     env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
     env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
     env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0"
+    # F4-1：出厂路径先 interrupt 再等 grace。grace 默认 20s，超过本测试的等待窗。
+    env["RXYCODE_APPSERVER_STALL_GRACE_SECONDS"] = "1"
     proc = _appserver_proc_with_env(env)
     try:
         client = AppserverClient(proc)
@@ -731,34 +733,39 @@ def test_appserver_watchdog_stall_kills_job():
             {"session_id": session["session_id"], "text": "hang:forever"},
         )
 
-        job_states: list[str] = []
-        error_response: dict | None = None
+        terminal: dict | None = None
         saw_degraded_heartbeat = False
+        kept = False
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
             message = client.readline(timeout=0.5)
             if message is None:
                 continue
-            if message.get("method") == "event/job_status":
+            if message.get("method") == "event/stall_escalation":
                 params = message.get("params") or {}
-                job_states.append(str(params.get("state")))
+                if params.get("outcome") == "kept":
+                    kept = True
             if message.get("method") == "event/server_heartbeat":
                 params = message.get("params") or {}
                 if params.get("degraded"):
                     saw_degraded_heartbeat = True
-            if message.get("id") == prompt_id and "error" in message:
-                error_response = message["error"]
-            if error_response is not None and saw_degraded_heartbeat:
+            if message.get("id") == prompt_id and (
+                "error" in message or "result" in message
+            ):
+                terminal = message
+            if terminal is not None and kept:
                 break
 
-        assert error_response is not None, "expected stalled prompt JSON-RPC error"
-        assert error_response["code"] == -32004
-        assert "failed" in job_states
-        assert saw_degraded_heartbeat
+        assert terminal is not None, "expected stalled prompt to finish"
+        assert kept, "interruptible hang must end as grace kept"
+        if "error" in terminal:
+            assert terminal["error"]["code"] != -32004
+        else:
+            assert terminal["result"]["status"] == "cancelled"
+        assert saw_degraded_heartbeat is False
 
-        # A stalled job kills only the affected worker. The appserver must
-        # recover its prompt path so the next user message is not rejected by
-        # a permanently degraded global latch.
+        # Interrupt cleared the hung turn. The appserver must still accept
+        # the next user message on the same session.
         recovered = client.request(
             "session/prompt",
             {
@@ -788,6 +795,7 @@ def test_appserver_stalled_session_does_not_block_another_session():
     env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
     env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
     env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0"
+    env["RXYCODE_APPSERVER_STALL_GRACE_SECONDS"] = "1"
     proc = _appserver_proc_with_env(env)
     try:
         client = AppserverClient(proc)
@@ -810,16 +818,18 @@ def test_appserver_stalled_session_does_not_block_another_session():
             {"session_id": second["session_id"], "text": "hang:forever"},
         )
 
-        first_failed = False
+        first_done = False
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             message = client.readline(timeout=0.5)
             if message is None:
                 continue
-            if message.get("id") == first_prompt and "error" in message:
-                first_failed = True
+            if message.get("id") == first_prompt and (
+                "result" in message or "error" in message
+            ):
+                first_done = True
                 break
-        assert first_failed, "expected one stalled session to fail"
+        assert first_done, "expected the stalled session to reach a terminal response"
 
         third = client.request("session/new", {"workspace_root": str(PROJECT_ROOT)})
         recovered = client.request(
@@ -851,6 +861,7 @@ def test_appserver_stalled_session_allows_existing_idle_session():
     env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
     env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
     env["RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS"] = "0"
+    env["RXYCODE_APPSERVER_STALL_GRACE_SECONDS"] = "1"
     proc = _appserver_proc_with_env(env)
     try:
         client = AppserverClient(proc)
@@ -868,14 +879,16 @@ def test_appserver_stalled_session_allows_existing_idle_session():
             "session/prompt",
             {"session_id": first["session_id"], "text": "hang:forever"},
         )
-        first_failed = False
+        first_done = False
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             message = client.readline(timeout=0.5)
-            if message is not None and message.get("id") == first_prompt and "error" in message:
-                first_failed = True
+            if message is not None and message.get("id") == first_prompt and (
+                "result" in message or "error" in message
+            ):
+                first_done = True
                 break
-        assert first_failed
+        assert first_done
         recovered = client.request(
             "session/prompt",
             {"session_id": idle["session_id"], "text": "hello from idle sibling"},
