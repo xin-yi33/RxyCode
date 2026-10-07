@@ -49,6 +49,7 @@ DURABLE_STATE_FIELDS = frozenset(
         "final_response",
         "phase",
         "error",
+        "resume_attempts",
     }
 )
 FORBIDDEN_RUNTIME_FIELDS = frozenset(

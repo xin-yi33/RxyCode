@@ -379,3 +379,4 @@ class AgentState(TypedDict):
     # -- control flow -------------------------------------------------------
     phase: str                               # planning | executing | validating | synthesizing | done
     error: Optional[str]
+    resume_attempts: int                     # durable resume count; not a second recovery graph

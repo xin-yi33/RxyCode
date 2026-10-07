@@ -749,7 +749,8 @@ async def validator_node(state: AgentState) -> dict:
             task.status = TaskStatus.FAILED
             task.touch()
             failed_ids.append(task.id)
-            await memory.log_error(
+            await _log_memory_error(
+                memory,
                 state["session_id"], task.id,
                 f"Validation error: {type(exc).__name__}: {exc}",
             )
@@ -766,7 +767,8 @@ async def validator_node(state: AgentState) -> dict:
             task.status = TaskStatus.FAILED
             failed_ids.append(task.id)
             # Log validation failure to error log (not conversation memory).
-            await memory.log_error(
+            await _log_memory_error(
+                memory,
                 state["session_id"], task.id,
                 f"Validation failed: {vr.issues}",
             )
@@ -1028,6 +1030,13 @@ async def compressor_node(state: AgentState) -> dict:
     }
 
 
+async def _log_memory_error(memory, session_id, task_id, error) -> None:
+    """Record a task error when the injected memory implements the log."""
+    if memory is None or not hasattr(memory, "log_error"):
+        return
+    await memory.log_error(session_id, task_id, error)
+
+
 async def error_recovery_node(state: AgentState) -> dict:
     """Handle execution errors.
 
@@ -1064,8 +1073,7 @@ async def error_recovery_node(state: AgentState) -> dict:
                     final_error=str(error)[:1000],
                 )
         # Log error to error log (NOT conversation memory)
-        if memory is not None:
-            await memory.log_error(session_id, task_id, error)
+        await _log_memory_error(memory, session_id, task_id, error)
         if action == "cancel":
             # Trigger the CANCELLED cascade immediately so dependents are
             # marked before route_next() runs.
@@ -1334,6 +1342,32 @@ def route_after_reflection(state: AgentState) -> str:
             state["error"] = "Reflection requested a governed retry"
         return "error"
     return route_next(state)
+
+
+RESUME_MAX_ATTEMPTS = 2
+
+
+def resume_budget_exhausted(document: dict) -> bool:
+    """True when an unfinished snapshot has already been resumed twice."""
+    state = document.get("state") if isinstance(document, dict) else None
+    if not isinstance(state, dict):
+        return False
+    try:
+        attempts = int(state.get("resume_attempts") or 0)
+    except (TypeError, ValueError):
+        return False
+    return attempts >= RESUME_MAX_ATTEMPTS
+
+
+def resume_exhausted_notice(document: dict) -> str:
+    """Honest stop text. Includes the 2/2 budget and the checkpoint id."""
+    checkpoint_id = ""
+    if isinstance(document, dict):
+        checkpoint_id = str(document.get("checkpoint_id") or "")
+    return (
+        f"resume attempts exhausted {RESUME_MAX_ATTEMPTS}/{RESUME_MAX_ATTEMPTS}; "
+        f"checkpoint {checkpoint_id} is kept for manual takeover"
+    )
 
 
 def route_entry(state: AgentState) -> str:

@@ -40,6 +40,7 @@ def _state(*, session_id: str = "session-1", status=TaskStatus.PENDING) -> dict:
         "final_response": None,
         "phase": "executing",
         "error": None,
+        "resume_attempts": 0,
     }
 
 

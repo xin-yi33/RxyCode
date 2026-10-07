@@ -40,6 +40,10 @@ from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
 from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
 from RxyCode.RxyCode1_1_0.config import settings as _settings
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
+from RxyCode.RxyCode1_1_0.core.graph import (
+    resume_budget_exhausted,
+    resume_exhausted_notice,
+)
 from RxyCode.RxyCode1_1_0.core.compaction import (
     build_compaction_summary_prompt,
     parse_state_snapshot,
@@ -2018,6 +2022,14 @@ def _build_graph_lazily():
     return build_graph()
 
 
+def _document_has_graph_snapshot(document: dict) -> bool:
+    """An empty begin_attempt shell is not a resume of a graph snapshot."""
+    state = document.get("state") if isinstance(document, dict) else None
+    if not isinstance(state, dict):
+        return False
+    return "task_tree" in state or "phase" in state
+
+
 class AgentV2:
     """LangGraph-based agent, drop-in compatible with the old Agent class."""
 
@@ -2192,14 +2204,28 @@ class AgentV2:
             if document and document.get("completed"):
                 store.reset(checkpoint_id=checkpoint_id)
                 document = None
-            if document:
-                durable = dict(document.get("state") or {})
-                task_tree = durable.get("task_tree")
-                if isinstance(task_tree, dict):
-                    restored_tree = TaskTree.model_validate(task_tree)
-                    restored_tree.assert_valid_plan()
-                    durable["task_tree"] = restored_tree
-                state.update(durable)
+            if document and _document_has_graph_snapshot(document):
+                if resume_budget_exhausted(document):
+                    notice = resume_exhausted_notice(document)
+                    _logger.error("resume budget exhausted: %s", notice)
+                    state["error"] = notice
+                    state["final_response"] = notice
+                    state["phase"] = "done"
+                    state["_resume_exhausted"] = True
+                    self._resume_exhausted_notice = notice
+                else:
+                    durable = dict(document.get("state") or {})
+                    try:
+                        attempts = int(durable.get("resume_attempts") or 0)
+                    except (TypeError, ValueError):
+                        attempts = 0
+                    durable["resume_attempts"] = attempts + 1
+                    task_tree = durable.get("task_tree")
+                    if isinstance(task_tree, dict):
+                        restored_tree = TaskTree.model_validate(task_tree)
+                        restored_tree.assert_valid_plan()
+                        durable["task_tree"] = restored_tree
+                    state.update(durable)
 
         state.update(
             {
@@ -7265,6 +7291,11 @@ class AgentV2:
                     checkpoint_key_input=user_input,
                     mode="compose",
                 )
+                if initial_state.get("_resume_exhausted"):
+                    result = str(initial_state.get("final_response") or "")
+                    self._memory.add_interaction(user_input, result)
+                    self._memory.save_session()
+                    return result
                 execution_cfg = self._cfg.get("execution", {})
                 graph_config = {
                     "recursion_limit": max(
@@ -7684,6 +7715,7 @@ class AgentV2:
             return "orchestration_error"
 
         try:
+            self._resume_exhausted_notice = None
             await emit_run_hook("before")
             result = await self._run_impl(user_input, mode)
         except asyncio.CancelledError:
@@ -7711,6 +7743,8 @@ class AgentV2:
         else:
             evidence = ToolOrchestrator.end_evidence_capture(evidence_token)
             evidence_token = None
+            exhausted_notice = getattr(self, "_resume_exhausted_notice", None)
+            self._resume_exhausted_notice = None
             # A failed read-only probe (websearch/webfetch/read/grep/...) is an
             # *attempt*, not a verdict: the model may legitimately retry with a
             # different source or strategy and still complete the task. Only
@@ -7841,17 +7875,22 @@ class AgentV2:
             # if status == "succeeded":
             #     journal_pending = journal is not None and journal.has_pending(attempt_id)
             #     if not journal_pending: mark_complete / mark_attempt_complete
-            journal = getattr(self, "_tool_journal", None)
-            if journal is not None:
-                sealed = journal.mark_attempt_complete(attempt_id)
-                if not sealed:
-                    journal.settle_attempt(attempt_id)
-            if attempt_store is not None and checkpoint_id is not None:
-                current_checkpoint = attempt_store.load(checkpoint_id)
-                if not (
-                    current_checkpoint and current_checkpoint.get("completed")
-                ):
-                    attempt_store.mark_complete(checkpoint_id)
+            if exhausted_notice:
+                result = str(exhausted_notice)
+                status = "failed"
+                record_failure("orchestration_error")
+            else:
+                journal = getattr(self, "_tool_journal", None)
+                if journal is not None:
+                    sealed = journal.mark_attempt_complete(attempt_id)
+                    if not sealed:
+                        journal.settle_attempt(attempt_id)
+                if attempt_store is not None and checkpoint_id is not None:
+                    current_checkpoint = attempt_store.load(checkpoint_id)
+                    if not (
+                        current_checkpoint and current_checkpoint.get("completed")
+                    ):
+                        attempt_store.mark_complete(checkpoint_id)
             trajectory.record(
                 "run.result",
                 {"status": status, "final_response": result},
@@ -8160,6 +8199,8 @@ class AgentV2:
                 checkpoint_key_input=user_input,
                 mode=mode,
             )
+            if initial_state.get("_resume_exhausted"):
+                return str(initial_state.get("final_response") or "")
 
             # Smart pipeline monitoring: detect real problems, not just slow tasks
             pipeline_start = time.time()

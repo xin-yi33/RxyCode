@@ -27,6 +27,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
+from RxyCode.RxyCode1_1_0.tools.write import write_tool
 
 from RxyCode.RxyCode1_1_0.core.governance import PolicyOutcome, SensitiveActionPolicy
 from RxyCode.RxyCode1_1_0.core.safety.approval import (
@@ -461,7 +462,12 @@ class ToolOrchestrator:
 
     def get(self, name: str) -> Any | None:
         """Get a tool by canonical name or supported alias."""
-        return self._bound_tools.get(self._canonical_name(name))
+        canonical = self._canonical_name(name)
+        tool = self._bound_tools.get(canonical)
+        if tool is None and canonical == "write":
+            self.register("write", write_tool)
+            tool = self._bound_tools.get(canonical)
+        return tool
 
     def get_all(self) -> dict[str, Any]:
         """Return all registered tools."""

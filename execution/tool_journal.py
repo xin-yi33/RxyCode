@@ -4,6 +4,9 @@ The journal deliberately implements *at-most-once replay*, not distributed
 exactly-once execution.  A process can die after an external side effect but
 before the result is committed.  Such a call remains ``pending`` and is
 blocked on resume so an unknown side effect is never repeated automatically.
+Resume keeps the unfinished document's attempt_id. Starting a fresh attempt
+to get past a pending entry is not allowed; repeating the side effect takes
+an explicit human confirm.
 """
 
 from __future__ import annotations
