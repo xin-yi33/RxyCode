@@ -66,7 +66,7 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_role_prompt,
     get_system_prompt,
 )
-from RxyCode.RxyCode1_1_0.core.prompts.registry import get_system_s2
+from RxyCode.RxyCode1_1_0.core.prompts.registry import get_prompt_version, get_system_s2
 from RxyCode.RxyCode1_1_0.core.research_policy import (
     ResearchPolicy,
     extract_research_query,
@@ -7039,7 +7039,12 @@ class AgentV2:
             separators=(",", ":"),
         )
         cache_namespace = self._application_cache_namespace()
-        cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
+        cached = precise_cache.get(
+            system,
+            cache_key,
+            prompt_version=get_prompt_version("system"),
+            namespace=cache_namespace,
+        )
         precise_hit = bool(cached and cached.get("response"))
         token_stats.record_application_cache("precise", hit=precise_hit)
         if precise_hit:
@@ -7182,7 +7187,13 @@ class AgentV2:
                     answer,
                     tool_error_occurred=getattr(self, "_tool_error_occurred", False),
                 ):
-                    precise_cache.put(system, cache_key, answer, namespace=cache_namespace)
+                    precise_cache.put(
+                        system,
+                        cache_key,
+                        answer,
+                        prompt_version=get_prompt_version("system"),
+                        namespace=cache_namespace,
+                    )
                     if not memory_ctx:
                         semantic_cache.put(user_input, answer, namespace=cache_namespace)
                 self._memory.add_interaction(user_input, answer)

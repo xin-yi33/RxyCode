@@ -112,6 +112,15 @@ class PromptRegistry:
                     template=template,
                 )
             }
+        # F4-8：system 模板也入 PromptSpec。precise cache 的 prompt_version 从这里取。
+        # 改正文必须同步 bump 日期版本（同日多次加 -rN）。
+        self._specs["system"] = {
+            "default": PromptSpec(
+                name="system",
+                version="2026-10-01",
+                template=SYSTEM_PROMPT_TEMPLATE,
+            )
+        }
 
     def register(
         self,
@@ -150,8 +159,12 @@ class PromptRegistry:
         return self._resolve_spec(key, "default")
 
     def list_keys(self) -> list[str]:
-        """Return all registered stage keys."""
-        return list(self._specs.keys())
+        """Return pipeline stage keys.
+
+        ``system`` is the S1 version knob for the precise cache. It stays
+        queryable through get_spec / get_prompt_version and is not a stage.
+        """
+        return [key for key in self._specs if key != "system"]
 
     def get_version(self, key: str) -> str:
         """Return the version of a registered prompt."""
@@ -298,6 +311,11 @@ def list_stages() -> list[str]:
 def get_prompt_version(key: str) -> str:
     """Convenience: get the version of a registered prompt."""
     return _registry.get_version(key)
+
+
+def get_spec(key: str) -> PromptSpec:
+    """Convenience: return the default-variant PromptSpec. Unknown keys raise KeyError."""
+    return _registry.get_spec(key)
 
 
 def build_user_message(
