@@ -15,9 +15,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
+from collections.abc import Mapping
 from typing import Callable, Optional
+
+from langchain_core.messages import HumanMessage
 
 from .cache_policy import tool_pair_integrity
 
@@ -180,11 +185,103 @@ def _split_units(body_msgs: list) -> list:
     return units
 
 
+def _partition_tail_units(units: list, keep_tail: int) -> tuple[list, list]:
+    """Split turn units into fold vs tail. System units stay in the tail."""
+    tail_units: list = []
+    fold_units: list = []
+    human_seen = 0
+    for unit in reversed(units):
+        is_system_unit = any(getattr(m, "type", None) == "system" for m in unit)
+        if is_system_unit:
+            tail_units.append(unit)
+        elif human_seen >= keep_tail:
+            fold_units.append(unit)
+        else:
+            tail_units.append(unit)
+            if any(getattr(m, "type", None) == "human" for m in unit):
+                human_seen += 1
+    fold_units.reverse()
+    tail_units.reverse()
+    return fold_units, tail_units
+
+
+def _fold_body(messages: list) -> tuple[list, list]:
+    """Frozen prefix (head system + first human) and the foldable body.
+
+    Prior compaction-summary messages are removed from the body.
+    """
+    if not messages:
+        return [], []
+    head: list = []
+    rest = list(messages)
+    if rest and getattr(rest[0], "type", None) == "system":
+        first_summary = bool(
+            (getattr(rest[0], "additional_kwargs", None) or {}).get(
+                "is_compaction_summary"
+            )
+        )
+        if not first_summary:
+            head.append(rest[0])
+            rest = rest[1:]
+    if rest and getattr(rest[0], "type", None) == "human":
+        head.append(rest[0])
+        rest = rest[1:]
+    body = [
+        m
+        for m in rest
+        if not (
+            getattr(m, "type", None) == "system"
+            and bool(
+                (getattr(m, "additional_kwargs", None) or {}).get(
+                    "is_compaction_summary"
+                )
+            )
+        )
+    ]
+    return head, body
+
+
+def _unit_has_tool(unit: list) -> bool:
+    return any(getattr(message, "type", None) == "tool" for message in unit)
+
+
+def _retain_visible_tombstone(fold_units: list, tail_units: list) -> None:
+    """Keep the newest tombstoned tool pair visible after a fold.
+
+    Full tool results still fold away. A pair is retained only when every
+    tool result in it is already the short tombstone, and the natural tail
+    would otherwise contain no tool message.
+    """
+    if any(_unit_has_tool(unit) for unit in tail_units):
+        return
+    for index in range(len(fold_units) - 1, -1, -1):
+        unit = fold_units[index]
+        tools = [message for message in unit if getattr(message, "type", None) == "tool"]
+        if not tools:
+            continue
+        if all(
+            str(getattr(message, "content", "") or "").strip() == TOOL_RESULT_TOMBSTONE
+            for message in tools
+        ):
+            fold_units.pop(index)
+            return
+
+
+def _select_fold_msgs(messages: list, keep_tail: int) -> list:
+    _head, body = _fold_body(messages)
+    units = _split_units(body)
+    fold_units, tail_units = _partition_tail_units(units, keep_tail)
+    _retain_visible_tombstone(fold_units, tail_units)
+    return [m for unit in fold_units for m in unit]
+
+
 def _fold_middle_section(
     messages: list,
     keep_tail: int,
     *,
     existing_summary: Optional[str] = None,
+    summarizer=None,
+    summary_meta: dict | None = None,
 ) -> list:
     """折叠断点之后的 assistant/tool 中间段为摘要消息（确定性折叠）。
 
@@ -199,41 +296,8 @@ def _fold_middle_section(
     """
     if not messages:
         return []
-    # 1) 前缀边界（luna 审计）：仅 messages[0] 为 system 时它才是缓存前缀
-    #    核心（保持头部、字节不变）；**其他 system 一律留在原序列位置**
-    #    （永不裁剪、不重排、不提升）。
-    head_system: list = []
-    body: list = []
-    if messages and getattr(messages[0], "type", None) == "system":
-        # luna 审计 R8-3：首条若是摘要标记消息，不当头部前缀（摘要唯一性）
-        first_summary = bool(
-            (getattr(messages[0], "additional_kwargs", None) or {}).get(
-                "is_compaction_summary"
-            )
-        )
-        if first_summary:
-            body = list(messages)
-        else:
-            head_system.append(messages[0])
-            body = list(messages[1:])
-    else:
-        body = list(messages)
-
-    # 移除已有摘要消息（luna 审计 B4-1）：压缩结果中最多一个摘要。
-    # 用显式标记 additional_kwargs["is_compaction_summary"] 识别（luna 审计
-    # R5），**不用正文子串**——正文含 "Objective" 的合法 system 不受影响。
-    body = [
-        m
-        for m in body
-        if not (
-            getattr(m, "type", None) == "system"
-            and bool(
-                (getattr(m, "additional_kwargs", None) or {}).get(
-                    "is_compaction_summary"
-                )
-            )
-        )
-    ]
+    # 1) 前缀：首条 system + 紧随的首轮 human 不折叠。其余 system 留在原位。
+    head_system, body = _fold_body(messages)
 
     if not body:
         # luna 审计 R6-1/R7-1：body 过滤后为空时，返回去重后的 head_system + body；
@@ -250,31 +314,11 @@ def _fold_middle_section(
 
     # 2) 断点后消息切分为"轮次单元"；非首位 system 为独立单元（永不折叠）
     units: list = _split_units(body)
-
-    # 3) 尾部保留（单元粒度）：system 单元永不折叠；其余保留最后 keep_tail
-    #    个 human 轮单元
-    tail_units: list = []
-    fold_units: list = []
-    human_seen = 0
-    for unit in reversed(units):
-        is_system_unit = any(
-            getattr(m, "type", None) == "system" for m in unit
-        )
-        if is_system_unit:
-            # system 永不裁剪：强制保留在尾部（相对顺序不变）
-            tail_units.append(unit)
-        elif human_seen >= keep_tail:
-            fold_units.append(unit)
-        else:
-            tail_units.append(unit)
-            if any(getattr(m, "type", None) == "human" for m in unit):
-                human_seen += 1
-    fold_units.reverse()
-    tail_units.reverse()
+    fold_units, tail_units = _partition_tail_units(units, keep_tail)
+    _retain_visible_tombstone(fold_units, tail_units)
 
     # 折叠段消息展平
     fold_msgs = [m for unit in fold_units for m in unit]
-    tail_msgs = [m for unit in tail_units for m in unit]
 
     if not fold_msgs:
         # luna 审计 R8-2：body 非空但无可折叠内容时，若已有摘要状态必须保留
@@ -286,27 +330,40 @@ def _fold_middle_section(
                 content=existing_summary,
                 additional_kwargs={"is_compaction_summary": True},
             )
-            return head_system + [summary_msg] + tail_msgs
+            # fold_units 被抽空时，被保留的墓碑工具对不在 tail_units 里。
+            # 用过滤后的 body 重建，避免那一对从结果里消失。
+            return head_system + [summary_msg] + body
         return head_system + body
 
-    # 4) 摘要信息提取（确定性：首条 human 为 objective、首条 ai 为 work_state、
-    #    最后 human 为 next_move）
+    # 4) 摘要信息提取。规则模板看断点后的整段（含尾部），这样 Next Move
+    # 是最新的 human，而不是被折进摘要的那一条。
+    scan = list(messages) or fold_msgs
     objective = ""
     work_state = ""
-    for m in fold_msgs:
+    for m in scan:
         if getattr(m, "type", None) == "human" and not objective:
             objective = str(getattr(m, "content", "") or "")[:200]
         if getattr(m, "type", None) == "ai" and not work_state:
             work_state = str(getattr(m, "content", "") or "")[:200]
     next_move = ""
-    for m in reversed(fold_msgs):
+    for m in reversed(scan):
         if getattr(m, "type", None) == "human":
             next_move = str(getattr(m, "content", "") or "")[:200]
             break
 
+    # 废弃代码（2026-10-08 版）：这里只拼 build_summary_message 三段 200 字。
+    # 已路由到 _try_llm_summary；失败仍回退规则模板，不半拼。
     summary_text = existing_summary
+    summary_source = SUMMARY_SOURCE_RULE
+    if summary_text is None and summarizer is not None:
+        summary_text = _try_llm_summary(summarizer, fold_msgs)
+        if summary_text is not None:
+            summary_source = SUMMARY_SOURCE_LLM
     if summary_text is None:
         summary_text = build_summary_message(objective, work_state, next_move)
+        summary_source = SUMMARY_SOURCE_RULE
+    if summary_meta is not None:
+        summary_meta["summary_source"] = summary_source
     # luna 审计 R6-2：使用正式 LangChain SystemMessage（生产链路序列化兼容），
     # 不用 SimpleNamespace。
     from langchain_core.messages import SystemMessage
@@ -336,6 +393,7 @@ def compact_messages(
     *,
     tail_turns: int = DEFAULT_TAIL_TURNS,
     return_telemetry: bool = False,
+    summarizer=None,
 ) -> list:
     """唯一压缩入口：断点前不可变，折叠断点后中间段为摘要并追加。
 
@@ -366,10 +424,13 @@ def compact_messages(
         ),
         None,
     )
+    summary_meta: dict = {}
     result = _fold_middle_section(
         list(messages),
         keep_tail=tail_turns,
         existing_summary=prior_summary,
+        summarizer=None if prior_summary else summarizer,
+        summary_meta=summary_meta,
     )
     tokens_after = sum(
         _estimate_chars(getattr(m, "content", "") or "") for m in result
@@ -415,6 +476,11 @@ def compact_messages(
         )
         if tighter_after >= tokens_after:
             break  # 无法继续缩小
+        # 尾部预算不能把墓碑工具结果也剪没。fold 之后 tail 里还要留得住它。
+        result_has_tool = any(getattr(m, "type", None) == "tool" for m in result)
+        tighter_has_tool = any(getattr(m, "type", None) == "tool" for m in tighter)
+        if result_has_tool and not tighter_has_tool:
+            break
         result = tighter
         tokens_after = tighter_after
     if not tool_pair_integrity(result):
@@ -430,6 +496,7 @@ def compact_messages(
         "tail_turns": tail_turns,
         "compacted": tokens_after < tokens_before,
         "note": "tokens are char/3 estimates (not provider token counts)",
+        "summary_source": summary_meta.get("summary_source", SUMMARY_SOURCE_RULE),
     }
     if return_telemetry:
         return result, telemetry
@@ -452,6 +519,7 @@ def run_compaction_ladder(
     context_window: int,
     reserved: int = DEFAULT_RESERVED_TOKENS,
     count: Callable[[str], int] | None = None,
+    summarizer=None,
 ) -> tuple[list, dict]:
     """Single auto/manual compact entry: microcompact, then fold if still over.
 
@@ -465,6 +533,14 @@ def run_compaction_ladder(
         else occupancy_tokens(messages, count=count)
     )
     usable = usable_tokens(context_window, reserved)
+    plan = plan_compaction(
+        messages,
+        occupancy=occ,
+        context_window=context_window,
+        reserved=reserved,
+        count=count,
+        force=force,
+    )
     telemetry: dict = {
         "occupancy": occ,
         "usable": usable,
@@ -472,27 +548,177 @@ def run_compaction_ladder(
         "reserved": max(0, int(reserved)),
         "force": bool(force),
         "did_compact": False,
-        "rung": "none",
+        "rung": plan["rung"],
     }
-    if occ <= usable and not force:
+    if plan["rung"] == "none":
         return list(messages), telemetry
 
-    micro, micro_tel = microcompact_messages(list(messages))
+    micro, micro_tel = microcompact_messages(
+        list(messages),
+        keep_recent=0 if force else KEEP_RECENT_TOOL_RESULTS,
+    )
     occ_micro = occupancy_tokens(micro, count=count)
     telemetry["occupancy_after_micro"] = occ_micro
     telemetry["tombstoned"] = micro_tel.get("tombstoned", 0)
-    if occ_micro <= usable and not force:
+    if plan["rung"] == "microcompact":
         telemetry["did_compact"] = bool(micro_tel.get("did_microcompact"))
-        telemetry["rung"] = "microcompact"
         return micro, telemetry
 
-    folded, fold_tel = compact_messages(
-        micro, tail_turns=DEFAULT_TAIL_TURNS, return_telemetry=True
-    )
+    fold_kwargs = {
+        "tail_turns": DEFAULT_TAIL_TURNS,
+        "return_telemetry": True,
+    }
+    if summarizer is not None:
+        fold_kwargs["summarizer"] = summarizer
+    folded, fold_tel = compact_messages(micro, **fold_kwargs)
     telemetry["did_compact"] = bool(
         fold_tel.get("compacted") or micro_tel.get("did_microcompact")
     )
     telemetry["rung"] = "fold"
     telemetry["tokens_before"] = fold_tel.get("tokens_before")
     telemetry["tokens_after"] = fold_tel.get("tokens_after")
+    telemetry["summary_source"] = fold_tel.get("summary_source", SUMMARY_SOURCE_RULE)
     return folded, telemetry
+
+
+STATE_SNAPSHOT_FIELDS = (
+    "objective",
+    "constraints",
+    "progress",
+    "files_touched",
+    "next_step",
+    "blockers",
+)
+SUMMARY_SOURCE_FIELD = "summary_source"
+SUMMARY_SOURCE_LLM = "llm"
+SUMMARY_SOURCE_RULE = "rule"
+
+
+def build_state_summary_message(fields: Mapping[str, str | list[str]]) -> str:
+    """六字段 → <summary> 文本。files_touched 为 list 时用 ", ".join。"""
+    files = fields["files_touched"]
+    if isinstance(files, (list, tuple)):
+        files = ", ".join(str(item) for item in files)
+    parts = [
+        "<summary>",
+        f"Objective: {str(fields['objective']).strip()}",
+        f"Constraints: {str(fields['constraints']).strip()}",
+        f"Progress: {str(fields['progress']).strip()}",
+        f"Files Touched: {str(files).strip()}",
+        f"Next Step: {str(fields['next_step']).strip()}",
+        f"Blockers: {str(fields['blockers']).strip()}",
+        "</summary>",
+    ]
+    return "\n".join(parts)
+
+
+def _parse_snapshot_json(text: str):
+    start = (text or "").find("{")
+    if start < 0:
+        return None
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def parse_state_snapshot(result) -> dict | None:
+    """Return the six fields only when every key is present. No half summary."""
+    if isinstance(result, str):
+        result = _parse_snapshot_json(result)
+    if not isinstance(result, Mapping):
+        return None
+    if any(key not in result for key in STATE_SNAPSHOT_FIELDS):
+        return None
+    return dict(result)
+
+
+def _snapshot_text_from_result(result) -> str | None:
+    fields = parse_state_snapshot(result)
+    if fields is None:
+        return None
+    return build_state_summary_message(fields)
+
+
+def _resolve_maybe_awaitable(value):
+    """无运行循环才 asyncio.run。有循环收到 awaitable 则失败，不另起线程。"""
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+    raise RuntimeError("summarizer awaitable received on the worker loop; pre-resolve it")
+
+
+def _try_llm_summary(summarizer, fold_msgs) -> str | None:
+    try:
+        result = _resolve_maybe_awaitable(summarizer(fold_msgs))
+        return _snapshot_text_from_result(result)
+    except Exception:
+        return None
+
+
+async def try_llm_summary_async(summarizer, fold_msgs) -> str | None:
+    """Await a summarizer on the current loop. CancelledError propagates."""
+    if summarizer is None:
+        return None
+    try:
+        result = summarizer(fold_msgs)
+        if inspect.isawaitable(result):
+            result = await result
+        return _snapshot_text_from_result(result)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None
+
+
+def plan_compaction(
+    messages: list,
+    *,
+    context_window: int,
+    reserved: int = DEFAULT_RESERVED_TOKENS,
+    occupancy: int | None = None,
+    count: Callable[[str], int] | None = None,
+    force: bool = False,
+) -> dict:
+    """Same rung decision as run_compaction_ladder. No LLM and no writes."""
+    occ = (
+        int(occupancy)
+        if occupancy is not None
+        else occupancy_tokens(messages, count=count)
+    )
+    usable = usable_tokens(context_window, reserved)
+    if occ <= usable and not force:
+        return {"rung": "none", "fold_msgs": []}
+    micro, _micro_tel = microcompact_messages(
+        list(messages),
+        keep_recent=0 if force else KEEP_RECENT_TOOL_RESULTS,
+    )
+    occ_micro = occupancy_tokens(micro, count=count)
+    if occ_micro <= usable and not force:
+        return {"rung": "microcompact", "fold_msgs": []}
+    return {
+        "rung": "fold",
+        "fold_msgs": _select_fold_msgs(micro, DEFAULT_TAIL_TURNS),
+    }
+
+
+def build_compaction_summary_prompt(messages) -> list:
+    """Ask the session model for the six snapshot fields as one JSON object."""
+    lines = []
+    for message in messages or []:
+        kind = getattr(message, "type", "message")
+        lines.append(f"{kind}: {getattr(message, 'content', '')}")
+    body = "\n".join(lines)
+    return [
+        HumanMessage(
+            content=(
+                "Summarize the folded work as JSON with keys "
+                "objective, constraints, progress, files_touched, next_step, blockers. "
+                "files_touched must be a list of strings.\n" + body
+            )
+        )
+    ]

@@ -40,6 +40,11 @@ from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
 from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
 from RxyCode.RxyCode1_1_0.config import settings as _settings
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
+from RxyCode.RxyCode1_1_0.core.compaction import (
+    build_compaction_summary_prompt,
+    parse_state_snapshot,
+    try_llm_summary_async,
+)
 from RxyCode.RxyCode1_1_0.config.model_capabilities import (
     DEFAULT_CAPABILITIES,
     resolve_graph_context_token_limit,
@@ -6639,26 +6644,74 @@ class AgentV2:
             return f"已压缩上下文：约 {before} → {after} tokens。"
         return f"占用约 {after} tokens。已走压缩入口，窗口未明显下降。"
 
+    async def _prefetch_compaction_summary(self, messages):
+        """Fold 摘要预取。30s 是适配层常量，不进超时注册表。取消继续往外抛。"""
+        try:
+            reply = await asyncio.wait_for(
+                self._llm.ainvoke(build_compaction_summary_prompt(messages)),
+                timeout=30.0,
+            )
+            content = getattr(reply, "content", "") or ""
+            fields = parse_state_snapshot(content)
+            rendered = await try_llm_summary_async(lambda _msgs: fields, messages)
+            if rendered is None:
+                return None
+            return fields
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.warning("F4-2 summary prefetch failed, rule fallback: %s", exc)
+            return None
+
     async def _maybe_compress_context(self, messages, *, force: bool = False) -> None:
         """Keep the in-loop message list inside window − reserved.
 
         The only automatic compact knife is core/compaction.py
         ``run_compaction_ladder``. /compact uses the same entry with force=True.
         """
-        from .compaction import DEFAULT_RESERVED_TOKENS, run_compaction_ladder
+        from .compaction import DEFAULT_RESERVED_TOKENS, plan_compaction, run_compaction_ladder
 
         context_window = self._context_window()
         reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
         total = self._estimate_tokens(messages)
         token_stats.update_context(total, context_window)
+
+        def _count(text: str) -> int:
+            return count_tokens(text, self._tokenizer_spec())
+
         try:
+            plan = plan_compaction(
+                messages,
+                occupancy=total,
+                context_window=context_window,
+                reserved=reserved,
+                count=_count,
+                force=force,
+            )
+            already_summarized = any(
+                getattr(message, "type", "") == "system"
+                and bool(
+                    (getattr(message, "additional_kwargs", None) or {}).get(
+                        "is_compaction_summary"
+                    )
+                )
+                for message in messages
+            )
+            prefetched = None
+            if plan["rung"] == "fold" and not already_summarized:
+                prefetched = await self._prefetch_compaction_summary(plan["fold_msgs"])
+
+            def _summary_provider(_folded):
+                return prefetched
+
             compacted, telemetry = run_compaction_ladder(
                 messages,
                 force=force,
                 occupancy=total,
                 context_window=context_window,
                 reserved=reserved,
-                count=lambda text: count_tokens(text, self._tokenizer_spec()),
+                count=_count,
+                summarizer=_summary_provider if prefetched else None,
             )
         except Exception as exc:  # pragma: no cover - 压缩失败不阻断请求
             _logger.warning("B4 compaction failed: %s", exc)
