@@ -20,10 +20,12 @@ def _assert_windows_acl_has_no_inheritance(path: Path) -> None:
         ["icacls", str(path)],
         check=True,
         capture_output=True,
-        text=True,
         timeout=15,
     )
-    assert "(I)" not in result.stdout
+    # icacls writes the console code page. text=True under PYTHONUTF8
+    # decodes that as UTF-8, the reader dies, and stdout is None.
+    stdout = result.stdout.decode("oem", errors="replace")
+    assert "(I)" not in stdout
 
 
 def test_model_credential_roundtrip_keeps_plaintext_out_of_both_files(
