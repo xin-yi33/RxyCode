@@ -27,6 +27,7 @@ from langgraph.graph import StateGraph, START, END
 from langchain_core.runnables import Runnable
 
 from RxyCode.RxyCode1_1_0.config import settings as _settings
+from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.config.credential_store import atomic_write_text
 from RxyCode.RxyCode1_1_0.config.model_capabilities import resolve_graph_context_token_limit
 from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
@@ -53,6 +54,23 @@ if TYPE_CHECKING:
 
 
 _logger = logging.getLogger(__name__)
+
+
+def resolve_graph_watch_clocks(cfg: dict | None) -> tuple[float, float, float]:
+    """Stall, max-time, and heartbeat clocks for one graph task.
+
+    废弃代码（2026-10-08 版）：exec_cfg.get("task_stall_timeout_seconds", 0) or 0、
+    task_max_time_seconds 默认 7200 再 ``or 0``、heartbeat_interval_seconds 默认 15
+    再 ``or 15``。已路由到 resolve_timeout。缺键仍走注册表默认；写出的 0 / None
+    仍走原来的 ``or`` 结果。max 地板留在外壳。
+    """
+    cfg = with_legacy_falsy(cfg, "execution", "task_stall_timeout_seconds", 0.0)
+    cfg = with_legacy_falsy(cfg, "execution", "task_max_time_seconds", 0.0)
+    cfg = with_legacy_falsy(cfg, "execution", "heartbeat_interval_seconds", 15.0)
+    stall_timeout = max(0.0, resolve_timeout("graph.task_stall_timeout_seconds", cfg))
+    max_timeout = max(0.0, resolve_timeout("graph.task_max_time_seconds", cfg))
+    check_interval = max(0.1, resolve_timeout("graph.heartbeat_interval_seconds", cfg))
+    return stall_timeout, max_timeout, check_interval
 
 
 # ---------------------------------------------------------------------------
@@ -431,18 +449,9 @@ async def executor_node(state: AgentState) -> dict:
         def seconds_since_activity(self):
             return _time.time() - self.last_activity
 
-    stall_timeout = max(
-        0.0,
-        float(exec_cfg.get("task_stall_timeout_seconds", 0) or 0),
-    )
-    max_timeout = max(
-        0.0,
-        float(exec_cfg.get("task_max_time_seconds", 7200) or 0),
-    )
-    check_interval = max(
-        0.1,
-        float(exec_cfg.get("heartbeat_interval_seconds", 15) or 15),
-    )
+    # 废弃代码（2026-10-08 版）：exec_cfg.get(...) or 0 / or 15。
+    # 已路由到 resolve_graph_watch_clocks（注册表 + 旧 or 归一）。
+    stall_timeout, max_timeout, check_interval = resolve_graph_watch_clocks(cfg)
 
     async def _run_single_task_body(task: TaskNode) -> dict:
         """Execute a single task with progress monitoring.

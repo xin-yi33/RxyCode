@@ -127,6 +127,17 @@ def _normalize_legacy_aliases(cfg: dict) -> dict:
     return normalized
 
 
+def get_settings() -> dict:
+    """Return the default settings dict, including the F4-7 mirrors.
+
+    Callers that need the on-disk user file still use ``load_config()``.
+    This accessor is the raw default dict so the registry mirrors stay one
+    source (``appserver.stall_grace_seconds`` and
+    ``schedule.revive_orphans_on_restore``).
+    """
+    return deepcopy(_default_config())
+
+
 def load_config() -> dict:
     path = get_config_path()
     with _CONFIG_LOCK:
@@ -246,6 +257,14 @@ def _default_config() -> dict:
             "enabled": True,
             "check_interval": 30,
             "task_timeout_seconds": 0,
+        },
+        # F4-6：与既有 scheduler 节分开。orphan 默认不自动复活。
+        "schedule": {
+            "revive_orphans_on_restore": False,
+        },
+        # F4-1 / F4-7：镜像 appserver.stall_grace_seconds 注册表默认值。
+        "appserver": {
+            "stall_grace_seconds": 20,
         },
         # Per-model pricing in USD per 1M tokens, e.g.
         #   pricing:

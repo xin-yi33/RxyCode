@@ -39,6 +39,7 @@ from openai import AsyncOpenAI
 from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
 from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
 from RxyCode.RxyCode1_1_0.config import settings as _settings
+from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.config.model_capabilities import (
     DEFAULT_CAPABILITIES,
     resolve_graph_context_token_limit,
@@ -221,6 +222,26 @@ _logger = logging.getLogger(__name__)
 # Stream clocks (Card A): three layers, no 30s first-token cap, no SDK 600s.
 # Connect is handshake only. Idle is thinking/keepalive. Appserver stall is
 # worker death (heartbeat), not model silence.
+# 废弃代码（2026-10-08 版）：20/180/300/60 只硬编码在本段。
+# 已路由到 config.timeouts.TIMEOUT_REGISTRY 的 stream.connect_seconds、
+# stream.idle_seconds（cap 300）与 stream.tool_argument_idle_seconds。
+# 常量保留为兜底默认，必须与注册表默认值相等。
+def resolve_pipeline_clocks(cfg: dict | None) -> tuple[float, float]:
+    """Soft budget and pipeline heartbeat.
+
+    废弃代码（2026-10-08 版）：pipeline_soft_budget_seconds 默认 3600 再 ``or 0``，
+    heartbeat_interval_seconds 默认 15 再 ``or 15``。已路由到 resolve_timeout。
+    缺键走注册表；写出的 0 / None 保持旧 ``or`` 结果。
+    """
+    cfg = with_legacy_falsy(cfg, "execution", "pipeline_soft_budget_seconds", 0.0)
+    cfg = with_legacy_falsy(cfg, "execution", "heartbeat_interval_seconds", 15.0)
+    soft_budget = max(0.0, resolve_timeout("pipeline.soft_budget_seconds", cfg))
+    heartbeat_interval = max(
+        0.1, resolve_timeout("graph.heartbeat_interval_seconds", cfg)
+    )
+    return soft_budget, heartbeat_interval
+
+
 STREAM_CONNECT_TIMEOUT_DEFAULT_SECONDS = 20.0
 STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS = 180.0
 STREAM_IDLE_TIMEOUT_CAP_SECONDS = 300.0
@@ -8063,15 +8084,12 @@ class AgentV2:
             pipeline_start = time.time()
             pipeline_tui = get_tui()
 
-            execution_cfg = (_settings.load_config() or {}).get("execution", {})
-            soft_budget = max(
-                0.0,
-                float(execution_cfg.get("pipeline_soft_budget_seconds", 3600) or 0),
-            )
-            heartbeat_interval = max(
-                0.1,
-                float(execution_cfg.get("heartbeat_interval_seconds", 15) or 15),
-            )
+            loaded_cfg = _settings.load_config() or {}
+            execution_cfg = loaded_cfg.get("execution", {})
+            # 废弃代码（2026-10-08 版）：pipeline_soft_budget_seconds 默认 3600、
+            # heartbeat_interval_seconds 默认 15，假值走 `or 0` / `or 15`。
+            # 已路由到 resolve_pipeline_clocks。
+            soft_budget, heartbeat_interval = resolve_pipeline_clocks(loaded_cfg)
 
             graph_config = {
                 "recursion_limit": max(

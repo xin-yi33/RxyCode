@@ -26,6 +26,8 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
+
 from RxyCode.RxyCode1_1_0.core.governance import PolicyOutcome, SensitiveActionPolicy
 from RxyCode.RxyCode1_1_0.core.safety.approval import (
     ApprovalDecision,
@@ -607,9 +609,13 @@ class ToolOrchestrator:
         if not isinstance(execution, dict):
             return 0.0
         try:
+            # 废弃代码（2026-10-08 版）：execution.get("tool_timeout_seconds", 1800) or 0。
+            # 已路由到 resolve_timeout。None 曾表示禁用，不能当成缺键走默认 1800。
+            clock_cfg = with_legacy_falsy(
+                config, "execution", "tool_timeout_seconds", 0.0
+            )
             global_timeout = max(
-                0.0,
-                float(execution.get("tool_timeout_seconds", 1800) or 0),
+                0.0, resolve_timeout("tool.timeout_seconds", clock_cfg)
             )
         except (TypeError, ValueError):
             return 0.0
@@ -622,17 +628,23 @@ class ToolOrchestrator:
         if key in ToolOrchestrator._LONG_RUNNING_TOOLS:
             return global_timeout
         try:
-            stall = float(
-                execution.get("tool_stall_timeout_seconds", 120) or 120
+            # 废弃代码（2026-10-08 版）：execution.get("tool_stall_timeout_seconds", 120)。
+            # 已路由到 config.timeouts.resolve_timeout("tool.stall_timeout_seconds")。
+            stall_cfg = with_legacy_falsy(
+                config, "execution", "tool_stall_timeout_seconds", 120.0
             )
+            stall = resolve_timeout("tool.stall_timeout_seconds", stall_cfg)
         except (TypeError, ValueError):
             stall = ToolOrchestrator._DEFAULT_STALL_SECONDS
         if stall <= 0:
             stall = ToolOrchestrator._DEFAULT_STALL_SECONDS
+        # read_file 是 tools/read.py 的函数名；stall 表的键是注册名 "read"。
+        # 不改 _TOOL_STALL_SECONDS，也不另造别名表：只在查表时归到已有的 read 档。
+        stall_key = "read" if key == "read_file" else key
         stall = min(
             stall,
             ToolOrchestrator._TOOL_STALL_SECONDS.get(
-                key, ToolOrchestrator._DEFAULT_STALL_SECONDS
+                stall_key, ToolOrchestrator._DEFAULT_STALL_SECONDS
             ),
         )
         floor = ToolOrchestrator._SLOW_START_TOOLS.get(key)

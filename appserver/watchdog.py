@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 
 def heartbeat_interval_seconds() -> float:
-    raw = os.environ.get("RXYCODE_APPSERVER_HEARTBEAT_SECONDS", "15")
-    return max(1.0, float(raw))
+    # 废弃代码（2026-10-08 版）：os.environ.get("RXYCODE_APPSERVER_HEARTBEAT_SECONDS", "15")。
+    # 已路由到 config.timeouts.resolve_timeout("appserver.heartbeat_seconds")。
+    # max(1.0, ...) 地板留在访问器外壳，注册表不做地板钳制。
+    from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout
+
+    return max(1.0, resolve_timeout("appserver.heartbeat_seconds"))
 
 
 def stall_timeout_seconds() -> float:
-    raw = os.environ.get("RXYCODE_APPSERVER_STALL_SECONDS", "120")
-    return max(1.0, float(raw))
+    # 废弃代码（2026-10-08 版）：os.environ.get("RXYCODE_APPSERVER_STALL_SECONDS", "120")。
+    # 已路由到 config.timeouts.resolve_timeout("appserver.stall_seconds")。
+    # max(1.0, ...) 地板留在访问器外壳，注册表不做地板钳制。
+    from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout
+
+    return max(1.0, resolve_timeout("appserver.stall_seconds"))
 
 
 @dataclass
