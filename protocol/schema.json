@@ -7992,7 +7992,7 @@
           "type": "string"
         },
         "server_version": {
-          "default": "1.4.0",
+          "default": "1.4.1",
           "title": "Server Version",
           "type": "string"
         },

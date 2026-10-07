@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode"
-version = "1.4.0"
+version = "1.4.1"
 description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,6 +50,7 @@ packages = [
   "RxyCode.RxyCode1_1_0.core.cu",
   "RxyCode.RxyCode1_1_0.core.providers",
   "RxyCode.RxyCode1_1_0.core.safety",
+  "RxyCode.RxyCode1_1_0.core.sandbox",
   "RxyCode.RxyCode1_1_0.core.subagents",
   "RxyCode.RxyCode1_1_0.core.agents",
   "RxyCode.RxyCode1_1_0.core.agents.bridge",

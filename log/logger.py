@@ -3,7 +3,10 @@ RxyCode 应用级日志模块（对标 opencode 日志模式）
 
 - 结构化 key=value 格式
 - 每次启动生成 8 字符 runID，附加到每条日志
-- 日志路径：~/.rxycode/logs/rxycode.log（RotatingFileHandler，10MB x 5 轮转）
+- 每次启动（setup_logging）生成一个带时间戳的日志文件
+  ``rxycode_YYYY-MM-DD_HH-MM-SS_<runid>.log``（RotatingFileHandler，10MB x 5 轮转）
+- 保留窗口 72h：每次访问日志目录（setup_logging / list_log_files）时按
+  文件名时间戳升序排序并清除超过 72h 的文件（见 log/rotator.py）
 - FileHandler 始终开启，可选 stderr 输出
 - 随进程退出自动关闭（atexit）
 
@@ -14,6 +17,7 @@ RxyCode 应用级日志模块（对标 opencode 日志模式）
     logger.info("Something happened", extra={"port": 8765})
 """
 
+import os
 import sys
 import time
 import uuid
@@ -26,6 +30,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .log_helpers import redact_sensitive
+from . import rotator
 
 # 每次启动生成 8 字符 runID
 RUN_ID = uuid.uuid4().hex[:8]
@@ -67,11 +72,17 @@ def run_id_context(run_id: str | None = None) -> Iterator[str]:
     finally:
         reset_run_id(token)
 
-# 日志路径：~/.rxycode/logs/rxycode.log
-LOG_DIR = Path.home() / ".rxycode" / "logs"
-LOG_FILE = LOG_DIR / "rxycode.log"
+# 日志目录：~/.rxycode/logs（可用 RXYCODE_DATA_DIR 重定向）。
+# 每次启动生成一个带时间戳的新文件；72h 前的文件在每次访问目录时被清除。
+LOG_DIR = Path(os.environ.get("RXYCODE_DATA_DIR") or (Path.home() / ".rxycode")) / "logs"
+LOG_FILE = LOG_DIR / "rxycode.log"  # setup_logging 时替换为带时间戳的实际文件
 
 _initialized = False
+
+
+def list_log_files(prune: bool = True) -> list[Path]:
+    """日志目录的统一访问入口：先按 72h 窗口清理，再返回按时间戳升序的文件列表。"""
+    return rotator.list_log_files(LOG_DIR, prune=prune)
 _logger_instance = None
 
 
@@ -156,9 +167,13 @@ def setup_logging(level: str = "INFO", print_logs: bool = False) -> logging.Logg
 
     formatter = KeyValueFormatter()
 
-    # 文件日志（始终开启，10MB x 5 轮转，避免单文件无限增长）
+    # 文件日志（始终开启，10MB x 5 轮转，避免单文件无限增长）。
+    # 每次启动是一个带时间戳的新文件；先按 72h 窗口清理旧文件。
+    global LOG_FILE
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        rotator.prune_old_logs(LOG_DIR)
+        LOG_FILE = rotator.new_log_path(LOG_DIR, RUN_ID)
         file_handler = logging.handlers.RotatingFileHandler(
             str(LOG_FILE), mode="a", maxBytes=10 * 1024 * 1024,
             backupCount=5, encoding="utf-8", errors="replace",

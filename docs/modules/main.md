@@ -60,3 +60,11 @@ Launch sequence:
 7. Shut down the embedded API server when the frontend exits.
 
 Missing runtime assets, Bun/Node.js, API startup failures, and frontend process failures return explicit CLI errors.
+
+## Product version (v1.4.1)
+
+The distribution and console/module version are 1.4.1. The import namespace
+`RxyCode.RxyCode1_1_0` remains stable; it is not a release-number directory.
+`install.ps1` and `install.sh` pin v1.4.1. This release ships the CLI source
+distribution, not a new Electron installer. Version parity is guarded by
+`tests/unit/test_packaging_contract.py`.

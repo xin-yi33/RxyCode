@@ -1,4 +1,4 @@
-<!-- README_SYNC: source=working-tree; updated=2026-09 -->
+<!-- README_SYNC: source=working-tree; updated=2026-10-07 -->
 <div align="center">
 
 **English** · [简体中文](./README.zh-CN.md)
@@ -9,7 +9,7 @@
 
 [⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want a local agent that plans, runs tools, and asks before risky writes.
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0)
+[![Version](https://img.shields.io/badge/version-1.4.1-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -25,10 +25,10 @@
 
 RxyCode is an autonomous coding agent running locally on your hardware. Bring an API key for any OpenAI-compatible model (DeepSeek, Qwen, Kimi, Claude, GPT, GLM, Doubao, or custom endpoints), and RxyCode takes over: decompose tasks, code solutions, execute commands, research the web, and mechanically verify the outcome. Terminal TUI out-of-the-box, optional Desktop GUI, and extensible with MCP and Skills.
 
-**v1.4.0 is a CLI release.** `rxycode` in a terminal is the product: sessions that title themselves, `/effort`, a plan you can approve, and the same retry clock for flaky model calls and read tools. Shift+Enter (or Ctrl+Enter) breaks a line; Enter sends. A new Desktop installer is not in this tag — the GUI packages remain on v1.3.0.
+**v1.4.1 is a CLI maintenance release.** It adds default-off OS sandbox backends for shell commands, 72-hour timestamped log retention, and seven transient transport retries with corrected circuit-breaker accounting. Windows venv commands are bound to a Job before they run; session recovery, mouse handling, and premature build completion also receive fixes. The product metadata is 1.4.1; JSON-RPC stays `1.1.0`. No new Desktop installer is published. See the [release notes](docs/release-notes/RELEASE_NOTES_v1.4.1.md) for platform limits and verification.
 
 > 💡 **Want a quick test drive?** Run instantly without installation if you have Python 3.10+:  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.0" rxycode`  
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.1" rxycode`
 > See [⚡ Quick Start & Deployment](#-quick-start--deployment) for complete install options, Desktop app, Docker, and Node.js frontend builds.
 
 ---
@@ -43,7 +43,7 @@ RxyCode goes far beyond a single-prompt ReAct loop.
 
 **Expert Team Mode**: Toggle `/agents on` to engage a full software organization rather than a lone agent. The built-in `software_dev` pack features 10 specialized roles across 7 stages:
 
-```
+```text
 PM → Architect → Frontend Engineer ∥ Backend Engineer → QA Tester → Mechanical Gate → Security ∥ Quality ∥ Maintainability Audit → Documentation
 ```
 
@@ -97,7 +97,7 @@ Claude Code requires an Anthropic subscription; Codex runs the agent loop on rem
 The whole repository is **not** uploaded automatically. Only content the agent actually read or produced, then placed into the model messages, is sent. `websearch` sends the query to DDGS; `webfetch` contacts the target URL; MCP servers see whatever those tools return. Bring your own keys—DeepSeek, Qwen, Kimi, Doubao, GLM, SiliconFlow, OpenAI, Anthropic proxies—with no middleware lock-in.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.0/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.1/install.ps1 | iex"
 rxycode
 ```
 
@@ -123,15 +123,15 @@ Choose the installation or deployment method that best fits your workflow:
 Requires only Python 3.10+. No global installation, instant execution:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.1/install.sh | sh
 rxycode
 ```
 
-The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.4.0`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
+The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.4.1`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
 
 The installer bootstraps `uv` (if missing) and configures an isolated runtime without touching system packages:
 
-**Downloads:** the latest release (**`v1.4.0`**) publishes **one** asset: `rxycode-1.4.0.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
+**Downloads:** the latest release (**`v1.4.1`**) publishes **one** asset: `rxycode-1.4.1.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
 
 Launch anytime by running `rxycode`.
 
@@ -141,23 +141,23 @@ Ideal for sandbox isolation or hosting an always-on headless API service.
 
 **Step 1: Clone repo & prepare environment**
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.0" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.1" rxycode
 ```
 
 **Step 2: Start container**
 - **Option A: Headless API Service (Daemon)**
-  ```bash
+```bash
   docker compose up -d api
-  ```
+```
   Exposes the FastAPI HTTP + SSE streaming server on port 8765.
 - **Option B: Interactive Terminal TUI (Requires TTY)**
-  ```bash
+```bash
   docker compose run --rm tui
-  ```
+```
 
 **Manual Single Image Build:**
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.4.0"
+uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.4.1"
 rxycode
 ```
 
@@ -167,28 +167,27 @@ RxyCode features decoupled frontend surfaces communicating via stdio JSON-RPC:
 
 - **Default OpenTUI (Bun + React 19)**:  
   Source at `frontend/opentui-app/`. CLI installer bundles or installs Bun automatically. To develop:
-  ```bash
+```bash
   cd frontend/opentui-app
   bun install
   bun run build
-  ```
+```
 - **Ink Fallback TUI (Node.js 20+ + React 18)**:  
   Source at `frontend/`. If your environment prefers standard Node.js:
-  ```bash
+```bash
   cd frontend
   npm install
   npm run build
-  # Launch with Ink engine:
   RXYCODE_TUI=ink rxycode
-  ```
+```
 - **Desktop GUI (Electron 39 + Vite + React)**:  
   Source at `frontend/desktop-app/`:
-  ```bash
+```bash
   cd frontend/desktop-app
   npm install
-  npm run dev       # Start development mode
-  npm run build     # Package installers (Windows / macOS / Linux)
-  ```
+  npm run dev
+  npm run build
+```
   > Everyday users do not need to compile the desktop client manually. Grab prebuilt installers from the [v1.3.0 Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0):
   > - **Windows**: Run `rxycode-desktop-1.3.0-setup.exe` or extract portable `RxyCode.Desktop-1.3.0-win.zip`.
   > - **Linux**: Run `rxycode-desktop-1.3.0.AppImage` (after `chmod +x`).
@@ -312,7 +311,7 @@ Key Shortcuts:
 ### Headless API Service
 
 ```bash
-rxycode --api   # Launches FastAPI HTTP + SSE service on port 8765
+rxycode --api
 ```
 
 ---
@@ -335,7 +334,7 @@ OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -
 
 ## Desktop GUI
 
-v1.4.0 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
+v1.4.1 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
 
 | OS | Asset |
 |----|--------|
@@ -369,7 +368,7 @@ Plan cards offer **是，实施此计划**, a **补充说明** field, and **跳�
 
 ## Architecture
 
-```
+```text
 rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
                      │
                      ▼ (stdio JSON-RPC / HTTP SSE)
@@ -381,7 +380,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
                      ▼
                  AgentV2
   ┌─────────────────────────────────────────────────────────┐
-  │  Simple queries → Fast path + 2-level cache             │
+  │  Simple queries → Fast path + SHA-256 / semantic cache  │
   │                                                         │
   │  Complex coding → LangGraph DAG pipeline:               │
   │  [Goal Planner] → [Decomposer] → [Parallel Exec] →      │
@@ -417,6 +416,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 | Version | Release Date | Key Features |
 |---|---|---|
+| [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | CLI maintenance: optional OS sandbox, Windows venv Job binding, log retention, retry/circuit-breaker and session/build fixes. No new Desktop installer |
 | [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | CLI / OpenTUI only: sessions, `/effort`, plan approval, shared model/tool retry, Shift+Enter newline. No new Desktop installer |
 | [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | Major Desktop workbench release: 3-column session & project workspace, plugin rail, permission tiers; Windows installer & portable zip, Linux AppImage; fixes Windows worker bootstrap deadlock |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 10-role 7-stage SOP expert teams; Windows encoding improvements; 8MB stdio JSON-RPC throughput |
@@ -470,6 +470,7 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | Product version **1.4.1** across CLI, OpenTUI, Ink, Desktop metadata, MCP identification, installers, and appserver. Protocol stays `1.1.0`. |
 | [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | Product version **1.4.0** across CLI, OpenTUI, Ink, Desktop metadata, and appserver. Protocol stays `1.1.0`. |
 | [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | Expert teams (off by default); CLI reliability; GitHub Release is `rxycode-1.2.11.tar.gz` only — Desktop stays on v1.2.10 |
 | [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop Plan / Goal / `+` menu; plan card Build/Revise/Skip; default CLI remains OpenTUI (`rxycode`) |

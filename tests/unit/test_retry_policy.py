@@ -26,19 +26,25 @@ def test_model_and_tool_retry_share_opencode_clock():
         opencode_retry_delay_seconds,
     )
 
-    assert MODEL_RETRY_MAX == STREAM_TRANSPORT_RETRY_MAX == 5
-    assert MODEL_RETRY_ATTEMPTS == 6
+    # 2026-10-01：连接传输重试 5 -> 7 次，延迟 2s 翻倍末次 128s，上限 30s -> 128s。
+    # 路由到最新 MODEL_RETRY_MAX / MODEL_RETRY_ATTEMPTS；旧的 5 次 / 30s 上限
+    # （断言 ... == 5 / ATTEMPTS == 6 / 第5次截到30s）已废弃，不再引用。
+    assert MODEL_RETRY_MAX == STREAM_TRANSPORT_RETRY_MAX == 7
+    assert MODEL_RETRY_ATTEMPTS == 8
     assert opencode_retry_delay_seconds(1, random_unit=lambda: 0) == 2.0
     assert opencode_retry_delay_seconds(2, random_unit=lambda: 0) == 4.0
     assert opencode_retry_delay_seconds(3, random_unit=lambda: 0) == 8.0
     assert opencode_retry_delay_seconds(4, random_unit=lambda: 0) == 16.0
-    assert opencode_retry_delay_seconds(5, random_unit=lambda: 0) == 30.0
+    assert opencode_retry_delay_seconds(5, random_unit=lambda: 0) == 32.0
+    assert opencode_retry_delay_seconds(6, random_unit=lambda: 0) == 64.0
+    # 第 7 次重试（末次）等待 128s（2 * 2^6，低于新上限 128s，不被截断）。
+    assert opencode_retry_delay_seconds(7, random_unit=lambda: 0) == 128.0
     assert opencode_retry_delay_seconds(1, random_unit=lambda: 1) == 2.5
     assert opencode_retry_delay_seconds(1, multiplier=0.01, random_unit=lambda: 0) == 0.02
 
 
 def test_short_connect_is_retryable_idle_is_not():
-    assert STREAM_TRANSPORT_RETRY_MAX == 5
+    assert STREAM_TRANSPORT_RETRY_MAX == 7
     assert classify_error(StreamConnectTimeoutError("handshake")) == ErrorKind.TRANSIENT
     assert _is_transport_retryable(StreamConnectTimeoutError("handshake")) is True
     assert _is_transport_retryable(httpx.ConnectTimeout("handshake")) is True

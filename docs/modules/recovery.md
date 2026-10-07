@@ -36,16 +36,24 @@ Handles errors during task execution with retry logic and error summarization.
   stream clocks (`FirstTokenTimeoutError` / `StreamIdleTimeoutError`), and
   long read/idle timeouts. Surface: `event/error`.
 - Short connect handshake (`StreamConnectTimeoutError`) is TRANSIENT and may
-  use `STREAM_TRANSPORT_RETRY_MAX` extra attempts (default 5). Daily
-  `_raw_stream` does **not** retry first-token/idle 180s. Appserver stall
-  recycles a dead worker; it is not an LLM retry.
+  use `STREAM_TRANSPORT_RETRY_MAX` extra attempts (default **7**, routing to
+  `MODEL_RETRY_MAX`; backoff 2s×2^n with ≤25% jitter, capped at 128s).
+  **`_raw_stream` 的精确类型重试（2026-09-23，`_is_transport_retryable`）**：
+  虽然 ErrorKind 分类上 fired clocks 属 PERMANENT，exact-type
+  `FirstTokenTimeoutError` **会被重试**（首个 token 前重试不重复内容）；
+  `StreamIdleTimeoutError` 恒禁止重试（内容已开始，重试会重复输出）。
+  Appserver stall recycles a dead worker; it is not an LLM retry.
 - Unknown errors default to PERMANENT (conservative: no blind retries)
 - `should_emit_event_error` is the session/TUI gate for `event/error`.
 
 **Backoff (retry_with_backoff):**
-- Adapted from tenacity: TRANSIENT errors retried with
-  wait_exponential_jitter(initial=2, max=30) + stop_after_attempt(3)
-  (`retry_with_backoff(..., wait_multiplier=2, max_attempts=3)`)
+- Adapted from tenacity: TRANSIENT errors retried with exponential backoff
+  2s×2^n + ≤25% jitter, capped at **128s** (`MODEL_RETRY_MAX_DELAY_SECONDS`);
+  attempts come from the caller — default `MODEL_RETRY_ATTEMPTS` = 8
+  (1 try + 7 retries); ToolOrchestrator READ tools pass
+  `execution.tool_retry_attempts` (default 6) with `tool_retry_wait_multiplier`
+  (default 1.0). 废弃代码（2026-09-23 版）：旧描述
+  `wait_exponential_jitter(initial=2, max=30) + stop_after_attempt(3)`。
 - PERMANENT errors propagate immediately without consuming attempts
 - Applies to READ-level tool invocations in ToolOrchestrator; task-level
   recovery (`handle_error`) marks tasks PENDING/CANCELLED rather than rewriting

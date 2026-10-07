@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -372,3 +374,96 @@ async def test_docker_timeout_stops_container_and_client_process(
     stop_container.assert_awaited_once_with(cidfile)
     stop_client.assert_awaited_once_with(process)
     assert not cidfile.exists()
+
+
+# ---- Windows Job 出生即绑定（2026-10-07 验收缺陷修：venv launcher 冲突）-----
+
+_CREATE_SUSPENDED = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
+
+_OS_SANDBOX_ON = {
+    "enabled": True,
+    "mode": "workspace",
+    "network": "inherit",
+    "on_missing_capability": "downgrade",
+}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job 出生即绑定专属")
+@pytest.mark.asyncio
+async def test_windows_job_spawn_is_created_suspended_then_bound(
+    executor, tmp_path, monkeypatch
+):
+    """layer=unit 接线：Windows + Job 计划 → CREATE_SUSPENDED 创建 →
+    指派 + 恢复主线程（替代后补整树枚举）。"""
+    from RxyCode.RxyCode1_1_0.core.sandbox import manager as sandbox_manager
+
+    executor.os_name = "win32"
+    _configure(
+        monkeypatch,
+        {
+            "sandbox_mode": "workspace",
+            "workspace_root": str(tmp_path),
+            "os_sandbox": _OS_SANDBOX_ON,
+        },
+    )
+    bound: list[tuple[int, int]] = []
+    monkeypatch.setattr(sandbox_manager, "open_sandbox_job", lambda wrapped: 4242)
+    monkeypatch.setattr(
+        sandbox_manager,
+        "bind_spawned_process",
+        lambda job, pid: bound.append((job, pid)),
+    )
+    process = _CompletedProcess()
+    spawn = AsyncMock(return_value=process)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    result = await executor.execute_argv_async(["python", "-V"], workdir=str(tmp_path))
+
+    assert result["success"] is True
+    spawn.assert_awaited_once()
+    flags = spawn.await_args.kwargs.get("creationflags", 0)
+    assert flags & _CREATE_SUSPENDED
+    assert flags & getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    assert bound == [(4242, process.pid)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job 出生即绑定专属")
+@pytest.mark.asyncio
+async def test_windows_job_bind_failure_is_fail_closed(
+    executor, tmp_path, monkeypatch
+):
+    """layer=unit fail-closed：绑定失败 → sandbox_error + 进程被清理——
+    不吞 GetLastError、不放行未约束进程。"""
+    from RxyCode.RxyCode1_1_0.core.sandbox import manager as sandbox_manager
+    from RxyCode.RxyCode1_1_0.core.sandbox.errors import SandboxUnavailableError
+
+    executor.os_name = "win32"
+    _configure(
+        monkeypatch,
+        {
+            "sandbox_mode": "workspace",
+            "workspace_root": str(tmp_path),
+            "os_sandbox": _OS_SANDBOX_ON,
+        },
+    )
+    monkeypatch.setattr(sandbox_manager, "open_sandbox_job", lambda wrapped: 4242)
+
+    def _boom(job, pid):
+        raise SandboxUnavailableError(
+            "AssignProcessToJobObject 失败（GetLastError=5）"
+        )
+
+    monkeypatch.setattr(sandbox_manager, "bind_spawned_process", _boom)
+    process = _CompletedProcess()
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
+    )
+    cleanup = AsyncMock()
+    monkeypatch.setattr(executor, "_cleanup_process", cleanup)
+
+    result = await executor.execute_argv_async(["python", "-V"], workdir=str(tmp_path))
+
+    assert result["success"] is False
+    assert result["error_type"] == "sandbox_error"
+    assert "GetLastError=5" in result["stderr"]
+    cleanup.assert_awaited_once()

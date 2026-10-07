@@ -1,6 +1,6 @@
 {
   "required_after": {
-    "transport_retry_max": 5,
+    "transport_retry_max": 7,
     "connect_timeout_retryable": true,
     "read_timeout_retryable": false,
     "first_token_timeout_retryable": true

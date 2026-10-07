@@ -74,7 +74,7 @@ remains the persisted-model wrapper.
 - lifecycle: {hook_timeout_seconds}
 - pricing: per-model $/M token prices (for billing display)
 - recovery: error-recovery policy defaults
-- llm: {transport_retries} extra 429/connect attempts on the stream path (default **5**, same 2s/4s/8s/16s/30s clock as READ-tool retries; not applied after a stream has already produced content)
+- llm: {transport_retries} extra 429/connect attempts on the stream path (**optional override, no longer shipped in defaults since 2026-10-01** — default routes to `MODEL_RETRY_MAX` = **7**, 2s×2^n backoff with ≤25% jitter capped at **128s**; not applied after a stream has already produced content。废弃代码（2026-09-23 版）：旧默认 **5**、30s 封顶，且发货默认值会静默覆盖新常量，已移除)
 - lsp: {enabled, servers}
 - autoCompact: {enabled, threshold}
 - rag: {index_delay_seconds, retrieval settings}

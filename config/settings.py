@@ -257,7 +257,13 @@ def _default_config() -> dict:
             "circuit_breaker_enabled": True,
         },
         "llm": {
-            "transport_retries": 5,  # extra 429/connect attempts; same as tool retries
+            # 废弃代码（2026-09-23 版）："transport_retries": 5（旧默认，注释为
+            # "extra 429/connect attempts; same as tool retries"）。
+            # 废弃原因：该 key 经 cfg 优先逻辑（agent_v2._transport_retry_max /
+            # _stream_transient_retry_max）静默覆盖 recovery/error_recovery.py 的
+            # 最新常量 MODEL_RETRY_MAX=7（退避 2s×2^n ≤25% jitter，末次 128s），
+            # 导致默认安装实际只重试 5 次。现已移除，统一路由到常量；
+            # 本地确需覆盖时可显式设置 "transport_retries": <int>。
         },
         "agents": {
             "enabled": False,
@@ -344,6 +350,20 @@ def _default_config() -> dict:
             "max_memory_mb": 4096,
             "max_cpus": 2.0,
             "max_processes": 128,
+            # v1.4.1 OS 级沙箱（core/sandbox/，仿 Codex：bwrap/Seatbelt/Job+受限令牌）。
+            # v1 默认关（烧熟后评估默认开）；docker 模式下不叠加（docker 自带边界）。
+            "os_sandbox": {
+                "enabled": False,
+                "mode": "workspace",            # workspace | read-only
+                "network": "none",              # none | inherit
+                "deny_read_globs": [
+                    "**/.env", "**/.env.*", "**/.ssh/**", "**/*.pem",
+                    "**/.aws/**", "**/credentials*",
+                ],
+                "max_memory_mb": 0,             # 0=不限（Windows Job 内核限额）
+                "max_processes": 0,             # 0=不限
+                "on_missing_capability": "downgrade",  # downgrade（显式响亮降级）| fail_closed
+            },
             "tool_retry_attempts": 6,  # 1 try + 5 retries; same clock as model transport
             "tool_retry_wait_multiplier": 1.0,
             "tool_timeout_seconds": 1800,

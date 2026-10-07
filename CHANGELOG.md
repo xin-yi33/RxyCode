@@ -11,6 +11,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.1] - 2026-10-07
+
+CLI / OpenTUI maintenance release. Publishes `rxycode-1.4.1.tar.gz`; no new
+Desktop installer or wheel. Product metadata advances to 1.4.1 while the
+JSON-RPC protocol remains `1.1.0` and the Python import namespace remains
+`RxyCode.RxyCode1_1_0`.
+
+### Added
+
+- Default-off OS shell sandbox backends: Windows Job Object resource limits
+  and kill-on-close; Linux bubblewrap; macOS Seatbelt. Unsupported constraints
+  fail closed or explicitly warn about downgrade according to configuration.
+- Timestamp-named logs with a default 72-hour retention window and an
+  environment override.
+- Product-version parity regression across installers, runtime manifests,
+  schema digest, MCP identification, package metadata, and terminal headers.
+
+### Changed
+
+- Default transient model transport retries: seven retries, exponential
+  backoff from 2 seconds capped at 128 seconds. Local configuration overrides
+  remain supported; permanent errors are not made retryable.
+- Mark unused legacy DSML, history, LSP, and legacy scheduler paths as deprecated
+  rather than silently creating competing execution routes.
+
+### Fixed
+
+- Bind suspended Windows shell processes to the sandbox Job before resuming
+  them, fixing venv launcher Job nesting and the post-spawn child-process race.
+- Stop counting each inner transport retry as a separate circuit-breaker
+  failure within one logical tool round; remove the stale five-retry default.
+- Recover dead appservers when opening the session list and admit the next
+  session after a stalled-job degradation.
+- Fix Windows mouse/session-list event handling and composer caret placement.
+- Do not finish a build on a premature final answer before required files are
+  written; treat a raised Responses transport failure as a failed stream.
+- Align opener mocks with the production boundary; skip only plan-text checks
+  when their gitignored local document is missing or empty.
+
+### Limits and verification
+
+The OS sandbox remains disabled by default and applies to shell execution,
+not MCP/browser/GUI subprocesses or file-tool permissions. Windows Job Objects
+are resource/process controls, not a filesystem or network security boundary.
+Linux/macOS native sandbox execution is not claimed as verified on the Windows
+release host. See [release notes](docs/release-notes/RELEASE_NOTES_v1.4.1.md)
+and the [detailed changelog](docs/release-notes/CHANGELOG_v1.4.1.md).
+
+---
+
 ## [1.4.0] - 2026-09-22
 
 CLI / OpenTUI only. This tag publishes `rxycode-1.4.0.tar.gz` and does not
@@ -863,6 +913,7 @@ verification layer and MCP integration.
 
 ---
 
+[1.4.1]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1
 [1.4.0]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0
 [1.2.11]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11
 [1.2.10]: https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10

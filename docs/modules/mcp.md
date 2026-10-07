@@ -3,6 +3,9 @@
 ## What Is This Module?
 Implements Model Context Protocol (MCP) client for connecting to external MCP servers. MCP servers provide additional tools and resources to the agent.
 
+Release metadata: `initialize.clientInfo` identifies RxyCode 1.4.1. This
+product-version change does not change the negotiated MCP protocol version.
+
 ## Key Files
 | File | Purpose |
 |------|---------|

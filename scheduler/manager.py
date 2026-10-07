@@ -1,4 +1,10 @@
-"""Task scheduler manager - runs scheduled tasks in background."""
+"""Task scheduler manager - runs scheduled tasks in background.
+
+路由说明（2026-10-01）：本线程式 TaskScheduler **仅供 api_server fallback**
+（Ink TUI，api_server.py:493）使用；live OpenTUI 路径的 /loop 权威实现是
+appserver/schedule_service.py（PhaseG-B16，asyncio）。两者仅共享
+scheduler/rules.py。改 live 调度行为请改 schedule_service，勿改本文件。
+"""
 
 import asyncio
 import inspect

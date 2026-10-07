@@ -1,4 +1,4 @@
-﻿import{createRequire}from'node:module';const require=createRequire(import.meta.url);
+import{createRequire}from'node:module';const require=createRequire(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -3117,9 +3117,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.production.min.js
+// node_modules/react-reconciler/cjs/react-reconciler.production.min.js
 var require_react_reconciler_production_min = __commonJS({
-  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.production.min.js"(exports, module) {
+  "node_modules/react-reconciler/cjs/react-reconciler.production.min.js"(exports, module) {
     module.exports = function $$$reconciler($$$hostConfig) {
       var exports2 = {};
       "use strict";
@@ -7866,9 +7866,9 @@ var require_react_reconciler_production_min = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.development.js
+// node_modules/react-reconciler/cjs/react-reconciler.development.js
 var require_react_reconciler_development = __commonJS({
-  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler.development.js"(exports, module) {
+  "node_modules/react-reconciler/cjs/react-reconciler.development.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV !== "production") {
       module.exports = function $$$reconciler($$$hostConfig) {
@@ -22994,9 +22994,9 @@ var require_react_reconciler_development = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/react-reconciler/index.js
+// node_modules/react-reconciler/index.js
 var require_react_reconciler = __commonJS({
-  "node_modules/ink/node_modules/react-reconciler/index.js"(exports, module) {
+  "node_modules/react-reconciler/index.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV === "production") {
       module.exports = require_react_reconciler_production_min();
@@ -23006,9 +23006,9 @@ var require_react_reconciler = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js
+// node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js
 var require_react_reconciler_constants_production_min = __commonJS({
-  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js"(exports) {
+  "node_modules/react-reconciler/cjs/react-reconciler-constants.production.min.js"(exports) {
     "use strict";
     exports.ConcurrentRoot = 1;
     exports.ContinuousEventPriority = 4;
@@ -23019,9 +23019,9 @@ var require_react_reconciler_constants_production_min = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.development.js
+// node_modules/react-reconciler/cjs/react-reconciler-constants.development.js
 var require_react_reconciler_constants_development = __commonJS({
-  "node_modules/ink/node_modules/react-reconciler/cjs/react-reconciler-constants.development.js"(exports) {
+  "node_modules/react-reconciler/cjs/react-reconciler-constants.development.js"(exports) {
     "use strict";
     if (process.env.NODE_ENV !== "production") {
       (function() {
@@ -23059,9 +23059,9 @@ var require_react_reconciler_constants_development = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/react-reconciler/constants.js
+// node_modules/react-reconciler/constants.js
 var require_constants = __commonJS({
-  "node_modules/ink/node_modules/react-reconciler/constants.js"(exports, module) {
+  "node_modules/react-reconciler/constants.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV === "production") {
       module.exports = require_react_reconciler_constants_production_min();
@@ -23080,9 +23080,9 @@ var require_emoji_regex = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/constants.js
+// node_modules/ws/lib/constants.js
 var require_constants2 = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/constants.js"(exports, module) {
+  "node_modules/ws/lib/constants.js"(exports, module) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -23103,9 +23103,9 @@ var require_constants2 = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/buffer-util.js
+// node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/buffer-util.js"(exports, module) {
+  "node_modules/ws/lib/buffer-util.js"(exports, module) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants2();
     var FastBuffer = Buffer[Symbol.species];
@@ -23178,9 +23178,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/limiter.js
+// node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/limiter.js"(exports, module) {
+  "node_modules/ws/lib/limiter.js"(exports, module) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -23228,9 +23228,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/permessage-deflate.js
+// node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/permessage-deflate.js"(exports, module) {
+  "node_modules/ws/lib/permessage-deflate.js"(exports, module) {
     "use strict";
     var zlib2 = __require("zlib");
     var bufferUtil = require_buffer_util();
@@ -23611,9 +23611,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/validation.js
+// node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/validation.js"(exports, module) {
+  "node_modules/ws/lib/validation.js"(exports, module) {
     "use strict";
     var { isUtf8 } = __require("buffer");
     var { hasBlob } = require_constants2();
@@ -23812,9 +23812,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/receiver.js
+// node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/receiver.js"(exports, module) {
+  "node_modules/ws/lib/receiver.js"(exports, module) {
     "use strict";
     var { Writable } = __require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -24444,9 +24444,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/sender.js
+// node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/sender.js"(exports, module) {
+  "node_modules/ws/lib/sender.js"(exports, module) {
     "use strict";
     var { Duplex } = __require("stream");
     var { randomFillSync } = __require("crypto");
@@ -24937,9 +24937,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/event-target.js
+// node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/event-target.js"(exports, module) {
+  "node_modules/ws/lib/event-target.js"(exports, module) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants2();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -25166,9 +25166,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/extension.js
+// node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/extension.js"(exports, module) {
+  "node_modules/ws/lib/extension.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -25319,9 +25319,9 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/websocket.js
+// node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/websocket.js"(exports, module) {
+  "node_modules/ws/lib/websocket.js"(exports, module) {
     "use strict";
     var EventEmitter4 = __require("events");
     var https2 = __require("https");
@@ -26215,9 +26215,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/stream.js
+// node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/stream.js"(exports, module) {
+  "node_modules/ws/lib/stream.js"(exports, module) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = __require("stream");
@@ -26313,9 +26313,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/subprotocol.js
+// node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/subprotocol.js"(exports, module) {
+  "node_modules/ws/lib/subprotocol.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -26358,9 +26358,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/lib/websocket-server.js
+// node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/ink/node_modules/ws/lib/websocket-server.js"(exports, module) {
+  "node_modules/ws/lib/websocket-server.js"(exports, module) {
     "use strict";
     var EventEmitter4 = __require("events");
     var http3 = __require("http");
@@ -26759,10 +26759,10 @@ var require_websocket_server = __commonJS({
   }
 });
 
-// node_modules/ink/node_modules/ws/wrapper.mjs
+// node_modules/ws/wrapper.mjs
 var import_stream, import_extension, import_permessage_deflate, import_receiver, import_sender, import_subprotocol, import_websocket, import_websocket_server, wrapper_default;
 var init_wrapper = __esm({
-  "node_modules/ink/node_modules/ws/wrapper.mjs"() {
+  "node_modules/ws/wrapper.mjs"() {
     import_stream = __toESM(require_stream(), 1);
     import_extension = __toESM(require_extension(), 1);
     import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -53001,10 +53001,10 @@ var require_follow_redirects = __commonJS({
       spread3.path = spread3.search ? spread3.pathname + spread3.search : spread3.pathname;
       return spread3;
     }
-    function removeMatchingHeaders(regex3, headers) {
+    function removeMatchingHeaders(regex2, headers) {
       var lastValue;
       for (var header in headers) {
-        if (regex3.test(header)) {
+        if (regex2.test(header)) {
           lastValue = headers[header];
           delete headers[header];
         }
@@ -53060,8 +53060,8 @@ var require_follow_redirects = __commonJS({
     function isURL(value) {
       return URL2 && value instanceof URL2;
     }
-    function escapeRegex(regex3) {
-      return regex3.replace(/[\]\\/()*+?.$]/g, "\\$&");
+    function escapeRegex(regex2) {
+      return regex2.replace(/[\]\\/()*+?.$]/g, "\\$&");
     }
     module.exports = wrap({ http: http3, https: https2 });
     module.exports.wrap = wrap;
@@ -55018,7 +55018,7 @@ function ansiRegex({ onlyFirst = false } = {}) {
   return new RegExp(pattern, onlyFirst ? void 0 : "g");
 }
 
-// node_modules/string-width/node_modules/strip-ansi/index.js
+// node_modules/strip-ansi/index.js
 var regex = ansiRegex();
 function stripAnsi(string) {
   if (typeof string !== "string") {
@@ -55191,18 +55191,6 @@ var measureText = (text) => {
   return { width, height };
 };
 var measure_text_default = measureText;
-
-// node_modules/wrap-ansi/node_modules/strip-ansi/index.js
-var regex2 = ansiRegex();
-function stripAnsi2(string) {
-  if (typeof string !== "string") {
-    throw new TypeError(`Expected a \`string\`, got \`${typeof string}\``);
-  }
-  if (!string.includes("\x1B") && !string.includes("\x9B")) {
-    return string;
-  }
-  return string.replace(regex2, "");
-}
 
 // node_modules/ansi-styles/index.js
 var ANSI_BACKGROUND_OFFSET = 10;
@@ -55408,7 +55396,7 @@ var wrapWord = (rows, word, columns) => {
   const characters = [...word];
   let isInsideEscape = false;
   let isInsideLinkEscape = false;
-  let visible = stringWidth(stripAnsi2(rows.at(-1)));
+  let visible = stringWidth(stripAnsi(rows.at(-1)));
   for (const [index, character] of characters.entries()) {
     const characterLength = stringWidth(character);
     if (visible + characterLength <= columns) {
@@ -56344,8 +56332,8 @@ function indentString(string, count = 1, options = {}) {
   if (count === 0) {
     return string;
   }
-  const regex3 = includeEmptyLines ? /^/gm : /^(?!\s*$)/gm;
-  return string.replace(regex3, indent.repeat(count));
+  const regex2 = includeEmptyLines ? /^/gm : /^(?!\s*$)/gm;
+  return string.replace(regex2, indent.repeat(count));
 }
 
 // node_modules/ink/build/get-max-width.js
@@ -58839,6 +58827,12 @@ var AVAILABLE_COMMANDS = [
   { name: "/plan", description: "\u8FDB\u5165\u89C4\u5212\u6A21\u5F0F", category: "Agent", keywords: "mode \u6A21\u5F0F" },
   { name: "/build", description: "\u8FDB\u5165\u6784\u5EFA\u6A21\u5F0F", category: "Agent", keywords: "mode \u6A21\u5F0F" },
   { name: "/compose", description: "\u8FDB\u5165\u7F16\u6392\u6A21\u5F0F", category: "Agent", keywords: "mode \u6A21\u5F0F" },
+  { name: "/solo", description: "\u672C\u8F6E\u5F3A\u5236\u5355 Agent", args: "<\u4EFB\u52A1>", category: "Agent", keywords: "mode solo \u5355" },
+  { name: "/team", description: "\u672C\u8F6E\u5F3A\u5236\u4E13\u5BB6\u56E2\uFF08auto \u65F6\u8DE8\u5C42\u5B9E\u73B0\u4E5F\u4F1A\u8D70\uFF09", args: "<\u4EFB\u52A1>", category: "Agent", keywords: "mode team \u4E13\u5BB6\u56E2" },
+  { name: "/explore", description: "\u672C\u8F6E\u5F3A\u5236\u53EA\u8BFB explore \u5B50\u4EE3\u7406", args: "<\u53EA\u8BFB\u95EE\u9898>", category: "Agent", keywords: "mode explore \u5B50\u4EE3\u7406 \u67E5\u4EE3\u7801" },
+  { name: "/team-multi", description: "\u5F3A\u5236\u4E13\u5BB6\u56E2\uFF08\u591A\u6A21\u578B\u5C1A\u672A\u542F\u7528\uFF09", args: "<\u4EFB\u52A1>", category: "Agent", keywords: "mode team-multi" },
+  { name: "/why-mode", description: "\u4E0A\u6B21\u4E3A\u4F55\u662F solo / team / explore", category: "Agent", keywords: "route why" },
+  { name: "/agents", description: "\u4E13\u5BB6\u56E2\u5F00\u5173\uFF08\u9ED8\u8BA4\u5173\uFF09\u4E0E\u9884\u7B97", args: "[on|off|team|route|router-model|budget|timeout]", category: "Agent", keywords: "agents \u4E13\u5BB6\u56E2 \u8BBE\u7F6E" },
   { name: "/thinking", description: "\u5C55\u5F00/\u6298\u53E0\u601D\u8003\u8FC7\u7A0B", category: "Agent", keywords: "think reason" },
   // Memory
   { name: "/memory add", description: "\u6DFB\u52A0\u8BB0\u5FC6", args: "<text>", category: "\u8BB0\u5FC6" },
@@ -58877,6 +58871,21 @@ var MODE_LABELS = {
   plan: "Plan",
   compose: "Compose"
 };
+
+// src/modelSetup.ts
+var NO_MODEL_WELCOME_HINT = "\u5C1A\u672A\u914D\u7F6E\u6A21\u578B \u2014 \u8F93\u5165 /addmodel \u6216\u6309 Ctrl+P";
+function decideModelSetup(args) {
+  if (!args.fetchOk) {
+    return { needsSetup: false, shouldAutoOpen: false };
+  }
+  if (args.modelCount > 0) {
+    return { needsSetup: false, shouldAutoOpen: false };
+  }
+  return {
+    needsSetup: true,
+    shouldAutoOpen: !args.alreadyAutoOpened
+  };
+}
 
 // src/components/Markdown.tsx
 var import_react23 = __toESM(require_react(), 1);
@@ -59718,7 +59727,7 @@ ${content.slice(-MAX_STREAMING_PREVIEW_CHARS)}` : content;
   if (lines.length <= maxLines) return charBounded;
   return ["... (streaming preview)", ...lines.slice(-(maxLines - 1))].join("\n");
 }
-var WelcomeMessage = import_react24.default.memo(() => {
+var WelcomeMessage = import_react24.default.memo(({ needsModelSetup }) => {
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "column", paddingTop: 0, paddingBottom: 0, children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Banner_default, {}),
     /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "column", paddingLeft: 2, children: [
@@ -59754,10 +59763,14 @@ var WelcomeMessage = import_react24.default.memo(() => {
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { color: "#aaa", children: " - \u4FE1\u606F\u6574\u7406\u3001\u8BA1\u5212\u6267\u884C\u3001\u591A\u6B65\u534F\u4F5C" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { color: "#888", children: "  \u6709\u4EC0\u4E48\u6211\u53EF\u4EE5\u5E2E\u4F60\u7684\uFF1F" }),
+      needsModelSetup && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: "#FFB6C1", bold: true, children: [
+        "  ",
+        NO_MODEL_WELCOME_HINT
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Text, { color: "#555", children: "  \u5FEB\u6377\u952E: Ctrl+P \u547D\u4EE4\u9762\u677F \xB7 Ctrl+T \u601D\u8003\u5C55\u5F00 \xB7 Tab \u5207\u6362\u6A21\u5F0F \xB7 Esc \u7EC8\u6B62" })
     ] })
   ] });
-}, () => true);
+}, (prev, next) => prev.needsModelSetup === next.needsModelSetup);
 var ThinkingSpinner = import_react24.default.memo(function ThinkingSpinner2({ done }) {
   const [spinnerIdx, setSpinnerIdx] = (0, import_react24.useState)(0);
   (0, import_react24.useEffect)(() => {
@@ -59797,11 +59810,6 @@ var ThinkingMessage = import_react24.default.memo(function ThinkingMessage2({ co
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: C.yellow, bold: true, children: [
         " Thought",
         stepLabel
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Text, { color: C.overlay2, children: [
-        " (/thinking ",
-        expanded ? "collapse" : "expand",
-        ")"
       ] })
     ] }),
     showExpand && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { paddingLeft: 4, flexDirection: "column", minHeight: 1, children: [
@@ -59934,7 +59942,7 @@ function renderMessage(msg, mode, expandThinking, maxAssistantPreviewLines) {
     case "tool":
       return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ToolMessage, { msg }, msg.id);
     case "user":
-      return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(UserMessage, { content: msg.content, mode }, msg.id);
+      return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(UserMessage, { content: msg.content, mode: msg.mode ?? mode }, msg.id);
     case "assistant":
       return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AssistantMessage, { msg, maxPreviewLines: maxAssistantPreviewLines }, msg.id);
     case "system":
@@ -59943,7 +59951,7 @@ function renderMessage(msg, mode, expandThinking, maxAssistantPreviewLines) {
       return null;
   }
 }
-var ChatPanel_default = import_react24.default.memo(function ChatPanel({ messages, height, mode, expandThinking }) {
+var ChatPanel_default = import_react24.default.memo(function ChatPanel({ messages, height, mode, expandThinking, needsModelSetup }) {
   const showWelcome = messages.length === 0;
   const committedIdsRef = (0, import_react24.useRef)([]);
   const staticGenerationRef = (0, import_react24.useRef)(0);
@@ -59960,7 +59968,7 @@ var ChatPanel_default = import_react24.default.memo(function ChatPanel({ message
   const finalized = messages.slice(0, committedCount);
   const active = messages.slice(committedCount);
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(Box_default, { flexDirection: "column", paddingX: 1, children: [
-    showWelcome && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(WelcomeMessage, {}),
+    showWelcome && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(WelcomeMessage, { needsModelSetup }),
     /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Static, { items: finalized, children: (msg) => renderMessage(msg, mode, expandThinking) }, staticGenerationRef.current),
     active.map((msg) => renderMessage(msg, mode, expandThinking, Math.max(3, height - 6)))
   ] });
@@ -66451,7 +66459,7 @@ function useApi() {
     isStreamingRef.current = true;
     hasReasoningRef.current = false;
     logInfo("Chat request sent", { len: content.length, mode });
-    addMessage({ role: "user", content });
+    addMessage({ role: "user", content, mode });
     setIsStreaming(true);
     const thinkingId = `${Date.now()}-thinking`;
     const assistantId = `${Date.now()}-assistant`;
@@ -66971,6 +66979,24 @@ function mapLoadedChatMessages(records, loadedAt = Date.now()) {
   });
 }
 
+// src/fetchModelsProbe.ts
+async function probeModels() {
+  try {
+    const resp = await axios_default.get(`${API_BASE}/models`, {
+      timeout: 8e3,
+      headers: authorizationHeaders()
+    });
+    const data = resp.data;
+    return {
+      ok: true,
+      models: data.models ?? [],
+      active: data.active ?? ""
+    };
+  } catch {
+    return { ok: false, models: [], active: "" };
+  }
+}
+
 // src/App.tsx
 var import_jsx_runtime12 = __toESM(require_jsx_runtime(), 1);
 var Header = import_react37.default.memo(({ mode, model, expandThinking, isStreaming }) => {
@@ -66978,7 +67004,7 @@ var Header = import_react37.default.memo(({ mode, model, expandThinking, isStrea
   return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Box_default, { paddingX: 1, flexShrink: 0, children: [
     /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Text, { color: "#FFB6C1", bold: true, children: [
       "  ",
-      "RxyCode v1.2.2"
+      "RxyCode v1.4.1"
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Text, { color: "#555", children: [
       " ",
@@ -67013,6 +67039,8 @@ function App2({ terminateProcess } = {}) {
   const thinkingTogglePendingRef = (0, import_react37.useRef)(false);
   const [addmodelState, setAddmodelState] = (0, import_react37.useState)(null);
   const [addmodelError, setAddmodelError] = (0, import_react37.useState)("");
+  const [needsModelSetup, setNeedsModelSetup] = (0, import_react37.useState)(false);
+  const autoOpenedModelSetupRef = (0, import_react37.useRef)(false);
   const [streamStartedAt, setStreamStartedAt] = (0, import_react37.useState)(null);
   const [clearKey, setClearKey] = (0, import_react37.useState)(0);
   const [activeModal, setActiveModal] = (0, import_react37.useState)(null);
@@ -67031,6 +67059,34 @@ function App2({ terminateProcess } = {}) {
     const iv = setInterval(fetchStatus, 3e4);
     return () => {
       clearInterval(iv);
+    };
+  }, []);
+  (0, import_react37.useEffect)(() => {
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < 10 && !cancelled; i++) {
+        const probe = await probeModels();
+        if (cancelled) return;
+        if (!probe.ok) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        const decision = decideModelSetup({
+          fetchOk: true,
+          modelCount: probe.models.length,
+          alreadyAutoOpened: autoOpenedModelSetupRef.current
+        });
+        setNeedsModelSetup(decision.needsSetup);
+        if (decision.shouldAutoOpen) {
+          autoOpenedModelSetupRef.current = true;
+          setAddmodelState({ step: "provider_model_id", data: {} });
+          setAddmodelError("");
+        }
+        return;
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
   }, []);
   (0, import_react37.useEffect)(() => {
@@ -67165,6 +67221,10 @@ function App2({ terminateProcess } = {}) {
     });
     if (result?.message) {
       addMessage({ role: "system", content: result.message });
+    }
+    if (result && result.action !== "error") {
+      const probe = await probeModels();
+      if (probe.ok) setNeedsModelSetup(probe.models.length === 0);
     }
   }, [addmodelState, setAddmodelState, setAddmodelError, addModel, addMessage]);
   const handleCommand = (0, import_react37.useCallback)(async (cmd) => {
@@ -67329,7 +67389,7 @@ function App2({ terminateProcess } = {}) {
   logDebug("InputBox render", { show: showInputBox, activeModal, showCommandPalette });
   return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(MouseProvider, { value: mouseManager, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Box_default, { flexDirection: "column", flexGrow: 1, children: [
     /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Header, { mode, model, expandThinking, isStreaming }),
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ChatPanel_default, { messages, height: chatHeight, mode, expandThinking }, clearKey),
+    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ChatPanel_default, { messages, height: chatHeight, mode, expandThinking, needsModelSetup }, clearKey),
     showProgress && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ProgressBanner_default, { isStreaming, startedAt: streamStartedAt, stepLabel: progressData?.stepLabel || "", activity: progressData?.activity || "" }),
     showInputBox && !addmodelState && /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
       InputBox_default,

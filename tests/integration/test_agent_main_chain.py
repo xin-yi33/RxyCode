@@ -136,7 +136,10 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
     )
     opener = MagicMock()
     monkeypatch.setattr(open_file_module.sys, "platform", "win32")
-    monkeypatch.setattr(open_file_module.os, "startfile", opener, raising=False)
+    # 2026-10-07 验收修：生产 open_file 已优先走 _open_on_windows（Path 入参，
+    # subprocess.Popen(cmd /c start)），os.startfile 只是其内部异常 fallback——
+    # mock 应对齐 OS opener 边界，而不是旧的 startfile 入口。
+    monkeypatch.setattr(open_file_module, "_open_on_windows", opener)
     event_queue = asyncio.Queue()
     stream_history: list[dict] = []
     stream_recorder = StreamSessionRecorder(
@@ -204,7 +207,7 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
         and "Decomposed into 1 sub-tasks" in event.get("text", "")
         for event in events
     )
-    opener.assert_called_once_with(str(artifact.resolve()))
+    opener.assert_called_once_with(artifact.resolve())
     audit_file = isolated_runtime.data_dir / "logs" / "audit.jsonl"
     assert audit_file.is_file()
     audit_text = audit_file.read_text(encoding="utf-8")

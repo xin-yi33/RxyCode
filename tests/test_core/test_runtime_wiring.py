@@ -79,6 +79,10 @@ async def test_usage_tracking_refunds_output_reservation_on_provider_error():
         rate_model="model",
         reserved_output_tokens=10,
     )
+    # ConnectionError 是传输可重试错误；默认 7 次预算会真睡
+    # 2/4/8/16/32/64/128s（pytest 单测超时 180s）。本用例只验收终态异常的
+    # 退款簿记，与重试次数正交，按 test_circuit_breaker.py:135 的既有惯例清零。
+    llm._transport_retries = 0
 
     with patch.object(cb_mod, "circuit_breaker_enabled", return_value=False):
         with pytest.raises(ConnectionError, match="provider down"):
@@ -108,6 +112,9 @@ async def test_usage_tracking_refunds_output_reservation_when_breaker_is_open():
         rate_model="model",
         reserved_output_tokens=10,
     )
+    # 同上：隔离熔断契约与传输重试预算（默认 7 次会真睡翻倍退避，
+    # 超 pytest 180s 单测超时）；下方 await_count 断言本就不钉死绝对次数。
+    llm._transport_retries = 0
     breaker = cb_mod.LLMCircuitBreaker(fail_max=1, reset_timeout=60)
 
     with (

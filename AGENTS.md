@@ -25,6 +25,7 @@
 | [validation](docs/modules/validation.md) | validation/ | Result validation - check results against requirements |
 | [recovery](docs/modules/recovery.md) | recovery/ | Error recovery - retry logic and error tracking |
 | [safety](docs/modules/safety.md) | core/safety/ | Safety gate - risk levels, approval (TUI/SSE), write whitelist, audit |
+| [sandbox](docs/modules/sandbox.md) | core/sandbox/ | OS 级沙箱（v1.4.1，仿 Codex）：bash 子进程内核强制执行面 —— Windows Job Object（限额+kill-on-close 整树指派）/ Linux bwrap / macOS Seatbelt；受限令牌原语宿主不支持时显式降级。默认 `execution.os_sandbox.enabled=false`，docker 模式不叠加 |
 | [evals](docs/modules/evals.md) | evals/ | Evaluation harness - task success rate, LLM-as-judge, baselines |
 | [agents](docs/modules/agents.md) | core/agents/ | Expert team: Coordinator, SOP, verifier, budget, router |
 | [rag](docs/modules/rag.md) | rag/ | Codebase vector search - chunking, embedding, cosine search, repo map |

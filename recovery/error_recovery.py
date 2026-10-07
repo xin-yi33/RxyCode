@@ -30,11 +30,18 @@ from typing import Awaitable, Callable, TypeVar
 # RETRY_MAX_RETRIES / RETRY_INITIAL_DELAY / RETRY_BACKOFF_FACTOR /
 # RETRY_JITTER_FACTOR / RETRY_MAX_DELAY_NO_HEADERS.
 # Every model-network retry and every tool retry uses this schedule.
-MODEL_RETRY_MAX = 5
+#
+# 2026-10-01 策略变更：传输连接重试 5 -> 7 次，延迟仍按 2s 翻倍，
+# 末次（第 7 次重试，第 8 次尝试前）等待 128s，因此上限从 30s 放开到 128s。
+# 序列：2, 4, 8, 16, 32, 64, 128（均含最多 25% 抖动，jitter 后截到 128s）。
+# 废弃代码（2026-09-23 版）：MODEL_RETRY_MAX = 5 / MODEL_RETRY_MAX_DELAY_SECONDS = 30.0。
+# 旧 5 次 + 30s 上限在弱网下等效重试序列 2,4,8,16,30（第 5 次被截到 30s），
+# 端到端等待太短，连接抖动易把一次用户回合的所有重试耗尽。
+MODEL_RETRY_MAX = 7
 MODEL_RETRY_INITIAL_SECONDS = 2.0
 MODEL_RETRY_BACKOFF_FACTOR = 2.0
 MODEL_RETRY_JITTER_FACTOR = 0.25
-MODEL_RETRY_MAX_DELAY_SECONDS = 30.0
+MODEL_RETRY_MAX_DELAY_SECONDS = 128.0
 MODEL_RETRY_ATTEMPTS = MODEL_RETRY_MAX + 1
 
 
@@ -46,7 +53,7 @@ def opencode_retry_delay_seconds(
 ) -> float:
     """Seconds to wait before retry number ``attempt`` (1 = first retry).
 
-    ``2s * 2^(attempt-1)``, plus up to 25% jitter, never above 30s.
+    ``2s * 2^(attempt-1)``, plus up to 25% jitter, never above 128s.
     ``multiplier`` scales the base and the cap together.
     """
     step = max(1, int(attempt))
@@ -239,10 +246,15 @@ async def retry_with_backoff(
 ) -> T:
     """Run ``fn`` retrying TRANSIENT errors with exponential backoff + jitter.
 
-    Adapted from tenacity: ``wait_exponential_jitter(initial=2, max=30)``
-    scaled by ``wait_multiplier`` (tests pass 0.01 to keep them fast) and
-    ``stop_after_attempt(max_attempts)``. PERMANENT errors propagate
+    Backoff is ``2s * 2**n`` with <=25% jitter, capped at
+    ``MODEL_RETRY_MAX_DELAY_SECONDS`` (128s), scaled by ``wait_multiplier``
+    (tests pass 0.01 to keep them fast), plus
+    ``stop_after_attempt(max_attempts)`` (default ``MODEL_RETRY_ATTEMPTS``
+    = 8, i.e. 1 try + 7 retries). PERMANENT errors propagate
     immediately without consuming retry attempts.
+
+    废弃代码（2026-09-23 版）：旧实现 tenacity ``wait_exponential_jitter(
+    initial=2, max=30)``（30s 封顶），已被 ``_OpenCodeWait``（128s 封顶）取代。
     """
     from tenacity import (
         AsyncRetrying,

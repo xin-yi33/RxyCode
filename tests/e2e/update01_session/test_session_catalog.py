@@ -76,9 +76,11 @@ def test_e2e_ss_05_list_keybinds_dispatch_rpc():
     assert "rename" in body and "pin" in body and "fork" in body
     assert "ctrl+shift" in body or "shift: true" in body or "shift === true" in body
     phase_path = REPO / "docs/plans/opus5-plan/rxycode/PHASE-UPDATE-01.md"
-    if not phase_path.is_file():
+    # 2026-10-07 验收修：gitignored 计划文档在发布件/外部工作树中可能缺失
+    # 或为 0 字节——空文本与缺失同等处理（跳过），不虚构关键词求绿。
+    phase = phase_path.read_text(encoding="utf-8") if phase_path.is_file() else ""
+    if not phase.strip():
         pytest.skip("plan tree is not part of the published checkout")
-    phase = phase_path.read_text(encoding="utf-8")
     for needle in ("SESSION_LIST_KEY_RENAME", "ctrl+r", "ctrl+d", "ctrl+f", "ctrl+shift+f"):
         assert needle in phase, needle
 

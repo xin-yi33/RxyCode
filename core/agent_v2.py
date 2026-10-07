@@ -372,6 +372,11 @@ class StreamConnectTimeoutError(TimeoutError):
 #: Extra attempts for 429 / connect / connection-reset before first useful chunk.
 #: Same budget as OpenCode RETRY_MAX_RETRIES and as READ-tool retries.
 #: Total attempts = this value + 1. Idle clocks after content started are not retried.
+#:
+#: 2026-10-01：连接传输重试 5 -> 7 次（延迟 2s 翻倍，末次 128s）。
+#: 路由到 recovery.error_recovery.MODEL_RETRY_MAX 的最新值；旧的 5 次
+#: （MODEL_RETRY_MAX=5，30s 上限）已废弃，不再被引用（见 error_recovery.py
+#: 顶部的「废弃代码（2026-09-23 版）」注释）。
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import (  # noqa: E402
     MODEL_RETRY_MAX,
     opencode_retry_delay_seconds,
@@ -1197,81 +1202,87 @@ def _strip_dsml_tool_markup(answer: str) -> str:
     return answer
 
 
-def _parse_dsml_tool_calls_legacy(answer: str) -> list[dict] | None:
-    """B7: 解析 DSML 文本格式的工具调用（deepseek FC 偶发输出兜底）。
-
-    deepseek-v4-flash 声明 supports_function_calling=True，但采样时偶发
-    输出 DSML 文本而非原生 tool_calls。实测存在两种标签变体：
-      - 标准：``<dsml><tool_calls><invoke name="X">...</invoke></tool_calls></dsml>``
-      - 变体：``<||DSML||tool_calls><||DSML||invoke name="X">...``
-        （``||`` 分隔符风格，实测 U+FF5C 全角竖线）
-    agent 若无兜底，文本会直接进入答案（pattern 检查失败）。
-
-    输出与 ``_fast_reply_with_tools`` 重组结果同构的 ``list[dict]``：
-    ``[{"name", "args", "id", "type": "tool_call"}]``。无 DSML 或解析失败
-    返回 None（不干扰正常路径）。
-    """
-    if not answer or ("tool_calls" not in answer and "invoke" not in answer):
-        return None
-    # 归一化标签变体：<dsml>、<||DSML||>、<____DSML____> 等任意前缀
-    # （含实测 U+FF5C 全角竖线）统一剥掉，保留标准标签名。
-    normalized = re.sub(
-        r"</?\s*[^<>]*?(\s*(?:tool_calls|invoke|parameter)\b)",
-        lambda m: (
-            ("</" if m.group(0).lstrip().startswith("</") else "<")
-            + m.group(1).strip()
-        ),
-        answer,
-        flags=re.IGNORECASE,
-    )
-    if "<tool_calls>" not in normalized and "<invoke" not in normalized:
-        return None
-    # luna R1-4: DSML 前后可能混有普通说明文本 → 只提取 <tool_calls>..</tool_calls>
-    # 片段（无外层包裹时退化为整体）。提取后仍有 <invoke> 才算有效。
-    block = re.search(r"<tool_calls>.*?</tool_calls>", normalized, re.DOTALL)
-    candidate = block.group(0) if block else normalized
-    if "<invoke" not in candidate:
-        return None
-    try:
-        import xml.etree.ElementTree as ET
-
-        root = ET.fromstring(f"<root>{candidate}</root>")
-    except (ET.ParseError, ValueError):
-        return None
-    # 定位 tool_calls 容器（可嵌套在 <dsml>/<root> 内，递归查找）。
-    container = root if root.tag == "tool_calls" else None
-    if container is None:
-        container = next(iter(root.iter("tool_calls")), None)
-    if container is None:
-        return None
-    calls: list[dict] = []
-    for index, invoke in enumerate(container.findall("invoke")):
-        name = invoke.get("name") or ""
-        if not name:
-            continue
-        args: dict = {}
-        for param in invoke.findall("parameter"):
-            key = param.get("name") or ""
-            if not key:
-                continue
-            value = param.text or ""
-            # 数字参数尽量保持数字类型（offset/limit 等）。
-            try:
-                if "." in value:
-                    args[key] = float(value)
-                else:
-                    args[key] = int(value)
-            except ValueError:
-                args[key] = value
-        calls.append(
-            {
-                "name": name,
-                "args": args,
-                "id": f"dsml_{index}",
-                "type": "tool_call",
-            }
-        )
-    return calls
+# 废弃代码（2026-10-01 注释）：_parse_dsml_tool_calls_legacy
+# 旧版 DSML 文本工具调用解析（deepseek FC 偶发输出兜底，B7）。
+# 废弃原因：全库零调用方（live 路径使用 core/agent_v2.py:5904 的
+# _parse_dsml_tool_calls；测试也只覆盖非 legacy 版）。保留注释存档，
+# 如确认不再需要可整体删除。
+#
+# def _parse_dsml_tool_calls_legacy(answer: str) -> list[dict] | None:
+#     """B7: 解析 DSML 文本格式的工具调用（deepseek FC 偶发输出兜底）。
+#
+#     deepseek-v4-flash 声明 supports_function_calling=True，但采样时偶发
+#     输出 DSML 文本而非原生 tool_calls。实测存在两种标签变体：
+#       - 标准：``<dsml><tool_calls><invoke name="X">...</invoke></tool_calls></dsml>``
+#       - 变体：``<||DSML||tool_calls><||DSML||invoke name="X">...``
+#         （``||`` 分隔符风格，实测 U+FF5C 全角竖线）
+#     agent 若无兜底，文本会直接进入答案（pattern 检查失败）。
+#
+#     输出与 ``_fast_reply_with_tools`` 重组结果同构的 ``list[dict]``：
+#     ``[{"name", "args", "id", "type": "tool_call"}]``。无 DSML 或解析失败
+#     返回 None（不干扰正常路径）。
+#     """
+#     if not answer or ("tool_calls" not in answer and "invoke" not in answer):
+#         return None
+#     # 归一化标签变体：<dsml>、<||DSML||>、<____DSML____> 等任意前缀
+#     # （含实测 U+FF5C 全角竖线）统一剥掉，保留标准标签名。
+#     normalized = re.sub(
+#         r"</?\s*[^<>]*?(\s*(?:tool_calls|invoke|parameter)\b)",
+#         lambda m: (
+#             ("</" if m.group(0).lstrip().startswith("</") else "<")
+#             + m.group(1).strip()
+#         ),
+#         answer,
+#         flags=re.IGNORECASE,
+#     )
+#     if "<tool_calls>" not in normalized and "<invoke" not in normalized:
+#         return None
+#     # luna R1-4: DSML 前后可能混有普通说明文本 → 只提取 <tool_calls>..</tool_calls>
+#     # 片段（无外层包裹时退化为整体）。提取后仍有 <invoke> 才算有效。
+#     block = re.search(r"<tool_calls>.*?</tool_calls>", normalized, re.DOTALL)
+#     candidate = block.group(0) if block else normalized
+#     if "<invoke" not in candidate:
+#         return None
+#     try:
+#         import xml.etree.ElementTree as ET
+#
+#         root = ET.fromstring(f"<root>{candidate}</root>")
+#     except (ET.ParseError, ValueError):
+#         return None
+#     # 定位 tool_calls 容器（可嵌套在 <dsml>/<root> 内，递归查找）。
+#     container = root if root.tag == "tool_calls" else None
+#     if container is None:
+#         container = next(iter(root.iter("tool_calls")), None)
+#     if container is None:
+#         return None
+#     calls: list[dict] = []
+#     for index, invoke in enumerate(container.findall("invoke")):
+#         name = invoke.get("name") or ""
+#         if not name:
+#             continue
+#         args: dict = {}
+#         for param in invoke.findall("parameter"):
+#             key = param.get("name") or ""
+#             if not key:
+#                 continue
+#             value = param.text or ""
+#             # 数字参数尽量保持数字类型（offset/limit 等）。
+#             try:
+#                 if "." in value:
+#                     args[key] = float(value)
+#                 else:
+#                     args[key] = int(value)
+#             except ValueError:
+#                 args[key] = value
+#         calls.append(
+#             {
+#                 "name": name,
+#                 "args": args,
+#                 "id": f"dsml_{index}",
+#                 "type": "tool_call",
+#             }
+#         )
+#     return calls
 
 
 def _error_feedback_wrap(
@@ -1804,7 +1815,12 @@ class UsageTrackingLLM:
         return first, ait
 
     def _transport_retry_max(self) -> int:
-        """Cached budget for transient transport-error retries (default 2 extra)."""
+        """Cached budget for transient transport-error retries.
+
+        路由到最新常量 ``STREAM_TRANSPORT_RETRY_MAX``（= ``MODEL_RETRY_MAX`` = 7，
+        退避 2s×2^n、末次 128s）；``llm.transport_retries`` cfg 可显式覆盖。
+        废弃代码（2026-09-23 版）：旧默认 "2 extra"（后改为 5），现默认 7。
+        """
         if self._transport_retries is None:
             try:
                 cfg = getattr(self, "_cfg", None) or {}
@@ -3793,7 +3809,12 @@ class AgentV2:
         return _strip_dsml_tool_markup(out or fallback_answer)
 
     def _stream_transient_retry_max(self) -> int:
-        """Extra 429/connect attempts on `_raw_stream` (default 2)."""
+        """Extra 429/connect attempts on `_raw_stream`.
+
+        路由到最新常量 ``STREAM_TRANSPORT_RETRY_MAX``（= ``MODEL_RETRY_MAX`` = 7）；
+        ``llm.transport_retries`` cfg 可显式覆盖。
+        废弃代码（2026-09-23 版）：旧默认 "2"（后改为 5），现默认 7。
+        """
         cfg = getattr(self, "_cfg", None) or getattr(self, "_cache_cfg", None) or {}
         raw = (cfg.get("llm") or {}).get("transport_retries", STREAM_TRANSPORT_RETRY_MAX)
         try:
@@ -5583,6 +5604,12 @@ class AgentV2:
         if getattr(self, "_tool_tracer", None) is None:
             self._tool_tracer = Tracer()
 
+        # Session 工具回合在此直接进入 _raw_stream（不经 ainvoke/astream），
+        # 因此 _OUTER_BREAKER_HELD 一直是 False，内层 _connect_provider_stream
+        # 会让同一次拉流的第 2..N 次传输重试各计一次失败，单轮即可打满
+        # fail_max 误开熔断。这里把整个工具回合视为一次外层 LLM 调用，
+        # 让内层重试共享一次熔断计数（与 ainvoke/astream 路径语义一致）。
+        _breaker_token = _OUTER_BREAKER_HELD.set(True)
         try:
             execution_cfg = getattr(self, "_cfg", {}).get("execution", {})
             max_rounds = max(
@@ -6340,6 +6367,10 @@ class AgentV2:
             return answer
         except Exception:
             raise
+        finally:
+            # 工具回合结束，恢复「无外层熔断」状态，让后续非回合路径
+            # （预热/keep-alive 等）的计数语义不受影响。
+            _OUTER_BREAKER_HELD.reset(_breaker_token)
 
     def _get_core_tools(self) -> list:
         """Return Agent-local tools for the tool-aware fast path.

@@ -1112,6 +1112,26 @@ class ShellExecutor:
             docker_argv.extend(["/bin/sh", "-lc", shell_command])
         return docker_argv
 
+    def _wrap_os_sandbox(self, argv: list[str], cwd: Path | None):
+        """v1.4.1 OS 沙箱包装入口（core/sandbox/）。
+
+        返回 ``(SandboxPolicy, WrappedCommand)``；disabled / 缺能力按 policy 语义
+        处置后不再包（downgrade 响亮降级或 fail_closed 已在 manager 内抛出）。
+        解析失败（坏 config）响应该为 sandbox_error——与本函数既有入口一致，
+        由 manager 的职责外移判定点抛 ValueError/SandboxUnavailableError。
+        """
+        from RxyCode.RxyCode1_1_0.core.sandbox.manager import wrap_command
+        from RxyCode.RxyCode1_1_0.core.sandbox.policy import from_config
+
+        cfg = load_config()
+        policy = from_config(cfg, workspace_root=(cwd or Path.cwd()))
+        if not policy.enabled:
+            return None
+        wrapped = wrap_command(policy, list(argv), cwd or Path.cwd())
+        if not wrapped.applied and not wrapped.downgraded:
+            return None
+        return policy, wrapped
+
     @staticmethod
     def _process_kwargs(cwd: Path | None, os_name: str) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -1213,6 +1233,7 @@ class ShellExecutor:
         cidfile: Path | None = None
         spawn_argv = argv
         spawn_cwd = policy.cwd
+        os_sandbox_pair = None
         if policy.mode == "docker":
             cidfile = self._new_docker_cidfile()
             spawn_argv = self._docker_argv(
@@ -1222,15 +1243,57 @@ class ShellExecutor:
                 cidfile=cidfile,
             )
             spawn_cwd = None
+        else:
+            # v1.4.1 OS 沙箱（core/sandbox/）：bwrap/Seatbelt 包装 argv；
+            # Windows 恒 argv 原样 + Job 计划（出生即绑定：下方 CREATE_SUSPENDED
+            # 创建 + 指派入 Job + ResumeThread，2026-10-07 起替代 spawn 后整树指派）。
+            # docker 自带 OS 边界，不叠加 os_sandbox。
+            os_sandbox_pair = self._wrap_os_sandbox(spawn_argv, spawn_cwd)
+            if os_sandbox_pair is not None:
+                spawn_argv = os_sandbox_pair[1].argv
 
+        wrapped_cmd = os_sandbox_pair[1] if os_sandbox_pair is not None else None
+        os_job_handle = 0
+        process_kwargs = self._process_kwargs(spawn_cwd, self.os_name)
+        if wrapped_cmd is not None and wrapped_cmd.job_plan is not None:
+            # v1.4.1 修订（2026-10-07 验收缺陷修）：Windows Job 绑定前移到
+            # 出生前——spawn 前建空 Job + CREATE_SUSPENDED 创建，根除后补
+            # 整树枚举与 venv launcher 等自建 Job 的跨层级重归属
+            # （AssignProcessToJobObject GetLastError=5）。句柄持有到
+            # finally 关闭：丢弃会随 worker 生命周期泄漏。
+            from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+                bind_spawned_process,
+                open_sandbox_job,
+            )
+
+            os_job_handle = open_sandbox_job(wrapped_cmd)
+            if os_job_handle:
+                # subprocess 无 CREATE_SUSPENDED 常量——CREATE_SUSPENDED=0x4
+                # （winbase.h），直接字面量并入 creationflags。
+                process_kwargs["creationflags"] = process_kwargs.get(
+                    "creationflags", 0
+                ) | 0x00000004
         process: asyncio.subprocess.Process | None = None
         communicate_task: asyncio.Task | None = None
         monitor_task: asyncio.Task | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *spawn_argv,
-                **self._process_kwargs(spawn_cwd, self.os_name),
+                **process_kwargs,
             )
+            if os_job_handle:
+                # root 此刻一行代码未跑（suspended），不存在先发子孙——
+                # 指派即全覆盖，随后恢复主线程。失败即 fail-closed：
+                # 清理 suspended root（无子孙可漏），不吞 GetLastError。
+                try:
+                    bind_spawned_process(os_job_handle, process.pid)
+                except Exception as exc:
+                    await self._cleanup_process(process, cidfile)
+                    process = None
+                    return _failure(
+                        f"[sandbox_error] {exc}",
+                        error_type="sandbox_error",
+                    )
             # GUI apps as the direct child keep pipes open until the window
             # closes (OpenCode-class hang). Opening Word/Notepad/Typora is
             # intercepted in tools/bash.py via launch_intent.
@@ -1454,8 +1517,21 @@ class ShellExecutor:
             return _failure(str(exc), error_type="execution_error")
         finally:
             await self._cancel_task(monitor_task)
+            if os_job_handle:
+                # v1.4.1 沙箱收尾：句柄关闭即 kill-on-close 生效——任何漏网的
+                # 孙进程在此被连坐回收；随后句柄本身被释放（防泄漏）。
+                from RxyCode.RxyCode1_1_0.core.sandbox.windows import _close_handle
+
+                _close_handle(os_job_handle)
             if cidfile is not None:
                 cidfile.unlink(missing_ok=True)
+            if wrapped_cmd is not None:
+                # v1.4.1 OS 沙箱：Seatbelt profile 等临时文件的兜底清理。
+                for leftover in wrapped_cmd.cleanup:
+                    try:
+                        leftover.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     async def _monitor_process_tree(
         self,

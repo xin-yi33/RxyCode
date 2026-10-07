@@ -1,5 +1,10 @@
 import threading
-"""File change tracker - records file modifications with diff generation."""
+"""File change tracker - records file modifications with diff generation.
+
+废弃代码（2026-10-01 注释）：生产链路零调用方（见 history/__init__.py 注释）。
+保留注释存档；如未来接线回 tools/edit|write，请先移除本注释并更新
+docs/modules/history.md。
+"""
 
 import os
 import difflib

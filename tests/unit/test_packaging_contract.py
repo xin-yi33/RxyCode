@@ -1,5 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -49,7 +51,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.4.0"
+    assert project["version"] == "1.4.1"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -61,6 +63,45 @@ def test_setuptools_maps_the_checkout_to_the_versioned_package():
 
     assert package_dirs[VERSIONED_PACKAGE] == "."
     assert package_dirs["RxyCode"] == "_package_root/RxyCode"
+
+
+def test_product_version_is_consistent_without_bumping_wire_protocol():
+    from appserver.release import schema_digest
+    from protocol.version import APPSERVER_VERSION, PROTOCOL_VERSION
+
+    version = _pyproject()["project"]["version"]
+    assert APPSERVER_VERSION == version
+    assert PROTOCOL_VERSION == "1.1.0"
+    source = (PROJECT_ROOT / "__init__.py").read_text(encoding="utf-8-sig")
+    assert re.search(r'__version__ = "([^"]+)"', source).group(1) == version
+    for package in ("frontend", "frontend/opentui-app", "frontend/desktop-app"):
+        package_dir = PROJECT_ROOT / package
+        metadata = json.loads((package_dir / "package.json").read_text(encoding="utf-8-sig"))
+        assert metadata["version"] == version, package
+        lock_path = package_dir / "package-lock.json"
+        if lock_path.exists():
+            lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+            assert lock["version"] == lock["packages"][""]["version"] == version
+    for platform in ("windows", "linux", "macos"):
+        manifest = json.loads(
+            (PROJECT_ROOT / "packaging/runtimes" / f"{platform}.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        assert manifest["appserver_version"] == version
+        assert manifest["protocol_version"] == PROTOCOL_VERSION
+        assert manifest["schema_digest"] == schema_digest()
+    sources = {
+        "install.ps1": f'$DefaultVersion = "{version}"',
+        "install.sh": f'DEFAULT_VERSION="{version}"',
+        "mcp/client.py": f'"clientInfo": {{"name": "RxyCode", "version": "{version}"}}',
+        "frontend/opentui-app/src/format.ts": f'APP_VERSION = "{version}"',
+        "frontend/opentui-app/src/transport/stdioTransport.ts": f'client_version: "{version}"',
+        "frontend/src/App.tsx": f'RxyCode v{version}',
+        "frontend/src/opentui/format.ts": f'RxyCode v{version}',
+    }
+    for path, expected in sources.items():
+        assert expected in (PROJECT_ROOT / path).read_text(encoding="utf-8-sig"), path
 
 
 def test_console_and_module_launcher_sources_are_present():
@@ -140,6 +181,13 @@ def test_pyproject_includes_every_core_subpackage():
         if dotted not in packages:
             missing.append(dotted)
     assert not missing, f"pyproject omits core subpackages: {missing}"
+
+
+def test_pyproject_ships_the_sandbox_subpackage():
+    """2026-10-07 审计回归：core.sandbox 漏进包清单时，installed 包连
+    os_sandbox disabled 都会在 utils/shell.py 导入点 ModuleNotFoundError。"""
+    packages = set(_pyproject()["tool"]["setuptools"]["packages"])
+    assert "RxyCode.RxyCode1_1_0.core.sandbox" in packages
 
 
 def test_nsis_custom_init_honors_silent_install_dir():

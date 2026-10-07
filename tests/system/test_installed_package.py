@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import configparser
 import os
@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from email.parser import Parser
@@ -77,11 +78,17 @@ def installed_package(tmp_path_factory: pytest.TempPathFactory) -> InstalledPack
     root = tmp_path_factory.mktemp("installed-rxycode")
     wheel_dir = root / "wheel"
     wheel_dir.mkdir()
+    # Windows MAX_PATH 纪律：uv 构建 wheel 时把 sdist 解到 UV_CACHE_DIR 下，
+    # 包内最深的资源路径 ~190 字符（core/agents/teams/.../skills/*.md）；
+    # pytest basetemp 本身 ~100 字符，叠加越 260 上限——实测最长的
+    # planning-and-task-breakdown.md 复制时报 ENOENT。缓存放 %TEMP% 浅层
+    # 短名目录，把总路径压在 260 以内（2026-10-07 排障定位，与包内容无关）。
+    short_cache = Path(tempfile.mkdtemp(prefix="rxy-uvc-"))
     build_env = os.environ.copy()
     build_env.pop("PYTHONPATH", None)
     build_env.update(
         {
-            "UV_CACHE_DIR": str(root / "uv-cache"),
+            "UV_CACHE_DIR": str(short_cache),
             "UV_NO_PROGRESS": "1",
             "UV_OFFLINE": "1",
             "UV_PYTHON_DOWNLOADS": "never",
@@ -112,6 +119,7 @@ def installed_package(tmp_path_factory: pytest.TempPathFactory) -> InstalledPack
             shutil.rmtree(generated, ignore_errors=True)
         if not build_dir_existed and build_dir.exists():
             shutil.rmtree(build_dir, ignore_errors=True)
+        shutil.rmtree(short_cache, ignore_errors=True)
 
     wheels = list(wheel_dir.glob("*.whl"))
     assert len(wheels) == 1, f"expected one wheel, found: {wheels}"
@@ -195,6 +203,11 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         assert VERSIONED_ROOT / "core/providers/__init__.py" in paths
         assert VERSIONED_ROOT / "core/subagents/__init__.py" in paths
         assert VERSIONED_ROOT / "core/bridge/__init__.py" in paths
+        # v1.4.1 沙箱模块必须进 wheel（2026-10-07 审计：漏装会让
+        # utils/shell.py 的 sandbox 导入在默认关闭时也 ModuleNotFoundError）。
+        assert VERSIONED_ROOT / "core/sandbox/__init__.py" in paths
+        assert VERSIONED_ROOT / "core/sandbox/manager.py" in paths
+        assert VERSIONED_ROOT / "core/sandbox/types.py" in paths
         assert VERSIONED_ROOT / "frontend/protocol-client/package.json" in paths
         assert VERSIONED_ROOT / "frontend/package.json" in paths
         assert VERSIONED_ROOT / "frontend/dist/index.js" in paths
@@ -229,7 +242,7 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         )
         metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
         assert metadata["Name"] == "rxycode"
-        assert metadata["Version"] == "1.4.0"
+        assert metadata["Version"] == "1.4.1"
         requirements = [
             value.casefold() for value in metadata.get_all("Requires-Dist", [])
         ]
@@ -301,7 +314,7 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         cwd=installed_package.workdir,
         env=installed_package.env,
     )
-    assert "1.4.0" in version.stdout + version.stderr
+    assert "1.4.1" in version.stdout + version.stderr
 
     providers = _run(
         [
@@ -313,6 +326,22 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         env=installed_package.env,
     )
     assert "RxyCode.RxyCode1_1_0.core.providers" in providers.stdout
+
+    # v1.4.1 沙箱 smoke：installed 树里 core.sandbox 可导入、utils/shell.py
+    # 用的同一入口（wrap_command）disabled 策略下原样返回（2026-10-07 审计修）。
+    sandbox = _run(
+        [
+            str(installed_package.python),
+            "-c",
+            "from pathlib import Path\n"
+            "from RxyCode.RxyCode1_1_0.core.sandbox import SandboxPolicy, wrap_command\n"
+            "wrapped = wrap_command(SandboxPolicy(enabled=False), ['echo', 'hi'], Path.cwd())\n"
+            "print(wrapped.applied, wrapped.backend)",
+        ],
+        cwd=installed_package.workdir,
+        env=installed_package.env,
+    )
+    assert "False none" in sandbox.stdout
 
     help_result = _run(
         [str(installed_package.console), "--help"],
