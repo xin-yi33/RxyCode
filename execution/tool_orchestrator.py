@@ -20,7 +20,7 @@ import os
 import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -53,6 +53,7 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
     trace_status_for_result,
 )
 from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
+from RxyCode.RxyCode1_1_0.protocol.timeout_decision import TimeoutEvidence
 
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import retry_with_backoff
@@ -160,6 +161,7 @@ class ToolOrchestrator:
         *,
         max_workers: int | None = None,
         tool_registry: Any | None = None,
+        timeout_engine: Any | None = None,
     ):
         if tool_registry is None:
             from RxyCode.RxyCode1_1_0.tools.registry import default_registry
@@ -207,6 +209,17 @@ class ToolOrchestrator:
         #: may still be finishing; a later wait=True call reaps them.
         self._retired_sync_executors: list[concurrent.futures.ThreadPoolExecutor] = []
         self._atexit_handle = atexit.register(self.shutdown_sync_executor)
+        # None keeps the historical wait_for path: a timeout cancels the call.
+        self._timeout_engine = timeout_engine
+        self._active_invocation: asyncio.Task | None = None
+
+    def expose_invocation_for_test(self):
+        """Read-only handle for the in-flight tool task. None before any call."""
+
+        def read() -> asyncio.Task | None:
+            return self._active_invocation
+
+        return read
 
     def set_audit_logger(self, logger: Any) -> None:
         """Inject an AuditLogger (defaults to the shared one on first use)."""
@@ -658,6 +671,167 @@ class ToolOrchestrator:
             stall = max(stall, floor)
         return min(global_timeout, stall)
 
+    def _void_timeout_engine(self, engine: Any) -> None:
+        interrupt = getattr(engine, "interrupt", None)
+        if not callable(interrupt):
+            return
+        with suppress(Exception):
+            interrupt()
+
+    def _run_tool_cleanup(self, tool: Any) -> None:
+        hook = getattr(tool, "_cleanup_hook", None)
+        if not callable(hook):
+            return
+        with suppress(Exception):
+            hook()
+
+    async def _cancel_and_reap(self, task: asyncio.Task, tool: Any) -> None:
+        """Cancel the tool task and let its own finally-cleanup finish.
+
+        A cancel that arrives while we are awaiting that cleanup must not
+        abort it, and must still surface as CancelledError afterwards.
+        """
+        caller_cancelled = False
+        if not task.done():
+            task.cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    caller_cancelled = True
+                    while current.cancelling():
+                        current.uncancel()
+                    continue
+                break
+            except Exception:
+                break
+        if task.cancelled():
+            self._run_tool_cleanup(tool)
+        if caller_cancelled:
+            raise asyncio.CancelledError
+
+    async def _release_cancelled_decision(self, decision: asyncio.Task) -> None:
+        """Let a shielded decide settle after interrupt. Python 3.11 re-cancels awaits."""
+        current = asyncio.current_task()
+        if current is not None and hasattr(current, "uncancel"):
+            while current.cancelling():
+                current.uncancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await decision
+
+    def _tool_timeout_evidence(
+        self,
+        name: str,
+        args: Any,
+        timeout: float,
+        call_id: str | None,
+        elapsed: float,
+    ) -> TimeoutEvidence:
+        owner = getattr(self, "_owner_agent", None)
+        session_id = str(getattr(owner, "_session_id", "") or "tool")
+        subject = str(call_id or name)
+        hint = f"{name}({summarize_args(args)})"[:500]
+        return TimeoutEvidence(
+            trigger_point="tool_timeout",
+            session_id=session_id,
+            run_id=get_current_run_id(),
+            subject_id=subject,
+            task_hint=hint or name,
+            elapsed_seconds=max(0.0, float(elapsed)),
+            budget_seconds=max(0.0, float(timeout)),
+            extension_index=0,
+            progress="",
+            last_error="",
+        )
+
+    def _granted_extension(self, engine: Any, evidence: TimeoutEvidence, resp: Any) -> float:
+        if getattr(resp, "action", None) != "continue":
+            return 0.0
+        last_grant = getattr(engine, "last_grant", None)
+        grant = None
+        if callable(last_grant):
+            with suppress(Exception):
+                grant = last_grant((evidence.session_id, evidence.subject_id))
+        granted = getattr(grant, "granted_seconds", None)
+        try:
+            seconds = float(granted if granted is not None else resp.extend_seconds)
+        except (TypeError, ValueError):
+            return 0.0
+        return seconds if seconds > 0 else 0.0
+
+    async def _await_tool_with_decision(
+        self,
+        invoke,
+        tool: Any,
+        name: str,
+        args: Any,
+        timeout: float,
+        call_id: str | None,
+    ) -> str:
+        """Wait on one task. A fresh shield is built for every wait.
+
+        ``decision_asked`` lives in this call. A second timeout does not ask
+        again. Disabled engines never enter this method.
+        """
+        engine = self._timeout_engine
+        decision_asked = False
+        task = asyncio.ensure_future(invoke())
+        self._active_invocation = task
+        started = time.monotonic()
+        try:
+            if timeout <= 0 or engine is None:
+                try:
+                    return await task
+                except asyncio.CancelledError:
+                    await self._cancel_and_reap(task, tool)
+                    raise
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                decision_asked = True
+                evidence = self._tool_timeout_evidence(
+                    name, args, timeout, call_id, time.monotonic() - started
+                )
+                decision = asyncio.ensure_future(engine.decide(evidence))
+                try:
+                    resp = await asyncio.shield(decision)
+                except asyncio.CancelledError:
+                    self._void_timeout_engine(engine)
+                    await self._release_cancelled_decision(decision)
+                    await self._cancel_and_reap(task, tool)
+                    raise
+                except Exception:
+                    await self._cancel_and_reap(task, tool)
+                    raise asyncio.TimeoutError from None
+                if task.done() and not task.cancelled():
+                    return task.result()
+                extend = self._granted_extension(engine, evidence, resp)
+                if extend <= 0:
+                    if task.done() and not task.cancelled():
+                        return task.result()
+                    await self._cancel_and_reap(task, tool)
+                    raise
+                try:
+                    return await asyncio.wait_for(asyncio.shield(task), timeout=extend)
+                except asyncio.TimeoutError:
+                    await self._cancel_and_reap(task, tool)
+                    raise
+                except asyncio.CancelledError:
+                    self._void_timeout_engine(engine)
+                    await self._cancel_and_reap(task, tool)
+                    raise
+            except asyncio.CancelledError:
+                if decision_asked:
+                    self._void_timeout_engine(engine)
+                await self._cancel_and_reap(task, tool)
+                raise
+        except asyncio.CancelledError:
+            if not task.done():
+                await self._cancel_and_reap(task, tool)
+            raise
+
     async def _invoke_and_finish(
         self,
         name: str,
@@ -773,11 +947,16 @@ class ToolOrchestrator:
             return await self._invoke_async(tool, args)
 
         try:
-            invocation = invoke()
-            if timeout > 0:
-                result = await asyncio.wait_for(invocation, timeout=timeout)
+            if self._timeout_engine is None:
+                invocation = invoke()
+                if timeout > 0:
+                    result = await asyncio.wait_for(invocation, timeout=timeout)
+                else:
+                    result = await invocation
             else:
-                result = await invocation
+                result = await self._await_tool_with_decision(
+                    invoke, tool, name, args, timeout, call_id
+                )
         except asyncio.TimeoutError:
             arg_preview = str(
                 summarize_args(args) if args is not None else ""

@@ -2243,7 +2243,10 @@ class AgentV2:
         # from scratch or warmup tokens miss the 97% floor.
         self._agent_prefix_messages: list | None = None
         # Register tools
-        self._tool_orchestrator = ToolOrchestrator(tool_registry=None)
+        self._tool_orchestrator = ToolOrchestrator(
+            tool_registry=None,
+            timeout_engine=getattr(self, "_timeout_engine", None),
+        )
         self._tool_orchestrator._owner_agent = self
         self._mcp_lock = threading.RLock()
         self._mcp_clients: dict[str, object] = {}
