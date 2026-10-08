@@ -332,6 +332,24 @@ def _default_config() -> dict:
             # 目录来源过期阈值（天）。超过视为来源过期，resolver 追加 warning。
             "catalog_max_age_days": 90,
         },
+        # P2：与 TIMEOUT_DECISION_DEFAULTS 同键同值。enabled 默认关闭。
+        "timeout_decision": {
+            "enabled": False,
+            "max_extensions_per_point": 2,
+            "extension_growth": 2,
+            "decision_timeout_seconds": 15.0,
+            "decision_model": None,
+            "fail_closed": True,
+            "max_restarts": 2,
+            "restart_total_wall_seconds": 7200.0,
+            "restart_grant_base_seconds": 900.0,
+            "absolute_cap_seconds": {
+                "graph_task_max_time": 21600.0,
+                "pipeline_soft_budget": 10800.0,
+                "watchdog_stall": 1800.0,
+                "tool_timeout": 7200.0,
+            },
+        },
         "execution": {
             "parallel_enabled": False,  # graph task fan-out; tool reads use tool_parallel_enabled
             "tool_parallel_enabled": True,

@@ -261,6 +261,25 @@ class TokenStats:
         output_cost = self.output_tokens / 1_000_000 * output_price
         return input_cost + output_cost
 
+    def record_decision_cost(self, session_id: str, cost: float) -> None:
+        """Add one timeout-decision USD amount for a session.
+
+        Token totals stay on ``add_real_usage``. This is the session USD
+        ledger ``core.timeout_decision.record_decision_cost`` delegates to.
+        """
+        try:
+            amount = float(cost)
+        except (TypeError, ValueError):
+            return
+        if amount < 0 or amount != amount or amount in (float("inf"), float("-inf")):
+            return
+        bucket = getattr(self, "_decision_cost_usd", None)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            self._decision_cost_usd = bucket
+        key = str(session_id)
+        bucket[key] = float(bucket.get(key, 0.0)) + amount
+
     def add_usage(self, input_tokens: int, output_tokens: int, cache_hit: bool = False):
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens

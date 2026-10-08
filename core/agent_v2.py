@@ -2078,6 +2078,8 @@ class AgentV2:
             float(lifecycle_cfg.get("hook_timeout_seconds", 5) or 5),
         )
         self._hooks = HookRegistry(default_timeout_seconds=hook_timeout)
+        # P2 reserves the attribute. P3, P4, and P6 are the consumers.
+        self._timeout_engine = None
 
         # Tell token_stats which model is active so billing_amount can look
         # up its per-model price from the config ``pricing`` section.
