@@ -312,6 +312,7 @@ class AppServer:
         self._notification_write_failures: list[BaseException] = []
         self._job_tasks: dict[str, asyncio.Task[Any]] = {}
         self._resolved_jobs: set[str] = set()
+        self._restart_fallback_jobs: set[str] = set()
         self._title_jobs: set[str] = set()
         self._title_tasks: set[asyncio.Task[Any]] = set()
         self._thinking_expanded = False
@@ -1124,6 +1125,51 @@ class AppServer:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    async def _emit_restart_interrupt_stop(self, stalled: ActiveJob) -> None:
+        """Publish the restart-phase interrupt failure as a real decision event.
+
+        This is not a second model call. The worker already raised
+        ``killed_by_interrupt_fallback`` and the host killed itself.
+        """
+        from RxyCode.RxyCode1_1_0.core.timeout_decision import event_from_decision
+        from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
+        from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
+            TimeoutDecisionResponse,
+            TimeoutEvidence,
+        )
+
+        elapsed = max(
+            0.0,
+            time.monotonic() - float(getattr(stalled, "started_at", time.monotonic())),
+        )
+        evidence = TimeoutEvidence(
+            trigger_point="watchdog_stall",
+            session_id=str(stalled.session_id),
+            run_id=get_current_run_id(),
+            subject_id=str(stalled.job_id),
+            task_hint="restart-interrupt",
+            elapsed_seconds=elapsed,
+            budget_seconds=0.0,
+            extension_index=0,
+            progress="",
+            last_error="killed_by_interrupt_fallback",
+        )
+        response = TimeoutDecisionResponse(
+            action="stop",
+            extend_seconds=0.0,
+            note="[fail-closed] killed_by_interrupt_fallback",
+            confidence=0.0,
+        )
+        event = event_from_decision(
+            response,
+            evidence,
+            extension_index=1,
+            fail_closed=True,
+            decision_model=None,
+            cost=0.0,
+        )
+        await self._emit_model(event)
+
     async def _restart_worker_continue(self, stalled: ActiveJob) -> None:
         """Kill the dead worker, start another, and rerun the original prompt.
 
@@ -1131,8 +1177,24 @@ class AppServer:
         The old request id is finalized once, with ``kill_host=False``, because
         the old host was already removed above. Pending journal attempts are
         not replayed; a new prompt does not reuse the old attempt id.
+
+        One interrupt runs first. The stop event is published only from the
+        RPC failure callback, before the tree kill. The original prompt then
+        sends the single error. A successful RPC still follows kill, spawn,
+        hydrate, and this method does not answer the old request itself.
         """
         session_id = stalled.session_id
+        host = self._session_hosts.get(session_id)
+        if host is not None:
+            async def _on_interrupt_failure(_exc: BaseException) -> None:
+                self._restart_fallback_jobs.add(stalled.job_id)
+                await self._emit_restart_interrupt_stop(stalled)
+
+            outcome = await host.interrupt(on_failure=_on_interrupt_failure)
+            if outcome.get("failed") or outcome.get("killed"):
+                self._stall_engines.pop(session_id, None)
+                self._session_hosts.pop(session_id, None)
+                return
         snapshot = dict(self._job_prompts.get(stalled.job_id) or {})
         prompt = str(snapshot.get("text") or "")
         budget = self._stall_restart_budgets.get(stalled.job_id)
@@ -1613,6 +1675,16 @@ class AppServer:
                         )
                     raise
                 except Exception as exc:
+                    if job_id in self._restart_fallback_jobs:
+                        await self._fail_job(
+                            session_id=session_id,
+                            job_id=job_id,
+                            request_id=request_id,
+                            code=-32004,
+                            message="killed_by_interrupt_fallback",
+                            kill_host=False,
+                        )
+                        return
                     await self._fail_job(
                         session_id=session_id,
                         job_id=job_id,
@@ -1627,6 +1699,16 @@ class AppServer:
                         self._watchdog.finish_job(job_id)
 
                 if job_id in self._resolved_jobs:
+                    return
+                if job_id in self._restart_fallback_jobs:
+                    await self._fail_job(
+                        session_id=session_id,
+                        job_id=job_id,
+                        request_id=request_id,
+                        code=-32004,
+                        message="killed_by_interrupt_fallback",
+                        kill_host=False,
+                    )
                     return
 
                 status = str(payload.get("status", "failed"))

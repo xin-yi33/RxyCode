@@ -975,13 +975,16 @@ class AgentHost:
             timeout=timeout,
         )
 
-    async def interrupt(self, *, timeout: float = 5.0) -> dict[str, Any]:
+    async def interrupt(self, *, timeout: float = 5.0, on_failure=None) -> dict[str, Any]:
         """Send an interrupt RPC; the worker cancels its running task.
 
         Return fields:
         - ``cancelled``: an active prompt task was cancelled.
         - ``failed``: the interrupt RPC itself failed (host was cleaned up).
         - ``killed``: the host was force-terminated as the failure fallback.
+
+        ``on_failure`` runs after the RPC raises and before the tree kill, so
+        the caller can publish the failure before the prompt observes it.
         """
         if not self.alive():
             return {"cancelled": False, "failed": False, "killed": False}
@@ -989,7 +992,11 @@ class AgentHost:
             result = await self._pipe_request("interrupt", {}, timeout=timeout)
         except Exception as exc:
             _logger.warning("interrupt RPC failed for %s: %s", self.session_id, exc)
-            await self.kill_async()
+            try:
+                if on_failure is not None:
+                    await on_failure(exc)
+            finally:
+                await self.kill_async()
             return {"cancelled": False, "failed": True, "killed": True}
         return {"cancelled": bool(result.get("cancelled")), "failed": False, "killed": False}
 

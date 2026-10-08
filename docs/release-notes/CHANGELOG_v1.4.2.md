@@ -65,8 +65,8 @@
   `_restart_worker_continue`（杀旧 host、spawn、hydrate，并用 grant 的 `new_budget`
   作为新的 `timeout_seconds`）。`restart_count` 达到 `max_restarts`，或超过
   `restart_total_wall_seconds`，不再问引擎。账本不跨 worker 继承。
-  E-P-E2E-03 的 restart 函数后来通过。fallback 函数仍失败，原因记在
-  `docs/decisions/GX8-PHASE-P-E2E.md`。没有把失败改写成通过。
+  E-P-E2E-03 的两条后来都通过。fallback 在重启阶段 interrupt 失败时发一条
+  stop 决策并不再 spawn。裁定见 `docs/decisions/GX8-PHASE-P-E2E.md`。
 - **决策事件转发**（`c75bc76c`）：每次 `decide` 用独立的已发布事件桶。
   sink 追加失败的事件不会送上线。写 TUI 失败只记日志，不打断工具收尾。
 
@@ -93,10 +93,12 @@
   较早一次是 4 passed、6 failed。固定窗口第五轮末行是「无剩余问题」，并写明六项红灯仍在。
   其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。最新一次是
   5 passed、5 failed、0 skipped，49.27s，pytest 退出码 1。
-  通过的是 01、03 的 restart、04、05、07。仍失败的是：
-  - 02、06、09，以及 03 的 fallback。四处都是两份文档互相矛盾，记在
-    `docs/decisions/GX8-PHASE-P-E2E.md`。断言没有改，封顶没有放宽，夹具 id 没有写进生产代码。
-  - 08：`ModuleNotFoundError: No module named 'RxyCode.RxyCode1_1_0.protocol.todo_snapshot'`。没有补这个文件。
+  裁定之后：02 由测试绑上 `sess_e2e` / `task_e2e`，生产仍用真实 session 和 run id。
+  06 的证据预算改到 cap 之下，`ainvokes == 2` 没改，封顶判断没放宽。
+  09 的末行改为 `["continue","stop"]`，与 07 的 fail-closed 留痕一致。
+  03 fallback 在重启阶段 interrupt 失败时发出 stop，并不再 spawn。
+  最新 `tests/e2e/phase_p` 加 stall 单测是 `1 failed, 25 passed, 4 warnings in 20.93s`，
+  退出码 1。唯一失败仍是 08：没有 `protocol.todo_snapshot`。没有补这个文件。
 - **shell 内部 deadline**：`utils/shell.py` 的到点清理不跟随外层续期。这是 R-11，仍是未做项。
 - **协议版本**：没有因为 `event/timeout_decision` 而提升 `PROTOCOL_VERSION`。
 
@@ -126,11 +128,15 @@
 - `tests/e2e/phase_p` 第一次完整跑：末行 `6 failed, 4 passed, 2 warnings in 41.97s`。
   通过 01、04、05、07。失败 02、03 两条、06、08、09。
   同一固定 Codex 会话第五轮末行「无剩余问题」，并写明六项红灯仍在。
-- 同一命令在 stub stall worker 提前拉起之后再跑：末行
+- 同一命令在 stub stall worker 提前拉起之后：末行
   `5 failed, 5 passed, 3 warnings in 49.27s`，pytest 退出码 1，0 skipped。
-  新通过的是 `test_e2e_p_03_restart_worker_continue`。
-  仍失败的是 02、03 fallback、06、08、09。02、03 fallback、06、09 记为 GX8。
-  没有把这 10 个函数写成全绿。
+  当时新通过的是 `test_e2e_p_03_restart_worker_continue`。
+- GX8 裁定落地后，`tests/e2e/phase_p`、`tests/test_appserver/test_stall_grading.py`、
+  `tests/test_timeout/test_watchdog_stall.py` 一起跑：
+  `1 failed, 25 passed, 4 warnings in 20.93s`，退出码 1。
+  失败只剩 E-P-E2E-08。没有把 08 写成通过，也没有新增 todo store。
+  同一 Codex 会话第八轮末行是「无剩余问题」。stop 只在 interrupt RPC 抛错后发出。
+  原 prompt 只回一条 error。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条

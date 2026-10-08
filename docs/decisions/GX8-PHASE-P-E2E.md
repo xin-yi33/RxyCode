@@ -1,7 +1,15 @@
 # GX8 · Phase P E2E 四处文档矛盾
 
-日期：2026-10-08。按 GX8 停下，不改抄来的断言，不放宽 absolute cap，
-不把夹具 id 写进生产代码，不新增 `protocol/todo_snapshot.py`。
+日期：2026-10-08。下面先保留矛盾本身，再给出裁定。
+不放宽 absolute cap，不把夹具 id 写进生产代码，不新增 `protocol/todo_snapshot.py`。
+E-P-E2E-08 / P8 仍要等权威 `TodoSnapshot`。本裁定不给它开新 store。
+
+## 裁定（2026-10-08）
+
+- **02：生产的 scope 推导胜出。** pipeline 的 subject 是这次 run id，session 是实例上的 session。断言里的 `("sess_e2e","task_e2e")` 继续有效，但测试必须自己绑上这对 id。生产代码不写死夹具。
+- **06：封顶胜出。** `budget_seconds >= cap` 仍不调 LLM。这条测的是两次逻辑调用和 scope 隔离，证据预算改到两条 cap 之下。`ainvokes == 2` 这条断言不改。
+- **09：E-P-E2E-07 与 fail-closed 留痕胜出。** 同一次 `interrupt()` 落定后 sink 里有 `stop`。09 末行改成期待 `["continue","stop"]`，并核对 note 前缀。不从 sink 删事件。
+- **03 fallback：测试包 2026-10-02 的重启阶段 interrupt 胜出。** 决策前的 RPC 失败仍跳过决策，这条不改。`_restart_worker_continue` 再发一次 interrupt。只有这次 RPC 实际失败才发 stop：回调在 `kill_async` 之前把真实 `event/timeout_decision` 发出去，note 含 `killed_by_interrupt_fallback`。原 prompt 自己回唯一的一条 error，重启函数不再对同一个 request 补第二条响应，也不再 spawn。RPC 成功则仍走 kill、spawn、hydrate。环境变量不会直接触发 stop。
 
 E-P-E2E-03 的第一条（`test_e2e_p_03_restart_worker_continue`）不是这四处矛盾。
 它失败是因为 `client.send` 只把 `session/prompt` 写进 stdin 就返回，stub 模式的
