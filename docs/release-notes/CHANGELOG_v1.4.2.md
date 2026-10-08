@@ -64,9 +64,10 @@
   micro 释放量低于 `clear_at_least`（默认 2000），或释放后仍超窗口，就继续 fold。
   —— 原因：清一点点会毁掉整段缓存，却腾不出可用窗口。
 - **压缩后重注 todo**（`core/status_band.py`）：`_band_full_on_next` 置位后，下一次状态带列出未完成项
-  `- [pending|in_progress|blocked] id: content`，完成和取消只留计数，并带上 still-active 头行。
+  `- [pending|in_progress|blocked] id: content`。尾坠始终是 `(N completed[, K cancelled])`，
+  N 为 0 也写 `(0 completed)`。取消数只在大于 0 时接在后面。并带上 still-active 头行。
   空台账不写这段。指纹没变就不再追加。
-  —— 原因：台账留在磁盘上，不等于压缩后的模型还能看见它。
+  —— 原因：台账留在磁盘上，不等于压缩后的模型还能看见它。完成数为 0 时如果省略尾坠，结构就不完整。
 - **stall 分级后再杀 worker**（`appserver/stall_grading.py`、`e36c5e31`、`c56df81d`）：
   先做 turn 级 interrupt 和 grace。进程还在才进入后续处置。grace 内恢复则保留 host。
 - **fold 摘要**（`9e95c3c5`）：fold 档可以要一份 LLM 状态快照。调用发生在原来的事件循环里。
@@ -124,6 +125,16 @@
 ## 废弃
 
 本轮没有删除生产代码。没有把 `enabled=false` 的现状路径标成废弃。那条路径仍是默认路径。
+没有人引用的旧模块保持整文件注释，路由在新模块上：
+
+- **旧配置**（`core/config.py`）：整文件已注释。现网配置走 `config/settings.py`。
+- **WebSocket 桥**（`core/agents/bridge/ws.py`）：整文件已注释。现网桥接走
+  `core/agents/bridge/stdio.py`，再由 `worker.py` 和 `leader.py` 接。
+- **todo 权威快照**：`core/timeout_decision.py` 的 `todo_progress_snapshot` 只是同形字符串，
+  不是读写路由。权威类型在 `protocol/todo.py`。`todo/get` 和状态带读
+  `tools/todo_events.py` 的 `read_todo_snapshot`。压缩后的模型文本走 `core/status_band.py`。
+- **大输出**：截断前落盘在 `tools/bash.py` 的 `_format_result`。预览脱敏走 `tools/secret_text.py`。
+  墓碑在 `core/compaction.py`。没有另一套截断模块。
 
 未做，不能写成已交付：
 
