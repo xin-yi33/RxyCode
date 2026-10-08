@@ -147,6 +147,24 @@ def test_u_f5_6_01_post_compaction_todo_section_shape():
     assert "已取消的细节" not in text
     assert "(1 completed, 1 cancelled)" in text
     assert "still active from before context compression" in text
+    zero_done = _band(
+        env=None,
+        events=[],
+        after_compaction=True,
+        todo_items=[{"id": "t1", "content": "搭骨架", "status": "in_progress"}],
+    )
+    assert "(0 completed)" in zero_done.render()
+    assert "cancelled" not in zero_done.render()
+    cancelled_only = _band(
+        env=None,
+        events=[],
+        after_compaction=True,
+        todo_items=[
+            {"id": "t1", "content": "搭骨架", "status": "in_progress"},
+            {"id": "t2", "content": "停了", "status": "cancelled"},
+        ],
+    )
+    assert "(0 completed, 1 cancelled)" in cancelled_only.render()
     assert "keep working through them and update status as you progress." in text
     empty = _band(env=None, events=[], after_compaction=True, todo_items=[], revision=0)
     blank = empty.render()

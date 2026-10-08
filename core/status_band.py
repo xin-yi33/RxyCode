@@ -82,7 +82,8 @@ class StatusBand:
                     f"- [{item.get('status')}] {item.get('id')}: {item.get('content')}"
                 )
             folded: list[str] = []
-            if done:
+            # 压缩后的非空段固定带完成数，0 也要写出来。取消数仍是可选尾段。
+            if self.after_compaction or done:
                 folded.append(f"{done} completed")
             if cancelled:
                 folded.append(f"{cancelled} cancelled")
