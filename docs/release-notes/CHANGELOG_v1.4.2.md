@@ -161,6 +161,13 @@
   9176 passed，4 skipped，46 warnings，1432.53s，退出码 0。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
+- F4-2 的 PHASE-FIX2 §2 基线勾保持未勾。没有调低 1s / 3s / 97% / 95%。
+  `python -m evals.probe_thinking_ttft`（glm-5.3-flash）在被终止前测到：闲聊首字 1.556s 与 1.238s，都高于 1s；简单任务 16s 内没有 thinking token；复杂任务首字约 7.596s，高于 3s。前缀预热失败（`AgentV2` 没有 `_tools_payload`）。约 337s 时进程被终止，没有退出码。
+  `python -m evals.probe_cache_complex` 退出码 0：deepseek-v4-flash 第二轮 8576/8810 = 0.9734。这只是两轮读代码前缀缓存，不是多 Agent，也不是多模态 + LinkAgent。
+  PHASE-K K21 点名的三条命令实跑失败，没有产出命中率：
+  `python -m pytest tests/test_cache/test_capability_hit_rate_gate.py -q` 是 `file or directory not found`，EXIT=4。
+  `python -m pytest tests/test_latency/test_first_token_budget.py -q` 同样是文件不存在，EXIT=4。
+  `python -m evals.cli run --backend agent --capability-matrix --save-report` 是 `unrecognized arguments: --capability-matrix --save-report`，EXIT=2。
 - 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条
   决策测试 5 passed，该文件 diff 为空。
   - fail-closed 改成 `action="continue"`：模型拒绝 `extend_seconds=0` 的 continue，
