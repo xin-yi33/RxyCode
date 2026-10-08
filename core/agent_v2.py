@@ -2030,6 +2030,52 @@ def _document_has_graph_snapshot(document: dict) -> bool:
     return "task_tree" in state or "phase" in state
 
 
+def build_routed_llm(cfg: dict | None = None):
+    """Raw chat model for a timeout decision, via the existing config builder.
+
+    ``from_config`` wraps this object once. The inner client is the same
+    ``_build_llm_from_config`` result the agent uses for a routed model.
+    """
+    whole = dict(cfg or {})
+    if not whole.get("models"):
+        try:
+            loaded = _settings.load_config() or {}
+        except Exception:
+            loaded = {}
+        if isinstance(loaded, dict) and loaded.get("models"):
+            merged = dict(loaded)
+            merged.update(whole)
+            whole = merged
+    section = whole.get("timeout_decision") or {}
+    name = section.get("decision_model") if isinstance(section, dict) else None
+    explicit = isinstance(name, str) and bool(name.strip())
+    if explicit:
+        model_config = _settings.get_model_config(name.strip(), whole)
+    else:
+        routes = (whole.get("governance") or {}).get("model_routes") or {}
+        routed_name = None
+        if isinstance(routes, dict):
+            for key in ("timeout_decision", "planner"):
+                if routes.get(key):
+                    routed_name = str(routes[key])
+                    break
+        if routed_name:
+            model_config = _settings.get_model_config(routed_name, whole)
+        else:
+            model_config = _settings.get_active_model_config(whole)
+    model_config = dict(model_config)
+    # None means the route picks a small model at low effort, not the
+    # active model's high/default effort.
+    if not explicit:
+        model_config["effort"] = "fast"
+    host = AgentV2.__new__(AgentV2)
+    host._cfg = whole
+    host._session_id = "timeout-decision"
+    host._configure_rate_limiter()
+    wrapped = host._build_llm_from_config(model_config)
+    return getattr(wrapped, "_llm", wrapped)
+
+
 class AgentV2:
     """LangGraph-based agent, drop-in compatible with the old Agent class."""
 
@@ -2063,6 +2109,9 @@ class AgentV2:
         if isinstance(routes, dict):
             for role, configured_name in routes.items():
                 if not configured_name:
+                    continue
+                # timeout_decision is not a ModelRole. build_routed_llm reads it.
+                if str(role).strip().casefold() == "timeout_decision":
                     continue
                 routed_config = _settings.get_model_config(str(configured_name), self._cfg)
                 self._model_router.register(

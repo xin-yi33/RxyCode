@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import NamedTuple
 
-from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM
+from RxyCode.RxyCode1_1_0.core.agent_v2 import UsageTrackingLLM, build_routed_llm
 from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
     ALLOWED_ACTIONS,
     TimeoutDecisionEvent,
@@ -179,6 +179,19 @@ def _scope_of(evidence: TimeoutEvidence) -> Scope:
     return (evidence.session_id, evidence.subject_id)
 
 
+def decision_base_llm(cfg: dict | None):
+    """Unwrapped chat model selected from the timeout_decision config.
+
+    ``from_config`` wraps this once. A client that is already a
+    ``UsageTrackingLLM`` is unwrapped so usage is not recorded twice.
+    The executor model is not a shortcut for this choice.
+    """
+    built = build_routed_llm(cfg if isinstance(cfg, dict) else None)
+    if isinstance(built, UsageTrackingLLM):
+        return built._llm
+    return built
+
+
 def from_config(cfg, *, base_llm, ledger=None, sink=None, hooks=None):
     """Build an engine from the whole config. Disabled config returns None."""
     section = timeout_decision_config(cfg)
@@ -288,7 +301,9 @@ class TimeoutDecisionEngine:
         my_token: int,
     ) -> TimeoutDecisionResponse:
         if self._void_token != my_token:
-            resp = self._publish_interrupted(evidence)
+            resp = self._publish_interrupted(
+                evidence, decision_model=self._named_model("unknown"),
+            )
             await self._emit_hook("after", evidence)
             return resp
         scope = _scope_of(evidence)
@@ -310,28 +325,36 @@ class TimeoutDecisionEngine:
                 fail_closed=False,
                 cost=0.0,
                 kind="decision.stop",
+                decision_model=self._named_model("unknown"),
             )
             await self._emit_hook("after", evidence)
             return pre
         await self._emit_hook("before", evidence)
         if self._void_token != my_token:
-            resp = self._publish_interrupted(evidence)
+            resp = self._publish_interrupted(
+                evidence, decision_model=self._named_model("unknown"),
+            )
             await self._emit_hook("after", evidence)
             return resp
         try:
             raw = await self._await_model(evidence)
         except asyncio.CancelledError:
             if self._void_token != my_token:
-                resp = self._publish_interrupted(evidence)
+                resp = self._publish_interrupted(
+                    evidence, decision_model=self._named_model("unknown"),
+                )
                 await self._emit_hook("after", evidence)
                 return resp
             raise
         except Exception as exc:
-            resp = self._fail_closed(evidence, scope, exc, cost=0.0)
+            resp = self._fail_closed(
+                evidence, scope, exc, cost=0.0,
+                decision_model=self._named_model("unknown"),
+            )
             await self._emit_hook("after", evidence)
             return resp
         cost = _response_cost(raw)
-        model = _decision_model(self._policy, raw)
+        model = self._named_model(_decision_model(self._policy, raw))
         if self._void_token != my_token:
             resp = self._publish_interrupted(
                 evidence, cost=cost, decision_model=model,
@@ -348,6 +371,20 @@ class TimeoutDecisionEngine:
             return resp
         await self._emit_hook("after", evidence)
         return resp
+
+    def _named_model(self, resolved: str) -> str:
+        """Config name wins. Otherwise the response name, then the client."""
+        configured = self._policy._cfg.get("decision_model")
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+        if resolved and resolved != "unknown":
+            return resolved
+        inner = getattr(self._llm, "_llm", self._llm)
+        for attr in ("model_name", "model"):
+            value = getattr(inner, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return resolved or "unknown"
 
     def last_grant(self, scope: Scope) -> Grant | None:
         """Grant the caller must apply. Use ``new_budget`` as the new ceiling."""

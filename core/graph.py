@@ -17,6 +17,7 @@ as pure conditional_edges - not as separate nodes.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import logging
 import time as _time
@@ -24,6 +25,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import Runnable
 
 from RxyCode.RxyCode1_1_0.config import settings as _settings
@@ -55,6 +57,10 @@ if TYPE_CHECKING:
 
 
 _logger = logging.getLogger(__name__)
+_ROUTED_DECISION_LLM: contextvars.ContextVar = contextvars.ContextVar(
+    "rxy_graph_decision_llm",
+    default=None,
+)
 
 
 def resolve_graph_watch_clocks(cfg: dict | None) -> tuple[float, float, float]:
@@ -72,6 +78,160 @@ def resolve_graph_watch_clocks(cfg: dict | None) -> tuple[float, float, float]:
     max_timeout = max(0.0, resolve_timeout("graph.task_max_time_seconds", cfg))
     check_interval = max(0.1, resolve_timeout("graph.heartbeat_interval_seconds", cfg))
     return stall_timeout, max_timeout, check_interval
+
+
+def _decision_api():
+    """Lazy import: timeout_decision imports agent_v2, which imports this module."""
+    from RxyCode.RxyCode1_1_0.core import timeout_decision as decision_api
+
+    return decision_api
+
+
+def _timeout_engine(cfg: dict):
+    """Return one decision engine, or None when the section is disabled.
+
+    The base model is the graph's already routed LLM when the watchdog is
+    running under executor_node. A direct call uses ``decision_base_llm``.
+    """
+    api = _decision_api()
+    section = api.timeout_decision_config(cfg or {})
+    if not section.get("enabled"):
+        return None
+    llm = api.decision_base_llm(cfg)
+    _ROUTED_DECISION_LLM.set(llm)
+    return api.from_config(cfg, base_llm=llm)
+
+
+def _coerce_task_evidence(factory, tracker, *, elapsed: float, budget: float):
+    """Build the evidence the engine decides on.
+
+    A factory dict that omits the live clocks keeps this loop's elapsed time
+    and the current max_timeout as budget_seconds. That is the base the grant
+    adds to.
+    """
+    raw = factory() if factory is not None else {}
+    if not isinstance(raw, dict):
+        return raw
+    data = {
+        "trigger_point": "graph_task_max_time",
+        "session_id": "graph",
+        "run_id": "graph",
+        "subject_id": "task",
+        "task_hint": "",
+        "elapsed_seconds": float(elapsed),
+        "budget_seconds": float(budget),
+        "extension_index": 0,
+        "progress": "",
+        "last_error": str(getattr(tracker, "last_error", "") or ""),
+    }
+    for key, value in raw.items():
+        if key in data and value is not None:
+            data[key] = value
+    evidence_type = _decision_api().TimeoutEvidence
+    return evidence_type(
+        trigger_point=data["trigger_point"],
+        session_id=str(data["session_id"]),
+        run_id=str(data["run_id"]),
+        subject_id=str(data["subject_id"]),
+        task_hint=str(data["task_hint"]),
+        elapsed_seconds=float(data["elapsed_seconds"]),
+        budget_seconds=float(data["budget_seconds"]),
+        extension_index=int(data["extension_index"]),
+        progress=str(data["progress"] or ""),
+        last_error=str(data["last_error"] or ""),
+    )
+
+
+async def run_task_watchdog(
+    tracker,
+    *,
+    check_interval: float,
+    stall_timeout: float,
+    max_timeout: float,
+    cfg: dict,
+    evidence_factory,
+    tui=None,
+) -> str:
+    """Watch one task. Returns error, stall, or max_time.
+
+    A disabled engine keeps the old max_time return. Continue and steer
+    replace the local ceiling with this grant's new_budget and keep looping.
+    The engine and its ledger live for this whole watchdog, not one check.
+    """
+    engine = _timeout_engine(cfg)
+    start = _time.time()
+    while True:
+        await asyncio.sleep(check_interval)
+        elapsed = _time.time() - start
+        stall = tracker.seconds_since_activity()
+
+        if tui and hasattr(tui, "write_progress"):
+            status = f"Working... {elapsed:.0f}s (chunks: {tracker.chunks_received})"
+            if stall > 10:
+                status += f" [idle: {stall:.0f}s]"
+            tui.write_progress(status)
+
+        if tracker.error_count >= 3:
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress(
+                    f"Multiple errors detected: {tracker.last_error[:80]}"
+                )
+            return "error"
+
+        if stall_timeout > 0 and stall >= stall_timeout:
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress(
+                    f"No activity for {stall_timeout:.0f}s - task may be stuck"
+                )
+            return "stall"
+
+        if max_timeout > 0 and elapsed >= max_timeout:
+            if engine is None:
+                if tui and hasattr(tui, "write_progress"):
+                    tui.write_progress(
+                        f"Task soft budget {max_timeout:.0f}s reached"
+                    )
+                return "max_time"
+            evidence = _coerce_task_evidence(
+                evidence_factory, tracker, elapsed=elapsed, budget=max_timeout,
+            )
+            decision = await engine.decide(evidence)
+            elapsed = _time.time() - start
+            if decision.action in ("continue", "steer"):
+                scope = (str(evidence.session_id), str(evidence.subject_id))
+                grant = engine.last_grant(scope)
+                if grant is None or float(grant.new_budget) <= elapsed:
+                    if tui and hasattr(tui, "write_progress"):
+                        tui.write_progress(
+                            f"Task soft budget {max_timeout:.0f}s reached"
+                        )
+                    return "max_time"
+                max_timeout = float(grant.new_budget)
+                if decision.action == "steer":
+                    notes = getattr(tracker, "guidance_notes", None)
+                    if notes is None:
+                        tracker.guidance_notes = []
+                        notes = tracker.guidance_notes
+                    notes.append(decision.note)
+                    if tui and hasattr(tui, "write_progress"):
+                        tui.write_progress(decision.note)
+                continue
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress(f"Task soft budget {max_timeout:.0f}s reached")
+            return "max_time"
+
+
+def _messages_with_guidance(tracker, messages):
+    """Append steer notes once, as a trailing user message."""
+    pending = getattr(tracker, "guidance_notes", None) or []
+    sent = int(getattr(tracker, "_guidance_sent", 0) or 0)
+    if not isinstance(messages, list) or sent >= len(pending):
+        return messages
+    fresh = [str(item) for item in pending[sent:] if str(item).strip()]
+    tracker._guidance_sent = len(pending)
+    if not fresh:
+        return messages
+    return [*messages, HumanMessage(content="\n".join(fresh))]
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +600,7 @@ async def executor_node(state: AgentState) -> dict:
             self.error_count = 0
             self.last_error = ""
             self.chunks_received = 0
+            self.guidance_notes: list[str] = []
         def heartbeat(self):
             self.last_activity = _time.time()
             self.chunks_received += 1
@@ -478,6 +639,7 @@ async def executor_node(state: AgentState) -> dict:
                 self._tracker = tracker
             def invoke(self, msgs, config=None, **kw):
                 self._tracker.heartbeat()
+                msgs = _messages_with_guidance(self._tracker, msgs)
                 try:
                     result = self._inner.invoke(msgs, config=config, **kw)
                     self._tracker.heartbeat()
@@ -487,6 +649,7 @@ async def executor_node(state: AgentState) -> dict:
                     raise
             async def ainvoke(self, msgs, config=None, **kw):
                 self._tracker.heartbeat()
+                msgs = _messages_with_guidance(self._tracker, msgs)
                 try:
                     result = await self._inner.ainvoke(msgs, config=config, **kw)
                     self._tracker.heartbeat()
@@ -496,6 +659,7 @@ async def executor_node(state: AgentState) -> dict:
                     raise
             async def astream(self, msgs, config=None, **kw):
                 self._tracker.heartbeat()
+                msgs = _messages_with_guidance(self._tracker, msgs)
                 async for chunk in self._inner.astream(
                     msgs, config=config, **kw
                 ):
@@ -516,40 +680,30 @@ async def executor_node(state: AgentState) -> dict:
             finally:
                 executor._llm = original_llm
 
-        async def _watchdog():
-            """Monitor progress and cancel if truly stuck."""
-            start = _time.time()
-            while True:
-                await asyncio.sleep(check_interval)
-                elapsed = _time.time() - start
-                stall = tracker.seconds_since_activity()
-
-                # Report progress to user
-                if tui and hasattr(tui, "write_progress"):
-                    status = f"Working... {elapsed:.0f}s (chunks: {tracker.chunks_received})"
-                    if stall > 10:
-                        status += f" [idle: {stall:.0f}s]"
-                    tui.write_progress(status)
-
-                # Check for real problems
-                if tracker.error_count >= 3:
-                    if tui and hasattr(tui, "write_progress"):
-                        tui.write_progress(f"Multiple errors detected: {tracker.last_error[:80]}")
-                    return "error"
-
-                if stall_timeout > 0 and stall >= stall_timeout:
-                    if tui and hasattr(tui, "write_progress"):
-                        tui.write_progress(f"No activity for {stall_timeout:.0f}s - task may be stuck")
-                    return "stall"
-
-                if max_timeout > 0 and elapsed >= max_timeout:
-                    if tui and hasattr(tui, "write_progress"):
-                        tui.write_progress(f"Task soft budget {max_timeout:.0f}s reached")
-                    return "max_time"
-
-        # Run executor and watchdog concurrently
+        # Run executor and watchdog concurrently.
+        # 废弃代码（2026-10-08 版）：executor_node 内 closure _watchdog()。
+        # 已路由到模块级 run_task_watchdog。返回串仍是 error / stall / max_time。
         exec_task = asyncio.create_task(_monitored_execute())
-        watch_task = asyncio.create_task(_watchdog())
+        watch_task = asyncio.create_task(run_task_watchdog(
+            tracker,
+            check_interval=check_interval,
+            stall_timeout=stall_timeout,
+            max_timeout=max_timeout,
+            cfg=cfg,
+            evidence_factory=lambda: {
+                "trigger_point": "graph_task_max_time",
+                "session_id": str(state.get("session_id") or "graph"),
+                "run_id": str(
+                    state.get("run_id") or state.get("session_id") or "graph"
+                ),
+                "subject_id": str(task.id),
+                "task_hint": task.title or "",
+                "extension_index": 0,
+                "progress": "",
+                "last_error": tracker.last_error or "",
+            },
+            tui=tui,
+        ))
 
         done, pending = await asyncio.wait(
             [exec_task, watch_task],
