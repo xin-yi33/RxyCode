@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import os
+import sys
 import re
 import tempfile
 import threading
@@ -2403,6 +2404,7 @@ class AgentV2:
 
         self._session_id = resolved
         self._clear_status_band()
+        self._clear_compact_breaker()
         self._memory = MemoryManager(session_id=resolved, llm=self._llm)
         self._memory.bind_rag_indexer(
             getattr(self, "_rag_indexer_thread", None)
@@ -2430,6 +2432,7 @@ class AgentV2:
         finally:
             self._session_loaded = False
             self._clear_status_band()
+            self._clear_compact_breaker()
         removed_checkpoints = 0
         if self._checkpoint_store is not None:
             removed_checkpoints = self._checkpoint_store.reset(
@@ -5511,6 +5514,17 @@ class AgentV2:
         self._turns_since_todo_write = 0
         self._turns_since_todo_reminder = 5
 
+    def _clear_compact_breaker(self) -> None:
+        """A new session does not inherit the previous stop."""
+        self._compact_fail_count = 0
+        self._compact_thrash_count = 0
+        self._auto_compact_stopped = False
+        self._compact_stop_reported = False
+        self._compact_refill_armed = False
+        self._compact_hold_turn = False
+        self._compact_model_attempted = False
+        self._compact_stop_message = ""
+
     def _begin_status_turn(self) -> None:
         """Count one user turn toward the todo reminder budget, not one model round."""
         self._turns_since_todo_write = int(getattr(self, "_turns_since_todo_write", 0) or 0) + 1
@@ -6172,6 +6186,9 @@ class AgentV2:
                 tool_call_liveness_at = 0.0
 
                 messages = self._ensure_status_band(messages)
+                if self._oversized_stopped_request(messages):
+                    answer = str(getattr(self, "_compact_stop_message", "") or "")
+                    break
                 if fast_build_round_max_tokens is None:
                     stream = self._raw_stream(messages, core_tools)
                 else:
@@ -6732,25 +6749,28 @@ class AgentV2:
                     tui.write_progress("Synthesizing results (stuck recovery)...")
                 parts: list[str] = []
                 messages = self._ensure_status_band(messages)
-                async for chunk in self._raw_stream(messages, core_tools):
-                    if not getattr(chunk, "choices", None):
-                        continue
-                    delta = chunk.choices[0].delta
-                    token = getattr(delta, "content", "") or ""
-                    if not isinstance(token, str):
-                        token = str(token)
-                    token = _novel_stream_text("".join(parts), token)
-                    if token:
-                        parts.append(token)
-                        if tui and hasattr(tui, "stream_token"):
-                            tui.stream_token(token)
-                synth_answer = "".join(parts)
-                # luna R7-3: recovery 为空时无条件 fallback，
-                # 不保留原 DSML/工具调用文本。
-                answer = (
-                    synth_answer.strip()
-                    or "[stuck detection] 已中止循环；请换一种完全不同的思路重试。"
-                )
+                if self._oversized_stopped_request(messages):
+                    answer = str(getattr(self, "_compact_stop_message", "") or "")
+                else:
+                    async for chunk in self._raw_stream(messages, core_tools):
+                        if not getattr(chunk, "choices", None):
+                            continue
+                        delta = chunk.choices[0].delta
+                        token = getattr(delta, "content", "") or ""
+                        if not isinstance(token, str):
+                            token = str(token)
+                        token = _novel_stream_text("".join(parts), token)
+                        if token:
+                            parts.append(token)
+                            if tui and hasattr(tui, "stream_token"):
+                                tui.stream_token(token)
+                    synth_answer = "".join(parts)
+                    # luna R7-3: recovery 为空时无条件 fallback，
+                    # 不保留原 DSML/工具调用文本。
+                    answer = (
+                        synth_answer.strip()
+                        or "[stuck detection] 已中止循环；请换一种完全不同的思路重试。"
+                    )
 
             if research_policy.citations_required and research_sources:
                 supported_urls = set(research_sources)
@@ -7065,12 +7085,12 @@ class AgentV2:
     async def _prefetch_compaction_summary(self, messages, prior_summary=None):
         """Fold 摘要预取。30s 是适配层常量，不进超时注册表。取消继续往外抛。"""
         try:
+            prompt = build_compaction_summary_prompt(
+                messages, prior_summary=prior_summary
+            )
+            self._compact_model_attempted = True
             reply = await asyncio.wait_for(
-                self._llm.ainvoke(
-                    build_compaction_summary_prompt(
-                        messages, prior_summary=prior_summary
-                    )
-                ),
+                self._llm.ainvoke(prompt),
                 timeout=30.0,
             )
             content = getattr(reply, "content", "") or ""
@@ -7085,6 +7105,89 @@ class AgentV2:
             _logger.warning("F4-2 summary prefetch failed, rule fallback: %s", exc)
             return None
 
+    def _prepare_compact_counters(self) -> None:
+        self._compact_fail_count = int(getattr(self, "_compact_fail_count", 0) or 0)
+        self._compact_thrash_count = int(getattr(self, "_compact_thrash_count", 0) or 0)
+        self._auto_compact_stopped = bool(getattr(self, "_auto_compact_stopped", False))
+        self._compact_stop_reported = bool(getattr(self, "_compact_stop_reported", False))
+        self._compact_refill_armed = bool(getattr(self, "_compact_refill_armed", False))
+        self._compact_model_attempted = False
+
+    def _report_compact_stop(self) -> None:
+        if self._compact_stop_reported:
+            return
+        self._compact_stop_reported = True
+        message = (
+            "自动压缩已停。请分块读大文件，或使用 /compact 手动压缩，"
+            "也可以交给子代理，或 /clear 清掉上下文。"
+        )
+        self._compact_stop_message = message
+        try:
+            self.note_status_event(message)
+        except Exception:
+            _logger.warning("compact stop note failed", exc_info=True)
+        try:
+            tui = get_tui()
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress(message)
+        except Exception:
+            _logger.warning("compact stop progress failed", exc_info=True)
+
+    def _compact_usable(self) -> int:
+        module = sys.modules["RxyCode.RxyCode1_1_0.core.compaction"]
+        reserved = max(0, int(module.DEFAULT_RESERVED_TOKENS))
+        return max(0, int(self._context_window()) - reserved)
+
+    def _oversized_stopped_request(self, messages) -> bool:
+        """Stopped sessions still answer small requests. Oversized ones do not stream."""
+        if not bool(getattr(self, "_auto_compact_stopped", False)):
+            self._compact_hold_turn = False
+            return False
+        held = self._estimate_tokens(messages) > self._compact_usable()
+        self._compact_hold_turn = held
+        return held
+
+    def _observe_compact_refill(self, rung: str) -> None:
+        """成功的自动 fold 之后，下一次自动判定仍是 fold 才累加 thrash。"""
+        if rung != "fold":
+            self._compact_thrash_count = 0
+            self._compact_refill_armed = False
+            return
+        if not self._compact_refill_armed:
+            return
+        self._compact_refill_armed = False
+        self._compact_thrash_count += 1
+        if self._compact_thrash_count >= 3:
+            self._auto_compact_stopped = True
+            self._report_compact_stop()
+
+    def _record_summary_attempt(self, prefetched) -> None:
+        if not self._compact_model_attempted:
+            return
+        if prefetched:
+            self._compact_fail_count = 0
+            return
+        self._compact_fail_count += 1
+        if self._compact_fail_count >= 3:
+            self._auto_compact_stopped = True
+            self._report_compact_stop()
+
+    def _finish_compact_bookkeeping(
+        self,
+        *,
+        force: bool,
+        telemetry: dict,
+        occupancy: int,
+        usable: int,
+    ) -> None:
+        self._compact_hold_turn = bool(self._auto_compact_stopped and occupancy > usable)
+        if (
+            not force
+            and telemetry.get("did_compact")
+            and telemetry.get("rung") == "fold"
+        ):
+            self._compact_refill_armed = True
+
     async def _maybe_compress_context(self, messages, *, force: bool = False) -> None:
         """Keep the in-loop message list inside window − reserved.
 
@@ -7096,7 +7199,13 @@ class AgentV2:
         context_window = self._context_window()
         reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
         total = self._estimate_tokens(messages)
+        usable = max(0, int(context_window) - reserved)
         token_stats.update_context(total, context_window)
+        self._prepare_compact_counters()
+        if not force and self._auto_compact_stopped:
+            self._report_compact_stop()
+            self._compact_hold_turn = total > usable
+            return
 
         def _count(text: str) -> int:
             return count_tokens(text, self._tokenizer_spec())
@@ -7110,6 +7219,11 @@ class AgentV2:
                 count=_count,
                 force=force,
             )
+            if not force:
+                self._observe_compact_refill(str(plan.get("rung") or ""))
+                if self._auto_compact_stopped:
+                    self._compact_hold_turn = total > usable
+                    return
             prior_summary = next(
                 (
                     getattr(message, "content", "")
@@ -7153,6 +7267,7 @@ class AgentV2:
                 else:
                     # 旧的单参数预取替身只收 fold messages。
                     prefetched = await prefetch(plan["fold_msgs"])
+            self._record_summary_attempt(prefetched)
 
             def _summary_provider(_folded):
                 return prefetched
@@ -7175,6 +7290,9 @@ class AgentV2:
             _logger.warning("B4 compaction failed: %s", exc)
             return
         if not telemetry.get("did_compact"):
+            self._finish_compact_bookkeeping(
+                force=force, telemetry=telemetry, occupancy=total, usable=usable
+            )
             return
         self._band_full_on_next = True
         snapshot = self._read_turn_snapshot()
@@ -7187,11 +7305,18 @@ class AgentV2:
                 "compacted",
             )
         messages[:] = compacted
-        token_stats.update_context(self._estimate_tokens(messages), context_window)
+        after = self._estimate_tokens(messages)
+        token_stats.update_context(after, context_window)
+        self._finish_compact_bookkeeping(
+            force=force, telemetry=telemetry, occupancy=after, usable=usable
+        )
         tui = get_tui()
         if telemetry.get("rung") == "microcompact":
-            if tui and hasattr(tui, "write_progress"):
-                tui.write_progress("已清旧工具输出，未做 LLM 摘要。")
+            try:
+                if tui and hasattr(tui, "write_progress"):
+                    tui.write_progress("已清旧工具输出，未做 LLM 摘要。")
+            except Exception:
+                _logger.warning("compact progress failed", exc_info=True)
             return
         _logger.info(
             "B4 compaction: occupancy=%s usable=%s rung=%s",
@@ -7199,8 +7324,11 @@ class AgentV2:
             telemetry.get("usable"),
             telemetry.get("rung"),
         )
-        if tui and hasattr(tui, "write_progress"):
-            tui.write_progress("Context compressed (prefix preserved)")
+        try:
+            if tui and hasattr(tui, "write_progress"):
+                tui.write_progress("Context compressed (prefix preserved)")
+        except Exception:
+            _logger.warning("compact progress failed", exc_info=True)
 
     def _tool_is_read_only(self, tool_name: str, tool_args) -> bool:
         """B8: 工具是否只读（读/搜索类可并行；写/危险类串行）。
