@@ -282,6 +282,7 @@ def _fold_middle_section(
     existing_summary: Optional[str] = None,
     summarizer=None,
     summary_meta: dict | None = None,
+    reuse_summary: bool = False,
 ) -> list:
     """折叠断点之后的 assistant/tool 中间段为摘要消息（确定性折叠）。
 
@@ -351,16 +352,23 @@ def _fold_middle_section(
             next_move = str(getattr(m, "content", "") or "")[:200]
             break
 
-    # 废弃代码（2026-10-08 版）：这里只拼 build_summary_message 三段 200 字。
-    # 已路由到 _try_llm_summary；失败仍回退规则模板，不半拼。
-    summary_text = existing_summary
+    # 废弃代码（2026-10-09）：summary_text = existing_summary，有旧摘要就
+    # 不再看新折叠段。预算收紧才 reuse_summary，避免再打一次摘要模型。
+    summary_text = None
     summary_source = SUMMARY_SOURCE_RULE
-    if summary_text is None and summarizer is not None:
-        summary_text = _try_llm_summary(summarizer, fold_msgs)
+    if reuse_summary and existing_summary:
+        summary_text = existing_summary
+    elif summarizer is not None:
+        summary_text = _try_llm_summary(summarizer, fold_msgs, existing_summary)
         if summary_text is not None:
             summary_source = SUMMARY_SOURCE_LLM
     if summary_text is None:
-        summary_text = build_summary_message(objective, work_state, next_move)
+        if existing_summary:
+            summary_text = _merge_rule_summary(
+                existing_summary, objective, work_state, next_move
+            )
+        else:
+            summary_text = build_summary_message(objective, work_state, next_move)
         summary_source = SUMMARY_SOURCE_RULE
     if summary_meta is not None:
         summary_meta["summary_source"] = summary_source
@@ -409,8 +417,7 @@ def compact_messages(
     tokens_before = sum(
         _estimate_chars(getattr(m, "content", "") or "") for m in messages
     )
-    # luna 审计 R7-1：重复压缩不丢失既有摘要状态——首次折叠前提取旧摘要
-    # （含 Objective/Work State/Next Move），合并进新摘要。
+    # 重复压缩把旧摘要并进新摘要。不能因为已有摘要就跳过这次折叠。
     prior_summary = next(
         (
             getattr(m, "content", "")
@@ -429,7 +436,8 @@ def compact_messages(
         list(messages),
         keep_tail=tail_turns,
         existing_summary=prior_summary,
-        summarizer=None if prior_summary else summarizer,
+        # 废弃代码（2026-10-09）：summarizer=None if prior_summary else summarizer
+        summarizer=summarizer,
         summary_meta=summary_meta,
     )
     tokens_after = sum(
@@ -470,6 +478,7 @@ def compact_messages(
             result,
             keep_tail=max(0, tail_turns - guard),
             existing_summary=existing_summary,
+            reuse_summary=True,
         )
         tighter_after = sum(
             _estimate_chars(getattr(m, "content", "") or "") for m in tighter
@@ -652,9 +661,113 @@ def _resolve_maybe_awaitable(value):
     raise RuntimeError("summarizer awaitable received on the worker loop; pre-resolve it")
 
 
-def _try_llm_summary(summarizer, fold_msgs) -> str | None:
+_SUMMARY_LABELS = frozenset(
+    {
+        "objective",
+        "constraints",
+        "progress",
+        "work state",
+        "files touched",
+        "next step",
+        "next move",
+        "blockers",
+    }
+)
+
+
+def _summary_field(text: str, label: str) -> str:
+    """取一个字段的整段，直到下一个已知标签。续行不能被丢掉。"""
+    want = label.lower()
+    captured: list[str] = []
+    active = False
+    for raw in (text or "").splitlines():
+        stripped = raw.strip()
+        lowered = stripped.lower()
+        if lowered in ("<summary>", "</summary>"):
+            if active:
+                break
+            continue
+        head, sep, tail = stripped.partition(":")
+        if sep and head.strip().lower() in _SUMMARY_LABELS:
+            if active:
+                break
+            if head.strip().lower() == want:
+                active = True
+                if tail.strip():
+                    captured.append(tail.strip())
+            continue
+        if active and stripped:
+            captured.append(stripped)
+    return "\n".join(captured).strip()
+
+
+def _merge_rule_summary(
+    prior_summary: str,
+    objective: str,
+    work_state: str,
+    next_move: str,
+) -> str:
+    """旧摘要并进新的六字段。Next Step 用这次扫到的最新对话，不留旧的 Next Move。"""
+    progress = (
+        _summary_field(prior_summary, "Progress")
+        or _summary_field(prior_summary, "Work State")
+        or work_state
+    )
+    return build_state_summary_message(
+        {
+            "objective": _summary_field(prior_summary, "Objective") or objective,
+            "constraints": _summary_field(prior_summary, "Constraints"),
+            "progress": progress,
+            "files_touched": _summary_field(prior_summary, "Files Touched"),
+            "next_step": next_move
+            or _summary_field(prior_summary, "Next Step")
+            or _summary_field(prior_summary, "Next Move"),
+            "blockers": _summary_field(prior_summary, "Blockers"),
+        }
+    )
+
+
+def _invoke_summarizer(summarizer, fold_msgs, prior_summary):
+    """按声明把旧摘要送进去。单参数摘要器不多传位置参数。"""
     try:
-        result = _resolve_maybe_awaitable(summarizer(fold_msgs))
+        signature = inspect.signature(summarizer)
+    except (TypeError, ValueError):
+        return summarizer(fold_msgs)
+    named = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    ]
+    has_var_positional = any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    has_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if len(named) >= 2:
+        second = named[1]
+        if second.kind == inspect.Parameter.KEYWORD_ONLY:
+            return summarizer(fold_msgs, **{second.name: prior_summary})
+        return summarizer(fold_msgs, prior_summary)
+    if has_var_positional:
+        return summarizer(fold_msgs, prior_summary)
+    if has_var_keyword:
+        return summarizer(fold_msgs, prior_summary=prior_summary)
+    return summarizer(fold_msgs)
+
+
+def _try_llm_summary(summarizer, fold_msgs, prior_summary=None) -> str | None:
+    try:
+        result = _resolve_maybe_awaitable(
+            _invoke_summarizer(summarizer, fold_msgs, prior_summary)
+        )
         return _snapshot_text_from_result(result)
     except Exception:
         return None
@@ -706,19 +819,28 @@ def plan_compaction(
     }
 
 
-def build_compaction_summary_prompt(messages) -> list:
+def build_compaction_summary_prompt(messages, prior_summary=None) -> list:
     """Ask the session model for the six snapshot fields as one JSON object."""
     lines = []
     for message in messages or []:
         kind = getattr(message, "type", "message")
         lines.append(f"{kind}: {getattr(message, 'content', '')}")
     body = "\n".join(lines)
+    prior = ""
+    if prior_summary:
+        prior = "\nPrior summary, merge it and do not drop it:\n" + str(prior_summary)
+    rules = (
+        "\nKeep user decisions and constraints verbatim. "
+        "next_step must quote the latest dialogue directly. "
+        "Record errors and approaches that were already tried. "
+        "Return JSON only. Do not call tools."
+    )
     return [
         HumanMessage(
             content=(
                 "Summarize the folded work as JSON with keys "
                 "objective, constraints, progress, files_touched, next_step, blockers. "
-                "files_touched must be a list of strings.\n" + body
+                "files_touched must be a list of strings.\n" + body + prior + rules
             )
         )
     ]

@@ -7062,11 +7062,15 @@ class AgentV2:
             return f"已压缩上下文：约 {before} → {after} tokens。"
         return f"占用约 {after} tokens。已走压缩入口，窗口未明显下降。"
 
-    async def _prefetch_compaction_summary(self, messages):
+    async def _prefetch_compaction_summary(self, messages, prior_summary=None):
         """Fold 摘要预取。30s 是适配层常量，不进超时注册表。取消继续往外抛。"""
         try:
             reply = await asyncio.wait_for(
-                self._llm.ainvoke(build_compaction_summary_prompt(messages)),
+                self._llm.ainvoke(
+                    build_compaction_summary_prompt(
+                        messages, prior_summary=prior_summary
+                    )
+                ),
                 timeout=30.0,
             )
             content = getattr(reply, "content", "") or ""
@@ -7106,18 +7110,49 @@ class AgentV2:
                 count=_count,
                 force=force,
             )
-            already_summarized = any(
-                getattr(message, "type", "") == "system"
-                and bool(
-                    (getattr(message, "additional_kwargs", None) or {}).get(
-                        "is_compaction_summary"
+            prior_summary = next(
+                (
+                    getattr(message, "content", "")
+                    for message in messages
+                    if getattr(message, "type", "") == "system"
+                    and bool(
+                        (getattr(message, "additional_kwargs", None) or {}).get(
+                            "is_compaction_summary"
+                        )
                     )
-                )
-                for message in messages
+                ),
+                None,
             )
+            # 废弃代码（2026-10-09）：`and not already_summarized` 让第二次 fold
+            # 不再预取。旧摘要要和新折叠段一起送给摘要模型。
             prefetched = None
-            if plan["rung"] == "fold" and not already_summarized:
-                prefetched = await self._prefetch_compaction_summary(plan["fold_msgs"])
+            if plan["rung"] == "fold":
+                prefetch = self._prefetch_compaction_summary
+                try:
+                    prefetch_signature = inspect.signature(prefetch)
+                except (TypeError, ValueError):
+                    prefetch_signature = None
+                pass_prior = False
+                if prefetch_signature is not None:
+                    pass_prior = any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        or (
+                            parameter.name == "prior_summary"
+                            and parameter.kind
+                            in (
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                inspect.Parameter.KEYWORD_ONLY,
+                            )
+                        )
+                        for parameter in prefetch_signature.parameters.values()
+                    )
+                if pass_prior:
+                    prefetched = await prefetch(
+                        plan["fold_msgs"], prior_summary=prior_summary
+                    )
+                else:
+                    # 旧的单参数预取替身只收 fold messages。
+                    prefetched = await prefetch(plan["fold_msgs"])
 
             def _summary_provider(_folded):
                 return prefetched
