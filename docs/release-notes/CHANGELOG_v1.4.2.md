@@ -54,6 +54,9 @@
 
 ## 变更
 
+- **压缩门控**（`core/compaction.py`）：尾部收紧按溢出比例跳步。`execution.compaction.exclude_tools` 里的工具结果不做墓碑。
+  micro 释放量低于 `clear_at_least`（默认 2000），或释放后仍超窗口，就继续 fold。
+  —— 原因：清一点点会毁掉整段缓存，却腾不出可用窗口。
 - **压缩后重注 todo**（`core/status_band.py`）：`_band_full_on_next` 置位后，下一次状态带列出未完成项
   `- [pending|in_progress|blocked] id: content`，完成和取消只留计数，并带上 still-active 头行。
   空台账不写这段。指纹没变就不再追加。

@@ -7210,6 +7210,19 @@ class AgentV2:
         def _count(text: str) -> int:
             return count_tokens(text, self._tokenizer_spec())
 
+        cfg = getattr(self, "_cfg", None) or {}
+        execution = cfg.get("execution") if isinstance(cfg, dict) else None
+        block = execution.get("compaction") if isinstance(execution, dict) else None
+        block = block if isinstance(block, dict) else {}
+        exclude_tools = [str(name) for name in (block.get("exclude_tools") or []) if str(name)]
+        if "clear_at_least" in block:
+            try:
+                clear_at_least = int(block["clear_at_least"])
+            except (TypeError, ValueError):
+                clear_at_least = 2000
+        else:
+            clear_at_least = 2000
+
         try:
             plan = plan_compaction(
                 messages,
@@ -7218,6 +7231,8 @@ class AgentV2:
                 reserved=reserved,
                 count=_count,
                 force=force,
+                exclude_tools=exclude_tools,
+                clear_at_least=clear_at_least,
             )
             if not force:
                 self._observe_compact_refill(str(plan.get("rung") or ""))
@@ -7285,6 +7300,8 @@ class AgentV2:
                 reserved=reserved,
                 count=_count,
                 summarizer=_summary_provider if prefetched else None,
+                exclude_tools=exclude_tools,
+                clear_at_least=clear_at_least,
             )
         except Exception as exc:  # pragma: no cover - 压缩失败不阻断请求
             _logger.warning("B4 compaction failed: %s", exc)

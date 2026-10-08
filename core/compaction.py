@@ -74,28 +74,75 @@ def _is_tool_result(message) -> bool:
     return getattr(message, "type", None) == "tool"
 
 
+def _tool_result_name(message) -> str:
+    name = getattr(message, "name", None)
+    if name:
+        return str(name)
+    extra = getattr(message, "additional_kwargs", None) or {}
+    if isinstance(extra, dict) and extra.get("name"):
+        return str(extra["name"])
+    return ""
+
+
+def _tool_names_by_call_id(messages) -> dict[str, str]:
+    """生产 ToolMessage 常常只有 tool_call_id。名字在前面的 assistant tool_calls 里。"""
+    names: dict[str, str] = {}
+    for message in messages or []:
+        calls = getattr(message, "tool_calls", None)
+        if not calls:
+            extra = getattr(message, "additional_kwargs", None) or {}
+            if isinstance(extra, dict):
+                calls = extra.get("tool_calls")
+        for call in calls or []:
+            if isinstance(call, dict):
+                cid = call.get("id")
+                name = call.get("name")
+            else:
+                cid = getattr(call, "id", None)
+                name = getattr(call, "name", None)
+            if cid and name:
+                names[str(cid)] = str(name)
+    return names
+
+
+def _resolved_tool_name(message, names: dict[str, str]) -> str:
+    named = _tool_result_name(message)
+    if named:
+        return named
+    return names.get(str(getattr(message, "tool_call_id", "") or ""), "")
+
+
 def microcompact_messages(
     messages: list,
     *,
     keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+    exclude_tools: list | None = None,
 ) -> tuple[list, dict]:
     """Tombstone old tool **results**. Keep humans and assistant tool_calls.
 
     UPDATE-01 U3 / UPI-3: do not delete user messages or tool_call skeletons.
     """
     keep_recent = max(0, int(keep_recent or 0))
+    excluded = {str(name) for name in (exclude_tools or []) if str(name)}
+    names = _tool_names_by_call_id(messages)
     tool_indexes = [index for index, message in enumerate(messages or []) if _is_tool_result(message)]
     keep = set(tool_indexes[-keep_recent:]) if keep_recent else set()
     out: list = []
     tombstoned = 0
+    cleared_texts: list[str] = []
     for index, message in enumerate(messages or []):
-        if not _is_tool_result(message) or index in keep:
+        if (
+            not _is_tool_result(message)
+            or index in keep
+            or _resolved_tool_name(message, names) in excluded
+        ):
             out.append(message)
             continue
         content = getattr(message, "content", "") or ""
         if str(content).strip() == TOOL_RESULT_TOMBSTONE:
             out.append(message)
             continue
+        cleared_texts.append(str(content))
         if hasattr(message, "model_copy"):
             out.append(message.model_copy(update={"content": TOOL_RESULT_TOMBSTONE}))
         else:
@@ -106,7 +153,11 @@ def microcompact_messages(
                 )
             )
         tombstoned += 1
-    return out, {"tombstoned": tombstoned, "did_microcompact": tombstoned > 0}
+    return out, {
+        "tombstoned": tombstoned,
+        "did_microcompact": tombstoned > 0,
+        "cleared_texts": cleared_texts,
+    }
 
 
 def build_summary_message(
@@ -468,15 +519,17 @@ def compact_messages(
         0,
         int(tokens_before * TAIL_BUDGET_RATIO) - fixed_overhead,
     )
+    keep = int(tail_turns)
     guard = 0
-    while (
-        tokens_after - fixed_overhead > budget_floor
-        and guard < 20
-    ):
+    while tokens_after - fixed_overhead > budget_floor and keep > 0 and guard < 8:
         guard += 1
+        # 废弃代码（2026-10-09）：keep_tail=tail_turns-guard，溢出很大时仍一格一格收。
+        nxt = _seeded_keep_tail(keep, tokens_after, fixed_overhead, budget_floor)
+        if nxt >= keep:
+            break
         tighter = _fold_middle_section(
             result,
-            keep_tail=max(0, tail_turns - guard),
+            keep_tail=nxt,
             existing_summary=existing_summary,
             reuse_summary=True,
         )
@@ -492,6 +545,7 @@ def compact_messages(
             break
         result = tighter
         tokens_after = tighter_after
+        keep = nxt
     if not tool_pair_integrity(result):
         _logger.warning(
             "compaction produced broken assistant-tool pairing; "
@@ -512,6 +566,22 @@ def compact_messages(
     return result
 
 
+def _seeded_keep_tail(
+    current: int,
+    tokens_after: int,
+    fixed_overhead: int,
+    budget_floor: int,
+) -> int:
+    """Jump the tail by the overflow share instead of dropping one turn."""
+    current = max(0, int(current))
+    overflow = (tokens_after - fixed_overhead) - budget_floor
+    span = max(1, tokens_after - fixed_overhead)
+    if overflow <= 0 or current <= 0:
+        return current
+    drop = max(1, (current * overflow + span - 1) // span)
+    return max(0, current - drop)
+
+
 def usable_tokens(
     context_window: int,
     reserved: int = DEFAULT_RESERVED_TOKENS,
@@ -529,6 +599,8 @@ def run_compaction_ladder(
     reserved: int = DEFAULT_RESERVED_TOKENS,
     count: Callable[[str], int] | None = None,
     summarizer=None,
+    exclude_tools: list | None = None,
+    clear_at_least: int = 2000,
 ) -> tuple[list, dict]:
     """Single auto/manual compact entry: microcompact, then fold if still over.
 
@@ -549,6 +621,8 @@ def run_compaction_ladder(
         reserved=reserved,
         count=count,
         force=force,
+        exclude_tools=exclude_tools,
+        clear_at_least=clear_at_least,
     )
     telemetry: dict = {
         "occupancy": occ,
@@ -565,6 +639,7 @@ def run_compaction_ladder(
     micro, micro_tel = microcompact_messages(
         list(messages),
         keep_recent=0 if force else KEEP_RECENT_TOOL_RESULTS,
+        exclude_tools=exclude_tools,
     )
     occ_micro = occupancy_tokens(micro, count=count)
     telemetry["occupancy_after_micro"] = occ_micro
@@ -796,6 +871,8 @@ def plan_compaction(
     occupancy: int | None = None,
     count: Callable[[str], int] | None = None,
     force: bool = False,
+    exclude_tools: list | None = None,
+    clear_at_least: int = 2000,
 ) -> dict:
     """Same rung decision as run_compaction_ladder. No LLM and no writes."""
     occ = (
@@ -809,9 +886,16 @@ def plan_compaction(
     micro, _micro_tel = microcompact_messages(
         list(messages),
         keep_recent=0 if force else KEEP_RECENT_TOOL_RESULTS,
+        exclude_tools=exclude_tools,
     )
     occ_micro = occupancy_tokens(micro, count=count)
-    if occ_micro <= usable and not force:
+    estimate = count or (lambda text: len(text or "") // 3)
+    released = sum(estimate(text) for text in (_micro_tel.get("cleared_texts") or []))
+    if (
+        not force
+        and occ_micro <= usable
+        and released >= max(0, int(clear_at_least))
+    ):
         return {"rung": "microcompact", "fold_msgs": []}
     return {
         "rung": "fold",
