@@ -89,6 +89,10 @@
 - **P8**：仓库没有 `class TodoSnapshot`、`class TodoItem`、`protocol/todo_snapshot.py`、
   `protocol/todo.py`。卡记为 `BLOCKED_PREREQUISITE`。没有新的 todo store，没有抄 P8 测试，
   没有把 evidence 接到假快照。
+  2026-10-08 起这一卡连同 E-P-E2E-08 搁置。交互式 todo 是模型自己写的步骤清单，
+  再投影到用户能看见的状态条；调研见
+  `docs/plans/opus5-plan/rxycode/research/2026-10-08-backend-status-bar-model-facing-todo.md`。
+  现在没有这块状态条，P8 只许消费已有的 `TodoSnapshot`，不能自己造一份。等状态条补上再做。
 - **Phase P E2E**：测试已按测试包抄入 `tests/e2e/phase_p`。
   较早一次是 4 passed、6 failed。固定窗口第五轮末行是「无剩余问题」，并写明六项红灯仍在。
   其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。那次是
@@ -100,6 +104,9 @@
   03 fallback 的生产行为仍在：interrupt RPC 实际失败才发 stop，原 prompt 只回一条 error。
   恢复原文后的 `tests/e2e/phase_p` 是 `4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。
   失败是 02、06、08、09。08 仍是没有 `protocol.todo_snapshot`。没有补这个文件。
+  2026-10-08 再跑同一命令：`4 failed, 6 passed, 4 warnings in 21.30s`，退出码 1。
+  失败名单没变。02 仍是 `assert 0 == 2`，06 仍是 `assert 1 == 2`，
+  09 仍是 `['continue', 'stop'] == ['continue']`。08 按上面的搁置，不补快照模块。
   MO-F4-6-01 的 `len(fires)` 仍是 1。历史 fire 不删。
   复活按本轮去重，不按任意历史成功。`_execute_async` 开工时把 `inflight_slot`
   写成当时的 `next_fire`。这个槽还没有成功 fire，复活就补投一次。
