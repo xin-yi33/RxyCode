@@ -152,13 +152,14 @@
   `test_u_p7_02` 仍 passed。还原后 3 passed。
   `granted = requested` 时 `test_u_p2_02` 是 `assert 2400.0 == 50.0`，
   `test_u_p2_04` 仍 passed。还原后 2 passed。`core/timeout_decision.py` 的 diff 为空。
-- 与三份日志对齐的结果：
-  `fix4-section-a.txt`：Fix4 单元包加 `tests/e2e/fix4` 是 79 passed，33.71s，退出码 0。
+- 与当前 scratch 三份日志对齐的结果：
+  `fix4-section-a.txt`：Fix4 单元包加 `tests/e2e/fix4` 是 `79 passed in 36.17s`，退出码 0。
   `phasep-section6.txt`：Phase P 单元、兼容和 `tests/e2e/phase_p` 是
-  `4 failed, 57 passed, 17 warnings in 32.09s`，退出码 1。
+  `4 failed, 57 passed, 17 warnings in 34.74s`，退出码 1。
   失败是 E2E-02、E2E-06、E2E-08、E2E-09。
   `merged-gate.txt`：`tests/contract tests/test_appserver tests/test_cache tests/test_core` 是
-  9176 passed，4 skipped，46 warnings，1432.53s，退出码 0。
+  `9176 passed, 4 skipped, 46 warnings in 1783.28s`，退出码 0。
+  更早一次同命令是 33.71s / 32.09s / 1432.53s。通过数和失败名单相同。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - F4-2 的 PHASE-FIX2 §2 基线勾保持未勾。没有调低 1s / 3s / 97% / 95%。
