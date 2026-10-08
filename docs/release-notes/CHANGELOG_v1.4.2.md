@@ -7,6 +7,12 @@
 
 ## 新增
 
+- **大输出落盘**（`tools/bash.py`）：超过 30000 字的 bash 输出在第一次截断前写入
+  `spill/<session>/<uuid>.txt`。模型看到头尾预览和 `Full output saved to:` 路径。
+  写盘或数据目录创建失败则降级截断并标明。相同原文按全文指纹第二次去重。
+  失败命令的路径行留在错误包络外面。预览和工具输出清洗整段抹掉正文里的密钥；`Full output saved to:` 路径行不再被二次脱敏。指针用绝对路径。
+  墓碑保留路径行；已经带路径的墓碑再次压缩不计新释放，fold 也不丢掉这对工具。内联结果墓碑后不能再读。
+  —— 原因：先截断再检查，原文已经找不回来。
 - **todo_write**（`tools/todo_write.py`，`protocol/todo.py`）：在现有 `tasks.json` 上做 merge / 整单替换。
   多于一个 `in_progress`、缺 content、未知状态都拒绝且不落盘。旧 `task` / `task_manage` 读写同一份台账。
   成功写入的工具结果带上这次调用的 `TodoSnapshot`。不另做一次摘要 LLM。

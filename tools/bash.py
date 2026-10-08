@@ -1,16 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 import platform
 import subprocess
+import uuid
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from ..config.settings import get_data_dir
+from ..core.session_runtime import current_session_id
 from ..utils.shell import shell_executor
 from .launch_intent import classify_shell_launch
 from .open_file import open_file, open_file_async
+from .secret_text import redact_secrets
+
+_logger = logging.getLogger(__name__)
+_SPILL_SEEN: dict[str, set[str]] = {}
+SPILL_PATH_PREFIX = "Full output saved to:"
+SPILL_FAIL_MARKER = "[spill write failed; output truncated]"
+DUPLICATE_SPILL = (
+    "[duplicate tool output omitted: bash 输出与上次相同，为节省 token 已去重]"
+)
 
 
 class BashInput(BaseModel):
@@ -51,6 +65,38 @@ LAUNCHED_OK = (
     "[launched] OS accepted the start request. "
     "The GUI app's lifetime is not waited on; continue with the Final Answer."
 )
+
+
+def _redact_preview(text: str) -> str:
+    """Preview only. The spill file keeps the raw bytes and is not logged."""
+    return redact_secrets(text)
+
+
+def _write_spill_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _spill_large_output(raw: str) -> str:
+    """Spill before the first irreversible truncation. Failure degrades to truncation."""
+    if len(raw) <= MAX_OUTPUT_CHARS:
+        return raw
+    session = current_session_id()
+    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    seen = _SPILL_SEEN.setdefault(session, set())
+    if fingerprint in seen:
+        return DUPLICATE_SPILL
+    try:
+        # get_data_dir 自己会 mkdir。目录创建失败和写文件失败走同一条降级。
+        # 相对数据目录要先变成绝对路径，否则之后 cwd 变了 Read 会打开另一处。
+        path = (get_data_dir() / "spill" / session / f"{uuid.uuid4().hex}.txt").resolve()
+        _write_spill_file(path, raw)
+    except OSError:
+        _logger.warning("spill write failed for session %s", session)
+        return _truncate_output(_redact_preview(raw)) + "\n" + SPILL_FAIL_MARKER
+    seen.add(fingerprint)
+    preview = _truncate_output(_redact_preview(raw))
+    return f"{preview}\n{SPILL_PATH_PREFIX} {path}"
 
 
 def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
@@ -184,27 +230,43 @@ def _looks_like_env_probe(command: str) -> bool:
     )
 
 
+def _detach_spill_paths(text: str) -> tuple[str, list[str]]:
+    """路径行必须能单独打开。不能留在错误包络的闭括号里面。"""
+    body: list[str] = []
+    paths: list[str] = []
+    for line in str(text).splitlines():
+        if line.startswith(SPILL_PATH_PREFIX):
+            paths.append(line.strip())
+        else:
+            body.append(line)
+    return "\n".join(body).strip(), paths
+
+
 def _format_result(result: dict, command: str = "") -> str:
     output = result["stdout"]
     if result["stderr"]:
         output += ("\n" if output else "") + result["stderr"]
     if not result["success"]:
         output += f"\n[exit code: {result['exit_code']}]"
-    output = _truncate_output(output)
-    output = output.strip()
+    output = _spill_large_output(output)
+    body, paths = _detach_spill_paths(output)
     if not result["success"]:
         # Tool recovery classifies the stable [error...] prefix.  Preserve the
         # command output and exit code, but do not let a failed shell probe be
         # mistaken for a successful empty/diagnostic result.
-        msg = f"[error executing bash: {output or 'command failed'}]"
+        msg = f"[error executing bash: {body or 'command failed'}]"
         if _looks_like_env_probe(command):
             msg += (
                 " Do not retry pip/python/node probes. Call write for the "
                 "user-named source files using the stdlib. Do not install "
                 "Flask/FastAPI/Django unless the user named that framework."
             )
+        if paths:
+            msg += "\n" + "\n".join(paths)
         return msg
-    return output or "[no output]"
+    if paths:
+        return f"{body}\n" + "\n".join(paths) if body else "\n".join(paths)
+    return body or "[no output]"
 
 
 bash_tool = StructuredTool.from_function(

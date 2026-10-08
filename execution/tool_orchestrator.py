@@ -17,7 +17,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -26,7 +25,10 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
+from RxyCode.RxyCode1_1_0.tools.secret_text import redact_secrets
 from RxyCode.RxyCode1_1_0.tools.write import write_tool
 
 from RxyCode.RxyCode1_1_0.core.governance import PolicyOutcome, SensitiveActionPolicy
@@ -135,6 +137,35 @@ def _canonical_tool_args(args: Any) -> str:
         return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
     except Exception:
         return str(args)
+
+
+def _is_generated_spill_line(line: str) -> bool:
+    """True only for data-dir/spill/<session>/<uuid>.txt that is already on disk."""
+    payload = line.strip()
+    prefix = "Full output saved to:"
+    if not payload.startswith(prefix):
+        return False
+    raw_path = payload[len(prefix):].strip()
+    if not raw_path or not os.path.isfile(raw_path):
+        return False
+    try:
+        resolved = os.path.realpath(raw_path)
+        root = os.path.realpath(get_data_dir() / "spill")
+        relative = os.path.relpath(resolved, root)
+    except (OSError, ValueError):
+        return False
+    if relative.startswith("..") or os.path.isabs(relative):
+        return False
+    parts = relative.split(os.sep)
+    if len(parts) != 2:
+        return False
+    session, filename = parts
+    try:
+        validate_session_id(session)
+    except ValueError:
+        return False
+    stem, ext = os.path.splitext(filename)
+    return ext.lower() == ".txt" and len(stem) == 32 and all(char in "0123456789abcdef" for char in stem.lower())
 
 
 class ToolOrchestrator:
@@ -422,13 +453,19 @@ class ToolOrchestrator:
             if char in "\n\r\t" or ord(char) >= 32
         )
         snapshot = getattr(result, "snapshot", None)
-        text = re.sub(
-            r"(?i)\b(api[_-]?key|authorization|password|passwd|secret|token)"
-            r"\s*([:=])\s*([^\s,;]+)",
-            lambda match: f"{match.group(1)}{match.group(2)}***",
-            text,
-        )
-        text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", "Bearer ***", text)
+        # 只留实际落盘的路径行。普通输出即使以同一前缀开头，也要脱敏。
+        body: list[str] = []
+        paths: list[str] = []
+        for line in text.splitlines(keepends=True):
+            if _is_generated_spill_line(line):
+                paths.append(line)
+            else:
+                body.append(line)
+        text = redact_secrets("".join(body))
+        if paths:
+            if text and not text.endswith(("\n", "\r")):
+                text += "\n"
+            text += "".join(paths)
         context_cfg = (config or {}).get("context", {})
         try:
             max_chars = max(

@@ -37,7 +37,7 @@ TAIL_BUDGET_RATIO = 0.25
 #: 输出预留（opencode overflow.ts:22-33 的 reserved，默认 20k）。
 DEFAULT_RESERVED_TOKENS = 20_000
 
-#: UPDATE-01 U3：旧 tool result 墓碑。文件仍在磁盘，模型可再 Read。
+#: 墓碑替换内联工具结果。spill-backed 输出可经路径读回；内联输出墓碑后不可恢复。
 TOOL_RESULT_TOMBSTONE = "[tool result cleared]"
 KEEP_RECENT_TOOL_RESULTS = 2
 
@@ -72,6 +72,32 @@ def occupancy_tokens(
 
 def _is_tool_result(message) -> bool:
     return getattr(message, "type", None) == "tool"
+
+
+_SPILL_PATH_PREFIX = "Full output saved to:"
+
+
+def _spill_path_lines(content: str) -> list[str]:
+    return [
+        line.strip()
+        for line in str(content).splitlines()
+        if line.strip().startswith(_SPILL_PATH_PREFIX)
+    ]
+
+
+def _tombstone_body(content: str) -> str:
+    paths = _spill_path_lines(content)
+    if not paths:
+        return TOOL_RESULT_TOMBSTONE
+    return TOOL_RESULT_TOMBSTONE + "\n" + "\n".join(paths)
+
+
+def _is_cleared_tombstone(content: str) -> bool:
+    """裸墓碑，或墓碑加路径行。第二种再压一次不能当成新的释放。"""
+    lines = [line.strip() for line in str(content).splitlines() if line.strip()]
+    if not lines or lines[0] != TOOL_RESULT_TOMBSTONE:
+        return False
+    return all(line.startswith(_SPILL_PATH_PREFIX) for line in lines[1:])
 
 
 def _tool_result_name(message) -> str:
@@ -139,16 +165,17 @@ def microcompact_messages(
             out.append(message)
             continue
         content = getattr(message, "content", "") or ""
-        if str(content).strip() == TOOL_RESULT_TOMBSTONE:
+        if _is_cleared_tombstone(str(content)):
             out.append(message)
             continue
         cleared_texts.append(str(content))
+        tombstone = _tombstone_body(str(content))
         if hasattr(message, "model_copy"):
-            out.append(message.model_copy(update={"content": TOOL_RESULT_TOMBSTONE}))
+            out.append(message.model_copy(update={"content": tombstone}))
         else:
             out.append(
                 type(message)(
-                    content=TOOL_RESULT_TOMBSTONE,
+                    content=tombstone,
                     tool_call_id=getattr(message, "tool_call_id", "") or "",
                 )
             )
@@ -311,7 +338,7 @@ def _retain_visible_tombstone(fold_units: list, tail_units: list) -> None:
         if not tools:
             continue
         if all(
-            str(getattr(message, "content", "") or "").strip() == TOOL_RESULT_TOMBSTONE
+            _is_cleared_tombstone(str(getattr(message, "content", "") or ""))
             for message in tools
         ):
             fold_units.pop(index)
