@@ -60,6 +60,64 @@ def test_mo_f5_3_01_fast_and_graph_share_one_renderer(tmp_path, monkeypatch):
     assert len(again) == len(produced)
 
 
+def test_mo_f5_6_01_compaction_reinjects_the_open_todo_section(tmp_path, monkeypatch):
+    """layer=module MO-F5-6-01 压缩后的下一次注入带上完整 todo 段。"""
+    import asyncio
+
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    from RxyCode.RxyCode1_1_0.config import settings
+    from RxyCode.RxyCode1_1_0.core import compaction as compaction_mod
+    from RxyCode.RxyCode1_1_0.tools.todo_write import todo_write
+
+    monkeypatch.setattr(settings, "get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(compaction_mod, "DEFAULT_RESERVED_TOKENS", 0)
+    todo_write(
+        [
+            {"id": "t1", "content": "搭骨架", "status": "in_progress"},
+            {"id": "t2", "content": "装依赖", "status": "pending"},
+            {"id": "t4", "content": "已完成的细节", "status": "completed"},
+        ],
+        merge=True,
+        session_id="band-compact",
+    )
+
+    async def _no_summary(_messages):
+        return None
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._llm = SimpleNamespace()
+    agent._session_id = "band-compact"
+    agent._capabilities = SimpleNamespace(context_window=300, tokenizer="tiktoken:o200k_base")
+    agent._memory = SimpleNamespace(flush_before_compaction=lambda _messages: None)
+    agent._prefetch_compaction_summary = _no_summary
+    agent._turns_since_todo_write = 1
+    agent._turns_since_todo_reminder = 0
+    messages = [
+        SystemMessage(content="SYS"),
+        HumanMessage(content="ANCHOR-A1 搭骨架"),
+        AIMessage(content="x" * 2000),
+        HumanMessage(content="中段"),
+        AIMessage(content="m"),
+        HumanMessage(content="尾一"),
+        AIMessage(content="t1"),
+        HumanMessage(content="尾二"),
+        AIMessage(content="t2"),
+    ]
+    asyncio.run(agent._maybe_compress_context(messages, force=True))
+    assert agent._band_full_on_next is True
+    injected = agent._ensure_status_band([HumanMessage(content="压缩后继续")])
+    text = injected[-1].content
+    assert "still active from before context compression" in text
+    assert "- [in_progress] t1: 搭骨架" in text
+    assert "- [pending] t2: 装依赖" in text
+    assert "(1 completed)" in text
+    assert "- [completed]" not in text
+    assert "已完成的细节" not in text
+    quiet = agent._ensure_status_band(injected)
+    assert len(quiet) == len(injected)
+
+
 def test_mo_f5_3_02_one_trailing_user_with_band_before_steer():
     """layer=module MO-F5-3-02 band 与 steer 合成一条 trailing user。"""
     from RxyCode.RxyCode1_1_0.tools.todo_write import todo_summary_llm_calls

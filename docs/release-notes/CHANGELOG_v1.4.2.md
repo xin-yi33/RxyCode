@@ -54,6 +54,10 @@
 
 ## 变更
 
+- **压缩后重注 todo**（`core/status_band.py`）：`_band_full_on_next` 置位后，下一次状态带列出未完成项
+  `- [pending|in_progress|blocked] id: content`，完成和取消只留计数，并带上 still-active 头行。
+  空台账不写这段。指纹没变就不再追加。
+  —— 原因：台账留在磁盘上，不等于压缩后的模型还能看见它。
 - **stall 分级后再杀 worker**（`appserver/stall_grading.py`、`e36c5e31`、`c56df81d`）：
   先做 turn 级 interrupt 和 grace。进程还在才进入后续处置。grace 内恢复则保留 host。
 - **fold 摘要**（`9e95c3c5`）：fold 档可以要一份 LLM 状态快照。调用发生在原来的事件循环里。

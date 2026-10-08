@@ -124,6 +124,47 @@ def test_u_f5_3_06_event_ring_and_todo_reminder_budget():
     assert later < 5
 
 
+def test_u_f5_6_01_post_compaction_todo_section_shape():
+    """layer=unit U-F5-6-01 压缩后 todo 段的条目、尾坠和头行。"""
+    band = _band(
+        env=None,
+        events=[],
+        after_compaction=True,
+        todo_items=[
+            {"id": "t1", "content": "搭骨架", "status": "in_progress"},
+            {"id": "t2", "content": "装依赖", "status": "pending"},
+            {"id": "t3", "content": "写测试", "status": "blocked"},
+            {"id": "t4", "content": "已完成的细节", "status": "completed"},
+            {"id": "t5", "content": "已取消的细节", "status": "cancelled"},
+        ],
+    )
+    text = band.render()
+    assert "- [in_progress] t1: 搭骨架" in text
+    assert "- [pending] t2: 装依赖" in text
+    assert "- [blocked] t3: 写测试" in text
+    assert "- [completed]" not in text
+    assert "已完成的细节" not in text
+    assert "已取消的细节" not in text
+    assert "(1 completed, 1 cancelled)" in text
+    assert "still active from before context compression" in text
+    assert "keep working through them and update status as you progress." in text
+    empty = _band(env=None, events=[], after_compaction=True, todo_items=[], revision=0)
+    blank = empty.render()
+    assert "TODO" not in blank
+    assert "still active" not in blank
+    assert "- [" not in blank
+
+
+def test_u_f5_6_02_full_flag_injects_todo_and_same_fingerprint_adds_nothing():
+    """layer=unit U-F5-6-02 全量重注带 todo；指纹没变则零注入。"""
+    band = _band(env=None, after_compaction=True)
+    sent = attach_status_band([HumanMessage(content="hi")], band, force_full=True)
+    assert "still active from before context compression" in sent[-1].content
+    assert "- [in_progress] t1: 搭骨架" in sent[-1].content
+    again = attach_status_band(sent, _band(env=None, after_compaction=False))
+    assert len(again) == len(sent)
+
+
 def test_u_f5_3_07_prefix_identity_ignores_the_band():
     """layer=unit U-F5-3-07 缓存面不含状态带。"""
     profile = PrefixProfile(
