@@ -21,7 +21,24 @@ from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
     TimeoutDecisionEvent,
     TimeoutDecisionResponse,
     TimeoutEvidence,
+    begin_decision_events as _begin_decision_events,
+    end_decision_events as _end_decision_events,
+    forward_decision_event as _forward_decision_event,
+    note_published_event,
 )
+
+
+def begin_decision_events():
+    """Per-call event bucket. Graph reaches this through ``_decision_api``."""
+    return _begin_decision_events()
+
+
+def end_decision_events(token) -> None:
+    _end_decision_events(token)
+
+
+def forward_decision_event(engine, tui) -> None:
+    _forward_decision_event(engine, tui)
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 
 # Module global so tests can monkeypatch this name before from_config.
@@ -618,6 +635,7 @@ class TimeoutDecisionEngine:
         self.total_cost += amount
         self.trajectory.append((kind, time.monotonic()))
         self._active_settled = True
+        note_published_event(event)
 
 
 def _response_cost(raw) -> float:

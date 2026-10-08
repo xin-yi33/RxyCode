@@ -201,7 +201,13 @@ async def run_task_watchdog(
             evidence = _coerce_task_evidence(
                 evidence_factory, tracker, elapsed=elapsed, budget=max_timeout,
             )
-            decision = await engine.decide(evidence)
+            api = _decision_api()
+            _bucket, token = api.begin_decision_events()
+            try:
+                decision = await engine.decide(evidence)
+                api.forward_decision_event(engine, tui)
+            finally:
+                api.end_decision_events(token)
             elapsed = _time.time() - start
             if decision.action in ("continue", "steer"):
                 scope = (str(evidence.session_id), str(evidence.subject_id))

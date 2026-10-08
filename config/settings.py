@@ -333,6 +333,8 @@ def _default_config() -> dict:
             "catalog_max_age_days": 90,
         },
         # P2：与 TIMEOUT_DECISION_DEFAULTS 同键同值。enabled 默认关闭。
+        # P7：每次决策的美元成本记入该 session，并放在 event/timeout_decision
+        # 的 cost 字段里给用户看。decision_model 为空时事件写 unknown。
         "timeout_decision": {
             "enabled": False,
             "max_extensions_per_point": 2,

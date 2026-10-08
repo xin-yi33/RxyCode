@@ -53,7 +53,12 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
     trace_status_for_result,
 )
 from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
-from RxyCode.RxyCode1_1_0.protocol.timeout_decision import TimeoutEvidence
+from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
+    TimeoutEvidence,
+    begin_decision_events,
+    end_decision_events,
+    forward_decision_event,
+)
 
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import retry_with_backoff
@@ -794,17 +799,23 @@ class ToolOrchestrator:
                 evidence = self._tool_timeout_evidence(
                     name, args, timeout, call_id, time.monotonic() - started
                 )
+                _bucket, token = begin_decision_events()
                 decision = asyncio.ensure_future(engine.decide(evidence))
                 try:
-                    resp = await asyncio.shield(decision)
-                except asyncio.CancelledError:
-                    self._void_timeout_engine(engine)
-                    await self._release_cancelled_decision(decision)
-                    await self._cancel_and_reap(task, tool)
-                    raise
-                except Exception:
-                    await self._cancel_and_reap(task, tool)
-                    raise asyncio.TimeoutError from None
+                    try:
+                        resp = await asyncio.shield(decision)
+                    except asyncio.CancelledError:
+                        self._void_timeout_engine(engine)
+                        await self._release_cancelled_decision(decision)
+                        forward_decision_event(engine, self.get_event_tui())
+                        await self._cancel_and_reap(task, tool)
+                        raise
+                    except Exception:
+                        await self._cancel_and_reap(task, tool)
+                        raise asyncio.TimeoutError from None
+                    forward_decision_event(engine, self.get_event_tui())
+                finally:
+                    end_decision_events(token)
                 if task.done() and not task.cancelled():
                     return task.result()
                 extend = self._granted_extension(engine, evidence, resp)

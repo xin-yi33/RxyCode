@@ -1,7 +1,7 @@
 # core/ - Agent Core
 
 ## What Is This Module?
-The core module is the brain of RxyCode. It contains the main agent logic, the LangGraph execution pipeline, system prompts, state definitions, and configuration. Every user request flows through this module.
+The core module is the brain of RxyCode. It contains the main agent logic, the LangGraph execution pipeline, system prompts, state definitions, and configuration. Every user request flows through this module. Phase P timeout decisions are configured by `timeout_decision_config` and each settled decision records its cost once through `record_decision_cost`.
 
 ## Architecture
 

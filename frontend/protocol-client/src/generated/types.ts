@@ -707,7 +707,8 @@ export type ProtocolNotification =
   | ProcessShutdown
   | RecoveryRequired
   | ProcessFailed
-  | WorkspaceChanged;
+  | WorkspaceChanged
+  | TimeoutDecisionEvent;
 export type Method136 =
   | "event/agent_started"
   | "event/agent_tool"
@@ -912,16 +913,32 @@ export type Method165 = "event/workspace_changed";
 export type ProjectId8 = string;
 export type WorkspaceRoot4 = string;
 export type DisplayName1 = string;
-export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method166 = "approval/request";
+export type Method166 = "event/timeout_decision";
 export type SessionId89 = string;
+export type RunId9 = string;
+export type EventId5 = string;
+export type Seq7 = number;
+export type Timestamp5 = string;
+export type TriggerPoint = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
+export type Action4 = "continue" | "steer" | "stop";
+export type ExtendSeconds = number;
+export type Note = string;
+export type Confidence = number;
+export type ExtensionIndex = number;
+export type ElapsedSeconds = number;
+export type FailClosed = boolean;
+export type DecisionModel = string;
+export type Cost1 = number;
+export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
+export type Method167 = "approval/request";
+export type SessionId90 = string;
 export type RequestId8 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
-export type Action4 = string;
+export type Action5 = string;
 export type RequestId9 = string;
 export type Decision1 = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method167 = "question/request";
-export type SessionId90 = string;
+export type Method168 = "question/request";
+export type SessionId91 = string;
 export type QuestionId = string;
 export type Question = string;
 export type Header = string;
@@ -987,8 +1004,8 @@ export type EntryStage = string;
 export type TotalTokenBudget = number;
 export type TotalTimeoutS = number;
 export type MaxDelegations = number;
-export type Method168 = "agents/delegate";
-export type SessionId91 = string;
+export type Method169 = "agents/delegate";
+export type SessionId92 = string;
 export type RequestId10 = string;
 export type ToRole = string;
 export type Stage1 = string;
@@ -1004,8 +1021,8 @@ export type Error = string;
 export type ToolsUsed = string[];
 export type TokensUsed1 = number;
 export type DurationS = number;
-export type Method169 = "agents/consult";
-export type SessionId92 = string;
+export type Method170 = "agents/consult";
+export type SessionId93 = string;
 export type RequestId12 = string;
 export type FromRole = string;
 export type ToRole1 = string;
@@ -1016,8 +1033,8 @@ export type AuditorRole = string;
 export type Passed = boolean;
 export type Findings = string[];
 export type CreatedAt = number;
-export type Method170 = "event/team";
-export type SessionId93 = string;
+export type Method171 = "event/team";
+export type SessionId94 = string;
 export type Role3 = string;
 export type Stage3 = string;
 export type Phase =
@@ -1039,39 +1056,39 @@ export type ExperimentTag1 = "E0" | "E1" | "E2";
 export type Task1 = string;
 export type Tokens = number;
 export type TimeoutS1 = number;
-export type Method171 = "task_delegate";
+export type Method172 = "task_delegate";
 export type TaskId5 = string;
 export type ParentId = string | null;
 export type Goal2 = string;
 export type ContextRefs = string[];
 export type Acceptance1 = string[];
 export type Tools1 = string[];
-export type Method172 = "progress";
+export type Method173 = "progress";
 export type TaskId6 = string;
 export type Status6 = "running" | "blocked" | "done" | "failed";
 export type Stage4 = string;
 export type Percent = number;
 export type EtaS = number | null;
 export type Notes = string;
-export type Method173 = "tool_call";
+export type Method174 = "tool_call";
 export type TaskId7 = string;
 export type Tool = string;
 export type Status7 = "running" | "done" | "failed";
 export type ResultRef = string;
-export type Method174 = "plan";
+export type Method175 = "plan";
 export type TaskId8 = string;
 export type Steps2 = string[];
 export type Files = string[];
 export type EstTokens = number;
 export type Ack = boolean;
-export type Method175 = "result";
+export type Method176 = "result";
 export type TaskId9 = string;
 export type Ok3 = boolean;
 export type Summary1 = string;
 export type ArtifactPaths = string[];
 export type TokensUsed3 = number;
 export type DurationS1 = number;
-export type Method176 = "abort";
+export type Method177 = "abort";
 export type TaskId10 = string;
 export type Reason8 = "budget" | "timeout" | "user";
 export type Partial = boolean;
@@ -1175,36 +1192,20 @@ export type Details1 = {
  * Phase P timeout decision evidence, response, and event. Not a session envelope.
  */
 export type TimeoutDecisionProtocol = TimeoutEvidence | TimeoutDecisionResponse | TimeoutDecisionEvent;
-export type TriggerPoint = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
-export type SessionId94 = string;
-export type RunId9 = string;
-export type SubjectId = string;
-export type TaskHint = string;
-export type ElapsedSeconds = number;
-export type BudgetSeconds = number;
-export type ExtensionIndex = number;
-export type Progress = string;
-export type LastError = string;
-export type Action5 = "continue" | "steer" | "stop";
-export type ExtendSeconds = number;
-export type Note = string;
-export type Confidence = number;
-export type Method177 = "event/timeout_decision";
+export type TriggerPoint1 = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
 export type SessionId95 = string;
 export type RunId10 = string;
-export type EventId5 = string;
-export type Seq7 = number;
-export type Timestamp5 = string;
-export type TriggerPoint1 = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
+export type SubjectId = string;
+export type TaskHint = string;
+export type ElapsedSeconds1 = number;
+export type BudgetSeconds = number;
+export type ExtensionIndex1 = number;
+export type Progress = string;
+export type LastError = string;
 export type Action6 = "continue" | "steer" | "stop";
 export type ExtendSeconds1 = number;
 export type Note1 = string;
 export type Confidence1 = number;
-export type ExtensionIndex1 = number;
-export type ElapsedSeconds1 = number;
-export type FailClosed = boolean;
-export type DecisionModel = string;
-export type Cost1 = number;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
@@ -3078,14 +3079,36 @@ export interface WorkspaceChanged {
   [k: string]: unknown;
 }
 /**
+ * P7 用户可见面。method 钉死；10 个决策字段钉死。
+ */
+export interface TimeoutDecisionEvent {
+  method?: Method166;
+  session_id: SessionId89;
+  run_id: RunId9;
+  event_id: EventId5;
+  seq: Seq7;
+  timestamp: Timestamp5;
+  trigger_point: TriggerPoint;
+  action: Action4;
+  extend_seconds: ExtendSeconds;
+  note: Note;
+  confidence: Confidence;
+  extension_index: ExtensionIndex;
+  elapsed_seconds: ElapsedSeconds;
+  fail_closed: FailClosed;
+  decision_model: DecisionModel;
+  cost: Cost1;
+  [k: string]: unknown;
+}
+/**
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method166;
-  session_id: SessionId89;
+  method?: Method167;
+  session_id: SessionId90;
   request_id: RequestId8;
   risk_level: RiskLevel;
-  action: Action4;
+  action: Action5;
   details?: Details;
   [k: string]: unknown;
 }
@@ -3104,8 +3127,8 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method167;
-  session_id: SessionId90;
+  method?: Method168;
+  session_id: SessionId91;
   question_id: QuestionId;
   question: Question;
   header?: Header;
@@ -3205,8 +3228,8 @@ export interface Extra1 {
  * 写清楚，否则成员会重复劳动或者不知道什么时候算完。
  */
 export interface DelegateRequest {
-  method?: Method168;
-  session_id: SessionId91;
+  method?: Method169;
+  session_id: SessionId92;
   request_id: RequestId10;
   to_role: ToRole;
   stage: Stage1;
@@ -3237,8 +3260,8 @@ export interface DelegateResult {
  * 团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
  */
 export interface ConsultRequest {
-  method?: Method169;
-  session_id: SessionId92;
+  method?: Method170;
+  session_id: SessionId93;
   request_id: RequestId12;
   from_role: FromRole;
   to_role: ToRole1;
@@ -3270,8 +3293,8 @@ export interface VerdictRecord {
  * F 层不得再定义名为 AgentEvent 的类型。
  */
 export interface TeamEvent {
-  method?: Method170;
-  session_id: SessionId93;
+  method?: Method171;
+  session_id: SessionId94;
   role: Role3;
   stage?: Stage3;
   phase: Phase;
@@ -3302,7 +3325,7 @@ export interface BridgeBudget {
  * Leader → Worker (F16). Lineage-only: refs, never conversation history.
  */
 export interface TaskDelegate {
-  method?: Method171;
+  method?: Method172;
   task_id: TaskId5;
   parent_id?: ParentId;
   goal: Goal2;
@@ -3316,7 +3339,7 @@ export interface TaskDelegate {
  * Worker → Leader streaming status. notes truncated to ~2k tokens.
  */
 export interface BridgeProgress {
-  method?: Method172;
+  method?: Method173;
   task_id: TaskId6;
   status: Status6;
   stage?: Stage4;
@@ -3329,7 +3352,7 @@ export interface BridgeProgress {
  * Worker → Leader. Large results go to result_ref, never inline.
  */
 export interface BridgeToolCall {
-  method?: Method173;
+  method?: Method174;
   task_id: TaskId7;
   tool: Tool;
   args?: Args2;
@@ -3344,7 +3367,7 @@ export interface Args2 {
  * Worker → Leader execution plan before work starts.
  */
 export interface BridgePlan {
-  method?: Method174;
+  method?: Method175;
   task_id: TaskId8;
   steps?: Steps2;
   files?: Files;
@@ -3356,7 +3379,7 @@ export interface BridgePlan {
  * Worker → Leader. summary is 1–2k tokens; artifacts are paths.
  */
 export interface BridgeResult {
-  method?: Method175;
+  method?: Method176;
   task_id: TaskId9;
   ok: Ok3;
   summary?: Summary1;
@@ -3369,7 +3392,7 @@ export interface BridgeResult {
  * Leader → Worker. Sent before a hard kill.
  */
 export interface BridgeAbort {
-  method?: Method176;
+  method?: Method177;
   task_id: TaskId10;
   reason: Reason8;
   partial?: Partial;
@@ -3495,14 +3518,14 @@ export interface ProtocolErrorData {
  * 决策证据包：LLM 决策的唯一输入。字段全集钉死。
  */
 export interface TimeoutEvidence {
-  trigger_point: TriggerPoint;
-  session_id: SessionId94;
-  run_id: RunId9;
+  trigger_point: TriggerPoint1;
+  session_id: SessionId95;
+  run_id: RunId10;
   subject_id: SubjectId;
   task_hint: TaskHint;
-  elapsed_seconds: ElapsedSeconds;
+  elapsed_seconds: ElapsedSeconds1;
   budget_seconds: BudgetSeconds;
-  extension_index: ExtensionIndex;
+  extension_index: ExtensionIndex1;
   progress: Progress;
   last_error: LastError;
   [k: string]: unknown;
@@ -3511,31 +3534,9 @@ export interface TimeoutEvidence {
  * LLM 决策出参；也是 Policy.pre_check / 事件的同构载体。
  */
 export interface TimeoutDecisionResponse {
-  action: Action5;
-  extend_seconds: ExtendSeconds;
-  note: Note;
-  confidence: Confidence;
-  [k: string]: unknown;
-}
-/**
- * P7 用户可见面。method 钉死；10 个决策字段钉死。
- */
-export interface TimeoutDecisionEvent {
-  method?: Method177;
-  session_id: SessionId95;
-  run_id: RunId10;
-  event_id: EventId5;
-  seq: Seq7;
-  timestamp: Timestamp5;
-  trigger_point: TriggerPoint1;
   action: Action6;
   extend_seconds: ExtendSeconds1;
   note: Note1;
   confidence: Confidence1;
-  extension_index: ExtensionIndex1;
-  elapsed_seconds: ElapsedSeconds1;
-  fail_closed: FailClosed;
-  decision_model: DecisionModel;
-  cost: Cost1;
   [k: string]: unknown;
 }

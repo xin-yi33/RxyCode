@@ -195,6 +195,7 @@ _REPLAY_EVENT_METHODS = {
     "review/stale",
     "review/failed",
     "review/cancelled",
+    "event/timeout_decision",
 }
 _MAX_REPLAY_TEXT = 24_000
 
@@ -1010,11 +1011,35 @@ class AppServer:
             progress="",
             last_error=str(evidence.get("reason") or ""),
         )
+        from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
+            TimeoutDecisionEvent,
+            begin_decision_events,
+            end_decision_events,
+        )
+
+        _bucket, token = begin_decision_events()
         try:
-            resp = await engine.decide(ev)
-        except Exception:
-            _logger.warning("watchdog stall decision failed for %s", job.job_id, exc_info=True)
-            return None
+            try:
+                resp = await engine.decide(ev)
+            except Exception:
+                _logger.warning(
+                    "watchdog stall decision failed for %s", job.job_id, exc_info=True
+                )
+                return None
+            for item in list(_bucket):
+                event = (
+                    item
+                    if isinstance(item, TimeoutDecisionEvent)
+                    else TimeoutDecisionEvent.model_validate(item)
+                )
+                try:
+                    await self._emit_model(event)
+                except Exception:
+                    _logger.warning(
+                        "timeout decision event was not emitted", exc_info=True
+                    )
+        finally:
+            end_decision_events(token)
         if getattr(resp, "action", None) != "continue":
             return None
         last_grant = getattr(engine, "last_grant", None)

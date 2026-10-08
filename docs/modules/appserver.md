@@ -18,6 +18,7 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `agent_host.py` | Parent-side client for one killable worker subprocess per session (T1) |
 | `agent_worker.py` | Isolated subprocess: bootstrap + `Session.prompt` (T1); async stdout via `write_message` (T3) |
 | `watchdog.py` | Stall detection + degraded mode (T4) |
+| `tui.py` | `ProtocolTui.write_timeout_decision` passes `event/timeout_decision` through unchanged |
 | `jsonrpc.py` | Read/write helpers; `write_message` offloads sync stdout to a thread (T3) |
 | `live_env.py` | Builds the live integration-test env (`build_live_appserver_env`) from real user config for `RXYCODE_APPSERVER_LIVE=1` |
 | `approval.py` | `JsonRpcApproval` broker (bidirectional `approval/request`) |

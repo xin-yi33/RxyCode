@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import math
+from contextvars import ContextVar, Token
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+_log = logging.getLogger(__name__)
+_PUBLISHED_EVENTS: ContextVar[list | None] = ContextVar(
+    "rxycode_timeout_published_events", default=None
+)
 
 TRIGGER_POINTS = (
     "graph_task_max_time",
@@ -101,3 +108,45 @@ class TimeoutDecisionEvent(BaseModel):
         _require_finite(self.elapsed_seconds, "elapsed_seconds")
         _require_finite(self.cost, "cost")
         return self
+
+
+def begin_decision_events() -> tuple[list, Token]:
+    """Open a per-call bucket. Concurrent decisions do not share it."""
+    bucket: list = []
+    return bucket, _PUBLISHED_EVENTS.set(bucket)
+
+
+def end_decision_events(token: Token) -> None:
+    _PUBLISHED_EVENTS.reset(token)
+
+
+def note_published_event(event: TimeoutDecisionEvent) -> None:
+    """Record the event settled by the decide call that is running now."""
+    bucket = _PUBLISHED_EVENTS.get()
+    if bucket is not None:
+        bucket.append(event)
+
+
+def forward_decision_event(engine, tui) -> None:
+    """Pass this call's settled events through. Writer errors stay here.
+
+    ``engine`` is unused. The bucket is the one ``begin_decision_events``
+    opened on this task, including a child task created after that open.
+    """
+    del engine
+    writer = getattr(tui, "write_timeout_decision", None)
+    bucket = _PUBLISHED_EVENTS.get()
+    if not callable(writer) or not bucket:
+        return
+    pending = list(bucket)
+    bucket.clear()
+    for item in pending:
+        try:
+            event = (
+                item
+                if isinstance(item, TimeoutDecisionEvent)
+                else TimeoutDecisionEvent.model_validate(item)
+            )
+            writer(event)
+        except Exception:
+            _log.warning("timeout decision event was not shown", exc_info=True)

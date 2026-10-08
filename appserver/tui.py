@@ -291,6 +291,10 @@ class ProtocolTui:
     def set_model(self, model_name: str) -> None:
         self._model_name = str(model_name)
 
+    def write_timeout_decision(self, event) -> None:
+        """Pass a TimeoutDecisionEvent through. No rewrite and no policy."""
+        self._emit(event)
+
     def write_progress(self, text: str) -> None:
         # Progress is a replacement status line. StreamCoalescer does not
         # concatenate progress segments, so "思考中（第 N 轮）…" cannot glue

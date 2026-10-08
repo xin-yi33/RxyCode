@@ -6519,6 +6519,110 @@
       "title": "WorkspaceChanged",
       "type": "object"
     },
+    "TimeoutDecisionEvent": {
+      "description": "P7 用户可见面。method 钉死；10 个决策字段钉死。",
+      "properties": {
+        "method": {
+          "const": "event/timeout_decision",
+          "default": "event/timeout_decision",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "trigger_point": {
+          "enum": [
+            "graph_task_max_time",
+            "pipeline_soft_budget",
+            "watchdog_stall",
+            "tool_timeout"
+          ],
+          "title": "Trigger Point",
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "continue",
+            "steer",
+            "stop"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "extend_seconds": {
+          "title": "Extend Seconds",
+          "type": "number"
+        },
+        "note": {
+          "title": "Note",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "extension_index": {
+          "title": "Extension Index",
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "fail_closed": {
+          "title": "Fail Closed",
+          "type": "boolean"
+        },
+        "decision_model": {
+          "title": "Decision Model",
+          "type": "string"
+        },
+        "cost": {
+          "minimum": 0,
+          "title": "Cost",
+          "type": "number"
+        }
+      },
+      "required": [
+        "session_id",
+        "run_id",
+        "event_id",
+        "seq",
+        "timestamp",
+        "trigger_point",
+        "action",
+        "extend_seconds",
+        "note",
+        "confidence",
+        "extension_index",
+        "elapsed_seconds",
+        "fail_closed",
+        "decision_model",
+        "cost"
+      ],
+      "title": "TimeoutDecisionEvent",
+      "type": "object"
+    },
     "ApprovalRequest": {
       "description": "Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.",
       "properties": {
@@ -8270,110 +8374,6 @@
       "title": "TimeoutDecisionResponse",
       "type": "object"
     },
-    "TimeoutDecisionEvent": {
-      "description": "P7 用户可见面。method 钉死；10 个决策字段钉死。",
-      "properties": {
-        "method": {
-          "const": "event/timeout_decision",
-          "default": "event/timeout_decision",
-          "title": "Method",
-          "type": "string"
-        },
-        "session_id": {
-          "title": "Session Id",
-          "type": "string"
-        },
-        "run_id": {
-          "title": "Run Id",
-          "type": "string"
-        },
-        "event_id": {
-          "title": "Event Id",
-          "type": "string"
-        },
-        "seq": {
-          "title": "Seq",
-          "type": "integer"
-        },
-        "timestamp": {
-          "title": "Timestamp",
-          "type": "string"
-        },
-        "trigger_point": {
-          "enum": [
-            "graph_task_max_time",
-            "pipeline_soft_budget",
-            "watchdog_stall",
-            "tool_timeout"
-          ],
-          "title": "Trigger Point",
-          "type": "string"
-        },
-        "action": {
-          "enum": [
-            "continue",
-            "steer",
-            "stop"
-          ],
-          "title": "Action",
-          "type": "string"
-        },
-        "extend_seconds": {
-          "title": "Extend Seconds",
-          "type": "number"
-        },
-        "note": {
-          "title": "Note",
-          "type": "string"
-        },
-        "confidence": {
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Confidence",
-          "type": "number"
-        },
-        "extension_index": {
-          "title": "Extension Index",
-          "type": "integer"
-        },
-        "elapsed_seconds": {
-          "title": "Elapsed Seconds",
-          "type": "number"
-        },
-        "fail_closed": {
-          "title": "Fail Closed",
-          "type": "boolean"
-        },
-        "decision_model": {
-          "title": "Decision Model",
-          "type": "string"
-        },
-        "cost": {
-          "minimum": 0,
-          "title": "Cost",
-          "type": "number"
-        }
-      },
-      "required": [
-        "session_id",
-        "run_id",
-        "event_id",
-        "seq",
-        "timestamp",
-        "trigger_point",
-        "action",
-        "extend_seconds",
-        "note",
-        "confidence",
-        "extension_index",
-        "elapsed_seconds",
-        "fail_closed",
-        "decision_model",
-        "cost"
-      ],
-      "title": "TimeoutDecisionEvent",
-      "type": "object"
-    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -8877,6 +8877,9 @@
         },
         {
           "$ref": "#/$defs/WorkspaceChanged"
+        },
+        {
+          "$ref": "#/$defs/TimeoutDecisionEvent"
         }
       ]
     },

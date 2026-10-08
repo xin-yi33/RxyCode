@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, Strict, model_validator
 
+from .timeout_decision import TimeoutDecisionEvent
 from .types import JobState, JsonObject, RunStatus
 
 
@@ -480,4 +481,5 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     RecoveryRequired,
     ProcessFailed,
     WorkspaceChanged,
+    TimeoutDecisionEvent,
 )

@@ -10,7 +10,7 @@
 
 | Module | Location | Purpose |
 |--------|----------|---------|
-| [core](docs/modules/core.md) | core/ | Agent brain - AgentV2, LangGraph pipeline, prompts, state |
+| [core](docs/modules/core.md) | core/ | Agent brain - AgentV2, LangGraph pipeline, prompts, state. Timeout decisions emit `event/timeout_decision` and record session cost once |
 | core Phase-Fix files | core/turn_router.py, prefix_profile.py, prewarm.py, turn_context.py, handoff.py, catalog.py | Routing/prewarm/keep-alive decision tables and reserved seams — read core.md Phase Fix invariants before touching agent_v2 |
 | [protocol](docs/modules/protocol.md) | protocol/ | Typed JSON-RPC protocol - pydantic models, JSON Schema, TS codegen |
 | [appserver](docs/modules/appserver.md) | appserver/ | Stdio JSON-RPC server - headless core transport for OpenTUI/Desktop。OpenTUI `/session` 列表权威是 `sessions/list`（UPDATE-01 轨 H），不是 `chat_storage` |

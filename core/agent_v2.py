@@ -46,7 +46,12 @@ from RxyCode.RxyCode1_1_0.core.graph import (
     resume_budget_exhausted,
     resume_exhausted_notice,
 )
-from RxyCode.RxyCode1_1_0.protocol.timeout_decision import TimeoutEvidence
+from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
+    TimeoutEvidence,
+    begin_decision_events,
+    end_decision_events,
+    forward_decision_event,
+)
 from RxyCode.RxyCode1_1_0.core.compaction import (
     build_compaction_summary_prompt,
     parse_state_snapshot,
@@ -2935,7 +2940,12 @@ class AgentV2:
             last_error="",
         )
         decision_started = time.monotonic()
-        decision = await engine.decide(evidence)
+        _bucket, token = begin_decision_events()
+        try:
+            decision = await engine.decide(evidence)
+            forward_decision_event(engine, get_tui())
+        finally:
+            end_decision_events(token)
         elapsed_now = float(elapsed) + (time.monotonic() - decision_started)
         if decision.action in ("continue", "steer"):
             grant = engine.last_grant((evidence.session_id, evidence.run_id))
