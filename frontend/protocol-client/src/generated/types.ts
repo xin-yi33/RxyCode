@@ -1,7 +1,12 @@
 /* Auto-generated. Edit protocol/schema.json then run: bun run generate */
 
 export type RxyCodeProtocol =
-  ClientRequest | ProtocolNotification | ServerRequestMessage | AgentProtocol | HandshakeProtocol;
+  | ClientRequest
+  | ProtocolNotification
+  | ServerRequestMessage
+  | AgentProtocol
+  | HandshakeProtocol
+  | TimeoutDecisionProtocol;
 export type ClientRequest =
   | InitializeRequest
   | NewSessionRequest
@@ -1166,6 +1171,40 @@ export type ServerVersion2 = string | null;
 export type Details1 = {
   [k: string]: unknown;
 } | null;
+/**
+ * Phase P timeout decision evidence, response, and event. Not a session envelope.
+ */
+export type TimeoutDecisionProtocol = TimeoutEvidence | TimeoutDecisionResponse | TimeoutDecisionEvent;
+export type TriggerPoint = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
+export type SessionId94 = string;
+export type RunId9 = string;
+export type SubjectId = string;
+export type TaskHint = string;
+export type ElapsedSeconds = number;
+export type BudgetSeconds = number;
+export type ExtensionIndex = number;
+export type Progress = string;
+export type LastError = string;
+export type Action5 = "continue" | "steer" | "stop";
+export type ExtendSeconds = number;
+export type Note = string;
+export type Confidence = number;
+export type Method177 = "event/timeout_decision";
+export type SessionId95 = string;
+export type RunId10 = string;
+export type EventId5 = string;
+export type Seq7 = number;
+export type Timestamp5 = string;
+export type TriggerPoint1 = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
+export type Action6 = "continue" | "steer" | "stop";
+export type ExtendSeconds1 = number;
+export type Note1 = string;
+export type Confidence1 = number;
+export type ExtensionIndex1 = number;
+export type ElapsedSeconds1 = number;
+export type FailClosed = boolean;
+export type DecisionModel = string;
+export type Cost1 = number;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
@@ -3450,5 +3489,53 @@ export interface ProtocolErrorData {
   protocol_max?: ProtocolMax1;
   server_version?: ServerVersion2;
   details?: Details1;
+  [k: string]: unknown;
+}
+/**
+ * 决策证据包：LLM 决策的唯一输入。字段全集钉死。
+ */
+export interface TimeoutEvidence {
+  trigger_point: TriggerPoint;
+  session_id: SessionId94;
+  run_id: RunId9;
+  subject_id: SubjectId;
+  task_hint: TaskHint;
+  elapsed_seconds: ElapsedSeconds;
+  budget_seconds: BudgetSeconds;
+  extension_index: ExtensionIndex;
+  progress: Progress;
+  last_error: LastError;
+  [k: string]: unknown;
+}
+/**
+ * LLM 决策出参；也是 Policy.pre_check / 事件的同构载体。
+ */
+export interface TimeoutDecisionResponse {
+  action: Action5;
+  extend_seconds: ExtendSeconds;
+  note: Note;
+  confidence: Confidence;
+  [k: string]: unknown;
+}
+/**
+ * P7 用户可见面。method 钉死；10 个决策字段钉死。
+ */
+export interface TimeoutDecisionEvent {
+  method?: Method177;
+  session_id: SessionId95;
+  run_id: RunId10;
+  event_id: EventId5;
+  seq: Seq7;
+  timestamp: Timestamp5;
+  trigger_point: TriggerPoint1;
+  action: Action6;
+  extend_seconds: ExtendSeconds1;
+  note: Note1;
+  confidence: Confidence1;
+  extension_index: ExtensionIndex1;
+  elapsed_seconds: ElapsedSeconds1;
+  fail_closed: FailClosed;
+  decision_model: DecisionModel;
+  cost: Cost1;
   [k: string]: unknown;
 }

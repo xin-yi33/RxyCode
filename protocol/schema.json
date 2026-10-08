@@ -8165,6 +8165,215 @@
       "title": "ProtocolErrorData",
       "type": "object"
     },
+    "TimeoutEvidence": {
+      "description": "决策证据包：LLM 决策的唯一输入。字段全集钉死。",
+      "properties": {
+        "trigger_point": {
+          "enum": [
+            "graph_task_max_time",
+            "pipeline_soft_budget",
+            "watchdog_stall",
+            "tool_timeout"
+          ],
+          "title": "Trigger Point",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "subject_id": {
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "task_hint": {
+          "title": "Task Hint",
+          "type": "string"
+        },
+        "elapsed_seconds": {
+          "minimum": 0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "budget_seconds": {
+          "minimum": 0,
+          "title": "Budget Seconds",
+          "type": "number"
+        },
+        "extension_index": {
+          "minimum": 0,
+          "title": "Extension Index",
+          "type": "integer"
+        },
+        "progress": {
+          "title": "Progress",
+          "type": "string"
+        },
+        "last_error": {
+          "title": "Last Error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger_point",
+        "session_id",
+        "run_id",
+        "subject_id",
+        "task_hint",
+        "elapsed_seconds",
+        "budget_seconds",
+        "extension_index",
+        "progress",
+        "last_error"
+      ],
+      "title": "TimeoutEvidence",
+      "type": "object"
+    },
+    "TimeoutDecisionResponse": {
+      "description": "LLM 决策出参；也是 Policy.pre_check / 事件的同构载体。",
+      "properties": {
+        "action": {
+          "enum": [
+            "continue",
+            "steer",
+            "stop"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "extend_seconds": {
+          "minimum": 0,
+          "title": "Extend Seconds",
+          "type": "number"
+        },
+        "note": {
+          "title": "Note",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "action",
+        "extend_seconds",
+        "note",
+        "confidence"
+      ],
+      "title": "TimeoutDecisionResponse",
+      "type": "object"
+    },
+    "TimeoutDecisionEvent": {
+      "description": "P7 用户可见面。method 钉死；10 个决策字段钉死。",
+      "properties": {
+        "method": {
+          "const": "event/timeout_decision",
+          "default": "event/timeout_decision",
+          "title": "Method",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "trigger_point": {
+          "enum": [
+            "graph_task_max_time",
+            "pipeline_soft_budget",
+            "watchdog_stall",
+            "tool_timeout"
+          ],
+          "title": "Trigger Point",
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "continue",
+            "steer",
+            "stop"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "extend_seconds": {
+          "title": "Extend Seconds",
+          "type": "number"
+        },
+        "note": {
+          "title": "Note",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "extension_index": {
+          "title": "Extension Index",
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "fail_closed": {
+          "title": "Fail Closed",
+          "type": "boolean"
+        },
+        "decision_model": {
+          "title": "Decision Model",
+          "type": "string"
+        },
+        "cost": {
+          "minimum": 0,
+          "title": "Cost",
+          "type": "number"
+        }
+      },
+      "required": [
+        "session_id",
+        "run_id",
+        "event_id",
+        "seq",
+        "timestamp",
+        "trigger_point",
+        "action",
+        "extend_seconds",
+        "note",
+        "confidence",
+        "extension_index",
+        "elapsed_seconds",
+        "fail_closed",
+        "decision_model",
+        "cost"
+      ],
+      "title": "TimeoutDecisionEvent",
+      "type": "object"
+    },
     "ClientRequest": {
       "oneOf": [
         {
@@ -8770,6 +8979,21 @@
           "$ref": "#/$defs/ProtocolErrorData"
         }
       ]
+    },
+    "TimeoutDecisionProtocol": {
+      "title": "TimeoutDecisionProtocol",
+      "description": "Phase P timeout decision evidence, response, and event. Not a session envelope.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TimeoutEvidence"
+        },
+        {
+          "$ref": "#/$defs/TimeoutDecisionResponse"
+        },
+        {
+          "$ref": "#/$defs/TimeoutDecisionEvent"
+        }
+      ]
     }
   },
   "oneOf": [
@@ -8787,6 +9011,9 @@
     },
     {
       "$ref": "#/$defs/HandshakeProtocol"
+    },
+    {
+      "$ref": "#/$defs/TimeoutDecisionProtocol"
     }
   ]
 }

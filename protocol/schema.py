@@ -12,7 +12,18 @@ from .handshake import HANDSHAKE_MODELS
 from .notifications import NOTIFICATION_MODELS
 from .requests import CLIENT_REQUEST_MODELS
 from .server_requests import SERVER_REQUEST_MODELS
+from .timeout_decision import (
+    TimeoutDecisionEvent,
+    TimeoutDecisionResponse,
+    TimeoutEvidence,
+)
 from .version import PROTOCOL_VERSION
+
+TIMEOUT_DECISION_MODELS: tuple[type, ...] = (
+    TimeoutEvidence,
+    TimeoutDecisionResponse,
+    TimeoutDecisionEvent,
+)
 
 
 def export_schema() -> dict[str, Any]:
@@ -25,6 +36,7 @@ def export_schema() -> dict[str, Any]:
         *AGENT_PROTOCOL_MODELS,
         *HANDSHAKE_MODELS,
         *ERROR_MODELS,
+        *TIMEOUT_DECISION_MODELS,
     )
     defs: dict[str, Any] = {}
     for model in models:
@@ -67,6 +79,17 @@ def export_schema() -> dict[str, Any]:
             for model in (*HANDSHAKE_MODELS, *ERROR_MODELS)
         ],
     }
+    defs["TimeoutDecisionProtocol"] = {
+        "title": "TimeoutDecisionProtocol",
+        "description": (
+            "Phase P timeout decision evidence, response, and event. "
+            "Not a session envelope."
+        ),
+        "anyOf": [
+            {"$ref": f"#/$defs/{model.__name__}"}
+            for model in TIMEOUT_DECISION_MODELS
+        ],
+    }
 
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -80,6 +103,7 @@ def export_schema() -> dict[str, Any]:
             {"$ref": "#/$defs/ServerRequestMessage"},
             {"$ref": "#/$defs/AgentProtocol"},
             {"$ref": "#/$defs/HandshakeProtocol"},
+            {"$ref": "#/$defs/TimeoutDecisionProtocol"},
         ],
     }
 
