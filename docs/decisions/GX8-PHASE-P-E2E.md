@@ -1,8 +1,22 @@
 # GX8 · Phase P E2E 四处文档矛盾
 
-日期：2026-10-08。下面先保留矛盾本身，再给出裁定。
+日期：2026-10-08。下面先保留矛盾本身。
 不放宽 absolute cap，不把夹具 id 写进生产代码，不新增 `protocol/todo_snapshot.py`。
-E-P-E2E-08 / P8 仍要等权威 `TodoSnapshot`。本裁定不给它开新 store。
+E-P-E2E-08 / P8 仍要等权威 `TodoSnapshot`。没有新 store。
+
+## 复核否决（断言改动已撤回）
+
+先前把 02 的 session/run 绑进测试、把 06 的预算改成 100、把 09 的末行改成 `["continue","stop"]`，用来让这三条变绿。复核要求抄入断言与测试包原文一致，不能自己裁定后改期望。这三处已恢复原文。
+
+恢复后的失败保持失败：
+
+- 02：`assert 0 == 2`，scope 不是 `("sess_e2e","task_e2e")`。
+- 06：`assert 1 == 2`。默认预算 7200 等于 tool cap，决策 LLM 只调用 1 次。
+- 09：`assert ['continue', 'stop'] == ['continue']`。interrupt 的 fail-closed stop 仍在 sink 里。E-P-E2E-07 仍要求这条 stop，所以不能删。
+
+`tests/e2e/phase_p` 恢复后：`4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。失败是 02、06、08、09。08 仍是 `ModuleNotFoundError: protocol.todo_snapshot`。
+
+MO-F4-6-01 的 `len(fires)` 从后来改成的 2 收回 1。历史 fire 没有删。该测试 `assert 2 == 1`，失败保持失败。
 
 ## 裁定（2026-10-08）
 

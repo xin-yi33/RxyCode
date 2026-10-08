@@ -7,7 +7,6 @@ import pytest
 
 from RxyCode.RxyCode1_1_0.core import timeout_decision as td
 from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2, build_timeout_notice
-from RxyCode.RxyCode1_1_0.log.logger import bind_run_id, reset_run_id
 from tests.e2e.phase_p import helpers
 from tests.e2e.phase_p.helpers import assert_event_fields
 
@@ -26,24 +25,17 @@ async def test_e2e_p_02_exhausted_policy_forces_stop():
     agent = AgentV2.__new__(AgentV2)
     agent._timeout_engine = engine
     agent._last_timeout_note = None
-    # Scope is the live session and run id. The assert names this pair;
-    # the branch does not invent it.
-    agent._session_id = "sess_e2e"
-    run_token = bind_run_id("task_e2e")
     budget = 3600.0
     # ── 阶段 2 扰动：三次到点 ──
-    try:
-        for _ in range(2):
-            fake = asyncio.create_task(asyncio.sleep(60))
-            stop_now, budget = await agent._pipeline_budget_branch(fake, soft_budget=budget, elapsed=3700.0)
-            assert stop_now is False
-            fake.cancel()
-        assert budget == 3600.0 + 300.0 + 600.0            # growth=2 封顶数学
-        t3 = asyncio.create_task(asyncio.sleep(60))
-        final_stop, final_budget = await agent._pipeline_budget_branch(t3, soft_budget=budget, elapsed=4300.0)
-        t3.cancel()                                                  # stop 后调用方按现状 :8119 取消
-    finally:
-        reset_run_id(run_token)
+    for _ in range(2):
+        fake = asyncio.create_task(asyncio.sleep(60))
+        stop_now, budget = await agent._pipeline_budget_branch(fake, soft_budget=budget, elapsed=3700.0)
+        assert stop_now is False
+        fake.cancel()
+    assert budget == 3600.0 + 300.0 + 600.0            # growth=2 封顶数学
+    t3 = asyncio.create_task(asyncio.sleep(60))
+    final_stop, final_budget = await agent._pipeline_budget_branch(t3, soft_budget=budget, elapsed=4300.0)
+    t3.cancel()                                                  # stop 后调用方按现状 :8119 取消
     # ── 阶段 3 断言 ──
     assert final_stop is True and final_budget == budget   # k=3 > max_extensions=2：不续
     assert agent._last_timeout_note.startswith("[policy] ")

@@ -93,12 +93,13 @@
   较早一次是 4 passed、6 failed。固定窗口第五轮末行是「无剩余问题」，并写明六项红灯仍在。
   其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。最新一次是
   5 passed、5 failed、0 skipped，49.27s，pytest 退出码 1。
-  裁定之后：02 由测试绑上 `sess_e2e` / `task_e2e`，生产仍用真实 session 和 run id。
-  06 的证据预算改到 cap 之下，`ainvokes == 2` 没改，封顶判断没放宽。
-  09 的末行改为 `["continue","stop"]`，与 07 的 fail-closed 留痕一致。
-  03 fallback 在重启阶段 interrupt 失败时发出 stop，并不再 spawn。
-  最新 `tests/e2e/phase_p` 加 stall 单测是 `1 failed, 25 passed, 4 warnings in 20.93s`，
-  退出码 1。唯一失败仍是 08：没有 `protocol.todo_snapshot`。没有补这个文件。
+  一度把 02、06、09 的抄入测试改到能变绿。复核否决了这三处。
+  它们已恢复测试包原文，失败保持失败：02 是 `assert 0 == 2`，06 是 `assert 1 == 2`，
+  09 是 `['continue', 'stop'] == ['continue']`。封顶没有放宽，fail-closed stop 没有从 sink 删掉。
+  03 fallback 的生产行为仍在：interrupt RPC 实际失败才发 stop，原 prompt 只回一条 error。
+  恢复原文后的 `tests/e2e/phase_p` 是 `4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。
+  失败是 02、06、08、09。08 仍是没有 `protocol.todo_snapshot`。没有补这个文件。
+  MO-F4-6-01 的 `len(fires)` 收回 1。历史 fire 还在，所以这条是 `assert 2 == 1`，没有把它写成通过。
 - **shell 内部 deadline**：`utils/shell.py` 的到点清理不跟随外层续期。这是 R-11，仍是未做项。
 - **协议版本**：没有因为 `event/timeout_decision` 而提升 `PROTOCOL_VERSION`。
 
@@ -133,10 +134,18 @@
   当时新通过的是 `test_e2e_p_03_restart_worker_continue`。
 - GX8 裁定落地后，`tests/e2e/phase_p`、`tests/test_appserver/test_stall_grading.py`、
   `tests/test_timeout/test_watchdog_stall.py` 一起跑：
-  `1 failed, 25 passed, 4 warnings in 20.93s`，退出码 1。
-  失败只剩 E-P-E2E-08。没有把 08 写成通过，也没有新增 todo store。
-  同一 Codex 会话第八轮末行是「无剩余问题」。stop 只在 interrupt RPC 抛错后发出。
-  原 prompt 只回一条 error。
+  那次把 02、06、09 的抄入断言改过，末行 `1 failed, 25 passed, 4 warnings in 20.93s`。
+  复核要求撤回这三处。撤回后的 `tests/e2e/phase_p` 是
+  `4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。
+  失败是 02、06、08、09。08 仍只有 `protocol.todo_snapshot` 不存在。没有新增 todo store。
+  自攻在 E2E 文件存在之后重跑：fail-closed 改成 continue 时，
+  `test_u_p2_05` 与 `test_e2e_p_05` 都 FAILED，退出码 1。还原后 2 passed。
+  只把默认 `extension_growth` 改成 3 时，`test_u_p7_02` 是 `assert 3 == 2`，
+  `test_e2e_p_01` 仍 passed。再把 grant 指数改成 `** k` 时，
+  `test_u_p2_03` 是 `assert 2400.0 == 1200.0`，`test_e2e_p_01` FAILED，
+  `test_u_p7_02` 仍 passed。还原后 3 passed。
+  `granted = requested` 时 `test_u_p2_02` 是 `assert 2400.0 == 50.0`，
+  `test_u_p2_04` 仍 passed。还原后 2 passed。`core/timeout_decision.py` 的 diff 为空。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条

@@ -14,12 +14,7 @@ pytestmark = pytest.mark.e2e
 
 
 def _ev(tp, subject):
-    # Default budget 7200 sits on the tool cap. This test counts two calls,
-    # so the evidence stays under both caps. The cap check itself is unchanged.
-    return TimeoutEvidence(**helpers.evidence_dict(
-        trigger_point=tp, subject_id=subject,
-        elapsed_seconds=100.0, budget_seconds=100.0,
-    ))
+    return TimeoutEvidence(**helpers.evidence_dict(trigger_point=tp, subject_id=subject))
 
 
 async def test_e2e_p_06_accounting_once_and_concurrent_isolation(monkeypatch):

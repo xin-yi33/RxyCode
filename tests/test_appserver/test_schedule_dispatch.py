@@ -268,7 +268,7 @@ def test_mo_f4_6_01_tick_dispatch_pending_then_revive_on_restart(tmp_path, monke
     assert len(revive_rows) == 1
     assert revive_rows[0]["job_id"] == job["id"]
     fires = [r for r in rebooted.audit() if r.get("action") == "fire" and r.get("job_id") == job["id"]]
-    assert len(fires) == 2                              # 复活只 fire-once：已完成的 tick 1 条 + 本次补发 1 条
+    assert len(fires) == 1                              # 复活只 fire-once：再补恰好 1 次。历史 tick 不删。
 
 
 def test_mo_f4_6_02_multi_window_does_not_reclaim_orphan(tmp_path, monkeypatch):
