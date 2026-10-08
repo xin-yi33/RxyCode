@@ -12,6 +12,7 @@ import {
   settleActiveMessages,
   type StreamReduceState,
 } from "../streamReducer.ts";
+import { applyTodoUpdated, snapshotFromTodoGet, type TodoDockSnapshot } from "../todoDock.ts";
 import type { Mode, StatusInfo } from "../types.ts";
 import {
   httpSendCommand,
@@ -87,7 +88,7 @@ export function __setPythonCmdForTests(cmd: string[] | null): void {
   pythonCmdOverride = cmd;
 }
 
-class StdioAppserverSession {
+export class StdioAppserverSession {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private client: ProtocolClient | null = null;
   private sessionId: string | null = null;
@@ -104,6 +105,9 @@ class StdioAppserverSession {
   private promptEpoch = 0;
   private childViewSessionId: string | null = null;
   private lastProcessFailed: string | null = null;
+  onTodo: ((snapshot: TodoDockSnapshot) => void) | null = null;
+  private todoView: TodoDockSnapshot = { list_id: "default", revision: 0, items: [] };
+  private todoTicket = 0;
   private steerMarks: SteerMark[] = [];
   private liveTurn: {
     epoch: number;
@@ -160,6 +164,7 @@ class StdioAppserverSession {
     this.proc = null;
     this.client = null;
     this.sessionId = null;
+    this.forgetTodoView();
     this.childViewSessionId = null;
     this.ready = null;
     this.lastProcessFailed = null;
@@ -241,6 +246,11 @@ class StdioAppserverSession {
       stdin.write(encoder.encode(`${line}\n`));
     });
     this.client = client;
+    client.onNotification = (method, params) => {
+      if (method !== "event/todo_updated") return;
+      const snapshot = (params as { snapshot?: unknown } | null)?.snapshot;
+      if (snapshot) this.publishTodo(snapshot);
+    };
 
     client.onServerRequest = async (method, params) => {
       const payload = (params ?? {}) as Record<string, unknown>;
@@ -361,6 +371,7 @@ class StdioAppserverSession {
       sessionTimeoutMs(),
     )) as { session_id: string };
     this.sessionId = session.session_id;
+    void this.refreshTodo().catch(() => {});
     // Fire-and-forget warm so the first user prompt is not blocked on Agent ctor.
     void this.warmBootstrap().catch(() => {
       // best-effort; first prompt will bootstrap again
@@ -683,6 +694,7 @@ class StdioAppserverSession {
         callbacks.onProgress?.("");
       };
       client.onNotification = (method, params) => {
+        priorOnNotification?.(method, params);
         if (this.promptEpoch !== epoch) return;
         const event = notifyToStreamEvent(method, params);
         if (event?.type === "token_usage" || event?.type === "final") {
@@ -934,7 +946,9 @@ class StdioAppserverSession {
         // switching away from a live turn is best-effort
       }
     }
+    if (this.sessionId !== sessionId) this.forgetTodoView();
     this.sessionId = sessionId;
+    void this.refreshTodo().catch(() => {});
     let replay = (await client.request<{
       events?: Array<{ method?: string; params?: Record<string, unknown> }>;
       gap_detected?: boolean;
@@ -970,6 +984,8 @@ class StdioAppserverSession {
         workspace_root: this.workspaceRoot(),
       })) as { session_id: string };
       this.sessionId = created.session_id;
+      this.forgetTodoView();
+      void this.refreshTodo().catch(() => {});
     }
   }
 
@@ -980,6 +996,37 @@ class StdioAppserverSession {
       thread_id: sessionId,
       pinned,
     });
+  }
+
+  private forgetTodoView(): void {
+    this.todoTicket += 1;
+    this.todoView = { list_id: "default", revision: 0, items: [] };
+    this.onTodo?.(this.todoView);
+  }
+
+  publishTodo(payload: unknown): void {
+    const raw = (payload ?? {}) as { session_id?: string; list_id?: string };
+    const owner = String(raw.session_id || "");
+    // 没有当前会话时 dock 不属于任何人。reset 之后迟到的旧快照不能再填回来。
+    if (!this.sessionId) return;
+    if (owner && owner !== this.sessionId) return;
+    const listId = String(raw.list_id || "");
+    if (listId && this.todoView.revision > 0 && listId !== this.todoView.list_id) return;
+    const next = applyTodoUpdated(this.todoView, { snapshot: snapshotFromTodoGet(payload) });
+    if (next === this.todoView) return;
+    this.todoView = next;
+    this.onTodo?.(next);
+  }
+
+  async refreshTodo(): Promise<void> {
+    if (!this.client || !this.sessionId) return;
+    const sessionId = this.sessionId;
+    const ticket = ++this.todoTicket;
+    const result = (await this.client.request("todo/get", { session_id: sessionId })) as {
+      session_id?: string;
+    };
+    if (ticket !== this.todoTicket || sessionId !== this.sessionId) return;
+    this.publishTodo({ ...result, session_id: result.session_id || sessionId });
   }
 
   async forkSession(sessionId: string): Promise<SessionListRow> {
@@ -1111,6 +1158,14 @@ export async function warmStdioBootstrap(): Promise<void> {
 }
 
 /** Kick appserver spawn as soon as the OpenTUI process starts. */
+export function bindTodoDock(listener: (snapshot: TodoDockSnapshot) => void): () => void {
+  sharedSession.onTodo = listener;
+  void sharedSession.refreshTodo().catch(() => {});
+  return () => {
+    if (sharedSession.onTodo === listener) sharedSession.onTodo = null;
+  };
+}
+
 export function startStdioWarmOnOpen(): void {
   if (warmOnOpenStarted) return;
   warmOnOpenStarted = true;

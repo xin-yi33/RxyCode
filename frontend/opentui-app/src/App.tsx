@@ -24,7 +24,8 @@ import {
   steerTurn,
 } from "./chatApi.ts";
 import { resolveTransportKind } from "./transport/config.ts";
-import { startStdioWarmOnOpen } from "./transport/stdioTransport.ts";
+import { bindTodoDock, startStdioWarmOnOpen } from "./transport/stdioTransport.ts";
+import { keyAction, todoDockLines, type TodoDockSnapshot } from "./todoDock.ts";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { QuestionDialog } from "./QuestionDialog.tsx";
 import type { QuestionInfo, QuestionReply } from "./questionInfo.ts";
@@ -492,6 +493,12 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isStreaming]);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const [todoSnapshot, setTodoSnapshot] = useState<TodoDockSnapshot>({
+    list_id: "default",
+    revision: 0,
+    items: [],
+  });
+  const [todoHidden, setTodoHidden] = useState(false);
   const [sticky, setSticky] = useState<StickyState>(createStickyState());
   const [inputValue, setInputValue] = useState("");
   const [paletteIdx, setPaletteIdx] = useState(0);
@@ -555,7 +562,11 @@ export default function App() {
     if (resolveTransportKind() === "stdio") {
       startStdioWarmOnOpen();
     }
-    return () => clearInterval(iv);
+    const unbindTodo = bindTodoDock(setTodoSnapshot);
+    return () => {
+      clearInterval(iv);
+      unbindTodo();
+    };
   }, []);
 
   // Keep the composer focused when the live stream ends. Drain the queue
@@ -1565,7 +1576,13 @@ export default function App() {
       pushSystem("再按一次 Ctrl+C 退出 RxyCode（2 秒内）");
       return;
     }
-    if (key.ctrl && key.name === "t") {
+    const chord = keyAction(key);
+    if (chord === "todo") {
+      key.preventDefault();
+      setTodoHidden((hidden) => !hidden);
+      return;
+    }
+    if (chord === "thinking") {
       key.preventDefault();
       void toggleThinking();
       return;
@@ -1693,6 +1710,7 @@ export default function App() {
       : turnElapsedSec != null
         ? `思考中${elapsedSuffix}`
         : " ";
+  const dockLines = todoHidden ? [] : todoDockLines(todoSnapshot);
 
 
   return (
@@ -1846,6 +1864,16 @@ export default function App() {
                 <span fg={C.overlay2}>{`  ${cmd.description}`}</span>
               </text>
             </box>
+          ))}
+        </box>
+      ) : null}
+
+      {dockLines.length > 0 ? (
+        <box style={{ flexShrink: 0, paddingLeft: 1, paddingRight: 1, height: dockLines.length }}>
+          {dockLines.map((line) => (
+            <text key={line} fg={C.subtext}>
+              {line}
+            </text>
           ))}
         </box>
       ) : null}

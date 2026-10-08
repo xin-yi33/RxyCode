@@ -20,7 +20,7 @@ const STATIC_DOCS: Record<string, { title: string; body: string }> = {
     body: [
       "1. Ctrl+P 打开命令面板，输入关键词过滤命令。",
       "2. Tab 在 Plan / Build / Compose 间切换。Plan 只规划不落盘。",
-      "3. Ctrl+T 展开或折叠思考过程。",
+      "3. Ctrl+E 展开或折叠思考过程。Ctrl+T 打开或收起 Todo。",
       "4. /session /model /settings 均为独立窗口，Esc 关闭。",
       "5. 默认单 Agent 写代码。专家团默认关：/agents on、开专家团、或 /team <可拆任务>。查代码可用 /explore 或 @explore。",
       "6. /why-mode 看上次为什么是 solo / team / explore。",

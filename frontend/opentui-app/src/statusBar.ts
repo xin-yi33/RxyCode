@@ -42,7 +42,7 @@ export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
       fg: input.thinkingExpanded ? C.green : C.overlay2,
     },
     { key: "cancel", text: "Esc:终止", fg: C.overlay2 },
-    { key: "shortcuts", text: "Tab:切换 /:命令 Ctrl+T:思考 Ctrl+P:设置", fg: C.overlay2 },
+    { key: "shortcuts", text: "Tab:切换 /:命令 Ctrl+E:思考 Ctrl+T:Todo Ctrl+P:设置", fg: C.overlay2 },
   ];
   if (input.teamRole) {
     all.splice(4, 0, { key: "teamRole", text: `[${input.teamRole}]`, fg: C.yellow, bold: true });

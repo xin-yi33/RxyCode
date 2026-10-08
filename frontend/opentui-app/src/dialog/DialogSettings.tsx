@@ -277,7 +277,8 @@ export function DialogCommandList({
 export function DialogHelp({ onClose }: { onClose: () => void }) {
   const options: DialogSelectOption<string>[] = [
     { id: "1", title: "Ctrl+P", description: "命令面板", category: "快捷键", value: "1" },
-    { id: "2", title: "Ctrl+T", description: "展开/折叠思考", category: "快捷键", value: "2" },
+    { id: "2", title: "Ctrl+E", description: "展开/折叠思考", category: "快捷键", value: "2" },
+    { id: "2b", title: "Ctrl+T", description: "打开/收起 Todo", category: "快捷键", value: "2b" },
     { id: "3", title: "Tab", description: "切换 Plan/Build/Compose", category: "快捷键", value: "3" },
     { id: "4", title: "/session", description: "切换会话", category: "命令", value: "4" },
     { id: "5", title: "/model", description: "选择模型", category: "命令", value: "5" },

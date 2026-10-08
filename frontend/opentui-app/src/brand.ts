@@ -112,7 +112,7 @@ export function welcomeRowsForSetup(needsSetup: boolean): WelcomeRow[] {
 }
 
 export const SHORTCUTS_HINT =
-  "  快捷键: Ctrl+P 命令面板 · Ctrl+T 思考展开 · Tab 切换模式 · Esc 终止";
+  "  快捷键: Ctrl+P 命令面板 · Ctrl+E 思考展开 · Ctrl+T Todo · Tab 切换模式 · Esc 终止";
 
 export const WELCOME_LINES = WELCOME_ROWS.map((row) => ({
   text: row.parts.map((p) => p.text).join(""),

@@ -18,7 +18,7 @@ export interface ChatMessage {
   toolExpanded?: boolean;
   done?: boolean;
   live?: boolean;
-  /** Per-thought display. Ctrl+T only seeds the next thought; click overrides this id. */
+  /** Per-thought display. Ctrl+E only seeds the next thought; click overrides this id. */
   expanded?: boolean;
   endedAt?: number;
   hasReasoning?: boolean;

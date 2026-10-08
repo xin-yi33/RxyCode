@@ -2,7 +2,7 @@ import { ToggleCounter } from "./toggleCounter.ts";
 
 const thinkingToggle = new ToggleCounter();
 // INVARIANT: a finished Thought keeps its body. Do not start this counter at 0.
-// Ctrl+T still toggles. Even counts collapse; the default must be odd/expanded.
+// Ctrl+E still toggles. Even counts collapse; the default must be odd/expanded.
 // 废弃代码（2026-09-22）：不 increment，停在 0。思考结束时正文被收掉，
 // 首位 Thought 看起来消失了。禁止再改回折叠默认。
 thinkingToggle.increment();

@@ -21,6 +21,10 @@
   日期翻页和超时决策进 last-3 事件环。压缩后下一次请求全量重贴，reset 清空 band。
   不进 S1，不进 prefix identity。
   —— 原因：模型每轮原先看不到正在做的清单和运行态。
+- **OpenTUI Todo**（`frontend/opentui-app/src/todoDock.ts`）：会话打开时读 `todo/get`，
+  之后只听 `event/todo_updated`。输入区上方显示未完成项，`[•]` 进行中、`[ ]` 待定，
+  全部完成就收起，空列表不占高度。`Ctrl+T` 打开或收起这份清单，思考改到 `Ctrl+E`。
+  —— 原因：同一份快照要能在终端里看见，界面不能自己再写一份。
 - **超时注册表**（`config/timeouts.py`，`ed7bd1cf`）：`TIMEOUT_REGISTRY` 收齐 12 个墙钟键。
   `resolve_timeout` 的优先级是配置、环境变量、默认值，然后再封顶 —— 原因：长任务超时散落在各调用点。
   `ERROR_LIMIT` 没有收进这张表。
