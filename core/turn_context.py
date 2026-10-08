@@ -11,7 +11,7 @@ from typing import Literal, Sequence, TypedDict
 
 
 class TurnContextBlock(TypedDict):
-    kind: Literal["eko", "note"]
+    kind: Literal["eko", "note", "status"]
     text: str
 
 
@@ -25,7 +25,7 @@ def validate_blocks(blocks: Sequence[dict]) -> None:
         if kind in FORBIDDEN_KINDS:
             raise ValueError(
                 f"turn-context kind {kind!r} is forbidden "
-                f"(allowed: eko, note)"
+                f"(allowed: eko, note, status)"
             )
 
 

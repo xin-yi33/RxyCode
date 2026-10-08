@@ -15,6 +15,12 @@
   包络是 `event_id`、`seq`、`timestamp`、`snapshot`。没有台账时 `todo/get` 返回空列表和 revision 0。
   拒绝写入不发事件。worker 走原来的通知链，回放按快照里的 session 归档，不改四字段包络。
   —— 原因：界面要读同一份清单，不能自己再造一份。
+- **状态带**（`core/status_band.py`，fast 与 graph 共用 `StatusBand.render`）：
+  模型请求缺最新指纹时，在末尾追加一条 trailing user。头是
+  `State update (auto-attached by harness, not user input):`。env 只在会话第一次出现，
+  日期翻页和超时决策进 last-3 事件环。压缩后下一次请求全量重贴，reset 清空 band。
+  不进 S1，不进 prefix identity。
+  —— 原因：模型每轮原先看不到正在做的清单和运行态。
 - **超时注册表**（`config/timeouts.py`，`ed7bd1cf`）：`TIMEOUT_REGISTRY` 收齐 12 个墙钟键。
   `resolve_timeout` 的优先级是配置、环境变量、默认值，然后再封顶 —— 原因：长任务超时散落在各调用点。
   `ERROR_LIMIT` 没有收进这张表。

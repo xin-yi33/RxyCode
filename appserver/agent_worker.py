@@ -11,6 +11,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -19,6 +20,56 @@ from .bootstrap import bootstrap_agent
 from .emitter import model_to_notification
 from .jsonrpc import StreamCoalescer, stream_coalesce_enabled, write_message
 from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
+
+
+def install_scripted_agent_replies(agent) -> None:
+    """Test seam: script the worker's real AgentV2 stream from one JSON file.
+
+    Production prompts leave this unset. The queue stays on the agent so a
+    later prompt in the same process continues where the previous one stopped.
+    """
+    path = os.environ.get("RXYCODE_SCRIPTED_AGENT_REPLIES")
+    if not path or agent is None or getattr(agent, "_scripted_replies_installed", False):
+        return
+    replies = json.loads(Path(path).read_text(encoding="utf-8"))
+    queue = list(replies)
+    capture = os.environ.get("RXYCODE_SCRIPTED_AGENT_CAPTURE")
+
+    async def stream(messages, tools=None, **_kwargs):
+        if capture:
+            text = "\n".join(str(getattr(message, "content", "") or "") for message in messages)
+            destination = Path(capture)
+            previous = destination.read_text(encoding="utf-8") if destination.exists() else ""
+            destination.write_text(previous + "\n---\n" + text, encoding="utf-8")
+        if not queue:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="最终结果：脚本用尽", tool_calls=None))],
+                usage=None,
+            )
+            return
+        item = queue.pop(0)
+        if item.get("kind") == "tool":
+            arguments = json.dumps(
+                {"todos": item.get("todos") or [], "merge": True},
+                ensure_ascii=False,
+            )
+            delta = SimpleNamespace(
+                content="",
+                tool_calls=[
+                    SimpleNamespace(
+                        index=0,
+                        id=str(item.get("id") or "call-scripted"),
+                        function=SimpleNamespace(name="todo_write", arguments=arguments),
+                    )
+                ],
+            )
+        else:
+            delta = SimpleNamespace(content=str(item.get("text") or ""), tool_calls=None)
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
+
+    agent._raw_stream = stream
+    agent._application_cache_namespace = lambda: "rxycode-scripted-agent"
+    agent._scripted_replies_installed = True
 
 
 def bind_worker_todo_sink(emit) -> None:
@@ -745,6 +796,7 @@ class AgentWorker:
                 )
                 if not accepts_permission_mode:
                     prompt_kwargs.pop("permission_mode", None)
+                install_scripted_agent_replies(self._agent)
                 result = await session.prompt(self._agent, text, **prompt_kwargs)
                 # turn 结束后才到达的 steer（agent 主循环没来得及 drain）：
                 # 合并为一条消息开一个兜底新回合，避免每条各产出一个

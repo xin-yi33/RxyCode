@@ -28,6 +28,13 @@ from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import Runnable
 
+from RxyCode.RxyCode1_1_0.core.status_band import (
+    StatusBand,
+    attach_status_band,
+    current_band_source,
+    timeout_event_text,
+)
+
 from RxyCode.RxyCode1_1_0.config import settings as _settings
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.config.credential_store import atomic_write_text
@@ -208,6 +215,7 @@ async def run_task_watchdog(
                 api.forward_decision_event(engine, tui)
             finally:
                 api.end_decision_events(token)
+            _note_settled_timeout(decision)
             elapsed = _time.time() - start
             if decision.action in ("continue", "steer"):
                 scope = (str(evidence.session_id), str(evidence.subject_id))
@@ -233,6 +241,64 @@ async def run_task_watchdog(
             return "max_time"
 
 
+def _note_settled_timeout(decision) -> None:
+    """Record one settled timeout decision on the agent that owns the event ring."""
+    source = current_band_source()
+    note = getattr(source, "note_status_event", None)
+    if not callable(note):
+        return
+    text = timeout_event_text(
+        getattr(decision, "action", ""),
+        getattr(decision, "note", ""),
+    )
+    if text:
+        note(text)
+
+
+class _TrackingLLM(Runnable):
+    """Report activity and attach the live status band on every model call."""
+
+    def __init__(self, inner, tracker):
+        self._inner = inner
+        self._tracker = tracker
+
+    def invoke(self, msgs, config=None, **kw):
+        self._tracker.heartbeat()
+        msgs = _messages_with_guidance(self._tracker, msgs)
+        try:
+            result = self._inner.invoke(msgs, config=config, **kw)
+            self._tracker.heartbeat()
+            return result
+        except Exception as exc:
+            self._tracker.record_error(exc)
+            raise
+
+    async def ainvoke(self, msgs, config=None, **kw):
+        self._tracker.heartbeat()
+        msgs = _messages_with_guidance(self._tracker, msgs)
+        try:
+            result = await self._inner.ainvoke(msgs, config=config, **kw)
+            self._tracker.heartbeat()
+            return result
+        except Exception as exc:
+            self._tracker.record_error(exc)
+            raise
+
+    async def astream(self, msgs, config=None, **kw):
+        self._tracker.heartbeat()
+        msgs = _messages_with_guidance(self._tracker, msgs)
+        async for chunk in self._inner.astream(msgs, config=config, **kw):
+            self._tracker.heartbeat()
+            yield chunk
+
+    def bind_tools(self, tools, **kw):
+        bound = self._inner.bind_tools(tools, **kw)
+        return _TrackingLLM(bound, self._tracker)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def _messages_with_guidance(tracker, messages):
     """Append steer notes once, as a trailing user message."""
     if not isinstance(messages, list):
@@ -247,6 +313,31 @@ def _messages_with_guidance(tracker, messages):
     if isinstance(pipeline, list) and pipeline:
         fresh.extend(str(item) for item in pipeline if str(item).strip())
         pipeline.clear()
+    band = getattr(tracker, "_status_band", None)
+    band_text = ""
+    probed = messages
+    if isinstance(band, StatusBand):
+        probed = attach_status_band(
+            messages,
+            band,
+            last_fp=getattr(tracker, "_last_band_fp", None),
+            force_full=bool(getattr(tracker, "_band_full_on_next", False)),
+        )
+        if len(probed) > len(messages):
+            band_text = str(probed[-1].content)
+            tracker._band_full_on_next = False
+            tracker._last_band_fp = band.fingerprint()
+    else:
+        source = current_band_source()
+        ensure = getattr(source, "_ensure_status_band", None)
+        if callable(ensure):
+            probed = ensure(messages)
+            if isinstance(probed, list) and len(probed) > len(messages):
+                band_text = str(probed[-1].content)
+    if band_text and fresh:
+        return [*messages, HumanMessage(content=band_text + "\n" + "\n".join(fresh))]
+    if band_text:
+        return probed
     if not fresh:
         return messages
     return [*messages, HumanMessage(content="\n".join(fresh))]
@@ -649,45 +740,6 @@ async def executor_node(state: AgentState) -> dict:
 
         executor = _executor_module.Executor(llm, tool_orch, config=cfg, event_tui=tui)
         tracker = _ProgressTracker()
-
-        class _TrackingLLM(Runnable):
-            """Wrapper that reports activity on every LLM call."""
-            def __init__(self, inner, tracker):
-                self._inner = inner
-                self._tracker = tracker
-            def invoke(self, msgs, config=None, **kw):
-                self._tracker.heartbeat()
-                msgs = _messages_with_guidance(self._tracker, msgs)
-                try:
-                    result = self._inner.invoke(msgs, config=config, **kw)
-                    self._tracker.heartbeat()
-                    return result
-                except Exception as e:
-                    self._tracker.record_error(e)
-                    raise
-            async def ainvoke(self, msgs, config=None, **kw):
-                self._tracker.heartbeat()
-                msgs = _messages_with_guidance(self._tracker, msgs)
-                try:
-                    result = await self._inner.ainvoke(msgs, config=config, **kw)
-                    self._tracker.heartbeat()
-                    return result
-                except Exception as e:
-                    self._tracker.record_error(e)
-                    raise
-            async def astream(self, msgs, config=None, **kw):
-                self._tracker.heartbeat()
-                msgs = _messages_with_guidance(self._tracker, msgs)
-                async for chunk in self._inner.astream(
-                    msgs, config=config, **kw
-                ):
-                    self._tracker.heartbeat()
-                    yield chunk
-            def bind_tools(self, tools, **kw):
-                bound = self._inner.bind_tools(tools, **kw)
-                return _TrackingLLM(bound, self._tracker)
-            def __getattr__(self, name):
-                return getattr(self._inner, name)
 
         async def _monitored_execute():
             """Execute with progress tracking injected into the LLM."""

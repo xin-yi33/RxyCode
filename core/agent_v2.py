@@ -75,6 +75,17 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_system_prompt,
 )
 from RxyCode.RxyCode1_1_0.core.prompts.registry import get_prompt_version, get_system_s2
+from RxyCode.RxyCode1_1_0.core.status_band import (
+    StatusBand,
+    apply_date_rollover,
+    attach_status_band,
+    bind_status_band,
+    capture_session_env,
+    note_todo_stale,
+    push_event,
+    reset_status_band,
+    timeout_event_text,
+)
 from RxyCode.RxyCode1_1_0.core.research_policy import (
     ResearchPolicy,
     extract_research_query,
@@ -199,6 +210,7 @@ def apply_mid_turn_steers(messages: list, drain) -> list[str]:
     return applied
 from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
 from RxyCode.RxyCode1_1_0.tools.registry import default_registry
+from RxyCode.RxyCode1_1_0.tools.todo_events import read_todo_snapshot
 from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
 from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX, token_stats
@@ -2390,6 +2402,7 @@ class AgentV2:
             pass
 
         self._session_id = resolved
+        self._clear_status_band()
         self._memory = MemoryManager(session_id=resolved, llm=self._llm)
         self._memory.bind_rag_indexer(
             getattr(self, "_rag_indexer_thread", None)
@@ -2416,6 +2429,7 @@ class AgentV2:
             self._agent_prefix_messages = None
         finally:
             self._session_loaded = False
+            self._clear_status_band()
         removed_checkpoints = 0
         if self._checkpoint_store is not None:
             removed_checkpoints = self._checkpoint_store.reset(
@@ -2947,6 +2961,7 @@ class AgentV2:
         finally:
             end_decision_events(token)
         elapsed_now = float(elapsed) + (time.monotonic() - decision_started)
+        self.note_status_event(timeout_event_text(decision.action, getattr(decision, "note", "")))
         if decision.action in ("continue", "steer"):
             grant = engine.last_grant((evidence.session_id, evidence.run_id))
             if grant is None or float(grant.new_budget) <= elapsed_now:
@@ -5459,7 +5474,7 @@ class AgentV2:
         """FX8: public seam for LinkAgent — EKO-style context can only
         append to the user suffix after the prefix is frozen.
 
-        ``kind`` must be ``eko`` or ``note``; ``system``/``tools`` raise
+        ``kind`` must be ``eko``, ``note``, or ``status``; ``system``/``tools`` raise
         ValueError (never splice into frozen sections). ChatPrefix turns
         ignore the blocks entirely.
         """
@@ -5481,6 +5496,152 @@ class AgentV2:
         from .turn_context import serialize_turn_context
 
         return serialize_turn_context(getattr(self, "_turn_context_blocks", []) or [])
+
+    def _clear_status_band(self) -> None:
+        """Session switch/reset drops the band cache. The ledger file stays."""
+        self._status_band = None
+        self._last_band_fp = None
+        self._band_full_on_next = False
+        self._status_events = []
+        self._status_env = None
+        self._status_env_sent = False
+        self._status_frozen_date = None
+        self._status_rollover_noted = False
+        self._status_seen_revision = 0
+        self._turns_since_todo_write = 0
+        self._turns_since_todo_reminder = 5
+
+    def _begin_status_turn(self) -> None:
+        """Count one user turn toward the todo reminder budget, not one model round."""
+        self._turns_since_todo_write = int(getattr(self, "_turns_since_todo_write", 0) or 0) + 1
+        if not hasattr(self, "_turns_since_todo_reminder"):
+            self._turns_since_todo_reminder = 5
+            return
+        self._turns_since_todo_reminder = int(self._turns_since_todo_reminder) + 1
+
+    def _read_turn_snapshot(self):
+        session_id = str(getattr(self, "_session_id", "") or "")
+        if not session_id:
+            return None
+        try:
+            return read_todo_snapshot(session_id)
+        except Exception:
+            _logger.warning("status band snapshot read failed", exc_info=True)
+            return None
+
+    def _frozen_status_env(self) -> dict:
+        cached = getattr(self, "_status_env", None)
+        if isinstance(cached, dict) and cached.get("date"):
+            return cached
+        env = capture_session_env(getattr(self, "_status_frozen_date", None))
+        self._status_env = env
+        self._status_frozen_date = str(env.get("date") or "")
+        return env
+
+    def _load_status_band(self) -> StatusBand | None:
+        snapshot = self._read_turn_snapshot()
+        if snapshot is None:
+            return None
+        items = [
+            {"id": item.id, "content": item.content, "status": item.status}
+            for item in list(getattr(snapshot, "items", []) or [])
+        ]
+        revision = int(getattr(snapshot, "revision", 0) or 0)
+        if revision <= 0 and not items:
+            return None
+        events = list(getattr(self, "_status_events", []) or [])
+        frozen_env = self._frozen_status_env()
+        if not getattr(self, "_status_rollover_noted", False):
+            rolled = apply_date_rollover(events, str(frozen_env.get("date") or ""))
+            if rolled is not events:
+                events = list(rolled)
+                self._status_rollover_noted = True
+        seen_revision = int(getattr(self, "_status_seen_revision", 0) or 0)
+        if revision > seen_revision:
+            self._turns_since_todo_write = 0
+            self._status_seen_revision = revision
+        has_open = any(str(item.get("status")) in {"pending", "in_progress", "blocked"} for item in items)
+        reminded, later = note_todo_stale(
+            events,
+            turns_since_write=int(getattr(self, "_turns_since_todo_write", 0) or 0),
+            has_open=has_open,
+            turns_since_reminder=int(getattr(self, "_turns_since_todo_reminder", 5) or 0),
+        )
+        if reminded is not events:
+            events = list(reminded)
+            self._turns_since_todo_reminder = later
+        self._status_events = events[-3:]
+        show_env = not bool(getattr(self, "_status_env_sent", False))
+        return StatusBand(
+            list_id=str(getattr(snapshot, "list_id", None) or "default"),
+            revision=revision,
+            env=frozen_env if show_env else None,
+            todo_items=items,
+            events=self._status_events,
+            after_compaction=bool(getattr(self, "_band_full_on_next", False)),
+        )
+
+    def _ensure_status_band(self, messages):
+        """Trailing-user injection. No snapshot means the message list is unchanged."""
+        if not isinstance(messages, list):
+            return messages
+        try:
+            band = self._load_status_band()
+            if band is None:
+                return messages
+            force = bool(getattr(self, "_band_full_on_next", False))
+            # 工具结果里的指纹不能挡住会话第一次 env。env 发出去之后才按指纹零新增。
+            needs_env = not bool(getattr(self, "_status_env_sent", False))
+            updated = attach_status_band(
+                messages,
+                band,
+                last_fp=getattr(self, "_last_band_fp", None),
+                force_full=force or needs_env,
+            )
+        except Exception:
+            _logger.warning("status band skipped", exc_info=True)
+            return messages
+        if len(updated) > len(messages):
+            self._last_band_fp = band.fingerprint()
+            if band.env is not None:
+                self._status_env_sent = True
+            if force:
+                self._band_full_on_next = False
+        return updated
+
+    def note_status_event(self, text: str) -> None:
+        """Append one settled harness event. The ring itself stays last-3."""
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        self._status_events = push_event(
+            list(getattr(self, "_status_events", []) or []),
+            cleaned,
+        )
+
+    def _todo_snapshot_marker(self, result) -> str:
+        """Mark this call's own snapshot. Do not re-read the ledger onto an older result."""
+        snapshot = getattr(result, "snapshot", None)
+        if snapshot is None:
+            return ""
+        self._turns_since_todo_write = 0
+        revision = int(getattr(snapshot, "revision", 0) or 0)
+        self._status_seen_revision = max(
+            int(getattr(self, "_status_seen_revision", 0) or 0),
+            revision,
+        )
+        items = [
+            {"id": item.id, "content": item.content, "status": item.status}
+            for item in list(getattr(snapshot, "items", []) or [])
+        ]
+        band = StatusBand(
+            list_id=str(getattr(snapshot, "list_id", None) or "default"),
+            revision=revision,
+            env=None,
+            todo_items=items,
+            events=list(getattr(self, "_status_events", []) or [])[-3:],
+        )
+        return f"\nlist_id={band.list_id} revision={band.revision} fp={band.fingerprint()}"
 
     def _application_cache_namespace(self) -> str:
         """Isolate answer caches by provider endpoint, model, credential,
@@ -5585,6 +5746,7 @@ class AgentV2:
         6. Update token stats and context tracking
         """
         await self._ensure_session_loaded()
+        self._begin_status_turn()
         # A21: fast path 按任务性质选 effort 档位（简单查询 → fast；其余 balanced）。
         # 用户显式配置的 effort（如 deep）优先，不被 fast path 覆盖。
         if mode is None:
@@ -6009,6 +6171,7 @@ class AgentV2:
                 tool_call_delta_chars = 0
                 tool_call_liveness_at = 0.0
 
+                messages = self._ensure_status_band(messages)
                 if fast_build_round_max_tokens is None:
                     stream = self._raw_stream(messages, core_tools)
                 else:
@@ -6497,9 +6660,12 @@ class AgentV2:
                         self._emit_tool_outcome_to_user(
                             tui, str(tool_name), str(result), is_error
                         )
+                    tool_content = self._tool_result_message_content(tool_name, str(result))
+                    if str(tool_name) == "todo_write" and not is_error:
+                        tool_content += self._todo_snapshot_marker(result)
                     messages.append(
                         ToolMessage(
-                            content=self._tool_result_message_content(tool_name, str(result)),
+                            content=tool_content,
                             tool_call_id=tool_id or tool_name,
                         )
                     )
@@ -6565,6 +6731,7 @@ class AgentV2:
                 if tui and hasattr(tui, "write_progress"):
                     tui.write_progress("Synthesizing results (stuck recovery)...")
                 parts: list[str] = []
+                messages = self._ensure_status_band(messages)
                 async for chunk in self._raw_stream(messages, core_tools):
                     if not getattr(chunk, "choices", None):
                         continue
@@ -6974,6 +7141,16 @@ class AgentV2:
             return
         if not telemetry.get("did_compact"):
             return
+        self._band_full_on_next = True
+        snapshot = self._read_turn_snapshot()
+        if snapshot is not None and (
+            int(getattr(snapshot, "revision", 0) or 0) > 0
+            or list(getattr(snapshot, "items", []) or [])
+        ):
+            self._status_events = push_event(
+                list(getattr(self, "_status_events", []) or []),
+                "compacted",
+            )
         messages[:] = compacted
         token_stats.update_context(self._estimate_tokens(messages), context_window)
         tui = get_tui()
@@ -7516,7 +7693,12 @@ class AgentV2:
                         int(execution_cfg.get("max_graph_steps", 60) or 60),
                     )
                 }
-                graph_result = await self._graph.ainvoke(initial_state, graph_config)
+                self._begin_status_turn()
+                _band_token = bind_status_band(self)
+                try:
+                    graph_result = await self._graph.ainvoke(initial_state, graph_config)
+                finally:
+                    reset_status_band(_band_token)
                 self._last_failure_attribution = dict(
                     graph_result.get("failure_attribution", {}) or {}
                 )
@@ -8436,10 +8618,13 @@ class AgentV2:
             }
             self._reset_pipeline_decision_state()
             self._pipeline_scope_run_id = str(get_current_run_id() or "").strip()
+            self._begin_status_turn()
+            _band_token = bind_status_band(self)
             _steer_token = _PIPELINE_STEER_NOTES.set(self._pipeline_steer_notes)
             graph_task = asyncio.create_task(
                 self._graph.ainvoke(initial_state, graph_config)
             )
+            reset_status_band(_band_token)
             _PIPELINE_STEER_NOTES.reset(_steer_token)
             budget_reached = False
 
