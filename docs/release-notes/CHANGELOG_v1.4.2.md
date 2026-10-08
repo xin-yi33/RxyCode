@@ -1,0 +1,115 @@
+# CHANGELOG v1.4.2
+
+> 记录日期：2026-10-08。上一份档案是 `CHANGELOG_v1.4.1.md`，那份冻结内容没有改。
+> 本文只记本分支已经提交的 Fix4 与 Phase P 改动。产品版本仍是 `pyproject.toml` 的
+> 1.4.1，协议版本仍是 `PROTOCOL_VERSION` 1.1.0。没有打 1.4.2 的 tag，也没有发布安装包。
+> 格式沿用 1.4.1：每条 = **模块**：做了什么 —— **原因**。归类：新增 / 变更 / 修复 / 废弃。
+
+## 新增
+
+- **超时注册表**（`config/timeouts.py`，`ed7bd1cf`）：`TIMEOUT_REGISTRY` 收齐 12 个墙钟键。
+  `resolve_timeout` 的优先级是配置、环境变量、默认值，然后再封顶 —— 原因：长任务超时散落在各调用点。
+  `ERROR_LIMIT` 没有收进这张表。
+- **决策协议**（`protocol/timeout_decision.py`，`30218a19`）：`TimeoutEvidence`、
+  `TimeoutDecisionResponse`、`TimeoutDecisionEvent`。证据的 `progress` 是字符串。
+  响应只有 action、extend_seconds、note、confidence。
+- **决策环**（`core/timeout_decision.py`，`3cd47569`）：`DecisionPolicy`、`ExtensionLedger`、
+  `TimeoutDecisionEngine`。`enabled` 默认 False。`from_config` 在关闭时返回 None。
+  续期 `granted = min(requested, room)`，`new_budget = budget + granted`。
+  序号是 `ledger.count(scope)+1`，scope 是 `(session_id, subject_id)`。
+  失败记 `action="stop"`，note 以 `"[fail-closed] "` 开头。
+  同形句柄投影 `todo_progress_snapshot` 也在这个文件里，它不是权威 TodoSnapshot。
+- **graph 到点决策**（`core/graph.py`，`b2e7cff1`）：`run_task_watchdog` 在 max_time 到点时，
+  引擎存在才问一次决策；关闭时仍返回 `"max_time"`。同一轮复用一个引擎。
+- **pipeline 软预算**（`core/agent_v2.py`，`8f29814a`）：`_pipeline_budget_branch`。
+  continue 用 `Grant.new_budget` 抬高软预算；policy stop 仍走原来的超时通知。
+- **工具到点只问一次**（`execution/tool_orchestrator.py`，`35e8a822`）：有引擎时，
+  底层 task 保留，每次等待新建 `asyncio.shield`。停止、再超时、调用方取消都走
+  `_cancel_and_reap`。`timeout_engine=None` 时仍是原来的 `wait_for`。
+- **决策事件**（`c75bc76c`）：`event/timeout_decision` 进入通知模型和回放表。
+  `ProtocolTui.write_timeout_decision` 原样 `_emit`。`schema.json` 与
+  `frontend/protocol-client` 的生成类型已更新。OpenTUI 和 Desktop 没有做渲染。
+- **hooks 最小契约**（`fca6eaf4`、`2d5a5794`）：先提交
+  `docs/decisions/P9-HOOKS-MIN-EVENT-SET.md`，再提交 `core/lifecycle_contract.py`
+  的 8 个 `(phase, subject)`。`decide` 在问 LLM 之前和落定之后发出
+  `timeout_decision` hook。`core/hooks.py` 没有改。
+
+## 变更
+
+- **stall 分级后再杀 worker**（`appserver/stall_grading.py`、`e36c5e31`、`c56df81d`）：
+  先做 turn 级 interrupt 和 grace。进程还在才进入后续处置。grace 内恢复则保留 host。
+- **fold 摘要**（`9e95c3c5`）：fold 档可以要一份 LLM 状态快照。调用发生在原来的事件循环里。
+  失败退回规则模板。不是 fold 档不预取。
+- **flush / recall**（`a7b6fc3e`）：写成功的事实在 fold 前进入项目隔离的 experience。
+  不写全局 UserMemory。检索分低于 0.12 的结果不返回。
+- **rewind 的 conversation scope**（`378aaa46`）：`conversation` 只截断当前 agent 前缀，
+  不回滚工作区。默认 `code` 仍回滚代码。
+- **graph resume 次数**（`5ea33c9d`）：durable 的 `resume_attempts` 上限是 2。
+  耗尽后不 hydrate、不封 checkpoint、不 settle journal。没有另做一套平行恢复。
+- **scheduler**（`78c5f1bb`）：未送达的 dispatch 可被发现；一次性 orphan 可以复活。
+  没有做无人窗口自动发起 prompt。`schedule/create` 需要显式批准，裸默认 ask 仍拒绝。
+- **precise cache**（`a44a1344`）：`prompt_version` 进入 system prompt 的精确缓存键。
+- **stall 决策与重启闸**（`e490e3ec`）：`escalate_stalled_job` 在 grace 结束时 await
+  `decision_hook`。`"continue"` 得到 `restart_requested`，外壳再走
+  `_restart_worker_continue`（杀旧 host、spawn、hydrate，并用 grant 的 `new_budget`
+  作为新的 `timeout_seconds`）。`restart_count` 达到 `max_restarts`，或超过
+  `restart_total_wall_seconds`，不再问引擎。账本不跨 worker 继承。
+  现场续跑出新事件的 E-P-E2E-03 没有跑。
+- **决策事件转发**（`c75bc76c`）：每次 `decide` 用独立的已发布事件桶。
+  sink 追加失败的事件不会送上线。写 TUI 失败只记日志，不打断工具收尾。
+
+## 修复
+
+- **graph token 估算**（`c7c8f8e8`）：`route_next` 改用和 fast 回路同一套 `count_tokens`。
+  未知模型的 `_FALLBACK_RATIO` 仍是 4.0。按这个比率，10 个字符是 `int(10/4)+1`。
+- **凭证测试的 icacls 解码**（`2b0f1be1`）：`PYTHONUTF8` 下按控制台代码页 oem 解码
+  `icacls` 输出。断言仍要求输出里有 `"(I)"`。
+- **管道失联与 interrupt 异常**（`e490e3ec`）：`pipe_broken` 先 interrupt，进程还活着再
+  kill 一次。两次之后进程仍在，就不把结果说成已经杀掉。interrupt 抛错时用 `alive()`
+  判断，不直接写成 `killed=True`。
+
+## 废弃
+
+本轮没有删除生产代码。没有把 `enabled=false` 的现状路径标成废弃。那条路径仍是默认路径。
+
+未做，不能写成已交付：
+
+- **P8**：仓库没有 `class TodoSnapshot`、`class TodoItem`、`protocol/todo_snapshot.py`、
+  `protocol/todo.py`。卡记为 `BLOCKED_PREREQUISITE`。没有新的 todo store，没有抄 P8 测试，
+  没有把 evidence 接到假快照。
+- **Phase P E2E**：`tests/e2e/phase_p` 不存在。E-P-E2E-01..09 没有跑。
+- **shell 内部 deadline**：`utils/shell.py` 的到点清理不跟随外层续期。这是 R-11，仍是未做项。
+- **协议版本**：没有因为 `event/timeout_decision` 而提升 `PROTOCOL_VERSION`。
+
+## 测试
+
+数字来自 2026-10-08 的 pytest 输出，日志在施工暂存目录。失败保持失败。
+
+- Fix4 出口在凭证解码修复之后，同一组命令跑了两遍，退出码都是 0。
+  A：68 passed，e2e 10 passed。B：9171 passed，4 skipped。4 条 skip 是原来就有的。
+- P9：抄入的 3 条先红（`ModuleNotFoundError: lifecycle_contract`，exit 2），
+  落地后 3 passed，exit 0。`ruff` 通过。`core/hooks.py` 无 diff。
+  Codex 会话 `01a11763-0d59-73e0-aa3c-d856830ac0dd`，模型 `gpt-6.1-sol`，high。
+  第一轮末行是「无剩余问题」。
+- Phase P 单元加模块：`tests/test_timeout`、`test_timeout_decision_event.py`、
+  `test_timeout_hook_contract.py` 共 40 passed，exit 0。测试包写的 44 条含 P8 的 4 条，
+  这 4 条没有抄，所以不是 44。
+- 现状兼容：`test_build_timeout_handling.py` 与 `tests/contract/test_timeout_cancel.py`
+  共 11 passed，exit 0。
+- `tests/contract`：873 passed，exit 0。
+- `tests/test_core` 单独跑：1 failed，7633 passed，exit 1。失败是
+  `test_backfill_missing_api_key_secrets_from_env`（`assert 0 == 1`）。
+  单独重跑这条是 1 passed。这是原有的顺序相关失败，不是 P9 引入的。
+- 合并门禁 `tests/contract tests/test_appserver tests/test_cache tests/test_core`：
+  9175 passed，4 skipped，exit 0，用时 1241.69s。4 条 skip 分别是
+  `RXYCODE_APPSERVER_LIVE`、一条 cache 同查询，以及两条「global test registry 没有注册工具」。
+  这次合并跑里，上面那条凭证测试没有失败。两次结果都保留，不把单独失败改写成通过。
+- 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条
+  决策测试 5 passed，该文件 diff 为空。
+  - fail-closed 改成 `action="continue"`：模型拒绝 `extend_seconds=0` 的 continue，
+    `test_u_p2_05` FAILED。测试包点名的 E2E 文件不存在，原命令 exit 4。
+  - `extension_growth` 默认改成 3，并且 grant 指数从 `k - 1` 改成 `k`：
+    `extend_seconds` 得到 2400.0 而不是 1200.0，默认值得到 3 而不是 2。两条都 FAILED。
+    点名的 E2E 文件不存在，原命令 exit 4。
+  - `granted = requested`：`test_u_p2_02` 得到 2400.0 而不是 50.0，FAILED。
+    `test_u_p2_04` 仍 passed。那条路径的请求没有顶到 cap，去掉截断不会把它打红。
