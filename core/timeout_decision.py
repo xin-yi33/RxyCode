@@ -149,6 +149,40 @@ def timeout_decision_config(cfg: dict | None) -> dict:
     return merged
 
 
+def restart_gate_verdict(restarts_state, section, *, now) -> str | None:
+    """Persistent stall-restart gate. None means a decision may run.
+
+    The count and the wall clock live on the session, so a new job id does
+    not clear them. ``now`` and ``first_restart_at`` must share one clock.
+    """
+    state = restarts_state if isinstance(restarts_state, dict) else {}
+    limits = section if isinstance(section, dict) else {}
+    try:
+        max_restarts = int(limits.get("max_restarts", 2))
+    except (TypeError, ValueError):
+        max_restarts = 2
+    try:
+        wall = float(limits.get("restart_total_wall_seconds", 7200.0))
+    except (TypeError, ValueError):
+        wall = 7200.0
+    try:
+        count = int(state.get("restart_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count >= max_restarts:
+        return "max_restarts"
+    first = state.get("first_restart_at")
+    if first is None:
+        return None
+    try:
+        elapsed = float(now) - float(first)
+    except (TypeError, ValueError):
+        return None
+    if elapsed > wall:
+        return "total_wall"
+    return None
+
+
 def record_decision_cost(session_id: str, cost: float) -> None:
     """Record one decision's USD cost once, on the process token stats."""
     token_stats.record_decision_cost(session_id, cost)

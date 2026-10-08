@@ -284,6 +284,16 @@ class AppServer:
         self._plugins.attach_to_capabilities()
         self._session_hosts: dict[str, AgentHost] = {}
         self._watchdog = WatchdogState()
+        # P5: tests assign a stub engine. None means the feature is off until
+        # the first stall reads config. Per-session engines own their ledgers.
+        self._timeout_engine = None
+        self._stall_engines: dict[str, Any] = {}
+        self._job_prompts: dict[str, dict[str, Any]] = {}
+        self._stall_restart_budgets: dict[str, float] = {}
+        self._restart_gates: dict[str, dict[str, Any]] = {}
+        self._last_stall_result: dict[str, Any] | None = None
+        self._timeout_cfg: dict[str, Any] | None = None
+        self._timeout_section_cache: dict[str, Any] | None = None
         self._started_at = time.monotonic()
         self._heartbeat_task: asyncio.Task[Any] | None = None
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -821,6 +831,7 @@ class AppServer:
         # /status regardless of how the job ends (stall, error, cancel, ...).
         await self._drain_emit_and_degrades(job_id)
         self._resolved_jobs.add(job_id)
+        self._forget_job_prompt(job_id)
         self._watchdog.finish_job(job_id)
         self._job_tasks.pop(job_id, None)
         if degrade_reason:
@@ -841,16 +852,274 @@ class AppServer:
         if kill_host:
             await self._kill_session_host(session_id)
 
-    async def _restart_worker_continue(self, stalled: ActiveJob) -> None:
-        """F4-1 外壳唯一重启点。P5 在这里真正拉起 worker 并续跑。
+    async def _spawn_session_host(self, session_id: str) -> AgentHost:
+        """Start the session worker. The only spawn path is ``_host_for_session``."""
+        return await self._host_for_session(session_id)
 
-        废弃代码（2026-10-08 版）：stall 没有续跑。default_decision_hook 恒返回
-        None，生产路径不会进入本方法。
+    def _timeout_section(self) -> dict[str, Any]:
+        """timeout_decision section. A read failure keeps the pinned defaults."""
+        if self._timeout_section_cache is not None:
+            return self._timeout_section_cache
+        cfg: dict[str, Any] = {}
+        try:
+            from RxyCode.RxyCode1_1_0.config.settings import load_config
+            from RxyCode.RxyCode1_1_0.core.timeout_decision import timeout_decision_config
+
+            loaded = load_config()
+            if isinstance(loaded, dict):
+                cfg = loaded
+            section = timeout_decision_config(cfg)
+        except Exception:
+            from RxyCode.RxyCode1_1_0.core.timeout_decision import timeout_decision_config
+
+            section = timeout_decision_config({})
+        self._timeout_cfg = cfg
+        self._timeout_section_cache = section
+        return section
+
+    def _engine_for_stall(self, session_id: str):
+        """Stub engine when a test assigned one. Otherwise one engine per session.
+
+        Disabled config stays None, which is the status-quo kill path.
+        A restarted worker gets a new engine so its ledger starts at zero.
         """
-        _logger.info(
-            "stall restart_requested for job %s is reserved for Phase P",
-            stalled.job_id,
+        if self._timeout_engine is not None:
+            return self._timeout_engine
+        section = self._timeout_section()
+        if not section.get("enabled"):
+            return None
+        engine = self._stall_engines.get(session_id)
+        if engine is not None:
+            return engine
+        from RxyCode.RxyCode1_1_0.core.timeout_decision import (
+            ExtensionLedger,
+            decision_base_llm,
+            from_config,
         )
+
+        try:
+            engine = from_config(
+                self._timeout_cfg or {},
+                base_llm=decision_base_llm(self._timeout_cfg or {}),
+                ledger=ExtensionLedger(),
+            )
+        except Exception:
+            _logger.warning("timeout engine was not built for %s", session_id, exc_info=True)
+            return None
+        if engine is not None:
+            self._stall_engines[session_id] = engine
+        return engine
+
+    def _restart_gate_state(self, session_id: str) -> dict[str, Any]:
+        """Session-scoped restart counter. The task row wins over process memory."""
+        raw: Any = None
+        try:
+            task = self._task_store.get(session_id)
+        except Exception:
+            task = None
+        if isinstance(task, dict):
+            raw = task.get("restart_gate")
+        if not isinstance(raw, dict):
+            raw = self._restart_gates.get(session_id) or {}
+        first = raw.get("first_restart_at")
+        try:
+            count = int(raw.get("restart_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        return {"restart_count": count, "first_restart_at": first}
+
+    def _record_restart_increment(self, session_id: str, *, started_at: float) -> bool:
+        """Count one accepted restart before the new worker is spawned.
+
+        Returns False when the count cannot be stored. The caller must not spawn.
+        A non-persistent store with no row yet gets an in-memory row so the
+        unit seam can persist. A durable store with no row, or a failed write,
+        blocks the restart.
+        """
+        state = self._restart_gate_state(session_id)
+        first = state.get("first_restart_at")
+        if first is None:
+            elapsed = max(0.0, time.monotonic() - float(started_at))
+            first = time.time() - elapsed
+        payload = {
+            "restart_count": int(state["restart_count"]) + 1,
+            "first_restart_at": first,
+        }
+        try:
+            if self._task_store.get(session_id) is None and not self._task_store.persistent:
+                self._task_store.upsert(
+                    session_id=session_id,
+                    title="stall-restart",
+                    workspace_root=".",
+                    status="running",
+                )
+            stored = self._task_store.update_restart_gate(session_id, payload)
+        except Exception:
+            _logger.warning("restart gate was not persisted for %s", session_id, exc_info=True)
+            return False
+        if not stored:
+            return False
+        self._restart_gates[session_id] = payload
+        return True
+
+    async def _stall_decision_hook(self, evidence: dict) -> str | None:
+        """Awaited once per stall that survived turn-cancel.
+
+        The argument is a dict (``job = evidence["job"]``). The return is
+        ``"continue"`` or None. A gate hit or a disabled engine does not call
+        the model. ``budget_seconds`` is only ``restart_grant_base_seconds``.
+        """
+        from RxyCode.RxyCode1_1_0.core.timeout_decision import restart_gate_verdict
+        from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
+        from RxyCode.RxyCode1_1_0.protocol.timeout_decision import TimeoutEvidence
+
+        job = evidence["job"]
+        section = self._timeout_section()
+        state = self._restart_gate_state(str(job.session_id))
+        if state.get("first_restart_at") is None:
+            # The wall starts at the original job, before any restart is counted.
+            elapsed = max(0.0, time.monotonic() - float(getattr(job, "started_at", time.monotonic())))
+            state = {
+                "restart_count": state["restart_count"],
+                "first_restart_at": time.time() - elapsed,
+            }
+        verdict = restart_gate_verdict(state, section, now=time.time())
+        if verdict is not None:
+            return None
+        engine = self._engine_for_stall(str(job.session_id))
+        if engine is None:
+            return None
+        try:
+            base = float(section.get("restart_grant_base_seconds", 900.0))
+        except (TypeError, ValueError):
+            base = 900.0
+        if base < 0:
+            base = 0.0
+        snapshot = self._job_prompts.get(str(job.job_id)) or {}
+        hint = str(snapshot.get("text") or "").strip() or str(job.job_id)
+        elapsed = max(0.0, time.monotonic() - float(getattr(job, "started_at", time.monotonic())))
+        ev = TimeoutEvidence(
+            trigger_point="watchdog_stall",
+            session_id=str(job.session_id),
+            run_id=get_current_run_id(),
+            subject_id=str(job.job_id),
+            task_hint=hint[:500],
+            elapsed_seconds=elapsed,
+            budget_seconds=base,
+            extension_index=0,
+            progress="",
+            last_error=str(evidence.get("reason") or ""),
+        )
+        try:
+            resp = await engine.decide(ev)
+        except Exception:
+            _logger.warning("watchdog stall decision failed for %s", job.job_id, exc_info=True)
+            return None
+        if getattr(resp, "action", None) != "continue":
+            return None
+        last_grant = getattr(engine, "last_grant", None)
+        grant = last_grant((str(job.session_id), str(job.job_id))) if callable(last_grant) else None
+        new_budget = getattr(grant, "new_budget", None)
+        try:
+            budget = float(new_budget)
+        except (TypeError, ValueError):
+            budget = 0.0
+        if budget <= 0:
+            return None
+        self._stall_restart_budgets[str(job.job_id)] = budget
+        return "continue"
+
+    async def _try_turn_cancel(self, stalled: ActiveJob) -> bool:
+        """Alias of ``run_stall_interrupt``. Escalate awaits the decision hook.
+
+        True means the stall is already settled (the turn came back, or the
+        host was already killed and ``fail_job(kill_host=False)`` ran).
+        False means grace expired. Escalate then awaits the hook once.
+        """
+        from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout
+
+        from .stall_grading import run_stall_interrupt
+
+        reason = f"job stalled >{stall_timeout_seconds()}s (session {stalled.session_id})"
+        result = await run_stall_interrupt(
+            watchdog=self._watchdog,
+            host=self._session_hosts.get(stalled.session_id),
+            job=stalled,
+            fail_job=self._fail_job,
+            emit=self._emit_stall_event,
+            reason=reason,
+            grace_seconds=resolve_timeout("appserver.stall_grace_seconds"),
+        )
+        self._last_stall_result = result
+        return result.get("action") != "needs_decision"
+
+    def _forget_job_prompt(self, job_id: str) -> None:
+        """Drop the stall snapshot once the job has a terminal or a restart copy."""
+        self._job_prompts.pop(job_id, None)
+        self._stall_restart_budgets.pop(job_id, None)
+
+    async def _cancel_stalled_task(self, job_id: str) -> None:
+        task = self._job_tasks.get(job_id)
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _restart_worker_continue(self, stalled: ActiveJob) -> None:
+        """Kill the dead worker, start another, and rerun the original prompt.
+
+        The new turn goes through ``_handle_prompt`` (worker ``Session.prompt``).
+        The old request id is finalized once, with ``kill_host=False``, because
+        the old host was already removed above. Pending journal attempts are
+        not replayed; a new prompt does not reuse the old attempt id.
+        """
+        session_id = stalled.session_id
+        snapshot = dict(self._job_prompts.get(stalled.job_id) or {})
+        prompt = str(snapshot.get("text") or "")
+        budget = self._stall_restart_budgets.get(stalled.job_id)
+        await self._cancel_stalled_task(stalled.job_id)
+        await self._kill_session_host(session_id)
+        self._stall_engines.pop(session_id, None)
+        spawned = False
+        try:
+            if prompt.strip():
+                await self._spawn_session_host(session_id)
+                spawned = True
+            self._sessions.hydrate(session_id)
+        finally:
+            if stalled.job_id not in self._resolved_jobs:
+                reason = (
+                    f"job stalled >{stall_timeout_seconds()}s (session {session_id})"
+                )
+                await self._fail_job(
+                    session_id=session_id,
+                    job_id=stalled.job_id,
+                    request_id=stalled.request_id,
+                    code=-32004,
+                    message=reason,
+                    kill_host=False,
+                )
+        if not spawned or not prompt.strip():
+            self._forget_job_prompt(stalled.job_id)
+            return
+        new_request_id = f"restart-{uuid.uuid4().hex}"
+        params: dict[str, Any] = {
+            "session_id": session_id,
+            "text": prompt,
+            "request_id": new_request_id,
+            "mode": str(snapshot.get("mode") or "build"),
+        }
+        if snapshot.get("permission_mode") is not None:
+            params["permission_mode"] = snapshot["permission_mode"]
+        if snapshot.get("thinking_expanded") is not None:
+            params["thinking_expanded"] = snapshot["thinking_expanded"]
+        if budget is not None and budget > 0:
+            params["timeout_seconds"] = budget
+        self._forget_job_prompt(stalled.job_id)
+        task = asyncio.create_task(self._handle_prompt(params, new_request_id))
+        self._prompt_tasks.add(task)
+        task.add_done_callback(self._prompt_tasks.discard)
 
     async def _emit_stall_event(self, message: dict) -> None:
         """Stall 分级事件走与 event/job_status 相同的通知通道。"""
@@ -865,14 +1134,14 @@ class AppServer:
 
     async def _handle_stalled_job(self, stalled: ActiveJob) -> None:
         # 废弃代码（2026-10-08 版）：此处直接 _fail_job(code=-32004, kill_host=True)。
-        # 已路由到 stall_grading.escalate_stalled_job。残余 task cancel 留在外壳。
+        # 唯一分级入口是 escalate_stalled_job。_try_turn_cancel 只是它的
+        # interrupt/grace 别名；hook 在 escalate 里 await 一次。
         from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout
 
-        from .stall_grading import default_decision_hook, escalate_stalled_job
+        from .stall_grading import escalate_stalled_job
 
-        task = self._job_tasks.get(stalled.job_id)
-        # 不把 _default_config 的镜像 20 当成用户 cfg，否则 env 永远盖不过默认值。
-        # 缺键时 resolve_timeout 走 env，再走注册表默认 20。
+        self._last_stall_result = None
+        was_tracked = stalled.job_id in self._watchdog.jobs
         result = await escalate_stalled_job(
             watchdog=self._watchdog,
             host=self._session_hosts.get(stalled.session_id),
@@ -881,16 +1150,37 @@ class AppServer:
             emit=self._emit_stall_event,
             stall_seconds=stall_timeout_seconds(),
             grace_seconds=resolve_timeout("appserver.stall_grace_seconds"),
-            decision_hook=default_decision_hook,
+            decision_hook=self._stall_decision_hook,
+            turn_cancel=self._try_turn_cancel,
         )
         if result.get("action") == "restart_requested":
+            if was_tracked and stalled.job_id not in self._watchdog.jobs:
+                self._forget_job_prompt(stalled.job_id)
+                return
+            if not self._record_restart_increment(
+                stalled.session_id, started_at=float(stalled.started_at)
+            ):
+                reason = str(result.get("reason") or "")
+                if not reason:
+                    reason = (
+                        f"job stalled >{stall_timeout_seconds()}s "
+                        f"(session {stalled.session_id})"
+                    )
+                await self._fail_job(
+                    session_id=stalled.session_id,
+                    job_id=stalled.job_id,
+                    request_id=stalled.request_id,
+                    code=-32004,
+                    message=reason,
+                    kill_host=True,
+                    degrade_reason=reason,
+                )
+                await self._cancel_stalled_task(stalled.job_id)
+                return
             await self._restart_worker_continue(stalled)
             return
         if result.get("action") in {"legacy_kill", "killed"}:
-            if task is not None and not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            await self._cancel_stalled_task(stalled.job_id)
 
     async def _handle_initialize(self, params: dict[str, Any], request_id: Any) -> None:
         if self._shutdown:
@@ -1140,6 +1430,13 @@ class AppServer:
             else bool(thinking_expanded)
         )
         self._thinking_expanded = expand
+        self._job_prompts[job_id] = {
+            "text": text,
+            "mode": mode,
+            "permission_mode": permission_mode,
+            "thinking_expanded": expand,
+            "timeout_seconds": wall_timeout,
+        }
 
         current = asyncio.current_task()
         if current is not None:
@@ -1298,6 +1595,7 @@ class AppServer:
                     self._schedule_session_title_for_events(session_id, after_success=True)
                 await self._respond(request_id, result)
                 self._resolved_jobs.add(job_id)
+                self._forget_job_prompt(job_id)
         finally:
             self._job_tasks.pop(job_id, None)
 

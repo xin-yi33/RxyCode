@@ -238,6 +238,7 @@ class DesktopTaskStore:
         title_is_manual: Any = _UNSET,
         title_source: Any = _UNSET,
         title_llm_pass: Any = _UNSET,
+        restart_gate: Any = _UNSET,
     ) -> dict[str, Any]:
         old = self._data["tasks"].get(session_id)
         self._claim(session_id)
@@ -291,6 +292,9 @@ class DesktopTaskStore:
                 "reporting_status": "not_reported",
             },
         }
+        gate = _pick(restart_gate, "restart_gate")
+        if isinstance(gate, dict):
+            task["restart_gate"] = gate
         self._data["tasks"][session_id] = task
         self._save()
         return dict(task)
@@ -304,6 +308,24 @@ class DesktopTaskStore:
     def get(self, session_id: str) -> dict[str, Any] | None:
         task = self._data["tasks"].get(session_id)
         return dict(task) if isinstance(task, dict) else None
+
+    def update_restart_gate(self, session_id: str, gate: dict[str, Any]) -> bool:
+        """Persist the stall-restart gate on the session row.
+
+        A later upsert that omits ``restart_gate`` keeps this value. The
+        ledger of granted seconds stays in the worker and is not written here.
+        """
+        task = self._data["tasks"].get(session_id)
+        if not isinstance(task, dict):
+            return False
+        self._claim(session_id)
+        task["restart_gate"] = {
+            "restart_count": int(gate.get("restart_count") or 0),
+            "first_restart_at": gate.get("first_restart_at"),
+        }
+        task["updated_at"] = _now()
+        self._save()
+        return True
 
     def rename(self, session_id: str, title: str) -> dict[str, Any]:
         task = self._require(session_id)

@@ -520,6 +520,27 @@ class SessionStore:
         self._persist(record)
         return record
 
+    def hydrate(self, session_id: str | None = None) -> AppSessionRecord | None:
+        """Reload session rows from the durable task store after a worker restart.
+
+        The appserver process stays up. The worker process does not, so the
+        next prompt must see the persisted row rather than a worker-local copy.
+        """
+        if self._task_store is None:
+            return self.get(session_id) if session_id else None
+        if session_id is None:
+            for task in self._task_store.list(include_trashed=True):
+                sid = str(task.get("session_id") or "")
+                if sid:
+                    self._sessions[sid] = self._from_task(task)
+            return None
+        task = self._task_store.get(session_id)
+        if not isinstance(task, dict):
+            return self.get(session_id)
+        record = self._from_task(task)
+        self._sessions[session_id] = record
+        return record
+
     def _require(self, session_id: str) -> AppSessionRecord:
         record = self._sessions.get(session_id)
         if record is None:
