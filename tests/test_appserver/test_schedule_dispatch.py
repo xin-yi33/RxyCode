@@ -271,6 +271,38 @@ def test_mo_f4_6_01_tick_dispatch_pending_then_revive_on_restart(tmp_path, monke
     assert len(fires) == 1                              # 复活只 fire-once：再补恰好 1 次。历史 tick 不删。
 
 
+def test_revive_redelivers_only_the_persisted_inflight_slot(tmp_path, monkeypatch):
+    """A finished tick stays one fire. The next round saved by _open_inflight still replays once."""
+    monkeypatch.setenv("RXYCODE_APPSERVER_MULTI", "1")
+    svc = _service(tmp_path, consumer=False)
+    start = datetime(2026, 10, 1, 9, 0, 0)
+    job = svc.create(
+        rule={"kind": "interval", "every": 1, "unit": "minutes"},
+        action=_interval_action(),
+        now=start,
+    )
+    job_id = job["id"]
+    fired = svc.tick(now=start + timedelta(seconds=90))
+    assert fired and fired[0]["ok"] is True
+    before = [
+        row for row in svc.audit()
+        if row.get("action") == "fire" and row.get("job_id") == job_id
+    ]
+    assert len(before) == 1
+    svc._open_inflight(svc._jobs[job_id])
+    rebooted = _service(tmp_path, consumer=False)
+    rebooted.restore_after_restart(revive_orphans=True)
+    fires = [
+        row for row in rebooted.audit()
+        if row.get("action") == "fire" and row.get("job_id") == job_id
+    ]
+    assert len(fires) == 2
+    assert fires[0] == before[0]
+    assert rebooted._jobs[job_id]["orphan"] is False
+    assert rebooted._jobs[job_id].get("inflight_slot") is None
+    assert len(rebooted.sessions.enqueued) == 1
+
+
 def test_mo_f4_6_02_multi_window_does_not_reclaim_orphan(tmp_path, monkeypatch):
     """layer=module MO-F4-6-02（多窗口不互相 reclaim——真实持久文件双实例）
     窗口 A 崩溃留 orphan（run_status=running）；窗口 B（`local_session_ids` 只含自己的

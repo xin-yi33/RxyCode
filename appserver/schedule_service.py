@@ -200,9 +200,21 @@ class ScheduleService:
         if not job.get("enabled", True):
             raise ScheduleError("SCHEDULE_DISABLED", f"{job_id} is disabled")
         stamp = now or _now()
-        # 同步补投。不走 fire()/_sync：在已有事件循环里会留下未 await 的协程，
-        # 并且失败时已经把 orphan 清掉。失败必须原样抛出，让 restore 记 skipped。
-        result = self._run_action(job)
+        # Dedupe this attempt, not every past success. A persisted inflight_slot
+        # is the round that died before its fire row. No inflight slot plus an
+        # existing ok fire means the tick already finished; keep that row and
+        # do not append another. A crash that never succeeded still dispatches.
+        slot = job.get("inflight_slot")
+        delivered_slot = slot or job.get("next_fire")
+        if slot:
+            should_dispatch = not self._slot_delivered(job_id, slot)
+        else:
+            should_dispatch = not self._slot_delivered(job_id, None)
+        result = job.get("last_result")
+        if should_dispatch:
+            # 同步补投。不走 fire()/_sync：在已有事件循环里会留下未 await 的协程，
+            # 并且失败时已经把 orphan 清掉。失败必须原样抛出，让 restore 记 skipped。
+            result = self._run_action(job)
         if inspect.isawaitable(result):
             close = getattr(result, "close", None)
             if callable(close):
@@ -218,10 +230,38 @@ class ScheduleService:
             # 从 now 重算，不回填已经错过的 interval。
             job["next_fire"] = _iso(next_fire(job["rule"], stamp))
         job["last_result"] = result
-        self._audit_row(action="fire", job_id=job_id, status="ok", result=result)
+        job["inflight_slot"] = None
+        if should_dispatch:
+            self._audit_row(
+                action="fire",
+                job_id=job_id,
+                status="ok",
+                result=result,
+                slot=delivered_slot,
+            )
         self._audit_row(action="revive", job_id=job_id, status="revived")
         self._save()
         return {"id": job_id, "ok": True, "orphan": False, "dispatch": result}
+
+    def _slot_delivered(self, job_id: str, slot: str | None) -> bool:
+        """True when this job already has an ok fire.
+
+        A slot limits the match to that round. None means any ok fire.
+        """
+        for row in self._audit:
+            if row.get("action") != "fire" or row.get("status") != "ok":
+                continue
+            if row.get("job_id") != job_id:
+                continue
+            if slot is None or row.get("slot") == slot:
+                return True
+        return False
+
+    def _open_inflight(self, job: dict[str, Any]) -> None:
+        """Save the slot about to be delivered. Revive replays only this slot."""
+        job["run_status"] = "running"
+        job["inflight_slot"] = job.get("next_fire")
+        self._save()
 
     def list_jobs(self) -> dict[str, Any]:
         return {"jobs": list(self._jobs.values()), "queue": list(self._queue), "running": sorted(self._running)}
@@ -362,24 +402,28 @@ class ScheduleService:
     async def _execute_async(self, job: dict[str, Any], now: datetime) -> dict[str, Any]:
         job_id = job["id"]
         self._running.add(job_id)
-        job["run_status"] = "running"
-        self._save()
+        slot = job.get("next_fire")
+        self._open_inflight(job)
         async with self._sem:
             try:
                 result = self._run_action(job)
                 if inspect.isawaitable(result):
                     result = await result
                 job["run_status"] = "idle"
+                job["inflight_slot"] = None
                 job["last_result"] = result
                 if (job.get("rule") or {}).get("once"):
                     job["enabled"] = False
                     job["next_fire"] = None
                 else:
                     job["next_fire"] = _iso(next_fire(job["rule"], now))
-                self._audit_row(action="fire", job_id=job_id, status="ok", result=result)
+                self._audit_row(
+                    action="fire", job_id=job_id, status="ok", result=result, slot=slot
+                )
                 return {"ok": True, "id": job_id, "result": result}
             except ScheduleError as exc:
                 job["run_status"] = "failed"
+                job["inflight_slot"] = None
                 job["last_result"] = {"error_code": exc.code, "message": exc.message}
                 if (job.get("rule") or {}).get("once"):
                     job["enabled"] = False
@@ -390,6 +434,7 @@ class ScheduleService:
                 return {"ok": False, "id": job_id, "error_code": exc.code, "message": exc.message}
             except Exception as exc:
                 job["run_status"] = "failed"
+                job["inflight_slot"] = None
                 job["last_result"] = {"error_code": "SCHEDULE_FAILED", "message": str(exc)}
                 if (job.get("rule") or {}).get("once"):
                     job["enabled"] = False

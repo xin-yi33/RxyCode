@@ -99,7 +99,11 @@
   03 fallback 的生产行为仍在：interrupt RPC 实际失败才发 stop，原 prompt 只回一条 error。
   恢复原文后的 `tests/e2e/phase_p` 是 `4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。
   失败是 02、06、08、09。08 仍是没有 `protocol.todo_snapshot`。没有补这个文件。
-  MO-F4-6-01 的 `len(fires)` 收回 1。历史 fire 还在，所以这条是 `assert 2 == 1`，没有把它写成通过。
+  MO-F4-6-01 的 `len(fires)` 仍是 1。历史 fire 不删。
+  复活按本轮去重，不按任意历史成功。`_execute_async` 开工时把 `inflight_slot`
+  写成当时的 `next_fire`。这个槽还没有成功 fire，复活就补投一次。
+  没有 `inflight_slot`、但已经有成功 fire（MO-F4-6-01 只把 run_status 改回 running）
+  则保留那条历史 fire，不再追加。历史审计行不删。
 - **shell 内部 deadline**：`utils/shell.py` 的到点清理不跟随外层续期。这是 R-11，仍是未做项。
 - **协议版本**：没有因为 `event/timeout_decision` 而提升 `PROTOCOL_VERSION`。
 
@@ -146,6 +150,11 @@
   `test_u_p7_02` 仍 passed。还原后 3 passed。
   `granted = requested` 时 `test_u_p2_02` 是 `assert 2400.0 == 50.0`，
   `test_u_p2_04` 仍 passed。还原后 2 passed。`core/timeout_decision.py` 的 diff 为空。
+- 按 `inflight_slot` 去重之后：Fix4 单元包加 `tests/e2e/fix4` 是 79 passed，33.71s，退出码 0。
+  合并门禁 `tests/contract tests/test_appserver tests/test_cache tests/test_core` 是
+  9176 passed，4 skipped，1432.53s，退出码 0。4 条 skip 与先前相同。
+  Phase P 单元、兼容和 `tests/e2e/phase_p` 是 `4 failed, 57 passed, 17 warnings in 32.09s`，
+  退出码 1。失败仍是 E2E-02、06、08、09。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条

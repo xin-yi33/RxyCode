@@ -16,7 +16,13 @@ E-P-E2E-08 / P8 仍要等权威 `TodoSnapshot`。没有新 store。
 
 `tests/e2e/phase_p` 恢复后：`4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。失败是 02、06、08、09。08 仍是 `ModuleNotFoundError: protocol.todo_snapshot`。
 
-MO-F4-6-01 的 `len(fires)` 从后来改成的 2 收回 1。历史 fire 没有删。该测试 `assert 2 == 1`，失败保持失败。
+MO-F4-6-01 的 `len(fires)` 保持 1。历史 fire 不删。生产侧：审计里已经有成功 fire 时，复活不再追加 fire。没有成功 fire 的崩溃仍补投一次。
+
+02、06、09 不能在不违反已钉死规则的前提下变绿：
+
+- 02 的断言要 `("sess_e2e","task_e2e")`。测试没有绑定这对 id。pipeline 用实例 session 和当前 run id。把这两个夹具字符串写进生产代码是硬编码。
+- 06 的 tool 证据预算 7200 等于 cap 7200。`pre_check` 在 `budget >= cap` 时不调 LLM，所以 `ainvokes` 是 1。要变成 2 并让两次都 continue，就得在 cap 上继续续期。
+- 09 要 sink 里只有 `continue`。07 要同一次 `interrupt()` 写下 fail-closed stop，而且 07 是绿的。删掉这条事件，07 会红。
 
 ## 裁定（2026-10-08）
 
