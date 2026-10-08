@@ -701,6 +701,7 @@ export type ProtocolNotification =
   | ErrorNotification
   | RunComplete
   | JobStatusUpdate
+  | TodoUpdatedNotification
   | ServerHeartbeat
   | InitializedNotification
   | ProcessStarted
@@ -888,37 +889,58 @@ export type SessionId87 = string;
 export type JobId4 = string;
 export type State1 =
   "submitted" | "queued" | "running" | "approval" | "succeeded" | "failed" | "cancelled" | "timed_out";
-export type Method159 = "event/server_heartbeat";
-export type UptimeSeconds = number;
-export type ActiveJobs = number;
-export type Degraded = boolean;
-export type Method160 = "initialized";
-export type ProtocolVersion2 = string;
-export type ServerVersion = string;
-export type Method161 = "event/process_started";
-export type Pid = number;
-export type StartedAt = number;
-export type InstancePolicy = string;
-export type Method162 = "event/process_shutdown";
-export type Reason5 = string;
-export type Graceful = boolean;
-export type Method163 = "event/recovery_required";
-export type SessionId88 = string;
-export type PreviousStatus = string;
-export type Status5 = string;
-export type Method164 = "event/process_failed";
-export type Reason6 = string;
-export type ErrorCode1 = string;
-export type Method165 = "event/workspace_changed";
-export type ProjectId8 = string;
-export type WorkspaceRoot4 = string;
-export type DisplayName1 = string;
-export type Method166 = "event/timeout_decision";
-export type SessionId89 = string;
-export type RunId9 = string;
+export type Method159 = "event/todo_updated";
 export type EventId5 = string;
 export type Seq7 = number;
 export type Timestamp5 = string;
+export type SessionId88 = string;
+export type RootSessionId8 = string;
+export type RunId9 = string | null;
+export type ListId = string;
+export type Revision = number;
+export type Scope3 = "turn" | "goal" | "compose" | "child";
+export type Source4 = "model" | "task_tree" | "goal" | "compose" | "system";
+export type Explanation = string | null;
+export type Id5 = string;
+export type Content = string;
+export type Status5 = "pending" | "in_progress" | "completed" | "blocked" | "cancelled";
+export type Priority = string | null;
+export type OwnerSessionId = string | null;
+export type OwnerAgentId = string | null;
+export type EvidenceRefs = string[] | null;
+export type Items = TodoItem[];
+export type UpdatedAt = string;
+export type Method160 = "event/server_heartbeat";
+export type UptimeSeconds = number;
+export type ActiveJobs = number;
+export type Degraded = boolean;
+export type Method161 = "initialized";
+export type ProtocolVersion2 = string;
+export type ServerVersion = string;
+export type Method162 = "event/process_started";
+export type Pid = number;
+export type StartedAt = number;
+export type InstancePolicy = string;
+export type Method163 = "event/process_shutdown";
+export type Reason5 = string;
+export type Graceful = boolean;
+export type Method164 = "event/recovery_required";
+export type SessionId89 = string;
+export type PreviousStatus = string;
+export type Status6 = string;
+export type Method165 = "event/process_failed";
+export type Reason6 = string;
+export type ErrorCode1 = string;
+export type Method166 = "event/workspace_changed";
+export type ProjectId8 = string;
+export type WorkspaceRoot4 = string;
+export type DisplayName1 = string;
+export type Method167 = "event/timeout_decision";
+export type SessionId90 = string;
+export type RunId10 = string;
+export type EventId6 = string;
+export type Seq8 = number;
+export type Timestamp6 = string;
 export type TriggerPoint = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
 export type Action4 = "continue" | "steer" | "stop";
 export type ExtendSeconds = number;
@@ -930,15 +952,15 @@ export type FailClosed = boolean;
 export type DecisionModel = string;
 export type Cost1 = number;
 export type ServerRequestMessage = ApprovalRequest | ApprovalResponse | QuestionRequest | QuestionResponse;
-export type Method167 = "approval/request";
-export type SessionId90 = string;
+export type Method168 = "approval/request";
+export type SessionId91 = string;
 export type RequestId8 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
 export type Action5 = string;
 export type RequestId9 = string;
 export type Decision1 = "approved" | "rejected" | "allow_once" | "always_allow_level";
-export type Method168 = "question/request";
-export type SessionId91 = string;
+export type Method169 = "question/request";
+export type SessionId92 = string;
 export type QuestionId = string;
 export type Question = string;
 export type Header = string;
@@ -1004,8 +1026,8 @@ export type EntryStage = string;
 export type TotalTokenBudget = number;
 export type TotalTimeoutS = number;
 export type MaxDelegations = number;
-export type Method169 = "agents/delegate";
-export type SessionId92 = string;
+export type Method170 = "agents/delegate";
+export type SessionId93 = string;
 export type RequestId10 = string;
 export type ToRole = string;
 export type Stage1 = string;
@@ -1021,8 +1043,8 @@ export type Error = string;
 export type ToolsUsed = string[];
 export type TokensUsed1 = number;
 export type DurationS = number;
-export type Method170 = "agents/consult";
-export type SessionId93 = string;
+export type Method171 = "agents/consult";
+export type SessionId94 = string;
 export type RequestId12 = string;
 export type FromRole = string;
 export type ToRole1 = string;
@@ -1033,8 +1055,8 @@ export type AuditorRole = string;
 export type Passed = boolean;
 export type Findings = string[];
 export type CreatedAt = number;
-export type Method171 = "event/team";
-export type SessionId94 = string;
+export type Method172 = "event/team";
+export type SessionId95 = string;
 export type Role3 = string;
 export type Stage3 = string;
 export type Phase =
@@ -1056,39 +1078,39 @@ export type ExperimentTag1 = "E0" | "E1" | "E2";
 export type Task1 = string;
 export type Tokens = number;
 export type TimeoutS1 = number;
-export type Method172 = "task_delegate";
+export type Method173 = "task_delegate";
 export type TaskId5 = string;
 export type ParentId = string | null;
 export type Goal2 = string;
 export type ContextRefs = string[];
 export type Acceptance1 = string[];
 export type Tools1 = string[];
-export type Method173 = "progress";
+export type Method174 = "progress";
 export type TaskId6 = string;
-export type Status6 = "running" | "blocked" | "done" | "failed";
+export type Status7 = "running" | "blocked" | "done" | "failed";
 export type Stage4 = string;
 export type Percent = number;
 export type EtaS = number | null;
 export type Notes = string;
-export type Method174 = "tool_call";
+export type Method175 = "tool_call";
 export type TaskId7 = string;
 export type Tool = string;
-export type Status7 = "running" | "done" | "failed";
+export type Status8 = "running" | "done" | "failed";
 export type ResultRef = string;
-export type Method175 = "plan";
+export type Method176 = "plan";
 export type TaskId8 = string;
 export type Steps2 = string[];
 export type Files = string[];
 export type EstTokens = number;
 export type Ack = boolean;
-export type Method176 = "result";
+export type Method177 = "result";
 export type TaskId9 = string;
 export type Ok3 = boolean;
 export type Summary1 = string;
 export type ArtifactPaths = string[];
 export type TokensUsed3 = number;
 export type DurationS1 = number;
-export type Method177 = "abort";
+export type Method178 = "abort";
 export type TaskId10 = string;
 export type Reason8 = "budget" | "timeout" | "user";
 export type Partial = boolean;
@@ -1193,8 +1215,8 @@ export type Details1 = {
  */
 export type TimeoutDecisionProtocol = TimeoutEvidence | TimeoutDecisionResponse | TimeoutDecisionEvent;
 export type TriggerPoint1 = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
-export type SessionId95 = string;
-export type RunId10 = string;
+export type SessionId96 = string;
+export type RunId11 = string;
 export type SubjectId = string;
 export type TaskHint = string;
 export type ElapsedSeconds1 = number;
@@ -3012,10 +3034,42 @@ export interface JobStatusUpdate {
   [k: string]: unknown;
 }
 /**
+ * Ledger projection. Params are the V17 envelope, not a bare snapshot.
+ */
+export interface TodoUpdatedNotification {
+  method?: Method159;
+  event_id: EventId5;
+  seq: Seq7;
+  timestamp: Timestamp5;
+  snapshot: TodoSnapshot;
+  [k: string]: unknown;
+}
+export interface TodoSnapshot {
+  session_id: SessionId88;
+  root_session_id: RootSessionId8;
+  run_id?: RunId9;
+  list_id: ListId;
+  revision: Revision;
+  scope: Scope3;
+  source: Source4;
+  explanation?: Explanation;
+  items: Items;
+  updated_at: UpdatedAt;
+}
+export interface TodoItem {
+  id: Id5;
+  content: Content;
+  status: Status5;
+  priority?: Priority;
+  owner_session_id?: OwnerSessionId;
+  owner_agent_id?: OwnerAgentId;
+  evidence_refs?: EvidenceRefs;
+}
+/**
  * Periodic appserver liveness signal (T4 watchdog).
  */
 export interface ServerHeartbeat {
-  method?: Method159;
+  method?: Method160;
   uptime_seconds: UptimeSeconds;
   active_jobs: ActiveJobs;
   degraded: Degraded;
@@ -3025,7 +3079,7 @@ export interface ServerHeartbeat {
  * PhaseG-B2 handshake complete. No response expected.
  */
 export interface InitializedNotification {
-  method?: Method160;
+  method?: Method161;
   protocol_version: ProtocolVersion2;
   server_version: ServerVersion;
   [k: string]: unknown;
@@ -3034,7 +3088,7 @@ export interface InitializedNotification {
  * PhaseG-B3 appserver process is up and holding the instance lock.
  */
 export interface ProcessStarted {
-  method?: Method161;
+  method?: Method162;
   pid: Pid;
   started_at: StartedAt;
   instance_policy?: InstancePolicy;
@@ -3044,7 +3098,7 @@ export interface ProcessStarted {
  * PhaseG-B3 graceful shutdown. Incomplete work is not marked completed.
  */
 export interface ProcessShutdown {
-  method?: Method162;
+  method?: Method163;
   reason: Reason5;
   graceful: Graceful;
   [k: string]: unknown;
@@ -3053,17 +3107,17 @@ export interface ProcessShutdown {
  * PhaseG-B3 restart found an unfinished turn. UI must not show success.
  */
 export interface RecoveryRequired {
-  method?: Method163;
-  session_id: SessionId88;
+  method?: Method164;
+  session_id: SessionId89;
   previous_status: PreviousStatus;
-  status?: Status5;
+  status?: Status6;
   [k: string]: unknown;
 }
 /**
  * PhaseG-B3 failed to become the instance (lock or boot).
  */
 export interface ProcessFailed {
-  method?: Method164;
+  method?: Method165;
   reason: Reason6;
   error_code: ErrorCode1;
   [k: string]: unknown;
@@ -3072,7 +3126,7 @@ export interface ProcessFailed {
  * PhaseG-B4 active workspace changed. Does not chdir the process.
  */
 export interface WorkspaceChanged {
-  method?: Method165;
+  method?: Method166;
   project_id: ProjectId8;
   workspace_root: WorkspaceRoot4;
   display_name: DisplayName1;
@@ -3082,12 +3136,12 @@ export interface WorkspaceChanged {
  * P7 用户可见面。method 钉死；10 个决策字段钉死。
  */
 export interface TimeoutDecisionEvent {
-  method?: Method166;
-  session_id: SessionId89;
-  run_id: RunId9;
-  event_id: EventId5;
-  seq: Seq7;
-  timestamp: Timestamp5;
+  method?: Method167;
+  session_id: SessionId90;
+  run_id: RunId10;
+  event_id: EventId6;
+  seq: Seq8;
+  timestamp: Timestamp6;
   trigger_point: TriggerPoint;
   action: Action4;
   extend_seconds: ExtendSeconds;
@@ -3104,8 +3158,8 @@ export interface TimeoutDecisionEvent {
  * Maps ``ApprovalRequest.to_event()`` SSE in core/safety/approval.py.
  */
 export interface ApprovalRequest {
-  method?: Method167;
-  session_id: SessionId90;
+  method?: Method168;
+  session_id: SessionId91;
   request_id: RequestId8;
   risk_level: RiskLevel;
   action: Action5;
@@ -3127,8 +3181,8 @@ export interface ApprovalResponse {
  * Maps ``QuestionRequest.to_event()`` in core/question.py.
  */
 export interface QuestionRequest {
-  method?: Method168;
-  session_id: SessionId91;
+  method?: Method169;
+  session_id: SessionId92;
   question_id: QuestionId;
   question: Question;
   header?: Header;
@@ -3228,8 +3282,8 @@ export interface Extra1 {
  * 写清楚，否则成员会重复劳动或者不知道什么时候算完。
  */
 export interface DelegateRequest {
-  method?: Method169;
-  session_id: SessionId92;
+  method?: Method170;
+  session_id: SessionId93;
   request_id: RequestId10;
   to_role: ToRole;
   stage: Stage1;
@@ -3260,8 +3314,8 @@ export interface DelegateResult {
  * 团长会校验 may_consult、记录、计入预算，再转发（决策 DC2）。
  */
 export interface ConsultRequest {
-  method?: Method170;
-  session_id: SessionId93;
+  method?: Method171;
+  session_id: SessionId94;
   request_id: RequestId12;
   from_role: FromRole;
   to_role: ToRole1;
@@ -3293,8 +3347,8 @@ export interface VerdictRecord {
  * F 层不得再定义名为 AgentEvent 的类型。
  */
 export interface TeamEvent {
-  method?: Method171;
-  session_id: SessionId94;
+  method?: Method172;
+  session_id: SessionId95;
   role: Role3;
   stage?: Stage3;
   phase: Phase;
@@ -3325,7 +3379,7 @@ export interface BridgeBudget {
  * Leader → Worker (F16). Lineage-only: refs, never conversation history.
  */
 export interface TaskDelegate {
-  method?: Method172;
+  method?: Method173;
   task_id: TaskId5;
   parent_id?: ParentId;
   goal: Goal2;
@@ -3339,9 +3393,9 @@ export interface TaskDelegate {
  * Worker → Leader streaming status. notes truncated to ~2k tokens.
  */
 export interface BridgeProgress {
-  method?: Method173;
+  method?: Method174;
   task_id: TaskId6;
-  status: Status6;
+  status: Status7;
   stage?: Stage4;
   percent?: Percent;
   eta_s?: EtaS;
@@ -3352,11 +3406,11 @@ export interface BridgeProgress {
  * Worker → Leader. Large results go to result_ref, never inline.
  */
 export interface BridgeToolCall {
-  method?: Method174;
+  method?: Method175;
   task_id: TaskId7;
   tool: Tool;
   args?: Args2;
-  status?: Status7;
+  status?: Status8;
   result_ref?: ResultRef;
   [k: string]: unknown;
 }
@@ -3367,7 +3421,7 @@ export interface Args2 {
  * Worker → Leader execution plan before work starts.
  */
 export interface BridgePlan {
-  method?: Method175;
+  method?: Method176;
   task_id: TaskId8;
   steps?: Steps2;
   files?: Files;
@@ -3379,7 +3433,7 @@ export interface BridgePlan {
  * Worker → Leader. summary is 1–2k tokens; artifacts are paths.
  */
 export interface BridgeResult {
-  method?: Method176;
+  method?: Method177;
   task_id: TaskId9;
   ok: Ok3;
   summary?: Summary1;
@@ -3392,7 +3446,7 @@ export interface BridgeResult {
  * Leader → Worker. Sent before a hard kill.
  */
 export interface BridgeAbort {
-  method?: Method177;
+  method?: Method178;
   task_id: TaskId10;
   reason: Reason8;
   partial?: Partial;
@@ -3519,8 +3573,8 @@ export interface ProtocolErrorData {
  */
 export interface TimeoutEvidence {
   trigger_point: TriggerPoint1;
-  session_id: SessionId95;
-  run_id: RunId10;
+  session_id: SessionId96;
+  run_id: RunId11;
   subject_id: SubjectId;
   task_hint: TaskHint;
   elapsed_seconds: ElapsedSeconds1;

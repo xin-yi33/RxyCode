@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, Strict, model_validator
 
 from .timeout_decision import TimeoutDecisionEvent
+from .todo import TodoSnapshot
 from .types import JobState, JsonObject, RunStatus
 
 
@@ -380,6 +381,16 @@ class RunComplete(BaseModel):
     status: RunStatus
 
 
+class TodoUpdatedNotification(BaseModel):
+    """Ledger projection. Params are the V17 envelope, not a bare snapshot."""
+
+    method: Literal["event/todo_updated"] = "event/todo_updated"
+    event_id: str
+    seq: int
+    timestamp: str
+    snapshot: TodoSnapshot
+
+
 class JobStatusUpdate(BaseModel):
     """Background job state for watchdog / appserver (submitted|running|failed)."""
 
@@ -474,6 +485,7 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     ErrorNotification,
     RunComplete,
     JobStatusUpdate,
+    TodoUpdatedNotification,
     ServerHeartbeat,
     InitializedNotification,
     ProcessStarted,

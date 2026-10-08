@@ -6324,6 +6324,211 @@
       "title": "JobStatusUpdate",
       "type": "object"
     },
+    "TodoItem": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed",
+            "blocked",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Priority"
+        },
+        "owner_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Session Id"
+        },
+        "owner_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Agent Id"
+        },
+        "evidence_refs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Refs"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "status"
+      ],
+      "title": "TodoItem",
+      "type": "object"
+    },
+    "TodoSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "root_session_id": {
+          "title": "Root Session Id",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "list_id": {
+          "title": "List Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "integer"
+        },
+        "scope": {
+          "enum": [
+            "turn",
+            "goal",
+            "compose",
+            "child"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "model",
+            "task_tree",
+            "goal",
+            "compose",
+            "system"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "explanation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Explanation"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "root_session_id",
+        "list_id",
+        "revision",
+        "scope",
+        "source",
+        "items",
+        "updated_at"
+      ],
+      "title": "TodoSnapshot",
+      "type": "object"
+    },
+    "TodoUpdatedNotification": {
+      "description": "Ledger projection. Params are the V17 envelope, not a bare snapshot.",
+      "properties": {
+        "method": {
+          "const": "event/todo_updated",
+          "default": "event/todo_updated",
+          "title": "Method",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/TodoSnapshot"
+        }
+      },
+      "required": [
+        "event_id",
+        "seq",
+        "timestamp",
+        "snapshot"
+      ],
+      "title": "TodoUpdatedNotification",
+      "type": "object"
+    },
     "ServerHeartbeat": {
       "description": "Periodic appserver liveness signal (T4 watchdog).",
       "properties": {
@@ -8856,6 +9061,9 @@
         },
         {
           "$ref": "#/$defs/JobStatusUpdate"
+        },
+        {
+          "$ref": "#/$defs/TodoUpdatedNotification"
         },
         {
           "$ref": "#/$defs/ServerHeartbeat"

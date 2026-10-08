@@ -109,6 +109,9 @@ def _save_tasks(directory: Path, data: dict) -> None:
         p,
         json.dumps(data, indent=2, ensure_ascii=False),
     )
+    from .todo_events import emit_saved_document
+
+    emit_saved_document(directory.name, data)
 
 
 def _manage_tasks_locked(

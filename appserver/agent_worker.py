@@ -19,6 +19,26 @@ from .bootstrap import bootstrap_agent
 from .emitter import model_to_notification
 from .jsonrpc import StreamCoalescer, stream_coalesce_enabled, write_message
 from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
+
+
+def bind_worker_todo_sink(emit) -> None:
+    """Send ledger writes out on the worker's existing notification chain."""
+    from RxyCode.RxyCode1_1_0.protocol.notifications import TodoUpdatedNotification
+    from RxyCode.RxyCode1_1_0.protocol.todo import TodoSnapshot
+    from RxyCode.RxyCode1_1_0.tools.todo_events import bind_todo_sink
+
+    def forward(message: dict) -> None:
+        params = message.get("params") or {}
+        emit(
+            TodoUpdatedNotification(
+                event_id=str(params.get("event_id") or ""),
+                seq=int(params.get("seq") or 0),
+                timestamp=str(params.get("timestamp") or ""),
+                snapshot=TodoSnapshot.model_validate(params.get("snapshot") or {}),
+            )
+        )
+
+    bind_todo_sink(forward)
 from .tui import ProtocolTui
 
 try:
@@ -689,6 +709,7 @@ class AgentWorker:
         heartbeat_task: asyncio.Task[Any] | None = None
         self._prompt_model_active = False
         try:
+            bind_worker_todo_sink(emit)
             cancel_prewarm = getattr(self._agent, "_cancel_background_prewarm", None)
             if callable(cancel_prewarm):
                 await cancel_prewarm()
@@ -782,16 +803,21 @@ class AgentWorker:
             self._mark_answered(request_id)
             return
         finally:
-            if heartbeat_task is not None:
-                heartbeat_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await heartbeat_task
-            # Unified teardown: covers Session construction failures and any
-            # error between coalescer.start() and the prompt body.  Idempotent
-            # when the except branches already wound down.
-            await self._wind_down_stream(tui, coalescer)
-            reset_prompt_context(tokens)
-            self._active_tui = None
+            from RxyCode.RxyCode1_1_0.tools.todo_events import bind_todo_sink
+
+            try:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat_task
+                # Unified teardown: covers Session construction failures and any
+                # error between coalescer.start() and the prompt body.  Idempotent
+                # when the except branches already wound down.
+                await self._wind_down_stream(tui, coalescer)
+                reset_prompt_context(tokens)
+                self._active_tui = None
+            finally:
+                bind_todo_sink(None)
 
         # Ensure notifications (e.g. reasoning_snapshot) reach stdout before
         # the result, so the client never observes the result arrive first.

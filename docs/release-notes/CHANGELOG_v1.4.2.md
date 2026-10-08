@@ -11,6 +11,10 @@
   多于一个 `in_progress`、缺 content、未知状态都拒绝且不落盘。旧 `task` / `task_manage` 读写同一份台账。
   成功写入的工具结果带上这次调用的 `TodoSnapshot`。不另做一次摘要 LLM。
   —— 原因：模型要有一份可写步骤清单，状态条和超时决策以后读同一份，而不是再总结整段上下文。
+- **todo 投影**（`tools/todo_events.py`，`todo/get`）：成功写入发一条 `event/todo_updated`，
+  包络是 `event_id`、`seq`、`timestamp`、`snapshot`。没有台账时 `todo/get` 返回空列表和 revision 0。
+  拒绝写入不发事件。worker 走原来的通知链，回放按快照里的 session 归档，不改四字段包络。
+  —— 原因：界面要读同一份清单，不能自己再造一份。
 - **超时注册表**（`config/timeouts.py`，`ed7bd1cf`）：`TIMEOUT_REGISTRY` 收齐 12 个墙钟键。
   `resolve_timeout` 的优先级是配置、环境变量、默认值，然后再封顶 —— 原因：长任务超时散落在各调用点。
   `ERROR_LIMIT` 没有收进这张表。

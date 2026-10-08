@@ -196,6 +196,7 @@ _REPLAY_EVENT_METHODS = {
     "review/failed",
     "review/cancelled",
     "event/timeout_decision",
+    "event/todo_updated",
 }
 _MAX_REPLAY_TEXT = 24_000
 
@@ -239,6 +240,9 @@ class AppServer:
                 self._task_store
             )
         self._sessions = SessionStore(task_store=self._task_store)
+        from RxyCode.RxyCode1_1_0.tools.todo_events import bind_todo_sink
+
+        bind_todo_sink(self._emit_notification)
         self._execution = ExecutionStore(on_change=self._schedule_execution_event)
         self._permissions = PermissionStore(persistent=not stub)
         self._approval_router = ApprovalRouter()
@@ -506,6 +510,10 @@ class AppServer:
             return
         child_id = params.get("child_session_id")
         sid = params.get("session_id")
+        if method == "event/todo_updated" and not (isinstance(sid, str) and sid):
+            snapshot = params.get("snapshot")
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("session_id"), str):
+                sid = snapshot["session_id"]
         parent_id = params.get("parent_session_id")
         root_id = params.get("root_session_id")
         if isinstance(child_id, str) and child_id:
@@ -1241,8 +1249,8 @@ class AppServer:
         self._prompt_tasks.add(task)
         task.add_done_callback(self._prompt_tasks.discard)
 
-    async def _emit_stall_event(self, message: dict) -> None:
-        """Stall 分级事件走与 event/job_status 相同的通知通道。"""
+    def _emit_notification(self, message: dict) -> None:
+        """event/job_status 与 event/todo_updated 共用的通知出口。"""
         note = {
             "jsonrpc": "2.0",
             "method": message.get("method"),
@@ -1250,6 +1258,10 @@ class AppServer:
         }
         self._persist_notification(note)
         self._schedule_notification(note)
+
+    async def _emit_stall_event(self, message: dict) -> None:
+        """Stall 分级事件走与 event/job_status 相同的通知通道。"""
+        self._emit_notification(message)
         await self._drain_emit_writes()
 
     async def _handle_stalled_job(self, stalled: ActiveJob) -> None:
@@ -2408,6 +2420,16 @@ class AppServer:
             await self._respond_error(request_id, -32603, "fork mutated parent events")
             return
         await self._respond(request_id, self._session_summary(child))
+
+    async def _handle_todo_get(self, params: dict[str, Any], request_id: Any) -> None:
+        from RxyCode.RxyCode1_1_0.tools.todo_events import read_todo_snapshot
+
+        session_id = str(params.get("session_id") or "")
+        if not session_id:
+            await self._respond_error(request_id, -32602, "session_id is required")
+            return
+        snapshot = read_todo_snapshot(session_id)
+        await self._respond(request_id, snapshot.model_dump(mode="json"))
 
     async def _handle_session_tree(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))
@@ -3777,6 +3799,8 @@ class AppServer:
             await self._handle_session_unarchive(params, request_id)
         elif method == "session/items":
             await self._handle_session_items(params, request_id)
+        elif method == "todo/get":
+            await self._handle_todo_get(params, request_id)
         elif method == "turn/start":
             task = asyncio.create_task(self._handle_prompt(params, request_id))
             self._prompt_tasks.add(task)
