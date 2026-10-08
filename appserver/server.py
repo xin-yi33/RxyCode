@@ -1370,6 +1370,15 @@ class AppServer:
         )
         self._claim_window_session(record.session_id)
         self._active_session_id = record.session_id
+        # Stub stall E2E writes session/prompt and immediately looks for the
+        # worker's marker child. send() does not wait, and stub mode does not
+        # warm in the background, so the child does not exist yet. Boot this
+        # one worker before the session response only when that stall seam is on.
+        if (
+            self._stub
+            and os.environ.get("RXYCODE_STUB_STALL_AFTER_PROMPT") == "1"
+        ):
+            await self._warm_session_host(record.session_id)
         await self._respond(
             request_id,
             {
