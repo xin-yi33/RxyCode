@@ -421,6 +421,7 @@ class ToolOrchestrator:
             char for char in text
             if char in "\n\r\t" or ord(char) >= 32
         )
+        snapshot = getattr(result, "snapshot", None)
         text = re.sub(
             r"(?i)\b(api[_-]?key|authorization|password|passwd|secret|token)"
             r"\s*([:=])\s*([^\s,;]+)",
@@ -436,16 +437,18 @@ class ToolOrchestrator:
             )
         except (TypeError, ValueError):
             max_chars = 30000
-        if len(text) <= max_chars:
-            return text
-        head = max_chars * 2 // 3
-        tail = max_chars - head
-        omitted = len(text) - max_chars
-        return (
-            text[:head]
-            + f"\n[tool output truncated: {omitted} chars omitted]\n"
-            + text[-tail:]
-        )
+        if len(text) > max_chars:
+            head = max_chars * 2 // 3
+            tail = max_chars - head
+            omitted = len(text) - max_chars
+            text = (
+                text[:head]
+                + f"\n[tool output truncated: {omitted} chars omitted]\n"
+                + text[-tail:]
+            )
+        if snapshot is not None:
+            return type(result)(text, snapshot)
+        return text
 
     @classmethod
     def _canonical_name(cls, name: str) -> str:
@@ -1580,19 +1583,40 @@ class ToolOrchestrator:
         except Exception as e:
             return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
 
+    async def _invoke_todo_write(self, tool: Any, args: Any):
+        """Return this call's TodoWriteResult. ainvoke would flatten it to str."""
+        coroutine = getattr(tool, "coroutine", None)
+        if coroutine is None or not isinstance(args, dict):
+            return None
+        payload = dict(args)
+        schema = getattr(tool, "args_schema", None)
+        if schema is not None:
+            payload = schema.model_validate(payload).model_dump()
+        resolved = coroutine(**payload)
+        if inspect.isawaitable(resolved):
+            resolved = await resolved
+        return resolved
+
     async def _invoke_async(self, tool: Any, args: Any) -> str:
         # Prefer the tool's own coroutine when present: the attribute is the
         # reliable signal (it may be an async callable object or a decorated
         # wrapper, not just a plain async def), which avoids misrouting async
         # tools to the sync pool.  A callable that does NOT produce an
         # awaitable (e.g. a MagicMock in tests) falls back to the sync path.
+        if getattr(tool, "name", None) == "todo_write":
+            preserved = await self._invoke_todo_write(tool, args)
+            if preserved is not None:
+                return preserved
         if getattr(tool, "coroutine", None) is not None:
             try:
                 payload = args if isinstance(args, dict) else str(args)
                 result = tool.ainvoke(payload)
                 if not inspect.isawaitable(result):
                     return await self._invoke_in_executor(tool, args)
-                return str(await result)
+                resolved = await result
+                if isinstance(resolved, str):
+                    return resolved
+                return str(resolved)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1629,10 +1653,17 @@ class ToolOrchestrator:
         # Prefer the tool's own coroutine when present (see _invoke_async):
         # the attribute itself is the reliable signal, not its exact type; a
         # callable that does not produce an awaitable falls back to sync.
+        if getattr(tool, "name", None) == "todo_write":
+            preserved = await self._invoke_todo_write(tool, args)
+            if preserved is not None:
+                return preserved
         if getattr(tool, "coroutine", None) is not None:
             result = tool.ainvoke(payload)
             if inspect.isawaitable(result):
-                return str(await result)
+                resolved = await result
+                if isinstance(resolved, str):
+                    return resolved
+                return str(resolved)
 
         def invoke_sync() -> str:
             if isinstance(args, dict):

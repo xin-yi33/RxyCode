@@ -7,6 +7,10 @@
 
 ## 新增
 
+- **todo_write**（`tools/todo_write.py`，`protocol/todo.py`）：在现有 `tasks.json` 上做 merge / 整单替换。
+  多于一个 `in_progress`、缺 content、未知状态都拒绝且不落盘。旧 `task` / `task_manage` 读写同一份台账。
+  成功写入的工具结果带上这次调用的 `TodoSnapshot`。不另做一次摘要 LLM。
+  —— 原因：模型要有一份可写步骤清单，状态条和超时决策以后读同一份，而不是再总结整段上下文。
 - **超时注册表**（`config/timeouts.py`，`ed7bd1cf`）：`TIMEOUT_REGISTRY` 收齐 12 个墙钟键。
   `resolve_timeout` 的优先级是配置、环境变量、默认值，然后再封顶 —— 原因：长任务超时散落在各调用点。
   `ERROR_LIMIT` 没有收进这张表。

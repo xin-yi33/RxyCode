@@ -29,6 +29,7 @@ from RxyCode.RxyCode1_1_0.tools.memory_tool import memory_tool
 from RxyCode.RxyCode1_1_0.tools.vision import vision_tool
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import workflow_tool
 from RxyCode.RxyCode1_1_0.tools.task_tool import task_tool
+from RxyCode.RxyCode1_1_0.tools.todo_write import todo_write_tool
 from RxyCode.RxyCode1_1_0.tools.patch import patch_tool
 from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
 from RxyCode.RxyCode1_1_0.tools.open_file import open_file_tool
@@ -108,6 +109,7 @@ def register_builtin_tools(
         # Tool-name freeze (B13): `task` is either the task-list tool
         # (legacy, subagents off) or the subagent dispatch tool (subagents on).
         task_manage_tool if subagents_enabled else task_tool,
+        todo_write_tool,
         vision_tool,
         browser_click_tool,
     ]

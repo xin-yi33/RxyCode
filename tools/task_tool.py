@@ -99,6 +99,10 @@ def _load_tasks(directory: Path) -> dict:
     return {"tasks": {}, "next_id": 1}
 
 
+def _bump_revision(data: dict) -> None:
+    data["revision"] = int(data.get("revision") or 0) + 1
+
+
 def _save_tasks(directory: Path, data: dict) -> None:
     p = directory / "tasks.json"
     atomic_write_text(
@@ -119,23 +123,36 @@ def _manage_tasks_locked(
     tasks = data.get("tasks", {})
 
     if operation == "create":
-        tid = f"T{data.get('next_id', 1)}"
+        next_id = int(data.get("next_id", 1) or 1)
+        while f"T{next_id}" in tasks:
+            next_id += 1
+        tid = f"T{next_id}"
         tasks[tid] = {
             "id": tid,
             "summary": summary,
+            "content": summary,
             "status": "open",
             "created": time.time(),
             "history": [{"status": "open", "ts": time.time(), "note": summary}],
         }
-        data["next_id"] = data.get("next_id", 1) + 1
+        data["next_id"] = next_id + 1
+        _bump_revision(data)
         _save_tasks(directory, data)
         return f"Created task {tid}: {summary}"
 
     if operation == "list":
         filt = status or ""
+        aliases = {
+            "open": {"open", "pending"},
+            "pending": {"open", "pending"},
+            "done": {"done", "completed"},
+            "completed": {"done", "completed"},
+            "abandoned": {"abandoned", "cancelled"},
+            "cancelled": {"abandoned", "cancelled"},
+        }
         lines = []
         for _tid, t in tasks.items():
-            if filt and t["status"] != filt:
+            if filt and t["status"] not in aliases.get(filt, {filt}):
                 continue
             lines.append(f"{t['id']} [{t['status']}] {t['summary']}")
         return "\n".join(lines) if lines else "[no tasks]"
@@ -167,9 +184,11 @@ def _manage_tasks_locked(
         t["history"].append({"status": "abandoned", "ts": time.time(), "note": event_summary})
     elif operation == "rename":
         t["summary"] = summary
+        t["content"] = summary
     else:
         return f"[error: unknown operation '{operation}']"
 
+    _bump_revision(data)
     _save_tasks(directory, data)
     return f"Task {id} -> {t['status']}" if operation != "rename" else f"Task {id} renamed to: {summary}"
 
