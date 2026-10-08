@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   applyTodoUpdated,
   keyAction,
+  snapshotFromTodoGet,
   todoDockLines,
   todoMark,
   type TodoDockSnapshot,
+  type TodoUpdatedEvent,
 } from "./todoDock.ts";
 
 const OPEN: TodoDockSnapshot = {
@@ -49,6 +51,33 @@ describe("U-F5-4 todo dock", () => {
     expect(keyAction({ ctrl: true, name: "p" })).toBeNull();
     const leftover = grepSource(/Ctrl\+T.*思考|Ctrl\+T.*thinking/i);
     expect(leftover).toEqual([]);
+  });
+
+  test("recorded event stream renders, updates, and collapses", () => {
+    const recorded = process.env.FIX5_TODO_RECORDING;
+    if (!recorded) {
+      expect(recorded).toBeUndefined();
+      return;
+    }
+    const payload = JSON.parse(readFileSync(recorded, "utf8")) as {
+      bootstrap: TodoDockSnapshot;
+      first_event: TodoUpdatedEvent;
+      completed_event: TodoUpdatedEvent;
+    };
+    const opened = snapshotFromTodoGet(payload.bootstrap);
+    const lines = todoDockLines(opened);
+    const text = lines.join("\n");
+    for (const item of payload.bootstrap.items) {
+      expect(text).toContain(item.content);
+    }
+    expect(text).toContain("[•]");
+    expect(text).toContain("[ ]");
+    expect(payload.first_event.snapshot?.revision).toBe(opened.revision);
+    const hidden = keyAction({ ctrl: true, name: "t" }) === "todo" ? [] : lines;
+    expect(hidden).toEqual([]);
+    const collapsed = applyTodoUpdated(opened, payload.completed_event);
+    expect(todoDockLines(collapsed)).toEqual([]);
+    writeFileSync(recorded + ".ok", "ok", "utf8");
   });
 
   test("U-F5-4-03 empty snapshot renders no rows", () => {
