@@ -319,6 +319,7 @@ class TimeoutDecisionEngine:
         self._llm = llm
         self._policy = policy
         self._ledger = ledger or ExtensionLedger()
+        self.ledger = self._ledger
         self._sink = sink
         self._hooks = hooks
         self.total_cost: float = 0.0

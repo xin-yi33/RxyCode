@@ -409,6 +409,13 @@ class AgentWorker:
         ``event/heartbeat`` remains an internal liveness signal; the paired
         ``event/progress`` is persisted and rendered as a compact status line.
         """
+        if (
+            os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
+            and os.environ.get("RXYCODE_STUB_STALL_AFTER_PROMPT") == "1"
+        ):
+            # The stall probe must observe a silent worker. A heartbeat would
+            # refresh last_progress_at and hide the stall.
+            return
         raw_interval = os.environ.get(
             "RXYCODE_APPSERVER_WORKER_HEARTBEAT_SECONDS", "10"
         )
@@ -949,6 +956,24 @@ class AgentWorker:
         does not cancel the interrupt handler itself.
         """
         cancelled = False
+        seen = int(getattr(self, "_stub_interrupt_count", 0)) + 1
+        self._stub_interrupt_count = seen
+        stub_mode = os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
+        if (
+            stub_mode
+            and os.environ.get("RXYCODE_STUB_RESTART_INTERRUPT_PHASE_FAILS") == "1"
+            and seen >= 2
+        ):
+            raise RuntimeError("killed_by_interrupt_fallback")
+        if stub_mode and os.environ.get("RXYCODE_STUB_INTERRUPT_NO_CANCEL") == "1":
+            await self._write_ordered(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"cancelled": False},
+                }
+            )
+            return
         manager = self._subagent_manager
         child_tasks = [task for task in self._subagent_tasks if not task.done()]
         if manager is not None:

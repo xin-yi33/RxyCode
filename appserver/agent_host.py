@@ -504,6 +504,26 @@ class AsyncRpcPipe:
         self._outgoing.put_nowait(message)
 
 
+def _posix_descendants(pid: int) -> list[int]:
+    """Every descendant, deepest last. ``pgrep -P`` is only the direct children."""
+    found: list[int] = []
+    out = subprocess.run(
+        ["pgrep", "-P", str(pid)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=5,
+        check=False,
+        text=True,
+    )
+    for line in (out.stdout or "").split():
+        if not line.isdigit():
+            continue
+        child = int(line)
+        found.extend(_posix_descendants(child))
+        found.append(child)
+    return found
+
+
 class AgentHost:
     """One killable worker subprocess per session (dual transport)."""
 
@@ -1012,13 +1032,11 @@ class AgentHost:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=wait_s)
                 except asyncio.TimeoutError:
-                    with contextlib.suppress(ProcessLookupError):
-                        proc.terminate()
+                    await self._kill_process_tree()
                     try:
                         await asyncio.wait_for(proc.wait(), timeout=3)
                     except asyncio.TimeoutError:
-                        with contextlib.suppress(ProcessLookupError):
-                            proc.kill()
+                        await self._kill_process_tree()
                         await asyncio.wait_for(proc.wait(), timeout=5)
         finally:
             if self._pipe is not None:
@@ -1027,6 +1045,50 @@ class AgentHost:
                 self._stderr_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._stderr_task
+
+    def _kill_process_tree_sync(self, pid: int) -> None:
+        """Kill one worker pid and its children. Safe to run in a thread."""
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+            return
+        for child in _posix_descendants(pid):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child, 9)
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, 9)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+
+    async def _kill_process_tree(self) -> None:
+        """Tree kill off the event loop, with a bounded wait."""
+        proc = self._proc
+        pid = getattr(proc, "pid", None) if proc is not None else None
+        if not pid:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._kill_process_tree_sync, int(pid)),
+                timeout=8,
+            )
+        except (asyncio.TimeoutError, OSError):
+            return
+
+    def _kill_process_tree_blocking(self) -> None:
+        proc = self._proc
+        pid = getattr(proc, "pid", None) if proc is not None else None
+        if pid:
+            self._kill_process_tree_sync(int(pid))
 
     def kill(self) -> None:
         if self._proc is None or self._is_dead():
@@ -1040,6 +1102,7 @@ class AgentHost:
         # Order per C1: shutdown RPC → terminate() → final kill().
         try:
             assert self._proc is not None
+            self._kill_process_tree_blocking()
             self._proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(ProcessLookupError):

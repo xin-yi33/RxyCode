@@ -49,12 +49,18 @@
 - **scheduler**（`78c5f1bb`）：未送达的 dispatch 可被发现；一次性 orphan 可以复活。
   没有做无人窗口自动发起 prompt。`schedule/create` 需要显式批准，裸默认 ask 仍拒绝。
 - **precise cache**（`a44a1344`）：`prompt_version` 进入 system prompt 的精确缓存键。
+- **E2E 支撑，六项红灯保持失败**（`appserver/agent_host.py`、`agent_worker.py`、
+  `emitter.py`、`server.py`、`stub.py`，`core/timeout_decision.py`，`core/agent_v2.py`）：
+  进程树按后代优先回收。Windows 用 `taskkill /F /T`，放到线程里并限时。
+  stub 只在 `RXYCODE_APPSERVER_STUB=1` 时读决策 JSONL、提示词文件和 stall marker。
+  `event/timeout_decision` 的 params 保留 `method`。引擎的 `ledger` 指向同一本账。
+  pipeline 决策使用当前 run id，缺了就抛错。这些改动没有让 E-P-E2E-02、03、06、08、09 变绿。
 - **stall 决策与重启闸**（`e490e3ec`）：`escalate_stalled_job` 在 grace 结束时 await
   `decision_hook`。`"continue"` 得到 `restart_requested`，外壳再走
   `_restart_worker_continue`（杀旧 host、spawn、hydrate，并用 grant 的 `new_budget`
   作为新的 `timeout_seconds`）。`restart_count` 达到 `max_restarts`，或超过
   `restart_total_wall_seconds`，不再问引擎。账本不跨 worker 继承。
-  现场续跑出新事件的 E-P-E2E-03 没有跑。
+  E-P-E2E-03 后来按测试包跑过，两条都失败，见测试一节。没有把失败改写成通过。
 - **决策事件转发**（`c75bc76c`）：每次 `decide` 用独立的已发布事件桶。
   sink 追加失败的事件不会送上线。写 TUI 失败只记日志，不打断工具收尾。
 
@@ -77,7 +83,16 @@
 - **P8**：仓库没有 `class TodoSnapshot`、`class TodoItem`、`protocol/todo_snapshot.py`、
   `protocol/todo.py`。卡记为 `BLOCKED_PREREQUISITE`。没有新的 todo store，没有抄 P8 测试，
   没有把 evidence 接到假快照。
-- **Phase P E2E**：`tests/e2e/phase_p` 不存在。E-P-E2E-01..09 没有跑。
+- **Phase P E2E**：测试已按测试包抄入 `tests/e2e/phase_p`。审计后的一次是 4 passed、6 failed、0 skipped。
+  通过的是 E-P-E2E-01、04、05、07。失败保持失败，断言没有改：
+  - 02：`assert 0 == 2`。ledger scope 不是 `("sess_e2e","task_e2e")`。
+  - 03 restart：`assert set()`。worker 里能看到 marker 子进程，父进程探针仍是空集。
+  - 03 fallback：30 秒内没有第二条 `event/timeout_decision`。重启走的是 kill 后重跑。
+  - 06：`assert 1 == 2`。tool 证据预算等于 cap 7200，`pre_check` 强制 stop，决策 LLM 只调用了 1 次。
+  - 08：`ModuleNotFoundError: No module named 'RxyCode.RxyCode1_1_0.protocol.todo_snapshot'`。没有补这个文件。
+  - 09：`assert ['continue', 'stop'] == ['continue']`。interrupt 之后 sink 里还有 fail-closed stop。
+  固定窗口审计是 Codex 会话 `01a11763-0d59-73e0-aa3c-d856830ac0dd`，模型 `gpt-6.1-sol`，high。
+  第五轮末行是「无剩余问题」，同时写明六项红灯仍未解决。没有再改代码去凑全绿。
 - **shell 内部 deadline**：`utils/shell.py` 的到点清理不跟随外层续期。这是 R-11，仍是未做项。
 - **协议版本**：没有因为 `event/timeout_decision` 而提升 `PROTOCOL_VERSION`。
 
@@ -104,6 +119,13 @@
   9175 passed，4 skipped，exit 0，用时 1241.69s。4 条 skip 分别是
   `RXYCODE_APPSERVER_LIVE`、一条 cache 同查询，以及两条「global test registry 没有注册工具」。
   这次合并跑里，上面那条凭证测试没有失败。两次结果都保留，不把单独失败改写成通过。
+- `tests/e2e/phase_p`：`python -m pytest tests/e2e/phase_p -q --timeout=120 --tb=line`。
+  日志末行是 `6 failed, 4 passed, 2 warnings in 41.97s`。0 skipped。
+  通过的函数是 01、04、05、07。失败的函数是 02、03 的两条、06、08、09。
+  同一固定 Codex 会话第五轮 `task_complete` 计数 55，末行「无剩余问题」。
+  审计写明这六项红灯仍未解决。没有把这 10 个函数写成全绿。
+- 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
+  自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条
   决策测试 5 passed，该文件 diff 为空。
   - fail-closed 改成 `action="continue"`：模型拒绝 `extend_seconds=0` 的 continue，

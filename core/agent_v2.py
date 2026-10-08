@@ -5558,6 +5558,10 @@ class AgentV2:
         self._agent_prefix_messages = prefix[:cut]
         return dropped
 
+    def _truncate_agent_prefix(self, keep: int = 1) -> int:
+        """Alias used by the phase-P composition test. Same cut as rewind."""
+        return self._rewind_agent_prefix(keep_human_messages=keep)
+
     async def _fast_reply_with_tools(
         self,
         user_input: str,

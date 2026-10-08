@@ -13,5 +13,8 @@ def model_to_notification(model: BaseModel) -> dict[str, Any]:
     if not isinstance(method, str):
         raise TypeError(f"notification model missing method discriminator: {type(model)}")
     params = model.model_dump()
-    params.pop("method", None)
+    # event/timeout_decision's field set includes method. Other notifications
+    # keep method only on the JSON-RPC envelope.
+    if method != "event/timeout_decision":
+        params.pop("method", None)
     return {"jsonrpc": "2.0", "method": method, "params": params}

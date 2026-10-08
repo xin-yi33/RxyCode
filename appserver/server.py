@@ -886,6 +886,9 @@ class AppServer:
         """
         if self._timeout_engine is not None:
             return self._timeout_engine
+        stubbed = self._stub_stall_engine(session_id)
+        if stubbed is not None:
+            return stubbed
         section = self._timeout_section()
         if not section.get("enabled"):
             return None
@@ -909,6 +912,30 @@ class AppServer:
             return None
         if engine is not None:
             self._stall_engines[session_id] = engine
+        return engine
+
+    def _stub_stall_engine(self, session_id: str):
+        """Scripted decision engine for the stub appserver only."""
+        from .stub import stub_decision_llm
+
+        llm = stub_decision_llm()
+        if llm is None:
+            return None
+        engine = self._stall_engines.get(session_id)
+        if engine is not None:
+            return engine
+        from RxyCode.RxyCode1_1_0.core.timeout_decision import (
+            DecisionPolicy,
+            ExtensionLedger,
+            TimeoutDecisionEngine,
+            timeout_decision_config,
+        )
+
+        section = timeout_decision_config({"timeout_decision": {"enabled": True}})
+        engine = TimeoutDecisionEngine(
+            llm, DecisionPolicy(section), ledger=ExtensionLedger(),
+        )
+        self._stall_engines[session_id] = engine
         return engine
 
     def _restart_gate_state(self, session_id: str) -> dict[str, Any]:
@@ -1066,6 +1093,12 @@ class AppServer:
         from .stall_grading import run_stall_interrupt
 
         reason = f"job stalled >{stall_timeout_seconds()}s (session {stalled.session_id})"
+        grace_seconds = resolve_timeout("appserver.stall_grace_seconds")
+        if (
+            os.environ.get("RXYCODE_APPSERVER_STUB") == "1"
+            and os.environ.get("RXYCODE_STUB_STALL_AFTER_PROMPT") == "1"
+        ):
+            grace_seconds = min(float(grace_seconds), 1.0)
         result = await run_stall_interrupt(
             watchdog=self._watchdog,
             host=self._session_hosts.get(stalled.session_id),
@@ -1073,7 +1106,7 @@ class AppServer:
             fail_job=self._fail_job,
             emit=self._emit_stall_event,
             reason=reason,
-            grace_seconds=resolve_timeout("appserver.stall_grace_seconds"),
+            grace_seconds=grace_seconds,
         )
         self._last_stall_result = result
         return result.get("action") != "needs_decision"
