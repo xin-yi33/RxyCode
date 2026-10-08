@@ -61,6 +61,12 @@ _ROUTED_DECISION_LLM: contextvars.ContextVar = contextvars.ContextVar(
     "rxy_graph_decision_llm",
     default=None,
 )
+# Shared list object. The pipeline loop sets it before create_task so the
+# graph task sees later appends, then the next model call consumes them.
+_PIPELINE_STEER_NOTES: contextvars.ContextVar = contextvars.ContextVar(
+    "rxy_pipeline_steer_notes",
+    default=None,
+)
 
 
 def resolve_graph_watch_clocks(cfg: dict | None) -> tuple[float, float, float]:
@@ -223,12 +229,18 @@ async def run_task_watchdog(
 
 def _messages_with_guidance(tracker, messages):
     """Append steer notes once, as a trailing user message."""
+    if not isinstance(messages, list):
+        return messages
+    fresh: list[str] = []
     pending = getattr(tracker, "guidance_notes", None) or []
     sent = int(getattr(tracker, "_guidance_sent", 0) or 0)
-    if not isinstance(messages, list) or sent >= len(pending):
-        return messages
-    fresh = [str(item) for item in pending[sent:] if str(item).strip()]
-    tracker._guidance_sent = len(pending)
+    if sent < len(pending):
+        fresh.extend(str(item) for item in pending[sent:] if str(item).strip())
+        tracker._guidance_sent = len(pending)
+    pipeline = _PIPELINE_STEER_NOTES.get()
+    if isinstance(pipeline, list) and pipeline:
+        fresh.extend(str(item) for item in pipeline if str(item).strip())
+        pipeline.clear()
     if not fresh:
         return messages
     return [*messages, HumanMessage(content="\n".join(fresh))]

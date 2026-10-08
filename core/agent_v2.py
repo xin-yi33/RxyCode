@@ -41,9 +41,12 @@ from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
 from RxyCode.RxyCode1_1_0.config import settings as _settings
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.core.graph import (
+    _PIPELINE_STEER_NOTES,
+    _timeout_engine as _graph_timeout_engine,
     resume_budget_exhausted,
     resume_exhausted_notice,
 )
+from RxyCode.RxyCode1_1_0.protocol.timeout_decision import TimeoutEvidence
 from RxyCode.RxyCode1_1_0.core.compaction import (
     build_compaction_summary_prompt,
     parse_state_snapshot,
@@ -118,7 +121,11 @@ from RxyCode.RxyCode1_1_0.log.log_helpers import (
     redact_sensitive,
     trace_status_for_result,
 )
-from RxyCode.RxyCode1_1_0.log.logger import get_bound_run_id, run_id_context
+from RxyCode.RxyCode1_1_0.log.logger import (
+    get_bound_run_id,
+    get_current_run_id,
+    run_id_context,
+)
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
@@ -732,14 +739,38 @@ def build_progress_message(elapsed: float) -> str:
     return f"Build in progress... {elapsed:.0f}s — complex multi-step task"
 
 
-def build_timeout_notice(elapsed: float, partial_text: str = "") -> str:
-    """Report an explicit soft-budget stop without re-running side effects."""
+def build_timeout_notice(
+    elapsed: float,
+    partial_text: str = "",
+    decision_note: str = "",
+) -> str:
+    """Report an explicit soft-budget stop without re-running side effects.
+
+    A two-argument call stays the old banner. A non-empty decision note adds
+    one line after that text.
+    """
     banner = (
         f"[Build paused at ~{elapsed:.0f}s] The configured soft time budget was "
         "reached. Previously executed tool actions were not repeated. Continue "
         "the task to resume from the saved conversation state."
     )
-    return f"{banner}\n\n{partial_text}" if partial_text else banner
+    body = f"{banner}\n\n{partial_text}" if partial_text else banner
+    note = str(decision_note or "").strip()
+    if note:
+        body = f"{body}\n[timeout decision] {note}"
+    return body
+
+
+def build_extension_progress(
+    elapsed: float,
+    extension_index: int,
+    new_budget: float,
+) -> str:
+    """Pinned continuation line shown after a soft-budget grant."""
+    return (
+        f"{build_progress_message(elapsed)}"
+        f"（决策续期 #{int(extension_index)}：预算 → {float(new_budget):.0f}s）"
+    )
 
 
 def build_failure_notice(elapsed: float, detail: str) -> str:
@@ -2127,8 +2158,13 @@ class AgentV2:
             float(lifecycle_cfg.get("hook_timeout_seconds", 5) or 5),
         )
         self._hooks = HookRegistry(default_timeout_seconds=hook_timeout)
-        # P2 reserves the attribute. P3, P4, and P6 are the consumers.
-        self._timeout_engine = None
+        # Disabled config stays None. The graph helper builds the engine.
+        self._reset_pipeline_decision_state()
+        try:
+            self._timeout_engine = _graph_timeout_engine(self._cfg)
+        except Exception:
+            _logger.exception("timeout decision engine failed to build")
+            raise
 
         # Tell token_stats which model is active so billing_amount can look
         # up its per-model price from the config ``pricing`` section.
@@ -2837,6 +2873,87 @@ class AgentV2:
     def _build_llm(self):
         """Create the active model with usage tracking and governance."""
         return self._build_llm_from_config(self.model_config)
+
+    def _reset_pipeline_decision_state(self) -> None:
+        """Drop one run's soft-budget note, index, and unsent steer text."""
+        self._last_timeout_note = None
+        self._pipeline_extension_index = 0
+        notes = getattr(self, "_pipeline_steer_notes", None)
+        if isinstance(notes, list):
+            notes.clear()
+        else:
+            self._pipeline_steer_notes = []
+
+    def _clear_unconsumed_pipeline_steers(self) -> None:
+        """Drop steer text that the graph did not consume. Keep the list."""
+        notes = getattr(self, "_pipeline_steer_notes", None)
+        if isinstance(notes, list):
+            notes.clear()
+
+    def _void_pipeline_decision(self) -> None:
+        """Cancel a decision that is still waiting on the model."""
+        engine = getattr(self, "_timeout_engine", None)
+        interrupt = getattr(engine, "interrupt", None)
+        if callable(interrupt):
+            interrupt()
+
+    async def _pipeline_budget_branch(
+        self,
+        graph_task,
+        *,
+        soft_budget: float,
+        elapsed: float,
+    ) -> tuple[bool, float]:
+        """Return (stop_now, new_soft_budget). The caller cancels on stop.
+
+        A missing engine keeps the old cancel path. Continue and steer leave
+        the running graph task alone and return this grant's new_budget.
+        """
+        engine = getattr(self, "_timeout_engine", None)
+        if engine is None:
+            return True, float(soft_budget)
+        session_id = str(getattr(self, "_session_id", "") or "pipeline")
+        run_id = str(get_current_run_id() or "").strip()
+        if not run_id:
+            raise RuntimeError("pipeline decision requires the current run id")
+        if getattr(self, "_pipeline_scope_run_id", None) != run_id:
+            self._reset_pipeline_decision_state()
+            self._pipeline_scope_run_id = run_id
+        evidence = TimeoutEvidence(
+            trigger_point="pipeline_soft_budget",
+            session_id=session_id,
+            run_id=run_id,
+            subject_id=run_id,
+            task_hint="pipeline",
+            elapsed_seconds=float(elapsed),
+            budget_seconds=float(soft_budget),
+            extension_index=0,
+            progress="",
+            last_error="",
+        )
+        decision_started = time.monotonic()
+        decision = await engine.decide(evidence)
+        elapsed_now = float(elapsed) + (time.monotonic() - decision_started)
+        if decision.action in ("continue", "steer"):
+            grant = engine.last_grant((evidence.session_id, evidence.run_id))
+            if grant is None or float(grant.new_budget) <= elapsed_now:
+                self._last_timeout_note = decision.note
+                return True, float(soft_budget)
+            self._pipeline_extension_index = int(
+                getattr(self, "_pipeline_extension_index", 0) or 0
+            ) + 1
+            if decision.action == "steer" and str(decision.note or "").strip():
+                notes = _PIPELINE_STEER_NOTES.get()
+                if not isinstance(notes, list):
+                    notes = getattr(self, "_pipeline_steer_notes", None)
+                    if not isinstance(notes, list):
+                        self._pipeline_steer_notes = []
+                        notes = self._pipeline_steer_notes
+                notes.append(str(decision.note).strip())
+            self._last_timeout_note = None
+            return False, float(grant.new_budget)
+        self._last_timeout_note = decision.note
+        return True, float(soft_budget)
 
     def register_hook(self, phase, callback, **kwargs) -> str:
         """Register a bounded lifecycle callback on this agent instance."""
@@ -5802,8 +5919,25 @@ class AgentV2:
                 # 不再等整回合结束后逐条另开新回合（旧行为：N 条队列消息
                 # 产生 N 个「最终结果」，且延迟=整个回合时长）。
                 if round_num > 0:
+                    def _drain_user_and_pipeline():
+                        notes = [
+                            str(item).strip()
+                            for item in (
+                                getattr(self, "_pipeline_steer_notes", []) or []
+                            )
+                            if str(item).strip()
+                        ]
+                        self._pipeline_steer_notes = []
+                        drain = getattr(self, "_drain_steers", None)
+                        if callable(drain):
+                            try:
+                                notes.extend(list(drain() or []))
+                            except Exception:
+                                pass
+                        return notes
+
                     _applied_steers = apply_mid_turn_steers(
-                        messages, getattr(self, "_drain_steers", None)
+                        messages, _drain_user_and_pipeline,
                     )
                     for _steer_text in _applied_steers:
                         _logger.info(
@@ -7482,6 +7616,7 @@ class AgentV2:
             raise ValueError(
                 f"Unsupported agent mode: {mode!r}. Valid modes: {valid_modes}"
             )
+        self._clear_unconsumed_pipeline_steers()
         run_stage_started = time.monotonic()
         _logger.info("run_stage=start mode=%s", mode)
         # Do not schedule a competing max_tokens=1 prewarm here. The user
@@ -7960,6 +8095,7 @@ class AgentV2:
             await emit_run_hook("after", status=status)
             return result
         finally:
+            self._clear_unconsumed_pipeline_steers()
             if evidence_token is not None:
                 evidence = ToolOrchestrator.end_evidence_capture(evidence_token)
             ToolOrchestrator.reset_event_tui(event_token)
@@ -8281,9 +8417,13 @@ class AgentV2:
                     int(execution_cfg.get("max_graph_steps", 60) or 60),
                 )
             }
+            self._reset_pipeline_decision_state()
+            self._pipeline_scope_run_id = str(get_current_run_id() or "").strip()
+            _steer_token = _PIPELINE_STEER_NOTES.set(self._pipeline_steer_notes)
             graph_task = asyncio.create_task(
                 self._graph.ainvoke(initial_state, graph_config)
             )
+            _PIPELINE_STEER_NOTES.reset(_steer_token)
             budget_reached = False
 
             while not graph_task.done():
@@ -8314,6 +8454,45 @@ class AgentV2:
                 _logger.debug("build pipeline running elapsed=%.0fs", elapsed)
 
                 if soft_budget > 0 and elapsed >= soft_budget and not graph_task.done():
+                    decision_task = asyncio.create_task(
+                        self._pipeline_budget_branch(
+                            graph_task, soft_budget=soft_budget, elapsed=elapsed,
+                        )
+                    )
+                    try:
+                        stop_now, soft_budget = await asyncio.shield(decision_task)
+                    except asyncio.CancelledError:
+                        self._void_pipeline_decision()
+                        caller = asyncio.current_task()
+                        if caller is not None:
+                            while caller.uncancel():
+                                pass
+                        if not decision_task.done():
+                            try:
+                                await decision_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                        graph_task.cancel()
+                        try:
+                            await graph_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        raise
+                    if graph_task.done():
+                        break
+                    if not stop_now:
+                        if pipeline_tui and hasattr(pipeline_tui, "write_progress"):
+                            try:
+                                pipeline_tui.write_progress(build_extension_progress(
+                                    elapsed,
+                                    int(getattr(self, "_pipeline_extension_index", 1) or 1),
+                                    soft_budget,
+                                ))
+                            except Exception as hb_exc:  # pragma: no cover - defensive
+                                _logger.warning(
+                                    "build extension emit failed: %s", hb_exc,
+                                )
+                        continue
                     _logger.warning(
                         "build pipeline reached soft budget=%.0fs; cancelling without fallback tools",
                         soft_budget,
@@ -8326,9 +8505,13 @@ class AgentV2:
                     budget_reached = True
                     break
 
+            self._clear_unconsumed_pipeline_steers()
             if budget_reached:
                 elapsed = time.time() - pipeline_start
-                final = build_timeout_notice(elapsed)
+                final = build_timeout_notice(
+                    elapsed,
+                    decision_note=self._last_timeout_note or "",
+                )
                 self._memory.add_interaction(user_input, final)
                 self._memory.save_session()
                 return final
