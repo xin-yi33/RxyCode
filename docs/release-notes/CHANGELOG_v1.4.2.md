@@ -91,8 +91,9 @@
   没有把 evidence 接到假快照。
 - **Phase P E2E**：测试已按测试包抄入 `tests/e2e/phase_p`。
   较早一次是 4 passed、6 failed。固定窗口第五轮末行是「无剩余问题」，并写明六项红灯仍在。
-  其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。最新一次是
+  其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。那次是
   5 passed、5 failed、0 skipped，49.27s，pytest 退出码 1。
+  与 `fix4-section-a.txt`、`phasep-section6.txt`、`merged-gate.txt` 对齐的结果在测试一节末尾。
   一度把 02、06、09 的抄入测试改到能变绿。复核否决了这三处。
   它们已恢复测试包原文，失败保持失败：02 是 `assert 0 == 2`，06 是 `assert 1 == 2`，
   09 是 `['continue', 'stop'] == ['continue']`。封顶没有放宽，fail-closed stop 没有从 sink 删掉。
@@ -126,7 +127,8 @@
 - `tests/test_core` 单独跑：1 failed，7633 passed，exit 1。失败是
   `test_backfill_missing_api_key_secrets_from_env`（`assert 0 == 1`）。
   单独重跑这条是 1 passed。这是原有的顺序相关失败，不是 P9 引入的。
-- 合并门禁 `tests/contract tests/test_appserver tests/test_cache tests/test_core`：
+- 合并门禁 `tests/contract tests/test_appserver tests/test_cache tests/test_core`，
+  在加入 inflight 测试之前的一次：
   9175 passed，4 skipped，exit 0，用时 1241.69s。4 条 skip 分别是
   `RXYCODE_APPSERVER_LIVE`、一条 cache 同查询，以及两条「global test registry 没有注册工具」。
   这次合并跑里，上面那条凭证测试没有失败。两次结果都保留，不把单独失败改写成通过。
@@ -150,11 +152,13 @@
   `test_u_p7_02` 仍 passed。还原后 3 passed。
   `granted = requested` 时 `test_u_p2_02` 是 `assert 2400.0 == 50.0`，
   `test_u_p2_04` 仍 passed。还原后 2 passed。`core/timeout_decision.py` 的 diff 为空。
-- 按 `inflight_slot` 去重之后：Fix4 单元包加 `tests/e2e/fix4` 是 79 passed，33.71s，退出码 0。
-  合并门禁 `tests/contract tests/test_appserver tests/test_cache tests/test_core` 是
-  9176 passed，4 skipped，1432.53s，退出码 0。4 条 skip 与先前相同。
-  Phase P 单元、兼容和 `tests/e2e/phase_p` 是 `4 failed, 57 passed, 17 warnings in 32.09s`，
-  退出码 1。失败仍是 E2E-02、06、08、09。
+- 与三份日志对齐的结果：
+  `fix4-section-a.txt`：Fix4 单元包加 `tests/e2e/fix4` 是 79 passed，33.71s，退出码 0。
+  `phasep-section6.txt`：Phase P 单元、兼容和 `tests/e2e/phase_p` 是
+  `4 failed, 57 passed, 17 warnings in 32.09s`，退出码 1。
+  失败是 E2E-02、E2E-06、E2E-08、E2E-09。
+  `merged-gate.txt`：`tests/contract tests/test_appserver tests/test_cache tests/test_core` 是
+  9176 passed，4 skipped，46 warnings，1432.53s，退出码 0。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - 自攻三条都先失败，再用 `git checkout -- core/timeout_decision.py` 还原。还原后上述 5 条
