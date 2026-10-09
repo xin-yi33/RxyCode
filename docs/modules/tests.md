@@ -13,6 +13,8 @@ tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVE
 v1.4.2 completion audit additions are deliberately hermetic: the FIX5 worker
 restart test writes a synthetic `api_key_env` model configuration with agents
 disabled and never copies the developer's `config.yaml` or `credentials.yaml`.
+It creates an explicit temporary runtime root and passes both data/config
+environment variables to the worker, independently of ambient test state.
 The packaging contract also runs an isolated subprocess that preloads a stale
 1.4.1 editable finder, then verifies `tests/conftest.py` rebinds the current
 checkout before importing `protocol.version`. The P8 composition fixture now
@@ -230,4 +232,6 @@ contract、serial、legacy regression 五 lane 采集。提升流程是：连续
 稳定结果后，通过 workflow 评审小步提高；不得下调。覆盖率数字不能替代主链、权限、
 恢复和终端协议的行为断言。
 
-当前目录没有 `.git`，没有 GitHub-hosted workflow 运行证据；当前机器也没有 Docker 二进制。上述数字来自本地等价命令，live provider 与镜像构建不能写成已通过。
+上面的 v1.2.8 覆盖率是历史本地记录，不代表当前云端验收。v1.4.2 的本地与 GitHub Actions
+证据分别记录在 `docs/release-notes/V1.4.2-COMPLETION-AUDIT.md`；live provider 与镜像构建
+未在本轮执行，不能写成已通过。

@@ -232,6 +232,21 @@ async def test_e_f5_e2e_01_status_band_round_trip(tmp_path, monkeypatch):
         reset_session_binding(token)
 
 
+def test_e_f5_e2e_02_uses_explicit_runtime_root(tmp_path, monkeypatch):
+    """The worker E2E must not fall back to ambient developer data."""
+    monkeypatch.delenv("RXYCODE_DATA_DIR", raising=False)
+    monkeypatch.delenv("RXYCODE_V2_CONFIG_DIR", raising=False)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(runtime))
+    monkeypatch.setenv("RXYCODE_V2_CONFIG_DIR", str(runtime))
+
+    from RxyCode.RxyCode1_1_0.config import settings
+
+    assert settings.get_data_dir() == runtime
+    assert Path(os.environ["RXYCODE_V2_CONFIG_DIR"]) == runtime
+
+
 @pytest.mark.asyncio
 async def _worker(repo: Path, env: dict, stderr_path: Path):
     from appserver.agent_host import WORKER_STDIO_LIMIT_BYTES, AsyncRpcPipe
@@ -263,7 +278,12 @@ async def _kill_worker_tree(proc):
 
 async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
     """E-F5-E2E-02 第一个 worker 写清单后被杀，新 worker 经 prompt 接着做。"""
-    del monkeypatch
+    monkeypatch.delenv("RXYCODE_DATA_DIR", raising=False)
+    monkeypatch.delenv("RXYCODE_V2_CONFIG_DIR", raising=False)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(runtime))
+    monkeypatch.setenv("RXYCODE_V2_CONFIG_DIR", str(runtime))
     from RxyCode.RxyCode1_1_0.config import settings
     from RxyCode.RxyCode1_1_0.tools.todo_events import read_todo_snapshot
     from RxyCode.RxyCode1_1_0.tools.todo_write import todo_summary_llm_calls
@@ -308,7 +328,6 @@ async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     capture = tmp_path / "capture.txt"
-    runtime = Path(os.environ["RXYCODE_DATA_DIR"])
     # Keep the worker hermetic: this E2E must never inherit the developer's
     # active provider, credentials, or team-routing choice.  The scripted
     # stream is installed at prompt time, while bootstrap still needs a
@@ -335,6 +354,8 @@ async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     base_env = dict(os.environ)
+    base_env["RXYCODE_DATA_DIR"] = str(runtime)
+    base_env["RXYCODE_V2_CONFIG_DIR"] = str(runtime)
     base_env["PYTHONPATH"] = str(repo)
     base_env["RXYCODE_E2E_TEST_API_KEY"] = "test-only-key"
     base_env["RXYCODE_SUBAGENTS"] = "0"

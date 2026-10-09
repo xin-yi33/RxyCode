@@ -175,8 +175,8 @@
 未做，不能写成已交付：
 
 - **P8**：FIX5 已经在 `protocol/todo.py` 里有 `TodoItem` 和 `TodoSnapshot`。没有第二套
-  `protocol/todo_snapshot.py`，也没有新的 todo store。P8 仍是 `BLOCKED_PREREQUISITE`：
-  没有抄 P8 测试，没有把 evidence 接到假快照。
+  `protocol/todo_snapshot.py`，也没有新的 todo store。P8 生产 evidence consumer 仍暂缓：
+  基础快照和状态带已经具备，但没有把 evidence 接到假快照，也没有把消费者写成已交付。
   2026-10-08 起这一卡连同 P8 生产消费搁置。2026-10-09 只把旧测试夹具的导入对齐到
   `protocol.todo`，没有补 `protocol.todo_snapshot.py`，没有把 evidence 接到假快照。交互式
   todo 是模型自己写的步骤清单，再投影到用户能看见的状态条；调研见
@@ -272,6 +272,11 @@
   archive 子任务隔离与用户轮次取消，和 FIX5 核心套件分别通过 `6` 与 `56` 条。
 - Windows 沙箱套件：`tests/test_core/test_sandbox_windows.py -n2` 为 `22 passed`，
   覆盖 ResumeThread 失败 fail-closed 清理；无 `Failed joining thread` INTERNALERROR。
+- 2026-10-09 云端隔离收尾：第二候选版的 Linux 3.11/3.12 均只剩 FIX5 worker E2E
+  依赖环境 `RXYCODE_DATA_DIR` 的同一失败；Windows、前端、协议与 lint 已通过。
+  E2E 现在自建临时 runtime，同时显式传递 data/config 根目录给 worker，不再依赖其他
+  测试遗留的环境变量。独立重跑本文件为 `3 passed`；恢复、合并、零总结调用和清理断言保留。
+  最终云端候选版必须另行通过，不能以本地三条通过替代。
 - 安装资源补缺已完成：`MANIFEST.in` 与 `pyproject.toml` 带入 `protocol/schema.json`、
   `packaging/runtimes/{windows,linux,macos}.json`、模型目录、内置子代理定义与桥接默认清单。
   独立 wheel/sdist 契约与安装测试 `3 passed`；另从 tar.gz 安装到源码之外的 venv，
