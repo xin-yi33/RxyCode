@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +14,7 @@ import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from RxyCode.RxyCode1_1_0.core.status_band import HEADER
+from RxyCode.RxyCode1_1_0.appserver.lifecycle import _terminate_pid_tree
 
 
 def _band_messages(messages) -> list:
@@ -246,10 +247,18 @@ async def _worker(repo: Path, env: dict, stderr_path: Path):
         stdout=asyncio.subprocess.PIPE,
         stderr=err,
         limit=WORKER_STDIO_LIMIT_BYTES,
+        start_new_session=(os.name != "nt"),
     )
     pipe = AsyncRpcPipe(proc.stdin, proc.stdout)
     await pipe.start()
     return proc, pipe
+
+
+async def _kill_worker_tree(proc):
+    """Use the shared platform-aware tree killer for this test-owned worker."""
+    if proc.returncode is None:
+        await asyncio.to_thread(_terminate_pid_tree, proc.pid)
+    await asyncio.wait_for(proc.wait(), timeout=10)
 
 
 async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
@@ -336,6 +345,7 @@ async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
     first_env["RXYCODE_SCRIPTED_AGENT_REPLIES"] = str(created)
     first_env["RXYCODE_SCRIPTED_AGENT_CAPTURE"] = str(tmp_path / "create-capture.txt")
     proc, pipe = await _worker(repo, first_env, tmp_path / "worker1.err")
+    writing = None
     try:
         started = await pipe.request(
             "bootstrap",
@@ -365,17 +375,18 @@ async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
             await asyncio.sleep(0.1)
         assert stored is not None
         assert stored.revision == 1
-        killed = subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            check=False,
-        )
-        assert killed.returncode == 0
+        await _kill_worker_tree(proc)
+        assert proc.returncode is not None
         writing.cancel()
     finally:
+        if writing is not None:
+            if not writing.done():
+                writing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await writing
+        await pipe.close()
         if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+            await _kill_worker_tree(proc)
 
     second_env = dict(base_env)
     second_env["RXYCODE_SCRIPTED_AGENT_REPLIES"] = str(resumed)
@@ -421,13 +432,9 @@ async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
         assert latest.items[2].status == "in_progress"
         assert todo_summary_llm_calls == 0
     finally:
+        await pipe2.close()
         if proc2.returncode is None:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc2.pid)],
-                capture_output=True,
-                check=False,
-            )
-            await proc2.wait()
+            await _kill_worker_tree(proc2)
         folder = settings.get_data_dir() / "tasks" / session_id
         if folder.exists():
             import shutil

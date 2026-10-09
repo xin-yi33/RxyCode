@@ -166,6 +166,7 @@ raise SystemExit(pytest.main([
     "tests/unit/test_packaging_contract.py",
     "-k",
     "test_product_version_is_consistent_without_bumping_wire_protocol",
+    "--import-mode=importlib",
     "-q",
     "-p",
     "no:cacheprovider",

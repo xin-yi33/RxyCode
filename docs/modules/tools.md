@@ -128,6 +128,14 @@ failure and timeout results retain their `[workflow error: ...]` or
 them as successful mutations. Outer task cancellation propagates to the
 controlled executor and waits for process-tree cleanup before unwinding.
 
+Secret preview redaction (`tools/secret_text.py`) first lowercases the model-
+visible text once and checks the unique `bearer`/assignment-key marker table.
+Marker-free text is returned unchanged without entering either character
+scanner. Text containing a marker still uses the existing bearer and assignment
+parsers, including case-insensitive keys, quoted or escaped values, and values
+whose key/value separator spans lines. This is only a model-visible preview
+optimization; spilled files remain raw and are not rewritten by this helper.
+
 ## Tool Registration Flow
 1. `core/builtin_tool_registration.register_builtin_tools(registry, orchestrator, ...)`
    creates and registers all built-in tools (called by AgentV2._register_tools())

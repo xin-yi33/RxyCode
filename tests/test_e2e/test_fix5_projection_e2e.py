@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_sessio
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 from RxyCode.RxyCode1_1_0.tools.registry import ToolRegistry
 from RxyCode.RxyCode1_1_0.tools.todo_events import bind_todo_sink
+from tests.conftest import require_tool
 
 REPO = Path(__file__).resolve().parents[2]
 SESSION = "sess_e2e05"
@@ -140,20 +142,28 @@ async def test_e_f5_e2e_05_event_get_and_dock(data_dir):
         )
         env = os.environ.copy()
         env["FIX5_TODO_RECORDING"] = str(record)
+        require_tool("bun", reason="FIX5 projection OpenTUI dock E2E")
+        bun = shutil.which("bun")
+        assert bun is not None
         proc = subprocess.run(
             [
-                "pwsh",
-                "-NoProfile",
-                "-Command",
-                "bun test src/todoDock.test.ts; exit $LASTEXITCODE",
+                bun,
+                "test",
+                "src/todoDock.test.ts",
             ],
             cwd=str(REPO / "frontend" / "opentui-app"),
             env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=120,
+            check=False,
         )
-        assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr
+        assert proc.returncode == 0, (
+            f"bun test failed with exit code {proc.returncode}\n"
+            f"stdout:\n{proc.stdout}\n"
+            f"stderr:\n{proc.stderr}"
+        )
         assert (data_dir / "recorded-todo-event.json.ok").read_text(encoding="utf-8") == "ok"
     finally:
         reset_session_binding(token)

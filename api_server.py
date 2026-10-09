@@ -11,6 +11,7 @@ import threading
 from contextlib import asynccontextmanager, suppress
 from typing import Optional
 from pathlib import Path
+from . import __version__
 
 def _ensure_utf8_stdio():
     """Reconfigure stdout/stderr for UTF-8 on Windows.
@@ -67,7 +68,7 @@ async def _lifespan(_app: FastAPI):
         await shutdown(_app)
 
 
-app = FastAPI(title="RxyCode API", version="3.0.0", lifespan=_lifespan)
+app = FastAPI(title="RxyCode API", version=__version__, lifespan=_lifespan)
 app.include_router(models_router)
 
 # 日志（复用 main.py 初始化的 logger）

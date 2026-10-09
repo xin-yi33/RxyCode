@@ -106,8 +106,12 @@ class TestBashOutputTruncation:
         tail = "T" * 15000
         big = head + ("M" * 20000) + tail
         out = self._run_with_output(big)
-        assert out.startswith("H" * 100)
-        assert out.rstrip().endswith("T" * 100)
+        preview, spill_path_text = out.rsplit("\nFull output saved to: ", 1)
+        assert preview.startswith("H" * 100)
+        assert preview.rstrip().endswith("T" * 100)
+        spill_path = Path(spill_path_text.strip())
+        assert spill_path.is_absolute()
+        assert spill_path.read_text(encoding="utf-8") == big
 
     def test_exactly_30000_not_truncated(self):
         big = "B" * 30000

@@ -1,6 +1,6 @@
 # RxyCode v1.4.2
 
-日期：2026-10-09。发布前验收稿；正式发布前以本轮完成审计和测试结果更新。
+日期：2026-10-09。
 这是 CLI / OpenTUI 版本，不发布新的 Electron Desktop 安装包。
 
 ## 本次变化
@@ -25,6 +25,8 @@
   worker 在读取请求前设定 UTF-8，避免 Windows 中文 prompt 损坏和 checkpoint 失败。
 - 安装包补齐协议 schema、运行时版本清单、模型目录和内置子代理定义；
   验收从独立安装目录读取这些资源，不用源码存在来替代安装可用。
+- 无密钥输出先做候选检查，避免逐字脱敏扫描；有候选字段仍用原解析器。
+  原有 200ms 性能门槛和跨行、引号、转义、大小写清洗断言保留。
 
 ## 安装
 
@@ -62,7 +64,23 @@ Python 导入路径仍为 `RxyCode.RxyCode1_1_0`。不修改历史版本目录�
 
 ## 验证记录
 
-本轮结果将随验收填入，不用历史 passed 代替本次验证。
+本轮本地五层验收：unit 231、integration 7、contract 873、serial 8、
+legacy regression 12320，共 **13439 passed / 28 skipped**。
+跳过项为 26 项未发布计划树检查、1 项显式 live 开关测试、1 项重复 query 样本。
+收尾修改另跑 API / SSE / 真实安装回归 **68 passed**。
+脱敏性能修复后，工具/恢复/投影联合复测 **94 passed**；
+实际采集 coverage 的脱敏与 spill 组 **17 passed**，200ms 原门槛通过。
+
+前端：OpenTUI **314 passed**，protocol-client **29 passed**，Ink **1502 passed**；
+typecheck、协议生成物检查和 build 通过。真实 Windows ConPTY 为
+**19 项交互 + 2 项异常退出**通过，OpenTUI `/model`、`/mod` Enter 通过。
+Node 24 的 ConPTY helper 打印 `AttachConsole failed`，但本轮交互和退出判据通过；
+该警告不冒充无告警结果。
+
+ruff、秘密扫描、README 双语同步检查、版本/安装契约和
+Windows 原生沙箱 22 项通过。GitHub 平台 CI 与正式 tag 的构建、Linux/Windows
+安装 smoke 由 [Actions](https://github.com/xin-yi33/RxyCode/actions) 记录；
+本地结果不替代 hosted 结果，也不替代 live 模型性能评测。
 逐项生产路由、命令、结果与限制见
 [完成审计](V1.4.2-COMPLETION-AUDIT.md)；
 历史开发过程见[详细 changelog](CHANGELOG_v1.4.2.md)。

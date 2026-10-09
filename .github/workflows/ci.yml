@@ -151,6 +151,11 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Set up Bun for appserver-to-dock integration
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Build frontend runtime
         working-directory: frontend
         run: |

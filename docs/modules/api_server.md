@@ -20,6 +20,17 @@ headless core and the same typed `protocol/` schema.
 - File size: 2,029 lines. Docstring:
   "RxyCode API Server - FastAPI backend for the Ink TUI"
 
+## Version metadata
+
+The FastAPI application metadata and generated OpenAPI document both use the
+package's single product-version source, `RxyCode.RxyCode1_1_0.__version__`:
+
+- `app.version` is the product version exposed by the HTTP adapter.
+- `/openapi.json` carries the same value at `info.version`.
+- This is application metadata only. The wire protocol remains independently
+  versioned by `PROTOCOL_VERSION` (`1.1.0`); routes, request payloads, and SSE
+  event contracts do not change when the product version changes.
+
 ### Module structure (post-thinning)
 
 The module was thinned by pure code relocation (behavior unchanged) into three

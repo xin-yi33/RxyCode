@@ -2,7 +2,7 @@
 
 > 记录日期：2026-10-09。上一份档案是 `CHANGELOG_v1.4.1.md`，那份冻结内容没有改。
 > 本文记录 Fix4、Phase P、FIX5 与本次发布补缺。产品版本统一为 `pyproject.toml` 的
-> 1.4.2，协议版本仍是 `PROTOCOL_VERSION` 1.1.0。本候选通过最终验收后发布 `v1.4.2`。
+> 1.4.2，协议版本仍是 `PROTOCOL_VERSION` 1.1.0。对应 CLI / OpenTUI 的 `v1.4.2` 发布。
 > 格式沿用 1.4.1：每条 = **模块**：做了什么 —— **原因**。归类：新增 / 变更 / 修复 / 废弃。
 
 ## 新增
@@ -111,6 +111,28 @@
   没有放宽封顶、删除 stop 事件或修改生产规则。
 
 ## 修复
+
+- **无密钥文本脱敏性能**（`tools/secret_text.py`）：入口 lowercase 一次，从现有
+  `_KEYS_BY_FIRST` 表派生候选词并包含 Bearer。没有任何候选词才返回原文；
+  有候选词仍走原解析器。不是跳过含密钥文本的脱敏，也不改字段规则。
+  —— 原因：Linux coverage 发现 90k 无密钥文本的两次逐字扫描耗时 0.719s，
+  超过既有 0.2s 门槛。收尾联合工具/恢复链 94 passed；以目录为测量源的
+  脱敏和原 spill 套件 17 passed，原门槛、跨行/引号/转义/大小写断言均保留。
+
+- **发布回归基建**（`tests/unit/test_packaging_contract.py`、Bash/Phase P/FIX5 E2E）：
+  嵌套 pytest 用自己的 runtime 与 importlib 导入方式，避免 xdist 目录抢占和同名
+  `RxyCode` checkout 的导入冲突。Bash 分开校验预览头尾与 spill 全文。
+  重启测试让父 journal 与 worker 共享显式隔离目录，等待子进程与 reader 退出。
+  Windows fake handle 只交给 mock 清理，并逐个断言回收，避免误关测试线程句柄。
+  FIX5 worker 用平台感知的既有清理入口；Todo dock 测试直接调用 Bun，缺工具或
+  非零退出明确失败，Linux CI 配置相同 Bun 工具链。
+  —— 原因：旧夹具的隐式目录、平台命令和输出假设不能代表新的生产契约；
+  不通过延长超时、关掉 timeout、跳过功能或放宽生产封顶规则制造绿色结果。
+
+- **HTTP 产品版本补漏**（`api_server.py`）：FastAPI 的 `app.version` 与 OpenAPI
+  `info.version` 改从包级 `__version__` 读取，不再硬编码 `3.0.0`。
+  —— 原因：产品版本统一为 1.4.2 后，该元数据仍报旧值；路由、payload、SSE 和
+  独立 JSON-RPC 协议版本 1.1.0 不变。新增版本合同与 API/SSE 回归共 `47 passed`。
 
 - **压缩后的 todo 尾坠**（`core/status_band.py`）：非空台账在压缩后的状态带里始终写出 `(N completed)`，取消数接在后面。完成数为 0 时也保留 `(0 completed)`。
   —— 原因：原先只在计数大于 0 时才写这一段，完成数为 0 时尾坠消失。

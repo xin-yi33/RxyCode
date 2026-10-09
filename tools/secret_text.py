@@ -7,10 +7,21 @@ _KEYS_BY_FIRST = {
     "s": ("secret",),
     "t": ("token",),
 }
+_REDACTION_MARKERS = tuple(
+    dict.fromkeys(
+        (
+            "bearer",
+            *(key for keys in _KEYS_BY_FIRST.values() for key in keys),
+        )
+    )
+)
 
 
 def redact_secrets(text: str) -> str:
     """抹掉密钥。引号值可以跨过键和冒号之间的换行；裸值停在本行。"""
+    lowered = text.lower()
+    if not any(marker in lowered for marker in _REDACTION_MARKERS):
+        return text
     return _redact_assignments(_redact_bearer(text))
 
 

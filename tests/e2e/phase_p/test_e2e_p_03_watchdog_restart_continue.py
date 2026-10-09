@@ -24,8 +24,18 @@ pytestmark = pytest.mark.e2e
 REPO = Path(__file__).resolve().parents[3]
 
 
-def _spawn(tmp_path: Path, *, decision_lines, prompt_lines, extra_env=()):
+def _spawn(
+    tmp_path: Path,
+    *,
+    decision_lines,
+    prompt_lines,
+    extra_env=(),
+    runtime_root: Path | None = None,
+):
     env = _appserver_env()
+    if runtime_root is not None:
+        env["RXYCODE_DATA_DIR"] = str(runtime_root)
+        env["RXYCODE_V2_CONFIG_DIR"] = str(runtime_root)
     env["RXYCODE_APPSERVER_STALL_SECONDS"] = "2"
     env["RXYCODE_APPSERVER_HEARTBEAT_SECONDS"] = "1"
     env["RXYCODE_TIMEOUT_DECISION_STUB_FILE"] = str(tmp_path / "decisions.jsonl")
@@ -68,10 +78,13 @@ def test_e2e_p_03_restart_worker_continue(tmp_path):
     而不是无关 attempt 的条目存在。
     """
     # ── 阶段 1 setup：真实 appserver 子进程 + 预置绑定原 attempt 的 pending journal ──
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
     proc, client = _spawn(
         tmp_path,
         decision_lines=[helpers.cont(600, "重启接续")],
         prompt_lines=["(stalled-worker-silence)", "E2E03-FINAL"],
+        runtime_root=runtime_root,
         extra_env=("RXYCODE_STUB_STALL_AFTER_PROMPT=1",
                    "RXYCODE_STUB_INTERRUPT_NO_CANCEL=1",
                    "RXYCODE_STUB_ATTEMPT_ID=att_0123456789abcdef0123456789abcdef"),
@@ -83,7 +96,7 @@ def test_e2e_p_03_restart_worker_continue(tmp_path):
         sid = sess["session_id"]
         # tool journal：pending 写条目绑定 run 将使用的固定 attempt（后门注入）——
         # 只用 execution/tool_journal.py 既有真实接口（禁发明 for_session/pending_calls）
-        journal = tj.ToolExecutionJournal()
+        journal = tj.ToolExecutionJournal(directory=runtime_root / "tool_journal")
         attempt_id = "att_0123456789abcdef0123456789abcdef"   # 合法：att_ + 32 hex（tool_journal.py:36）
         digest = tj.arguments_digest({"path": "marker-should-not-rerun.txt"})
         call = tj.JournalCall(key=tj.stable_call_key("write", digest, 0),
@@ -118,7 +131,14 @@ def test_e2e_p_03_restart_worker_continue(tmp_path):
         assert not marker_file.exists()
         assert proc.poll() is None                               # appserver 不降级不退化
     finally:
-        proc.kill()
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=10)
+        finally:
+            client.close()
+            client._reader.join(timeout=5)
+        assert not client._reader.is_alive()
 
 
 def test_e2e_p_03_killed_by_interrupt_fallback(tmp_path):
@@ -163,4 +183,11 @@ def test_e2e_p_03_killed_by_interrupt_fallback(tmp_path):
         assert len(terminal_notes) == 1                          # 唯一终态，按 stop 落地
         assert _marker_pids("e2e-03-worker-marker") == set()
     finally:
-        proc.kill()
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=10)
+        finally:
+            client.close()
+            client._reader.join(timeout=5)
+        assert not client._reader.is_alive()

@@ -23,8 +23,15 @@ No unreleased changes recorded.
   non-ASCII prompt corruption and checkpoint hashing failures on Windows.
 - Ship the protocol schema, runtime version manifests, model catalog and
   built-in agent definitions in wheel/sdist; verify their installed readers.
+- Derive HTTP/OpenAPI product-version metadata from the package version,
+  replacing the unrelated hard-coded 3.0.0 value without changing wire contracts.
 - Isolate scripted FIX5 recovery tests from user credentials/config and bind
   pytest imports to the checkout under test rather than a stale editable install.
+- Align regression fixtures with spill output and shared journal roots, keep
+  fake Windows handles away from real cleanup calls, and run FIX5 worker/dock
+  integration through platform-aware process cleanup and direct Bun invocation.
+- Avoid Python per-character redaction scans for text containing none of the
+  supported secret markers; candidate-bearing text keeps the existing parser.
 
 CLI / OpenTUI release. Product metadata is `1.4.2`; JSON-RPC remains
 `1.1.0` and the import namespace stays `RxyCode.RxyCode1_1_0`.
