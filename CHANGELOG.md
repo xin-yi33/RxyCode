@@ -9,7 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased changes recorded.
+### Added
+
+- Complete the post-1.4.2 P8 handoff: timeout evidence now consumes the latest
+  session-scoped TodoSnapshot for pipeline, graph, tool-timeout, and appserver
+  stall-recovery decisions through the existing `tasks.json` reader.
+- Add real-consumer P8 regressions and `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md`.
+
+### Boundaries
+
+- This is an Unreleased follow-up and is not part of the frozen `1.4.2` tag or
+  its release notes/audit. No protocol model, todo store, timeout default,
+  budget accounting, safety policy, or shell-internal deadline changes.
+
+### Verification
+
+- 2026-10-09 main-reviewer full acceptance passed `13463` tests with `28`
+  baseline skips; the separate `112`-case P8 focused regression is not counted
+  twice.
 
 ---
 

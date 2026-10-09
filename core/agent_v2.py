@@ -212,7 +212,10 @@ def apply_mid_turn_steers(messages: list, drain) -> list[str]:
     return applied
 from RxyCode.RxyCode1_1_0.recovery.tracker import RecoveryKind
 from RxyCode.RxyCode1_1_0.tools.registry import default_registry
-from RxyCode.RxyCode1_1_0.tools.todo_events import read_todo_snapshot
+from RxyCode.RxyCode1_1_0.tools.todo_events import (
+    read_todo_snapshot,
+    todo_progress_for_session,
+)
 from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
 from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX, token_stats
@@ -2945,6 +2948,10 @@ class AgentV2:
         if getattr(self, "_pipeline_scope_run_id", None) != run_id:
             self._reset_pipeline_decision_state()
             self._pipeline_scope_run_id = run_id
+        progress = todo_progress_for_session(
+            str(getattr(self, "_session_id", "") or ""),
+            root_session_id=str(getattr(self, "_session_id", "") or ""),
+        )
         evidence = TimeoutEvidence(
             trigger_point="pipeline_soft_budget",
             session_id=session_id,
@@ -2954,7 +2961,7 @@ class AgentV2:
             elapsed_seconds=float(elapsed),
             budget_seconds=float(soft_budget),
             extension_index=0,
-            progress="",
+            progress=progress,
             last_error="",
         )
         decision_started = time.monotonic()

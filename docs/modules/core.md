@@ -196,6 +196,20 @@ cancelled at a fixed 600-second boundary. Operators can opt into a positive
 stall cutoff, while `task_max_time_seconds=7200` independently enforces the
 default total task ceiling.
 
+### P8 timeout evidence and TodoSnapshot
+
+Before an enabled timeout decision, the pipeline and graph watchdog read the
+current session's authoritative `tasks.json` through
+`tools.todo_events.read_todo_snapshot`. `todo_progress_for_session` validates
+`session_id`, `root_session_id`, `list_id`, `scope`, and non-negative revision,
+then uses the deterministic `todo_progress_snapshot` projection. It reads on
+every decision point, so a restarted worker or rebuilt consumer sees the
+latest persisted revision; it never reads the `latest` compatibility bucket or
+uses a cached status-band object as evidence. Missing, empty, malformed, or
+cross-scope snapshots produce the legal empty `progress` string. Todo progress
+is advisory plan state only and never replaces tool, journal, budget, or
+verification evidence; the path makes no Todo-summary LLM call.
+
 ### Core Code: prompts/ (Prompt Registry)
 
 A package providing the single source of truth for all pipeline stage prompts.

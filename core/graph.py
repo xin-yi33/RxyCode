@@ -125,6 +125,7 @@ def _coerce_task_evidence(factory, tracker, *, elapsed: float, budget: float):
     raw = factory() if factory is not None else {}
     if not isinstance(raw, dict):
         return raw
+    todo_session_id = str(raw.get("_todo_session_id") or "").strip()
     data = {
         "trigger_point": "graph_task_max_time",
         "session_id": "graph",
@@ -140,7 +141,15 @@ def _coerce_task_evidence(factory, tracker, *, elapsed: float, budget: float):
     for key, value in raw.items():
         if key in data and value is not None:
             data[key] = value
-    evidence_type = _decision_api().TimeoutEvidence
+    api = _decision_api()
+    if todo_session_id:
+        data["progress"] = api.todo_progress_for_session(
+            todo_session_id,
+            root_session_id=str(raw.get("root_session_id") or todo_session_id),
+            list_id=str(raw.get("list_id") or "default"),
+            scope=str(raw.get("scope") or "turn"),
+        )
+    evidence_type = api.TimeoutEvidence
     return evidence_type(
         trigger_point=data["trigger_point"],
         session_id=str(data["session_id"]),
@@ -763,13 +772,16 @@ async def executor_node(state: AgentState) -> dict:
             evidence_factory=lambda: {
                 "trigger_point": "graph_task_max_time",
                 "session_id": str(state.get("session_id") or "graph"),
+                "_todo_session_id": str(state.get("session_id") or ""),
+                "root_session_id": str(
+                    state.get("root_session_id") or state.get("session_id") or ""
+                ),
                 "run_id": str(
                     state.get("run_id") or state.get("session_id") or "graph"
                 ),
                 "subject_id": str(task.id),
                 "task_hint": task.title or "",
                 "extension_index": 0,
-                "progress": "",
                 "last_error": tracker.last_error or "",
             },
             tui=tui,

@@ -1006,7 +1006,10 @@ class AppServer:
         ``"continue"`` or None. A gate hit or a disabled engine does not call
         the model. ``budget_seconds`` is only ``restart_grant_base_seconds``.
         """
-        from RxyCode.RxyCode1_1_0.core.timeout_decision import restart_gate_verdict
+        from RxyCode.RxyCode1_1_0.core.timeout_decision import (
+            restart_gate_verdict,
+            todo_progress_for_session,
+        )
         from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
         from RxyCode.RxyCode1_1_0.protocol.timeout_decision import TimeoutEvidence
 
@@ -1035,6 +1038,9 @@ class AppServer:
         snapshot = self._job_prompts.get(str(job.job_id)) or {}
         hint = str(snapshot.get("text") or "").strip() or str(job.job_id)
         elapsed = max(0.0, time.monotonic() - float(getattr(job, "started_at", time.monotonic())))
+        progress = todo_progress_for_session(
+            str(job.session_id), root_session_id=str(job.session_id)
+        )
         ev = TimeoutEvidence(
             trigger_point="watchdog_stall",
             session_id=str(job.session_id),
@@ -1044,7 +1050,7 @@ class AppServer:
             elapsed_seconds=elapsed,
             budget_seconds=base,
             extension_index=0,
-            progress="",
+            progress=progress,
             last_error=str(evidence.get("reason") or ""),
         )
         from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
@@ -1139,7 +1145,10 @@ class AppServer:
         This is not a second model call. The worker already raised
         ``killed_by_interrupt_fallback`` and the host killed itself.
         """
-        from RxyCode.RxyCode1_1_0.core.timeout_decision import event_from_decision
+        from RxyCode.RxyCode1_1_0.core.timeout_decision import (
+            event_from_decision,
+            todo_progress_for_session,
+        )
         from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
         from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
             TimeoutDecisionResponse,
@@ -1150,6 +1159,9 @@ class AppServer:
             0.0,
             time.monotonic() - float(getattr(stalled, "started_at", time.monotonic())),
         )
+        progress = todo_progress_for_session(
+            str(stalled.session_id), root_session_id=str(stalled.session_id)
+        )
         evidence = TimeoutEvidence(
             trigger_point="watchdog_stall",
             session_id=str(stalled.session_id),
@@ -1159,7 +1171,7 @@ class AppServer:
             elapsed_seconds=elapsed,
             budget_seconds=0.0,
             extension_index=0,
-            progress="",
+            progress=progress,
             last_error="killed_by_interrupt_fallback",
         )
         response = TimeoutDecisionResponse(

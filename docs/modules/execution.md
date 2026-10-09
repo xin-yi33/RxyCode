@@ -78,6 +78,14 @@ kill, while `task_max_time_seconds=7200` remains the independent total task
 ceiling. Setting a positive deadline to `0` explicitly disables only that
 deadline layer.
 
+When timeout decisions are enabled, `_tool_timeout_evidence` reads the current
+session's authoritative TodoSnapshot immediately before `TimeoutDecisionEngine.decide`.
+The deterministic progress string is refreshed for each timeout, including
+after a consumer rebuild. Empty, malformed, or differently scoped snapshots
+remain valid empty evidence and do not cause a fallback to another session.
+This read is observational only: it does not write `tasks.json` and does not
+invoke a Todo-summary model.
+
 MCP tools are dynamic but do not bypass this entry point. `AgentV2` registers
 their `StructuredTool` adapters in the orchestrator, and the executor only sees
 the usual safe proxies. Because MCP annotations are untrusted and their names

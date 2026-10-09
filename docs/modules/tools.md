@@ -28,6 +28,8 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 | vision.py | VisionTool - image analysis using multimodal LLM |
 | subagent_task_tool.py | `task` tool - isolated subagent dispatch (`ChildSessionManager`) when `subagents_enabled`. Schema stays visible whenever subagents are on or the session said 用子代理; `agent_id=explore` is the Grok-style readonly codebase worker. |
 | task_manage.py | `task_manage` tool - task-list management (legacy `task` when subagents disabled) |
+| todo_write.py | Model-facing todo ledger writer over the shared `tasks.json` store; returns the authoritative `TodoSnapshot` projection |
+| todo_events.py | `tasks.json` reader and deterministic TodoSnapshot/progress projection used by status-band and timeout evidence consumers |
 | agent_invoke.py | `@agent` mention parsing + dispatch (`parse_mention` / `invoke_mention` / `list_mentionable_agents`) |
 | memory_tool.py | MemoryTool - interact with the memory system |
 | history_tool.py | HistoryTool - access memory/session history |
@@ -135,6 +137,13 @@ scanner. Text containing a marker still uses the existing bearer and assignment
 parsers, including case-insensitive keys, quoted or escaped values, and values
 whose key/value separator spans lines. This is only a model-visible preview
 optimization; spilled files remain raw and are not rewritten by this helper.
+
+`tools/todo_events.py::todo_progress_for_session` is the shared read-only
+consumer for timeout evidence. It reopens the exact session's
+`tasks.json` on every call, validates the snapshot identity and scope, and
+projects items with `todo_progress_snapshot`. It has no write path, no
+`latest` fallback, and no summary-model call; an absent or invalid ledger is
+represented by empty progress.
 
 ## Tool Registration Flow
 1. `core/builtin_tool_registration.register_builtin_tools(registry, orchestrator, ...)`

@@ -19,8 +19,11 @@ The packaging contract also runs an isolated subprocess that preloads a stale
 1.4.1 editable finder, then verifies `tests/conftest.py` rebinds the current
 checkout before importing `protocol.version`. The P8 composition fixture now
 imports the sole authoritative `protocol.todo` schema; this validates existing
-projection/steer/compact/hooks/rewind composition only and does not deliver the
-deferred P8 production evidence consumer.
+projection/steer/compact/hooks/rewind composition. The P8 production evidence
+consumer is covered separately by `tests/test_timeout/test_todo_progress_snapshot.py`:
+the tests write through `todo_write`, capture evidence from all four real
+consumers, and verify latest-revision, malformed/empty, identity isolation,
+rebuild, read-only, and zero-summary-call behavior.
 
 ## 测试层
 

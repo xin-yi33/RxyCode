@@ -29,6 +29,7 @@ from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.tools.secret_text import redact_secrets
+from RxyCode.RxyCode1_1_0.tools.todo_events import todo_progress_for_session
 from RxyCode.RxyCode1_1_0.tools.write import write_tool
 
 from RxyCode.RxyCode1_1_0.core.governance import PolicyOutcome, SensitiveActionPolicy
@@ -775,7 +776,8 @@ class ToolOrchestrator:
         elapsed: float,
     ) -> TimeoutEvidence:
         owner = getattr(self, "_owner_agent", None)
-        session_id = str(getattr(owner, "_session_id", "") or "tool")
+        live_session_id = str(getattr(owner, "_session_id", "") or "")
+        session_id = live_session_id or "tool"
         subject = str(call_id or name)
         hint = f"{name}({summarize_args(args)})"[:500]
         return TimeoutEvidence(
@@ -787,7 +789,10 @@ class ToolOrchestrator:
             elapsed_seconds=max(0.0, float(elapsed)),
             budget_seconds=max(0.0, float(timeout)),
             extension_index=0,
-            progress="",
+            progress=todo_progress_for_session(
+                live_session_id,
+                root_session_id=live_session_id,
+            ),
             last_error="",
         )
 

@@ -53,6 +53,13 @@ Question      -> worker PipeQuestionBroker -> AgentHost -> client `question/requ
 Watchdog (T4) -> periodic event/server_heartbeat; stall -> kill worker + degraded
 ```
 
+For an enabled stall recovery decision, `AppServer` reads the current
+session's authoritative TodoSnapshot immediately before building
+`watchdog_stall` evidence. The same session/root/list/scope validation is used
+for a rebuilt worker and for the fail-closed interrupt-stop event; no parent,
+sibling, or `latest` snapshot is substituted. Empty or invalid snapshots leave
+`progress` empty, and this path never asks a Todo-summary model.
+
 Each session gets its own **agent worker subprocess**. Prompt/bootstrap timeouts call
 `AgentHost.kill()` so blocked work cannot hold the main process (T1).
 Background `session/new` warm uses a 180s budget and **single-flight**

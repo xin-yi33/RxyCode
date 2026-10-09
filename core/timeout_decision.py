@@ -26,6 +26,10 @@ from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
     forward_decision_event as _forward_decision_event,
     note_published_event,
 )
+from RxyCode.RxyCode1_1_0.tools.todo_events import (
+    todo_progress_for_session as _todo_progress_for_session,
+    todo_progress_snapshot as _todo_progress_snapshot,
+)
 
 
 def begin_decision_events():
@@ -207,22 +211,23 @@ def record_decision_cost(session_id: str, cost: float) -> None:
 
 def todo_progress_snapshot(snapshot_or_handle) -> str:
     """Project a TodoSnapshot-shaped handle. Empty or malformed input is ""."""
-    if snapshot_or_handle is None:
-        return ""
-    items = getattr(snapshot_or_handle, "items", None)
-    if not isinstance(items, list) or not items:
-        return ""
-    parts: list[str] = []
-    completed = 0
-    for item in items:
-        status = getattr(item, "status", None)
-        content = getattr(item, "content", None)
-        if not isinstance(status, str) or not isinstance(content, str):
-            return ""
-        if status == "completed":
-            completed += 1
-        parts.append(f"{status} {content}")
-    return f"[{completed}/{len(items)}] " + " | ".join(parts)
+    return _todo_progress_snapshot(snapshot_or_handle)
+
+
+def todo_progress_for_session(
+    session_id: str | None,
+    *,
+    root_session_id: str | None = None,
+    list_id: str = "default",
+    scope: str = "turn",
+) -> str:
+    """Read and project the latest authoritative snapshot for evidence."""
+    return _todo_progress_for_session(
+        session_id,
+        root_session_id=root_session_id,
+        list_id=list_id,
+        scope=scope,
+    )
 
 
 def _scope_of(evidence: TimeoutEvidence) -> Scope:
