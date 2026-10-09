@@ -299,12 +299,26 @@ def test_resume_thread_failure_raises_instead_of_silent_success(tmp_path):
             windows.kernel32, "ResumeThread", return_value=0xFFFFFFFF),
         mock.patch.object(windows.kernel32, "TerminateProcess") as terminate,
         mock.patch.object(
-            windows.kernel32, "WaitForSingleObject", return_value=0),
+            windows.kernel32, "WaitForSingleObject", return_value=0) as wait,
+        mock.patch.object(windows, "_close_handle") as close_handle,
     ):
         with pytest.raises(SandboxUnavailableError, match="ResumeThread"):
             spawn_restricted_sync(
                 ["cmd.exe", "/c", "exit"], str(tmp_path), _policy())
-    terminate.assert_called_once()
+    assert terminate.call_count == 1
+    terminated_handle, terminate_code = terminate.call_args.args
+    assert terminated_handle.value == 111
+    assert terminate_code == 1
+    assert wait.call_count == 1
+    waited_handle, wait_timeout = wait.call_args.args
+    assert waited_handle.value == 111
+    assert wait_timeout == 3000
+    close_handle.assert_has_calls([
+        mock.call(222),
+        mock.call(111),
+        mock.call(999),
+    ])
+    assert close_handle.call_count == 3
 
 
 # ---- 出生即绑定（2026-10-07 验收缺陷修：venv launcher 自建 Job 冲突）---------

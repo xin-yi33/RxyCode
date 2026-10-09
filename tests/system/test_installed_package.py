@@ -20,6 +20,19 @@ from tests.conftest import require_tool
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VERSIONED_ROOT = PurePosixPath("RxyCode/RxyCode1_1_0")
 EXPECTED_ENTRYPOINT = "RxyCode.RxyCode1_1_0.entrypoint:main"
+RUNTIME_DATA_FILES = (
+    "protocol/schema.json",
+    "packaging/runtimes/windows.json",
+    "packaging/runtimes/linux.json",
+    "packaging/runtimes/macos.json",
+    "config/model_catalog.json",
+    "config/model_catalog.schema.json",
+    "config/agents/explore.json",
+    "config/agents/general.json",
+    "config/agents/reviewer.md",
+    "config/agents/scout.yaml",
+    "config/bridge_workers.json",
+)
 
 
 @dataclass(frozen=True)
@@ -211,6 +224,8 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         assert VERSIONED_ROOT / "frontend/protocol-client/package.json" in paths
         assert VERSIONED_ROOT / "frontend/package.json" in paths
         assert VERSIONED_ROOT / "frontend/dist/index.js" in paths
+        for relative_path in RUNTIME_DATA_FILES:
+            assert VERSIONED_ROOT / relative_path in paths, relative_path
         assert not any(path.parts[:3] == (*VERSIONED_ROOT.parts, "evals") for path in paths)
 
         forbidden_directories = {
@@ -242,7 +257,7 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         )
         metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
         assert metadata["Name"] == "rxycode"
-        assert metadata["Version"] == "1.4.1"
+        assert metadata["Version"] == "1.4.2"
         requirements = [
             value.casefold() for value in metadata.get_all("Requires-Dist", [])
         ]
@@ -279,6 +294,7 @@ def test_sdist_contains_bootstraps_without_runtime_state(
         PurePosixPath("frontend/package.json"),
         PurePosixPath("frontend/dist/index.js"),
         PurePosixPath("_package_root/RxyCode/__main__.py"),
+        *(PurePosixPath(path) for path in RUNTIME_DATA_FILES),
     ):
         assert required in relative
 
@@ -314,7 +330,7 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         cwd=installed_package.workdir,
         env=installed_package.env,
     )
-    assert "1.4.1" in version.stdout + version.stderr
+    assert "1.4.2" in version.stdout + version.stderr
 
     providers = _run(
         [
@@ -342,6 +358,26 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         env=installed_package.env,
     )
     assert "False none" in sandbox.stdout
+
+    # Probe the installed readers, not the checkout: omitted package data
+    # otherwise silently produces an empty catalog and incompatible runtime.
+    resources = _run(
+        [
+            str(installed_package.python),
+            "-c",
+            "from RxyCode.RxyCode1_1_0.appserver.release import ReleaseService\n"
+            "from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog\n"
+            "from RxyCode.RxyCode1_1_0.core.subagents.builtin_agents import builtin_agent_ids\n"
+            "compat = ReleaseService().compatibility()\n"
+            "assert compat['compatible'], compat\n"
+            "assert ModelCatalog.load()._exact, 'installed model catalog is empty'\n"
+            "assert {'explore', 'general', 'reviewer', 'scout'} <= set(builtin_agent_ids())\n"
+            "print('installed runtime resources OK')",
+        ],
+        cwd=installed_package.workdir,
+        env=installed_package.env,
+    )
+    assert "installed runtime resources OK" in resources.stdout
 
     help_result = _run(
         [str(installed_package.console), "--help"],

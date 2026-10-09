@@ -56,7 +56,7 @@ async def test_e2e_p_09_extend_interrupt_cleanup_then_second_round():
     # ── 阶段 2 扰动 A：第一次超时 → 决策 continue → 延长内拿到真实结果 ──
     quick = _proc_tool("p9-extend", 0.4)
     orch.register("p9-extend", quick, risk="write")
-    out1 = await orch.execute_tool("p9-extend", "x", cfg)
+    out1 = await orch.execute_tool("p9-extend", "x", cfg, call_id="p9-extend-call")
     assert out1 == "p9-extend-done"                                # continue 生效：延长后真实返回
     helpers.assert_event_fields(collect[0], trigger_point="tool_timeout", action="continue",
                                extension_index=1, fail_closed=False)
@@ -67,7 +67,9 @@ async def test_e2e_p_09_extend_interrupt_cleanup_then_second_round():
     orch.register("p9-long", long_tool, risk="write")
     tasks_before = set(asyncio.all_tasks())
     threads_before = len(threading.enumerate())
-    run = asyncio.create_task(orch.execute_tool("p9-long", "x", cfg))
+    run = asyncio.create_task(
+        orch.execute_tool("p9-long", "x", cfg, call_id="p9-long-call")
+    )
     await asyncio.sleep(0.2)                                       # 决策 pending（hang 60s）
     assert engine.pending_decisions == 1
     engine.interrupt()                                             # 用户 interrupt（作废 pending）
@@ -79,6 +81,18 @@ async def test_e2e_p_09_extend_interrupt_cleanup_then_second_round():
     assert killed == ["p9-long"]                                   # 原始 task 被取消
     assert _marker_pids(MARKER) == set()                           # 无子进程残留（真实探针）
     assert engine.pending_decisions == 0
+    helpers.assert_event_fields(
+        collect[1],
+        trigger_point="tool_timeout",
+        action="stop",
+        extension_index=0,
+        fail_closed=True,
+        extend_seconds=0.0,
+    )
+    assert collect[1]["note"].startswith("[fail-closed] interrupted")
+    assert ledger.count(("tool", "p9-long-call")) == 0
+    assert ledger.total_extended(("tool", "p9-extend-call")) == pytest.approx(2.0)
+    events_after_interrupt = list(collect)
     kinds = [k for k, _t in engine.trajectory]
     assert "interrupt" in kinds
     leaked = set(asyncio.all_tasks()) - tasks_before
@@ -87,6 +101,7 @@ async def test_e2e_p_09_extend_interrupt_cleanup_then_second_round():
     # ── 阶段 4 同会话再发一轮并成功返回 ──
     echo = _proc_tool("p9-round2", 0.0)
     orch.register("p9-round2", echo, risk="write")
-    out3 = await orch.execute_tool("p9-round2", "x", cfg)
+    out3 = await orch.execute_tool("p9-round2", "x", cfg, call_id="p9-round2-call")
     assert out3 == "p9-round2-done"                                # 同会话复跑成功
-    assert [e["action"] for e in collect] == ["continue"]          # interrupt 不落 continue/stop 事件
+    assert [e["action"] for e in collect] == ["continue", "stop"]
+    assert collect == events_after_interrupt                       # 成功轮不新增决策事件

@@ -156,7 +156,7 @@ def test_u_f4_6_06_reconnect_does_not_redeliver(tmp_path, monkeypatch):
     monkeypatch.setenv("RXYCODE_APPSERVER_MULTI", "1")
     svc = _service(tmp_path, consumer=False)
     start = datetime(2026, 10, 1, 9, 0, 0)
-    job = svc.create(rule={"kind": "interval", "every": 1, "unit": "minutes"}, action=_interval_action(), now=start)
+    _job = svc.create(rule={"kind": "interval", "every": 1, "unit": "minutes"}, action=_interval_action(), now=start)
     fired = svc.tick(now=start + timedelta(seconds=90))
     assert fired[0]["ok"] is True
     assert len(svc.sessions.enqueued) == 1

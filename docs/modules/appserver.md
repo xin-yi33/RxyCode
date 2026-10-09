@@ -69,7 +69,7 @@ later tool activity.
 |----|-------------|----------------|
 | T1 | Process isolation per session | `AgentHost` spawns `agent_worker` subprocess; `kill()` on timeout/shutdown |
 | T2 | Explicit timeouts | Bootstrap, prompt, approval, and worker RPC each have wall-clock limits |
-| T3 | Non-blocking stdio on asyncio loops | `jsonrpc.write_message` uses `asyncio.to_thread(write_message_sync, …)`. `server.py` handlers `await write_message`. `agent_worker.py` async paths `await write_message`; sync `emit` callbacks use `_schedule_write()` → `create_task(write_message(…))` so neither loop blocks on `sys.stdout` |
+| T3 | Non-blocking stdio on asyncio loops | `jsonrpc.write_message` uses `asyncio.to_thread(write_message_sync, …)`. `server.py` handlers `await write_message`. `agent_worker.py` async paths `await write_message`; sync `emit` callbacks use `_schedule_write()` → `create_task(write_message(…))` so neither loop blocks on `sys.stdout`. Worker stdin/stdout/stderr are explicitly reconfigured to UTF-8 before the RPC reader starts, so locale-bound Windows pipes cannot turn non-ASCII prompts into surrogate code points. |
 | T4 | Watchdog / degrade | `watchdog.py`: heartbeat, stall detection, `-32004`, failed-job events, worker kill |
 
 ## Methods (client -> server)

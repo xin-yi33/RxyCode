@@ -35,11 +35,25 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
     _checkout_root = Path(__file__).resolve().parent.parent
     os.environ["RXYCODE_CHECKOUT_ROOT"] = str(_checkout_root)
     os.environ["_RXYCODE_TEST_CHECKOUT"] = str(_checkout_root)
-    _editable_finder_types = ("_EditableFinder",)
+    def _is_editable_finder(finder) -> bool:
+        """Recognize both the class and instance form emitted by editable installs.
+
+        Setuptools' generated finder is inserted as the class itself, so
+        ``type(finder).__name__`` is ``"type"`` even though
+        ``finder.__name__`` is ``"_EditableFinder"``.  Checking only the
+        instance type leaves the stale checkout resolver active and allows a
+        preloaded ``protocol`` module from another worktree to win.
+        """
+        cls = finder if isinstance(finder, type) else type(finder)
+        return (
+            getattr(cls, "__name__", "") == "_EditableFinder"
+            and getattr(cls, "__module__", "").startswith("__editable__")
+        )
+
     sys.meta_path = [
         finder
         for finder in sys.meta_path
-        if type(finder).__name__ not in _editable_finder_types
+        if not _is_editable_finder(finder)
     ]
     _canonical_init = _checkout_root / "__init__.py"
     _canonical = sys.modules.get("RxyCode.RxyCode1_1_0")
@@ -51,8 +65,56 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
         except OSError:
             _bound_here = False
     if not _bound_here:
+        # A stale editable package may have imported its canonical children
+        # before pytest loads this conftest.  Replacing only the package root
+        # is insufficient: importlib would keep returning the old
+        # ``RxyCode.RxyCode1_1_0.protocol`` and bare ``protocol`` modules from
+        # ``sys.modules``.  Remove only checkout-owned package keys whose
+        # source is outside this checkout; third-party modules are untouched.
+        _bare_names = {
+            "appserver",
+            "cache",
+            "config",
+            "core",
+            "execution",
+            "history",
+            "log",
+            "lsp",
+            "mcp",
+            "memory",
+            "planning",
+            "protocol",
+            "rag",
+            "recovery",
+            "scheduler",
+            "synthesis",
+            "tools",
+            "utils",
+            "validation",
+            "api_server",
+        }
+        _canonical_prefix = "RxyCode.RxyCode1_1_0"
+        for _name, _module in list(sys.modules.items()):
+            _module_file = getattr(_module, "__file__", None)
+            if not _module_file:
+                continue
+            try:
+                _module_here = Path(_module_file).resolve().is_relative_to(_checkout_root)
+            except (OSError, ValueError):
+                _module_here = False
+            if (
+                (_name == _canonical_prefix or _name.startswith(f"{_canonical_prefix}."))
+                or (_name.split(".", 1)[0] in _bare_names and not _module_here)
+            ):
+                sys.modules.pop(_name, None)
+        _parent = _types.ModuleType("RxyCode")
+        _parent.__path__ = [str(_checkout_root / "_package_root" / "RxyCode")]
+        sys.modules["RxyCode"] = _parent
+        _canonical = None
+    if not _bound_here:
         if "RxyCode" not in sys.modules:
             _parent_mod = _types.ModuleType("RxyCode")
+            _parent_mod.__path__ = [str(_checkout_root / "_package_root" / "RxyCode")]
             sys.modules["RxyCode"] = _parent_mod
         _canonical = _types.ModuleType("RxyCode.RxyCode1_1_0")
         sys.modules["RxyCode.RxyCode1_1_0"] = _canonical

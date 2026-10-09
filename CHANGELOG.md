@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes recorded.
+
+---
+
+## [1.4.2] - 2026-10-09
+
+### Release audit fixes
+
+- Prevent archive prewarm tasks from cancelling their own parent; a per-task
+  context marker still allows a real user turn to cancel background prewarm.
+- Configure worker JSON-RPC pipes as UTF-8 before reading requests, avoiding
+  non-ASCII prompt corruption and checkpoint hashing failures on Windows.
+- Ship the protocol schema, runtime version manifests, model catalog and
+  built-in agent definitions in wheel/sdist; verify their installed readers.
+- Isolate scripted FIX5 recovery tests from user credentials/config and bind
+  pytest imports to the checkout under test rather than a stale editable install.
+
+CLI / OpenTUI release. Product metadata is `1.4.2`; JSON-RPC remains
+`1.1.0` and the import namespace stays `RxyCode.RxyCode1_1_0`.
+Ships one source distribution, not a new Desktop installer.
+
+### Added
+
+- Model-written `todo_write` on the existing task store, authoritative
+  TodoSnapshot events and `todo/get`, and an OpenTUI dock. `Ctrl+T` toggles
+  Todo; `Ctrl+E` toggles thinking.
+- A model-facing status band shared by the fast and graph paths. Todo
+  projection and recovery read persisted state without another Todo-summary
+  model call.
+- Spill oversized bash output before its first truncation; retain a readable
+  file pointer through later context compaction.
+- Default-off agentic timeout decisions with capped grants, cancellation
+  cleanup, events, and hooks; centralized timeout configuration.
+
+### Changed
+
+- Context compression merges prior summaries with newly folded messages.
+  Automatic summary failures and repeated refills are bounded; explicit
+  manual compaction remains available.
+- Harden stalled-worker recovery, checkpoint resume limits, project-scoped
+  memory flush/recall, schedule dispatch recovery, and prompt-version cache
+  keys.
+
 ### Fixed
 
 - Test infrastructure: skip the native Windows sandbox suite before importing
@@ -16,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regression that fails if those bindings are imported first. This corrects
   the post-release v1.4.1 Linux CI collector error; published CLI distributions
   do not contain tests and their runtime content is unchanged.
+
+### Verification and limits
+
+P8 timeout-evidence consumption of the new status band remains deferred;
+shell-internal deadlines are not extended by the outer decision grant.
+Scheduled prompt execution still requires a consuming client. No new
+Desktop binaries or Linux/macOS native-sandbox validation are claimed.
+See the [release notes](docs/release-notes/RELEASE_NOTES_v1.4.2.md),
+[detailed changelog](docs/release-notes/CHANGELOG_v1.4.2.md), and
+[completion audit](docs/release-notes/V1.4.2-COMPLETION-AUDIT.md) for
+item-level routes, current verification, and historical results.
 
 ---
 

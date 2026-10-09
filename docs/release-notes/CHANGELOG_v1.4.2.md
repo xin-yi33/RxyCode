@@ -1,8 +1,8 @@
 # CHANGELOG v1.4.2
 
-> 记录日期：2026-10-08。上一份档案是 `CHANGELOG_v1.4.1.md`，那份冻结内容没有改。
-> 本文只记本分支已经提交的 Fix4 与 Phase P 改动。产品版本仍是 `pyproject.toml` 的
-> 1.4.1，协议版本仍是 `PROTOCOL_VERSION` 1.1.0。没有打 1.4.2 的 tag，也没有发布安装包。
+> 记录日期：2026-10-09。上一份档案是 `CHANGELOG_v1.4.1.md`，那份冻结内容没有改。
+> 本文记录 Fix4、Phase P、FIX5 与本次发布补缺。产品版本统一为 `pyproject.toml` 的
+> 1.4.2，协议版本仍是 `PROTOCOL_VERSION` 1.1.0。本候选通过最终验收后发布 `v1.4.2`。
 > 格式沿用 1.4.1：每条 = **模块**：做了什么 —— **原因**。归类：新增 / 变更 / 修复 / 废弃。
 
 ## 新增
@@ -102,6 +102,14 @@
 - **决策事件转发**（`c75bc76c`）：每次 `decide` 用独立的已发布事件桶。
   sink 追加失败的事件不会送上线。写 TUI 失败只记日志，不打断工具收尾。
 
+- **Phase P 测试契约对齐**（仅 `tests/e2e/phase_p`）：P02 夹具显式绑定
+  `agent._session_id` 与当前真实 `run_id`，按 `(session, run)` 检查 pipeline ledger，
+  并 await 被取消的 fake task；P06 将并发两次合法决策的 tool evidence 预算降到
+  cap 以下，同时补上预算等于 cap 时零 LLM、policy stop 的边界回归；P09 保留
+  中断产生的 fail-closed stop 事件，断言无额外 grant、后续成功轮无新决策事件及进程清理。
+  —— 原因：旧测试契约分别与现有 scope、封顶前置检查、以及 P07 已冻结的中断语义冲突。
+  没有放宽封顶、删除 stop 事件或修改生产规则。
+
 ## 修复
 
 - **压缩后的 todo 尾坠**（`core/status_band.py`）：非空台账在压缩后的状态带里始终写出 `(N completed)`，取消数接在后面。完成数为 0 时也保留 `(0 completed)`。
@@ -121,6 +129,12 @@
 - **管道失联与 interrupt 异常**（`e490e3ec`）：`pipe_broken` 先 interrupt，进程还活着再
   kill 一次。两次之后进程仍在，就不把结果说成已经杀掉。interrupt 抛错时用 `alive()`
   判断，不直接写成 `killed=True`。
+- **Windows ResumeThread 失败夹具**（`tests/test_core/test_sandbox_windows.py`）：
+  失败注入测试现在 mock `_close_handle`，并逐项断言 `TerminateProcess`、等待和
+  thread/process/token 三个假句柄的回收；不再把 fake handle 送进真实 `kernel32.CloseHandle`。
+  同时按 ctypes 句柄值断言，而不是比较两个不保证对象相等的 `c_void_p` 实例。
+  —— 原因：旧夹具只 mock 了终止和等待，失败清理路径会触碰真实内核句柄，可能误关
+  pytest 的定时器线程句柄并在全量回归中表现为 `Failed joining thread`。
 
 ## 废弃
 
@@ -141,10 +155,12 @@
 - **P8**：FIX5 已经在 `protocol/todo.py` 里有 `TodoItem` 和 `TodoSnapshot`。没有第二套
   `protocol/todo_snapshot.py`，也没有新的 todo store。P8 仍是 `BLOCKED_PREREQUISITE`：
   没有抄 P8 测试，没有把 evidence 接到假快照。
-  2026-10-08 起这一卡连同 E-P-E2E-08 搁置。E-P-E2E-08 仍要导入 `protocol.todo_snapshot`，
-  这个模块没有补。交互式 todo 是模型自己写的步骤清单，再投影到用户能看见的状态条；调研见
+  2026-10-08 起这一卡连同 P8 生产消费搁置。2026-10-09 只把旧测试夹具的导入对齐到
+  `protocol.todo`，没有补 `protocol.todo_snapshot.py`，没有把 evidence 接到假快照。交互式
+  todo 是模型自己写的步骤清单，再投影到用户能看见的状态条；调研见
   `docs/plans/opus5-plan/rxycode/research/2026-10-08-backend-status-bar-model-facing-todo.md`。
-  P8 只许消费已有的 `TodoSnapshot`，不能自己再造一份。本轮没有做 P8。
+  P8 只许消费已有的 `TodoSnapshot`，不能自己再造一份。本轮没有做 P8 生产实现；现在通过的
+  E-P-E2E-08 只核验已有投影、steer、compact、hooks、rewind 之间的交叉行为。
 - **Phase P E2E**：测试已按测试包抄入 `tests/e2e/phase_p`。
   较早一次是 4 passed、6 failed。固定窗口第五轮末行是「无剩余问题」，并写明六项红灯仍在。
   其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。那次是
@@ -154,11 +170,15 @@
   它们已恢复测试包原文，失败保持失败：02 是 `assert 0 == 2`，06 是 `assert 1 == 2`，
   09 是 `['continue', 'stop'] == ['continue']`。封顶没有放宽，fail-closed stop 没有从 sink 删掉。
   03 fallback 的生产行为仍在：interrupt RPC 实际失败才发 stop，原 prompt 只回一条 error。
-  恢复原文后的 `tests/e2e/phase_p` 是 `4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。
-  失败是 02、06、08、09。08 仍是没有 `protocol.todo_snapshot`。没有补这个文件。
-  2026-10-08 再跑同一命令：`4 failed, 6 passed, 4 warnings in 21.30s`，退出码 1。
-  失败名单没变。02 仍是 `assert 0 == 2`，06 仍是 `assert 1 == 2`，
-  09 仍是 `['continue', 'stop'] == ['continue']`。08 按上面的搁置，不补快照模块。
+  恢复原文后的历史 `tests/e2e/phase_p` 是 `4 failed, 6 passed, 4 warnings in 19.42s`，退出码 1。
+  失败是 02、06、08、09；其中 08 当时只是过期导入名，不是 P8 生产消费。
+  2026-10-09 将 08 夹具改为唯一权威的 `protocol.todo` 后，历史实跑是
+  `3 failed, 7 passed`；这三个红灯随后按现有生产事实完成测试契约修正：02 的
+  `assert 0 == 2` 来自缺少 session/run 绑定且未收尸的 fake task，06 的
+  `assert 1 == 2` 来自 tool evidence 已等于 7200 cap、被 policy 预检合法拦截，
+  09 的 `['continue', 'stop'] == ['continue']` 来自旧断言漏掉既有 fail-closed stop。
+  修正后当前 `tests/e2e/phase_p` 实跑为 `11 passed`，退出码 0；其中 P8 仍只是
+  `protocol.todo` 夹具对齐，不代表 P8 生产 evidence consumer 已实现。
   MO-F4-6-01 的 `len(fires)` 仍是 1。历史 fire 不删。
   复活按本轮去重，不按任意历史成功。`_execute_async` 开工时把 `inflight_slot`
   写成当时的 `next_fire`。这个槽还没有成功 fire，复活就补投一次。
@@ -169,7 +189,8 @@
 
 ## 测试
 
-数字来自 2026-10-08 的 pytest 输出，日志在施工暂存目录。失败保持失败。
+历史数字来自 2026-10-08 的 pytest 输出，日志在施工暂存目录；补缺回归数字来自
+2026-10-09 本地重跑。失败保持失败。
 
 - Fix4 出口在凭证解码修复之后，同一组命令跑了两遍，退出码都是 0。
   A：68 passed，e2e 10 passed。B：9171 passed，4 skipped。4 条 skip 是原来就有的。
@@ -219,6 +240,21 @@
   `merged-gate.txt`：`tests/contract tests/test_appserver tests/test_cache tests/test_core` 是
   `9176 passed, 4 skipped, 46 warnings in 1783.28s`，退出码 0。
   更早一次同命令是 33.71s / 32.09s / 1432.53s。通过数和失败名单相同。
+- 2026-10-09 补缺回归：正常 `python -m pytest` 在旧 editable finder 预加载时曾从另一个
+  checkout 读取 `APPSERVER_VERSION=1.4.1`。`tests/conftest.py` 现在同时识别 class-form
+  `_EditableFinder` 并清理其已加载的 canonical/bare 子模块；隔离子进程回归连同 packaging
+  contract 共 `38 passed`。FIX5-02 也不再复制真实用户配置或凭据：worker 使用关闭团队路由的
+  合成 `api_key_env` 配置；worker 启动时显式 UTF-8 配置修复 Windows 非 ASCII prompt 被
+  surrogate 解码、随后 checkpoint identity 失败的问题，`tests/test_e2e/test_fix5_status_band_e2e.py`
+  的 E-F5-E2E-02 已通过。相关 prewarm 自取消回归使用 per-task `ContextVar` 同时验证
+  archive 子任务隔离与用户轮次取消，和 FIX5 核心套件分别通过 `6` 与 `56` 条。
+- Windows 沙箱套件：`tests/test_core/test_sandbox_windows.py -n2` 为 `22 passed`，
+  覆盖 ResumeThread 失败 fail-closed 清理；无 `Failed joining thread` INTERNALERROR。
+- 安装资源补缺已完成：`MANIFEST.in` 与 `pyproject.toml` 带入 `protocol/schema.json`、
+  `packaging/runtimes/{windows,linux,macos}.json`、模型目录、内置子代理定义与桥接默认清单。
+  独立 wheel/sdist 契约与安装测试 `3 passed`；另从 tar.gz 安装到源码之外的 venv，
+  console/module 均返回 1.4.2，compatibility 为真，模型目录与四个内置子代理可读。
+  Release workflow 的 Linux/Windows 安装 smoke 同时增加资源读取断言。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - F4-2 的 PHASE-FIX2 §2 基线勾保持未勾。没有调低 1s / 3s / 97% / 95%。

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode"
-version = "1.4.1"
+version = "1.4.2"
 description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -95,6 +95,14 @@ dependencies = { file = ["requirements.txt"] }
   "core/agents/teams/**/*.yaml",
   "core/agents/teams/**/*.md",
   "core/prompts/*.md",
+  "protocol/schema.json",
+  "packaging/runtimes/*.json",
+  "config/model_catalog.json",
+  "config/model_catalog.schema.json",
+  "config/bridge_workers.json",
+  "config/agents/*.json",
+  "config/agents/*.yaml",
+  "config/agents/*.md",
 ]
 
 [tool.setuptools.exclude-package-data]

@@ -10,8 +10,8 @@ rollback via `RXYCODE_TUI=ink`.
 
 ## Architecture
 Release metadata: OpenTUI and Ink headers, stdio `client_version`, and the
-frontend package/lock metadata use product version 1.4.1. Desktop metadata
-also advances, but v1.4.1 does not publish a Desktop installer. The private
+frontend package/lock metadata use product version 1.4.2. Desktop metadata
+also advances, but v1.4.2 does not publish a Desktop installer. The private
 protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 
 - OpenTUI under `frontend/opentui-app/` (React 19.2+) — **default** when Bun is available

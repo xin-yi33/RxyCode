@@ -10,6 +10,16 @@ tests/stress_test/test_phase4_harness.py`，跳过项为需要 `RXYCODE_APPSERVE
 的真实 appserver live 测试）。前端基线：`28 files / 153 tests`；thinking/SSE 聚焦契约
 `12 tests`；Windows ConPTY `19 + 2` 个场景通过。
 
+v1.4.2 completion audit additions are deliberately hermetic: the FIX5 worker
+restart test writes a synthetic `api_key_env` model configuration with agents
+disabled and never copies the developer's `config.yaml` or `credentials.yaml`.
+The packaging contract also runs an isolated subprocess that preloads a stale
+1.4.1 editable finder, then verifies `tests/conftest.py` rebinds the current
+checkout before importing `protocol.version`. The P8 composition fixture now
+imports the sole authoritative `protocol.todo` schema; this validates existing
+projection/steer/compact/hooks/rewind composition only and does not deliver the
+deferred P8 production evidence consumer.
+
 ## 测试层
 
 | 层 | 位置 | 边界与当前代表场景 |

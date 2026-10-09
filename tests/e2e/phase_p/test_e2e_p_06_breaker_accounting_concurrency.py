@@ -13,8 +13,13 @@ from tests.e2e.phase_p import helpers
 pytestmark = pytest.mark.e2e
 
 
-def _ev(tp, subject):
-    return TimeoutEvidence(**helpers.evidence_dict(trigger_point=tp, subject_id=subject))
+def _ev(tp, subject, *, budget_seconds=1800.0):
+    return TimeoutEvidence(**helpers.evidence_dict(
+        trigger_point=tp,
+        subject_id=subject,
+        elapsed_seconds=budget_seconds,
+        budget_seconds=budget_seconds,
+    ))
 
 
 async def test_e2e_p_06_accounting_once_and_concurrent_isolation(monkeypatch):
@@ -59,3 +64,31 @@ async def test_e2e_p_06_accounting_once_and_concurrent_isolation(monkeypatch):
     assert shared_ledger.count(("sess_e2e", "graph_task_1")) == 1
     assert shared_ledger.count(("sess_e2e", "call_1")) == 1
     assert _OUTER_BREAKER_HELD.get() is False                    # reset 后环境干净（不泄漏到下个 turn）
+
+
+async def test_e2e_p_06_absolute_cap_is_zero_llm_stop():
+    """预算等于 tool cap 时由 policy 直接 stop，不调用决策模型。"""
+    scripted = helpers.ScriptedDecisionLLM([helpers.cont(1, "不可达")])
+    events: list[dict] = []
+    engine = td.TimeoutDecisionEngine(
+        scripted,
+        td.DecisionPolicy(helpers.policy_dict()),
+        ledger=(ledger := td.ExtensionLedger()),
+        sink=events,
+    )
+
+    decision = await engine.decide(_ev("tool_timeout", "cap-boundary", budget_seconds=7200.0))
+
+    assert decision.action == "stop"
+    assert scripted.calls == 0
+    assert ledger.count(("sess_e2e", "cap-boundary")) == 0
+    assert len(events) == 1
+    helpers.assert_event_fields(
+        events[0],
+        trigger_point="tool_timeout",
+        action="stop",
+        extension_index=0,
+        fail_closed=False,
+        extend_seconds=0.0,
+    )
+    assert events[0]["note"].startswith("[policy] ")

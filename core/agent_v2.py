@@ -76,6 +76,7 @@ from RxyCode.RxyCode1_1_0.core.prompts import (
     get_system_prompt,
 )
 from RxyCode.RxyCode1_1_0.core.prompts.registry import get_prompt_version, get_system_s2
+from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_request_active
 from RxyCode.RxyCode1_1_0.core.status_band import (
     StatusBand,
     apply_date_rollover,
@@ -4136,8 +4137,14 @@ class AgentV2:
         # )
         background_llm = not through_breaker
         if max_tokens != 1:
-            self._prewarm_request_active = False
-            await self._cancel_background_prewarm()
+            # ``prewarm_all`` runs two archive coroutines under the single
+            # background task stored in ``_prewarm_task``.  Each archive
+            # reaches this method, so cancelling the stored parent from an
+            # archive child recursively cancels the child itself.  The
+            # per-task prewarm ContextVar keeps archive children distinct from
+            # a real user stream, which may still cancel the background task.
+            if not prewarm_request_active():
+                await self._cancel_background_prewarm()
         provider = getattr(self, "_provider", None)
         candidate_resolver = getattr(provider, "transport_candidates", None)
         resolved_candidates = (
@@ -5351,6 +5358,15 @@ class AgentV2:
         """Drop an in-flight prewarm so it cannot occupy the provider slot."""
         task = getattr(self, "_prewarm_task", None)
         if task is None or task.done():
+            return False
+        # ``_prewarm_async`` itself calls ``_raw_stream``.  User-turn
+        # streams cancel the background task from ``_raw_stream`` because
+        # they must not share the provider slot, but the prewarm stream must
+        # not cancel and await itself.  On asyncio this creates a recursive
+        # cancellation cascade and leaves the first real turn without its
+        # scripted/real stream.  Let the owning prewarm task finish its
+        # current request; a concurrent user turn still cancels it here.
+        if task is asyncio.current_task():
             return False
         task.cancel()
         try:

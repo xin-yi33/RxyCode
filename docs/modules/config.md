@@ -129,6 +129,12 @@ directly inside the model entry to override the provider's declared value
 [docs/modules/providers.md](providers.md).
 
 ## Data Migration
+
+Release packaging includes `model_catalog.json` (and its schema), the built-in
+`agents/` definitions and `bridge_workers.json`. These are read-only defaults,
+not user `config.yaml` or credentials. The installed-package smoke test loads
+the catalog and all four built-in subagents outside the source checkout.
+
 When the default data root is used, `settings.py` copies missing entries from the previous `~/.rxycode/` root and the legacy in-repo `data/` directory into `~/.RxyCode/`. Explicit `RXYCODE_DATA_DIR` locations are not populated from legacy sources.
 
 Legacy inline model credentials are migrated on load. `config.yaml` keeps only

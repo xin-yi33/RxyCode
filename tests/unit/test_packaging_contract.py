@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -51,7 +54,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.4.1"
+    assert project["version"] == "1.4.2"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -102,6 +105,97 @@ def test_product_version_is_consistent_without_bumping_wire_protocol():
     }
     for path, expected in sources.items():
         assert expected in (PROJECT_ROOT / path).read_text(encoding="utf-8-sig"), path
+
+
+def test_pytest_rebinds_checkout_after_stale_editable_package_is_preloaded(tmp_path):
+    """A stale editable finder must not leak its old version into this checkout.
+
+    The subprocess deliberately preloads a small 1.4.1 package through the
+    same class-shaped finder emitted by setuptools.  The target conftest must
+    remove that finder and purge its already-imported canonical children
+    before the 1.4.2 packaging contract imports ``protocol.version``.
+    """
+    stale_root = tmp_path / "stale"
+    stale_package = stale_root / "RxyCode" / "RxyCode1_1_0"
+    (stale_package / "protocol").mkdir(parents=True)
+    (stale_root / "RxyCode" / "__init__.py").write_text(
+        "__path__ = []\n", encoding="utf-8"
+    )
+    (stale_package / "__init__.py").write_text(
+        "__path__ = [r'" + str(stale_package).replace("\\", "\\\\") + "']\n",
+        encoding="utf-8",
+    )
+    (stale_package / "protocol" / "__init__.py").write_text(
+        "\n", encoding="utf-8"
+    )
+    (stale_package / "protocol" / "version.py").write_text(
+        'APPSERVER_VERSION = "1.4.1"\nPROTOCOL_VERSION = "1.1.0"\n',
+        encoding="utf-8",
+    )
+
+    script = f"""
+import importlib.abc
+import importlib.util
+import sys
+from pathlib import Path
+
+stale = Path({str(stale_root)!r})
+
+class _EditableFinder(importlib.abc.MetaPathFinder):
+    @classmethod
+    def find_spec(cls, fullname, path=None, target=None):
+        mapping = {{
+            "RxyCode": stale / "RxyCode" / "__init__.py",
+            "RxyCode.RxyCode1_1_0": stale / "RxyCode" / "RxyCode1_1_0" / "__init__.py",
+        }}
+        filename = mapping.get(fullname)
+        if filename is None:
+            return None
+        return importlib.util.spec_from_file_location(
+            fullname,
+            filename,
+            submodule_search_locations=[str(filename.parent)],
+        )
+
+_EditableFinder.__module__ = "__editable___stale_finder"
+sys.meta_path.insert(0, _EditableFinder)
+from RxyCode.RxyCode1_1_0.protocol.version import APPSERVER_VERSION
+assert APPSERVER_VERSION == "1.4.1"
+import pytest
+raise SystemExit(pytest.main([
+    "tests/unit/test_packaging_contract.py",
+    "-k",
+    "test_product_version_is_consistent_without_bumping_wire_protocol",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+], plugins=[]))
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(PROJECT_ROOT)
+    # The child pytest is a fresh lane, not an xdist worker of the parent.
+    # Give it an exclusive root/run id so conftest's fail-closed mkdir remains
+    # meaningful even when this test itself runs under xdist.
+    env["RXYCODE_TEST_ROOT"] = str(tmp_path / "child-test-root")
+    env["RXYCODE_TEST_RUN_ID"] = f"packaging-child-{os.getpid()}-{tmp_path.name}"
+    for key in (
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+        "PYTEST_CURRENT_TEST",
+    ):
+        env.pop(key, None)
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_console_and_module_launcher_sources_are_present():

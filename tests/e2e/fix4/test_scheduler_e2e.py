@@ -148,7 +148,7 @@ def test_e2e_f4_06_full_chain_fire_consume_final_dedupe(tmp_path):
         assert actor.finals.count("stub:loop ping") == 1
 
         # 真实忙碌扰动：窗口正在执行 slow turn（真实占位），第二个 job 到点也来
-        busy1 = client.request(
+        _busy1 = client.request(
             "schedule/create",
             {
                 "rule": {"kind": "at", "time": _iso_after(0.8)},
@@ -156,7 +156,7 @@ def test_e2e_f4_06_full_chain_fire_consume_final_dedupe(tmp_path):
             },
             timeout=5.0,
         )
-        busy2 = client.request(
+        _busy2 = client.request(
             "schedule/create",
             {
                 "rule": {"kind": "at", "time": _iso_after(1.0)},

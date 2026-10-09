@@ -406,7 +406,12 @@ Dispatch entry points: `tools/subagent_task_tool.py` (`task` tool),
   suffix wrapped like `_fast_reply` via `build_user_message`. Consume until
   the first reasoning token. `session/warm` (OpenTUI
   `startStdioWarmOnOpen`) waits for that prefix, not just Agent ctor.
-  Keep-alive still uses max_tokens=1 on the same system + core tools.
+  Keep-alive still uses max_tokens=1 on the same system + core tools. The
+  two `prewarm_all()` archive children enter a per-task `ContextVar` while
+  they stream; `_raw_stream` must not cancel their owning gather task, while
+  a real user stream in another task still cancels an in-flight prewarm. This
+  prevents recursive asyncio cancellation on the first turn
+  (`tests/test_llm_timeout_guard.py`).
 - **Turn context** (`append_turn_context`) only appends to the user suffix
   after the memory context; `system`/`tools` kinds are rejected.
 - **Handoff** may never carry transcripts (`HandoffEnvelope`).

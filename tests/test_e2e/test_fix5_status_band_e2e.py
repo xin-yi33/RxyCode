@@ -300,13 +300,37 @@ async def test_e_f5_e2e_02_killed_worker_model_continues(tmp_path, monkeypatch):
     )
     capture = tmp_path / "capture.txt"
     runtime = Path(os.environ["RXYCODE_DATA_DIR"])
-    real_home = Path(os.environ.get("HOMEDRIVE", "C:") + os.environ.get("HOMEPATH", ""))
-    for name in ("config.yaml", "credentials.yaml"):
-        source = real_home / ".RxyCode" / name
-        if source.exists():
-            (runtime / name).write_bytes(source.read_bytes())
+    # Keep the worker hermetic: this E2E must never inherit the developer's
+    # active provider, credentials, or team-routing choice.  The scripted
+    # stream is installed at prompt time, while bootstrap still needs a
+    # syntactically valid model entry to construct a real AgentV2.
+    (runtime / "config.yaml").write_text(
+        json.dumps(
+            {
+                "active_model": "e2e-scripted",
+                "models": {
+                    "e2e-scripted": {
+                        "provider_id": "openai_compatible",
+                        "model_name": "e2e-scripted-model",
+                        "base_url": "https://127.0.0.1:1/v1",
+                        "api_key_env": "RXYCODE_E2E_TEST_API_KEY",
+                    }
+                },
+                "agents": {
+                    "enabled": False,
+                    "route_mode": "auto",
+                    "multi_model": {"enabled": False},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     base_env = dict(os.environ)
     base_env["PYTHONPATH"] = str(repo)
+    base_env["RXYCODE_E2E_TEST_API_KEY"] = "test-only-key"
+    base_env["RXYCODE_SUBAGENTS"] = "0"
+    base_env["RXYCODE_SUBAGENTS_TASK"] = "0"
+    base_env["RXYCODE_SUBAGENTS_MENTION"] = "0"
 
     first_env = dict(base_env)
     first_env["RXYCODE_SCRIPTED_AGENT_REPLIES"] = str(created)

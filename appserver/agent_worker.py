@@ -1645,6 +1645,21 @@ def _configure_event_loop() -> None:
         pass  # fall back to the default loop; unit-tested
 
 
+def _configure_stdio() -> None:
+    """Read and write JSON-RPC as UTF-8 even on a locale-bound Windows pipe.
+
+    ``PYTHONIOENCODING`` is normally read while Python creates the standard
+    streams, so setting it in ``main()`` is too late for workers launched by
+    a host with a legacy code page.  Reconfigure the already-open pipe before
+    the reader task starts; otherwise a Chinese prompt can contain surrogate
+    escapes and fail checkpoint identity hashing before the model is called.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def main() -> None:
     import warnings
 
@@ -1659,6 +1674,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    _configure_stdio()
     _configure_event_loop()
     asyncio.run(AgentWorker().run())
 

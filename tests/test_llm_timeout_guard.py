@@ -1127,9 +1127,53 @@ class TestPrewarmNonBlocking:
         cancelled = await agent._cancel_background_prewarm()
         assert cancelled is True
         assert agent._prewarm_task is None
-        import inspect
-        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2 as AgentCls
 
-        assert "_cancel_background_prewarm" in inspect.getsource(AgentCls._raw_stream)
-        src = inspect.getsource(AgentCls._raw_stream)
-        assert "_prewarm_request_active" in src
+    @pytest.mark.asyncio
+    async def test_prewarm_context_isolated_from_user_cancellation(self):
+        """Archive children skip cancellation; a concurrent user stream does not."""
+        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+        from RxyCode.RxyCode1_1_0.core.prewarm import prewarm_request_context
+        from langchain_core.messages import HumanMessage
+
+        class ArchiveReached(Exception):
+            pass
+
+        class Provider:
+            def transport_candidates(self, _config):
+                raise ArchiveReached
+
+        agent = object.__new__(AgentV2)
+        agent._prewarm_task = asyncio.current_task()
+        # Retain the old shared marker to prove the decision is now per-task,
+        # not accidentally based on an attribute visible to user turns.
+        agent._prewarm_request_active = True
+        agent._provider = Provider()
+        agent.model_config = {}
+
+        async def archive_cancel_would_be_a_bug():
+            raise AssertionError("archive child cancelled its owning prewarm task")
+
+        agent._cancel_background_prewarm = archive_cancel_would_be_a_bug
+        with prewarm_request_context():
+            with pytest.raises(ArchiveReached):
+                async for _chunk in AgentV2._raw_stream(
+                    agent, [HumanMessage(content="archive")], max_tokens=2
+                ):
+                    pass
+
+        class UserCancelReached(Exception):
+            pass
+
+        async def user_cancel_is_required():
+            raise UserCancelReached
+
+        agent._cancel_background_prewarm = user_cancel_is_required
+        with pytest.raises(UserCancelReached):
+            async for _chunk in AgentV2._raw_stream(
+                agent, [HumanMessage(content="user")], max_tokens=2
+            ):
+                pass
+
+        owner = object.__new__(AgentV2)
+        owner._prewarm_task = asyncio.current_task()
+        assert await owner._cancel_background_prewarm() is False

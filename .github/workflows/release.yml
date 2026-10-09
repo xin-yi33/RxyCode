@@ -122,6 +122,7 @@ jobs:
           "$smoke_env/bin/rxycode" --version
           "$smoke_env/bin/rxycode" --help
           "$smoke_env/bin/python" -m RxyCode --version
+          "$smoke_env/bin/python" -c 'from RxyCode.RxyCode1_1_0.appserver.release import ReleaseService; from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog; from RxyCode.RxyCode1_1_0.core.subagents.builtin_agents import builtin_agent_ids; assert ReleaseService().compatibility()["compatible"]; assert ModelCatalog.load()._exact; assert {"explore", "general", "reviewer", "scout"} <= set(builtin_agent_ids())'
           set +e
           output="$(printf '/exit\n' | RXYCODE_DATA_DIR="$RUNNER_TEMP/rxycode-fresh-home" "$smoke_env/bin/rxycode" 2>&1)"
           status=$?
@@ -149,6 +150,8 @@ jobs:
           & $rxycode --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $smokePython -m RxyCode --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $smokePython -c 'from RxyCode.RxyCode1_1_0.appserver.release import ReleaseService; from RxyCode.RxyCode1_1_0.config.model_catalog import ModelCatalog; from RxyCode.RxyCode1_1_0.core.subagents.builtin_agents import builtin_agent_ids; assert ReleaseService().compatibility()["compatible"]; assert ModelCatalog.load()._exact; assert {"explore", "general", "reviewer", "scout"} <= set(builtin_agent_ids())'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:RXYCODE_DATA_DIR = Join-Path $env:RUNNER_TEMP "rxycode-fresh-home"
           $output = "/exit" | & $rxycode 2>&1 | Out-String

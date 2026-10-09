@@ -8,6 +8,8 @@ encoding turn (S1 / 97% / user thinking-TTFT clock).
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from RxyCode.RxyCode1_1_0.core.cache_policy import build_prewarm_signature
@@ -22,6 +24,24 @@ PREWARM_MAX_TOKENS = 4096
 #: Serializes the temporary _capabilities swap so the chat slot (thinking
 #: off) and the agent slot (thinking on) never race on the shared agent.
 _PREWARM_CAPS_LOCK = asyncio.Lock()
+_PREWARM_REQUEST_CONTEXT: ContextVar[bool] = ContextVar(
+    "rxycode_prewarm_request", default=False
+)
+
+
+def prewarm_request_active() -> bool:
+    """Return whether the current asyncio task is an archive prewarm stream."""
+    return _PREWARM_REQUEST_CONTEXT.get()
+
+
+@contextmanager
+def prewarm_request_context():
+    """Mark only the current task as a prewarm archive request."""
+    token = _PREWARM_REQUEST_CONTEXT.set(True)
+    try:
+        yield
+    finally:
+        _PREWARM_REQUEST_CONTEXT.reset(token)
 
 
 def _mcp_signature(agent: Any) -> str:
@@ -151,19 +171,18 @@ async def prewarm_archive(agent: Any, kind: PrewarmKind) -> None:
         agent.model_config["effort"] = "fast"
     async with _PREWARM_CAPS_LOCK:
         agent._thinking_disabled_this_turn = False
-        agent._prewarm_request_active = True
-        try:
-            async for chunk in raw_stream(
-                msgs,
-                tools=tools,
-                max_tokens=PREWARM_MAX_TOKENS,
-                through_breaker=False,
-            ):
-                if _chunk_has_thinking(agent, chunk):
-                    break
-        finally:
-            agent._prewarm_request_active = False
-            agent._thinking_disabled_this_turn = was_disabled
+        with prewarm_request_context():
+            try:
+                async for chunk in raw_stream(
+                    msgs,
+                    tools=tools,
+                    max_tokens=PREWARM_MAX_TOKENS,
+                    through_breaker=False,
+                ):
+                    if _chunk_has_thinking(agent, chunk):
+                        break
+            finally:
+                agent._thinking_disabled_this_turn = was_disabled
     confirm = getattr(agent, "_confirm_prewarm", None)
     if confirm is not None:
         confirm(kind)

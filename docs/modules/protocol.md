@@ -2,6 +2,10 @@
 
 Typed JSON-RPC wire protocol between RxyCode clients and the headless core.
 
+The wheel and sdist ship `schema.json` and `packaging/runtimes/*.json` so
+`ReleaseService.compatibility()` checks the same version and digest after
+installation as it does in the source checkout.
+
 ## Purpose
 
 Phase 2 introduces a versioned, pydantic-defined contract so OpenTUI, Desktop,
@@ -13,7 +17,7 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 |------|------|
 | `__init__.py` | Package marker；产品包 `__init__.py` 把裸名 `protocol`（以及 `core` / `utils` 等）统一到 `RxyCode.RxyCode1_1_0.*`，避免两套 class |
 | `version.py` | `PROTOCOL_VERSION` (currently `1.1.0`; `PROTOCOL_VERSION_MIN` `1.0.0`) |
-| Product release metadata | v1.4.1 changes `APPSERVER_VERSION` and `InitializeResult.server_version`, not the wire protocol. Keep `packaging/runtimes/*.json` appserver versions and normalized schema SHA-256 in sync; regenerate TypeScript after schema export. |
+| Product release metadata | v1.4.2 changes `APPSERVER_VERSION` and `InitializeResult.server_version`, not the wire protocol. Keep `packaging/runtimes/*.json` appserver versions and normalized schema SHA-256 in sync; regenerate TypeScript after schema export. |
 | `requests.py` | Client -> server (`initialize`, `session/*` incl. `set_thinking_expanded` / `warm`, `shutdown`, `models/*` incl. `ModelsSetActiveRequest.effort`（2026-08-12：optional_field，全局思考强度档位）） |
 | `notifications.py` | Server -> client one-way events |
 | `server_requests.py` | Server -> client messages that need a reply (approval, question) |

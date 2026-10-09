@@ -39,7 +39,7 @@ def _steer(note, extend=60):
 async def test_e2e_p_08_todo_steer_compact_hooks_rewind(monkeypatch, tmp_path):
     """layer=e2e E-P-E2E-08 长任务综合：五机制组合、最终状态一致、无跨机制污染"""
     # ── 阶段 1 setup：权威 TodoSnapshot（P8 只投影）+ 真实 hooks + 真实 engine（steer）──
-    from RxyCode.RxyCode1_1_0.protocol.todo_snapshot import TodoItem, TodoSnapshot
+    from RxyCode.RxyCode1_1_0.protocol.todo import TodoItem, TodoSnapshot
     todo = TodoSnapshot(
         session_id="sess_long", root_session_id="sess_long", list_id="default",
         revision=1, scope="turn", source="model",

@@ -92,7 +92,7 @@ def test_e2e_p_03_restart_worker_continue(tmp_path):
         assert journal.has_pending(attempt_id) is True
         marker_file = tmp_path / "marker-should-not-rerun.txt"
         # ── 阶段 2 扰动：发 prompt（worker 即刻失联，stall 2s 后进入决策环）──
-        prompt_id = client.send("session/prompt", {"session_id": sid, "text": "跑一个 10 分钟构建"})
+        _prompt_id = client.send("session/prompt", {"session_id": sid, "text": "跑一个 10 分钟构建"})
         assert _marker_pids("e2e-03-worker-marker")            # 失联 worker 进程树在
         # ── 阶段 3 断言：事件 → 唯一终态 → Final 重启执行 ──
         seen = _collect_until(client, lambda n: n.get("method") == "event/timeout_decision")

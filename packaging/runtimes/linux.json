@@ -5,7 +5,7 @@
   "appserver_entry": "python -m appserver",
   "artifact": "rxycode-appserver-linux",
   "protocol_version": "1.1.0",
-  "appserver_version": "1.4.1",
+  "appserver_version": "1.4.2",
   "schema_digest_source": "protocol/schema.json",
-  "schema_digest": "sha256:a8e7ca30e8079b937e3c2f2f5b1e7a0308a10698cc452ba7709c8491867b0bbb"
+  "schema_digest": "sha256:ec0c1540edc74318f5624eb351a87171ec89834677413725f5eea758ef4788b4"
 }

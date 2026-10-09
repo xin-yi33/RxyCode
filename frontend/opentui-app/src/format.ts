@@ -17,7 +17,7 @@ export function formatMessageLine(msg: ChatMessage): string {
   }
 }
 
-export const APP_VERSION = "1.4.1";
+export const APP_VERSION = "1.4.2";
 
 export function formatHeaderLine(mode: Mode, model: string, thinkingLive: boolean): string {
   // 三参签名锁定（UPDATE-01 U54）。顶栏芯片走 App.tsx JSX，不再渲染本字符串。
