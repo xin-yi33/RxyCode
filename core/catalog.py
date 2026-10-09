@@ -116,6 +116,9 @@ def read_cached_tokens(provider_id: str, model_id: str, usage: dict) -> int:
     )
 
 
+# 废弃代码（2026-10-09 死代码复核）：read_reasoning_tokens 与 read_cost_ticks
+# 全仓零调用（含 tests）——usage 计费链走 config/model_capabilities.py 的
+# 嵌套元组，不经 catalog 读取器；待 usage 管线迁移评估，勿新调用。
 def read_reasoning_tokens(provider_id: str, model_id: str, usage: dict) -> int:
     """读取 reasoning token 数（Grok/MiMo 单独计费，规范 8）。"""
     contract = get_contract(provider_id, model_id)

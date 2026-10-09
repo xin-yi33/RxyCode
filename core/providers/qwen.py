@@ -163,6 +163,9 @@ def _prompt_variant(model_name: str) -> str:
     return family if family is not None else "default"
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——
+# capabilities() 直接写字面量 supports_reasoning=True（本文件 :255 附近），
+# helper 从未接线。
 def _supports_reasoning(model_name: str) -> bool:
     """§7.7 问 5：3.7/3.8 均适配 thinking（3.7 混合默认可关；3.8 仅思考不可关）。"""
     return _family(model_name) is not None

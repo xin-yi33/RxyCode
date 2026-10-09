@@ -79,6 +79,8 @@ def tree_hash(workspace: Path) -> str:
     return _sha256("\n".join(parts))
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——refresh_hashes
+# （review.py:478）已改走 current_diff 快照 hash，不再逐文件重算。
 def _file_content_hash(root: Path, rel: str) -> str:
     target = assert_inside_workspace(root, root / rel)
     if not target.is_file():
@@ -242,6 +244,8 @@ def _findings_from_diff(diff_text: str) -> list[dict[str, Any]]:
     return findings
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——唯一 hunk
+# 消费方 revert_hunk（review.py:270）内联了自己的解析循环，此函数为重复残留。
 def _parse_hunks(diff_text: str) -> list[dict[str, Any]]:
     hunks: list[dict[str, Any]] = []
     current_file = ""

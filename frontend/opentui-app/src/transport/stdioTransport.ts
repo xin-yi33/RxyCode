@@ -50,10 +50,24 @@ import { sessionEventsToMessages } from "../dialog/sessionEventsToMessages.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 60_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
+// 2026-10-09 模型切换有界等待：对话框曾有「正在切换模型…」无限转圈（request 无超时）。
+const MODEL_SET_ACTIVE_TIMEOUT_MS = 10_000;
+const SESSION_SET_MODEL_TIMEOUT_MS = 40_000; // server agent_host 上限 30s + 余量
+const STATUS_SNAPSHOT_TIMEOUT_MS = 5_000;
 let warmOnOpenStarted = false;
 
 function newId(suffix: string): string {
   return `${Date.now()}-${suffix}-${Math.random().toString().slice(2, 7)}`;
+}
+
+/** Bound any promise without changing the callee's signature. */
+function withBoundedWait<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]);
 }
 
 function initTimeoutMs(): number {
@@ -409,12 +423,15 @@ export class StdioAppserverSession {
   }
 
   async switchModel(modelId: string): Promise<CommandResult> {
+    // 2026-10-09 修复：三处 RPC 原来走无超时的 client.request——服务端一旦
+    // 静默丢应答，对话框就永远停在「正在切换模型…」，后续点击被 switching
+    // 门拦死（用户实测）。全部改为有界等待，超时者落为「切换失败」。
     const client = await this.ensureReady();
-    const active = (await client.request<{
+    const active = (await client.requestWithTimeout<{
       ok?: boolean;
       id?: string;
       message?: string;
-    }>("models/set_active", { id: modelId })) as {
+    }>("models/set_active", { id: modelId }, MODEL_SET_ACTIVE_TIMEOUT_MS)) as {
       ok?: boolean;
       id?: string;
       message?: string;
@@ -427,10 +444,12 @@ export class StdioAppserverSession {
     let sessionErr = "";
     if (this.sessionId) {
       try {
-        await client.request("session/set_model", {
-          session_id: this.sessionId,
-          model_id: modelId,
-        });
+        await client.requestWithTimeout(
+          "session/set_model",
+          { session_id: this.sessionId, model_id: modelId },
+          // server 侧 agent_host 自带 30s 上限，客户端留余量先收错误。
+          SESSION_SET_MODEL_TIMEOUT_MS,
+        );
         sessionSet = "ok";
       } catch (e) {
         sessionSet = "error";
@@ -438,7 +457,11 @@ export class StdioAppserverSession {
       }
     }
     try {
-      await this.fetchStatusSnapshot();
+      await withBoundedWait(
+        this.fetchStatusSnapshot(),
+        STATUS_SNAPSHOT_TIMEOUT_MS,
+        "status refresh timed out",
+      );
     } catch {
       this.lastStatus = { ...(this.lastStatus ?? {}), model: modelId };
     }

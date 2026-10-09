@@ -518,5 +518,8 @@ def is_client_response(message: dict[str, Any]) -> bool:
     return "id" in message and ("result" in message or "error" in message)
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——JSON-RPC 消息
+# 分类只经 server.py 显式导入的 is_client_request/is_client_response 消费，
+# 本谓词从未接线。保留注释存档，勿新调用。
 def is_notification(message: dict[str, Any]) -> bool:
     return isinstance(message.get("method"), str) and "id" not in message

@@ -72,4 +72,52 @@ describe("status bar formatting", () => {
     expect(stringWidth(text)).toBeLessThanOrEqual(78);
     expect(text.includes("\n")).toBe(false);
   });
+
+  test("宽终端显示完整快捷键段", () => {
+    const text = formatStatusBarText({
+      connected: true,
+      contextUsedK: 0,
+      contextMaxK: 1049,
+      cacheSize: "0B",
+      cacheRate: "0.0%",
+      mode: "build",
+      thinkingExpanded: false,
+      width: 200,
+      modeColor: "#FF69B4",
+    });
+    expect(text).toContain("Ctrl+E:思考");
+    expect(text).toContain("Ctrl+P:设置");
+  });
+
+  test("2026-10-09：中等宽度回退紧凑文案，Ctrl+P 不消失", () => {
+    const text = formatStatusBarText({
+      connected: true,
+      contextUsedK: 0.0,
+      contextMaxK: 1049,
+      cacheSize: "0B",
+      cacheRate: "0.0%",
+      mode: "build",
+      thinkingExpanded: false,
+      width: 120,
+      modeColor: "#FF69B4",
+    });
+    expect(text).toContain("Ctrl+P");
+    expect(text).toContain("Ctrl+T:Todo");
+    expect(text).not.toContain("Ctrl+E:思考");
+  });
+
+  test("极窄终端才整段剪没", () => {
+    const text = formatStatusBarText({
+      connected: true,
+      contextUsedK: 41.1,
+      contextMaxK: 1049,
+      cacheSize: "907.0k",
+      cacheRate: "96.2%",
+      mode: "build",
+      thinkingExpanded: false,
+      width: 60,
+      modeColor: "#FF69B4",
+    });
+    expect(text).not.toContain("Ctrl+P");
+  });
 });

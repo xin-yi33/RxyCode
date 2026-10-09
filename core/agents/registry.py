@@ -34,6 +34,9 @@ def teams_root() -> Path:
     return root
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——
+# _load_groups/_save_groups 内联字面量 `self.root / "teams.groups.yaml"`；
+# 且本函数经全局 teams_root() 会忽略自定义 root，接线反而引入 bug，勿启用。
 def groups_path() -> Path:
     return teams_root() / "teams.groups.yaml"
 

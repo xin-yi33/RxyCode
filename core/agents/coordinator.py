@@ -148,6 +148,8 @@ class _BudgetLike(Protocol):
     def check(self) -> None: ...
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零实例化（含 tests）——
+# Coordinator.__init__ 走 `budget or BudgetGuard()`，该空实现从未接线。
 class _NoopBudget:
     def start(self, team: TeamSpec) -> None:
         return None

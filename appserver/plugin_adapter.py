@@ -39,6 +39,9 @@ def catalog_entry(name: str, path: Path | None = None) -> dict[str, Any] | None:
     return None
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——plugin_service
+# 已内联同等判定（plugin_service.py:349/470），插件适配层只消费
+# load_catalog/catalog_entry，勿新调用。
 def adapter_kind(manifest: dict[str, Any] | None, catalog_row: dict[str, Any] | None = None) -> str:
     for source in (manifest, catalog_row):
         if not isinstance(source, dict):

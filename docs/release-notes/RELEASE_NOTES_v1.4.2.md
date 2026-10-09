@@ -103,4 +103,31 @@ deadline 行为。
 
 验收记录见 [`P8/FIX5 handoff acceptance`](../P8-FIX5-HANDOFF-ACCEPTANCE.md)。
 P8 专项回归 `112 passed`，不重复计入主审全量 `13463 passed / 28 baseline
-skipped`；云端 CI 与正式 Release 资产仍需按发布流程独立复验。
+skipped`；云端 CI 与正式 Release 资产均需按发布流程独立复验。
+
+## 同版本刷新批次（2026-10-09 晚）
+
+发布后发现 4 处用户面问题 + 2 处内部整洁问题，本批次全部修复并并入同一
+`1.4.2` tag/tarball（不创建新版本号；已装用户必须按上文「同版本替换后的升级」
+`--force --refresh` / `--force-reinstall` 刷新）：
+
+- **模型切换对话**：修复「正在切换模型…」无限转圈——原三处 RPC 无超时，
+  改为 10s / 40s / 5s 有界等待，超时落成「切换失败」；后端本链实测
+  `models/set_active` 0.11s、worker 侧 `session/set_model` 冷 1.3s 暖 4.7s，
+  确认非后端缺陷。
+- **模型/会话选择对话框双光标**：键盘焦点槽隐藏自画 caret，屏幕光标唯一
+  （搜索行伪光标）。
+- **中等宽度（115–126 列）状态栏**：快捷键提示段新增紧凑文案回退，
+  `Ctrl+P`、`Ctrl+T:Todo` 在中等宽度不再被整段剪没。
+- **Todo 展示规则**：进行中改为正中间中点 `[·]`（U+00B7）；存在任一未终结
+  任务时 pending/in_progress/completed 条目全部逐条显示（含 id），不再折叠成
+  计数摘要；汇总行 `(n completed, k cancelled)` 仅作补充；仅全部终结
+  （completed/cancelled）才可收起。数据层不变。
+- **内部整洁（不可靠面，不影响行为）**：路由体检确认 13 处死代码加废弃注释
+  （含原因+日期+路由去向），生产零语义变化；F5 文档落点与实现同步
+  （`tools/todo_events.py` 为真实快照实现位置）。
+
+本批次验证：OpenTUI `bun test` **325 passed / 0 fail**、`npx tsc --noEmit` 零错；
+Ink `npx tsc` 零错 + `npx vitest run` **1502 passed**；ruff 全过；Python 复核
+套件 **47 passed**（stall_grading / session_model / sandbox_windows /
+todo_snapshot / status_band）；安装树打包契约与系统冒烟按发布流程复跑。

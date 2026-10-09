@@ -701,6 +701,9 @@ class _SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——原定位是受限
+# 令牌 spawn 的测试复核面，但对应测试从未覆盖它（测试用的是
+# query_token_integrity/query_job_limits）；需要时再补测试接线，勿新调用。
 def token_group_has(pid: int, sid_text: str) -> bool:
     """子进程令牌组里是否含指定 SID（如 RESTRICTED_GROUP_SID S-1-5-12）——测试复核面。"""
     proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)

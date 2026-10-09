@@ -16,6 +16,9 @@ STALL_PHASES = ("interrupt", "grace_wait", "grace_end", "kill")
 STALL_OUTCOMES = ("kept", "killed", "killed_by_interrupt_fallback", "restart_requested")
 
 
+# 废弃代码（2026-10-09 死代码复核）：自称"生产默认"但从未接线——生产经
+# server.py:1297 注入的是 server._stall_decision_hook（server.py:1002，带
+# 重启闸门 + todo 进度的真决策引擎）。全仓零引用（含 tests），勿新调用。
 async def default_decision_hook(evidence):
     """生产默认决策钩子：恒 None =「到点 kill」的现状决策。
 

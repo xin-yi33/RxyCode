@@ -197,6 +197,9 @@ def current_band_source():
     return _CURRENT_BAND.get()
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——活接口是
+# 上方的 current_band_source()（core/graph.py:255/340 消费），本函数为平行
+# 冗余 API，勿新调用。
 def current_status_band() -> StatusBand | None:
     source = _CURRENT_BAND.get()
     if isinstance(source, StatusBand):

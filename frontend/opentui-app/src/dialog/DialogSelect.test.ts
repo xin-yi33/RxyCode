@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildSelectRows,
   formatSearchFieldDisplay,
@@ -7,6 +9,15 @@ import {
   textFromKeyEvent,
   type DialogSelectOption,
 } from "./DialogSelect.tsx";
+
+describe("focus sink single-cursor", () => {
+  test("2026-10-09 双光标回归：焦点槽 input 必须 showCursor={false}", () => {
+    const source = readFileSync(join(import.meta.dir, "DialogSelect.tsx"), "utf8");
+    expect(source).toContain("showCursor={false}");
+    // 焦点槽是唯一 focused 的 input（只有一个光标来源）。
+    expect(source.split("focused").length - 1).toBeGreaterThanOrEqual(1);
+  });
+});
 
 describe("scheduleAfterMouse", () => {
   test("does not run inside the mouse handler", async () => {

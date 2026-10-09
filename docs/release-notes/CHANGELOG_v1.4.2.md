@@ -157,6 +157,41 @@
   同时按 ctypes 句柄值断言，而不是比较两个不保证对象相等的 `c_void_p` 实例。
   —— 原因：旧夹具只 mock 了终止和等待，失败清理路径会触碰真实内核句柄，可能误关
   pytest 的定时器线程句柄并在全量回归中表现为 `Failed joining thread`。
+- **模型切换对话无限转圈**（`frontend/opentui-app/src/transport/stdioTransport.ts`）：
+  `switchModel` 的三处 RPC 原走无超时的 `client.request`——服务端一旦静默丢应答，
+  对话框永远停在「正在切换模型…」，后续点击被 `switching` 门拦死（用户 2026-10-09
+  实测：已选/未选模型点击均无反应）。改 `requestWithTimeout`：`models/set_active`
+  10s、`session/set_model` 40s（对齐 server `agent_host` 30s 上限+余量）、状态快照
+  刷新 5s `withBoundedWait` 兜底。后端本链实测冷 1.3s/暖 4.7s 正常，非后端缺陷。
+- **模型选择对话框双光标**（`frontend/opentui-app/src/dialog/DialogSelect.tsx`）：
+  键盘焦点槽 `<input>` 本身被 OpenTUI 渲染自画 caret，叠加搜索行的块形伪光标造成
+  两个光标。焦点槽加 `showCursor={false}`——它只吃键盘事件，屏幕上唯一光标回到
+  搜索行伪光标。
+- **中等宽度下 Ctrl+P 提示消失**（`frontend/opentui-app/src/statusBar.ts`）：
+  快捷键段在原实现里放不下就**整段剪没**（<126 列实测），用户完全看不到设置入口。
+  现改为两级回退：先试完整文案，放不下退紧凑文案 `Tab切换 /命令 Ctrl+P设置
+  Ctrl+T:Todo`（必须保留 Ctrl+P 与 Ctrl+T:Todo），再放不下才整段剪。宽度阈值从
+  ~126 列降到 ~115 列。
+- **Todo dock 渲染按用户规格 §一–§五**（`frontend/opentui-app/src/todoDock.ts`）：
+  符号映射改为 `[√]/[·]/[ ]/[!]/[x]`（原 `[✓]/[•]/[ ]/[!]/[-]`；2026-10-09 用户裁定
+  进行中用**正中间中点 U+00B7**，非基线点也非项目符号）；不消失规则——存在任一
+  未终结任务（pending/in_progress/blocked）时，pending/in_progress/completed 全部
+  **逐条显示**（含 id），禁止折叠成计数摘要；汇总行 `(n completed, k cancelled)` 仅作
+  补充保留；清表时机——仅全部终结（completed/cancelled）才可收起。数据层（id/状态机/
+  priority/revision/fingerprint/list_id）原样不变。
+- **死代码复核与墓石轮（2026-10-09 路由体检）**：AST 扫描全仓 2087 个顶层 def/class，
+  1127 条「生产零引用」候选经 4 路逐一复核（装饰器注册/RPC 字符串派发/getattr 动态
+  访问逐项排除），确证 13 处死代码并加废弃注释头（原因+日期+路由去向，守「注释不删」
+  纪律）：`appserver/jsonrpc.is_notification`、`review._file_content_hash`、
+  `review._parse_hunks`、`stall_grading.default_decision_hook`（路由至
+  `server._stall_decision_hook`）、`plugin_adapter.adapter_kind`、
+  `core/catalog.read_reasoning_tokens`+`read_cost_ticks`、
+  `status_band.current_status_band`（路由至 `current_band_source`）、
+  `agents/coordinator._NoopBudget`、`agents/registry.groups_path`、
+  `providers/qwen._supports_reasoning`、`sandbox/windows.token_group_has`、
+  `subagents/config_loader.detect_format`、`config/model_limits.reset_catalog_cache`。
+  测试钉定/规划接缝类（A/D）未动；根目录 6 个 LeetCode 练习残留 +
+  `twitter_wiki_count.py`（untracked 一次性脚本）仅登记、待用户裁决归置。
 
 ## 废弃
 
@@ -303,3 +338,17 @@
     点名的 E2E 文件不存在，原命令 exit 4。
   - `granted = requested`：`test_u_p2_02` 得到 2400.0 而不是 50.0，FAILED。
     `test_u_p2_04` 仍 passed。那条路径的请求没有顶到 cap，去掉截断不会把它打红。
+- 2026-10-09 模型对话/Todo 渲染四修验证：
+  - OpenTUI `bun test`：**325 passed / 0 fail**（修后新增 `stdioTransport.switchModel.test.ts`
+    3 条：10s 超时收敛、`session/set_model` 超时捕获、快照兜底；`DialogSelect.test.ts`
+    焦点槽 `showCursor={false}` 断言；`statusBar.test.ts` 三档宽度回退断言；
+    `todoDock.test.ts` 用户规格 §一–§三 五条 + 中点 U+00B7 裁定断言）。
+  - OpenTUI `npx tsc --noEmit`：零错。
+  - Ink 前端 `npx tsc --noEmit` + `npx vitest run`：**1502 passed**。
+  - 后端本链实测（appserver stdio 直达）：`models/set_active` 0.11s、
+    `session/set_model` 冷 1.28s / 暖 4.71s——证明转圈非后端缺陷，是客户端 request
+    无超时。
+  - 宽度实测（修后）：快捷键段 115–126 列显示紧凑文案（Ctrl+P 可见），≥127 列显示
+    完整文案，<115 列整段剪没。
+  - 墓石轮复核后回归：`ruff` 全过；`test_stall_grading/test_session_model/
+    test_sandbox_windows/test_todo_snapshot/test_status_band` 47 passed。

@@ -188,6 +188,8 @@ def normalize_raw_config(raw: AgentDefDict) -> AgentDefDict:
 # Format detection
 # ---------------------------------------------------------------------------
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests）——loader 自身
+# 按已知后缀规范化路径，从不调用本检测，勿新调用。
 def detect_format(file_path: str) -> str:
     """Detect the config format from a file extension.
 

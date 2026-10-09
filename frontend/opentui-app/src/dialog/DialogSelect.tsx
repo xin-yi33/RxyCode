@@ -701,10 +701,13 @@ export function DialogSelect<T>({
           {flat.length ? safeIdx + 1 : 0}/{flat.length}{" "}
         </text>
       </RowShell>
-      {/* Focus sink last: keeps ConPTY keys without overlaying the list for mouse hits */}
+      {/* Focus sink last: keeps ConPTY keys without overlaying the list for mouse hits.
+          2026-10-09 修复双光标：此 input 只负责吃键盘事件，showCursor={false}
+          关掉它自画的 caret——屏幕上唯一的光标是搜索行那个块形伪光标。 */}
       <input
         ref={focusRef}
         focused
+        showCursor={false}
         value={filter}
         onInput={(v) => {
           if (!showSearch) return;

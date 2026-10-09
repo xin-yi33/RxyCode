@@ -318,6 +318,9 @@ def resolve_configured_max_tokens(
     return resolution
 
 
+# 废弃代码（2026-10-09 死代码复核）：全仓零调用（含 tests，docstring 自称
+# 测试用但无测试在用）——目录缓存随进程生命周期失效；测试如需重置，直接
+# 操作模块内 `_catalog_cache`，勿新调用。
 def reset_catalog_cache() -> None:
     """清空目录缓存（测试用）。"""
     global _catalog_cache

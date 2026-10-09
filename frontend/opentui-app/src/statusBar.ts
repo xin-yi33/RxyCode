@@ -19,6 +19,12 @@ export interface StatusBarInput {
 
 export type StatusSegment = { key: string; text: string; fg: string; bold?: boolean };
 
+// 2026-10-09 修复：快捷键段被整段剪没时 Ctrl+P和法律其余提示完全不可见
+// （终端 <126 列实测）——先试全文，放不下退紧凑文案，再放不下才剪。
+// 紧凑版必须保留 Ctrl+P（设置/命令面板入口）与 Ctrl+T:Todo。
+const SHORTCUTS_FULL = "Tab:切换 /:命令 Ctrl+E:思考 Ctrl+T:Todo Ctrl+P:设置";
+const SHORTCUTS_COMPACT = "Tab切换 /命令 Ctrl+P设置 Ctrl+T:Todo";
+
 /** Classic Ink StatusBar segments (multi-color). */
 export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
   const connIcon = input.connected ? "●" : "○";
@@ -63,12 +69,22 @@ export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
   const contentWidth = Math.max(1, input.width - 2);
 
   for (const key of optional) {
-    const candidate = order.filter((k) => visible.has(k) || k === key);
-    const joined = candidate
-      .map((k) => all.find((s) => s.key === k)!.text)
-      .join(" │ ");
-    // CJK status labels are 2 columns; JS string.length would overflow the row.
-    if (stringWidth(joined) <= contentWidth) visible.add(key);
+    const texts =
+      key === "shortcuts"
+        ? [SHORTCUTS_FULL, SHORTCUTS_COMPACT]
+        : [all.find((s) => s.key === key)!.text];
+    for (const text of texts) {
+      const candidate = order.filter((k) => visible.has(k) || k === key);
+      const joined = candidate
+        .map((k) => (k === key ? text : all.find((s) => s.key === k)!.text))
+        .join(" │ ");
+      // CJK status labels are 2 columns; JS string.length would overflow the row.
+      if (stringWidth(joined) <= contentWidth) {
+        visible.add(key);
+        all.find((s) => s.key === key)!.text = text;
+        break;
+      }
+    }
   }
 
   return order.filter((k) => visible.has(k)).map((k) => all.find((s) => s.key === k)!);
