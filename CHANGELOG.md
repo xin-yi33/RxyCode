@@ -9,24 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased changes recorded.
+
+---
+
+## [1.4.3] - 2026-10-09
+
 ### Added
 
-- Complete the post-1.4.2 P8 handoff: timeout evidence now consumes the latest
-  session-scoped TodoSnapshot for pipeline, graph, tool-timeout, and appserver
-  stall-recovery decisions through the existing `tasks.json` reader.
+- Complete the P8 timeout-evidence handoff: pipeline, graph watchdog,
+  ToolOrchestrator, and AppServer stall-recovery decisions consume the latest
+  session-scoped TodoSnapshot through the existing `tasks.json` reader.
 - Add real-consumer P8 regressions and `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md`.
 
 ### Boundaries
 
-- This is an Unreleased follow-up and is not part of the frozen `1.4.2` tag or
-  its release notes/audit. No protocol model, todo store, timeout default,
-  budget accounting, safety policy, or shell-internal deadline changes.
+- This patch preserves the frozen `1.4.2` release notes and audit. It adds no
+  protocol model, Todo store, timeout default, budget accounting, safety
+  policy, or shell-internal deadline behavior.
+- Product release metadata is `1.4.3`; JSON-RPC remains `1.1.0`. This release
+  publishes only `rxycode-1.4.3.tar.gz`, not a wheel or Desktop installer.
 
 ### Verification
 
 - 2026-10-09 main-reviewer full acceptance passed `13463` tests with `28`
   baseline skips; the separate `112`-case P8 focused regression is not counted
-  twice.
+  twice. See `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md` for boundaries and evidence.
 
 ---
 

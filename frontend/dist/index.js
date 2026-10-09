@@ -67004,7 +67004,7 @@ var Header = import_react37.default.memo(({ mode, model, expandThinking, isStrea
   return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Box_default, { paddingX: 1, flexShrink: 0, children: [
     /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Text, { color: "#FFB6C1", bold: true, children: [
       "  ",
-      "RxyCode v1.4.2"
+      "RxyCode v1.4.3"
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(Text, { color: "#555", children: [
       " ",

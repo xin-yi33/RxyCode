@@ -360,7 +360,7 @@ export class StdioAppserverSession {
       "initialize",
       {
         client_name: "opentui",
-        client_version: "1.4.2",
+        client_version: "1.4.3",
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),

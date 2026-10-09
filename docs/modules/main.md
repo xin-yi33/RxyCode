@@ -61,10 +61,10 @@ Launch sequence:
 
 Missing runtime assets, Bun/Node.js, API startup failures, and frontend process failures return explicit CLI errors.
 
-## Product version (v1.4.2)
+## Product version (v1.4.3)
 
-The distribution and console/module version are 1.4.2. The import namespace
+The distribution and console/module version are 1.4.3. The import namespace
 `RxyCode.RxyCode1_1_0` remains stable; it is not a release-number directory.
-`install.ps1` and `install.sh` pin v1.4.2. This release ships the CLI source
+`install.ps1` and `install.sh` pin v1.4.3. This release ships the CLI source
 distribution, not a new Electron installer. Version parity is guarded by
 `tests/unit/test_packaging_contract.py`.
