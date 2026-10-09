@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import suppress
 from unittest.mock import MagicMock
 
 import pytest
@@ -101,21 +102,28 @@ async def test_u_p6_02_second_timeout_hits_status_quo_and_cancels():
 async def test_u_p6_03_cancel_during_decision_voids_pending_and_cancels_task():
     """layer=unit U-P6-03 决策期间用户取消：engine.interrupt 作废 pending 决策、任务被取消"""
     ledger = td.ExtensionLedger()
+    llm = _HangLLM()
     engine = td.TimeoutDecisionEngine(
-        _HangLLM(), td.DecisionPolicy(_policy_dict()), ledger=ledger)
+        llm, td.DecisionPolicy(_policy_dict()), ledger=ledger)
     cancelled: list[str] = []
     tool = _controllable_tool("p6-cancel", asyncio.Event(), cancelled=cancelled)
     orch = _make(tool, engine)
     run = asyncio.create_task(_run(orch, "p6-cancel", 0.05))
-    await asyncio.sleep(0.15)                            # 第一次超时已过，决策 pending 中
-    assert engine.pending_decisions == 1
-    run.cancel()                                         # 用户取消路径
-    with pytest.raises(asyncio.CancelledError):
-        await run
-    assert cancelled == ["p6-cancel"]                    # (d) 用户取消同样 cancel+await 原始 task
-    kinds = [k for k, _t in engine.trajectory]
-    assert "interrupt" in kinds and kinds.index("interrupt") < len(kinds) - 1
-    assert engine.pending_decisions == 0                 # pending 决策作废收殓
+    try:
+        await asyncio.wait_for(llm.started.wait(), timeout=2.0)  # 真实模型请求已进入决策
+        assert engine.pending_decisions == 1
+        run.cancel()                                         # 用户取消路径
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        assert cancelled == ["p6-cancel"]                    # (d) 用户取消同样 cancel+await 原始 task
+        kinds = [k for k, _t in engine.trajectory]
+        assert "interrupt" in kinds and kinds.index("interrupt") < len(kinds) - 1
+        assert engine.pending_decisions == 0                 # pending 决策作废收殓
+    finally:
+        if not run.done():
+            run.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await run
 
 
 async def test_u_p6_04_stop_cancels_then_cleans_with_no_residue(tmp_path):
@@ -198,7 +206,12 @@ async def test_u_p6_06_outer_cancel_during_extension_wait_interrupts_and_latch_r
 
 class _HangLLM:
     """决策 LLM 挂死：pending 直到外部结束。"""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+
     async def ainvoke(self, prompt, **kw):
+        self.started.set()
         await asyncio.sleep(3600)
 
 

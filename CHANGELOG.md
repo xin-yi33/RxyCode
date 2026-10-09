@@ -22,6 +22,12 @@ No unreleased changes recorded.
   session-scoped TodoSnapshot through the existing `tasks.json` reader.
 - Add real-consumer P8 regressions and `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md`.
 
+### Fixed
+
+- Make the tool-timeout cancellation regression wait for decision-model entry
+  instead of guessing with a fixed sleep. Production timeout and safety rules
+  are unchanged.
+
 ### Boundaries
 
 - This patch preserves the frozen `1.4.2` release notes and audit. It adds no

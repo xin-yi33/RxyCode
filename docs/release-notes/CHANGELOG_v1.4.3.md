@@ -33,3 +33,9 @@
 独立 P8 专项回归 `112 passed`，不重复计入主审五层全量记录的
 `13463 passed / 28 baseline skipped`。本地发布资产、云端 CI 和正式 GitHub
 Release 结果不在本文提前宣称；它们仍需主审按发布流程独立复验。
+
+U-P6-03 的取消路径测试改用 `_HangLLM.ainvoke()` 入口的 `Event` 握手，
+不再用固定 sleep 猜测决策是否已启动；`pending == 1`、interrupt、取消和
+收尸断言保持不变。CI run `37891014724` 曾因该测试的时序竞争在 Linux
+Python 3.12 coverage job 失败；本地修正不等同于云端重跑已通过，仍需主审
+按发布流程复验。
