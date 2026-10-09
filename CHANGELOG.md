@@ -11,39 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes recorded.
 
----
-
-## [1.4.3] - 2026-10-09
-
-### Added
-
-- Complete the P8 timeout-evidence handoff: pipeline, graph watchdog,
-  ToolOrchestrator, and AppServer stall-recovery decisions consume the latest
-  session-scoped TodoSnapshot through the existing `tasks.json` reader.
-- Add real-consumer P8 regressions and `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md`.
-
-### Fixed
-
-- Make the tool-timeout cancellation regression wait for decision-model entry
-  instead of guessing with a fixed sleep. Production timeout and safety rules
-  are unchanged.
-
-### Boundaries
-
-- This patch preserves the frozen `1.4.2` release notes and audit. It adds no
-  protocol model, Todo store, timeout default, budget accounting, safety
-  policy, or shell-internal deadline behavior.
-- Product release metadata is `1.4.3`; JSON-RPC remains `1.1.0`. This release
-  publishes only `rxycode-1.4.3.tar.gz`, not a wheel or Desktop installer.
-
-### Verification
-
-- 2026-10-09 main-reviewer full acceptance passed `13463` tests with `28`
-  baseline skips; the separate `112`-case P8 focused regression is not counted
-  twice. See `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md` for boundaries and evidence.
-
----
-
 ## [1.4.2] - 2026-10-09
 
 ### Release audit fixes
@@ -80,6 +47,10 @@ Ships one source distribution, not a new Desktop installer.
   file pointer through later context compaction.
 - Default-off agentic timeout decisions with capped grants, cancellation
   cleanup, events, and hooks; centralized timeout configuration.
+- Complete the P8 timeout-evidence handoff: pipeline, graph watchdog,
+  ToolOrchestrator, and AppServer stall-recovery decisions consume the latest
+  session-scoped TodoSnapshot through the existing `tasks.json` reader.
+- Add real-consumer P8 regressions and `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md`.
 
 ### Changed
 
@@ -97,17 +68,27 @@ Ships one source distribution, not a new Desktop installer.
   regression that fails if those bindings are imported first. This corrects
   the post-release v1.4.1 Linux CI collector error; published CLI distributions
   do not contain tests and their runtime content is unchanged.
+- Make the tool-timeout cancellation regression wait for decision-model entry
+  instead of guessing with a fixed sleep. Production timeout and safety rules
+  are unchanged.
 
 ### Verification and limits
 
-P8 timeout-evidence consumption of the new status band remains deferred;
-shell-internal deadlines are not extended by the outer decision grant.
+P8 timeout-evidence consumption of the new status band is now complete across
+the four production paths; empty or malformed identity/scope data yields empty
+progress, while a valid persisted snapshot restores progress after consumer
+rebuild. Shell-internal deadlines are not extended by the outer decision grant.
 Scheduled prompt execution still requires a consuming client. No new
 Desktop binaries or Linux/macOS native-sandbox validation are claimed.
 See the [release notes](docs/release-notes/RELEASE_NOTES_v1.4.2.md),
 [detailed changelog](docs/release-notes/CHANGELOG_v1.4.2.md), and
 [completion audit](docs/release-notes/V1.4.2-COMPLETION-AUDIT.md) for
 item-level routes, current verification, and historical results.
+
+The original 1.4.2 package omitted this P8 production-consumer completion;
+this entry records the corrective completion in the same 1.4.2 release line.
+Product metadata remains `1.4.2`; JSON-RPC remains `1.1.0`; the release ships
+only `rxycode-1.4.2.tar.gz`, not a wheel or new Desktop installer.
 
 ---
 

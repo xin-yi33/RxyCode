@@ -34,7 +34,7 @@
 不是开箱即用的 Desktop 安装包。
 
 ```powershell
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2"
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2"
 rxycode --version
 rxycode
 ```
@@ -42,9 +42,13 @@ rxycode
 或下载该 Release 的 tar.gz 后：
 
 ```powershell
-python -m pip install rxycode-1.4.2.tar.gz
+python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.2.tar.gz
 rxycode --version
 ```
+
+### 同版本替换后的升级
+
+如果你在本次同一 `1.4.2` tag / tarball 替换前已经安装过 `v1.4.2`，必须刷新缓存并重装，不能只依赖版本号判断已是最新。uv 使用上面的 `--force --refresh`；本地 tarball 使用上面的 `--no-cache-dir --force-reinstall`。
 
 产品版本是 `1.4.2`；JSON-RPC 兼容版本仍是 `1.1.0`；
 Python 导入路径仍为 `RxyCode.RxyCode1_1_0`。不修改历史版本目录和第三方依赖版本。
@@ -54,7 +58,11 @@ Python 导入路径仍为 `RxyCode.RxyCode1_1_0`。不修改历史版本目录�
 - Todo 的 completed 是计划状态，不代替工具、文件或测试证据。
 - 状态带进入模型上下文仍消耗 input token；只保证不另起 Todo 总结调用，
   不承诺所有模型、冷请求或压缩后都达到 97% 缓存命中。
-- P8 新状态带到超时证据的生产消费尚未交付，相关后继验收不冒充完成。
+- P8 新状态带到超时证据的生产消费现已补齐：pipeline、graph watchdog、
+  ToolOrchestrator tool timeout 和 AppServer stall recovery 四个生产入口，
+  均从当前 session 的权威 `TodoSnapshot` 读取最新 progress。空、坏或身份/
+  scope 不符时只产生空 progress；有效持久快照可让重建后的消费方恢复最新
+  progress。读取和恢复不调用额外 Todo-summary 模型。
 - 外层工具续期不能改变 shell 自身的内部 deadline（R-11）。
 - scheduler 恢复 dispatch 不等于无人窗口自动执行 prompt。
 - 超时决策默认关闭；关闭分支是有效兼容路径，不是废弃代码。
@@ -84,3 +92,15 @@ Windows 原生沙箱 22 项通过。GitHub 平台 CI 与正式 tag 的构建、L
 逐项生产路由、命令、结果与限制见
 [完成审计](V1.4.2-COMPLETION-AUDIT.md)；
 历史开发过程见[详细 changelog](CHANGELOG_v1.4.2.md)。
+
+## P8 补缺记录
+
+原始 1.4.2 打包状态遗漏了上述 P8 生产 evidence consumer；本节记录同一
+1.4.2 release line 的补齐，不创建新的产品版本。实现复用现有
+`protocol.todo.TodoSnapshot`、`tasks.json` reader 与确定性 session/root/list/scope
+校验，不新增 protocol model、Todo store、timeout 默认值、预算或 shell 内部
+deadline 行为。
+
+验收记录见 [`P8/FIX5 handoff acceptance`](../P8-FIX5-HANDOFF-ACCEPTANCE.md)。
+P8 专项回归 `112 passed`，不重复计入主审全量 `13463 passed / 28 baseline
+skipped`；云端 CI 与正式 Release 资产仍需按发布流程独立复验。

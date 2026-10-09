@@ -172,17 +172,17 @@
 - **大输出**：截断前落盘在 `tools/bash.py` 的 `_format_result`。预览脱敏走 `tools/secret_text.py`。
   墓碑在 `core/compaction.py`。没有另一套截断模块。
 
-未做，不能写成已交付：
+历史未做项与仍受限项（P8 已在本 release line 补齐）：
 
-- **P8**：FIX5 已经在 `protocol/todo.py` 里有 `TodoItem` 和 `TodoSnapshot`。没有第二套
-  `protocol/todo_snapshot.py`，也没有新的 todo store。P8 生产 evidence consumer 仍暂缓：
-  基础快照和状态带已经具备，但没有把 evidence 接到假快照，也没有把消费者写成已交付。
-  2026-10-08 起这一卡连同 P8 生产消费搁置。2026-10-09 只把旧测试夹具的导入对齐到
-  `protocol.todo`，没有补 `protocol.todo_snapshot.py`，没有把 evidence 接到假快照。交互式
-  todo 是模型自己写的步骤清单，再投影到用户能看见的状态条；调研见
+- **P8 补缺完成**：原始 1.4.2 打包状态遗漏了生产 evidence consumer；现已在同一
+  1.4.2 release line 补齐。实现复用 `protocol/todo.py` 的 `TodoItem` / `TodoSnapshot`、
+  现有 `tasks.json` reader 和确定性 session/root/list/scope 校验，不新增
+  `protocol/todo_snapshot.py`、todo store 或 Todo-summary 模型。pipeline、graph watchdog、
+  ToolOrchestrator tool timeout、AppServer stall recovery 四个生产入口均消费最新持久快照；
+  空、坏或身份/scope 不符时 progress 为空，重建后的消费方在有效快照存在时恢复最新 progress。
+  P8 仍不改变 timeout 默认值、预算、safety 或 shell 内部 deadline。交互式 todo 是模型自己
+  写的步骤清单，再投影到用户能看见的状态条；调研见
   `docs/plans/opus5-plan/rxycode/research/2026-10-08-backend-status-bar-model-facing-todo.md`。
-  P8 只许消费已有的 `TodoSnapshot`，不能自己再造一份。本轮没有做 P8 生产实现；现在通过的
-  E-P-E2E-08 只核验已有投影、steer、compact、hooks、rewind 之间的交叉行为。
 - **Phase P E2E**：测试已按测试包抄入 `tests/e2e/phase_p`。
   较早一次是 4 passed、6 failed。固定窗口第五轮末行是「无剩余问题」，并写明六项红灯仍在。
   其后只修了 03 restart 的时序：`send` 返回时 worker 还没起来。那次是
@@ -199,8 +199,8 @@
   `assert 0 == 2` 来自缺少 session/run 绑定且未收尸的 fake task，06 的
   `assert 1 == 2` 来自 tool evidence 已等于 7200 cap、被 policy 预检合法拦截，
   09 的 `['continue', 'stop'] == ['continue']` 来自旧断言漏掉既有 fail-closed stop。
-  修正后当前 `tests/e2e/phase_p` 实跑为 `11 passed`，退出码 0；其中 P8 仍只是
-  `protocol.todo` 夹具对齐，不代表 P8 生产 evidence consumer 已实现。
+  修正后当前 `tests/e2e/phase_p` 实跑为 `11 passed`，退出码 0；其中 P8 夹具与生产
+  evidence consumer 均已对齐，具体生产路径和边界见 `docs/P8-FIX5-HANDOFF-ACCEPTANCE.md`。
   MO-F4-6-01 的 `len(fires)` 仍是 1。历史 fire 不删。
   复活按本轮去重，不按任意历史成功。`_execute_async` 开工时把 `inflight_slot`
   写成当时的 `next_fire`。这个槽还没有成功 fire，复活就补投一次。
@@ -282,6 +282,9 @@
   独立 wheel/sdist 契约与安装测试 `3 passed`；另从 tar.gz 安装到源码之外的 venv，
   console/module 均返回 1.4.2，compatibility 为真，模型目录与四个内置子代理可读。
   Release workflow 的 Linux/Windows 安装 smoke 同时增加资源读取断言。
+- **同版本安装刷新**：本次替换同一 `1.4.2` tag/tarball 后，已有安装不能只看版本号；uv
+  使用 `uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2"`，
+  本地 tarball 使用 `python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.2.tar.gz`。
 - 自攻当时点名的 E2E 路径还不存在，所以那两条原命令是 exit 4。目录是后来才抄入的。
   自攻的 FAILED 与还原后的 5 passed 不变。后来的 E2E 结果以上面这一条为准，不是 exit 4。
 - F4-2 的 PHASE-FIX2 §2 基线勾保持未勾。没有调低 1s / 3s / 97% / 95%。

@@ -1,6 +1,6 @@
 # Quick start
 
-Product version **1.4.3**. Protocol version stays `1.1.0`. Default CLI is OpenTUI: type `rxycode` in `cmd` or any terminal.
+Product version **1.4.2**. Protocol version stays `1.1.0`. Default CLI is OpenTUI: type `rxycode` in `cmd` or any terminal.
 
 Desktop GUI binaries are **not** in this release. They remain on the still-published [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) GitHub Release.
 
@@ -13,39 +13,41 @@ Desktop GUI binaries are **not** in this release. They remain on the still-publi
 | Node.js | 20+ | Desktop GUI (from v1.2.10), Ink fallback (`RXYCODE_TUI=ink`) |
 | OpenAI-compatible API key | — | Any provider you configure |
 
-## Install the CLI (v1.4.3)
+## Install the CLI (v1.4.2)
 
 **Windows PowerShell:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.3/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.2/install.ps1 | iex"
 rxycode
 ```
 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.2/install.sh | sh
 rxycode
 ```
 
 **From the GitHub Release tarball:**
 
 ```bash
-python -m pip install rxycode-1.4.3.tar.gz
+python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.2.tar.gz
 rxycode
 ```
 
 **uv:**
 
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2" rxycode
 ```
 
 ```bash
-uv tool install --force "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3"
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2"
 rxycode
 ```
+
+If `v1.4.2` was already installed before the same-version tag or tarball replacement, use the refresh/reinstall forms above so the old cached artifact is not retained. The uv command refreshes its cache; the tarball command disables pip's cache and force-reinstalls the package.
 
 The installer / tarball is **CLI / OpenTUI**. It does not include Electron. `rxycode gui` only works after you install a Desktop build from v1.2.10.
 
@@ -68,4 +70,4 @@ The installer / tarball is **CLI / OpenTUI**. It does not include Electron. `rxy
 - [README](../README.md) — full English overview
 - [Desktop GUI](GUI.md)
 - [Expert teams](agent/README.md) — off by default
-- [Release notes](release-notes/RELEASE_NOTES_v1.4.3.md)
+- [Release notes](release-notes/RELEASE_NOTES_v1.4.2.md)

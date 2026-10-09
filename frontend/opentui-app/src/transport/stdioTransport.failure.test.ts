@@ -87,7 +87,7 @@ describe("stdio transport startup failures", () => {
         "    mid = msg.get('id')",
         "    method = msg.get('method')",
         "    if method == 'initialize':",
-        "        result = {'protocol_version': '1.1.0', 'protocol_min': '1.0.0', 'protocol_max': '1.1.0', 'server_name': 'rxycode-appserver', 'server_version': '1.4.3', 'capabilities': {}}",
+        "        result = {'protocol_version': '1.1.0', 'protocol_min': '1.0.0', 'protocol_max': '1.1.0', 'server_name': 'rxycode-appserver', 'server_version': '1.4.2', 'capabilities': {}}",
         "    elif method == 'session/new':",
         "        result = {'session_id': 's1', 'workspace_root': '.'}",
         "    elif method == 'sessions/list':",

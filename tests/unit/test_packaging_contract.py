@@ -54,7 +54,7 @@ def test_pyproject_exposes_the_versioned_console_entrypoint():
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.4.3"
+    assert project["version"] == "1.4.2"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -113,7 +113,7 @@ def test_pytest_rebinds_checkout_after_stale_editable_package_is_preloaded(tmp_p
     The subprocess deliberately preloads a small 1.4.1 package through the
     same class-shaped finder emitted by setuptools.  The target conftest must
     remove that finder and purge its already-imported canonical children
-    before the 1.4.3 packaging contract imports ``protocol.version``.
+    before the 1.4.2 packaging contract imports ``protocol.version``.
     """
     stale_root = tmp_path / "stale"
     stale_package = stale_root / "RxyCode" / "RxyCode1_1_0"

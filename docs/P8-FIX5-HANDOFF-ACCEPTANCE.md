@@ -1,7 +1,8 @@
 # P8 / FIX5 Handoff Acceptance
 
-This document records the post-1.4.2 completion of the FIX5-to-P8 handoff. It
-is intentionally separate from the frozen 1.4.2 release notes and audit.
+This document records the P8/FIX5 completion added to the 1.4.2 release line
+after the original package omitted the production evidence-consumer wiring.
+It is the acceptance supplement for that corrective 1.4.2 completion.
 
 ## Gap
 
@@ -84,7 +85,7 @@ test, and one duplicate-query test; this handoff added no skip. Whole-repo
 Ruff, `lazy_import_total=180 budget=181`, CR-at-EOL whitespace, and secret
 scan checks also passed. Logs are in `artifacts/p8-handoff/full-layers.log`,
 `artifacts/p8-handoff/focused.log`/XML, and the five-layer JUnit directory.
-This completes the P8 follow-up acceptance, but does not close the complete
+This completes the P8 completion supplement for 1.4.2, but does not close the complete
 Phase P or any other card exit without its own recorded acceptance.
 
 ## Remaining boundaries
