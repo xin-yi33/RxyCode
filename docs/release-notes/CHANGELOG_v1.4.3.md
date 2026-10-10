@@ -3,6 +3,21 @@
 > 变更管理约定：开发期随改随记；条目被撤回时同步删除/标注。发版时随版本号滚动为新文件。
 > 基线：v1.4.2（同版本刷新批次 f96ce3fd）。
 
+## 键位更正（2026-10-11）Ctrl+T 改回思考开关
+
+用户裁定：`Ctrl+T` 是思考展开开关（Ink 版 `frontend/src/App.tsx` 与设计稿
+`frontend/_palette.txt` 的原始约定），FIX5 做 Todo dock 时把它挪给 Todo、把思考挤到
+`Ctrl+E` 是错的。本版**换回**：`Ctrl+T` = 展开/折叠思考，`Ctrl+E` = 打开/收起 Todo。
+
+- 改动文件（OpenTUI）：`todoDock.ts`（`keyAction` 单点互换）、`statusBar.ts`（完整/紧凑
+  文案）、`brand.ts` 快捷键行、`DialogDoc.tsx`、`DialogSettings.tsx` 快捷键条目、
+  `types.ts` / `lib/thinkingDisplay.ts` 注释；对应测试 `todoDock.test.ts` /
+  `statusBar.test.ts` 同步更新。
+- 用户文档：README / README.zh-CN 快捷键表互换描述。
+- 历史文档跟进（按"内容撤回文档同步"约定）：`CHANGELOG.md`、`RELEASE_NOTES_v1.4.2.md`、
+  `CHANGELOG_v1.4.2.md` 中的旧键位描述均加 ⚠️ 更正标记，不删除历史事实。
+- Ink 版一直是 `Ctrl+T`=思考，无需改动；桌面端 `Ctrl+T`=浏览器面板属另一键位体系，不受影响。
+
 ## 性能修复（2026-10-11）/model 与 /session 卡顿
 
 ### 背景

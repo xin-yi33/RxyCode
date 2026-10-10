@@ -295,8 +295,8 @@ Key Shortcuts:
 |---|---|
 | `Tab` | Toggle working mode (Build / Plan / Compose) |
 | `Ctrl+P` | Open command palette |
-| `Ctrl+T` | Toggle the Todo checklist (OpenTUI) |
-| `Ctrl+E` | Toggle thinking / reasoning panel (OpenTUI) |
+| `Ctrl+T` | Toggle thinking / reasoning panel (OpenTUI) |
+| `Ctrl+E` | Toggle the Todo checklist (OpenTUI) |
 | `Esc` | Cancel running operation / dismiss dialogs |
  
 <details>
@@ -470,8 +470,8 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 |----------|--------|
 | `Tab` | Switch work mode |
 | `Ctrl+P` | Command palette |
-| `Ctrl+T` | Toggle the Todo checklist (OpenTUI) |
-| `Ctrl+E` | Toggle thinking (OpenTUI) |
+| `Ctrl+T` | Toggle thinking (OpenTUI) |
+| `Ctrl+E` | Toggle the Todo checklist (OpenTUI) |
 | `Enter` | Send the prompt |
 | `Shift+Enter` / `Ctrl+Enter` | Insert a newline (Windows ConPTY Shift+Enter arrives as CRLF and is not sent) |
 | `Esc` | Cancel |

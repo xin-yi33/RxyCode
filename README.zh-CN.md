@@ -281,8 +281,8 @@ rxycode
 |------|------|
 | `Tab` | 切换工作模式（Build 构建 / Plan 规划 / Compose 紧凑） |
 | `Ctrl+P` | 调出全局命令面板 |
-| `Ctrl+T` | 打开/折叠 Todo 清单（OpenTUI） |
-| `Ctrl+E` | 打开/折叠模型思考过程面板（OpenTUI） |
+| `Ctrl+T` | 打开/折叠模型思考过程面板（OpenTUI） |
+| `Ctrl+E` | 打开/折叠 Todo 清单（OpenTUI） |
 | `Esc` | 中断当前任务或退出弹窗 |
 
 <details>

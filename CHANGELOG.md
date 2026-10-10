@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to RxyCode are documented in this file.
 
@@ -38,8 +38,9 @@ Ships one source distribution, not a new Desktop installer.
 ### Added
 
 - Model-written `todo_write` on the existing task store, authoritative
-  TodoSnapshot events and `todo/get`, and an OpenTUI dock. `Ctrl+T` toggles
-  Todo; `Ctrl+E` toggles thinking.
+  TodoSnapshot events and `todo/get`, and an OpenTUI dock. `Ctrl+E` toggles
+  Todo; `Ctrl+T` toggles thinking (keymap corrected in v1.4.3: `Ctrl+T` has
+  always been the thinking toggle — see CHANGELOG_v1.4.3).
 - A model-facing status band shared by the fast and graph paths. Todo
   projection and recovery read persisted state without another Todo-summary
   model call.
