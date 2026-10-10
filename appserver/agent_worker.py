@@ -1137,7 +1137,12 @@ class AgentWorker:
                 }
             )
             return
-        result = self._agent.switch_model(model_id)
+        # switch_model does disk I/O (save_history 原子写、load_config、DPAPI
+        # 解密); run it off the worker asyncio loop so a slow disk cannot
+        # freeze the whole worker for seconds.  model/switch stays off
+        # _STDIN_CONCURRENT_METHODS, so the dispatcher still awaits this
+        # handler serially before reading the next stdin message.
+        result = await asyncio.to_thread(self._agent.switch_model, model_id)
         if not isinstance(result, dict):
             result = {"model_id": model_id}
         await self._write_ordered(

@@ -36,6 +36,41 @@ _os_name = os.name
 _cached_windows_sid: str | None = None
 
 
+# ── Per-path ACL cache ────────────────────────────────────────────────
+# Every config/credential load or save used to spawn one or two ``icacls``
+# child processes (15s timeout each); a single model switch could accumulate
+# 15-30+ subprocess spawns and freeze the caller for seconds.  ``icacls`` is
+# idempotent, so after a *successful* restrict we remember the file
+# signature ``(size, mtime_ns, exists)`` and skip the subprocess while the
+# file is unchanged.  Each process carries its own cache, which concurrent
+# processes tolerate: the worst case is one redundant ``icacls`` run.
+# ``RXYCODE_DISABLE_ACL_CACHE=1`` restores the old always-run behavior.
+_ACL_CACHE: dict[str, tuple[int, int, bool]] = {}
+_ACL_CACHE_LOCK = threading.Lock()
+
+
+def _acl_cache_disabled() -> bool:
+    return os.environ.get("RXYCODE_DISABLE_ACL_CACHE") == "1"
+
+
+def _acl_cache_key(path: Path) -> str:
+    key = str(path)
+    return os.path.normcase(key) if os.name == "nt" else key
+
+
+def _acl_signature(path: Path) -> tuple[int, int, bool]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0, False)
+    return (stat.st_size, stat.st_mtime_ns, True)
+
+
+def _invalidate_acl_cache(path: Path) -> None:
+    with _ACL_CACHE_LOCK:
+        _ACL_CACHE.pop(_acl_cache_key(path), None)
+
+
 def _windows_current_sid_from_token() -> str:
     """Read the process token SID in-process.
 
@@ -160,6 +195,12 @@ def restrict_file_permissions(path: Path) -> None:
         os.chmod(path, 0o600)
         return
 
+    cache_key = _acl_cache_key(path)
+    signature = _acl_signature(path)
+    if not _acl_cache_disabled():
+        with _ACL_CACHE_LOCK:
+            if _ACL_CACHE.get(cache_key) == signature:
+                return
     sid = _windows_current_sid()
     result = subprocess.run(
         [
@@ -180,6 +221,9 @@ def restrict_file_permissions(path: Path) -> None:
     )
     if result.returncode != 0:
         raise OSError("Unable to restrict local configuration file permissions")
+    if not _acl_cache_disabled():
+        with _ACL_CACHE_LOCK:
+            _ACL_CACHE[cache_key] = signature
 
 
 async def restrict_file_permissions_async(path: Path) -> None:
@@ -215,12 +259,17 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
             os.fsync(stream.fileno())
         restrict_file_permissions(temporary_path)
         os.replace(temporary_path, path)
+        # 写后主动失效缓存条目：目标文件内容已变化，而一次性临时文件名
+        # 滞留在缓存里只会泄漏。
+        _invalidate_acl_cache(temporary_path)
+        _invalidate_acl_cache(path)
         restrict_file_permissions(path)
         _fsync_directory(path.parent)
     except BaseException:
         if fd >= 0:
             os.close(fd)
         temporary_path.unlink(missing_ok=True)
+        _invalidate_acl_cache(temporary_path)
         raise
 
 

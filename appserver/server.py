@@ -596,9 +596,14 @@ class AppServer:
 
         safe_params = redact(params)
         try:
-            self._task_store.append_event(
+            # Buffered: the cross-process save runs in a background flusher
+            # thread so tool-event bursts cannot freeze this loop.  A hard
+            # kill can lose the last ~0.2s of replay events (display data
+            # only); graceful shutdown drains via flush_pending.
+            self._task_store.append_event_buffered(
                 session_id,
-                {"method": method, "params": safe_params},
+                method,
+                safe_params,
             )
         except Exception:
             _logger.exception("failed to persist session event for %s", session_id)
@@ -3689,7 +3694,15 @@ class AppServer:
     async def _handle_session_set_model(
         self, params: dict[str, Any], request_id: Any
     ) -> None:
-        """Switch one task's worker model and persist the selection."""
+        """Switch one task's worker model (task-scoped, no global re-persist).
+
+        The client already persists the selection globally first:
+        ``stdioTransport.switchModel`` calls ``models/set_active`` before
+        ``session/set_model``.  Re-writing the same config here duplicated
+        that disk write (and its icacls storm) on this event loop, so the
+        persist call was dropped; only the task-scoped worker switch and
+        session record remain.
+        """
         session_id = str(params.get("session_id", ""))
         model_id = str(params.get("model_id", "")).strip()
         record = self._sessions.get(session_id)
@@ -3699,12 +3712,6 @@ class AppServer:
         if not model_id:
             await self._respond_error(request_id, -32602, "model_id is required")
             return
-        try:
-            from .model_routes import set_active
-
-            set_active({"id": model_id})
-        except Exception:
-            _logger.warning("could not persist active model %s", model_id, exc_info=True)
         host = self._session_hosts.get(session_id)
         result: dict[str, Any] = {"ok": True, "model_id": model_id}
         try:
@@ -4088,7 +4095,8 @@ class AppServer:
         elif method == "models/list":
             from .model_routes import list_models
 
-            await self._respond(request_id, list_models())
+            # load_config + icacls 是同步磁盘 I/O；移出事件循环。
+            await self._respond(request_id, await asyncio.to_thread(list_models))
         elif method == "models/presets":
             from .model_routes import list_presets
 
@@ -4112,7 +4120,8 @@ class AppServer:
         elif method == "models/set_active":
             from .model_routes import set_active
 
-            await self._respond(request_id, set_active(params))
+            # set_active_model 落盘（save_history 原子写 + icacls）；移出事件循环。
+            await self._respond(request_id, await asyncio.to_thread(set_active, params))
         elif method == "models/test_connection":
             from .model_routes import test_connection
 
@@ -4281,4 +4290,10 @@ class AppServer:
                 )
             for session_id in list(self._session_hosts):
                 await self._kill_session_host(session_id)
+            try:
+                # Drain buffered replay events so a graceful exit does not
+                # lose the tail of the transcript log.
+                await self._task_store.flush_pending(timeout=2.0)
+            except Exception:
+                _logger.warning("task store buffered events not fully flushed", exc_info=True)
             self._instance_lock.release()

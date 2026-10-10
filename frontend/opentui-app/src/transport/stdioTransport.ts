@@ -54,6 +54,9 @@ const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
 const MODEL_SET_ACTIVE_TIMEOUT_MS = 10_000;
 const SESSION_SET_MODEL_TIMEOUT_MS = 40_000; // server agent_host 上限 30s + 余量
 const STATUS_SNAPSHOT_TIMEOUT_MS = 5_000;
+// 2026-10-11 /session 目录有界等待：原来 request 无超时，服务端静默丢应答时
+// 会话对话框长转圈；超时直接交还 UI 错误态，不触发 respawn（与进程已死区分）。
+const SESSIONS_LIST_TIMEOUT_MS = 8_000;
 let warmOnOpenStarted = false;
 
 function newId(suffix: string): string {
@@ -407,9 +410,25 @@ export class StdioAppserverSession {
     return this.client !== null && this.sessionId !== null;
   }
 
+  /** Coalesced models/list read — see listModels(). */
+  private inflightModelsList: Promise<ModelsListPayload> | null = null;
+
   async listModels(): Promise<ModelsListPayload> {
-    const client = await this.ensureReady();
-    return (await client.request<ModelsListPayload>("models/list", {})) as ModelsListPayload;
+    // /model 切换成功后 fetchStatus() 与 fetchModels() 同拍触发同一 RPC
+    //（一个读状态一个读目录，数据都是 models/list）：合并 in-flight 读，
+    // 一次请求结果复用，不再串行重发。
+    if (this.inflightModelsList) return this.inflightModelsList;
+    const pending = (async () => {
+      const client = await this.ensureReady();
+      return (await client.request<ModelsListPayload>("models/list", {})) as ModelsListPayload;
+    })();
+    this.inflightModelsList = pending;
+    pending
+      .catch(() => {})
+      .finally(() => {
+        if (this.inflightModelsList === pending) this.inflightModelsList = null;
+      });
+    return pending;
   }
 
   async fetchStatusSnapshot(): Promise<StatusInfo | null> {
@@ -455,6 +474,14 @@ export class StdioAppserverSession {
         sessionSet = "error";
         sessionErr = e instanceof Error ? e.message : String(e);
       }
+    }
+    if (sessionSet === "error") {
+      // 2026-10-11 假成功修复：全局 active 已持久化但 worker 还跑旧模型——
+      // 不得返回 model_changed；调用方对话框据此提示「切换失败，请重试」。
+      // 同时不刷新状态快照，芯片继续显示 worker 实际在用的旧模型。
+      // （无 session 时 ② 为 skipped：全局默认模型已切，仍算成功。）
+      const message = sessionErr ? `${sessionErr}，请重试` : "切换失败，请重试";
+      return { ok: false, action: "error", error: message, message };
     }
     try {
       await withBoundedWait(
@@ -939,24 +966,28 @@ export class StdioAppserverSession {
     this.resetSession();
   }
 
-  private async requestSessionList(): Promise<SessionListRow[]> {
+  private async requestSessionList(timeoutMs: number): Promise<SessionListRow[]> {
     const client = await this.ensureReady();
-    const listed = (await client.request<{ sessions?: SessionListRow[] }>("sessions/list", {})) as {
-      sessions?: SessionListRow[];
-    };
+    const listed = (await client.requestWithTimeout<{ sessions?: SessionListRow[] }>(
+      "sessions/list",
+      {},
+      timeoutMs,
+    )) as { sessions?: SessionListRow[] };
     return Array.isArray(listed.sessions) ? listed.sessions : [];
   }
 
-  async listSessions(): Promise<SessionListRow[]> {
+  async listSessions(timeoutMs = SESSIONS_LIST_TIMEOUT_MS): Promise<SessionListRow[]> {
     try {
-      return await this.requestSessionList();
+      return await this.requestSessionList(timeoutMs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // RPC 超时（服务端静默丢应答）直接交还 UI 错误态；只有 appserver 进程
+      // 已死（stdout closed / exited）才 reset + respawn 并重试一次。
       if (!message.includes("appserver stdout closed") && !message.includes("appserver exited")) {
         throw err;
       }
       this.resetSession(err instanceof Error ? err : new Error(message));
-      return await this.requestSessionList();
+      return await this.requestSessionList(timeoutMs);
     }
   }
 

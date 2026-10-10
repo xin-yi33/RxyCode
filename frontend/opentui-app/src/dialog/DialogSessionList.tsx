@@ -20,6 +20,18 @@ const DATE_GROUP_PINNED = "Pinned";
 const DATE_GROUP_TODAY = "Today";
 const DATE_GROUP_YESTERDAY = "Yesterday";
 
+type SessionListCacheEntry = { rows: SessionListRow[]; fetchedAt: number };
+
+// /session 打开慢的前端止血（2026-10-11）：模块级保留最近一次成功返回的目录，
+// 再次打开立即渲染缓存行、后台刷新成功后替换（stale-while-revalidate）。
+// reload() 是唯一写入点，pin/fork/rename 之后的 reload 会顺带更新缓存。
+let sessionListCache: SessionListCacheEntry | null = null;
+
+/** Test hook: module-level cache would otherwise bleed across tests. */
+export function __clearSessionListCacheForTests(): void {
+  sessionListCache = null;
+}
+
 function visibleRows(rows: SessionListRow[]): SessionListRow[] {
   return rows.filter((row) => !row.trashed_at && !row.parent_session_id);
 }
@@ -43,7 +55,9 @@ export function DialogSessionList({
   onClose: () => void;
   onLoaded: (payload: { name: string; messages?: unknown[]; message?: string }) => void;
 }) {
-  const [rows, setRows] = useState<SessionListRow[] | null>(null);
+  const [rows, setRows] = useState<SessionListRow[] | null>(() =>
+    sessionListCache ? visibleRows(sessionListCache.rows) : null,
+  );
   const [error, setError] = useState("");
   const [renaming, setRenaming] = useState<SessionListRow | null>(null);
   const [busy, setBusy] = useState("");
@@ -52,6 +66,7 @@ export function DialogSessionList({
   const reload = useCallback(async () => {
     const transport = getChatTransport();
     const listed = await transport.listSessions();
+    sessionListCache = { rows: listed, fetchedAt: Date.now() };
     const next = visibleRows(listed);
     setRows(next);
     if (!next.length) setError("暂无会话");
@@ -62,8 +77,14 @@ export function DialogSessionList({
       try {
         await reload();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-        setRows([]);
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        if (sessionListCache) {
+          // 有缓存行可展示时不清空列表，仅在底栏提示本次后台刷新失败。
+          setBusy(`刷新失败: ${message}`);
+        } else {
+          setRows([]);
+        }
       }
     })();
   }, [reload]);

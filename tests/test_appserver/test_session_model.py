@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -43,6 +45,47 @@ async def test_worker_switches_model_only_when_idle(monkeypatch):
         "model_id": "deepseek/deepseek-v4",
         "provider_id": "deepseek",
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_model_switch_does_not_freeze_the_loop(monkeypatch):
+    """switch_model 的磁盘 I/O 必须跑在线程里，不能卡住 worker 事件循环。"""
+    worker = AgentWorker()
+    release = threading.Event()
+
+    class Agent:
+        def switch_model(self, model_id: str) -> dict[str, str]:
+            release.wait(5.0)
+            return {"model_id": model_id, "provider_id": "glm"}
+
+    worker._agent = Agent()
+    responses = []
+
+    async def capture(payload):
+        responses.append(payload)
+
+    monkeypatch.setattr(worker, "_write_ordered", capture)
+
+    task = asyncio.create_task(
+        worker._dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "model/switch",
+                "params": {"model_id": "glm/glm-5"},
+            }
+        )
+    )
+    ticks = 0
+    for _ in range(20):
+        await asyncio.sleep(0.001)
+        ticks += 1
+    assert ticks == 20
+    assert not task.done()
+    release.set()
+    await asyncio.wait_for(task, timeout=5.0)
+    assert responses[-1]["result"]["ok"] is True
+    assert responses[-1]["result"]["model_id"] == "glm/glm-5"
 
 
 @pytest.mark.asyncio
@@ -104,10 +147,6 @@ async def test_server_session_set_model_updates_task_record(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 async def test_server_session_set_model_joins_inflight_bootstrap(monkeypatch, tmp_path):
     """Task model selection must not race the background worker warm-up."""
-    monkeypatch.setattr(
-        "appserver.model_routes.set_active",
-        lambda params: {"ok": True, "id": params.get("id")},
-    )
     server = AppServer(stub=True)
     server._initialized = True
     record = server._sessions.create(tmp_path)
@@ -140,7 +179,8 @@ async def test_server_session_set_model_joins_inflight_bootstrap(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_session_set_model_persists_without_starting_worker(monkeypatch, tmp_path):
+async def test_session_set_model_does_not_persist_active_model(monkeypatch, tmp_path):
+    """前端先调 models/set_active 持久化；set_model 只做任务级切换，不再重写。"""
     persisted: list[str] = []
 
     def fake_set_active(params):
@@ -162,7 +202,45 @@ async def test_session_set_model_persists_without_starting_worker(monkeypatch, t
         {"session_id": record.session_id, "model_id": "deepseek/deepseek-v4-flash"}, 12
     )
 
-    assert persisted == ["deepseek/deepseek-v4-flash"]
+    assert persisted == []
     assert record.model_id == "deepseek/deepseek-v4-flash"
     assert responses[-1]["ok"] is True
     host_factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_models_list_and_set_active_run_off_the_event_loop(monkeypatch):
+    """models/list 与 models/set_active 的同步磁盘 I/O 移出 appserver 事件循环。"""
+    server = AppServer(stub=True)
+    server._initialized = True
+    calls: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy(func, /, *args, **kwargs):
+        calls.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
+
+    def list_models() -> dict:
+        return {"ok": True, "models": []}
+
+    def set_active(params: dict) -> dict:
+        return {"ok": True, "id": params.get("id")}
+
+    monkeypatch.setattr("appserver.model_routes.list_models", list_models)
+    monkeypatch.setattr("appserver.model_routes.set_active", set_active)
+    responses = []
+    monkeypatch.setattr(
+        server,
+        "_respond",
+        AsyncMock(side_effect=lambda _request_id, payload: responses.append(payload)),
+    )
+
+    await server._dispatch({"jsonrpc": "2.0", "id": 1, "method": "models/list", "params": {}})
+    await server._dispatch(
+        {"jsonrpc": "2.0", "id": 2, "method": "models/set_active", "params": {"id": "glm/glm-5"}}
+    )
+
+    assert calls == ["list_models", "set_active"]
+    assert responses == [{"ok": True, "models": []}, {"ok": True, "id": "glm/glm-5"}]
