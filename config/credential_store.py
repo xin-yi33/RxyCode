@@ -35,6 +35,24 @@ _os_name = os.name
 
 _cached_windows_sid: str | None = None
 
+# ── credentials.yaml 解析缓存 ─────────────────────────────────────────
+# models/list 每个模型 resolve 一次都调 load_credential → _read_store，
+# 66 个模型 = 57 次纯 Python yaml.safe_load（2026-10-11 profile：list_models
+# 2.08s 中 1.37s 是重复解析同一文件）。按 (path, size, mtime_ns) 签名缓存解析
+# 结果；任何写入（含原子替换）都会改 mtime 自动失效，_write_store 也主动清。
+# 返回浅拷贝，防调用方（如 store_credential 的写入前拼装）污染缓存。
+# RXYCODE_DISABLE_ACL_CACHE=1 一并禁用本缓存（与 ACL 缓存同一个回退开关）。
+_READ_STORE_CACHE: dict[str, tuple[tuple[int, int], dict[str, str]]] = {}
+
+
+def _read_store_cache_key(path: Path) -> str:
+    key = str(path)
+    return os.path.normcase(key) if os.name == "nt" else key
+
+
+def _invalidate_read_store_cache(path: Path) -> None:
+    _READ_STORE_CACHE.pop(_read_store_cache_key(path), None)
+
 
 # ── Per-path ACL cache ────────────────────────────────────────────────
 # Every config/credential load or save used to spawn one or two ``icacls``
@@ -398,6 +416,13 @@ def _read_store(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     restrict_file_permissions(path)
+    if not _acl_cache_disabled():
+        cache_key = _read_store_cache_key(path)
+        stat = path.stat()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        cached = _READ_STORE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return dict(cached[1])
     with path.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream) or {}
     if document.get("version") != _STORE_VERSION:
@@ -408,6 +433,8 @@ def _read_store(path: Path) -> dict[str, str]:
         for key, value in credentials.items()
     ):
         raise ValueError("Invalid credential store")
+    if not _acl_cache_disabled():
+        _READ_STORE_CACHE[cache_key] = (signature, dict(credentials))
     return credentials
 
 
@@ -415,6 +442,8 @@ def _write_store(path: Path, credentials: dict[str, str]) -> None:
     document = {"version": _STORE_VERSION, "credentials": credentials}
     text = yaml.safe_dump(document, allow_unicode=True, sort_keys=True)
     atomic_write_text(path, text)
+    # 写入后主动失效：下一次读必须拿到新内容，而不是本进程旧缓存。
+    _invalidate_read_store_cache(path)
 
 
 def store_credential(value: str, config_path: Path) -> str:

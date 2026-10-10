@@ -68,8 +68,21 @@ def _copy_missing_items(source: Path, target: Path) -> None:
             shutil.copy2(item, dst)
 
 
+# 一次性幂等迁移的进程内记忆（2026-10-11）：get_data_dir 热路径上每次调用都
+# 重跑一遍 legacy 目录扫描（profile：models/list 2.08s 中 0.47s 来自 59 次
+# 重复迁移检查）。迁移本来就是幂等的"缺则补齐"，同一目标目录进程内做一次即可；
+# 失败也标记（best-effort，下个进程会重试）。换 RXYCODE_DATA_DIR 的测试不受影响：
+# 记忆按目标路径区分，新目录仍会迁移一次。
+_MIGRATED_TARGETS: set[str] = set()
+_MIGRATED_LOCK = threading.Lock()
+
+
 def _migrate_legacy_data_if_needed(target: Path) -> None:
     """Best-effort migration from previous user and in-repo data roots."""
+    key = str(target.resolve())
+    with _MIGRATED_LOCK:
+        if key in _MIGRATED_TARGETS:
+            return
     try:
         if target == DEFAULT_CONFIG_DIR:
             _copy_missing_items(LEGACY_USER_DATA_DIR, target)
@@ -77,6 +90,8 @@ def _migrate_legacy_data_if_needed(target: Path) -> None:
     except Exception:
         # Migration is best-effort; never block startup on it.
         pass
+    with _MIGRATED_LOCK:
+        _MIGRATED_TARGETS.add(key)
 
 
 def get_date_stamp(moment: datetime | None = None) -> str:

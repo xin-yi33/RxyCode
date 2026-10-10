@@ -52,7 +52,24 @@
 - 新增/更新：`tests/test_appserver/test_desktop_task_store.py`（buffered flush 合并/等价/多进程 merge/purge）、`tests/test_appserver/test_session_model.py`、`tests/test_core/test_credential_acl_cache.py`、`frontend/opentui-app/src/transport/stdioTransport.switchModel.test.ts`、`stdioTransport.listSessions.test.ts`、`src/dialog/DialogSessionList.cache.test.tsx`。
 - 门禁：appserver 199 passed / 1 skipped（live-gated）；credential 相关 20 passed；ruff appserver+config 全过；前端 bun test **333 passed / 0 fail**；`tsc --noEmit` 零错。
 
-### 遗留（本轮精准修复未覆盖，后续立项）
+#### 追加：`/model` 打开时的 models/list 慢（2026-10-11 真实环境复测发现并修复）
+
+真实环境（66 模型、349 会话、26MB 台账）实测 `models/list` 每次调用 1.3–2.0s。
+cProfile 定位：`resolve_model_config` 每模型一次 → 57 次 `load_credential` →
+**57 次纯 Python `yaml.safe_load` 重复解析同一 credentials.yaml**（1.37s）+
+59 次 `get_data_dir` 每次重跑 legacy 目录迁移扫描（0.47s）。
+
+| 位置 | 修改 | 原因 |
+|---|---|---|
+| `config/credential_store.py` | `_read_store` 按 `(path, size, mtime_ns)` 签名缓存解析结果，命中返回浅拷贝；`_write_store` 与任何外部写入（mtime 变化）自动失效；与 ACL 缓存共用 `RXYCODE_DISABLE_ACL_CACHE=1` 回退开关 | 同文件没变化时重复 parse 是纯浪费；写后必须读到新内容，防 store_credential 拼装污染缓存因此返回拷贝 |
+| `config/settings.py` | `_migrate_legacy_data_if_needed` 按目标路径记忆（`_MIGRATED_TARGETS`），进程内同一目录只迁移一次（含失败标记） | 迁移本就是幂等的"缺则补齐"；热路径上重复扫描是 0.4s+ 白工。RXYCODE_DATA_DIR 切换的测试不受影响（按路径区分） |
+
+实测：`models/list` 冷 0.88s → **热 0.10–0.12s**；`models/set_active` 80–90ms；
+`sessions/list`（349 会话）60–125ms。测试：
+`tests/test_core/test_credential_read_store_cache.py`（4）、
+`tests/test_core/test_migration_memo.py`（2）+ 全量门禁通过。
+
+## 遗留（本轮精准修复未覆盖，后续立项）
 
 - `tasks.json` 单文件巨石（26MB+）应改 append-only 分段存储（JSONL + 独立元数据小文件）——根治病灶，属存储层重构。
 - `AppServer.__init__` 冷启动同步全量 parse + 约 20 个 service eager 构造，可懒加载。
