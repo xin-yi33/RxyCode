@@ -105,3 +105,10 @@ cProfile 定位：`resolve_model_config` 每模型一次 → 57 次 `load_creden
 - `tasks.json` 单文件巨石（26MB+）应改 append-only 分段存储（JSONL + 独立元数据小文件）——根治病灶，属存储层重构。
 - `AppServer.__init__` 冷启动同步全量 parse + 约 20 个 service eager 构造，可懒加载。
 - 模型目录同 `(provider_model_id, base_url)` 条目在列表中重复显示的 merge 去重。
+
+## CLI 内存治理记录（2026-10-11）
+
+- 新增 [CLI 内存治理记录](../CLI-MEMORY-MANAGEMENT-2026-10-11.md)：TUI 1000 条 transcript native nodes 由 9354 降至 760；匹配的 100 MB Bash fixture（k=3）峰值 RSS 约低 79%，样本耗时未显示速度提升。
+- 独立候选组合 gate 10292 passed、1 skipped、47 warnings（279.94 秒；core/tools/appserver/subagents/integration/contract/system cancellation/packaging）；shell+tools+cancellation 1045 passed，reader/consumer 18 passed，worker owner/parent gates 20/19 passed，Ruff 全绿。
+- 内存变更于 2026-10-11 集成到 primary 工作树；primary fresh proof：appserver/subagents/capture-consumers-security/realAgent/cancel 711 passed、1 skipped（75.89 秒），TUI 354 passed、0 failed（70 files，28.52 秒），tsc、Ruff touched files 和 scoped diff check 通过。需重启 RxyCode 加载；不是发布，产品版本仍为 1.4.2。
+- K3 基线 `53e5bae5` 未变，primary 与隔离树 normalized code 全部匹配；本次按用户授权仅提交本地 master，不推送、不发布，其他 WIP 与计划文档不纳入。结果不是全仓库/live 覆盖，内存限制与 fixture 边界见报告。

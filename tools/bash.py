@@ -2,24 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 import platform
 import subprocess
-import uuid
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from ..config.settings import get_data_dir
 from ..core.session_runtime import current_session_id
 from ..utils.shell import shell_executor
 from .launch_intent import classify_shell_launch
 from .open_file import open_file, open_file_async
 from .secret_text import redact_secrets
 
-_logger = logging.getLogger(__name__)
 _SPILL_SEEN: dict[str, set[str]] = {}
+_SPILL_ARTIFACTS: dict[str, dict[str, frozenset[str]]] = {}
 SPILL_PATH_PREFIX = "Full output saved to:"
 SPILL_FAIL_MARKER = "[spill write failed; output truncated]"
 DUPLICATE_SPILL = (
@@ -68,35 +65,49 @@ LAUNCHED_OK = (
 
 
 def _redact_preview(text: str) -> str:
-    """Preview only. The spill file keeps the raw bytes and is not logged."""
+    """Redact model-visible previews only; raw local artifacts are untouched."""
     return redact_secrets(text)
 
 
-def _write_spill_file(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="\n")
+def _capture_fingerprint(result: dict) -> str | None:
+    base = result.get("capture_fingerprint")
+    if not base:
+        return None
+    identity = f"{base}:{result.get('success')}:{result.get('exit_code')}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _spill_large_output(raw: str) -> str:
-    """Spill before the first irreversible truncation. Failure degrades to truncation."""
-    if len(raw) <= MAX_OUTPUT_CHARS:
-        return raw
-    session = current_session_id()
-    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+def _artifact_paths(result: dict) -> list[str]:
+    return [
+        str(path)
+        for path in (result.get("stdout_artifact"), result.get("stderr_artifact"))
+        if path
+    ]
+
+
+def _is_duplicate_capture(result: dict, paths: list[str]) -> bool:
+    if not paths or result.get("capture_error"):
+        return False
+    fingerprint = _capture_fingerprint(result)
+    if not fingerprint:
+        return False
+    session = str(current_session_id() or "default")
     seen = _SPILL_SEEN.setdefault(session, set())
+    artifacts = _SPILL_ARTIFACTS.setdefault(session, {})
+    current_paths = frozenset(paths)
     if fingerprint in seen:
-        return DUPLICATE_SPILL
-    try:
-        # get_data_dir 自己会 mkdir。目录创建失败和写文件失败走同一条降级。
-        # 相对数据目录要先变成绝对路径，否则之后 cwd 变了 Read 会打开另一处。
-        path = (get_data_dir() / "spill" / session / f"{uuid.uuid4().hex}.txt").resolve()
-        _write_spill_file(path, raw)
-    except OSError:
-        _logger.warning("spill write failed for session %s", session)
-        return _truncate_output(_redact_preview(raw)) + "\n" + SPILL_FAIL_MARKER
+        # A repeated format call may be handed the exact same result object.
+        # Do not unlink its canonical files; remove only newly captured copies.
+        previous_paths = artifacts.get(fingerprint, frozenset())
+        for path in current_paths - previous_paths:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return True
     seen.add(fingerprint)
-    preview = _truncate_output(_redact_preview(raw))
-    return f"{preview}\n{SPILL_PATH_PREFIX} {path}"
+    artifacts[fingerprint] = current_paths
+    return False
 
 
 def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
@@ -230,26 +241,30 @@ def _looks_like_env_probe(command: str) -> bool:
     )
 
 
-def _detach_spill_paths(text: str) -> tuple[str, list[str]]:
-    """路径行必须能单独打开。不能留在错误包络的闭括号里面。"""
-    body: list[str] = []
-    paths: list[str] = []
-    for line in str(text).splitlines():
-        if line.startswith(SPILL_PATH_PREFIX):
-            paths.append(line.strip())
-        else:
-            body.append(line)
-    return "\n".join(body).strip(), paths
-
-
 def _format_result(result: dict, command: str = "") -> str:
-    output = result["stdout"]
-    if result["stderr"]:
-        output += ("\n" if output else "") + result["stderr"]
+    # Deprecated 2026-10-11: _spill_large_output/_write_spill_file materialized
+    # full streams before spilling. BoundedOutputCapture now streams previews/
+    # artifacts; never route new calls through that old path. Keep this metadata-only.
+    output = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    if stderr:
+        output += ("\n" if output else "") + stderr
     if not result["success"]:
         output += f"\n[exit code: {result['exit_code']}]"
-    output = _spill_large_output(output)
-    body, paths = _detach_spill_paths(output)
+    paths = _artifact_paths(result)
+    if _is_duplicate_capture(result, paths):
+        return DUPLICATE_SPILL
+
+    body = _truncate_output(_redact_preview(output))
+    if result.get("capture_error"):
+        capture_error = str(result["capture_error"])
+        marker = (
+            SPILL_FAIL_MARKER
+            if "spill" in capture_error.lower()
+            else "[output capture failed; preview may be incomplete]"
+        )
+        body += "\n" + marker
+    path_lines = [f"{SPILL_PATH_PREFIX} {path}" for path in paths]
     if not result["success"]:
         # Tool recovery classifies the stable [error...] prefix.  Preserve the
         # command output and exit code, but do not let a failed shell probe be
@@ -261,11 +276,11 @@ def _format_result(result: dict, command: str = "") -> str:
                 "user-named source files using the stdlib. Do not install "
                 "Flask/FastAPI/Django unless the user named that framework."
             )
-        if paths:
-            msg += "\n" + "\n".join(paths)
+        if path_lines:
+            msg += "\n" + "\n".join(path_lines)
         return msg
-    if paths:
-        return f"{body}\n" + "\n".join(paths) if body else "\n".join(paths)
+    if path_lines:
+        return f"{body}\n" + "\n".join(path_lines) if body else "\n".join(path_lines)
     return body or "[no output]"
 
 

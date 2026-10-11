@@ -11,6 +11,7 @@ Shared utilities used across the codebase: backend event output, streaming state
 | i18n.py | Internationalization: zh/en language support |
 | slash_help.py | Canonical `/help` body (`build_help_text`) for HTTP `/command` |
 | shell.py | `ShellExecutor` - cross-platform command execution with enforceable sandbox policies (workspace/docker/host modes, process-tree cleanup, timeout/cancellation). On Windows PowerShell, an actual `mysql.exe` / `mysql -u` invocation is wrapped in `cmd.exe` so password-on-CLI stderr warnings and `-e` SQL semicolons do not fail the tool. Env probes such as `MYSQL_*` and `Get-Command mysql` stay in PowerShell. |
+| output_capture.py | `BoundedOutputCapture` - drains stdout/stderr in fixed-size chunks, retains bounded per-stream previews, and synchronously spills overflow to `get_data_dir()/spill/<session>/` with byte counts, SHA-256, truncation, artifact, and capture-error metadata. |
 | queue.py | QueueManager: persistent task queue |
 | safe_http.py | Pinned public HTTP client: `validate_public_url` / `is_public_address` / `fetch_public_response` / `safe_url_label`, `UnsafeUrlError`, `ResponseTooLargeError` (used by webfetch/file_download) |
 | atomic_file.py | `atomic_write_text` - atomic same-directory temp write + fsync + rename (used by write/edit/memory/task/queue) |
@@ -35,3 +36,24 @@ The adapter preserves the output methods expected by agents and tools, including
 - Supports Chinese and English text resources.
 - `i18n.set_lang(lang)`: Switch language.
 - `i18n.t(key)`: Resolve translated text with key fallback.
+
+## Shell output capture
+
+`ShellExecutor` reads stdout and stderr independently in 64 KiB chunks. Each
+stream keeps at most a 48 KiB preview; once their combined raw output exceeds
+30000 bytes, complete streams are written to local artifacts under
+`get_data_dir()/spill/<session>/`. Artifact writes run synchronously inside the
+pipe readers, so slow storage applies backpressure instead of accumulating
+queued chunks. Results retain `stdout`, `stderr`, `exit_code`, and `success`,
+and may additionally include per-stream byte counts, SHA-256 values, artifact
+paths and truncation flags, plus `capture_error`. A failed spill keeps only the
+bounded preview and explicitly reports the capture failure; it does not change
+or retry the already-executed command. For truncated streams, a small
+cross-chunk scan detects the same sensitivity markers used by secret preview
+redaction; if any appear, the raw tail is omitted with an explicit safety note
+so a byte-window cannot retain a secret value after clipping away its key.
+Non-sensitive output keeps the usual head-and-tail preview. Timeout/cancellation
+continues through the existing process-tree cleanup path and removes incomplete
+artifacts. `append_capture_hints()` lets existing ShellExecutor consumers expose
+generated local artifact path lines (or a capture-failure notice) without
+reopening complete files.

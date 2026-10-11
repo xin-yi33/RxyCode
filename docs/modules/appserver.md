@@ -80,6 +80,21 @@ create, trash, restore, and purge still save immediately. After bootstrap the GU
 `Waiting for model response…` so the startup banner cannot linger over
 later tool activity.
 
+Once a session worker is proven idle, the appserver gracefully asks it to
+flush its current session memory and then exits it; a later turn starts a new
+worker for the same session and task-scoped model. The default idle timeout is
+600 seconds and the maximum idle-candidate count is two. Candidates with any
+persisted child records are pinned and excluded from both TTL and capacity
+selection. Active prompts, queued work, approvals/questions, live child
+sessions, write leases, executions, and enabled schedules also prevent
+retirement. The worker-side prepare check additionally pins in-memory
+child-tree history, including terminal children that are not represented in
+the session store. Since that history is only discovered during prepare, a
+failed prepare can leave total idle workers above the configured candidate
+count. Child-free workers still recycle normally. Any uncertain activity or
+persistence failure keeps the worker alive. Graceful worker shutdown also
+disconnects its owned MCP clients.
+
 ## Phase 2 hard constraints (P4)
 
 | ID | Requirement | Implementation |
@@ -121,6 +136,8 @@ When the watchdog marks the server **degraded**, new `session/prompt` calls retu
 | `RXYCODE_APPSERVER_BOOTSTRAP_DELAY` | Seconds to sleep in `bootstrap_agent` (stub integration tests for bootstrap timeout) |
 | `RXYCODE_APPSERVER_HEARTBEAT_SECONDS` | Interval for `event/server_heartbeat` (default `15`) |
 | `RXYCODE_APPSERVER_STALL_SECONDS` | Job stall threshold before degrade + worker kill (default `120`) |
+| `RXYCODE_WORKER_IDLE_SECONDS` | Gracefully retire proven-idle session workers after this many seconds (default `600`; `0` disables TTL expiry) |
+| `RXYCODE_MAX_IDLE_WORKERS` | Maximum idle session workers retained (default `2`; `0` keeps no idle workers) |
 | `RXYCODE_APPSERVER_LIVE=1` | Run live AgentV2 integration test; uses real `~/.RxyCode/config.yaml`, not pytest-isolated data dir |
 | `RXYCODE_APPSERVER_LIVE_TIMEOUT` | Live prompt/run timeout in seconds (default `300`) |
 

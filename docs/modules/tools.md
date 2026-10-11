@@ -184,10 +184,20 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
 - Captures stdout/stderr separately
 - Handles Windows PowerShell vs cmd detection
 - Supports working directory changes
-- Combined output longer than 30000 chars is middle-truncated (head + tail
-  kept, ~15000 chars each) with a "[输出已截断...]" hint telling the agent to
-  use grep / redirect-to-file for the rest (Tier1 style, adapted from
-  memory/compressor.py:170-194)
+- Uses the bounded `ShellExecutor` previews and raw stdout/stderr artifacts;
+  bash formats the previews without reading the complete artifact back into
+  memory. Artifact paths retain the `Full output saved to:` prefix, duplicate
+  large captures are still omitted, and model-visible previews pass through
+  secret redaction. Combined preview text above 30000 chars is middle-truncated
+  with a hint to read the artifact in segments. A failed spill reports
+  `[spill write failed; output truncated]` and never claims the full output
+  was saved. The shared `append_capture_hints()` presentation helper is also
+  used by workflow, Git, formatter, installer/MCP, screenshot, and file-opener
+  callers of `ShellExecutor`, so their bounded previews retain a path to the
+  complete local artifact without loading it back into memory. If a truncated
+  stream contains a secret-redaction marker, its raw tail is conservatively
+  omitted before tool-orchestrator redaction; the exact bytes remain in the
+  local artifact.
 
 ### ReadTool (read.py)
 - Reads file contents with optional line range (offset/limit)

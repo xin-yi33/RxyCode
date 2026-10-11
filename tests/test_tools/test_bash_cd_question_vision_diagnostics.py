@@ -85,8 +85,20 @@ class TestBashOutputTruncation:
     def _run_with_output(self, text):
         from unittest.mock import patch, MagicMock
         from RxyCode.RxyCode1_1_0.tools import bash as bash_mod
+        from RxyCode.RxyCode1_1_0.utils.output_capture import BoundedOutputCapture
 
-        fake = {"stdout": text, "stderr": "", "success": True, "exit_code": 0}
+        capture = BoundedOutputCapture()
+        raw = text.encode("utf-8")
+        for offset in range(0, len(raw), 8192):
+            capture.feed("stdout", raw[offset : offset + 8192])
+        capture.end_stream("stdout")
+        capture.end_stream("stderr")
+        fake = {
+            **capture.finish(),
+            "success": True,
+            "exit_code": 0,
+            "error_type": None,
+        }
         with patch.object(bash_mod, "shell_executor") as mock_exec:
             mock_exec.execute = MagicMock(return_value=fake)
             return bash_mod.run_bash("whatever")

@@ -9,6 +9,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ..core.session_runtime import resolve_session_path
+from ..utils.output_capture import append_capture_hints
 from ..utils.shell import shell_executor
 
 
@@ -115,8 +116,11 @@ async def run_git_async(
     result = await shell_executor.execute_argv_async(
         command, workdir=repo_path, timeout=60  # git 快照短命令，不是已废弃的 bash 60s 默认
     )
-    return _format_git_result(
-        result["stdout"], result["stderr"], result["success"]
+    return append_capture_hints(
+        _format_git_result(
+            result["stdout"], result["stderr"], result["success"]
+        ),
+        result,
     )
 
 

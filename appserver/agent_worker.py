@@ -272,6 +272,20 @@ def bootstrap_subagent_manager(
     return manager, store
 
 
+def _subagents_enabled_from_env() -> bool | None:
+    """Read the same validated master switch used to build the manager."""
+    try:
+        try:
+            from ..core.subagents.modes import subagent_config_from_env
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.subagents.modes import (
+                subagent_config_from_env,
+            )
+        return bool(subagent_config_from_env().flags.subagents_enabled)
+    except Exception:
+        return None
+
+
 class _PipeApproval(ApprovalBroker):
     """Forward approval requests to the parent appserver over worker stdout."""
 
@@ -334,9 +348,15 @@ class AgentWorker:
     def __init__(self) -> None:
         install_tui_context_hook()
         self._agent: Any | None = None
+        self._stub = False
         self._subagent_manager: Any | None = None
+        # None means the feature state could not be established. A missing
+        # manager is safe only when bootstrap positively observed the master
+        # subagent switch disabled.
+        self._subagents_enabled: bool | None = None
         self._subagent_event_store: Any | None = None
         self._subagent_tasks: set[asyncio.Task[Any]] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._session_id = "worker"
         self._workspace_root = Path.cwd()
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
@@ -590,10 +610,12 @@ class AgentWorker:
 
     async def _handle_bootstrap(self, params: dict[str, Any], request_id: int) -> None:
         stub = bool(params.get("stub", False))
+        self._stub = stub
         workspace = Path(str(params.get("workspace_root", ".")))
         self._workspace_root = workspace.resolve()
         self._session_id = str(params.get("session_id", "worker"))
         model_id = str(params.get("model_id") or "").strip() or None
+        self._subagents_enabled = _subagents_enabled_from_env()
         self._subagent_manager, self._subagent_event_store = bootstrap_subagent_manager(
             session_id=self._session_id,
             workspace_root=self._workspace_root,
@@ -655,12 +677,93 @@ class AgentWorker:
         preconnect = getattr(agent, "_preconnect_provider", None)
         if callable(preconnect):
             try:
-                asyncio.get_running_loop().create_task(preconnect())
+                task = asyncio.get_running_loop().create_task(preconnect())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except Exception:
                 pass
         schedule = getattr(agent, "_schedule_prewarm", None)
         if callable(schedule):
             schedule()
+
+    def _prepare_suspend_blocker(self) -> str | None:
+        """Return a reason when worker-owned activity makes suspension unsafe.
+
+        Unknown/missing state is treated as busy. The parent independently
+        checks appserver-owned prompts, executions, approvals and schedules.
+        """
+        agent = getattr(self, "_agent", None)
+        if agent is None:
+            return "agent_not_bootstrapped"
+        run_task = getattr(self, "_run_task", None)
+        if run_task is not None and not run_task.done():
+            return "prompt_active"
+        if any(not task.done() for task in getattr(self, "_subagent_tasks", ())):
+            return "subagent_task_active"
+        if getattr(self, "_pending", None):
+            return "approval_or_question_pending"
+        if getattr(self, "_write_failures", None):
+            return "worker_write_failed"
+        if bool(getattr(agent, "_user_turn_active", False)):
+            return "user_turn_active"
+
+        prewarm_task = getattr(agent, "_prewarm_task", None)
+        if prewarm_task is not None and not prewarm_task.done():
+            return "prewarm_active"
+        if any(not task.done() for task in getattr(self, "_background_tasks", ())):
+            return "worker_background_task_active"
+
+        manager = getattr(self, "_subagent_manager", None)
+        if manager is None:
+            if getattr(self, "_subagents_enabled", None) is False:
+                return None
+            return "subagent_state_unavailable"
+        try:
+            tree = manager.get_tree(self._session_id)
+            if tree.list_active():
+                return "child_session_active"
+            if int(manager.active_lease_count) != 0:
+                return "write_lease_active"
+            if tree.list_all():
+                # Child trees and retry request bodies are worker-local today;
+                # the event store is not enough to reconstruct them on boot.
+                return "child_history_not_rehydratable"
+        except Exception:
+            return "subagent_state_unavailable"
+        return None
+
+    async def _handle_prepare_suspend(self, request_id: int) -> None:
+        """Persist quiescent memory before parent-side graceful retirement."""
+        blocker = self._prepare_suspend_blocker()
+        if blocker:
+            raise RuntimeError(f"worker cannot suspend: {blocker}")
+        # Drain only completed-turn output; this never cancels or interrupts
+        # work. Recheck after the await before touching persisted memory.
+        await self._flush_pending_writes()
+        blocker = self._prepare_suspend_blocker()
+        if blocker:
+            raise RuntimeError(f"worker cannot suspend: {blocker}")
+
+        agent = self._agent
+        memory = getattr(agent, "_memory", None)
+        save_session = getattr(memory, "save_session", None) if memory is not None else None
+        if memory is None and self._stub:
+            persisted = True
+        elif callable(save_session):
+            saved = save_session()
+            if inspect.isawaitable(saved):
+                raise RuntimeError("worker session persistence must be synchronous")
+            persisted = True
+        else:
+            raise RuntimeError("worker session persistence is unavailable")
+
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"ok": True, "safe": True, "persisted": persisted},
+            }
+        )
 
     async def _handle_prefix_warm(self, params: dict[str, Any], request_id: int) -> None:
         """Join thinking-on prefix prewarm so session/warm is not ctor-only."""
@@ -1440,6 +1543,8 @@ class AgentWorker:
         method = str(message.get("method", ""))
         if method == "bootstrap":
             await self._handle_bootstrap(params, int(request_id))
+        elif method == "prepare_suspend":
+            await self._handle_prepare_suspend(int(request_id))
         elif method == "prefix_warm":
             await self._handle_prefix_warm(params, int(request_id))
         elif method == "model/switch":

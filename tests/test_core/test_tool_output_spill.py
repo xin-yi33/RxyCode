@@ -15,6 +15,7 @@ from RxyCode.RxyCode1_1_0.core.compaction import (
 )
 from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_session_binding
 from RxyCode.RxyCode1_1_0.tools.bash import _format_result, _truncate_output
+from RxyCode.RxyCode1_1_0.utils.output_capture import BoundedOutputCapture
 
 _BEARER = "SUPERSECRETBODYTOKEN"
 
@@ -40,8 +41,19 @@ def _raw() -> str:
     )
 
 
-def _result(text: str) -> dict:
-    return {"stdout": text, "stderr": "", "success": True, "exit_code": 0}
+def _result(text: str, *, success: bool = True, exit_code: int = 0) -> dict:
+    capture = BoundedOutputCapture()
+    raw = text.encode("utf-8")
+    for offset in range(0, len(raw), 8192):
+        capture.feed("stdout", raw[offset : offset + 8192])
+    capture.end_stream("stdout")
+    capture.end_stream("stderr")
+    return {
+        **capture.finish(),
+        "success": success,
+        "exit_code": exit_code,
+        "error_type": None,
+    }
 
 
 def _path_from(message: str) -> Path:
@@ -165,8 +177,7 @@ def test_u_f5_9_01_spill_before_truncation_and_dedupe_raw_text(caplog, monkeypat
         ToolOrchestrator._clean_tool_output(bomb)
         assert time.perf_counter() - started < 0.2
         failed = _format_result(
-            {"stdout": raw, "stderr": "", "success": False, "exit_code": 2},
-            command="python boom.py",
+            _result(raw, success=False, exit_code=2), command="python boom.py"
         )
         path_line = next(
             line for line in failed.splitlines() if line.startswith("Full output saved to:")
@@ -205,13 +216,13 @@ def test_u_f5_9_01_spill_before_truncation_and_dedupe_raw_text(caplog, monkeypat
 
 
 def test_u_f5_9_02_write_failure_falls_back_without_raising(monkeypatch):
-    from RxyCode.RxyCode1_1_0.tools import bash as bash_mod
+    from RxyCode.RxyCode1_1_0.utils import output_capture as capture_mod
 
-    def boom(path, text):
-        del path, text
+    def boom(path):
+        del path
         raise OSError("disk full")
 
-    monkeypatch.setattr(bash_mod, "_write_spill_file", boom)
+    monkeypatch.setattr(capture_mod, "_open_capture_artifact", boom)
     token = bind_session("spill-unit-02")
     try:
         raw = _raw()
@@ -224,7 +235,7 @@ def test_u_f5_9_02_write_failure_falls_back_without_raising(monkeypatch):
         def data_dir_boom():
             raise OSError("data dir unwritable")
 
-        monkeypatch.setattr(bash_mod, "get_data_dir", data_dir_boom)
+        monkeypatch.setattr(capture_mod, "get_data_dir", data_dir_boom)
         degraded = _format_result(_result(raw + "\nsecond-distinct"))
         assert "Full output saved to:" not in degraded
         assert "spill write failed" in degraded

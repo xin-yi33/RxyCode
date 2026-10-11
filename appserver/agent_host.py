@@ -547,6 +547,12 @@ class AgentHost:
         self._bootstrapped = False
         self._bootstrap_task: asyncio.Task[Any] | None = None
         self._bootstrap_lock = asyncio.Lock()
+        # Server-side activity is tracked from RPC entry through response.
+        # The legacy transport also consults its pending mailbox map because
+        # cancelling asyncio.to_thread() stops waiting but not the thread.
+        self._active_rpc_count = 0
+        self._last_activity_at = time.monotonic()
+        self._retiring = False
         self._emit: EmitFn | None = None
         self._async = async_rpc_enabled()
         self._legacy_degraded = False
@@ -570,10 +576,12 @@ class AgentHost:
 
     async def start(self) -> None:
         """Launch the worker subprocess with the selected transport."""
+        self._touch_activity()
         if self._async:
             await self._start_async()
         else:
             await asyncio.to_thread(self._start_legacy)
+        self._touch_activity()
 
     async def _start_async(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
@@ -801,12 +809,21 @@ class AgentHost:
         the legacy fallback, which exists only for AC7 switch=0 equivalence
         tests.
         """
-        if self._async:
-            assert self._pipe is not None
-            return await self._pipe.request(method, params, timeout=timeout)
-        return await asyncio.to_thread(self._request, method, params, timeout=timeout)
+        if self.retiring and method != "prepare_suspend":
+            raise RuntimeError("session worker is retiring")
+        self._active_rpc_count = self._active_rpc_count + 1
+        self._touch_activity()
+        try:
+            if self._async:
+                assert self._pipe is not None
+                return await self._pipe.request(method, params, timeout=timeout)
+            return await asyncio.to_thread(self._request, method, params, timeout=timeout)
+        finally:
+            self._active_rpc_count = max(0, self._active_rpc_count - 1)
+            self._touch_activity()
 
     def _request(self, method: str, params: dict[str, Any], *, timeout: float | None) -> dict:
+        self._touch_activity()
         with self._send_lock:
             request_id = self._next_id
             self._next_id += 1
@@ -828,6 +845,7 @@ class AgentHost:
         finally:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
+            self._touch_activity()
         if "error" in message:
             error = message.get("error")
             if isinstance(error, dict):
@@ -843,6 +861,48 @@ class AgentHost:
     @property
     def bootstrapped(self) -> bool:
         return self._bootstrapped
+
+    @property
+    def pid(self) -> int | None:
+        """The owned worker PID, for lifecycle diagnostics and tests."""
+        return getattr(self._proc, "pid", None) if self._proc is not None else None
+
+    @property
+    def active_rpc_count(self) -> int:
+        count = int(getattr(self, "_active_rpc_count", 0) or 0)
+        if not getattr(self, "_async", True):
+            lock = getattr(self, "_pending_lock", None)
+            pending = getattr(self, "_pending", None)
+            if lock is not None and pending is not None:
+                with lock:
+                    count += len(pending)
+        return count
+
+    @property
+    def last_activity_at(self) -> float:
+        return float(getattr(self, "_last_activity_at", 0.0) or 0.0)
+
+    @property
+    def retiring(self) -> bool:
+        return bool(getattr(self, "_retiring", False))
+
+    def _touch_activity(self) -> None:
+        # Also called by the legacy RPC thread. A monotonic float assignment
+        # is atomic on supported Python runtimes and avoids cross-thread loop
+        # callbacks solely for an idle timestamp.
+        self._last_activity_at = time.monotonic()
+
+    def begin_retirement(self, *, force: bool = False) -> bool:
+        """Exclude new RPCs once the parent has proved the host quiescent."""
+        if self.retiring or (self.active_rpc_count and not force):
+            return False
+        self._retiring = True
+        self._touch_activity()
+        return True
+
+    def cancel_retirement(self) -> None:
+        self._retiring = False
+        self._touch_activity()
 
     async def ensure_bootstrapped(self, *, timeout: float) -> None:
         """Join a single in-flight bootstrap instead of starting a second one.
@@ -893,6 +953,14 @@ class AgentHost:
             )
         except Exception:
             return {"ok": False, "prefix_warmed": False}
+
+    async def prepare_suspend(self, *, timeout: float = 15.0) -> dict[str, Any]:
+        """Ask the private worker to verify quiescence and persist session memory.
+
+        This RPC never interrupts or cancels worker activity. A negative or
+        malformed response is a fail-closed signal to retain the process.
+        """
+        return await self._pipe_request("prepare_suspend", {}, timeout=timeout)
 
     async def run_prompt(
         self,

@@ -225,15 +225,22 @@ async def install_mcp_from_npm_async(
         if result.get("error_type") == "timeout":
             return False, "npx check timed out (process tree terminated)"
         if not result["success"]:
-            return False, "npx not found. Please install Node.js first."
+            from ..utils.output_capture import append_capture_hints
+
+            return False, append_capture_hints(
+                "npx not found. Please install Node.js first.", result
+            )
         # The config write (YAML parse + fsync + replace) is short but sync;
         # keep it off the event loop (stop-waiting boundary, §4.3).
-        return await asyncio.to_thread(
+        added, message = await asyncio.to_thread(
             add_mcp_server,
             name=server_name,
             command="npx",
             args=["-y", package_name],
         )
+        from ..utils.output_capture import append_capture_hints
+
+        return added, append_capture_hints(message, result)
     except Exception as e:
         return False, f"Failed to install MCP: {e}"
 
@@ -284,14 +291,21 @@ async def install_mcp_from_pip_async(
         if result.get("error_type") == "timeout":
             return False, "pip install timed out (process tree terminated)"
         if not result["success"]:
-            return False, f"pip install failed: {result['stderr']}"
+            from ..utils.output_capture import append_capture_hints
+
+            return False, append_capture_hints(
+                f"pip install failed: {result['stderr']}", result
+            )
         module_name = package_name.replace("-", "_")
         # Keep the short sync config write off the event loop (§4.3).
-        return await asyncio.to_thread(
+        added, message = await asyncio.to_thread(
             add_mcp_server,
             name=server_name,
             command=sys.executable,
             args=["-m", module_name],
         )
+        from ..utils.output_capture import append_capture_hints
+
+        return added, append_capture_hints(message, result)
     except Exception as e:
         return False, f"Failed to install MCP: {e}"

@@ -18,35 +18,44 @@ class _CompletedProcess:
     def __init__(
         self,
         *,
-        returncode: int = 0,
+        returncode: int | None = 0,
         stdout: bytes = b"ok",
         stderr: bytes = b"",
+        eof: bool = True,
     ) -> None:
         self.pid = 4100
         self.returncode = returncode
-        self._stdout = stdout
-        self._stderr = stderr
-
-    async def communicate(self):
-        return self._stdout, self._stderr
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        for reader, data in ((self.stdout, stdout), (self.stderr, stderr)):
+            if data:
+                reader.feed_data(data)
+            if eof:
+                reader.feed_eof()
+        self._waiter = asyncio.get_running_loop().create_future()
+        if returncode is not None:
+            self._waiter.set_result(returncode)
 
     async def wait(self):
-        return self.returncode
+        return await self._waiter
+
+    def _finish(self, returncode: int) -> None:
+        self.returncode = returncode
+        self.stdout.feed_eof()
+        self.stderr.feed_eof()
+        if not self._waiter.done():
+            self._waiter.set_result(returncode)
 
     def kill(self):
-        self.returncode = -9
+        self._finish(-9)
 
     def terminate(self):
-        self.returncode = -15
+        self._finish(-15)
 
 
 class _BlockingProcess(_CompletedProcess):
     def __init__(self) -> None:
-        super().__init__(returncode=0)
-        self.returncode = None
-
-    async def communicate(self):
-        await asyncio.Event().wait()
+        super().__init__(returncode=None, stdout=b"", stderr=b"", eof=False)
 
 
 @pytest.fixture

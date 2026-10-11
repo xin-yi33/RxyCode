@@ -6,7 +6,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
-import locale
 import math
 import os
 from pathlib import Path
@@ -24,6 +23,10 @@ from ..config.settings import load_config
 from ..core.session_runtime import (
     current_working_directory,
     initial_working_directory,
+)
+from .output_capture import (
+    CAPTURE_READ_CHUNK_BYTES,
+    BoundedOutputCapture,
 )
 
 
@@ -101,6 +104,45 @@ def _failure(
     if resource_limit is not None:
         result["resource_limit"] = resource_limit
     return result
+
+
+async def _read_output_pipe(
+    pipe: asyncio.StreamReader | None,
+    capture: BoundedOutputCapture,
+    stream_name: str,
+) -> None:
+    """Drain one pipe in bounded chunks; collector writes apply backpressure."""
+    if pipe is None:
+        capture.read_error(stream_name, RuntimeError("pipe unavailable"))
+        raise _OutputPipeReadError(stream_name)
+    try:
+        while True:
+            chunk = await pipe.read(CAPTURE_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            capture.feed(stream_name, chunk)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        capture.read_error(stream_name, exc)
+        # A failed read means the child may block forever once this OS pipe
+        # fills. Propagate a fixed message so the executor immediately enters
+        # its existing process-tree cleanup path without exposing exception
+        # text that might contain local paths or output fragments.
+        raise _OutputPipeReadError(stream_name) from None
+    else:
+        capture.end_stream(stream_name)
+
+
+class _OutputPipeReadError(RuntimeError):
+    """Sanitized signal that a subprocess output pipe could not be drained."""
+
+    def __init__(self, stream_name: str) -> None:
+        self.stream_name = stream_name
+        super().__init__(
+            f"[capture_error] subprocess {stream_name} pipe read failed; "
+            "execution status unknown"
+        )
 
 
 def sample_process_tree(pid: int | None) -> tuple[float, int, int, int]:
@@ -1274,7 +1316,14 @@ class ShellExecutor:
                     "creationflags", 0
                 ) | 0x00000004
         process: asyncio.subprocess.Process | None = None
-        communicate_task: asyncio.Task | None = None
+        capture_roots = tuple(
+            root for root in (policy.workspace_root, policy.cwd) if root is not None
+        )
+        capture = BoundedOutputCapture(forbidden_roots=capture_roots)
+        capture_complete = False
+        capture_task: asyncio.Future | None = None
+        reader_tasks: list[asyncio.Task] = []
+        process_wait_task: asyncio.Task | None = None
         monitor_task: asyncio.Task | None = None
         try:
             process = await asyncio.create_subprocess_exec(
@@ -1297,8 +1346,22 @@ class ShellExecutor:
             # GUI apps as the direct child keep pipes open until the window
             # closes (OpenCode-class hang). Opening Word/Notepad/Typora is
             # intercepted in tools/bash.py via launch_intent.
-            # 废弃代码（2026-09-21）：对打开类命令在这里 communicate() 等到 GUI 退出。
-            communicate_task = asyncio.create_task(process.communicate())
+            # Deprecated 2026-10-11: main-command process.communicate() buffered
+            # both full streams; BoundedOutputCapture replaced it with streaming
+            # bounded previews/artifacts. Never route new command captures back.
+            # Read each stream independently. No communicate()/whole-output
+            # byte buffers are created, and every write is awaited inline by
+            # its reader task so slow storage back-pressures the child.
+            reader_tasks = [
+                asyncio.create_task(
+                    _read_output_pipe(process.stdout, capture, "stdout")
+                ),
+                asyncio.create_task(
+                    _read_output_pipe(process.stderr, capture, "stderr")
+                ),
+            ]
+            process_wait_task = asyncio.create_task(process.wait())
+            capture_task = asyncio.gather(*reader_tasks, process_wait_task)
             if policy.mode in {"host", "workspace"} and (
                 policy.max_memory_mb > 0 or policy.max_processes > 0
             ):
@@ -1306,7 +1369,7 @@ class ShellExecutor:
                     self._monitor_process_tree(process, policy)
                 )
 
-            waiters = {communicate_task}
+            waiters = {capture_task}
             if monitor_task is not None:
                 waiters.add(monitor_task)
             started = time.monotonic()
@@ -1345,8 +1408,14 @@ class ShellExecutor:
                     WATCHDOG_OBSERVE_SECONDS,
                 )
             )
-            await asyncio.sleep(0)
-            if checkpoints and not communicate_task.done():
+            # A completed StreamReader-backed mock needs one scheduling turn
+            # per pipe before gather becomes done; avoid probing psutil for a
+            # process that has already exited during pipe startup.
+            for _ in range(3):
+                if capture_task.done():
+                    break
+                await asyncio.sleep(0)
+            if checkpoints and not capture_task.done():
                 sampler = ProcessTreeSampler(process.pid)
                 sampler.sample()
                 # 废弃代码（2026-09-22）：把启动时的内存和进程数当作仍在工作的基线。
@@ -1355,11 +1424,11 @@ class ShellExecutor:
 
             while True:
                 now = time.monotonic()
-                if communicate_task.done():
+                if capture_task.done():
                     break
                 if now >= deadline:
                     await self._cleanup_process(process, cidfile)
-                    await self._cancel_task(communicate_task)
+                    await self._cancel_task(capture_task)
                     trail = ("\n" + "\n".join(probes)) if probes else ""
                     return _failure(
                         f"[timeout after {timeout}s]{trail}",
@@ -1378,13 +1447,13 @@ class ShellExecutor:
                     violation = monitor_task.result()
                     if violation is not None:
                         await self._cleanup_process(process, cidfile)
-                        await self._cancel_task(communicate_task)
+                        await self._cancel_task(capture_task)
                         return _failure(
                             violation.message(),
                             error_type="resource_limit",
                             resource_limit=violation.resource,
                         )
-                if communicate_task in done:
+                if capture_task in done:
                     break
                 now = time.monotonic()
                 if checkpoints and sampler is not None and now + 0.05 >= checkpoints[0]:
@@ -1392,13 +1461,13 @@ class ShellExecutor:
                     cpu1, rss1, live1, io1 = sampler.sample()
                     if (
                         observe_seconds > 0
-                        and not communicate_task.done()
+                        and not capture_task.done()
                     ):
                         await asyncio.wait(
-                            {communicate_task},
+                            {capture_task},
                             timeout=observe_seconds,
                         )
-                    if communicate_task.done():
+                    if capture_task.done():
                         break
                     cpu2, rss2, live2, io2 = sampler.sample()
                     elapsed = int(time.monotonic() - started)
@@ -1444,7 +1513,7 @@ class ShellExecutor:
                         continue
                     if time.monotonic() + 0.05 >= idle_kill_at:
                         await self._cleanup_process(process, cidfile)
-                        await self._cancel_task(communicate_task)
+                        await self._cancel_task(capture_task)
                         return _failure(
                             "[watchdog idle after "
                             f"{elapsed}s] {note}"
@@ -1457,24 +1526,11 @@ class ShellExecutor:
                         note + "还没到交回模型的检查点，先继续等。"
                     )
 
-            stdout, stderr = await communicate_task
-            # Decode subprocess output as UTF-8 first. Python 3.6+ on Windows
-            # writes UTF-8 to pipes regardless of the console code page, and
-            # locale.getpreferredencoding() commonly returns cp936/gbk on
-            # zh-CN systems — decoding UTF-8 bytes as GBK produced mojibake
-            # (e.g. 测 → 娴嬭瘯). Fall back to the system locale encoding only
-            # when UTF-8 decoding fails.
-            def _decode_output(data: bytes | None) -> str:
-                if not data:
-                    return ""
-                try:
-                    return data.decode("utf-8", errors="strict")
-                except UnicodeDecodeError:
-                    fallback = locale.getpreferredencoding(False) or "utf-8"
-                    return data.decode(fallback, errors="replace")
-
-            stdout_text = _decode_output(stdout)
-            stderr_text = _decode_output(stderr)
+            await capture_task
+            captured = capture.finish()
+            capture_complete = True
+            stdout_text = str(captured["stdout"])
+            stderr_text = str(captured["stderr"])
             # Stable result schema: every outcome carries ``error_type``
             # (None on normal success/exit), so callers can use
             # result["error_type"] without KeyError on success paths.
@@ -1484,16 +1540,36 @@ class ShellExecutor:
                 "exit_code": process.returncode,
                 "success": process.returncode == 0,
                 "error_type": None,
+                **captured,
             }
             if policy.mode == "docker" and process.returncode != 0:
                 detail = stderr_text.strip() or "docker run returned a non-zero exit code"
                 result["stderr"] = f"[docker_sandbox] {detail}"
                 result["error_type"] = "docker_sandbox"
             return result
+        except _OutputPipeReadError as exc:
+            if process is not None:
+                await self._cleanup_process(process, cidfile)
+            for task in reader_tasks:
+                await self._cancel_task(task)
+            await self._cancel_task(process_wait_task)
+            captured = capture.finish()
+            capture_complete = True
+            result = _failure(str(exc), error_type="execution_error")
+            result.update(captured)
+            captured_stderr = str(captured.get("stderr") or "")
+            result["stderr"] = (
+                f"{exc}\n{captured_stderr}" if captured_stderr else str(exc)
+            )
+            result["capture_error"] = (
+                str(captured.get("capture_error") or "")
+                or f"{exc.stream_name} pipe read failed (OSError)"
+            )
+            return result
         except asyncio.CancelledError:
             if process is not None:
                 await self._cleanup_process(process, cidfile)
-            await self._cancel_task(communicate_task)
+            await self._cancel_task(capture_task)
             raise
         except FileNotFoundError as exc:
             if process is not None:
@@ -1508,6 +1584,7 @@ class ShellExecutor:
         except Exception as exc:
             if process is not None:
                 await self._cleanup_process(process, cidfile)
+            await self._cancel_task(capture_task)
             if policy.mode == "docker":
                 return _failure(
                     f"[docker_sandbox] Docker sandbox failed: {exc}; "
@@ -1516,6 +1593,16 @@ class ShellExecutor:
                 )
             return _failure(str(exc), error_type="execution_error")
         finally:
+            await self._cancel_task(capture_task)
+            for task in reader_tasks:
+                await self._cancel_task(task)
+            await self._cancel_task(process_wait_task)
+            if not capture_complete:
+                capture.abort()
+            if process is not None and process.returncode is not None:
+                transport = getattr(process, "_transport", None)
+                if transport is not None:
+                    transport.close()
             await self._cancel_task(monitor_task)
             if os_job_handle:
                 # v1.4.1 沙箱收尾：句柄关闭即 kill-on-close 生效——任何漏网的
@@ -1628,14 +1715,15 @@ class ShellExecutor:
 
         Works even when the root process has already exited while its children
         survive (they may be holding the stdout/stderr pipes open, which is
-        exactly what keeps ``communicate()`` blocked): POSIX kills the process
+        exactly what keeps output readers waiting for EOF): POSIX kills the process
         group (the child was spawned with ``start_new_session=True``, so the
         group outlives the leader), Windows walks the parent chain from the
         recorded pid and kills every descendant.
 
         POSIX: after SIGTERM the whole process group is polled; if any member
         survives the grace period (e.g. it ignores SIGTERM or the root exited
-        early), the group escalates to SIGKILL.
+        early), the group escalates to SIGKILL. This also closes inherited pipe
+        writers that could otherwise keep a bounded reader waiting at EOF.
         """
         pid = process.pid
         if self.os_name == "win32":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -264,6 +265,109 @@ def test_appserver_full_conversation_round_trip(appserver_proc):
     )
     assert result["status"] == "succeeded"
     assert result["text"] == "stub:hello appserver"
+
+
+def test_idle_worker_recycles_in_appserver_process_without_losing_session(tmp_path):
+    """Exercise the real appserver/AgentHost/worker path with short idle TTL."""
+    env = _appserver_env()
+    env["RXYCODE_WORKER_IDLE_SECONDS"] = "0.4"
+    env["RXYCODE_MAX_IDLE_WORKERS"] = "2"
+    env["RXYCODE_SUBAGENTS"] = "0"
+    proc = _appserver_proc_with_env(env)
+    stderr_lines: list[str] = []
+
+    def drain_stderr() -> None:
+        assert proc.stderr is not None
+        stderr_lines.extend(line.rstrip() for line in proc.stderr if line.strip())
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
+    client = AppserverClient(proc)
+
+    def wait_for_log(
+        pattern: re.Pattern[str],
+        *,
+        timeout: float = 15.0,
+        exclude_pid: int | None = None,
+    ) -> re.Match[str]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for line in stderr_lines:
+                match = pattern.search(line)
+                if match and (
+                    exclude_pid is None
+                    or not match.groups()
+                    or int(match.group(1)) != exclude_pid
+                ):
+                    return match
+            if proc.poll() is not None:
+                raise AssertionError(f"appserver exited early: {stderr_lines[-20:]}")
+            time.sleep(0.025)
+        raise AssertionError(f"timed out waiting for {pattern.pattern}: {stderr_lines[-30:]}")
+
+    try:
+        from protocol.version import PROTOCOL_VERSION
+
+        client.request(
+            "initialize",
+            {
+                "client_name": "idle-lifecycle-pytest",
+                "client_version": "0.0.0",
+                "protocol_version": PROTOCOL_VERSION,
+            },
+        )
+        session = client.request(
+            "session/new",
+            {"workspace_root": str(tmp_path), "model": "idle-lifecycle-model"},
+        )
+        session_id = session["session_id"]
+        assert client.request(
+            "session/prompt",
+            {"session_id": session_id, "text": "before idle retirement"},
+            timeout=30,
+        )["text"] == "stub:before idle retirement"
+
+        started_pattern = re.compile(
+            rf"agent worker started session={re.escape(session_id)} pid=(\d+)"
+        )
+        first_start = wait_for_log(started_pattern)
+        first_pid = int(first_start.group(1))
+        retired_pattern = re.compile(
+            rf"idle worker retired session={re.escape(session_id)} "
+            rf"pid={first_pid} reason=idle_ttl"
+        )
+        wait_for_log(retired_pattern)
+
+        assert client.request(
+            "session/prompt",
+            {"session_id": session_id, "text": "after idle retirement"},
+            timeout=30,
+        )["text"] == "stub:after idle retirement"
+        second_start = wait_for_log(started_pattern, exclude_pid=first_pid)
+        second_pid = int(second_start.group(1))
+        # The retirement event is only logged after AgentHost confirms the
+        # old process is gone. The resumed request must use a new worker PID.
+        assert second_pid != first_pid
+        sessions = client.request("sessions/list", {})["sessions"]
+        resumed = next(item for item in sessions if item["session_id"] == session_id)
+        assert resumed["model_id"] == "idle-lifecycle-model"
+        assert any(
+            f"idle worker retired session={session_id} pid={first_pid} reason=idle_ttl"
+            in line
+            for line in stderr_lines
+        )
+    finally:
+        if proc.poll() is None:
+            try:
+                client.request("shutdown", timeout=10)
+                proc.wait(timeout=20)
+            except Exception:
+                # The test owns this appserver process; use only its handle.
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+        client.close()
+        stderr_thread.join(timeout=2)
 
 
 def test_appserver_session_new_preserves_explicit_model_metadata(appserver_proc):

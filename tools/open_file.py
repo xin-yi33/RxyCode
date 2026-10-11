@@ -323,6 +323,7 @@ async def open_file_async(filePath: str) -> str:
         return f"[opened {path}]"
 
     from ..utils.shell import shell_executor
+    from ..utils.output_capture import append_capture_hints
 
     command = (
         ["open", str(path)] if sys.platform == "darwin" else ["xdg-open", str(path)]
@@ -330,8 +331,8 @@ async def open_file_async(filePath: str) -> str:
     result = await shell_executor.execute_argv_async(command, timeout=10)
     if not result["success"]:
         detail = (result["stderr"] or "opener failed").strip()
-        return f"[error opening file: {detail}]"
-    return f"[opened {path}]"
+        return append_capture_hints(f"[error opening file: {detail}]", result)
+    return append_capture_hints(f"[opened {path}]", result)
 
 
 open_file_tool = StructuredTool.from_function(

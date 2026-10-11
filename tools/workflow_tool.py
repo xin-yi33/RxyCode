@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from ..config.settings import load_config
 from ..core.session_runtime import current_session_id
+from ..utils.output_capture import append_capture_hints
 from ..utils.shell import shell_executor
 
 
@@ -252,12 +253,15 @@ async def _execute_script_async(
         output = stdout
         if stderr:
             output += "\n[stderr] " + stderr
-        return output.strip() or "[no output]"
+        return append_capture_hints(output.strip() or "[no output]", result)
 
     detail = stderr.strip() or stdout.strip() or "controlled execution failed"
     error_type = str(result.get("error_type") or "execution_error")
     exit_code = result.get("exit_code", -1)
-    return f"[workflow error: {error_type}: {detail}; exit code: {exit_code}]"
+    return append_capture_hints(
+        f"[workflow error: {error_type}: {detail}; exit code: {exit_code}]",
+        result,
+    )
 
 
 async def _run_workflow_bg(

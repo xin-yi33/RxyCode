@@ -50,6 +50,11 @@ import { isPromptNewlineKey, isPromptSubmitKey, normalizePromptSubmitText } from
 import { buildStatusSegments, formatStatusBarText } from "./statusBar.ts";
 import { CHAT_SCROLLBOX_STYLE } from "./chatLayout.ts";
 import {
+  TranscriptMountWindow,
+  type TranscriptMountWindowHandle,
+} from "./TranscriptMountWindow.tsx";
+import { formatAllMessagesForCopy } from "./transcriptMountBudget.ts";
+import {
   createStickyState,
   onSendMessage,
   onScrollToBottom,
@@ -481,6 +486,15 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   messagesRef.current = messages;
+  const transcriptWindowRef = useRef<TranscriptMountWindowHandle | null>(null);
+  const [sessionMountEpoch, setSessionMountEpoch] = useState(0);
+  const setLoadedSessionMessages = useCallback(
+    (updater: (previous: ChatMessage[]) => ChatMessage[]) => {
+      setSessionMountEpoch((current) => current + 1);
+      setMessages(updater);
+    },
+    [],
+  );
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<ApprovalInfo | null>(null);
@@ -597,6 +611,7 @@ export default function App() {
   const reengageSticky = useCallback(() => {
     const next = onSendMessage(stickyRef.current);
     setSticky(next);
+    transcriptWindowRef.current?.resetToTail();
     try {
       const box = scrollRef.current;
       if (box) box.scrollTop = Math.max(0, box.scrollHeight);
@@ -635,20 +650,7 @@ export default function App() {
 
   /** 复制全部对话文本到剪贴板（解决终端鼠标框选受视口限制、无法全部复制的问题）。 */
   const copyAllMessages = useCallback(() => {
-    const lines: string[] = [];
-    for (const m of messagesRef.current) {
-      if (m.role === "user") lines.push(`> ${m.content}`);
-      else if (m.role === "assistant") lines.push(m.content);
-      else if (m.role === "thinking") lines.push(`[思考] ${m.content}`);
-      else if (m.role === "tool") {
-        const name = m.toolName || "tool";
-        const status = m.toolStatus || "running";
-        const args = m.toolArgs ? ` ${m.toolArgs}` : "";
-        lines.push(`[${name} ${status}]${args} ${m.content || ""}`);
-      } else if (m.role === "system") lines.push(`[系统] ${m.content}`);
-      else if (m.role === "child_session") lines.push(`[子代理 ${m.agentId || ""}] ${m.content}`);
-    }
-    const text = lines.join("\n").trim();
+    const text = formatAllMessagesForCopy(messagesRef.current);
     if (!text) return false;
     return copyPlain(text);
   }, [copyPlain]);
@@ -882,7 +884,7 @@ export default function App() {
 
   const settingsDialogs = useSettingsDialogs({
     pushSystem,
-    setMessages,
+    setMessages: setLoadedSessionMessages,
     fetchStatus: () => void fetchStatus(setStatus),
     clearInput,
     statusLine,
@@ -1623,15 +1625,23 @@ export default function App() {
     }
     if (key.name === "pageup" || (key.name === "up" && key.ctrl)) {
       setSticky(onUserScrollUp(stickyRef.current));
+      transcriptWindowRef.current?.loadOlder();
       return;
     }
     if (key.name === "pagedown" || (key.name === "down" && key.ctrl)) {
-      setSticky(onScrollToBottom(stickyRef.current));
-      try {
-        const box = scrollRef.current;
-        if (box) box.scrollTop = Math.max(0, box.scrollHeight);
-      } catch {
-        // ignore
+      const atTail = transcriptWindowRef.current?.loadNewer() ?? true;
+      setSticky(
+        atTail
+          ? onScrollToBottom(stickyRef.current)
+          : onUserScrollUp(stickyRef.current),
+      );
+      if (atTail) {
+        try {
+          const box = scrollRef.current;
+          if (box) box.scrollTop = Math.max(0, box.scrollHeight);
+        } catch {
+          // ignore
+        }
       }
     }
   });
@@ -1646,6 +1656,14 @@ export default function App() {
   }, [messages.length, visibleMessages.length, hasPlanFileCard, planDoc]);
 
   const stickyEnabled = shouldAutoStick(sticky);
+  const transcriptResetKey = `${sessionMountEpoch}:${visibleMessages[0]?.id ?? "empty"}`;
+  const currentScrollBox = scrollRef.current;
+  const atScrollTail = !currentScrollBox ||
+    currentScrollBox.scrollTop >= Math.max(
+      0,
+      currentScrollBox.scrollHeight - currentScrollBox.viewport.height - 1,
+    );
+  const transcriptFollowingTail = stickyEnabled && atScrollTail;
   // 废弃代码（2026-09-21）：void formatHeaderLine(mode, model, thinkingLive)
   // 三参签名仍由 format.ts 保留；顶栏芯片禁止再用该字符串。
   // 废弃代码（2026-09-21）：composer 再画 model · effort 会挤掉 Ready、挡住 textarea 复制。档位只在顶栏。
@@ -1793,8 +1811,20 @@ export default function App() {
         {visibleMessages.length === 0 ? (
           <WelcomeBanner cols={cols} needsModelSetup={needsModelSetup} />
         ) : (
-          visibleMessages.map((msg) => (
-            <box key={msg.id} style={{ width: "100%", paddingTop: 1 }}>
+          <TranscriptMountWindow
+            messages={visibleMessages}
+            resetKey={transcriptResetKey}
+            followingTail={transcriptFollowingTail}
+            scrollRef={scrollRef}
+            controlsRef={transcriptWindowRef}
+            onHistoryNavigation={(atTail) => {
+              setSticky(
+                atTail
+                  ? onScrollToBottom(stickyRef.current)
+                  : onUserScrollUp(stickyRef.current),
+              );
+            }}
+            renderMessage={(msg) => (
               <ChatLine
                 msg={msg}
                 modeColor={modeColor}
@@ -1805,8 +1835,8 @@ export default function App() {
                 planBody={planDoc?.body}
                 markdown={mdComposerOn}
               />
-            </box>
-          ))
+            )}
+          />
         )}
       </scrollbox>
 

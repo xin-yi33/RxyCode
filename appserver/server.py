@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from .agent_host import AgentHost
 from .approval import JsonRpcApproval
 from .emitter import model_to_notification
+from .idle_policy import IdleWorkerPolicy
 from .jsonrpc import (
     is_client_request,
     is_client_response,
@@ -188,6 +189,7 @@ _SESSION_MUTATION_METHODS = frozenset(
     {
         "session/prompt",
         "turn/start",
+        "session/warm",
         "session/set_model",
         "session/rename",
         "session/trash",
@@ -380,6 +382,10 @@ class AppServer:
         )
         self._plugins.attach_to_capabilities()
         self._session_hosts: dict[str, AgentHost] = {}
+        # This lock is the sole lifecycle owner for a session's worker: spawn,
+        # replacement, forced cleanup, and idle retirement all use it.
+        self._session_host_lifecycle_locks: dict[str, asyncio.Lock] = {}
+        self._worker_idle_policy = IdleWorkerPolicy.from_env()
         self._watchdog = WatchdogState()
         # P5: tests assign a stub engine. None means the feature is off until
         # the first stall reads config. Per-session engines own their ledgers.
@@ -393,6 +399,7 @@ class AppServer:
         self._timeout_section_cache: dict[str, Any] | None = None
         self._started_at = time.monotonic()
         self._heartbeat_task: asyncio.Task[Any] | None = None
+        self._idle_reaper_task: asyncio.Task[Any] | None = None
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._next_server_id = 1
         self._pending_server: dict[int, asyncio.Future[dict[str, Any]]] = {}
@@ -400,6 +407,8 @@ class AppServer:
         set_approval_broker(self._approval)
         self._active_session_id = "latest"
         self._prompt_tasks: set[asyncio.Task[Any]] = set()
+        self._session_background_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+        self._dispatch_count = 0
         # Work that left the stdin loop. Drained with prompts on shutdown.
         self._detached_tasks: set[asyncio.Task[Any]] = set()
         self._session_tails: dict[str, asyncio.Task[Any]] = {}
@@ -524,6 +533,35 @@ class AppServer:
             self._session_locks[session_id] = lock
         return lock
 
+    def _session_host_lifecycle_lock(self, session_id: str) -> asyncio.Lock:
+        locks = self._session_host_lifecycle_locks
+        lock = locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[session_id] = lock
+        return lock
+
+    def _track_prompt_task(
+        self, task: asyncio.Task[Any], session_id: str | None = None
+    ) -> asyncio.Task[Any]:
+        """Track prompt/warm ownership before its scheduler can run it."""
+        self._prompt_tasks.add(task)
+        if session_id:
+            owned = self._session_background_tasks.setdefault(session_id, set())
+            owned.add(task)
+
+            def _forget_session_task(done: asyncio.Task[Any], key: str = session_id) -> None:
+                tasks = self._session_background_tasks.get(key)
+                if tasks is None:
+                    return
+                tasks.discard(done)
+                if not tasks:
+                    self._session_background_tasks.pop(key, None)
+
+            task.add_done_callback(_forget_session_task)
+        task.add_done_callback(self._prompt_tasks.discard)
+        return task
+
     def _claim_window_session(self, session_id: str) -> None:
         """This window may run tools and schedules for this session only."""
         if session_id and session_id != "latest":
@@ -533,38 +571,345 @@ class AppServer:
                 attached.add(session_id)
 
     async def _host_for_session(self, session_id: str) -> AgentHost:
-        host = self._session_hosts.get(session_id)
-        if host is not None and host.alive() and not host.degraded:
+        async with self._session_host_lifecycle_lock(session_id):
+            host = self._session_hosts.get(session_id)
+            if (
+                host is not None
+                and host.alive()
+                and not host.degraded
+                and not getattr(host, "retiring", False)
+            ):
+                return host
+            if host is not None:
+                host.begin_retirement(force=True)
+                try:
+                    await host.kill_async()
+                except BaseException:
+                    if host.alive():
+                        host.cancel_retirement()
+                        raise
+                if host.alive():
+                    host.cancel_retirement()
+                    raise RuntimeError(
+                        f"session worker could not be stopped: {session_id}"
+                    )
+                if self._session_hosts.get(session_id) is host:
+                    self._session_hosts.pop(session_id, None)
+
+            record = self._sessions.get(session_id)
+            if record is None:
+                raise RuntimeError(f"unknown session: {session_id}")
+            project_root = Path(__file__).resolve().parents[1]
+            _logger.info(
+                "Starting agent worker for session %s (stub=%s, workspace=%s)",
+                session_id,
+                self._stub,
+                record.workspace_root,
+            )
+            host = AgentHost(
+                session_id=session_id,
+                workspace_root=record.workspace_root,
+                model_id=record.model_id,
+                stub=self._stub,
+                project_root=project_root,
+                forward_server_request=self._send_server_request,
+                main_loop=asyncio.get_running_loop(),
+            )
+            try:
+                await host.start()
+            except BaseException:
+                with contextlib.suppress(BaseException):
+                    await host.kill_async()
+                raise
+            # The lifecycle lock prevents another creator/reaper from changing
+            # this identity during start. Recheck the durable session after
+            # the process-start await before publishing it to the registry.
+            if self._sessions.get(session_id) is None:
+                with contextlib.suppress(BaseException):
+                    await host.kill_async()
+                raise RuntimeError(f"session disappeared while starting worker: {session_id}")
+            if self._session_hosts.get(session_id) is not None:
+                with contextlib.suppress(BaseException):
+                    await host.kill_async()
+                raise RuntimeError(f"worker identity changed while starting: {session_id}")
+            self._session_hosts[session_id] = host
+            _logger.info(
+                "agent worker started session=%s pid=%s", session_id, host.pid
+            )
             return host
-        if host is not None:
-            await host.kill_async()
-        record = self._sessions.get(session_id)
-        if record is None:
-            raise RuntimeError(f"unknown session: {session_id}")
-        project_root = Path(__file__).resolve().parents[1]
-        _logger.info(
-            "Starting agent worker for session %s (stub=%s, workspace=%s)",
-            session_id,
-            self._stub,
-            record.workspace_root,
-        )
-        host = AgentHost(
-            session_id=session_id,
-            workspace_root=record.workspace_root,
-            model_id=record.model_id,
-            stub=self._stub,
-            project_root=project_root,
-            forward_server_request=self._send_server_request,
-            main_loop=asyncio.get_running_loop(),
-        )
-        await host.start()
-        self._session_hosts[session_id] = host
-        return host
 
     async def _kill_session_host(self, session_id: str) -> None:
-        host = self._session_hosts.pop(session_id, None)
-        if host is not None:
-            await host.kill_async()
+        async with self._session_host_lifecycle_lock(session_id):
+            host = self._session_hosts.get(session_id)
+            if host is None:
+                return
+            host.begin_retirement(force=True)
+            try:
+                await host.kill_async()
+            except BaseException:
+                if not host.alive() and self._session_hosts.get(session_id) is host:
+                    self._session_hosts.pop(session_id, None)
+                elif host.alive():
+                    host.cancel_retirement()
+                raise
+            if host.alive():
+                host.cancel_retirement()
+                raise RuntimeError(f"session worker is still alive: {session_id}")
+            if self._session_hosts.get(session_id) is host:
+                self._session_hosts.pop(session_id, None)
+
+    def _idle_worker_protection_reason(
+        self,
+        session_id: str,
+        host: AgentHost,
+        *,
+        session_lock_owned: bool = False,
+        allow_retiring: bool = False,
+    ) -> str | None:
+        """Fail closed unless parent-side state proves this session idle."""
+        try:
+            if not host.alive() or not bool(getattr(host, "bootstrapped", False)):
+                return "worker_not_ready"
+            if bool(getattr(host, "retiring", False)) and not allow_retiring:
+                return "worker_already_retiring"
+            if int(host.active_rpc_count) != 0:
+                return "worker_rpc_active"
+            bootstrap_task = getattr(host, "_bootstrap_task", None)
+            if bootstrap_task is not None and not bootstrap_task.done():
+                return "bootstrap_active"
+        except Exception:
+            return "worker_state_unknown"
+
+        if self._pending_server:
+            # Server requests currently have no reliable session ownership
+            # metadata. An outstanding approval/question protects all workers.
+            return "server_request_pending"
+        if getattr(self, "_dispatch_count", 0):
+            # Includes inline requests and lookup-to-RPC windows whose host
+            # request counter has not been entered yet. This is deliberately
+            # global because some read/control methods lack session ownership.
+            return "appserver_request_in_flight"
+        tail = self._session_tails.get(session_id)
+        if tail is not None and not tail.done():
+            return "session_mutation_pending"
+        if not session_lock_owned:
+            lock = self._session_locks.get(session_id)
+            if lock is not None and lock.locked():
+                return "session_operation_active"
+        if any(
+            not task.done()
+            for task in self._session_background_tasks.get(session_id, ())
+        ):
+            return "prompt_or_warm_task_active"
+        for snapshot in self._job_prompts.values():
+            if str(snapshot.get("session_id") or "") == session_id:
+                return "prompt_cleanup_pending"
+        if any(job.session_id == session_id for job in self._watchdog.jobs.values()):
+            return "watchdog_job_active"
+        if session_id in getattr(self, "_inflight_turns", {}):
+            return "turn_in_flight"
+
+        record = self._sessions.get(session_id)
+        if record is None:
+            return "session_missing"
+        try:
+            if self._sessions.child_count(session_id) > 0:
+                # Exclude durable child history before capacity accounting;
+                # the worker-side tree check covers history not in this store.
+                return "persisted_child_history"
+        except Exception:
+            return "child_session_state_unknown"
+        if str(getattr(record, "status", "")) in {
+            "submitted",
+            "running",
+            "approval",
+            "active",
+        }:
+            return "session_status_active"
+
+        try:
+            executions = self._execution.list(session_id)
+        except Exception:
+            return "execution_state_unknown"
+        if executions:
+            return "execution_active_or_waiting"
+
+        schedule = getattr(self, "_schedule", None)
+        jobs = getattr(schedule, "_jobs", None)
+        running = getattr(schedule, "_running", None)
+        queued = getattr(schedule, "_queue", None)
+        if not isinstance(jobs, dict) or not isinstance(running, set) or not isinstance(queued, list):
+            return "schedule_state_unknown"
+        for job_id, job in jobs.items():
+            if not isinstance(job, dict):
+                return "schedule_state_unknown"
+            action = job.get("action")
+            if not isinstance(action, dict):
+                if job.get("enabled", True) or job_id in running or job_id in queued:
+                    return "schedule_state_unknown"
+                continue
+            owner = str(action.get("session_id") or "")
+            if owner == session_id and (
+                job.get("enabled", True) or job_id in running or job_id in queued
+            ):
+                return "session_schedule_enabled_or_active"
+            if (job_id in running or job_id in queued) and not owner:
+                return "schedule_owner_unknown"
+        return None
+
+    def _idle_worker_reap_interval(self) -> float:
+        policy = getattr(self, "_worker_idle_policy", IdleWorkerPolicy.from_env())
+        if policy.idle_seconds > 0:
+            return min(15.0, max(0.25, policy.idle_seconds / 4.0))
+        return 15.0
+
+    async def _idle_worker_reaper_loop(self) -> None:
+        while not self._shutdown:
+            await asyncio.sleep(self._idle_worker_reap_interval())
+            try:
+                await self._reap_idle_workers_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _logger.warning("idle worker sweep failed", exc_info=True)
+
+    async def _reap_idle_workers_once(self, *, now: float | None = None) -> list[str]:
+        """Retire expired or excess workers after proving each one idle."""
+        policy = getattr(self, "_worker_idle_policy", IdleWorkerPolicy.from_env())
+        stamp = time.monotonic() if now is None else float(now)
+        candidates: list[tuple[str, AgentHost, float]] = []
+        for session_id, host in list(self._session_hosts.items()):
+            reason = self._idle_worker_protection_reason(session_id, host)
+            if reason is not None:
+                continue
+            try:
+                last_activity = float(host.last_activity_at)
+            except Exception:
+                # Unknown activity is not evidence that this host is idle.
+                continue
+            candidates.append((session_id, host, last_activity))
+
+        candidates.sort(key=lambda item: item[2], reverse=True)
+        expired = {
+            session_id
+            for session_id, _host, last_activity in candidates
+            if policy.idle_seconds > 0
+            and stamp - last_activity >= policy.idle_seconds
+        }
+        over_capacity = {
+            session_id
+            for session_id, _host, _last_activity in candidates[
+                policy.max_idle_workers :
+            ]
+        }
+        retired: list[str] = []
+        for session_id, host, _last_activity in reversed(candidates):
+            if session_id not in expired and session_id not in over_capacity:
+                continue
+            reason = "idle_ttl" if session_id in expired else "idle_capacity"
+            if await self._retire_idle_worker(session_id, host, reason=reason):
+                retired.append(session_id)
+        return retired
+
+    async def _retire_idle_worker(
+        self, session_id: str, expected_host: AgentHost, *, reason: str
+    ) -> bool:
+        """Singleflight prepare/save/stop; never cancel worker-owned activity."""
+        async with self._session_lock(session_id):
+            async with self._session_host_lifecycle_lock(session_id):
+                if self._session_hosts.get(session_id) is not expected_host:
+                    return False
+                blocked = self._idle_worker_protection_reason(
+                    session_id,
+                    expected_host,
+                    session_lock_owned=True,
+                )
+                if blocked is not None or not expected_host.begin_retirement():
+                    return False
+                try:
+                    prepared = await expected_host.prepare_suspend()
+                except asyncio.CancelledError:
+                    expected_host.cancel_retirement()
+                    raise
+                except Exception as exc:
+                    expected_host.cancel_retirement()
+                    _logger.warning(
+                        "idle worker retained session=%s pid=%s reason=prepare_failed error=%s",
+                        session_id,
+                        expected_host.pid,
+                        exc,
+                    )
+                    return False
+
+                # The private worker has just awaited while persisting. Recheck
+                # every parent-owned source of activity and exact host identity
+                # before allowing shutdown.
+                if self._session_hosts.get(session_id) is not expected_host:
+                    expected_host.cancel_retirement()
+                    return False
+                blocked = self._idle_worker_protection_reason(
+                    session_id,
+                    expected_host,
+                    session_lock_owned=True,
+                    allow_retiring=True,
+                )
+                if (
+                    blocked is not None
+                    or expected_host.active_rpc_count != 0
+                    or not isinstance(prepared, dict)
+                    or prepared.get("safe") is not True
+                    or prepared.get("persisted") is not True
+                ):
+                    expected_host.cancel_retirement()
+                    _logger.info(
+                        "idle worker retained session=%s pid=%s reason=%s",
+                        session_id,
+                        expected_host.pid,
+                        blocked or "worker_not_prepared",
+                    )
+                    return False
+
+                pid = expected_host.pid
+                try:
+                    await expected_host.kill_async()
+                except asyncio.CancelledError:
+                    # The process may still be alive; leave the exact host in
+                    # the registry so shutdown or the next lifecycle request
+                    # can finish its owned cleanup.
+                    if expected_host.alive():
+                        expected_host.cancel_retirement()
+                    raise
+                except Exception as exc:
+                    if expected_host.alive():
+                        expected_host.cancel_retirement()
+                    _logger.warning(
+                        "idle worker retained session=%s pid=%s reason=shutdown_failed error=%s",
+                        session_id,
+                        pid,
+                        exc,
+                    )
+                    return False
+
+                # Identity and process state are checked after the shutdown
+                # await so stale cleanup cannot remove a replacement worker.
+                if self._session_hosts.get(session_id) is not expected_host:
+                    return False
+                if expected_host.alive() or expected_host.active_rpc_count:
+                    expected_host.cancel_retirement()
+                    _logger.warning(
+                        "idle worker retained session=%s pid=%s reason=shutdown_unconfirmed",
+                        session_id,
+                        pid,
+                    )
+                    return False
+                self._session_hosts.pop(session_id, None)
+                _logger.info(
+                    "idle worker retired session=%s pid=%s reason=%s",
+                    session_id,
+                    pid,
+                    reason,
+                )
+                return True
 
     async def _emit_model(self, model: BaseModel) -> None:
         message = model_to_notification(model)
@@ -1315,7 +1660,7 @@ class AppServer:
             outcome = await host.interrupt(on_failure=_on_interrupt_failure)
             if outcome.get("failed") or outcome.get("killed"):
                 self._stall_engines.pop(session_id, None)
-                self._session_hosts.pop(session_id, None)
+                await self._kill_session_host(session_id)
                 return
         snapshot = dict(self._job_prompts.get(stalled.job_id) or {})
         prompt = str(snapshot.get("text") or "")
@@ -1360,8 +1705,7 @@ class AppServer:
             params["timeout_seconds"] = budget
         self._forget_job_prompt(stalled.job_id)
         task = asyncio.create_task(self._handle_prompt(params, new_request_id))
-        self._prompt_tasks.add(task)
-        task.add_done_callback(self._prompt_tasks.discard)
+        self._track_prompt_task(task, session_id)
 
     def _emit_notification(self, message: dict) -> None:
         """event/job_status 与 event/todo_updated 共用的通知出口。"""
@@ -1590,20 +1934,19 @@ class AppServer:
         # background, removing the cold-start cost from the first prompt.
         if not self._stub:
             warm = asyncio.create_task(self._warm_session_host(record.session_id))
-            self._prompt_tasks.add(warm)
-            warm.add_done_callback(self._prompt_tasks.discard)
+            self._track_prompt_task(warm, record.session_id)
 
     async def _warm_session_host(self, session_id: str) -> None:
         try:
             async with self._session_lock(session_id):
                 host = await self._host_for_session(session_id)
-            await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
-            await self._emit_model(
-                ProgressUpdate(
-                    session_id=session_id,
-                    text="Agent worker ready",
+                await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
+                await self._emit_model(
+                    ProgressUpdate(
+                        session_id=session_id,
+                        text="Agent worker ready",
+                    )
                 )
-            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1686,6 +2029,7 @@ class AppServer:
         )
         self._thinking_expanded = expand
         self._job_prompts[job_id] = {
+            "session_id": session_id,
             "text": text,
             "mode": mode,
             "permission_mode": permission_mode,
@@ -2018,7 +2362,11 @@ class AppServer:
         expanded = bool(params.get("expanded"))
         self._thinking_expanded = expanded
         host = self._session_hosts.get(session_id)
-        if host is not None and host.alive():
+        if (
+            host is not None
+            and host.alive()
+            and not getattr(host, "retiring", False)
+        ):
             await host.set_thinking_expanded(expanded)
         await self._respond(
             request_id,
@@ -2042,11 +2390,12 @@ class AppServer:
             await self._respond_error(request_id, -32602, "timeout_seconds must be positive")
             return
         try:
-            host = await self._host_for_session(session_id)
-            started = time.monotonic()
-            await host.ensure_bootstrapped(timeout=timeout)
-            remaining = max(5.0, timeout - (time.monotonic() - started))
-            prefix = await host.prefix_warm(timeout=remaining)
+            async with self._session_lock(session_id):
+                host = await self._host_for_session(session_id)
+                started = time.monotonic()
+                await host.ensure_bootstrapped(timeout=timeout)
+                remaining = max(5.0, timeout - (time.monotonic() - started))
+                prefix = await host.prefix_warm(timeout=remaining)
         except Exception as exc:
             await self._respond_error(request_id, -32000, str(exc))
             return
@@ -2072,7 +2421,7 @@ class AppServer:
             return
         host = self._session_hosts.get(session_id)
         outcome = {"cancelled": False, "failed": False, "killed": False}
-        if host is not None and host.alive():
+        if host is not None and host.alive() and not getattr(host, "retiring", False):
             try:
                 result = await host.interrupt(timeout=5.0)
                 outcome = {
@@ -2484,8 +2833,7 @@ class AppServer:
         # The host is owned by this session and can be cleaned up in the
         # background after the client has received the durable trash result.
         cleanup = asyncio.create_task(self._kill_session_host(session_id))
-        self._prompt_tasks.add(cleanup)
-        cleanup.add_done_callback(self._prompt_tasks.discard)
+        self._track_prompt_task(cleanup, session_id)
 
     async def _handle_session_restore(self, params: dict[str, Any], request_id: Any) -> None:
         session_id = str(params.get("session_id", ""))
@@ -3809,22 +4157,14 @@ class AppServer:
         if not model_id:
             await self._respond_error(request_id, -32602, "model_id is required")
             return
-        host = self._session_hosts.get(session_id)
         result: dict[str, Any] = {"ok": True, "model_id": model_id}
         try:
-            if (
-                host is not None
-                and host.alive()
-            ):
-                # ``session/new`` warms the worker in the background.  The
-                # Desktop model picker can immediately send ``session/set_model``
-                # while that single-flight bootstrap is still running.  Join
-                # it before switching the task-local model; otherwise the
-                # following prompt can race the same worker bootstrap and sit
-                # at ``Starting Agent worker…`` until the appserver watchdog
-                # reports a misleading 120s stall.
+            host = self._session_hosts.get(session_id)
+            if host is not None and host.alive():
                 if not getattr(host, "bootstrapped", False):
-                    await host.ensure_bootstrapped(timeout=_DEFAULT_WARM_TIMEOUT_SECONDS)
+                    await host.ensure_bootstrapped(
+                        timeout=_DEFAULT_WARM_TIMEOUT_SECONDS
+                    )
                 switched = await host.set_model(model_id, timeout=30.0)
                 if isinstance(switched, dict):
                     result.update(switched)
@@ -3834,7 +4174,11 @@ class AppServer:
             await self._respond_error(request_id, -32000, str(exc))
             return
         provider_id = result.get("provider_id") if isinstance(result, dict) else None
-        self._sessions.set_model(session_id, model_id, str(provider_id) if provider_id else None)
+        self._sessions.set_model(
+            session_id,
+            model_id,
+            str(provider_id or "") or None,
+        )
         await self._respond(
             request_id,
             {
@@ -3919,8 +4263,9 @@ class AppServer:
             await self._handle_todo_get(params, request_id)
         elif method == "turn/start":
             task = asyncio.create_task(self._handle_prompt(params, request_id))
-            self._prompt_tasks.add(task)
-            task.add_done_callback(self._prompt_tasks.discard)
+            self._track_prompt_task(
+                task, str(params.get("session_id", self._active_session_id))
+            )
         elif method == "turn/steer":
             await self._handle_turn_steer(params, request_id)
         elif method == "turn/interrupt":
@@ -4162,16 +4507,18 @@ class AppServer:
             await self._handle_session_set_model(params, request_id)
         elif method == "session/prompt":
             task = asyncio.create_task(self._handle_prompt(params, request_id))
-            self._prompt_tasks.add(task)
-            task.add_done_callback(self._prompt_tasks.discard)
+            self._track_prompt_task(
+                task, str(params.get("session_id", self._active_session_id))
+            )
         elif method == "session/interrupt":
             await self._handle_interrupt(params, request_id)
         elif method == "session/set_thinking_expanded":
             await self._handle_set_thinking_expanded(params, request_id)
         elif method == "session/warm":
             task = asyncio.create_task(self._handle_warm(params, request_id))
-            self._prompt_tasks.add(task)
-            task.add_done_callback(self._prompt_tasks.discard)
+            self._track_prompt_task(
+                task, str(params.get("session_id", self._active_session_id))
+            )
         elif method == "shutdown":
             await self._handle_shutdown(params, request_id)
 
@@ -4346,6 +4693,7 @@ class AppServer:
             self._session_tails.pop(session_id, None)
 
     async def _dispatch_guarded(self, message: dict[str, Any]) -> None:
+        self._dispatch_count = getattr(self, "_dispatch_count", 0) + 1
         try:
             await self._dispatch(message)
         except asyncio.CancelledError:
@@ -4354,6 +4702,8 @@ class AppServer:
             _logger.exception("dispatch failed for %s", message)
             if "id" in message and not is_client_response(message):
                 await self._respond_error(message.get("id"), -32603, "internal error")
+        finally:
+            self._dispatch_count = max(0, self._dispatch_count - 1)
 
     def _schedule_inbound(self, lane: str, message: dict[str, Any]) -> None:
         """Leave the stdin loop. Session and config lanes stay ordered."""
@@ -4444,6 +4794,9 @@ class AppServer:
             self._instance_lock.release()
             return
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        self._idle_reaper_task = asyncio.create_task(
+            self._idle_worker_reaper_loop()
+        )
         await self._emit_model(
             ProcessStarted(
                 pid=os.getpid(),
@@ -4501,6 +4854,11 @@ class AppServer:
                     self._schedule_inbound(lane, message)
             await self._drain_background()
         finally:
+            if self._idle_reaper_task is not None:
+                self._idle_reaper_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._idle_reaper_task
+                self._idle_reaper_task = None
             if self._heartbeat_task is not None:
                 self._heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

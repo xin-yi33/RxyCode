@@ -30,6 +30,7 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 | File | Purpose |
 |------|---------|
 | opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing。composer 元信息行：`{mode} · {model} · {effortChip}`（UPDATE-01 U54）；禁止改 `formatHeaderLine` 三参换芯片。已发送 user 气泡右键 Message Actions（U58）；Revert 横幅（U59） |
+| opentui-app/src/TranscriptMountWindow.tsx / `transcriptMountBudget.ts` | Transcript render budget: tail-first 80-message native mount window with 40-message overlapping older/newer pages. Full `messages` remains authoritative; `/copy`, tool/thought/markdown cards, revert/fork and source data are not truncated. The top/bottom controls and PageUp/PageDown move a bounded sliding window; anchor rows keep their viewport line across a page prepend. New session loads and `/clear` reset the window. |
 | opentui-app/src/followupQueue.ts | Processing 时 follow-up 队列（FIFO，上限 10）；立即发送走 `turn/steer` |
 | opentui-app/src/FollowupQueueBar.tsx | 队列行：立即发送 / 编辑 / 删除 |
 | opentui-app/src/index.tsx | OpenTUI entry — CliRenderer alternate screen + lifecycle |
@@ -49,6 +50,13 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 | opentui-app/src/dialog/messageActions.ts | UPDATE-01 轨 J：`shouldOpenMessageActions` / `pointInUserBubble` / overlay 文案。右键 `button===2`。**busy 仍弹 overlay**。Fork 方法锁定 `thread/fork`。Revert busy 走 `revertNeedsAbort` → `session/interrupt` |
 | opentui-app/src/dialog/DialogMessageActions.tsx | 用户气泡 Message Actions overlay（Revert / Copy / Fork）。复用 DialogSelect，禁止重写导航 |
 | opentui-app/src/Modal.tsx / brand.ts / statusBar.ts | Shared UI primitives |
+
+**Transcript native mount budget (OpenTUI):** `ScrollBox` viewport culling only
+skips drawing off-screen children; it does not unmount their native renderables.
+`TranscriptMountWindow` therefore mounts at most 80 transcript messages and
+slides that bounded window by 40 messages when navigating older/newer pages.
+Message objects and their content remain in App state; this is a render-tree
+budget, not transcript deletion, summarization, or an RSS/Private-memory claim.
 
 ## Key Files (Ink — fallback)
 | File | Purpose |
