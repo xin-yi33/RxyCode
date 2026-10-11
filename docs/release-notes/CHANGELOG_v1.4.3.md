@@ -69,6 +69,37 @@ cProfile 定位：`resolve_model_config` 每模型一次 → 57 次 `load_creden
 `tests/test_core/test_credential_read_store_cache.py`（4）、
 `tests/test_core/test_migration_memo.py`（2）+ 全量门禁通过。
 
+#### 追加：上面性能改动引入的正确性，以及仍同步的热路径（2026-10-11）
+
+上面的缓冲快照和 `to_thread` 没有拆掉 stdin 读循环，也没有挡住旧快照回写。
+本段只记这次补上的行为和本机函数测量，不重复宣称 `/model`、`/session` 的界面加速。
+
+| 位置 | 修改 | 原因 |
+|---|---|---|
+| `appserver/task_store.py` | 模型、标题、状态、用量、回收、恢复、重启门和 purge 都增加代次；快照复制任务行，代次不一致则放弃该轮并重刷 | 缓冲事件先拍下旧行，`upsert` 已换成新模型/标题/终态后，旧快照仍把磁盘写回旧值和 `running`。`drop_generation` 原先只覆盖 purge |
+| `frontend/.../stdioTransport.ts` | 管理 RPC（含 `models/list`、`session/events`）走有界等待，超时清掉 inflight。`session/prompt`、`session/warm` 不套这个短超时。`attachSession` 只有事件加载成功才提交新 `sessionId` | 无超时的 `models/list` 被 inflight 合并后，后续读取挂在同一个 Promise。加载失败前改会话身份会串会话 |
+| `core/agent_v2.py`、`stdioTransport.ts` | 切换边界只刷新模型表。新 LLM、provider、能力和 memory 建成后才提交。失败后状态轮询锁住切换前的 worker 模型，不回滚其他窗口的全局 active | 已启动 worker 用启动时的 `self._cfg`，看不到刚添加的模型。失败后轮询用全局默认模型冒充当前 worker |
+| `DialogSessionList.tsx` | 每次打开增加代次，关闭弹窗的迟到结果不写缓存。刷新失败仍保留缓存 | 旧弹窗返回覆盖新弹窗已经拿到的列表 |
+| `appserver/server.py` | stdin 单独线程。中断、steer、审批回复不排在发现/连接测试/切换后面。同会话 prompt 与 `set_model` 按到达顺序。配置写入单车道。发现类请求最多 4 路，关停时排空 | `run` 等完整 `_dispatch` 返回才读下一行。handler 里的 `to_thread` 让出了事件循环，但读不到已经在 stdin 里的中断和审批回复 |
+| `sessions.py`、`task_store.py` | 用量、终态、重命名在有事件循环时并入已有 0.2s 刷盘。内存立刻更新。无循环时仍立即保存。关停 `flush_pending` 排空 | 这三项仍每次同步重写整份 `tasks.json`。20 次用量加终态加重命名是 22 次读 |
+| `model_manager.py`、`credential_store.py`、`api_server_models.py` | 批量添加先校验，再一次凭据写、一次配置写。每个模型仍有独立凭据引用，失败只删这一批新引用。HTTP 单模型添加放到 `to_thread`，并用 `activate=True` 合并第二次 `set_active` 写 | 20 个模型原来 22 次 load、21 次 save、20 次凭据文件写 |
+| `sessionEventsToMessages.ts` | `tool_end` 用 `call_id` 索引配卡片。打开会话仍拉完整 `session/events`，不用截断的 `session/items` 代替全量恢复 | 每个 `tool_end` 复制、反转并扫描全部消息 |
+
+本机测量（不是 TUI 按键、首屏、网络或 worker bootstrap）：慢发现期间中断进入处理 5 次，中位数 0.20ms（0.11–0.23ms），改前 500ms 内进不了处理。2 万对 tool 事件转换 5 次，中位数 13.5ms（7.0–23.8ms），改前单次约 559ms。20 次用量加终态加重命名在循环上 5 次，中位数 0.27ms（0.26–0.40ms），磁盘合并为 1 读 1 写。批量 20/100 个模型各 1 次 load、1 次 save、1 次凭据文件写；该计时是内存假写入，不是 DPAPI 磁盘时间。
+
+#### 追加：审计确认的三处正确性（2026-10-11）
+
+- `onboard_models_batch` 提交时在 `hold_config_lock()` 里重新读取配置，只合并本批尚未存在的模型。连接检查不持有这把锁。`add_model`、`set_active_model`、`remove_model`、清凭据走同一把跨进程文件锁。进程内 `RLock` 不充当跨进程保护。保存失败只删除本轮新建的凭据引用。
+- 失败切模锁定的是任务的 `model_id`，不再用显示名称反查。加载另一会话、重连和成功切模会替换该 id。名称、服务商后缀和上下文上限来自同一个模型条目。
+- 会话弹窗每次刷新递增序号。同一次打开里，置顶、重命名或 Fork 的结果不会被更早的 `sessions/list` 盖回。
+- `stdioTransport.todo.test.ts` 的桩补上 `requestWithTimeout`，三条原有 Todo 行为继续断言内容，不只判断不抛异常。
+
+#### 追加：三个异步边界（2026-10-11）
+
+- 凭据文件的添加、批量添加和删除用 `exclusive_file_lock` 包住完整读改写，不再只靠进程内 `_STORE_LOCK`。先放开凭据锁，再拿配置锁，避免和 `add_model` 里「先配置、后凭据」交叉死锁。双进程测试在隔离目录用测试密钥复现：两边都写成功后两个引用都能读回。
+- `switchModel` 在第一个 await 之前固定目标 `session_id`、原模型 id 和 `attachGeneration`。`session/set_model` 使用这个固定会话。响应只有在代次和会话都没变时才改当前模型 id 或状态条。最后一次状态刷新结束后再查一次；期间若已加载另一会话，不再返回 `model_changed`。
+- 会话弹窗用实例存活标记。关闭之后，置顶、重命名、Fork 的迟到回调可以让后台操作结束，但不再调用 `reload()`，因此不会递增全局序号，也不会改缓存或界面。
+
 ## 遗留（本轮精准修复未覆盖，后续立项）
 
 - `tasks.json` 单文件巨石（26MB+）应改 append-only 分段存储（JSONL + 独立元数据小文件）——根治病灶，属存储层重构。

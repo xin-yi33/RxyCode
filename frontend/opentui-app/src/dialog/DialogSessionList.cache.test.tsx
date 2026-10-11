@@ -27,6 +27,19 @@ const fakeTransport: ChatTransport = {
       resolvers.push(resolve);
       rejecters.push(reject);
     }),
+  pinSession: async () => {},
+  forkSession: async (sessionId: string) => ({
+    session_id: `${sessionId}-fork`,
+    title: "FORKED",
+    display_title: "FORKED",
+    date_group: "Today",
+  }),
+  renameSession: async (sessionId: string, title: string) => ({
+    session_id: sessionId,
+    title,
+    display_title: title,
+    date_group: "Today",
+  }),
 } as unknown as ChatTransport;
 
 const ROW_A: SessionListRow = {
@@ -153,6 +166,219 @@ describe("DialogSessionList stale-while-revalidate cache", () => {
       expect(frame).toContain("刷新失败: RPC timeout: sessions/list");
     } finally {
       renderer.destroy();
+    }
+  });
+
+  test("关闭的旧弹窗迟到结果不能覆盖新弹窗缓存", async () => {
+    const { flush, renderer } = await testRender(
+      <DialogSessionList {...dialogProps} />,
+      { width: 80, height: 24 },
+    );
+    await flush();
+    await waitForCalls(1);
+    renderer.destroy();
+
+    const second = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    try {
+      await second.flush();
+      await waitForCalls(2);
+      await act(async () => {
+        resolvers[1]!([ROW_B]);
+        await Promise.resolve();
+      });
+      const fresh = await second.waitForFrame((text: string) => text.includes("新鲜行_B"));
+      expect(fresh).toContain("新鲜行_B");
+      await act(async () => {
+        resolvers[0]!([ROW_A]);
+        await Promise.resolve();
+      });
+      expect(second.captureCharFrame()).toContain("新鲜行_B");
+      expect(second.captureCharFrame()).not.toContain("缓存行_A");
+    } finally {
+      second.renderer.destroy();
+    }
+  });
+
+  test("同一弹窗里置顶后的刷新不被更早的打开刷新覆盖", async () => {
+    await seedCache([ROW_A]);
+    const view = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    try {
+      await view.flush();
+      await waitForCalls(2);
+      await act(async () => {
+        view.mockInput.pressKey("f", { ctrl: true });
+        await Promise.resolve();
+      });
+      await waitForCalls(3);
+      await act(async () => {
+        resolvers[2]!([
+          { ...ROW_A, display_title: "FRESH_PINNED", pinned: true, date_group: "Pinned" },
+        ]);
+        await Promise.resolve();
+      });
+      await view.waitForFrame((text: string) => text.includes("FRESH_PINNED"));
+      await act(async () => {
+        resolvers[1]!([{ ...ROW_A, display_title: "STALE_UNPINNED" }]);
+        await Promise.resolve();
+      });
+      const frame = view.captureCharFrame();
+      expect(frame).toContain("FRESH_PINNED");
+      expect(frame).not.toContain("STALE_UNPINNED");
+    } finally {
+      view.renderer.destroy();
+    }
+  });
+
+  test("重命名后的刷新不被更早的打开刷新覆盖", async () => {
+    await seedCache([ROW_A]);
+    const view = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    try {
+      await view.flush();
+      await waitForCalls(2);
+      await act(async () => {
+        view.mockInput.pressKey("r", { ctrl: true });
+        await Promise.resolve();
+      });
+      await act(async () => {
+        view.mockInput.pressEnter();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await waitForCalls(3);
+      await act(async () => {
+        resolvers[2]!([{ ...ROW_A, display_title: "RENAMED_TITLE" }]);
+        await Promise.resolve();
+      });
+      await view.waitForFrame((text: string) => text.includes("RENAMED_TITLE"));
+      await act(async () => {
+        resolvers[1]!([{ ...ROW_A, display_title: "STALE_OLD_NAME" }]);
+        await Promise.resolve();
+      });
+      const frame = view.captureCharFrame();
+      expect(frame).toContain("RENAMED_TITLE");
+      expect(frame).not.toContain("STALE_OLD_NAME");
+    } finally {
+      view.renderer.destroy();
+    }
+  });
+
+  test("Fork 后的刷新不被更早的打开刷新覆盖", async () => {
+    await seedCache([ROW_A]);
+    const view = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    try {
+      await view.flush();
+      await waitForCalls(2);
+      await act(async () => {
+        view.mockInput.pressKey("f", { ctrl: true, shift: true });
+        await Promise.resolve();
+      });
+      await waitForCalls(3);
+      await act(async () => {
+        resolvers[2]!([
+          { session_id: "s-fork", display_title: "FRESH_FORK", title: "FRESH_FORK", date_group: "Today" },
+        ]);
+        await Promise.resolve();
+      });
+      await view.waitForFrame((text: string) => text.includes("FRESH_FORK"));
+      await act(async () => {
+        resolvers[1]!([{ ...ROW_A, display_title: "STALE_BEFORE_FORK" }]);
+        await Promise.resolve();
+      });
+      const frame = view.captureCharFrame();
+      expect(frame).toContain("FRESH_FORK");
+      expect(frame).not.toContain("STALE_BEFORE_FORK");
+    } finally {
+      view.renderer.destroy();
+    }
+  });
+
+  test("较早的刷新失败不能盖掉较新的成功结果", async () => {
+    await seedCache([ROW_A]);
+    const view = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    try {
+      await view.flush();
+      await waitForCalls(2);
+      await act(async () => {
+        view.mockInput.pressKey("f", { ctrl: true });
+        await Promise.resolve();
+      });
+      await waitForCalls(3);
+      await act(async () => {
+        resolvers[2]!([
+          { ...ROW_A, display_title: "FRESH_PINNED", pinned: true, date_group: "Pinned" },
+        ]);
+        await Promise.resolve();
+      });
+      await view.waitForFrame((text: string) => text.includes("FRESH_PINNED"));
+      await act(async () => {
+        rejecters[1]!(new Error("older list failed"));
+        await Promise.resolve();
+      });
+      const frame = view.captureCharFrame();
+      expect(frame).toContain("FRESH_PINNED");
+      expect(frame).not.toContain("older list failed");
+    } finally {
+      view.renderer.destroy();
+    }
+  });
+
+  test("关闭后迟到的置顶不能递增序号或挡住新弹窗刷新", async () => {
+    await seedCache([ROW_A]);
+    let releasePin: () => void = () => {};
+    fakeTransport.pinSession = () =>
+      new Promise<void>((resolve) => {
+        releasePin = resolve;
+      });
+    const first = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    await first.flush();
+    await waitForCalls(2);
+    await act(async () => {
+      first.mockInput.pressKey("f", { ctrl: true });
+      await Promise.resolve();
+    });
+    first.renderer.destroy();
+
+    const second = await testRender(<DialogSessionList {...dialogProps} />, {
+      width: 80,
+      height: 24,
+    });
+    try {
+      await second.flush();
+      await waitForCalls(3);
+      await act(async () => {
+        releasePin();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(resolvers.length).toBe(3);
+      await act(async () => {
+        resolvers[2]!([{ ...ROW_A, display_title: "FRESH_REOPEN" }]);
+        await Promise.resolve();
+      });
+      const frame = await second.waitForFrame((text: string) => text.includes("FRESH_REOPEN"));
+      expect(frame).toContain("FRESH_REOPEN");
+      expect(frame).not.toContain("STALE_PIN_RELOAD");
+    } finally {
+      fakeTransport.pinSession = async () => {};
+      second.renderer.destroy();
     }
   });
 

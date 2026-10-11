@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import sys
 import uuid
@@ -168,6 +169,97 @@ def _permission_profiles() -> list[PermissionProfileSummary]:
         for row in PermissionStore(persistent=False).snapshot()["profiles"]
     ]
 _SHUTDOWN_PROMPT_WAIT_SECONDS = 30.0
+# Network/catalog reads may overlap. Config writes stay on one lane.
+_SLOW_RPC_LIMIT = 4
+# These must enter while a discover, connection test, or model switch is
+# still running. They are not queued behind that work.
+_CONTROL_METHODS = frozenset(
+    {
+        "session/interrupt",
+        "turn/interrupt",
+        "turn/steer",
+        "approval/decide",
+        "approval/revoke",
+    }
+)
+# One chain per session, in arrival order. Prompt dispatch returns after it
+# schedules the turn; a switch queued before that prompt still finishes first.
+_SESSION_MUTATION_METHODS = frozenset(
+    {
+        "session/prompt",
+        "turn/start",
+        "session/set_model",
+        "session/rename",
+        "session/trash",
+        "session/restore",
+        "session/purge",
+        "session/set_thinking_expanded",
+        "session/archive",
+        "session/unarchive",
+        "session/fork",
+        "thread/pin",
+    }
+)
+# Serialized off the reader so two windows cannot interleave config saves,
+# and a following session/set_model observes the write that arrived first.
+_MODEL_ADMIN_METHODS = frozenset(
+    {
+        "models/set_active",
+        "models/onboard",
+        "models/onboard_batch",
+        "models/remove",
+        "credentials/upsert",
+        "credentials/delete",
+    }
+)
+_SLOW_READER_METHODS = frozenset(
+    {
+        "models/discover",
+        "models/test_connection",
+        "models/list",
+    }
+)
+
+
+def inbound_lane(method: str) -> str:
+    """Where one request runs relative to the stdin loop.
+
+    ``inline`` stays on the reader. Everything else is tracked and drained
+    on shutdown. This is not a global free-for-all: session mutations stay
+    ordered, and model-config writes stay on a single lane.
+    """
+    if method in _CONTROL_METHODS:
+        return "control"
+    if method in _SESSION_MUTATION_METHODS:
+        return "session"
+    if method in _MODEL_ADMIN_METHODS:
+        return "admin"
+    if method in _SLOW_READER_METHODS:
+        return "slow"
+    return "inline"
+
+
+async def _wait_task(task: asyncio.Task[Any] | None) -> None:
+    """Wait until ``task`` finishes without adopting its cancellation."""
+    if task is None or task.done():
+        return
+    loop = asyncio.get_running_loop()
+    finished: asyncio.Future[None] = loop.create_future()
+
+    def _done(_task: asyncio.Task[Any]) -> None:
+        if not finished.done():
+            finished.set_result(None)
+
+    task.add_done_callback(_done)
+    if task.done():
+        if not finished.done():
+            finished.set_result(None)
+        task.remove_done_callback(_done)
+        return
+    try:
+        await finished
+    finally:
+        task.remove_done_callback(_done)
 _REPLAY_EVENT_METHODS = {
     "event/task_started",
     "event/task_complete",
@@ -308,6 +400,11 @@ class AppServer:
         set_approval_broker(self._approval)
         self._active_session_id = "latest"
         self._prompt_tasks: set[asyncio.Task[Any]] = set()
+        # Work that left the stdin loop. Drained with prompts on shutdown.
+        self._detached_tasks: set[asyncio.Task[Any]] = set()
+        self._session_tails: dict[str, asyncio.Task[Any]] = {}
+        self._model_admin_tail: asyncio.Task[Any] | None = None
+        self._slow_slots: asyncio.Semaphore | None = None
         # Worker notifications arrive synchronously from the AsyncRpcPipe
         # reader, but stdout writes are asynchronous. A single FIFO writer is
         # required so a slow tool_end cannot be overtaken by recovery/error.
@@ -4202,6 +4299,129 @@ class AppServer:
             )
         await self._respond(request_id, result)
 
+    def _read_stdin_into(
+        self, loop: asyncio.AbstractEventLoop, inbox: asyncio.Queue[str]
+    ) -> None:
+        """Own stdin reads on one thread.
+
+        ``run`` used to ``await asyncio.to_thread(sys.stdin.readline)`` only
+        after ``_dispatch`` returned, so a slow discover blocked the next
+        line. A dedicated thread keeps the default executor free for
+        ``to_thread`` handlers. The worker still refuses to overlap its own
+        bootstrap import with readline; this reader does not call into that
+        import.
+        """
+        try:
+            while True:
+                line = sys.stdin.readline()
+                try:
+                    loop.call_soon_threadsafe(inbox.put_nowait, line)
+                except RuntimeError:
+                    return
+                if not line:
+                    return
+        except Exception:
+            _logger.exception("stdin reader failed")
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(inbox.put_nowait, "")
+
+    def _track_detached(self, task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+        self._detached_tasks.add(task)
+        task.add_done_callback(self._detached_tasks.discard)
+        return task
+
+    def _slow_limit(self) -> asyncio.Semaphore:
+        slots = self._slow_slots
+        if slots is None:
+            slots = asyncio.Semaphore(_SLOW_RPC_LIMIT)
+            self._slow_slots = slots
+        return slots
+
+    def _clear_model_admin_tail(self, task: asyncio.Task[Any]) -> None:
+        if self._model_admin_tail is task:
+            self._model_admin_tail = None
+
+    def _clear_session_tail(self, session_id: str, task: asyncio.Task[Any]) -> None:
+        if self._session_tails.get(session_id) is task:
+            self._session_tails.pop(session_id, None)
+
+    async def _dispatch_guarded(self, message: dict[str, Any]) -> None:
+        try:
+            await self._dispatch(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.exception("dispatch failed for %s", message)
+            if "id" in message and not is_client_response(message):
+                await self._respond_error(message.get("id"), -32603, "internal error")
+
+    def _schedule_inbound(self, lane: str, message: dict[str, Any]) -> None:
+        """Leave the stdin loop. Session and config lanes stay ordered."""
+        if lane == "control":
+            self._track_detached(asyncio.create_task(self._dispatch_guarded(message)))
+            return
+        if lane == "admin":
+            previous = self._model_admin_tail
+
+            async def _run_admin(predecessor: asyncio.Task[Any] | None = previous) -> None:
+                await _wait_task(predecessor)
+                await self._dispatch_guarded(message)
+
+            task = self._track_detached(asyncio.create_task(_run_admin()))
+            self._model_admin_tail = task
+            task.add_done_callback(self._clear_model_admin_tail)
+            return
+        if lane == "session":
+            params = message.get("params") or {}
+            session_id = ""
+            if isinstance(params, dict) and params.get("session_id"):
+                session_id = str(params.get("session_id"))
+            previous = self._session_tails.get(session_id)
+            method = str(message.get("method") or "")
+            admin = self._model_admin_tail if method == "session/set_model" else None
+
+            async def _run_session(
+                predecessor: asyncio.Task[Any] | None = previous,
+                admin_tail: asyncio.Task[Any] | None = admin,
+            ) -> None:
+                await _wait_task(admin_tail)
+                await _wait_task(predecessor)
+                await self._dispatch_guarded(message)
+
+            task = self._track_detached(asyncio.create_task(_run_session()))
+            self._session_tails[session_id] = task
+            task.add_done_callback(
+                lambda done, key=session_id: self._clear_session_tail(key, done)
+            )
+            return
+        if lane == "slow":
+            limit = self._slow_limit()
+
+            async def _run_slow() -> None:
+                async with limit:
+                    await self._dispatch_guarded(message)
+
+            self._track_detached(asyncio.create_task(_run_slow()))
+            return
+        self._track_detached(asyncio.create_task(self._dispatch_guarded(message)))
+
+    async def _drain_background(self) -> None:
+        background = set(self._prompt_tasks) | set(self._detached_tasks)
+        if not background:
+            return
+        _done, pending = await asyncio.wait(
+            background, timeout=_SHUTDOWN_PROMPT_WAIT_SECONDS
+        )
+        if pending:
+            _logger.warning(
+                "shutdown: %d background task(s) still running after %.0fs; cancelling",
+                len(pending),
+                _SHUTDOWN_PROMPT_WAIT_SECONDS,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def run(self) -> None:
         """Read JSON-RPC lines from stdin until EOF or shutdown."""
         if self._instance_blocked:
@@ -4234,9 +4454,30 @@ class AppServer:
             await self._emit_model(
                 RecoveryRequired(session_id=session_id, previous_status=previous)
             )
+        # First import of model IO must not overlap the stdin thread.
+        # Windows can deadlock readline against a CRT stdin lock taken
+        # during import. Later probes reuse the cached modules.
+        try:
+            from .model_routes import _load_module
+        except ImportError:
+            from appserver.model_routes import _load_module
+        try:
+            _load_module("..config.model_manager", "config.model_manager")
+            _load_module("..core.providers", "core.providers")
+        except Exception:
+            _logger.warning("model IO preload failed", exc_info=True)
+        loop = asyncio.get_running_loop()
+        inbox: asyncio.Queue[str] = asyncio.Queue()
+        reader = threading.Thread(
+            target=self._read_stdin_into,
+            args=(loop, inbox),
+            name="appserver-stdin",
+            daemon=True,
+        )
+        reader.start()
         try:
             while not self._shutdown:
-                line = await asyncio.to_thread(sys.stdin.readline)
+                line = await inbox.get()
                 if not line:
                     break
                 try:
@@ -4246,29 +4487,19 @@ class AppServer:
                     continue
                 if message is None:
                     continue
-                try:
-                    await self._dispatch(message)
-                except Exception:
-                    _logger.exception("dispatch failed for %s", message)
-                    if "id" in message:
-                        await self._respond_error(
-                            message.get("id"), -32603, "internal error"
-                        )
-
-            if self._prompt_tasks:
-                _done, pending = await asyncio.wait(
-                    self._prompt_tasks,
-                    timeout=_SHUTDOWN_PROMPT_WAIT_SECONDS,
-                )
-                if pending:
-                    _logger.warning(
-                        "shutdown: %d prompt task(s) still running after %.0fs; cancelling",
-                        len(pending),
-                        _SHUTDOWN_PROMPT_WAIT_SECONDS,
-                    )
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
+                if is_client_response(message):
+                    self._resolve_server_response(message)
+                    continue
+                method = str(message.get("method") or "")
+                if method == "shutdown":
+                    await self._dispatch_guarded(message)
+                    break
+                lane = inbound_lane(method)
+                if lane == "inline":
+                    await self._dispatch_guarded(message)
+                else:
+                    self._schedule_inbound(lane, message)
+            await self._drain_background()
         finally:
             if self._heartbeat_task is not None:
                 self._heartbeat_task.cancel()

@@ -39,7 +39,7 @@ files:
 | File | Lines | Responsibility |
 |---|---|---|
 | `api_server.py` | 2,029 | FastAPI route assembly layer (HTTP/SSE adapter): 8 `@app.` routes, request models, startup/auth; mounts `models_router` via `app.include_router` (api_server.py:71) |
-| `api_server_models.py` | 355 | Model-management endpoints (`/models`, `/models/presets`, `/models/discover`, `/models/onboard`, `/models/onboard/batch`) on an `APIRouter` (`models_router`), plus their request models |
+| `api_server_models.py` | 355 | Model-management endpoints (`/models`, `/models/presets`, `/models/discover`, `/models/onboard`, `/models/onboard/batch`) on an `APIRouter` (`models_router`), plus their request models. Single onboard persists with `add_model(..., activate=True)` inside `asyncio.to_thread` (one config save). Batch onboard uses `onboard_models_batch` (one credential write, one config save). |
 | `api_server_stream.py` | 451 | SSE transport classes: `APIProxyTUI` (11), `StreamSessionRecorder` (125), `StreamTUI` (271) |
 
 ## Phase 2 Adapter Positioning

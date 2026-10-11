@@ -99,14 +99,39 @@ class DesktopTaskStore:
         # is created lazily on the caller's event loop.
         self._event_dirty = False
         self._flush_task: asyncio.Task[None] | None = None
-        # Bumped by purge() so a frozen snapshot can detect that owned data
-        # was removed after it was taken (see _save_snapshot).
+        # Bumped by purge and by task-metadata writes. A buffered event
+        # snapshot carries the generation it observed; _save_snapshot drops
+        # the round when a newer write has already landed.
         self._drop_generation = 0
         self._load()
 
     def _claim(self, session_id: str) -> None:
         self._owned.add(session_id)
         self._dropped.discard(session_id)
+
+    def _note_metadata_write(self) -> None:
+        """Task rows changed. An older event snapshot must not write them back."""
+        self._drop_generation += 1
+
+    def _arm_metadata_flush(self) -> bool:
+        """Coalesce a metadata rewrite into the existing event flusher.
+
+        Memory is already updated. With a running loop the cross-process
+        read/merge/replace waits for the same ~0.2s burst window as replay
+        events, and ``flush_pending`` still drains it on shutdown. No loop
+        means the caller is synchronous, so the immediate save stays.
+        """
+        if not self.persistent:
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        self._event_dirty = True
+        task = self._flush_task
+        if task is None or task.done():
+            self._flush_task = loop.create_task(self._flush_buffered_events())
+        return True
 
     def _read_disk(self) -> dict[str, Any]:
         empty: dict[str, Any] = {"tasks": {}, "events": {}}
@@ -263,6 +288,7 @@ class DesktopTaskStore:
         title_source: Any = _UNSET,
         title_llm_pass: Any = _UNSET,
         restart_gate: Any = _UNSET,
+        defer: bool = False,
     ) -> dict[str, Any]:
         old = self._data["tasks"].get(session_id)
         self._claim(session_id)
@@ -320,6 +346,9 @@ class DesktopTaskStore:
         if isinstance(gate, dict):
             task["restart_gate"] = gate
         self._data["tasks"][session_id] = task
+        self._note_metadata_write()
+        if defer and self._arm_metadata_flush():
+            return dict(task)
         self._save()
         return dict(task)
 
@@ -348,6 +377,7 @@ class DesktopTaskStore:
             "first_restart_at": gate.get("first_restart_at"),
         }
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return True
 
@@ -359,6 +389,7 @@ class DesktopTaskStore:
             raise ValueError("title is required")
         task["title"] = clean
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return dict(task)
 
@@ -367,6 +398,7 @@ class DesktopTaskStore:
         self._claim(session_id)
         task["trashed_at"] = _now()
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return dict(task)
 
@@ -375,6 +407,7 @@ class DesktopTaskStore:
         self._claim(session_id)
         task["trashed_at"] = None
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return dict(task)
 
@@ -385,7 +418,7 @@ class DesktopTaskStore:
         # Invalidate any buffered-flush snapshot taken before this purge; the
         # generation check inside _save_snapshot runs under the same file
         # lock that the purge's own save below is serialized by.
-        self._drop_generation += 1
+        self._note_metadata_write()
         del self._data["tasks"][session_id]
         self._data["events"].pop(session_id, None)
         self._save()
@@ -482,7 +515,10 @@ class DesktopTaskStore:
         the snapshot so the writer thread never iterates live sets.
         """
         return {
-            "tasks": dict(self._data["tasks"]),
+            "tasks": {
+                str(key): dict(value) if isinstance(value, dict) else value
+                for key, value in self._data["tasks"].items()
+            },
             "events": {
                 str(key): list(value)
                 for key, value in self._data["events"].items()
@@ -500,10 +536,11 @@ class DesktopTaskStore:
         this writer thread was merging must survive (the dirty loop
         re-flushes them), so unlike :meth:`_save` this never assigns
         ``self._data`` and never clears ``self._dropped``.  A purge that
-        interleaved after the snapshot was taken bumps ``_drop_generation``;
-        because the comparison happens under the same file lock that
-        serializes the purge's own save, aborting this round and retrying
-        with a fresh snapshot can never resurrect purged data.
+        interleaved after the snapshot was taken bumps ``_drop_generation``
+        (purge and task-metadata writes). Because the comparison happens
+        under the same file lock that serializes those saves, aborting this
+        round and retrying with a fresh snapshot cannot restore an older
+        model, title, status, usage, or a purged session.
         """
         if not self.persistent:
             return

@@ -57,6 +57,8 @@ const STATUS_SNAPSHOT_TIMEOUT_MS = 5_000;
 // 2026-10-11 /session 目录有界等待：原来 request 无超时，服务端静默丢应答时
 // 会话对话框长转圈；超时直接交还 UI 错误态，不触发 respawn（与进程已死区分）。
 const SESSIONS_LIST_TIMEOUT_MS = 8_000;
+/** Bounded wait for catalog/admin reads. session/prompt stays unbounded. */
+const DEFAULT_ADMIN_RPC_TIMEOUT_MS = 8_000;
 let warmOnOpenStarted = false;
 
 function newId(suffix: string): string {
@@ -81,6 +83,11 @@ function initTimeoutMs(): number {
 function sessionTimeoutMs(): number {
   const raw = Number(process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS ?? "");
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SESSION_TIMEOUT_MS;
+}
+
+function adminRpcTimeoutMs(): number {
+  const raw = Number(process.env.RXYCODE_ADMIN_RPC_TIMEOUT_MS ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_ADMIN_RPC_TIMEOUT_MS;
 }
 
 type PromptResult = {
@@ -125,6 +132,11 @@ export class StdioAppserverSession {
   onTodo: ((snapshot: TodoDockSnapshot) => void) | null = null;
   private todoView: TodoDockSnapshot = { list_id: "default", revision: 0, items: [] };
   private todoTicket = 0;
+  /** Worker model label. Set when a session switch fails so polls do not show the new global default. */
+  /** Config id of the open task's model. Display text is derived from this id. */
+  private sessionModelId: string | null = null;
+  /** Bumped on every attach so a slower older load cannot commit a newer session. */
+  private attachGeneration = 0;
   private steerMarks: SteerMark[] = [];
   private liveTurn: {
     epoch: number;
@@ -181,6 +193,7 @@ export class StdioAppserverSession {
     this.proc = null;
     this.client = null;
     this.sessionId = null;
+    this.sessionModelId = null;
     this.forgetTodoView();
     this.childViewSessionId = null;
     this.ready = null;
@@ -382,12 +395,13 @@ export class StdioAppserverSession {
       },
       initTimeoutMs(),
     );
-    const session = (await client.requestWithTimeout<{ session_id: string }>(
+    const session = (await client.requestWithTimeout<{ session_id: string; model_id?: string | null }>(
       "session/new",
       { workspace_root: this.workspaceRoot() },
       sessionTimeoutMs(),
-    )) as { session_id: string };
+    )) as { session_id: string; model_id?: string | null };
     this.sessionId = session.session_id;
+    this.sessionModelId = session.model_id ?? null;
     void this.refreshTodo().catch(() => {});
     // Fire-and-forget warm so the first user prompt is not blocked on Agent ctor.
     void this.warmBootstrap().catch(() => {
@@ -420,7 +434,11 @@ export class StdioAppserverSession {
     if (this.inflightModelsList) return this.inflightModelsList;
     const pending = (async () => {
       const client = await this.ensureReady();
-      return (await client.request<ModelsListPayload>("models/list", {})) as ModelsListPayload;
+      return (await client.requestWithTimeout<ModelsListPayload>(
+        "models/list",
+        {},
+        adminRpcTimeoutMs(),
+      )) as ModelsListPayload;
     })();
     this.inflightModelsList = pending;
     pending
@@ -434,7 +452,13 @@ export class StdioAppserverSession {
   async fetchStatusSnapshot(): Promise<StatusInfo | null> {
     try {
       const listed = await this.listModels();
-      this.lastStatus = statusFromModelsList(listed, this.lastStatus);
+      const taskModelId = this.sessionModelId || undefined;
+      this.lastStatus = statusFromModelsList(listed, this.lastStatus, taskModelId);
+      if (this.sessionId && !this.sessionModelId) {
+        const adopted =
+          listed.active || listed.models?.find((item) => item.active)?.id || "";
+        if (adopted) this.sessionModelId = adopted;
+      }
     } catch {
       // Keep lastStatus. Never fall back to HTTP /status (different process, always 0).
     }
@@ -446,6 +470,14 @@ export class StdioAppserverSession {
     // 静默丢应答，对话框就永远停在「正在切换模型…」，后续点击被 switching
     // 门拦死（用户实测）。全部改为有界等待，超时者落为「切换失败」。
     const client = await this.ensureReady();
+    // Captured before any await that can outlive this screen. Later reads of
+    // this.sessionId would aim session/set_model at whatever session loaded
+    // while models/set_active was still in flight.
+    const targetSessionId = this.sessionId;
+    const previousModelId = this.sessionModelId;
+    const generation = this.attachGeneration;
+    const stillThisSession = () =>
+      this.attachGeneration === generation && this.sessionId === targetSessionId;
     const active = (await client.requestWithTimeout<{
       ok?: boolean;
       id?: string;
@@ -461,19 +493,29 @@ export class StdioAppserverSession {
     }
     let sessionSet: "ok" | "skipped" | "error" = "skipped";
     let sessionErr = "";
-    if (this.sessionId) {
+    if (targetSessionId) {
       try {
         await client.requestWithTimeout(
           "session/set_model",
-          { session_id: this.sessionId, model_id: modelId },
+          { session_id: targetSessionId, model_id: modelId },
           // server 侧 agent_host 自带 30s 上限，客户端留余量先收错误。
           SESSION_SET_MODEL_TIMEOUT_MS,
         );
         sessionSet = "ok";
+        if (stillThisSession()) this.sessionModelId = modelId;
       } catch (e) {
         sessionSet = "error";
         sessionErr = e instanceof Error ? e.message : String(e);
+        if (stillThisSession()) this.sessionModelId = previousModelId;
       }
+    }
+    if (!stillThisSession()) {
+      return {
+        ok: false,
+        action: "error",
+        error: "会话已更换",
+        message: "会话已更换",
+      };
     }
     if (sessionSet === "error") {
       // 2026-10-11 假成功修复：全局 active 已持久化但 worker 还跑旧模型——
@@ -490,7 +532,20 @@ export class StdioAppserverSession {
         "status refresh timed out",
       );
     } catch {
-      this.lastStatus = { ...(this.lastStatus ?? {}), model: modelId };
+      // session/set_model already succeeded, so the id is confirmed. The
+      // catalog read did not return a nickname; show the id rather than a
+      // name that was not looked up.
+      if (stillThisSession()) {
+        this.lastStatus = { ...(this.lastStatus ?? {}), model: modelId };
+      }
+    }
+    if (!stillThisSession()) {
+      return {
+        ok: false,
+        action: "error",
+        error: "会话已更换",
+        message: "会话已更换",
+      };
     }
     return {
       ok: true,
@@ -509,10 +564,10 @@ export class StdioAppserverSession {
     if (!this.sessionId) {
       throw new Error("appserver session not ready");
     }
-    const result = (await client.request("session/set_thinking_expanded", {
+    const result = (await client.requestWithTimeout("session/set_thinking_expanded", {
       session_id: this.sessionId,
       expanded,
-    })) as {
+    }, adminRpcTimeoutMs())) as {
       ok?: boolean;
       expanded?: boolean;
       action?: string;
@@ -568,7 +623,13 @@ export class StdioAppserverSession {
     if (!this.sessionId) return;
     const sessionId = this.sessionId;
     void this.ensureReady()
-      .then((client) => client.request("session/interrupt", { session_id: sessionId }))
+      .then((client) =>
+        client.requestWithTimeout(
+          "session/interrupt",
+          { session_id: sessionId },
+          adminRpcTimeoutMs(),
+        ),
+      )
       .catch(() => {
         // best-effort; UI already left Processing
       });
@@ -581,7 +642,11 @@ export class StdioAppserverSession {
     const sessionId = this.sessionId;
     try {
       const client = await this.ensureReady();
-      await client.request("turn/steer", { session_id: sessionId, text: trimmed });
+      await client.requestWithTimeout(
+        "turn/steer",
+        { session_id: sessionId, text: trimmed },
+        adminRpcTimeoutMs(),
+      );
       const live = this.liveTurn;
       if (live && this.promptEpoch === live.epoch) {
         const at = live.getState().messages.length;
@@ -991,31 +1056,42 @@ export class StdioAppserverSession {
     }
   }
 
-  async attachSession(sessionId: string): Promise<AttachSessionResult> {
+  async attachSession(sessionId: string, modelId?: string | null): Promise<AttachSessionResult> {
     const client = await this.ensureReady();
-    if (this.sessionId && this.sessionId !== sessionId) {
+    const generation = (this.attachGeneration ?? 0) + 1;
+    this.attachGeneration = generation;
+    const previousId = this.sessionId;
+    if (previousId && previousId !== sessionId) {
       try {
         await this.interrupt();
       } catch {
         // switching away from a live turn is best-effort
       }
     }
-    if (this.sessionId !== sessionId) this.forgetTodoView();
-    this.sessionId = sessionId;
-    void this.refreshTodo().catch(() => {});
-    let replay = (await client.request<{
+    if (generation !== this.attachGeneration) {
+      throw new Error("stale session attach");
+    }
+    const timeout = adminRpcTimeoutMs();
+    let replay = (await client.requestWithTimeout<{
       events?: Array<{ method?: string; params?: Record<string, unknown> }>;
       gap_detected?: boolean;
-    }>("session/events", { session_id: sessionId, cursor: 0 })) as {
+    }>("session/events", { session_id: sessionId, cursor: 0 }, timeout)) as {
       events?: Array<{ method?: string; params?: Record<string, unknown> }>;
       gap_detected?: boolean;
     };
     if (replay.gap_detected) {
-      replay = (await client.request("session/events", {
+      replay = (await client.requestWithTimeout("session/events", {
         session_id: sessionId,
         cursor: 0,
-      })) as typeof replay;
+      }, timeout)) as typeof replay;
     }
+    if (generation !== this.attachGeneration) {
+      throw new Error("stale session attach");
+    }
+    if (previousId !== sessionId) this.forgetTodoView();
+    this.sessionId = sessionId;
+    this.sessionModelId = modelId || null;
+    void this.refreshTodo().catch(() => {});
     void this.warmBootstrap().catch(() => {
       // first prompt will bootstrap
     });
@@ -1027,17 +1103,26 @@ export class StdioAppserverSession {
 
   async renameSession(sessionId: string, title: string): Promise<SessionListRow> {
     const client = await this.ensureReady();
-    return (await client.request<SessionListRow>("session/rename", { session_id: sessionId, title })) as SessionListRow;
+    return (await client.requestWithTimeout<SessionListRow>(
+      "session/rename",
+      { session_id: sessionId, title },
+      adminRpcTimeoutMs(),
+    )) as SessionListRow;
   }
 
   async trashSession(sessionId: string): Promise<void> {
     const client = await this.ensureReady();
-    await client.request("session/trash", { session_id: sessionId });
+    await client.requestWithTimeout(
+      "session/trash",
+      { session_id: sessionId },
+      adminRpcTimeoutMs(),
+    );
     if (this.sessionId === sessionId) {
-      const created = (await client.request<{ session_id: string }>("session/new", {
+      const created = await client.request<{ session_id: string; model_id?: string | null }>("session/new", {
         workspace_root: this.workspaceRoot(),
-      })) as { session_id: string };
+      });
       this.sessionId = created.session_id;
+      this.sessionModelId = created.model_id ?? null;
       this.forgetTodoView();
       void this.refreshTodo().catch(() => {});
     }
@@ -1045,11 +1130,11 @@ export class StdioAppserverSession {
 
   async pinSession(sessionId: string, pinned: boolean): Promise<void> {
     const client = await this.ensureReady();
-    await client.request("thread/pin", {
+    await client.requestWithTimeout("thread/pin", {
       session_id: sessionId,
       thread_id: sessionId,
       pinned,
-    });
+    }, adminRpcTimeoutMs());
   }
 
   private forgetTodoView(): void {
@@ -1076,7 +1161,11 @@ export class StdioAppserverSession {
     if (!this.client || !this.sessionId) return;
     const sessionId = this.sessionId;
     const ticket = ++this.todoTicket;
-    const result = (await this.client.request("todo/get", { session_id: sessionId })) as {
+    const result = (await this.client.requestWithTimeout(
+      "todo/get",
+      { session_id: sessionId },
+      adminRpcTimeoutMs(),
+    )) as {
       session_id?: string;
     };
     if (ticket !== this.todoTicket || sessionId !== this.sessionId) return;
@@ -1181,8 +1270,8 @@ export const stdioTransport: ChatTransport = {
     return sharedSession.listSessions();
   },
 
-  async attachSession(sessionId: string) {
-    return sharedSession.attachSession(sessionId);
+  async attachSession(sessionId: string, modelId?: string | null) {
+    return sharedSession.attachSession(sessionId, modelId);
   },
 
   async renameSession(sessionId: string, title: string) {

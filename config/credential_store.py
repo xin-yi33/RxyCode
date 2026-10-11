@@ -11,6 +11,7 @@ import asyncio
 import base64
 import csv
 import ctypes
+from contextlib import contextmanager
 from ctypes import wintypes
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 
 import yaml
 
@@ -295,6 +297,76 @@ def atomic_write_text(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"))
 
 
+_FILE_LOCK_STATE = threading.local()
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[None]:
+    """Lock *path* across processes for a read-modify-write.
+
+    ``os.replace`` keeps a single write atomic. It does not stop two
+    processes from each reading the old file and then replacing it.
+    The same thread may re-enter; another thread or process waits.
+    """
+    key = str(path)
+    depth = int(getattr(_FILE_LOCK_STATE, "depth", 0) or 0)
+    if depth and getattr(_FILE_LOCK_STATE, "key", None) == key:
+        _FILE_LOCK_STATE.depth = depth + 1
+        try:
+            yield
+        finally:
+            _FILE_LOCK_STATE.depth = depth
+        return
+
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+b")
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() < 1:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                        break
+                    time.sleep(0.02)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _FILE_LOCK_STATE.depth = 1
+        _FILE_LOCK_STATE.key = key
+        try:
+            yield
+        finally:
+            _FILE_LOCK_STATE.depth = 0
+            _FILE_LOCK_STATE.key = None
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
+
+
 class _DataBlob(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.c_void_p)]
 
@@ -447,16 +519,47 @@ def _write_store(path: Path, credentials: dict[str, str]) -> None:
 
 
 def store_credential(value: str, config_path: Path) -> str:
-    value = value.strip()
-    if not value:
+    return store_credentials([value], config_path)[0]
+
+
+def _credential_rmw_pause() -> None:
+    """Test-only gap between a credential read and its write.
+
+    Unset in production. A positive ``RXYCODE_CREDENTIAL_RMW_PAUSE`` makes
+    two processes overlap inside the read-modify-write so a missing
+    cross-process lock fails closed instead of passing by timing.
+    """
+    raw = os.environ.get("RXYCODE_CREDENTIAL_RMW_PAUSE", "").strip()
+    if not raw:
+        return
+    time.sleep(float(raw))
+
+
+def store_credentials(values: list[str], config_path: Path) -> list[str]:
+    """Protect every value under its own reference and write the store once.
+
+    References are not shared. Deleting or rolling back one model removes
+    only that reference.
+    """
+    cleaned = [value.strip() for value in values]
+    if any(not item for item in cleaned):
         raise ValueError("Credential must not be empty")
+    if not cleaned:
+        return []
     path = _secret_path(config_path)
-    with _STORE_LOCK:
-        credentials = _read_store(path)
-        reference = uuid.uuid4().hex
-        credentials[reference] = _protect(value, reference)
-        _write_store(path, credentials)
-    return reference
+    references: list[str] = []
+    # File lock outside the in-process lock. Never take the config lock
+    # while this credential lock is held; config edits run before or after.
+    with exclusive_file_lock(path):
+        with _STORE_LOCK:
+            credentials = _read_store(path)
+            _credential_rmw_pause()
+            for value in cleaned:
+                reference = uuid.uuid4().hex
+                credentials[reference] = _protect(value, reference)
+                references.append(reference)
+            _write_store(path, credentials)
+    return references
 
 
 def load_credential(reference: str, config_path: Path) -> str:
@@ -471,24 +574,38 @@ def load_credential(reference: str, config_path: Path) -> str:
     return _unprotect(protected)
 
 
-def delete_credential(reference: str, config_path: Path) -> None:
-    if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
-        return
+def delete_credentials(references: list[str], config_path: Path) -> None:
+    """Drop many references in one store write. Unknown refs are ignored."""
     path = _secret_path(config_path)
-    keyring_was_backed = False
-    with _STORE_LOCK:
-        credentials = _read_store(path)
-        if reference not in credentials:
-            return
-        keyring_was_backed = str(credentials[reference]).startswith("keyring-v1:")
-        del credentials[reference]
-        _write_store(path, credentials)
-    # Best-effort cleanup of the OS keyring entry (macOS Keychain /
-    # Linux Secret Service) when the removed blob was keyring-backed.
-    if keyring_was_backed:
+    keyring_refs: list[str] = []
+    with exclusive_file_lock(path):
+        with _STORE_LOCK:
+            credentials = _read_store(path)
+            _credential_rmw_pause()
+            changed = False
+            for reference in references:
+                if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
+                    continue
+                current = credentials.get(reference)
+                if current is None:
+                    continue
+                if str(current).startswith("keyring-v1:"):
+                    keyring_refs.append(reference)
+                del credentials[reference]
+                changed = True
+            if changed:
+                _write_store(path, credentials)
+    for reference in keyring_refs:
         try:
             import keyring
 
             keyring.delete_password(_KEYRING_SERVICE, reference)
         except Exception:
             pass
+
+
+def delete_credential(reference: str, config_path: Path) -> None:
+    # 单条删除走 delete_credentials，避免再维护第二份读写。
+    if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
+        return
+    delete_credentials([reference], config_path)

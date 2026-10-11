@@ -6,7 +6,12 @@ import time
 from typing import Literal, Optional
 from urllib.parse import urlsplit
 
-from .credential_store import delete_credential, store_credential
+from .credential_store import (
+    delete_credential,
+    delete_credentials,
+    store_credential,
+    store_credentials,
+)
 from .model_endpoint import (
     detect_explicit_transport,
     ensure_resource_path_rewritable,
@@ -23,7 +28,13 @@ from .model_transport import (
     normalize_api_transport,
     normalize_transport_candidates,
 )
-from .settings import get_config_path, get_model_config, load_config, save_config
+from .settings import (
+    get_config_path,
+    get_model_config,
+    hold_config_lock,
+    load_config,
+    save_config,
+)
 
 
 DISCOVERY_UNSUPPORTED_MESSAGE = (
@@ -223,6 +234,7 @@ def add_model(
     nickname: Optional[str] = None,
     api_transport: Optional[str] = None,
     resource_path: Optional[str] = None,
+    activate: bool = False,
 ) -> dict:
     """M5：max_tokens 只接受正整数 / "auto" / None；0/负数/空串/浮点拒绝。"""
     if max_tokens is not None and max_tokens != "auto":
@@ -269,59 +281,203 @@ def add_model(
             base_url, explicit_transport, require_https=True
         )
     meta = resolve_provider_meta(base_url, provider_id, provider_name)
-    cfg = load_config()
-    models = cfg.setdefault("models", {})
-    # M5.5：同 Provider + 同 model_name 已存在（不同 key）→ fail closed，不静默覆盖。
-    vendor_id = model_name or name
+    new_ref = ""
+    previous_reference = ""
+
+    def mutate(cfg: dict):
+        nonlocal new_ref, previous_reference
+        models = cfg.setdefault("models", {})
+        # M5.5：同 Provider + 同 model_name 已存在（不同 key）→ fail closed，不静默覆盖。
+        vendor_id = model_name or name
+        for existing_key, existing in models.items():
+            if existing_key == name:
+                continue  # 同 key 更新是允许的（重新保存/改配置）
+            if not isinstance(existing, dict):
+                continue
+            try:
+                same_url = normalize_provider_base_url(
+                    existing.get("base_url", ""), require_https=False
+                ) == base_url
+            except ValueError:
+                same_url = False
+            existing_vendor = (existing.get("model_name") or existing_key).strip()
+            if (
+                same_url
+                and existing_vendor == vendor_id
+                and (existing.get("provider_id") or meta["id"]) == meta["id"]
+            ):
+                raise ValueError(
+                    f"model '{vendor_id}' already exists for provider '{meta['id']}' "
+                    f"at key '{existing_key}'; use that key instead of adding a duplicate"
+                )
+        current = models.get(name, {})
+        previous_reference = current.get("api_key_secret", "") if isinstance(current, dict) else ""
+        entry = {
+            **_credential_config(api_key),
+            "base_url": base_url,
+            "model_name": vendor_id,
+            "max_tokens": max_tokens if max_tokens is not None else "auto",
+            "temperature": temperature,
+            "provider_id": meta["id"],
+            "provider_name": meta["name"],
+        }
+        if explicit_transport is not None:
+            entry["api_transport"] = explicit_transport
+        if exact_resource:
+            entry["resource_path"] = exact_resource
+            entry["api_transport"] = infer_transport_from_resource_path(exact_resource)
+        if nickname and nickname.strip() and nickname.strip() != vendor_id:
+            entry["nickname"] = nickname.strip()
+        new_ref = str(entry.get("api_key_secret") or "")
+        models[name] = entry
+        if activate or not cfg.get("active_model"):
+            cfg["active_model"] = name
+        if activate:
+            _touch_recent_models(cfg, name)
+        return entry, True
+
+    try:
+        entry = _edit_config(mutate)
+    except BaseException:
+        if new_ref:
+            delete_credential(new_ref, get_config_path())
+        raise
+    if previous_reference != entry.get("api_key_secret"):
+        delete_credential(previous_reference, get_config_path())
+    return entry
+
+
+def _credential_plan(api_key: str) -> dict[str, str]:
+    """Decide once how a batch should store one shared pasted key."""
+    value = api_key.strip()
+    match = re.fullmatch(r"(?:env:|\$\{)([A-Za-z_][A-Za-z0-9_]*)\}?", value)
+    if match:
+        return {"mode": "env", "api_key_env": match.group(1)}
+    for name, configured in os.environ.items():
+        if not name.upper().endswith(("API_KEY", "ACCESS_TOKEN")) or not configured:
+            continue
+        if hmac.compare_digest(configured, value):
+            return {"mode": "env-secret", "api_key_env": name}
+    return {"mode": "secret"}
+
+
+def _edit_config(mutator):
+    """Read, change, and save config while the cross-process lock is held.
+
+    ``mutator`` returns ``(result, dirty)``. A clean result does not save.
+    """
+    with hold_config_lock():
+        cfg = load_config()
+        result, dirty = mutator(cfg)
+        if dirty:
+            save_config(cfg)
+        return result
+
+
+def _model_key_occupied(
+    models: dict,
+    key: str,
+    model_name: str,
+    base_url: str,
+    provider_id: str,
+) -> bool:
+    """True when this batch must not replace an entry that already exists."""
+    if key in models:
+        return True
     for existing_key, existing in models.items():
-        if existing_key == name:
-            continue  # 同 key 更新是允许的（重新保存/改配置）
-        if not isinstance(existing, dict):
+        if not isinstance(existing, dict) or existing_key == key:
             continue
         try:
-            same_url = normalize_provider_base_url(
-                existing.get("base_url", ""), require_https=False
-            ) == base_url
+            same_url = (
+                normalize_provider_base_url(
+                    existing.get("base_url", ""), require_https=False
+                )
+                == base_url
+            )
         except ValueError:
             same_url = False
         existing_vendor = (existing.get("model_name") or existing_key).strip()
         if (
             same_url
-            and existing_vendor == vendor_id
-            and (existing.get("provider_id") or meta["id"]) == meta["id"]
+            and existing_vendor == model_name
+            and (existing.get("provider_id") or provider_id) == provider_id
         ):
-            raise ValueError(
-                f"model '{vendor_id}' already exists for provider '{meta['id']}' "
-                f"at key '{existing_key}'; use that key instead of adding a duplicate"
-            )
-    previous_reference = models.get(name, {}).get("api_key_secret", "")
-    entry = {
-        **_credential_config(api_key),
-        "base_url": base_url,
-        "model_name": vendor_id,
-        "max_tokens": max_tokens if max_tokens is not None else "auto",
-        "temperature": temperature,
-        "provider_id": meta["id"],
-        "provider_name": meta["name"],
-    }
-    if explicit_transport is not None:
-        entry["api_transport"] = explicit_transport
-    if exact_resource:
-        entry["resource_path"] = exact_resource
-        entry["api_transport"] = infer_transport_from_resource_path(exact_resource)
-    if nickname and nickname.strip() and nickname.strip() != vendor_id:
-        entry["nickname"] = nickname.strip()
-    models[name] = entry
-    if not cfg.get("active_model"):
-        cfg["active_model"] = name
+            return True
+    return False
+
+
+def _commit_model_batch(
+    *,
+    keys: list[str],
+    api_key: str,
+    base_url: str,
+    provider_id: str,
+    provider_name: str,
+    explicit_transport: Optional[str],
+    active_model_id: Optional[str],
+) -> dict:
+    """Write this batch's credentials once, then merge onto the latest config."""
+    if not keys:
+        return {"added": [], "active": None, "skipped": []}
+    plan = _credential_plan(api_key)
+    config_path = get_config_path()
+    references: list[str] = []
+    if plan["mode"] != "env":
+        references = store_credentials([api_key] * len(keys), config_path)
+    ref_by_key = dict(zip(keys, references))
+
+    def mutate(cfg: dict):
+        models = cfg.setdefault("models", {})
+        if not isinstance(models, dict):
+            models = {}
+            cfg["models"] = models
+        added: list[str] = []
+        skipped_now: list[str] = []
+        for key in keys:
+            model_name = key.split("/", 1)[1] if "/" in key else key
+            if _model_key_occupied(models, key, model_name, base_url, provider_id):
+                skipped_now.append(key)
+                continue
+            entry: dict = {
+                "base_url": base_url,
+                "model_name": model_name,
+                "max_tokens": "auto",
+                "temperature": 0.7,
+                "provider_id": provider_id,
+                "provider_name": provider_name,
+            }
+            if plan["mode"] == "env":
+                entry["api_key_env"] = plan["api_key_env"]
+            else:
+                entry["api_key_secret"] = ref_by_key[key]
+                if plan["mode"] == "env-secret":
+                    entry["api_key_env"] = plan["api_key_env"]
+            if explicit_transport is not None:
+                entry["api_transport"] = explicit_transport
+            models[key] = entry
+            added.append(key)
+        active = None
+        if added:
+            candidates: list[str] = []
+            if active_model_id and active_model_id.strip():
+                stripped = active_model_id.strip()
+                candidates.append(stripped)
+                candidates.append(local_model_key(stripped, provider_id))
+            active = next((item for item in candidates if item in added), added[0])
+            cfg["active_model"] = active
+            _touch_recent_models(cfg, active)
+        return {"added": added, "active": active, "skipped": skipped_now}, bool(added)
+
     try:
-        save_config(cfg)
+        result = _edit_config(mutate)
     except BaseException:
-        delete_credential(entry.get("api_key_secret", ""), get_config_path())
+        if references:
+            delete_credentials(references, config_path)
         raise
-    if previous_reference != entry.get("api_key_secret"):
-        delete_credential(previous_reference, get_config_path())
-    return entry
+    unused = [ref_by_key[key] for key in result["skipped"] if key in ref_by_key]
+    if unused:
+        delete_credentials(unused, config_path)
+    return result
 
 
 def onboard_models_batch(
@@ -382,12 +538,13 @@ def onboard_models_batch(
             if "/" not in existing_key:
                 legacy_same_endpoint.add(existing_key)
 
+    pending: list[str] = []
     for model_id in model_ids:
         mid = model_id.strip()
         if not mid:
             continue
         key = local_model_key(mid, provider_id)
-        if key in known or mid in legacy_same_endpoint:
+        if key in known or mid in legacy_same_endpoint or key in pending:
             skipped.append(key)
             continue
         if not skip_probe:
@@ -402,28 +559,22 @@ def onboard_models_batch(
             if not probe.get("success"):
                 skipped.append(key)
                 continue
-        add_model(
-            key,
-            api_key,
-            base_url,
-            model_name=mid,
-            provider_id=provider_id,
-            provider_name=provider_name,
-            api_transport=explicit_transport,
-        )
-        added.append(key)
+        pending.append(key)
         known.add(key)
         legacy_same_endpoint.add(mid)
 
-    active: Optional[str] = None
-    if added:
-        # active_model_id may be a raw vendor id or an already-namespaced key.
-        candidates = []
-        if active_model_id:
-            candidates.append(active_model_id.strip())
-            candidates.append(local_model_key(active_model_id.strip(), provider_id))
-        active = next((c for c in candidates if c in added), added[0])
-        set_active_model(active)
+    references = _commit_model_batch(
+        keys=pending,
+        api_key=api_key,
+        base_url=base_url,
+        provider_id=provider_id,
+        provider_name=provider_name,
+        explicit_transport=explicit_transport,
+        active_model_id=active_model_id,
+    )
+    added = list(references["added"])
+    skipped.extend(references["skipped"])
+    active = references["active"]
 
     count = len(added)
     group = provider_name or "其他"
@@ -437,20 +588,48 @@ def onboard_models_batch(
 
 
 def remove_model(name: str) -> bool:
-    cfg = load_config()
-    models = cfg.get("models", {})
-    if name not in models:
+    removed_ref = ""
+
+    def mutate(cfg: dict):
+        nonlocal removed_ref
+        models = cfg.get("models", {})
+        if name not in models:
+            return False, False
+        removed = models.pop(name)
+        removed_ref = removed.get("api_key_secret", "") if isinstance(removed, dict) else ""
+        if cfg.get("active_model") == name:
+            cfg["active_model"] = next(iter(models), None)
+        previous = cfg.get("recent_models")
+        if isinstance(previous, list):
+            cfg["recent_models"] = [
+                item for item in previous if isinstance(item, str) and item != name
+            ]
+        return True, True
+
+    if not _edit_config(mutate):
         return False
-    removed = models.pop(name)
-    if cfg.get("active_model") == name:
-        cfg["active_model"] = next(iter(models), None)
-    previous = cfg.get("recent_models")
-    if isinstance(previous, list):
-        cfg["recent_models"] = [
-            item for item in previous if isinstance(item, str) and item != name
-        ]
-    save_config(cfg)
-    delete_credential(removed.get("api_key_secret", ""), get_config_path())
+    delete_credential(removed_ref, get_config_path())
+    return True
+
+
+def clear_model_credential(name: str) -> bool:
+    """Drop one model's credential reference without touching other models."""
+    removed_ref = ""
+
+    def mutate(cfg: dict):
+        nonlocal removed_ref
+        entry = (cfg.get("models") or {}).get(name)
+        if not isinstance(entry, dict):
+            return False, False
+        removed_ref = str(entry.get("api_key_secret") or "")
+        entry.pop("api_key_secret", None)
+        entry.pop("api_key_env", None)
+        return True, True
+
+    if not _edit_config(mutate):
+        return False
+    if removed_ref:
+        delete_credential(removed_ref, get_config_path())
     return True
 
 
@@ -493,13 +672,14 @@ def list_recent_models() -> list[str]:
 
 
 def set_active_model(name: str) -> bool:
-    cfg = load_config()
-    if name not in cfg.get("models", {}):
-        return False
-    cfg["active_model"] = name
-    _touch_recent_models(cfg, name)
-    save_config(cfg)
-    return True
+    def mutate(cfg: dict):
+        if name not in cfg.get("models", {}):
+            return False, False
+        cfg["active_model"] = name
+        _touch_recent_models(cfg, name)
+        return True, True
+
+    return bool(_edit_config(mutate))
 
 
 #: /effort 全局思考强度档位的配置键（2026-08-12）。
@@ -523,9 +703,12 @@ def set_effort(value: str) -> bool:
     """
     if not isinstance(value, str) or not value.strip():
         return False
-    cfg = load_config()
-    cfg[EFFORT_CONFIG_KEY] = value.strip()
-    save_config(cfg)
+
+    def mutate(cfg: dict):
+        cfg[EFFORT_CONFIG_KEY] = value.strip()
+        return True, True
+
+    _edit_config(mutate)
     return True
 
 

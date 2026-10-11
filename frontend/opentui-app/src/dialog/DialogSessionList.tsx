@@ -2,7 +2,7 @@
  * OpenTUI session picker. Catalog RPC is sessions/list.
  * Enter calls attachSession (stdio), not the slash session command.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 import { DialogSelect, type DialogSelectOption } from "./DialogSelect.tsx";
 import { DialogPrompt } from "./DialogPrompt.tsx";
@@ -26,10 +26,13 @@ type SessionListCacheEntry = { rows: SessionListRow[]; fetchedAt: number };
 // 再次打开立即渲染缓存行、后台刷新成功后替换（stale-while-revalidate）。
 // reload() 是唯一写入点，pin/fork/rename 之后的 reload 会顺带更新缓存。
 let sessionListCache: SessionListCacheEntry | null = null;
+/** Incremented for every list fetch, including pin, rename, and fork refreshes. */
+let sessionListEpoch = 0;
 
 /** Test hook: module-level cache would otherwise bleed across tests. */
 export function __clearSessionListCacheForTests(): void {
   sessionListCache = null;
+  sessionListEpoch = 0;
 }
 
 function visibleRows(rows: SessionListRow[]): SessionListRow[] {
@@ -62,21 +65,48 @@ export function DialogSessionList({
   const [renaming, setRenaming] = useState<SessionListRow | null>(null);
   const [busy, setBusy] = useState("");
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
-  const reload = useCallback(async () => {
-    const transport = getChatTransport();
-    const listed = await transport.listSessions();
+  const applyListed = useCallback((epoch: number, listed: SessionListRow[]) => {
+    if (epoch !== sessionListEpoch) return;
     sessionListCache = { rows: listed, fetchedAt: Date.now() };
     const next = visibleRows(listed);
     setRows(next);
     if (!next.length) setError("暂无会话");
   }, []);
 
+  const reload = useCallback(async () => {
+    if (!aliveRef.current) return;
+    const epoch = ++sessionListEpoch;
+    const transport = getChatTransport();
+    try {
+      const listed = await transport.listSessions();
+      if (epoch !== sessionListEpoch) return;
+      applyListed(epoch, listed);
+    } catch (err) {
+      if (epoch !== sessionListEpoch) return;
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      if (sessionListCache) setBusy(`刷新失败: ${message}`);
+    }
+  }, [applyListed]);
+
   useEffect(() => {
+    const epoch = ++sessionListEpoch;
+    let cancelled = false;
     void (async () => {
       try {
-        await reload();
+        const listed = await getChatTransport().listSessions();
+        if (cancelled || epoch !== sessionListEpoch) return;
+        applyListed(epoch, listed);
       } catch (err) {
+        if (cancelled || epoch !== sessionListEpoch) return;
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
         if (sessionListCache) {
@@ -87,7 +117,10 @@ export function DialogSessionList({
         }
       }
     })();
-  }, [reload]);
+    return () => {
+      cancelled = true;
+    };
+  }, [applyListed]);
 
   const options: DialogSelectOption<SessionListRow>[] = useMemo(() => {
     return (rows || []).map((row) => ({
@@ -127,6 +160,7 @@ export function DialogSessionList({
               const updated = (await getChatTransport().renameSession(sessionId, title)) || {
                 session_id: sessionId,
               };
+              if (!aliveRef.current) return;
               const patch = {
                 title: updated.title || title,
                 display_title: updated.display_title || title,
@@ -207,7 +241,10 @@ export function DialogSessionList({
       onSelect={(opt) => {
         void (async () => {
           try {
-            const attached = await getChatTransport().attachSession(opt.value.session_id);
+            const attached = await getChatTransport().attachSession(
+              opt.value.session_id,
+              opt.value.model_id,
+            );
             onLoaded({
               name: opt.value.display_title || opt.value.session_id,
               messages: attached.messages,
@@ -245,6 +282,7 @@ export function DialogSessionList({
         if (result.action === "pin") {
           void (async () => {
             await getChatTransport().pinSession(opt.value.session_id, !opt.value.pinned);
+            if (!aliveRef.current) return;
             await reload();
           })();
           return true;
@@ -252,6 +290,7 @@ export function DialogSessionList({
         if (result.action === "fork") {
           void (async () => {
             await getChatTransport().forkSession(opt.value.session_id);
+            if (!aliveRef.current) return;
             await reload();
           })();
           return true;

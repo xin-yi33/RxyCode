@@ -45,7 +45,7 @@ export interface ChatTransport {
   openParentSession(): Promise<ChildNavigationResult>;
   shutdown?(): Promise<void>;
   listSessions(): Promise<SessionListRow[]>;
-  attachSession(sessionId: string): Promise<AttachSessionResult>;
+  attachSession(sessionId: string, modelId?: string | null): Promise<AttachSessionResult>;
   renameSession(sessionId: string, title: string): Promise<SessionListRow>;
   trashSession(sessionId: string): Promise<void>;
   pinSession(sessionId: string, pinned: boolean): Promise<void>;
@@ -69,6 +69,8 @@ export interface SessionListRow {
   created_at?: string;
   workspace_root?: string;
   status?: string;
+  model_id?: string | null;
+  provider_id?: string | null;
 }
 
 export interface AttachSessionResult {

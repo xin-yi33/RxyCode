@@ -8,9 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from contextlib import contextmanager
+from collections.abc import Iterator
+
 from .credential_store import (
     atomic_write_text,
     delete_credential,
+    exclusive_file_lock,
     load_credential,
     restrict_file_permissions,
     store_credential,
@@ -151,6 +155,18 @@ def get_settings() -> dict:
     ``schedule.revive_orphans_on_restore``).
     """
     return deepcopy(_default_config())
+
+
+@contextmanager
+def hold_config_lock() -> Iterator[None]:
+    """Hold the config file lock across one read-modify-write.
+
+    ``load_config`` and ``save_config`` each take only the in-process lock.
+    Callers that change models must hold this lock from the fresh read
+    through the matching save. Network probes stay outside it.
+    """
+    with exclusive_file_lock(get_config_path()):
+        yield
 
 
 def load_config() -> dict:

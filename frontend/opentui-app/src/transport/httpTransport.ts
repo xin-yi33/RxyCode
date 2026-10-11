@@ -294,7 +294,7 @@ export const httpTransport: ChatTransport = {
     return [];
   },
 
-  async attachSession(sessionId: string) {
+  async attachSession(sessionId: string, _modelId?: string | null) {
     return { session_id: sessionId, messages: [] };
   },
 

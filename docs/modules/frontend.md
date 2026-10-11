@@ -18,7 +18,7 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 - Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
 - **Chat transport** (P5): `RXYCODE_TRANSPORT=stdio|http` (default `stdio`)
   - `stdio` (default): spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
-  - `/session` attach 走 `session/events` → `sessionEventsToMessages`：恢复 thought（`event/final.thinking`）、已结束的 tool card、`done` 的 assistant（Markdown 编译后展示）。禁止把加载消息剥成只有 role/content（会让 tool 一直 `[running]`、MD 变源码）
+  - `/session` attach 走完整 `session/events`（不是截断后的 `session/items` 页）→ `sessionEventsToMessages`：用 `call_id` 索引配 tool_end，恢复 thought（`event/final.thinking`）、已结束的 tool card、`done` 的 assistant（Markdown 编译后展示）。没有 begin 的 tool_end 仍保留为一条 tool。禁止把加载消息剥成只有 role/content（会让 tool 一直 `[running]`、MD 变源码）。会话列表每次刷新（打开、置顶、重命名、Fork）都递增请求序号，只有最新一次能改列表和缓存。`models/list`、`session/events` 等管理 RPC 有超时；`session/prompt` 没有。任务模型身份是配置里的 `model_id`（`sessions/list` 已带回），显示名和上下文上限都从这一条取出。失败的 `session/set_model` 之后继续显示这个 id，不改其它窗口的全局 active；换会话、重连或成功切模会换掉它。切模请求在等待期间固定发起时的 `session_id` 和代次，迟到成功或失败都不改已经加载的另一会话。关闭会话弹窗后，置顶、重命名、Fork 的迟到回调不再刷新列表缓存。
   - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`) — fallback via `RXYCODE_TRANSPORT=http`
   - Status bar 上下文/缓存: stdio 消费 `event/token_usage` + `models/list.context_window`（不再依赖 HTTP `/status`）
   - Esc 立即结束 Processing，后台再发 `session/interrupt`

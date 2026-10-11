@@ -52,6 +52,55 @@ describe("sessionEventsToMessages", () => {
     expect(loaded.find((m) => m.role === "assistant")?.content).toBe("# Hello");
   });
 
+  test("out-of-order tool_end updates the matching call, not the latest tool", () => {
+    const messages = sessionEventsToMessages([
+      { method: "event/tool_begin", params: { call_id: "a", tool_name: "read", arguments: { path: "a" } } },
+      { method: "event/tool_begin", params: { call_id: "b", tool_name: "bash", arguments: { command: "ls" } } },
+      { method: "event/tool_end", params: { call_id: "a", ok: true, summary: "file" } },
+      { method: "event/tool_end", params: { call_id: "b", ok: false, summary: "fail" } },
+      { method: "event/message_delta", params: { text: "after" } },
+      { method: "event/final", params: { text: "after", thinking: "thought" } },
+    ]);
+    expect(messages.map((m) => m.role)).toEqual(["tool", "tool", "thinking", "assistant"]);
+    expect(messages[0]?.toolStatus).toBe("success");
+    expect(messages[0]?.content).toBe("file");
+    expect(messages[1]?.toolStatus).toBe("error");
+    expect(messages[1]?.content).toBe("fail");
+    expect(messages[3]?.content).toBe("after");
+  });
+
+  test("a tool_end whose begin is on an earlier page stays a real tool row", () => {
+    const page = sessionEventsToMessages([
+      { method: "event/tool_end", params: { call_id: "late", ok: true, summary: "kept", tool_name: "read" } },
+      { method: "event/final", params: { text: "done" } },
+    ]);
+    expect(page.map((m) => m.role)).toEqual(["tool", "assistant"]);
+    expect(page[0]?.toolCallId).toBe("late");
+    expect(page[0]?.content).toBe("kept");
+    expect(page[0]?.toolStatus).toBe("success");
+  });
+
+  test("twenty thousand tool pairs settle without a full-list scan", () => {
+    const events = [];
+    for (let i = 0; i < 20000; i += 1) {
+      events.push({
+        method: "event/tool_begin",
+        params: { call_id: `c${i}`, tool_name: "read", arguments: { path: "a" } },
+      });
+      events.push({
+        method: "event/tool_end",
+        params: { call_id: `c${i}`, ok: true, summary: "ok" },
+      });
+    }
+    const started = performance.now();
+    const messages = sessionEventsToMessages(events);
+    const elapsed = performance.now() - started;
+    expect(messages.length).toBe(20000);
+    expect(messages[0]?.toolStatus).toBe("success");
+    expect(messages[19999]?.toolCallId).toBe("c19999");
+    expect(elapsed).toBeLessThan(200);
+  });
+
   test("matched tool_end error is settled with endedAt", () => {
     const messages = sessionEventsToMessages([
       {

@@ -30,6 +30,18 @@ describe("stdio admin commands", () => {
     });
   });
 
+  test("status poll keeps the worker model after a failed global switch", () => {
+    const listed = {
+      active: "new/model",
+      models: [
+        { id: "old/model", name: "old-model", nickname: "old-model", active: false },
+        { id: "new/model", name: "new-model", nickname: "new-model", active: true },
+      ],
+    };
+    const status = statusFromModelsList(listed, { model: "old-model" }, "old/model");
+    expect(status.model).toBe("old-model");
+  });
+
   test("status bar uses persisted active model before the worker starts", () => {
     const status = statusFromModelsList({
       active: "deepseek/deepseek-v4-flash",

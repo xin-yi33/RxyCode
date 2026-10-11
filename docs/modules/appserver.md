@@ -43,7 +43,11 @@ messages to **stdout**, and sends all logs to **stderr** only.
 ## Request flow
 
 ```
-Client stdin  -> AppServer._dispatch()
+Client stdin  -> dedicated reader -> AppServer._dispatch()
+              control (interrupt, approval reply, steer) is not queued
+              behind discover, connection test, or model switch
+              same-session prompt/set_model/rename stay in arrival order
+              model-config writes stay on one lane; discover is capped
               -> AgentHost (subprocess per session, T1)
               -> agent_worker: bootstrap_agent(workspace_root) + Session.prompt()
               -> AgentV2.run()
@@ -66,7 +70,13 @@ Background `session/new` warm uses a 180s budget and **single-flight**
 bootstrap: a timed-out waiter does not start a second AgentV2 constructor.
 `session/set_model` joins that same in-flight warm (also 180s) instead of
 aborting at 30s, which previously left Desktop stuck on
-`Starting Agent worker…`. After bootstrap the GUI receives
+`Starting Agent worker…`. It does not block the stdin reader: interrupt and
+approval replies are dispatched while it runs, and a later prompt for that
+same session waits until the switch handler returns. `event/token_usage`,
+terminal status, and rename update the in-memory row immediately and share
+the buffered `tasks.json` flush with replay events. `flush_pending` still
+runs on shutdown. A hard kill can drop the last ~0.2s of those fields;
+create, trash, restore, and purge still save immediately. After bootstrap the GUI receives
 `Waiting for model response…` so the startup banner cannot linger over
 later tool activity.
 

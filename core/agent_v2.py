@@ -2463,7 +2463,15 @@ class AgentV2:
         active = getattr(self, "_active_task", None)
         if active is not None and not active.done():
             raise RuntimeError("cannot switch model during an active run")
-        model_config = _settings.get_model_config(configured_name, self._cfg)
+        # The worker's startup copy of config does not contain models added
+        # later. Read the catalog at the switch boundary, but keep this
+        # session's other settings (active default, mcpServers, routes).
+        fresh = _settings.load_config()
+        lookup = dict(self._cfg) if isinstance(getattr(self, "_cfg", None), dict) else {}
+        fresh_models = fresh.get("models") if isinstance(fresh, dict) else None
+        if isinstance(fresh_models, dict):
+            lookup["models"] = fresh_models
+        model_config = _settings.get_model_config(configured_name, lookup)
         api_key = str(model_config.get("api_key") or "").strip()
         if not api_key:
             env_name = model_config.get("api_key_env") or "the configured environment variable"
@@ -2476,22 +2484,25 @@ class AgentV2:
         except Exception:
             pass
         # Build the new LLM before mutating live state so a missing-credential
-        # / construct failure leaves the previous model active.
+        # / construct failure leaves the previous model, memory, and router.
         new_llm = self._build_llm_from_config(model_config)
+        new_provider = providers.resolve(model_config)
+        new_capabilities = new_provider.capabilities(model_config)
+        new_memory = MemoryManager(session_id=self._session_id, llm=new_llm)
+        new_memory.bind_rag_indexer(getattr(self, "_rag_indexer_thread", None))
         self.model_config = model_config
         self._llm = new_llm
-        self._provider = providers.resolve(model_config)
-        self._capabilities = self._provider.capabilities(model_config)
+        self._provider = new_provider
+        self._capabilities = new_capabilities
+        self._memory = new_memory
+        if isinstance(self._cfg, dict) and isinstance(fresh_models, dict):
+            self._cfg["models"] = dict(fresh_models)
         self._sync_token_stats_context()
         self._model_router.register(
             "default",
             self._llm,
             provider=self._provider_name(model_config),
             model_name=model_config.get("model_name"),
-        )
-        self._memory = MemoryManager(session_id=self._session_id, llm=self._llm)
-        self._memory.bind_rag_indexer(
-            getattr(self, "_rag_indexer_thread", None)
         )
         self._session_loaded = False
         token_stats.set_model(model_config.get("model_name"))

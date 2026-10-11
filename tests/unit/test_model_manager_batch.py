@@ -1,5 +1,6 @@
 """Batch onboard and provider metadata on add_model."""
 
+import threading
 from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
@@ -39,6 +40,260 @@ def test_add_model_persists_provider_metadata(monkeypatch):
     entry = state["cfg"]["models"]["deepseek-chat"]
     assert entry["provider_id"] == "deepseek"
     assert entry["provider_name"] == "DeepSeek"
+
+
+def test_onboard_batch_writes_config_and_credentials_once(monkeypatch):
+    """20 and 100 models are validated once, then committed in one config save."""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    for count in (20, 100):
+        state = {"cfg": {"models": {}}}
+        loads = 0
+        saves = 0
+        credential_writes = 0
+
+        def load(state=state):
+            nonlocal loads
+            loads += 1
+            return deepcopy(state["cfg"])
+
+        def save(new_cfg, state=state):
+            nonlocal saves
+            saves += 1
+            state["cfg"] = deepcopy(new_cfg)
+
+        def store_one(value, path):
+            nonlocal credential_writes
+            credential_writes += 1
+            return f"secret:{credential_writes}:{value}"
+
+        def store_many(values, path):
+            nonlocal credential_writes
+            credential_writes += 1
+            return [f"secret:{index}:{value}" for index, value in enumerate(values)]
+
+        monkeypatch.setattr(model_manager, "load_config", load)
+        monkeypatch.setattr(model_manager, "save_config", save)
+        monkeypatch.setattr(model_manager, "store_credential", store_one)
+        if hasattr(model_manager, "store_credentials"):
+            monkeypatch.setattr(model_manager, "store_credentials", store_many)
+        monkeypatch.setattr(model_manager, "delete_credential", lambda *args, **kwargs: None)
+
+        ids = [f"model-{index}" for index in range(count)]
+        ids.append(ids[0])
+        result = model_manager.onboard_models_batch(
+            api_key="sk-batch",
+            base_url="https://api.deepseek.com/v1",
+            model_ids=ids,
+            provider_id="deepseek",
+            provider_name="DeepSeek",
+            skip_probe=True,
+        )
+
+        assert len(result["added"]) == count
+        assert result["skipped"] == ["deepseek/model-0"]
+        assert loads <= 2
+        assert saves == 1
+        assert credential_writes == 1
+        assert len(state["cfg"]["models"]) == count
+        secrets = [entry["api_key_secret"] for entry in state["cfg"]["models"].values()]
+        assert len(secrets) == len(set(secrets))
+
+
+def test_onboard_batch_rolls_back_credentials_when_save_fails(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = {
+        "cfg": {
+            "models": {"other/kept": {"api_key_secret": "already-there", "model_name": "kept"}},
+            "theme": "kept-setting",
+        }
+    }
+    deleted: list[str] = []
+
+    monkeypatch.setattr(model_manager, "load_config", lambda: deepcopy(state["cfg"]))
+
+    def save(_new_cfg):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(model_manager, "save_config", save)
+    monkeypatch.setattr(
+        model_manager,
+        "store_credential",
+        lambda value, path: f"secret:{value}",
+    )
+    if hasattr(model_manager, "store_credentials"):
+        monkeypatch.setattr(
+            model_manager,
+            "store_credentials",
+            lambda values, path: [f"secret:{index}" for index in range(len(values))],
+        )
+
+    def delete(reference, path):
+        deleted.append(reference)
+
+    monkeypatch.setattr(model_manager, "delete_credential", delete)
+    if hasattr(model_manager, "delete_credentials"):
+        monkeypatch.setattr(
+            model_manager,
+            "delete_credentials",
+            lambda references, path: deleted.extend(references),
+        )
+
+    try:
+        model_manager.onboard_models_batch(
+            api_key="sk-batch",
+            base_url="https://api.deepseek.com/v1",
+            model_ids=["model-a", "model-b"],
+            provider_id="deepseek",
+            provider_name="DeepSeek",
+            skip_probe=True,
+        )
+    except RuntimeError as exc:
+        assert "disk full" in str(exc)
+    else:
+        raise AssertionError("save failure must surface")
+
+    assert state["cfg"]["theme"] == "kept-setting"
+    assert state["cfg"]["models"]["other/kept"]["api_key_secret"] == "already-there"
+    assert "already-there" not in deleted
+    assert deleted
+
+
+def test_batch_commit_keeps_changes_made_during_probe(monkeypatch):
+    """A connection check must not freeze the config that is later saved."""
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = {"cfg": {"models": {}, "theme": "initial"}}
+
+    monkeypatch.setattr(model_manager, "load_config", lambda: deepcopy(state["cfg"]))
+    monkeypatch.setattr(
+        model_manager,
+        "save_config",
+        lambda new_cfg: state.__setitem__("cfg", deepcopy(new_cfg)),
+    )
+    monkeypatch.setattr(model_manager, "delete_credential", lambda *args, **kwargs: None)
+    monkeypatch.setattr(model_manager, "delete_credentials", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        model_manager,
+        "store_credentials",
+        lambda values, path: [f"new-{index}" for index in range(len(values))],
+    )
+
+    def probe(**_kwargs):
+        state["cfg"]["theme"] = "changed-by-user"
+        state["cfg"]["models"]["other/kept"] = {"model_name": "kept", "api_key_secret": "old-ref"}
+        return {"success": True}
+
+    monkeypatch.setattr(model_manager, "probe_model_connection", probe)
+    result = model_manager.onboard_models_batch(
+        api_key="env:AUDIT_FAKE_API_KEY",
+        base_url="https://api.deepseek.com/v1",
+        model_ids=["batch-model"],
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+        skip_probe=False,
+    )
+
+    assert "deepseek/batch-model" in result["added"]
+    assert "other/kept" in state["cfg"]["models"]
+    assert state["cfg"]["models"]["other/kept"]["api_key_secret"] == "old-ref"
+    assert state["cfg"]["theme"] == "changed-by-user"
+
+
+def test_two_batches_keep_both_new_models(monkeypatch, tmp_path):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = {"cfg": {"models": {}, "theme": "shared"}}
+    monkeypatch.setattr(model_manager, "get_config_path", lambda: tmp_path / "config.yaml")
+    barrier = threading.Barrier(2)
+
+    def load():
+        snap = deepcopy(state["cfg"])
+        try:
+            barrier.wait(timeout=0.3)
+        except threading.BrokenBarrierError:
+            pass
+        return snap
+
+    def save(new_cfg):
+        state["cfg"] = deepcopy(new_cfg)
+
+    monkeypatch.setattr(model_manager, "load_config", load)
+    monkeypatch.setattr(model_manager, "save_config", save)
+    monkeypatch.setattr(model_manager, "delete_credential", lambda *args, **kwargs: None)
+    monkeypatch.setattr(model_manager, "delete_credentials", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        model_manager,
+        "store_credentials",
+        lambda values, path: [f"ref-{values[0]}-{index}" for index in range(len(values))],
+    )
+
+    errors: list[BaseException] = []
+
+    def run(model_id: str, provider: str):
+        try:
+            model_manager.onboard_models_batch(
+                api_key=f"sk-{provider}",
+                base_url="https://api.deepseek.com/v1" if provider == "deepseek" else "https://opencode.ai/zen/go/v1",
+                model_ids=[model_id],
+                provider_id=provider,
+                provider_name=provider,
+                skip_probe=True,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=run, args=("left", "deepseek"))
+    second = threading.Thread(target=run, args=("right", "opencode-go"))
+    first.start()
+    second.start()
+    first.join(timeout=3)
+    second.join(timeout=3)
+    assert not errors
+    assert not first.is_alive() and not second.is_alive()
+    assert "deepseek/left" in state["cfg"]["models"]
+    assert "opencode-go/right" in state["cfg"]["models"]
+    assert state["cfg"]["theme"] == "shared"
+
+
+def test_commit_does_not_overwrite_model_added_before_save(monkeypatch):
+    from RxyCode.RxyCode1_1_0.config import model_manager
+
+    state = {"cfg": {"models": {}, "theme": "kept-setting"}}
+    deleted: list[str] = []
+    monkeypatch.setattr(model_manager, "load_config", lambda: deepcopy(state["cfg"]))
+    monkeypatch.setattr(
+        model_manager,
+        "save_config",
+        lambda new_cfg: state.__setitem__("cfg", deepcopy(new_cfg)),
+    )
+
+    def store_many(values, path):
+        state["cfg"]["models"]["deepseek/model-0"] = {
+            "model_name": "model-0",
+            "provider_id": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key_secret": "already",
+        }
+        return ["new-ref" for _value in values]
+
+    monkeypatch.setattr(model_manager, "store_credentials", store_many)
+    monkeypatch.setattr(model_manager, "delete_credentials", lambda refs, path: deleted.extend(refs))
+    result = model_manager.onboard_models_batch(
+        api_key="sk-batch",
+        base_url="https://api.deepseek.com/v1",
+        model_ids=["model-0"],
+        provider_id="deepseek",
+        provider_name="DeepSeek",
+        skip_probe=True,
+    )
+    assert result["added"] == []
+    assert "deepseek/model-0" in result["skipped"]
+    assert state["cfg"]["models"]["deepseek/model-0"]["api_key_secret"] == "already"
+    assert state["cfg"]["theme"] == "kept-setting"
+    assert "new-ref" in deleted
+    assert "already" not in deleted
 
 
 def test_onboard_models_batch_skips_probe_and_adds_multiple(monkeypatch):

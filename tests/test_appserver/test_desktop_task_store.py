@@ -238,6 +238,60 @@ async def test_buffered_appends_coalesce_into_few_disk_writes(monkeypatch, tmp_p
     assert [event["params"]["i"] for event in disk["events"]["s1"]] == list(range(50))
 
 
+async def test_hot_usage_status_and_rename_do_not_rewrite_per_call(monkeypatch, tmp_path: Path):
+    """Token usage, terminal status, and rename share one coalesced rewrite.
+
+    Each of those used to read and replace the whole tasks.json on the
+    appserver loop. A burst must return before that disk work, then one
+    flush must land the latest values.
+    """
+    import appserver.task_store as task_store_module
+
+    monkeypatch.setattr(task_store_module, "_BUFFER_FLUSH_DELAY_SECONDS", 0.01)
+    store = DesktopTaskStore(tmp_path / "tasks.json")
+    sessions = SessionStore(task_store=store)
+    record = sessions.create(tmp_path / "workspace", title="Old title")
+    reads = 0
+    writes = 0
+    original_read = store._read_disk
+    original_write = store._write_merged
+
+    def counting_read():
+        nonlocal reads
+        reads += 1
+        time.sleep(0.02)
+        return original_read()
+
+    def counting_write(merged):
+        nonlocal writes
+        writes += 1
+        time.sleep(0.02)
+        return original_write(merged)
+
+    monkeypatch.setattr(store, "_read_disk", counting_read)
+    monkeypatch.setattr(store, "_write_merged", counting_write)
+
+    started = time.perf_counter()
+    for index in range(20):
+        sessions.update_usage(record.session_id, {"input_tokens": index, "output_tokens": index})
+    sessions.update_status(record.session_id, "completed")
+    sessions.rename(record.session_id, "Renamed title")
+    elapsed = time.perf_counter() - started
+
+    assert reads == 0
+    assert writes == 0
+    assert elapsed < 0.15
+    await store.flush_pending(timeout=2.0)
+    assert reads == 1
+    assert writes == 1
+    disk = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))
+    row = disk["tasks"][record.session_id]
+    assert row["title"] == "Renamed title"
+    assert row["status"] == "completed"
+    assert row["usage"]["input_tokens"] == 19
+    assert row["usage"]["output_tokens"] == 19
+
+
 async def test_persist_notification_does_not_block_the_loop(monkeypatch, tmp_path: Path):
     """The 26MB lock+read+merge+fsync save must not run on the appserver loop."""
     server = AppServer(stub=True)
@@ -320,6 +374,65 @@ async def test_two_store_instances_keep_each_others_buffered_events(tmp_path: Pa
     disk = json.loads(path.read_text(encoding="utf-8"))
     assert [event["params"]["n"] for event in disk["events"]["winA"]] == [1, 3]
     assert [event["params"]["n"] for event in disk["events"]["winB"]] == [2]
+
+
+async def test_stale_event_snapshot_does_not_rewind_task_metadata(monkeypatch, tmp_path: Path):
+    """A buffered event snapshot taken before upsert/rename/trash must not win."""
+    monkeypatch.setattr("appserver.task_store._now", lambda: "2026-10-11T00:00:00Z")
+    store = DesktopTaskStore(tmp_path / "tasks.json")
+    store.upsert(
+        session_id="s1",
+        title="Old title",
+        workspace_root=tmp_path,
+        model_id="old-model",
+        provider_id="old",
+        status="running",
+    )
+
+    original = store._event_snapshot
+    raced = False
+
+    def racing_snapshot():
+        nonlocal raced
+        snapshot = original()
+        if not raced:
+            raced = True
+            store.upsert(
+                session_id="s1",
+                title="New title",
+                workspace_root=tmp_path,
+                model_id="new-model",
+                provider_id="new",
+                status="completed",
+                usage={
+                    "input_tokens": 9,
+                    "output_tokens": 4,
+                    "cache_hit_tokens": None,
+                    "cache_write_tokens": None,
+                    "cache_hit_rate": None,
+                    "reporting_status": "reported",
+                },
+            )
+            store.rename("s1", "Renamed title")
+            store.trash("s1")
+            store.restore("s1")
+        return snapshot
+
+    monkeypatch.setattr(store, "_event_snapshot", racing_snapshot)
+    store.append_event_buffered("s1", "event/progress", {"n": 1})
+    await store.flush_pending(timeout=5.0)
+
+    disk = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))
+    task = disk["tasks"]["s1"]
+    assert task["model_id"] == "new-model"
+    assert task["title"] == "Renamed title"
+    assert task["status"] == "completed"
+    assert task["usage"]["input_tokens"] == 9
+    assert task["trashed_at"] is None
+    assert [event["params"]["n"] for event in disk["events"]["s1"]] == [1]
+    reloaded = DesktopTaskStore(tmp_path / "tasks.json")
+    assert reloaded.get("s1")["model_id"] == "new-model"
+    assert reloaded.get("s1")["status"] == "completed"
 
 
 async def test_purge_during_pending_flush_does_not_resurrect_session(monkeypatch, tmp_path: Path):

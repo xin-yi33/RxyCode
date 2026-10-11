@@ -20,9 +20,22 @@ reads the API key from `RXYCODE_API_KEY` (never from argv). Empty config errors
 point at this command or the TUI `/addmodel` flow, not a missing subcommand.
 
 `add_model()` accepts optional `provider_id` and `provider_name` metadata for
-grouping in `/model`. `onboard_models_batch()` adds multiple models in one pass;
-when `skip_probe=True` (preset/custom discover path) it never calls
-`probe_model_connection()`. Config keys are namespaced as
+grouping in `/model`. `activate=True` sets the active model in that same save.
+`onboard_models_batch()` validates the whole list first, then writes
+credentials once and config once. The connection check does not hold the
+config lock. The save re-reads the latest file inside `hold_config_lock()`
+and only inserts keys that are still absent, so a concurrent model or
+setting change is kept. Each new model still gets its own credential
+reference, so deleting one does not erase the others. A failed save deletes
+only the references created for that attempt. `add_model`, `set_active_model`,
+`remove_model`, and credential clearing use the same lock. The in-process
+`RLock` alone is not the cross-process protection; the file lock is.
+Credential add, batch add, and delete take `exclusive_file_lock` on
+`credentials.yaml` for the whole read-modify-write. That lock is released
+before the config lock is taken, so a model save never waits on config while
+still holding the credential lock. When `skip_probe=True`
+(preset/custom discover path) it never calls
+`probe_model_connection()`. Duplicate ids in the batch are skipped. Config keys are namespaced as
 `{provider_id}/{model_id}` so the same vendor model id can exist under two
 groups (e.g. DeepSeek vs OpenCode Go). `infer_provider_group(base_url)` maps a
 URL host to a preset name, else ``其他``.

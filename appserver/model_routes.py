@@ -403,27 +403,12 @@ def delete_credential(params: dict[str, Any]) -> dict[str, Any]:
 
     params: {id}
     """
-    credentials = _load_module("..config.credential_store", "config.credential_store")
     manager = _load_module("..config.model_manager", "config.model_manager")
-    settings = _load_module("..config.settings", "config.settings")
-    _delete_secret = credentials.delete_credential
-    load_config = manager.load_config
-    save_config = manager.save_config
-    get_config_path = settings.get_config_path
+    clear_model_credential = manager.clear_model_credential
 
     model_id = str(params.get("id", "")).strip()
     if not model_id:
         return {"ok": False, "error_code": "invalid", "message": "id must not be empty"}
-
-    cfg = load_config()
-    entry = (cfg.get("models") or {}).get(model_id)
-    if not isinstance(entry, dict):
+    if not clear_model_credential(model_id):
         return {"ok": False, "error_code": "not_found", "message": f"No model with id '{model_id}'"}
-
-    reference = entry.get("api_key_secret")
-    if reference:
-        _delete_secret(reference, get_config_path())
-    entry.pop("api_key_secret", None)
-    entry.pop("api_key_env", None)
-    save_config(cfg)
     return {"ok": True, "id": model_id}
