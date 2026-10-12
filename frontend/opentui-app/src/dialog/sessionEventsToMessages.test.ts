@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { normalizeLoadedMessages, sessionEventsToMessages } from "./sessionEventsToMessages.ts";
+import { formatAllMessagesForCopy } from "../transcriptMountBudget.ts";
 
 describe("sessionEventsToMessages", () => {
   test("settles unmatched tools and restores thought plus markdown-ready assistant", () => {
@@ -50,6 +51,36 @@ describe("sessionEventsToMessages", () => {
     expect(tool?.toolArgs).toContain("a");
     expect(loaded.find((m) => m.role === "assistant")?.done).toBe(true);
     expect(loaded.find((m) => m.role === "assistant")?.content).toBe("# Hello");
+  });
+
+  test("replay and transcript copy retain only lightweight attachment labels", () => {
+    const eventMessages = sessionEventsToMessages([
+      {
+        method: "event/user_message",
+        params: {
+          text: "请查看附件。",
+          attachments: [{ path: "C:\\fixtures\\diagram.png", name: "diagram.png", rawBytes: "A".repeat(100_000) }],
+        },
+      },
+    ]);
+    expect(eventMessages[0]?.attachments).toEqual([
+      { path: "C:\\fixtures\\diagram.png", name: "diagram.png" },
+    ]);
+    expect(JSON.stringify(eventMessages)).not.toContain("rawBytes");
+
+    const loaded = normalizeLoadedMessages([{
+      role: "user",
+      content: "请查看附件。",
+      attachments: [{ path: "C:\\fixtures\\diagram.png", name: "diagram.png", bytes: "A".repeat(100_000) }],
+    }]);
+    expect(loaded[0]?.attachments).toEqual([
+      { path: "C:\\fixtures\\diagram.png", name: "diagram.png" },
+    ]);
+    const copied = formatAllMessagesForCopy(loaded);
+    expect(copied).toContain("请查看附件。");
+    expect(copied).toContain("[附件] diagram.png · image");
+    expect(copied).not.toContain("C:\\fixtures");
+    expect(copied).not.toContain("AAAA");
   });
 
   test("out-of-order tool_end updates the matching call, not the latest tool", () => {

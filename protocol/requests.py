@@ -42,6 +42,13 @@ class NewSessionRequest(BaseModel):
     model: str | None = None
 
 
+class PromptAttachment(BaseModel):
+    """Client-local file reference carried with one ``session/prompt`` turn."""
+
+    path: str = Field(min_length=1, max_length=4096)
+    name: str | None = Field(default=None, max_length=512)
+
+
 class PromptRequest(BaseModel):
     """One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).
 
@@ -50,11 +57,14 @@ class PromptRequest(BaseModel):
     semantics when appserver enforces wall-clock limits.
     ``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning
     stream emission on ``ProtocolTui``.
+    ``attachments`` contains only client-selected local file references; the
+    worker revalidates every path and never persists media bytes.
     """
 
     method: Literal["session/prompt"] = "session/prompt"
     session_id: str
     text: str
+    attachments: list[PromptAttachment] = Field(default_factory=list, max_length=10)
     timeout_seconds: float | None = Field(
         default=None,
         description="Optional wall-clock limit for this prompt (maps execution.tool_timeout_seconds semantics).",

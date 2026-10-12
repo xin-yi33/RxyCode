@@ -57,6 +57,19 @@ Question      -> worker PipeQuestionBroker -> AgentHost -> client `question/requ
 Watchdog (T4) -> periodic event/server_heartbeat; stall -> kill worker + degraded
 ```
 
+`session/prompt` accepts optional `attachments: [{path, name?}]` metadata and
+passes it through `_run_prompt` (including watchdog restart snapshots),
+`AgentHost.run_prompt`, worker params, and `Session.prompt`. The worker/core
+reopens and validates the client-local paths; task events and idempotent result
+metadata retain only paths and labels, never image bytes. Reusing a request ID
+with a different prompt body or attachment metadata is rejected rather than
+replaying the prior answer. `initialize.result.capabilities` includes
+`prompt_attachments: true`; the protocol version is unchanged.
+
+The HTTP `/chat` and `/chat/stream` adapters also pass the same optional field
+to the same Session entry point. They do not create an alternate attachment
+loop.
+
 For an enabled stall recovery decision, `AppServer` reads the current
 session's authoritative TodoSnapshot immediately before building
 `watchdog_stall` evidence. The same session/root/list/scope validation is used

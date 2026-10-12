@@ -22,6 +22,7 @@ import {
   sendChatMessage,
   sendCommand,
   steerTurn,
+  getCurrentSessionId,
 } from "./chatApi.ts";
 import { resolveTransportKind } from "./transport/config.ts";
 import { bindTodoDock, startStdioWarmOnOpen } from "./transport/stdioTransport.ts";
@@ -71,6 +72,16 @@ import {
   type Mode,
   type StatusInfo,
 } from "./types.ts";
+import {
+  captureClipboard,
+  formatAttachmentLabels,
+  getAttachmentKind,
+  getAttachmentName,
+  MAX_CLIPBOARD_ATTACHMENTS,
+  parsePurePathDrop,
+  resolveExistingPathDrop,
+  type ClipboardAttachment,
+} from "./clipboard.ts";
 import {
   welcomeRowsForSetup,
   WORDMARK,
@@ -314,18 +325,24 @@ const USER_BAR_GLYPH = "\u258E";
 /** OpenCode-style user bubble: panel field + thin bar on every row. */
 function UserMessage({
   content,
+  attachments = [],
   modeColor,
   wrapW,
   markdown = true,
 }: {
   content: string;
+  attachments?: readonly ClipboardAttachment[];
   modeColor: string;
   wrapW: number;
   markdown?: boolean;
 }) {
   const rendered = markdown && looksLikeMarkdown(content);
   const lines = wrapContentLines(content, Math.max(8, wrapW - 2));
-  const barCount = Math.max(3, (rendered ? content.split(/\r?\n/).length : lines.length) + 2);
+  const attachmentText = attachments.length
+    ? `附件: ${attachments.map((item) => `${getAttachmentName(item)} · ${getAttachmentKind(item)}`).join("  | ")}`
+    : "";
+  const attachmentLines = attachmentText ? wrapContentLines(attachmentText, Math.max(8, wrapW - 2)) : [];
+  const barCount = Math.max(3, (rendered ? content.split(/\r?\n/).length : lines.length) + attachmentLines.length + 2);
   return (
     <box
       style={{
@@ -361,6 +378,11 @@ function UserMessage({
             </text>
           ))
         )}
+        {attachmentLines.map((line, i) => (
+          <text key={`attachment-${i}`} fg={C.teal} selectable>
+            {line || " "}
+          </text>
+        ))}
       </box>
     </box>
   );
@@ -398,7 +420,7 @@ function ChatLine({
   if (msg.role === "user") {
     const frameColor =
       msg.mode && MODE_COLORS[msg.mode] ? MODE_COLORS[msg.mode] : modeColor;
-    return <UserMessage content={msg.content} modeColor={frameColor} wrapW={wrapW} markdown={markdown} />;
+    return <UserMessage content={msg.content} attachments={msg.attachments} modeColor={frameColor} wrapW={wrapW} markdown={markdown} />;
   }
   if (msg.role === "assistant") {
     if (msg.done && planBody && msg.content === planBody) {
@@ -486,10 +508,35 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const messagesRef = useRef<ChatMessage[]>([]);
   messagesRef.current = messages;
+  const [inputValue, setInputValue] = useState("");
+  const inputTextRef = useRef("");
+  const [attachments, setAttachments] = useState<ClipboardAttachment[]>([]);
+  const attachmentsRef = useRef<ClipboardAttachment[]>([]);
+  attachmentsRef.current = attachments;
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteNotice, setPasteNotice] = useState("");
+  const draftEpochRef = useRef(0);
+  const pasteEpochRef = useRef(0);
+  const pasteGenerationRef = useRef(0);
+  const activeClipboardCaptureRef = useRef<AbortController | null>(null);
+  const pendingCtrlVPasteRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptWindowRef = useRef<TranscriptMountWindowHandle | null>(null);
   const [sessionMountEpoch, setSessionMountEpoch] = useState(0);
   const setLoadedSessionMessages = useCallback(
     (updater: (previous: ChatMessage[]) => ChatMessage[]) => {
+      draftEpochRef.current += 1;
+      pasteEpochRef.current += 1;
+      pasteGenerationRef.current += 1;
+      if (pendingCtrlVPasteRef.current !== null) {
+        clearTimeout(pendingCtrlVPasteRef.current);
+        pendingCtrlVPasteRef.current = null;
+      }
+      activeClipboardCaptureRef.current?.abort();
+      activeClipboardCaptureRef.current = null;
+      inputTextRef.current = "";
+      setInputValue("");
+      attachmentsRef.current = [];
+      setAttachments([]);
       setSessionMountEpoch((current) => current + 1);
       setMessages(updater);
     },
@@ -514,7 +561,6 @@ export default function App() {
   });
   const [todoHidden, setTodoHidden] = useState(false);
   const [sticky, setSticky] = useState<StickyState>(createStickyState());
-  const [inputValue, setInputValue] = useState("");
   const [paletteIdx, setPaletteIdx] = useState(0);
   const [permissionMode, setPermissionMode] = useState("confirm_all");
   const [copyToast, setCopyToast] = useState(false);
@@ -724,10 +770,39 @@ export default function App() {
     setFollowups(next);
   }, []);
 
+  const invalidatePasteWork = useCallback(() => {
+    pasteEpochRef.current += 1;
+    pasteGenerationRef.current += 1;
+    if (pendingCtrlVPasteRef.current !== null) {
+      clearTimeout(pendingCtrlVPasteRef.current);
+      pendingCtrlVPasteRef.current = null;
+    }
+    activeClipboardCaptureRef.current?.abort();
+    activeClipboardCaptureRef.current = null;
+    setPasteBusy(false);
+  }, []);
+
+  const markDraftChanged = useCallback(() => {
+    draftEpochRef.current += 1;
+    invalidatePasteWork();
+  }, [invalidatePasteWork]);
+
+  const replaceComposerAttachments = useCallback((next: readonly ClipboardAttachment[]) => {
+    if (next.length > MAX_CLIPBOARD_ATTACHMENTS) {
+      pushSystem(`附件最多 ${MAX_CLIPBOARD_ATTACHMENTS} 个；本次未添加`);
+      return false;
+    }
+    markDraftChanged();
+    const copied = next.map((item) => ({ ...item }));
+    attachmentsRef.current = copied;
+    setAttachments(copied);
+    return true;
+  }, [markDraftChanged, pushSystem]);
+
   const enqueueBusyFollowup = useCallback(
-    (raw: string, queuedMode: Mode) => {
+    (raw: string, queuedMode: Mode, queuedAttachments: readonly ClipboardAttachment[] = []) => {
       const before = followupsRef.current;
-      const next = enqueueFollowup(before, raw, queuedMode);
+      const next = enqueueFollowup(before, raw, queuedMode, queuedAttachments);
       if (next.length === before.length) {
         if (before.length >= FOLLOWUP_LIMIT) {
           pushSystem(`队列已满（最多 ${FOLLOWUP_LIMIT} 条），等当前回合结束后再发`);
@@ -742,15 +817,22 @@ export default function App() {
     [patchFollowups, pushSystem],
   );
 
-  const fillComposer = useCallback((text: string) => {
+  const fillComposer = useCallback((text: string, nextAttachments?: readonly ClipboardAttachment[]) => {
+    markDraftChanged();
+    inputTextRef.current = text;
     setInputValue(text);
+    if (nextAttachments) {
+      const copied = nextAttachments.map((item) => ({ ...item }));
+      attachmentsRef.current = copied;
+      setAttachments(copied);
+    }
     try {
       textareaRef.current?.setText(text);
       textareaRef.current?.focus();
     } catch {
       // ignore
     }
-  }, []);
+  }, [markDraftChanged]);
 
   const handleQueueDelete = useCallback(
     (id: string) => {
@@ -764,23 +846,36 @@ export default function App() {
       const taken = takeFollowupById(followupsRef.current, id);
       if (!taken.item) return;
       const draftText = (textareaRef.current?.plainText ?? inputValue).trim();
+      const draftAttachments = attachmentsRef.current.map((item) => ({ ...item }));
       const previous = editingFollowupRef.current;
       let next = taken.remaining;
       if (previous && previous.id !== taken.item.id) {
         next = putBackFollowup(next, {
           ...previous,
           text: draftText || previous.text,
+          attachments: draftText || draftAttachments.length ? draftAttachments : previous.attachments,
         });
       }
       editingFollowupRef.current = taken.item;
       patchFollowups(next);
-      fillComposer(taken.item.text);
+      fillComposer(taken.item.text, taken.item.attachments ?? []);
     },
     [fillComposer, inputValue, patchFollowups],
   );
 
   const handleQueueSendNow = useCallback(
     (id: string) => {
+      const queued = followupsRef.current.find((row) => row.id === id);
+      if (!queued) return;
+      const queuedAttachments = queued.attachments?.map((item) => ({ ...item })) ?? [];
+      if (queuedAttachments.length && parseMention(queued.text)) {
+        pushSystem("@child 调用不支持附件；该队列项及附件仍保留，请编辑为普通消息后发送");
+        return;
+      }
+      if (queuedAttachments.length && isStreamingRef.current) {
+        pushSystem("当前回合的即时 steer 协议只支持文本；附件仍留在队列，将在下一回合发送");
+        return;
+      }
       const taken = takeFollowupById(followupsRef.current, id);
       if (!taken.item) return;
       patchFollowups(taken.remaining);
@@ -815,7 +910,7 @@ export default function App() {
             return;
           }
         }
-        void submitTextRef.current?.(text, sendMode);
+        void submitTextRef.current?.(text, sendMode, undefined, queuedAttachments);
       })();
     },
     [mode, patchFollowups, pushSystem],
@@ -869,10 +964,18 @@ export default function App() {
   );
 
   const clearInput = useCallback(() => {
+    markDraftChanged();
+    inputTextRef.current = "";
     setInputValue("");
     textareaRef.current?.setText("");
     setPaletteIdx(0);
-  }, []);
+    setPasteNotice("");
+  }, [markDraftChanged]);
+
+  const clearComposer = useCallback(() => {
+    clearInput();
+    replaceComposerAttachments([]);
+  }, [clearInput, replaceComposerAttachments]);
 
   const statusLine = status
     ? `${status.model || "?"} · ${status.mode || mode} · effort ${formatComposerEffortChip(status.effort)} · ctx ${status.context_used_k ?? 0}k`
@@ -899,10 +1002,93 @@ export default function App() {
     },
   });
 
-  const submitTextRef = useRef<((text: string, sendMode?: Mode, displayText?: string) => Promise<void>) | null>(null);
+  const submitTextRef = useRef<((text: string, sendMode?: Mode, displayText?: string, attachments?: readonly ClipboardAttachment[]) => Promise<void>) | null>(null);
 
   const { dialogOpen, openPalette, openSession, openModel, openAddModel, routePaletteCommand } =
     settingsDialogs;
+
+  const pasteBlockedRef = useRef(false);
+  pasteBlockedRef.current = Boolean(dialogOpen || pendingApproval || pendingQuestion);
+
+  const captureClipboardNow = useCallback(async () => {
+    if (pasteBlockedRef.current) return;
+    if (activeClipboardCaptureRef.current) {
+      setPasteNotice("剪贴板读取中，请稍候");
+      return;
+    }
+    const controller = new AbortController();
+    activeClipboardCaptureRef.current = controller;
+    const snapshot = {
+      generation: ++pasteGenerationRef.current,
+      pasteEpoch: ++pasteEpochRef.current,
+      draftEpoch: draftEpochRef.current,
+      sessionId: getCurrentSessionId(),
+      draftText: textareaRef.current?.plainText ?? inputTextRef.current,
+    };
+    let expectedSessionId = snapshot.sessionId;
+    const sessionStillCurrent = () => {
+      const currentSessionId = getCurrentSessionId();
+      // A capture can begin before the first session is initialized. Accept that
+      // one null -> ID transition, then pin the ID for the rest of this request.
+      if (expectedSessionId === null) {
+        if (currentSessionId !== null) expectedSessionId = currentSessionId;
+        return true;
+      }
+      return expectedSessionId === currentSessionId;
+    };
+    const isCurrent = () =>
+      activeClipboardCaptureRef.current === controller &&
+      !controller.signal.aborted &&
+      snapshot.generation === pasteGenerationRef.current &&
+      snapshot.pasteEpoch === pasteEpochRef.current &&
+      snapshot.draftEpoch === draftEpochRef.current &&
+      sessionStillCurrent() &&
+      snapshot.draftText === (textareaRef.current?.plainText ?? inputTextRef.current) &&
+      !pasteBlockedRef.current;
+
+    setPasteBusy(true);
+    setPasteNotice("读取剪贴板…");
+    try {
+      const result = await captureClipboard(controller.signal);
+      if (!isCurrent()) return;
+      if (result.attachments.length) {
+        const combined = [...attachmentsRef.current, ...result.attachments];
+        if (!replaceComposerAttachments(combined)) return;
+        setPasteNotice(`已添加 ${result.attachments.length} 个附件`);
+        return;
+      }
+      if (result.text) {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.insertText(result.text);
+        markDraftChanged();
+        const nextText = textarea.plainText ?? `${snapshot.draftText}${result.text}`;
+        inputTextRef.current = nextText;
+        setInputValue(nextText);
+        setPasteNotice("已粘贴文本");
+        return;
+      }
+      setPasteNotice("剪贴板为空");
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) return;
+      if (!isCurrent()) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setPasteNotice(`剪贴板读取失败：${message}`);
+      pushSystem(`剪贴板读取失败：${message}`);
+    } finally {
+      if (activeClipboardCaptureRef.current === controller) {
+        activeClipboardCaptureRef.current = null;
+        setPasteBusy(false);
+      }
+    }
+  }, [inputValue, markDraftChanged, pushSystem, replaceComposerAttachments]);
+
+  useEffect(() => {
+    if (pasteBlockedRef.current) invalidatePasteWork();
+  }, [dialogOpen, pendingApproval, pendingQuestion, invalidatePasteWork]);
+
+  useEffect(() => () => invalidatePasteWork(), [invalidatePasteWork]);
 
   useEffect(() => {
     let cancelled = false;
@@ -933,9 +1119,13 @@ export default function App() {
   }, [openAddModel]);
 
   usePaste((event) => {
+    if (pendingCtrlVPasteRef.current !== null) {
+      clearTimeout(pendingCtrlVPasteRef.current);
+      pendingCtrlVPasteRef.current = null;
+    }
     // Nested dialogs own paste (focused search input). Do not preventDefault.
     // Streaming must still accept paste: Enter queues the follow-up.
-    if (dialogOpen || pendingApproval || pendingQuestion) return;
+    if (pasteBlockedRef.current) return;
     let text = "";
     try {
       text = stripAnsiSequences(decodePasteBytes(event.bytes));
@@ -946,7 +1136,15 @@ export default function App() {
         return;
       }
     }
-    if (!text) return;
+    if (!text) {
+      try {
+        event.preventDefault();
+      } catch {
+        // ignore
+      }
+      void captureClipboardNow();
+      return;
+    }
     try {
       event.preventDefault();
     } catch {
@@ -957,7 +1155,48 @@ export default function App() {
     try {
       ta.focus();
       ta.insertText(text);
-      setInputValue(ta.plainText ?? "");
+      const afterText = ta.plainText ?? "";
+      const afterCursor = ta.cursorOffset;
+      markDraftChanged();
+      inputTextRef.current = afterText;
+      setInputValue(afterText);
+      if (parsePurePathDrop(text)) {
+        const snapshot = {
+          generation: pasteGenerationRef.current,
+          pasteEpoch: pasteEpochRef.current,
+          draftEpoch: draftEpochRef.current,
+          sessionId: getCurrentSessionId(),
+          text: afterText,
+        };
+        void resolveExistingPathDrop(text).then((resolved) => {
+          if (!resolved || pasteBlockedRef.current) return;
+          if (
+            snapshot.generation !== pasteGenerationRef.current ||
+            snapshot.pasteEpoch !== pasteEpochRef.current ||
+            snapshot.draftEpoch !== draftEpochRef.current ||
+            snapshot.sessionId !== getCurrentSessionId() ||
+            snapshot.text !== (textareaRef.current?.plainText ?? inputValue)
+          ) return;
+          const combined = [...attachmentsRef.current, ...resolved];
+          if (combined.length > MAX_CLIPBOARD_ATTACHMENTS) {
+            setPasteNotice(`最多 ${MAX_CLIPBOARD_ATTACHMENTS} 个附件；路径已保留为文本`);
+            return;
+          }
+          const start = Math.max(0, afterCursor - text.length);
+          if (afterText.slice(start, afterCursor) !== text) return;
+          const prefix = afterText.slice(0, start);
+          const suffix = afterText.slice(afterCursor);
+          const restoredText = prefix + suffix;
+          const currentTextarea = textareaRef.current;
+          if (!currentTextarea) return;
+          inputTextRef.current = restoredText;
+          currentTextarea.setText(restoredText);
+          currentTextarea.cursorOffset = prefix.length;
+          setInputValue(restoredText);
+          replaceComposerAttachments(combined);
+          setPasteNotice(`已添加 ${resolved.length} 个附件`);
+        });
+      }
     } catch {
       // ignore
     }
@@ -989,6 +1228,31 @@ export default function App() {
           setMessages([]);
           setProgress("");
           reengageSticky();
+          clearComposer();
+          return;
+        }
+        if (name === "/paste") {
+          clearInput();
+          // Let the native textarea's clear/onContentChange settle first;
+          // otherwise its delayed change notification invalidates this capture.
+          queueMicrotask(() => void captureClipboardNow());
+          return;
+        }
+        if (name === "/removeattachment") {
+          const token = args.trim().toLowerCase();
+        if (token === "all") {
+            replaceComposerAttachments([]);
+            pushSystem("已清空附件");
+          } else {
+            const index = /^\d+$/.test(token) ? Number.parseInt(token, 10) - 1 : -1;
+            if (!Number.isInteger(index) || index < 0 || index >= attachmentsRef.current.length) {
+              pushSystem(`用法：/removeattachment <1-${attachmentsRef.current.length}|all>`);
+            } else {
+              const next = attachmentsRef.current.filter((_, itemIndex) => itemIndex !== index);
+              replaceComposerAttachments(next);
+              pushSystem(`已移除附件 ${index + 1}`);
+            }
+          }
           clearInput();
           return;
         }
@@ -1171,11 +1435,14 @@ export default function App() {
     },
     [
       clearInput,
+      clearComposer,
+      captureClipboardNow,
       copyAllMessages,
       openSession,
       pushSystem,
       reengageSticky,
       routePaletteCommand,
+      replaceComposerAttachments,
       toggleThinking,
     ],
   );
@@ -1234,13 +1501,14 @@ export default function App() {
   );
 
   const submitText = useCallback(
-    async (raw: string, sendMode?: Mode, displayText?: string) => {
+    async (raw: string, sendMode?: Mode, displayText?: string, attachmentsToSend: readonly ClipboardAttachment[] = []) => {
+      const frozenAttachments = attachmentsToSend.map((item) => ({ ...item }));
       const activeMode = sendMode ?? mode;
       const resolved = raw.trimStart().startsWith("/")
         ? resolveSlashSubmit(raw, paletteIdx)
         : raw;
       const classified = classifyInput(resolved);
-      if (classified.kind === "chat" && !classified.text) return;
+      if (classified.kind === "chat" && !classified.text && frozenAttachments.length === 0) return;
       const phaseFPromptCommands = new Set([
         "/solo",
         "/team",
@@ -1261,8 +1529,8 @@ export default function App() {
             setPlanDoc(null);
             setPlanFocused(false);
           }
-          if (enqueueBusyFollowup(queued, activeMode)) {
-            clearInput();
+          if (enqueueBusyFollowup(queued, activeMode, frozenAttachments)) {
+            clearComposer();
           }
           return;
         }
@@ -1285,7 +1553,9 @@ export default function App() {
         }
       }
 
-      const trimmed = classified.kind === "command" ? classified.raw : classified.text;
+      const trimmed = classified.kind === "command"
+        ? classified.raw
+        : classified.text || (frozenAttachments.length ? "请查看附件。" : "");
       let outgoing = trimmed;
       let outgoingMode = activeMode;
       // sendMode != null: approve / request-changes / queue drain already chose mode.
@@ -1342,15 +1612,22 @@ export default function App() {
           setMode("plan");
         }
       }
+      const mention = parseMention(trimmed);
+      if (mention && frozenAttachments.length) {
+        pushSystem("@child 调用当前不支持附件；附件和草稿已保留，请改为普通消息发送");
+        return;
+      }
       editingFollowupRef.current = null;
       turnModeRef.current = outgoingMode;
       reengageSticky();
-      clearInput();
+      const originalDraftText = textareaRef.current?.plainText ?? inputTextRef.current;
+      const submissionSessionId = getCurrentSessionId();
+      clearComposer();
+      const clearedDraftEpoch = draftEpochRef.current;
 
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const mention = parseMention(trimmed);
       if (mention) {
         const { agentId, prompt } = mention;
         const userMsg = {
@@ -1420,9 +1697,28 @@ export default function App() {
           },
           controller.signal,
           displayText?.trim() || (outgoing !== trimmed ? trimmed : undefined),
+          frozenAttachments,
         );
+      } catch (error) {
+        setIsStreaming(false);
+        setProgress("");
+        setPendingApproval(null);
+        setPendingQuestion(null);
+        const stillEmpty =
+          draftEpochRef.current === clearedDraftEpoch &&
+          submissionSessionId === getCurrentSessionId() &&
+          (textareaRef.current?.plainText ?? inputTextRef.current) === "" &&
+          attachmentsRef.current.length === 0;
+        if (frozenAttachments.length && stillEmpty) {
+          fillComposer(originalDraftText, frozenAttachments);
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        setPasteNotice(`发送失败：${message}`);
+        pushSystem(`发送失败：${message}${frozenAttachments.length ? "；附件草稿已恢复，未自动重试" : ""}`);
+        return;
       } finally {
         turnBusyRef.current = false;
+        if (abortRef.current === controller) abortRef.current = null;
       }
       setPendingApproval(null);
       setPendingQuestion(null);
@@ -1432,38 +1728,49 @@ export default function App() {
       if (taken.item) {
         followupsRef.current = taken.remaining;
         setFollowups(taken.remaining);
-        void submitTextRef.current?.(taken.item.text, taken.item.mode);
+        if (taken.item.attachments?.length && parseMention(taken.item.text)) {
+          patchFollowups(putBackFollowup(followupsRef.current, taken.item));
+          pushSystem("@child 队列项不支持附件；该项已保留在队列，请编辑后发送");
+          return;
+        }
+        void submitTextRef.current?.(taken.item.text, taken.item.mode, undefined, taken.item.attachments ?? []);
       }
     },
-    [clearInput, copyPlain, enqueueBusyFollowup, isStreaming, mode, onApprovalRequest, onQuestionRequest, openModel, paletteIdx, planSelectedLine, pushSystem, reengageSticky, runLocalOrRemoteCommand],
+    [clearComposer, clearInput, copyPlain, enqueueBusyFollowup, fillComposer, inputValue, isStreaming, mode, onApprovalRequest, onQuestionRequest, openModel, paletteIdx, planSelectedLine, pushSystem, reengageSticky, runLocalOrRemoteCommand],
   );
 
   const submitFromInput = useCallback(() => {
     if (dialogOpen || pendingApproval || pendingQuestion) return;
     const plain = textareaRef.current?.plainText ?? "";
     const text = normalizePromptSubmitText(plain || inputValue);
-    if (!text) return;
-    void submitText(text);
+    const draftAttachments = attachmentsRef.current.map((item) => ({ ...item }));
+    if (!text && draftAttachments.length === 0) return;
+    void submitText(text || "请查看附件。", undefined, undefined, draftAttachments);
   }, [dialogOpen, inputValue, pendingApproval, pendingQuestion, submitText]);
 
   const onPromptKeyDown = useCallback(
-    (key: { name?: string; sequence?: string; raw?: string; shift?: boolean; meta?: boolean; ctrl?: boolean; super?: boolean; preventDefault?: () => void }) => {
+    (key: { name?: string; sequence?: string; raw?: string; shift?: boolean; meta?: boolean; option?: boolean; ctrl?: boolean; super?: boolean; preventDefault?: () => void }) => {
       if (isPromptNewlineKey(key)) {
         key.preventDefault?.();
         textareaRef.current?.newLine?.();
-        setInputValue(textareaRef.current?.plainText ?? `${inputValue}\n`);
+        const nextText = textareaRef.current?.plainText ?? `${inputValue}\n`;
+        if (nextText !== inputTextRef.current) {
+          inputTextRef.current = nextText;
+          markDraftChanged();
+        }
+        setInputValue(nextText);
         return;
       }
       if (!isPromptSubmitKey(key)) return;
       const text = normalizePromptSubmitText(
         textareaRef.current?.plainText ?? inputValue,
       );
-      if (!text || dialogOpen || pendingApproval || pendingQuestion) return;
+      if ((!text && attachmentsRef.current.length === 0) || dialogOpen || pendingApproval || pendingQuestion) return;
       // Stop textarea default newline / submit double-fire; we own submission.
       key.preventDefault?.();
       submitFromInput();
     },
-    [dialogOpen, inputValue, pendingApproval, pendingQuestion, submitFromInput],
+    [dialogOpen, inputValue, markDraftChanged, pendingApproval, pendingQuestion, submitFromInput],
   );
 
   submitTextRef.current = submitText;
@@ -1476,6 +1783,16 @@ export default function App() {
 
   const inputWrapW = Math.max(20, cols - 6);
   const inputHeight = inputVisibleLines(inputValue, inputWrapW);
+  const attachmentLine = formatAttachmentLabels(attachments).map((label) => `[${label}]`).join("  ");
+  const clipComposerLine = (value: string, width: number) => {
+    if (stringWidth(value) <= width) return value;
+    let output = "";
+    for (const char of value) {
+      if (stringWidth(output + char + "…") > width) break;
+      output += char;
+    }
+    return `${output}…`;
+  };
 
   useKeyboard((key) => {
     ctrlHeldRef.current = Boolean(key.ctrl);
@@ -1493,6 +1810,27 @@ export default function App() {
     }
 
     if (dialogOpen) {
+      return;
+    }
+
+    const keyName = String(key.name || "").toLowerCase();
+    if (key.ctrl && keyName === "v") {
+      if (pendingCtrlVPasteRef.current !== null) clearTimeout(pendingCtrlVPasteRef.current);
+      pendingCtrlVPasteRef.current = setTimeout(() => {
+        pendingCtrlVPasteRef.current = null;
+        void captureClipboardNow();
+      }, 140);
+      return;
+    }
+    // OpenTUI 0.4.5 parses the legacy ESC+v Alt prefix as meta=true. Only
+    // consume V here; super (macOS Command) remains the terminal's Cmd+V policy.
+    if (keyName === "v" && (key.option || key.meta)) {
+      key.preventDefault?.();
+      if (pendingCtrlVPasteRef.current !== null) {
+        clearTimeout(pendingCtrlVPasteRef.current);
+        pendingCtrlVPasteRef.current = null;
+      }
+      void captureClipboardNow();
       return;
     }
 
@@ -1517,7 +1855,9 @@ export default function App() {
       if (inputValue.trimStart().startsWith("/") && slashSuggestions.length > 0) {
         const cmd = slashSuggestions[Math.min(paletteIdx, slashSuggestions.length - 1)];
         if (cmd) {
+          inputTextRef.current = cmd.name + " ";
           setInputValue(cmd.name + " ");
+          markDraftChanged();
           textareaRef.current?.setText(cmd.name + " ");
         }
         return;
@@ -1558,8 +1898,8 @@ export default function App() {
         return;
       }
       const draft = (textareaRef.current?.plainText ?? inputValue).trim();
-      if (draft) {
-        clearInput();
+      if (draft || attachmentsRef.current.length > 0 || activeClipboardCaptureRef.current) {
+        clearComposer();
         textareaRef.current?.focus();
         quitArmedUntilRef.current = 0;
         return;
@@ -1592,11 +1932,16 @@ export default function App() {
     if (isPromptNewlineKey(key)) {
       key.preventDefault?.();
       textareaRef.current?.newLine?.();
-      setInputValue(textareaRef.current?.plainText ?? `${inputValue}\n`);
+      const nextText = textareaRef.current?.plainText ?? `${inputValue}\n`;
+      if (nextText !== inputTextRef.current) {
+        inputTextRef.current = nextText;
+        markDraftChanged();
+      }
+      setInputValue(nextText);
       return;
     }
     const promptText = textareaRef.current?.plainText ?? inputValue;
-    if (isPromptSubmitKey(key) && !promptText.trim()) {
+    if (isPromptSubmitKey(key) && !promptText.trim() && attachmentsRef.current.length === 0) {
       key.preventDefault();
       return;
     }
@@ -1604,7 +1949,7 @@ export default function App() {
       const text = normalizePromptSubmitText(
         textareaRef.current?.plainText ?? inputValue,
       );
-      if (text) {
+      if (text || attachmentsRef.current.length > 0) {
         key.preventDefault?.();
         submitFromInput();
       }
@@ -1617,8 +1962,7 @@ export default function App() {
         void cancelActiveRequest();
         abortRef.current.abort();
         abortRef.current = null;
-        setInputValue("");
-        textareaRef.current?.setText("");
+        clearInput();
         textareaRef.current?.focus();
       }
       return;
@@ -1884,8 +2228,13 @@ export default function App() {
               key={cmd.name}
               style={{ width: "100%" }}
               onMouseDown={() => {
-                setInputValue(cmd.name + " ");
-                textareaRef.current?.setText(cmd.name + " ");
+                const nextText = cmd.name + " ";
+                if (nextText !== inputTextRef.current) {
+                  inputTextRef.current = nextText;
+                  markDraftChanged();
+                }
+                setInputValue(nextText);
+                textareaRef.current?.setText(nextText);
               }}
             >
               <text fg={i === paletteIdx ? BRAND_HOT : C.subtext}>
@@ -1945,6 +2294,17 @@ export default function App() {
             <box style={{ flexGrow: 1 }} />
             <text fg={C.overlay2}>{permissionMode} </text>
           </box>
+          <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
+            {attachments.length ? (
+              <text fg={C.teal} wrapMode="none">
+                {clipComposerLine(attachmentLine, Math.max(8, cols - 28))}
+              </text>
+            ) : null}
+            <box style={{ flexGrow: 1 }} />
+            <text fg={pasteBusy ? C.yellow : pasteNotice.startsWith("剪贴板读取失败") || pasteNotice.startsWith("发送失败") ? C.red : C.overlay2} wrapMode="none">
+              {clipComposerLine(pasteBusy ? "剪贴板读取中…" : pasteNotice || "Alt+V · /paste", Math.max(12, cols - 8))}
+            </text>
+          </box>
           <box style={{ flexDirection: "row", width: "100%", height: inputHeight }}>
             <text fg={modeColor} attributes={1}>
               {"> "}
@@ -1962,6 +2322,10 @@ export default function App() {
               onKeyDown={onPromptKeyDown}
               onContentChange={() => {
                 const next = textareaRef.current?.plainText ?? "";
+                if (next !== inputTextRef.current) {
+                  inputTextRef.current = next;
+                  markDraftChanged();
+                }
                 setInputValue(next);
                 if (next.trimStart().startsWith("/")) setPaletteIdx(0);
               }}

@@ -14,8 +14,38 @@ The core module is the brain of RxyCode. It contains the main agent logic, the L
 | session_title.py | UPDATE-01 轨 H：`maybe_generate_session_title`。首轮 prompt **立刻** fallback 占位；隐藏 LLM 命名真正的 title；第三轮用三轮 user+assistant 再总结。`title_is_manual` 不得覆盖。禁止用 compact PE，禁止把命名过程写进 transcript |
 
 `Session` is the strangler entry point for `appserver/` (stdio JSON-RPC) and
-`api_server.py` (HTTP/SSE adapter). It performs no I/O — surfaces map
-`emit()` protocol events; SSE adapters use `notification_to_sse_event()`.
+`api_server.py` (HTTP/SSE adapter). It owns no UI or transport I/O — surfaces
+map `emit()` protocol events; SSE adapters use `notification_to_sse_event()`.
+
+### Prompt attachments
+
+`Session.prompt(..., attachments=[])` is the shared attachment seam for both
+JSON-RPC and HTTP/SSE. The request carries client-selected absolute local
+`{path, name?}` references only. The Session revalidates every file, bounds
+text previews to 32 KiB per file / 64 KiB total, and converts supported images
+to PNG image blocks (up to 5 images, 20 MP source, 2048 px edge, 5 MiB encoded
+per image). Images fail before a model call unless the active model advertises
+`supports_vision`; attachment turns bypass the application answer caches.
+Provider prefix caching is unchanged.
+
+File/image preparation lives in `core.prompt_attachments`; Session awaits this
+bounded synchronous helper through `asyncio.to_thread` so a large image cannot
+block worker heartbeats or cancellation. Preparation results are bound to the
+Agent only after the await succeeds, and request-local attributes are restored
+in `finally`.
+
+Each actual primary-agent user-message construction attaches the current
+request's media. Compose plan/build and reconstructed retries therefore each
+receive the image; tool-loop reminders reuse their message list. Attachments do
+not flow into child agents. Team/explore routing intents fail before dispatch;
+when a Session already has persistent team routing enabled, an ordinary
+attachment prompt stays on the primary AgentV2 path. Complex Compose graph
+requests fail before the planning call because the internal replan graph does
+not carry user media. Compaction reserves image occupancy without tokenizing
+base64 and keeps image-bearing turns in the recent context; summaries contain
+only a non-image placeholder. If a stored image turn is later sent to a
+text-only model, its image block is omitted and the user/file reference remains
+with an explicit “model has not seen it” note.
 
 ### Key Files
 | File | Purpose |

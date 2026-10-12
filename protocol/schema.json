@@ -120,8 +120,37 @@
       "title": "NewSessionRequest",
       "type": "object"
     },
+    "PromptAttachment": {
+      "description": "Client-local file reference carried with one ``session/prompt`` turn.",
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "PromptAttachment",
+      "type": "object"
+    },
     "PromptRequest": {
-      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.\n``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning\nstream emission on ``ProtocolTui``.",
+      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.\n``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning\nstream emission on ``ProtocolTui``.\n``attachments`` contains only client-selected local file references; the\nworker revalidates every path and never persists media bytes.",
       "properties": {
         "method": {
           "const": "session/prompt",
@@ -136,6 +165,14 @@
         "text": {
           "title": "Text",
           "type": "string"
+        },
+        "attachments": {
+          "items": {
+            "$ref": "#/$defs/PromptAttachment"
+          },
+          "maxItems": 10,
+          "title": "Attachments",
+          "type": "array"
         },
         "timeout_seconds": {
           "anyOf": [

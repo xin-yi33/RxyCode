@@ -1,6 +1,7 @@
 import type { ApprovalDecision, ApprovalInfo } from "../ApprovalDialog.tsx";
 import type { QuestionInfo, QuestionReply } from "../questionInfo.ts";
 import type { Mode, StatusInfo } from "../types.ts";
+import type { ClipboardAttachment } from "../clipboard.ts";
 import type { CommandResult } from "./httpAdmin.ts";
 
 export type MessageUpdater = (
@@ -25,6 +26,7 @@ export type SteerTurnResult =
 
 export interface ChatTransport {
   readonly kind: TransportKind;
+  getCurrentSessionId?(): string | null;
   fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void>;
   sendCommand(command: string): Promise<CommandResult>;
   cancelActiveRequest(): Promise<void>;
@@ -38,6 +40,7 @@ export interface ChatTransport {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
     displayContent?: string,
+    attachments?: readonly ClipboardAttachment[],
   ): Promise<void>;
   invokeSubagent(agentId: string, prompt: string): Promise<SubagentResult>;
   listChildSessions(): Promise<ChildNavigationEntry[]>;

@@ -55,6 +55,7 @@ from RxyCode.RxyCode1_1_0.protocol.timeout_decision import (
 )
 from RxyCode.RxyCode1_1_0.core.compaction import (
     build_compaction_summary_prompt,
+    estimate_content_tokens,
     parse_state_snapshot,
     try_llm_summary_async,
 )
@@ -911,9 +912,7 @@ def _estimate_tokens(text, spec: str = "tiktoken:o200k_base") -> int:
     """Estimate token count for a single text blob using a tokenizer spec."""
     if text is None:
         return 0
-    if not isinstance(text, str):
-        text = str(text)
-    return count_tokens(text, spec)
+    return estimate_content_tokens(text, lambda value: count_tokens(value, spec))
 
 
 def _tool_output_is_error(result_text: str) -> bool:
@@ -5721,11 +5720,77 @@ class AgentV2:
             and prior[0].content == system
         )
 
+    def _build_prompt_human_message(self, user_msg: str) -> HumanMessage:
+        """Build one actual user message, attaching this request's media.
+
+        A Session turn can make more than one independent user-facing model
+        call (for example Compose plan then build, or a reconstructed retry).
+        Scope attachment deduplication to each constructed call context rather
+        than consuming the attachment for the whole Session turn. Tool-loop
+        reminders reuse their existing messages and do not call this factory.
+        """
+        content = user_msg
+        if getattr(self, "_prompt_attachment_active", False):
+            renderer = getattr(self, "_prompt_attachment_renderer", None)
+            prepared = getattr(self, "_prompt_attachment_context", None)
+            if callable(renderer) and prepared is not None:
+                content = renderer(user_msg, prepared)
+        return HumanMessage(content=content)
+
+    def _text_only_prefix(self, messages: list) -> list:
+        """Keep old image turns readable after switching to a text-only model."""
+        capabilities = getattr(self, "_capabilities", None)
+        if bool(getattr(capabilities, "supports_vision", False)):
+            return messages
+        changed = []
+        for message in messages:
+            content = getattr(message, "content", None)
+            if not isinstance(message, HumanMessage) or not isinstance(content, list):
+                changed.append(message)
+                continue
+            kept = []
+            removed = False
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in {
+                    "image", "image_url", "input_image"
+                }:
+                    removed = True
+                else:
+                    kept.append(block)
+            if not removed:
+                changed.append(message)
+                continue
+            text_parts = []
+            for block in kept:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and block.get("type") in {"text", "input_text"}:
+                    block_text = block.get("text")
+                    if isinstance(block_text, str):
+                        text_parts.append(block_text)
+                    else:
+                        text_parts.append("[Malformed content block omitted for this text-only model.]")
+                elif isinstance(block, dict):
+                    block_type = str(block.get("type") or "unknown")
+                    text_parts.append(
+                        f"[{block_type} content omitted for this text-only model.]"
+                    )
+                else:
+                    text_parts.append("[Unsupported content block omitted for this text-only model.]")
+            text_parts.append(
+                "[Earlier image was not embedded for this text-only model; "
+                "the model has not seen it. Keep any adjacent file reference. "
+                "Switch to a vision-capable model and resend the image to inspect it.]"
+            )
+            replacement = message.model_copy(update={"content": "\n".join(text_parts)})
+            changed.append(replacement)
+        return changed
+
     def _continue_agent_prefix(self, system: str, user_msg: str) -> list:
         """F14/PHASE-FIX: keep S1 + prior turns; only the new user suffix is unique."""
-        new_human = HumanMessage(content=user_msg)
+        new_human = self._build_prompt_human_message(user_msg)
         if self._agent_prefix_is_live(system):
-            prior = list(self._agent_prefix_messages)
+            prior = self._text_only_prefix(list(self._agent_prefix_messages))
             return prior + [new_human]
         return [SystemMessage(content=system), new_human]
 
@@ -5887,7 +5952,12 @@ class AgentV2:
             separators=(",", ":"),
         )
         cache_namespace = self._application_cache_namespace()
-        if research_policy.cache_read_allowed and not implement_after_plan:
+        attachment_turn = bool(getattr(self, "_prompt_attachment_active", False))
+        if (
+            research_policy.cache_read_allowed
+            and not implement_after_plan
+            and not attachment_turn
+        ):
             cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
             precise_hit = bool(cached and cached.get("response"))
             token_stats.record_application_cache("precise", hit=precise_hit)
@@ -6841,6 +6911,7 @@ class AgentV2:
 
                 if (
                     research_policy.cache_write_allowed
+                    and not attachment_turn
                     and not tools_invoked
                     and _should_cache_answer(
                         answer,
@@ -7632,14 +7703,18 @@ class AgentV2:
             separators=(",", ":"),
         )
         cache_namespace = self._application_cache_namespace()
-        cached = precise_cache.get(
+        attachment_turn = bool(getattr(self, "_prompt_attachment_active", False))
+        cached = None if attachment_turn else precise_cache.get(
             system,
             cache_key,
             prompt_version=get_prompt_version("system"),
             namespace=cache_namespace,
         )
         precise_hit = bool(cached and cached.get("response"))
-        token_stats.record_application_cache("precise", hit=precise_hit)
+        if attachment_turn:
+            token_stats.record_application_cache("precise", bypass=True)
+        else:
+            token_stats.record_application_cache("precise", hit=precise_hit)
         if precise_hit:
             token_stats.record_application_cache("semantic", bypass=True)
             tui = get_tui()
@@ -7650,7 +7725,7 @@ class AgentV2:
 
         # Level 2: semantic similarity cache (only when no conversation context)
         cached = None
-        if not memory_ctx:
+        if not attachment_turn and not memory_ctx:
             cached = semantic_cache.get(user_input, namespace=cache_namespace)
             semantic_hit = bool(cached and cached.get("response"))
             token_stats.record_application_cache("semantic", hit=semantic_hit)
@@ -7673,7 +7748,7 @@ class AgentV2:
             tui.write_progress("Analyzing your request...")
 
         # Cache miss -> call LLM
-        messages = [SystemMessage(content=system), HumanMessage(content=user_msg)]
+        messages = [SystemMessage(content=system), self._build_prompt_human_message(user_msg)]
         try:
             # ALWAYS stream for real-time token display
             answer_parts = []
@@ -7776,9 +7851,12 @@ class AgentV2:
             try:
                 # B7 (共性 8): 失败结果不缓存——空答案 / [error ...] 错误串 /
                 # 本轮发生工具错误（luna R8-2）一律不写入应用缓存。
-                if _should_cache_answer(
-                    answer,
-                    tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+                if (
+                    not attachment_turn
+                    and _should_cache_answer(
+                        answer,
+                        tool_error_occurred=getattr(self, "_tool_error_occurred", False),
+                    )
                 ):
                     precise_cache.put(
                         system,
@@ -7787,7 +7865,7 @@ class AgentV2:
                         prompt_version=get_prompt_version("system"),
                         namespace=cache_namespace,
                     )
-                    if not memory_ctx:
+                    if not attachment_turn and not memory_ctx:
                         semantic_cache.put(user_input, answer, namespace=cache_namespace)
                 self._memory.add_interaction(user_input, answer)
                 self._memory.save_session()
@@ -8643,6 +8721,24 @@ class AgentV2:
             download=download_intent,
         )
         self._turn_decision = decision
+        if getattr(self, "_prompt_attachment_active", False):
+            from .prompt_attachments import PromptAttachmentError
+
+        if (
+            getattr(self, "_prompt_attachment_active", False)
+            and decision.path not in {"chat", "agent", "plan", "compose"}
+        ):
+            raise PromptAttachmentError(
+                f"The {decision.path} route does not accept explicit prompt attachments; resend through a direct chat/agent route."
+            )
+        if (
+            getattr(self, "_prompt_attachment_active", False)
+            and decision.path == "compose"
+            and not self._is_simple_query(user_input)
+        ):
+            raise PromptAttachmentError(
+                "Complex Compose requests enter an internal plan/build pipeline that does not preserve user attachments; no planning call or tool was started. Resend through a direct chat/agent route."
+            )
         tui = get_tui()
         if tui is not None:
             liveness = getattr(tui, "write_turn_liveness", None)

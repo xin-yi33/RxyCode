@@ -28,6 +28,22 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 | `subagents.py` | `SUBAGENT_PROTOCOL_VERSION=1`: AgentDefinition, TaskRequest, TaskResult, TriggerKind, ChildStatus, WorkspaceMode, BudgetSpec, PermissionSpec, ContextEnvelope |
 | `subagents_schema.json` | Machine-validatable subagent protocol schema |
 
+### Prompt attachment wire contract
+
+`session/prompt` adds one optional `attachments` field (defaults to `[]`):
+`[{"path": "<absolute client-local path>", "name": "<optional label>"}]`,
+with at most 10 references. The same shape is accepted by HTTP `ChatRequest`
+for `/chat` and `/chat/stream`; both surfaces enter `Session.prompt()`.
+Only path/name metadata is recorded for replay and idempotency. Image bytes
+are reopened and validated in the worker and are never written to the event
+log. This is an additive optional field: protocol stays 1.1.0 and product
+version stays 1.4.2.
+
+The appserver initialize response advertises support in its existing object:
+`result.capabilities.prompt_attachments === true`. Clients should check this
+only before sending a request with attachments; a missing flag means the
+server is old and the send must fail visibly (restart/update the server).
+
 ## SSE event inventory (P1 step 3)
 
 Audit command (from `00-EXECUTION-PLAN.md` P1):
@@ -87,7 +103,7 @@ HTTP replies today: `POST /approve` and `POST /question/respond` in `api_server.
 ## Commands
 
 ```powershell
-python -m protocol.schema | Out-File -Encoding utf8 protocol\schema.json
+python -c "import json; from pathlib import Path; from protocol.schema import export_schema; Path('protocol/schema.json').write_text(json.dumps(export_schema(), indent=2, ensure_ascii=False) + chr(10), encoding='utf-8')"
 python -m pytest tests/test_protocol_schema.py -q
 python -m ruff check protocol
 ```
@@ -103,7 +119,7 @@ python -m ruff check protocol
 
 **规则**：
 - 手改 `generated/` 下的文件直接违反 G3/C2，CI 会自动检测不一致。
-- 协议变更顺序：`protocol/*.py` → `protocol/schema.json`（`python -m protocol.schema` export）→ `bun run generate`（生成 TS 类型）→ 提交全部四个文件。
+- 协议变更顺序：`protocol/*.py` → UTF-8 `protocol/schema.json` export（见上方命令）→ `bun run generate`（生成 TS 类型）→ 更新运行时 schema digest → 提交全部生成物。
 - `frontend/protocol-client/package.json` 中的 `generate` 脚本是唯一可用的类型生成入口。
 
 ## Dependencies

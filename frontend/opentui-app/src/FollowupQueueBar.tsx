@@ -28,7 +28,7 @@ export function FollowupQueueBar(props: {
           <text fg={MODE_COLORS[item.mode] || C.text}>
             {`  ${i + 1}.[${MODE_LABELS[item.mode] || item.mode}] `}
           </text>
-          <text fg={C.text}>{`${previewFollowup(item.text, 36)}  `}</text>
+          <text fg={C.text}>{`${previewFollowup(item.text, 30)}${item.attachments?.length ? `  +${item.attachments.length} 附件` : ""}  `}</text>
           <box onMouseDown={() => props.onSendNow(item.id)}>
             <text fg={C.green}>{"[立即发送]"}</text>
           </box>

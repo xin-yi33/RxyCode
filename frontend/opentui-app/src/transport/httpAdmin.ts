@@ -57,16 +57,27 @@ export async function httpFetchStatus(
 }
 
 /** Fetch full /status payload; returns null when the backend is offline. */
-export async function httpFetchStatusValue(): Promise<StatusInfo | null> {
+export async function httpFetchStatusValue(signal?: AbortSignal): Promise<StatusInfo | null> {
   try {
     const resp = await axios.get(`${API_BASE}/status`, {
       timeout: 5000,
       headers: authorizationHeaders(),
+      signal,
     });
+    if (signal?.aborted) throw createAbortError();
     return resp.data as StatusInfo;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+      throw createAbortError();
+    }
     return null;
   }
+}
+
+function createAbortError(): Error {
+  const error = new Error("Request aborted");
+  error.name = "AbortError";
+  return error;
 }
 
 export async function httpSendCommand(command: string): Promise<CommandResult> {

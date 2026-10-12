@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,7 @@ _APPROVED_PLAN_IMPLEMENT_PREFIXES = (
     "按已批准的计划开始实施",
     "已批准计划，开始实施",
 )
+_MISSING_ATTACHMENT_ATTRIBUTE = object()
 
 
 def _is_approved_plan_implement(text: str) -> bool:
@@ -197,6 +200,7 @@ class Session:
         run_id: str,
         tui: Any | None = None,
         permission_mode: str | None = None,
+        attachments: list[Any] | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
         try:
@@ -252,9 +256,37 @@ class Session:
         )
 
         session_token = bind_session(self.session_id)
+        attachment_attributes = {
+            name: getattr(agent, name, _MISSING_ATTACHMENT_ATTRIBUTE)
+            for name in (
+                "_prompt_attachment_context",
+                "_prompt_attachment_active",
+                "_prompt_attachment_renderer",
+            )
+        }
         try:
             set_working_directory(workspace, persist=False)
             try:
+                from .prompt_attachments import (
+                    PreparedPromptAttachments,
+                    human_message_content,
+                    prepare_prompt_attachments,
+                )
+
+                capabilities = getattr(agent, "_capabilities", None)
+                if attachments:
+                    prepared_attachments = await asyncio.to_thread(
+                        prepare_prompt_attachments,
+                        attachments,
+                        supports_vision=bool(
+                            getattr(capabilities, "supports_vision", False)
+                        ),
+                    )
+                else:
+                    prepared_attachments = PreparedPromptAttachments()
+                agent._prompt_attachment_context = prepared_attachments
+                agent._prompt_attachment_active = prepared_attachments.has_attachments
+                agent._prompt_attachment_renderer = human_message_content
                 if permission_mode is None:
                     answer = await self._dispatch_user_turn(agent, text, mode)
                 else:
@@ -393,6 +425,12 @@ class Session:
             )
         finally:
             self.emit = outer_emit
+            for name, previous_value in attachment_attributes.items():
+                if previous_value is _MISSING_ATTACHMENT_ATTRIBUTE:
+                    with contextlib.suppress(AttributeError):
+                        delattr(agent, name)
+                else:
+                    setattr(agent, name, previous_value)
             reset_prompt_clock(clock_token)
             reset_session_binding(session_token)
 
@@ -482,6 +520,29 @@ class Session:
             head, _, tail = stripped.partition(" ")
             cmd = head.lower()
             rest = tail.strip()
+
+        if getattr(agent, "_prompt_attachment_active", False) and cmd in {
+            "/solo", "/team", "/team-multi", "/explore", "/why-mode",
+            "/agents", "/compact",
+        }:
+            raise ValueError(
+                f"{cmd} does not carry prompt attachments; resend them with a direct chat request."
+            )
+
+        intent = parse_route_intent(stripped)
+        if (
+            getattr(agent, "_prompt_attachment_active", False)
+            and (intent.mode is not None or intent.persist_route or intent.persist_subagents)
+        ):
+            raise ValueError(
+                "Team, explore, and persistent routing requests do not carry prompt attachments; resend through a direct chat/agent route."
+            )
+
+        if getattr(agent, "_prompt_attachment_active", False):
+            # A session may already have team/explore routing enabled from an
+            # earlier turn. Keep this explicit user turn on the primary
+            # AgentV2 path so no router/child dispatch can consume the image.
+            return await agent.run(intent.remainder or stripped, mode=mode)
 
         intent = self._apply_session_route_flags(agent, stripped)
         if self._session_subagents_opt_in:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -68,6 +69,49 @@ class SkillError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _prompt_attachment_metadata(value: Any) -> list[dict[str, str | None]]:
+    """Keep only bounded path/name fields in logs, replay snapshots and hashes."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 10:
+        raise ValueError("attachments must be a list of at most 10 file references")
+    normalized: list[dict[str, str | None]] = []
+    for item in value:
+        if isinstance(item, BaseModel):
+            item = item.model_dump(exclude_none=False)
+        if not isinstance(item, dict):
+            raise ValueError("each attachment must contain a path and optional name")
+        path = item.get("path")
+        name = item.get("name")
+        if not isinstance(path, str) or not path or len(path) > 4096:
+            raise ValueError("attachment path must be a non-empty string of at most 4096 characters")
+        if name is not None and (not isinstance(name, str) or len(name) > 512):
+            raise ValueError("attachment name must be a string of at most 512 characters")
+        normalized.append({"path": path, "name": name})
+    return normalized
+
+
+def _prompt_request_signature(
+    *,
+    text: str,
+    attachments: list[dict[str, str | None]],
+    mode: str,
+    permission_mode: str | None,
+    thinking_expanded: bool | None,
+    capability: Any = None,
+) -> str:
+    body = {
+        "text": text,
+        "attachments": attachments,
+        "mode": mode,
+        "permission_mode": permission_mode,
+        "thinking_expanded": thinking_expanded,
+        "capability": capability,
+    }
+    canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 from .settings import SettingsError, SettingsService, handshake_model_summaries, summarize_model
 from .worktree_service import WorktreeError, WorktreeService
 from .task_store import DesktopTaskStore
@@ -427,6 +471,7 @@ class AppServer:
         self._title_tasks: set[asyncio.Task[Any]] = set()
         self._thinking_expanded = False
         self._inflight_turns: dict[str, str] = {}
+        self._inflight_turn_signatures: dict[str, str] = {}
 
     def _ensure_notification_writer(self) -> None:
         try:
@@ -1299,10 +1344,19 @@ class AppServer:
             status = "cancelled" if "cancel" in message.lower() else "failed"
             if "timed out" in message.lower() or "timeout" in message.lower():
                 status = "timeout"
+            failed_result: dict[str, Any] = {
+                "status": status,
+                "text": "",
+                "error": message,
+                "code": code,
+            }
+            request_signature = self._inflight_turn_signatures.get(session_id)
+            if request_signature:
+                failed_result["_request_signature"] = request_signature
             self._sessions.remember_turn(
                 session_id,
                 turn_key,
-                {"status": status, "text": "", "error": message, "code": code},
+                failed_result,
             )
         if request_id is not None:
             await self._respond_error(request_id, code, message)
@@ -1696,6 +1750,9 @@ class AppServer:
             "text": prompt,
             "request_id": new_request_id,
             "mode": str(snapshot.get("mode") or "build"),
+            "attachments": [
+                dict(item) for item in (snapshot.get("attachments") or [])
+            ],
         }
         if snapshot.get("permission_mode") is not None:
             params["permission_mode"] = snapshot["permission_mode"]
@@ -1843,6 +1900,7 @@ class AppServer:
                 "recovery_restore_ok": recovery_ok,
                 "multi_agent": True,
                 "multi_model": True,
+                "prompt_attachments": True,
             },
             capability_snapshot=CapabilitySnapshot(thread_fork=True, multi_agent=True, multi_model=True),
             model_providers=_model_provider_summaries(),
@@ -2011,6 +2069,8 @@ class AppServer:
         thinking_expanded: bool | None = None,
         permission_mode: str | None = None,
         turn_key: str | None = None,
+        attachments: list[dict[str, str | None]] | None = None,
+        request_signature: str | None = None,
     ) -> None:
         record = self._sessions.get(session_id)
         if record is None:
@@ -2035,6 +2095,8 @@ class AppServer:
             "permission_mode": permission_mode,
             "thinking_expanded": expand,
             "timeout_seconds": wall_timeout,
+            "attachments": [dict(item) for item in (attachments or [])],
+            "request_signature": request_signature,
         }
 
         current = asyncio.current_task()
@@ -2102,6 +2164,7 @@ class AppServer:
                         mode=mode,
                         thinking_expanded=expand,
                         permission_mode=permission_mode,
+                        attachments=attachments or [],
                     )
 
                 try:
@@ -2209,7 +2272,10 @@ class AppServer:
                     "reporting_status": payload.get("reporting_status", "not_reported"),
                 }
                 remembered = str(turn_key or request_id)
-                self._sessions.remember_turn(session_id, remembered, result)
+                stored_result = dict(result)
+                if request_signature:
+                    stored_result["_request_signature"] = request_signature
+                self._sessions.remember_turn(session_id, remembered, stored_result)
                 if status == "succeeded":
                     self._schedule_session_title_for_events(session_id, after_success=True)
                 await self._respond(request_id, result)
@@ -2227,6 +2293,11 @@ class AppServer:
         if self._sessions.get(session_id) is None:
             await self._respond_error(request_id, -32001, f"unknown session: {session_id}")
             return
+        try:
+            attachments = _prompt_attachment_metadata(params.get("attachments", []))
+        except ValueError as exc:
+            await self._respond_error(request_id, -32602, str(exc))
+            return
         self._claim_window_session(session_id)
         if "capability" in params:
             try:
@@ -2234,31 +2305,57 @@ class AppServer:
             except CapabilityDenied as exc:
                 await self._respond_error(request_id, -32602, exc.message, {"error_code": exc.code})
                 return
-        session_record = self._sessions.get(session_id)
-        if session_record is not None:
-            session_record.last_user_prompt = text
-            self._sessions.note_user_prompt(session_id, text)
-        self._task_store.append_event(
-            session_id,
-            {
-                "method": "session/prompt",
-                "params": {"session_id": session_id, "text": text, "role": "user"},
-            },
-        )
-        self._schedule_session_title_for_events(session_id, after_success=False)
         # Turn idempotency is a client UUID, never the JSON-RPC message id.
         # ProtocolClient restarts nextId at 1 every TUI launch; persisted
         # turn_results keyed by those ids would replay a previous answer
         # without calling the worker (first send after attach dumps old text).
         client_turn_id = str(params.get("request_id") or "").strip()
         turn_key = client_turn_id or f"turn-{uuid.uuid4()}"
+        mode = str(params.get("mode") or "build")
+        thinking_raw = params.get("thinking_expanded")
+        thinking_expanded = None if thinking_raw is None else bool(thinking_raw)
+        permission_mode_raw = params.get("permission_mode")
+        permission_mode = (
+            str(permission_mode_raw).strip().lower()
+            if permission_mode_raw is not None
+            else None
+        )
+        if permission_mode not in {None, "confirm_all", "auto_edit", "full_auto"}:
+            await self._respond_error(request_id, -32602, "invalid permission_mode")
+            return
+        request_signature = _prompt_request_signature(
+            text=text,
+            attachments=attachments,
+            mode=mode,
+            permission_mode=permission_mode,
+            thinking_expanded=thinking_expanded,
+            capability=params.get("capability"),
+        )
         stored = (
             self._sessions.turn_result(session_id, turn_key) if client_turn_id else None
         )
         if stored is not None:
-            await self._respond(request_id, dict(stored))
+            previous_signature = stored.get("_request_signature")
+            if previous_signature != request_signature and (
+                previous_signature is not None or attachments
+            ):
+                await self._respond_error(
+                    request_id,
+                    -32602,
+                    "request_id was already used with a different prompt body or attachment metadata",
+                )
+                return
+            replay = {key: value for key, value in stored.items() if key != "_request_signature"}
+            await self._respond(request_id, replay)
             return
         if self._inflight_turns.get(session_id) == turn_key:
+            if self._inflight_turn_signatures.get(session_id) != request_signature:
+                await self._respond_error(
+                    request_id,
+                    -32602,
+                    "request_id is already running with a different prompt body or attachment metadata",
+                )
+                return
             await self._respond(
                 request_id,
                 {
@@ -2297,6 +2394,23 @@ class AppServer:
             )
             return
 
+        session_record = self._sessions.get(session_id)
+        if session_record is not None:
+            session_record.last_user_prompt = text
+            self._sessions.note_user_prompt(session_id, text)
+        event_params: dict[str, Any] = {
+            "session_id": session_id,
+            "text": text,
+            "role": "user",
+        }
+        if attachments:
+            event_params["attachments"] = [dict(item) for item in attachments]
+        self._task_store.append_event(
+            session_id,
+            {"method": "session/prompt", "params": event_params},
+        )
+        self._schedule_session_title_for_events(session_id, after_success=False)
+
         timeout_raw = params.get("timeout_seconds")
         timeout_seconds: float | None
         if timeout_raw is None:
@@ -2316,23 +2430,8 @@ class AppServer:
                 return
 
         job_id = uuid.uuid4().hex[:12]
-        mode = str(params.get("mode", "build"))
-        thinking_raw = params.get("thinking_expanded")
-        thinking_expanded: bool | None
-        if thinking_raw is None:
-            thinking_expanded = None
-        else:
-            thinking_expanded = bool(thinking_raw)
-        permission_mode_raw = params.get("permission_mode")
-        permission_mode = (
-            str(permission_mode_raw).strip().lower()
-            if permission_mode_raw is not None
-            else None
-        )
-        if permission_mode not in {None, "confirm_all", "auto_edit", "full_auto"}:
-            await self._respond_error(request_id, -32602, "invalid permission_mode")
-            return
         self._inflight_turns[session_id] = turn_key
+        self._inflight_turn_signatures[session_id] = request_signature
         try:
             await self._run_prompt(
                 session_id=session_id,
@@ -2344,10 +2443,13 @@ class AppServer:
                 thinking_expanded=thinking_expanded,
                 permission_mode=permission_mode,
                 turn_key=turn_key,
+                attachments=attachments,
+                request_signature=request_signature,
             )
         finally:
             if self._inflight_turns.get(session_id) == turn_key:
                 self._inflight_turns.pop(session_id, None)
+                self._inflight_turn_signatures.pop(session_id, None)
 
     async def _handle_set_thinking_expanded(
         self, params: dict[str, Any], request_id: Any

@@ -880,6 +880,7 @@ class AgentWorker:
                     "run_id": run_id,
                     "permission_mode": params.get("permission_mode"),
                 }
+                attachments = params.get("attachments") or []
                 # Keep the worker compatible with lightweight Session doubles
                 # and older integrations while passing the request-local TUI
                 # to the production Session implementation.
@@ -890,15 +891,33 @@ class AgentWorker:
                         for parameter in prompt_signature.parameters.values()
                     )
                 except (TypeError, ValueError):
+                    prompt_signature = None
                     accepts_tui = True
                 if accepts_tui:
                     prompt_kwargs["tui"] = tui
-                accepts_permission_mode = "permission_mode" in prompt_signature.parameters or any(
-                    parameter.kind is inspect.Parameter.VAR_KEYWORD
-                    for parameter in prompt_signature.parameters.values()
+                accepts_permission_mode = prompt_signature is None or (
+                    "permission_mode" in prompt_signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
                 )
                 if not accepts_permission_mode:
                     prompt_kwargs.pop("permission_mode", None)
+                accepts_attachments = prompt_signature is None or (
+                    "attachments" in prompt_signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
+                )
+                if attachments and not accepts_attachments:
+                    raise ValueError(
+                        "This Session.prompt implementation does not support "
+                        "prompt attachments; update the worker/core integration."
+                    )
+                if accepts_attachments:
+                    prompt_kwargs["attachments"] = attachments
                 install_scripted_agent_replies(self._agent)
                 result = await session.prompt(self._agent, text, **prompt_kwargs)
                 # turn 结束后才到达的 steer（agent 主循环没来得及 drain）：
@@ -913,7 +932,9 @@ class AgentWorker:
                     if not extras:
                         break
                     combined = "\n\n".join(extras)
-                    result = await session.prompt(self._agent, combined, **prompt_kwargs)
+                    steer_kwargs = dict(prompt_kwargs)
+                    steer_kwargs.pop("attachments", None)
+                    result = await session.prompt(self._agent, combined, **steer_kwargs)
                 schedule = getattr(self._agent, "_schedule_prewarm", None)
                 if callable(schedule):
                     schedule()

@@ -4,8 +4,8 @@
 - **压缩=唯一的 cache-reset point**：平时严格 append-only；前缀只能在
   压缩那一刻变。本模块是唯一压缩入口（工具循环、research、会话恢复
   全部走这里），压缩之外任何"改写历史"的调用都是 bug。
-- **断点前不可变**：system + 前缀区消息逐字节保留；压缩只折叠断点之后
-  的 assistant/tool 中间段，构造摘要消息**追加**到断点之后。
+- **断点前不可变**：system + 普通前缀区消息逐字节保留；不再是最新
+  human turn 的首条图像消息可进入折叠区，避免历史 base64 永久钉在前缀。
 - **摘要模板** Objective / Work State / Next Move（opencode
   session/compaction.ts:16-46），必须携带任务状态（防返工，共性 5）。
 - **尾部保留** tail_turns=2 / preserveRecentBudget 25%；system 永不裁剪。
@@ -27,6 +27,36 @@ from langchain_core.messages import HumanMessage
 from .cache_policy import tool_pair_integrity
 
 _logger = logging.getLogger(__name__)
+_PROMPT_ATTACHMENT_HELPERS = None
+
+
+def _prompt_attachment_helpers():
+    """Load media-aware helpers only when a content block needs them."""
+    global _PROMPT_ATTACHMENT_HELPERS
+    if _PROMPT_ATTACHMENT_HELPERS is None:
+        from .prompt_attachments import (
+            content_text_for_summary as summarize_content,
+            estimate_content_tokens as estimate_content,
+        )
+
+        _PROMPT_ATTACHMENT_HELPERS = (summarize_content, estimate_content)
+    return _PROMPT_ATTACHMENT_HELPERS
+
+
+def estimate_content_tokens(content, count_text):
+    """Shared bounded estimator; image data never reaches the tokenizer."""
+    if isinstance(content, str):
+        return count_text(content)
+    if not isinstance(content, (list, tuple)):
+        return 0
+    return _prompt_attachment_helpers()[1](content, count_text)
+
+
+def content_text_for_summary(content):
+    """Shared summary view that replaces image data with a short placeholder."""
+    if isinstance(content, str):
+        return content
+    return _prompt_attachment_helpers()[0](content)
 
 #: 尾部保留轮数（opencode tail_turns=2 语义；调用方可覆盖）。
 DEFAULT_TAIL_TURNS = 2
@@ -56,10 +86,7 @@ def occupancy_tokens(
     total = 0
     for message in messages or []:
         content = getattr(message, "content", "") or ""
-        if isinstance(content, str):
-            total += estimate(content)
-        else:
-            total += estimate(json.dumps(content, ensure_ascii=False, default=str))
+        total += estimate_content_tokens(content, estimate)
         tool_calls = getattr(message, "tool_calls", None)
         if not tool_calls:
             extra = getattr(message, "additional_kwargs", None) or {}
@@ -207,9 +234,9 @@ def build_summary_message(
     return "\n".join(parts)
 
 
-def _estimate_chars(text: str) -> int:
+def _estimate_chars(text) -> int:
     """token 估算（chars/3，与 _middle_truncate 同源；luna 审计要求单位一致）。"""
-    return len(text or "") // 3
+    return estimate_content_tokens(text, lambda value: len(value or "") // 3)
 
 
 def _split_units(body_msgs: list) -> list:
@@ -263,15 +290,52 @@ def _split_units(body_msgs: list) -> list:
     return units
 
 
+def _unit_has_image(unit: list) -> bool:
+    """Return whether a turn contains native image media."""
+    for message in unit:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            continue
+        if any(
+            isinstance(block, dict)
+            and block.get("type") in {"image", "image_url", "input_image"}
+            for block in content
+        ):
+            return True
+    return False
+
+
 def _partition_tail_units(units: list, keep_tail: int) -> tuple[list, list]:
-    """Split turn units into fold vs tail. System units stay in the tail."""
+    """Split turn units into fold vs tail.
+
+    System units stay in the tail. The latest human unit stays only when it is
+    the current image turn; older image turns follow the normal ``keep_tail``
+    policy and can be folded through the media-safe summary renderer.
+    """
     tail_units: list = []
     fold_units: list = []
     human_seen = 0
-    for unit in reversed(units):
+    latest_human_index = next(
+        (
+            index
+            for index in range(len(units) - 1, -1, -1)
+            if any(getattr(message, "type", None) == "human" for message in units[index])
+        ),
+        None,
+    )
+    protect_current_image = (
+        latest_human_index
+        if latest_human_index is not None and _unit_has_image(units[latest_human_index])
+        else None
+    )
+    for index in range(len(units) - 1, -1, -1):
+        unit = units[index]
         is_system_unit = any(getattr(m, "type", None) == "system" for m in unit)
-        if is_system_unit:
+        is_current_image = index == protect_current_image
+        if is_system_unit or is_current_image:
             tail_units.append(unit)
+            if any(getattr(m, "type", None) == "human" for m in unit):
+                human_seen += 1
         elif human_seen >= keep_tail:
             fold_units.append(unit)
         else:
@@ -302,8 +366,17 @@ def _fold_body(messages: list) -> tuple[list, list]:
             head.append(rest[0])
             rest = rest[1:]
     if rest and getattr(rest[0], "type", None) == "human":
-        head.append(rest[0])
-        rest = rest[1:]
+        first_human = rest[0]
+        has_later_human = any(
+            getattr(message, "type", None) == "human" for message in rest[1:]
+        )
+        # Keep the frozen first-user prefix for ordinary text and a sole/current
+        # image turn. Once a later human turn exists, allow an initial image
+        # turn into the foldable body so its base64 cannot live forever.
+        stale_initial_image = _unit_has_image([first_human]) and has_later_human
+        if not stale_initial_image:
+            head.append(first_human)
+            rest = rest[1:]
     body = [
         m
         for m in rest
@@ -375,7 +448,8 @@ def _fold_middle_section(
     """
     if not messages:
         return []
-    # 1) 前缀：首条 system + 紧随的首轮 human 不折叠。其余 system 留在原位。
+    # 1) Frozen prefix: first system + ordinary first human. A stale initial
+    #    image turn is foldable. Other system messages retain their positions.
     head_system, body = _fold_body(messages)
 
     if not body:
@@ -421,13 +495,13 @@ def _fold_middle_section(
     work_state = ""
     for m in scan:
         if getattr(m, "type", None) == "human" and not objective:
-            objective = str(getattr(m, "content", "") or "")[:200]
+            objective = content_text_for_summary(getattr(m, "content", ""))[:200]
         if getattr(m, "type", None) == "ai" and not work_state:
-            work_state = str(getattr(m, "content", "") or "")[:200]
+            work_state = content_text_for_summary(getattr(m, "content", ""))[:200]
     next_move = ""
     for m in reversed(scan):
         if getattr(m, "type", None) == "human":
-            next_move = str(getattr(m, "content", "") or "")[:200]
+            next_move = content_text_for_summary(getattr(m, "content", ""))[:200]
             break
 
     # 废弃代码（2026-10-09）：summary_text = existing_summary，有旧摘要就
@@ -935,7 +1009,9 @@ def build_compaction_summary_prompt(messages, prior_summary=None) -> list:
     lines = []
     for message in messages or []:
         kind = getattr(message, "type", "message")
-        lines.append(f"{kind}: {getattr(message, 'content', '')}")
+        lines.append(
+            f"{kind}: {content_text_for_summary(getattr(message, 'content', ''))}"
+        )
     body = "\n".join(lines)
     prior = ""
     if prior_summary:

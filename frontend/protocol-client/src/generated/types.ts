@@ -165,6 +165,61 @@ export type Method2 = "session/prompt";
 export type SessionId = string;
 export type Text = string;
 /**
+ * @maxItems 10
+ */
+export type Attachments =
+  | []
+  | [PromptAttachment]
+  | [PromptAttachment, PromptAttachment]
+  | [PromptAttachment, PromptAttachment, PromptAttachment]
+  | [PromptAttachment, PromptAttachment, PromptAttachment, PromptAttachment]
+  | [PromptAttachment, PromptAttachment, PromptAttachment, PromptAttachment, PromptAttachment]
+  | [PromptAttachment, PromptAttachment, PromptAttachment, PromptAttachment, PromptAttachment, PromptAttachment]
+  | [
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment
+    ]
+  | [
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment
+    ]
+  | [
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment
+    ]
+  | [
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment,
+      PromptAttachment
+    ];
+export type Path = string;
+export type Name = string | null;
+/**
  * Optional wall-clock limit for this prompt (maps execution.tool_timeout_seconds semantics).
  */
 export type TimeoutSeconds = number | null;
@@ -371,7 +426,7 @@ export type CheckpointId1 = string;
 export type SessionId32 = string;
 export type ApprovalId2 = string | null;
 export type Method50 = "checkpoint/snapshot/create";
-export type Name = string;
+export type Name1 = string;
 export type SessionId33 = string;
 export type UserPrompt = string | null;
 export type Method51 = "checkpoint/rewind";
@@ -402,13 +457,13 @@ export type HunkIndex = number | null;
 export type ApprovalId5 = string | null;
 export type Method57 = "file/preview";
 export type SessionId38 = string;
-export type Path = string;
+export type Path1 = string;
 export type Method58 = "file/tree";
 export type SessionId39 = string;
-export type Path1 = string | null;
+export type Path2 = string | null;
 export type Method59 = "file/open_external";
 export type SessionId40 = string;
-export type Path2 = string;
+export type Path3 = string;
 export type Confirm2 = boolean;
 export type Method60 = "worktree/list";
 export type SessionId41 = string;
@@ -521,7 +576,7 @@ export type Method88 = "team/group_rename";
 export type Old = string;
 export type New = string;
 export type Method89 = "team/install";
-export type Name1 = string;
+export type Name2 = string;
 export type Url = string;
 export type Confirm6 = boolean;
 export type Group = string;
@@ -530,7 +585,7 @@ export type SessionId50 = string;
 export type TeamId = string;
 export type Method91 = "project/list";
 export type Method92 = "project/add";
-export type Path3 = string;
+export type Path4 = string;
 export type DisplayName = string | null;
 export type Method93 = "project/remove";
 export type ProjectId4 = string;
@@ -540,7 +595,7 @@ export type Method95 = "workspace/status";
 export type WorkspaceRoot2 = string;
 export type Method96 = "workspace/resolve";
 export type WorkspaceRoot3 = string;
-export type Path4 = string;
+export type Path5 = string;
 export type Method97 = "settings/get";
 export type SessionId51 = string | null;
 export type ProjectId6 = string | null;
@@ -621,24 +676,24 @@ export type AppserverVersion = string | null;
 export type SchemaDigest = string | null;
 export type Method116 = "cli/list";
 export type Method117 = "cli/install";
-export type Name2 = string;
+export type Name3 = string;
 export type Source1 = string;
 export type Method118 = "cli/launch";
-export type Name3 = string;
+export type Name4 = string;
 export type Args = string[] | null;
 export type Method119 = "cli/uninstall";
-export type Name4 = string;
-export type Method120 = "cli/start";
 export type Name5 = string;
+export type Method120 = "cli/start";
+export type Name6 = string;
 export type Args1 = string[] | null;
 export type Method121 = "cli/stop";
-export type Name6 = string;
-export type Method122 = "cli/decide";
 export type Name7 = string;
+export type Method122 = "cli/decide";
+export type Name8 = string;
 export type HasSource = boolean;
 export type HasSdk = boolean;
 export type Method123 = "cli/record_failure";
-export type Name8 = string;
+export type Name9 = string;
 export type Stage = string;
 export type Reason3 = string;
 export type NextStep = string | null;
@@ -662,19 +717,19 @@ export type Enabled3 = boolean | null;
 export type Method129 = "plugin/list";
 export type Method130 = "plugin/install";
 export type Source2 = string;
-export type Path5 = string | null;
-export type Name9 = string | null;
+export type Path6 = string | null;
+export type Name10 = string | null;
 export type Method131 = "plugin/uninstall";
-export type Name10 = string;
+export type Name11 = string;
 export type KeepUserConfig = boolean;
 export type Method132 = "plugin/toggle";
-export type Name11 = string;
+export type Name12 = string;
 export type Enabled4 = boolean;
 export type Method133 = "plugin/catalog";
 export type Method134 = "plugin/connect/start";
-export type Name12 = string;
-export type Method135 = "plugin/connect/callback";
 export type Name13 = string;
+export type Method135 = "plugin/connect/callback";
+export type Name14 = string;
 export type Code = string;
 export type State = string;
 export type ProtocolNotification =
@@ -771,7 +826,7 @@ export type SessionId74 = string;
 export type TaskId3 = string;
 export type Kind1 = string;
 export type Origin = string;
-export type Name14 = string;
+export type Name15 = string;
 export type Status2 = string;
 export type ArgsSummary = string | null;
 export type Risk = string | null;
@@ -1006,7 +1061,7 @@ export type MemoryScope = "private" | "shared";
 export type TimeoutS = number;
 export type TokenBudget = number | null;
 export type MayConsult = string[];
-export type Name15 = string;
+export type Name16 = string;
 export type Role1 = string;
 export type ExpectedOutput = string;
 export type ContextKeys = string[];
@@ -1017,7 +1072,7 @@ export type NextOnSuccess = string | null;
 export type NextOnFailure = string | null;
 export type MaxRetries = number;
 export type ParallelMembers = string[] | null;
-export type Name16 = string;
+export type Name17 = string;
 export type DisplayName3 = string;
 export type Description = string;
 export type Members = AgentSpec[];
@@ -1270,16 +1325,27 @@ export interface NewSessionRequest {
  * semantics when appserver enforces wall-clock limits.
  * ``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning
  * stream emission on ``ProtocolTui``.
+ * ``attachments`` contains only client-selected local file references; the
+ * worker revalidates every path and never persists media bytes.
  */
 export interface PromptRequest {
   method?: Method2;
   session_id: SessionId;
   text: Text;
+  attachments?: Attachments;
   timeout_seconds?: TimeoutSeconds;
   mode?: Mode;
   thinking_expanded?: ThinkingExpanded;
   capability?: Capability;
   request_id?: RequestId;
+  [k: string]: unknown;
+}
+/**
+ * Client-local file reference carried with one ``session/prompt`` turn.
+ */
+export interface PromptAttachment {
+  path: Path;
+  name?: Name;
   [k: string]: unknown;
 }
 /**
@@ -1774,7 +1840,7 @@ export interface CheckpointRestoreRequest {
  */
 export interface CheckpointSnapshotCreateRequest {
   method?: Method50;
-  name: Name;
+  name: Name1;
   session_id: SessionId33;
   user_prompt?: UserPrompt;
   [k: string]: unknown;
@@ -1847,7 +1913,7 @@ export interface GitRevertRequest {
 export interface FilePreviewRequest {
   method?: Method57;
   session_id: SessionId38;
-  path: Path;
+  path: Path1;
   [k: string]: unknown;
 }
 /**
@@ -1856,7 +1922,7 @@ export interface FilePreviewRequest {
 export interface FileTreeRequest {
   method?: Method58;
   session_id: SessionId39;
-  path?: Path1;
+  path?: Path2;
   [k: string]: unknown;
 }
 /**
@@ -1865,7 +1931,7 @@ export interface FileTreeRequest {
 export interface FileOpenExternalRequest {
   method?: Method59;
   session_id: SessionId40;
-  path: Path2;
+  path: Path3;
   confirm?: Confirm2;
   [k: string]: unknown;
 }
@@ -2177,7 +2243,7 @@ export interface TeamGroupRenameRequest {
  */
 export interface TeamInstallRequest {
   method?: Method89;
-  name: Name1;
+  name: Name2;
   url?: Url;
   confirm?: Confirm6;
   group?: Group;
@@ -2204,7 +2270,7 @@ export interface ProjectListRequest {
  */
 export interface ProjectAddRequest {
   method?: Method92;
-  path: Path3;
+  path: Path4;
   display_name?: DisplayName;
   [k: string]: unknown;
 }
@@ -2238,7 +2304,7 @@ export interface WorkspaceStatusRequest {
 export interface WorkspaceResolveRequest {
   method?: Method96;
   workspace_root: WorkspaceRoot3;
-  path: Path4;
+  path: Path5;
   [k: string]: unknown;
 }
 /**
@@ -2493,7 +2559,7 @@ export interface CliListRequest {
  */
 export interface CliInstallRequest {
   method?: Method117;
-  name: Name2;
+  name: Name3;
   source?: Source1;
   [k: string]: unknown;
 }
@@ -2504,7 +2570,7 @@ export interface CliInstallRequest {
  */
 export interface CliLaunchRequest {
   method?: Method118;
-  name: Name3;
+  name: Name4;
   args?: Args;
   [k: string]: unknown;
 }
@@ -2515,7 +2581,7 @@ export interface CliLaunchRequest {
  */
 export interface CliUninstallRequest {
   method?: Method119;
-  name: Name4;
+  name: Name5;
   [k: string]: unknown;
 }
 /**
@@ -2525,7 +2591,7 @@ export interface CliUninstallRequest {
  */
 export interface CliStartRequest {
   method?: Method120;
-  name: Name5;
+  name: Name6;
   args?: Args1;
   [k: string]: unknown;
 }
@@ -2536,7 +2602,7 @@ export interface CliStartRequest {
  */
 export interface CliStopRequest {
   method?: Method121;
-  name: Name6;
+  name: Name7;
   [k: string]: unknown;
 }
 /**
@@ -2546,7 +2612,7 @@ export interface CliStopRequest {
  */
 export interface CliDecideRequest {
   method?: Method122;
-  name: Name7;
+  name: Name8;
   has_source?: HasSource;
   has_sdk?: HasSdk;
   [k: string]: unknown;
@@ -2558,7 +2624,7 @@ export interface CliDecideRequest {
  */
 export interface CliRecordFailureRequest {
   method?: Method123;
-  name: Name8;
+  name: Name9;
   stage: Stage;
   reason: Reason3;
   next_step?: NextStep;
@@ -2642,8 +2708,8 @@ export interface PluginListRequest {
 export interface PluginInstallRequest {
   method?: Method130;
   source: Source2;
-  path?: Path5;
-  name?: Name9;
+  path?: Path6;
+  name?: Name10;
   [k: string]: unknown;
 }
 /**
@@ -2653,7 +2719,7 @@ export interface PluginInstallRequest {
  */
 export interface PluginUninstallRequest {
   method?: Method131;
-  name: Name10;
+  name: Name11;
   keep_user_config?: KeepUserConfig;
   [k: string]: unknown;
 }
@@ -2664,7 +2730,7 @@ export interface PluginUninstallRequest {
  */
 export interface PluginToggleRequest {
   method?: Method132;
-  name: Name11;
+  name: Name12;
   enabled: Enabled4;
   [k: string]: unknown;
 }
@@ -2684,7 +2750,7 @@ export interface PluginCatalogRequest {
  */
 export interface PluginConnectStartRequest {
   method?: Method134;
-  name: Name12;
+  name: Name13;
   [k: string]: unknown;
 }
 /**
@@ -2694,7 +2760,7 @@ export interface PluginConnectStartRequest {
  */
 export interface PluginConnectCallbackRequest {
   method?: Method135;
-  name: Name13;
+  name: Name14;
   code: Code;
   state: State;
   [k: string]: unknown;
@@ -2838,7 +2904,7 @@ export interface ExecutionItem {
   task_id: TaskId3;
   kind: Kind1;
   origin: Origin;
-  name: Name14;
+  name: Name15;
   status: Status2;
   args_summary?: ArgsSummary;
   risk?: Risk;
@@ -3239,7 +3305,7 @@ export interface Extra {
  * next_on_failure 静态决定，不由 LLM 现场发挥。
  */
 export interface SopStage {
-  name: Name15;
+  name: Name16;
   role: Role1;
   expected_output: ExpectedOutput;
   context_keys?: ContextKeys;
@@ -3260,7 +3326,7 @@ export interface SopStage {
  * 不是本协议的成员表。F18 用 extra['ecosystem.is_leader'] 标记展示用主理人。
  */
 export interface TeamSpec {
-  name: Name16;
+  name: Name17;
   display_name: DisplayName3;
   description?: Description;
   members: Members;

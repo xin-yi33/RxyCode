@@ -1,4 +1,5 @@
 import type { ChatMessage, Mode, ToolStatus } from "../types.ts";
+import { validateClipboardAttachments } from "../clipboard.ts";
 
 export type SessionEventLike = {
   method?: string;
@@ -91,7 +92,17 @@ export function sessionEventsToMessages(events: SessionEventLike[]): ChatMessage
     if (method === "session/prompt" || method === "event/user_message") {
       flushAssistant(at);
       const text = String(p.text ?? p.content ?? "");
-      if (text) push("user", text, {}, at);
+      if (text) {
+        let attachments: ChatMessage["attachments"];
+        try {
+          attachments = validateClipboardAttachments(p.attachments);
+        } catch {
+          // Historical events have no attachment field; malformed metadata is
+          // ignored as one unit and never copied into transcript state.
+          attachments = undefined;
+        }
+        push("user", text, attachments?.length ? { attachments } : {}, at);
+      }
       continue;
     }
     if (method === "event/message_delta") {
@@ -216,6 +227,14 @@ export function normalizeLoadedMessages(raw: unknown[]): ChatMessage[] {
       id: row.id || `loaded-${i}-${stamp}`,
       role,
       content: String(row.content ?? row.text ?? ""),
+      attachments: (() => {
+        try {
+          const attachments = validateClipboardAttachments(row.attachments);
+          return attachments.length ? attachments : undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       timestamp,
       done: row.done ?? true,
       live: false,

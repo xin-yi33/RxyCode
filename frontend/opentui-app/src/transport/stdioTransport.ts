@@ -47,6 +47,8 @@ import type {
   SubagentResult,
 } from "./types.ts";
 import { sessionEventsToMessages } from "../dialog/sessionEventsToMessages.ts";
+import { MAX_CLIPBOARD_ATTACHMENTS, type ClipboardAttachment } from "../clipboard.ts";
+import type { PromptRequest } from "../../../protocol-client/src/generated/types.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 60_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
@@ -116,6 +118,11 @@ export class StdioAppserverSession {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private client: ProtocolClient | null = null;
   private sessionId: string | null = null;
+  private serverCapabilities: Record<string, unknown> = {};
+
+  getCurrentSessionId(): string | null {
+    return this.sessionId;
+  }
   private ready: Promise<void> | null = null;
   private lastStatus: StatusInfo | null = null;
   private pendingApprovals = new Map<
@@ -193,6 +200,7 @@ export class StdioAppserverSession {
     this.proc = null;
     this.client = null;
     this.sessionId = null;
+    this.serverCapabilities = {};
     this.sessionModelId = null;
     this.forgetTodoView();
     this.childViewSessionId = null;
@@ -386,7 +394,7 @@ export class StdioAppserverSession {
       }
     })();
 
-    await client.requestWithTimeout(
+    const initialized = await client.requestWithTimeout<{ capabilities?: Record<string, unknown> }>(
       "initialize",
       {
         client_name: "opentui",
@@ -394,7 +402,10 @@ export class StdioAppserverSession {
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),
-    );
+    ) as { capabilities?: Record<string, unknown> };
+    this.serverCapabilities = initialized?.capabilities && typeof initialized.capabilities === "object"
+      ? initialized.capabilities
+      : {};
     const session = (await client.requestWithTimeout<{ session_id: string; model_id?: string | null }>(
       "session/new",
       { workspace_root: this.workspaceRoot() },
@@ -721,13 +732,24 @@ export class StdioAppserverSession {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
     displayContent?: string,
+    attachments?: readonly ClipboardAttachment[],
   ): Promise<void> {
+    if (attachments?.length) {
+      if (attachments.length > MAX_CLIPBOARD_ATTACHMENTS) {
+        throw new Error(`附件最多 ${MAX_CLIPBOARD_ATTACHMENTS} 个；未发送`);
+      }
+      await this.ensureReady();
+      if (this.serverCapabilities.prompt_attachments !== true) {
+        throw new Error("当前 appserver 未声明 prompt_attachments 能力；请重启/更新 server 后再发送，附件草稿已保留");
+      }
+    }
     const userMsg = {
       id: newId("user"),
       role: "user" as const,
       content: displayContent?.trim() ? displayContent : content,
       timestamp: Date.now(),
       mode,
+      ...(attachments?.length ? { attachments: attachments.map((item) => ({ ...item })) } : {}),
     };
     this.promptEpoch += 1;
     const epoch = this.promptEpoch;
@@ -870,14 +892,19 @@ export class StdioAppserverSession {
       abort.signal.addEventListener("abort", onAbort);
 
       try {
+        const promptAttachments = attachments?.length
+          ? attachments.map((item) => ({ ...item })) as PromptRequest["attachments"]
+          : undefined;
+        const promptParams = {
+          session_id: this.sessionId,
+          text: content,
+          mode,
+          thinking_expanded: thinkingExpandedPref,
+          request_id: turnRequestId,
+          ...(promptAttachments ? { attachments: promptAttachments } : {}),
+        } satisfies PromptRequest;
         const result = (await raceWithAbort(
-          client.request<PromptResult>("session/prompt", {
-            session_id: this.sessionId,
-            text: content,
-            mode,
-            thinking_expanded: thinkingExpandedPref,
-            request_id: turnRequestId,
-          }),
+          client.request<PromptResult>("session/prompt", promptParams),
           signal,
           abort.signal,
         )) as PromptResult;
@@ -925,6 +952,7 @@ export class StdioAppserverSession {
           // Keep lastStatus from token_usage / prompt result.
         }
       } catch (e) {
+        if (attachments?.length) throw e;
         if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
           publish({
             ...state,
@@ -983,6 +1011,7 @@ export class StdioAppserverSession {
           return [...prev.slice(0, idx + 1), ...settleActiveMessages(state.messages)];
         });
       }
+      if (attachments?.length) throw e;
       if (signal?.aborted || (e as Error)?.name === "AbortError") {
         callbacks.onMessages((prev) => [
           ...prev,
@@ -1185,6 +1214,10 @@ let sharedSession = new StdioAppserverSession();
 export const stdioTransport: ChatTransport = {
   kind: "stdio",
 
+  getCurrentSessionId() {
+    return sharedSession.getCurrentSessionId();
+  },
+
   async fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
     onStatus(await sharedSession.fetchStatusSnapshot());
   },
@@ -1262,8 +1295,9 @@ export const stdioTransport: ChatTransport = {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
     displayContent?: string,
+    attachments?: readonly ClipboardAttachment[],
   ): Promise<void> {
-    await sharedSession.sendChatMessage(content, mode, callbacks, signal, displayContent);
+    await sharedSession.sendChatMessage(content, mode, callbacks, signal, displayContent, attachments);
   },
 
   async listSessions() {

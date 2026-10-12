@@ -972,6 +972,7 @@ class AgentHost:
         mode: str = "build",
         thinking_expanded: bool = False,
         permission_mode: str | None = None,
+        attachments: list[dict[str, str | None]] | None = None,
     ) -> dict[str, Any]:
         self._emit = emit
         return await self._pipe_request(
@@ -983,6 +984,7 @@ class AgentHost:
                 "mode": mode,
                 "thinking_expanded": thinking_expanded,
                 "permission_mode": permission_mode,
+                "attachments": attachments or [],
             },
             timeout=timeout,
         )

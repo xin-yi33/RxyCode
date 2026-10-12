@@ -11,8 +11,10 @@ import {
   type StreamReduceState,
 } from "../streamReducer.ts";
 import type { Mode, StatusInfo } from "../types.ts";
+import type { ClipboardAttachment } from "../clipboard.ts";
 import {
   httpCancelActiveRequest,
+  httpFetchStatusValue,
   httpFetchStatus,
   httpRespondApproval,
   httpRespondQuestion,
@@ -126,13 +128,21 @@ export const httpTransport: ChatTransport = {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
     displayContent?: string,
+    attachments?: readonly ClipboardAttachment[],
   ): Promise<void> {
+    if (attachments?.length) {
+      const status = await httpFetchStatusValue(signal);
+      if (status?.capabilities?.prompt_attachments !== true) {
+        throw new Error("当前 HTTP 服务未在 /status 声明 prompt_attachments；请更新/重启 server 后再发送，附件草稿已保留");
+      }
+    }
     const userMsg = {
       id: newId("user"),
       role: "user" as const,
       content: displayContent?.trim() ? displayContent : content,
       timestamp: Date.now(),
       mode,
+      ...(attachments?.length ? { attachments: attachments.map((item) => ({ ...item })) } : {}),
     };
     httpPromptEpoch += 1;
     const epoch = httpPromptEpoch;
@@ -174,9 +184,14 @@ export const httpTransport: ChatTransport = {
       callbacks.onMessages((prev) => spliceTurnMessages(prev, userMsg.id, state.messages));
     };
 
+    let attachmentAdmissionError: Error | null = null;
     let lastStatus: StatusInfo | null = null;
     let lastLive = "";
     const handleEvent = (event: StreamEvent) => {
+      if (attachments?.length && event.type === "error") {
+        attachmentAdmissionError ??= new Error(event.message || event.error || "HTTP 附件请求被拒绝");
+        return;
+      }
       if (event.type === "token_usage" || event.type === "final") {
         lastStatus = applyTokenUsageToStatus(lastStatus, event);
         callbacks.onStatus(lastStatus);
@@ -229,13 +244,18 @@ export const httpTransport: ChatTransport = {
           resp = await fetch(`${API_BASE}/chat/stream`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authorizationHeaders() },
-            body: JSON.stringify({ message: content, mode }),
+            body: JSON.stringify({
+              message: content,
+              mode,
+              ...(attachments?.length ? { attachments: attachments.map((item) => ({ ...item })) } : {}),
+            }),
             signal,
           });
           lastErr = null;
           break;
         } catch (e) {
           lastErr = e;
+          if (attachments?.length) break;
           if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
         }
       }
@@ -253,12 +273,23 @@ export const httpTransport: ChatTransport = {
         handleEvent,
         (event) => event.type === "final" || event.type === "done",
       );
+      if (attachmentAdmissionError) throw attachmentAdmissionError;
 
       publish({
         ...state,
         messages: settleActiveMessages(state.messages),
       });
     } catch (e) {
+      if (attachments?.length) {
+        publish({
+          ...state,
+          messages: settleActiveMessages(
+            state.messages,
+            (e as Error)?.name === "AbortError" ? "cancelled" : undefined,
+          ),
+        });
+        throw e;
+      }
       if ((e as Error)?.name === "AbortError") {
         publish({
           ...state,

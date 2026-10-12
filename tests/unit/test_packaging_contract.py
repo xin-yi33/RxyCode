@@ -49,6 +49,16 @@ def test_installer_ships_playwright_package_not_the_browser_binary():
     assert "_install_bundled_chromium" in launch
 
 
+def test_clipboard_image_runtime_declares_and_packages_pillow_and_helper():
+    requirements = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "Pillow>=10.0,<13" in requirements
+    manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include utils *.py" in manifest
+    helper = (PROJECT_ROOT / "utils" / "clipboard_capture.py").read_text(encoding="utf-8")
+    assert "from RxyCode" not in helper
+    assert "import RxyCode" not in helper
+
+
 def test_pyproject_exposes_the_versioned_console_entrypoint():
     config = _pyproject()
     project = config["project"]

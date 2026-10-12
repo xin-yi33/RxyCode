@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./types.ts";
+import { getAttachmentKind, getAttachmentName } from "./clipboard.ts";
 
 export const DEFAULT_TRANSCRIPT_MOUNT_BUDGET = 80;
 export const TRANSCRIPT_HISTORY_PAGE_SIZE = 40;
@@ -60,7 +61,12 @@ export function sameTranscriptRange(
 export function formatAllMessagesForCopy(messages: readonly ChatMessage[]): string {
   const lines: string[] = [];
   for (const message of messages) {
-    if (message.role === "user") lines.push(`> ${message.content}`);
+    if (message.role === "user") {
+      lines.push(`> ${message.content}`);
+      for (const attachment of message.attachments ?? []) {
+        lines.push(`  [附件] ${getAttachmentName(attachment)} · ${getAttachmentKind(attachment)}`);
+      }
+    }
     else if (message.role === "assistant") lines.push(message.content);
     else if (message.role === "thinking") lines.push(`[思考] ${message.content}`);
     else if (message.role === "tool") {

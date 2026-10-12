@@ -16,6 +16,41 @@ Shared utilities used across the codebase: backend event output, streaming state
 | safe_http.py | Pinned public HTTP client: `validate_public_url` / `is_public_address` / `fetch_public_response` / `safe_url_label`, `UnsafeUrlError`, `ResponseTooLargeError` (used by webfetch/file_download) |
 | atomic_file.py | `atomic_write_text` - atomic same-directory temp write + fsync + rename (used by write/edit/memory/task/queue) |
 | user_facing_errors.py | `to_user_facing_error` + `MSG_*` zh/error mapping for terminal messages |
+| clipboard_capture.py | Standalone one-shot OS clipboard helper; no project imports, one JSON result, bounded command/text/image reads |
+
+## Clipboard capture helper
+
+Run `python -I -X utf8 <project-root>/utils/clipboard_capture.py --output-dir
+<client-data>/clipboard`. Isolated mode prevents the script's `utils/` directory
+or `PYTHONPATH` from shadowing standard-library modules while preserving
+standard-library and installed-package access. The non-isolated command
+`python <script>` is deprecated (2026-10-11): the repository's `utils/queue.py`
+can shadow stdlib `queue` and fail during import before clipboard access. The
+helper emits exactly one JSON object with `kind` (`text`,
+`attachments`, `empty`, or `error`), `text`, and `attachments`; failures may
+also include `error`. Windows reads copied file paths through native CF_HDROP,
+then bitmap through Pillow, then bounded Unicode text; CF_HDROP and text still
+work if Pillow is unavailable, while image paste reports explicit install
+guidance. Linux supports graphical Wayland (`wl-paste`) or X11
+(`xclip`) when installed. macOS supports clipboard PNG and text; Finder file
+objects are explicitly unsupported. Headless/missing-command cases report an
+error rather than a successful empty paste.
+
+Clipboard text is capped at 64 KiB and marked when truncated. A copied image is
+normalized to a unique PNG under the supplied output directory, capped at 20
+MP, 2048 px per edge, and 5 MiB encoded; its human label is
+`剪贴板图片.png`. The default is `~/.RxyCode/temp/clipboard`, matching
+`config.settings.DEFAULT_CONFIG_DIR`; `RXYCODE_DATA_DIR` overrides the data
+root without importing the full settings package. POSIX command reads have a
+deadline, and the helper starts its own process group so the caller can cancel
+the helper and its clipboard-command descendants together.
+
+Generated PNGs remain in the persistent clipboard temp directory so queued
+turns and history can continue referring to them; they are not deleted at the
+end of the current turn. There is currently no automatic, reference-safe
+cleanup or garbage collection. A future cleanup policy must account for
+queued/history references before removing generated files; that policy is not
+implemented yet.
 
 ## Core Code: streaming.py
 
@@ -23,7 +58,14 @@ Shared utilities used across the codebase: backend event output, streaming state
 
 ## Core Code: tui.py
 
-`tui.py` is not a user interface. The interactive UI lives exclusively in `frontend/` and uses Ink.
+`tui.py` is not a user interface. The default interactive TUI is OpenTUI in
+`frontend/opentui-app/`; Ink in `frontend/` remains the optional
+`RXYCODE_TUI=ink` fallback.
+
+Retired documentation wording (2026-10-11): the former “frontend exclusively
+uses Ink” description was stale because OpenTUI is now the default TUI. This
+corrects the module documentation only; it does not change code or runtime
+routing.
 
 The module exposes:
 - `BackendOutputAdapter`: Minimal non-interactive event sink for backend code running without an API stream.

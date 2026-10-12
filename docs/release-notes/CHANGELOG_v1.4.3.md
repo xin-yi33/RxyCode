@@ -112,3 +112,56 @@ cProfile 定位：`resolve_model_config` 每模型一次 → 57 次 `load_creden
 - 独立候选组合 gate 10292 passed、1 skipped、47 warnings（279.94 秒；core/tools/appserver/subagents/integration/contract/system cancellation/packaging）；shell+tools+cancellation 1045 passed，reader/consumer 18 passed，worker owner/parent gates 20/19 passed，Ruff 全绿。
 - 内存变更于 2026-10-11 集成到 primary 工作树；primary fresh proof：appserver/subagents/capture-consumers-security/realAgent/cancel 711 passed、1 skipped（75.89 秒），TUI 354 passed、0 failed（70 files，28.52 秒），tsc、Ruff touched files 和 scoped diff check 通过。需重启 RxyCode 加载；不是发布，产品版本仍为 1.4.2。
 - K3 基线 `53e5bae5` 未变，primary 与隔离树 normalized code 全部匹配；本次按用户授权仅提交本地 master，不推送、不发布，其他 WIP 与计划文档不纳入。结果不是全仓库/live 覆盖，内存限制与 fixture 边界见报告。
+
+## TUI 剪贴板附件（2026-10-11，实施记录；验收未完成）
+
+主 OpenTUI 提示框支持从本机剪贴板添加文件或截图：在 Explorer 复制文件后回到提示框按 `Ctrl+V`；终端截获快捷键时可用 `Alt+V` 或 `/paste`。附件可在发送前通过 `/removeattachment` 移除。原有 `usePaste` 继续处理普通终端文本粘贴，未废弃；OpenTUI 仍为 0.4.5，Ink 附件交互不属于本轮目标。
+
+### 入口与实现文件
+
+| 位置 | 本轮行为 |
+|---|---|
+| `frontend/opentui-app/src/App.tsx`、`frontend/opentui-app/src/transport/stdioTransport.ts` | 用户触发粘贴、附件草稿与排队快照、提交前 capability guard；legacy 服务不支持时明确拒绝，不 silent drop |
+| `utils/clipboard_capture.py` | 一次性本机 helper 读取文件列表、位图或文本；读取有界，3.5 秒超时及其他失败显式报告，不轮询 |
+| `protocol/requests.py` | `PromptRequest.attachments` 为可选 path/name 列表，默认空列表，兼容无附件请求 |
+| `appserver/server.py`、`appserver/agent_host.py`、`appserver/agent_worker.py` | stdio `initialize` 声明附件能力，沿既有 `handleprompt → AgentHost → worker` 传递附件 |
+| `core/session.py`、`core/agent_v2.py` | Session 校验并准备附件，主 prompt 通过 `_build_prompt_human_message` 单一工厂生成文本或真实 image blocks |
+| `api_server.py` | HTTP `/status` 提供附件 capability 并用于发送前 guard；`/chat` 与 `/chat/stream` 进入同一 Session（不是 `/chatstream`），与 stdio 共用既有 headless 入口；旧 server 明确拒绝附件请求 |
+
+旧无附件 prompt 的直接 `HumanMessage` 构造路径已由 `_build_prompt_human_message` 替代，无附件仍产生原有纯文本消息。附件路径经 `PromptRequest → server/AgentHost/worker → Session.prepare → AgentV2`；只在确有附件时将只读准备放入 `asyncio.to_thread`，无附件请求不进入该线程路径。取消后的旧准备结果不绑定，queued turn 冻结自身副本。非视觉模型的文本仍是字符串；真实图像块只在 vision capability 检查通过后构造。`Session._dispatch_user_turn` 对普通附件 turn 跳过旧 team/multi-agent 分派，直接走主 AgentV2，附件不继承到 child；携带附件的显式路由切换命令另有 guard。真正因不能保留附件而 preflight 拒绝的路径包括复杂 Compose、file/download，不能笼统写成 team 状态下的附件请求被拒绝。
+
+### 能力与限制
+
+- 小型 UTF-8 文本有界内联，每文件 32 KiB、每轮合计 64 KiB。图片（包括 BMP/TIFF/ICO）规范化为 PNG，只有模型视觉 capability 允许时才发送真实 `HumanMessage` image blocks；不以路径或 metadata 冒充图像输入，也不自动换模型。
+- PDF、视频仅作为文件引用供现有工具使用，不承诺模型原生理解其内容。每轮最多 10 个附件、其中最多 5 张图片；源图像 5 MiB、模型图像 URL 5 MiB、解码 20 MP、最长边 2048 px 等限制使准备过程有界。
+- 附件 turn 旁路精确与语义答案缓存，provider prefix 行为未改。图像 occupancy 的约 1024 token reserve 是预算近似，不是实际计量或账单；旧图按 `tail_turns` 压为摘要或引用，当前与最新图像受保护。
+- 临时 PNG 保存在持久 temp 目录，保留 queued/history 引用，不在当轮结束时删除。目前没有自动、安全的引用计数清理策略或 GC；后续清理必须先确认引用已解除。冷启动只持久化附件 metadata，不承诺恢复或冷启动后自动重建视觉上下文。
+
+### 验证状态（2026-10-11 阶段记录）
+
+父代理本轮独立运行的阶段回归结果：fresh Bun 380 passed / 0 failed，`tsc` 通过；protocol 29 passed，`tsc` 通过；compaction/attachment Python 97 passed / 1 skipped；provider/tools/subagent Python 2164 passed。当时更广门禁仍在运行，并有失败待查；后续冻结快照结果见 2026-10-12 追加记录。
+
+早期 broker snapshot/backup 预检失败，但证据不能确认 managed clipboard 当时无法完成校验的原因，不推测为 opaque 格式问题。另一次旧预检在没有测试写入时仍进入 restore，缺少原内容 digest，不能确认精确恢复，也不能声称发生了数据丢失。新版 broker 的 backup-failure 记录为零次写入、零次恢复；用户主动复制普通文本后，中间一次运行备份 7 种格式并验证 restored hash 一致。最终三轮均验证剪贴板恢复 hash；前两轮备份 5 种格式，细节见下方验收记录。
+
+### 阶段记录与最终验收（2026-10-12）
+
+已核对源码的修复：`App.tsx` 使用 OpenTUI 0.4.5 实际解析的 `option/meta` 处理 Alt+V；`clipboard.ts` 用 `python -I -X utf8` 隔离启动 helper，避免 `utils/queue` 遮蔽标准库 `queue`，并在非零退出码时解析和透传 helper 的 error JSON。原有文本 `usePaste` 路径保留。
+
+父代理冻结 source 后的 core/appserver/bridge/cache/protocol/packaging 广门禁：8516 passed / 4 skipped / 2 deselected，448.93 秒。两个排除项均在干净 master 基线 `8823266e` 复现：
+
+- `tracked_docs_allowlist`：既有 CLI memory 根报告的文档 allowlist 失败。
+- `backfill_missing_api_key_secrets_from_env`：全 core 顺序中返回 0，单独运行通过；基线运行至 272 passed 后也出现同一失败。
+
+上述是有明确范围及基线排除项的门禁结果，不是全仓库全绿。父代理另有 fresh Bun 384 passed / 0 failed（73 files，31.34 秒）及 `tsc` 通过；protocol 29 passed 且 `tsc` 通过；provider/tools/subagent Python 2164 passed；最近一次 Python focused suite 为 138 passed / 2 skipped。各结果对应各自快照，最终修复后的验收仍以正式记录为准。
+
+09:10 的阶段快照历史上为 3/4：前三场景 assertions 通过，PDF/MP4 provider-request assertions 通过；第四场景原始 TUI capture 因 ANSI cursor movement 跳过空白 cells 而出现 false negative，真实 raw render 中完整 Final 可见。采证已在同一 deadline 内改为等待完整 ASCII 序列并归一化 ANSI/空白，缺词仍失败且有回归测试。此前 1/4 图像阶段因 `image_observations` 元数据缺失的记录也保留为历史；均由后续三轮完整结果取代。
+
+最终真实 E2E 三个独立轮次均 4/4 GREEN，所有场景 assertions（含 PDF/MP4 完整免责声明）通过：`clipboard-e2e-20261012-092556` pytest 1 passed / 11.22 s，`clipboard-e2e-20261012-092620` 1 passed / 10.53 s；移除未接线 `sitecustomize` 后的 `clipboard-e2e-20261012-093143` pytest 1 passed / 11.19 s。每轮 13 个 synthetic provider requests；第三轮 clipboard restore/hash 成功，Bun/appserver/worker 三 PID exited、`reader_stopped=true`。第三轮 chip/final timings（ms）：files 176.23/3460，image 214.43/303.09，text 188.91/303，refs 188.2/318.32。100 ms 指标是最终 chip 完成时间，不是首次状态反馈；图像约 214 ms，不能声称所有场景均低于 100 ms。PNG fixture 为 32×24、RGB(23, 167, 91)。模型 fixture 配置 `gpt-5.6-luna`，回答由本地合成 provider 预设，不是 live 模型理解评估。
+
+最终非 E2E fresh 回归：provider + broker units 15 passed / 2.86 s；all-feature suite 60 passed / 2 skipped / 5.90 s；Bun 384 passed / 31.76 s 且 `tsc` 通过；protocol/codegen 29 passed 且 `tsc` 通过。更广 8516 gate 的两项基线排除保持原记录，不代表整个仓库全绿。
+
+**JSON-RPC 采证纠正：** 2026-10-12 曾尝试通过测试 `sitecustomize.py` tee 完整 JSON-RPC；生产 `stdioTransport.start` 固定设置 `PYTHONPATH=this.projectRoot()`，覆盖 harness 加入的测试目录，导致 `sitecustomize.py` 未被导入、前两轮 `evidence/jsonrpc` 目录为空。该次 wire-capture 尝试作废，不能声称存在完整 RPC tee；空目录不是证据。未发布的死钩子已删除，harness 已移除 `RXYCODE_CLIPBOARD_E2E_RPC_TRACE` 与空目录创建，生产传输未改；修正后 units 与第三轮 4/4 suite 均通过。现有证据是 appserver 持久 `task-events.json` 协议事件、provider trace 与 ConPTY terminal 观察，仍不等于完整 wire capture。此前两轮产品行为结果仍有效。
+
+**产物状态：** 父代理确认三轮 evidence 位于 `primary artifacts/tui-clipboard-e2e-2026-10-12/round-1` 至 `round-3`，共 27 files / 478171 bytes，copy hash verified，无 CA keys/config/fixtures。三个外部源目录均完整未删，两次原生 `Remove-Item` 被执行层 policy 拒绝，没有尝试其他 shell 绕过：`D:\tmp-cursor-probe\rxycode-clipboard-acceptance-20261011`、`D:\tmp-cursor-probe\rxycode-clipboard-snapshot-readonly`、`D:\tmp-cursor-probe\opencode-clipboard-ref-20261011`。Git worktree 将在父流程 commit 后用原生 `git worktree remove`；当前尚无 commit/hash。未调用收费 API，未做 UI 像素级视觉审核；正式验收报告见 [`docs/modules/reports/TUI-CLIPBOARD-ATTACHMENTS-E2E-2026-10-11.md`](../modules/reports/TUI-CLIPBOARD-ATTACHMENTS-E2E-2026-10-11.md)。
+
+产品版本仍为 1.4.2；本文件是 v1.4.3 开发期变更记录。代码已 stage，但当前尚无 Git commit/hash；提交与 fast-forward master 由父流程处理。不发版、不 push。

@@ -46,7 +46,7 @@ from .log.log_helpers import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 import json as _json
 import asyncio as _asyncio
 import time as _time
@@ -58,6 +58,7 @@ from .api_server_models import (  # noqa: F401  (re-exports for test backward co
     ModelOnboardingRequest,
     router as models_router,
 )
+from .protocol.requests import PromptAttachment
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -255,6 +256,7 @@ class ChatRequest(BaseModel):
     message: str
     mode: str = "build"
     session_id: str = "latest"
+    attachments: list[PromptAttachment] = Field(default_factory=list, max_length=10)
 
     @field_validator("session_id")
     @classmethod
@@ -807,6 +809,7 @@ async def get_status():
     # surface None instead of a wrong hard-coded price.
     billing = token_stats.billing_amount
     return {
+        "capabilities": {"prompt_attachments": True},
         "memory_mb": round(mem_mb, 1),
         "memory_pct": round(mem_pct, 1),
         "billing": round(billing, 4) if billing is not None else None,
@@ -854,6 +857,7 @@ async def chat(req: ChatRequest):
     valid_modes = ("build", "plan", "compose")
     if req.mode not in valid_modes:
         return ChatResponse(response=f"Invalid mode: {req.mode}. Valid modes: {valid_modes}", error=f"Invalid mode: {req.mode}")
+    attachments = [item.model_dump(exclude_none=True) for item in req.attachments]
 
     async def run_chat() -> ChatResponse:
         _state["mode"] = req.mode
@@ -873,6 +877,8 @@ async def chat(req: ChatRequest):
         started_at = _time.monotonic()
         terminal_status = "failed"
         user_record = _session_message("user", req.message, run_id=run_id)
+        if attachments:
+            user_record["attachments"] = [dict(item) for item in attachments]
         history.append(user_record)
 
         with run_id_context(run_id):
@@ -895,6 +901,7 @@ async def chat(req: ChatRequest):
                     req.message,
                     mode=req.mode,
                     run_id=run_id,
+                    attachments=attachments,
                 )
                 terminal_status = prompt_result.status
                 _detail = prompt_result.detail
@@ -1961,6 +1968,7 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {_json.dumps({'type': 'error', 'message': f'Invalid mode: {req.mode}'})}\n\n"
             yield "data: {\"type\": \"done\"}\n\n"
         return StreamingResponse(error_gen(), media_type="text/event-stream")
+    attachments = [item.model_dump(exclude_none=True) for item in req.attachments]
 
     # C4: session-slot admission replaces the legacy global busy flag.
     # try_acquire never blocks: global-cap-full or same-session-busy both get
@@ -2039,6 +2047,10 @@ async def chat_stream(req: ChatRequest):
             recorder = StreamSessionRecorder(
                 history, run_id=run_id, user_message=req.message
             )
+            if attachments and recorder.messages:
+                recorder.messages[0]["attachments"] = [
+                    dict(item) for item in attachments
+                ]
             stream_tui.recorder = recorder
             _state["mode"] = req.mode
             set_tui(stream_tui)
@@ -2071,6 +2083,7 @@ async def chat_stream(req: ChatRequest):
                     req.message,
                     mode=req.mode,
                     run_id=run_id,
+                    attachments=attachments,
                 )
                 stream_tui.flush_stream_buffers()
                 status = result.status
