@@ -147,6 +147,26 @@ auto-route stdio 时序 flake，单跑绿）；core 分段 7681 passed（懒导�
 剪贴板批次遗留红，本批增量为 0；credential/watchdog 两 flake 单跑均绿）；
 bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 
+### P2：展开描述把审批选项挤出屏幕（2026-10-12 复审 `4319b56b` 遗留）
+
+症状：3291–3912 字符的 description 展开后（80×24 及部分 120×40），批准/拒绝
+选项被挤出屏幕、PageDown 也到不了描述尾部（布局缺陷，非权限绕过）。
+
+根因有两层：①描述未限高，长文直接顶掉选项区；②换行按 JS `length` 算——
+CJK 字符在终端占 **2 格**，64 个汉字实为 128 格，超宽行被横向截掉，尾部指令
+段永远滚不到。修复（`ApprovalDialog.tsx`）：
+
+- 展开态描述进**限高 ScrollBox**（`descViewportLines`：终端高 −16，封顶 10 行），
+  ↑↓/PgUp/PgDn/Home/End 滚动，审批选项固定在滚动区外始终可见（参照 DialogDoc 模式）。
+- `wrapDescriptionLines` 改为按**显示宽度**（wcwidth 区段表：CJK/全角/emoji 记 2 格）
+  软换行，行宽预算扣除边框/padding/缩进/滚动条（-16 格）。
+- 收起/展开快捷键不变（`v`）；展开时 ↑↓ 改为滚动描述，a/r/l/↵ 决策仍然可用；
+  底栏提示随状态切换。
+
+测试：`ApprovalDialog.test.tsx` +2（9 行展开尾部需滚动可见、3k+ 字符展开后
+选项仍在屏且 102 行滚动到尾含 TAILMARK；`descViewportLines`/`clampDescScroll`/
+`wrapDescriptionLines` 纯函数边界）。全量：bun test **389 passed / 0 fail**，tsc 零错。
+
 ## 遗留（本轮精准修复未覆盖，后续立项）
 
 - `tasks.json` 单文件巨石（26MB+）应改 append-only 分段存储（JSONL + 独立元数据小文件）——根治病灶，属存储层重构。
