@@ -326,6 +326,9 @@ export class StdioAppserverSession {
             typeof argsRaw === "string"
               ? argsRaw
               : JSON.stringify(argsRaw ?? details ?? {}),
+          description:
+            // 2026-10-12 审批界面回显外部（如 MCP）工具描述，用户复核可见。
+            typeof details?.description === "string" ? details.description : "",
         });
       });
       this.activeCallbacks?.onApprovalRequest?.(null);

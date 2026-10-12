@@ -427,12 +427,14 @@ async def test_agent_next_run_hot_loads_executes_and_unloads_downloaded_mcp(
     assert agent._mcp_clients["hot"] is not first_client
 
     status = agent.runtime_status()["mcp"]
+    # 2026-10-12 新增 manifest_drift 聚合键（清单重审防线，无漂移时为空表）。
     assert status == {
         "configured_servers": 1,
         "connected_servers": 1,
         "tools": 1,
         "error_count": 0,
         "error_types": [],
+        "manifest_drift": {},
         "backoff_servers": 0,
         "next_retry_seconds": 0,
         "process_isolation": "host_process",

@@ -36,6 +36,9 @@ class ApprovalRequest:
     args_summary: Any
     risk: RiskLevel
     approval_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # 2026-10-12 不可信输入可见性：MCP 工具的 description 是外部输入，用户
+    # 在审批界面复核时需要看到它的完整内容（投毒文本只攻击模型的时代结束了）。
+    tool_description: str = ""
 
     def __post_init__(self):
         # Cap the summary size so prompts/SSE payloads stay small.
@@ -48,6 +51,7 @@ class ApprovalRequest:
             "tool": self.tool_name,
             "risk": self.risk.name,
             "args": self.args_summary,
+            "description": self.tool_description,
         }
 
 

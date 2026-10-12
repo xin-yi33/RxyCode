@@ -9,6 +9,8 @@ export interface ApprovalInfo {
   tool: string;
   risk: string;
   args: string;
+  /** 2026-10-12 外部工具（如 MCP）的完整描述，用户审批时复核。可为空。 */
+  description?: string;
 }
 
 const OPTIONS: Array<{ key: string; label: string; decision: ApprovalDecision }> = [
@@ -84,6 +86,15 @@ export function ApprovalDialog({
           </span>
         </text>
         <text fg={C.overlay2}>{`  Args: ${argsPreview}`}</text>
+        {approval.description ? (
+          <text fg={C.overlay2}>
+            {`  Desc: ${
+              approval.description.length > 120
+                ? `${approval.description.slice(0, 120)}...`
+                : approval.description
+            }`}
+          </text>
+        ) : null}
         <text fg={C.overlay2}>{"─".repeat(40)}</text>
         {OPTIONS.map((o, i) => {
           const sel = i === idx;

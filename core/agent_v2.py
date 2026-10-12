@@ -146,6 +146,7 @@ from RxyCode.RxyCode1_1_0.log.logger import (
     run_id_context,
 )
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
+from RxyCode.RxyCode1_1_0.mcp import tool_manifest as _tool_manifest
 from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
@@ -2277,6 +2278,9 @@ class AgentV2:
         self._mcp_errors: dict[str, str] = {}
         self._mcp_retry_state: dict[str, tuple[int, float]] = {}
         self._mcp_config_fingerprint: str | None = None
+        # 2026-10-12 清单漂移重审：server -> {added,removed,changed} 计数，
+        # 只进聚合（不含描述/schema 内容，遵守 mcp 聚合无秘密约定）。
+        self._mcp_manifest_drift: dict[str, dict[str, int]] = {}
         self._mcp_runtime = {
             "configured_servers": 0,
             "connected_servers": 0,
@@ -2287,6 +2291,7 @@ class AgentV2:
             "next_retry_seconds": 0,
             "process_isolation": "host_process",
             "environment": "safe_allowlist_plus_explicit",
+            "manifest_drift": {},
         }
         self._register_tools()
         # Configured MCP processes are lifecycle-owned by this Agent. Connect
@@ -4946,7 +4951,11 @@ class AgentV2:
                 "next_retry_seconds": 0,
                 "process_isolation": "host_process",
                 "environment": "safe_allowlist_plus_explicit",
+                "manifest_drift": {},
             }
+        # 2026-10-12 与上面各字段同规约：轻量构造路径（测试用）缺省再补。
+        if not hasattr(self, "_mcp_manifest_drift"):
+            self._mcp_manifest_drift = {}
         if not hasattr(self, "_mcp_server_tool_names"):
             self._mcp_server_tool_names = {}
         if not hasattr(self, "_mcp_server_fingerprints"):
@@ -4996,6 +5005,18 @@ class AgentV2:
                 self._mcp_server_fingerprints.pop(server_name, None)
                 self._mcp_errors.pop(server_name, None)
                 self._mcp_retry_state.pop(server_name, None)
+                self._mcp_manifest_drift.pop(server_name, None)
+                # 2026-10-12 清单基线生命周期：server 被移出配置时其基线一并
+                # 清除（重新加入视为全新接入，重新走初次基线）。
+                try:
+                    # 模块级导入（见文件头 _tool_manifest）：保持 P7 懒导入计数不变。
+                    _store = _tool_manifest.load_manifest_store()
+                    if _store.pop(server_name, None) is not None:
+                        _tool_manifest.save_manifest_store(_store)
+                except Exception:
+                    _logger.exception(
+                        "MCP tool manifest cleanup failed for %s", server_name
+                    )
                 changed = True
 
             candidates: list[str] = []
@@ -5086,6 +5107,42 @@ class AgentV2:
                             tool_name, tool, risk=risk
                         )
                     self._mcp_server_tool_names[server_name] = set(new_tools)
+                    # 2026-10-12 清单基线 + 漂移重审（供应链防线）：
+                    # tools/list_changed 触发重注册是静默通道；这里把
+                    # (description, schemas) 的哈希与持久化基线比对，
+                    # 漂移记 warning + 运行时聚合供状态面板呈现，
+                    # 仍 fail-open 注册、新清单立即成为下次的基线。
+                    try:
+                        # 模块级导入（见文件头 _tool_manifest）：保持 P7 懒导入计数不变。
+                        _manifest_store = _tool_manifest.load_manifest_store()
+                        _signature = _tool_manifest.signature_for_tools(new_tools)
+                        _baseline = _manifest_store.get(server_name)
+                        _drift = _tool_manifest.diff_signatures(_baseline or {}, _signature)
+                        if _baseline is not None and (
+                            _drift["added"] or _drift["removed"] or _drift["changed"]
+                        ):
+                            _logger.warning(
+                                "MCP server %s tool manifest drifted (re-review "
+                                "required; new manifest registered fail-open and is "
+                                "now the baseline): added=%s removed=%s changed=%s",
+                                server_name,
+                                _drift["added"],
+                                _drift["removed"],
+                                _drift["changed"],
+                            )
+                            self._mcp_manifest_drift[server_name] = {
+                                "added": len(_drift["added"]),
+                                "removed": len(_drift["removed"]),
+                                "changed": len(_drift["changed"]),
+                            }
+                        else:
+                            self._mcp_manifest_drift.pop(server_name, None)
+                        _manifest_store[server_name] = _signature
+                        _tool_manifest.save_manifest_store(_manifest_store)
+                    except Exception:
+                        _logger.exception(
+                            "MCP tool manifest review failed for %s", server_name
+                        )
                 changed = True
 
             errors = dict(self._mcp_errors)
@@ -5115,6 +5172,7 @@ class AgentV2:
                 ),
                 "process_isolation": "host_process",
                 "environment": "safe_allowlist_plus_explicit",
+                "manifest_drift": dict(self._mcp_manifest_drift),
             }
             return changed
 
@@ -5134,6 +5192,7 @@ class AgentV2:
             self._mcp_errors = {}
             self._mcp_retry_state = {}
             self._mcp_config_fingerprint = None
+            self._mcp_manifest_drift = {}
             self._mcp_runtime = {
                 "configured_servers": 0,
                 "connected_servers": 0,
@@ -5144,6 +5203,7 @@ class AgentV2:
                 "next_retry_seconds": 0,
                 "process_isolation": "host_process",
                 "environment": "safe_allowlist_plus_explicit",
+                "manifest_drift": {},
             }
         for client in clients.values():
             try:

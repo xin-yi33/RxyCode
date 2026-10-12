@@ -1583,7 +1583,15 @@ class ToolOrchestrator:
                         name, args, msg, executed=False, approval="rejected",
                         risk=risk, audit=audit,
                     )
-                req = ApprovalRequest(tool_name=name, args_summary=args, risk=risk)
+                # 2026-10-12：审批载荷携带工具 description（外部输入，MCP 尤其
+                # 需要用户在执行前读到它的完整内容）。
+                tool_description = str(getattr(tool, "description", "") or "")[:4000]
+                req = ApprovalRequest(
+                    tool_name=name,
+                    args_summary=args,
+                    risk=risk,
+                    tool_description=tool_description,
+                )
                 decision = await broker.request_approval(req)
                 if decision == ApprovalDecision.REJECTED:
                     msg = (

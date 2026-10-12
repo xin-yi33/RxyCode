@@ -100,6 +100,22 @@ cProfile 定位：`resolve_model_config` 每模型一次 → 57 次 `load_creden
 - `switchModel` 在第一个 await 之前固定目标 `session_id`、原模型 id 和 `attachGeneration`。`session/set_model` 使用这个固定会话。响应只有在代次和会话都没变时才改当前模型 id 或状态条。最后一次状态刷新结束后再查一次；期间若已加载另一会话，不再返回 `model_changed`。
 - 会话弹窗用实例存活标记。关闭之后，置顶、重命名、Fork 的迟到回调可以让后台操作结束，但不再调用 `reload()`，因此不会递增全局序号，也不会改缓存或界面。
 
+## 安全：MCP 接入三防线（2026-10-12）
+
+用户裁定按审计结论修。三条基线原本状况：description 审计部分有、版本锁定没有、最小权限凭证部分有。本批落地：
+
+| 防线 | 修改点 | 说明 |
+|---|---|---|
+| **投毒审计**（新模块 `mcp/tool_poisoning.py`） | `mcp/client.py` tools/list 解析处 | description 原样进模型系统提示此前无防线。命中 `<IMPORTANT>`/"ignore previous instructions"/`<system>`/密钥外泄/敏感文件读取模式时：给模型可见的 `⚠ description flagged` 警告前缀 + warning 日志（fail-open，不静默注册） |
+| **审批可见性** | `core/safety/approval.py`、`appserver/approval.py`、`execution/tool_orchestrator.py`、`ApprovalDialog.tsx`、`stdioTransport.ts` | 审批载荷携带工具完整 description（`details.description`，additive 不改协议），OpenTUI 审批弹窗新增 `Desc:` 行——用户复核时第一次能读到外部（如 MCP）工具自己写的说明 |
+| **版本钉死** | `tools/mcp_manager.py`、`appserver/plugin_service.py` | `_NPM_PACKAGE_RE` 允许 `pkg@version`/`@tag`（原来禁止 @后缀，`npx -y 裸包名`是静默拉最新通道）；GitHub MCP docker 镜像钉 `v0.5.0`（原隐式 `:latest`），升级=改常量+重审 |
+| **清单重审**（新模块 `mcp/tool_manifest.py`） | `core/agent_v2.py` 注册/移除路径 | 每 server 持久化 `(description, schemas)` 哈希基线到 `<data_dir>/mcp/tool_manifests.json`；`tools/list_changed` 热重注册时比对：漂移记 warning（+/-/~ 工具名明细）+ `runtime_status().mcp.manifest_drift` 计数聚合，fail-open 注册且新清单立即成为基线（每次真实变化只报一次）。server 移出配置时基线同步清除 |
+| **最小权限 env** | `mcp/client.py`（墓石注释） | `GITHUB_PERSONAL_ACCESS_TOKEN`/`GH_TOKEN` 移出全局继承白名单——原来任何 server（含无关天气 server）的子进程都能读到仓库级 PAT。github 系仍由 `mcp/github_auth.py` 按名字门控注入；其它 server 如需请显式配 `mcpServers.<name>.env` |
+
+**测试**：新增 `tests/test_mcp/test_supply_chain_guards.py`（27）、`ApprovalDialog.test.tsx`（2）；插件运行时断言改读常量防 tag 升级再红；`runtime_status().mcp` 精确断言补 `manifest_drift` 键。门禁：mcp/plugin/approval/安全 82 passed、tools/contract 53 passed、test_appserver 767 passed、test_core 分段全绿（credential 顺序依赖 flake 仍为既有问题）、ruff 全过、前端 bun test **386 passed / 0 fail**、tsc 零错。
+
+**已知非本批负债（不静默吸收）**：`test_lazy_import_budget` 在 HEAD（67975be2，剪贴板批次）已红（184 ≥ 181），与本次修改无关（本批模块级导入，懒导入增量为 0），待该批次作者修复 ratchet。
+
 ## 遗留（本轮精准修复未覆盖，后续立项）
 
 - `tasks.json` 单文件巨石（26MB+）应改 append-only 分段存储（JSONL + 独立元数据小文件）——根治病灶，属存储层重构。

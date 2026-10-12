@@ -31,7 +31,9 @@ _GITHUB_REPO_RE = re.compile(
     r"(?:\.git)?(?:/(?:tree|archive/refs/heads)/(?P<ref>[^/]+))?(?:/|\.zip)?$"
 )
 _GITHUB_SECRET_ENV = frozenset({"GITHUB_PERSONAL_ACCESS_TOKEN", "GH_TOKEN"})
-_OFFICIAL_GITHUB_MCP_IMAGE = "ghcr.io/github/github-mcp-server"
+# 2026-10-12 供应链钉版：镜像不再隐式 :latest（无 tag 即 latest 会静默更新）。
+# 升级路径明确：改这个 tag 并重审查，而不是让 docker 无感漂移。
+_OFFICIAL_GITHUB_MCP_IMAGE = "ghcr.io/github/github-mcp-server:v0.5.0"
 _DEPRECATED_GITHUB_NPM = "@modelcontextprotocol/server-github"
 
 
