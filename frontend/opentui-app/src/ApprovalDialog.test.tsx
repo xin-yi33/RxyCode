@@ -3,6 +3,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
+import { act } from "react";
 import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
 
 const base: ApprovalInfo = {
@@ -42,6 +43,33 @@ describe("ApprovalDialog description echo", () => {
       expect(frame).not.toContain("Desc:");
     } finally {
       renderer.destroy();
+    }
+  });
+
+  test("长 description 默认截断并可按 v 展开全文（K3-3）", async () => {
+    const longDesc = `${"安全前缀填充内容 ".repeat(30)}关键尾部指令段-TAILMARK`;
+    const view = await testRender(
+      <ApprovalDialog
+        approval={{ ...base, description: longDesc }}
+        onDecision={() => undefined}
+      />,
+      { width: 80, height: 24 },
+    );
+    try {
+      await view.flush();
+      const truncated = view.captureCharFrame();
+      expect(truncated).toContain("Desc:");
+      expect(truncated).not.toContain("TAILMARK");
+      expect(truncated).toContain("按 v 展开全文");
+
+      await act(async () => {
+        view.mockInput.pressKey("v");
+      });
+      await view.flush();
+      const expanded = view.captureCharFrame();
+      expect(expanded).toContain("TAILMARK");
+    } finally {
+      view.renderer.destroy();
     }
   });
 });

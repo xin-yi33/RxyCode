@@ -5010,9 +5010,8 @@ class AgentV2:
                 # 清除（重新加入视为全新接入，重新走初次基线）。
                 try:
                     # 模块级导入（见文件头 _tool_manifest）：保持 P7 懒导入计数不变。
-                    _store = _tool_manifest.load_manifest_store()
-                    if _store.pop(server_name, None) is not None:
-                        _tool_manifest.save_manifest_store(_store)
+                    # K3-4：锁内读-改-写，避免多窗口并发丢记录。
+                    _tool_manifest.remove_baseline(server_name)
                 except Exception:
                     _logger.exception(
                         "MCP tool manifest cleanup failed for %s", server_name
@@ -5137,8 +5136,8 @@ class AgentV2:
                             }
                         else:
                             self._mcp_manifest_drift.pop(server_name, None)
-                        _manifest_store[server_name] = _signature
-                        _tool_manifest.save_manifest_store(_manifest_store)
+                        # K3-4：锁内读-改-写合并，不与其它进程的基线互相覆盖。
+                        _tool_manifest.update_baseline(server_name, _signature)
                     except Exception:
                         _logger.exception(
                             "MCP tool manifest review failed for %s", server_name

@@ -33,9 +33,15 @@ export function ApprovalDialog({
   onDecision: (decision: ApprovalDecision) => void;
 }) {
   const [idx, setIdx] = useState(0);
+  // 2026-10-12 K3-3：外部工具 description 不再只看 120 字符截断——
+  // 投毒文本往往藏在中后段；按 v 展开全文/收起。
+  const [expanded, setExpanded] = useState(false);
   const riskColor = RISK_COLOR[approval.risk] || C.yellow;
   const argsPreview =
     approval.args.length > 200 ? `${approval.args.slice(0, 200)}...` : approval.args;
+  const description = approval.description ?? "";
+  const descPreview =
+    description.length > 120 ? `${description.slice(0, 120)}...` : description;
 
   useKeyboard((key) => {
     if (key.name === "up") {
@@ -51,6 +57,10 @@ export function ApprovalDialog({
       return;
     }
     const lower = (key.name || "").toLowerCase();
+    if (lower === "v" && description.length > 120) {
+      setExpanded((value) => !value);
+      return;
+    }
     const hit = OPTIONS.find((o) => o.key === lower);
     if (hit) onDecision(hit.decision);
   });
@@ -86,13 +96,11 @@ export function ApprovalDialog({
           </span>
         </text>
         <text fg={C.overlay2}>{`  Args: ${argsPreview}`}</text>
-        {approval.description ? (
+        {description ? (
           <text fg={C.overlay2}>
-            {`  Desc: ${
-              approval.description.length > 120
-                ? `${approval.description.slice(0, 120)}...`
-                : approval.description
-            }`}
+            {expanded
+              ? `  Desc: ${description}`
+              : `  Desc: ${descPreview}${description.length > 120 ? " (按 v 展开全文)" : ""}`}
           </text>
         ) : null}
         <text fg={C.overlay2}>{"─".repeat(40)}</text>
@@ -111,7 +119,11 @@ export function ApprovalDialog({
             </box>
           );
         })}
-        <text fg={C.overlay2}>{"  ↑↓ 选择   ↵ 确认   a/r/l 快捷   鼠标点击"}</text>
+        <text fg={C.overlay2}>
+          {description.length > 120
+            ? "  ↑↓ 选择   ↵ 确认   a/r/l 快捷   v 展开/收起 Desc   鼠标点击"
+            : "  ↑↓ 选择   ↵ 确认   a/r/l 快捷   鼠标点击"}
+        </text>
       </box>
     </box>
   );

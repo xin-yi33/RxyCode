@@ -116,6 +116,37 @@ cProfile 定位：`resolve_model_config` 每模型一次 → 57 次 `load_creden
 
 **已知非本批负债（不静默吸收）**：`test_lazy_import_budget` 在 HEAD（67975be2，剪贴板批次）已红（184 ≥ 181），与本次修改无关（本批模块级导入，懒导入增量为 0），待该批次作者修复 ratchet。
 
+### K3 复审四条接缝（2026-10-12）
+
+GPT 对上一批 MCP 安全加固的复审指出四个真实缺口，全部关闭（fail-open
+语义、github 名称门控宽度均为既有设计/风险，不在本批变更范围）：
+
+1. **Schema 漂移漏报**：`signature_for_tools` 原把 `StructuredTool.args_schema`
+   （pydantic 类）直接序列化，只剩 repr——参数类型/输出结构变了哈希不变。
+   现在 MCP 适配器把原始 `inputSchema`/`outputSchema` 存进
+   `metadata['mcp_input_schema']`/`['mcp_output_schema']`，签名优先用原始
+   schema；非 MCP 路径语义化回退 `model_json_schema()`。参数类型漂移必然改哈希。
+2. **扫描范围不足**：投毒扫描原先只查工具级 description——参数 description
+   同样进模型。新增 `scan_schema_descriptions` 递归扫描 schema 图
+   （properties/items/anyOf/allOf/oneOf/$defs/definitions/patternProperties），
+   命中按参数路径命名（如 `parameter description 'mode': ...`），上限 20 条防洪。
+3. **审批描述截断**：弹窗原截 120 字符——投毒文本常藏在中后段。新增 `v` 键
+   展开/收起全文（仅当超限时显示提示），底栏快捷键提示同步显示。
+4. **清单存储并发/类型**：原来读-改-写合并裸跑，多窗口并发互丢基线；
+   顶层非 dict 时 `.get` 抛 AttributeError 被外层 except 吞掉 = 复核静默跳过。
+   现在 `update_baseline`/`remove_baseline` 在跨进程锁内读-改-写合并
+   （不再调用方手动 load+save）；加载改为逐条类型校验，坏条目按条丢弃并记
+   warning，顶层类型错误按空基线处理并明确记 log，不再静默跳过。
+
+测试：`tests/test_mcp/test_supply_chain_guards.py` K3 段 +10（pydantic 类型漂移、
+原始 schema 优先、输出结构变化、嵌套参数扫描、12 线程并发写合并、单 server
+移除原子性、非 dict 顶层/非字符串 digest 降级）；前端 `ApprovalDialog.test.tsx`
++1（长描述默认截断、按 v 展开含尾部指令段）。门禁：守卫套件 37 passed；
+mcp/plugin/approval/安全 92 passed；appserver+bridge+cache 701 passed（1 项
+auto-route stdio 时序 flake，单跑绿）；core 分段 7681 passed（懒导入门槛仍为
+剪贴板批次遗留红，本批增量为 0；credential/watchdog 两 flake 单跑均绿）；
+bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
+
 ## 遗留（本轮精准修复未覆盖，后续立项）
 
 - `tasks.json` 单文件巨石（26MB+）应改 append-only 分段存储（JSONL + 独立元数据小文件）——根治病灶，属存储层重构。

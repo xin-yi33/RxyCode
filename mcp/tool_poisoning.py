@@ -40,3 +40,47 @@ def annotate_poisoned_description(description: str, findings: list[str]) -> str:
         return description
     joined = "; ".join(findings)
     return f"[⚠ description flagged: {joined}]\n{description}"
+
+
+_MAX_SCHEMA_FINDINGS = 20
+
+
+def scan_schema_descriptions(schema: object) -> list[str]:
+    """Scan every ``description`` string inside a JSON schema (K3-2).
+
+    Tool-level description scanning alone misses injections hidden in
+    parameter descriptions, which also reach the model through the args
+    schema.  Walks the schema graph (properties/items/anyOf/allOf/oneOf/
+    $defs/definitions/patternProperties) and reports each poisoned field as
+    ``"parameter description '<name>': <pattern>"``.  Capped so a hostile
+    schema cannot flood the report.
+    """
+    findings: list[str] = []
+
+    def walk(node: object, path: str) -> None:
+        if len(findings) >= _MAX_SCHEMA_FINDINGS:
+            return
+        if isinstance(node, dict):
+            desc = node.get("description")
+            if isinstance(desc, str):
+                for label in scan_tool_description(desc):
+                    where = path or "<root>"
+                    findings.append(f"parameter description '{where}': {label}")
+            for key, child in node.items():
+                if key == "description":
+                    continue
+                if isinstance(child, dict):
+                    if key in ("properties", "$defs", "definitions", "patternProperties"):
+                        for sub_name, sub in child.items():
+                            walk(sub, f"{path}.{sub_name}" if path else str(sub_name))
+                    else:
+                        walk(child, path)
+                elif isinstance(child, list) and key in ("anyOf", "allOf", "oneOf"):
+                    for sub in child:
+                        walk(sub, path)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, path)
+
+    walk(schema, "")
+    return findings

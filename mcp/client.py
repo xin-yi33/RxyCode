@@ -583,11 +583,14 @@ class MCPClient:
                 description = _bounded_text(description, 4000)
                 # 2026-10-12 不可信输入审计：description 原样进模型系统提示，
                 # 命中投毒模式时给模型可见的警告前缀并记日志（不静默注册）。
+                # K3-2：参数 description 同样到达模型（args schema），一并扫描。
                 from .tool_poisoning import (
                     annotate_poisoned_description,
+                    scan_schema_descriptions,
                     scan_tool_description,
                 )
                 poison = scan_tool_description(description)
+                poison.extend(scan_schema_descriptions(schema))
                 if poison:
                     description = annotate_poisoned_description(description, poison)
                     logger.warning(
@@ -1103,6 +1106,11 @@ def load_mcp_servers(config: dict[str, Any]) -> MCPLoadResult:
                     metadata={
                         "source": "mcp",
                         "mcp_risk": mcp_risk,
+                        # 2026-10-12 K3-1：清单基线签原始 schema。args_schema 经
+                        # pydantic 化后序列化只剩 repr，参数类型漂移会漏报；
+                        # 原始 dict 存 metadata，签名直接用它。
+                        "mcp_input_schema": discovered.parameters,
+                        "mcp_output_schema": discovered.output_schema,
                     },
                     args_schema=_build_args_schema(
                         discovered.parameters,
