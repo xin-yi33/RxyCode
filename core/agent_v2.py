@@ -878,6 +878,14 @@ def _is_approved_plan_implement(text: str) -> bool:
     return any(head.startswith(prefix) for prefix in _APPROVED_PLAN_PREFIXES)
 
 
+def _is_full_discovery_output(tool_name: str, content: str) -> bool:
+    """完整 schema 披露。去重和截断都留在 tool_search，不走普通工具输出加工。"""
+    return (
+        str(tool_name) == TOOL_SEARCH_NAME
+        and DISCOVERY_PIN_MARKER in str(content or "")
+    )
+
+
 def _tool_call_ids(tool_calls) -> set[str]:
     ids: set[str] = set()
     for call in tool_calls or []:
@@ -3945,10 +3953,7 @@ class AgentV2:
         完整 discovery 由 tool_search 自己按上下文去重。历史重建后指纹表
         仍在，不能再把刚重新给出的 schema 换成省略占位符。其他工具照常去重。
         """
-        if (
-            str(tool_name) == TOOL_SEARCH_NAME
-            and DISCOVERY_PIN_MARKER in str(content or "")
-        ):
+        if _is_full_discovery_output(tool_name, content):
             return content
         seen = getattr(self, "_seen_tool_fingerprints", None)
         if seen is None:
@@ -3987,9 +3992,11 @@ class AgentV2:
         request and falsely turns a recoverable tool error into a protocol
         failure.
         """
-        raw = self._truncate_tool_text(
-            self._dedupe_tool_output(tool_name, str(result))
-        )
+        raw = self._dedupe_tool_output(tool_name, str(result))
+        # 完整 discovery 的体积由 tool_search 自己限制。普通 2000 字截断会切碎
+        # parameters JSON，同时 facade 已经记成已加载，再搜也补不回来。
+        if not _is_full_discovery_output(tool_name, raw):
+            raw = self._truncate_tool_text(raw)
         if _tool_output_is_error(str(result)):
             raw = raw + "\n\n" + self._error_feedback_message(tool_name, str(result))
         return (

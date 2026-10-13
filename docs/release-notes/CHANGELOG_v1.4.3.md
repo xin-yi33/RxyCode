@@ -286,6 +286,24 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
 - 验证：`test_tool_search_k3_2_acceptance.py`、`test_token_governance.py`、`test_tool_message_protocol.py`、`test_approved_plan_implement.py` 和 `/load-chat` 精确恢复测试共 67 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
 
+## 完整 discovery 不再被普通输出截断（2026-10-13，复审 `68ba5ff2`）
+
+产品版本仍是 1.4.2。下面只记这次复现过、并已改到的行为。
+
+### 1. 新增与修复
+
+- 完整 discovery 跳过普通工具输出截断。默认 `cache.tool_output_max_chars` 仍是 2000，只作用于其他工具。
+- 搜索层自己的大小限制不变。写入下一轮模型请求的 `ToolMessage` 保留完整 `parameters` JSON，可以解析，不再被切成头尾。
+- 同一上下文再次搜索仍返回 `ALREADY AVAILABLE`。这次模型已经拿到完整定义。
+- 普通 `read` 超长输出仍按 2000 字符截断，相同内容第二次仍去重。
+
+### 2. 数据完整性
+
+- 去重豁免、展示记录恢复成历史观察、原生调用配对、任务结束只释放本任务记录，这些没有改口。
+- 基础 schema 仍是冻结的核心集。按需定义仍留在原历史消息里。
+- 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
+- 验证：`test_full_discovery_is_not_truncated_at_the_default_output_limit`、`test_rebuilt_discovery_stays_in_the_next_model_tool_message` 和 `test_token_governance.py` 共 39 通过；`test_tool_search_k3_2_acceptance.py` 与 `test_tool_message_protocol.py` 另行通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：

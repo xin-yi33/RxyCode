@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -660,6 +661,82 @@ def test_rebuilt_discovery_stays_in_the_next_model_tool_message(monkeypatch, tmp
     assert "mcp_echo" in body
     assert "duplicate tool output omitted" not in body
     assert "duplicate tool output omitted" in agent._dedupe_tool_output("read", "SAME-BYTES")
+
+
+def _parameters_object(text: str) -> dict:
+    marker = "parameters: "
+    start = text.index(marker) + len(marker)
+    end = text.index("\nIMPORTANT:", start)
+    return json.loads(text[start:end])
+
+
+def test_full_discovery_is_not_truncated_at_the_default_output_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    from RxyCode.RxyCode1_1_0.config.settings import _default_config
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    assert _default_config()["cache"]["tool_output_max_chars"] == 2000
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "truncate-discovery"
+    agent._capabilities = None
+    agent._provider = None
+    agent._seen_tool_fingerprints = {}
+    agent._tool_output_max_chars = lambda: 2000
+    pad = "p" * 5200
+    tool = SimpleNamespace(
+        name="mcp_wide",
+        description="mcp wide schema",
+        metadata={
+            "source": "mcp",
+            "mcp_input_schema": {
+                "type": "object",
+                "properties": {"q": {"type": "string", "description": pad}},
+            },
+        },
+        args_schema=None,
+        output_schema=None,
+    )
+    facade = _bind_fast_facade(agent, {"mcp_wide": tool})
+    first = facade.search("wide")
+    assert len(first) > 2000
+    original = _parameters_object(first)
+    assert original["properties"]["q"]["description"] == pad
+
+    plan_body = agent._tool_result_message_content("tool_search", first)
+    assert _parameters_object(plan_body) == original
+
+    agent._prepare_approved_implement("已批准计划，开始实施")
+    second = facade.search("wide")
+    assert "parameters:" in second
+    call_id = "search-wide-1"
+    request = [
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "id": call_id,
+                "name": "tool_search",
+                "args": {"query": "wide"},
+                "type": "tool_call",
+            }],
+        ),
+        ToolMessage(
+            content=agent._tool_result_message_content("tool_search", second),
+            tool_call_id=call_id,
+        ),
+    ]
+    body = str(request[-1].content)
+    assert _parameters_object(body) == original
+    assert "...[truncated]..." not in body
+    assert "ALREADY AVAILABLE" in facade.search("wide")
+
+    long_read = "R" * 4000
+    read_once = agent._tool_result_message_content("read", long_read)
+    raw_read = read_once.split("\n[对用户说：", 1)[0]
+    assert len(raw_read) <= 2000
+    assert "...[truncated]..." in raw_read
+    assert "duplicate tool output omitted" in agent._tool_result_message_content(
+        "read", long_read
+    )
 
 
 def test_replace_model_history_keeps_a_real_tool_pair():
