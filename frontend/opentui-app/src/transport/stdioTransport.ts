@@ -5,6 +5,7 @@ import type { ApprovalDecision } from "../ApprovalDialog.tsx";
 import {
   questionInfoFromParams,
   questionResultFromReply,
+  type QuestionInfo,
   type QuestionReply,
 } from "../questionInfo.ts";
 import {
@@ -130,6 +131,21 @@ export class StdioAppserverSession {
     (decision: ApprovalDecision) => void
   >();
   private approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** FIFO of approval request ids. The dialog shows only the head, so a second request cannot replace it. */
+  private approvalQueue: string[] = [];
+  private approvalInfo = new Map<string, {
+    approvalId: string;
+    tool: string;
+    risk: string;
+    args: string;
+    description: string;
+  }>();
+  /** In-flight handleLine calls. The read pump does not await them: an approval wait must not stall later RPCs. */
+  private lineJobs = new Set<Promise<void>>();
+  /** Bumped to retire a connection writer before its pending replies run. */
+  private writerGeneration = 0;
+  private questionQueue: string[] = [];
+  private questionInfo = new Map<string, QuestionInfo>();
   private pendingQuestions = new Map<string, (reply: QuestionReply) => void>();
   private activePromptAbort: AbortController | null = null;
   private activeCallbacks: ChatApiCallbacks | null = null;
@@ -166,25 +182,98 @@ export class StdioAppserverSession {
     return process.env.RXYCODE_WORKSPACE_ROOT ?? this.projectRoot();
   }
 
+  private emitApprovalHead(): void {
+    const head = this.approvalQueue[0];
+    if (!head) {
+      this.activeCallbacks?.onApprovalRequest?.(null);
+      return;
+    }
+    const info = this.approvalInfo.get(head);
+    if (info) this.activeCallbacks?.onApprovalRequest?.(info);
+  }
+
+  private enqueueApproval(info: {
+    approvalId: string;
+    tool: string;
+    risk: string;
+    args: string;
+    description: string;
+  }): void {
+    this.approvalInfo.set(info.approvalId, info);
+    if (!this.approvalQueue.includes(info.approvalId)) this.approvalQueue.push(info.approvalId);
+    if (this.approvalQueue[0] === info.approvalId) this.emitApprovalHead();
+  }
+
+  private settleApproval(requestId: string): void {
+    this.approvalQueue = this.approvalQueue.filter((id) => id !== requestId);
+    this.approvalInfo.delete(requestId);
+    this.emitApprovalHead();
+  }
+
   private clearPendingApprovals(decision: ApprovalDecision = "rejected"): void {
     for (const timer of this.approvalTimers.values()) {
       clearTimeout(timer);
     }
     this.approvalTimers.clear();
-    for (const resolve of this.pendingApprovals.values()) {
-      resolve(decision);
-    }
+    this.approvalQueue = [];
+    this.approvalInfo?.clear();
+    const pending = [...this.pendingApprovals.values()];
     this.pendingApprovals.clear();
+    this.activeCallbacks?.onApprovalRequest?.(null);
+    for (const resolve of pending) resolve(decision);
+  }
+
+  /** Parse one stdout line without waiting for a human approval inside it. */
+  private pumpLine(line: string): void {
+    const client = this.client;
+    if (!client) return;
+    let job: Promise<void> = Promise.resolve();
+    job = client.handleLine(line).catch(() => {
+      // handleLine reports RPC errors itself. A rejection must not stop the read pump.
+    }).finally(() => {
+      this.lineJobs.delete(job);
+    });
+    this.lineJobs.add(job);
+  }
+
+  private emitQuestionHead(): void {
+    const head = this.questionQueue[0];
+    if (!head) {
+      this.activeCallbacks?.onQuestionRequest?.(null);
+      return;
+    }
+    const info = this.questionInfo.get(head);
+    if (info) this.activeCallbacks?.onQuestionRequest?.(info);
+  }
+
+  private enqueueQuestion(info: QuestionInfo): void {
+    this.questionInfo.set(info.questionId, info);
+    if (!this.questionQueue.includes(info.questionId)) this.questionQueue.push(info.questionId);
+    if (this.questionQueue[0] === info.questionId) this.emitQuestionHead();
+  }
+
+  private settleQuestion(questionId: string): void {
+    this.questionQueue = this.questionQueue.filter((id) => id !== questionId);
+    this.questionInfo.delete(questionId);
+    this.emitQuestionHead();
   }
 
   private clearPendingQuestions(reply: QuestionReply = { cancelled: true }): void {
-    for (const resolve of this.pendingQuestions.values()) {
-      resolve(reply);
-    }
-    this.pendingQuestions.clear();
+    this.questionQueue = [];
+    this.questionInfo?.clear();
+    const pending = [...(this.pendingQuestions?.values() ?? [])];
+    this.pendingQuestions?.clear();
+    this.activeCallbacks?.onQuestionRequest?.(null);
+    for (const resolve of pending) resolve(reply);
+  }
+
+  /** Drop this connection's writer so a late approval reply cannot hit a dead pipe or the next process. */
+  private invalidateWriter(): void {
+    this.writerGeneration += 1;
   }
 
   private resetSession(reason?: Error): void {
+    this.invalidateWriter();
     this.clearPendingApprovals();
     this.clearPendingQuestions();
     if (this.client) {
@@ -280,8 +369,26 @@ export class StdioAppserverSession {
 
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+    const generation = ++this.writerGeneration;
+    const proc = this.proc;
     const client = new ProtocolClient((line) => {
-      stdin.write(encoder.encode(`${line}\n`));
+      // A closed generation must not write. A live write error is recorded and rethrown.
+      if (
+        generation !== this.writerGeneration ||
+        !proc ||
+        this.proc !== proc ||
+        proc.exitCode !== null
+      ) {
+        return;
+      }
+      try {
+        stdin.write(encoder.encode(`${line}\n`));
+      } catch (err) {
+        this.writerGeneration += 1;
+        const message = err instanceof Error ? err.message : String(err);
+        this.lastProcessFailed = message;
+        throw err;
+      }
     });
     this.client = client;
     client.onNotification = (method, params) => {
@@ -298,9 +405,9 @@ export class StdioAppserverSession {
         // 超时不适用于 question；后端同样不限时）。
         const reply = await new Promise<QuestionReply>((resolve) => {
           this.pendingQuestions.set(info.questionId, resolve);
-          this.activeCallbacks?.onQuestionRequest?.(info);
+          this.enqueueQuestion(info);
         });
-        this.activeCallbacks?.onQuestionRequest?.(null);
+        this.settleQuestion(info.questionId);
         return questionResultFromReply(info.questionId, reply);
       }
       if (method !== "approval/request") {
@@ -318,7 +425,7 @@ export class StdioAppserverSession {
           resolve("rejected");
         }, 120_000);
         this.approvalTimers.set(requestId, timer);
-        this.activeCallbacks?.onApprovalRequest?.({
+        this.enqueueApproval({
           approvalId: requestId,
           tool: String(payload.action ?? "unknown"),
           risk: String(payload.risk_level ?? "WRITE"),
@@ -331,7 +438,7 @@ export class StdioAppserverSession {
             typeof details?.description === "string" ? details.description : "",
         });
       });
-      this.activeCallbacks?.onApprovalRequest?.(null);
+      this.settleApproval(requestId);
       return { request_id: requestId, decision };
     };
 
@@ -374,12 +481,12 @@ export class StdioAppserverSession {
           while (newline >= 0) {
             const line = buffer.slice(0, newline);
             buffer = buffer.slice(newline + 1);
-            await client.handleLine(line);
+            this.pumpLine(line);
             newline = buffer.indexOf("\n");
           }
         }
         if (buffer.trim()) {
-          await client.handleLine(buffer);
+          this.pumpLine(buffer);
         }
       } catch {
         client.rejectAllPending(new Error("appserver stdout reader failed"));
@@ -629,6 +736,8 @@ export class StdioAppserverSession {
   }
 
   async interrupt(): Promise<void> {
+    this.clearPendingApprovals("rejected");
+    this.clearPendingQuestions({ cancelled: true });
     if (shouldClearStreamingOnUserCancel()) {
       this.activeCallbacks?.onStreaming(false);
       this.activeCallbacks?.onProgress?.("");
@@ -873,7 +982,7 @@ export class StdioAppserverSession {
             lastLiveProgress = "";
             callbacks.onProgress?.("");
           }
-          if (event.type === "tool_result") {
+          if (event.type === "tool_result" && this.pendingApprovals.size === 0 && this.approvalQueue.length === 0) {
             callbacks.onApprovalRequest?.(null);
           }
         }
@@ -1055,12 +1164,20 @@ export class StdioAppserverSession {
 
   async shutdown(): Promise<void> {
     if (!this.client) return;
+    const client = this.client;
+    // Answer queued approvals and questions while this writer is still the live one.
+    this.clearPendingApprovals("rejected");
+    this.clearPendingQuestions({ cancelled: true });
+    const jobs = [...this.lineJobs];
+    if (jobs.length > 0) await Promise.allSettled(jobs);
     try {
-      await this.client.request("shutdown", { reason: "opentui exit" });
+      if (this.client === client) {
+        await client.request("shutdown", { reason: "opentui exit" });
+      }
     } catch {
       // ignore
     }
-    this.resetSession();
+    if (this.client === client) this.resetSession();
   }
 
   private async requestSessionList(timeoutMs: number): Promise<SessionListRow[]> {

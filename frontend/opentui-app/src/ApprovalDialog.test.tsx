@@ -6,8 +6,11 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import {
   ApprovalDialog,
+  approvalMaxHeight,
+  approvalScrollLayout,
   clampDescScroll,
   descViewportLines,
+  displayCellWidth,
   wrapDescriptionLines,
   type ApprovalInfo,
 } from "./ApprovalDialog.tsx";
@@ -140,5 +143,36 @@ describe("ApprovalDialog description echo", () => {
     expect(clampDescScroll(Number.NaN, 20, 8)).toBe(0);
     expect(wrapDescriptionLines("abcd".repeat(30), 20).length).toBe(6);
     expect(wrapDescriptionLines("一行短文本", 68)).toEqual(["一行短文本"]);
+  });
+
+  test("80×24 有 6 条 Todo 时描述区让出选项所需的行", () => {
+    const budget = approvalMaxHeight({
+      termRows: 24,
+      headerRows: 1,
+      progressRows: 1,
+      todoRows: 6,
+      followupRows: 0,
+      statusRows: 1,
+    });
+    expect(budget).toBe(15);
+    const layout = approvalScrollLayout(budget);
+    expect(layout.compact).toBe(false);
+    expect(layout).toEqual({ bodyRows: 5, compact: false });
+    expect(approvalScrollLayout(9)).toEqual({ bodyRows: 5, compact: true });
+    expect(approvalScrollLayout(9).bodyRows + 4).toBe(9);
+  });
+
+  test("emoji、ZWJ 和组合字符按运行时宽度换行且正文还在", () => {
+    expect(displayCellWidth("🤖")).toBe(2);
+    expect(displayCellWidth("🧪")).toBe(2);
+    expect(displayCellWidth("👩‍💻")).toBe(Bun.stringWidth("👩‍💻"));
+    expect(displayCellWidth("汉")).toBe(2);
+    expect(displayCellWidth("e\u0301")).toBe(Bun.stringWidth("e\u0301"));
+    const marker = "LOST_MARKER";
+    const text = "🤖".repeat(48) + marker + "🤖".repeat(80) + " TAIL_MARKER";
+    const lines = wrapDescriptionLines(text, 64);
+    expect(lines.join("")).toBe(text);
+    for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(64);
+    expect(lines.join("").includes(marker)).toBe(true);
   });
 });

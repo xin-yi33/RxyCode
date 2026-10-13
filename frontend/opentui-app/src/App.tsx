@@ -27,7 +27,7 @@ import {
 import { resolveTransportKind } from "./transport/config.ts";
 import { bindTodoDock, startStdioWarmOnOpen } from "./transport/stdioTransport.ts";
 import { keyAction, todoDockLines, type TodoDockSnapshot } from "./todoDock.ts";
-import { ApprovalDialog, type ApprovalInfo } from "./ApprovalDialog.tsx";
+import { ApprovalDialog, approvalMaxHeight, type ApprovalInfo } from "./ApprovalDialog.tsx";
 import { QuestionDialog } from "./QuestionDialog.tsx";
 import type { QuestionInfo, QuestionReply } from "./questionInfo.ts";
 import { classifyInput, formatCommandResult } from "./commandRouter.ts";
@@ -501,8 +501,9 @@ const TUI_REVISION = "product-steer-queue-1.3";
 export default function App() {
   useEffect(() => {
   }, []);
-  const { width } = useTerminalDimensions();
+  const { width, height: termHeight } = useTerminalDimensions();
   const cols = width || 80;
+  const termRows = termHeight || 24;
   const renderer = useRenderer();
   const [mode, setMode] = useState<Mode>("build");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -2073,6 +2074,15 @@ export default function App() {
         ? `思考中${elapsedSuffix}`
         : " ";
   const dockLines = todoHidden ? [] : todoDockLines(todoSnapshot);
+  const followupRows = followups.length === 0 ? 0 : Math.min(8, 1 + followups.length);
+  const dialogMaxHeight = approvalMaxHeight({
+    termRows,
+    headerRows: copyToast ? 3 : 1,
+    progressRows: showProgressSlot ? 1 : 0,
+    todoRows: dockLines.length,
+    followupRows,
+    statusRows: 1,
+  });
 
 
   return (
@@ -2265,7 +2275,11 @@ export default function App() {
       />
 
       {pendingApproval ? (
-        <ApprovalDialog approval={pendingApproval} onDecision={onApprovalDecision} />
+        <ApprovalDialog
+          approval={pendingApproval}
+          maxHeight={dialogMaxHeight}
+          onDecision={onApprovalDecision}
+        />
       ) : pendingQuestion ? (
         <QuestionDialog question={pendingQuestion} onResponse={onQuestionResponse} />
       ) : dialogOpen ? null : (
