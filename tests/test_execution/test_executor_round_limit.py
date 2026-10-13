@@ -150,8 +150,11 @@ async def test_executor_wires_config_to_agent_local_limit(monkeypatch):
 
     assert result == "completed"
     middleware = create_agent.call_args.kwargs["middleware"]
-    assert len(middleware) == 2
+    # 2026-10-13 K3-2：envelope 派发中间件加入，且拿同一份回合预算——
+    # 「执行之后再补拒绝」按序注册在 round-limit 之后、先检后执行。
+    assert len(middleware) == 3
     assert middleware[1].max_tool_rounds == 3
+    assert middleware[2]._round_limit == 3
     invocation_config = graph.ainvoke.await_args.args[1]
     assert invocation_config == {"recursion_limit": _internal_recursion_limit(3)}
 

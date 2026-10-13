@@ -6,7 +6,7 @@ import logging
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, hook_config
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from RxyCode.RxyCode1_1_0.core.prompts import (
     build_user_message,
@@ -18,9 +18,14 @@ from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
     install_langchain_responses_reasoning_patch,
     native_reasoning_scope,
 )
-from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+from RxyCode.RxyCode1_1_0.core.safety.policy import (
+    RiskLevel,
+    canonical_tool_name,
+    get_tool_risk,
+)
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.core.tool_search import (
+    TOOL_SEARCH_NAME,
     is_deferred_tool,
     parse_deferred_tool_json_calls,
 )
@@ -191,15 +196,44 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
     * ID 用中间件构件序号，跨轮唯一。
     """
 
-    def __init__(self, orchestrator: ToolOrchestrator, config: dict | None = None):
+    def __init__(
+        self,
+        orchestrator: ToolOrchestrator,
+        config: dict | None = None,
+        *,
+        max_risk: RiskLevel | None = None,
+        round_limit: int | None = None,
+    ):
+        """#1：max_risk 是子任务只读边界（READ 任务拒绝 WRITE/DANGER envelope）。
+
+        #2：round_limit 与原生一致——执行**前**检查，不允许"先执行再补拒"。"""
         super().__init__()
         self._tools = orchestrator
         self._config = config or {}
+        self._max_risk = max_risk
+        self._round_limit = round_limit
         self._seq = 0
+        self._dispatched_rounds = 0  # 计入与原生相同的工具回合预算
 
     def after_model(self, state, runtime):
         # 同步路径不被 Executor 的 ainvoke 使用；若误用于 sync 图，显式放行
         # 原生执行，绝不静默吞 envelope。
+        return None
+
+    def _deferred_gate_reason(self, name: str) -> str | None:
+        """#1：envelope 执行前套用子任务权限约束；无限制时全放行。"""
+        if self._max_risk is None:
+            return None
+        canonical = canonical_tool_name(name)
+        risk = max(
+            get_tool_risk(canonical),
+            self._tools._risk_overrides.get(canonical, RiskLevel.READ),
+        )
+        if risk > self._max_risk:
+            return (
+                f"[deferred gate] READ-only task: tool {name!r} is {risk.name} "
+                "and was NOT executed"
+            )
         return None
 
     async def aafter_model(self, state, runtime):
@@ -208,17 +242,66 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
             (m for m in reversed(messages) if isinstance(m, AIMessage)),
             None,
         )
-        if last_ai is None or last_ai.tool_calls:
-            return None  # 原生轮次；混合 envelope 的显式处理在 fast 路径
+        if last_ai is None:
+            return None
         content = last_ai.content
         text = content if isinstance(content, str) else str(content or "")
-        if "<tool_call" not in text:
+        has_envelope = "<tool_call" in text
+        if last_ai.tool_calls:
+            # #7d：原生+envelope 混合——显式反馈而非静默忽略。
+            if has_envelope:
+                return {
+                    "messages": [
+                        HumanMessage(
+                            content=(
+                                "[protocol] <tool_call> envelopes in a reply that "
+                                "ALSO contains native tool calls were NOT executed; "
+                                "re-emit the envelope as the only tool call(s) of "
+                                "a round."
+                            )
+                        )
+                    ]
+                }
+            return None
+        if not has_envelope:
             return None
 
         calls, bad = parse_deferred_tool_json_calls(text, start=self._seq)
         self._seq += len(calls)
         if not calls:
             return None
+
+        # #2：执行前检查回合预算（原生口径 = 带 tool_calls 的 AIMessage 数 +
+        # 本中间件已派发轮次）。先检后执行，不再"先执行再补拒"。
+        rounds_used = sum(
+            1
+            for m in messages
+            if isinstance(m, AIMessage) and bool(getattr(m, "tool_calls", None))
+        ) + self._dispatched_rounds
+        if self._round_limit is not None and rounds_used + 1 > self._round_limit:
+            blocked = [
+                ToolMessage(
+                    content=(
+                        "Tool call blocked: execution.max_tool_rounds "
+                        f"is {self._round_limit}."
+                    ),
+                    tool_call_id=str(call["id"]),
+                    name=call.get("name"),
+                    status="error",
+                )
+                for call in calls
+            ]
+            blocked.append(
+                AIMessage(
+                    content=(
+                        "[Executor stopped: tool-round limit reached "
+                        f"({self._round_limit}/{self._round_limit}).]"
+                    )
+                )
+            )
+            self._dispatched_rounds += 1
+            return {"jump_to": "end", "messages": blocked}
+        self._dispatched_rounds += 1
 
         result_messages: list = []
         for call in calls:
@@ -233,6 +316,17 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
                 )
                 continue
             name = call["name"]
+            gate_reason = self._deferred_gate_reason(name)
+            if gate_reason is not None:
+                # #1：任务约束拒绝；不改变工具本身在全局层级的风险分类。
+                result_messages.append(
+                    ToolMessage(
+                        content=gate_reason,
+                        tool_call_id=call_id,
+                        status="error",
+                    )
+                )
+                continue
             if self._tools.get(name) is None:
                 result_messages.append(
                     ToolMessage(
@@ -250,7 +344,11 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
                     name,
                     call["args"],
                     config=self._config,
-                    mode="build",
+                    mode=(
+                        "plan"
+                        if self._max_risk is not None and self._max_risk <= RiskLevel.READ
+                        else "build"
+                    ),
                     call_id=call_id,
                 )
                 result_messages.append(
@@ -329,13 +427,35 @@ class Executor:
             # _DeferredEnvelopeDispatchMiddleware 派发，执行走同一 orchestrator。
             # 注意：select_safe_tools 返回的是代理 StructuredTool，from_function
             # 不带 metadata——按原名回查 orchestrator 注册真身再判 deferred。
-            available = [
-                tool
-                for tool in available
-                if not is_deferred_tool(
-                    self._tools.get(getattr(tool, "name", "") or "") or tool
+            # orchestrator 替身夹具（tests/test_execution/_OrchestratorStub）只有
+            # select_safe_tools/execute_tool——没有 .get 时按代理自身判 deferred。
+            _lookup = getattr(self._tools, "get", None)
+
+            def _deferred_flag(tool_obj) -> bool:
+                if callable(_lookup):
+                    return is_deferred_tool(
+                        _lookup(getattr(tool_obj, "name", "") or "") or tool_obj
+                    )
+                return is_deferred_tool(tool_obj)
+
+            available = [tool for tool in available if not _deferred_flag(tool)]
+            # #4：hint 限定子集后也必须保留 tool_search——hint 只约束**调用
+            # 范围**，发现入口永远在场（否则 deferred 工具无入口可达）。
+            task_limit = RiskLevel.READ if task.effect == TaskEffect.READ else None
+            has_search_meta = (
+                callable(_lookup) and _lookup(TOOL_SEARCH_NAME) is not None
+            )
+            if (
+                has_search_meta
+                and TOOL_SEARCH_NAME not in [getattr(t, "name", "") for t in available]
+            ):
+                available.extend(
+                    self._tools.select_safe_tools(
+                        [TOOL_SEARCH_NAME],
+                        self._config,
+                        max_risk=task_limit,
+                    )
                 )
-            ]
             tool_names = [getattr(tool, "name", str(tool)) for tool in available]
             task_content = (
                 f"Task: {task.title}\n"
@@ -352,7 +472,12 @@ class Executor:
                 middleware=[
                     _ResponsesReasoningMiddleware(),
                     _ToolRoundLimitMiddleware(max_tool_rounds),
-                    _DeferredEnvelopeDispatchMiddleware(self._tools, self._config),
+                    _DeferredEnvelopeDispatchMiddleware(
+                        self._tools,
+                        self._config,
+                        max_risk=task_limit,
+                        round_limit=max_tool_rounds,
+                    ),
                 ],
             )
             result = await agent.ainvoke(

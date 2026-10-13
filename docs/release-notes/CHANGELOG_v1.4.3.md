@@ -3,6 +3,33 @@
 > 变更管理约定：开发期随改随记；条目被撤回时同步删除/标注。发版时随版本号滚动为新文件。
 > 基线：v1.4.2（同版本刷新批次 f96ce3fd）。
 
+## 文件工具合并（2026-10-13）：只暴露 read / edit
+
+- `core/builtin_tool_registration.py` / `tools/registry.py`：文件读取只注册 read，
+  文件变更只注册 edit。view/write/patch 是兼容别名，不进入模型 schema 或工具描述。
+  这不是删除能力：edit 支持完整写入、新建、精确替换、单文件 unified diff。
+- `tools/edit.py`：operation=write/replace/patch；省略时仅允许一个明确 payload。
+  混合或缺失参数先拒绝再写盘，空 content/空替换合法。完整写入及补丁复用既有
+  atomic helpers，旧 write/patch adapter 标注日期和兼容用途；view 实现委托 read。
+- `execution/tool_orchestrator.py`：旧调用/hint 解析到新工具，不回灌旧 schema；
+  精确 hint 不再匹配描述中提及同名词的无关工具。别名调用继承目标最低风险，
+  仍经过 Plan 边界、路径、审批、Journal、取消及审计，旧事件保留原调用名称。
+- `execution/evidence.py`：按 edit payload 验证完整文件内容、替换或补丁新增行，
+  不因名称合并丢掉写入证据检查。`tools/patch.py` 同时修复旧实现忽略原文、丢
+  行尾的问题：hunk 原文/行数匹配后才原子写入；错误补丁不改文件。
+- `core/prompts/`、Fast build 提示及内置 tester/doc：引用新 edit 入口，system
+  PromptSpec 版本为 2026-10-13-file-tools。上线会有一次前缀变化，不声称跨版本
+  缓存无损；会话内定义仍固定。
+- OpenTUI：edit 的 write payload 显示 Wrote 与内容预览；replace/patch 保留
+  Edited 与红绿差异。整文件覆盖预览仍不是核验过的 before/after diff。
+- 验证：验收命令为 `python -m pytest tests/test_tools tests/test_safety_gate.py
+  tests/test_core/test_execution.py tests/test_core/test_agent_tool_contracts.py
+  tests/test_core/test_prompts.py tests/test_prompt_registry.py tests/integration/test_agent_main_chain.py
+  tests/integration/test_unified_file_tools.py tests/test_subagents tests/test_execution tests/test_agents -q`。
+  最终结果待本轮收尾填入；OpenTUI fresh Bun 394 passed，tsc --noEmit 通过。
+- 范围：只合并文件工具，不宣称剩余常驻工具全都必需；不改产品版本、不发布、
+  不 push。未修改并发 K3 会话的 tool_search/compaction/Executor 修复。
+
 ## 键位更正（2026-10-11）Ctrl+T 改回思考开关
 
 用户裁定：`Ctrl+T` 是思考展开开关（Ink 版 `frontend/src/App.tsx` 与设计稿
@@ -158,6 +185,7 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 工具名、参数和说明放进同一个滚动区。长路径参数换行后，说明不会被挤成 0 行，按 End 仍能看到文末。
 - 终端只剩约 9 行给对话框时（80×18 且有 6 条 Todo），按钮收成单独一行：`[a]允许 [r]拒绝 [l]全部`。这一行不和说明叠在一起。说明至少留 1 行。
 - 滚轮、滚动条、方向键和行号都读 scrollbox 的 `scrollTop`。滚到第 12 行再按向下，到第 13 行，不会跳回第 1 行。
+- 已经滚到文末时，窗口变矮后仍停在新的文末，行号和眼前的行一起改。没有滚到文末时，位置保持原处，不跳到文末，也不跳回开头。
 - 说明按字素簇换行，宽度用 `Bun.stringWidth`。汉字、🤖、🧪、👩‍💻 不再被裁掉。手写宽字符表 `_WIDE_RANGES` 已删除。
 - `v` 仍用来展开或收起。展开后 ↑↓、PgUp、PgDn、Home、End 滚动正文；`a`、`r`、`l` 和回车仍能做决定。
 - `question/request` 按问题 ID 排队，界面只显示队首。答完当前条，再显示下一条。
@@ -257,6 +285,45 @@ core 分段 7707、ruff 干净、懒导入增量 0。
 "强化提示缺失"(搜索块现在显式声明普通调用不会执行)。
 **尚未验证**：其他 provider（Anthropic/GLM 原生）、prefix cache 真实命中率
 （本机 glm 账户临时 429；deepseek 小样本 cache_read 不足以推导 97%）。
+
+#### K3-2 复审七项（行为级复现逐项闭环，2026-10-13 后半夜）
+
+审计 `1ccc429e` 追加的 7 项真实复现缺口，全部修复且不推翻既有架构：
+
+1. **Graph envelope 绕过子任务只读**：`_DeferredEnvelopeDispatchMiddleware`
+   此前对一切注册工具放行且固定 `mode="build"`。现在携带任务 `max_risk`
+   （READ 任务对每个 envelope 先做
+   `max(classify(name), orchestrator._risk_overrides)` 比较，WRITE/DANGER
+   一律拒绝并显式反馈"g的下限语义：override 只升不降"），mode 随任务
+   降级。
+2. **回合预算先检后执行**：中间件自带 `_dispatched_rounds` 计数，与原生
+   AIMessage(tool_calls) 轮次累加，**执行之前**超过 `max_tool_rounds` 就
+   `jump_to=end` 产出与原生同款的 blocked ToolMessage——不再"先执行再补
+   拒绝"。
+3. **发现状态再进一步贴合上下文**：`_fold_middle_section` 在单元过滤时
+   保留 discovery pin 单元（AI 调用+发现 ToolMessage 完整配对）原相对
+   位置；`microcompact_messages` pin 提升为模块常量；暴露记录仍绑定
+   `(session, sha256)`，正常流程不靠"压缩后重复搜索"。
+4. **tools_hint 不漏搜索入口**：executor 过滤 deferred 后强制注入
+   `tool_search` 代理（proxy 化保持风险预算一致），hint 只约束调用范围。
+5. **真实内置按需工具出真 schema**：`_normalize_args_schema`（pydantic
+   `model_json_schema()` 优先），测试用真实 `download_skill/download_mcp
+   /team_install` 验证返回 JSON（含 properties、可识别参数字段），不再给
+   类 repr。
+6. **单个大 schema 可发现**：唯一命中但超共享预算时，允许到
+   `_MAX_SINGLE_RESULT_TEXT=12000` 的**完整**单块（绝不半截），余量命中才
+   提醒收窄。
+7. **解析与 graph 混合**：`<tool_call>[]</tool_call>`、一包两 JSON、超 8
+   连发全部给显式 malformed（不再当 Final 或静默吞第九个）；graph 原生+
+   envelope 混合追加 HumanMessage 协议提示（fast 同规约）。
+
+**夹具**：8 份 executor stub 夹具不再因为缺 `.get` 崩——生产代码就地做了
+getattr 防御（fallback 按代理自身判 deferred），未动旧验收规则；旧
+middleware 数量断言 2→3，且 dispatch 拿到同一份 limit。
+**测试**：`tests/test_core/test_tool_search_k3_2_acceptance.py` 11 项行为级
+（真中间件/真 fold/真 executor 绑定/真内置工具）+ 回归 appserver+bridge+
+cache+tools+execution **1931**、core 分段 **7719**、ruff 干净、懒导入增
+量 0。
 
 ## 遗留（本轮精准修复未覆盖，后续立项）
 

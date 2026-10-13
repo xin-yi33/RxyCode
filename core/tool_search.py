@@ -59,6 +59,9 @@ TOOL_SEARCH_DESCRIPTION = (
 DISCOVERY_PIN_MARKER = "[deferred tool disclosure — keep this message and its position]"
 
 _MAX_RESULTS_TEXT = 4000
+#: 单项完整块硬上限：只有这一个命中时可以完整放行（K3-2 #6
+#: 「单个大 schema 永远发现不了」——不返回半截定义，允许稍大但完整的单块）。
+_MAX_SINGLE_RESULT_TEXT = 12000
 _MAX_DESC_CHARS = 500
 
 
@@ -87,6 +90,28 @@ def _trim(text: str, limit: int) -> str:
 
 def _fenced_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _normalize_args_schema(value: Any) -> dict:
+    """#5：把参数 schema 归一成 JSON Schema 字典。
+
+    优先级：metadata 里存的原始 MCP schema（dict）> pydantic 类的
+    ``model_json_schema()`` > dict 原样 > 空。旧实现把 pddantic 类对象直接
+    ``default=str`` 序列化成类 repr，模型只能猜参数（K3-2 #5）。
+    """
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    model_json_schema = getattr(value, "model_json_schema", None)
+    if callable(model_json_schema):
+        try:
+            schema = model_json_schema()
+            if isinstance(schema, dict):
+                return schema
+        except Exception:  # noqa: BLE001 — degrate to empty, message stays visible
+            pass
+    return {}
 
 
 def _is_cjk(char: str) -> bool:
@@ -218,7 +243,10 @@ class DeferredToolSearch:
                     if isinstance(metadata, dict)
                     else None
                 )
-                schema_doc = raw_schema or getattr(tool, "args_schema", None) or {}
+                schema_doc = _normalize_args_schema(
+                    raw_schema if raw_schema is not None
+                    else getattr(tool, "args_schema", None)
+                )
                 block = (
                     f"=== tool: {name} ===\n"
                     f"description: {_trim(getattr(tool, 'description', ''), _MAX_DESC_CHARS)}\n"
@@ -230,10 +258,14 @@ class DeferredToolSearch:
                     f"{DISCOVERY_PIN_MARKER}"
                 )
             # P1: 按完整项打包——预算不足就不塞这一块，也绝不标记已暴露。
+            # K3-2 #6：唯一命中时允许一个**完整**单块超过共享预算到硬上限
+            # （否则 4k 预算会让单个 schema 永远发现不了）；半块永不返回。
             joined = "\n\n".join([*parts, block])
             if len(joined) > _MAX_RESULTS_TEXT:
-                remainder += 1
-                continue
+                single_fresh = not parts and not already
+                if not (single_fresh and len(block) <= _MAX_SINGLE_RESULT_TEXT):
+                    remainder += 1
+                    continue
             parts.append(block)
             if not already:
                 self._mark_exposed(name, tool)
@@ -241,12 +273,14 @@ class DeferredToolSearch:
         if remainder:
             parts.append(
                 f"…{remainder} more match(es) withheld; narrow the query to reveal them "
-                "(never emitted as a partial schema)."
+                "(never emitted as a partial schema). Single oversized tools can be "
+                f"requested by exact name up to {_MAX_SINGLE_RESULT_TEXT} chars."
             )
         if not parts:
             return (
                 "Found matches but none fit the result budget; narrow the query "
-                "(one named tool at a time)."
+                "(one named tool at a time). Single complete tool definitions are "
+                f"allowed up to {_MAX_SINGLE_RESULT_TEXT} chars unpadded."
             )
         return "\n\n".join(parts)
 
@@ -263,7 +297,9 @@ class DeferredToolSearch:
         )
 
 
-_ENVELOPE_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+# payload 任意形态都先接住再校验——<tool_call>[]</tool_call> 这类坏包装
+# 也必须产生显式 malformed 反馈（K3-2 #7），不能因正则不匹配而当 Final 放出。
+_ENVELOPE_RE = re.compile(r"<tool_call>\s*(.+?)\s*</tool_call>", re.DOTALL)
 _ORPHAN_TAIL_RE = re.compile(r"<tool_call(?![\s\S]*</tool_call>)", re.DOTALL)
 _MAX_DEFERRED_CALLS = 8
 
@@ -290,17 +326,27 @@ def parse_deferred_tool_json_calls(
         return calls, malformed
     decoder = json.JSONDecoder()
     seq = start
+    dropped_overflow = 0
     for match in _ENVELOPE_RE.finditer(answer):
         if seq - start >= _MAX_DEFERRED_CALLS:
-            break
+            dropped_overflow += 1
+            continue
         payload = match.group(1)
         call_id = f"defercall_{seq}"
         seq += 1
         try:
-            value, _end = decoder.raw_decode(payload)
+            value, end = decoder.raw_decode(payload)
         except (json.JSONDecodeError, ValueError) as exc:
             malformed[call_id] = (
                 f"bad <tool_call> JSON: {exc}; re-emit a single valid envelope"
+            )
+            calls.append({"name": "<invalid>", "args": {}, "id": call_id, "type": "tool_call"})
+            continue
+        # K3-2 #7：一个 envelope 里塞两个连续 JSON——只接第一个必须显式拒。
+        if payload[end:].strip():
+            malformed[call_id] = (
+                "<tool_call> has trailing content after the first JSON object; "
+                "emit one complete envelope per call"
             )
             calls.append({"name": "<invalid>", "args": {}, "id": call_id, "type": "tool_call"})
             continue
@@ -319,6 +365,23 @@ def parse_deferred_tool_json_calls(
             calls.append({"name": name, "args": {}, "id": call_id, "type": "tool_call"})
             continue
         calls.append({"name": name, "args": args, "id": call_id, "type": "tool_call"})
+
+    # K3-2 #7：超过上限的第 N+1 个调用显式拒绝，不再被静默吞掉。
+    if dropped_overflow:
+        overflow_id = f"defercall_{seq}"
+        malformed[overflow_id] = (
+            f"mixed: {_MAX_DEFERRED_CALLS}-envelope limit reached; "
+            f"{dropped_overflow} further envelope(s) were NOT executed. "
+            "Split them across rounds."
+        )
+        calls.append(
+            {
+                "name": "<invalid>",
+                "args": {},
+                "id": overflow_id,
+                "type": "tool_call",
+            }
+        )
 
     consumed_end = answer.rfind("</tool_call>")
     if _ORPHAN_TAIL_RE.search(answer[consumed_end + 1 :]):

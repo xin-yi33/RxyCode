@@ -71,6 +71,18 @@ DEFAULT_RESERVED_TOKENS = 20_000
 TOOL_RESULT_TOMBSTONE = "[tool result cleared]"
 KEEP_RECENT_TOOL_RESULTS = 2
 
+#: tool_search 首次发现消息固定 pin 标记——与 core/tool_search.DISCOVERY_PIN_MARKER
+#: 一字不差（测试守卫），本文件计入懒导入预算，不新增模块导入。
+_DISCOVERY_PIN_MARKER = "[deferred tool disclosure — keep this message and its position]"
+
+
+def _unit_has_discovery_pin(unit: list) -> bool:
+    """AI 调用 + 发现 ToolMessage 的配对单元是否携带 pin。"""
+    return any(
+        _DISCOVERY_PIN_MARKER in str(getattr(m, "content", "") or "")
+        for m in unit
+    )
+
 
 def occupancy_tokens(
     messages,
@@ -185,9 +197,6 @@ def microcompact_messages(
     cleared_texts: list[str] = []
     # 2026-10-13 K例复审：tool_search 首次发现消息（含完整 schema）带 pin
     # 标记——压缩删除后"已加载"状态与真实上下文脱节。普通压缩不动这类消息。
-    # 字符串与 core/tool_search.DISCOVERY_PIN_MARKER 一字不差（测试守卫相等），
-    # 本文件在懒导入计数口径内，不新增模块导入。
-    _DISCOVERY_PIN_MARKER = "[deferred tool disclosure — keep this message and its position]"
     for index, message in enumerate(messages or []):
         if not _is_tool_result(message):
             out.append(message)
@@ -480,6 +489,16 @@ def _fold_middle_section(
     units: list = _split_units(body)
     fold_units, tail_units = _partition_tail_units(units, keep_tail)
     _retain_visible_tombstone(fold_units, tail_units)
+
+    # 2026-10-13 K3-2 #3：tool_search 首次发现单元（AI 调用 + 发现
+    # ToolMessage 配对）整体留在原顺序位置——不再被折进摘要，后续轮次
+    # 仍读到完整首次发现（正常流程不靠压缩后重复搜索补救）。
+    if fold_units:
+        pinned = [u for u in fold_units if _unit_has_discovery_pin(u)]
+        if pinned:
+            fold_units = [
+                u for u in fold_units if not any(u is p for p in pinned)
+            ]
 
     # 折叠段消息展平
     fold_msgs = [m for unit in fold_units for m in unit]
