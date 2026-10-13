@@ -9,6 +9,40 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 - An args_schema (Pydantic model for structured input)
 - A func (the actual implementation)
 
+## Two-Tier Tool Schema (2026-10-13, 检索式分层)
+
+Every LLM request's `tools` array is **two tiers**:
+
+- **Frozen core** — the built-ins (and `tool_search` itself once registered),
+  sorted by name and byte-stable across turns so the provider prefix cache
+  keeps hitting (FX6 unchanged).
+- **Deferred** — everything tagged `metadata["source"] in {"mcp", "plugin"}`
+  (e.g. ~90 GitHub-MCP tools), which **never appears in the request schema**.
+  A GitHub-scale MCP connection no longer adds tens of thousands of schema
+  tokens per round.
+
+Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
+
+1. Model calls `tool_search(query)` — a real, always-on meta tool registered
+   by `_refresh_mcp_tools` the first time a deferred tool lands.
+2. Its result returns the top matches' **full schemas inline in the tool
+   result message** (which appends to trajectory — cache prefix untouched).
+   Same session dedup: a tool already exposed returns only an "ALREADY
+   AVAILABLE" reminder, not the schema again.
+3. To invoke a discovered tool the model emits the free-form envelope
+   `<tool_call>{"name": "mcp_x", "arguments": {...}}</tool_call>` — parsed by
+   `parse_deferred_tool_json_calls` into the standard dispatch dicts and
+   executed through the **same** ToolOrchestrator approval/audit path (no
+   second invoke channel). Unknown names and bad JSON become explicit
+   malformed-call feedback, never silent no-ops.
+
+Invariants:
+- `_get_core_tools()` output varies only when the frozen core changes;
+  adding/removing an MCP server no longer mutates the request schema after
+  the first registration of `tool_search`.
+- Prewarm binds through the same `_get_core_tools()` (`core/prewarm.py`
+  `core_tools_for`), so the hello-turn prefix equals the work-turn prefix.
+
 ## Key Files
 | File | Purpose |
 |------|---------|

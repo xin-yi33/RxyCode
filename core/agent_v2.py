@@ -147,6 +147,12 @@ from RxyCode.RxyCode1_1_0.log.logger import (
 )
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp import tool_manifest as _tool_manifest
+from RxyCode.RxyCode1_1_0.core.tool_search import (
+    DeferredToolSearch,
+    TOOL_SEARCH_NAME,
+    is_deferred_tool,
+    parse_deferred_tool_json_calls,
+)
 from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.memory.manager import MemoryManager
@@ -2278,6 +2284,9 @@ class AgentV2:
         self._mcp_errors: dict[str, str] = {}
         self._mcp_retry_state: dict[str, tuple[int, float]] = {}
         self._mcp_config_fingerprint: str | None = None
+        # 2026-10-13 检索式分层：deferred（MCP）工具不进 request schema，
+        # 经 tool_search 按需暴露；该门面在首个 deferred 工具落地时注册一次。
+        self._tool_search_facade: DeferredToolSearch | None = None
         # 2026-10-12 清单漂移重审：server -> {added,removed,changed} 计数，
         # 只进聚合（不含描述/schema 内容，遵守 mcp 聚合无秘密约定）。
         self._mcp_manifest_drift: dict[str, dict[str, int]] = {}
@@ -5144,6 +5153,10 @@ class AgentV2:
                         )
                 changed = True
 
+            # 有 deferred 工具在网就保证检索面可用（只注册一次，schema 恒定）。
+            if any(self._mcp_server_tool_names.values()):
+                self._ensure_tool_search_tool()
+
             errors = dict(self._mcp_errors)
             if config_error is not None:
                 errors["config"] = config_error
@@ -6539,6 +6552,29 @@ class AgentV2:
                     # tool_calls → 兜底解析，避免文本直接进答案。
                     tool_calls = _parse_dsml_tool_calls(answer) or []
 
+                if not tool_calls:
+                    # 2026-10-13 检索式分层派发：tool_search 发现的 deferred
+                    # 工具不在 function-calling schema 里，模型按 call_format
+                    # 输出 <tool_call>{...}</tool_call> 自由形式。解析后经同一
+                    # 执行路径（审批/审计/journal 不变）进轨迹，结果消息位置
+                    # 与原生工具调用一致（图 4-4 schema 留在历史里）。
+                    defer_calls, defer_bad = parse_deferred_tool_json_calls(answer)
+                    if defer_calls:
+                        for call in defer_calls:
+                            if call["id"] in defer_bad:
+                                continue
+                            if (
+                                self._tool_orchestrator is None
+                                or self._tool_orchestrator.get(call["name"]) is None
+                            ):
+                                defer_bad[call["id"]] = (
+                                    f"unknown or un-registered tool "
+                                    f"{call['name']!r}. Call tool_search first to "
+                                    "obtain the exact name and schema."
+                                )
+                        tool_calls = defer_calls
+                        malformed_tool_calls.update(defer_bad)
+
                 incomplete_dsml = (
                     not tool_calls
                     and _contains_dsml_tool_markup(answer)
@@ -7000,17 +7036,42 @@ class AgentV2:
             # （预热/keep-alive 等）的计数语义不受影响。
             _OUTER_BREAKER_HELD.reset(_breaker_token)
 
+    def _ensure_tool_search_tool(self) -> None:
+        """Register the tool_search meta adapter once deferred tools exist.
+
+        2026-10-13 检索式分层：首个 deferred 工具落地时注册一次（此后不再
+        触碰，保持 schema 字节稳定）；之后 MCP 增删改都只在 orchestrator 层
+        变化，不再改变请求的 tools 数组。
+        """
+        orchestrator = getattr(self, "_tool_orchestrator", None)
+        if orchestrator is None or orchestrator.get(TOOL_SEARCH_NAME) is not None:
+            return
+        facade = getattr(self, "_tool_search_facade", None)
+        if facade is None:
+            facade = DeferredToolSearch(lambda: orchestrator.get_all())
+            self._tool_search_facade = facade
+        orchestrator.register(TOOL_SEARCH_NAME, facade.as_tool(), risk="read")
+
     def _get_core_tools(self) -> list:
         """Return Agent-local tools for the tool-aware fast path.
 
         A20: tool_send_policy=="subset" 时按会话内固定的确定性子集裁剪
         （按名字排序保留前 8 个）；RAG 分支也应用该策略；其余（None/full）
         全量返回，现状不变。
+
+        2026-10-13 检索式分层（FX6 兼容）：deferred（MCP/plugin）工具永远
+        不进 request schema——全量 MCP 工具会让每轮请求白加数万 token 并
+        摊薄工具决策质量。它们经 tool_search 在轨迹消息里按需暴露（图 4-4
+        模式：schema 留在历史里，前缀字节不变）。
         """
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None:
             return []
-        tools = list(orchestrator.get_all().values())
+        tools = [
+            tool
+            for tool in orchestrator.get_all().values()
+            if not is_deferred_tool(tool)
+        ]
         # FX6 ToolsFreeze: role allowlists deny at _execute_tool. Cropping the
         # bound schema per role would change prefix bytes and miss the 97% hit.
         if getattr(self._memory, "_rag_enabled", False):

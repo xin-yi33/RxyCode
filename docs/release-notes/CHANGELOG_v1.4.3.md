@@ -158,14 +158,65 @@ CJK 字符在终端占 **2 格**，64 个汉字实为 128 格，超宽行被横�
 
 - 展开态描述进**限高 ScrollBox**（`descViewportLines`：终端高 −16，封顶 10 行），
   ↑↓/PgUp/PgDn/Home/End 滚动，审批选项固定在滚动区外始终可见（参照 DialogDoc 模式）。
+  ⚠️ 2026-10-13：这个视口只按整终端估算。真实 App 里还有 Todo、进度和状态栏，
+  80×24 展开 6 条 Todo 时选项仍会出屏。整页预算见下方同日追加。
 - `wrapDescriptionLines` 改为按**显示宽度**（wcwidth 区段表：CJK/全角/emoji 记 2 格）
   软换行，行宽预算扣除边框/padding/缩进/滚动条（-16 格）。
+  ⚠️ 2026-10-13：这张手写区间表不完整。🤖、🧪 被算成 1 格，ZWJ 字素簇被拆开，
+  过宽行仍会裁掉正文。同日改为运行时宽度，区间表不再使用。
 - 收起/展开快捷键不变（`v`）；展开时 ↑↓ 改为滚动描述，a/r/l/↵ 决策仍然可用；
   底栏提示随状态切换。
 
 测试：`ApprovalDialog.test.tsx` +2（9 行展开尾部需滚动可见、3k+ 字符展开后
 选项仍在屏且 102 行滚动到尾含 TAILMARK；`descViewportLines`/`clampDescScroll`/
 `wrapDescriptionLines` 纯函数边界）。全量：bun test **389 passed / 0 fail**，tsc 零错。
+
+### 审批体验四项（2026-10-13，深审 `854ea941`）
+
+深审确认后端 schema 指纹、参数描述扫描、坏清单恢复和并发基线写入仍成立。
+下面四项是审批体验：1 项是上面 P2 在完整 App 里的残留，2 项是该次 UI 实现的新缺陷，
+1 项是 `90bbb687` 之前就有的读泵等待。没有权限绕过，也没有真实模型投毒成功。
+产品版本仍是 1.4.2。
+
+| 项 | 触发 | 修改 |
+|---|---|---|
+| 整页高度 | `descViewportLines` 按整个终端高度给描述区。80×24 有 6 条 Todo、进度和状态栏时，展开长描述后批准 / 拒绝 / 全部批准出屏 | `App.tsx` 用 `approvalMaxHeight` 扣掉标题、进度、Todo、队列和状态栏，把剩余行数传给对话框。描述区只用扣掉边框、工具行、参数换行和三个选项后的剩余行。Todo 保持显示，描述仍可滚动 |
+| 滚动位置 | 滚轮改 scrollbox 的 `scrollTop`，方向键却在从 0 开始的另一套偏移上加 1。滚到第 12 行再按向下会跳回第 1 行 | 键盘、滚轮、滚动条和行号都读这份 `scrollTop`。缩放时按当前可见位置夹紧，不另记一套滚轮计数 |
+| Unicode 换行 | 手写宽字符表把 🤖、🧪 算成 1 格，把 👩‍💻 拆开。过宽行被 `height: 1` 裁掉，`LOST_MARKER` 怎么滚都看不见 | `displayCellWidth` 改为 `Bun.stringWidth`。`wrapDescriptionLines` 按 `Intl.Segmenter` 字素簇换行。删掉 `_WIDE_RANGES` |
+| 读泵 | `stdioTransport` 的读泵 `await client.handleLine`，审批处理又等待人工答复，后续 RPC 和进度通知停在 stdout。本机对端约 0.15ms 已写出另一条 RPC，前端 500ms 诊断截止前读不到 | 读泵不再等待人工答复，在途 `handleLine` 仍跟踪到断线清理。审批按请求 ID 做 FIFO，界面只显示队首。取消和断线逐项以拒绝结束等待；拒绝仍然挡住这次远端调用。管理 RPC 超时没有加长 |
+
+测试：`ApprovalDialog.test.tsx` 增加 80×24 / 6 Todo 的高度预算，以及 emoji、ZWJ、组合字符换行后正文仍在；新增 `stdioTransport.approvalQueue.test.ts`（两个审批不互相覆盖、待答时 ping 仍返回、取消和断线后没有悬空请求）。审计复合验收 `depth-contracts.test.ts` 由 2 通过 / 4 失败变为 **6 通过 / 0 失败**。OpenTUI 全套 **393 passed / 0 fail**（75 个文件），`tsc --noEmit` 通过。本轮没有改版本号，也没有提交 Git。
+
+## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
+
+用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：
+原先每个 LLM 请求都带全量工具 JSON schema（33 内置 ≈5k tokens，接一个
+GitHub MCP ≈90 工具再白加数万 tokens/轮，且扁平摊名冲击工具决策质量）。
+改为两层：
+
+- **冻结核心集**（不变式 FX6 兼容）：内置工具 + `tool_search` 元工具，
+  按名排序、逐字节稳定，provider 前缀缓存不受影响；MCP/插件工具
+  （`metadata.source in {"mcp","plugin"}`）**绝不进 request schema**。
+- **`tool_search` 元工具**（`core/tool_search.py`）：首个 deferred 工具落地时
+  由 `_refresh_mcp_tools` 注册一次（此后 MCP 增删改只动 orchestrator，
+  不再改 schema）。模型用关键字查询，返回 top-k 命中工具的**完整 schema 内嵌
+  在 tool 结果消息里**（消息进轨迹 = 缓存前缀字节不动，书图 4-4 模式）；
+  同一工具本会话不重复输出 schema（"ALREADY AVAILABLE" 短提示），排名
+  name 优先、desc token 加权，输出上限 4000 字符。
+
+**调用链**：模型对发现的工具按 `call_format` 输出
+`<tool_call>{"name": "mcp_x", "arguments": {...}}</tool_call>` 自由形式 →
+`parse_deferred_tool_json_calls` 解析为标准 dispatch（嵌套 JSON 用
+JSONDecoder 边界解析；坏 JSON/缺名/未知工具进 malformed 反馈，绝不静默）→
+**同一条 ToolOrchestrator 执行路径**（审批/风险/审计/journal 全保留，无第二
+调用通道）。prewarm 经同一 `_get_core_tools()`，预热前缀与工作轮一致。
+
+测试：`tests/test_core/test_tool_search_discovery.py` 10 项（分层冻结字节稳定、
+元工具仅注册一次、搜索排名/无命中/空目录/已暴露去重、解析合法嵌套/多重/坏
+JSON/非 dict args/缺名、快路径 E2E——`mcp_fake_echo` 经 envelope 执行且请求
+tools 每轮恒定 `[read, tool_search]`）。回归：appserver 702 passed、
+bridge+cache 636、core 分段 7692（credential/lazy-import 两既有归因失败不随
+本批变化，懒导入计数 184 增量为 0）、ruff 全过；前端无界面改动（bun 未重跑）。
 
 ## 遗留（本轮精准修复未覆盖，后续立项）
 
