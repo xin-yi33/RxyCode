@@ -183,10 +183,21 @@ def microcompact_messages(
     out: list = []
     tombstoned = 0
     cleared_texts: list[str] = []
+    # 2026-10-13 K例复审：tool_search 首次发现消息（含完整 schema）带 pin
+    # 标记——压缩删除后"已加载"状态与真实上下文脱节。普通压缩不动这类消息。
+    # 字符串与 core/tool_search.DISCOVERY_PIN_MARKER 一字不差（测试守卫相等），
+    # 本文件在懒导入计数口径内，不新增模块导入。
+    _DISCOVERY_PIN_MARKER = "[deferred tool disclosure — keep this message and its position]"
     for index, message in enumerate(messages or []):
+        if not _is_tool_result(message):
+            out.append(message)
+            continue
+        _content = str(getattr(message, "content", "") or "")
+        if _DISCOVERY_PIN_MARKER in _content:
+            out.append(message)  # 首次发现消息钉在原位置
+            continue
         if (
-            not _is_tool_result(message)
-            or index in keep
+            index in keep
             or _resolved_tool_name(message, names) in excluded
         ):
             out.append(message)

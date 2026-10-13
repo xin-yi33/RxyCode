@@ -20,6 +20,10 @@ from RxyCode.RxyCode1_1_0.core.providers.responses_adapter import (
 )
 from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
+from RxyCode.RxyCode1_1_0.core.tool_search import (
+    is_deferred_tool,
+    parse_deferred_tool_json_calls,
+)
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 
 _logger = logging.getLogger(__name__)
@@ -175,6 +179,106 @@ class _ResponsesReasoningMiddleware(AgentMiddleware):
         return self._finalize(response)
 
 
+class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
+    """2026-10-13 K例复审（P2c）：Graph 路径与 Fast 同层——
+
+    * request schema 冻结（executor 侧已筛走 deferred 工具）；
+    * 模型对 tool_search 发现的工具输出的 ``<tool_call>``自由形式，在这里
+      解析成 dispatch 并经**同一个 orchestrator** 执行（审批/风险/journal
+      与 fast 路径一致，不经 ToolNode）；
+    * 结果以 ToolMessage 追加；AIMessage 以同 id 更新（add_messages reducer
+      同 id 覆盖）把 tool_calls 骨架补上，保持 OpenAI 消息配对有效；
+    * ID 用中间件构件序号，跨轮唯一。
+    """
+
+    def __init__(self, orchestrator: ToolOrchestrator, config: dict | None = None):
+        super().__init__()
+        self._tools = orchestrator
+        self._config = config or {}
+        self._seq = 0
+
+    def after_model(self, state, runtime):
+        # 同步路径不被 Executor 的 ainvoke 使用；若误用于 sync 图，显式放行
+        # 原生执行，绝不静默吞 envelope。
+        return None
+
+    async def aafter_model(self, state, runtime):
+        messages = state.get("messages", [])
+        last_ai = next(
+            (m for m in reversed(messages) if isinstance(m, AIMessage)),
+            None,
+        )
+        if last_ai is None or last_ai.tool_calls:
+            return None  # 原生轮次；混合 envelope 的显式处理在 fast 路径
+        content = last_ai.content
+        text = content if isinstance(content, str) else str(content or "")
+        if "<tool_call" not in text:
+            return None
+
+        calls, bad = parse_deferred_tool_json_calls(text, start=self._seq)
+        self._seq += len(calls)
+        if not calls:
+            return None
+
+        result_messages: list = []
+        for call in calls:
+            call_id = call["id"]
+            if call_id in bad:
+                result_messages.append(
+                    ToolMessage(
+                        content=f"[tool argument parse error] {bad[call_id]}",
+                        tool_call_id=call_id,
+                        status="error",
+                    )
+                )
+                continue
+            name = call["name"]
+            if self._tools.get(name) is None:
+                result_messages.append(
+                    ToolMessage(
+                        content=(
+                            f"[error] unknown or un-registered tool {name!r}. "
+                            "Call tool_search first for the exact name and schema."
+                        ),
+                        tool_call_id=call_id,
+                        status="error",
+                    )
+                )
+                continue
+            try:
+                outcome = await self._tools.execute_tool(
+                    name,
+                    call["args"],
+                    config=self._config,
+                    mode="build",
+                    call_id=call_id,
+                )
+                result_messages.append(
+                    ToolMessage(content=str(outcome), tool_call_id=call_id)
+                )
+            except Exception as exc:  # 失败不静默——进轨迹继续下一轮
+                result_messages.append(
+                    ToolMessage(
+                        content=f"[error: {exc}]",
+                        tool_call_id=call_id,
+                        status="error",
+                    )
+                )
+
+        # LangChain 消息契约：工具结果必须跟在带 tool_calls 的 assistant 后。
+        # add_messages reducer 同 id 覆盖 → 把 skeleton 补回 AI 消息。
+        call_skeletons = [
+            {"name": c["name"], "args": c["args"], "id": c["id"], "type": "tool_call"}
+            for c in calls
+        ]
+        try:
+            updated_ai = last_ai.model_copy(update={"tool_calls": call_skeletons})
+        except Exception:
+            updated_ai = last_ai
+        return {"messages": [updated_ai, *result_messages]}
+
+
+
 class Executor:
     """Run a task with an agent-local tool-round budget.
 
@@ -220,6 +324,18 @@ class Executor:
                     task.tools_hint,
                     self._config,
                 )
+            # 2026-10-13 K例复审（P2c）：Graph 与 Fast 同一层——deferred（MCP/插件）
+            # 工具不进 create_agent 的 schema；发现的工具经
+            # _DeferredEnvelopeDispatchMiddleware 派发，执行走同一 orchestrator。
+            # 注意：select_safe_tools 返回的是代理 StructuredTool，from_function
+            # 不带 metadata——按原名回查 orchestrator 注册真身再判 deferred。
+            available = [
+                tool
+                for tool in available
+                if not is_deferred_tool(
+                    self._tools.get(getattr(tool, "name", "") or "") or tool
+                )
+            ]
             tool_names = [getattr(tool, "name", str(tool)) for tool in available]
             task_content = (
                 f"Task: {task.title}\n"
@@ -236,6 +352,7 @@ class Executor:
                 middleware=[
                     _ResponsesReasoningMiddleware(),
                     _ToolRoundLimitMiddleware(max_tool_rounds),
+                    _DeferredEnvelopeDispatchMiddleware(self._tools, self._config),
                 ],
             )
             result = await agent.ainvoke(

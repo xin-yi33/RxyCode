@@ -58,6 +58,9 @@ TOOL_RISK_TABLE: dict[str, RiskLevel] = {
     "webfetch": RiskLevel.READ,
     "websearch": RiskLevel.READ,
     "datetime": RiskLevel.READ,
+    # 2026-10-13 K例复审：纯目录检索元工具——不触发写审批/快照（不得因此
+    # 降低被发现 MCP 工具自身的风险，它们的 risk 各自独立分类）。
+    "tool_search": RiskLevel.READ,
     "final_answer": RiskLevel.READ,
     "history": RiskLevel.READ,
     "diagnostics": RiskLevel.READ,

@@ -147,45 +147,36 @@ auto-route stdio 时序 flake，单跑绿）；core 分段 7681 passed（懒导�
 剪贴板批次遗留红，本批增量为 0；credential/watchdog 两 flake 单跑均绿）；
 bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 
-### P2：展开描述把审批选项挤出屏幕（2026-10-12 复审 `4319b56b` 遗留）
+## 审批对话框、提问队列和连接关闭（2026-10-12 至 2026-10-13）
 
-症状：3291–3912 字符的 description 展开后（80×24 及部分 120×40），批准/拒绝
-选项被挤出屏幕、PageDown 也到不了描述尾部（布局缺陷，非权限绕过）。
+产品版本仍是 1.4.2。下面只记现在生效的行为。涉及文件：`frontend/opentui-app/src/ApprovalDialog.tsx`、`frontend/opentui-app/src/App.tsx`、`frontend/opentui-app/src/transport/stdioTransport.ts`。
 
-根因有两层：①描述未限高，长文直接顶掉选项区；②换行按 JS `length` 算——
-CJK 字符在终端占 **2 格**，64 个汉字实为 128 格，超宽行被横向截掉，尾部指令
-段永远滚不到。修复（`ApprovalDialog.tsx`）：
+### 1. 新增与修复
 
-- 展开态描述进**限高 ScrollBox**（`descViewportLines`：终端高 −16，封顶 10 行），
-  ↑↓/PgUp/PgDn/Home/End 滚动，审批选项固定在滚动区外始终可见（参照 DialogDoc 模式）。
-  ⚠️ 2026-10-13：这个视口只按整终端估算。真实 App 里还有 Todo、进度和状态栏，
-  80×24 展开 6 条 Todo 时选项仍会出屏。整页预算见下方同日追加。
-- `wrapDescriptionLines` 改为按**显示宽度**（wcwidth 区段表：CJK/全角/emoji 记 2 格）
-  软换行，行宽预算扣除边框/padding/缩进/滚动条（-16 格）。
-  ⚠️ 2026-10-13：这张手写区间表不完整。🤖、🧪 被算成 1 格，ZWJ 字素簇被拆开，
-  过宽行仍会裁掉正文。同日改为运行时宽度，区间表不再使用。
-- 收起/展开快捷键不变（`v`）；展开时 ↑↓ 改为滚动描述，a/r/l/↵ 决策仍然可用；
-  底栏提示随状态切换。
+- 展开工具说明时，批准、拒绝、全部批准固定在滚动区外面。80×24、有 6 条 Todo 时，这三项仍在屏幕上。
+- 说明区高度改由 App 计算。先扣掉标题、进度、Todo、队列和状态栏，再把剩下的行数交给对话框。不再按整个终端高度估算。
+- 工具名、参数和说明放进同一个滚动区。长路径参数换行后，说明不会被挤成 0 行，按 End 仍能看到文末。
+- 终端只剩约 9 行给对话框时（80×18 且有 6 条 Todo），按钮收成单独一行：`[a]允许 [r]拒绝 [l]全部`。这一行不和说明叠在一起。说明至少留 1 行。
+- 滚轮、滚动条、方向键和行号都读 scrollbox 的 `scrollTop`。滚到第 12 行再按向下，到第 13 行，不会跳回第 1 行。
+- 说明按字素簇换行，宽度用 `Bun.stringWidth`。汉字、🤖、🧪、👩‍💻 不再被裁掉。手写宽字符表 `_WIDE_RANGES` 已删除。
+- `v` 仍用来展开或收起。展开后 ↑↓、PgUp、PgDn、Home、End 滚动正文；`a`、`r`、`l` 和回车仍能做决定。
+- `question/request` 按问题 ID 排队，界面只显示队首。答完当前条，再显示下一条。
+- 取消、重置和断线把每一条未答提问标成取消，不替用户填写答案。
+- 读泵不再等待人工审批或人工提问。等待期间，状态、目录读取和进度通知继续处理。
+- 审批按请求 ID 排队，界面只显示队首。拒绝仍然阻止这一次远端调用。两条审批不会互相盖掉。
+- 正常关闭时，先在还活着的连接上写完待审批和待提问，再发送 `shutdown`。
+- 意外 EOF 或会话重置时，先让这个连接的 writer 失效，再解除等待。旧回复不会写进已经关闭的管道，也不会写进下一次启动的新进程。
+- 活连接上的真实写失败记入 `lastProcessFailed`，并向调用方抛出。管理 RPC 的超时没有加长。
 
-测试：`ApprovalDialog.test.tsx` +2（9 行展开尾部需滚动可见、3k+ 字符展开后
-选项仍在屏且 102 行滚动到尾含 TAILMARK；`descViewportLines`/`clampDescScroll`/
-`wrapDescriptionLines` 纯函数边界）。全量：bun test **389 passed / 0 fail**，tsc 零错。
+### 2. 数据完整性
 
-### 审批体验四项（2026-10-13，深审 `854ea941`）
-
-深审确认后端 schema 指纹、参数描述扫描、坏清单恢复和并发基线写入仍成立。
-下面四项是审批体验：1 项是上面 P2 在完整 App 里的残留，2 项是该次 UI 实现的新缺陷，
-1 项是 `90bbb687` 之前就有的读泵等待。没有权限绕过，也没有真实模型投毒成功。
-产品版本仍是 1.4.2。
-
-| 项 | 触发 | 修改 |
-|---|---|---|
-| 整页高度 | `descViewportLines` 按整个终端高度给描述区。80×24 有 6 条 Todo、进度和状态栏时，展开长描述后批准 / 拒绝 / 全部批准出屏 | `App.tsx` 用 `approvalMaxHeight` 扣掉标题、进度、Todo、队列和状态栏，把剩余行数传给对话框。描述区只用扣掉边框、工具行、参数换行和三个选项后的剩余行。Todo 保持显示，描述仍可滚动 |
-| 滚动位置 | 滚轮改 scrollbox 的 `scrollTop`，方向键却在从 0 开始的另一套偏移上加 1。滚到第 12 行再按向下会跳回第 1 行 | 键盘、滚轮、滚动条和行号都读这份 `scrollTop`。缩放时按当前可见位置夹紧，不另记一套滚轮计数 |
-| Unicode 换行 | 手写宽字符表把 🤖、🧪 算成 1 格，把 👩‍💻 拆开。过宽行被 `height: 1` 裁掉，`LOST_MARKER` 怎么滚都看不见 | `displayCellWidth` 改为 `Bun.stringWidth`。`wrapDescriptionLines` 按 `Intl.Segmenter` 字素簇换行。删掉 `_WIDE_RANGES` |
-| 读泵 | `stdioTransport` 的读泵 `await client.handleLine`，审批处理又等待人工答复，后续 RPC 和进度通知停在 stdout。本机对端约 0.15ms 已写出另一条 RPC，前端 500ms 诊断截止前读不到 | 读泵不再等待人工答复，在途 `handleLine` 仍跟踪到断线清理。审批按请求 ID 做 FIFO，界面只显示队首。取消和断线逐项以拒绝结束等待；拒绝仍然挡住这次远端调用。管理 RPC 超时没有加长 |
-
-测试：`ApprovalDialog.test.tsx` 增加 80×24 / 6 Todo 的高度预算，以及 emoji、ZWJ、组合字符换行后正文仍在；新增 `stdioTransport.approvalQueue.test.ts`（两个审批不互相覆盖、待答时 ping 仍返回、取消和断线后没有悬空请求）。审计复合验收 `depth-contracts.test.ts` 由 2 通过 / 4 失败变为 **6 通过 / 0 失败**。OpenTUI 全套 **393 passed / 0 fail**（75 个文件），`tsc --noEmit` 通过。本轮没有改版本号，也没有提交 Git。
+- 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。没有新的安装包。
+- 每次审批仍按 `request_id` 对上那一次调用。拒绝不会被记成允许。
+- Todo 没有为了腾出屏幕而被隐藏或删掉。工具说明的原文还在滚动区里，没有改成截断后丢弃。
+- 两个提问不会合成一条。还没回答的问题留在队列里，直到用户回答、取消或断线。
+- 断线之后，上一个连接的审批结果不会写进新进程。待处理的审批和提问会被清掉，`pending` 和 `lineJobs` 归零。
+- 这一段没有改 MCP 清单基线、schema 指纹、参数描述扫描、坏清单恢复和并发写入。没有发现新的权限绕过或密钥外泄。
+- 验证：OpenTUI 全套 393 通过，`tsc --noEmit` 通过。审批复合验收 6 通过。复审边界里，80×18、6 条 Todo 的画面已复核：`TAIL_MARKER` 单独一行，下一行才是 `[a]允许 [r]拒绝 [l]全部`。没有提交 Git。
 
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
@@ -210,6 +201,8 @@ GitHub MCP ≈90 工具再白加数万 tokens/轮，且扁平摊名冲击工具�
 JSONDecoder 边界解析；坏 JSON/缺名/未知工具进 malformed 反馈，绝不静默）→
 **同一条 ToolOrchestrator 执行路径**（审批/风险/审计/journal 全保留，无第二
 调用通道）。prewarm 经同一 `_get_core_tools()`，预热前缀与工作轮一致。
+⚠️ 本节初版的"首个 MCP 落地才注册/去重不分会话"已被下方 K例复审批次修订（含
+启动即常驻、(session, hash) 绑定、Graph 同层、混合/孤儿显式处理）。
 
 测试：`tests/test_core/test_tool_search_discovery.py` 10 项（分层冻结字节稳定、
 元工具仅注册一次、搜索排名/无命中/空目录/已暴露去重、解析合法嵌套/多重/坏
@@ -217,6 +210,53 @@ JSON/非 dict args/缺名、快路径 E2E——`mcp_fake_echo` 经 envelope 执�
 tools 每轮恒定 `[read, tool_search]`）。回归：appserver 702 passed、
 bridge+cache 636、core 分段 7692（credential/lazy-import 两既有归因失败不随
 本批变化，懒导入计数 184 增量为 0）、ruff 全过；前端无界面改动（bun 未重跑）。
+
+### K例复审批次：`tool_search` 检索式分层收口（2026-10-13）
+
+承接上一批 `ec3bbf18`，评审给出 P1×2、P2×6 共 8 项缺口 + 常驻集裁定 +
+todo 契约冲突，全部落地（评审原文归档于 artifacts 最新审计目录）：
+
+**P1（语义正确性）**
+- `tool_search` 结果**按完整项打包**：超出 4000 字符预算的命中整块 withholding
+  并明示数量，不再"半截 schema 当已暴露"。`ALREADY AVAILABLE` 仅授给完整
+  返回过的工具。
+- 暴露记录绑定 `(session_id, schema sha256)`（sha256 复用 `mcp.tool_manifest`）：
+  新会话/同名 schema 更新都能重新暴露，陈旧"已加载"记录不再污染。
+- 首次发现消息携带 `DISCOVERY_PIN_MARKER`，`microcompact_messages` 普通压缩
+  跳过、留在原位置（大字面量折叠路径不受此 pin 影响，见遗留）。
+
+**P2（生产一致性）**
+- `tool_search` 启动即常驻（空目录返回明示而非"未注册"）；`subset` 模式
+  强制保留（末位交换进前 8）；`policy.py` 分类为 READ（此前 register 的
+  `risk="read"` 只是下限、unknown→WRITE 的路径没改），
+  `PLAN_READONLY_TOOL_NAMES` 加入。
+- `defercall_N` 跨轮 `_defercall_seq` 递增唯一（消息关联/压缩保护不再撞名）；
+  原生+envelope 混合：envelope 并入但被全部标 malformed 并各发一条明确反馈
+  （不再静默丢弃）；未闭合 `<tool_call>` 尾巴明确报错，不再被当作 Final 文本。
+- 搜索分词 CJK 友好（中文短语子串命中+单字加权）："天气"命中"查询城市天气"。
+- **Graph 路径同层**：executor `select_safe_tools` 返回的代理 StructuredTool
+  丢 metadata，过滤行按原名回查 orchestrator 真身判 deferred；
+  `_DeferredEnvelopeDispatchMiddleware`（`aafter_model`）把 envelope 解析成
+  dispatch、经**同一 orchestrator** 执行（审批/journal 不走 ToolNode 第二
+  通道）；AIMessage 用 add_messages 同 id 覆盖补 tool_calls 骨架保 provider
+  消息配对。
+- `task_manage/start` 与 `todo_write` 统一单一 in_progress 校验（同一
+  tasks.json，不另建存储）；旧测试 `test_u_f5_1_04` 按新规则改写。
+
+**常驻/按需裁定表**：`download_skill`、`download_mcp`、`team_install` 进入
+按需层（安装类、低频、DANGER）；`workflow`**/new-feature 暂留常驻**待其独立
+验收；`write/edit/patch`、`read/view` 语义不同，不合并。完整表见
+docs/modules/tools.md。
+
+**验收**：评审 9 条全部有测试（`test_tool_search_discovery_k3.py` 15 项；
+原 10 项发现测试调整后仍过）+ appserver 768、bridge+cache+test_tools 932、
+core 分段 7707、ruff 干净、懒导入增量 0。
+**真实模型**（deepseek-v4-flash 官方 API，非 mock）：冻结 schema 被接受、
+原生通道成功调 `tool_search`、返回 schema 后按 `call_format` 输出 envelope
+且原生调用归零；供应商报告 `cache_read`（以输入计）。发现并修复了模型的
+"强化提示缺失"(搜索块现在显式声明普通调用不会执行)。
+**尚未验证**：其他 provider（Anthropic/GLM 原生）、prefix cache 真实命中率
+（本机 glm 账户临时 429；deepseek 小样本 cache_read 不足以推导 97%）。
 
 ## 遗留（本轮精准修复未覆盖，后续立项）
 

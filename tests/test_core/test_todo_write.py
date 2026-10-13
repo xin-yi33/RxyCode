@@ -163,6 +163,11 @@ def test_u_f5_1_04_legacy_task_roundtrip(session):
     manage_tasks("rename", id="T5", summary="改名后")
     renamed = {item.id: item.content for item in read_todo_models()}
     assert renamed["T5"] == "改名后"
+    # K例复审：单一 in_progress 权威规则（todo_write）同时约束 task_manage——
+    # 先来一条会失败（T4 进行中），完成 T4 后再 start 才成功。
+    conflict = manage_tasks("start", id="T2")
+    assert "in_progress conflict" in conflict
+    manage_tasks("done", id="T4")
     manage_tasks("start", id="T2")
     assert json.loads(manage_tasks("get", id="T2"))["status"] in {"in_progress", "open"}
     manage_tasks("create", summary="不覆盖 T1")

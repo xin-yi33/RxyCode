@@ -36,12 +36,48 @@ Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
    second invoke channel). Unknown names and bad JSON become explicit
    malformed-call feedback, never silent no-ops.
 
-Invariants:
+Invariants (K例复审修订 2026-10-13):
+- `tool_search` is a **resident** from session start (empty catalog answered
+  gracefully), not "when the first MCP arrives"; subset policies force-include
+  it; `risk=read` is a floor only, so the tool is classified READ in
+  `core/safety/policy.py` AND in `PLAN_READONLY_TOOL_NAMES`.
 - `_get_core_tools()` output varies only when the frozen core changes;
   adding/removing an MCP server no longer mutates the request schema after
   the first registration of `tool_search`.
 - Prewarm binds through the same `_get_core_tools()` (`core/prewarm.py`
   `core_tools_for`), so the hello-turn prefix equals the work-turn prefix.
+- Discovery result messages carry `DISCOVERY_PIN_MARKER`; ordinary compaction
+  (`microcompact_messages`) leaves them at their position. Exposure tracking
+  is bound to `(session_id, schema sha256)` — new session or schema change
+  re-exposes; it never returns stale "ALREADY AVAILABLE" from a prior session.
+- `defercall_N` ids increase monotonically for the session; mixed
+  native+envelope replies get every envelope rejected with an explicit
+  ToolMessage (never silently dropped); an unterminated envelope is an
+  explicit parse error, never silently treated as the final answer.
+- Graph path (`execution/executor.py`) shares the tier: `create_agent` is
+  bound with the frozen list only (proxies resolved back to the registered
+  tool for the deferred flag), and `_DeferredEnvelopeDispatchMiddleware`
+  dispatches envelopes through the same orchestrator (approval/audit/journal).
+
+### Resident / on-demand / compat entry（K例复审裁定表）
+
+频率口径：**按调用形态与失败的代价比第一原则评估**（现有审计日志混有来源
+不明的调用，不足以支撑"无人使用"结论——这也是裁定边界）。
+
+| 工具 | 层 | 理由 |
+|---|---|---|
+| read/view/ls/grep/glob | 常驻 | 每个编码轮次的观察面（read 与 view 语义重叠但参数/行区间行为不同，合并会断既有调用） |
+| write/edit/patch | 常驻 | 代码改写主力；语义不同（write 全量、edit 点改、patch 标准 diff），不合并 |
+| bash | 常驻 | Shell 出入口，几乎所有构建/测试/探查路径 |
+| websearch/webfetch | 常驻 | 联网搜索/抓取高频且为只读 |
+| task(todo)/task_manage/todo_write | 常驻 | 状态带与长程任务源；两个入口已统一单一 in_progress 校验（K3-9） |
+| memory/history | 常驻 | 上下文检索（memory 是持久层示意，history 是会话轨迹轴；作用域不同并存） |
+| vision/open_file | 常驻 | TUI/Desktop 日常预览路径 |
+| download_file/change_directory/diagnostics/datetime/format/question/skill/final_answer | 常驻 | 日常功能面/对话管理 |
+| **download_skill / download_mcp / team_install** | **按需**（`DEFERRED_BUILTIN_TOOL_NAMES`） | 安装类动作低频、高危（DANGER）；不进 schema 既省预算也不做错误默认项。经 `tool_search` 暴露、envelope 派发 |
+| **workflow** | 常驻（观察评估中，待单独审计） | 长任务编排工具，新特性还在被验证（另一会话工作流）；本批不动它的层级，**待该特性独立验收后再裁定** |
+| 所有 MCP / 插件 | 按需 | `metadata.source` 标记层 |
+| 兼容入口 | — | `_select_turn_tools` 已废弃；`task`/`task_manage` 兼容名字仍在；`shell` 归一 `bash` |
 
 ## Key Files
 | File | Purpose |

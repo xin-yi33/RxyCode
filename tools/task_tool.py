@@ -171,6 +171,18 @@ def _manage_tasks_locked(
         return f"[error: task {id} not found]"
 
     if operation == "start":
+        # 2026-10-13 K例复审：todo_write._validate 的单一 in_progress 权威规则
+        # 同样约束 task_manage/start——两入口不能各放各的（历史契约冲突）。
+        others_active = [
+            str(tid)
+            for tid, row in tasks.items()
+            if tid != id and str(row.get("status")) == "in_progress"
+        ]
+        if others_active:
+            return (
+                f"[error: in_progress conflict: {', '.join(others_active)}]"
+                "先把进行中的任务完成或阻塞，再开启新的任务（todo_write 同一状态规则）"
+            )
         t["status"] = "in_progress"
         t["history"].append({"status": "in_progress", "ts": time.time(), "note": event_summary})
     elif operation == "block":

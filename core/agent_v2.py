@@ -695,6 +695,8 @@ PLAN_READONLY_TOOL_NAMES = frozenset({
     "webfetch",
     "datetime",
     "final_answer",
+    # 2026-10-13 K例复审：目录检索是纯只读，Plan 路径也放行了它。
+    "tool_search",
 })
 from RxyCode.RxyCode1_1_0.core.request_routing import (
     GIT_FORCE_RE as _GIT_FORCE_RE,
@@ -2285,8 +2287,11 @@ class AgentV2:
         self._mcp_retry_state: dict[str, tuple[int, float]] = {}
         self._mcp_config_fingerprint: str | None = None
         # 2026-10-13 检索式分层：deferred（MCP）工具不进 request schema，
-        # 经 tool_search 按需暴露；该门面在首个 deferred 工具落地时注册一次。
+        # 经 tool_search 按需暴露。
         self._tool_search_facade: DeferredToolSearch | None = None
+        # K例复审（P2d）：自由形式派发 ID 跨轮递增唯一（消息关联/压缩保护
+        # 依赖 ID 唯一性，每轮重置的 defercall_0 会撞名）。
+        self._defercall_seq: int = 0
         # 2026-10-12 清单漂移重审：server -> {added,removed,changed} 计数，
         # 只进聚合（不含描述/schema 内容，遵守 mcp 聚合无秘密约定）。
         self._mcp_manifest_drift: dict[str, dict[str, int]] = {}
@@ -4908,6 +4913,9 @@ class AgentV2:
                 .get("run_official_agent_enabled", False)
             ),
         )
+        # 2026-10-13 K例复审（P2a）：tool_search 启动即常驻——空目录也可调用；
+        # 不再是"首个 MCP 刷新后才出现"的不固定状态。常驻集合与 prewarm 一致。
+        self._ensure_tool_search_tool()
         # 废弃代码（2026-09-22）：sync_agent_computer_use 已写好，AgentV2 从未调用，
         # computer_use 打开后 browser_open 也不会进 schema。
         try:
@@ -6552,28 +6560,44 @@ class AgentV2:
                     # tool_calls → 兜底解析，避免文本直接进答案。
                     tool_calls = _parse_dsml_tool_calls(answer) or []
 
-                if not tool_calls:
-                    # 2026-10-13 检索式分层派发：tool_search 发现的 deferred
-                    # 工具不在 function-calling schema 里，模型按 call_format
-                    # 输出 <tool_call>{...}</tool_call> 自由形式。解析后经同一
-                    # 执行路径（审批/审计/journal 不变）进轨迹，结果消息位置
-                    # 与原生工具调用一致（图 4-4 schema 留在历史里）。
-                    defer_calls, defer_bad = parse_deferred_tool_json_calls(answer)
-                    if defer_calls:
-                        for call in defer_calls:
-                            if call["id"] in defer_bad:
-                                continue
-                            if (
-                                self._tool_orchestrator is None
-                                or self._tool_orchestrator.get(call["name"]) is None
-                            ):
-                                defer_bad[call["id"]] = (
-                                    f"unknown or un-registered tool "
-                                    f"{call['name']!r}. Call tool_search first to "
-                                    "obtain the exact name and schema."
-                                )
-                        tool_calls = defer_calls
-                        malformed_tool_calls.update(defer_bad)
+                # 2026-10-13 K例复审修订：envelope 解析不再依赖"原生为空"，
+                # 混合调用必须显式处理（不再静默丢弃 envelope）；ID 跨轮
+                # _defercall_seq 递增唯一（消息关联/压缩保护宁可重放不可撞名）。
+                defer_calls, defer_bad = ([], {})
+                if "<tool_call" in answer:
+                    _seq_start = getattr(self, "_defercall_seq", 0)
+                    defer_calls, defer_bad = parse_deferred_tool_json_calls(
+                        answer, start=_seq_start
+                    )
+                    self._defercall_seq = _seq_start + len(defer_calls)
+                if defer_calls and tool_calls:
+                    # 原生 + envelope 混合：envelope 并入 tool_calls 但全部
+                    # malformed（原生照常执行）——每个被拒 envelope 产生一条
+                    # 明确反馈 ToolMessage，模型据此分两轮重发，不静默丢失。
+                    for call in defer_calls:
+                        malformed_tool_calls[call["id"]] = (
+                            "mixed native + <tool_call> envelopes in one reply are "
+                            "not executed; re-emit the envelope as the only tool "
+                            "call(s) of a round."
+                        )
+                    tool_calls = [*tool_calls, *defer_calls]
+                elif defer_calls:
+                    # 纯 envelope：经同一执行路径（审批/审计/journal 不变），
+                    # 结果消息位置与原生工具调用一致（图 4-4 schema 留在历史里）。
+                    for call in defer_calls:
+                        if call["id"] in defer_bad:
+                            continue
+                        if (
+                            self._tool_orchestrator is None
+                            or self._tool_orchestrator.get(call["name"]) is None
+                        ):
+                            defer_bad[call["id"]] = (
+                                f"unknown or un-registered tool "
+                                f"{call['name']!r}. Call tool_search first to "
+                                "obtain the exact name and schema."
+                            )
+                    tool_calls = defer_calls
+                    malformed_tool_calls.update(defer_bad)
 
                 incomplete_dsml = (
                     not tool_calls
@@ -7037,18 +7061,21 @@ class AgentV2:
             _OUTER_BREAKER_HELD.reset(_breaker_token)
 
     def _ensure_tool_search_tool(self) -> None:
-        """Register the tool_search meta adapter once deferred tools exist.
+        """注册 tool_search 元工具（幂等）：启动即常驻，空目录也可调用。
 
-        2026-10-13 检索式分层：首个 deferred 工具落地时注册一次（此后不再
-        触碰，保持 schema 字节稳定）；之后 MCP 增删改都只在 orchestrator 层
-        变化，不再改变请求的 tools 数组。
+        2026-10-13 K例复审修订：不再依赖"首个 deferred 工具落地"时机——常驻
+        集合必须固定（启动/MCP 刷新/subset/prewarm 四处一致）。暴露记录绑定
+        (session_id, schema_hash)，新会话/schema 变更允许重新暴露。
         """
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None or orchestrator.get(TOOL_SEARCH_NAME) is not None:
             return
         facade = getattr(self, "_tool_search_facade", None)
         if facade is None:
-            facade = DeferredToolSearch(lambda: orchestrator.get_all())
+            facade = DeferredToolSearch(
+                lambda: orchestrator.get_all(),
+                get_session_id=lambda: str(getattr(self, "_session_id", "") or ""),
+            )
             self._tool_search_facade = facade
         orchestrator.register(TOOL_SEARCH_NAME, facade.as_tool(), risk="read")
 
@@ -7084,11 +7111,19 @@ class AgentV2:
             # 会话内固定：首次计算后缓存，MCP 工具后续变化不改变子集。
             cache = getattr(self, "_subset_tool_names", None)
             if cache is None:
-                cache = tuple(
-                    getattr(t, "name", "") for t in sorted(
-                        tools, key=lambda t: getattr(t, "name", "")
-                    )[:8]
-                )
+                names = [
+                    getattr(t, "name", "")
+                    for t in sorted(tools, key=lambda t: getattr(t, "name", ""))
+                ]
+                cache = tuple(names[:8])
+                # 2026-10-13 K例复审（P2a）：subset 也必须保留 tool_search——
+                # 否则该模型档位下模型没有任何发现 deferred 工具的入口。
+                # 交换末位进前 7，保持总长 8 与确定性。
+                if (
+                    TOOL_SEARCH_NAME in names
+                    and TOOL_SEARCH_NAME not in cache
+                ):
+                    cache = tuple(sorted((*cache[:7], TOOL_SEARCH_NAME))[:8])
                 self._subset_tool_names = cache
             # B2: subset 分支同样按名排序——输入列表乱序不得导致输出顺序抖动
             # （工具 schema 顺序是前缀字节的一部分，静默失效源清单第 6 条）。

@@ -132,8 +132,10 @@ def test_search_ranks_by_name_and_description():
     text = facade.search("github search")
     first_block = text.split("\n\n")[0] if "\n\n" in text else text
     assert "mcp_github_search" in first_block
-    assert "parameters:" in text and "call_format:" in text
-    assert "<tool_call>" in text
+    assert "parameters:" in text
+    # K例复审修订：发现块必须显式声明"不在 function-calling 列表里、
+    # 普通调用不会执行"，否则真实模型会反复重查 tool_search（实测 deepseek-v4-flash）。
+    assert "IMPORTANT" in text and "<tool_call>" in text
 
 
 def test_search_no_match_and_empty_catalog():
