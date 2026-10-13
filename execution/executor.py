@@ -26,9 +26,11 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import (
 from RxyCode.RxyCode1_1_0.core.state import TaskEffect, TaskNode
 from RxyCode.RxyCode1_1_0.core.tool_search import (
     TOOL_SEARCH_NAME,
+    current_disclosure_context_id,
     is_deferred_tool,
     parse_deferred_tool_json_calls,
     push_disclosure_context,
+    release_finished_disclosure_context,
     reset_disclosure_context,
 )
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
@@ -534,7 +536,11 @@ class Executor:
                 except Exception as exc:  # pragma: no cover - defensive
                     _logger.warning("thinking export failed (ignored): %s", exc)
         finally:
-            reset_disclosure_context(disclosure)
+            # ContextVar 会复位，但 facade 里的记录不会跟着消失。只删本任务的 key。
+            try:
+                release_finished_disclosure_context(current_disclosure_context_id())
+            finally:
+                reset_disclosure_context(disclosure)
             evidence = self._tools.end_evidence_capture(token)
             if event_token is not None:
                 self._tools.reset_event_tui(event_token)

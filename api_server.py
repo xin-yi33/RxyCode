@@ -1659,9 +1659,13 @@ async def _execute_command(req: CommandRequest):
                 agent._memory.clear()
                 agent._memory.short_term.load_from_dicts(messages)
                 agent._session_loaded = True
-                rotate = getattr(agent, "_rotate_disclosure_message_context", None)
-                if callable(rotate):
-                    rotate()
+                replace = getattr(agent, "replace_model_history", None)
+                if callable(replace):
+                    replace(messages)
+                else:
+                    rotate = getattr(agent, "_rotate_disclosure_message_context", None)
+                    if callable(rotate):
+                        rotate()
             return {
                 "action": "chat_loaded",
                 "message": f"对话已加载: {name}",

@@ -29,6 +29,7 @@ import json
 import logging
 import re
 import uuid
+import weakref
 from typing import Any, Callable
 
 # 模块级导入：core/tool_search.py 计入 P7 懒导入预算；langchain_core 在
@@ -64,6 +65,57 @@ def push_disclosure_context(context_id: str | None = None):
 
 def reset_disclosure_context(token) -> None:
     _disclosure_context.reset(token)
+
+
+# 活着的 facade。隔离任务结束时按 context id 删记录，不把表清成空。
+_live_facades: weakref.WeakSet = weakref.WeakSet()
+
+
+def current_disclosure_context_id() -> str | None:
+    return _disclosure_context.get()
+
+
+def release_finished_disclosure_context(context_id: str | None) -> None:
+    """Drop one finished isolated context. Fast keys and other tasks stay."""
+    if not context_id:
+        return
+    for facade in list(_live_facades):
+        facade.release_context(context_id)
+
+
+_DISCOVERY_TOOL_RE = re.compile(r"^=== tool: (.+?) ===\s*$", re.MULTILINE)
+
+
+def discovery_tool_names(messages) -> set[str]:
+    """Tool names whose full schema disclosure is still inside these messages."""
+    names: set[str] = set()
+    for message in messages or []:
+        text = _message_text(message)
+        if DISCOVERY_PIN_MARKER not in text:
+            continue
+        names.update(
+            name.strip()
+            for name in _DISCOVERY_TOOL_RE.findall(text)
+            if name.strip()
+        )
+    return names
+
+
+def _message_text(message: Any) -> str:
+    if isinstance(message, str):
+        return message
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+        return "\n".join(parts)
+    return str(content or "")
 
 TOOL_SEARCH_DESCRIPTION = (
     "Search the on-demand external tool catalog (MCP servers, plugins, "
@@ -194,6 +246,30 @@ class DeferredToolSearch:
         self._get_message_context_id = get_message_context_id
         # name → {context_id: schema_hash}。只记当前上下文，不覆盖其他任务。
         self._exposed: dict[str, dict[str, str]] = {}
+        _live_facades.add(self)
+
+    def release_context(self, context_key: str) -> None:
+        """删除一个已经结束的上下文。别的 key 保留。"""
+        if not context_key:
+            return
+        empty: list[str] = []
+        for name, bucket in self._exposed.items():
+            bucket.pop(context_key, None)
+            if not bucket:
+                empty.append(name)
+        for name in empty:
+            del self._exposed[name]
+
+    def revoke_names(self, names: set[str] | frozenset[str]) -> None:
+        """局部回退：只撤销当前上下文里这些工具的暴露记录。"""
+        key = self._context_key()
+        for name in names:
+            bucket = self._exposed.get(name)
+            if not bucket:
+                continue
+            bucket.pop(key, None)
+            if not bucket:
+                del self._exposed[name]
 
     def _context_key(self) -> str:
         bound = _disclosure_context.get()

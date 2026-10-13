@@ -247,6 +247,25 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
 - 验证：`tests/test_core/test_tool_search_k3_2_acceptance.py`、`test_tool_search_discovery.py`、`test_tool_search_discovery_k3.py`、`test_compaction_breaker.py`、`test_session_isolation.py` 共 64 通过。`/load-chat` 恢复历史的 API 测试 1 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
 
+## 重建历史、局部回退和已结束上下文（2026-10-13，复审 `bb0392a1`）
+
+产品版本仍是 1.4.2。下面只记这次复现过、并已改到的行为。
+
+### 1. 新增与修复
+
+- 批准计划进入 Build 时，计划阶段的 AgentPrefix 整段丢掉，消息上下文同时换成新的。下一轮请求里没有旧 schema，再次搜索会重新给出完整 schema。
+- 历史回退只撤销被删掉、且留下的消息里已经没有的 discovery。仍留在前缀里的工具继续返回 `ALREADY AVAILABLE`。另一个任务的记录不动。
+- 普通追加对话不换标识，第二次搜索仍是 `ALREADY AVAILABLE`。`reset_session()` 仍换标识并重新给出 schema。
+- `/load-chat` 在同一 session 里会替换模型下一轮实际续写的 AgentPrefix，同时换标识。验收看的是下一轮请求：旧前缀不在，新对话在。不再只调用 `load_from_dicts()`。
+- Graph 任务结束时只释放该任务的暴露记录。Fast 历史还在时，它的记录保留。连续 10 个独立任务不会把记录从 1 份堆到 10 份。
+
+### 2. 数据完整性
+
+- 基础 schema 仍是冻结的核心集。按需定义仍留在当时那条历史消息里。
+- 同一次回退不会把还在历史中的工具再加载一遍。并发任务的记录不会被这次释放或回退清掉。
+- 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
+- 验证：上述行为所在的 tool_search、compaction、session、rewind、批准计划和 `/load-chat` 测试共 73 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：

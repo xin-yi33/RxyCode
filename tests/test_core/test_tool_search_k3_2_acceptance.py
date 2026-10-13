@@ -411,6 +411,262 @@ def test_reset_session_rotates_fast_disclosure_without_wiping_other_contexts(mon
     assert "other-task" in facade._exposed["mcp_echo"]
 
 
+def _context_keys(facade) -> set[str]:
+    keys: set[str] = set()
+    for bucket in facade._exposed.values():
+        keys.update(bucket)
+    return keys
+
+
+def _bind_fast_facade(agent, registry):
+    agent._disclosure_message_context_id = "msg-live"
+    facade = DeferredToolSearch(
+        lambda: registry,
+        get_session_id=lambda: str(agent._session_id),
+        get_message_context_id=lambda: str(agent._disclosure_message_context_id),
+    )
+    agent._tool_search_facade = facade
+    return facade
+
+
+def test_approved_plan_rebuild_rotates_disclosure_for_the_next_request(monkeypatch, tmp_path):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "approve-disclosure"
+    agent._capabilities = None
+    agent._provider = None
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    facade = _bind_fast_facade(agent, registry)
+    first = facade.search("echo")
+    assert "parameters:" in first
+    assert "ALREADY AVAILABLE" in facade.search("echo")
+    token = push_disclosure_context("other-task")
+    try:
+        other = facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    assert "parameters:" in other
+    system = get_system_prompt(variant=agent._prompt_variant())
+    agent._agent_prefix_messages = [
+        SystemMessage(content=system),
+        HumanMessage(content="PLAN-OLD"),
+        ToolMessage(content=first, tool_call_id="disc-1"),
+        AIMessage(content="plan ready"),
+    ]
+    before = agent._disclosure_message_context_id
+
+    agent._prepare_approved_implement("已批准计划，开始实施")
+
+    assert agent._agent_prefix_messages is None
+    assert agent._disclosure_message_context_id != before
+    nxt = agent._continue_agent_prefix(system, "开始实施")
+    blob = "\n".join(str(getattr(message, "content", "") or "") for message in nxt)
+    assert "PLAN-OLD" not in blob
+    assert "parameters:" not in blob
+    assert "开始实施" in blob
+    again = facade.search("echo")
+    assert "parameters:" in again
+    assert "ALREADY AVAILABLE" not in again
+    token = push_disclosure_context("other-task")
+    try:
+        other_again = facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    assert "ALREADY AVAILABLE" in other_again
+
+
+def test_rewind_revokes_only_discoveries_removed_from_the_prefix():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    registry = {
+        "mcp_alpha": _mcp_write_tool("mcp_alpha"),
+        "mcp_beta": _mcp_write_tool("mcp_beta"),
+    }
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "rewind-session"
+    facade = _bind_fast_facade(agent, registry)
+    alpha = facade.search("alpha")
+    beta = facade.search("beta")
+    assert "parameters:" in alpha and "parameters:" in beta
+    assert "ALREADY AVAILABLE" in facade.search("alpha")
+    token = push_disclosure_context("other-task")
+    try:
+        assert "parameters:" in facade.search("beta")
+    finally:
+        reset_disclosure_context(token)
+    agent._agent_prefix_messages = [
+        SystemMessage(content="S1"),
+        HumanMessage(content="h1"),
+        AIMessage(
+            content="search alpha",
+            tool_calls=[{"id": "a", "name": "tool_search", "args": {"query": "alpha"}}],
+        ),
+        ToolMessage(content=alpha, tool_call_id="a"),
+        AIMessage(content="done-a"),
+        HumanMessage(content="h2"),
+        AIMessage(
+            content="search beta",
+            tool_calls=[{"id": "b", "name": "tool_search", "args": {"query": "beta"}}],
+        ),
+        ToolMessage(content=beta, tool_call_id="b"),
+        AIMessage(content="done-b"),
+    ]
+
+    assert agent._rewind_agent_prefix(keep_human_messages=2) == 0
+    assert "ALREADY AVAILABLE" in facade.search("alpha")
+    assert "ALREADY AVAILABLE" in facade.search("beta")
+
+    dropped = agent._rewind_agent_prefix(keep_human_messages=1)
+    assert dropped > 0
+    assert "parameters:" in facade.search("beta")
+    assert "ALREADY AVAILABLE" in facade.search("alpha")
+    token = push_disclosure_context("other-task")
+    try:
+        other_again = facade.search("beta")
+    finally:
+        reset_disclosure_context(token)
+    assert "ALREADY AVAILABLE" in other_again
+    assert "other-task" in facade._exposed["mcp_beta"]
+
+
+@pytest.mark.asyncio
+async def test_load_chat_replaces_the_history_the_next_request_sends(tmp_path, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    from RxyCode.RxyCode1_1_0.api_server import CommandRequest, _execute_command, _state
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.memory.chat_storage import chat_storage
+    from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "latest"
+    agent._capabilities = None
+    agent._provider = None
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    facade = _bind_fast_facade(agent, registry)
+    old_schema = facade.search("echo")
+    assert "parameters:" in old_schema
+    token = push_disclosure_context("other-task")
+    try:
+        assert "parameters:" in facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    from RxyCode.RxyCode1_1_0.core.prompts import get_system_prompt
+
+    system = get_system_prompt(variant=agent._prompt_variant())
+    agent._agent_prefix_messages = [
+        SystemMessage(content=system),
+        HumanMessage(content="OLD-PLAN-MARKER"),
+        ToolMessage(content=old_schema, tool_call_id="old-disc"),
+        AIMessage(content="old answer"),
+    ]
+    stm = ShortTermMemory(window_size=20)
+    agent._memory = SimpleNamespace(
+        clear=lambda *args, **kwargs: stm.clear(),
+        short_term=stm,
+    )
+    saved = {
+        "agent": _state.get("agent"),
+        "chat_history": list(_state.get("chat_history") or []),
+        "chat_histories": dict(_state.get("chat_histories") or {}),
+        "active_session_id": _state.get("active_session_id"),
+    }
+    loaded = [
+        {"role": "user", "content": "NEW-CHAT-BODY"},
+        {"role": "assistant", "content": "new answer"},
+    ]
+    assert chat_storage.save("load-disclosure-check", loaded)
+    _state["agent"] = agent
+    _state["chat_history"] = []
+    _state["chat_histories"] = {"latest": _state["chat_history"]}
+    _state["active_session_id"] = "latest"
+    before = agent._disclosure_message_context_id
+    try:
+        payload = await _execute_command(CommandRequest(command="/load-chat load-disclosure-check"))
+    finally:
+        _state["agent"] = saved["agent"]
+        _state["chat_history"] = saved["chat_history"]
+        _state["chat_histories"] = saved["chat_histories"]
+        _state["active_session_id"] = saved["active_session_id"]
+
+    assert payload["action"] == "chat_loaded"
+    assert agent._disclosure_message_context_id != before
+    assert any("NEW-CHAT-BODY" in str(getattr(message, "content", "")) for message in stm.get_messages())
+    prefix = agent._agent_prefix_messages
+    assert prefix and isinstance(prefix[0], SystemMessage)
+    assert agent._agent_prefix_is_live(prefix[0].content)
+    nxt = agent._continue_agent_prefix(prefix[0].content, "下一问")
+    blob = "\n".join(str(getattr(message, "content", "") or "") for message in nxt)
+    assert "NEW-CHAT-BODY" in blob
+    assert "下一问" in blob
+    assert "OLD-PLAN-MARKER" not in blob
+    assert "parameters:" not in blob
+    again = facade.search("echo")
+    assert "parameters:" in again
+    assert "ALREADY AVAILABLE" not in again
+    token = push_disclosure_context("other-task")
+    try:
+        other_again = facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    assert "ALREADY AVAILABLE" in other_again
+
+
+@pytest.mark.asyncio
+async def test_finished_graph_context_drops_only_its_disclosure_records(monkeypatch):
+    from RxyCode.RxyCode1_1_0.core.state import TaskNode
+    from RxyCode.RxyCode1_1_0.execution.executor import Executor
+    from RxyCode.RxyCode1_1_0.execution import executor as executor_mod
+
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    holder = {"id": "fast-msg"}
+    facade = DeferredToolSearch(
+        lambda: registry,
+        get_session_id=lambda: "same-session",
+        get_message_context_id=lambda: holder["id"],
+    )
+    assert "parameters:" in facade.search("echo")
+    token = push_disclosure_context("other-task")
+    try:
+        assert "parameters:" in facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    baseline = _context_keys(facade)
+
+    class _Tools:
+        def begin_evidence_capture(self):
+            return "ev"
+
+        def end_evidence_capture(self, token):
+            del token
+            return []
+
+        def select_safe_tools(self, hints, config, max_risk=None):
+            del hints, config, max_risk
+            return []
+
+    class _Agent:
+        async def ainvoke(self, payload, config):
+            del payload, config
+            facade.search("echo")
+            return {"messages": [SimpleNamespace(content="done")]}
+
+    monkeypatch.setattr(executor_mod, "create_agent", lambda *args, **kwargs: _Agent())
+    executor = Executor(llm=object(), tool_orchestrator=_Tools(), config={})
+    for index in range(10):
+        await executor.execute_with_evidence(TaskNode(title=f"task-{index}", description="work"))
+    assert _context_keys(facade) == baseline
+    assert "ALREADY AVAILABLE" in facade.search("echo")
+    token = push_disclosure_context("other-task")
+    try:
+        other_again = facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    assert "ALREADY AVAILABLE" in other_again
+
+
 @pytest.mark.asyncio
 async def test_deferred_rounds_follow_history_not_a_second_counter():
     tool = _mcp_write_tool("mcp_echo")

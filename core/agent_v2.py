@@ -2428,6 +2428,8 @@ class AgentV2:
         except Exception:
             pass
 
+        # 旧 session 的消息上下文到此结束。先按旧 session 释放记录，再换 id。
+        self._rotate_disclosure_message_context()
         self._session_id = resolved
         self._clear_status_band()
         self._clear_compact_breaker()
@@ -2439,7 +2441,6 @@ class AgentV2:
         self._agent_prefix_messages = None
         # A20: subset 工具子集按会话固定——切换会话时清除缓存，避免沿用旧会话子集。
         self._subset_tool_names = None
-        self._rotate_disclosure_message_context()
         return resolved
 
     def reset_session(self) -> dict[str, int | str]:
@@ -5630,10 +5631,58 @@ class AgentV2:
         return current
 
     def _rotate_disclosure_message_context(self) -> str:
-        """清空或重建历史后换标识。只改本 agent 的 key，不清其他上下文的记录。"""
+        """完整重建历史后换标识，并释放刚结束的 Fast key。不清其他上下文。"""
+        previous = str(getattr(self, "_disclosure_message_context_id", "") or "")
         rotated = uuid.uuid4().hex
         self._disclosure_message_context_id = rotated
+        if previous:
+            facade = getattr(self, "_tool_search_facade", None)
+            release = getattr(facade, "release_context", None)
+            if callable(release):
+                session = str(getattr(self, "_session_id", "") or "")
+                release(f"session:{session}:msg:{previous}")
         return rotated
+
+    def _revoke_dropped_discoveries(self, kept, dropped) -> None:
+        """局部回退只撤销被删掉、且保留部分里已经没有的 discovery。"""
+        from RxyCode.RxyCode1_1_0.core.tool_search import discovery_tool_names
+
+        facade = getattr(self, "_tool_search_facade", None)
+        revoke = getattr(facade, "revoke_names", None)
+        if not callable(revoke):
+            return
+        gone = discovery_tool_names(dropped) - discovery_tool_names(kept)
+        if gone:
+            revoke(gone)
+
+    def replace_model_history(self, messages: list | None) -> None:
+        """用另一份对话替换下一轮模型实际续写的 AgentPrefix，并换暴露标识。"""
+        system = get_system_prompt(variant=self._prompt_variant())
+        restored: list = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role") or "")
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                content = str(content or "")
+            if role == "user":
+                restored.append(HumanMessage(content=content))
+            elif role == "assistant":
+                ai = AIMessage(content=content)
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    ai.tool_calls = tool_calls
+                restored.append(ai)
+            elif role == "tool":
+                restored.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=str(msg.get("tool_call_id") or ""),
+                    )
+                )
+        self._agent_prefix_messages = [SystemMessage(content=system), *restored]
+        self._rotate_disclosure_message_context()
 
     def _clear_status_band(self) -> None:
         """Session switch/reset drops the band cache. The ledger file stays."""
@@ -5931,7 +5980,9 @@ class AgentV2:
         dropped = len(prefix) - cut
         if dropped <= 0:
             return 0
-        self._agent_prefix_messages = prefix[:cut]
+        kept = prefix[:cut]
+        self._agent_prefix_messages = kept
+        self._revoke_dropped_discoveries(kept, prefix[cut:])
         return dropped
 
     def _truncate_agent_prefix(self, keep: int = 1) -> int:
@@ -7789,6 +7840,8 @@ class AgentV2:
     def _prepare_approved_implement(self, user_input: str) -> tuple[str, str, dict]:
         """Drop a live Plan-mode AgentPrefix and pin the session plan.md."""
         self._agent_prefix_messages = None
+        # 计划历史整段丢掉。暴露记录必须跟着换，否则 Build 会拿到 ALREADY AVAILABLE。
+        self._rotate_disclosure_message_context()
         disk = ""
         try:
             path = _session_plan_md_path(getattr(self, "_session_id", None))
