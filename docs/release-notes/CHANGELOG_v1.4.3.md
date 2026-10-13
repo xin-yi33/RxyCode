@@ -206,6 +206,27 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 这一段没有改 MCP 清单基线、schema 指纹、参数描述扫描、坏清单恢复和并发写入。没有发现新的权限绕过或密钥外泄。
 - 验证：OpenTUI 全套 393 通过，`tsc --noEmit` 通过。审批复合验收 6 通过。复审边界里，80×18、6 条 Todo 的画面已复核：`TAIL_MARKER` 单独一行，下一行才是 `[a]允许 [r]拒绝 [l]全部`。缩到 80×18 且已经在文末时，行号与可见行一致。这些 OpenTUI 改动随本记录一起提交。产品版本仍是 1.4.2。
 
+## 检索式发现的上下文、回合和消息配对（2026-10-13，复审 `b9a327ec`）
+
+产品版本仍是 1.4.2。下面只记这次复现过、并已改到的行为。
+
+### 1. 新增与修复
+
+- `tool_search` 的“已加载”按当前执行上下文记录，不再只看 `session_id`。同一个子任务里第二次搜索仍返回 `ALREADY AVAILABLE`。Executor 的下一个隔离子任务会重新拿到完整 schema。并发任务的记录互不覆盖。
+- 按需工具的回合数只数历史里已经带 `tool_calls` 的助手消息。当前这条还没补进历史的 envelope 只再加 1。预算为 2 时，按需调用可以执行 2 轮，不再被提前停在 1 轮。仍是执行前拦截。
+- 同一条回复里既有原生调用又有 `<tool_call>` 时，先执行原生调用，协议提示放在那些工具结果之后。
+- 预算用尽而拒绝按需调用时，先把调用骨架补回助手消息，再追加拒绝结果，消息对保持完整。
+- 空的 `<tool_call></tool_call>` 返回解析错误，不再当成 Final Answer。超限占位和未闭合 envelope 各自使用下一个调用 ID，不再共用 `defercall_8`。
+- 压缩预取和真正折叠都跳过带 pin 的首次 discovery。没有可折叠内容时，不调用摘要模型。
+- `tests/test_core/test_tool_search_k3_2_acceptance.py` 里 `assert 条件 or ["mcp_echo"]` 改为只断言 `tool_search` 在绑定列表中。
+
+### 2. 数据完整性
+
+- 基础 schema 仍是冻结的核心集。按需工具的定义仍留在原历史位置，不把 MCP 工具塞回每轮请求。
+- 同一上下文里的 schema 不会因为这次修改被重复发送。隔离的新上下文不会因为旧记录而拿不到定义。
+- 拒绝仍然发生在执行之前。只读任务拒绝写操作、hint 下保留 `tool_search`、安装类工具返回真实 JSON Schema，这些已修好的行为没有改口。
+- 验证：`tests/test_core/test_tool_search_k3_2_acceptance.py`、`test_tool_search_discovery.py`、`test_tool_search_discovery_k3.py` 共 41 通过。产品版本仍是 1.4.2。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：

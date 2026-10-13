@@ -28,6 +28,8 @@ from RxyCode.RxyCode1_1_0.core.tool_search import (
     TOOL_SEARCH_NAME,
     is_deferred_tool,
     parse_deferred_tool_json_calls,
+    push_disclosure_context,
+    reset_disclosure_context,
 )
 from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
 
@@ -213,7 +215,8 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
         self._max_risk = max_risk
         self._round_limit = round_limit
         self._seq = 0
-        self._dispatched_rounds = 0  # 计入与原生相同的工具回合预算
+        self._mixed_hint: str | None = None
+        self._mixed_last_call_id: str | None = None
 
     def after_model(self, state, runtime):
         # 同步路径不被 Executor 的 ainvoke 使用；若误用于 sync 图，显式放行
@@ -248,20 +251,21 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
         text = content if isinstance(content, str) else str(content or "")
         has_envelope = "<tool_call" in text
         if last_ai.tool_calls:
-            # #7d：原生+envelope 混合——显式反馈而非静默忽略。
+            # 混合调用：先让原生 tool_calls 执行。提示放在那些结果之后，
+            # 不能插在 assistant 和 ToolMessage 中间，否则消息对不合法。
             if has_envelope:
-                return {
-                    "messages": [
-                        HumanMessage(
-                            content=(
-                                "[protocol] <tool_call> envelopes in a reply that "
-                                "ALSO contains native tool calls were NOT executed; "
-                                "re-emit the envelope as the only tool call(s) of "
-                                "a round."
-                            )
-                        )
-                    ]
-                }
+                ids = [
+                    c.get("id") if isinstance(c, dict) else getattr(c, "id", None)
+                    for c in last_ai.tool_calls
+                ]
+                ids = [str(item) for item in ids if item]
+                self._mixed_last_call_id = ids[-1] if ids else None
+                self._mixed_hint = (
+                    "[protocol] <tool_call> envelopes in a reply that "
+                    "ALSO contains native tool calls were NOT executed; "
+                    "re-emit the envelope as the only tool call(s) of "
+                    "a round."
+                )
             return None
         if not has_envelope:
             return None
@@ -271,13 +275,17 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
         if not calls:
             return None
 
-        # #2：执行前检查回合预算（原生口径 = 带 tool_calls 的 AIMessage 数 +
-        # 本中间件已派发轮次）。先检后执行，不再"先执行再补拒"。
+        # 回合数只数历史里已经带 tool_calls 的 AIMessage。当前这条 envelope
+        # 还没补进历史，只再加 1。补进之后下一轮自然计到，不再另记一份。
         rounds_used = sum(
             1
             for m in messages
             if isinstance(m, AIMessage) and bool(getattr(m, "tool_calls", None))
-        ) + self._dispatched_rounds
+        )
+        call_skeletons = [
+            {"name": c["name"], "args": c["args"], "id": c["id"], "type": "tool_call"}
+            for c in calls
+        ]
         if self._round_limit is not None and rounds_used + 1 > self._round_limit:
             blocked = [
                 ToolMessage(
@@ -299,9 +307,10 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
                     )
                 )
             )
-            self._dispatched_rounds += 1
-            return {"jump_to": "end", "messages": blocked}
-        self._dispatched_rounds += 1
+            return {
+                "jump_to": "end",
+                "messages": [self._with_tool_calls(last_ai, call_skeletons), *blocked],
+            }
 
         result_messages: list = []
         for call in calls:
@@ -365,15 +374,36 @@ class _DeferredEnvelopeDispatchMiddleware(AgentMiddleware):
 
         # LangChain 消息契约：工具结果必须跟在带 tool_calls 的 assistant 后。
         # add_messages reducer 同 id 覆盖 → 把 skeleton 补回 AI 消息。
-        call_skeletons = [
-            {"name": c["name"], "args": c["args"], "id": c["id"], "type": "tool_call"}
-            for c in calls
-        ]
+        return {
+            "messages": [
+                self._with_tool_calls(last_ai, call_skeletons),
+                *result_messages,
+            ]
+        }
+
+    @staticmethod
+    def _with_tool_calls(message, skeletons: list) -> AIMessage:
         try:
-            updated_ai = last_ai.model_copy(update={"tool_calls": call_skeletons})
+            return message.model_copy(update={"tool_calls": skeletons})
         except Exception:
-            updated_ai = last_ai
-        return {"messages": [updated_ai, *result_messages]}
+            return message
+
+    async def awrap_tool_call(self, request, handler):
+        result = await handler(request)
+        call_id = str((getattr(request, "tool_call", None) or {}).get("id") or "")
+        if (
+            self._mixed_hint
+            and call_id
+            and call_id == self._mixed_last_call_id
+        ):
+            hint = self._mixed_hint
+            self._mixed_hint = None
+            self._mixed_last_call_id = None
+            note = HumanMessage(content=hint)
+            if isinstance(result, list):
+                return [*result, note]
+            return [result, note]
+        return result
 
 
 
@@ -410,6 +440,7 @@ class Executor:
         if self._event_tui is not None:
             event_token = self._tools.bind_event_tui(self._event_tui)
         token = self._tools.begin_evidence_capture()
+        disclosure = push_disclosure_context()
         try:
             if task.effect == TaskEffect.READ:
                 available = self._tools.select_safe_tools(
@@ -503,6 +534,7 @@ class Executor:
                 except Exception as exc:  # pragma: no cover - defensive
                     _logger.warning("thinking export failed (ignored): %s", exc)
         finally:
+            reset_disclosure_context(disclosure)
             evidence = self._tools.end_evidence_capture(token)
             if event_token is not None:
                 self._tools.reset_event_tui(event_token)

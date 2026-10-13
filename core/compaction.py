@@ -443,6 +443,8 @@ def _select_fold_msgs(messages: list, keep_tail: int) -> list:
     units = _split_units(body)
     fold_units, tail_units = _partition_tail_units(units, keep_tail)
     _retain_visible_tombstone(fold_units, tail_units)
+    # 与 _fold_middle_section 同一条规则：pinned discovery 不进预取摘要。
+    fold_units = [unit for unit in fold_units if not _unit_has_discovery_pin(unit)]
     return [m for unit in fold_units for m in unit]
 
 

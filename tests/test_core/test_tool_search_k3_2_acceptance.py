@@ -11,13 +11,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
 from RxyCode.RxyCode1_1_0.core.tool_search import (
     DISCOVERY_PIN_MARKER,
     DeferredToolSearch,
     parse_deferred_tool_json_calls,
+    push_disclosure_context,
+    reset_disclosure_context,
 )
 from RxyCode.RxyCode1_1_0.execution.executor import _DeferredEnvelopeDispatchMiddleware
 
@@ -205,7 +208,7 @@ async def test_k3_2_4_hint_keeps_tool_search_in_bound_list(monkeypatch):
     # hint 命中的 deferred 工具被过滤；tool_search 一定在场
     assert "mcp_echo" not in bound_names
     assert "tool_search" in bound_names
-    assert captured["select_hints"] == ["tool_search"] or ["mcp_echo"]
+    assert captured["select_hints"] == ["tool_search"]
 
 
 # # 5：真实内置按需工具返回真 schema ────────────────────────────────────
@@ -290,6 +293,111 @@ def test_k3_2_7_overflow_envelopes_explicitly_rejected():
     )
 
 
+def test_isolated_disclosure_contexts_do_not_share_already_available():
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    facade = DeferredToolSearch(lambda: registry, get_session_id=lambda: "same-session")
+    first_token = push_disclosure_context("ctx-a")
+    try:
+        first = facade.search("echo")
+    finally:
+        reset_disclosure_context(first_token)
+    second_token = push_disclosure_context("ctx-b")
+    try:
+        second = facade.search("echo")
+        third = facade.search("echo")
+    finally:
+        reset_disclosure_context(second_token)
+    assert "parameters:" in first and "parameters:" in second
+    assert "ALREADY AVAILABLE" in third
+    assert "ctx-a" in facade._exposed["mcp_echo"]
+    assert "ctx-b" in facade._exposed["mcp_echo"]
+
+
+@pytest.mark.asyncio
+async def test_deferred_rounds_follow_history_not_a_second_counter():
+    tool = _mcp_write_tool("mcp_echo")
+    orchestrator = _orch_stub({"mcp_echo": tool})
+    middleware = _DeferredEnvelopeDispatchMiddleware(
+        orchestrator, {}, round_limit=2
+    )
+    envelope = '<tool_call>{"name": "mcp_echo", "arguments": {}}</tool_call>'
+    first = await middleware.aafter_model(_ai_state(envelope), None)
+    assert first is not None and "jump_to" not in first
+    assert orchestrator.execute_tool.await_count == 1
+    updated = first["messages"][0]
+    follow = {
+        "messages": [
+            HumanMessage(content="task"),
+            updated,
+            ToolMessage(content="ok", tool_call_id=updated.tool_calls[0]["id"]),
+            AIMessage(content=envelope),
+        ]
+    }
+    second = await middleware.aafter_model(follow, None)
+    assert second is not None and "jump_to" not in second
+    assert orchestrator.execute_tool.await_count == 2
+    third_ai = AIMessage(content=envelope)
+    third = await middleware.aafter_model(
+        {"messages": [*follow["messages"][:3], second["messages"][0], second["messages"][1], third_ai]},
+        None,
+    )
+    assert third.get("jump_to") == "end"
+    assert orchestrator.execute_tool.await_count == 2
+    chain = [third_ai, *third["messages"]]
+    # The returned list replaces/overlays the assistant, then tool results.
+    paired = [third["messages"][0], *third["messages"][1:-1]]
+    assert tool_pair_integrity(paired) is True
+    assert any(isinstance(m, ToolMessage) and "max_tool_rounds" in str(m.content) for m in third["messages"])
+
+
+def test_pinned_discovery_is_not_prefetched_for_summary():
+    from RxyCode.RxyCode1_1_0.core.compaction import plan_compaction
+
+    pinned = ToolMessage(
+        content=f"full schema {DISCOVERY_PIN_MARKER}",
+        tool_call_id="s1",
+        name="tool_search",
+    )
+    messages = [
+        SystemMessage(content="system"),
+        HumanMessage(content="find a tool"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "tool_search", "args": {}, "id": "s1", "type": "tool_call"}],
+        ),
+        pinned,
+    ]
+    plan = plan_compaction(
+        messages,
+        context_window=100,
+        reserved=0,
+        force=True,
+        count=lambda text: max(1, len(text or "")),
+    )
+    assert plan["rung"] == "fold"
+    assert plan["fold_msgs"] == []
+
+
+def test_k3_2_7_empty_envelope_is_a_parse_error():
+    calls, malformed = parse_deferred_tool_json_calls("<tool_call></tool_call>")
+    assert len(calls) == 1
+    assert calls[0]["id"] in malformed
+    assert "empty" in malformed[calls[0]["id"]]
+
+
+def test_k3_2_7_overflow_and_orphan_do_not_share_an_id():
+    closed = "".join(
+        f'<tool_call>{{"name": "mcp_{i}", "arguments": {{}}}}</tool_call>'
+        for i in range(9)
+    )
+    calls, malformed = parse_deferred_tool_json_calls(closed + "<tool_call>{")
+    ids = [call["id"] for call in calls]
+    assert len(ids) == len(set(ids))
+    assert len(calls) == 10
+    assert sum("unterminated" in text for text in malformed.values()) == 1
+    assert sum("limit" in text for text in malformed.values()) == 1
+
+
 def test_k3_2_7_non_dict_payload_is_malformed_not_final():
     calls, malformed = parse_deferred_tool_json_calls("<tool_call>[]</tool_call>")
     assert calls and all(c["id"] in malformed for c in calls)
@@ -304,7 +412,18 @@ async def test_k3_2_7_graph_mixed_native_and_envelope_explicit_note():
         tool_calls=[{"name": "read", "args": {}, "id": "n1", "type": "tool_call"}],
     )
     result = await middleware.aafter_model({"messages": [HumanMessage(content="t"), ai]}, None)
-    assert result is not None
-    feedback = [m for m in result["messages"] if isinstance(m, HumanMessage)]
-    assert any("NOT executed" in str(m.content) for m in feedback)
+    assert result is None
     assert orchestrator.execute_tool.await_count == 0
+
+    async def handler(_request):
+        return ToolMessage(content="file text", tool_call_id="n1", name="read")
+
+    class _Req:
+        tool_call = {"name": "read", "id": "n1", "args": {}}
+
+    wrapped = await middleware.awrap_tool_call(_Req(), handler)
+    assert isinstance(wrapped, list)
+    chain = [ai, *wrapped]
+    assert tool_pair_integrity(chain) is True
+    assert isinstance(chain[-1], HumanMessage)
+    assert "NOT executed" in str(chain[-1].content)

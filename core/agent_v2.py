@@ -7515,7 +7515,7 @@ class AgentV2:
             # 废弃代码（2026-10-09）：`and not already_summarized` 让第二次 fold
             # 不再预取。旧摘要要和新折叠段一起送给摘要模型。
             prefetched = None
-            if plan["rung"] == "fold":
+            if plan["rung"] == "fold" and plan.get("fold_msgs"):
                 prefetch = self._prefetch_compaction_summary
                 try:
                     prefetch_signature = inspect.signature(prefetch)

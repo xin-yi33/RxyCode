@@ -11,8 +11,9 @@ K例复审修订点：
 
 * 搜索结果按**完整项**打包（P1）：若有超出文本预算的命中，完整截断在块
   边界并明示剩余数量——绝不返回半截 schema 再把半成品标记为"已暴露"。
-* 暴露记录绑定 ``(session_id, schema_hash)``（P1）：新会话、同名 schema
-  更新都可以重新暴露，不会被陈旧的"已加载"记录污染。
+* 暴露记录按实际上下文加 ``schema_hash``（P1）：同一上下文不重复给
+  schema；Executor 的每个隔离子任务是新上下文，必须重新得到定义。
+  不按名字全局清空，并发任务各自保留自己的记录。
 * 首次发现消息带固定 pin 标记，普通压缩（microcompact 墓碑化）跳过它们（P1）。
 * 查询分词 CJK 友好（P2）：中文短语直接子串命中，单字加权，修复
   "天气"查不到"查询城市天气"。
@@ -23,9 +24,11 @@ K例复审修订点：
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
+import uuid
 from typing import Any, Callable
 
 # 模块级导入：core/tool_search.py 计入 P7 懒导入预算；langchain_core 在
@@ -45,6 +48,22 @@ DEFERRED_BUILTIN_TOOL_NAMES = frozenset(
 )
 
 TOOL_SEARCH_NAME = "tool_search"
+
+#: 当前执行上下文。未设置时退回 session_id（Fast 路径同一会话共享历史）。
+#: Executor 每个隔离子任务设置自己的值；contextvars 按任务隔离，不清全局表。
+_disclosure_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "rxycode_disclosure_context",
+    default=None,
+)
+
+
+def push_disclosure_context(context_id: str | None = None):
+    """Bind later tool_search calls to one message context. Returns the reset token."""
+    return _disclosure_context.set(context_id or uuid.uuid4().hex)
+
+
+def reset_disclosure_context(token) -> None:
+    _disclosure_context.reset(token)
 
 TOOL_SEARCH_DESCRIPTION = (
     "Search the on-demand external tool catalog (MCP servers, plugins, "
@@ -169,25 +188,35 @@ class DeferredToolSearch:
     ) -> None:
         self._get_registry = get_registry
         self._get_session_id = get_session_id or (lambda: "")
-        # name → (session_id, schema_hash):context 是会场票根，不是全局记账。
-        self._exposed: dict[str, tuple[str, str]] = {}
+        # name → {context_id: schema_hash}。只记当前上下文，不覆盖其他任务。
+        self._exposed: dict[str, dict[str, str]] = {}
+
+    def _context_key(self) -> str:
+        bound = _disclosure_context.get()
+        if bound:
+            return bound
+        return f"session:{self._get_session_id()}"
 
     @property
     def exposed(self) -> frozenset[str]:
-        return frozenset(self._exposed)
+        key = self._context_key()
+        return frozenset(
+            name for name, bucket in self._exposed.items() if key in bucket
+        )
 
     def _schema_hash(self, name: str, tool: Any) -> str:
         return signature_for_tools({name: tool}).get(name, "")
 
     def _is_already_exposed(self, name: str, tool: Any) -> bool:
-        record = self._exposed.get(name)
-        if record is None:
+        bucket = self._exposed.get(name)
+        if not bucket:
             return False
-        session, digest = record
-        return session == self._get_session_id() and digest == self._schema_hash(name, tool)
+        digest = bucket.get(self._context_key())
+        return digest is not None and digest == self._schema_hash(name, tool)
 
     def _mark_exposed(self, name: str, tool: Any) -> None:
-        self._exposed[name] = (self._get_session_id(), self._schema_hash(name, tool))
+        bucket = self._exposed.setdefault(name, {})
+        bucket[self._context_key()] = self._schema_hash(name, tool)
 
     def search(self, query: str, top_k: int = 5) -> str:
         registry = self._get_registry() or {}
@@ -299,7 +328,7 @@ class DeferredToolSearch:
 
 # payload 任意形态都先接住再校验——<tool_call>[]</tool_call> 这类坏包装
 # 也必须产生显式 malformed 反馈（K3-2 #7），不能因正则不匹配而当 Final 放出。
-_ENVELOPE_RE = re.compile(r"<tool_call>\s*(.+?)\s*</tool_call>", re.DOTALL)
+_ENVELOPE_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _ORPHAN_TAIL_RE = re.compile(r"<tool_call(?![\s\S]*</tool_call>)", re.DOTALL)
 _MAX_DEFERRED_CALLS = 8
 
@@ -327,13 +356,28 @@ def parse_deferred_tool_json_calls(
     decoder = json.JSONDecoder()
     seq = start
     dropped_overflow = 0
+
+    def allocate() -> str:
+        nonlocal seq
+        call_id = f"defercall_{seq}"
+        seq += 1
+        return call_id
+
+    accepted = 0
     for match in _ENVELOPE_RE.finditer(answer):
-        if seq - start >= _MAX_DEFERRED_CALLS:
+        if accepted >= _MAX_DEFERRED_CALLS:
             dropped_overflow += 1
             continue
         payload = match.group(1)
-        call_id = f"defercall_{seq}"
-        seq += 1
+        call_id = allocate()
+        accepted += 1
+        if not payload.strip():
+            malformed[call_id] = (
+                "empty <tool_call> envelope: the call was NOT executed; "
+                "re-emit one complete JSON object"
+            )
+            calls.append({"name": "<invalid>", "args": {}, "id": call_id, "type": "tool_call"})
+            continue
         try:
             value, end = decoder.raw_decode(payload)
         except (json.JSONDecodeError, ValueError) as exc:
@@ -368,7 +412,7 @@ def parse_deferred_tool_json_calls(
 
     # K3-2 #7：超过上限的第 N+1 个调用显式拒绝，不再被静默吞掉。
     if dropped_overflow:
-        overflow_id = f"defercall_{seq}"
+        overflow_id = allocate()
         malformed[overflow_id] = (
             f"mixed: {_MAX_DEFERRED_CALLS}-envelope limit reached; "
             f"{dropped_overflow} further envelope(s) were NOT executed. "
@@ -385,7 +429,7 @@ def parse_deferred_tool_json_calls(
 
     consumed_end = answer.rfind("</tool_call>")
     if _ORPHAN_TAIL_RE.search(answer[consumed_end + 1 :]):
-        orphan_id = f"defercall_{seq}"
+        orphan_id = allocate()
         malformed[orphan_id] = (
             "unterminated <tool_call> envelope: the call was NOT executed; "
             "re-emit one complete, closed envelope as the only tool call this round"
