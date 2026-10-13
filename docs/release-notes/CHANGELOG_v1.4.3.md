@@ -266,6 +266,26 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
 - 验证：上述行为所在的 tool_search、compaction、session、rewind、批准计划和 `/load-chat` 测试共 73 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
 
+## 重建后的 schema 进入下一次请求，展示型工具记录可配对（2026-10-13，复审 `2b21673c`）
+
+产品版本仍是 1.4.2。下面只记这次复现过、并已改到的行为。
+
+### 1. 新增与修复
+
+- 完整 discovery 仍由 `tool_search` 按上下文去重。写入模型消息时，不再交给普通工具输出去重。历史清空后指纹表还在，也不会把重新给出的 schema 换成 `duplicate tool output omitted`。
+- 其他工具的重复输出仍去重。`read` 的相同内容第二次仍是省略占位符。
+- 验收看的是下一次模型请求里的 `ToolMessage`：其中有 `parameters:` 和 discovery 标记。
+- `/load-chat` 遇到带真实 `tool_calls` 和 `tool_call_id` 的记录时，保持调用和结果配对。
+- API 只保存了 `toolName`、`toolArgs`、`toolStdout` 的展示记录，恢复成标注过的历史观察文本，保留工具名、参数和结果。不生成调用 ID，也不重放工具。
+- 这两种恢复结果都通过 `tool_pair_integrity()`。
+
+### 2. 数据完整性
+
+- 回退只撤销被删除的 discovery、普通文字历史替换、任务结束后只释放本任务记录，这些已经生效的行为没有改口。
+- 基础 schema 仍是冻结的核心集。按需定义仍留在当时那条历史消息里。
+- 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
+- 验证：`test_tool_search_k3_2_acceptance.py`、`test_token_governance.py`、`test_tool_message_protocol.py`、`test_approved_plan_implement.py` 和 `/load-chat` 精确恢复测试共 67 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：

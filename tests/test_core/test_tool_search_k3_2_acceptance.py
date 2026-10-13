@@ -614,6 +614,156 @@ async def test_load_chat_replaces_the_history_the_next_request_sends(tmp_path, m
     assert "ALREADY AVAILABLE" in other_again
 
 
+def test_rebuilt_discovery_stays_in_the_next_model_tool_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "dedupe-discovery"
+    agent._capabilities = None
+    agent._provider = None
+    agent._seen_tool_fingerprints = {}
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    facade = _bind_fast_facade(agent, registry)
+    first = facade.search("echo")
+    plan_body = agent._tool_result_message_content("tool_search", first)
+    assert "parameters:" in plan_body
+    assert DISCOVERY_PIN_MARKER in plan_body
+    assert "duplicate tool output omitted" not in plan_body
+    assert agent._dedupe_tool_output("read", "SAME-BYTES") == "SAME-BYTES"
+    assert "duplicate tool output omitted" in agent._dedupe_tool_output("read", "SAME-BYTES")
+
+    agent._prepare_approved_implement("已批准计划，开始实施")
+    second = facade.search("echo")
+    assert "parameters:" in second
+    call_id = "search-build-1"
+    # Fast 循环在下一次模型请求前，用这个函数写入 ToolMessage。
+    request = [
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "id": call_id,
+                "name": "tool_search",
+                "args": {"query": "echo"},
+                "type": "tool_call",
+            }],
+        ),
+        ToolMessage(
+            content=agent._tool_result_message_content("tool_search", second),
+            tool_call_id=call_id,
+        ),
+    ]
+    body = str(request[-1].content)
+    assert isinstance(request[-1], ToolMessage)
+    assert "parameters:" in body
+    assert DISCOVERY_PIN_MARKER in body
+    assert "mcp_echo" in body
+    assert "duplicate tool output omitted" not in body
+    assert "duplicate tool output omitted" in agent._dedupe_tool_output("read", "SAME-BYTES")
+
+
+def test_replace_model_history_keeps_a_real_tool_pair():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "native-pair"
+    agent._capabilities = None
+    agent._provider = None
+    agent._disclosure_message_context_id = "msg-native"
+    agent.replace_model_history([
+        {"role": "user", "content": "读文件"},
+        {
+            "role": "assistant",
+            "content": "calling",
+            "tool_calls": [{
+                "id": "call_1",
+                "name": "read",
+                "args": {"path": "a.txt"},
+                "type": "tool_call",
+            }],
+        },
+        {"role": "tool", "content": "file body", "tool_call_id": "call_1"},
+        {"role": "assistant", "content": "done"},
+    ])
+    prefix = agent._agent_prefix_messages
+    assert tool_pair_integrity(prefix) is True
+    tools = [message for message in prefix if isinstance(message, ToolMessage)]
+    assert len(tools) == 1
+    assert tools[0].tool_call_id == "call_1"
+    assert "file body" in str(tools[0].content)
+
+
+@pytest.mark.asyncio
+async def test_load_chat_display_tool_record_is_observation_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path))
+    from RxyCode.RxyCode1_1_0.api_server import (
+        CommandRequest,
+        _execute_command,
+        _session_message,
+        _state,
+    )
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.memory.chat_storage import chat_storage
+    from RxyCode.RxyCode1_1_0.memory.short_term import ShortTermMemory
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "latest"
+    agent._capabilities = None
+    agent._provider = None
+    agent._disclosure_message_context_id = "msg-display"
+    stm = ShortTermMemory(window_size=20)
+    agent._memory = SimpleNamespace(
+        clear=lambda *args, **kwargs: stm.clear(),
+        short_term=stm,
+    )
+    loaded = [
+        _session_message("user", "请查一下", run_id="run-display"),
+        _session_message(
+            "tool",
+            "STDOUT-MARKER",
+            run_id="run-display",
+            toolName="read",
+            toolArgs='{"path": "a.txt"}',
+            toolStatus="success",
+            toolStdout="STDOUT-MARKER",
+        ),
+        _session_message("assistant", "看完了", run_id="run-display"),
+    ]
+    assert chat_storage.save("load-display-tool", loaded)
+    saved = {
+        "agent": _state.get("agent"),
+        "chat_history": list(_state.get("chat_history") or []),
+        "chat_histories": dict(_state.get("chat_histories") or {}),
+        "active_session_id": _state.get("active_session_id"),
+    }
+    _state["agent"] = agent
+    _state["chat_history"] = []
+    _state["chat_histories"] = {"latest": _state["chat_history"]}
+    _state["active_session_id"] = "latest"
+    try:
+        payload = await _execute_command(CommandRequest(command="/load-chat load-display-tool"))
+    finally:
+        _state["agent"] = saved["agent"]
+        _state["chat_history"] = saved["chat_history"]
+        _state["chat_histories"] = saved["chat_histories"]
+        _state["active_session_id"] = saved["active_session_id"]
+
+    assert payload["action"] == "chat_loaded"
+    prefix = agent._agent_prefix_messages
+    assert tool_pair_integrity(prefix) is True
+    assert not any(isinstance(message, ToolMessage) for message in prefix)
+    blob = "\n".join(str(getattr(message, "content", "") or "") for message in prefix)
+    assert "STDOUT-MARKER" in blob
+    assert "历史工具观察" in blob
+    assert "工具: read" in blob
+    assert '{"path": "a.txt"}' in blob
+    nxt = agent._continue_agent_prefix(prefix[0].content, "继续")
+    assert tool_pair_integrity(nxt) is True
+    assert "STDOUT-MARKER" in "\n".join(
+        str(getattr(message, "content", "") or "") for message in nxt
+    )
+
+
 @pytest.mark.asyncio
 async def test_finished_graph_context_drops_only_its_disclosure_records(monkeypatch):
     from RxyCode.RxyCode1_1_0.core.state import TaskNode

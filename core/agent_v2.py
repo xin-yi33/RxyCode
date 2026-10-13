@@ -150,6 +150,7 @@ from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp import tool_manifest as _tool_manifest
 from RxyCode.RxyCode1_1_0.core.tool_search import (
     DeferredToolSearch,
+    DISCOVERY_PIN_MARKER,
     TOOL_SEARCH_NAME,
     is_deferred_tool,
     parse_deferred_tool_json_calls,
@@ -875,6 +876,36 @@ _APPROVED_IMPLEMENT_ROLE = (
 def _is_approved_plan_implement(text: str) -> bool:
     head = (text or "").lstrip()
     return any(head.startswith(prefix) for prefix in _APPROVED_PLAN_PREFIXES)
+
+
+def _tool_call_ids(tool_calls) -> set[str]:
+    ids: set[str] = set()
+    for call in tool_calls or []:
+        if isinstance(call, dict):
+            call_id = call.get("id")
+        else:
+            call_id = getattr(call, "id", None)
+        if call_id:
+            ids.add(str(call_id))
+    return ids
+
+
+def _historical_tool_observation(msg: dict, content: str) -> str:
+    """展示型工具记录没有可配对的调用。保留原文，不编造 tool_call_id。"""
+    name = str(msg.get("toolName") or msg.get("name") or "unknown")
+    args = str(msg.get("toolArgs") or msg.get("args") or "")
+    status = str(msg.get("toolStatus") or "")
+    stdout = str(msg.get("toolStdout") or content or "")
+    lines = [
+        "[历史工具观察] 这是已保存对话中的工具展示记录，不是新的工具调用。",
+        f"工具: {name}",
+    ]
+    if args:
+        lines.append(f"参数: {args}")
+    if status:
+        lines.append(f"状态: {status}")
+    lines.append(f"结果: {stdout}")
+    return "\n".join(lines)
 
 
 def _session_plan_md_path(session_id: str | None) -> Path:
@@ -3910,7 +3941,15 @@ class AgentV2:
         不重复进历史（aider add_rel_fname 语义）。不同指纹（含时间戳
         差异）→ 每次原样保留。指纹集合按工具累计（A→B→A 中第二次 A
         仍判定为重复，luna R5-2）。
+
+        完整 discovery 由 tool_search 自己按上下文去重。历史重建后指纹表
+        仍在，不能再把刚重新给出的 schema 换成省略占位符。其他工具照常去重。
         """
+        if (
+            str(tool_name) == TOOL_SEARCH_NAME
+            and DISCOVERY_PIN_MARKER in str(content or "")
+        ):
+            return content
         seen = getattr(self, "_seen_tool_fingerprints", None)
         if seen is None:
             seen = self._seen_tool_fingerprints = {}
@@ -5659,6 +5698,8 @@ class AgentV2:
         """用另一份对话替换下一轮模型实际续写的 AgentPrefix，并换暴露标识。"""
         system = get_system_prompt(variant=self._prompt_variant())
         restored: list = []
+        open_call_ids: set[str] = set()
+        last_tool_id = ""
         for msg in messages or []:
             if not isinstance(msg, dict):
                 continue
@@ -5668,19 +5709,28 @@ class AgentV2:
                 content = str(content or "")
             if role == "user":
                 restored.append(HumanMessage(content=content))
+                open_call_ids = set()
+                last_tool_id = ""
             elif role == "assistant":
                 ai = AIMessage(content=content)
                 tool_calls = msg.get("tool_calls")
                 if tool_calls:
                     ai.tool_calls = tool_calls
                 restored.append(ai)
+                open_call_ids = _tool_call_ids(tool_calls)
+                last_tool_id = ""
             elif role == "tool":
-                restored.append(
-                    ToolMessage(
-                        content=content,
-                        tool_call_id=str(msg.get("tool_call_id") or ""),
+                call_id = str(msg.get("tool_call_id") or "").strip()
+                if call_id and (call_id in open_call_ids or call_id == last_tool_id):
+                    restored.append(ToolMessage(content=content, tool_call_id=call_id))
+                    open_call_ids.discard(call_id)
+                    last_tool_id = call_id
+                else:
+                    restored.append(
+                        AIMessage(content=_historical_tool_observation(msg, content))
                     )
-                )
+                    open_call_ids = set()
+                    last_tool_id = ""
         self._agent_prefix_messages = [SystemMessage(content=system), *restored]
         self._rotate_disclosure_message_context()
 
