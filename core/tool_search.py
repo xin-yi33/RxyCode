@@ -185,9 +185,13 @@ class DeferredToolSearch:
         self,
         get_registry: Callable[[], dict[str, Any]],
         get_session_id: Callable[[], str] | None = None,
+        get_message_context_id: Callable[[], str] | None = None,
     ) -> None:
         self._get_registry = get_registry
         self._get_session_id = get_session_id or (lambda: "")
+        # Fast 路径没有 ContextVar。标识跟着持久消息上下文走，清空或重建历史时
+        # 由调用方换成新值。不在这里清整张表，避免扫掉并发任务的记录。
+        self._get_message_context_id = get_message_context_id
         # name → {context_id: schema_hash}。只记当前上下文，不覆盖其他任务。
         self._exposed: dict[str, dict[str, str]] = {}
 
@@ -195,7 +199,12 @@ class DeferredToolSearch:
         bound = _disclosure_context.get()
         if bound:
             return bound
-        return f"session:{self._get_session_id()}"
+        session = self._get_session_id()
+        getter = self._get_message_context_id
+        message_ctx = str(getter() or "") if getter is not None else ""
+        if message_ctx:
+            return f"session:{session}:msg:{message_ctx}"
+        return f"session:{session}"
 
     @property
     def exposed(self) -> frozenset[str]:
@@ -314,13 +323,21 @@ class DeferredToolSearch:
         return "\n\n".join(parts)
 
     def as_tool(self) -> Any:
-        """Return the StructuredTool adapter with frozen naming/description."""
+        """Return the StructuredTool adapter with frozen naming/description.
+
+        同步实现会走 orchestrator 的线程池，ContextVar 进不了工作线程，
+        隔离任务会退回同一个 session key。异步适配留在当前任务里调用同一个 facade。
+        """
         def _run(query: str, top_k: int = 5) -> str:
             """Search on-demand (MCP/plugin) tools by keyword and return schemas."""
             return self.search(query, top_k)
 
+        async def _arun(query: str, top_k: int = 5) -> str:
+            return self.search(query, top_k)
+
         return StructuredTool.from_function(
             func=_run,
+            coroutine=_arun,
             name=TOOL_SEARCH_NAME,
             description=TOOL_SEARCH_DESCRIPTION,
         )

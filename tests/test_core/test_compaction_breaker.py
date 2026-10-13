@@ -243,13 +243,18 @@ async def test_progress_outlet_error_still_runs_rule_fallback(monkeypatch):
     monkeypatch.setattr(agent_mod, "get_tui", lambda: _BoomTui())
     llm = _FailingLLM()
     agent = _agent(llm)
-    messages = _chain()
+    # 每次都给一份新的可折叠内容。复用已经被折叠过的同一列表时，后两次没有
+    # 摘要内容，模型不会被调用，这不是熔断失败。
+    last = None
     for _ in range(3):
-        await agent._maybe_compress_context(messages, force=True)
+        last = _chain()
+        await agent._maybe_compress_context(last, force=True)
     assert agent._auto_compact_stopped is True
+    assert llm.calls == 3
+    assert int(getattr(agent, "_compact_fail_count", 0) or 0) == 3
     assert any(
         bool((getattr(message, "additional_kwargs", None) or {}).get("is_compaction_summary"))
-        for message in messages
+        for message in last
     )
 
 

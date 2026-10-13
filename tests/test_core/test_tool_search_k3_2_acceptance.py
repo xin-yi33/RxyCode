@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,6 +18,7 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
 from RxyCode.RxyCode1_1_0.core.cache_policy import tool_pair_integrity
 from RxyCode.RxyCode1_1_0.core.tool_search import (
     DISCOVERY_PIN_MARKER,
+    TOOL_SEARCH_DESCRIPTION,
     DeferredToolSearch,
     parse_deferred_tool_json_calls,
     push_disclosure_context,
@@ -311,6 +313,102 @@ def test_isolated_disclosure_contexts_do_not_share_already_available():
     assert "ALREADY AVAILABLE" in third
     assert "ctx-a" in facade._exposed["mcp_echo"]
     assert "ctx-b" in facade._exposed["mcp_echo"]
+
+
+async def _invoke_search(orchestrator, tool, context_id: str) -> str:
+    token = push_disclosure_context(context_id)
+    try:
+        return await orchestrator._invoke_async(tool, {"query": "echo", "top_k": 5})
+    finally:
+        reset_disclosure_context(token)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_async_path_keeps_disclosure_context():
+    """同步 tool 会进线程池并丢掉 ContextVar。必须走真实 _invoke_async。"""
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    facade = DeferredToolSearch(lambda: registry, get_session_id=lambda: "same-session")
+    tool = facade.as_tool()
+    assert tool.coroutine is not None
+    assert tool.name == "tool_search"
+    assert tool.description == TOOL_SEARCH_DESCRIPTION
+    orchestrator = ToolOrchestrator(max_workers=2, tool_registry=SimpleNamespace())
+    try:
+        first = await _invoke_search(orchestrator, tool, "ctx-a")
+        second = await _invoke_search(orchestrator, tool, "ctx-b")
+        third = await _invoke_search(orchestrator, tool, "ctx-b")
+        assert "parameters:" in first and "parameters:" in second
+        assert "ALREADY AVAILABLE" in third
+        assert "session:same-session" not in facade._exposed["mcp_echo"]
+
+        fresh = DeferredToolSearch(lambda: registry, get_session_id=lambda: "same-session")
+        fresh_tool = fresh.as_tool()
+        concurrent = await asyncio.gather(
+            _invoke_search(orchestrator, fresh_tool, "ctx-c"),
+            _invoke_search(orchestrator, fresh_tool, "ctx-d"),
+        )
+        assert all("parameters:" in text for text in concurrent)
+        assert "ctx-c" in fresh._exposed["mcp_echo"]
+        assert "ctx-d" in fresh._exposed["mcp_echo"]
+    finally:
+        orchestrator.shutdown_sync_executor(wait=True)
+
+
+def test_reset_session_rotates_fast_disclosure_without_wiping_other_contexts(monkeypatch):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_mod
+
+    monkeypatch.setattr(agent_mod, "clear_session_runtime", lambda _sid: 0)
+    monkeypatch.setattr(agent_mod, "clear_session_tasks", lambda _sid: 0)
+    monkeypatch.setattr(agent_mod, "clear_session_workflows", lambda _sid: 0)
+
+    agent = AgentV2.__new__(AgentV2)
+    agent._session_id = "same-session"
+    agent._active_task = None
+    agent._checkpoint_store = None
+    agent._attempt_store = None
+    agent._memory = SimpleNamespace(
+        long_term=SimpleNamespace(clear_session=lambda: 0),
+        experience=SimpleNamespace(delete_session=lambda _sid: 0),
+        short_term=SimpleNamespace(clear=lambda: None),
+        invalidate_code_context=lambda: None,
+    )
+    registry = {"mcp_echo": _mcp_write_tool("mcp_echo")}
+    agent._tool_search_facade = None
+    agent._tool_orchestrator = SimpleNamespace(
+        get_all=lambda: dict(registry),
+        get=lambda name: registry.get(name),
+        register=lambda name, tool, risk=None: registry.__setitem__(name, tool),
+    )
+    agent._ensure_tool_search_tool()
+    facade = agent._tool_search_facade
+    first = facade.search("echo")
+    repeat = facade.search("echo")
+    assert "ALREADY AVAILABLE" in repeat
+    token = push_disclosure_context("other-task")
+    try:
+        other = facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    assert "parameters:" in first and "parameters:" in other
+    before = agent._disclosure_message_context_id
+
+    result = agent.reset_session()
+
+    assert result["session_id"] == "same-session"
+    assert agent._disclosure_message_context_id != before
+    again = facade.search("echo")
+    assert "parameters:" in again
+    assert "ALREADY AVAILABLE" not in again
+    token = push_disclosure_context("other-task")
+    try:
+        other_again = facade.search("echo")
+    finally:
+        reset_disclosure_context(token)
+    assert "ALREADY AVAILABLE" in other_again
+    assert "other-task" in facade._exposed["mcp_echo"]
 
 
 @pytest.mark.asyncio

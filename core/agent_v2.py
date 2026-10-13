@@ -23,6 +23,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional, Sequence
@@ -2143,6 +2144,9 @@ class AgentV2:
     def __init__(self, model_name: Optional[str] = None, session_id: Optional[str] = None):
         self._cfg = _settings.load_config()
         self._session_id = validate_session_id(session_id) if session_id else "latest"
+        # Fast 的 tool_search 暴露记录绑这个标识，不单绑 session。追加对话不换；
+        # reset / 切换会话 / 载入另一份历史时换。并发任务的 ContextVar 记录不动。
+        self._disclosure_message_context_id = uuid.uuid4().hex
         # F2: None keeps single-agent cache keys byte-identical (FX9 / MC1).
         self._agent_namespace = None
         # B5: 预热状态（惰性初始化；PrewarmState 签名校验 + keep-alive 调度）
@@ -2435,6 +2439,7 @@ class AgentV2:
         self._agent_prefix_messages = None
         # A20: subset 工具子集按会话固定——切换会话时清除缓存，避免沿用旧会话子集。
         self._subset_tool_names = None
+        self._rotate_disclosure_message_context()
         return resolved
 
     def reset_session(self) -> dict[str, int | str]:
@@ -2455,6 +2460,8 @@ class AgentV2:
             self._session_loaded = False
             self._clear_status_band()
             self._clear_compact_breaker()
+            # session_id 不变。历史已经清空，暴露记录必须改挂到新的消息上下文。
+            self._rotate_disclosure_message_context()
         removed_checkpoints = 0
         if self._checkpoint_store is not None:
             removed_checkpoints = self._checkpoint_store.reset(
@@ -5613,6 +5620,21 @@ class AgentV2:
 
         return serialize_turn_context(getattr(self, "_turn_context_blocks", []) or [])
 
+    def _disclosure_message_context_id_value(self) -> str:
+        """Fast 路径的持久消息上下文。未初始化时补一个，之后保持不变直到轮换。"""
+        current = str(getattr(self, "_disclosure_message_context_id", "") or "")
+        if current:
+            return current
+        current = uuid.uuid4().hex
+        self._disclosure_message_context_id = current
+        return current
+
+    def _rotate_disclosure_message_context(self) -> str:
+        """清空或重建历史后换标识。只改本 agent 的 key，不清其他上下文的记录。"""
+        rotated = uuid.uuid4().hex
+        self._disclosure_message_context_id = rotated
+        return rotated
+
     def _clear_status_band(self) -> None:
         """Session switch/reset drops the band cache. The ledger file stays."""
         self._status_band = None
@@ -7064,8 +7086,9 @@ class AgentV2:
         """注册 tool_search 元工具（幂等）：启动即常驻，空目录也可调用。
 
         2026-10-13 K例复审修订：不再依赖"首个 deferred 工具落地"时机——常驻
-        集合必须固定（启动/MCP 刷新/subset/prewarm 四处一致）。暴露记录绑定
-        (session_id, schema_hash)，新会话/schema 变更允许重新暴露。
+        集合必须固定（启动/MCP 刷新/subset/prewarm 四处一致）。Fast 暴露记录绑定
+        (session_id, 消息上下文, schema_hash)。清空或重建历史会换消息上下文；
+        Executor 的 ContextVar 不走这条退路。
         """
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None or orchestrator.get(TOOL_SEARCH_NAME) is not None:
@@ -7075,6 +7098,7 @@ class AgentV2:
             facade = DeferredToolSearch(
                 lambda: orchestrator.get_all(),
                 get_session_id=lambda: str(getattr(self, "_session_id", "") or ""),
+                get_message_context_id=self._disclosure_message_context_id_value,
             )
             self._tool_search_facade = facade
         orchestrator.register(TOOL_SEARCH_NAME, facade.as_tool(), risk="read")

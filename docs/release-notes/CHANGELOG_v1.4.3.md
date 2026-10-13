@@ -227,6 +227,26 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 拒绝仍然发生在执行之前。只读任务拒绝写操作、hint 下保留 `tool_search`、安装类工具返回真实 JSON Schema，这些已修好的行为没有改口。
 - 验证：`tests/test_core/test_tool_search_k3_2_acceptance.py`、`test_tool_search_discovery.py`、`test_tool_search_discovery_k3.py` 共 41 通过。产品版本仍是 1.4.2。
 
+## 检索式发现穿过线程池，清空历史后重新给 schema（2026-10-13，复审 `900222f7`）
+
+产品版本仍是 1.4.2。下面只记这次复现过、并已改到的行为。
+
+### 1. 新增与修复
+
+- `tool_search` 增加异步适配，搜索仍调用原来的 facade，并且留在当前任务里。同步实现不再被送进线程池，ContextVar 不会在工作线程里变成空。
+- Executor 的两个隔离子任务，串行和并发都能拿到完整 schema。同一个上下文里再次搜索仍返回 `ALREADY AVAILABLE`。
+- Fast 的暴露记录绑定 session 和持久消息上下文。普通追加对话不换这个标识。
+- `reset_session()` 清空历史后 session 不变，但消息上下文换成新的。下一次搜索重新给出 schema，不会停在 `ALREADY AVAILABLE`。
+- 切换会话，以及 `/load-chat` 载入另一份历史，也换这个标识。只改当前 agent 的标识，不清其他并发任务已经记下的 schema。
+- 压缩熔断测试改为每次提供一份新的可折叠内容。三次真实摘要失败仍触发熔断。没有可折叠内容时不调用摘要模型，这条生产行为没有改。
+
+### 2. 数据完整性
+
+- 基础 schema 仍是冻结的核心集。按需工具的定义仍留在原历史位置。
+- 同一消息上下文里的 schema 不会因为这次修改被重复发送。另一个任务的暴露记录不会因为这次清空被删掉。
+- 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
+- 验证：`tests/test_core/test_tool_search_k3_2_acceptance.py`、`test_tool_search_discovery.py`、`test_tool_search_discovery_k3.py`、`test_compaction_breaker.py`、`test_session_isolation.py` 共 64 通过。`/load-chat` 恢复历史的 API 测试 1 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：
