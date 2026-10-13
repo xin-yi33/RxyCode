@@ -13,22 +13,24 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 
 Every LLM request's `tools` array is **two tiers**:
 
-- **Frozen core** — the built-ins (and `tool_search` itself once registered),
-  sorted by name and byte-stable across turns so the provider prefix cache
-  keeps hitting (FX6 unchanged).
-- **Deferred** — everything tagged `metadata["source"] in {"mcp", "plugin"}`
-  (e.g. ~90 GitHub-MCP tools), which **never appears in the request schema**.
-  A GitHub-scale MCP connection no longer adds tens of thousands of schema
-  tokens per round.
+- **Frozen core** — the built-ins plus `tool_search`, sorted by name and
+  byte-stable across turns so the provider prefix cache keeps hitting
+  (FX6 unchanged). `tool_search` is registered at agent start by
+  `_ensure_tool_search_tool`.
+- **Deferred** — `metadata["source"] in {"mcp", "plugin"}`, plus the rare
+  installers `download_skill`, `download_mcp`, and `team_install`. These
+  never appear in the request schema. A GitHub-scale MCP connection does
+  not add tens of thousands of schema tokens per round.
 
 Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
 
-1. Model calls `tool_search(query)` — a real, always-on meta tool registered
-   by `_refresh_mcp_tools` the first time a deferred tool lands.
-2. Its result returns the top matches' **full schemas inline in the tool
-   result message** (which appends to trajectory — cache prefix untouched).
-   Same session dedup: a tool already exposed returns only an "ALREADY
-   AVAILABLE" reminder, not the schema again.
+1. Model calls `tool_search(query)`. The tool is already on the frozen core,
+   including when no MCP server is connected.
+2. The catalog is one flat keyword list. Each MCP tool is named
+   `mcp_{server}_{tool}`; search does not walk server, then group, then tool.
+   Hits return **full schemas inline in the tool result** (appended to the
+   trajectory; the cache prefix stays put). A tool already exposed in the
+   same message context returns `ALREADY AVAILABLE`.
 3. To invoke a discovered tool the model emits the free-form envelope
    `<tool_call>{"name": "mcp_x", "arguments": {...}}</tool_call>` — parsed by
    `parse_deferred_tool_json_calls` into the standard dispatch dicts and
@@ -36,20 +38,26 @@ Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
    second invoke channel). Unknown names and bad JSON become explicit
    malformed-call feedback, never silent no-ops.
 
-Invariants (K例复审修订 2026-10-13):
-- `tool_search` is a **resident** from session start (empty catalog answered
-  gracefully), not "when the first MCP arrives"; subset policies force-include
-  it; `risk=read` is a floor only, so the tool is classified READ in
-  `core/safety/policy.py` AND in `PLAN_READONLY_TOOL_NAMES`.
-- `_get_core_tools()` output varies only when the frozen core changes;
-  adding/removing an MCP server no longer mutates the request schema after
-  the first registration of `tool_search`.
+Invariants (current as of 2026-10-13, after `0cedb02e`):
+- `tool_search` is resident from agent start. `_refresh_mcp_tools` may call
+  `_ensure_tool_search_tool` again; that call is idempotent and is not the
+  registration trigger. Subset policies force-include it. `risk=read` is a
+  floor, so the tool is READ in `core/safety/policy.py` and in
+  `PLAN_READONLY_TOOL_NAMES`.
+- `_get_core_tools()` changes only when the frozen core changes. Adding or
+  removing an MCP server does not change the request schema.
 - Prewarm binds through the same `_get_core_tools()` (`core/prewarm.py`
   `core_tools_for`), so the hello-turn prefix equals the work-turn prefix.
-- Discovery result messages carry `DISCOVERY_PIN_MARKER`; ordinary compaction
-  (`microcompact_messages`) leaves them at their position. Exposure tracking
-  is bound to `(session_id, schema sha256)` — new session or schema change
-  re-exposes; it never returns stale "ALREADY AVAILABLE" from a prior session.
+- A full discovery carries `DISCOVERY_PIN_MARKER` and stays at its position
+  through ordinary compaction. `tool_search` owns its own dedupe and size
+  cap. The generic tool-output dedupe and the 2000-character truncation do
+  not rewrite that message.
+- Fast exposure is `(session_id, message-context id, schema sha256)`.
+  Append-only chat keeps the id. Clearing history, switching session,
+  approving a plan, or loading another chat rotates it. A partial rewind
+  revokes only discoveries that left the prefix. Graph tasks use a
+  ContextVar and drop that key when the task ends. A schema change
+  re-exposes the tool.
 - `defercall_N` ids increase monotonically for the session; mixed
   native+envelope replies get every envelope rejected with an explicit
   ToolMessage (never silently dropped); an unterminated envelope is an

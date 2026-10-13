@@ -5215,7 +5215,8 @@ class AgentV2:
                         )
                 changed = True
 
-            # 有 deferred 工具在网就保证检索面可用（只注册一次，schema 恒定）。
+            # 启动时已经注册 tool_search。这里再调一次只是幂等补登记，
+            # 不是“首个 MCP 落地才出现”的入口。
             if any(self._mcp_server_tool_names.values()):
                 self._ensure_tool_search_tool()
 

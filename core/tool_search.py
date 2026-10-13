@@ -1,11 +1,14 @@
 """Deferred tool catalog + on-demand schema disclosure (2026-10-13, K例复审修订).
 
 Design (AI-Agents-in-Depth §4.4 图 4-4): the request schema is a two-tier
-frozen core (built-ins + the ``tool_search`` meta adapter).  Deferred tools
-(``metadata["source"] in {"mcp","plugin"}`` and explicitly deferred rare
-built-ins) never enter the request schema; the model discovers them through
-``tool_search``, whose results carry full schemas inline in the tool-result
-message (trajectory append-only).
+frozen core (built-ins + the ``tool_search`` meta adapter, registered at
+agent start).  Deferred tools (``metadata["source"] in {"mcp","plugin"}``
+and explicitly deferred rare built-ins) never enter the request schema; the
+model discovers them through ``tool_search``.  The catalog is one flat
+keyword list (``mcp_{server}_{tool}``), not a server-then-tool walk.
+Results carry full schemas inline in the tool-result message (trajectory
+append-only).  Generic output dedupe and the 2000-character tool-output
+cut do not rewrite a full discovery.
 
 K例复审修订点：
 

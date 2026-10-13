@@ -327,8 +327,10 @@ GitHub MCP ≈90 工具再白加数万 tokens/轮，且扁平摊名冲击工具�
 JSONDecoder 边界解析；坏 JSON/缺名/未知工具进 malformed 反馈，绝不静默）→
 **同一条 ToolOrchestrator 执行路径**（审批/风险/审计/journal 全保留，无第二
 调用通道）。prewarm 经同一 `_get_core_tools()`，预热前缀与工作轮一致。
-⚠️ 本节初版的"首个 MCP 落地才注册/去重不分会话"已被下方 K例复审批次修订（含
-启动即常驻、(session, hash) 绑定、Graph 同层、混合/孤儿显式处理）。
+⚠️ 本节初版的“首个 MCP 落地才注册 / 去重只看本会话”不是当前行为。当前引用以
+`docs/modules/tools.md` 为准：`tool_search` 在 agent 启动时注册；Fast 暴露记录
+是 session、消息上下文和 schema 哈希；完整 discovery 不走普通去重和 2000 字
+截断；MCP 检索是按 `mcp_{服务器}_{工具名}` 打分的一张目录，不按服务器逐层展开。
 
 测试：`tests/test_core/test_tool_search_discovery.py` 10 项（分层冻结字节稳定、
 元工具仅注册一次、搜索排名/无命中/空目录/已暴露去重、解析合法嵌套/多重/坏

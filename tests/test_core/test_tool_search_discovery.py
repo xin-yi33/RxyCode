@@ -4,7 +4,7 @@
 - 内置核心工具字节冻结进 request schema（前缀缓存不动）；
 - deferred（MCP/plugin）工具绝不进 schema，经 tool_search 在轨迹中暴露；
 - 发现的工具以 <tool_call> 自由形式派发，走同一审批/审计执行路径；
-- 同一工具本会话不重复加载 schema。
+- 同一消息上下文里不重复加载 schema。换会话、清空或重建历史后重新给定义。
 """
 
 from __future__ import annotations
@@ -248,7 +248,7 @@ async def test_fast_path_deferred_dispatch_via_envelope(monkeypatch):
     agent._tool_tracer = MagicMock()
     agent._execute_tool = AgentV2._execute_tool.__get__(agent, AgentV2)
     agent._tool_search_facade = None
-    agent._ensure_tool_search_tool()  # 首个 deferred 落地 → 元工具注册
+    agent._ensure_tool_search_tool()  # 启动即常驻；这里补登记，不依赖 MCP 落地
 
     monkeypatch.setattr(settings, "load_config", lambda: agent._cfg)
 
