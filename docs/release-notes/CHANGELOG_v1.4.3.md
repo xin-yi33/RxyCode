@@ -304,6 +304,23 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
 - 验证：`test_full_discovery_is_not_truncated_at_the_default_output_limit`、`test_rebuilt_discovery_stays_in_the_next_model_tool_message` 和 `test_token_governance.py` 共 39 通过；`test_tool_search_k3_2_acceptance.py` 与 `test_tool_message_protocol.py` 另行通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
 
+## 写入代码后自动检查并反馈（2026-10-13）
+
+产品版本仍是 1.4.2。
+
+### 1. 新增与修复
+
+- `write_file` 落盘后不再只返回“已写入”。Python 先做 `compile` 语法检查，再跑 `ruff` 的 `F` 和 `E9`。未定义名字这类问题按“第 N 行第 M 列：F821 …”放进同一次工具结果。
+- JavaScript 在本机有 `node` 时用 `node --check` 报语法错误。TypeScript 仍只有括号检查，结果里写明没有对应检查器。
+- 检查失败不撤回已经写入的文件。模型下一轮看到这份列表后自己修改。
+- `edit(operation="write")` 调用的就是 `write_file`，所以整文件写入走同一份报告。
+
+### 2. 数据完整性
+
+- 不跑整个项目的测试，也不把普通格式问题塞进返回值。
+- 产品版本号没有改，仍是 1.4.2。
+- 验证：`tests/test_tools/test_write.py::TestWriteTool` 8 通过。没有做收费 Provider 测试，也没有做全仓库验收。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：
