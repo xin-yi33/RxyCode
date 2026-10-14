@@ -3995,7 +3995,11 @@ class AgentV2:
         raw = self._dedupe_tool_output(tool_name, str(result))
         # 完整 discovery 的体积由 tool_search 自己限制。普通 2000 字截断会切碎
         # parameters JSON，同时 facade 已经记成已加载，再搜也补不回来。
-        if not _is_full_discovery_output(tool_name, raw):
+        # 长命令输出已经只留首尾，并带有全文路径；再截一次会把路径切掉。
+        already_bounded = (
+            "完整输出已保存至" in raw or "Full output saved to:" in raw
+        )
+        if not _is_full_discovery_output(tool_name, raw) and not already_bounded:
             raw = self._truncate_tool_text(raw)
         if _tool_output_is_error(str(result)):
             raw = raw + "\n\n" + self._error_feedback_message(tool_name, str(result))
