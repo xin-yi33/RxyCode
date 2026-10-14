@@ -204,8 +204,20 @@ async def _maybe_launch_async(command: str, workdir: str = "") -> str | None:
     return await loop.run_in_executor(None, _detach_gui, command, workdir)
 
 
+def _refuse_blacklisted(command: str) -> str | None:
+    from RxyCode.RxyCode1_1_0.core.safety.policy import hard_denied_shell_reason
+
+    reason = hard_denied_shell_reason(command)
+    if not reason:
+        return None
+    return f"[blocked: dangerous command rejected] {reason}。这条命令未执行。"
+
+
 def run_bash(command: str, description: str = "", workdir: str = "", timeout: int = 1800) -> str:
     # 废弃代码（2026-09-20）：timeout: int = 60 / 120 不再作为 run_bash 默认值。
+    refused = _refuse_blacklisted(command)
+    if refused is not None:
+        return refused
     launched = _maybe_launch(command, workdir)
     if launched is not None:
         return launched
@@ -221,6 +233,9 @@ async def run_bash_async(
     timeout: int = 1800,  # 废弃代码（2026-09-20）：旧默认 timeout: int = 60 / 120
 ) -> str:
     """Cancellable Bash implementation used by the async agent path."""
+    refused = _refuse_blacklisted(command)
+    if refused is not None:
+        return refused
     launched = await _maybe_launch_async(command, workdir)
     if launched is not None:
         return launched

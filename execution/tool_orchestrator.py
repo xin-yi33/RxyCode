@@ -45,6 +45,7 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import (
     WRITE_PATH_BLOCKED_HINT,
     canonical_tool_name,
     find_bash_disallowed_write_paths,
+    hard_denied_shell_reason,
     get_tool_risk,
     is_dry_run,
     is_write_allowed,
@@ -1482,6 +1483,20 @@ class ToolOrchestrator:
                 name, args, msg, executed=False, approval="dry_run",
                 risk=risk, audit=audit, config=config,
             )
+
+        # 系统命令黑名单在审批和 full_auto 之前。safety.enabled=false 也不能放行。
+        if isinstance(args, dict) and self._canonical_name(name) == "bash":
+            denied = hard_denied_shell_reason(str(args.get("command") or ""))
+            if denied:
+                audit = self._get_audit_logger()
+                msg = (
+                    "[blocked: dangerous command rejected] "
+                    f"{denied}。这条命令未执行。"
+                )
+                return self._finish(
+                    name, args, msg, executed=False, approval="rejected",
+                    risk=risk, audit=audit,
+                )
 
         # Plan mode remains a hard capability boundary even when the optional
         # confirmation gate is disabled.

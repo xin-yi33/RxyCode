@@ -130,6 +130,105 @@ DANGEROUS_COMMAND_PATTERNS: list[str] = [
 
 _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_COMMAND_PATTERNS]
 
+# 黑名单：命中后一律不执行。full_auto 和人工批准都不能放行。
+# 相对路径的项目清理（rm -rf ./build）不在这里。
+_CATASTROPHIC_PREFIXES = (
+    "/system", "/library", "/volumes", "/applications", "/bin", "/sbin",
+    "/usr", "/etc", "/boot", "/dev", "/private", "/var", "/opt", "/home",
+    "/users", "/root", "/tmp",
+)
+_COMMAND_EDGE = r"(?:^|[;&|`\n(])\s*(?:sudo\s+)?"
+
+
+def _shell_scan_text(command: str) -> str:
+    return re.sub(r"['\"]", "", command or "")
+
+
+def _is_catastrophic_path(token: str) -> bool:
+    raw = token.strip().replace("\\", "/").rstrip("/")
+    if not raw:
+        return True
+    lower = raw.lower()
+    if lower in {"/", "/.", "/*", "~", "~/", ".", "..", "*", "$home"}:
+        return True
+    if any(lower == prefix or lower.startswith(prefix + "/") for prefix in _CATASTROPHIC_PREFIXES):
+        return True
+    if re.fullmatch(r"[a-z]:", lower):
+        return True
+    return re.match(
+        r"^[a-z]:/(windows|program files|program files \(x86\)|users|programdata)(/|$)",
+        lower,
+    ) is not None
+
+
+def _recursive_delete_hits_system(text: str) -> bool:
+    patterns = (
+        r"(?:sudo\s+)?rm\b(?P<tail>[^;&|\n]*)",
+        r"\b(?:Remove-Item|ri|rmdir|rd|del)\b(?P<tail>[^;&|\n]*)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            tail = match.group("tail")
+            recursive = re.search(
+                r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive|-Recurse|/s)\b",
+                tail,
+                re.IGNORECASE,
+            )
+            if match.group(0).lower().startswith("rm") and not recursive:
+                continue
+            if not match.group(0).lower().startswith("rm") and not recursive:
+                continue
+            tokens = []
+            for tok in tail.split():
+                if not tok or tok.startswith("-"):
+                    continue
+                if tok.lower() in {"/s", "/q", "/f"}:
+                    continue
+                tokens.append(tok)
+            if not tokens:
+                return True
+            if any(_is_catastrophic_path(tok) for tok in tokens):
+                return True
+    return False
+
+
+_ALWAYS_DENIED: tuple[tuple[str, str], ...] = (
+    (r"\bmkfs(\.\w+)?\b", "格式化文件系统"),
+    (r"\bdd\b[^\n]*\bof=/dev/", "把数据写入磁盘设备"),
+    (r"\bdiskutil\s+erase", "擦除 macOS 磁盘"),
+    (_COMMAND_EDGE + r"format(?:\.com)?\s+[a-z]:", "格式化 Windows 磁盘"),
+    (r"\b(?:Format-Volume|Clear-Disk|Initialize-Disk|Clear-Partition)\b", "清除或初始化磁盘"),
+    (_COMMAND_EDGE + r"diskpart\b", "进入 diskpart"),
+    (_COMMAND_EDGE + r"(?:shutdown|reboot|halt|poweroff)\b", "关机或重启"),
+    (r"\b(?:Stop-Computer|Restart-Computer)\b", "关机或重启"),
+    (_COMMAND_EDGE + r"init\s+[06]\b", "切换到关机或重启运行级别"),
+    (r"\bsystemctl\s+(?:poweroff|reboot|halt)\b", "systemctl 关机或重启"),
+    (r":\(\)\s*\{", "fork bomb"),
+    (r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba)?(?:sh|zsh|fish|pwsh|powershell)\b", "把下载内容直接送进 shell"),
+    (r"\breg(?:\.exe)?\s+delete\b", "删除注册表"),
+    (r"\bbcdedit\b[^\n]*/delete\b", "删除启动项"),
+    (r"\bcipher(?:\.exe)?\s+/w\b", "覆盖擦除磁盘空闲空间"),
+    (r"\bvssadmin\s+delete\s+shadows\b", "删除卷影副本"),
+    (r"\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:enc|encodedcommand)\b", "编码后的 PowerShell 看不清内容"),
+    (r"\bchmod\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+)?777\s+/", "把根目录权限改成 777"),
+)
+
+
+def hard_denied_shell_reason(command: str) -> str | None:
+    """Return why this shell command is on the hard blacklist, or None.
+
+    A match must not run. Approval and full_auto do not override it.
+    """
+    text = _shell_scan_text(command).strip()
+    if not text:
+        return None
+    if _recursive_delete_hits_system(text):
+        return "递归删除指向系统目录、磁盘根或用户主目录"
+    for pattern, reason in _ALWAYS_DENIED:
+        if re.search(pattern, text, re.IGNORECASE):
+            return reason
+    return None
+
 # A deliberately small allow-list for shell probes that have no filesystem,
 # process, package, network, or repository side effect.  Bash itself remains
 # WRITE by default; only a command made entirely from these segments can be

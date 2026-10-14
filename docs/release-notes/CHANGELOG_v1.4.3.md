@@ -321,6 +321,22 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。
 - 验证：`tests/test_tools/test_write.py::TestWriteTool` 8 通过。没有做收费 Provider 测试，也没有做全仓库验收。
 
+## 危险系统命令黑名单（2026-10-13）
+
+产品版本仍是 1.4.2。
+
+### 1. 新增与修复
+
+- `bash` 在进 shell 之前检查硬黑名单。命中后直接拒绝，`full_auto` 和人工批准都不能放行。
+- 黑名单覆盖 Linux、macOS、Windows 上的系统破坏命令：对根目录、系统目录、磁盘根和用户主目录的递归删除，格式化磁盘，`dd` 写设备，关机重启，下载内容直接送进 shell，删除注册表，编码后的 PowerShell。
+- 项目里的相对清理，例如 `rm -rf ./build`，不在这份黑名单里，仍走原来的写入风险和审批。
+
+### 2. 数据完整性
+
+- 原来的危险命令分级还在。黑名单是在分级之前的硬拒绝，不是把所有 shell 都关掉。
+- 产品版本号没有改，仍是 1.4.2。
+- 验证：`TestHardDeniedShell`、`TestClassifyBashCommand` 和危险 bash 闸门测试共 78 通过。没有做收费 Provider 测试，也没有做全仓库验收。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：

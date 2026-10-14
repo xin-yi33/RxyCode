@@ -174,22 +174,11 @@ class TestPolicyGate:
         tool = _make_tool("bash")
         orch.register("bash", tool)
 
-        broker = SseApproval(timeout=5)
-        events = []
-        broker.set_event_sink(events.append)
-        set_approval_broker(broker)
-        cfg = {"safety": {"enabled": True}}
-
-        async def respond():
-            await asyncio.sleep(0.02)
-            assert events[0]["risk"] == "DANGER"
-            broker.resolve(events[0]["approval_id"], "rejected")
-
-        result, _ = await asyncio.gather(
-            orch.execute_tool("bash", {"command": "rm -rf /"}, config=cfg),
-            respond(),
+        cfg = {"safety": {"enabled": True, "permission_mode": "full_auto"}}
+        result = await orch.execute_tool(
+            "bash", {"command": "rm -rf /"}, config=cfg,
         )
-        assert "rejected" in result.lower()
+        assert "dangerous command rejected" in result.lower()
         tool.invoke.assert_not_called()
 
     @pytest.mark.asyncio
