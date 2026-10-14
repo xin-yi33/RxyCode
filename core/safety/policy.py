@@ -133,19 +133,36 @@ _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_COMMAND_PA
 # 黑名单：命中后一律不执行。full_auto 和人工批准都不能放行。
 # 相对路径的项目清理（rm -rf ./build）不在这里。
 _CATASTROPHIC_PREFIXES = (
-    "/system", "/library", "/volumes", "/applications", "/bin", "/sbin",
-    "/usr", "/etc", "/boot", "/dev", "/private", "/var", "/opt", "/home",
-    "/users", "/root", "/tmp",
+    # Linux
+    "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/boot", "/dev",
+    "/proc", "/sys", "/run", "/var", "/opt", "/home", "/root", "/tmp",
+    # macOS
+    "/system", "/library", "/volumes", "/applications", "/private", "/cores",
+    "/users",
 )
-_COMMAND_EDGE = r"(?:^|[;&|`\n(])\s*(?:sudo\s+)?"
+_COMMAND_EDGE = (
+    r"(?:^|[;&|`\n(])\s*"
+    r"(?:(?:sudo|cmd(?:\.exe)?\s+/c|powershell(?:\.exe)?\s+-command|"
+    r"pwsh(?:\.exe)?\s+-command)\s+)*"
+)
+_WIN_CRITICAL_PROCESS = r"(?:lsass|csrss|winlogon|smss|services|wininit)"
 
 
 def _shell_scan_text(command: str) -> str:
     return re.sub(r"['\"]", "", command or "")
 
 
+def _normalize_path_token(token: str) -> str:
+    text = token.strip().replace("\\", "/")
+    text = re.sub(r"^//\?/([a-zA-Z]:)", r"\1", text)
+    for env_name in ("systemroot", "windir"):
+        text = re.sub(rf"(?i)^%(?:{env_name})%", "c:/windows", text)
+        text = re.sub(rf"(?i)^\$env:{env_name}", "c:/windows", text)
+    return text.rstrip("/")
+
+
 def _is_catastrophic_path(token: str) -> bool:
-    raw = token.strip().replace("\\", "/").rstrip("/")
+    raw = _normalize_path_token(token)
     if not raw:
         return True
     lower = raw.lower()
@@ -164,7 +181,7 @@ def _is_catastrophic_path(token: str) -> bool:
 def _recursive_delete_hits_system(text: str) -> bool:
     patterns = (
         r"(?:sudo\s+)?rm\b(?P<tail>[^;&|\n]*)",
-        r"\b(?:Remove-Item|ri|rmdir|rd|del)\b(?P<tail>[^;&|\n]*)",
+        r"\b(?:Remove-Item|ri|rmdir|rd|del|erase)\b(?P<tail>[^;&|\n]*)",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -210,7 +227,26 @@ _ALWAYS_DENIED: tuple[tuple[str, str], ...] = (
     (r"\bcipher(?:\.exe)?\s+/w\b", "覆盖擦除磁盘空闲空间"),
     (r"\bvssadmin\s+delete\s+shadows\b", "删除卷影副本"),
     (r"\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:enc|encodedcommand)\b", "编码后的 PowerShell 看不清内容"),
-    (r"\bchmod\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+)?777\s+/", "把根目录权限改成 777"),
+    (r"\bchmod\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+)?(?:777|000|a\+rwx)\s+/", "递归改写根目录权限"),
+    (r">\s*/dev/(?:sd|nvme|mmc|disk|rdisk)", "重定向写入磁盘设备"),
+    (r"\b(?:shred|wipefs)\b[^\n]*\s/dev/", "擦除磁盘设备"),
+    (r"\b(?:sfdisk\s+--delete|parted\b[^\n]*\bmklabel\b)", "改写分区表"),
+    (_COMMAND_EDGE + r"fdisk\s+/dev/(?!.*\s-l\b)", "改写磁盘分区"),
+    (r"\bkill\s+(?:-9\s+)?-1\b", "结束全部进程"),
+    (r"\becho\s+[bco]\s*>\s*/proc/sysrq-trigger", "触发内核紧急重启或关机"),
+    # macOS
+    (r"\bcsrutil\s+(?:disable|clear)\b", "关闭 macOS 系统完整性保护"),
+    (r"\bnvram\s+-[cd]\b", "清除 macOS NVRAM"),
+    (r"\basr\s+restore\b", "用 asr 整盘恢复"),
+    # Windows
+    (r"\bwmic\s+shadowcopy\s+delete\b", "删除 Windows 卷影副本"),
+    (r"\bwbadmin\s+delete\s+catalog\b", "删除 Windows 备份目录"),
+    (r"\bbcdedit\b[^\n]*\s/(?:set|import|createstore)\b", "改写 Windows 启动配置"),
+    (r"\bsdelete(?:64)?(?:\.exe)?\b", "安全擦除磁盘"),
+    (r"\bfsutil\s+usn\s+deletejournal\b", "删除 NTFS USN 日志"),
+    (r"\btaskkill\b[^\n]*\s/im\s+" + _WIN_CRITICAL_PROCESS + r"\.exe\b", "结束 Windows 关键进程"),
+    (r"\bStop-Process\b[^\n]*\b" + _WIN_CRITICAL_PROCESS + r"\b", "结束 Windows 关键进程"),
+    (r"\bnet\s+user\b[^\n]*\s/delete\b", "删除 Windows 用户"),
 )
 
 
@@ -224,6 +260,15 @@ def hard_denied_shell_reason(command: str) -> str | None:
         return None
     if _recursive_delete_hits_system(text):
         return "递归删除指向系统目录、磁盘根或用户主目录"
+    find_delete = re.search(
+        r"(?i)\bfind\s+(\S+)[^\n;|&]*-(?:delete|exec\s+rm)\b",
+        text,
+    )
+    if find_delete:
+        start = find_delete.group(1)
+        # find . -name '*.pyc' -delete 是项目内清理。根和系统目录不是。
+        if start not in {".", "./", ".."} and _is_catastrophic_path(start):
+            return "find 从系统目录或根目录删除文件"
     for pattern, reason in _ALWAYS_DENIED:
         if re.search(pattern, text, re.IGNORECASE):
             return reason

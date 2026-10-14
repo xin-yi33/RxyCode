@@ -337,6 +337,14 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。
 - 验证：`TestHardDeniedShell`、`TestClassifyBashCommand` 和危险 bash 闸门测试共 78 通过。没有做收费 Provider 测试，也没有做全仓库验收。
 
+同一条黑名单随后补上三个系统各自的破坏命令，仍是执行前硬拒绝：
+
+- Linux：`find / -delete`、`shred /dev`、重定向写入 `/dev/sd`、`kill -9 -1`、sysrq。
+- macOS：`csrutil disable`、`nvram -c`、`asr restore`，以及对 `/Applications`、`/System`、`/Volumes` 的递归删除。
+- Windows：`cmd /c format`、`bcdedit /set`、`taskkill` 结束 `lsass` 等关键进程、`del /s %SystemRoot%`、`wbadmin delete catalog`。
+- `rm -rf ./build`、`find . -name '*.pyc' -delete`、`fdisk -l`、`bcdedit /enum`、`nvram -p` 仍不在黑名单里。
+- 验证：上述测试共 95 通过。产品版本仍是 1.4.2。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：
