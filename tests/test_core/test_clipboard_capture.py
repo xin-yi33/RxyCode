@@ -157,11 +157,10 @@ def test_main_emits_exactly_one_json_object(monkeypatch, capsys):
 def test_windows_file_list_and_text_fallback_do_not_require_pillow(monkeypatch, tmp_path):
     import builtins
 
-    monkeypatch.setattr(capture.os, "name", "nt")
     path = tmp_path / "copied.txt"
     path.write_text("copied", encoding="utf-8")
     monkeypatch.setattr(capture, "_read_windows_file_list", lambda: [str(path)])
-    result = capture.capture_clipboard(tmp_path / "out")
+    result = capture._capture_windows_clipboard(tmp_path / "out")
     assert result["kind"] == "attachments"
     assert result["attachments"] == [{"path": str(path.resolve()), "name": path.name}]
 
@@ -176,14 +175,13 @@ def test_windows_file_list_and_text_fallback_do_not_require_pillow(monkeypatch, 
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", import_without_pillow)
-    text_result = capture.capture_clipboard(tmp_path / "out")
+    text_result = capture._capture_windows_clipboard(tmp_path / "out")
     assert text_result == {"kind": "text", "text": "文本仍可用", "attachments": []}
 
 
-def test_windows_clipboard_image_without_pillow_has_explicit_guidance(monkeypatch):
+def test_windows_clipboard_image_without_pillow_has_explicit_guidance(monkeypatch, tmp_path):
     import builtins
 
-    monkeypatch.setattr(capture.os, "name", "nt")
     monkeypatch.setattr(capture, "_read_windows_file_list", lambda: None)
     monkeypatch.setattr(capture, "_windows_clipboard_has_image", lambda: True)
     original_import = builtins.__import__
@@ -194,6 +192,6 @@ def test_windows_clipboard_image_without_pillow_has_explicit_guidance(monkeypatc
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", import_without_pillow)
-    result = capture.capture_clipboard()
+    result = capture._capture_windows_clipboard(tmp_path)
     assert result["kind"] == "error"
     assert "Pillow is unavailable" in result["error"]

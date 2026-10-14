@@ -246,7 +246,6 @@ from .providers.base import (
     RESPONSES_TRANSPORT,
 )
 from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds, tool_pair_integrity
-from .compaction import DEFAULT_RESERVED_TOKENS, plan_compaction, run_compaction_ladder
 from .prompt_attachments import PromptAttachmentError
 from .providers._compat import (
     OPENAI_CHAT_TRANSPORT,
@@ -4122,8 +4121,6 @@ class AgentV2:
         把结果追加进 messages，再调一次无工具 synthesis 产最终答案。
         最多一轮（防死循环）；失败/无答案时回退原文本。
         """
-        from langchain_core.messages import AIMessage, ToolMessage
-
         ai_kwargs = {}
         messages.append(AIMessage(
             content="",
@@ -7592,6 +7589,8 @@ class AgentV2:
         The only automatic compact knife is core/compaction.py
         ``run_compaction_ladder``. /compact uses the same entry with force=True.
         """
+        from .compaction import DEFAULT_RESERVED_TOKENS, plan_compaction, run_compaction_ladder
+
         context_window = self._context_window()
         reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
         total = self._estimate_tokens(messages)
@@ -8533,8 +8532,6 @@ class AgentV2:
     async def _review_answer(self, user_input: str, answer: str) -> float:
         """B7: 独立 reviewer 打分（0-1）。失败时保守返回低分（触发重试）。"""
         try:
-            from langchain_core.messages import HumanMessage
-
             prompt = (
                 "你是独立评审。任务：\n"
                 f"{user_input[:2000]}\n\n"

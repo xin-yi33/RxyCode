@@ -13,11 +13,6 @@ from pydantic import BaseModel
 
 from ..protocol.notifications import ErrorNotification, FinalAnswer, ProgressUpdate, TokenUsage
 
-from .prompt_attachments import (
-    PreparedPromptAttachments,
-    human_message_content,
-    prepare_prompt_attachments,
-)
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import BudgetExceeded, Coordinator
 from RxyCode.RxyCode1_1_0.core.agents.router import (
     ExecutionMode,
@@ -272,6 +267,12 @@ class Session:
         try:
             set_working_directory(workspace, persist=False)
             try:
+                from .prompt_attachments import (
+                    PreparedPromptAttachments,
+                    human_message_content,
+                    prepare_prompt_attachments,
+                )
+
                 capabilities = getattr(agent, "_capabilities", None)
                 if attachments:
                     prepared_attachments = await asyncio.to_thread(

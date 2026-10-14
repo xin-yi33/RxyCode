@@ -553,58 +553,69 @@ def _install_shutdown_cleanup() -> None:
             pass
 
 
+def _capture_windows_clipboard(destination: str | Path) -> dict[str, Any]:
+    """Windows clipboard order: file list, then image, then text.
+
+    Split out of ``capture_clipboard`` so the branch can be tested without
+    pretending this process is Windows. ``pathlib.Path`` follows ``os.name``;
+    flipping that flag on Linux raises ``WindowsPath``.
+    """
+    output_dir = Path(destination)
+    try:
+        file_paths = _read_windows_file_list()
+        if file_paths is not None:
+            return _result(
+                "attachments",
+                attachments=_validate_clipboard_paths(file_paths),
+            )
+    except Exception as exc:
+        return _result("error", error=str(exc) or "Windows clipboard file list failed")
+
+    try:
+        from PIL import Image, ImageGrab
+
+        clipboard_object = None
+        for attempt in range(CLIPBOARD_RETRIES):
+            try:
+                clipboard_object = ImageGrab.grabclipboard()
+                break
+            except OSError:
+                if attempt + 1 == CLIPBOARD_RETRIES:
+                    raise
+                time.sleep(CLIPBOARD_RETRY_SECONDS)
+        if isinstance(clipboard_object, list):
+            attachments = _validate_clipboard_paths(clipboard_object)
+            return _result("attachments", attachments=attachments)
+        if isinstance(clipboard_object, Image.Image):
+            return _result(
+                "attachments",
+                attachments=[_clipboard_image_to_png(clipboard_object, output_dir)],
+            )
+    except ImportError:
+        try:
+            if _windows_clipboard_has_image():
+                return _result(
+                    "error",
+                    error="Clipboard contains image data but Pillow is unavailable; install the declared RxyCode dependencies and retry.",
+                )
+        except Exception as exc:
+            return _result("error", error=str(exc) or "Windows clipboard inspection failed")
+    except Exception as exc:
+        return _result("error", error=str(exc) or "Windows clipboard capture failed")
+
+    try:
+        text = _read_windows_text()
+        if text is not None:
+            return _result("text", text=text)
+        return _result("empty")
+    except Exception as exc:
+        return _result("error", error=str(exc) or "Windows clipboard text capture failed")
+
+
 def capture_clipboard(output_dir: str | Path | None = None) -> dict[str, Any]:
     destination = Path(output_dir).expanduser() if output_dir else _default_output_dir()
     if os.name == "nt":
-        try:
-            file_paths = _read_windows_file_list()
-            if file_paths is not None:
-                return _result(
-                    "attachments",
-                    attachments=_validate_clipboard_paths(file_paths),
-                )
-        except Exception as exc:
-            return _result("error", error=str(exc) or "Windows clipboard file list failed")
-
-        try:
-            from PIL import Image, ImageGrab
-
-            clipboard_object = None
-            for attempt in range(CLIPBOARD_RETRIES):
-                try:
-                    clipboard_object = ImageGrab.grabclipboard()
-                    break
-                except OSError:
-                    if attempt + 1 == CLIPBOARD_RETRIES:
-                        raise
-                    time.sleep(CLIPBOARD_RETRY_SECONDS)
-            if isinstance(clipboard_object, list):
-                attachments = _validate_clipboard_paths(clipboard_object)
-                return _result("attachments", attachments=attachments)
-            if isinstance(clipboard_object, Image.Image):
-                return _result(
-                    "attachments",
-                    attachments=[_clipboard_image_to_png(clipboard_object, destination)],
-                )
-        except ImportError:
-            try:
-                if _windows_clipboard_has_image():
-                    return _result(
-                        "error",
-                        error="Clipboard contains image data but Pillow is unavailable; install the declared RxyCode dependencies and retry.",
-                    )
-            except Exception as exc:
-                return _result("error", error=str(exc) or "Windows clipboard inspection failed")
-        except Exception as exc:
-            return _result("error", error=str(exc) or "Windows clipboard capture failed")
-
-        try:
-            text = _read_windows_text()
-            if text is not None:
-                return _result("text", text=text)
-            return _result("empty")
-        except Exception as exc:
-            return _result("error", error=str(exc) or "Windows clipboard text capture failed")
+        return _capture_windows_clipboard(destination)
 
     if sys.platform.startswith("linux"):
         return _linux_clipboard(destination)
