@@ -5,7 +5,7 @@
   "appserver_entry": "python -m appserver",
   "artifact": "rxycode-appserver-windows",
   "protocol_version": "1.1.0",
-  "appserver_version": "1.4.2",
+  "appserver_version": "1.4.3",
   "schema_digest_source": "protocol/schema.json",
-  "schema_digest": "sha256:8b06fbeccb45db12ca9d6f5f3ee78250f348329444e58e1a7344d69523988ba9"
+  "schema_digest": "sha256:44f0faecbe3039df4041e68582da616a820a7fff47780f08426e7685fe6dd267"
 }

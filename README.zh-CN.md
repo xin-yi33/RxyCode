@@ -9,7 +9,7 @@
 
 [⭐ 给仓库点 Star](https://github.com/xin-yi33/RxyCode) —— 方便以后回来，也让同样在找「会规划、会调工具、危险操作会问你」的本地 Agent 的人更容易发现它。
 
-[![Version](https://img.shields.io/badge/version-1.4.2-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2)
+[![Version](https://img.shields.io/badge/version-1.4.3-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -25,10 +25,10 @@
 
 RxyCode 是一个跑在本地的编程 Agent。你给一个 OpenAI 兼容的 API Key（DeepSeek、通义千问、Kimi、Claude、GPT、GLM、豆包……随便哪家），它就能帮你拆任务、写代码、跑命令、搜网页，做完了还会自己验一遍。终端 TUI 开箱即用，桌面 GUI 可选装，MCP 和 Skill 想扩展就扩展。
 
-**1.4.2 新增模型可写的 Todo 台账与 OpenTUI 清单面板。** 同一份快照供界面和模型侧状态带读取；展示或恢复清单不额外调用模型总结。另有上下文增量重摘要、大工具输出落盘，以及默认关闭、带续期上限的超时决策。P8 超时证据现在已在四个生产入口读取当前会话的权威 TodoSnapshot；身份或作用域无效时 progress 为空，有效持久快照可让重建后的消费方恢复最新 progress。产品元数据统一为 1.4.2，JSON-RPC 仍是 `1.1.0`；本次不发布新的 Desktop 安装包。验收边界见[发布说明](docs/release-notes/RELEASE_NOTES_v1.4.2.md)。
+**1.4.3 把常用工具留在冻结 schema 里，MCP 按需用 `tool_search` 加载。** 搜索留在提出请求的任务里；完整 schema 不会被普通去重或 2000 字截断吃掉。写入代码后，同一次结果带回语法和静态检查。Linux、macOS、Windows 上的系统破坏命令在进 shell 之前拒绝。命令输出超过 200 行时，上下文只留首尾各 50 行，全文落在文件里。每次过闸门的工具调用都有耗时、会话和失败告警。产品元数据是 1.4.3，JSON-RPC 仍是 `1.1.0`；本次不发布新的 Desktop 安装包。说明见[发布说明](docs/release-notes/RELEASE_NOTES_v1.4.3.md)。
 
 > 💡 **想立刻试试？** 有 Python 环境直接免安装运行：  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2" rxycode`
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3" rxycode`
 > 完整安装、桌面客户端、Docker 容器化与 Node.js 前端构建见下文 [⚡ 快速开始与部署](#-快速开始与部署)。
 
 ---
@@ -76,14 +76,14 @@ RxyCode 不只是单个 Agent 在干活。
 |------|------|------|
 | READ | 读文件、grep、抓网页 | 直接放行 |
 | WRITE | 写文件、编辑、Shell | 要审批（可配成自动） |
-| DANGER | `rm -rf /`、`git push --force`、`format C:` | 必须明确批准 |
+| DANGER | `git push --force`、安装器 | 必须明确批准。`rm -rf /`、`format C:` 在硬黑名单里，不会执行 |
 
 Shell 命令会被动态重新分级——普通 `bash` 是 WRITE，但里面出现 `rm -rf` 或 `curl | sh` 会自动升到 DANGER。写文件只能写项目目录和 `~/.RxyCode/output/`，别的路径直接拒绝。完整审计日志在 `~/.RxyCode/logs/audit.jsonl`，敏感信息自动脱敏。
 
 还有个演练模式：`RXYCODE_DRY_RUN=1`，所有写操作只预览不执行。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.2/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.3/install.ps1 | iex"
 rxycode
 ```
 
@@ -109,22 +109,22 @@ MCP 工具和内置工具走同一套安全门，挂了自动退避重连，不�
 只要本地有 Python 3.10+，无需全局安装任何文件，即开即用：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.2/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.3/install.sh | sh
 rxycode
 ```
 
-安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.4.2`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
+安装脚本会在需要时引导安装 `uv`，创建隔离环境，并安装钉死的 **`v1.4.3`**。这是 **CLI / OpenTUI** 包，不包含 Electron Desktop。
 
 安装器会自动安装 `uv`（若缺失）、配置独立隔离环境，不污染系统全局 Python：
 
-**下载说明：** 最新版（**`v1.4.2`**）只发布 **一个** 资源：`rxycode-1.4.2.tar.gz`。不提供 wheel，也不发布新的 Windows / macOS / Linux Desktop 安装包。桌面安装包和便携 zip 仍在未关闭的 **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)**（`RxyCode.Desktop-1.2.10-win.zip`、setup.exe、dmg、AppImage）。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更细的步骤见 [docs/quickstart.md](docs/quickstart.md)。
+**下载说明：** 最新版（**`v1.4.3`**）只发布 **一个** 资源：`rxycode-1.4.3.tar.gz`。不提供 wheel，也不发布新的 Windows / macOS / Linux Desktop 安装包。桌面安装包和便携 zip 仍在未关闭的 **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)**（`RxyCode.Desktop-1.2.10-win.zip`、setup.exe、dmg、AppImage）。GitHub 的 “Source code” zip/tar.gz 是完整前后端源码，用来自己构建，不是开箱即用的 Desktop。更细的步骤见 [docs/quickstart.md](docs/quickstart.md)。
 
-如果你在同版本 tag 或 tarball 替换前已经安装过 `v1.4.2`，需要刷新缓存并重新安装修正版：
+从旧的 CLI 安装升级：
 
 ```bash
-uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2"
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3"
 
-python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.2.tar.gz
+python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.3.tar.gz
 ```
 
 安装成功后，在任意终端输入 `rxycode` 即可启动。
@@ -135,7 +135,7 @@ python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.2.tar.gz
 
 **步骤 1：克隆代码与配置环境变量**
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3" rxycode
 ```
 
 **步骤 2：启动服务**
@@ -151,7 +151,7 @@ uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2" rxycode
 
 **自定义单镜像构建运行：**
 ```bash
-uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.2"
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3"
 rxycode
 ```
 
@@ -315,10 +315,10 @@ rxycode --api
 
 ### 旧版 Desktop 资源与截图
 
-v1.4.2 不发布 Desktop。旧版 [v1.2.10 资源](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)
+v1.4.3 不发布 Desktop。旧版 [v1.2.10 资源](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)
 仍可下载；Linux AppImage 无法直接启动时可尝试
 `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-1.2.10.AppImage`。
-以下截图对应旧版 Desktop，不能视作 1.4.2 新增功能：
+以下截图对应旧版 Desktop，不能视作 1.4.3 新增功能：
 
 <p align="center"><img src="docs/imgs/gui-shell.png" alt="旧版 Desktop 会话界面" width="800"></p>
 <p align="center"><img src="docs/imgs/gui-plus-menu.png" alt="输入框附加菜单" width="800"></p>
@@ -329,6 +329,7 @@ v1.4.2 不发布 Desktop。旧版 [v1.2.10 资源](https://github.com/xin-yi33/R
 
 | 版本 | 日期 | 要点 |
 |------|------|------|
+| [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | 按需 MCP schema、写入后的语法和静态检查、三系统命令黑名单、超过 200 行的输出落盘、工具审计和告警。产品元数据 1.4.3，协议 1.1.0；不发布新的 Desktop 安装包 |
 | [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo 台账与终端面板、模型侧状态带、压缩重摘要、大输出落盘、默认关闭的超时决策。产品元数据 1.4.2，协议 1.1.0；不发布新的 Desktop 安装包 |
 | [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | 产品版本 **1.4.1**：CLI、OpenTUI、Ink、Desktop 元数据、MCP 标识、安装脚本和 appserver。协议仍是 `1.1.0`。 |
 | [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | 产品版本 **1.4.0**：CLI、OpenTUI、Ink、Desktop 元数据和 appserver。协议仍是 `1.1.0`。 |
@@ -399,6 +400,7 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 | 版本 | 发布时间 | 主要更新亮点 |
 |---|---|---|
+| [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | 按需 MCP schema、写入后的语法和静态检查、三系统命令黑名单、超过 200 行的输出落盘、工具审计和告警。产品元数据 1.4.3，协议 1.1.0；不发布新的 Desktop 安装包 |
 | [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo 台账与终端面板、模型侧状态带、压缩重摘要、大输出落盘、默认关闭的超时决策。产品元数据 1.4.2，协议 1.1.0；不发布新的 Desktop 安装包 |
 | [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | CLI 维护版：可选 OS 沙箱、Windows venv Job 绑定、日志保留、重试与熔断、会话与开发终态修复。不发布新的桌面安装包 |
 | [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | 只发 CLI：会话、`/effort`、计划审批、模型和读工具同一套重试、Shift+Enter 换行。没有新的桌面安装包 |

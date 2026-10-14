@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes recorded.
 
+## [1.4.3] - 2026-10-14
+
+CLI / OpenTUI release. Product metadata is `1.4.3`; JSON-RPC remains
+`1.1.0`. Ships one source distribution, `rxycode-1.4.3.tar.gz`. No new
+Desktop installer.
+
+### Added
+
+- On-demand MCP and plugin schemas through `tool_search`, bound to the real
+  message context. Full discoveries stay out of generic dedupe and the
+  2000-character tool-output cut.
+- Syntax and linter findings on code writes. Python uses `compile` plus
+  ruff `F` and `E9`.
+- A hard shell blacklist for catastrophic Linux, macOS, and Windows commands.
+  Approval and `full_auto` cannot override it.
+- Head-and-tail presentation for command output longer than 200 lines, with
+  the full text stored for `read`.
+- Tool audit records with duration, session, context, success rate, and
+  alerts for repeated failures, timeouts, and spill failures.
+
+See [release notes](docs/release-notes/RELEASE_NOTES_v1.4.3.md) and the
+[development changelog](docs/release-notes/CHANGELOG_v1.4.3.md).
+
 ## [1.4.2] - 2026-10-09
 
 ### Release audit fixes
