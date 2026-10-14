@@ -284,6 +284,20 @@ def test_u_f5_9_03_tombstone_keeps_spill_path_and_drops_inline_promise():
     assert "D:/data/spill/sess/abc.txt" in visible
 
 
+def _bind_data_outside_workspace(tmp_path: Path, monkeypatch) -> None:
+    """Real bash spill must sit outside the shell workspace.
+
+    CI points RXYCODE_DATA_DIR at artifacts/runtime inside the repo, and the
+    default sandbox treats that repo as the workspace. The capture then
+    refuses the spill. Production keeps ~/.RxyCode outside the project.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("RXYCODE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("RXYCODE_V2_CONFIG_DIR", str(data_dir))
+
+
 def _cleanup(session: str) -> None:
     spill = get_data_dir() / "spill" / session
     if spill.exists():
@@ -293,11 +307,12 @@ def _cleanup(session: str) -> None:
     assert not spill.exists()
 
 
-async def test_mo_f5_9_01_real_bash_spills_before_the_clean_limit():
+async def test_mo_f5_9_01_real_bash_spills_before_the_clean_limit(tmp_path, monkeypatch):
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
     from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
     from RxyCode.RxyCode1_1_0.tools.read import read_file
 
+    _bind_data_outside_workspace(tmp_path, monkeypatch)
     session = "spill-mo-01"
     token = bind_session(session)
     try:
@@ -322,11 +337,12 @@ async def test_mo_f5_9_01_real_bash_spills_before_the_clean_limit():
         _cleanup(session)
 
 
-async def test_e_f5_e2e_06_spill_read_tombstone_and_dedupe():
+async def test_e_f5_e2e_06_spill_read_tombstone_and_dedupe(tmp_path, monkeypatch):
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
     from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
     from RxyCode.RxyCode1_1_0.tools.read import read_file
 
+    _bind_data_outside_workspace(tmp_path, monkeypatch)
     session = "spill-e2e-06"
     token = bind_session(session)
     try:

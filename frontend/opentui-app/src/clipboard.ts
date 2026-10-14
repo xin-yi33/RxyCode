@@ -2,10 +2,18 @@ import { stripAnsiSequences } from "@opentui/core";
 import { dirname, resolve } from "node:path";
 import { stat as statFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import {
+  MAX_CLIPBOARD_ATTACHMENTS,
+  MAX_CLIPBOARD_PATH_LENGTH,
+  validateClipboardAttachments,
+  type ClipboardAttachment,
+} from "./clipboardAttachments.ts";
 
-export type ClipboardAttachment = {
-  path: string;
-  name?: string;
+export type { ClipboardAttachment };
+export {
+  MAX_CLIPBOARD_ATTACHMENTS,
+  MAX_CLIPBOARD_PATH_LENGTH,
+  validateClipboardAttachments,
 };
 
 export type ClipboardCaptureResult = {
@@ -17,9 +25,6 @@ export type ClipboardCaptureResult = {
 
 const HELPER_TIMEOUT_MS = 3_500;
 const MAX_HELPER_OUTPUT_BYTES = 256 * 1024;
-export const MAX_CLIPBOARD_ATTACHMENTS = 10;
-export const MAX_CLIPBOARD_PATH_LENGTH = 4_096;
-const MAX_CLIPBOARD_NAME_LENGTH = 512;
 const SOURCE_PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 type ClipboardHelperChild = {
@@ -133,36 +138,6 @@ export async function resolveExistingPathDrop(
   } catch {
     return null;
   }
-}
-
-/** Strict all-or-none metadata sanitizer shared by helper results and replay. */
-export function validateClipboardAttachments(value: unknown): ClipboardAttachment[] {
-  if (!Array.isArray(value) || value.length > MAX_CLIPBOARD_ATTACHMENTS) {
-    throw new Error(`附件列表必须是最多 ${MAX_CLIPBOARD_ATTACHMENTS} 项的数组`);
-  }
-  const attachments: ClipboardAttachment[] = [];
-  for (const raw of value) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error("剪贴板 helper 返回了无效附件项");
-    }
-    const item = raw as Record<string, unknown>;
-    if (
-      typeof item.path !== "string" ||
-      !item.path.trim() ||
-      item.path.length > MAX_CLIPBOARD_PATH_LENGTH ||
-      item.path.includes("\0")
-    ) {
-      throw new Error("剪贴板 helper 返回了无效或过长的附件路径");
-    }
-    if (item.name !== undefined && item.name !== null && (typeof item.name !== "string" || item.name.length > MAX_CLIPBOARD_NAME_LENGTH)) {
-      throw new Error("剪贴板 helper 返回了无效或过长的附件名称");
-    }
-    attachments.push({
-      path: item.path,
-      ...(typeof item.name === "string" && item.name.trim() ? { name: item.name } : {}),
-    });
-  }
-  return attachments;
 }
 
 function decodeClipboardCaptureOutput(output: string): ClipboardCaptureResult {

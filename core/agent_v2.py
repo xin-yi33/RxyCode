@@ -152,6 +152,7 @@ from RxyCode.RxyCode1_1_0.core.tool_search import (
     DeferredToolSearch,
     DISCOVERY_PIN_MARKER,
     TOOL_SEARCH_NAME,
+    discovery_tool_names,
     is_deferred_tool,
     parse_deferred_tool_json_calls,
 )
@@ -245,6 +246,8 @@ from .providers.base import (
     RESPONSES_TRANSPORT,
 )
 from .cache_policy import cache_control_for_ttl, resolve_ttl_seconds, tool_pair_integrity
+from .compaction import DEFAULT_RESERVED_TOKENS, plan_compaction, run_compaction_ladder
+from .prompt_attachments import PromptAttachmentError
 from .providers._compat import (
     OPENAI_CHAT_TRANSPORT,
     OPENAI_RESPONSES_TRANSPORT,
@@ -5696,8 +5699,6 @@ class AgentV2:
 
     def _revoke_dropped_discoveries(self, kept, dropped) -> None:
         """局部回退只撤销被删掉、且保留部分里已经没有的 discovery。"""
-        from RxyCode.RxyCode1_1_0.core.tool_search import discovery_tool_names
-
         facade = getattr(self, "_tool_search_facade", None)
         revoke = getattr(facade, "revoke_names", None)
         if not callable(revoke):
@@ -7591,8 +7592,6 @@ class AgentV2:
         The only automatic compact knife is core/compaction.py
         ``run_compaction_ladder``. /compact uses the same entry with force=True.
         """
-        from .compaction import DEFAULT_RESERVED_TOKENS, plan_compaction, run_compaction_ladder
-
         context_window = self._context_window()
         reserved = max(0, int(DEFAULT_RESERVED_TOKENS))
         total = self._estimate_tokens(messages)
@@ -9015,9 +9014,6 @@ class AgentV2:
             download=download_intent,
         )
         self._turn_decision = decision
-        if getattr(self, "_prompt_attachment_active", False):
-            from .prompt_attachments import PromptAttachmentError
-
         if (
             getattr(self, "_prompt_attachment_active", False)
             and decision.path not in {"chat", "agent", "plan", "compose"}

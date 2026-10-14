@@ -26,6 +26,8 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
+from RxyCode.RxyCode1_1_0.core.tool_search import current_disclosure_context_id
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.tools.secret_text import redact_secrets
@@ -444,9 +446,6 @@ class ToolOrchestrator:
         if executed and artifact_issues:
             text = f"[evidence failed: {'; '.join(artifact_issues)}]"
         if audit is not None and risk is not None:
-            from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
-            from RxyCode.RxyCode1_1_0.core.tool_search import current_disclosure_context_id
-
             audit.log(
                 tool=name,
                 risk=risk,

@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { StdioAppserverSession, __setPythonCmdForTests } from "./stdioTransport.ts";
 
-const python = process.env.RXYCODE_APPSERVER_PYTHON ?? "D:\\Anaconda3\\python.exe";
+function pythonForFixture(): string {
+  const configured = process.env.RXYCODE_APPSERVER_PYTHON?.trim();
+  if (configured) return configured;
+  return process.platform === "win32" ? "python" : "python3";
+}
 
 const fixtureFixed = `
 import json, sys
@@ -56,7 +60,7 @@ function start(mode: string): StdioAppserverSession {
   process.env.RXYCODE_DATA_DIR = dir;
   process.env.RXYCODE_APPSERVER_INIT_TIMEOUT_MS = "2000";
   process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS = "2000";
-  __setPythonCmdForTests([python, "-B", "-u", script, mode]);
+  __setPythonCmdForTests([pythonForFixture(), "-B", "-u", script, mode]);
   return new StdioAppserverSession();
 }
 

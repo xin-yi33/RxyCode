@@ -25,22 +25,17 @@ from typing import Callable, Optional
 from langchain_core.messages import HumanMessage
 
 from .cache_policy import tool_pair_integrity
+from .prompt_attachments import (
+    content_text_for_summary as _summarize_attachment_content,
+    estimate_content_tokens as _estimate_attachment_tokens,
+)
 
 _logger = logging.getLogger(__name__)
-_PROMPT_ATTACHMENT_HELPERS = None
 
 
 def _prompt_attachment_helpers():
-    """Load media-aware helpers only when a content block needs them."""
-    global _PROMPT_ATTACHMENT_HELPERS
-    if _PROMPT_ATTACHMENT_HELPERS is None:
-        from .prompt_attachments import (
-            content_text_for_summary as summarize_content,
-            estimate_content_tokens as estimate_content,
-        )
-
-        _PROMPT_ATTACHMENT_HELPERS = (summarize_content, estimate_content)
-    return _PROMPT_ATTACHMENT_HELPERS
+    """Media-aware helpers. Imported with this module so the P7 counter stays put."""
+    return (_summarize_attachment_content, _estimate_attachment_tokens)
 
 
 def estimate_content_tokens(content, count_text):

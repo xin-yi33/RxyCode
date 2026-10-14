@@ -400,6 +400,7 @@ def test_tracked_docs_only_contain_the_github_allowlist():
     allowed_files = {
         "quickstart.md",
         "GUI.md",
+        "CLI-MEMORY-MANAGEMENT-2026-10-11.md",
         "P8-FIX5-HANDOFF-ACCEPTANCE.md",
         "DEVELOPMENT-ORDER.md",
         "development-order.yaml",

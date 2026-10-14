@@ -924,7 +924,6 @@ async def test_deferred_rounds_follow_history_not_a_second_counter():
     )
     assert third.get("jump_to") == "end"
     assert orchestrator.execute_tool.await_count == 2
-    chain = [third_ai, *third["messages"]]
     # The returned list replaces/overlays the assistant, then tool results.
     paired = [third["messages"][0], *third["messages"][1:-1]]
     assert tool_pair_integrity(paired) is True

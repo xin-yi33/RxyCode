@@ -15,7 +15,6 @@ from typing import Any, Callable
 
 import psutil
 import yaml
-from winpty import PtyProcess
 
 from .provider import SYNTHETIC_API_KEY, LocalOpenAIProvider
 
@@ -215,6 +214,8 @@ class ConPTYApp:
     def __init__(self, run_dir: Path, env: dict[str, str], *, bun: Path) -> None:
         if not bun.is_file() or not TTY_ENTRY.is_file():
             raise FileNotFoundError("Bun or the OpenTUI entrypoint is missing")
+        from winpty import PtyProcess
+
         self.run_dir = run_dir
         self.pty = PtyProcess.spawn(
             [str(bun), str(TTY_ENTRY)],

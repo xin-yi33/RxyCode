@@ -430,9 +430,14 @@ class TestSafeToolProxies:
             json.loads(line)
             for line in audit_path.read_text(encoding="utf-8").splitlines()
         ]
-        assert len(records) == 1
-        assert records[0]["approval"] == "auto"
-        assert str(records[0]["result"]).startswith(expected)
+        lifecycle = [row for row in records if row.get("event") != "alert"]
+        alerts = [row for row in records if row.get("event") == "alert"]
+        assert len(lifecycle) == 1
+        assert lifecycle[0]["approval"] == "auto"
+        assert str(lifecycle[0]["result"]).startswith(expected)
+        assert len(alerts) == 1
+        assert alerts[0]["kind"] == "timeout"
+        assert alerts[0]["tool"] == "read"
 
 
 class TestEvidenceCapture:

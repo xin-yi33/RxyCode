@@ -320,8 +320,9 @@ def test_successful_onboarding_preserves_nickname_provider_mapping(monkeypatch):
         provider_id="custom-provider-example",
         provider_name="provider.example",
         nickname="daily-coder",
+        activate=True,
     )
-    activate.assert_called_once_with("custom-provider-example/provider/model-v2")
+    activate.assert_not_called()
 
 
 @pytest.mark.parametrize(

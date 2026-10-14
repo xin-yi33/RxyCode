@@ -1,5 +1,5 @@
 import type { ChatMessage, Mode, ToolStatus } from "../types.ts";
-import { validateClipboardAttachments } from "../clipboard.ts";
+import { validateClipboardAttachments } from "../clipboardAttachments.ts";
 
 export type SessionEventLike = {
   method?: string;

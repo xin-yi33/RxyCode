@@ -364,7 +364,13 @@ async def test_pipe_read_failure_kills_blocked_writer_without_waiting_for_timeou
             assert pipe_transport._sock is None
         else:
             pipe = pipe_transport.get_extra_info("pipe")
-            assert pipe is None or pipe.fileno() == -1
+            if pipe is None:
+                continue
+            try:
+                fd = pipe.fileno()
+            except ValueError:
+                fd = -1
+            assert fd == -1
 
 
 @pytest.mark.asyncio

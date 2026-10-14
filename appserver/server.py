@@ -2349,7 +2349,11 @@ class AppServer:
             await self._respond(request_id, replay)
             return
         if self._inflight_turns.get(session_id) == turn_key:
-            if self._inflight_turn_signatures.get(session_id) != request_signature:
+            # A missing signature is not a different body. The stored-result
+            # branch already treats None that way; this branch used to reject
+            # the same-id retry before any signature had been recorded.
+            inflight_signature = self._inflight_turn_signatures.get(session_id)
+            if inflight_signature is not None and inflight_signature != request_signature:
                 await self._respond_error(
                     request_id,
                     -32602,

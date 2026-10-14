@@ -40,7 +40,7 @@ def test_two_processes_keep_both_credential_references(tmp_path: Path) -> None:
         )
     refs: list[str] = []
     try:
-        for child, secret in zip(children, ("isolated-secret-a", "isolated-secret-b")):
+        for child in children:
             stdout, stderr = child.communicate(timeout=15)
             assert child.returncode == 0, stderr
             ref = stdout.strip().splitlines()[-1]
