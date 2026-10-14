@@ -421,6 +421,7 @@ class ToolOrchestrator:
         risk: Any | None = None,
         audit: Any | None = None,
         config: dict | None = None,
+        duration_ms: float | None = None,
     ) -> str:
         text = self._clean_tool_output(result, config)
         evidence = build_tool_evidence(
@@ -443,7 +444,21 @@ class ToolOrchestrator:
         if executed and artifact_issues:
             text = f"[evidence failed: {'; '.join(artifact_issues)}]"
         if audit is not None and risk is not None:
-            audit.log(tool=name, risk=risk, args=args, approval=approval, result=text)
+            from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
+            from RxyCode.RxyCode1_1_0.core.tool_search import current_disclosure_context_id
+
+            audit.log(
+                tool=name,
+                risk=risk,
+                args=args,
+                approval=approval,
+                result=text,
+                duration_ms=duration_ms,
+                session_id=str(current_session_id() or ""),
+                context_id=str(current_disclosure_context_id() or ""),
+                outcome=str(getattr(evidence, "status", "") or ""),
+                executed=executed,
+            )
         return text
 
     @staticmethod
@@ -916,6 +931,11 @@ class ToolOrchestrator:
         except (TypeError, ValueError):
             retry_attempts, retry_wait = 1, 1.0
 
+        started = time.perf_counter()
+
+        def elapsed_ms() -> float:
+            return round((time.perf_counter() - started) * 1000, 3)
+
         journal_binding = self.get_tool_journal_binding()
         journal_call = None
         if journal_binding is not None and getattr(risk, "name", "") in {
@@ -1034,6 +1054,7 @@ class ToolOrchestrator:
                 risk=risk,
                 audit=audit,
                 config=config,
+                duration_ms=elapsed_ms(),
             )
         except asyncio.CancelledError:
             self._finish(
@@ -1045,6 +1066,7 @@ class ToolOrchestrator:
                 risk=risk,
                 audit=audit,
                 config=config,
+                duration_ms=elapsed_ms(),
             )
             raise
         except Exception as exc:
@@ -1057,6 +1079,7 @@ class ToolOrchestrator:
                 risk=risk,
                 audit=audit,
                 config=config,
+                duration_ms=elapsed_ms(),
             )
         finished = self._finish(
             name,
@@ -1067,6 +1090,7 @@ class ToolOrchestrator:
             risk=risk,
             audit=audit,
             config=config,
+            duration_ms=elapsed_ms(),
         )
         if journal_call is not None:
             verified = build_tool_evidence(

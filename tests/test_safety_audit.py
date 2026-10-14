@@ -167,6 +167,75 @@ class TestAuditLogger:
         rec = json.loads(audit_file.read_text(encoding="utf-8").strip())
         assert len(rec["result"]) <= 220
 
+    def test_call_records_duration_context_and_metrics(self, audit_file):
+        logger = AuditLogger(path=audit_file)
+        logger.log(
+            tool="bash",
+            risk=RiskLevel.WRITE,
+            args={"command": "echo hi"},
+            approval="approved",
+            result="hi",
+            duration_ms=12.5,
+            session_id="sess-1",
+            context_id="ctx-1",
+            outcome="succeeded",
+            executed=True,
+        )
+        rec = json.loads(audit_file.read_text(encoding="utf-8").strip())
+        assert rec["duration_ms"] == 12.5
+        assert rec["session_id"] == "sess-1"
+        assert rec["context_id"] == "ctx-1"
+        assert rec["reason"] == "approved"
+        assert rec["outcome"] == "succeeded"
+        stats = logger.metrics.snapshot()["bash"]
+        assert stats["calls"] == 1
+        assert stats["failures"] == 0
+        assert stats["success_rate"] == 1.0
+        assert stats["avg_duration_ms"] == 12.5
+
+    def test_third_failure_and_timeout_write_alerts(self, audit_file):
+        logger = AuditLogger(path=audit_file)
+        for _ in range(3):
+            logger.log(
+                tool="bash",
+                risk=RiskLevel.WRITE,
+                args={},
+                approval="auto",
+                result="[error executing bash: boom]",
+                outcome="failed",
+                executed=True,
+            )
+        logger.log(
+            tool="bash",
+            risk=RiskLevel.DANGER,
+            args={},
+            approval="auto",
+            result="[error: tool 'bash' timed out after 30s]",
+            outcome="failed",
+            executed=True,
+            duration_ms=30000,
+        )
+        logger.log(
+            tool="bash",
+            risk=RiskLevel.WRITE,
+            args={},
+            approval="auto",
+            result="[spill write failed; output truncated]",
+            outcome="failed",
+            executed=True,
+        )
+        rows = [
+            json.loads(line)
+            for line in audit_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        alerts = [row for row in rows if row.get("event") == "alert"]
+        kinds = [row["kind"] for row in alerts]
+        assert kinds.count("frequent_failure") == 1
+        assert "timeout" in kinds
+        assert "resource" in kinds
+        assert logger.metrics.snapshot()["bash"]["calls"] == 5
+
     def test_concurrent_writes_safe(self, audit_file):
         """Thread lock: concurrent log() calls must not interleave lines."""
         import threading

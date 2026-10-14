@@ -8,8 +8,10 @@ get_data_dir). Failures are swallowed — auditing must never break a run.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +21,9 @@ from RxyCode.RxyCode1_1_0.log.logger import get_current_run_id
 
 from ..log_retention import rotate_file
 from .policy import RiskLevel
+
+_logger = logging.getLogger(__name__)
+_FAILURE_ALERT_STREAK = 3
 
 #: Keys matching any of these (case-insensitive substring) are redacted.
 SENSITIVE_KEY_PATTERNS = ("api_key", "apikey", "password", "passwd", "secret", "token", "authorization")
@@ -60,6 +65,49 @@ def _default_path() -> Path:
     return base / "logs" / "audit.jsonl"
 
 
+class ToolMetrics:
+    """调用次数、成功率、平均耗时。不保留参数和结果正文。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._calls: dict[str, int] = defaultdict(int)
+        self._failures: dict[str, int] = defaultdict(int)
+        self._duration_ms: dict[str, float] = defaultdict(float)
+        self._streak: dict[str, int] = defaultdict(int)
+
+    def record(
+        self,
+        tool: str,
+        *,
+        succeeded: bool,
+        duration_ms: float | None,
+    ) -> int:
+        with self._lock:
+            self._calls[tool] += 1
+            if succeeded:
+                self._streak[tool] = 0
+            else:
+                self._failures[tool] += 1
+                self._streak[tool] += 1
+            if duration_ms is not None:
+                self._duration_ms[tool] += max(0.0, float(duration_ms))
+            return self._streak[tool]
+
+    def snapshot(self) -> dict[str, dict[str, float | int]]:
+        with self._lock:
+            out: dict[str, dict[str, float | int]] = {}
+            for tool, calls in self._calls.items():
+                failures = self._failures[tool]
+                avg = self._duration_ms[tool] / calls if calls else 0.0
+                out[tool] = {
+                    "calls": calls,
+                    "failures": failures,
+                    "success_rate": round((calls - failures) / calls, 6) if calls else 0.0,
+                    "avg_duration_ms": round(avg, 3),
+                }
+            return out
+
+
 class AuditLogger:
     """Append-only JSONL audit writer. Thread-safe via a single lock."""
 
@@ -72,6 +120,7 @@ class AuditLogger:
     ):
         self._path = Path(path) if path else _default_path()
         self._lock = threading.Lock()
+        self.metrics = ToolMetrics()
         try:
             config = load_config().get("observability") or {}
         except Exception:
@@ -110,9 +159,14 @@ class AuditLogger:
         args: Any,
         approval: str,
         result: Any,
+        *,
+        duration_ms: float | None = None,
+        session_id: str | None = None,
+        context_id: str | None = None,
+        outcome: str | None = None,
+        executed: bool | None = None,
     ) -> None:
-        """Append one record. ``approval`` is one of
-        auto/approved/rejected/always/dry_run."""
+        """Append one record. ``approval`` is why the call was allowed to run."""
         try:
             run_id = get_current_run_id()
         except Exception:
@@ -126,16 +180,77 @@ class AuditLogger:
         if len(result_s) > _MAX_VALUE_CHARS:
             result_s = result_s[:_MAX_VALUE_CHARS] + "..."
 
+        streak = 0
+        if outcome is not None:
+            streak = self.metrics.record(
+                tool,
+                succeeded=outcome == "succeeded",
+                duration_ms=duration_ms,
+            )
         record = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
             "run_id": run_id,
+            "session_id": session_id or "",
+            "context_id": context_id or "",
             "tool": tool,
             "risk": risk.name if isinstance(risk, RiskLevel) else str(risk),
             "args": sanitize_args(args),
             "approval": approval,
+            "reason": approval,
+            "outcome": outcome or "",
+            "executed": executed,
+            "duration_ms": None if duration_ms is None else round(max(0.0, float(duration_ms)), 3),
             "result": result_s,
         }
         line = json.dumps(record, ensure_ascii=False)
+        self._write_line(line)
+        self._maybe_alert(
+            tool=tool,
+            session_id=session_id or "",
+            result_s=result_s,
+            streak=streak,
+            outcome=outcome,
+        )
+        _logger.info(
+            "tool_call tool=%s outcome=%s duration_ms=%s session=%s approval=%s",
+            tool,
+            outcome or "",
+            record["duration_ms"],
+            session_id or "",
+            approval,
+        )
+
+    def _maybe_alert(
+        self,
+        *,
+        tool: str,
+        session_id: str,
+        result_s: str,
+        streak: int,
+        outcome: str | None,
+    ) -> None:
+        kinds: list[str] = []
+        lowered = result_s.lower()
+        if "timed out" in lowered:
+            kinds.append("timeout")
+        if "spill write failed" in lowered:
+            kinds.append("resource")
+        if outcome is not None and outcome != "succeeded" and streak == _FAILURE_ALERT_STREAK:
+            kinds.append("frequent_failure")
+        for kind in kinds:
+            detail = f"{tool} {kind}"
+            _logger.warning("tool_alert kind=%s tool=%s session=%s", kind, tool, session_id)
+            alert = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+                "event": "alert",
+                "kind": kind,
+                "tool": tool,
+                "session_id": session_id,
+                "detail": detail,
+            }
+            self._write_line(json.dumps(alert, ensure_ascii=False))
+
+    def _write_line(self, line: str) -> None:
         try:
             with self._lock:
                 self._path.parent.mkdir(parents=True, exist_ok=True)

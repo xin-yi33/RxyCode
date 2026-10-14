@@ -358,6 +358,22 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 - 产品版本号没有改，仍是 1.4.2。
 - 验证：`TestBashOutputTruncation`、`test_shell_output_capture.py`、`test_tool_output_spill.py` 共 20 通过。没有做收费 Provider 测试，也没有做全仓库验收。
 
+## 工具执行可观测（2026-10-13）
+
+产品版本仍是 1.4.2。
+
+### 1. 新增与修复
+
+- 每次工具调用的审计记录现在包含调用时间、脱敏后的参数、截断后的结果、耗时 `duration_ms`、会话 `session_id`、上下文 `context_id`，以及这次为什么执行（`approval` / `reason`）。
+- 同一份记录汇总调用次数、失败次数、成功率和平均耗时，不把参数和结果正文留在指标里。
+- 同一工具连续失败 3 次、结果里出现超时、或落盘失败时，写一条 `event=alert` 并打出警告日志。审计失败仍然不会打断工具调用。
+
+### 2. 数据完整性
+
+- 密钥字段继续脱敏。结果正文仍截断到审计上限。
+- 产品版本号没有改，仍是 1.4.2。
+- 验证：`tests/test_safety_audit.py`、`TestGateDisabled`、`TestAuditIntegration` 共 22 通过。没有做收费 Provider 测试，也没有做全仓库验收。
+
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
 用户裁定（依据 AI-Agents-in-Depth §4.4「层次化组织与主动工具发现」图 4-4）：

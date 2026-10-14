@@ -63,6 +63,9 @@ class TestGateDisabled:
         assert record["tool"] == "mytool"
         assert record["risk"] == "WRITE"
         assert record["approval"] == "safety_disabled"
+        assert record["reason"] == "safety_disabled"
+        assert isinstance(record["duration_ms"], float)
+        assert record["duration_ms"] >= 0
 
 
 class TestPolicyGate:
