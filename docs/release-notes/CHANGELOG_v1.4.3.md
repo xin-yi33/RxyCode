@@ -323,27 +323,22 @@ bun test 387 passed / 0 fail；tsc 零错；ruff 全过。
 
 ## 危险系统命令黑名单（2026-10-13）
 
-产品版本仍是 1.4.2。
+产品版本仍是 1.4.2。下面只记这次已经落到代码里的行为。
 
 ### 1. 新增与修复
 
 - `bash` 在进 shell 之前检查硬黑名单。命中后直接拒绝，`full_auto` 和人工批准都不能放行。
-- 黑名单覆盖 Linux、macOS、Windows 上的系统破坏命令：对根目录、系统目录、磁盘根和用户主目录的递归删除，格式化磁盘，`dd` 写设备，关机重启，下载内容直接送进 shell，删除注册表，编码后的 PowerShell。
-- 项目里的相对清理，例如 `rm -rf ./build`，不在这份黑名单里，仍走原来的写入风险和审批。
+- 三个系统共用这一条拒绝。相对路径的项目清理不在里面。
+- Linux：递归删除 `/`、`/usr`、`/etc`、`/boot`、`/home`、`/root` 等系统目录；`find / -delete`；`shred` 或重定向写入 `/dev/sd`；`mkfs`；`dd of=/dev`；`kill -9 -1`；关机、重启和 sysrq。
+- macOS：递归删除 `/System`、`/Library`、`/Volumes`、`/Applications`、`/private`；`diskutil erase`；`csrutil disable`；`nvram -c`；`asr restore`。
+- Windows：递归删除 `C:\`、`C:\Windows`、`%SystemRoot%`、`C:\Users`；`format`、`cmd /c format`、`diskpart`、`Clear-Disk`；`bcdedit /set` 和 `/delete`；`taskkill` 或 `Stop-Process` 结束 `lsass`、`csrss`、`winlogon` 这类关键进程；`reg delete`；`wbadmin delete catalog`；编码后的 PowerShell。
+- `rm -rf ./build`、`find . -name '*.pyc' -delete`、`fdisk -l`、`bcdedit /enum`、`nvram -p` 不在黑名单里。前两个仍走原来的写入风险和审批，后三个是只读查询。
 
 ### 2. 数据完整性
 
 - 原来的危险命令分级还在。黑名单是在分级之前的硬拒绝，不是把所有 shell 都关掉。
-- 产品版本号没有改，仍是 1.4.2。
-- 验证：`TestHardDeniedShell`、`TestClassifyBashCommand` 和危险 bash 闸门测试共 78 通过。没有做收费 Provider 测试，也没有做全仓库验收。
-
-同一条黑名单随后补上三个系统各自的破坏命令，仍是执行前硬拒绝：
-
-- Linux：`find / -delete`、`shred /dev`、重定向写入 `/dev/sd`、`kill -9 -1`、sysrq。
-- macOS：`csrutil disable`、`nvram -c`、`asr restore`，以及对 `/Applications`、`/System`、`/Volumes` 的递归删除。
-- Windows：`cmd /c format`、`bcdedit /set`、`taskkill` 结束 `lsass` 等关键进程、`del /s %SystemRoot%`、`wbadmin delete catalog`。
-- `rm -rf ./build`、`find . -name '*.pyc' -delete`、`fdisk -l`、`bcdedit /enum`、`nvram -p` 仍不在黑名单里。
-- 验证：上述测试共 95 通过。产品版本仍是 1.4.2。
+- 产品版本号没有改，仍是 1.4.2。JSON-RPC 协议版本没有改。
+- 验证：`TestHardDeniedShell`、`TestClassifyBashCommand` 和危险 bash 闸门测试共 95 通过。没有做收费 Provider 测试，也没有做全仓库验收。产品版本仍是 1.4.2。
 
 ## 检索式工具分层：MCP 工具不再全量注入 schema（2026-10-13）
 
