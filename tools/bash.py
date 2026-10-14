@@ -10,6 +10,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ..core.session_runtime import current_session_id
+from ..utils.output_capture import write_text_artifact
 from ..utils.shell import shell_executor
 from .launch_intent import classify_shell_launch
 from .open_file import open_file, open_file_async
@@ -53,6 +54,10 @@ class BashInput(BaseModel):
 #: is middle-truncated (head + tail kept) so a noisy command cannot blow up
 #: the context window.
 MAX_OUTPUT_CHARS = 30000
+#: 超过 200 行或 10000 字符时，上下文只留首尾各 50 行，全文在 spill 文件里。
+INLINE_LINE_LIMIT = 200
+INLINE_CHAR_LIMIT = 10_000
+EDGE_LINES = 50
 
 #: Hint appended when truncation happens (Tier1 style, see
 #: memory/compressor.py:170-194 _middle_truncate).
@@ -108,6 +113,66 @@ def _is_duplicate_capture(result: dict, paths: list[str]) -> bool:
     seen.add(fingerprint)
     artifacts[fingerprint] = current_paths
     return False
+
+
+def _output_is_long(text: str, result: dict) -> bool:
+    if result.get("stdout_truncated") or result.get("stderr_truncated"):
+        return True
+    line_count = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
+    if line_count <= 0:
+        line_count = text.count("\n") + (0 if not text or text.endswith("\n") else 1)
+    char_count = int(result.get("stdout_bytes") or 0) + int(result.get("stderr_bytes") or 0)
+    if char_count <= 0:
+        char_count = len(text)
+    return line_count > INLINE_LINE_LIMIT or char_count > INLINE_CHAR_LIMIT or len(text) > INLINE_CHAR_LIMIT
+
+
+def _edge_sections(text: str, result: dict) -> tuple[str, str, int]:
+    head_lines = list(result.get("stdout_head_lines") or [])
+    if not head_lines:
+        head_lines = list(result.get("stderr_head_lines") or [])
+    if result.get("stderr") and result.get("stderr_tail_lines"):
+        tail_lines = list(result.get("stderr_tail_lines") or [])
+    else:
+        tail_lines = list(result.get("stdout_tail_lines") or [])
+    total = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
+    if head_lines or tail_lines:
+        if result.get("stdout_redaction_hold") or result.get("stderr_redaction_hold"):
+            tail_lines = []
+        return (
+            _redact_preview("\n".join(head_lines[:EDGE_LINES])),
+            _redact_preview("\n".join(tail_lines[-EDGE_LINES:])),
+            total,
+        )
+    lines = text.splitlines()
+    head = "\n".join(lines[:EDGE_LINES])
+    tail = "\n".join(lines[-EDGE_LINES:]) if len(lines) > EDGE_LINES else ""
+    return head, tail, len(lines)
+
+
+def _shape_long_output(text: str, result: dict, paths: list[str]) -> tuple[str, list[str]]:
+    """Keep the first and last 50 lines in context and point at the full file."""
+    if not text or not _output_is_long(text, result):
+        return text, paths
+    if result.get("capture_error"):
+        return _truncate_output(text), []
+    saved = list(paths)
+    truncated = bool(result.get("stdout_truncated") or result.get("stderr_truncated"))
+    if not saved and not truncated:
+        try:
+            saved = [str(write_text_artifact(text))]
+        except OSError:
+            return _truncate_output(text), paths
+    if not saved:
+        return _truncate_output(text), paths
+    head, tail, total = _edge_sections(text, result)
+    shown = (EDGE_LINES if head else 0) + (EDGE_LINES if tail and tail != head else 0)
+    omitted = max(0, total - shown)
+    parts = [head, f"... [省略 {omitted} 行，完整输出已保存至 {saved[0]}] ..."]
+    if tail and tail != head:
+        parts.append(tail)
+    parts.append("如需完整输出，请使用 read 工具读取该文件")
+    return "\n".join(part for part in parts if part), saved
 
 
 def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
@@ -270,7 +335,9 @@ def _format_result(result: dict, command: str = "") -> str:
     if _is_duplicate_capture(result, paths):
         return DUPLICATE_SPILL
 
-    body = _truncate_output(_redact_preview(output))
+    body, paths = _shape_long_output(_redact_preview(output), result, paths)
+    if len(body) > MAX_OUTPUT_CHARS and "完整输出已保存至" not in body:
+        body = _truncate_output(body)
     if result.get("capture_error"):
         capture_error = str(result["capture_error"])
         marker = (

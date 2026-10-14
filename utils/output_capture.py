@@ -8,6 +8,7 @@ import locale
 import os
 import re
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import BinaryIO
 
@@ -82,6 +83,13 @@ class _StreamCapture:
         self.artifact_complete = False
         self.capture_error: str | None = None
         self.eof = False
+        self.line_count = 0
+        self.head_lines: list[str] = []
+        self.tail_lines: deque[str] = deque(maxlen=50)
+        self._line_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._pending_head = ""
+        self._pending_tail = ""
+        self._pending_len = 0
 
     def add(self, chunk: bytes) -> None:
         self.total_bytes += len(chunk)
@@ -89,6 +97,7 @@ class _StreamCapture:
         self._observe_redaction_markers(chunk)
         self._validate_utf8(chunk)
         self._add_preview(chunk)
+        self._note_lines(chunk)
 
     def _observe_redaction_markers(self, chunk: bytes) -> None:
         if self._redaction_marker_seen:
@@ -146,10 +155,45 @@ class _StreamCapture:
             except UnicodeDecodeError:
                 self.utf8_valid = False
             self._utf8_decoder = None
+        self._note_lines(b"", final=True)
+        if self._pending_len:
+            self._commit_line()
         if not read_ok:
             self._fail("pipe read failed", read_error or OSError())
             return
         self._close_artifact()
+
+    def _note_lines(self, chunk: bytes, *, final: bool = False) -> None:
+        text = self._line_decoder.decode(chunk, final=final)
+        if not text:
+            return
+        pieces = text.split("\n")
+        for index, piece in enumerate(pieces):
+            self._append_pending(piece)
+            if index < len(pieces) - 1:
+                self._commit_line()
+
+    def _append_pending(self, piece: str) -> None:
+        if not piece:
+            return
+        self._pending_len += len(piece)
+        if len(self._pending_head) < 200:
+            room = 200 - len(self._pending_head)
+            self._pending_head += piece[:room]
+            piece = piece[room:]
+        if piece:
+            self._pending_tail = (self._pending_tail + piece)[-200:]
+
+    def _commit_line(self) -> None:
+        self.line_count += 1
+        head = self._pending_head
+        tail = self._pending_tail if self._pending_len > 200 and self._pending_tail else head
+        if len(self.head_lines) < 50:
+            self.head_lines.append(head)
+        self.tail_lines.append(tail)
+        self._pending_head = ""
+        self._pending_tail = ""
+        self._pending_len = 0
 
     def preview_text(self) -> str:
         encoding = "utf-8" if self.utf8_valid else (locale.getpreferredencoding(False) or "utf-8")
@@ -371,6 +415,18 @@ class BoundedOutputCapture:
             "stderr_sha256": self.stderr.digest.hexdigest(),
             "stdout_truncated": self.stdout._preview_truncated,
             "stderr_truncated": self.stderr._preview_truncated,
+            "stdout_line_count": self.stdout.line_count,
+            "stderr_line_count": self.stderr.line_count,
+            "stdout_head_lines": list(self.stdout.head_lines),
+            "stderr_head_lines": list(self.stderr.head_lines),
+            "stdout_tail_lines": list(self.stdout.tail_lines),
+            "stderr_tail_lines": list(self.stderr.tail_lines),
+            "stdout_redaction_hold": (
+                self.stdout._redaction_marker_seen and self.stdout._preview_truncated
+            ),
+            "stderr_redaction_hold": (
+                self.stderr._redaction_marker_seen and self.stderr._preview_truncated
+            ),
             "stdout_artifact": (
                 str(self.stdout.artifact_path)
                 if self.stdout.artifact_complete and self.stdout.artifact_path is not None
@@ -390,6 +446,16 @@ class BoundedOutputCapture:
     def abort(self) -> None:
         self.stdout.abort()
         self.stderr.abort()
+
+
+def write_text_artifact(text: str) -> Path:
+    """Save a complete tool result the capture has not already spilled."""
+    session = _session_component(str(current_session_id() or "default"))
+    directory = (get_data_dir() / "spill" / session).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{uuid.uuid4().hex}.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def append_capture_hints(output: str, result: dict[str, object]) -> str:
