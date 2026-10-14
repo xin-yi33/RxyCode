@@ -80,7 +80,7 @@ class TestRunBash:
 
 
 class TestBashOutputTruncation:
-    """超过 200 行或 10000 字符时，上下文只留首尾，全文在 spill 文件。"""
+    """超过 200 行时，上下文只留首尾，全文在 spill 文件。"""
 
     def _run_with_output(self, text):
         from unittest.mock import patch, MagicMock
@@ -107,14 +107,13 @@ class TestBashOutputTruncation:
         out = self._run_with_output("hello")
         assert out == "hello"
 
-    def test_long_output_truncated_with_hint(self):
+    def test_long_single_line_is_not_cut_by_line_rule(self):
         big = "A" * 40000
         out = self._run_with_output(big)
-        assert len(out) < 32000
-        assert "省略" in out
-        assert "请使用 read 工具读取该文件" in out
+        assert "省略" not in out
+        assert "Full output saved to:" in out
 
-    def test_truncation_keeps_head_and_tail(self):
+    def test_byte_spill_keeps_head_and_tail_without_line_cut(self):
         head = "H" * 15000
         tail = "T" * 15000
         big = head + ("M" * 20000) + tail
@@ -122,16 +121,17 @@ class TestBashOutputTruncation:
         preview, spill_path_text = out.rsplit("\nFull output saved to: ", 1)
         assert preview.startswith("H" * 100)
         assert "T" * 100 in preview
-        assert "请使用 read 工具读取该文件" in preview
+        assert "省略" not in preview
         spill_path = Path(spill_path_text.strip())
         assert spill_path.is_absolute()
         assert spill_path.read_text(encoding="utf-8") == big
 
-    def test_exactly_10000_chars_stays_inline(self):
-        big = "B" * 10000
+    def test_exactly_200_lines_stay_inline(self):
+        big = "\n".join(f"line-{index:04d}" for index in range(200))
         out = self._run_with_output(big)
         assert "省略" not in out
-        assert out == big
+        assert "line-0000" in out
+        assert "line-0199" in out
 
     def test_over_200_lines_keeps_50_each_end(self):
         lines = [f"line-{index:04d}" for index in range(260)]

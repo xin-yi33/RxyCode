@@ -54,9 +54,8 @@ class BashInput(BaseModel):
 #: is middle-truncated (head + tail kept) so a noisy command cannot blow up
 #: the context window.
 MAX_OUTPUT_CHARS = 30000
-#: 超过 200 行或 10000 字符时，上下文只留首尾各 50 行，全文在 spill 文件里。
+#: 只按行数截断：超过 200 行时，上下文留首尾各 50 行，全文在 spill 文件里。
 INLINE_LINE_LIMIT = 200
-INLINE_CHAR_LIMIT = 10_000
 EDGE_LINES = 50
 
 #: Hint appended when truncation happens (Tier1 style, see
@@ -115,16 +114,17 @@ def _is_duplicate_capture(result: dict, paths: list[str]) -> bool:
     return False
 
 
-def _output_is_long(text: str, result: dict) -> bool:
-    if result.get("stdout_truncated") or result.get("stderr_truncated"):
-        return True
+def _output_line_count(text: str, result: dict) -> int:
     line_count = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
-    if line_count <= 0:
-        line_count = text.count("\n") + (0 if not text or text.endswith("\n") else 1)
-    char_count = int(result.get("stdout_bytes") or 0) + int(result.get("stderr_bytes") or 0)
-    if char_count <= 0:
-        char_count = len(text)
-    return line_count > INLINE_LINE_LIMIT or char_count > INLINE_CHAR_LIMIT or len(text) > INLINE_CHAR_LIMIT
+    if line_count > 0:
+        return line_count
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def _output_is_long(text: str, result: dict) -> bool:
+    return _output_line_count(text, result) > INLINE_LINE_LIMIT
 
 
 def _edge_sections(text: str, result: dict) -> tuple[str, str, int]:
