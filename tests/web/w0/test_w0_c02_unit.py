@@ -23,6 +23,8 @@ def test_w0_c02_contract():
     assert len(row["commit"]) >= 12
     assert row["license"] not in {"", "UNKNOWN"}
     assert row["rejected"]
+    assert row["why"]
+    assert row["threshold"]
 
 
 def test_w0_c02_negative():
@@ -33,3 +35,6 @@ def test_w0_c02_negative():
     blank = _scanner().reuse_decision("")
     assert blank["status"] == "RESEARCH_REQUIRED"
     assert blank["copy_allowed"] is False
+    licensed = _scanner().lookup_verdict(PLAN, "storage-durability")
+    assert _scanner().reuse_decision(licensed["license"], "")["copy_allowed"] is False
+    assert _scanner().reuse_decision(licensed["license"], licensed["commit"])["copy_allowed"] is True

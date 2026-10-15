@@ -21,4 +21,6 @@ def test_w0_c02_integration():
     traced = _scanner().trace_verdict(PLAN, "linux-sandbox")
     assert traced["limit"]
     assert traced["version"]
-    assert (PLAN / traced["adr"]).is_file()
+    adr_text = (PLAN / traced["adr"]).read_text(encoding="utf-8")
+    assert traced["version"] in adr_text
+    assert traced["limit"] in adr_text
