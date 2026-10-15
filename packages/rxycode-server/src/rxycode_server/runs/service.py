@@ -32,12 +32,19 @@ class RunAccepted:
     events_url: str
 
 
-def _digest(message: str, target_id: str, permission_profile: str, request_id: str) -> str:
+def _digest(
+    message: str,
+    target_id: str,
+    permission_profile: str,
+    request_id: str,
+    session_id: str,
+) -> str:
     payload = json.dumps(
         {
             "message": message,
             "permission_profile": permission_profile,
             "request_id": request_id,
+            "session_id": session_id,
             "target_id": target_id,
         },
         sort_keys=True,
@@ -68,7 +75,7 @@ def create_run(
 ) -> RunAccepted:
     """Insert run + event + outbox. The caller's tenant wins over any body claim."""
     del claimed_tenant_id
-    digest = _digest(message, target_id, permission_profile, request_id)
+    digest = _digest(message, target_id, permission_profile, request_id, session_id)
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with Session(engine) as db:
@@ -103,7 +110,13 @@ def create_run(
                         tenant_id=tenant_id,
                         seq=1,
                         type="run.created",
-                        payload={"request_id": request_id, "target_id": target_id},
+                        payload={
+                        "message": message,
+                        "permission_profile": permission_profile,
+                        "request_id": request_id,
+                        "session_id": session_id,
+                        "target_id": target_id,
+                    },
                         at=datetime.now(timezone.utc),
                     )
                 )
@@ -133,3 +146,22 @@ def create_run(
     finally:
         engine.dispose()
     return _accepted(run_id)
+
+
+def load_run(database_url: str, run_id: str) -> dict[str, str]:
+    """Read the accepted task back from the durable event, not from the digest."""
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            event = db.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
+            ).one()
+    finally:
+        engine.dispose()
+    payload = event.payload
+    return {
+        "message": str(payload["message"]),
+        "permission_profile": str(payload["permission_profile"]),
+        "session_id": str(payload["session_id"]),
+        "target_id": str(payload["target_id"]),
+    }

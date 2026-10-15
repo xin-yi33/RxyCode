@@ -22,8 +22,15 @@ for _path in (_SERVER, _WORKER):
 
 from rxycode_server.persistence.migrate import upgrade_head
 from rxycode_server.persistence.models import Organization, Project, SessionRow, User
-from rxycode_server.runs.service import RunAlreadyActive, RunConflict, create_run
-from rxycode_worker.supervisor import LeaseRejected, claim, commit_terminal
+from rxycode_server.runs.service import RunAlreadyActive, RunConflict, create_run, load_run
+from rxycode_worker.supervisor import (
+    LeaseRejected,
+    claim,
+    commit_terminal,
+    confirm_cancel,
+    renew_lease,
+    request_cancel,
+)
 
 
 def _seed(url: str) -> str:
@@ -75,6 +82,10 @@ def test_w2_c03_contract(postgres_url: str):
     assert second.http_status == 202
     assert first.run_id == second.run_id
     assert first.status == "queued"
+    loaded = load_run(postgres_url, first.run_id)
+    assert loaded["message"] == "build the gate"
+    assert loaded["permission_profile"] == "workspace-write"
+    assert loaded["session_id"] == session_id
     assert first.events_url == f"/api/v1/runs/{first.run_id}/events"
     assert _counts(postgres_url) == (1, 1, 1)
     engine = create_engine(postgres_url)
@@ -86,6 +97,21 @@ def test_w2_c03_contract(postgres_url: str):
     engine.dispose()
     assert tenant_id == "tenant-c03"
     assert status == "pending"
+    other_session = uuid.uuid4().hex
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.add(
+            SessionRow(
+                id=other_session,
+                tenant_id="tenant-c03",
+                project_id="project-c03",
+                title="other",
+            )
+        )
+        db.commit()
+    engine.dispose()
+    with pytest.raises(RunConflict):
+        create_run(postgres_url, **{**kwargs, "session_id": other_session})
     with pytest.raises(RunConflict):
         create_run(postgres_url, **{**kwargs, "message": "different payload"})
     assert _counts(postgres_url) == (1, 1, 1)
@@ -136,6 +162,7 @@ def test_w2_c03_negative(postgres_url: str, tmp_path: Path):
     while time.time() < deadline and not marker.exists():
         time.sleep(0.05)
     assert marker.read_text(encoding="utf-8") == "1"
+    assert renew_lease(postgres_url, created.run_id, "worker-a", 1) == 1
     worker.kill()
     worker.wait(timeout=10)
     engine = create_engine(postgres_url)
@@ -186,3 +213,58 @@ def test_w2_c03_negative(postgres_url: str, tmp_path: Path):
     assert current == 1
     with pytest.raises(LeaseRejected):
         commit_terminal(postgres_url, created.run_id, "worker-a", 1, "succeeded")
+    cancel_session = uuid.uuid4().hex
+    done_session = uuid.uuid4().hex
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.add(SessionRow(id=cancel_session, tenant_id="tenant-c03", project_id="project-c03", title="cancel"))
+        db.add(SessionRow(id=done_session, tenant_id="tenant-c03", project_id="project-c03", title="done"))
+        db.commit()
+    engine.dispose()
+    cancel_run = create_run(
+        postgres_url,
+        tenant_id="tenant-c03",
+        session_id=cancel_session,
+        message="stop",
+        target_id="local:1",
+        permission_profile="workspace-write",
+        request_id="req-cancel",
+    )
+    assert claim(postgres_url, cancel_run.run_id, "worker-a") == 1
+    assert request_cancel(postgres_url, cancel_run.run_id) == "cancel_requested"
+    assert request_cancel(postgres_url, cancel_run.run_id) == "cancel_requested"
+    engine = create_engine(postgres_url)
+    with engine.connect() as conn:
+        cancel_events = conn.execute(
+            text("SELECT count(*) FROM run_events WHERE run_id = :id AND type = 'cancel_requested'"),
+            {"id": cancel_run.run_id},
+        ).scalar()
+    engine.dispose()
+    assert cancel_events == 1
+    assert confirm_cancel(
+        postgres_url, cancel_run.run_id, "worker-a", 1, effects_known=False
+    ) == "recovery_required"
+    assert confirm_cancel(
+        postgres_url, cancel_run.run_id, "worker-a", 1, effects_known=True
+    ) == "recovery_required"
+    done = create_run(
+        postgres_url,
+        tenant_id="tenant-c03",
+        session_id=done_session,
+        message="finish",
+        target_id="local:1",
+        permission_profile="workspace-write",
+        request_id="req-done",
+    )
+    assert claim(postgres_url, done.run_id, "worker-b") == 1
+    commit_terminal(postgres_url, done.run_id, "worker-b", 1, "succeeded")
+    with pytest.raises(LeaseRejected):
+        commit_terminal(postgres_url, done.run_id, "worker-b", 1, "failed")
+    engine = create_engine(postgres_url)
+    with engine.connect() as conn:
+        done_status = conn.execute(
+            text("SELECT status FROM runs WHERE id = :id"),
+            {"id": done.run_id},
+        ).scalar()
+    engine.dispose()
+    assert done_status == "succeeded"
