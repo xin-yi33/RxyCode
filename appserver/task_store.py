@@ -352,6 +352,13 @@ class DesktopTaskStore:
         self._save()
         return dict(task)
 
+    def read_legacy_rows(self) -> list[dict[str, Any]]:
+        """Read-only copies for a cloud import. Does not rewrite the JSON file."""
+        tasks = self._data.get("tasks", {})
+        if not isinstance(tasks, dict):
+            return []
+        return [dict(item) for item in tasks.values() if isinstance(item, dict)]
+
     def list(self, *, include_trashed: bool = False) -> list[dict[str, Any]]:
         values = list(self._data["tasks"].values())
         if not include_trashed:
