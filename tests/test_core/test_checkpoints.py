@@ -41,6 +41,7 @@ def _state(*, session_id: str = "session-1", status=TaskStatus.PENDING) -> dict:
         "phase": "executing",
         "error": None,
         "resume_attempts": 0,
+        "build_workflow": None,
     }
 
 

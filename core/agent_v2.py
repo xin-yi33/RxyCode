@@ -148,6 +148,24 @@ from RxyCode.RxyCode1_1_0.log.logger import (
 )
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp import tool_manifest as _tool_manifest
+from RxyCode.RxyCode1_1_0.core.build_workflow import (
+    CheckReceipt,
+    WorkflowContractError,
+    check_completion,
+    checkpoint_payload,
+    is_documentation_path,
+    is_ordinary_text_save,
+    parse_decision_text,
+    retarget_contract,
+    tests_passed_nonempty,
+    workflow_enabled,
+    workflow_from_checkpoint,
+)
+from RxyCode.RxyCode1_1_0.core.project_instructions import (
+    InstructionCache,
+    bind_instruction_permissions,
+    discover_instructions,
+)
 from RxyCode.RxyCode1_1_0.core.tool_search import (
     DeferredToolSearch,
     DISCOVERY_PIN_MARKER,
@@ -867,6 +885,61 @@ _APPROVED_PLAN_PREFIXES = (
     "按已批准的计划开始实施",
     "已批准计划，开始实施",
 )
+_PLAN_REJECT_PREFIXES = (
+    "拒绝此计划",
+    "不实施此计划",
+    "不要实施",
+    "reject this plan",
+    "do not implement this plan",
+)
+_WORKFLOW_MUTATION_TOOLS = frozenset(
+    {"write", "edit", "patch", "bash", "git", "task", "spawn_subagent"}
+)
+_GIT_READONLY_OPERATIONS = frozenset({"status", "diff", "log", "branch"})
+_WORKFLOW_CONTINUATION_PREFIXES = (
+    "[tool",
+    "[retry]",
+    "[resume]",
+    "Tool result:",
+    "TOOL_RESULT",
+)
+_PARENT_BUILD_WORKFLOW: _contextvars.ContextVar[dict | None] = _contextvars.ContextVar(
+    "rxycode_parent_build_workflow",
+    default=None,
+)
+
+
+class _WorkflowGeneration:
+    """One counter shared by a parent and the children it spawns."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: int = 0) -> None:
+        self.value = int(value or 0)
+
+
+_PARENT_WORKFLOW_GENERATION: _contextvars.ContextVar[_WorkflowGeneration | None] = (
+    _contextvars.ContextVar("rxycode_parent_workflow_generation", default=None)
+)
+_FILE_MUTATOR_RE = re.compile(
+    r"(?i)(?:\b(?:cp|mv|install)\b|\b(?:copy|move)\b|\bsed\s+-[^\n]*\bi\b|\bperl\s+-[^\n]*i\b)"
+)
+_FILE_TOKEN_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_./\\-]+\.(?:py|pyi|ts|tsx|js|jsx|go|java|rs|c|h|cpp|cs|md|rst|txt))"
+)
+_GIT_WORKTREE_REWRITE_RE = re.compile(
+    r"(?i)\bgit(?:\.exe)?\s+(?:checkout|restore|reset|switch|clean|apply|rebase|merge|revert)\b"
+)
+_SHELL_WRITE_SIGNAL_RE = re.compile(
+    r"(?i)(?:>>?|\bout-file\b|\bset-content\b|\btee-object\b|\badd-content\b|"
+    r"\bwrite_text\b|\bwrite_bytes\b|open\([^)]*['\"][wa+]|\bsed\s+-[^\n]*\bi\b)"
+)
+_SHELL_REDIRECT_RE = re.compile(
+    r"(?i)(?:>>?|out-file(?:\s+-filepath)?|set-content(?:\s+-path)?|"
+    r"tee-object(?:\s+-filepath)?|add-content(?:\s+-path)?)\s+['\"]?([^\s'\"|>]+)"
+)
+_QUOTED_FILE_RE = re.compile(r"['\"]([^'\"]+?\.[A-Za-z0-9_]+)['\"]")
+_STDERR_REDIRECT_RE = re.compile(r"(?i)(?:2>&1|2>\s*/dev/null|2>\s*nul|2>\s*\$null)")
 _APPROVED_IMPLEMENT_ROLE = (
     "你当前处于 BUILD，必须按用户消息和 plan.md 中的已批准计划实施。"
     "禁止继续或复用工作区里与该计划无关的旧游戏/旧 HTML（例如上一版贪吃蛇）。"
@@ -2401,6 +2474,12 @@ class AgentV2:
                         restored_tree.assert_valid_plan()
                         durable["task_tree"] = restored_tree
                     state.update(durable)
+                    payload = durable.get("build_workflow")
+                    if isinstance(payload, dict):
+                        self.restore_build_workflow(
+                            payload,
+                            run_id=str(get_current_run_id() or ""),
+                        )
 
         state.update(
             {
@@ -4005,11 +4084,17 @@ class AgentV2:
             raw = self._truncate_tool_text(raw)
         if _tool_output_is_error(str(result)):
             raw = raw + "\n\n" + self._error_feedback_message(tool_name, str(result))
-        return (
+        body = (
             raw
             + "\n[对用户说：这个工具返回了什么、是否报错、下一步做什么。"
             "禁止静默连打下一个工具。]"
         )
+        # The label is only for the child model's next message. Error checks
+        # and final_answer keep the raw result above.
+        if isinstance(getattr(self, "_subagent_system_prompt", None), str):
+            if not body.lstrip().startswith("[TOOL_RESULT]"):
+                body = "[TOOL_RESULT]\n" + body
+        return body
 
     def _emit_tool_outcome_to_user(
         self,
@@ -5391,6 +5476,523 @@ class AgentV2:
             return "fast"
         return "balanced"
 
+    def _build_workflow_enabled(self) -> bool:
+        return workflow_enabled(getattr(self, "_cfg", None))
+
+    async def _workflow_model_text(self, prompt: str) -> str:
+        """One no-tool call on the current model. Not a second agent loop."""
+        llm = getattr(self, "_llm", None)
+        if llm is None or not callable(getattr(llm, "ainvoke", None)):
+            raise WorkflowContractError("classifier unavailable")
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        return str(getattr(response, "content", "") or "")
+
+    def _is_workflow_continuation_text(self, text: str) -> bool:
+        current = getattr(self, "_build_workflow", None)
+        if current is None:
+            return False
+        if text == getattr(current, "goal", None):
+            return True
+        head = (text or "").lstrip()
+        if head.startswith(_WORKFLOW_CONTINUATION_PREFIXES):
+            return True
+        if _is_approved_plan_implement(head):
+            return True
+        return head.startswith(_PLAN_REJECT_PREFIXES)
+
+    async def _ensure_build_workflow(self, goal: str) -> None:
+        """Classify a new development goal once. Retries reuse the contract."""
+        if not self._build_workflow_enabled():
+            return
+        override = getattr(self, "_subagent_system_prompt", None)
+        if isinstance(override, str) and override.strip():
+            if getattr(self, "_build_workflow", None) is None:
+                payload = getattr(self, "_inherited_build_workflow", None)
+                if not isinstance(payload, dict):
+                    payload = _PARENT_BUILD_WORKFLOW.get()
+                if isinstance(payload, dict):
+                    self.inherit_build_workflow(payload)
+            return
+        current = getattr(self, "_build_workflow", None)
+        if current is not None and self._is_workflow_continuation_text(goal):
+            return
+        previous = current
+        self._build_workflow = None
+        self._build_workflow_receipts = {}
+        self._workflow_subject = goal
+        self._workflow_write_generation = 0
+        self._workflow_clarify_answered = False
+        self._workflow_plan_status = "pending"
+        self._workflow_plan_revision = 1
+        self._workflow_plan_bound_revision = None
+        self._workflow_plan_goal = ""
+        self._workflow_touched_dirs = set()
+        prompt = (
+            "Classify this goal. Reply with one JSON object only. "
+            "difficulty is simple, medium, or complex from the task itself, "
+            "not from length or keywords. task_kind is development, question, "
+            "or read_only. stage_actions keys: project_docs, clarify, design, "
+            "build_verify, doc_sync. Values: inspect, run, or skip. "
+            "development must set build_verify to run and include required_checks "
+            "with check_id, command, cwd, success_predicate. "
+            f"Goal:\n{goal}"
+        )
+        ask = getattr(self, "_build_workflow_ask", None)
+
+        async def _text(body: str) -> str:
+            if callable(ask):
+                produced = ask(body)
+                if hasattr(produced, "__await__"):
+                    produced = await produced
+                return str(produced)
+            return await self._workflow_model_text(body)
+
+        def _accept(parsed):
+            if previous is not None:
+                parsed = retarget_contract(previous, parsed)
+            self._build_workflow = parsed
+            self._build_workflow_block = ""
+            self._workflow_plan_revision = int(
+                getattr(self, "_workflow_plan_revision", 1) or 1
+            )
+
+        try:
+            _accept(parse_decision_text(await _text(prompt), goal=goal))
+        except WorkflowContractError:
+            try:
+                _accept(
+                    parse_decision_text(
+                        await _text(prompt + "\nReturn only the JSON object."),
+                        goal=goal,
+                    )
+                )
+            except WorkflowContractError as exc:
+                self._build_workflow = None
+                self._build_workflow_block = str(exc)
+
+    def _workflow_stage_note(self) -> str:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None:
+            return ""
+        lines = [
+            f"Build-workflow contract {decision.workflow_id}: "
+            f"{decision.difficulty} {decision.task_kind}. {decision.reason}",
+        ]
+        for stage, action in decision.stage_actions.items():
+            lines.append(f"- {stage}: {action}")
+        if decision.stage_actions.get("clarify") == "run":
+            lines.append("Use the question tool before any write. Do not guess.")
+        if decision.stage_actions.get("design") == "run":
+            lines.append("State the design and wait for approval before mutating files.")
+        if decision.stage_actions.get("project_docs") != "skip":
+            lines.append("Read the applicable AGENTS.md or project notes before editing.")
+        if decision.stage_actions.get("doc_sync") == "run":
+            lines.append("Update the affected docs after the code change, then re-run the checks.")
+        if decision.required_checks:
+            lines.append("Required checks:")
+            for check in decision.required_checks:
+                lines.append(f"- {check.check_id}: {check.command} (cwd {check.cwd})")
+        lines.append("Do not claim completion until those checks have actually passed.")
+        return "\n".join(lines)
+
+    def _file_op_must_enter_tool_loop(self, op: dict | None) -> bool:
+        """Development writes cannot skip the contract by using the direct file path."""
+        if not self._build_workflow_enabled():
+            return False
+        if not op or op.get("op") in {"read", "list", None}:
+            return False
+        if op.get("op") == "write" and is_ordinary_text_save(
+            str(op.get("path") or ""),
+            str(op.get("content") or ""),
+        ):
+            return False
+        decision = getattr(self, "_build_workflow", None)
+        return decision is None or getattr(decision, "task_kind", "") == "development"
+
+    def _workflow_generation_box(self) -> _WorkflowGeneration:
+        box = self.__dict__.get("_workflow_generation")
+        if not isinstance(box, _WorkflowGeneration):
+            shared = None
+            prompt = getattr(self, "_subagent_system_prompt", None)
+            if isinstance(prompt, str) and prompt.strip():
+                shared = _PARENT_WORKFLOW_GENERATION.get()
+            box = shared if isinstance(shared, _WorkflowGeneration) else _WorkflowGeneration(
+                int(getattr(self, "_workflow_write_generation", 0) or 0)
+            )
+            self._workflow_generation = box
+        self._workflow_write_generation = int(box.value)
+        return box
+
+    def _current_workflow_generation(self) -> int:
+        return int(self._workflow_generation_box().value)
+
+    def _workflow_subject_hash(self) -> str:
+        decision = getattr(self, "_build_workflow", None)
+        goal = getattr(decision, "goal", "") if decision is not None else ""
+        return f"{goal}:{self._current_workflow_generation()}"
+
+    def _workflow_completion_feedback(self) -> str | None:
+        if not self._build_workflow_enabled():
+            return None
+        if getattr(self, "_workflow_active_mode", "build") == "plan":
+            return None
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None:
+            reason = getattr(self, "_build_workflow_block", "") or "missing contract"
+            return f"[build-workflow] 不能完成：{reason}"
+        if decision.task_kind != "development":
+            return None
+        verdict = check_completion(
+            decision,
+            getattr(self, "_build_workflow_receipts", {}) or {},
+            str(getattr(self, "_workspace_root", "") or ""),
+            self._workflow_subject_hash(),
+        )
+        if verdict.accepted:
+            return None
+        return (
+            "[build-workflow] 完成门未通过。"
+            f" missing={','.join(verdict.missing) or '-'} "
+            f"stale={','.join(verdict.stale) or '-'}. "
+            "继续补齐验收，不要宣称已经完成。"
+        )
+
+    def _workflow_tool_path(self, args: dict | None) -> str:
+        if not isinstance(args, dict):
+            return ""
+        return str(args.get("filePath") or args.get("path") or args.get("file_path") or "")
+
+    def _workflow_doc_dirs(self) -> set[str]:
+        dirs = {
+            str(item).replace("\\", "/").rstrip("/") or "."
+            for item in (getattr(self, "_workflow_touched_dirs", set()) or set())
+        }
+        decision = getattr(self, "_build_workflow", None)
+        if decision is not None:
+            for check in decision.required_checks:
+                cwd = str(check.cwd or ".").replace("\\", "/").rstrip("/") or "."
+                dirs.add(cwd)
+        return dirs
+
+    def _workflow_doc_is_unrelated(self, args: dict | None) -> bool:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or decision.stage_actions.get("doc_sync") != "run":
+            return False
+        path = self._workflow_tool_path(args).replace("\\", "/")
+        if not path or not is_documentation_path(path):
+            return False
+        parent = str(Path(path).parent).replace("\\", "/").rstrip("/") or "."
+        for allowed in self._workflow_doc_dirs():
+            if parent == allowed or parent.startswith(allowed + "/") or allowed.startswith(parent + "/"):
+                return False
+        return True
+
+    def _workflow_clarify_open(self) -> bool:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or decision.stage_actions.get("clarify") != "run":
+            return False
+        return not bool(getattr(self, "_workflow_clarify_answered", False))
+
+    def _workflow_design_open(self) -> bool:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or decision.stage_actions.get("design") != "run":
+            return False
+        if getattr(self, "_workflow_plan_status", "") != "approved":
+            return True
+        expected = int(getattr(self, "_workflow_plan_revision", 1) or 1)
+        bound = getattr(self, "_workflow_plan_bound_revision", None)
+        if bound != expected:
+            return True
+        goal = getattr(decision, "goal", "")
+        return getattr(self, "_workflow_plan_goal", None) not in {goal, decision.workflow_id}
+
+    def note_workflow_plan(self, *, approved: bool, plan_revision: int, goal: str) -> None:
+        """Bind design approval to the current goal and plan revision."""
+        decision = getattr(self, "_build_workflow", None)
+        expected = int(getattr(self, "_workflow_plan_revision", 1) or 1)
+        wanted = getattr(decision, "goal", "") if decision is not None else ""
+        identity_ok = plan_revision == expected and (
+            not wanted or goal in {wanted, getattr(decision, "workflow_id", "")}
+        )
+        if not identity_ok or not approved:
+            self._workflow_plan_status = "rejected" if not approved else "pending"
+            self._workflow_plan_bound_revision = None
+            self._workflow_plan_goal = goal
+            return
+        self._workflow_plan_status = "approved"
+        self._workflow_plan_bound_revision = plan_revision
+        self._workflow_plan_goal = goal
+
+    def _observe_workflow_plan_turn(self, user_input: str) -> None:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or decision.stage_actions.get("design") != "run":
+            return
+        text = (user_input or "").lstrip()
+        expected = int(getattr(self, "_workflow_plan_revision", 1) or 1)
+        if _is_approved_plan_implement(text):
+            self.note_workflow_plan(approved=True, plan_revision=expected, goal=decision.goal)
+        elif text.startswith(_PLAN_REJECT_PREFIXES):
+            self.note_workflow_plan(approved=False, plan_revision=expected, goal=decision.goal)
+
+    def _question_answer_resolved(self, result: str) -> bool:
+        text = str(result or "").strip()
+        if not text or text.lower().startswith("[error"):
+            return False
+        lowered = text.lower()
+        return not any(
+            marker in lowered
+            for marker in ("no input", "cancelled", "timed out", "unavailable")
+        )
+
+    def _workflow_blocks_mutation(self, name: str, args: dict | None = None) -> bool:
+        if not self._build_workflow_enabled():
+            return False
+        tool = str(name or "").lower()
+        if tool not in _WORKFLOW_MUTATION_TOOLS:
+            return False
+        payload = args or {}
+        if tool in {"bash", "task"} and classify_tool_risk(tool, payload) < RiskLevel.WRITE:
+            return False
+        if tool == "git" and str(payload.get("operation") or "status").strip().lower() in _GIT_READONLY_OPERATIONS:
+            return False
+        if self._workflow_doc_is_unrelated(payload):
+            return True
+        decision = getattr(self, "_build_workflow", None)
+        if tool in {"write", "edit", "patch"} and is_ordinary_text_save(
+            self._workflow_tool_path(payload),
+            str(payload.get("content") or payload.get("new_string") or ""),
+        ):
+            if decision is None or decision.task_kind != "development":
+                return False
+        if decision is None:
+            return True
+        if decision.task_kind != "development":
+            return False
+        if self._workflow_clarify_open() or self._workflow_design_open():
+            return True
+        return not any(check.required for check in decision.required_checks)
+
+    def _workflow_tool_ref(self, call_id: str) -> str:
+        getter = getattr(ToolOrchestrator, "get_tool_journal_binding", None)
+        binding = getter() if callable(getter) else None
+        attempt = str(getattr(binding, "attempt_id", "") or "")
+        if attempt and call_id:
+            return f"journal:{attempt}:{call_id}"
+        if call_id:
+            return f"tool:{call_id}"
+        return ""
+
+    def _record_workflow_receipt(
+        self,
+        name: str,
+        args: dict,
+        result: str,
+        is_error: bool,
+        call_id: str = "",
+    ) -> None:
+        if str(name).lower() == "question" and self._question_answer_resolved(result):
+            self._workflow_clarify_answered = True
+            return
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or str(name).lower() != "bash":
+            return
+        command = str((args or {}).get("command") or "")
+        explicit_cwd = str((args or {}).get("cwd") or (args or {}).get("workdir") or "").strip()
+        receipts = getattr(self, "_build_workflow_receipts", None)
+        if not isinstance(receipts, dict):
+            receipts = {}
+            self._build_workflow_receipts = receipts
+        for check in decision.required_checks:
+            if check.command != command:
+                continue
+            if explicit_cwd:
+                recorded_cwd = explicit_cwd.replace("\\", "/")
+            else:
+                recorded_cwd = self._workflow_actual_cwd()
+                if self._workflow_cwd_matches(recorded_cwd, check.cwd):
+                    continue
+            if not recorded_cwd:
+                continue
+            if check.success_predicate == "tests_passed_nonempty":
+                predicate_passed = (not is_error) and tests_passed_nonempty(result)
+            else:
+                predicate_passed = not is_error
+            receipts[check.check_id] = CheckReceipt(
+                check_id=check.check_id,
+                workflow_id=decision.workflow_id,
+                goal_revision=decision.goal_revision,
+                contract_revision=decision.contract_revision,
+                workspace_id=str(getattr(self, "_workspace_root", "") or ""),
+                subject_hash=self._workflow_subject_hash(),
+                command=check.command,
+                cwd=recorded_cwd,
+                exit_code=1 if is_error or not predicate_passed else 0,
+                executed=True,
+                predicate_passed=predicate_passed,
+                result_summary=result[:500],
+                tool_result_ref=self._workflow_tool_ref(call_id),
+            )
+
+    def _workflow_actual_cwd(self) -> str:
+        try:
+            return str(current_working_directory()).replace("\\", "/")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _workflow_cwd_matches(actual: str, expected: str) -> bool:
+        left = str(actual or "").replace("\\", "/").rstrip("/") or "."
+        right = str(expected or "").replace("\\", "/").rstrip("/") or "."
+        return left == right
+
+    def _bump_workflow_generation(self) -> None:
+        box = self._workflow_generation_box()
+        box.value += 1
+        self._workflow_write_generation = int(box.value)
+
+    def _shell_write_targets(self, command: str) -> list[str]:
+        visible = _STDERR_REDIRECT_RE.sub(" ", command)
+        if _SHELL_WRITE_SIGNAL_RE.search(visible) is None:
+            return []
+        found: list[str] = []
+        for match in _SHELL_REDIRECT_RE.finditer(visible):
+            found.append(match.group(1))
+        if re.search(r"(?i)\bwrite_text\b|\bwrite_bytes\b|open\(", visible):
+            found.extend(_QUOTED_FILE_RE.findall(visible))
+        return found
+
+    def _shell_invalidates_subject(self, command: str) -> bool:
+        text = str(command or "").strip()
+        if not text:
+            return False
+        decision = getattr(self, "_build_workflow", None)
+        if decision is not None and any(check.command == text for check in decision.required_checks):
+            return False
+        if classify_tool_risk("bash", {"command": text}) < RiskLevel.WRITE:
+            return False
+        if _GIT_WORKTREE_REWRITE_RE.search(text):
+            return True
+        targets = self._shell_write_targets(text)
+        if _FILE_MUTATOR_RE.search(text):
+            targets = [*targets, *_FILE_TOKEN_RE.findall(text)]
+            if not targets:
+                return True
+        if not targets:
+            return False
+        return any(not is_documentation_path(target) for target in targets)
+
+    def _git_tool_invalidates(self, args: dict | None) -> bool:
+        payload = args or {}
+        operation = str(payload.get("operation") or "").strip().lower()
+        if operation in {"checkout", "restore", "reset", "switch", "clean"}:
+            return True
+        if operation in {"status", "diff", "log", "branch"}:
+            return False
+        return bool(_GIT_WORKTREE_REWRITE_RE.search(str(payload.get("args") or payload.get("command") or "")))
+
+    def _note_workflow_write(self, name: str, is_error: bool, args: dict | None = None) -> None:
+        if is_error or not self._build_workflow_enabled():
+            return
+        if name in {"write", "edit", "patch"}:
+            path = self._workflow_tool_path(args).replace("\\", "/")
+            parent = str(Path(path).parent).replace("\\", "/").rstrip("/") or "."
+            if path and not is_documentation_path(path):
+                touched = getattr(self, "_workflow_touched_dirs", None)
+                if not isinstance(touched, set):
+                    touched = set()
+                    self._workflow_touched_dirs = touched
+                touched.add(parent)
+            if path and is_documentation_path(path):
+                return
+            self._bump_workflow_generation()
+            return
+        if name == "bash" and self._shell_invalidates_subject(str((args or {}).get("command") or "")):
+            self._bump_workflow_generation()
+            return
+        if name == "git" and self._git_tool_invalidates(args):
+            self._bump_workflow_generation()
+
+    def project_instructions(self, target):
+        cache = getattr(self, "_instruction_cache", None)
+        if not isinstance(cache, InstructionCache):
+            cache = InstructionCache()
+            self._instruction_cache = cache
+        root = Path(str(getattr(self, "_workspace_root", "") or "."))
+        return discover_instructions(root, target, cache=cache)
+
+    def instruction_permissions(self, allowlist, target):
+        return bind_instruction_permissions(allowlist, self.project_instructions(target))
+
+    def workflow_checkpoint_document(self) -> dict | None:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None:
+            return None
+        receipts = getattr(self, "_build_workflow_receipts", None)
+        if not isinstance(receipts, dict):
+            receipts = {}
+            self._build_workflow_receipts = receipts
+        return checkpoint_payload(
+            decision,
+            receipts,
+            stage_progress=getattr(self, "_workflow_stage_progress", {}) or {},
+            plan_revision=int(getattr(self, "_workflow_plan_revision", 1) or 1),
+            plan_status=str(getattr(self, "_workflow_plan_status", "pending") or "pending"),
+            plan_goal=str(getattr(self, "_workflow_plan_goal", "") or decision.goal),
+            plan_bound_revision=getattr(self, "_workflow_plan_bound_revision", None),
+            clarify_answered=bool(getattr(self, "_workflow_clarify_answered", False)),
+            write_generation=self._current_workflow_generation(),
+            touched_dirs=tuple(getattr(self, "_workflow_touched_dirs", set()) or ()),
+        )
+
+    def inherit_build_workflow(self, payload) -> None:
+        """Copy a parent contract onto a child. Receipts stay with the parent."""
+        if not isinstance(payload, dict):
+            return
+        try:
+            decision, _parent_receipts = workflow_from_checkpoint(payload)
+        except WorkflowContractError:
+            return
+        self._build_workflow = decision
+        self._build_workflow_receipts = {}
+        self._build_workflow_block = ""
+        shared = _PARENT_WORKFLOW_GENERATION.get()
+        if isinstance(shared, _WorkflowGeneration):
+            self._workflow_generation = shared
+            self._workflow_write_generation = int(shared.value)
+        else:
+            self._workflow_write_generation = int(payload.get("write_generation") or 0)
+        self._workflow_clarify_answered = bool(payload.get("clarify_answered"))
+        self._workflow_plan_revision = int(payload.get("plan_revision") or 1)
+        self._workflow_plan_status = str(payload.get("plan_status") or "pending")
+        self._workflow_plan_goal = str(payload.get("plan_goal") or decision.goal)
+        bound = payload.get("plan_bound_revision")
+        self._workflow_plan_bound_revision = bound if isinstance(bound, int) else None
+        progress = payload.get("stage_progress")
+        self._workflow_stage_progress = dict(progress) if isinstance(progress, dict) else {}
+        touched = payload.get("touched_dirs") or []
+        self._workflow_touched_dirs = {str(item) for item in touched}
+
+    def restore_build_workflow(self, payload, *, run_id: str | None = None) -> None:
+        """Resume the same task. A new run id does not mint a new workflow."""
+        del run_id
+        if not isinstance(payload, dict):
+            return
+        decision, receipts = workflow_from_checkpoint(payload)
+        self._build_workflow = decision
+        self._build_workflow_receipts = receipts
+        self._build_workflow_block = ""
+        self._workflow_write_generation = int(payload.get("write_generation") or 0)
+        self._workflow_clarify_answered = bool(payload.get("clarify_answered"))
+        self._workflow_plan_revision = int(payload.get("plan_revision") or 1)
+        self._workflow_plan_status = str(payload.get("plan_status") or "pending")
+        self._workflow_plan_goal = str(payload.get("plan_goal") or decision.goal)
+        bound = payload.get("plan_bound_revision")
+        self._workflow_plan_bound_revision = bound if isinstance(bound, int) else None
+        progress = payload.get("stage_progress")
+        self._workflow_stage_progress = dict(progress) if isinstance(progress, dict) else {}
+        touched = payload.get("touched_dirs") or []
+        self._workflow_touched_dirs = {str(item) for item in touched}
+
     def _apply_turn_effort(self, mode: str, text: str) -> str:
         """A21: pick this turn's effort. Implicit LLM-build default
         ``balanced`` must not skip simple→fast routing.
@@ -5704,9 +6306,30 @@ class AgentV2:
         if gone:
             revoke(gone)
 
+    def _subagent_inbox_pending(self) -> bool:
+        inbox = getattr(self, "_subagent_inbox", None)
+        return isinstance(inbox, list) and any(str(item).strip() for item in inbox)
+
+    def _inject_subagent_inbox(self, messages: list) -> None:
+        """Append child reports that arrived before this model call."""
+        inbox = getattr(self, "_subagent_inbox", None)
+        if not isinstance(inbox, list) or not inbox:
+            return
+        pending = [str(item).strip() for item in inbox if str(item).strip()]
+        inbox.clear()
+        for text in pending:
+            messages.append(HumanMessage(content=text))
+
+    def _active_system_prompt(self) -> str:
+        """Primary uses the product prompt. A child uses only its own."""
+        override = getattr(self, "_subagent_system_prompt", None)
+        if isinstance(override, str) and override.strip():
+            return override
+        return get_system_prompt(variant=self._prompt_variant())
+
     def replace_model_history(self, messages: list | None) -> None:
         """用另一份对话替换下一轮模型实际续写的 AgentPrefix，并换暴露标识。"""
-        system = get_system_prompt(variant=self._prompt_variant())
+        system = self._active_system_prompt()
         restored: list = []
         open_call_ids: set[str] = set()
         last_tool_id = ""
@@ -6072,6 +6695,19 @@ class AgentV2:
         6. Update token stats and context tracking
         """
         await self._ensure_session_loaded()
+        self._workflow_active_mode = mode or "build"
+        if self._workflow_active_mode != "plan":
+            await self._ensure_build_workflow(user_input)
+            self._observe_workflow_plan_turn(user_input)
+        decision_now = getattr(self, "_build_workflow", None)
+        self._workflow_gate_this_turn = bool(
+            self._build_workflow_enabled()
+            and self._workflow_active_mode != "plan"
+            and getattr(decision_now, "task_kind", "") == "development"
+        )
+        stage_note = self._workflow_stage_note()
+        if stage_note:
+            role_instruction = f"{role_instruction.strip()}\n\n{stage_note}".strip() if role_instruction else stage_note
         self._begin_status_turn()
         # A21: fast path 按任务性质选 effort 档位（简单查询 → fast；其余 balanced）。
         # 用户显式配置的 effort（如 deep）优先，不被 fast path 覆盖。
@@ -6086,7 +6722,7 @@ class AgentV2:
             self.model_config = {}
         self.model_config = dict(self.model_config)
         self._apply_turn_effort(mode, user_input)
-        system = get_system_prompt(variant=self._prompt_variant())
+        system = self._active_system_prompt()
         prefix_live = self._agent_prefix_is_live(system)
         # 废弃代码（2026-09-21）：曾在 effort=fast 时也注入 FAST_LOCAL_BUILD_INSTRUCTION。
         # 带 fast 档的厂商会把「必须写 tests/test_lru_cache.py」灌进打开文件任务。
@@ -6095,8 +6731,17 @@ class AgentV2:
             and mode == "build"
             and self._has_creation_product_intent(user_input)
         ):
+            instruction = FAST_LOCAL_BUILD_INSTRUCTION
+            if self._build_workflow_enabled():
+                instruction = instruction.replace(
+                    "finish required documentation before validation, and run one focused ",
+                    "follow the active build-workflow contract, then run one focused ",
+                ).replace(
+                    "Stop immediately after the actual validation and return a factual Final Answer.",
+                    "Return a factual Final Answer only after the harness completion gate accepts the required checks.",
+                )
             role_instruction = (
-                f"{role_instruction.strip()}\n\n{FAST_LOCAL_BUILD_INSTRUCTION}"
+                f"{role_instruction.strip()}\n\n{instruction}"
             ).strip()
         # FX6: the agent path NEVER resolves per-turn allowlists for schema
         # shaping — tools are the frozen full core set. Explicit allowlists
@@ -6170,6 +6815,7 @@ class AgentV2:
             research_policy.cache_read_allowed
             and not implement_after_plan
             and not attachment_turn
+            and not self._build_workflow_enabled()
         ):
             cached = precise_cache.get(system, cache_key, namespace=cache_namespace)
             precise_hit = bool(cached and cached.get("response"))
@@ -6206,6 +6852,7 @@ class AgentV2:
             tui.write_progress("Analyzing your request...")
 
         messages = self._continue_agent_prefix(system, user_msg)
+        self._inject_subagent_inbox(messages)
         research_sources: list[str] = []
 
         def _prefetch_failure(detail: str) -> str | None:
@@ -6444,6 +7091,10 @@ class AgentV2:
                                 notes.extend(list(drain() or []))
                             except Exception:
                                 pass
+                        inbox = getattr(self, "_subagent_inbox", None)
+                        if isinstance(inbox, list) and inbox:
+                            notes.extend(str(item) for item in inbox)
+                            inbox.clear()
                         return notes
 
                     _applied_steers = apply_mid_turn_steers(
@@ -6764,6 +7415,11 @@ class AgentV2:
                     react_decision,
                     write_still_required=write_still_required,
                 ):
+                    workflow_block = self._workflow_completion_feedback()
+                    if workflow_block and not tool_calls:
+                        messages.append(AIMessage(content=answer))
+                        messages.append(HumanMessage(content=workflow_block))
+                        continue
                     break
                 if has_final_answer_call(tool_calls):
                     tool_calls = drop_tools_after_final_answer(tool_calls)
@@ -6890,6 +7546,11 @@ class AgentV2:
                     except Exception:
                         creation_intent = False
                     if answer.strip() and not creation_intent:
+                        workflow_block = self._workflow_completion_feedback()
+                        if workflow_block:
+                            messages.append(AIMessage(content=answer))
+                            messages.append(HumanMessage(content=workflow_block))
+                            continue
                         break
                     # Plan mode ends when the model returns the plan text.
                     # Build mode still treats a tool-free round as non-exit.
@@ -7052,6 +7713,18 @@ class AgentV2:
                         self._tool_error_occurred = True
                     else:
                         last_round_had_success = True
+                    self._record_workflow_receipt(
+                        str(tool_name),
+                        tool_args if isinstance(tool_args, dict) else {},
+                        str(result),
+                        is_error,
+                        call_id=str(tool_id or ""),
+                    )
+                    self._note_workflow_write(
+                        str(tool_name).lower(),
+                        is_error,
+                        tool_args if isinstance(tool_args, dict) else {},
+                    )
                     if is_final_answer_tool(str(tool_name)):
                         final_answer_called = True
                     stuck = self._stuck_detector.record(
@@ -7074,6 +7747,11 @@ class AgentV2:
                             self._stuck_detector.stuck_reason,
                         )
                 if final_answer_called:
+                    workflow_block = self._workflow_completion_feedback()
+                    if workflow_block:
+                        final_answer_called = False
+                        messages.append(HumanMessage(content=workflow_block))
+                        continue
                     # 2026-09-23：final_answer 的 result 就是模型写的最终答案，
                     # 优先于流式文本（此前只在 answer 为空时才用，导致模型写了
                     # 元评论「给出最终结果。」后，真正的答案被丢弃、只在 Thought
@@ -7368,6 +8046,11 @@ class AgentV2:
         tool schema is frozen full (never cropped per turn), so denials
         live HERE, not in the API schema.
         """
+        if self._workflow_blocks_mutation(name, args):
+            return (
+                "[blocked: development change needs a build-workflow contract "
+                "with a required check]"
+            )
         if mode == "plan" and name not in PLAN_READONLY_TOOL_NAMES:
             return (
                 f"[blocked: plan mode is read-only; "
@@ -7433,11 +8116,26 @@ class AgentV2:
                 and get_event_tui() is None
             ):
                 event_token = bind_event_tui(get_tui())
+            parent_token = None
+            generation_token = None
+            if str(name).lower() in {"task", "spawn_subagent"}:
+                document = self.workflow_checkpoint_document()
+                generation_token = _PARENT_WORKFLOW_GENERATION.set(
+                    self._workflow_generation_box()
+                )
+                if isinstance(document, dict):
+                    inherited = dict(document)
+                    inherited["receipts"] = []
+                    parent_token = _PARENT_BUILD_WORKFLOW.set(inherited)
             try:
                 result = await orchestrator.execute_tool(
                     name, args, **gate_kwargs
                 )
             finally:
+                if parent_token is not None:
+                    _PARENT_BUILD_WORKFLOW.reset(parent_token)
+                if generation_token is not None:
+                    _PARENT_WORKFLOW_GENERATION.reset(generation_token)
                 if event_token is not None and callable(reset_event_tui):
                     reset_event_tui(event_token)
             if fallback_span is not None:
@@ -7982,8 +8680,9 @@ class AgentV2:
         if decision is None or "session.load" not in decision.skip_await:
             await self._ensure_session_loaded()
         memory_ctx = self._memory_ctx_for_turn(user_input)
-        system = get_system_prompt(variant=self._prompt_variant())
+        system = self._active_system_prompt()
         user_msg = build_user_message("", user_input, memory_ctx)
+        inbox_pending = self._subagent_inbox_pending()
 
         # Level 1: exact hash cache (include memory context in key for freshness)
         memory_fingerprint = None
@@ -7996,14 +8695,14 @@ class AgentV2:
         )
         cache_namespace = self._application_cache_namespace()
         attachment_turn = bool(getattr(self, "_prompt_attachment_active", False))
-        cached = None if attachment_turn else precise_cache.get(
+        cached = None if attachment_turn or inbox_pending else precise_cache.get(
             system,
             cache_key,
             prompt_version=get_prompt_version("system"),
             namespace=cache_namespace,
         )
         precise_hit = bool(cached and cached.get("response"))
-        if attachment_turn:
+        if attachment_turn or inbox_pending:
             token_stats.record_application_cache("precise", bypass=True)
         else:
             token_stats.record_application_cache("precise", hit=precise_hit)
@@ -8017,7 +8716,7 @@ class AgentV2:
 
         # Level 2: semantic similarity cache (only when no conversation context)
         cached = None
-        if not attachment_turn and not memory_ctx:
+        if not attachment_turn and not memory_ctx and not inbox_pending:
             cached = semantic_cache.get(user_input, namespace=cache_namespace)
             semantic_hit = bool(cached and cached.get("response"))
             token_stats.record_application_cache("semantic", hit=semantic_hit)
@@ -8039,8 +8738,10 @@ class AgentV2:
         ):
             tui.write_progress("Analyzing your request...")
 
-        # Cache miss -> call LLM
+        # Cache miss -> call LLM. Pending child reports ride in the same inbox
+        # the tool loop already drains; a chat turn must see them too.
         messages = [SystemMessage(content=system), self._build_prompt_human_message(user_msg)]
+        self._inject_subagent_inbox(messages)
         try:
             # ALWAYS stream for real-time token display
             answer_parts = []
@@ -8143,12 +8844,12 @@ class AgentV2:
             try:
                 # B7 (共性 8): 失败结果不缓存——空答案 / [error ...] 错误串 /
                 # 本轮发生工具错误（luna R8-2）一律不写入应用缓存。
-                if (
-                    not attachment_turn
-                    and _should_cache_answer(
-                        answer,
-                        tool_error_occurred=getattr(self, "_tool_error_occurred", False),
-                    )
+                # 消费了子代理报告的这一轮也不写：缓存键不含报告，
+                # 另一会话会命中这份答案。
+                cacheable_turn = not attachment_turn and not inbox_pending
+                if cacheable_turn and _should_cache_answer(
+                    answer,
+                    tool_error_occurred=getattr(self, "_tool_error_occurred", False),
                 ):
                     precise_cache.put(
                         system,
@@ -8157,7 +8858,7 @@ class AgentV2:
                         prompt_version=get_prompt_version("system"),
                         namespace=cache_namespace,
                     )
-                    if not attachment_turn and not memory_ctx:
+                    if not memory_ctx:
                         semantic_cache.put(user_input, answer, namespace=cache_namespace)
                 self._memory.add_interaction(user_input, answer)
                 self._memory.save_session()
@@ -8811,6 +9512,15 @@ class AgentV2:
                         record_failure(failure_category)
             if (
                 status == "succeeded"
+                and getattr(self, "_workflow_gate_this_turn", False)
+            ):
+                workflow_block = self._workflow_completion_feedback()
+                if workflow_block:
+                    result = f"[build incomplete: {workflow_block}]"
+                    status = "failed"
+                    record_failure("verification_error")
+            if (
+                status == "succeeded"
                 and mode in {"build", "compose"}
                 and _answer_is_incomplete_build_continuation(str(result))
                 and not has_verified_write
@@ -8987,6 +9697,7 @@ class AgentV2:
         # It is intentionally reset once per top-level request, not per tool
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
+        self._workflow_gate_this_turn = False
         # 2026-09-23：每次顶层请求清空传输耗尽记录，避免上一次的网络断
         # 污染本次的证据门判定。
         _last_transport_exhaustion.drain()
@@ -9051,6 +9762,15 @@ class AgentV2:
 
         if decision.path == "plan":
             return await self._run_plan_only(user_input)
+
+        if (
+            decision.path == "file_op"
+            and self._file_op_must_enter_tool_loop(file_op)
+        ):
+            await self._ensure_build_workflow(user_input)
+            if self._file_op_must_enter_tool_loop(file_op):
+                decision = route(user_input, mode, routing_directive)
+                self._turn_decision = decision
 
         if decision.path == "file_op":
             try:

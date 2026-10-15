@@ -410,6 +410,9 @@ def _default_config() -> dict:
             "tool_journal_enabled": True,
             "tool_journal_retention": 100,
             "tool_journal_max_result_chars": 30000,
+            # Primary Build workflow contract. Off until deterministic
+            # acceptance and an authorized live classification sample pass.
+            "build_workflow": {"enabled": False},
             # Workspace mode constrains the selected cwd. Docker mode adds an
             # OS boundary and defaults to no network; operators can opt into it
             # once the configured image contains their required toolchain.
