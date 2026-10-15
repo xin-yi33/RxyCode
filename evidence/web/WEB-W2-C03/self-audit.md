@@ -7,3 +7,4 @@
 - dispatch_pending writes a Redis stream. A publisher that raises ConnectionError leaves the outbox pending and increments attempts. The retry publishes once. A second dispatch does not add another stream entry.
 - attempt_tool calls ToolExecutionJournal.reserve. After a ConnectionError the journal entry stays pending, and the next call is uncertain without executing the tool again.
 - Nested whitelist is fa7d5f4. The parent commit does not track the embedded plan repository.
+- Codex first returned VERDICT: PROBLEMS. 719cadc0 stores the message and permission profile on the first event, includes session_id in the idempotency digest, compares lease time with clock_timestamp() at update time, refuses to rewrite a terminal status, renews the same epoch, and records cancel_requested once before confirm_cancel.
