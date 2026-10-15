@@ -9,7 +9,7 @@ from RxyCode.RxyCode1_1_0.main import browser_entry_status, open_shared_core
 from RxyCode.RxyCode1_1_0.protocol.agents import AgentSpec
 
 
-def test_w1_c05_contract():
+async def test_w1_c05_contract():
     """One task through every surface creates a single AgentRuntime."""
     from appserver.agent_worker import session_type_for_worker
 
@@ -22,12 +22,23 @@ def test_w1_c05_contract():
         tools=[],
         mechanical=True,
     )
+    class _Agent:
+        async def run(self, text: str, mode: str = "build") -> str:
+            del text, mode
+            return "ok"
+
+        def cancel(self) -> bool:
+            return True
+
     core = open_shared_core(session, spec)
-    runtimes = [core.run(surface, "same-task") for surface in ("cli", "opentui", "desktop", "web")]
+    agent = _Agent()
+    runtimes = [
+        await core.run(surface, "same-task", agent)
+        for surface in ("cli", "opentui", "desktop", "web")
+    ]
     assert core.creations == 1
     assert all(runtime is runtimes[0] for runtime in runtimes)
     assert type(runtimes[0]) is AgentRuntime
-    assert runtimes[0].memory_get("task") == "same-task"
     assert session.agent_runtimes["c05"] is runtimes[0]
     assert session_type_for_worker() is Session
 

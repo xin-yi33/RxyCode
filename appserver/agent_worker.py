@@ -943,7 +943,11 @@ class AgentWorker:
                 if accepts_attachments:
                     prompt_kwargs["attachments"] = attachments
                 install_scripted_agent_replies(self._agent)
-                result = await session.prompt(self._agent, text, **prompt_kwargs)
+                from RxyCode.RxyCode1_1_0.main import dispatch_surface_prompt
+
+                result = await dispatch_surface_prompt(
+                    "desktop", session, self._agent, text, **prompt_kwargs
+                )
                 # turn 结束后才到达的 steer（agent 主循环没来得及 drain）：
                 # 合并为一条消息开一个兜底新回合，避免每条各产出一个
                 # 「最终结果」（多 final_answer 业务 bug，2026-09-23）。
@@ -958,7 +962,9 @@ class AgentWorker:
                     combined = "\n\n".join(extras)
                     steer_kwargs = dict(prompt_kwargs)
                     steer_kwargs.pop("attachments", None)
-                    result = await session.prompt(self._agent, combined, **steer_kwargs)
+                    result = await dispatch_surface_prompt(
+                        "desktop", session, self._agent, combined, **steer_kwargs
+                    )
                 schedule = getattr(self._agent, "_schedule_prewarm", None)
                 if callable(schedule):
                     schedule()

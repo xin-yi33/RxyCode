@@ -742,7 +742,7 @@ class SharedCore:
         self.runtime: object | None = None
         self.creations = 0
 
-    def run(self, surface: str, task: str) -> object:
+    async def run(self, surface: str, task: str, agent: object) -> object:
         facade = core_for_surface(surface)
         runtime_type = facade["agent_runtime"]
         if self.runtime is None:
@@ -750,8 +750,21 @@ class SharedCore:
             self.creations += 1
         elif type(self.runtime) is not runtime_type:
             raise RuntimeError(f"{surface} forked the agent runtime")
-        self.runtime.memory_set("task", task)
+        await dispatch_surface_prompt(
+            surface,
+            self.session,
+            agent,
+            task,
+            mode="build",
+            run_id=f"run-{surface}",
+        )
         return self.runtime
+
+
+async def dispatch_surface_prompt(surface: str, session: object, agent: object, text: str, **kwargs: object) -> object:
+    """CLI, OpenTUI, Desktop, and Web prompts go through this one Session.prompt."""
+    core_for_surface(surface)
+    return await session.prompt(agent, text, **kwargs)
 
 
 def open_shared_core(session: object, spec: object) -> SharedCore:
