@@ -35,8 +35,9 @@ def append_event(
         run = db.execute(
             select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
         ).scalar_one()
-        current = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
-        seq = int(current or 0) + 1
+        retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
+        seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
+        run.event_seq = seq
         event_id = uuid.uuid4().hex
         db.add(
             RunEvent(
@@ -68,14 +69,14 @@ def replay(database_url: str, *, tenant_id: str, run_id: str, after_seq: int) ->
         rows = db.scalars(
             select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
         ).all()
-        if rows:
-            oldest = int(rows[0].seq)
-            if after_seq + 1 < oldest:
-                return {
-                    "code": "CURSOR_EXPIRED",
-                    "snapshot_seq": oldest,
-                    "events": [],
-                }
+        high = int(run.event_seq or 0)
+        oldest = int(rows[0].seq) if rows else None
+        if after_seq < high and (oldest is None or after_seq + 1 < oldest):
+            return {
+                "code": "CURSOR_EXPIRED",
+                "snapshot_seq": oldest if oldest is not None else high,
+                "events": [],
+            }
         events = [
             {"seq": int(row.seq), "type": row.type, "payload": dict(row.payload)}
             for row in rows

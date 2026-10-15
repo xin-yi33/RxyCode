@@ -15,7 +15,7 @@ _SRC = REPO / "packages" / "rxycode-server" / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from rxycode_server.events.store import append_event, prune_through
+from rxycode_server.events.store import append_event, prune_through, replay
 from rxycode_server.main import create_app
 from rxycode_server.persistence.migrate import upgrade_head
 from rxycode_server.persistence.models import Organization, Project, SessionRow, User
@@ -176,3 +176,14 @@ def test_w2_c04_negative(postgres_url: str):
     assert expired["events"] == []
     assert expired["snapshot_seq"] == 41
     assert "secret-tip" not in str(expired)
+    prune_through(postgres_url, tenant_id="tenant-c04", run_id=run_id, through_seq=43)
+    wiped = replay(postgres_url, tenant_id="tenant-c04", run_id=run_id, after_seq=0)
+    assert wiped["code"] == "CURSOR_EXPIRED"
+    assert wiped["events"] == []
+    assert append_event(
+        postgres_url,
+        tenant_id="tenant-c04",
+        run_id=run_id,
+        event_type="assistant.delta",
+        payload={"n": "after-prune"},
+    ) == 43

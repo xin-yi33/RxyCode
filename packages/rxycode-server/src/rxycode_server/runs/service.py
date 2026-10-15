@@ -100,6 +100,7 @@ def create_run(
                         request_id=request_id,
                         input_digest=digest,
                         target_id=target_id,
+                        event_seq=1,
                     )
                 )
                 db.flush()

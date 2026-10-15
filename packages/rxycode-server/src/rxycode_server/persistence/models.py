@@ -130,6 +130,7 @@ class Run(Base):
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     request_id: Mapped[str] = mapped_column(String(64))
     input_digest: Mapped[str] = mapped_column(String(128), default="")
+    event_seq: Mapped[int] = mapped_column(Integer, default=0)
     target_id: Mapped[str] = mapped_column(String(64), default="")
     organization: Mapped[Organization] = relationship(
         primaryjoin="Run.tenant_id == Organization.tenant_id",
