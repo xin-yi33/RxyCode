@@ -78,6 +78,7 @@ packages = [
   "rxycode_server.persistence",
   "rxycode_server.alembic",
   "rxycode_server.alembic.versions",
+  "rxycode_server.api",
 ]
 
 [tool.setuptools.package-dir]
@@ -90,6 +91,7 @@ packages = [
 "rxycode_server.persistence" = "packages/rxycode-server/src/rxycode_server/persistence"
 "rxycode_server.alembic" = "packages/rxycode-server/alembic"
 "rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
+"rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

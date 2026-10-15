@@ -138,6 +138,14 @@ def _is_loopback_bind_host(host: str) -> bool:
         return False
 
 
+def reject_as_public_web_gateway(host: str) -> None:
+    """Keep this Ink app a loopback fallback. The public web app is rxycode_server."""
+    if not _is_loopback_bind_host(host):
+        raise RuntimeError(
+            "api_server is a loopback fallback and cannot be reused as the public web gateway"
+        )
+
+
 _SENSITIVE_KEYS = re.compile(
     r"(?:authorization|api[_-]?key|access[_-]?token|bearer|password|secret|token)",
     re.IGNORECASE,
