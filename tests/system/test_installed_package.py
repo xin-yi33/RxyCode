@@ -411,3 +411,23 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         assert "ERR_MODULE_NOT_FOUND" not in output
         assert "Cannot find module" not in output
         assert "Traceback (most recent call last)" not in output
+
+
+def test_installed_wheel_session_identity_matches_legacy(
+    installed_package: InstalledPackage,
+):
+    """WEB-W1-C01 wheel smoke: packaged Session is the installed legacy class."""
+    probe = _run(
+        [
+            str(installed_package.python),
+            "-c",
+            "import RxyCode.RxyCode1_1_0.core.session as legacy\n"
+            "import rxycode_core\n"
+            "assert rxycode_core.Session is legacy.Session\n"
+            "assert rxycode_core.reuse_or_create_session is legacy.reuse_or_create_session\n"
+            "print(rxycode_core.audit_class_identity([rxycode_core.Session, legacy.Session]))\n",
+        ],
+        cwd=installed_package.workdir,
+        env=installed_package.env,
+    )
+    assert probe.stdout.strip() == "OK"

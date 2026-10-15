@@ -1,0 +1,8 @@
+parent branch: feat/rxycode-web
+parent HEAD before this card: fe1fd59b8 (git rev-parse --short was fe1fd59b)
+nested docs/plans/opus5-plan HEAD: ecc3e73
+upstream: none for either branch
+anchors present: pyproject.toml [project], core/session.py reuse_or_create_session, tests/system/test_installed_package.py test_
+AgentV2 class: core/agent_v2.py only
+core/session.py working tree has an unrelated unstaged inbox_for edit. This card does not stage it and does not change Session behavior.
+W0 wave exit is not claimed. CW03 and CW04 stay P0 OPEN in the trace file.

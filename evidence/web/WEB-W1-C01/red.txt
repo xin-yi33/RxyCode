@@ -1,0 +1,13 @@
+WEB-W1-C01 RED, before packages/rxycode-core existed.
+
+unit (python -m pytest tests/web/w1/test_w1_c01_unit.py -q --tb=short):
+FAILED test_w1_c01_contract - ModuleNotFoundError: No module named 'rxycode_core'
+FAILED test_w1_c01_negative - ModuleNotFoundError: No module named 'rxycode_core'
+2 failed in 1.63s
+
+module (python -m pytest tests/web/w1/test_w1_c01_module.py --tb=short -q):
+wheel build and pip install succeeded, then the installed interpreter failed:
+ModuleNotFoundError: No module named 'rxycode_core'
+assert probe.returncode == 0
+1 failed in 10.97s
+Full pytest text is red-module.txt.

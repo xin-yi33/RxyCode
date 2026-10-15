@@ -1,0 +1,197 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index bd20db1f..ed7efe0a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -71,11 +71,13 @@ packages = [
+   "RxyCode.RxyCode1_1_0.tools",
+   "RxyCode.RxyCode1_1_0.utils",
+   "RxyCode.RxyCode1_1_0.validation",
++  "rxycode_core",
+ ]
+ 
+ [tool.setuptools.package-dir]
+ "RxyCode" = "_package_root/RxyCode"
+ "RxyCode.RxyCode1_1_0" = "."
++"rxycode_core" = "packages/rxycode-core/src/rxycode_core"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/tests/system/test_installed_package.py b/tests/system/test_installed_package.py
+index 6b253da7..5180c063 100644
+--- a/tests/system/test_installed_package.py
++++ b/tests/system/test_installed_package.py
+@@ -411,3 +411,23 @@ def test_fresh_install_runs_console_and_module_entrypoints(
+         assert "ERR_MODULE_NOT_FOUND" not in output
+         assert "Cannot find module" not in output
+         assert "Traceback (most recent call last)" not in output
++
++
++def test_installed_wheel_session_identity_matches_legacy(
++    installed_package: InstalledPackage,
++):
++    """WEB-W1-C01 wheel smoke: packaged Session is the installed legacy class."""
++    probe = _run(
++        [
++            str(installed_package.python),
++            "-c",
++            "import RxyCode.RxyCode1_1_0.core.session as legacy\n"
++            "import rxycode_core\n"
++            "assert rxycode_core.Session is legacy.Session\n"
++            "assert rxycode_core.reuse_or_create_session is legacy.reuse_or_create_session\n"
++            "print(rxycode_core.audit_class_identity([rxycode_core.Session, legacy.Session]))\n",
++        ],
++        cwd=installed_package.workdir,
++        env=installed_package.env,
++    )
++    assert probe.stdout.strip() == "OK"
+diff --git a/packages/rxycode-core/src/rxycode_core/__init__.py b/packages/rxycode-core/src/rxycode_core/__init__.py
+new file mode 100644
+index 00000000..bd2ea829
+--- /dev/null
++++ b/packages/rxycode-core/src/rxycode_core/__init__.py
+@@ -0,0 +1,18 @@
++"""Install-time identity for the one historical Session class.
++
++This package does not copy AgentV2. Session and reuse_or_create_session are
++the class and function objects defined in RxyCode.RxyCode1_1_0.core.session.
++"""
++
++from __future__ import annotations
++
++from RxyCode.RxyCode1_1_0.core.session import Session, reuse_or_create_session
++
++__all__ = ["Session", "audit_class_identity", "reuse_or_create_session"]
++
++
++def audit_class_identity(classes: list[type]) -> str:
++    """Return OK when every entry is the same class object, otherwise BLOCKED."""
++    if len(set(classes)) > 1:
++        return "BLOCKED"
++    return "OK"
+diff --git a/tests/web/w1/test_w1_c01_unit.py b/tests/web/w1/test_w1_c01_unit.py
+new file mode 100644
+index 00000000..94945f4b
+--- /dev/null
++++ b/tests/web/w1/test_w1_c01_unit.py
+@@ -0,0 +1,39 @@
++"""WEB-W1-C01. The new package and the legacy import share one Session class."""
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-core" / "src"
++if _SRC.is_dir() and str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++
++def test_w1_c01_contract():
++    """Legacy, canonical, and rxycode_core Session are one object."""
++    from RxyCode.RxyCode1_1_0.core.session import Session as Canonical
++    from core.session import Session as Legacy
++    from rxycode_core import Session as Packaged
++
++    assert Legacy is Canonical
++    assert Packaged is Canonical
++
++
++def test_w1_c01_negative():
++    """Two different Agent classes block the import audit."""
++    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2 as Canonical
++    from core.agent_v2 import AgentV2 as Legacy
++    from rxycode_core import audit_class_identity
++
++    assert Legacy is Canonical
++    assert audit_class_identity([Legacy, Canonical]) == "OK"
++
++    class _SecondAgent:
++        pass
++
++    assert audit_class_identity([Legacy, _SecondAgent]) == "BLOCKED"
++    with pytest.raises(AssertionError):
++        assert audit_class_identity([Legacy, _SecondAgent]) == "OK"
+diff --git a/tests/web/w1/test_w1_c01_module.py b/tests/web/w1/test_w1_c01_module.py
+new file mode 100644
+index 00000000..b2972e26
+--- /dev/null
++++ b/tests/web/w1/test_w1_c01_module.py
+@@ -0,0 +1,76 @@
++"""WEB-W1-C01. An installed wheel exposes one Session and the CLI entry."""
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++import venv
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++
++
++def _python(env_dir: Path) -> Path:
++    if os.name == "nt":
++        return env_dir / "Scripts" / "python.exe"
++    return env_dir / "bin" / "python"
++
++
++def test_w1_c01_integration(tmp_path: Path):
++    """A fresh venv install keeps Session identity and can start the console."""
++    wheel_dir = tmp_path / "wheel"
++    wheel_dir.mkdir()
++    build = subprocess.run(
++        [
++            sys.executable,
++            "-m",
++            "pip",
++            "wheel",
++            "--no-deps",
++            "-w",
++            str(wheel_dir),
++            str(REPO),
++        ],
++        cwd=REPO,
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert build.returncode == 0, build.stderr
++    wheels = list(wheel_dir.glob("rxycode-*.whl"))
++    assert len(wheels) == 1
++    env_dir = tmp_path / "venv"
++    venv.create(env_dir, with_pip=True, system_site_packages=True)
++    python = _python(env_dir)
++    install = subprocess.run(
++        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert install.returncode == 0, install.stderr
++    probe = subprocess.run(
++        [
++            str(python),
++            "-c",
++            "import RxyCode.RxyCode1_1_0.appserver.server as server\n"
++            "import RxyCode.RxyCode1_1_0.core.session as legacy\n"
++            "import rxycode_core\n"
++            "assert rxycode_core.Session is legacy.Session\n"
++            "print('wheel-session-ok')\n",
++        ],
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert probe.returncode == 0, probe.stderr
++    assert "wheel-session-ok" in probe.stdout
++    console = env_dir / "Scripts" / "rxycode.exe" if os.name == "nt" else env_dir / "bin" / "rxycode"
++    help_run = subprocess.run(
++        [str(console), "--help"],
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert help_run.returncode == 0, help_run.stderr
++    assert "Usage:" in help_run.stdout + help_run.stderr
