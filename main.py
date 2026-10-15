@@ -691,8 +691,18 @@ def _resolve_model_label(model):
 
 _ENTRY_SURFACES = ("cli", "opentui", "desktop", "web")
 _ELECTRON_PRELOAD = re.compile(
-    r"""(?:from\s+['\"]electron['\"]|require\(\s*['\"]electron['\"]|['\"][^'\"]*preload[^'\"]*['\"])""",
-    re.IGNORECASE,
+    r"""(?ix)
+    (?:
+        \bfrom\s+['\"]electron['\"]
+        | \bimport\s+['\"]electron['\"]
+        | \bimport\s*\(\s*['\"]electron['\"]
+        | \brequire\s*\(\s*['\"]electron['\"]
+        | \bfrom\s+['\"][^'\"]*preload[^'\"]*['\"]
+        | \bimport\s+['\"][^'\"]*preload[^'\"]*['\"]
+        | \bimport\s*\(\s*['\"][^'\"]*preload[^'\"]*['\"]
+        | \brequire\s*\(\s*['\"][^'\"]*preload[^'\"]*['\"]
+    )
+    """
 )
 
 
@@ -721,6 +731,32 @@ def browser_entry_status(source: str) -> str:
     if _ELECTRON_PRELOAD.search(source):
         return "BLOCKED"
     return "OK"
+
+
+class SharedCore:
+    """One AgentRuntime for a task, reused by CLI, OpenTUI, Desktop, and Web."""
+
+    def __init__(self, session: object, spec: object) -> None:
+        self.session = session
+        self.spec = spec
+        self.runtime: object | None = None
+        self.creations = 0
+
+    def run(self, surface: str, task: str) -> object:
+        facade = core_for_surface(surface)
+        runtime_type = facade["agent_runtime"]
+        if self.runtime is None:
+            self.runtime = runtime_type(self.spec, session=self.session)
+            self.creations += 1
+        elif type(self.runtime) is not runtime_type:
+            raise RuntimeError(f"{surface} forked the agent runtime")
+        self.runtime.memory_set("task", task)
+        return self.runtime
+
+
+def open_shared_core(session: object, spec: object) -> SharedCore:
+    """Open the single core used by every surface for one task."""
+    return SharedCore(session, spec)
 
 
 class _CaseInsensitiveCommandGroup(click.Group):
