@@ -18,7 +18,7 @@ _SRC = REPO / "packages" / "rxycode-server" / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from rxycode_server.events.store import append_event
+from rxycode_server.events.store import append_event, prune_through
 from rxycode_server.main import create_app
 from rxycode_server.persistence.migrate import upgrade_head
 from rxycode_server.persistence.models import Organization, Project, SessionRow, User
@@ -151,9 +151,19 @@ def test_w2_c04_integration(postgres_url: str):
         status = conn.execute(text("SELECT status FROM runs WHERE id = :id"), {"id": created.run_id}).scalar()
     engine.dispose()
     assert status == "pending"
-    engine = create_engine(postgres_url)
-    with engine.connect() as conn:
-        status = conn.execute(text("SELECT status FROM runs WHERE id = :id"), {"id": created.run_id}).scalar()
-    engine.dispose()
-    assert status == "pending"
+    prune_through(postgres_url, tenant_id=tenant_id, run_id=created.run_id, through_seq=44)
+
+    async def expired() -> str:
+        chunks: list[str] = []
+        async for frame in iter_frames(
+            postgres_url,
+            tenant_id=tenant_id,
+            run_id=created.run_id,
+            after_seq=10,
+            follow=False,
+        ):
+            chunks.append(frame)
+        return "".join(chunks)
+
+    assert "CURSOR_EXPIRED" in asyncio.run(expired())
     del session_id

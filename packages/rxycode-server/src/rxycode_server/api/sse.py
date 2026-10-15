@@ -55,10 +55,12 @@ def _frame(event: dict) -> str:
     return f"id: {event['seq']}\ndata: {body}\n\n"
 
 
-def _pull(database_url: str, tenant_id: str, run_id: str, cursor: int, sent: set[int]) -> tuple[int, list[str]]:
+def _pull(database_url: str, tenant_id: str, run_id: str, cursor: int, sent: set[int]) -> tuple[int, list[str], dict | None]:
     result = replay(database_url, tenant_id=tenant_id, run_id=run_id, after_seq=cursor)
+    if result.get("code") == "CURSOR_EXPIRED":
+        return cursor, [], result
     if result.get("code"):
-        return cursor, []
+        return cursor, [], result
     frames: list[str] = []
     for event in result["events"]:
         seq = int(event["seq"])
@@ -67,7 +69,7 @@ def _pull(database_url: str, tenant_id: str, run_id: str, cursor: int, sent: set
         sent.add(seq)
         cursor = seq
         frames.append(_frame(event))
-    return cursor, frames
+    return cursor, frames, None
 
 
 _TERMINAL = {"succeeded", "failed", "cancelled", "recovery_required"}
@@ -111,7 +113,16 @@ async def iter_frames(
                         return
                 except TimeoutError:
                     pass
-            cursor, frames = _pull(database_url, tenant_id, run_id, cursor, sent)
+            cursor, frames, problem = _pull(database_url, tenant_id, run_id, cursor, sent)
+            if problem is not None:
+                yield "event: error\ndata: " + json.dumps(
+                    {
+                        "code": problem.get("code"),
+                        "snapshot_seq": problem.get("snapshot_seq"),
+                    },
+                    separators=(",", ":"),
+                ) + "\n\n"
+                return
             for frame in frames:
                 yield frame
             if not follow:
