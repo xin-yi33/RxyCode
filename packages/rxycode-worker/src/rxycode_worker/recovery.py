@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, text
@@ -34,6 +35,46 @@ def _engine(database_url: str):
     return create_engine(url, poolclass=NullPool)
 
 
+def _aware(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _lock_run(conn, run_id: str):
+    return conn.execute(
+        text(
+            """
+            SELECT session_id, status, lease_owner, lease_epoch,
+                   lease_until, target_id, tenant_id
+            FROM runs
+            WHERE id = :id
+            FOR UPDATE
+            """
+        ),
+        {"id": run_id},
+    ).one_or_none()
+
+
+def _owns(row, *, tenant_id: str, worker_id: str, epoch: int) -> bool:
+    return (
+        row is not None
+        and str(row.tenant_id) == tenant_id
+        and row.lease_owner == worker_id
+        and int(row.lease_epoch) == int(epoch)
+    )
+
+
+def _lease_is_current(row, *, tenant_id: str, worker_id: str, epoch: int, now: datetime) -> bool:
+    """True only when the lease is still live at `now`, sampled after the row lock."""
+    if not _owns(row, tenant_id=tenant_id, worker_id=worker_id, epoch=epoch):
+        return False
+    if str(row.status) not in {"leased", "running", "cancel_requested"}:
+        return False
+    until = _aware(row.lease_until)
+    return until is not None and until >= now
+
+
 def _lease_session(
     database_url: str,
     *,
@@ -45,34 +86,26 @@ def _lease_session(
     """Return session_id when this worker's epoch still owns an unexpired lease."""
     engine = _engine(database_url)
     try:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT session_id
-                    FROM runs
-                    WHERE id = :run_id
-                      AND tenant_id = :tenant_id
-                      AND lease_owner = :worker
-                      AND lease_epoch = :epoch
-                      AND status IN ('leased', 'running', 'cancel_requested')
-                      AND lease_until >= clock_timestamp()
-                    """
-                ),
-                {
-                    "run_id": run_id,
-                    "tenant_id": tenant_id,
-                    "worker": worker_id,
-                    "epoch": epoch,
-                },
-            ).first()
+        with engine.begin() as conn:
+            row = _lock_run(conn, run_id)
+            now = datetime.now(timezone.utc)
+            if _lease_is_current(
+                row,
+                tenant_id=tenant_id,
+                worker_id=worker_id,
+                epoch=epoch,
+                now=now,
+            ):
+                return str(row.session_id)
+            if _owns(row, tenant_id=tenant_id, worker_id=worker_id, epoch=epoch) and str(
+                row.status
+            ) == "recovery_required":
+                return str(row.session_id)
     except Exception:
         return None
     finally:
         engine.dispose()
-    if row is None:
-        return None
-    return str(row[0])
+    return None
 
 
 def _persist_unknown(
@@ -91,39 +124,30 @@ def _persist_unknown(
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
-            updated = conn.execute(
-                text(
-                    """
-                    UPDATE runs
-                    SET status = 'recovery_required',
-                        revision = revision + 1
-                    WHERE id = :run_id
-                      AND tenant_id = :tenant_id
-                      AND lease_owner = :worker
-                      AND lease_epoch = :epoch
-                      AND status IN ('leased', 'running', 'cancel_requested')
-                      AND lease_until >= clock_timestamp()
-                    RETURNING target_id
-                    """
-                ),
-                {
-                    "run_id": run_id,
-                    "tenant_id": tenant_id,
-                    "worker": worker_id,
-                    "epoch": epoch,
-                },
-            ).first()
-            if updated is None:
-                existing = conn.execute(
+            row = _lock_run(conn, run_id)
+            now = datetime.now(timezone.utc)
+            if not _owns(row, tenant_id=tenant_id, worker_id=worker_id, epoch=epoch):
+                return False
+            if str(row.status) == "recovery_required":
+                target_id = row.target_id
+            elif _lease_is_current(
+                row,
+                tenant_id=tenant_id,
+                worker_id=worker_id,
+                epoch=epoch,
+                now=now,
+            ):
+                updated = conn.execute(
                     text(
                         """
-                        SELECT target_id
-                        FROM runs
+                        UPDATE runs
+                        SET status = 'recovery_required',
+                            revision = revision + 1
                         WHERE id = :run_id
                           AND tenant_id = :tenant_id
                           AND lease_owner = :worker
                           AND lease_epoch = :epoch
-                          AND status = 'recovery_required'
+                        RETURNING target_id
                         """
                     ),
                     {
@@ -133,11 +157,11 @@ def _persist_unknown(
                         "epoch": epoch,
                     },
                 ).first()
-                if existing is None:
+                if updated is None:
                     return False
-                target_id = existing[0]
-            else:
                 target_id = updated[0]
+            else:
+                return False
             conn.execute(
                 text(
                     """
@@ -186,6 +210,42 @@ def _looks_executed(text: str) -> bool:
     return True
 
 
+def _permission_mode(database_url: str, tenant_id: str, run_id: str) -> str:
+    """Use the profile stored when the run was accepted. Never upgrade it."""
+    engine = _engine(database_url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT payload->>'permission_profile'
+                    FROM run_events
+                    WHERE run_id = :run_id
+                      AND tenant_id = :tenant_id
+                      AND type = 'run.created'
+                    ORDER BY seq
+                    LIMIT 1
+                    """
+                ),
+                {"run_id": run_id, "tenant_id": tenant_id},
+            ).first()
+    except Exception:
+        return "confirm_all"
+    finally:
+        engine.dispose()
+    if row is None or not row[0]:
+        return "confirm_all"
+    return str(row[0])
+
+
+def _scope_blocked(text: str) -> bool:
+    """A guard refused the call. A lost ACK says the side effect already completed."""
+    if "side-effect completed" in text:
+        return False
+    lowered = text.lower()
+    return "journal unavailable" in lowered or "outcome unknown" in lowered
+
+
 async def _execute_through_orchestrator(
     *,
     journal: Any,
@@ -194,6 +254,7 @@ async def _execute_through_orchestrator(
     checkpoint_id: str,
     command: str,
     workdir: str,
+    permission_mode: str,
 ) -> str:
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
     from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
@@ -217,7 +278,7 @@ async def _execute_through_orchestrator(
             {
                 "safety": {
                     "enabled": True,
-                    "permission_mode": "full_auto",
+                    "permission_mode": permission_mode,
                     "allowed_write_paths": [workdir] if workdir else [],
                 },
                 "execution": {
@@ -298,11 +359,21 @@ def run_shell_before_ack(
         }
     before = _journal_state(journal, attempt_id, call_id)
     if before == "unknown":
+        _persist_unknown(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            command=command,
+            worker_id=worker_id,
+            epoch=epoch,
+        )
         return {
             "executed": False,
             "acked": False,
             "journal_state": "unknown",
-            "run_status": "running",
+            "run_status": "recovery_required",
         }
     checkpoint_id = remote_checkpoint_id(run_id)
     text_result = asyncio.run(
@@ -313,11 +384,32 @@ def run_shell_before_ack(
             checkpoint_id=checkpoint_id,
             command=command,
             workdir=workdir,
+            permission_mode=_permission_mode(database_url, tenant_id, run_id),
         )
     )
+    if _scope_blocked(text_result):
+        _persist_unknown(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            command=command,
+            worker_id=worker_id,
+            epoch=epoch,
+        )
+        return {
+            "executed": False,
+            "acked": False,
+            "journal_state": "unknown",
+            "run_status": "recovery_required",
+            "output": text_result,
+        }
     after = _journal_state(journal, attempt_id, call_id)
     acked = after == "completed"
-    executed = acked or (before == "not_started" and after == "unknown" and _looks_executed(text_result))
+    executed = acked or (
+        before == "not_started" and after == "unknown" and _looks_executed(text_result)
+    )
     return {
         "executed": executed,
         "acked": acked,
@@ -400,10 +492,11 @@ def recover_unknown_shell(
             checkpoint_id=remote_checkpoint_id(run_id),
             command=command,
             workdir=workdir,
+            permission_mode=_permission_mode(database_url, tenant_id, run_id),
         )
     )
     after = _journal_state(journal, attempt_id, call_id)
-    if after == "unknown":
+    if _scope_blocked(text_result) or after == "unknown":
         _persist_unknown(
             database_url,
             tenant_id=tenant_id,
@@ -414,7 +507,12 @@ def recover_unknown_shell(
             worker_id=worker_id,
             epoch=epoch,
         )
-        executed = before == "not_started" and _looks_executed(text_result)
+        executed = (
+            before == "not_started"
+            and after == "unknown"
+            and _looks_executed(text_result)
+            and not _scope_blocked(text_result)
+        )
         return {
             "executed": executed,
             "journal_state": "unknown",

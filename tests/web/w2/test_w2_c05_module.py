@@ -76,7 +76,7 @@ def test_w2_c05_integration(postgres_url: str, tmp_path: Path):
         session_id=session_id,
         message="append a line",
         target_id="local:c05",
-        permission_profile="workspace-write",
+        permission_profile="full_auto",
         request_id="req-c05",
     )
     journal = _LostAckJournal(tmp_path / "journal")
@@ -136,6 +136,8 @@ def _assert_lost_ack(postgres_url: str, created, workdir: Path, journal) -> None
         **common,
     )
     assert bypass["executed"] is False
+    assert bypass["journal_state"] == "unknown"
+    assert bypass["run_status"] == "recovery_required"
     assert target.read_text(encoding="utf-8").count("shell-write") == 1
 
     denied = recover_unknown_shell(
@@ -182,8 +184,36 @@ def _assert_lost_ack(postgres_url: str, created, workdir: Path, journal) -> None
             select(ToolInvocation).where(ToolInvocation.run_id == created.run_id)
         ).all()
     engine.dispose()
-    assert len(rows) == 1
-    assert rows[0].call_id == call_id
-    assert rows[0].attempt_id == attempt_id
-    assert rows[0].journal_state == "unknown"
-    assert rows[0].target_id == "local:c05"
+    matched = [row for row in rows if row.call_id == call_id]
+    assert len(matched) == 1
+    assert matched[0].attempt_id == attempt_id
+    assert matched[0].journal_state == "unknown"
+    assert matched[0].target_id == "local:c05"
+
+    asked = create_run(
+        postgres_url,
+        tenant_id="tenant-c05",
+        session_id=run.session_id,
+        message="do not auto run",
+        target_id="local:c05",
+        permission_profile="confirm_all",
+        request_id="req-c05-ask",
+    )
+    ask_epoch = claim(postgres_url, asked.run_id, "worker-ask")
+    assert ask_epoch == 1
+    denied_file = workdir / "not-approved.txt"
+    ask_journal = ToolExecutionJournal(workdir / "ask-journal")
+    blocked = run_shell_before_ack(
+        postgres_url,
+        tenant_id="tenant-c05",
+        run_id=asked.run_id,
+        call_id="call_" + uuid.uuid4().hex,
+        attempt_id="att_" + uuid.uuid4().hex,
+        command="Add-Content -LiteralPath 'not-approved.txt' -Value 'nope' -Encoding utf8",
+        workdir=str(workdir),
+        journal=ask_journal,
+        worker_id="worker-ask",
+        epoch=ask_epoch,
+    )
+    assert blocked["executed"] is False
+    assert not denied_file.exists()
