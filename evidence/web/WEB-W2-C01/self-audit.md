@@ -8,5 +8,7 @@
 - relationship() rows exist so one Session.commit inserts a parent before a child. organizations.tenant_id is the unique tenant key and is not the primary key, so those relationships name the primaryjoin.
 - read_legacy_rows copies task dicts and does not call _save. The old JSON shape is unchanged.
 - JSON files are not used as the cloud user store. RiskLevel is unchanged. No second agent loop.
-- Parent commit 357b8a33 accidentally recorded the nested plan repository as a gitlink. ef3ad475 removes that gitlink. The whitelist amendment is nested commit f9a3ca5, inside docs/plans/opus5-plan, and is not a parent blob.
+- Parent commit 357b8a33 accidentally recorded the nested plan repository as a gitlink. ef3ad475 removes that gitlink. The whitelist amendments are nested commits f9a3ca5 and 5ac3f54, inside docs/plans/opus5-plan, and are not parent blobs.
+- Codex returned VERDICT: PROBLEMS. 3812ad79 answers those four items: composite foreign keys keep a child in its parent's tenant; requirements.txt declares SQLAlchemy, Alembic, and psycopg; database URLs escape % before ConfigParser; the two package __init__.py files are on the whitelist.
+- A session cannot reference another tenant's project, and a run cannot reference another tenant's session. The integration test inserts both and expects IntegrityError.
 - Unrelated dirty files, including appserver/tui.py and the desktop launcher hunks, stay unstaged. See worktree-status.txt.

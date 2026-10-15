@@ -1,14 +1,25 @@
  appserver/task_store.py                            |   7 +
+ evidence/web/WEB-W2-C01/baseline.txt               |   1 +
+ evidence/web/WEB-W2-C01/diff-stat.txt              |  14 +
+ evidence/web/WEB-W2-C01/diff.txt                   | 873 +++++++++++++++++++++
+ evidence/web/WEB-W2-C01/handoff.md                 |   7 +
+ evidence/web/WEB-W2-C01/integration.txt            |   2 +
+ evidence/web/WEB-W2-C01/red.txt                    |  15 +
+ evidence/web/WEB-W2-C01/self-audit.md              |  12 +
+ evidence/web/WEB-W2-C01/status.txt                 |   9 +
+ evidence/web/WEB-W2-C01/unit.txt                   |   2 +
+ evidence/web/WEB-W2-C01/worktree-status.txt        | 153 ++++
  packages/rxycode-server/alembic/__init__.py        |   1 +
- packages/rxycode-server/alembic/env.py             |  30 +++
- .../alembic/versions/001_web_base.py               |  26 ++
+ packages/rxycode-server/alembic/env.py             |  30 +
+ .../alembic/versions/001_web_base.py               |  26 +
  .../rxycode-server/alembic/versions/__init__.py    |   1 +
  .../rxycode-server/src/rxycode_server/__init__.py  |   1 +
  .../src/rxycode_server/persistence/__init__.py     |   1 +
- .../src/rxycode_server/persistence/migrate.py      |  37 +++
- .../src/rxycode_server/persistence/models.py       | 291 +++++++++++++++++++++
+ .../src/rxycode_server/persistence/migrate.py      |  38 +
+ .../src/rxycode_server/persistence/models.py       | 356 +++++++++
  pyproject.toml                                     |   8 +
- tests/web/w2/conftest.py                           |  59 +++++
- tests/web/w2/test_w2_c01_module.py                 | 183 +++++++++++++
- tests/web/w2/test_w2_c01_unit.py                   | 133 ++++++++++
- 13 files changed, 778 insertions(+)
+ requirements.txt                                   |   3 +
+ tests/web/w2/conftest.py                           |  59 ++
+ tests/web/w2/test_w2_c01_module.py                 | 237 ++++++
+ tests/web/w2/test_w2_c01_unit.py                   | 135 ++++
+ 24 files changed, 1991 insertions(+)

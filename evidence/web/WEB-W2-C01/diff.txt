@@ -16,6 +16,1154 @@ index 84f401e2..00c817bd 100644
      def list(self, *, include_trashed: bool = False) -> list[dict[str, Any]]:
          values = list(self._data["tasks"].values())
          if not include_trashed:
+diff --git a/evidence/web/WEB-W2-C01/baseline.txt b/evidence/web/WEB-W2-C01/baseline.txt
+new file mode 100644
+index 00000000..27b81815
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/baseline.txt
+@@ -0,0 +1 @@
++ef3ad475ffc3feb9c644faa7212d09e73bd47e0c
+diff --git a/evidence/web/WEB-W2-C01/diff-stat.txt b/evidence/web/WEB-W2-C01/diff-stat.txt
+new file mode 100644
+index 00000000..642bfe77
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/diff-stat.txt
+@@ -0,0 +1,14 @@
++ appserver/task_store.py                            |   7 +
++ packages/rxycode-server/alembic/__init__.py        |   1 +
++ packages/rxycode-server/alembic/env.py             |  30 +++
++ .../alembic/versions/001_web_base.py               |  26 ++
++ .../rxycode-server/alembic/versions/__init__.py    |   1 +
++ .../rxycode-server/src/rxycode_server/__init__.py  |   1 +
++ .../src/rxycode_server/persistence/__init__.py     |   1 +
++ .../src/rxycode_server/persistence/migrate.py      |  37 +++
++ .../src/rxycode_server/persistence/models.py       | 291 +++++++++++++++++++++
++ pyproject.toml                                     |   8 +
++ tests/web/w2/conftest.py                           |  59 +++++
++ tests/web/w2/test_w2_c01_module.py                 | 183 +++++++++++++
++ tests/web/w2/test_w2_c01_unit.py                   | 133 ++++++++++
++ 13 files changed, 778 insertions(+)
+diff --git a/evidence/web/WEB-W2-C01/diff.txt b/evidence/web/WEB-W2-C01/diff.txt
+new file mode 100644
+index 00000000..01253035
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/diff.txt
+@@ -0,0 +1,873 @@
++diff --git a/appserver/task_store.py b/appserver/task_store.py
++index 84f401e2..00c817bd 100644
++--- a/appserver/task_store.py
+++++ b/appserver/task_store.py
++@@ -352,6 +352,13 @@ class DesktopTaskStore:
++         self._save()
++         return dict(task)
++ 
+++    def read_legacy_rows(self) -> list[dict[str, Any]]:
+++        """Read-only copies for a cloud import. Does not rewrite the JSON file."""
+++        tasks = self._data.get("tasks", {})
+++        if not isinstance(tasks, dict):
+++            return []
+++        return [dict(item) for item in tasks.values() if isinstance(item, dict)]
+++
++     def list(self, *, include_trashed: bool = False) -> list[dict[str, Any]]:
++         values = list(self._data["tasks"].values())
++         if not include_trashed:
++diff --git a/packages/rxycode-server/alembic/__init__.py b/packages/rxycode-server/alembic/__init__.py
++new file mode 100644
++index 00000000..68cdc2ef
++--- /dev/null
+++++ b/packages/rxycode-server/alembic/__init__.py
++@@ -0,0 +1 @@
+++"""Alembic script package shipped with rxycode_server."""
++diff --git a/packages/rxycode-server/alembic/env.py b/packages/rxycode-server/alembic/env.py
++new file mode 100644
++index 00000000..709cca65
++--- /dev/null
+++++ b/packages/rxycode-server/alembic/env.py
++@@ -0,0 +1,30 @@
+++"""Alembic env. One transaction per migration so a failure rolls back."""
+++
+++from __future__ import annotations
+++
+++from alembic import context
+++from sqlalchemy import engine_from_config, pool
+++
+++from rxycode_server.persistence.models import Base
+++
+++config = context.config
+++target_metadata = Base.metadata
+++
+++
+++def run_migrations_online() -> None:
+++    connectable = engine_from_config(
+++        config.get_section(config.config_ini_section) or {},
+++        prefix="sqlalchemy.",
+++        poolclass=pool.NullPool,
+++    )
+++    with connectable.connect() as connection:
+++        context.configure(
+++            connection=connection,
+++            target_metadata=target_metadata,
+++            transaction_per_migration=True,
+++        )
+++        with context.begin_transaction():
+++            context.run_migrations()
+++
+++
+++run_migrations_online()
++diff --git a/packages/rxycode-server/alembic/versions/001_web_base.py b/packages/rxycode-server/alembic/versions/001_web_base.py
++new file mode 100644
++index 00000000..7324a187
++--- /dev/null
+++++ b/packages/rxycode-server/alembic/versions/001_web_base.py
++@@ -0,0 +1,26 @@
+++"""Web business tables.
+++
+++Revision ID: 001_web_base
+++Revises:
+++"""
+++
+++from __future__ import annotations
+++
+++from alembic import op
+++
+++revision = "001_web_base"
+++down_revision = None
+++branch_labels = None
+++depends_on = None
+++
+++
+++def upgrade() -> None:
+++    from rxycode_server.persistence.models import apply_web_schema
+++
+++    apply_web_schema(op.get_bind())
+++
+++
+++def downgrade() -> None:
+++    from rxycode_server.persistence.models import drop_web_schema
+++
+++    drop_web_schema(op.get_bind())
++diff --git a/packages/rxycode-server/alembic/versions/__init__.py b/packages/rxycode-server/alembic/versions/__init__.py
++new file mode 100644
++index 00000000..6f06aac1
++--- /dev/null
+++++ b/packages/rxycode-server/alembic/versions/__init__.py
++@@ -0,0 +1 @@
+++"""Alembic revision package shipped with rxycode_server."""
++diff --git a/packages/rxycode-server/src/rxycode_server/__init__.py b/packages/rxycode-server/src/rxycode_server/__init__.py
++new file mode 100644
++index 00000000..27190649
++--- /dev/null
+++++ b/packages/rxycode-server/src/rxycode_server/__init__.py
++@@ -0,0 +1 @@
+++"""Cloud server package. Persistence lives under persistence."""
++diff --git a/packages/rxycode-server/src/rxycode_server/persistence/__init__.py b/packages/rxycode-server/src/rxycode_server/persistence/__init__.py
++new file mode 100644
++index 00000000..2ac02966
++--- /dev/null
+++++ b/packages/rxycode-server/src/rxycode_server/persistence/__init__.py
++@@ -0,0 +1 @@
+++"""PostgreSQL models and Alembic entry for the web business tables."""
++diff --git a/packages/rxycode-server/src/rxycode_server/persistence/migrate.py b/packages/rxycode-server/src/rxycode_server/persistence/migrate.py
++new file mode 100644
++index 00000000..12e03d27
++--- /dev/null
+++++ b/packages/rxycode-server/src/rxycode_server/persistence/migrate.py
++@@ -0,0 +1,37 @@
+++"""Run the web Alembic revision against a caller-supplied database URL."""
+++
+++from __future__ import annotations
+++
+++from pathlib import Path
+++
+++from alembic import command
+++from alembic.config import Config
+++
+++
+++def _alembic_dir() -> Path:
+++    """Find env.py in the source tree or in the installed package."""
+++    here = Path(__file__).resolve()
+++    for parent in here.parents:
+++        candidate = parent / "alembic"
+++        revision = candidate / "versions" / "001_web_base.py"
+++        if (candidate / "env.py").is_file() and revision.is_file():
+++            return candidate
+++    raise FileNotFoundError("web alembic directory is not next to rxycode_server")
+++
+++
+++ALEMBIC_DIR = _alembic_dir()
+++
+++
+++def _config(url: str) -> Config:
+++    cfg = Config()
+++    cfg.set_main_option("script_location", str(ALEMBIC_DIR))
+++    cfg.set_main_option("sqlalchemy.url", url)
+++    return cfg
+++
+++
+++def upgrade_head(url: str) -> None:
+++    command.upgrade(_config(url), "head")
+++
+++
+++def downgrade_base(url: str) -> None:
+++    command.downgrade(_config(url), "base")
++diff --git a/packages/rxycode-server/src/rxycode_server/persistence/models.py b/packages/rxycode-server/src/rxycode_server/persistence/models.py
++new file mode 100644
++index 00000000..f139d5f3
++--- /dev/null
+++++ b/packages/rxycode-server/src/rxycode_server/persistence/models.py
++@@ -0,0 +1,291 @@
+++"""SQLAlchemy 2 models for the web business database.
+++
+++Cloud users are rows here, not JSON files. Every business row carries tenant_id.
+++"""
+++
+++from __future__ import annotations
+++
+++from datetime import datetime
+++from typing import Any
+++
+++from sqlalchemy import (
+++    DateTime,
+++    ForeignKey,
+++    Index,
+++    Integer,
+++    String,
+++    UniqueConstraint,
+++    text,
+++)
+++from sqlalchemy.dialects.postgresql import JSONB
+++from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+++
+++
+++class Base(DeclarativeBase):
+++    pass
+++
+++
+++class User(Base):
+++    __tablename__ = "users"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    github_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+++    kind: Mapped[str] = mapped_column(String(16), default="local")
+++
+++
+++class Organization(Base):
+++    __tablename__ = "organizations"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(String(64), unique=True)
+++
+++
+++class Membership(Base):
+++    __tablename__ = "memberships"
+++    __table_args__ = (UniqueConstraint("tenant_id", "user_id", name="uq_memberships_tenant_user"),)
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+++    role: Mapped[str] = mapped_column(String(32))
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="Membership.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++    user: Mapped[User] = relationship()
+++
+++
+++class Project(Base):
+++    __tablename__ = "projects"
+++    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_projects_tenant_name"),)
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    name: Mapped[str] = mapped_column(String(200))
+++    repo_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="Project.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++
+++
+++class SessionRow(Base):
+++    __tablename__ = "sessions"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+++    title: Mapped[str] = mapped_column(String(200), default="")
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="SessionRow.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++    project: Mapped[Project] = relationship()
+++
+++
+++class Run(Base):
+++    __tablename__ = "runs"
+++    __table_args__ = (
+++        UniqueConstraint("tenant_id", "request_id", name="uq_runs_tenant_request"),
+++        Index(
+++            "uq_runs_one_active_per_session",
+++            "session_id",
+++            unique=True,
+++            postgresql_where=text("status IN ('pending', 'running', 'leased')"),
+++        ),
+++    )
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"))
+++    status: Mapped[str] = mapped_column(String(32))
+++    revision: Mapped[int] = mapped_column(Integer, default=0)
+++    lease_owner: Mapped[str | None] = mapped_column(String(64))
+++    lease_epoch: Mapped[int] = mapped_column(Integer, default=0)
+++    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+++    request_id: Mapped[str] = mapped_column(String(64))
+++    input_digest: Mapped[str] = mapped_column(String(128), default="")
+++    target_id: Mapped[str] = mapped_column(String(64), default="")
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="Run.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++    session: Mapped[SessionRow] = relationship()
+++
+++
+++class RunEvent(Base):
+++    __tablename__ = "run_events"
+++    __table_args__ = (UniqueConstraint("run_id", "seq", name="uq_run_events_run_seq"),)
+++
+++    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    seq: Mapped[int] = mapped_column(Integer)
+++    type: Mapped[str] = mapped_column(String(64))
+++    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+++    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+++    run: Mapped[Run] = relationship()
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="RunEvent.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++
+++
+++class Outbox(Base):
+++    __tablename__ = "outbox"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    event_id: Mapped[str] = mapped_column(ForeignKey("run_events.event_id"))
+++    dispatch_status: Mapped[str] = mapped_column(String(32), default="pending")
+++    attempts: Mapped[int] = mapped_column(Integer, default=0)
+++    event: Mapped[RunEvent] = relationship()
+++
+++
+++class Approval(Base):
+++    __tablename__ = "approvals"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+++    call_id: Mapped[str] = mapped_column(String(64))
+++    status: Mapped[str] = mapped_column(String(32))
+++    revision: Mapped[int] = mapped_column(Integer, default=0)
+++    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="Approval.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++    run: Mapped[Run] = relationship()
+++
+++
+++class ToolInvocation(Base):
+++    __tablename__ = "tool_invocations"
+++    __table_args__ = (UniqueConstraint("run_id", "call_id", name="uq_tool_invocations_run_call"),)
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+++    call_id: Mapped[str] = mapped_column(String(64))
+++    target_id: Mapped[str] = mapped_column(String(64), default="")
+++    attempt_id: Mapped[str] = mapped_column(String(64), default="")
+++    journal_state: Mapped[str] = mapped_column(String(32), default="unknown")
+++    digest: Mapped[str] = mapped_column(String(128), default="")
+++    run: Mapped[Run] = relationship()
+++
+++
+++class Device(Base):
+++    __tablename__ = "devices"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    credential_hash: Mapped[str] = mapped_column(String(128))
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="Device.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++
+++
+++class DeviceGrant(Base):
+++    __tablename__ = "device_grants"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"))
+++    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+++    grant_scope: Mapped[str] = mapped_column(String(64))
+++    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+++    device: Mapped[Device] = relationship()
+++    organization: Mapped[Organization] = relationship(
+++        primaryjoin="DeviceGrant.tenant_id == Organization.tenant_id",
+++        foreign_keys=[tenant_id],
+++    )
+++
+++
+++class Artifact(Base):
+++    __tablename__ = "artifacts"
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+++    object_key: Mapped[str] = mapped_column(String(400))
+++    sha256: Mapped[str] = mapped_column(String(64))
+++    size: Mapped[int] = mapped_column(Integer)
+++    content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+++    run: Mapped[Run] = relationship()
+++
+++
+++class UsageRecord(Base):
+++    __tablename__ = "usage_records"
+++    __table_args__ = (
+++        UniqueConstraint("run_id", "model_id", "price_version", name="uq_usage_once"),
+++    )
+++
+++    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+++    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+++    model_id: Mapped[str] = mapped_column(String(128))
+++    price_version: Mapped[str] = mapped_column(String(32))
+++    tokens: Mapped[int] = mapped_column(Integer, default=0)
+++    currency: Mapped[str] = mapped_column(String(8), default="USD")
+++    amount: Mapped[str] = mapped_column(String(32), default="0")
+++    run: Mapped[Run] = relationship()
+++
+++
+++WEB_TABLES = (
+++    "users",
+++    "organizations",
+++    "memberships",
+++    "projects",
+++    "sessions",
+++    "runs",
+++    "run_events",
+++    "outbox",
+++    "approvals",
+++    "tool_invocations",
+++    "devices",
+++    "device_grants",
+++    "artifacts",
+++    "usage_records",
+++)
+++
+++
+++def apply_web_schema(connection) -> None:
+++    """Create the web tables. Callers own the transaction."""
+++    Base.metadata.create_all(connection)
+++
+++
+++def drop_web_schema(connection) -> None:
+++    """Drop only these tables. Never touches a desktop task directory."""
+++    Base.metadata.drop_all(connection)
+++
+++
+++def seed_demo(db: Session) -> Project:
+++    """Insert one demo tenant and project. A second call keeps the same row."""
+++    existing = db.query(Project).filter_by(tenant_id="demo", name="demo").one_or_none()
+++    if existing is not None:
+++        return existing
+++    db.add(User(id="user-demo", github_id=None, kind="local"))
+++    db.add(Organization(id="org-demo", tenant_id="demo"))
+++    project = Project(id="project-demo", tenant_id="demo", name="demo", repo_config={})
+++    db.add(project)
+++    db.flush()
+++    return project
+++
+++
+++def import_desktop_tasks(store: Any, db: Session, *, tenant_id: str, project_id: str) -> int:
+++    """Copy legacy task rows into sessions. Does not save the JSON store."""
+++    inserted = 0
+++    for row in store.read_legacy_rows():
+++        legacy_id = str(row.get("session_id") or row.get("id") or "")
+++        if not legacy_id:
+++            continue
+++        found = db.get(SessionRow, legacy_id)
+++        if found is not None:
+++            continue
+++        db.add(
+++            SessionRow(
+++                id=legacy_id,
+++                tenant_id=tenant_id,
+++                project_id=project_id,
+++                title=str(row.get("title") or ""),
+++            )
+++        )
+++        inserted += 1
+++    db.flush()
+++    return inserted
++diff --git a/pyproject.toml b/pyproject.toml
++index e509e25a..0285dfad 100644
++--- a/pyproject.toml
+++++ b/pyproject.toml
++@@ -74,6 +74,10 @@ packages = [
++   "rxycode_core",
++   "rxycode_core.runtime",
++   "rxycode_protocol",
+++  "rxycode_server",
+++  "rxycode_server.persistence",
+++  "rxycode_server.alembic",
+++  "rxycode_server.alembic.versions",
++ ]
++ 
++ [tool.setuptools.package-dir]
++@@ -82,6 +86,10 @@ packages = [
++ "rxycode_core" = "packages/rxycode-core/src/rxycode_core"
++ "rxycode_core.runtime" = "packages/rxycode-core/src/rxycode_core/runtime"
++ "rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
+++"rxycode_server" = "packages/rxycode-server/src/rxycode_server"
+++"rxycode_server.persistence" = "packages/rxycode-server/src/rxycode_server/persistence"
+++"rxycode_server.alembic" = "packages/rxycode-server/alembic"
+++"rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
++ 
++ [tool.setuptools.dynamic]
++ dependencies = { file = ["requirements.txt"] }
++diff --git a/tests/web/w2/conftest.py b/tests/web/w2/conftest.py
++new file mode 100644
++index 00000000..43c031f4
++--- /dev/null
+++++ b/tests/web/w2/conftest.py
++@@ -0,0 +1,59 @@
+++"""One empty PostgreSQL database for the W2 persistence card."""
+++
+++from __future__ import annotations
+++
+++import subprocess
+++import time
+++
+++import pytest
+++from sqlalchemy import create_engine, text
+++
+++_CONTAINER = "rxy-w2c01-pg"
+++_URL = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+++
+++
+++def _docker(*args: str) -> subprocess.CompletedProcess[str]:
+++    return subprocess.run(
+++        ["docker", *args],
+++        text=True,
+++        capture_output=True,
+++        check=False,
+++    )
+++
+++
+++@pytest.fixture(scope="session")
+++def _postgres_server() -> str:
+++    _docker("rm", "-f", _CONTAINER)
+++    started = _docker(
+++        "run",
+++        "-d",
+++        "--name",
+++        _CONTAINER,
+++        "-e",
+++        "POSTGRES_HOST_AUTH_METHOD=trust",
+++        "-e",
+++        "POSTGRES_DB=rxycode",
+++        "-p",
+++        "127.0.0.1:55432:5432",
+++        "postgres:16",
+++    )
+++    assert started.returncode == 0, started.stderr
+++    deadline = time.time() + 60
+++    while time.time() < deadline:
+++        ready = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
+++        if ready.returncode == 0:
+++            return _URL
+++        time.sleep(1)
+++    logs = _docker("logs", _CONTAINER)
+++    raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")
+++
+++
+++@pytest.fixture
+++def postgres_url(_postgres_server: str) -> str:
+++    """Give each test an empty database. The test itself runs Alembic."""
+++    engine = create_engine(_postgres_server)
+++    with engine.begin() as conn:
+++        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+++        conn.execute(text("CREATE SCHEMA public"))
+++    engine.dispose()
+++    return _postgres_server
++diff --git a/tests/web/w2/test_w2_c01_module.py b/tests/web/w2/test_w2_c01_module.py
++new file mode 100644
++index 00000000..05941125
++--- /dev/null
+++++ b/tests/web/w2/test_w2_c01_module.py
++@@ -0,0 +1,183 @@
+++"""WEB-W2-C01. Tenants stay isolated, and a legacy JSON file is not rewritten."""
+++from __future__ import annotations
+++
+++import os
+++import subprocess
+++import sys
+++import tarfile
+++import venv
+++from pathlib import Path
+++
+++from sqlalchemy import create_engine, inspect, text
+++from sqlalchemy.orm import Session
+++
+++REPO = Path(__file__).resolve().parents[3]
+++_SRC = REPO / "packages" / "rxycode-server" / "src"
+++if str(_SRC) not in sys.path:
+++    sys.path.insert(0, str(_SRC))
+++
+++from appserver.task_store import DesktopTaskStore
+++from rxycode_server.persistence.migrate import upgrade_head
+++from rxycode_server.persistence.models import (
+++    Organization,
+++    Project,
+++    SessionRow,
+++    User,
+++    import_desktop_tasks,
+++    seed_demo,
+++)
+++
+++
+++def test_w2_c01_integration(postgres_url: str, tmp_path: Path):
+++    """Two tenants may use the same project name, and legacy import does not overwrite."""
+++    upgrade_head(postgres_url)
+++    engine = create_engine(postgres_url)
+++    store_path = tmp_path / "tasks.json"
+++    store = DesktopTaskStore(store_path, persistent=True)
+++    store.upsert(session_id="legacy-1", title="old", workspace_root=tmp_path / "workspace")
+++    before = store_path.read_bytes()
+++    with Session(engine) as db:
+++        for tenant_id in ("tenant-a", "tenant-b"):
+++            db.add(User(id=f"user-{tenant_id}", github_id=f"gh-{tenant_id}", kind="github"))
+++            db.add(Organization(id=f"org-{tenant_id}", tenant_id=tenant_id))
+++            db.add(
+++                Project(
+++                    id=f"project-{tenant_id}",
+++                    tenant_id=tenant_id,
+++                    name="app",
+++                    repo_config={"remote": tenant_id},
+++                )
+++            )
+++            db.add(
+++                SessionRow(
+++                    id=f"session-{tenant_id}",
+++                    tenant_id=tenant_id,
+++                    project_id=f"project-{tenant_id}",
+++                    title="app",
+++                )
+++            )
+++        db.flush()
+++        seed_demo(db)
+++        seed_demo(db)
+++        imported = import_desktop_tasks(
+++            store, db, tenant_id="demo", project_id="project-demo"
+++        )
+++        db.commit()
+++    assert imported == 1
+++    assert store_path.read_bytes() == before
+++    with engine.connect() as conn:
+++        rows = conn.execute(
+++            text(
+++                "SELECT s.tenant_id, p.tenant_id, p.name "
+++                "FROM sessions s JOIN projects p ON p.id = s.project_id "
+++                "WHERE p.name = 'app' ORDER BY s.tenant_id"
+++            )
+++        ).all()
+++        demo = conn.execute(text("SELECT count(*) FROM projects WHERE name = 'demo'")).scalar()
+++    assert rows == [("tenant-a", "tenant-a", "app"), ("tenant-b", "tenant-b", "app")]
+++    assert demo == 1
+++
+++
+++def _python(env_dir: Path) -> Path:
+++    if os.name == "nt":
+++        return env_dir / "Scripts" / "python.exe"
+++    return env_dir / "bin" / "python"
+++
+++
+++def _clean_env() -> dict[str, str]:
+++    env = os.environ.copy()
+++    env.pop("PYTHONPATH", None)
+++    env.pop("PYTHONHOME", None)
+++    return env
+++
+++
+++def test_w2_c01_installed_migration(postgres_url: str, tmp_path: Path):
+++    """upgrade_head from a wheel of HEAD creates and drops the business tables."""
+++    archive = tmp_path / "head.tar"
+++    archived = subprocess.run(
+++        ["git", "archive", "--format=tar", "-o", str(archive), "HEAD"],
+++        cwd=REPO,
+++        text=True,
+++        capture_output=True,
+++        check=False,
+++        env=_clean_env(),
+++    )
+++    assert archived.returncode == 0, archived.stderr
+++    checkout = tmp_path / "checkout"
+++    checkout.mkdir()
+++    with tarfile.open(archive) as bundle:
+++        if sys.version_info >= (3, 12):
+++            bundle.extractall(checkout, filter="data")
+++        else:
+++            bundle.extractall(checkout)
+++    wheel_dir = tmp_path / "wheel"
+++    wheel_dir.mkdir()
+++    build = subprocess.run(
+++        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(checkout)],
+++        cwd=tmp_path,
+++        text=True,
+++        capture_output=True,
+++        check=False,
+++        env=_clean_env(),
+++    )
+++    assert build.returncode == 0, build.stderr
+++    wheels = list(wheel_dir.glob("rxycode-*.whl"))
+++    assert len(wheels) == 1
+++    env_dir = tmp_path / "venv"
+++    venv.create(env_dir, with_pip=True, system_site_packages=True)
+++    python = _python(env_dir)
+++    install = subprocess.run(
+++        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
+++        cwd=tmp_path,
+++        text=True,
+++        capture_output=True,
+++        check=False,
+++        env=_clean_env(),
+++    )
+++    assert install.returncode == 0, install.stderr
+++    run_dir = tmp_path / "run"
+++    run_dir.mkdir()
+++    probe = (
+++        "from pathlib import Path\n"
+++        "from rxycode_server.persistence.migrate import ALEMBIC_DIR, downgrade_base, upgrade_head\n"
+++        "import os\n"
+++        "import rxycode_server.persistence.migrate as migrate\n"
+++        "origin = Path(migrate.__file__).resolve()\n"
+++        "script = Path(ALEMBIC_DIR).resolve()\n"
+++        "from sqlalchemy import create_engine, inspect\n"
+++        "print(origin)\n"
+++        "print(script)\n"
+++        "url = os.environ['W2_C01_URL']\n"
+++        "upgrade_head(url)\n"
+++        "names = set(inspect(create_engine(url)).get_table_names())\n"
+++        "assert 'runs' in names and 'organizations' in names\n"
+++        "downgrade_base(url)\n"
+++        "assert 'runs' not in set(inspect(create_engine(url)).get_table_names())\n"
+++        "print('wheel-migrate-ok')\n"
+++    )
+++    env = _clean_env()
+++    env["W2_C01_URL"] = postgres_url
+++    run = subprocess.run(
+++        [str(python), "-c", probe],
+++        cwd=run_dir,
+++        text=True,
+++        capture_output=True,
+++        check=False,
+++        env=env,
+++    )
+++    assert run.returncode == 0, run.stderr
+++    assert "wheel-migrate-ok" in run.stdout
+++    venv_root = str(env_dir.resolve()).casefold()
+++    repo_root = str(REPO.resolve()).casefold()
+++    origins = [
+++        line.strip()
+++        for line in run.stdout.splitlines()
+++        if line.strip() and line.strip() != "wheel-migrate-ok"
+++    ]
+++    assert len(origins) == 2
+++    for origin in origins:
+++        folded = origin.casefold()
+++        assert venv_root in folded
+++        assert repo_root not in folded
+++    engine = create_engine(postgres_url)
+++    assert "runs" not in set(inspect(engine).get_table_names())
++diff --git a/tests/web/w2/test_w2_c01_unit.py b/tests/web/w2/test_w2_c01_unit.py
++new file mode 100644
++index 00000000..423edc90
++--- /dev/null
+++++ b/tests/web/w2/test_w2_c01_unit.py
++@@ -0,0 +1,133 @@
+++"""WEB-W2-C01. Alembic upgrade creates the business constraints on PostgreSQL."""
+++from __future__ import annotations
+++
+++import sys
+++from pathlib import Path
+++
+++import pytest
+++from sqlalchemy import create_engine, inspect, text
+++from sqlalchemy.exc import IntegrityError
+++from sqlalchemy.orm import Session
+++
+++REPO = Path(__file__).resolve().parents[3]
+++_SRC = REPO / "packages" / "rxycode-server" / "src"
+++if str(_SRC) not in sys.path:
+++    sys.path.insert(0, str(_SRC))
+++
+++from rxycode_server.persistence.migrate import downgrade_base, upgrade_head
+++from rxycode_server.persistence.models import (
+++    WEB_TABLES,
+++    Organization,
+++    Project,
+++    Run,
+++    SessionRow,
+++    User,
+++    apply_web_schema,
+++)
+++
+++
+++def _org(db: Session, tenant_id: str) -> None:
+++    db.add(User(id=f"user-{tenant_id}", github_id=f"gh-{tenant_id}", kind="github"))
+++    db.add(Organization(id=f"org-{tenant_id}", tenant_id=tenant_id))
+++    db.flush()
+++
+++
+++def test_w2_c01_contract(postgres_url: str, tmp_path: Path):
+++    """Upgrade an empty database, then downgrade without deleting a legacy directory."""
+++    legacy = tmp_path / "desktop-tasks"
+++    legacy.mkdir()
+++    (legacy / "tasks.json").write_text('{"tasks":{},"events":{}}', encoding="utf-8")
+++    upgrade_head(postgres_url)
+++    engine = create_engine(postgres_url)
+++    found = set(inspect(engine).get_table_names())
+++    assert set(WEB_TABLES) <= found
+++    uniques = {
+++        item["name"]
+++        for item in inspect(engine).get_unique_constraints("runs")
+++    }
+++    assert "uq_runs_tenant_request" in uniques
+++    indexes = {item["name"] for item in inspect(engine).get_indexes("runs")}
+++    assert "uq_runs_one_active_per_session" in indexes
+++    downgrade_base(postgres_url)
+++    assert "runs" not in set(inspect(engine).get_table_names())
+++    assert legacy.is_dir()
+++    assert (legacy / "tasks.json").is_file()
+++    with engine.connect() as conn:
+++        trans = conn.begin()
+++        apply_web_schema(conn)
+++        trans.rollback()
+++    assert "runs" not in set(inspect(engine).get_table_names())
+++    upgrade_head(postgres_url)
+++
+++
+++def test_w2_c01_negative(postgres_url: str):
+++    """The same tenant cannot create two runs with one request_id."""
+++    upgrade_head(postgres_url)
+++    engine = create_engine(postgres_url)
+++    with Session(engine) as db:
+++        _org(db, "tenant-a")
+++        db.add(Project(id="project-a", tenant_id="tenant-a", name="app", repo_config={}))
+++        db.add(SessionRow(id="session-a", tenant_id="tenant-a", project_id="project-a", title=""))
+++        db.add(
+++            Run(
+++                id="run-1",
+++                tenant_id="tenant-a",
+++                session_id="session-a",
+++                status="succeeded",
+++                request_id="req-1",
+++                revision=0,
+++                lease_epoch=0,
+++                input_digest="",
+++                target_id="",
+++            )
+++        )
+++        db.commit()
+++        db.add(
+++            Run(
+++                id="run-2",
+++                tenant_id="tenant-a",
+++                session_id="session-a",
+++                status="succeeded",
+++                request_id="req-1",
+++                revision=0,
+++                lease_epoch=0,
+++                input_digest="",
+++                target_id="",
+++            )
+++        )
+++        with pytest.raises(IntegrityError):
+++            db.commit()
+++        db.rollback()
+++        db.add(
+++            Run(
+++                id="run-active-1",
+++                tenant_id="tenant-a",
+++                session_id="session-a",
+++                status="running",
+++                request_id="req-active-1",
+++                revision=0,
+++                lease_epoch=0,
+++                input_digest="",
+++                target_id="",
+++            )
+++        )
+++        db.commit()
+++        db.add(
+++            Run(
+++                id="run-active-2",
+++                tenant_id="tenant-a",
+++                session_id="session-a",
+++                status="pending",
+++                request_id="req-active-2",
+++                revision=0,
+++                lease_epoch=0,
+++                input_digest="",
+++                target_id="",
+++            )
+++        )
+++        with pytest.raises(IntegrityError):
+++            db.commit()
+++        db.rollback()
+++    with engine.connect() as conn:
+++        count = conn.execute(text("SELECT count(*) FROM runs")).scalar()
+++    assert count == 2
+diff --git a/evidence/web/WEB-W2-C01/handoff.md b/evidence/web/WEB-W2-C01/handoff.md
+new file mode 100644
+index 00000000..3e922605
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/handoff.md
+@@ -0,0 +1,7 @@
++# WEB-W2-C01 handoff
++
++Parent code: 357b8a33, gitlink removal: ef3ad475, on feat/rxycode-web. Not pushed.
++Nested whitelist: f9a3ca5 in docs/plans/opus5-plan on feat/rxycode-web. Not pushed.
++Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80, model gpt-6.1-sol, effort high.
++Do not open WEB-W2-C02 until that session's last line is VERDICT: NO_REMAINING_PROBLEMS.
++CW03 and CW04 stay P0 OPEN. This card does not open the W1 gate.
+diff --git a/evidence/web/WEB-W2-C01/integration.txt b/evidence/web/WEB-W2-C01/integration.txt
+new file mode 100644
+index 00000000..2cbd781b
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/integration.txt
+@@ -0,0 +1,2 @@
++..                                                                       [100%]
++2 passed in 19.20s
+diff --git a/evidence/web/WEB-W2-C01/red.txt b/evidence/web/WEB-W2-C01/red.txt
+new file mode 100644
+index 00000000..557e0e4c
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/red.txt
+@@ -0,0 +1,15 @@
++First execution of tests/web/w2/test_w2_c01_unit.py, before relationship() flush ordering:
++
++test_w2_c01_contract passed.
++test_w2_c01_negative failed on the first commit, not on the duplicate request_id.
++
++psycopg.errors.ForeignKeyViolation: insert or update on table "runs" violates foreign key constraint "runs_session_id_fkey"
++DETAIL: Key (session_id)=(session-a) is not present in table "sessions".
++SQLAlchemy inserted runs before sessions. SaveUpdateAll is ordered by class name when no relationship() exists, and Run sorts before SessionRow.
++
++First execution of tests/web/w2/test_w2_c01_module.py after that fix:
++
++FileNotFoundError: tasks.json
++DesktopTaskStore._save returns without writing when _owned and _dropped are empty. Putting a dict into _data and calling _save does not create the file. The test then called read_bytes on a path the store never wrote.
++
++Those two failures are the red runs for this card. The later green runs are unit.txt and integration.txt.
+diff --git a/evidence/web/WEB-W2-C01/self-audit.md b/evidence/web/WEB-W2-C01/self-audit.md
+new file mode 100644
+index 00000000..778922fd
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/self-audit.md
+@@ -0,0 +1,12 @@
++# WEB-W2-C01 self-audit
++
++- upgrade_head / downgrade_base call Alembic. env.py sets transaction_per_migration. The revision calls apply_web_schema / drop_web_schema.
++- test_w2_c01_contract checks the fifteen business tables, uq_runs_tenant_request, and the partial index uq_runs_one_active_per_session. downgrade leaves the desktop task directory in place. A rolled-back apply_web_schema does not leave runs behind.
++- test_w2_c01_negative rejects a second run with the same tenant_id and request_id, then rejects a second active run (pending/running/leased) on the same session. The count stays at the rows that committed.
++- test_w2_c01_integration inserts the same project name in two tenants, calls seed_demo twice, and imports a DesktopTaskStore row through upsert and read_legacy_rows. tasks.json bytes do not change.
++- test_w2_c01_installed_migration installs a wheel built from git archive HEAD and runs upgrade_head and downgrade_base with PYTHONPATH cleared. migrate.py and the Alembic directory resolve inside the venv.
++- relationship() rows exist so one Session.commit inserts a parent before a child. organizations.tenant_id is the unique tenant key and is not the primary key, so those relationships name the primaryjoin.
++- read_legacy_rows copies task dicts and does not call _save. The old JSON shape is unchanged.
++- JSON files are not used as the cloud user store. RiskLevel is unchanged. No second agent loop.
++- Parent commit 357b8a33 accidentally recorded the nested plan repository as a gitlink. ef3ad475 removes that gitlink. The whitelist amendment is nested commit f9a3ca5, inside docs/plans/opus5-plan, and is not a parent blob.
++- Unrelated dirty files, including appserver/tui.py and the desktop launcher hunks, stay unstaged. See worktree-status.txt.
+diff --git a/evidence/web/WEB-W2-C01/status.txt b/evidence/web/WEB-W2-C01/status.txt
+new file mode 100644
+index 00000000..3267cc04
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/status.txt
+@@ -0,0 +1,9 @@
++branch=feat/rxycode-web
++upstream=none
++parent_code=357b8a335e73a2b8946b44f5de9b8039acd3550e
++parent_unlink=ef3ad475ffc3feb9c644faa7212d09e73bd47e0c
++nested_whitelist=f9a3ca5a967c72b3d048abff5844c8f8cce6c52e
++base=28835728
++unit=2 passed
++module=2 passed
++pushed=no
+diff --git a/evidence/web/WEB-W2-C01/unit.txt b/evidence/web/WEB-W2-C01/unit.txt
+new file mode 100644
+index 00000000..2e95af5c
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/unit.txt
+@@ -0,0 +1,2 @@
++..                                                                       [100%]
++2 passed in 2.60s
+diff --git a/evidence/web/WEB-W2-C01/worktree-status.txt b/evidence/web/WEB-W2-C01/worktree-status.txt
+new file mode 100644
+index 00000000..bb56d4d7
+--- /dev/null
++++ b/evidence/web/WEB-W2-C01/worktree-status.txt
+@@ -0,0 +1,153 @@
++ M appserver/tui.py
++ M config/model_endpoint.py
++ M core/agent_v2.py
++ M core/agents/teams/software_dev/team.yaml
++ M core/build_workflow.py
++ M core/builtin_tool_registration.py
++ M core/prompts/few_shot.py
++ M core/prompts/registry.py
++ M core/prompts/templates.py
++ M core/session.py
++ M core/subagents/manager.py
++ M core/subagents/runtime.py
++ M desktop/recovery.json
++ M docs/modules/agents.md
++ M docs/modules/execution.md
++ M docs/modules/frontend.md
++ M docs/modules/tools.md
++ M docs/release-notes/CHANGELOG_v1.4.4.md
++ M evals/baselines/tool-latency.json
++ M evals/prompts/open-file-launch-e2e.md
++ M evals/public/fixtures/chateval_slice.json
++ M evals/public/official_chateval.py
++ M execution/evidence.py
++ M frontend/desktop-app/src/features/approvals/approval.mode.ts
++ M frontend/desktop-app/src/features/cli/cli.probe.ts
++ M frontend/desktop-app/src/features/plan/plan.persist.ts
++ M frontend/desktop-app/src/features/plugins/plugin.probe.ts
++ M frontend/desktop-app/src/features/recycle/RecycleBin.test.ts
++ M frontend/desktop-app/src/features/recycle/recycle.probe.ts
++ M frontend/desktop-app/src/features/review/InlineComment.test.ts
++ M frontend/desktop-app/src/features/review/review.comments.ts
++ M frontend/desktop-app/src/features/schedule/schedule.probe.ts
++ M frontend/desktop-app/src/features/sessions/SessionMenu.ts
++ M frontend/desktop-app/src/features/sessions/session.probe.ts
++ M frontend/desktop-app/src/features/sidechat/sideChat.ts
++ M frontend/desktop-app/src/renderer/src/App.tsx
++ M frontend/desktop-app/src/renderer/src/assets/main.css
++ M frontend/desktop-app/src/renderer/src/components/ChatArea.tsx
++ M frontend/desktop-app/src/renderer/src/components/SessionList.tsx
++ M frontend/desktop-app/src/renderer/src/components/TaskInspector.tsx
++ M frontend/desktop-app/src/renderer/src/hooks/useConversation.ts
++ M frontend/desktop-app/src/renderer/src/lib/conversationStore.mts
++ M frontend/desktop-app/src/renderer/src/lib/conversationStore.test.mts
++ M frontend/opentui-app/src/PlanPane.test.ts
++ M frontend/opentui-app/src/ToolCard.tsx
++ M frontend/opentui-app/src/lib/toolDisplay.test.ts
++ M frontend/opentui-app/src/lib/toolDisplay.ts
++ M frontend/opentui-app/src/planDoc.ts
++ M frontend/opentui-app/src/streamReducer.test.ts
++ M frontend/opentui-app/src/streamReducer.ts
++ M frontend/opentui-app/src/transport/httpTransport.ts
++ M frontend/opentui-app/src/transport/notifyToStreamEvent.test.ts
++ M frontend/opentui-app/src/transport/notifyToStreamEvent.ts
++ M frontend/opentui-app/src/transport/stdioTransport.ts
++ M main.py
++ M tests/fixtures/responses/main_chain_write.json
++ M tests/integration/test_agent_main_chain.py
++ M tests/test_core/test_build_workflow.py
++ M tests/test_core/test_prompts.py
++ M tests/test_core/test_research_fast_path.py
++ M tests/test_subagents/test_execution_bridge.py
++ M tests/test_tools/test_write.py
++ M tests/unit/test_gui_command.py
++ M tools/edit.py
++ M tools/patch.py
++ M tools/registry.py
++ M tools/subagent_task_tool.py
++ M tools/view.py
++ M utils/tui.py
++?? .agents/
++?? .claude/
++?? .grok/
++?? .opencode/
++?? .specify/
++?? CLAUDE.md
++?? _extract_pdf.py
++?? admin-backend/
++?? auth/
++?? base633.html
++?? cdx.txt
++?? cdx_menu.txt
++?? common_elements.py
++?? core/subagents/collab.py
++?? core/subagents/inbox.py
++?? core/subagents/prompt.py
++?? count_hep_lat_ps.py
++?? count_words_check.py
++?? ddc633.json
++?? ddc633b.json
++?? diff2580816.html
++?? doc_audit_report.txt
++?? docs.zip
++?? docs/assets/cli-demo2.mp4
++?? docs/assets/gui-demo.mp4
++?? docs/assets/rxycode-v1.4.0-intro.mp4
++?? docs/imgs/v140-hero.jpg
++?? docs/imgs/v140-opentui-diff.jpg
++?? docs/imgs/v140-scene1-hook.jpg
++?? docs/imgs/v140-scene3-resilience.jpg
++?? docs/imgs/v140-teams-architecture.jpg
++?? docs/imgs/v143-cover.jpg
++?? docs/phase-g/SESSION-RESTORE-ABC.md
++?? docs/plans/
++?? docs/release-notes/RXYCODE_V1.4.0_LAUNCH_ARTICLE.md
++?? evidence/web/WEB-W2-C01/
++?? extract_lauria.py
++?? fibonacci.cpp
++?? frontend/desktop-app/GUI-ADAPT.md
++?? frontend/desktop-app/src/features/protocol/
++?? frontend/desktop-app/src/renderer/src/components/TaskInspector.childActivity.test.mts
++?? frontend/desktop-app/src/renderer/src/lib/prose.mts
++?? frontend/desktop-app/src/renderer/src/lib/prose.test.mts
++?? full_binary_trees.py
++?? gg_balloon.html
++?? gh2.json
++?? gh3.json
++?? gh_search.json
++?? hafnia_genus.json
++?? hafnia_summary.json
++?? hafnia_wikitext.json
++?? inspect_entry.py
++?? lauria_full.txt
++?? legume_log.json
++?? legume_rev.json
++?? login_app/
++?? lru_cache.py
++?? majority_element.py
++?? median_two_sorted.py
++?? neb.json
++?? neb.txt
++?? numpy_reg.json
++?? opencv_maskrcnn_commits.json
++?? pip/
++?? receipts/
++?? research/
++?? research_fetch.py
++?? revision_cache.json
++?? scratch/
++?? scripts/doc_audit_accept.txt
++?? scripts/fix2_exit_gate.ps1
++?? scripts/generate_promo_video.py
++?? scripts/req_trace.py
++?? scripts/sync-agent-crew-skills.ps1
++?? scripts/sync_open_file_e2e_prompts.py
++?? scripts/x11_cache_hunt.ps1
++?? skills-lock.json
++?? tests/integration/test_unified_file_tools.py
++?? tests/test_lcs.py
++?? tests/test_median_two_sorted.py
++?? tests/test_subagents/test_subagent_prompt_and_collab.py
++?? tests/test_tools/test_unified_file_tools.py
++?? tests/test_top_words.py
++?? tools/subagent_collab.py
 diff --git a/packages/rxycode-server/alembic/__init__.py b/packages/rxycode-server/alembic/__init__.py
 new file mode 100644
 index 00000000..68cdc2ef
@@ -114,10 +1262,10 @@ index 00000000..2ac02966
 +"""PostgreSQL models and Alembic entry for the web business tables."""
 diff --git a/packages/rxycode-server/src/rxycode_server/persistence/migrate.py b/packages/rxycode-server/src/rxycode_server/persistence/migrate.py
 new file mode 100644
-index 00000000..12e03d27
+index 00000000..fdf67f74
 --- /dev/null
 +++ b/packages/rxycode-server/src/rxycode_server/persistence/migrate.py
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,38 @@
 +"""Run the web Alembic revision against a caller-supplied database URL."""
 +
 +from __future__ import annotations
@@ -145,7 +1293,8 @@ index 00000000..12e03d27
 +def _config(url: str) -> Config:
 +    cfg = Config()
 +    cfg.set_main_option("script_location", str(ALEMBIC_DIR))
-+    cfg.set_main_option("sqlalchemy.url", url)
++    # ConfigParser treats % as interpolation. A percent-encoded password is still one URL.
++    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 +    return cfg
 +
 +
@@ -157,10 +1306,10 @@ index 00000000..12e03d27
 +    command.downgrade(_config(url), "base")
 diff --git a/packages/rxycode-server/src/rxycode_server/persistence/models.py b/packages/rxycode-server/src/rxycode_server/persistence/models.py
 new file mode 100644
-index 00000000..f139d5f3
+index 00000000..148c84c8
 --- /dev/null
 +++ b/packages/rxycode-server/src/rxycode_server/persistence/models.py
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,356 @@
 +"""SQLAlchemy 2 models for the web business database.
 +
 +Cloud users are rows here, not JSON files. Every business row carries tenant_id.
@@ -174,6 +1323,7 @@ index 00000000..f139d5f3
 +from sqlalchemy import (
 +    DateTime,
 +    ForeignKey,
++    ForeignKeyConstraint,
 +    Index,
 +    Integer,
 +    String,
@@ -220,7 +1370,10 @@ index 00000000..f139d5f3
 +
 +class Project(Base):
 +    __tablename__ = "projects"
-+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_projects_tenant_name"),)
++    __table_args__ = (
++        UniqueConstraint("tenant_id", "name", name="uq_projects_tenant_name"),
++        UniqueConstraint("tenant_id", "id", name="uq_projects_tenant_id"),
++    )
 +
 +    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
@@ -234,22 +1387,41 @@ index 00000000..f139d5f3
 +
 +class SessionRow(Base):
 +    __tablename__ = "sessions"
++    __table_args__ = (
++        ForeignKeyConstraint(
++            ["tenant_id", "project_id"],
++            ["projects.tenant_id", "projects.id"],
++            name="fk_sessions_project_tenant",
++        ),
++        UniqueConstraint("tenant_id", "id", name="uq_sessions_tenant_id"),
++    )
 +
 +    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
-+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
++    project_id: Mapped[str] = mapped_column(String(64))
 +    title: Mapped[str] = mapped_column(String(200), default="")
 +    organization: Mapped[Organization] = relationship(
 +        primaryjoin="SessionRow.tenant_id == Organization.tenant_id",
 +        foreign_keys=[tenant_id],
++        overlaps="project",
 +    )
-+    project: Mapped[Project] = relationship()
++    project: Mapped[Project] = relationship(
++        primaryjoin="and_(SessionRow.project_id == Project.id, SessionRow.tenant_id == Project.tenant_id)",
++        foreign_keys=[project_id, tenant_id],
++        overlaps="organization",
++    )
 +
 +
 +class Run(Base):
 +    __tablename__ = "runs"
 +    __table_args__ = (
 +        UniqueConstraint("tenant_id", "request_id", name="uq_runs_tenant_request"),
++        UniqueConstraint("tenant_id", "id", name="uq_runs_tenant_id"),
++        ForeignKeyConstraint(
++            ["tenant_id", "session_id"],
++            ["sessions.tenant_id", "sessions.id"],
++            name="fk_runs_session_tenant",
++        ),
 +        Index(
 +            "uq_runs_one_active_per_session",
 +            "session_id",
@@ -260,7 +1432,7 @@ index 00000000..f139d5f3
 +
 +    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
-+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"))
++    session_id: Mapped[str] = mapped_column(String(64))
 +    status: Mapped[str] = mapped_column(String(32))
 +    revision: Mapped[int] = mapped_column(Integer, default=0)
 +    lease_owner: Mapped[str | None] = mapped_column(String(64))
@@ -272,25 +1444,42 @@ index 00000000..f139d5f3
 +    organization: Mapped[Organization] = relationship(
 +        primaryjoin="Run.tenant_id == Organization.tenant_id",
 +        foreign_keys=[tenant_id],
++        overlaps="session",
 +    )
-+    session: Mapped[SessionRow] = relationship()
++    session: Mapped[SessionRow] = relationship(
++        primaryjoin="and_(Run.session_id == SessionRow.id, Run.tenant_id == SessionRow.tenant_id)",
++        foreign_keys=[session_id, tenant_id],
++        overlaps="organization",
++    )
 +
 +
 +class RunEvent(Base):
 +    __tablename__ = "run_events"
-+    __table_args__ = (UniqueConstraint("run_id", "seq", name="uq_run_events_run_seq"),)
++    __table_args__ = (
++        UniqueConstraint("run_id", "seq", name="uq_run_events_run_seq"),
++        ForeignKeyConstraint(
++            ["tenant_id", "run_id"],
++            ["runs.tenant_id", "runs.id"],
++            name="fk_run_events_run_tenant",
++        ),
++    )
 +
 +    event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
++    run_id: Mapped[str] = mapped_column(String(64))
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
 +    seq: Mapped[int] = mapped_column(Integer)
 +    type: Mapped[str] = mapped_column(String(64))
 +    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 +    at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-+    run: Mapped[Run] = relationship()
++    run: Mapped[Run] = relationship(
++        primaryjoin="and_(RunEvent.run_id == Run.id, RunEvent.tenant_id == Run.tenant_id)",
++        foreign_keys=[run_id, tenant_id],
++        overlaps="organization",
++    )
 +    organization: Mapped[Organization] = relationship(
 +        primaryjoin="RunEvent.tenant_id == Organization.tenant_id",
 +        foreign_keys=[tenant_id],
++        overlaps="run",
 +    )
 +
 +
@@ -306,10 +1495,17 @@ index 00000000..f139d5f3
 +
 +class Approval(Base):
 +    __tablename__ = "approvals"
++    __table_args__ = (
++        ForeignKeyConstraint(
++            ["tenant_id", "run_id"],
++            ["runs.tenant_id", "runs.id"],
++            name="fk_approvals_run_tenant",
++        ),
++    )
 +
 +    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
-+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
++    run_id: Mapped[str] = mapped_column(String(64))
 +    call_id: Mapped[str] = mapped_column(String(64))
 +    status: Mapped[str] = mapped_column(String(32))
 +    revision: Mapped[int] = mapped_column(Integer, default=0)
@@ -317,8 +1513,13 @@ index 00000000..f139d5f3
 +    organization: Mapped[Organization] = relationship(
 +        primaryjoin="Approval.tenant_id == Organization.tenant_id",
 +        foreign_keys=[tenant_id],
++        overlaps="run",
 +    )
-+    run: Mapped[Run] = relationship()
++    run: Mapped[Run] = relationship(
++        primaryjoin="and_(Approval.run_id == Run.id, Approval.tenant_id == Run.tenant_id)",
++        foreign_keys=[run_id, tenant_id],
++        overlaps="organization",
++    )
 +
 +
 +class ToolInvocation(Base):
@@ -341,6 +1542,7 @@ index 00000000..f139d5f3
 +    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
 +    credential_hash: Mapped[str] = mapped_column(String(128))
++    __table_args__ = (UniqueConstraint("tenant_id", "id", name="uq_devices_tenant_id"),)
 +    organization: Mapped[Organization] = relationship(
 +        primaryjoin="Device.tenant_id == Organization.tenant_id",
 +        foreign_keys=[tenant_id],
@@ -349,16 +1551,28 @@ index 00000000..f139d5f3
 +
 +class DeviceGrant(Base):
 +    __tablename__ = "device_grants"
++    __table_args__ = (
++        ForeignKeyConstraint(
++            ["tenant_id", "device_id"],
++            ["devices.tenant_id", "devices.id"],
++            name="fk_device_grants_device_tenant",
++        ),
++    )
 +
 +    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"))
++    device_id: Mapped[str] = mapped_column(String(64))
 +    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
 +    grant_scope: Mapped[str] = mapped_column(String(64))
 +    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-+    device: Mapped[Device] = relationship()
++    device: Mapped[Device] = relationship(
++        primaryjoin="and_(DeviceGrant.device_id == Device.id, DeviceGrant.tenant_id == Device.tenant_id)",
++        foreign_keys=[device_id, tenant_id],
++        overlaps="organization",
++    )
 +    organization: Mapped[Organization] = relationship(
 +        primaryjoin="DeviceGrant.tenant_id == Organization.tenant_id",
 +        foreign_keys=[tenant_id],
++        overlaps="device",
 +    )
 +
 +
@@ -478,6 +1692,17 @@ index e509e25a..0285dfad 100644
  
  [tool.setuptools.dynamic]
  dependencies = { file = ["requirements.txt"] }
+diff --git a/requirements.txt b/requirements.txt
+index e7db1b1b..95a62afb 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -24,3 +24,6 @@ uvloop>=0.21.0; platform_system != 'Windows'
+ # 虚拟浏览器只带 Python 包。废弃代码（2026-09-22）：把 chrome-headless-shell
+ # 打进 NSIS / electron-builder。浏览器在用户缓存，第一次 navigate 再下载。
+ playwright>=1.49.0
++sqlalchemy>=2,<2.1
++alembic>=1.17,<2
++psycopg[binary]>=3.2,<4
 diff --git a/tests/web/w2/conftest.py b/tests/web/w2/conftest.py
 new file mode 100644
 index 00000000..43c031f4
@@ -545,10 +1770,10 @@ index 00000000..43c031f4
 +    return _postgres_server
 diff --git a/tests/web/w2/test_w2_c01_module.py b/tests/web/w2/test_w2_c01_module.py
 new file mode 100644
-index 00000000..05941125
+index 00000000..9b45da7a
 --- /dev/null
 +++ b/tests/web/w2/test_w2_c01_module.py
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,237 @@
 +"""WEB-W2-C01. Tenants stay isolated, and a legacy JSON file is not rewritten."""
 +from __future__ import annotations
 +
@@ -557,9 +1782,12 @@ index 00000000..05941125
 +import sys
 +import tarfile
 +import venv
++import zipfile
 +from pathlib import Path
 +
++import pytest
 +from sqlalchemy import create_engine, inspect, text
++from sqlalchemy.exc import IntegrityError
 +from sqlalchemy.orm import Session
 +
 +REPO = Path(__file__).resolve().parents[3]
@@ -572,6 +1800,7 @@ index 00000000..05941125
 +from rxycode_server.persistence.models import (
 +    Organization,
 +    Project,
++    Run,
 +    SessionRow,
 +    User,
 +    import_desktop_tasks,
@@ -627,6 +1856,34 @@ index 00000000..05941125
 +        demo = conn.execute(text("SELECT count(*) FROM projects WHERE name = 'demo'")).scalar()
 +    assert rows == [("tenant-a", "tenant-a", "app"), ("tenant-b", "tenant-b", "app")]
 +    assert demo == 1
++    with Session(engine) as db:
++        db.add(
++            SessionRow(
++                id="cross-session",
++                tenant_id="tenant-a",
++                project_id="project-tenant-b",
++                title="cross",
++            )
++        )
++        with pytest.raises(IntegrityError):
++            db.commit()
++        db.rollback()
++        db.add(
++            Run(
++                id="cross-run",
++                tenant_id="tenant-a",
++                session_id="session-tenant-b",
++                status="succeeded",
++                request_id="cross-req",
++                revision=0,
++                lease_epoch=0,
++                input_digest="",
++                target_id="",
++            )
++        )
++        with pytest.raises(IntegrityError):
++            db.commit()
++        db.rollback()
 +
 +
 +def _python(env_dir: Path) -> Path:
@@ -674,8 +1931,13 @@ index 00000000..05941125
 +    assert build.returncode == 0, build.stderr
 +    wheels = list(wheel_dir.glob("rxycode-*.whl"))
 +    assert len(wheels) == 1
++    with zipfile.ZipFile(wheels[0]) as bundle:
++        metadata_name = next(name for name in bundle.namelist() if name.endswith(".dist-info/METADATA"))
++        metadata = bundle.read(metadata_name).decode("utf-8").casefold()
++    for requirement in ("sqlalchemy", "alembic", "psycopg"):
++        assert f"requires-dist: {requirement}" in metadata
 +    env_dir = tmp_path / "venv"
-+    venv.create(env_dir, with_pip=True, system_site_packages=True)
++    venv.create(env_dir, with_pip=True, system_site_packages=False)
 +    python = _python(env_dir)
 +    install = subprocess.run(
 +        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
@@ -686,6 +1948,23 @@ index 00000000..05941125
 +        env=_clean_env(),
 +    )
 +    assert install.returncode == 0, install.stderr
++    runtime = subprocess.run(
++        [
++            str(python),
++            "-m",
++            "pip",
++            "install",
++            "sqlalchemy>=2,<2.1",
++            "alembic>=1.17,<2",
++            "psycopg[binary]>=3.2,<4",
++        ],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=_clean_env(),
++    )
++    assert runtime.returncode == 0, runtime.stderr
 +    run_dir = tmp_path / "run"
 +    run_dir.mkdir()
 +    probe = (
@@ -734,10 +2013,10 @@ index 00000000..05941125
 +    assert "runs" not in set(inspect(engine).get_table_names())
 diff --git a/tests/web/w2/test_w2_c01_unit.py b/tests/web/w2/test_w2_c01_unit.py
 new file mode 100644
-index 00000000..423edc90
+index 00000000..8610940e
 --- /dev/null
 +++ b/tests/web/w2/test_w2_c01_unit.py
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,135 @@
 +"""WEB-W2-C01. Alembic upgrade creates the business constraints on PostgreSQL."""
 +from __future__ import annotations
 +
@@ -798,6 +2077,8 @@ index 00000000..423edc90
 +        trans.rollback()
 +    assert "runs" not in set(inspect(engine).get_table_names())
 +    upgrade_head(postgres_url)
++    encoded = postgres_url.replace("postgres@", "postgres:p%40ss@", 1)
++    upgrade_head(encoded)
 +
 +
 +def test_w2_c01_negative(postgres_url: str):
