@@ -1,0 +1,10 @@
+parent_code=12662832
+nested=e8aa3d8
+branch=feat/rxycode-web
+pushed=no
+unit=4 passed
+integration=1 passed
+cache=30 passed, 2 pre-existing skips
+red=ModuleNotFoundError checkpoints and recovery
+checkpointer=langgraph-checkpoint-postgres 3.2.0 AsyncPostgresSaver
+postgres=127.0.0.1:55432 container rxy-w2c01-pg

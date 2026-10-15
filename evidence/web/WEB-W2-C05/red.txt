@@ -1,0 +1,28 @@
+RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-wagtrfdf
+
+=================================== ERRORS ====================================
+______________ ERROR collecting tests/web/w2/test_w2_c05_unit.py ______________
+ImportError while importing test module 'D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w2\test_w2_c05_unit.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+D:\Anaconda3\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\web\w2\test_w2_c05_unit.py:20: in <module>
+    from rxycode_worker.checkpoints import (  # noqa: E402
+E   ModuleNotFoundError: No module named 'rxycode_worker.checkpoints'
+_____________ ERROR collecting tests/web/w2/test_w2_c05_module.py _____________
+ImportError while importing test module 'D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w2\test_w2_c05_module.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+D:\Anaconda3\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\web\w2\test_w2_c05_module.py:29: in <module>
+    from rxycode_worker.recovery import (  # noqa: E402
+E   ModuleNotFoundError: No module named 'rxycode_worker.recovery'
+=========================== short test summary info ===========================
+ERROR tests/web/w2/test_w2_c05_unit.py
+ERROR tests/web/w2/test_w2_c05_module.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!
+2 errors in 0.53s

@@ -1,0 +1,15 @@
+commit 12662832a31c9a0ee979dba6cba47cd859417ed4
+Author:     Run <1262075942@qq.com>
+AuthorDate: Fri Oct 16 07:26:46 2026 +0800
+Commit:     Run <1262075942@qq.com>
+CommitDate: Fri Oct 16 07:26:46 2026 +0800
+
+    feat(web): web-w2-c05 - LangGraph Checkpoint/Worker 閲嶅惎涓庡壇浣滅敤 Journal
+
+ execution/tool_journal.py                          |  85 ++++++++
+ .../src/rxycode_worker/checkpoints.py              | 237 +++++++++++++++++++++
+ .../rxycode-worker/src/rxycode_worker/recovery.py  | 201 +++++++++++++++++
+ requirements.txt                                   |   1 +
+ tests/web/w2/test_w2_c05_module.py                 | 134 ++++++++++++
+ tests/web/w2/test_w2_c05_unit.py                   | 196 +++++++++++++++++
+ 6 files changed, 854 insertions(+)
