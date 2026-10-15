@@ -6,6 +6,7 @@ where they are and are not reused as difficulty.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
@@ -162,6 +163,21 @@ def validate_decision(raw: Mapping, *, goal: str) -> WorkflowDecision:
         required_checks=tuple(checks),
         goal=goal,
     )
+
+
+def assign_workflow_id(text: str, goal: str) -> str:
+    """Fill workflow_id when the model omits the identity field."""
+    match = re.search(r"\{.*\}", text.strip(), re.S)
+    if match is None:
+        return text
+    try:
+        raw = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return text
+    if not isinstance(raw, dict) or str(raw.get("workflow_id") or "").strip():
+        return text
+    raw["workflow_id"] = "wf-" + hashlib.sha256(goal.encode("utf-8")).hexdigest()[:12]
+    return json.dumps(raw, ensure_ascii=False)
 
 
 def parse_decision_text(text: str, *, goal: str) -> WorkflowDecision:

@@ -242,6 +242,30 @@ def _json_decision(**overrides) -> str:
     return json.dumps(raw)
 
 
+def _shell_workspace() -> str:
+    from pathlib import Path
+
+    from RxyCode.RxyCode1_1_0.utils.shell import shell_executor
+
+    try:
+        return str(shell_executor.resolved_workdir("").resolve())
+    except Exception:
+        return str(Path.cwd().resolve())
+
+
+def _bind_shell(monkeypatch, root) -> None:
+    import RxyCode.RxyCode1_1_0.utils.shell as shell_mod
+
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(shell_mod, "current_working_directory", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(shell_mod, "initial_working_directory", lambda: root)
+    monkeypatch.setattr(
+        shell_mod,
+        "load_config",
+        lambda: {"execution": {"sandbox_mode": "workspace", "workspace_root": str(root)}},
+    )
+
+
 def _host(*, enabled: bool = True):
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
@@ -250,7 +274,7 @@ def _host(*, enabled: bool = True):
         "execution": {"build_workflow": {"enabled": enabled}},
         "agents": {"enabled": False},
     }
-    host._workspace_root = "ws-a"
+    host._workspace_root = _shell_workspace()
     host._subagent_system_prompt = None
     host._workflow_plan_revision = 1
     return host
@@ -458,6 +482,19 @@ def test_sc_bw_2_medium_clarify_blocks_writes_until_the_question_is_answered():
     assert AgentV2._workflow_blocks_mutation(host, "git", {"operation": "status"}) is False
     assert AgentV2._workflow_blocks_mutation(host, "git", {"operation": "diff"}) is False
     assert AgentV2._workflow_blocks_mutation(host, "git", {"operation": "log"}) is False
+    assert AgentV2._workflow_blocks_mutation(
+        host, "git", {"operation": "branch", "args": "new-feature"}
+    ) is True
+    assert AgentV2._workflow_blocks_mutation(
+        host, "git", {"operation": "branch", "args": "-a"}
+    ) is False
+    assert AgentV2._workflow_blocks_mutation(
+        host, "shell", {"command": "mkdir pkg"}
+    ) is True
+    assert AgentV2._workflow_blocks_mutation(
+        host, "git", {"operation": "diff", "args": "--output=mod.py"}
+    ) is True
+    assert AgentV2._workflow_blocks_mutation(host, "git", {"operation": "diff"}) is False
     AgentV2._record_workflow_receipt(
         host, "question", {}, "[no input: question channel unavailable]", False, call_id="q0"
     )
@@ -570,7 +607,7 @@ async def _async_false():
     return False
 
 
-def _run_scripted_loop(host, rounds, results):
+def _run_scripted_loop(host, rounds, results, goal="fix the null check in parse_line"):
     from types import SimpleNamespace
 
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
@@ -611,7 +648,7 @@ def _run_scripted_loop(host, rounds, results):
     host._raw_stream = raw_stream
 
     import asyncio
-    result = asyncio.run(AgentV2._fast_reply_with_tools(host, "fix the null check in parse_line", mode="build"))
+    result = asyncio.run(AgentV2._fast_reply_with_tools(host, goal, mode="build"))
     return result, snapshots, seen
 
 
@@ -706,7 +743,7 @@ def test_question_and_read_only_finish_without_a_code_test():
     assert "空列表" in result
     assert seen == []
     assert not any(
-        "[build-workflow]" in str(getattr(message, "content", ""))
+        "完成门未通过" in str(getattr(message, "content", ""))
         for messages in snapshots
         for message in messages
     )
@@ -744,7 +781,7 @@ def test_sc_bw_5_doc_sync_then_code_change_resume_keeps_identity_and_rechecks(tm
         False,
         call_id="bash-1",
     )
-    assert AgentV2._workflow_completion_feedback(host) is None
+    assert AgentV2._workflow_completion_feedback(host) is not None
     AgentV2._note_workflow_write(
         host, "write", False, {"filePath": "README.md", "content": "parser notes\n"}
     )
@@ -836,7 +873,6 @@ def test_sc_bw_6_sessions_do_not_share_receipts_or_reclassify_children():
         return _json_decision(workflow_id="wf-session-a")
 
     parent = _host()
-    parent._workspace_root = "ws-a"
     parent._build_workflow_ask = ask
 
     import asyncio
@@ -874,11 +910,20 @@ def _pkg_decision():
     }])
 
 
-def test_shell_and_git_source_edits_stale_receipts_without_touching_reads_or_docs():
+def test_shell_and_git_source_edits_stale_receipts_without_touching_reads_or_docs(tmp_path, monkeypatch):
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    _bind_shell(monkeypatch, repo)
+
+    def workspace_host():
+        item = _host()
+        item._workspace_root = str(repo)
+        return item
+
     command = "python -m pytest tests/test_parser.py -q"
-    host = _host()
+    host = workspace_host()
     host._build_workflow = _pkg_decision()
     AgentV2._record_workflow_receipt(
         host, "bash", {"command": command, "cwd": "pkg"}, "1 passed", False, call_id="bash-ok"
@@ -906,7 +951,7 @@ def test_shell_and_git_source_edits_stale_receipts_without_touching_reads_or_doc
         "cp src/mod.py pkg/mod.py",
         "copy src\\mod.py pkg\\mod.py",
     ):
-        rewritten = _host()
+        rewritten = workspace_host()
         rewritten._build_workflow = _pkg_decision()
         AgentV2._record_workflow_receipt(
             rewritten, "bash", {"command": command, "cwd": "pkg"}, "1 passed", False, call_id="bash-rewrite"
@@ -914,7 +959,7 @@ def test_shell_and_git_source_edits_stale_receipts_without_touching_reads_or_doc
         assert AgentV2._workflow_completion_feedback(rewritten) is None
         AgentV2._note_workflow_write(rewritten, "bash", False, {"command": rewrite})
         assert AgentV2._workflow_completion_feedback(rewritten) is not None, rewrite
-    docs = _host()
+    docs = workspace_host()
     docs._build_workflow = _pkg_decision()
     AgentV2._record_workflow_receipt(
         docs, "bash", {"command": command, "cwd": "pkg"}, "1 passed", False, call_id="bash-docs"
@@ -924,7 +969,7 @@ def test_shell_and_git_source_edits_stale_receipts_without_touching_reads_or_doc
     )
     assert AgentV2._workflow_completion_feedback(docs) is None
 
-    fresh = _host()
+    fresh = workspace_host()
     fresh._build_workflow = _pkg_decision()
     AgentV2._record_workflow_receipt(
         fresh, "bash", {"command": command, "cwd": "pkg"}, "1 passed", False, call_id="bash-git"
@@ -934,15 +979,100 @@ def test_shell_and_git_source_edits_stale_receipts_without_touching_reads_or_doc
     )
     assert AgentV2._workflow_completion_feedback(fresh) is not None
 
-    omitted = _host()
+    omitted = workspace_host()
     omitted._build_workflow = _pkg_decision()
     AgentV2._record_workflow_receipt(
         omitted, "bash", {"command": command}, "1 passed", False, call_id="bash-omit"
     )
-    receipt = omitted._build_workflow_receipts.get("parser")
-    assert receipt is not None
-    assert receipt.cwd != "pkg"
+    assert omitted._build_workflow_receipts.get("parser") is None
     assert AgentV2._workflow_completion_feedback(omitted) is not None
+    matched = workspace_host()
+    matched._build_workflow = _pkg_decision()
+    AgentV2._record_workflow_receipt(
+        matched,
+        "bash",
+        {"command": command, "workdir": "pkg"},
+        "1 passed",
+        False,
+        call_id="bash-workdir",
+    )
+    assert matched._build_workflow_receipts["parser"].cwd == "pkg"
+    assert AgentV2._workflow_completion_feedback(matched) is None
+    AgentV2._note_workflow_write(
+        matched, "bash", True, {"command": "Remove-Item pkg/mod.py"}
+    )
+    assert AgentV2._workflow_completion_feedback(matched) is not None
+    compound = workspace_host()
+    compound._build_workflow = _pkg_decision()
+    AgentV2._record_workflow_receipt(
+        compound, "bash", {"command": command, "workdir": "pkg"}, "1 passed", False, call_id="bash-compound"
+    )
+    assert AgentV2._workflow_completion_feedback(compound) is None
+    AgentV2._note_workflow_write(
+        compound,
+        "bash",
+        False,
+        {"command": "Write-Output note > README.md ; Remove-Item mod.py"},
+    )
+    assert AgentV2._workflow_completion_feedback(compound) is not None
+    single_output = workspace_host()
+    single_output._build_workflow = _pkg_decision()
+    AgentV2._record_workflow_receipt(
+        single_output, "bash", {"command": command, "workdir": "pkg"}, "1 passed", False, call_id="bash-output"
+    )
+    AgentV2._note_workflow_write(
+        single_output, "bash", False, {"command": "Write-Output note > README.md"}
+    )
+    assert AgentV2._workflow_completion_feedback(single_output) is None
+    for unsafe in (
+        "Write-Output note > README.md\nRemove-Item mod.py",
+        "Get-Content README.md | Set-Content NOTES.md",
+        "{ Write-Output note > README.md }",
+        "echo note > README.md & Remove-Item mod.py",
+    ):
+        poisoned = workspace_host()
+        poisoned._build_workflow = _pkg_decision()
+        AgentV2._record_workflow_receipt(
+            poisoned, "bash", {"command": command, "workdir": "pkg"}, "1 passed", False, call_id="bash-unsafe"
+        )
+        assert AgentV2._workflow_completion_feedback(poisoned) is None
+        AgentV2._note_workflow_write(poisoned, "bash", False, {"command": unsafe})
+        assert AgentV2._workflow_completion_feedback(poisoned) is not None, unsafe
+
+
+def test_double_quoted_substitution_deletes_source_and_closes_the_gate(tmp_path, monkeypatch):
+    import subprocess
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    repo = tmp_path / "repo"
+    pkg = repo / "pkg"
+    pkg.mkdir(parents=True)
+    source = pkg / "mod.py"
+    source.write_text("x = 1\n", encoding="utf-8")
+    _bind_shell(monkeypatch, repo)
+    host = _host()
+    host._workspace_root = str(repo)
+    host._build_workflow = _pkg_decision()
+    command = "python -m pytest tests/test_parser.py -q"
+    deletion = 'Write-Output "$(Remove-Item mod.py)" > README.md'
+    AgentV2._record_workflow_receipt(
+        host, "bash", {"command": command, "workdir": "pkg"}, "1 passed", False, call_id="bash-before-delete"
+    )
+    assert source.is_file()
+    assert AgentV2._workflow_completion_feedback(host) is None
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", deletion],
+        cwd=pkg,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not source.exists()
+    AgentV2._note_workflow_write(host, "bash", False, {"command": deletion})
+    assert AgentV2._workflow_completion_feedback(host) is not None
 
 
 def test_child_inherits_parent_contract_without_reclassifying():
@@ -1057,3 +1187,351 @@ def test_child_source_edit_stales_the_parent_receipt():
     parent._tool_orchestrator = SimpleNamespace(execute_tool=edit_code)
     assert asyncio.run(AgentV2._execute_tool(parent, "task", {"prompt": "edit pkg/mod.py"})) == "code"
     assert AgentV2._workflow_completion_feedback(parent) is not None
+
+
+def test_blocked_check_is_not_a_passing_receipt():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    host = _host()
+    host._build_workflow = _decision(
+        difficulty="medium",
+        stage_actions={
+            "project_docs": "inspect",
+            "clarify": "run",
+            "design": "run",
+            "build_verify": "run",
+            "doc_sync": "skip",
+        },
+        required_checks=[{
+            "check_id": "parser",
+            "command": "python -m pytest tests/test_parser.py -q",
+            "cwd": ".",
+            "success_predicate": "exit_zero",
+        }],
+    )
+    command = "python -m pytest tests/test_parser.py -q"
+
+    import asyncio
+    blocked = asyncio.run(AgentV2._execute_tool(
+        host, "bash", {"command": command, "workdir": "."}
+    ))
+    assert str(blocked).startswith("[blocked:")
+    AgentV2._record_workflow_receipt(
+        host, "bash", {"command": command, "workdir": "."}, blocked, False, call_id="blocked-1"
+    )
+    receipt = host._build_workflow_receipts.get("parser")
+    assert receipt is None or receipt.executed is False or receipt.predicate_passed is False
+    assert AgentV2._workflow_completion_feedback(host) is not None
+
+
+def test_continue_keeps_the_active_goal():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    calls = {"n": 0}
+
+    def ask(prompt: str) -> str:
+        calls["n"] += 1
+        assert "workflow_id" in prompt
+        assert "acceptance" in prompt
+        if calls["n"] == 1:
+            return _json_decision(workflow_id="")
+        return "not json"
+
+    host = _host()
+    host._build_workflow_ask = ask
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    assert calls["n"] == 1
+    assert host._build_workflow.goal == "fix parser"
+    asyncio.run(AgentV2._ensure_build_workflow(host, "继续"))
+    assert calls["n"] == 1
+    assert host._build_workflow.goal == "fix parser"
+    assert host._build_workflow.contract_revision == 1
+
+
+def test_classifier_repair_includes_the_validation_error():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    prompts = []
+
+    def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        return "not json"
+
+    host = _host()
+    host._build_workflow_ask = ask
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    assert len(prompts) == 2
+    assert "rejected" in prompts[1]
+    assert host._build_workflow is None
+
+
+def test_checkpoint_saves_the_contract_without_a_manual_payload(tmp_path):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "checkpoints")
+    host = _host()
+    host._session_id = "sess"
+    host._checkpoint_store = store
+    host._build_workflow_ask = lambda _prompt: _json_decision()
+    host._llm = None
+    host._memory = None
+    host._tool_orchestrator = None
+    host._tool_tracer = None
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    loaded = store.load(store.checkpoint_id("sess", "fix parser", "build"))
+    assert loaded["state"]["build_workflow"]["workflow_id"] == "wf-1"
+    resumed = _host()
+    resumed._session_id = "sess"
+    resumed._checkpoint_store = store
+    resumed._llm = None
+    resumed._memory = None
+    resumed._tool_orchestrator = None
+    resumed._tool_tracer = None
+    AgentV2._prepare_graph_state(
+        resumed, {}, checkpoint_key_input="fix parser", mode="build"
+    )
+    assert resumed._build_workflow.workflow_id == "wf-1"
+
+
+def test_relative_workdir_follows_the_session_directory(tmp_path, monkeypatch):
+    import RxyCode.RxyCode1_1_0.utils.shell as shell_mod
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    repo = tmp_path / "repo"
+    pkg = repo / "pkg"
+    pkg.mkdir(parents=True)
+    monkeypatch.setattr(shell_mod, "current_working_directory", lambda *_args, **_kwargs: pkg)
+    monkeypatch.setattr(shell_mod, "initial_working_directory", lambda: repo)
+    monkeypatch.setattr(
+        shell_mod,
+        "load_config",
+        lambda: {"execution": {"sandbox_mode": "workspace", "workspace_root": str(repo)}},
+    )
+    host = _host()
+    host._workspace_root = str(repo)
+    command = "python -m pytest tests/test_parser.py -q"
+    host._build_workflow = _decision(required_checks=[{
+        "check_id": "parser",
+        "command": command,
+        "cwd": str(repo),
+        "success_predicate": "tests_passed_nonempty",
+    }])
+    AgentV2._record_workflow_receipt(
+        host, "bash", {"command": command, "workdir": "."}, "1 passed", False, call_id="dot"
+    )
+    assert host._build_workflow_receipts.get("parser") is None
+    assert AgentV2._workflow_completion_feedback(host) is not None
+
+
+def test_project_rules_and_new_contract_reach_the_model(tmp_path):
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    (tmp_path / "AGENTS.md").write_text("UNIQUE-AGENTS-MARKER\n", encoding="utf-8")
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        command = (
+            "python -m pytest tests/test_first.py -q"
+            if calls["n"] == 1
+            else "python -m pytest tests/test_second.py -q"
+        )
+        return _json_decision(
+            contract_revision=calls["n"],
+            reason=f"run {command}",
+            task_kind="question",
+            acceptance=["解释这一轮要检查的文件"],
+            required_checks=[],
+            stage_actions={stage: "skip" for stage in (
+                "project_docs", "clarify", "design", "build_verify", "doc_sync"
+            )} | {"project_docs": "inspect"},
+        )
+
+    host = _loop_host(ask)
+    host._workspace_root = str(tmp_path)
+    snapshots = []
+
+    async def raw_stream(messages, _tools=None):
+        snapshots.append("\n".join(str(getattr(message, "content", "")) for message in messages))
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(
+                content="任务完成\n这一轮只解释检查命令",
+                reasoning_content="",
+                tool_calls=None,
+            ))],
+            usage=None,
+        )
+
+    host._raw_stream = raw_stream
+
+    import asyncio
+    asyncio.run(AgentV2._fast_reply_with_tools(host, "fix the first parser", mode="build"))
+    asyncio.run(AgentV2._fast_reply_with_tools(host, "migrate the second parser", mode="build"))
+    assert "UNIQUE-AGENTS-MARKER" in snapshots[0]
+    assert "test_second.py" in snapshots[-1]
+
+
+def test_new_goal_does_not_keep_the_old_doc_sync_state():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    host = _host()
+    host._build_workflow_ask = lambda _prompt: _json_decision(stage_actions={
+        "project_docs": "inspect",
+        "clarify": "skip",
+        "design": "skip",
+        "build_verify": "run",
+        "doc_sync": "run",
+    })
+    host._workflow_stage_progress = {"doc_sync": "done"}
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, "migrate the parser"))
+    assert host._workflow_stage_progress.get("doc_sync") != "done"
+    AgentV2._record_workflow_receipt(
+        host,
+        "bash",
+        {"command": "python -m pytest tests/test_parser.py -q", "workdir": "."},
+        "1 passed",
+        False,
+        call_id="b",
+    )
+    assert AgentV2._workflow_completion_feedback(host) is not None
+
+
+def test_default_build_restores_the_saved_contract_before_classifying(tmp_path):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "checkpoints")
+    first = _host()
+    first._session_id = "sess"
+    first._checkpoint_store = store
+    first._build_workflow_ask = lambda _prompt: _json_decision(workflow_id="wf-original")
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(first, "fix parser"))
+    AgentV2.note_workflow_plan(first, approved=True, plan_revision=1, goal="fix parser")
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision(workflow_id="wf-reclassified")
+
+    second = _host()
+    second._session_id = "sess"
+    second._checkpoint_store = store
+    second._build_workflow_ask = ask
+    asyncio.run(AgentV2._ensure_build_workflow(second, "fix parser"))
+    assert calls["n"] == 0
+    assert second._build_workflow.workflow_id == "wf-original"
+    assert second._workflow_plan_status == "approved"
+
+
+def test_two_relative_dots_follow_session_and_workspace(tmp_path, monkeypatch):
+    import RxyCode.RxyCode1_1_0.utils.shell as shell_mod
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    repo = tmp_path / "repo"
+    pkg = repo / "pkg"
+    pkg.mkdir(parents=True)
+    command = "python -m pytest tests/test_parser.py -q"
+    decision = _decision(required_checks=[{
+        "check_id": "parser",
+        "command": command,
+        "cwd": ".",
+        "success_predicate": "tests_passed_nonempty",
+    }])
+    _bind_shell(monkeypatch, repo)
+    same = _host()
+    same._workspace_root = str(repo)
+    same._build_workflow = decision
+    AgentV2._record_workflow_receipt(
+        same, "bash", {"command": command, "workdir": "."}, "1 passed", False, call_id="same-dot"
+    )
+    assert same._build_workflow_receipts.get("parser") is not None
+    assert AgentV2._workflow_completion_feedback(same) is None
+
+    monkeypatch.setattr(shell_mod, "current_working_directory", lambda *_args, **_kwargs: pkg)
+    monkeypatch.setattr(shell_mod, "initial_working_directory", lambda: repo)
+    monkeypatch.setattr(
+        shell_mod,
+        "load_config",
+        lambda: {"execution": {"sandbox_mode": "workspace", "workspace_root": str(repo)}},
+    )
+    split = _host()
+    split._workspace_root = str(repo)
+    split._build_workflow = decision
+    AgentV2._record_workflow_receipt(
+        split, "bash", {"command": command, "workdir": "."}, "1 passed", False, call_id="split-dot"
+    )
+    assert split._build_workflow_receipts.get("parser") is None
+    assert AgentV2._workflow_completion_feedback(split) is not None
+
+
+def test_restored_contract_reloads_project_rules_before_the_turn_note(tmp_path):
+    import json
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    marker = "UNIQUE-RESTORE-AGENTS-MARKER"
+    (tmp_path / "AGENTS.md").write_text(marker + "\n", encoding="utf-8")
+    store = CheckpointStore(tmp_path / "checkpoints")
+    goal = "fix parser"
+    first = _host()
+    first._session_id = "sess"
+    first._checkpoint_store = store
+    first._workspace_root = str(tmp_path)
+    first._build_workflow_ask = lambda _prompt: _json_decision(
+        workflow_id="wf-original",
+        task_kind="question",
+        acceptance=["解释这一轮要检查的文件"],
+        required_checks=[],
+        stage_actions={stage: "skip" for stage in (
+            "project_docs", "clarify", "design", "build_verify", "doc_sync"
+        )} | {"project_docs": "inspect"},
+    )
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(first, goal))
+    saved = store.load(store.checkpoint_id("sess", goal, "build"))
+    assert marker not in json.dumps(saved)
+    assert saved["state"]["build_workflow"]["stage_progress"]["project_docs"] == "done"
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision(workflow_id="wf-reclassified")
+
+    second = _loop_host(ask)
+    second._session_id = "sess"
+    second._checkpoint_store = store
+    second._workspace_root = str(tmp_path)
+    result, snapshots, _seen = _run_scripted_loop(
+        second,
+        [
+            {"tool": "bash", "id": "bash-1", "args": {"command": "pwd"}},
+            {"content": "任务完成\n规则仍在"},
+        ],
+        ["ok"],
+        goal=goal,
+    )
+    assert calls["n"] == 0
+    assert second._build_workflow.workflow_id == "wf-original"
+    assert second._workflow_stage_progress.get("project_docs") == "done"
+    assert "规则仍在" in result
+    assert len(snapshots) >= 2
+    for messages in snapshots:
+        text = "\n".join(str(getattr(message, "content", "")) for message in messages)
+        assert marker in text
+    reloaded = store.load(store.checkpoint_id("sess", goal, "build"))
+    assert marker not in json.dumps(reloaded)

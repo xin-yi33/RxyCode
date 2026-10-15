@@ -130,7 +130,12 @@ from RxyCode.RxyCode1_1_0.core.session_runtime import (
 from RxyCode.RxyCode1_1_0.core.state import TaskTree
 from RxyCode.RxyCode1_1_0.core.tracing import Tracer
 from RxyCode.RxyCode1_1_0.core.trajectory import TrajectoryLogger
-from RxyCode.RxyCode1_1_0.execution.evidence import deterministic_issues
+from RxyCode.RxyCode1_1_0.execution.evidence import (
+    build_tool_evidence,
+    deterministic_issues,
+)
+from RxyCode.RxyCode1_1_0.tools.git_tool import git_invocation_is_readonly
+from RxyCode.RxyCode1_1_0.utils.shell import shell_executor
 from RxyCode.RxyCode1_1_0.execution.tool_journal import (
     ToolExecutionJournal,
     new_attempt_id,
@@ -155,6 +160,7 @@ from RxyCode.RxyCode1_1_0.core.build_workflow import (
     checkpoint_payload,
     is_documentation_path,
     is_ordinary_text_save,
+    assign_workflow_id,
     parse_decision_text,
     retarget_contract,
     tests_passed_nonempty,
@@ -895,7 +901,9 @@ _PLAN_REJECT_PREFIXES = (
 _WORKFLOW_MUTATION_TOOLS = frozenset(
     {"write", "edit", "patch", "bash", "git", "task", "spawn_subagent"}
 )
-_GIT_READONLY_OPERATIONS = frozenset({"status", "diff", "log", "branch"})
+_CONTINUATION_RE = re.compile(
+    r"(?i)^(?:继续|接着做|继续做|continue|go on|keep going)[。.!！\s]*$"
+)
 _WORKFLOW_CONTINUATION_PREFIXES = (
     "[tool",
     "[retry]",
@@ -921,31 +929,93 @@ class _WorkflowGeneration:
 _PARENT_WORKFLOW_GENERATION: _contextvars.ContextVar[_WorkflowGeneration | None] = (
     _contextvars.ContextVar("rxycode_parent_workflow_generation", default=None)
 )
-_FILE_MUTATOR_RE = re.compile(
-    r"(?i)(?:\b(?:cp|mv|install)\b|\b(?:copy|move)\b|\bsed\s+-[^\n]*\bi\b|\bperl\s+-[^\n]*i\b)"
-)
-_FILE_TOKEN_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_./\\-]+\.(?:py|pyi|ts|tsx|js|jsx|go|java|rs|c|h|cpp|cs|md|rst|txt))"
-)
-_GIT_WORKTREE_REWRITE_RE = re.compile(
-    r"(?i)\bgit(?:\.exe)?\s+(?:checkout|restore|reset|switch|clean|apply|rebase|merge|revert)\b"
-)
-_SHELL_WRITE_SIGNAL_RE = re.compile(
-    r"(?i)(?:>>?|\bout-file\b|\bset-content\b|\btee-object\b|\badd-content\b|"
-    r"\bwrite_text\b|\bwrite_bytes\b|open\([^)]*['\"][wa+]|\bsed\s+-[^\n]*\bi\b)"
-)
 _SHELL_REDIRECT_RE = re.compile(
     r"(?i)(?:>>?|out-file(?:\s+-filepath)?|set-content(?:\s+-path)?|"
     r"tee-object(?:\s+-filepath)?|add-content(?:\s+-path)?)\s+['\"]?([^\s'\"|>]+)"
 )
-_QUOTED_FILE_RE = re.compile(r"['\"]([^'\"]+?\.[A-Za-z0-9_]+)['\"]")
 _STDERR_REDIRECT_RE = re.compile(r"(?i)(?:2>&1|2>\s*/dev/null|2>\s*nul|2>\s*\$null)")
+# A doc exception has to match the whole command. Extracted paths are not proof.
+_DOC_REDIRECT_RE = re.compile(
+    r"(?i)^(?:echo|printf|write-output)\b.*>>?\s+['\"]?([^\s'\"<>|&;{}]+)['\"]?\s*$"
+)
+_DOC_COPY_RE = re.compile(
+    r"(?i)^(?:cp|copy|mv|move)\s+"
+    r"['\"]?([^\s'\"]+)['\"]?\s+['\"]?([^\s'\"]+)['\"]?\s*$"
+)
 _APPROVED_IMPLEMENT_ROLE = (
     "你当前处于 BUILD，必须按用户消息和 plan.md 中的已批准计划实施。"
     "禁止继续或复用工作区里与该计划无关的旧游戏/旧 HTML（例如上一版贪吃蛇）。"
     "计划是新项目就按计划新建或覆盖指定文件，不要在旧文件上改出另一个游戏。"
     "第一轮就必须调用工具（ls/read/write/edit），不要只在思维链里写完整实现。"
 )
+
+
+def _shell_text_outside_quotes(command: str) -> str:
+    """Hide proven literals. Double quotes still expose command substitution.
+
+    Single quotes are literals in PowerShell and bash. Double quotes execute
+    ``$()`` and backticks, so those markers stay visible. Other characters
+    inside double quotes are hidden and are not treated as extra commands.
+    """
+    chars: list[str] = []
+    quote = ""
+    text = str(command or "")
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            else:
+                chars.append(" ")
+            index += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = ""
+                index += 1
+                continue
+            if text.startswith("$(", index):
+                chars.append("$(")
+                index += 2
+                continue
+            if char == "`":
+                chars.append(char)
+            else:
+                chars.append(" ")
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        chars.append(char)
+        index += 1
+    return "".join(chars)
+
+
+def _shell_shape_is_unproven(command: str) -> bool:
+    """Newlines, pipes, script blocks, and command substitution are unproven."""
+    visible = _STDERR_REDIRECT_RE.sub(" ", _shell_text_outside_quotes(command))
+    if re.search(r"[\n\r|;{}&]", visible):
+        return True
+    return "$(" in visible or "`" in visible
+
+
+def _confirmed_single_doc_operation(command: str) -> bool:
+    """True only for one echo-style redirect or one doc-to-doc copy."""
+    if _shell_shape_is_unproven(command):
+        return False
+    visible = _STDERR_REDIRECT_RE.sub(" ", str(command or "")).strip()
+    copied = _DOC_COPY_RE.fullmatch(visible)
+    if copied:
+        return all(is_documentation_path(part) for part in copied.groups())
+    if len(_SHELL_REDIRECT_RE.findall(visible)) != 1:
+        return False
+    redirected = _DOC_REDIRECT_RE.fullmatch(visible)
+    if redirected is None:
+        return False
+    return is_documentation_path(redirected.group(1))
 
 
 def _is_approved_plan_implement(text: str) -> bool:
@@ -5496,6 +5566,8 @@ class AgentV2:
         head = (text or "").lstrip()
         if head.startswith(_WORKFLOW_CONTINUATION_PREFIXES):
             return True
+        if _CONTINUATION_RE.match(head):
+            return True
         if _is_approved_plan_implement(head):
             return True
         return head.startswith(_PLAN_REJECT_PREFIXES)
@@ -5520,6 +5592,7 @@ class AgentV2:
         self._build_workflow = None
         self._build_workflow_receipts = {}
         self._workflow_subject = goal
+        self._workflow_generation = _WorkflowGeneration(0)
         self._workflow_write_generation = 0
         self._workflow_clarify_answered = False
         self._workflow_plan_status = "pending"
@@ -5527,14 +5600,23 @@ class AgentV2:
         self._workflow_plan_bound_revision = None
         self._workflow_plan_goal = ""
         self._workflow_touched_dirs = set()
+        self._workflow_stage_progress = {}
+        self._workflow_instruction_text = ""
+        if getattr(self, "_build_workflow", None) is None and self._restore_unfinished_workflow(goal):
+            return
         prompt = (
             "Classify this goal. Reply with one JSON object only. "
+            "Required fields: workflow_id (string; the harness may fill it), "
+            "goal_revision, contract_revision, task_kind, difficulty, "
+            "stage_actions, reason, acceptance, required_checks. "
             "difficulty is simple, medium, or complex from the task itself, "
             "not from length or keywords. task_kind is development, question, "
             "or read_only. stage_actions keys: project_docs, clarify, design, "
             "build_verify, doc_sync. Values: inspect, run, or skip. "
+            "acceptance is a non-empty list of concrete outcomes, not blank text. "
             "development must set build_verify to run and include required_checks "
-            "with check_id, command, cwd, success_predicate. "
+            "with check_id, command, cwd, and success_predicate "
+            "exit_zero or tests_passed_nonempty. "
             f"Goal:\n{goal}"
         )
         ask = getattr(self, "_build_workflow_ask", None)
@@ -5555,15 +5637,24 @@ class AgentV2:
             self._workflow_plan_revision = int(
                 getattr(self, "_workflow_plan_revision", 1) or 1
             )
+            self._note_project_docs_stage()
+            self._persist_build_workflow()
+
+        def _parse(body: str):
+            return parse_decision_text(assign_workflow_id(body, goal), goal=goal)
 
         try:
-            _accept(parse_decision_text(await _text(prompt), goal=goal))
-        except WorkflowContractError:
+            _accept(_parse(await _text(prompt)))
+        except WorkflowContractError as first_error:
             try:
                 _accept(
-                    parse_decision_text(
-                        await _text(prompt + "\nReturn only the JSON object."),
-                        goal=goal,
+                    _parse(
+                        await _text(
+                            prompt
+                            + "\nThe previous JSON was rejected: "
+                            + str(first_error)
+                            + "\nReturn only the JSON object."
+                        )
                     )
                 )
             except WorkflowContractError as exc:
@@ -5642,17 +5733,27 @@ class AgentV2:
             return f"[build-workflow] 不能完成：{reason}"
         if decision.task_kind != "development":
             return None
+        unmet: list[str] = []
+        if self._workflow_clarify_open():
+            unmet.append("clarify")
+        if self._workflow_design_open():
+            unmet.append("design")
+        progress = getattr(self, "_workflow_stage_progress", {}) or {}
+        if decision.stage_actions.get("project_docs") == "run" and progress.get("project_docs") != "done":
+            unmet.append("project_docs")
+        if decision.stage_actions.get("doc_sync") == "run" and progress.get("doc_sync") != "done":
+            unmet.append("doc_sync")
         verdict = check_completion(
             decision,
             getattr(self, "_build_workflow_receipts", {}) or {},
             str(getattr(self, "_workspace_root", "") or ""),
             self._workflow_subject_hash(),
         )
-        if verdict.accepted:
+        if verdict.accepted and not unmet:
             return None
         return (
             "[build-workflow] 完成门未通过。"
-            f" missing={','.join(verdict.missing) or '-'} "
+            f" missing={','.join([*unmet, *verdict.missing]) or '-'} "
             f"stale={','.join(verdict.stale) or '-'}. "
             "继续补齐验收，不要宣称已经完成。"
         )
@@ -5722,6 +5823,12 @@ class AgentV2:
         self._workflow_plan_status = "approved"
         self._workflow_plan_bound_revision = plan_revision
         self._workflow_plan_goal = goal
+        progress = getattr(self, "_workflow_stage_progress", None)
+        if not isinstance(progress, dict):
+            progress = {}
+            self._workflow_stage_progress = progress
+        progress["design"] = "done"
+        self._persist_build_workflow()
 
     def _observe_workflow_plan_turn(self, user_input: str) -> None:
         decision = getattr(self, "_build_workflow", None)
@@ -5747,13 +5854,16 @@ class AgentV2:
     def _workflow_blocks_mutation(self, name: str, args: dict | None = None) -> bool:
         if not self._build_workflow_enabled():
             return False
-        tool = str(name or "").lower()
+        tool = canonical_tool_name(name)
         if tool not in _WORKFLOW_MUTATION_TOOLS:
             return False
         payload = args or {}
         if tool in {"bash", "task"} and classify_tool_risk(tool, payload) < RiskLevel.WRITE:
             return False
-        if tool == "git" and str(payload.get("operation") or "status").strip().lower() in _GIT_READONLY_OPERATIONS:
+        if tool == "git" and git_invocation_is_readonly(
+            str(payload.get("operation") or "status"),
+            str(payload.get("args") or ""),
+        ):
             return False
         if self._workflow_doc_is_unrelated(payload):
             return True
@@ -5790,33 +5900,43 @@ class AgentV2:
         is_error: bool,
         call_id: str = "",
     ) -> None:
-        if str(name).lower() == "question" and self._question_answer_resolved(result):
+        tool = canonical_tool_name(name)
+        if tool == "question" and self._question_answer_resolved(result):
             self._workflow_clarify_answered = True
+            self._persist_build_workflow()
             return
         decision = getattr(self, "_build_workflow", None)
-        if decision is None or str(name).lower() != "bash":
+        if decision is None or tool != "bash":
             return
         command = str((args or {}).get("command") or "")
-        explicit_cwd = str((args or {}).get("cwd") or (args or {}).get("workdir") or "").strip()
+        provided_dir = "workdir" in (args or {}) or "cwd" in (args or {})
+        explicit_cwd = str((args or {}).get("workdir") or (args or {}).get("cwd") or "").strip()
         receipts = getattr(self, "_build_workflow_receipts", None)
         if not isinstance(receipts, dict):
             receipts = {}
             self._build_workflow_receipts = receipts
+        lowered = str(result or "").strip().lower()
+        not_run = lowered.startswith(("[blocked", "[rejected", "[cancelled", "[dry-run"))
+        evidence = build_tool_evidence(
+            "bash",
+            args or {},
+            str(result or ""),
+            executed=not not_run,
+        )
         for check in decision.required_checks:
             if check.command != command:
                 continue
-            if explicit_cwd:
-                recorded_cwd = explicit_cwd.replace("\\", "/")
-            else:
-                recorded_cwd = self._workflow_actual_cwd()
-                if self._workflow_cwd_matches(recorded_cwd, check.cwd):
-                    continue
-            if not recorded_cwd:
+            if not self._shell_cwd_matches_check(
+                explicit_cwd if provided_dir else "",
+                check.cwd,
+                provided=provided_dir,
+            ):
                 continue
+            ran = bool(evidence.executed and evidence.status == "succeeded")
             if check.success_predicate == "tests_passed_nonempty":
-                predicate_passed = (not is_error) and tests_passed_nonempty(result)
+                predicate_passed = ran and (not is_error) and tests_passed_nonempty(result)
             else:
-                predicate_passed = not is_error
+                predicate_passed = ran and not is_error and evidence.exit_code in (None, 0)
             receipts[check.check_id] = CheckReceipt(
                 check_id=check.check_id,
                 workflow_id=decision.workflow_id,
@@ -5825,13 +5945,14 @@ class AgentV2:
                 workspace_id=str(getattr(self, "_workspace_root", "") or ""),
                 subject_hash=self._workflow_subject_hash(),
                 command=check.command,
-                cwd=recorded_cwd,
-                exit_code=1 if is_error or not predicate_passed else 0,
-                executed=True,
+                cwd=check.cwd,
+                exit_code=0 if predicate_passed else 1,
+                executed=ran,
                 predicate_passed=predicate_passed,
                 result_summary=result[:500],
-                tool_result_ref=self._workflow_tool_ref(call_id),
+                tool_result_ref=self._workflow_tool_ref(call_id) if ran else "",
             )
+        self._persist_build_workflow()
 
     def _workflow_actual_cwd(self) -> str:
         try:
@@ -5839,27 +5960,43 @@ class AgentV2:
         except Exception:
             return ""
 
-    @staticmethod
-    def _workflow_cwd_matches(actual: str, expected: str) -> bool:
-        left = str(actual or "").replace("\\", "/").rstrip("/") or "."
-        right = str(expected or "").replace("\\", "/").rstrip("/") or "."
-        return left == right
+    def _resolved_shell_workdir(self, workdir: str) -> Path | None:
+        """Use the shell executor's own workdir resolution."""
+        try:
+            return shell_executor.resolved_workdir(workdir)
+        except Exception:
+            return None
+
+    def _shell_cwd_matches_check(self, workdir: str, check_cwd: str, *, provided: bool) -> bool:
+        """True when the shell directory and the contract directory are the same path.
+
+        ShellExecutor resolves the tool workdir from the session cwd. A relative
+        contract directory resolves from the workspace root. Identical raw
+        strings, including two "." values, are not a match by themselves.
+        """
+        executed = self._resolved_shell_workdir(workdir if provided else "")
+        if executed is None:
+            return False
+        contract = Path(str(check_cwd or "").strip() or ".")
+        if not contract.is_absolute():
+            root = Path(str(getattr(self, "_workspace_root", "") or ".")).expanduser()
+            contract = root / contract
+        try:
+            contract = contract.resolve()
+            executed = executed.resolve()
+        except OSError:
+            return False
+        return os.path.normcase(str(executed)) == os.path.normcase(str(contract))
 
     def _bump_workflow_generation(self) -> None:
         box = self._workflow_generation_box()
         box.value += 1
         self._workflow_write_generation = int(box.value)
-
-    def _shell_write_targets(self, command: str) -> list[str]:
-        visible = _STDERR_REDIRECT_RE.sub(" ", command)
-        if _SHELL_WRITE_SIGNAL_RE.search(visible) is None:
-            return []
-        found: list[str] = []
-        for match in _SHELL_REDIRECT_RE.finditer(visible):
-            found.append(match.group(1))
-        if re.search(r"(?i)\bwrite_text\b|\bwrite_bytes\b|open\(", visible):
-            found.extend(_QUOTED_FILE_RE.findall(visible))
-        return found
+        decision = getattr(self, "_build_workflow", None)
+        if decision is not None and decision.stage_actions.get("doc_sync") == "run":
+            progress = getattr(self, "_workflow_stage_progress", None)
+            if isinstance(progress, dict):
+                progress.pop("doc_sync", None)
 
     def _shell_invalidates_subject(self, command: str) -> bool:
         text = str(command or "").strip()
@@ -5868,30 +6005,28 @@ class AgentV2:
         decision = getattr(self, "_build_workflow", None)
         if decision is not None and any(check.command == text for check in decision.required_checks):
             return False
+        if _shell_shape_is_unproven(text):
+            return True
         if classify_tool_risk("bash", {"command": text}) < RiskLevel.WRITE:
             return False
-        if _GIT_WORKTREE_REWRITE_RE.search(text):
-            return True
-        targets = self._shell_write_targets(text)
-        if _FILE_MUTATOR_RE.search(text):
-            targets = [*targets, *_FILE_TOKEN_RE.findall(text)]
-            if not targets:
-                return True
-        if not targets:
-            return False
-        return any(not is_documentation_path(target) for target in targets)
+        return not _confirmed_single_doc_operation(text)
 
     def _git_tool_invalidates(self, args: dict | None) -> bool:
         payload = args or {}
-        operation = str(payload.get("operation") or "").strip().lower()
-        if operation in {"checkout", "restore", "reset", "switch", "clean"}:
-            return True
-        if operation in {"status", "diff", "log", "branch"}:
-            return False
-        return bool(_GIT_WORKTREE_REWRITE_RE.search(str(payload.get("args") or payload.get("command") or "")))
+        return not git_invocation_is_readonly(
+            str(payload.get("operation") or "status"),
+            str(payload.get("args") or ""),
+        )
 
     def _note_workflow_write(self, name: str, is_error: bool, args: dict | None = None) -> None:
-        if is_error or not self._build_workflow_enabled():
+        if not self._build_workflow_enabled():
+            return
+        name = canonical_tool_name(name)
+        if name == "bash" and self._shell_invalidates_subject(str((args or {}).get("command") or "")):
+            self._bump_workflow_generation()
+            self._persist_build_workflow()
+            return
+        if is_error:
             return
         if name in {"write", "edit", "patch"}:
             path = self._workflow_tool_path(args).replace("\\", "/")
@@ -5903,14 +6038,115 @@ class AgentV2:
                     self._workflow_touched_dirs = touched
                 touched.add(parent)
             if path and is_documentation_path(path):
+                progress = getattr(self, "_workflow_stage_progress", None)
+                if not isinstance(progress, dict):
+                    progress = {}
+                    self._workflow_stage_progress = progress
+                progress["doc_sync"] = "done"
+                self._persist_build_workflow()
                 return
             self._bump_workflow_generation()
-            return
-        if name == "bash" and self._shell_invalidates_subject(str((args or {}).get("command") or "")):
-            self._bump_workflow_generation()
+            self._persist_build_workflow()
             return
         if name == "git" and self._git_tool_invalidates(args):
             self._bump_workflow_generation()
+            self._persist_build_workflow()
+
+    def _load_workflow_instruction_text(self) -> None:
+        """Read applicable project rules into memory. The body is not checkpointed."""
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or decision.stage_actions.get("project_docs") == "skip":
+            self._workflow_instruction_text = ""
+            return
+        files = self.project_instructions(None)
+        self._workflow_instruction_text = "\n\n".join(
+            f"[{item.path} scope={item.scope}]\n{item.text}" for item in files
+        )
+
+    def _note_project_docs_stage(self) -> None:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is None or decision.stage_actions.get("project_docs") == "skip":
+            return
+        self._load_workflow_instruction_text()
+        progress = getattr(self, "_workflow_stage_progress", None)
+        if not isinstance(progress, dict):
+            progress = {}
+            self._workflow_stage_progress = progress
+        progress["project_docs"] = "done"
+
+    def _publish_workflow_context(self) -> None:
+        """Put the current contract and project rules in the turn suffix.
+
+        A live prefix drops role_instruction, so a changed contract must ride
+        after the frozen history as a note. It does not enter the system
+        prompt or the tool schema.
+        """
+        blocks = [
+            block
+            for block in (getattr(self, "_turn_context_blocks", None) or [])
+            if not (
+                isinstance(block, dict)
+                and str(block.get("text") or "").startswith("[build-workflow]")
+            )
+        ]
+        parts: list[str] = []
+        note = self._workflow_stage_note()
+        if note:
+            parts.append(note)
+        rules = str(getattr(self, "_workflow_instruction_text", "") or "").strip()
+        if rules:
+            parts.append("Applicable project instructions:\n" + rules)
+        if parts:
+            blocks.append({
+                "kind": "note",
+                "text": "[build-workflow]\n" + "\n\n".join(parts),
+            })
+        self._turn_context_blocks = blocks
+
+    def _restore_unfinished_workflow(self, goal: str) -> bool:
+        """Load the current attempt's contract before a new classification."""
+        store = getattr(self, "_checkpoint_store", None)
+        session_id = str(getattr(self, "_session_id", "") or "")
+        if store is None or not session_id or not str(goal or "").strip():
+            return False
+        try:
+            document = store.load(store.checkpoint_id(session_id, goal, "build"))
+        except Exception:
+            return False
+        if not isinstance(document, dict) or document.get("completed"):
+            return False
+        payload = (document.get("state") or {}).get("build_workflow")
+        if not isinstance(payload, dict):
+            return False
+        if str(payload.get("goal") or "") != goal:
+            return False
+        self.restore_build_workflow(payload, run_id=str(get_current_run_id() or ""))
+        return getattr(self, "_build_workflow", None) is not None
+
+    def _persist_build_workflow(self) -> None:
+        store = getattr(self, "_checkpoint_store", None)
+        document = self.workflow_checkpoint_document()
+        if store is None or document is None:
+            return
+        session_id = str(getattr(self, "_session_id", "") or "")
+        user_input = str(document.get("goal") or "")
+        mode = "build"
+        if not session_id or not user_input:
+            return
+        existing = None
+        try:
+            existing = store.load(store.checkpoint_id(session_id, user_input, mode))
+        except Exception:
+            existing = None
+        state = dict((existing or {}).get("state") or {})
+        state["build_workflow"] = document
+        state.setdefault("phase", "executing")
+        state.setdefault("user_input", user_input)
+        state.setdefault("resume_attempts", 0)
+        try:
+            store.save(session_id, user_input, mode, state)
+        except Exception:
+            return
 
     def project_instructions(self, target):
         cache = getattr(self, "_instruction_cache", None)
@@ -5918,7 +6154,8 @@ class AgentV2:
             cache = InstructionCache()
             self._instruction_cache = cache
         root = Path(str(getattr(self, "_workspace_root", "") or "."))
-        return discover_instructions(root, target, cache=cache)
+        target_path = root if target is None else Path(str(target))
+        return discover_instructions(root, target_path, cache=cache)
 
     def instruction_permissions(self, allowlist, target):
         return bind_instruction_permissions(allowlist, self.project_instructions(target))
@@ -5981,7 +6218,8 @@ class AgentV2:
         self._build_workflow = decision
         self._build_workflow_receipts = receipts
         self._build_workflow_block = ""
-        self._workflow_write_generation = int(payload.get("write_generation") or 0)
+        self._workflow_generation = _WorkflowGeneration(int(payload.get("write_generation") or 0))
+        self._workflow_write_generation = int(self._workflow_generation.value)
         self._workflow_clarify_answered = bool(payload.get("clarify_answered"))
         self._workflow_plan_revision = int(payload.get("plan_revision") or 1)
         self._workflow_plan_status = str(payload.get("plan_status") or "pending")
@@ -5992,6 +6230,7 @@ class AgentV2:
         self._workflow_stage_progress = dict(progress) if isinstance(progress, dict) else {}
         touched = payload.get("touched_dirs") or []
         self._workflow_touched_dirs = {str(item) for item in touched}
+        self._load_workflow_instruction_text()
 
     def _apply_turn_effort(self, mode: str, text: str) -> str:
         """A21: pick this turn's effort. Implicit LLM-build default
@@ -6708,6 +6947,7 @@ class AgentV2:
         stage_note = self._workflow_stage_note()
         if stage_note:
             role_instruction = f"{role_instruction.strip()}\n\n{stage_note}".strip() if role_instruction else stage_note
+        self._publish_workflow_context()
         self._begin_status_turn()
         # A21: fast path 按任务性质选 effort 档位（简单查询 → fast；其余 balanced）。
         # 用户显式配置的 effort（如 deep）优先，不被 fast path 覆盖。

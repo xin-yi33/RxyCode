@@ -1193,6 +1193,13 @@ class ShellExecutor:
             kwargs["start_new_session"] = True
         return kwargs
 
+    def resolved_workdir(self, workdir: str = "") -> Path:
+        """Directory this executor would actually use for *workdir*."""
+        policy = self._execution_policy(workdir)
+        if policy.cwd is not None:
+            return policy.cwd
+        return current_working_directory()
+
     def execute(self, command: str, workdir: str = "", timeout: int = DEFAULT_SHELL_TIMEOUT) -> dict:
         # 废弃代码（2026-09-20）：timeout: int = 60  # 旧前台一刀切，禁止再引用。
         """Run the same controlled async implementation from synchronous callers."""
