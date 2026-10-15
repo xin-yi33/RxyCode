@@ -186,10 +186,25 @@ class Session:
         self._session_subagents_opt_in = False
         self.drain_steers: Callable[[], list[str]] | None = None
         self._agents_enabled_cached = None
+        self._active_run = None
         try:
             self._agents_enabled_cached = self._read_agents_enabled()
         except Exception:
             self._agents_enabled_cached = False
+
+    def open_run(
+        self,
+        authenticated: dict[str, object],
+        claimed: dict[str, object] | None = None,
+    ) -> Any:
+        """Mint a RunContext for this same Session. The client session id is ignored."""
+        from rxycode_protocol.run_context import RunContext
+
+        payload = dict(authenticated)
+        payload["session_id"] = self.session_id
+        context = RunContext.from_authenticated(payload, claimed=claimed)
+        self._active_run = context
+        return context
 
     async def prompt(
         self,
@@ -201,8 +216,13 @@ class Session:
         tui: Any | None = None,
         permission_mode: str | None = None,
         attachments: list[Any] | None = None,
+        run_context: Any | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
+        if run_context is not None:
+            if getattr(run_context, "session_id", None) != self.session_id:
+                raise ValueError("run context session_id does not match this session")
+            self._active_run = run_context
         try:
             from .ttft_clock import (
                 bind_prompt_clock,

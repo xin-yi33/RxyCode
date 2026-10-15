@@ -12,13 +12,38 @@ _tui: ContextVar[Any | None] = ContextVar("appserver_tui", default=None)
 _delegate_depth: ContextVar[int] = ContextVar("appserver_delegate_depth", default=0)
 
 
-def bind_prompt_context(session_id: str, tui: Any) -> tuple[Token[str], Token[Any | None]]:
-    return _session_id.set(session_id), _tui.set(tui)
+_run_context: ContextVar[Any | None] = ContextVar("appserver_run_context", default=None)
 
 
-def reset_prompt_context(tokens: tuple[Token[str], Token[Any | None]]) -> None:
+def bind_prompt_context(
+    session_id: str,
+    tui: Any,
+    run_context: Any | None = None,
+) -> tuple[Token[str], Token[Any | None], Token[Any | None]]:
+    """Bind the prompt TUI plus an explicit RunContext for this task.
+
+    Existing callers that only pass session id and TUI still work. The third
+    token is reset by reset_prompt_context. This does not change the process
+    working directory.
+    """
+    return (
+        _session_id.set(session_id),
+        _tui.set(tui),
+        _run_context.set(run_context),
+    )
+
+
+def reset_prompt_context(
+    tokens: tuple[Token[str], Token[Any | None], Token[Any | None]],
+) -> None:
     _session_id.reset(tokens[0])
     _tui.reset(tokens[1])
+    _run_context.reset(tokens[2])
+
+
+def current_run_context() -> Any | None:
+    """Return the RunContext bound for this task, or None."""
+    return _run_context.get()
 
 
 def get_bound_session_id() -> str:

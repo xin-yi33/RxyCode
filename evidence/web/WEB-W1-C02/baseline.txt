@@ -1,0 +1,7 @@
+parent branch: feat/rxycode-web
+parent HEAD before WEB-W1-C02: 6301907ac9d55a1801fe0921b18f2fd02bce34ad
+nested docs/plans/opus5-plan HEAD: ecc3e73
+upstream: none
+anchors present: core/session.py class PromptResult, appserver/runtime.py bind_prompt_context
+core/session.py also has an unrelated unstaged inbox_for edit. This card does not stage that hunk.
+W0 exit is not claimed. CW03 and CW04 stay P0 OPEN.
