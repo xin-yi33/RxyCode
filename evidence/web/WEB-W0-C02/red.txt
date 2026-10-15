@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-0g1hc4pv
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c02_unit.py:21: AttributeError: module 'rxycode_web_check_plan_c02' has no attribute 'lookup_verdict'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c02_unit.py:30: AttributeError: module 'rxycode_web_check_plan_c02' has no attribute 'reuse_decision'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c02_module.py:21: AttributeError: module 'rxycode_web_check_plan_c02m' has no attribute 'trace_verdict'
+=========================== short test summary info ===========================
+FAILED tests/web/w0/test_w0_c02_unit.py::test_w0_c02_contract - AttributeErro...
+FAILED tests/web/w0/test_w0_c02_unit.py::test_w0_c02_negative - AttributeErro...
+FAILED tests/web/w0/test_w0_c02_module.py::test_w0_c02_integration - Attribut...
+3 failed in 0.11s

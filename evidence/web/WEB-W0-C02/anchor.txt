@@ -1,0 +1,2 @@
+body_has_anchor False
+name_has_anchor True

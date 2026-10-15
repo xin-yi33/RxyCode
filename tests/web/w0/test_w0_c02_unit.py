@@ -1,0 +1,35 @@
+"""WEB-W0-C02 unit contracts. These call the shipped verdict lookup."""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[3]
+PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
+
+
+def _scanner():
+    path = PLAN / "scripts" / "check_plan.py"
+    spec = importlib.util.spec_from_file_location("rxycode_web_check_plan_c02", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_w0_c02_contract():
+    """Given a subsystem requirement, the verdict names a verified source and a rejected option."""
+    row = _scanner().lookup_verdict(PLAN, "linux-sandbox")
+    assert row["source_url"].startswith("https://")
+    assert len(row["commit"]) >= 12
+    assert row["license"] not in {"", "UNKNOWN"}
+    assert row["rejected"]
+
+
+def test_w0_c02_negative():
+    """An unknown external license stays RESEARCH_REQUIRED and does not allow copying code."""
+    blocked = _scanner().reuse_decision("UNKNOWN")
+    assert blocked["status"] == "RESEARCH_REQUIRED"
+    assert blocked["copy_allowed"] is False
+    blank = _scanner().reuse_decision("")
+    assert blank["status"] == "RESEARCH_REQUIRED"
+    assert blank["copy_allowed"] is False
