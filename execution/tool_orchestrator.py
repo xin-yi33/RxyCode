@@ -1047,7 +1047,7 @@ class ToolOrchestrator:
 
         async def _invoke_body() -> str:
             if _routes_through_port(name):
-                return await self._invoke_through_port(name, args, tool)
+                return await self._invoke_through_port(name, args, _invoke_registered)
             return await _invoke_registered()
 
         async def _invoke_registered() -> str:
@@ -1777,8 +1777,11 @@ class ToolOrchestrator:
                 return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
         return await self._invoke_in_executor(tool, args)
 
-    async def _invoke_through_port(self, name: str, args: Any, tool: Any) -> str:
-        """Terminal shell/read/edit calls go through NativeBackend, not around it."""
+    async def _invoke_through_port(self, name: str, args: Any, runner: Any) -> str:
+        """Terminal shell/read/edit calls go through NativeBackend, not around it.
+
+        ``runner`` is the existing retry-aware invocation, so READ retries stay.
+        """
         port_module = _execution_port_module()
         port = port_module.current_execution_port() or port_module.default_execution_port()
         target_id = "local"
@@ -1788,10 +1791,6 @@ class ToolOrchestrator:
         call.name = name
         call.target_id = target_id
         call.version = 1
-
-        async def runner() -> str:
-            return await self._invoke_async(tool, args)
-
         event = await port.backend.ainvoke(call, runner)
         return event.text
 
