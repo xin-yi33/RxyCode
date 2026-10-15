@@ -629,3 +629,88 @@ class ToolExecutionJournal:
         completed.sort(key=lambda item: (item[0], item[1].name))
         for _updated_at, path in completed[:excess]:
             path.unlink(missing_ok=True)
+
+
+_REMOTE_CALL_ID_PATTERN = re.compile(r"^call_[0-9a-f]{32}$")
+
+
+def remote_call_key(call_id: str) -> str:
+    """Hash a web call id into the local 64-hex call key."""
+    if not isinstance(call_id, str) or not _REMOTE_CALL_ID_PATTERN.fullmatch(call_id):
+        raise ValueError(f"Invalid remote call_id: {call_id!r}")
+    return "call_" + hashlib.sha256(call_id.encode("utf-8")).hexdigest()
+
+
+def remote_journal_state(
+    status: str | None,
+) -> Literal["not_started", "completed", "unknown"]:
+    """Map the local journal onto the web states. Pending stays unknown."""
+    if status is None:
+        return "not_started"
+    if status == "completed":
+        return "completed"
+    return "unknown"
+
+
+class RemoteJournalAdapter:
+    """Bind a remote call_id and attempt_id to the existing at-most-once journal.
+
+    ``reserve`` is the only execution grant. ``pending`` is reported as
+    ``unknown`` and a later call id with the same action stays uncertain.
+    """
+
+    def __init__(self, journal: ToolExecutionJournal) -> None:
+        self.journal = journal
+
+    def _call(self, call_id: str, tool: str, args: Any) -> JournalCall:
+        return JournalCall(
+            key=remote_call_key(call_id),
+            tool=str(tool).strip().lower(),
+            args_digest=arguments_digest(args),
+            ordinal=0,
+        )
+
+    def reserve(
+        self,
+        *,
+        attempt_id: str,
+        call_id: str,
+        tool: str,
+        args: Any,
+        checkpoint_id: str | None = None,
+    ) -> JournalReservation:
+        call = self._call(call_id, tool, args)
+        return self.journal.reserve(attempt_id, call, checkpoint_id=checkpoint_id)
+
+    def complete(
+        self,
+        *,
+        attempt_id: str,
+        call_id: str,
+        tool: str,
+        args: Any,
+        result: Any,
+    ) -> str:
+        call = self._call(call_id, tool, args)
+        return self.journal.complete(attempt_id, call, result)
+
+    def state(
+        self,
+        *,
+        attempt_id: str,
+        call_id: str,
+    ) -> Literal["not_started", "completed", "unknown"]:
+        key = remote_call_key(call_id)
+        try:
+            document = self.journal.load(attempt_id)
+        except ToolJournalError:
+            return "unknown"
+        if document is None:
+            return "not_started"
+        if document.get("poisoned"):
+            return "unknown"
+        entry = document.get("entries", {}).get(key)
+        if not isinstance(entry, dict):
+            return "not_started"
+        status = entry.get("status")
+        return remote_journal_state(status if isinstance(status, str) else None)
