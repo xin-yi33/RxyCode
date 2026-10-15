@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
+
+_CURRENT: ContextVar[RunContext | None] = ContextVar("rxycode_run_context", default=None)
 
 _IDENTITY_FIELDS = (
     "tenant_id",
@@ -59,3 +62,16 @@ class RunContext:
             values[field] = str(raw)
         values["run_id"] = uuid.uuid4().hex
         return cls(**values)
+
+
+def bind_run_context(context: RunContext | None) -> Token[RunContext | None]:
+    """Bind one run for the current task. Callers reset the returned token."""
+    return _CURRENT.set(context)
+
+
+def reset_run_context(token: Token[RunContext | None]) -> None:
+    _CURRENT.reset(token)
+
+
+def current_run_context() -> RunContext | None:
+    return _CURRENT.get()

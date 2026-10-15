@@ -28,6 +28,19 @@ from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
 
 EmitCallback = Callable[[BaseModel], None]
 
+
+def _run_context_module() -> Any:
+    import importlib
+    import sys
+
+    try:
+        return importlib.import_module("rxycode_protocol.run_context")
+    except ImportError:
+        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-protocol" / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        return importlib.import_module("rxycode_protocol.run_context")
+
 _APPROVED_PLAN_IMPLEMENT_PREFIXES = (
     "按已批准的计划开始实施",
     "已批准计划，开始实施",
@@ -198,11 +211,9 @@ class Session:
         claimed: dict[str, object] | None = None,
     ) -> Any:
         """Mint a RunContext for this same Session. The client session id is ignored."""
-        from rxycode_protocol.run_context import RunContext
-
         payload = dict(authenticated)
         payload["session_id"] = self.session_id
-        context = RunContext.from_authenticated(payload, claimed=claimed)
+        context = _run_context_module().RunContext.from_authenticated(payload, claimed=claimed)
         self._active_run = context
         return context
 
@@ -223,6 +234,7 @@ class Session:
             if getattr(run_context, "session_id", None) != self.session_id:
                 raise ValueError("run context session_id does not match this session")
             self._active_run = run_context
+            run_id = run_context.run_id
         try:
             from .ttft_clock import (
                 bind_prompt_clock,
@@ -284,6 +296,8 @@ class Session:
                 "_prompt_attachment_renderer",
             )
         }
+        run_module = _run_context_module()
+        run_token = run_module.bind_run_context(getattr(self, "_active_run", None))
         try:
             set_working_directory(workspace, persist=False)
             try:
@@ -444,6 +458,7 @@ class Session:
                 **usage_kwargs,
             )
         finally:
+            _run_context_module().reset_run_context(run_token)
             self.emit = outer_emit
             for name, previous_value in attachment_attributes.items():
                 if previous_value is _MISSING_ATTACHMENT_ATTRIBUTE:

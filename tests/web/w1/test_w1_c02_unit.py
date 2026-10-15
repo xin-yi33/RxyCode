@@ -29,8 +29,14 @@ async def test_w1_c02_contract(tmp_path: Path):
     from rxycode_protocol.run_context import RunContext
 
     class _Agent:
+        def __init__(self) -> None:
+            self.seen: list[object] = []
+
         async def run(self, text: str, mode: str = "build") -> str:
             del text, mode
+            from appserver.runtime import current_run_context
+
+            self.seen.append(current_run_context())
             return "ok"
 
         def cancel(self) -> bool:
@@ -47,9 +53,14 @@ async def test_w1_c02_contract(tmp_path: Path):
     assert first.session_id == second.session_id == "ses-c02"
     assert session is same
     assert session.emit == emitted.append
-    await session.prompt(_Agent(), "turn", mode="build", run_id="legacy-run", run_context=second)
+    agent = _Agent()
+    await session.prompt(agent, "turn", mode="build", run_id="legacy-run", run_context=second)
     assert session is same
     assert session._active_run is second
+    assert agent.seen == [second]
+    finals = [item for item in emitted if getattr(item, "run_id", None) == second.run_id]
+    assert finals
+    assert all(getattr(item, "run_id", None) != "legacy-run" for item in emitted)
 
 
 def test_w1_c02_negative():

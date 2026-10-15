@@ -72,12 +72,14 @@ packages = [
   "RxyCode.RxyCode1_1_0.utils",
   "RxyCode.RxyCode1_1_0.validation",
   "rxycode_core",
+  "rxycode_protocol",
 ]
 
 [tool.setuptools.package-dir]
 "RxyCode" = "_package_root/RxyCode"
 "RxyCode.RxyCode1_1_0" = "."
 "rxycode_core" = "packages/rxycode-core/src/rxycode_core"
+"rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

@@ -19,7 +19,13 @@ from pydantic import BaseModel
 from .bootstrap import bootstrap_agent
 from .emitter import model_to_notification
 from .jsonrpc import StreamCoalescer, stream_coalesce_enabled, write_message
-from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
+from .runtime import (
+    bind_prompt_context,
+    get_bound_tui,
+    install_tui_context_hook,
+    reset_prompt_context,
+    server_run_context,
+)
 
 
 def install_scripted_agent_replies(agent) -> None:
@@ -805,8 +811,9 @@ class AgentWorker:
             )
             return
         text = str(params.get("text", ""))
-        run_id = str(params.get("run_id") or uuid.uuid4().hex)
         session_id = str(params.get("session_id", self._session_id))
+        run_context = server_run_context(session_id, claimed=params)
+        run_id = run_context.run_id
 
         def emit(notification: BaseModel) -> None:
             # Ordering barrier: any buffered stream content is submitted to
@@ -826,7 +833,7 @@ class AgentWorker:
         expanded = bool(params.get("thinking_expanded", self._thinking_expanded))
         self._thinking_expanded = expanded
         tui.set_thinking_expanded(expanded)
-        tokens = bind_prompt_context(session_id, tui)
+        tokens = bind_prompt_context(session_id, tui, run_context=run_context)
         self._active_tui = tui
 
         # C3: batch per-token notifications through a StreamCoalescer
@@ -879,6 +886,7 @@ class AgentWorker:
                     "mode": str(params.get("mode", "build")),
                     "run_id": run_id,
                     "permission_mode": params.get("permission_mode"),
+                    "run_context": run_context,
                 }
                 attachments = params.get("attachments") or []
                 # Keep the worker compatible with lightweight Session doubles
@@ -904,6 +912,15 @@ class AgentWorker:
                 )
                 if not accepts_permission_mode:
                     prompt_kwargs.pop("permission_mode", None)
+                accepts_run_context = prompt_signature is None or (
+                    "run_context" in prompt_signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
+                )
+                if not accepts_run_context:
+                    prompt_kwargs.pop("run_context", None)
                 accepts_attachments = prompt_signature is None or (
                     "attachments" in prompt_signature.parameters
                     or any(
