@@ -27,3 +27,4 @@ playwright>=1.49.0
 sqlalchemy>=2,<2.1
 alembic>=1.17,<2
 psycopg[binary]>=3.2,<4
+redis>=5,<7
