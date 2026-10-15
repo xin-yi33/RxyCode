@@ -10,3 +10,4 @@
 - A second user receives 404 for the first user's project and session, and the names are not in the body. The body's tenant_id is ignored.
 - openapi.json is the app.openapi() document. The Starlette httpx deprecation warning comes from the installed TestClient, not from this card.
 - Nested whitelist is 8802d6b. The parent commit does not track the embedded plan repository.
+- Codex first returned VERDICT: PROBLEMS. 29d6625f answers it: local login requires mode=local and the server secret, and it reuses the one local user; OAuth state is bound to the rxy_oauth cookie; GET /api/v1/projects/{id}/sessions lists only that tenant.
