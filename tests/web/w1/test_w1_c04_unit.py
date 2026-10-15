@@ -49,7 +49,9 @@ def test_w1_c04_contract():
     event = WebEvent.model_validate({"method": "event/agent_started"})
     assert event.method == "event/agent_started"
     assert "event/agent_started" in schema["$defs"]["WebEvent"]["properties"]["method"]["enum"]
-    assert schema["$defs"]["ToolCall"]["properties"]["version"]["type"] == "integer"
+    version = schema["$defs"]["ToolCall"]["properties"]["version"]
+    assert version["type"] == "integer"
+    assert version["minimum"] == 1
 
 
 def test_w1_c04_negative():

@@ -1485,7 +1485,7 @@ class ToolCall(BaseModel):
     name: str
     target_id: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    version: int
+    version: int = Field(ge=1)
     call_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
 
     @model_validator(mode="after")
