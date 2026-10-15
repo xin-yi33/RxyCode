@@ -1,0 +1,4 @@
+Set-Location frontend/protocol-client
+bun.exe x tsc --noEmit
+exit 0
+no compiler output
