@@ -230,11 +230,13 @@ class Session:
         run_context: Any | None = None,
     ) -> PromptResult:
         """Run one user turn through AgentV2 and emit terminal protocol events."""
+        bound_run = None
         if run_context is not None:
             if getattr(run_context, "session_id", None) != self.session_id:
                 raise ValueError("run context session_id does not match this session")
             self._active_run = run_context
             run_id = run_context.run_id
+            bound_run = run_context
         try:
             from .ttft_clock import (
                 bind_prompt_clock,
@@ -297,7 +299,7 @@ class Session:
             )
         }
         run_module = _run_context_module()
-        run_token = run_module.bind_run_context(getattr(self, "_active_run", None))
+        run_token = run_module.bind_run_context(bound_run)
         try:
             set_working_directory(workspace, persist=False)
             try:

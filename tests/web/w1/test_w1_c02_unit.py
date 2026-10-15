@@ -55,12 +55,15 @@ async def test_w1_c02_contract(tmp_path: Path):
     assert session.emit == emitted.append
     agent = _Agent()
     await session.prompt(agent, "turn", mode="build", run_id="legacy-run", run_context=second)
+    await session.prompt(agent, "next", mode="build", run_id="run-b")
     assert session is same
     assert session._active_run is second
-    assert agent.seen == [second]
-    finals = [item for item in emitted if getattr(item, "run_id", None) == second.run_id]
-    assert finals
-    assert all(getattr(item, "run_id", None) != "legacy-run" for item in emitted)
+    assert agent.seen[0] is second
+    assert agent.seen[1] is None
+    run_ids = [getattr(item, "run_id", None) for item in emitted]
+    assert second.run_id in run_ids
+    assert "run-b" in run_ids
+    assert "legacy-run" not in run_ids
 
 
 def test_w1_c02_negative():
