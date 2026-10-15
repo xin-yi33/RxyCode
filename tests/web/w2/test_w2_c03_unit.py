@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -268,3 +269,102 @@ def test_w2_c03_negative(postgres_url: str, tmp_path: Path):
         ).scalar()
     engine.dispose()
     assert done_status == "succeeded"
+    pending_session = uuid.uuid4().hex
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.add(
+            SessionRow(
+                id=pending_session,
+                tenant_id="tenant-c03",
+                project_id="project-c03",
+                title="pending-cancel",
+            )
+        )
+        db.commit()
+    engine.dispose()
+    pending = create_run(
+        postgres_url,
+        tenant_id="tenant-c03",
+        session_id=pending_session,
+        message="not started",
+        target_id="local:1",
+        permission_profile="workspace-write",
+        request_id="req-pending-cancel",
+    )
+    barrier = threading.Barrier(2)
+    statuses: list[str] = []
+
+    def cancel_once() -> None:
+        barrier.wait()
+        statuses.append(request_cancel(postgres_url, pending.run_id))
+
+    threads = [threading.Thread(target=cancel_once), threading.Thread(target=cancel_once)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert statuses == ["cancel_requested", "cancel_requested"]
+    engine = create_engine(postgres_url)
+    with engine.connect() as conn:
+        pending_events = conn.execute(
+            text("SELECT count(*) FROM run_events WHERE run_id = :id AND type = 'cancel_requested'"),
+            {"id": pending.run_id},
+        ).scalar()
+    engine.dispose()
+    assert pending_events == 1
+    with pytest.raises(RunAlreadyActive):
+        create_run(
+            postgres_url,
+            tenant_id="tenant-c03",
+            session_id=pending_session,
+            message="too soon",
+            target_id="local:1",
+            permission_profile="workspace-write",
+            request_id="req-while-cancelling",
+        )
+    assert claim(postgres_url, pending.run_id, "worker-c") == 1
+    assert confirm_cancel(
+        postgres_url, pending.run_id, "worker-c", 1, effects_known=True
+    ) == "cancelled"
+    delay_session = uuid.uuid4().hex
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.add(
+            SessionRow(
+                id=delay_session,
+                tenant_id="tenant-c03",
+                project_id="project-c03",
+                title="delay",
+            )
+        )
+        db.commit()
+    engine.dispose()
+    delayed = create_run(
+        postgres_url,
+        tenant_id="tenant-c03",
+        session_id=delay_session,
+        message="delay",
+        target_id="local:1",
+        permission_profile="workspace-write",
+        request_id="req-delay",
+    )
+    assert claim(postgres_url, delayed.run_id, "worker-d", ttl_seconds=1) == 1
+    started = threading.Event()
+
+    def hold() -> None:
+        engine = create_engine(postgres_url)
+        with engine.connect() as conn:
+            trans = conn.begin()
+            conn.execute(
+                text("SELECT id FROM runs WHERE id = :id FOR UPDATE"),
+                {"id": delayed.run_id},
+            )
+            started.set()
+            time.sleep(2)
+            trans.commit()
+        engine.dispose()
+
+    threading.Thread(target=hold).start()
+    assert started.wait(timeout=10)
+    with pytest.raises(LeaseRejected):
+        commit_terminal(postgres_url, delayed.run_id, "worker-d", 1, "succeeded")

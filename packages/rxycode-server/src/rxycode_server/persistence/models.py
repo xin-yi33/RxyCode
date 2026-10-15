@@ -114,7 +114,9 @@ class Run(Base):
             "uq_runs_one_active_per_session",
             "session_id",
             unique=True,
-            postgresql_where=text("status IN ('pending', 'running', 'leased')"),
+            postgresql_where=text(
+                "status IN ('pending', 'running', 'leased', 'cancel_requested')"
+            ),
         ),
     )
 

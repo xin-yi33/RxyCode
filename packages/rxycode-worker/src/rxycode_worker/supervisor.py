@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
@@ -10,8 +12,31 @@ class LeaseRejected(Exception):
     """The worker's lease epoch is no longer the one stored in the database."""
 
 
+_ACTIVE = {"pending", "leased", "running", "cancel_requested"}
+
+
 def _engine(database_url: str):
     return create_engine(database_url, poolclass=NullPool)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _lock(conn, run_id: str):
+    return conn.execute(
+        text(
+            """
+            SELECT status, lease_owner, lease_epoch, lease_until, tenant_id
+            FROM runs
+            WHERE id = :id
+            FOR UPDATE
+            """
+        ),
+        {"id": run_id},
+    ).one()
 
 
 def claim(database_url: str, run_id: str, worker_id: str, *, ttl_seconds: int = 30) -> int | None:
@@ -19,28 +44,43 @@ def claim(database_url: str, run_id: str, worker_id: str, *, ttl_seconds: int = 
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
-            row = conn.execute(
+            row = _lock(conn, run_id)
+            now = datetime.now(timezone.utc)
+            until = _aware(row.lease_until)
+            held = (
+                row.lease_owner is not None
+                and until is not None
+                and until >= now
+            )
+            if row.status not in _ACTIVE or held:
+                return None
+            status = "cancel_requested" if row.status == "cancel_requested" else "leased"
+            epoch = int(row.lease_epoch) + 1
+            conn.execute(
                 text(
                     """
                     UPDATE runs
-                    SET status = 'leased',
+                    SET status = :status,
                         lease_owner = :worker,
-                        lease_epoch = lease_epoch + 1,
-                        lease_until = clock_timestamp() + (:ttl * interval '1 second'),
+                        lease_epoch = :epoch,
+                        lease_until = :until,
                         revision = revision + 1
                     WHERE id = :run_id
-                      AND status IN ('pending', 'leased', 'running')
-                      AND (lease_owner IS NULL OR lease_until < clock_timestamp())
-                    RETURNING lease_epoch
                     """
                 ),
-                {"worker": worker_id, "ttl": ttl_seconds, "run_id": run_id},
-            ).first()
+                {
+                    "status": status,
+                    "worker": worker_id,
+                    "epoch": epoch,
+                    "until": now + timedelta(seconds=ttl_seconds),
+                    "run_id": run_id,
+                },
+            )
     finally:
         engine.dispose()
-    if row is None:
+    if row.status not in _ACTIVE or held:
         return None
-    return int(row[0])
+    return epoch
 
 
 def renew_lease(
@@ -55,32 +95,31 @@ def renew_lease(
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
-            row = conn.execute(
+            row = _lock(conn, run_id)
+            now = datetime.now(timezone.utc)
+            until = _aware(row.lease_until)
+            if (
+                row.lease_owner != worker_id
+                or int(row.lease_epoch) != epoch
+                or row.status not in {"leased", "running", "cancel_requested"}
+                or until is None
+                or until < now
+            ):
+                raise LeaseRejected(run_id)
+            conn.execute(
                 text(
                     """
                     UPDATE runs
-                    SET lease_until = clock_timestamp() + (:ttl * interval '1 second'),
+                    SET lease_until = :until,
                         revision = revision + 1
                     WHERE id = :run_id
-                      AND lease_owner = :worker
-                      AND lease_epoch = :epoch
-                      AND status IN ('leased', 'running', 'cancel_requested')
-                      AND lease_until >= clock_timestamp()
-                    RETURNING lease_epoch
                     """
                 ),
-                {
-                    "ttl": ttl_seconds,
-                    "run_id": run_id,
-                    "worker": worker_id,
-                    "epoch": epoch,
-                },
-            ).first()
+                {"until": now + timedelta(seconds=ttl_seconds), "run_id": run_id},
+            )
     finally:
         engine.dispose()
-    if row is None:
-        raise LeaseRejected(run_id)
-    return int(row[0])
+    return epoch
 
 
 def commit_terminal(
@@ -96,31 +135,30 @@ def commit_terminal(
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
-            row = conn.execute(
+            row = _lock(conn, run_id)
+            now = datetime.now(timezone.utc)
+            until = _aware(row.lease_until)
+            if (
+                row.status not in {"leased", "running"}
+                or row.lease_owner != worker_id
+                or int(row.lease_epoch) != epoch
+                or until is None
+                or until < now
+            ):
+                raise LeaseRejected(run_id)
+            conn.execute(
                 text(
                     """
                     UPDATE runs
                     SET status = :status,
                         revision = revision + 1
                     WHERE id = :run_id
-                      AND lease_owner = :worker
-                      AND lease_epoch = :epoch
-                      AND status IN ('leased', 'running')
-                      AND lease_until >= clock_timestamp()
-                    RETURNING id
                     """
                 ),
-                {
-                    "status": status,
-                    "run_id": run_id,
-                    "worker": worker_id,
-                    "epoch": epoch,
-                },
-            ).first()
+                {"status": status, "run_id": run_id},
+            )
     finally:
         engine.dispose()
-    if row is None:
-        raise LeaseRejected(run_id)
 
 
 def request_cancel(database_url: str, run_id: str) -> str:
@@ -128,13 +166,7 @@ def request_cancel(database_url: str, run_id: str) -> str:
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
-            current = conn.execute(
-                text("SELECT status, tenant_id FROM runs WHERE id = :id"),
-                {"id": run_id},
-            ).one()
-            if current.status != "pending" and current.status not in {"leased", "running"}:
-                return str(current.status)
-            conn.execute(
+            row = conn.execute(
                 text(
                     """
                     UPDATE runs
@@ -142,10 +174,17 @@ def request_cancel(database_url: str, run_id: str) -> str:
                         revision = revision + 1
                     WHERE id = :id
                       AND status IN ('pending', 'leased', 'running')
+                    RETURNING tenant_id
                     """
                 ),
                 {"id": run_id},
-            )
+            ).first()
+            if row is None:
+                current = conn.execute(
+                    text("SELECT status FROM runs WHERE id = :id"),
+                    {"id": run_id},
+                ).scalar()
+                return str(current)
             event_id = conn.execute(text("SELECT gen_random_uuid()::text")).scalar()
             seq = conn.execute(
                 text("SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = :id"),
@@ -164,7 +203,7 @@ def request_cancel(database_url: str, run_id: str) -> str:
                 {
                     "event_id": event_id,
                     "run_id": run_id,
-                    "tenant_id": current.tenant_id,
+                    "tenant_id": row.tenant_id,
                     "seq": seq,
                     "payload": '{"kind":"cancel_requested"}',
                 },
@@ -196,38 +235,34 @@ def confirm_cancel(
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
-            row = conn.execute(
+            row = _lock(conn, run_id)
+            now = datetime.now(timezone.utc)
+            until = _aware(row.lease_until)
+            current = str(row.status)
+            if current in {"cancelled", "recovery_required"}:
+                return current
+            if (
+                current != "cancel_requested"
+                or row.lease_owner != worker_id
+                or int(row.lease_epoch) != epoch
+                or until is None
+                or until < now
+            ):
+                raise LeaseRejected(run_id)
+            conn.execute(
                 text(
                     """
                     UPDATE runs
                     SET status = :status,
                         revision = revision + 1
                     WHERE id = :run_id
-                      AND lease_owner = :worker
-                      AND lease_epoch = :epoch
-                      AND status = 'cancel_requested'
-                      AND lease_until >= clock_timestamp()
-                    RETURNING id
                     """
                 ),
-                {
-                    "status": status,
-                    "run_id": run_id,
-                    "worker": worker_id,
-                    "epoch": epoch,
-                },
-            ).first()
-            if row is not None:
-                return status
-            current = conn.execute(
-                text("SELECT status FROM runs WHERE id = :id"),
-                {"id": run_id},
-            ).scalar()
+                {"status": status, "run_id": run_id},
+            )
     finally:
         engine.dispose()
-    if current in {"cancelled", "recovery_required"}:
-        return str(current)
-    raise LeaseRejected(run_id)
+    return status
 
 
 def attempt_tool(journal, attempt_id: str, tool: str, args: dict, execute):
