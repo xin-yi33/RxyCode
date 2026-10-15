@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tarfile
 import venv
 from pathlib import Path
 
@@ -50,13 +51,29 @@ async def test_w1_c03_integration():
 
 def test_w1_c03_installed_port(tmp_path: Path):
     """The runtime port imports from the wheel, not from a src path insert."""
+    archive = tmp_path / "head.tar"
+    archived = subprocess.run(
+        ["git", "archive", "--format=tar", "-o", str(archive), "HEAD"],
+        cwd=REPO,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert archived.returncode == 0, archived.stderr
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    with tarfile.open(archive) as bundle:
+        if sys.version_info >= (3, 12):
+            bundle.extractall(checkout, filter="data")
+        else:
+            bundle.extractall(checkout)
     wheel_dir = tmp_path / "wheel"
     wheel_dir.mkdir()
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
     build = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(REPO)],
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(checkout)],
         cwd=tmp_path,
         text=True,
         capture_output=True,

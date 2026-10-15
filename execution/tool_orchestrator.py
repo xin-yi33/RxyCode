@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import contextvars
 import inspect
 import json
 import logging
@@ -185,6 +186,16 @@ def _execution_port_module() -> Any:
         if src.is_dir() and str(src) not in sys.path:
             sys.path.insert(0, str(src))
         return importlib.import_module("rxycode_core.runtime.execution_port")
+
+
+_PORT_TOOLS = frozenset({"bash", "read", "edit", "write", "patch"})
+
+
+def _routes_through_port(name: str) -> bool:
+    if name in _PORT_TOOLS:
+        return True
+    port = _execution_port_module().current_execution_port()
+    return port is not None and name in port.specs
 
 
 def _tool_annotations(tool: Any) -> dict[str, Any]:
@@ -1035,6 +1046,11 @@ class ToolOrchestrator:
                 port_module.reset_native_dispatch(dispatch_token)
 
         async def _invoke_body() -> str:
+            if _routes_through_port(name):
+                return await self._invoke_through_port(name, args, tool)
+            return await _invoke_registered()
+
+        async def _invoke_registered() -> str:
             if getattr(risk, "name", "") == "READ" and retry_attempts > 1:
                 tui = self.get_event_tui()
 
@@ -1761,6 +1777,24 @@ class ToolOrchestrator:
                 return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
         return await self._invoke_in_executor(tool, args)
 
+    async def _invoke_through_port(self, name: str, args: Any, tool: Any) -> str:
+        """Terminal shell/read/edit calls go through NativeBackend, not around it."""
+        port_module = _execution_port_module()
+        port = port_module.current_execution_port() or port_module.default_execution_port()
+        target_id = "local"
+        if isinstance(args, dict):
+            target_id = str(args.get("target") or args.get("target_id") or "local")
+        call = type("PortCall", (), {})()
+        call.name = name
+        call.target_id = target_id
+        call.version = 1
+
+        async def runner() -> str:
+            return await self._invoke_async(tool, args)
+
+        event = await port.backend.ainvoke(call, runner)
+        return event.text
+
     async def _invoke_in_executor(self, tool: Any, args: Any) -> str:
         """Run a sync tool on the orchestrator's bounded executor (queues when
         saturated instead of spawning unbounded threads).
@@ -1779,7 +1813,7 @@ class ToolOrchestrator:
         if executor is None:
             return "[error: tool executor is shut down]"
         try:
-            future = executor.submit(self._invoke, tool, args)
+            future = executor.submit(contextvars.copy_context().run, self._invoke, tool, args)
         except RuntimeError:
             # Executor was shut down concurrently with the submit.
             return "[error: tool executor is shut down]"
@@ -1812,7 +1846,7 @@ class ToolOrchestrator:
         if executor is None:
             raise RuntimeError("tool executor is shut down")
         try:
-            future = executor.submit(invoke_sync)
+            future = executor.submit(contextvars.copy_context().run, invoke_sync)
         except RuntimeError:
             raise RuntimeError("tool executor is shut down") from None
         return await asyncio.wrap_future(future)

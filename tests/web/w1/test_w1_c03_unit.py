@@ -1,6 +1,7 @@
 """WEB-W1-C03. The unified gate owns capability checks and the native backend."""
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -24,6 +25,8 @@ async def test_w1_c03_contract():
     from rxycode_core.runtime.execution_port import (
         Capabilities,
         ExecutionPort,
+        NativeBackend,
+        ToolEvent,
         ToolSpec,
         bind_execution_port,
         reset_execution_port,
@@ -50,7 +53,13 @@ async def test_w1_c03_contract():
     port.register_spec(
         ToolSpec(name="screenshot", version=1, required_capability="desktop")
     )
-    assert port.specs["screenshot"].allows_execute() is False
+    spec = port.specs["screenshot"]
+    assert spec.allows_execute() is False
+    assert ToolSpec.from_dict(spec.to_dict()) == spec
+    capabilities = Capabilities(frozenset({"desktop"}))
+    assert Capabilities.from_dict(capabilities.to_dict()) == capabilities
+    with pytest.raises(ValueError):
+        ToolSpec(name="screenshot", version=0, required_capability="desktop")
     call = ToolCall(name="screenshot", target_id="phone", arguments={"target": "phone"}, version=1)
     assert ToolCall.from_dict(call.to_dict()) == call
     token = bind_execution_port(port)
@@ -110,6 +119,69 @@ async def test_w1_c03_contract():
         reset_execution_port(allowed_token)
     assert called["n"] == 1
     assert allowed_result == "png:desktop-1"
+
+    leaked: list[str] = []
+    release = asyncio.Event()
+
+    async def read_file(filePath: str) -> str:
+        async def after_return() -> None:
+            await release.wait()
+            late = NativeBackend().invoke(
+                ToolCall(name="read", target_id="local", arguments={}, version=1),
+                lambda: ToolEvent(ok=True, status="OK", tool="read", target_id="local", text="late", version=1),
+            )
+            leaked.append(late.status)
+
+        asyncio.create_task(after_return())
+        return f"body:{filePath}"
+
+    read_orchestrator = ToolOrchestrator()
+    read_orchestrator.register(
+        "read",
+        StructuredTool.from_function(coroutine=read_file, name="read", description="read a file"),
+    )
+    read_result = await read_orchestrator.execute_tool(
+        "read",
+        {"filePath": "notes.txt"},
+        config={"safety": {"enabled": False}},
+    )
+    assert read_result == "body:notes.txt"
+    release.set()
+    await asyncio.sleep(0)
+    assert leaked == ["BLOCKED"]
+
+    def sync_probe(filePath: str) -> str:
+        event = NativeBackend().invoke(
+            ToolCall(name="sync_probe", target_id="local", arguments={"filePath": filePath}, version=1),
+            lambda: ToolEvent(
+                ok=True,
+                status="OK",
+                tool="sync_probe",
+                target_id="local",
+                text=f"edited:{filePath}",
+                version=1,
+            ),
+        )
+        return event.text
+
+    sync_port = ExecutionPort()
+    sync_port.register_spec(ToolSpec(name="sync_probe", version=1, required_capability="fs"))
+    sync_port.register_target("local", Capabilities(frozenset({"fs"})))
+    edit_orchestrator = ToolOrchestrator()
+    edit_orchestrator.register(
+        "sync_probe",
+        StructuredTool.from_function(func=sync_probe, name="sync_probe", description="sync probe"),
+    )
+    sync_token = bind_execution_port(sync_port)
+    try:
+        edit_result = await edit_orchestrator.execute_tool(
+            "sync_probe",
+            {"filePath": "notes.txt", "target": "local"},
+            config={"safety": {"enabled": False}},
+        )
+    finally:
+        reset_execution_port(sync_token)
+    assert edit_result == "edited:notes.txt"
 
 
 def test_w1_c03_negative():
