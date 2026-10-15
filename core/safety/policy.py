@@ -412,6 +412,20 @@ def classify_tool_risk(name: str, args: Any = None) -> RiskLevel:
     return risk
 
 
+def apply_mcp_hint(name: str, risk: RiskLevel, annotations: Any | None) -> RiskLevel:
+    """Unknown MCP stays at least WRITE. Hints may only raise risk.
+
+    ``readOnlyHint`` does not lower a level. ``destructiveHint`` raises to
+    DANGER. ToolSpec text is not an annotation and is not read here.
+    """
+    hints = annotations if isinstance(annotations, dict) else {}
+    if canonical_tool_name(name) not in TOOL_RISK_TABLE and hints:
+        risk = max(risk, RiskLevel.WRITE)
+    if hints.get("destructiveHint") is True:
+        risk = max(risk, RiskLevel.DANGER)
+    return risk
+
+
 def _resolve(path: str) -> Path:
     from ..session_runtime import resolve_session_path
 

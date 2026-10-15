@@ -45,6 +45,7 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import (
     RiskLevel,
     TOOL_NAME_ALIASES,
     WRITE_PATH_BLOCKED_HINT,
+    apply_mcp_hint,
     canonical_tool_name,
     find_bash_disallowed_write_paths,
     hard_denied_shell_reason,
@@ -170,6 +171,32 @@ def _is_generated_spill_line(line: str) -> bool:
         return False
     stem, ext = os.path.splitext(filename)
     return ext.lower() == ".txt" and len(stem) == 32 and all(char in "0123456789abcdef" for char in stem.lower())
+
+
+def _execution_port_module() -> Any:
+    import importlib
+    import sys
+    from pathlib import Path
+
+    try:
+        return importlib.import_module("rxycode_core.runtime.execution_port")
+    except ImportError:
+        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-core" / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        return importlib.import_module("rxycode_core.runtime.execution_port")
+
+
+def _tool_annotations(tool: Any) -> dict[str, Any]:
+    metadata = getattr(tool, "metadata", None)
+    if isinstance(metadata, dict):
+        annotations = metadata.get("annotations")
+        if isinstance(annotations, dict):
+            return annotations
+    annotations = getattr(tool, "annotations", None)
+    if isinstance(annotations, dict):
+        return annotations
+    return {}
 
 
 class ToolOrchestrator:
@@ -1000,6 +1027,14 @@ class ToolOrchestrator:
                 )
 
         async def invoke() -> str:
+            port_module = _execution_port_module()
+            dispatch_token = port_module.authorize_native_dispatch()
+            try:
+                return await _invoke_body()
+            finally:
+                port_module.reset_native_dispatch(dispatch_token)
+
+        async def _invoke_body() -> str:
             if getattr(risk, "name", "") == "READ" and retry_attempts > 1:
                 tui = self.get_event_tui()
 
@@ -1475,7 +1510,22 @@ class ToolOrchestrator:
             mode=mode,
             minimum_risk=self._risk_overrides.get(canonical),
         )
-        risk = policy_decision.risk
+        risk = apply_mcp_hint(canonical, policy_decision.risk, _tool_annotations(tool))
+        port = _execution_port_module().current_execution_port()
+        if port is not None:
+            denial = port.capability_denial(canonical, args)
+            if denial:
+                audit = self._get_audit_logger()
+                return self._finish(
+                    name,
+                    args,
+                    denial,
+                    executed=False,
+                    approval="rejected",
+                    risk=risk,
+                    audit=audit,
+                    config=config,
+                )
         if policy_decision.outcome is PolicyOutcome.DENY:
             audit = self._get_audit_logger()
             reason = policy_decision.reason

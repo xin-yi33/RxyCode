@@ -1,0 +1,588 @@
+diff --git a/core/safety/policy.py b/core/safety/policy.py
+index ed82963d..f3f6c35d 100644
+--- a/core/safety/policy.py
++++ b/core/safety/policy.py
+@@ -412,6 +412,20 @@ def classify_tool_risk(name: str, args: Any = None) -> RiskLevel:
+     return risk
+ 
+ 
++def apply_mcp_hint(name: str, risk: RiskLevel, annotations: Any | None) -> RiskLevel:
++    """Unknown MCP stays at least WRITE. Hints may only raise risk.
++
++    ``readOnlyHint`` does not lower a level. ``destructiveHint`` raises to
++    DANGER. ToolSpec text is not an annotation and is not read here.
++    """
++    hints = annotations if isinstance(annotations, dict) else {}
++    if canonical_tool_name(name) not in TOOL_RISK_TABLE and hints:
++        risk = max(risk, RiskLevel.WRITE)
++    if hints.get("destructiveHint") is True:
++        risk = max(risk, RiskLevel.DANGER)
++    return risk
++
++
+ def _resolve(path: str) -> Path:
+     from ..session_runtime import resolve_session_path
+ 
+diff --git a/execution/tool_orchestrator.py b/execution/tool_orchestrator.py
+index fa3e4f96..1f6aad4f 100644
+--- a/execution/tool_orchestrator.py
++++ b/execution/tool_orchestrator.py
+@@ -45,6 +45,7 @@ from RxyCode.RxyCode1_1_0.core.safety.policy import (
+     RiskLevel,
+     TOOL_NAME_ALIASES,
+     WRITE_PATH_BLOCKED_HINT,
++    apply_mcp_hint,
+     canonical_tool_name,
+     find_bash_disallowed_write_paths,
+     hard_denied_shell_reason,
+@@ -172,6 +173,32 @@ def _is_generated_spill_line(line: str) -> bool:
+     return ext.lower() == ".txt" and len(stem) == 32 and all(char in "0123456789abcdef" for char in stem.lower())
+ 
+ 
++def _execution_port_module() -> Any:
++    import importlib
++    import sys
++    from pathlib import Path
++
++    try:
++        return importlib.import_module("rxycode_core.runtime.execution_port")
++    except ImportError:
++        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-core" / "src"
++        if src.is_dir() and str(src) not in sys.path:
++            sys.path.insert(0, str(src))
++        return importlib.import_module("rxycode_core.runtime.execution_port")
++
++
++def _tool_annotations(tool: Any) -> dict[str, Any]:
++    metadata = getattr(tool, "metadata", None)
++    if isinstance(metadata, dict):
++        annotations = metadata.get("annotations")
++        if isinstance(annotations, dict):
++            return annotations
++    annotations = getattr(tool, "annotations", None)
++    if isinstance(annotations, dict):
++        return annotations
++    return {}
++
++
+ class ToolOrchestrator:
+     """Registry and selector for agent tools."""
+ 
+@@ -1000,6 +1027,14 @@ class ToolOrchestrator:
+                 )
+ 
+         async def invoke() -> str:
++            port_module = _execution_port_module()
++            dispatch_token = port_module.authorize_native_dispatch()
++            try:
++                return await _invoke_body()
++            finally:
++                port_module.reset_native_dispatch(dispatch_token)
++
++        async def _invoke_body() -> str:
+             if getattr(risk, "name", "") == "READ" and retry_attempts > 1:
+                 tui = self.get_event_tui()
+ 
+@@ -1475,7 +1510,22 @@ class ToolOrchestrator:
+             mode=mode,
+             minimum_risk=self._risk_overrides.get(canonical),
+         )
+-        risk = policy_decision.risk
++        risk = apply_mcp_hint(canonical, policy_decision.risk, _tool_annotations(tool))
++        port = _execution_port_module().current_execution_port()
++        if port is not None:
++            denial = port.capability_denial(canonical, args)
++            if denial:
++                audit = self._get_audit_logger()
++                return self._finish(
++                    name,
++                    args,
++                    denial,
++                    executed=False,
++                    approval="rejected",
++                    risk=risk,
++                    audit=audit,
++                    config=config,
++                )
+         if policy_decision.outcome is PolicyOutcome.DENY:
+             audit = self._get_audit_logger()
+             reason = policy_decision.reason
+diff --git a/packages/rxycode-core/src/rxycode_core/runtime/__init__.py b/packages/rxycode-core/src/rxycode_core/runtime/__init__.py
+new file mode 100644
+index 00000000..2e2b74aa
+--- /dev/null
++++ b/packages/rxycode-core/src/rxycode_core/runtime/__init__.py
+@@ -0,0 +1 @@
++"""Runtime ports for the one ToolOrchestrator gate."""
+diff --git a/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py b/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py
+new file mode 100644
+index 00000000..43122b06
+--- /dev/null
++++ b/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py
+@@ -0,0 +1,118 @@
++"""Capability port. ToolSpec does not grant permission. Native calls need the gate."""
++
++from __future__ import annotations
++
++from collections.abc import Callable
++from contextvars import ContextVar, Token
++from dataclasses import dataclass
++
++_PORT: ContextVar[ExecutionPort | None] = ContextVar("rxycode_execution_port", default=None)
++_NATIVE: ContextVar[bool] = ContextVar("rxycode_native_dispatch", default=False)
++
++
++@dataclass(frozen=True)
++class Capabilities:
++    """What one target can do. This is not a permission grant."""
++
++    names: frozenset[str]
++
++    def allows(self, capability: str) -> bool:
++        return capability in self.names
++
++
++@dataclass(frozen=True)
++class ToolSpec:
++    """Declared tool shape. Declaration never authorizes execution."""
++
++    name: str
++    version: int
++    required_capability: str
++
++    def allows_execute(self) -> bool:
++        return False
++
++
++@dataclass(frozen=True)
++class ToolEvent:
++    ok: bool
++    status: str
++    tool: str
++    target_id: str
++    text: str
++    version: int = 1
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "ok": self.ok,
++            "status": self.status,
++            "tool": self.tool,
++            "target_id": self.target_id,
++            "text": self.text,
++            "version": self.version,
++        }
++
++
++class NativeBackend:
++    """OS-facing call. Refuses to run unless ToolOrchestrator authorized this task."""
++
++    def invoke(self, call: object, runner: Callable[[], ToolEvent]) -> ToolEvent:
++        if not _NATIVE.get():
++            return ToolEvent(
++                ok=False,
++                status="BLOCKED",
++                tool=str(getattr(call, "name", "")),
++                target_id=str(getattr(call, "target_id", "")),
++                text="[blocked: native backend requires ToolOrchestrator]",
++                version=int(getattr(call, "version", 1) or 1),
++            )
++        return runner()
++
++
++class ExecutionPort:
++    def __init__(self) -> None:
++        self.targets: dict[str, Capabilities] = {}
++        self.specs: dict[str, ToolSpec] = {}
++        self.backend = NativeBackend()
++
++    def register_target(self, target_id: str, capabilities: Capabilities) -> None:
++        self.targets[target_id] = capabilities
++
++    def register_spec(self, spec: ToolSpec) -> None:
++        self.specs[spec.name] = spec
++
++    def capability_denial(self, name: str, args: object) -> str | None:
++        spec = self.specs.get(name)
++        if spec is None:
++            return None
++        target_id = ""
++        if isinstance(args, dict):
++            target_id = str(args.get("target") or args.get("target_id") or "")
++        capabilities = self.targets.get(target_id)
++        if capabilities is None or not capabilities.allows(spec.required_capability):
++            shown = target_id or "(missing)"
++            return (
++                f"[blocked: target {shown} lacks capability "
++                f"{spec.required_capability} for {name}]"
++            )
++        return None
++
++
++def bind_execution_port(port: ExecutionPort) -> Token[ExecutionPort | None]:
++    return _PORT.set(port)
++
++
++def reset_execution_port(token: Token[ExecutionPort | None]) -> None:
++    _PORT.reset(token)
++
++
++def current_execution_port() -> ExecutionPort | None:
++    return _PORT.get()
++
++
++def authorize_native_dispatch() -> Token[bool]:
++    """Called only by ToolOrchestrator after approval and journaling."""
++    return _NATIVE.set(True)
++
++
++def reset_native_dispatch(token: Token[bool]) -> None:
++    _NATIVE.reset(token)
+diff --git a/packages/rxycode-protocol/src/rxycode_protocol/tool_rpc.py b/packages/rxycode-protocol/src/rxycode_protocol/tool_rpc.py
+new file mode 100644
+index 00000000..1d0c99ef
+--- /dev/null
++++ b/packages/rxycode-protocol/src/rxycode_protocol/tool_rpc.py
+@@ -0,0 +1,63 @@
++"""Fixed tool call and chunk frames. Version is required and must be at least 1."""
++
++from __future__ import annotations
++
++import uuid
++from collections.abc import Mapping
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class ToolCall:
++    name: str
++    target_id: str
++    arguments: dict[str, object]
++    version: int
++    call_id: str = ""
++
++    def __post_init__(self) -> None:
++        if self.version < 1:
++            raise ValueError("tool call version must be >= 1")
++        if not self.call_id:
++            object.__setattr__(self, "call_id", uuid.uuid4().hex)
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "name": self.name,
++            "target_id": self.target_id,
++            "arguments": dict(self.arguments),
++            "version": self.version,
++            "call_id": self.call_id,
++        }
++
++    @classmethod
++    def from_dict(cls, data: Mapping[str, object]) -> ToolCall:
++        version = int(data["version"])
++        if version < 1:
++            raise ValueError("tool call version must be >= 1")
++        arguments = data.get("arguments") or {}
++        if not isinstance(arguments, dict):
++            raise ValueError("tool call arguments must be an object")
++        return cls(
++            name=str(data["name"]),
++            target_id=str(data["target_id"]),
++            arguments=dict(arguments),
++            version=version,
++            call_id=str(data.get("call_id") or ""),
++        )
++
++
++@dataclass(frozen=True)
++class ToolChunk:
++    call_id: str
++    index: int
++    text: str
++    final: bool
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "call_id": self.call_id,
++            "index": self.index,
++            "text": self.text,
++            "final": self.final,
++        }
+diff --git a/pyproject.toml b/pyproject.toml
+index eea13742..e509e25a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -72,6 +72,7 @@ packages = [
+   "RxyCode.RxyCode1_1_0.utils",
+   "RxyCode.RxyCode1_1_0.validation",
+   "rxycode_core",
++  "rxycode_core.runtime",
+   "rxycode_protocol",
+ ]
+ 
+@@ -79,6 +80,7 @@ packages = [
+ "RxyCode" = "_package_root/RxyCode"
+ "RxyCode.RxyCode1_1_0" = "."
+ "rxycode_core" = "packages/rxycode-core/src/rxycode_core"
++"rxycode_core.runtime" = "packages/rxycode-core/src/rxycode_core/runtime"
+ "rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
+ 
+ [tool.setuptools.dynamic]
+diff --git a/tests/web/w1/test_w1_c03_module.py b/tests/web/w1/test_w1_c03_module.py
+new file mode 100644
+index 00000000..9768984e
+--- /dev/null
++++ b/tests/web/w1/test_w1_c03_module.py
+@@ -0,0 +1,105 @@
++"""WEB-W1-C03. MCP hints cannot lower the existing WRITE gate."""
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++import venv
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-core" / "src"
++if _SRC.is_dir() and str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++
++def _tool(name: str, annotations: dict[str, bool]):
++    from langchain_core.tools import StructuredTool
++
++    called = {"n": 0}
++
++    async def body() -> str:
++        called["n"] += 1
++        return "ran"
++
++    tool = StructuredTool.from_function(coroutine=body, name=name, description="mcp tool")
++    tool.metadata = {"annotations": annotations}
++    return tool, called
++
++
++async def test_w1_c03_integration():
++    """readOnlyHint stays WRITE; destructiveHint can only raise the risk."""
++    from execution.tool_orchestrator import ToolOrchestrator
++
++    readonly, readonly_called = _tool("mcp_widget", {"readOnlyHint": True})
++    destructive, destructive_called = _tool("mcp_wipe", {"destructiveHint": True, "readOnlyHint": True})
++    orchestrator = ToolOrchestrator()
++    orchestrator.register("mcp_widget", readonly)
++    orchestrator.register("mcp_wipe", destructive)
++    config = {"safety": {"enabled": True}}
++    readonly_result = await orchestrator.execute_tool("mcp_widget", {}, config=config)
++    destructive_result = await orchestrator.execute_tool("mcp_wipe", {}, config=config)
++    assert readonly_called["n"] == 0
++    assert destructive_called["n"] == 0
++    assert "WRITE" in readonly_result
++    assert "no approval broker" in readonly_result
++    assert "DANGER" in destructive_result
++    assert "no approval broker" in destructive_result
++    assert "READ" not in readonly_result
++
++
++def test_w1_c03_installed_port(tmp_path: Path):
++    """The runtime port imports from the wheel, not from a src path insert."""
++    wheel_dir = tmp_path / "wheel"
++    wheel_dir.mkdir()
++    env = os.environ.copy()
++    env.pop("PYTHONPATH", None)
++    env.pop("PYTHONHOME", None)
++    build = subprocess.run(
++        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(REPO)],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert build.returncode == 0, build.stderr
++    wheels = list(wheel_dir.glob("rxycode-*.whl"))
++    assert len(wheels) == 1
++    env_dir = tmp_path / "venv"
++    venv.create(env_dir, with_pip=True, system_site_packages=True)
++    python = env_dir / "Scripts" / "python.exe" if os.name == "nt" else env_dir / "bin" / "python"
++    install = subprocess.run(
++        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert install.returncode == 0, install.stderr
++    probe = subprocess.run(
++        [
++            str(python),
++            "-c",
++            "from pathlib import Path\n"
++            "from rxycode_core.runtime.execution_port import ExecutionPort, ToolSpec\n"
++            "from rxycode_protocol.tool_rpc import ToolCall\n"
++            "port = ExecutionPort()\n"
++            "assert ToolSpec(name='screenshot', version=1, required_capability='desktop').allows_execute() is False\n"
++            "call = ToolCall(name='screenshot', target_id='phone', arguments={}, version=1)\n"
++            "assert call.version == 1\n"
++            "print(Path(port.__class__.__module__ and __import__('rxycode_core.runtime.execution_port', fromlist=['ExecutionPort']).__file__).resolve())\n"
++            "print('installed-port-ok')\n",
++        ],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert probe.returncode == 0, probe.stderr
++    assert "installed-port-ok" in probe.stdout
++    origin = next(line for line in probe.stdout.splitlines() if line.strip() and line.strip() != "installed-port-ok")
++    assert str(env_dir.resolve()).casefold() in origin.casefold()
++    assert str(REPO.resolve()).casefold() not in origin.casefold()
+diff --git a/tests/web/w1/test_w1_c03_unit.py b/tests/web/w1/test_w1_c03_unit.py
+new file mode 100644
+index 00000000..94f71529
+--- /dev/null
++++ b/tests/web/w1/test_w1_c03_unit.py
+@@ -0,0 +1,142 @@
++"""WEB-W1-C03. The unified gate owns capability checks and the native backend."""
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++for _rel in (
++    Path("packages") / "rxycode-core" / "src",
++    Path("packages") / "rxycode-protocol" / "src",
++):
++    _src = REPO / _rel
++    if _src.is_dir() and str(_src) not in sys.path:
++        sys.path.insert(0, str(_src))
++
++
++async def test_w1_c03_contract():
++    """A target without desktop capability cannot take a screenshot."""
++    from langchain_core.tools import StructuredTool
++
++    from execution.tool_orchestrator import ToolOrchestrator
++    from rxycode_core.runtime.execution_port import (
++        Capabilities,
++        ExecutionPort,
++        ToolSpec,
++        bind_execution_port,
++        reset_execution_port,
++    )
++    from rxycode_protocol.tool_rpc import ToolCall
++
++    called = {"n": 0}
++
++    async def screenshot(target: str) -> str:
++        called["n"] += 1
++        return f"png:{target}"
++
++    orchestrator = ToolOrchestrator()
++    orchestrator.register(
++        "screenshot",
++        StructuredTool.from_function(
++            coroutine=screenshot,
++            name="screenshot",
++            description="capture the target screen",
++        ),
++    )
++    port = ExecutionPort()
++    port.register_target("phone", Capabilities(frozenset()))
++    port.register_spec(
++        ToolSpec(name="screenshot", version=1, required_capability="desktop")
++    )
++    assert port.specs["screenshot"].allows_execute() is False
++    call = ToolCall(name="screenshot", target_id="phone", arguments={"target": "phone"}, version=1)
++    assert ToolCall.from_dict(call.to_dict()) == call
++    token = bind_execution_port(port)
++    try:
++        result = await orchestrator.execute_tool(
++            "screenshot",
++            {"target": "phone"},
++            config={"safety": {"enabled": False}},
++        )
++    finally:
++        reset_execution_port(token)
++    assert called["n"] == 0
++    assert "lacks capability desktop" in result
++    assert "phone" in result
++
++    allowed = ExecutionPort()
++    allowed.register_target("desktop-1", Capabilities(frozenset({"desktop"})))
++    allowed.register_spec(
++        ToolSpec(name="screenshot", version=1, required_capability="desktop")
++    )
++
++    async def screenshot_with_backend(target: str) -> str:
++        from rxycode_core.runtime.execution_port import NativeBackend, ToolEvent
++        from rxycode_protocol.tool_rpc import ToolCall
++
++        event = NativeBackend().invoke(
++            ToolCall(name="screenshot", target_id=target, arguments={"target": target}, version=1),
++            lambda: ToolEvent(
++                ok=True,
++                status="OK",
++                tool="screenshot",
++                target_id=target,
++                text=f"png:{target}",
++                version=1,
++            ),
++        )
++        called["n"] += 1
++        return event.text
++
++    allowed_orchestrator = ToolOrchestrator()
++    allowed_orchestrator.register(
++        "screenshot",
++        StructuredTool.from_function(
++            coroutine=screenshot_with_backend,
++            name="screenshot",
++            description="capture the target screen",
++        ),
++    )
++    allowed_token = bind_execution_port(allowed)
++    try:
++        allowed_result = await allowed_orchestrator.execute_tool(
++            "screenshot",
++            {"target": "desktop-1"},
++            config={"safety": {"enabled": False}},
++        )
++    finally:
++        reset_execution_port(allowed_token)
++    assert called["n"] == 1
++    assert allowed_result == "png:desktop-1"
++
++
++def test_w1_c03_negative():
++    """NativeBackend refuses a call that did not come from ToolOrchestrator."""
++    from rxycode_core.runtime.execution_port import NativeBackend, ToolEvent
++    from rxycode_protocol.tool_rpc import ToolCall
++
++    called = {"n": 0}
++
++    def runner() -> ToolEvent:
++        called["n"] += 1
++        return ToolEvent(ok=True, status="OK", tool="bash", target_id="local", text="ran", version=1)
++
++    event = NativeBackend().invoke(
++        ToolCall(name="bash", target_id="local", arguments={"command": "echo hi"}, version=1),
++        runner,
++    )
++    assert event.status == "BLOCKED"
++    assert event.ok is False
++    assert called["n"] == 0
++    with pytest.raises(ValueError):
++        ToolCall.from_dict(
++            {
++                "name": "bash",
++                "target_id": "local",
++                "arguments": {},
++                "version": 0,
++                "call_id": "x",
++            }
++        )

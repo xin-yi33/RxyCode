@@ -72,6 +72,7 @@ packages = [
   "RxyCode.RxyCode1_1_0.utils",
   "RxyCode.RxyCode1_1_0.validation",
   "rxycode_core",
+  "rxycode_core.runtime",
   "rxycode_protocol",
 ]
 
@@ -79,6 +80,7 @@ packages = [
 "RxyCode" = "_package_root/RxyCode"
 "RxyCode.RxyCode1_1_0" = "."
 "rxycode_core" = "packages/rxycode-core/src/rxycode_core"
+"rxycode_core.runtime" = "packages/rxycode-core/src/rxycode_core/runtime"
 "rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
 
 [tool.setuptools.dynamic]
