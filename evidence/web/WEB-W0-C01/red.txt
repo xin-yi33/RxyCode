@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-8vew68rm
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c01_unit.py:22: AttributeError: module 'rxycode_web_check_plan' has no attribute 'scan_contract'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c01_unit.py:31: AttributeError: module 'rxycode_web_check_plan' has no attribute 'authority_status'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c01_module.py:21: AttributeError: module 'rxycode_web_check_plan' has no attribute 'tracking_status'
+=========================== short test summary info ===========================
+FAILED tests/web/w0/test_w0_c01_unit.py::test_w0_c01_contract - AttributeErro...
+FAILED tests/web/w0/test_w0_c01_unit.py::test_w0_c01_negative - AttributeErro...
+FAILED tests/web/w0/test_w0_c01_module.py::test_w0_c01_integration - Attribut...
+3 failed in 0.12s

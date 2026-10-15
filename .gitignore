@@ -151,7 +151,24 @@ docs/*
 !docs/development-order.yaml
 !docs/specs/
 !docs/specs/**
-docs/plans/
+# docs/plans stays ignored, except the Web plan tracked by WEB-W0-C01.
+# Parent directories must be re-included before a nested exception can match.
+!docs/plans/
+docs/plans/*
+!docs/plans/opus5-plan/
+docs/plans/opus5-plan/*
+!docs/plans/opus5-plan/rxycode -web/
+!docs/plans/opus5-plan/rxycode -web/**
+# The un-ignore above is later, so secret and archive names must be closed again.
+docs/plans/opus5-plan/rxycode -web/**/.env
+docs/plans/opus5-plan/rxycode -web/**/.env.*
+docs/plans/opus5-plan/rxycode -web/**/credentials.yaml
+docs/plans/opus5-plan/rxycode -web/**/*.secret
+docs/plans/opus5-plan/rxycode -web/**/secrets.json
+docs/plans/opus5-plan/rxycode -web/**/secret.txt
+docs/plans/opus5-plan/rxycode -web/**/live_credentials.*
+docs/plans/opus5-plan/rxycode -web/**/rxycode_gh_secret.txt
+docs/plans/opus5-plan/rxycode -web/**/*.rar
 
 # --- 计划目录里的压缩包 / 零散笔记（不入库）---
 docs/plans/opus5-plan.rar
