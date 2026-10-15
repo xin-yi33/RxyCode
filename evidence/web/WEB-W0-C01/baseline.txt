@@ -12,3 +12,7 @@ parent_porcelain_lines=154
 card_stages_only=.gitignore, tests/web/w0/test_w0_c01_unit.py, tests/web/w0/test_w0_c01_module.py, evidence/web/WEB-W0-C01/
 web_local_secret_check=.env credentials.yaml history.rar under rxycode -web are ignored; README.md is not
 unrelated_dirty_left_unstaged=yes
+status_output=evidence/web/WEB-W0-C01/status.txt
+version_conflict_scan=evidence/web/WEB-W0-C01/version-conflict.txt
+isolated_worktree=detached checkout of b4fa2d3b; git status --porcelain was empty; see worktree-status.txt
+whitelist=PHASE-W0 WEB-W0-C01 now names scripts/check_plan.py

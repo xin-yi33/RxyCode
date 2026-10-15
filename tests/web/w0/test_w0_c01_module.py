@@ -26,3 +26,4 @@ def test_w0_c01_integration():
     assert report["web_local_env_ignored"] is True
     assert report["web_local_credentials_ignored"] is True
     assert report["web_local_archive_ignored"] is True
+    assert report["web_local_secrets_ignored"] is True

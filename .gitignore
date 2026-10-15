@@ -169,6 +169,9 @@ docs/plans/opus5-plan/rxycode -web/**/secret.txt
 docs/plans/opus5-plan/rxycode -web/**/live_credentials.*
 docs/plans/opus5-plan/rxycode -web/**/rxycode_gh_secret.txt
 docs/plans/opus5-plan/rxycode -web/**/*.rar
+docs/plans/opus5-plan/rxycode -web/**/*.key
+docs/plans/opus5-plan/rxycode -web/**/*.token
+docs/plans/opus5-plan/rxycode -web/**/config.local.yaml
 
 # --- 计划目录里的压缩包 / 零散笔记（不入库）---
 docs/plans/opus5-plan.rar
