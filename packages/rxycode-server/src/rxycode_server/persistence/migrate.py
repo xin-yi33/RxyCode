@@ -25,7 +25,8 @@ ALEMBIC_DIR = _alembic_dir()
 def _config(url: str) -> Config:
     cfg = Config()
     cfg.set_main_option("script_location", str(ALEMBIC_DIR))
-    cfg.set_main_option("sqlalchemy.url", url)
+    # ConfigParser treats % as interpolation. A percent-encoded password is still one URL.
+    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     return cfg
 
 

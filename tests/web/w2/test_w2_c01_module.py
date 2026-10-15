@@ -6,9 +6,12 @@ import subprocess
 import sys
 import tarfile
 import venv
+import zipfile
 from pathlib import Path
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 REPO = Path(__file__).resolve().parents[3]
@@ -21,6 +24,7 @@ from rxycode_server.persistence.migrate import upgrade_head
 from rxycode_server.persistence.models import (
     Organization,
     Project,
+    Run,
     SessionRow,
     User,
     import_desktop_tasks,
@@ -76,6 +80,34 @@ def test_w2_c01_integration(postgres_url: str, tmp_path: Path):
         demo = conn.execute(text("SELECT count(*) FROM projects WHERE name = 'demo'")).scalar()
     assert rows == [("tenant-a", "tenant-a", "app"), ("tenant-b", "tenant-b", "app")]
     assert demo == 1
+    with Session(engine) as db:
+        db.add(
+            SessionRow(
+                id="cross-session",
+                tenant_id="tenant-a",
+                project_id="project-tenant-b",
+                title="cross",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+        db.add(
+            Run(
+                id="cross-run",
+                tenant_id="tenant-a",
+                session_id="session-tenant-b",
+                status="succeeded",
+                request_id="cross-req",
+                revision=0,
+                lease_epoch=0,
+                input_digest="",
+                target_id="",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
 
 
 def _python(env_dir: Path) -> Path:
@@ -123,8 +155,13 @@ def test_w2_c01_installed_migration(postgres_url: str, tmp_path: Path):
     assert build.returncode == 0, build.stderr
     wheels = list(wheel_dir.glob("rxycode-*.whl"))
     assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as bundle:
+        metadata_name = next(name for name in bundle.namelist() if name.endswith(".dist-info/METADATA"))
+        metadata = bundle.read(metadata_name).decode("utf-8").casefold()
+    for requirement in ("sqlalchemy", "alembic", "psycopg"):
+        assert f"requires-dist: {requirement}" in metadata
     env_dir = tmp_path / "venv"
-    venv.create(env_dir, with_pip=True, system_site_packages=True)
+    venv.create(env_dir, with_pip=True, system_site_packages=False)
     python = _python(env_dir)
     install = subprocess.run(
         [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
@@ -135,6 +172,23 @@ def test_w2_c01_installed_migration(postgres_url: str, tmp_path: Path):
         env=_clean_env(),
     )
     assert install.returncode == 0, install.stderr
+    runtime = subprocess.run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "sqlalchemy>=2,<2.1",
+            "alembic>=1.17,<2",
+            "psycopg[binary]>=3.2,<4",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_clean_env(),
+    )
+    assert runtime.returncode == 0, runtime.stderr
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     probe = (

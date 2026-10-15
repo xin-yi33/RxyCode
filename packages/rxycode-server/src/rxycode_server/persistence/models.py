@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -57,7 +58,10 @@ class Membership(Base):
 
 class Project(Base):
     __tablename__ = "projects"
-    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_projects_tenant_name"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_projects_tenant_name"),
+        UniqueConstraint("tenant_id", "id", name="uq_projects_tenant_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
@@ -71,22 +75,41 @@ class Project(Base):
 
 class SessionRow(Base):
     __tablename__ = "sessions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "project_id"],
+            ["projects.tenant_id", "projects.id"],
+            name="fk_sessions_project_tenant",
+        ),
+        UniqueConstraint("tenant_id", "id", name="uq_sessions_tenant_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    project_id: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(200), default="")
     organization: Mapped[Organization] = relationship(
         primaryjoin="SessionRow.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
+        overlaps="project",
     )
-    project: Mapped[Project] = relationship()
+    project: Mapped[Project] = relationship(
+        primaryjoin="and_(SessionRow.project_id == Project.id, SessionRow.tenant_id == Project.tenant_id)",
+        foreign_keys=[project_id, tenant_id],
+        overlaps="organization",
+    )
 
 
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
         UniqueConstraint("tenant_id", "request_id", name="uq_runs_tenant_request"),
+        UniqueConstraint("tenant_id", "id", name="uq_runs_tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "session_id"],
+            ["sessions.tenant_id", "sessions.id"],
+            name="fk_runs_session_tenant",
+        ),
         Index(
             "uq_runs_one_active_per_session",
             "session_id",
@@ -97,7 +120,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
-    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"))
+    session_id: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32))
     revision: Mapped[int] = mapped_column(Integer, default=0)
     lease_owner: Mapped[str | None] = mapped_column(String(64))
@@ -109,25 +132,42 @@ class Run(Base):
     organization: Mapped[Organization] = relationship(
         primaryjoin="Run.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
+        overlaps="session",
     )
-    session: Mapped[SessionRow] = relationship()
+    session: Mapped[SessionRow] = relationship(
+        primaryjoin="and_(Run.session_id == SessionRow.id, Run.tenant_id == SessionRow.tenant_id)",
+        foreign_keys=[session_id, tenant_id],
+        overlaps="organization",
+    )
 
 
 class RunEvent(Base):
     __tablename__ = "run_events"
-    __table_args__ = (UniqueConstraint("run_id", "seq", name="uq_run_events_run_seq"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_run_events_run_seq"),
+        ForeignKeyConstraint(
+            ["tenant_id", "run_id"],
+            ["runs.tenant_id", "runs.id"],
+            name="fk_run_events_run_tenant",
+        ),
+    )
 
     event_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    run_id: Mapped[str] = mapped_column(String(64))
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     seq: Mapped[int] = mapped_column(Integer)
     type: Mapped[str] = mapped_column(String(64))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    run: Mapped[Run] = relationship()
+    run: Mapped[Run] = relationship(
+        primaryjoin="and_(RunEvent.run_id == Run.id, RunEvent.tenant_id == Run.tenant_id)",
+        foreign_keys=[run_id, tenant_id],
+        overlaps="organization",
+    )
     organization: Mapped[Organization] = relationship(
         primaryjoin="RunEvent.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
+        overlaps="run",
     )
 
 
@@ -143,10 +183,17 @@ class Outbox(Base):
 
 class Approval(Base):
     __tablename__ = "approvals"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "run_id"],
+            ["runs.tenant_id", "runs.id"],
+            name="fk_approvals_run_tenant",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
-    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    run_id: Mapped[str] = mapped_column(String(64))
     call_id: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32))
     revision: Mapped[int] = mapped_column(Integer, default=0)
@@ -154,8 +201,13 @@ class Approval(Base):
     organization: Mapped[Organization] = relationship(
         primaryjoin="Approval.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
+        overlaps="run",
     )
-    run: Mapped[Run] = relationship()
+    run: Mapped[Run] = relationship(
+        primaryjoin="and_(Approval.run_id == Run.id, Approval.tenant_id == Run.tenant_id)",
+        foreign_keys=[run_id, tenant_id],
+        overlaps="organization",
+    )
 
 
 class ToolInvocation(Base):
@@ -178,6 +230,7 @@ class Device(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     credential_hash: Mapped[str] = mapped_column(String(128))
+    __table_args__ = (UniqueConstraint("tenant_id", "id", name="uq_devices_tenant_id"),)
     organization: Mapped[Organization] = relationship(
         primaryjoin="Device.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
@@ -186,16 +239,28 @@ class Device(Base):
 
 class DeviceGrant(Base):
     __tablename__ = "device_grants"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "device_id"],
+            ["devices.tenant_id", "devices.id"],
+            name="fk_device_grants_device_tenant",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"))
+    device_id: Mapped[str] = mapped_column(String(64))
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     grant_scope: Mapped[str] = mapped_column(String(64))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    device: Mapped[Device] = relationship()
+    device: Mapped[Device] = relationship(
+        primaryjoin="and_(DeviceGrant.device_id == Device.id, DeviceGrant.tenant_id == Device.tenant_id)",
+        foreign_keys=[device_id, tenant_id],
+        overlaps="organization",
+    )
     organization: Mapped[Organization] = relationship(
         primaryjoin="DeviceGrant.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
+        overlaps="device",
     )
 
 

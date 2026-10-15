@@ -58,6 +58,8 @@ def test_w2_c01_contract(postgres_url: str, tmp_path: Path):
         trans.rollback()
     assert "runs" not in set(inspect(engine).get_table_names())
     upgrade_head(postgres_url)
+    encoded = postgres_url.replace("postgres@", "postgres:p%40ss@", 1)
+    upgrade_head(encoded)
 
 
 def test_w2_c01_negative(postgres_url: str):
