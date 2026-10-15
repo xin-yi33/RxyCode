@@ -1,0 +1,76 @@
+diff --git a/tests/web/w0/test_w0_c04_module.py b/tests/web/w0/test_w0_c04_module.py
+new file mode 100644
+index 00000000..17cc87cd
+--- /dev/null
++++ b/tests/web/w0/test_w0_c04_module.py
+@@ -0,0 +1,24 @@
++"""WEB-W0-C04. A new command that reuses an old protocol name stays blocked."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
++
++
++def _scanner():
++    path = PLAN / "scripts" / "check_plan.py"
++    spec = importlib.util.spec_from_file_location("rxycode_web_check_plan_c04m", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_w0_c04_integration():
++    """session/prompt already belongs to the old JSON-RPC protocol."""
++    ruling = _scanner().protocol_name_ruling(REPO, PLAN, "session/prompt")
++    assert ruling["ruling"] == "BLOCKED"
++    assert ruling["conflict_id"] == "CW04"
++    assert ruling["old_method"] == "session/prompt"
+diff --git a/tests/web/w0/test_w0_c04_unit.py b/tests/web/w0/test_w0_c04_unit.py
+new file mode 100644
+index 00000000..92e73b4c
+--- /dev/null
++++ b/tests/web/w0/test_w0_c04_unit.py
+@@ -0,0 +1,40 @@
++"""WEB-W0-C04. Requirement rows and the W1 gate come from the plan files."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
++
++
++def _scanner():
++    path = PLAN / "scripts" / "check_plan.py"
++    spec = importlib.util.spec_from_file_location("rxycode_web_check_plan_c04", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_w0_c04_contract():
++    """Each of the seven requirements has an owner, a card, and a test id."""
++    rows = _scanner().trace_requirements(PLAN)
++    wanted = {f"WEB-RQ0{index}" for index in range(1, 8)}
++    found = {row["id"] for row in rows}
++    assert wanted <= found
++    for row in rows:
++        if row["id"] not in wanted:
++            continue
++        assert row["owner"]
++        assert row["card"].startswith("WEB-W")
++        assert row["test_id"]
++        assert row["test_defined"] is True
++
++
++def test_w0_c04_negative():
++    """Unresolved P0 conflicts reject the move to W1."""
++    conflicts = _scanner().load_conflicts(PLAN)
++    assert any(
++        item["severity"] == "P0" and item["status"] == "OPEN" for item in conflicts
++    )
++    assert _scanner().w1_gate(conflicts) == "REJECTED"
