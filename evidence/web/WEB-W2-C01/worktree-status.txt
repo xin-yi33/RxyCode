@@ -1,0 +1,153 @@
+ M appserver/tui.py
+ M config/model_endpoint.py
+ M core/agent_v2.py
+ M core/agents/teams/software_dev/team.yaml
+ M core/build_workflow.py
+ M core/builtin_tool_registration.py
+ M core/prompts/few_shot.py
+ M core/prompts/registry.py
+ M core/prompts/templates.py
+ M core/session.py
+ M core/subagents/manager.py
+ M core/subagents/runtime.py
+ M desktop/recovery.json
+ M docs/modules/agents.md
+ M docs/modules/execution.md
+ M docs/modules/frontend.md
+ M docs/modules/tools.md
+ M docs/release-notes/CHANGELOG_v1.4.4.md
+ M evals/baselines/tool-latency.json
+ M evals/prompts/open-file-launch-e2e.md
+ M evals/public/fixtures/chateval_slice.json
+ M evals/public/official_chateval.py
+ M execution/evidence.py
+ M frontend/desktop-app/src/features/approvals/approval.mode.ts
+ M frontend/desktop-app/src/features/cli/cli.probe.ts
+ M frontend/desktop-app/src/features/plan/plan.persist.ts
+ M frontend/desktop-app/src/features/plugins/plugin.probe.ts
+ M frontend/desktop-app/src/features/recycle/RecycleBin.test.ts
+ M frontend/desktop-app/src/features/recycle/recycle.probe.ts
+ M frontend/desktop-app/src/features/review/InlineComment.test.ts
+ M frontend/desktop-app/src/features/review/review.comments.ts
+ M frontend/desktop-app/src/features/schedule/schedule.probe.ts
+ M frontend/desktop-app/src/features/sessions/SessionMenu.ts
+ M frontend/desktop-app/src/features/sessions/session.probe.ts
+ M frontend/desktop-app/src/features/sidechat/sideChat.ts
+ M frontend/desktop-app/src/renderer/src/App.tsx
+ M frontend/desktop-app/src/renderer/src/assets/main.css
+ M frontend/desktop-app/src/renderer/src/components/ChatArea.tsx
+ M frontend/desktop-app/src/renderer/src/components/SessionList.tsx
+ M frontend/desktop-app/src/renderer/src/components/TaskInspector.tsx
+ M frontend/desktop-app/src/renderer/src/hooks/useConversation.ts
+ M frontend/desktop-app/src/renderer/src/lib/conversationStore.mts
+ M frontend/desktop-app/src/renderer/src/lib/conversationStore.test.mts
+ M frontend/opentui-app/src/PlanPane.test.ts
+ M frontend/opentui-app/src/ToolCard.tsx
+ M frontend/opentui-app/src/lib/toolDisplay.test.ts
+ M frontend/opentui-app/src/lib/toolDisplay.ts
+ M frontend/opentui-app/src/planDoc.ts
+ M frontend/opentui-app/src/streamReducer.test.ts
+ M frontend/opentui-app/src/streamReducer.ts
+ M frontend/opentui-app/src/transport/httpTransport.ts
+ M frontend/opentui-app/src/transport/notifyToStreamEvent.test.ts
+ M frontend/opentui-app/src/transport/notifyToStreamEvent.ts
+ M frontend/opentui-app/src/transport/stdioTransport.ts
+ M main.py
+ M tests/fixtures/responses/main_chain_write.json
+ M tests/integration/test_agent_main_chain.py
+ M tests/test_core/test_build_workflow.py
+ M tests/test_core/test_prompts.py
+ M tests/test_core/test_research_fast_path.py
+ M tests/test_subagents/test_execution_bridge.py
+ M tests/test_tools/test_write.py
+ M tests/unit/test_gui_command.py
+ M tools/edit.py
+ M tools/patch.py
+ M tools/registry.py
+ M tools/subagent_task_tool.py
+ M tools/view.py
+ M utils/tui.py
+?? .agents/
+?? .claude/
+?? .grok/
+?? .opencode/
+?? .specify/
+?? CLAUDE.md
+?? _extract_pdf.py
+?? admin-backend/
+?? auth/
+?? base633.html
+?? cdx.txt
+?? cdx_menu.txt
+?? common_elements.py
+?? core/subagents/collab.py
+?? core/subagents/inbox.py
+?? core/subagents/prompt.py
+?? count_hep_lat_ps.py
+?? count_words_check.py
+?? ddc633.json
+?? ddc633b.json
+?? diff2580816.html
+?? doc_audit_report.txt
+?? docs.zip
+?? docs/assets/cli-demo2.mp4
+?? docs/assets/gui-demo.mp4
+?? docs/assets/rxycode-v1.4.0-intro.mp4
+?? docs/imgs/v140-hero.jpg
+?? docs/imgs/v140-opentui-diff.jpg
+?? docs/imgs/v140-scene1-hook.jpg
+?? docs/imgs/v140-scene3-resilience.jpg
+?? docs/imgs/v140-teams-architecture.jpg
+?? docs/imgs/v143-cover.jpg
+?? docs/phase-g/SESSION-RESTORE-ABC.md
+?? docs/plans/
+?? docs/release-notes/RXYCODE_V1.4.0_LAUNCH_ARTICLE.md
+?? evidence/web/WEB-W2-C01/
+?? extract_lauria.py
+?? fibonacci.cpp
+?? frontend/desktop-app/GUI-ADAPT.md
+?? frontend/desktop-app/src/features/protocol/
+?? frontend/desktop-app/src/renderer/src/components/TaskInspector.childActivity.test.mts
+?? frontend/desktop-app/src/renderer/src/lib/prose.mts
+?? frontend/desktop-app/src/renderer/src/lib/prose.test.mts
+?? full_binary_trees.py
+?? gg_balloon.html
+?? gh2.json
+?? gh3.json
+?? gh_search.json
+?? hafnia_genus.json
+?? hafnia_summary.json
+?? hafnia_wikitext.json
+?? inspect_entry.py
+?? lauria_full.txt
+?? legume_log.json
+?? legume_rev.json
+?? login_app/
+?? lru_cache.py
+?? majority_element.py
+?? median_two_sorted.py
+?? neb.json
+?? neb.txt
+?? numpy_reg.json
+?? opencv_maskrcnn_commits.json
+?? pip/
+?? receipts/
+?? research/
+?? research_fetch.py
+?? revision_cache.json
+?? scratch/
+?? scripts/doc_audit_accept.txt
+?? scripts/fix2_exit_gate.ps1
+?? scripts/generate_promo_video.py
+?? scripts/req_trace.py
+?? scripts/sync-agent-crew-skills.ps1
+?? scripts/sync_open_file_e2e_prompts.py
+?? scripts/x11_cache_hunt.ps1
+?? skills-lock.json
+?? tests/integration/test_unified_file_tools.py
+?? tests/test_lcs.py
+?? tests/test_median_two_sorted.py
+?? tests/test_subagents/test_subagent_prompt_and_collab.py
+?? tests/test_tools/test_unified_file_tools.py
+?? tests/test_top_words.py
+?? tools/subagent_collab.py

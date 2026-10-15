@@ -1,0 +1,14 @@
+ appserver/task_store.py                            |   7 +
+ packages/rxycode-server/alembic/__init__.py        |   1 +
+ packages/rxycode-server/alembic/env.py             |  30 +++
+ .../alembic/versions/001_web_base.py               |  26 ++
+ .../rxycode-server/alembic/versions/__init__.py    |   1 +
+ .../rxycode-server/src/rxycode_server/__init__.py  |   1 +
+ .../src/rxycode_server/persistence/__init__.py     |   1 +
+ .../src/rxycode_server/persistence/migrate.py      |  37 +++
+ .../src/rxycode_server/persistence/models.py       | 291 +++++++++++++++++++++
+ pyproject.toml                                     |   8 +
+ tests/web/w2/conftest.py                           |  59 +++++
+ tests/web/w2/test_w2_c01_module.py                 | 183 +++++++++++++
+ tests/web/w2/test_w2_c01_unit.py                   | 133 ++++++++++
+ 13 files changed, 778 insertions(+)
