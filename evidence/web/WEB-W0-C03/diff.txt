@@ -1,0 +1,20 @@
+commit 875a094872a2515c75c38812178a334fc80b99c8
+Author:     Run <1262075942@qq.com>
+AuthorDate: Fri Oct 16 02:11:28 2026 +0800
+Commit:     Run <1262075942@qq.com>
+CommitDate: Fri Oct 16 02:11:28 2026 +0800
+
+    feat(web): web-w0-c03 - 鍗曚竴 Agent 鍩虹嚎涓庢棫绔洖褰掑揩鐓?    
+    Record the live session reuse and protocol event baseline without changing those paths.
+
+ evidence/web/WEB-W0-C03/baseline.txt        |  7 ++++
+ evidence/web/WEB-W0-C03/cache.txt           |  5 +++
+ evidence/web/WEB-W0-C03/handoff.md          |  4 +++
+ evidence/web/WEB-W0-C03/integration.txt     |  2 ++
+ evidence/web/WEB-W0-C03/red.txt             |  7 ++++
+ evidence/web/WEB-W0-C03/self-audit.md       |  7 ++++
+ evidence/web/WEB-W0-C03/unit.txt            |  2 ++
+ evidence/web/WEB-W0-C03/worktree-status.txt |  1 +
+ tests/web/w0/test_w0_c03_module.py          | 47 +++++++++++++++++++++++++
+ tests/web/w0/test_w0_c03_unit.py            | 53 +++++++++++++++++++++++++++++
+ 10 files changed, 135 insertions(+)
