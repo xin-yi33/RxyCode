@@ -1,3 +1,31 @@
+diff --git a/packages/rxycode-core/src/rxycode_core/__init__.py b/packages/rxycode-core/src/rxycode_core/__init__.py
+new file mode 100644
+index 00000000..9a45fc51
+--- /dev/null
++++ b/packages/rxycode-core/src/rxycode_core/__init__.py
+@@ -0,0 +1,22 @@
++"""Install-time identity for the one historical Session class.
++
++This package does not copy AgentV2. Session and reuse_or_create_session are
++the class and function objects defined in RxyCode.RxyCode1_1_0.core.session.
++"""
++
++from __future__ import annotations
++
++from RxyCode.RxyCode1_1_0.core.session import Session, reuse_or_create_session
++
++__all__ = ["Session", "audit_class_identity", "reuse_or_create_session"]
++
++
++def audit_class_identity(classes: list[type]) -> str:
++    """Return OK when every entry is the same class object, otherwise BLOCKED.
++
++    Identity is ``is``, not ``==``. A metaclass that makes distinct classes
++    compare equal must still be BLOCKED.
++    """
++    if len({id(item) for item in classes}) > 1:
++        return "BLOCKED"
++    return "OK"
 diff --git a/pyproject.toml b/pyproject.toml
 index bd20db1f..ed7efe0a 100644
 --- a/pyproject.toml
@@ -44,36 +72,145 @@ index 6b253da7..5180c063 100644
 +        env=installed_package.env,
 +    )
 +    assert probe.stdout.strip() == "OK"
-diff --git a/packages/rxycode-core/src/rxycode_core/__init__.py b/packages/rxycode-core/src/rxycode_core/__init__.py
+diff --git a/tests/web/w1/test_w1_c01_module.py b/tests/web/w1/test_w1_c01_module.py
 new file mode 100644
-index 00000000..bd2ea829
+index 00000000..5c9bc7d9
 --- /dev/null
-+++ b/packages/rxycode-core/src/rxycode_core/__init__.py
-@@ -0,0 +1,18 @@
-+"""Install-time identity for the one historical Session class.
-+
-+This package does not copy AgentV2. Session and reuse_or_create_session are
-+the class and function objects defined in RxyCode.RxyCode1_1_0.core.session.
-+"""
-+
++++ b/tests/web/w1/test_w1_c01_module.py
+@@ -0,0 +1,127 @@
++"""WEB-W1-C01. An installed wheel exposes one Session and the CLI entry."""
 +from __future__ import annotations
 +
-+from RxyCode.RxyCode1_1_0.core.session import Session, reuse_or_create_session
++import os
++import subprocess
++import sys
++import tarfile
++import venv
++from pathlib import Path
 +
-+__all__ = ["Session", "audit_class_identity", "reuse_or_create_session"]
++REPO = Path(__file__).resolve().parents[3]
 +
 +
-+def audit_class_identity(classes: list[type]) -> str:
-+    """Return OK when every entry is the same class object, otherwise BLOCKED."""
-+    if len(set(classes)) > 1:
-+        return "BLOCKED"
-+    return "OK"
++def _python(env_dir: Path) -> Path:
++    if os.name == "nt":
++        return env_dir / "Scripts" / "python.exe"
++    return env_dir / "bin" / "python"
++
++
++def _clean_env() -> dict[str, str]:
++    env = os.environ.copy()
++    env.pop("PYTHONPATH", None)
++    env.pop("PYTHONHOME", None)
++    return env
++
++
++def test_w1_c01_integration(tmp_path: Path):
++    """A wheel of HEAD, installed without the checkout on the path, is one Session."""
++    archive = tmp_path / "head.tar"
++    archived = subprocess.run(
++        ["git", "archive", "--format=tar", "-o", str(archive), "HEAD"],
++        cwd=REPO,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=_clean_env(),
++    )
++    assert archived.returncode == 0, archived.stderr
++    checkout = tmp_path / "checkout"
++    checkout.mkdir()
++    with tarfile.open(archive) as bundle:
++        if sys.version_info >= (3, 12):
++            bundle.extractall(checkout, filter="data")
++        else:
++            bundle.extractall(checkout)
++    wheel_dir = tmp_path / "wheel"
++    wheel_dir.mkdir()
++    build = subprocess.run(
++        [
++            sys.executable,
++            "-m",
++            "pip",
++            "wheel",
++            "--no-deps",
++            "-w",
++            str(wheel_dir),
++            str(checkout),
++        ],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=_clean_env(),
++    )
++    assert build.returncode == 0, build.stderr
++    wheels = list(wheel_dir.glob("rxycode-*.whl"))
++    assert len(wheels) == 1
++    env_dir = tmp_path / "venv"
++    # Third-party deps stay on the base interpreter. The origin check below
++    # rejects a checkout or editable install that shadows this wheel.
++    venv.create(env_dir, with_pip=True, system_site_packages=True)
++    python = _python(env_dir)
++    install = subprocess.run(
++        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=_clean_env(),
++    )
++    assert install.returncode == 0, install.stderr
++    run_dir = tmp_path / "run"
++    run_dir.mkdir()
++    probe = subprocess.run(
++        [
++            str(python),
++            "-c",
++            "import RxyCode.RxyCode1_1_0.appserver.server as server\n"
++            "import RxyCode.RxyCode1_1_0.core.session as legacy\n"
++            "import rxycode_core\n"
++            "from pathlib import Path\n"
++            "assert rxycode_core.Session is legacy.Session\n"
++            "for mod in (rxycode_core, legacy, server):\n"
++            "    print(Path(mod.__file__).resolve())\n"
++            "print('wheel-session-ok')\n",
++        ],
++        cwd=run_dir,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=_clean_env(),
++    )
++    assert probe.returncode == 0, probe.stderr
++    assert "wheel-session-ok" in probe.stdout
++    venv_root = str(env_dir.resolve()).casefold()
++    repo_root = str(REPO.resolve()).casefold()
++    origins = [
++        line.strip()
++        for line in probe.stdout.splitlines()
++        if line.strip() and line.strip() != "wheel-session-ok"
++    ]
++    assert len(origins) == 3
++    for origin in origins:
++        folded = origin.casefold()
++        assert venv_root in folded
++        assert repo_root not in folded
++    console = env_dir / "Scripts" / "rxycode.exe" if os.name == "nt" else env_dir / "bin" / "rxycode"
++    help_run = subprocess.run(
++        [str(console), "--help"],
++        cwd=run_dir,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=_clean_env(),
++    )
++    assert help_run.returncode == 0, help_run.stderr
++    assert "Usage:" in help_run.stdout + help_run.stderr
 diff --git a/tests/web/w1/test_w1_c01_unit.py b/tests/web/w1/test_w1_c01_unit.py
 new file mode 100644
-index 00000000..94945f4b
+index 00000000..490d6500
 --- /dev/null
 +++ b/tests/web/w1/test_w1_c01_unit.py
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,54 @@
 +"""WEB-W1-C01. The new package and the legacy import share one Session class."""
 +from __future__ import annotations
 +
@@ -111,87 +248,20 @@ index 00000000..94945f4b
 +        pass
 +
 +    assert audit_class_identity([Legacy, _SecondAgent]) == "BLOCKED"
-+    with pytest.raises(AssertionError):
-+        assert audit_class_identity([Legacy, _SecondAgent]) == "OK"
-diff --git a/tests/web/w1/test_w1_c01_module.py b/tests/web/w1/test_w1_c01_module.py
-new file mode 100644
-index 00000000..b2972e26
---- /dev/null
-+++ b/tests/web/w1/test_w1_c01_module.py
-@@ -0,0 +1,76 @@
-+"""WEB-W1-C01. An installed wheel exposes one Session and the CLI entry."""
-+from __future__ import annotations
 +
-+import os
-+import subprocess
-+import sys
-+import venv
-+from pathlib import Path
++    class _EqualMeta(type):
++        def __eq__(cls, other: object) -> bool:
++            return isinstance(other, type)
 +
-+REPO = Path(__file__).resolve().parents[3]
++        def __hash__(cls) -> int:
++            return 1
 +
++    class _Left(metaclass=_EqualMeta):
++        pass
 +
-+def _python(env_dir: Path) -> Path:
-+    if os.name == "nt":
-+        return env_dir / "Scripts" / "python.exe"
-+    return env_dir / "bin" / "python"
++    class _Right(metaclass=_EqualMeta):
++        pass
 +
-+
-+def test_w1_c01_integration(tmp_path: Path):
-+    """A fresh venv install keeps Session identity and can start the console."""
-+    wheel_dir = tmp_path / "wheel"
-+    wheel_dir.mkdir()
-+    build = subprocess.run(
-+        [
-+            sys.executable,
-+            "-m",
-+            "pip",
-+            "wheel",
-+            "--no-deps",
-+            "-w",
-+            str(wheel_dir),
-+            str(REPO),
-+        ],
-+        cwd=REPO,
-+        text=True,
-+        capture_output=True,
-+        check=False,
-+    )
-+    assert build.returncode == 0, build.stderr
-+    wheels = list(wheel_dir.glob("rxycode-*.whl"))
-+    assert len(wheels) == 1
-+    env_dir = tmp_path / "venv"
-+    venv.create(env_dir, with_pip=True, system_site_packages=True)
-+    python = _python(env_dir)
-+    install = subprocess.run(
-+        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
-+        text=True,
-+        capture_output=True,
-+        check=False,
-+    )
-+    assert install.returncode == 0, install.stderr
-+    probe = subprocess.run(
-+        [
-+            str(python),
-+            "-c",
-+            "import RxyCode.RxyCode1_1_0.appserver.server as server\n"
-+            "import RxyCode.RxyCode1_1_0.core.session as legacy\n"
-+            "import rxycode_core\n"
-+            "assert rxycode_core.Session is legacy.Session\n"
-+            "print('wheel-session-ok')\n",
-+        ],
-+        text=True,
-+        capture_output=True,
-+        check=False,
-+    )
-+    assert probe.returncode == 0, probe.stderr
-+    assert "wheel-session-ok" in probe.stdout
-+    console = env_dir / "Scripts" / "rxycode.exe" if os.name == "nt" else env_dir / "bin" / "rxycode"
-+    help_run = subprocess.run(
-+        [str(console), "--help"],
-+        text=True,
-+        capture_output=True,
-+        check=False,
-+    )
-+    assert help_run.returncode == 0, help_run.stderr
-+    assert "Usage:" in help_run.stdout + help_run.stderr
++    assert _Left == _Right
++    assert _Left is not _Right
++    assert audit_class_identity([_Left, _Right]) == "BLOCKED"
