@@ -1,20 +1,193 @@
-commit 875a094872a2515c75c38812178a334fc80b99c8
-Author:     Run <1262075942@qq.com>
-AuthorDate: Fri Oct 16 02:11:28 2026 +0800
-Commit:     Run <1262075942@qq.com>
-CommitDate: Fri Oct 16 02:11:28 2026 +0800
-
-    feat(web): web-w0-c03 - 鍗曚竴 Agent 鍩虹嚎涓庢棫绔洖褰掑揩鐓?    
-    Record the live session reuse and protocol event baseline without changing those paths.
-
- evidence/web/WEB-W0-C03/baseline.txt        |  7 ++++
- evidence/web/WEB-W0-C03/cache.txt           |  5 +++
- evidence/web/WEB-W0-C03/handoff.md          |  4 +++
- evidence/web/WEB-W0-C03/integration.txt     |  2 ++
- evidence/web/WEB-W0-C03/red.txt             |  7 ++++
- evidence/web/WEB-W0-C03/self-audit.md       |  7 ++++
- evidence/web/WEB-W0-C03/unit.txt            |  2 ++
- evidence/web/WEB-W0-C03/worktree-status.txt |  1 +
- tests/web/w0/test_w0_c03_module.py          | 47 +++++++++++++++++++++++++
- tests/web/w0/test_w0_c03_unit.py            | 53 +++++++++++++++++++++++++++++
- 10 files changed, 135 insertions(+)
+diff --git a/tests/web/w0/test_w0_c03_module.py b/tests/web/w0/test_w0_c03_module.py
+index 0be39dcd..a831c713 100644
+--- a/tests/web/w0/test_w0_c03_module.py
++++ b/tests/web/w0/test_w0_c03_module.py
+@@ -1,31 +1,21 @@
+-"""WEB-W0-C03. Protocol events round-trip through the shipped models."""
++"""WEB-W0-C03. Appserver wire events are consumed by the protocol client."""
+ from __future__ import annotations
+ 
++import json
++import shutil
++import subprocess
+ from pathlib import Path
+ 
+-from core.session import notification_to_sse_event
++from appserver.emitter import model_to_notification
++from execution.tool_journal import ToolExecutionJournal, new_attempt_id
+ from protocol.notifications import FinalAnswer, RecoveryStarted
+ 
+ REPO = Path(__file__).resolve().parents[3]
++CLIENT = REPO / "frontend" / "protocol-client"
+ 
+ 
+-def test_w0_c03_integration():
+-    """An existing final event keeps its type and schema version for the old client."""
+-    notice = FinalAnswer(
+-        session_id="ses-c03",
+-        run_id="run-c03",
+-        text="done",
+-        session_schema_version=4,
+-    )
+-    event = notification_to_sse_event(notice)
+-    assert event is not None
+-    assert event["type"] == "final"
+-    assert event["run_id"] == "run-c03"
+-    assert event["session_schema_version"] == 4
+-    restored = FinalAnswer.model_validate(notice.model_dump())
+-    assert restored.method == "event/final"
+-    assert restored.session_schema_version == 4
+-
++def test_w0_c03_integration(tmp_path: Path):
++    """Recovery then final keeps method order when the old client reads the wire."""
+     started = RecoveryStarted(
+         session_id="ses-c03",
+         run_id="run-c03",
+@@ -38,10 +28,60 @@ def test_w0_c03_integration():
+         error_kind="timeout",
+         max_attempts=2,
+     )
+-    again = RecoveryStarted.model_validate(started.model_dump())
+-    assert again.method == "event/recovery_started"
+-    assert again.recovery_kind == "transport_retry"
+-    assert again.seq == 1
+-    schema = (REPO / "protocol" / "schema.json").read_text(encoding="utf-8")
+-    assert "event/final" in schema
+-    assert "event/recovery_started" in schema
++    final = FinalAnswer(
++        session_id="ses-c03",
++        run_id="run-c03",
++        text="done",
++        session_schema_version=4,
++    )
++    payload = "\n".join(
++        json.dumps(model_to_notification(item), ensure_ascii=False)
++        for item in (started, final)
++    )
++    script = """
++import { ProtocolClient } from "./src/client.ts";
++const seen = [];
++const client = new ProtocolClient(() => {});
++client.onNotification = (method, params) => {
++  seen.push({
++    method,
++    recovery_kind: params && params.recovery_kind ? params.recovery_kind : null,
++    session_schema_version: params ? params.session_schema_version ?? null : null,
++  });
++};
++const text = await new Response(Bun.stdin).text();
++for (const line of text.split(String.fromCharCode(10)).filter((item) => item.length > 0)) {
++  await client.handleLine(line);
++}
++console.log(JSON.stringify(seen));
++"""
++    bun = shutil.which("bun.exe")
++    if bun is None:
++        fallback = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
++        bun = str(fallback) if fallback.is_file() else shutil.which("bun")
++    assert bun, "BLOCKED: bun is not installed"
++    proc = subprocess.run(
++        [bun, "-e", script],
++        input=payload,
++        text=True,
++        capture_output=True,
++        cwd=CLIENT,
++        check=False,
++    )
++    assert proc.returncode == 0, proc.stderr
++    seen = json.loads(proc.stdout)
++    assert [item["method"] for item in seen] == [
++        "event/recovery_started",
++        "event/final",
++    ]
++    assert seen[0]["recovery_kind"] == "transport_retry"
++    assert seen[1]["session_schema_version"] == 4
++
++    journal = ToolExecutionJournal(tmp_path / "journal")
++    attempt_id = new_attempt_id()
++    binding = journal.binding(attempt_id)
++    call = binding.next_call("write", {"path": "a.txt"})
++    assert journal.reserve(attempt_id, call).action == "execute"
++    assert journal.has_pending(attempt_id) is True
++    retry = binding.next_call("write", {"path": "a.txt"})
++    assert journal.reserve(attempt_id, retry).action == "uncertain"
+diff --git a/tests/web/w0/test_w0_c03_unit.py b/tests/web/w0/test_w0_c03_unit.py
+index 3d231594..44dab559 100644
+--- a/tests/web/w0/test_w0_c03_unit.py
++++ b/tests/web/w0/test_w0_c03_unit.py
+@@ -4,6 +4,11 @@ from __future__ import annotations
+ import importlib.util
+ from pathlib import Path
+ 
++import pytest
++from pydantic import BaseModel
++
++from protocol.notifications import FinalAnswer
++
+ REPO = Path(__file__).resolve().parents[3]
+ PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
+ 
+@@ -16,31 +21,54 @@ def _scanner():
+     return module
+ 
+ 
+-def test_w0_c03_contract(tmp_path: Path):
+-    """Same session id and workspace keeps agent_runtimes and replaces emit."""
++class _PromptAgent:
++    def __init__(self) -> None:
++        self._thinking_history: list[str] = []
++        self._last_thinking = ""
++
++    async def run(self, text: str, mode: str = "build") -> str:
++        return text
++
++
++def _final_texts(events: list[BaseModel]) -> list[str]:
++    return [item.text for item in events if isinstance(item, FinalAnswer)]
++
++
++@pytest.mark.asyncio
++async def test_w0_c03_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
++    """A second prompt on the same session keeps runtimes and uses the new emit."""
+     from core.session import reuse_or_create_session
+ 
+-    first_emit: list[str] = []
+-    second_emit: list[str] = []
++    monkeypatch.setenv("RXYCODE_DATA_DIR", str(tmp_path / "data"))
++    workspace = tmp_path / "ws"
++    workspace.mkdir()
++    first_emit: list[BaseModel] = []
++    second_emit: list[BaseModel] = []
+     first = reuse_or_create_session(
+         None,
+         session_id="ses-c03",
+-        workspace_root=tmp_path,
++        workspace_root=workspace,
+         emit=first_emit.append,
+     )
+     marker = object()
+     first.agent_runtimes["architect"] = marker
++    agent = _PromptAgent()
++    first_result = await first.prompt(agent, "one", mode="build", run_id="run-1")
++    assert first_result.answer == "one"
+     second = reuse_or_create_session(
+         first,
+         session_id="ses-c03",
+-        workspace_root=tmp_path,
++        workspace_root=workspace,
+         emit=second_emit.append,
+     )
+     assert second is first
+     assert second.agent_runtimes["architect"] is marker
+-    second.emit("next")
+-    assert second_emit == ["next"]
+-    assert first_emit == []
++    second_result = await second.prompt(agent, "two", mode="build", run_id="run-2")
++    assert second_result.answer == "two"
++    assert second.agent_runtimes["architect"] is marker
++    assert _final_texts(second_emit) == ["two"]
++    assert "two" not in _final_texts(first_emit)
++    assert _final_texts(first_emit) == ["one"]
+ 
+ 
+ def test_w0_c03_negative(tmp_path: Path):

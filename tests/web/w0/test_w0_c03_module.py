@@ -1,31 +1,21 @@
-"""WEB-W0-C03. Protocol events round-trip through the shipped models."""
+"""WEB-W0-C03. Appserver wire events are consumed by the protocol client."""
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
-from core.session import notification_to_sse_event
+from appserver.emitter import model_to_notification
+from execution.tool_journal import ToolExecutionJournal, new_attempt_id
 from protocol.notifications import FinalAnswer, RecoveryStarted
 
 REPO = Path(__file__).resolve().parents[3]
+CLIENT = REPO / "frontend" / "protocol-client"
 
 
-def test_w0_c03_integration():
-    """An existing final event keeps its type and schema version for the old client."""
-    notice = FinalAnswer(
-        session_id="ses-c03",
-        run_id="run-c03",
-        text="done",
-        session_schema_version=4,
-    )
-    event = notification_to_sse_event(notice)
-    assert event is not None
-    assert event["type"] == "final"
-    assert event["run_id"] == "run-c03"
-    assert event["session_schema_version"] == 4
-    restored = FinalAnswer.model_validate(notice.model_dump())
-    assert restored.method == "event/final"
-    assert restored.session_schema_version == 4
-
+def test_w0_c03_integration(tmp_path: Path):
+    """Recovery then final keeps method order when the old client reads the wire."""
     started = RecoveryStarted(
         session_id="ses-c03",
         run_id="run-c03",
@@ -38,10 +28,60 @@ def test_w0_c03_integration():
         error_kind="timeout",
         max_attempts=2,
     )
-    again = RecoveryStarted.model_validate(started.model_dump())
-    assert again.method == "event/recovery_started"
-    assert again.recovery_kind == "transport_retry"
-    assert again.seq == 1
-    schema = (REPO / "protocol" / "schema.json").read_text(encoding="utf-8")
-    assert "event/final" in schema
-    assert "event/recovery_started" in schema
+    final = FinalAnswer(
+        session_id="ses-c03",
+        run_id="run-c03",
+        text="done",
+        session_schema_version=4,
+    )
+    payload = "\n".join(
+        json.dumps(model_to_notification(item), ensure_ascii=False)
+        for item in (started, final)
+    )
+    script = """
+import { ProtocolClient } from "./src/client.ts";
+const seen = [];
+const client = new ProtocolClient(() => {});
+client.onNotification = (method, params) => {
+  seen.push({
+    method,
+    recovery_kind: params && params.recovery_kind ? params.recovery_kind : null,
+    session_schema_version: params ? params.session_schema_version ?? null : null,
+  });
+};
+const text = await new Response(Bun.stdin).text();
+for (const line of text.split(String.fromCharCode(10)).filter((item) => item.length > 0)) {
+  await client.handleLine(line);
+}
+console.log(JSON.stringify(seen));
+"""
+    bun = shutil.which("bun.exe")
+    if bun is None:
+        fallback = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+        bun = str(fallback) if fallback.is_file() else shutil.which("bun")
+    assert bun, "BLOCKED: bun is not installed"
+    proc = subprocess.run(
+        [bun, "-e", script],
+        input=payload,
+        text=True,
+        capture_output=True,
+        cwd=CLIENT,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    seen = json.loads(proc.stdout)
+    assert [item["method"] for item in seen] == [
+        "event/recovery_started",
+        "event/final",
+    ]
+    assert seen[0]["recovery_kind"] == "transport_retry"
+    assert seen[1]["session_schema_version"] == 4
+
+    journal = ToolExecutionJournal(tmp_path / "journal")
+    attempt_id = new_attempt_id()
+    binding = journal.binding(attempt_id)
+    call = binding.next_call("write", {"path": "a.txt"})
+    assert journal.reserve(attempt_id, call).action == "execute"
+    assert journal.has_pending(attempt_id) is True
+    retry = binding.next_call("write", {"path": "a.txt"})
+    assert journal.reserve(attempt_id, retry).action == "uncertain"
