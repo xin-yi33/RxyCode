@@ -402,10 +402,11 @@ class ToolOrchestrator:
         journal: Any | None,
         attempt_id: str | None,
         checkpoint_id: str | None = None,
+        remote_call_id: str | None = None,
     ) -> Token:
         """Bind one durable side-effect journal to the current request."""
         binding = (
-            journal.binding(attempt_id, checkpoint_id)
+            journal.binding(attempt_id, checkpoint_id, remote_call_id)
             if journal is not None and attempt_id is not None
             else None
         )

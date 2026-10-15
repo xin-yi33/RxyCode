@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -30,10 +32,18 @@ from rxycode_worker.recovery import (  # noqa: E402
     recover_unknown_shell,
     run_shell_before_ack,
 )
+from rxycode_worker.supervisor import claim  # noqa: E402
 
 from RxyCode.RxyCode1_1_0.execution.tool_journal import (  # noqa: E402
     ToolExecutionJournal,
 )
+
+
+class _LostAckJournal(ToolExecutionJournal):
+    """The shell can finish while the durable ACK still fails."""
+
+    def complete(self, attempt_id: str, call: object, result: object) -> str:
+        raise OSError("ack lost")
 
 
 def _seed(url: str) -> str:
@@ -69,37 +79,83 @@ def test_w2_c05_integration(postgres_url: str, tmp_path: Path):
         permission_profile="workspace-write",
         request_id="req-c05",
     )
-    journal = ToolExecutionJournal(tmp_path / "journal")
-    target = tmp_path / "shell-write.txt"
+    journal = _LostAckJournal(tmp_path / "journal")
+    # The shell sandbox only allows the configured workspace, which is this repo.
+    workdir = Path(tempfile.mkdtemp(prefix="w2c05-shell-", dir=REPO))
+    try:
+        _assert_lost_ack(postgres_url, created, workdir, journal)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _assert_lost_ack(postgres_url: str, created, workdir: Path, journal) -> None:
+    target = workdir / "shell-write.txt"
     attempt_id = "att_" + uuid.uuid4().hex
     call_id = "call_" + uuid.uuid4().hex
-    command = [
-        "pwsh",
-        "-NoProfile",
-        "-Command",
-        f"Add-Content -LiteralPath '{target}' -Value 'shell-write' -Encoding utf8",
-    ]
-    started = run_shell_before_ack(
+    command = "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
+    epoch = claim(postgres_url, created.run_id, "worker-c05")
+    assert epoch == 1
+    common = {
+        "tenant_id": "tenant-c05",
+        "run_id": created.run_id,
+        "command": command,
+        "workdir": str(workdir),
+        "journal": journal,
+    }
+    stale = run_shell_before_ack(
         postgres_url,
-        tenant_id="tenant-c05",
-        run_id=created.run_id,
         call_id=call_id,
         attempt_id=attempt_id,
-        command=command,
-        journal=journal,
+        worker_id="other-worker",
+        epoch=1,
+        **common,
     )
-    assert started["executed"] is True
-    assert started["acked"] is False
+    assert stale["executed"] is False
+    assert stale["run_status"] == "lease_rejected"
+    assert not target.exists()
+
+    started = run_shell_before_ack(
+        postgres_url,
+        call_id=call_id,
+        attempt_id=attempt_id,
+        worker_id="worker-c05",
+        epoch=epoch,
+        **common,
+    )
+    assert started["executed"] is True, started.get("output")
+    assert started["acked"] is False, started.get("output")
+    assert target.exists(), started.get("output")
     assert target.read_text(encoding="utf-8").count("shell-write") == 1
+
+    bypass = run_shell_before_ack(
+        postgres_url,
+        call_id="call_" + uuid.uuid4().hex,
+        attempt_id="att_" + uuid.uuid4().hex,
+        worker_id="worker-c05",
+        epoch=epoch,
+        **common,
+    )
+    assert bypass["executed"] is False
+    assert target.read_text(encoding="utf-8").count("shell-write") == 1
+
+    denied = recover_unknown_shell(
+        postgres_url,
+        call_id=call_id,
+        attempt_id=attempt_id,
+        worker_id="other-worker",
+        epoch=2,
+        **common,
+    )
+    assert denied["executed"] is False
+    assert denied["run_status"] == "lease_rejected"
 
     recovered = recover_unknown_shell(
         postgres_url,
-        tenant_id="tenant-c05",
-        run_id=created.run_id,
         call_id=call_id,
         attempt_id=attempt_id,
-        command=command,
-        journal=journal,
+        worker_id="worker-c05",
+        epoch=epoch,
+        **common,
     )
     assert recovered["executed"] is False
     assert recovered["journal_state"] == "unknown"
@@ -108,12 +164,11 @@ def test_w2_c05_integration(postgres_url: str, tmp_path: Path):
 
     again = recover_unknown_shell(
         postgres_url,
-        tenant_id="tenant-c05",
-        run_id=created.run_id,
         call_id=call_id,
         attempt_id=attempt_id,
-        command=command,
-        journal=journal,
+        worker_id="worker-c05",
+        epoch=epoch,
+        **common,
     )
     assert again["executed"] is False
     assert target.read_text(encoding="utf-8").count("shell-write") == 1

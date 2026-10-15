@@ -249,6 +249,7 @@ class ToolJournalBinding:
         journal: "ToolExecutionJournal",
         attempt_id: str,
         checkpoint_id: str | None = None,
+        remote_call_id: str | None = None,
     ) -> None:
         self.journal = journal
         self.attempt_id = validate_attempt_id(attempt_id)
@@ -257,12 +258,22 @@ class ToolJournalBinding:
         ):
             raise ValueError(f"Invalid checkpoint_id: {checkpoint_id!r}")
         self.checkpoint_id = checkpoint_id
+        if remote_call_id is not None:
+            remote_call_key(remote_call_id)
+        self.remote_call_id = remote_call_id
         self._ordinals: dict[tuple[str, str], int] = {}
         self._lock = threading.Lock()
 
     def next_call(self, tool: str, args: Any) -> JournalCall:
         canonical_tool = str(tool).strip().lower()
         digest = arguments_digest(args)
+        if self.remote_call_id is not None:
+            return JournalCall(
+                key=remote_call_key(self.remote_call_id),
+                tool=canonical_tool,
+                args_digest=digest,
+                ordinal=0,
+            )
         signature = (canonical_tool, digest)
         with self._lock:
             ordinal = self._ordinals.get(signature, 0)
@@ -310,8 +321,14 @@ class ToolExecutionJournal:
         self,
         attempt_id: str,
         checkpoint_id: str | None = None,
+        remote_call_id: str | None = None,
     ) -> ToolJournalBinding:
-        return ToolJournalBinding(self, attempt_id, checkpoint_id)
+        return ToolJournalBinding(
+            self,
+            attempt_id,
+            checkpoint_id,
+            remote_call_id,
+        )
 
     def _path(self, attempt_id: str) -> Path:
         validate_attempt_id(attempt_id)
@@ -639,6 +656,16 @@ def remote_call_key(call_id: str) -> str:
     if not isinstance(call_id, str) or not _REMOTE_CALL_ID_PATTERN.fullmatch(call_id):
         raise ValueError(f"Invalid remote call_id: {call_id!r}")
     return "call_" + hashlib.sha256(call_id.encode("utf-8")).hexdigest()
+
+
+def remote_checkpoint_id(run_id: str) -> str:
+    """One checkpoint scope for every attempt of a run.
+
+    A later attempt id cannot step past a pending entry from this run.
+    """
+    if not isinstance(run_id, str) or not run_id or "\x00" in run_id:
+        raise ValueError(f"invalid run_id: {run_id!r}")
+    return "cp_" + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:32]
 
 
 def remote_journal_state(

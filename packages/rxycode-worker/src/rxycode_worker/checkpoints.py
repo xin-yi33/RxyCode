@@ -198,12 +198,11 @@ async def resume_readonly(
     )
 
 
-async def _accept_run(
+async def _probe_checkpointer(
     database_url: str,
     *,
     session_id: str,
     run_id: str,
-    effect: Callable[[], object],
 ) -> dict[str, object]:
     thread_id = graph_thread_id(session_id, run_id)
     try:
@@ -215,8 +214,24 @@ async def _accept_run(
             "status": "recovery_required",
             "thread_id": thread_id,
         }
-    effect()
     return {"started": True, "status": "running", "thread_id": thread_id}
+
+
+async def checkpointer_ready(
+    database_url: str,
+    *,
+    session_id: str,
+    run_id: str,
+) -> bool:
+    """True only after AsyncPostgresSaver setup and a read succeed."""
+    outcome = await _call_on_selector(
+        lambda: _probe_checkpointer(
+            database_url,
+            session_id=session_id,
+            run_id=run_id,
+        )
+    )
+    return bool(outcome["started"])
 
 
 async def accept_run(
@@ -227,11 +242,14 @@ async def accept_run(
     effect: Callable[[], object],
 ) -> dict[str, object]:
     """Prove the checkpointer is usable before any unjournaled side effect."""
-    return await _call_on_selector(
-        lambda: _accept_run(
+    outcome = await _call_on_selector(
+        lambda: _probe_checkpointer(
             database_url,
             session_id=session_id,
             run_id=run_id,
-            effect=effect,
         )
     )
+    if not outcome["started"]:
+        return outcome
+    effect()
+    return outcome

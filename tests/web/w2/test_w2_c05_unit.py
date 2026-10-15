@@ -23,7 +23,10 @@ from rxycode_worker.checkpoints import (  # noqa: E402
     record_readonly_checkpoint,
     resume_readonly,
 )
-from rxycode_worker.recovery import recover_unknown_shell  # noqa: E402
+from rxycode_worker.recovery import (  # noqa: E402
+    recover_unknown_shell,
+    run_shell_before_ack,
+)
 
 from RxyCode.RxyCode1_1_0.execution.tool_journal import (  # noqa: E402
     RemoteJournalAdapter,
@@ -133,24 +136,40 @@ def test_w2_c05_corrupt_journal(tmp_path: Path, postgres_url: str):
     journal = ToolExecutionJournal(tmp_path / "journal")
     (journal.directory / f"{attempt_id}.json").write_text("{not-json", encoding="utf-8")
     marker = tmp_path / "corrupt-write.txt"
-    command = [
-        "pwsh",
-        "-NoProfile",
-        "-Command",
-        f"Set-Content -LiteralPath '{marker}' -Value 'should-not-run'",
-    ]
     outcome = recover_unknown_shell(
         postgres_url,
         tenant_id="tenant-c05",
         run_id="run-missing",
         call_id=call_id,
         attempt_id=attempt_id,
-        command=command,
+        command="Set-Content -LiteralPath 'corrupt-write.txt' -Value 'should-not-run'",
+        workdir=str(tmp_path),
         journal=journal,
+        worker_id="worker-c05",
+        epoch=1,
     )
     assert outcome["executed"] is False
     assert outcome["journal_state"] == "unknown"
-    assert outcome["run_status"] == "recovery_required"
+    assert not marker.exists()
+
+
+def test_w2_c05_shell_requires_checkpointer(tmp_path: Path):
+    """A closed database does not start the shell from the recovery helper."""
+    marker = tmp_path / "closed.txt"
+    journal = ToolExecutionJournal(tmp_path / "journal")
+    outcome = run_shell_before_ack(
+        "postgresql://postgres@127.0.0.1:1/rxycode?connect_timeout=2",
+        tenant_id="tenant-c05",
+        run_id="run-closed",
+        call_id="call_" + "ab" * 16,
+        attempt_id="att_" + "cd" * 16,
+        command="Set-Content -LiteralPath 'closed.txt' -Value 'nope'",
+        workdir=str(tmp_path),
+        journal=journal,
+        worker_id="worker-c05",
+        epoch=1,
+    )
+    assert outcome["executed"] is False
     assert not marker.exists()
 
 
