@@ -22,3 +22,6 @@ def test_w0_c04_integration():
     assert ruling["ruling"] == "BLOCKED"
     assert ruling["conflict_id"] == "CW04"
     assert ruling["old_method"] == "session/prompt"
+    kind_only = _scanner().protocol_name_ruling(REPO, PLAN, "needs_input")
+    assert kind_only["ruling"] == "CLEAR"
+    assert kind_only["old_method"] == ""

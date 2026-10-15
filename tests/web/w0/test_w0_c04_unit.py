@@ -37,4 +37,9 @@ def test_w0_c04_negative():
     assert any(
         item["severity"] == "P0" and item["status"] == "OPEN" for item in conflicts
     )
-    assert _scanner().w1_gate(conflicts) == "REJECTED"
+    gate = _scanner().w1_gate
+    assert gate(conflicts) == "REJECTED"
+    assert gate([{"severity": "P0", "status": "NEEDS_VERIFICATION"}]) == "REJECTED"
+    assert gate([{"severity": "P0", "status": "CONFIRMED"}]) == "REJECTED"
+    assert gate([{"severity": "P0", "status": "RESOLVED"}]) == "ALLOWED"
+    assert gate([{"severity": "P0", "status": "FALSE_POSITIVE"}]) == "ALLOWED"
