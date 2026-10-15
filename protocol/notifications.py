@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import typing
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, Strict, field_validator, model_validator
@@ -497,14 +498,28 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
 )
 
 
+def _literal_strings(annotation: object) -> list[str]:
+    origin = typing.get_origin(annotation)
+    if origin is Literal:
+        return [item for item in typing.get_args(annotation) if isinstance(item, str)]
+    args = typing.get_args(annotation)
+    found: list[str] = []
+    for arg in args:
+        found.extend(_literal_strings(arg))
+    return found
+
+
 def frozen_event_methods() -> frozenset[str]:
-    """Method constants already on the notification union. WebEvent may only map these."""
+    """Every method string on the notification union, including AgentEvent literals."""
     found: list[str] = []
     for model in NOTIFICATION_MODELS:
         field = model.model_fields.get("method")
+        if field is None:
+            continue
         default = getattr(field, "default", None)
         if isinstance(default, str):
             found.append(default)
+        found.extend(_literal_strings(field.annotation))
     return frozenset(found)
 
 
@@ -521,3 +536,11 @@ class WebEvent(BaseModel):
         if value not in frozen_event_methods():
             raise ValueError(f"unknown event method: {value}")
         return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: object, handler: object):
+        json_schema = handler(core_schema)
+        method = json_schema.setdefault("properties", {}).setdefault("method", {})
+        method["type"] = "string"
+        method["enum"] = sorted(frozen_event_methods())
+        return json_schema

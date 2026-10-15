@@ -1,6 +1,7 @@
 """WEB-W1-C04. New schema fields stay optional for old JSON-RPC clients."""
 from __future__ import annotations
 
+from protocol.notifications import WebEvent
 from protocol.requests import InitializeRequest, PromptRequest
 from protocol.schema import export_schema, required_field_breaks_legacy
 from protocol.server_requests import ApprovalRequest
@@ -42,7 +43,13 @@ def test_w1_c04_contract():
     assert "run_id" not in prompt_def.get("required", [])
     assert schema["$defs"]["InitializeRequest"]["properties"]["method"]["const"] == "initialize"
     assert schema["$defs"]["ApprovalRequest"]["properties"]["method"]["const"] == "approval/request"
-    assert {"RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic"} <= set(schema["$defs"])
+    assert {"RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic", "ToolCall", "ToolChunk"} <= set(
+        schema["$defs"]
+    )
+    event = WebEvent.model_validate({"method": "event/agent_started"})
+    assert event.method == "event/agent_started"
+    assert "event/agent_started" in schema["$defs"]["WebEvent"]["properties"]["method"]["enum"]
+    assert schema["$defs"]["ToolCall"]["properties"]["version"]["type"] == "integer"
 
 
 def test_w1_c04_negative():

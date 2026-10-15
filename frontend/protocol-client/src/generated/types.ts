@@ -1295,17 +1295,66 @@ export type Confidence1 = number;
 /**
  * Additive Run, Event, Device, and diagnostic models. Not a session envelope. Old initialize, session/prompt, and approval/request methods are unchanged.
  */
-export type WebProtocol = RunRecord | WebEvent | DeviceRecord | WebDiagnostic;
+export type WebProtocol = RunRecord | WebEvent | DeviceRecord | WebDiagnostic | ToolCall | ToolChunk;
 export type RunId13 = string;
 export type SessionId97 = string;
 export type Status9 = "running" | "succeeded" | "failed" | "cancelled";
-export type Method179 = string;
+export type Method179 =
+  | "event/agent_budget_exceeded"
+  | "event/agent_cancelled"
+  | "event/agent_denied"
+  | "event/agent_done"
+  | "event/agent_needs_input"
+  | "event/agent_paused"
+  | "event/agent_progress"
+  | "event/agent_routed"
+  | "event/agent_started"
+  | "event/agent_team_created"
+  | "event/agent_tool"
+  | "event/agent_usage"
+  | "event/done"
+  | "event/error"
+  | "event/execution"
+  | "event/final"
+  | "event/job_status"
+  | "event/message_delta"
+  | "event/plan"
+  | "event/process_failed"
+  | "event/process_shutdown"
+  | "event/process_started"
+  | "event/progress"
+  | "event/reasoning_snapshot"
+  | "event/recovery_analyzing"
+  | "event/recovery_attempt"
+  | "event/recovery_exhausted"
+  | "event/recovery_required"
+  | "event/recovery_resolved"
+  | "event/recovery_started"
+  | "event/server_heartbeat"
+  | "event/step"
+  | "event/task_complete"
+  | "event/task_started"
+  | "event/timeout_decision"
+  | "event/todo_updated"
+  | "event/token_usage"
+  | "event/tool_begin"
+  | "event/tool_end"
+  | "event/workspace_changed"
+  | "initialized";
 export type RunId14 = string | null;
 export type DeviceId1 = string;
 export type Kind3 = "desktop" | "cli" | "web";
 export type Capabilities2 = string[];
 export type Code1 = "RUN_CANCELLED" | "DEVICE_UNSUPPORTED" | "CAPABILITY_DENIED";
 export type Retryable1 = boolean;
+export type Name18 = string;
+export type TargetId = string;
+export type Version = number;
+export type CallId2 = string;
+export type CallId3 = string;
+export type Index1 = number;
+export type Text9 = string;
+export type Final = boolean;
 
 /**
  * JSON-RPC handshake on connect (future ``python -m appserver``).
@@ -3721,5 +3770,29 @@ export interface DeviceRecord {
 export interface WebDiagnostic {
   code: Code1;
   retryable?: Retryable1;
+  [k: string]: unknown;
+}
+/**
+ * Versioned tool call frame generated into the schema. Version must be at least 1.
+ */
+export interface ToolCall {
+  name: Name18;
+  target_id: TargetId;
+  arguments?: Arguments1;
+  version: Version;
+  call_id?: CallId2;
+  [k: string]: unknown;
+}
+export interface Arguments1 {
+  [k: string]: unknown;
+}
+/**
+ * One chunk of a tool result. Generated into the schema with ToolCall.
+ */
+export interface ToolChunk {
+  call_id: CallId3;
+  index: Index1;
+  text: Text9;
+  final: Final;
   [k: string]: unknown;
 }

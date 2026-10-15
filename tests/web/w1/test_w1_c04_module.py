@@ -51,10 +51,11 @@ def test_w1_c04_integration(tmp_path: Path):
     )
     assert gen.returncode == 0, gen.stderr
     text = generated.read_text(encoding="utf-8")
-    for name in ("RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic"):
+    names = ("RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic", "ToolCall", "ToolChunk")
+    for name in names:
         assert f"export interface {name}" in text
     committed = (CLIENT / "src" / "generated" / "types.ts").read_text(encoding="utf-8")
-    for name in ("RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic"):
+    for name in names:
         assert f"export interface {name}" in committed
     digest_ts = (CLIENT / "src" / "generated" / "web_digest.ts").read_text(encoding="utf-8")
     assert digest in digest_ts

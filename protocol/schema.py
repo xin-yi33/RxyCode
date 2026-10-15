@@ -14,7 +14,14 @@ from .agents import AGENT_PROTOCOL_MODELS
 from .errors import ERROR_MODELS, ProtocolErrorCode
 from .handshake import HANDSHAKE_MODELS
 from .notifications import NOTIFICATION_MODELS, WebEvent, frozen_event_methods
-from .requests import CLIENT_REQUEST_MODELS, DeviceRecord, RunRecord, WebDiagnostic
+from .requests import (
+    CLIENT_REQUEST_MODELS,
+    DeviceRecord,
+    RunRecord,
+    ToolCall,
+    ToolChunk,
+    WebDiagnostic,
+)
 from .server_requests import SERVER_REQUEST_MODELS
 from .timeout_decision import (
     TimeoutDecisionEvent,
@@ -34,6 +41,8 @@ WEB_PROTOCOL_MODELS: tuple[type, ...] = (
     WebEvent,
     DeviceRecord,
     WebDiagnostic,
+    ToolCall,
+    ToolChunk,
 )
 
 
@@ -64,7 +73,10 @@ def schema_digest(schema: Mapping[str, Any]) -> str:
         "events": sorted(frozen_event_methods()),
         "errors": [str(code) for code in ProtocolErrorCode.__args__],
         "capabilities": names,
-        "web_models": [model.__name__ for model in WEB_PROTOCOL_MODELS],
+        "web_models": {
+            model.__name__: schema.get("$defs", {}).get(model.__name__, {})
+            for model in WEB_PROTOCOL_MODELS
+        },
     }
     raw = json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+import uuid
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .types import JsonObject
 
@@ -1474,6 +1475,59 @@ class WebDiagnostic(BaseModel):
 
     code: Literal["RUN_CANCELLED", "DEVICE_UNSUPPORTED", "CAPABILITY_DENIED"]
     retryable: bool = False
+
+
+class ToolCall(BaseModel):
+    """Versioned tool call frame generated into the schema. Version must be at least 1."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    target_id: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    version: int
+    call_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+
+    @model_validator(mode="after")
+    def _check_version(self) -> ToolCall:
+        if self.version < 1:
+            raise ValueError("tool call version must be >= 1")
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolCall:
+        version = int(data["version"])
+        if version < 1:
+            raise ValueError("tool call version must be >= 1")
+        arguments = data.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise ValueError("tool call arguments must be an object")
+        payload: dict[str, Any] = {
+            "name": str(data["name"]),
+            "target_id": str(data["target_id"]),
+            "arguments": dict(arguments),
+            "version": version,
+        }
+        if data.get("call_id"):
+            payload["call_id"] = str(data["call_id"])
+        return cls.model_validate(payload)
+
+
+class ToolChunk(BaseModel):
+    """One chunk of a tool result. Generated into the schema with ToolCall."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call_id: str
+    index: int
+    text: str
+    final: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
 
 
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (

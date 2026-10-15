@@ -39,6 +39,8 @@ export {
 export type {
   DeviceRecord,
   RunRecord,
+  ToolCall,
+  ToolChunk,
   WebDiagnostic,
   WebEvent,
 } from "./generated/types.ts";

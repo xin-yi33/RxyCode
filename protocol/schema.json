@@ -8676,6 +8676,49 @@
       "description": "One envelope around an existing notification method. It does not add a wire method.",
       "properties": {
         "method": {
+          "enum": [
+            "event/agent_budget_exceeded",
+            "event/agent_cancelled",
+            "event/agent_denied",
+            "event/agent_done",
+            "event/agent_needs_input",
+            "event/agent_paused",
+            "event/agent_progress",
+            "event/agent_routed",
+            "event/agent_started",
+            "event/agent_team_created",
+            "event/agent_tool",
+            "event/agent_usage",
+            "event/done",
+            "event/error",
+            "event/execution",
+            "event/final",
+            "event/job_status",
+            "event/message_delta",
+            "event/plan",
+            "event/process_failed",
+            "event/process_shutdown",
+            "event/process_started",
+            "event/progress",
+            "event/reasoning_snapshot",
+            "event/recovery_analyzing",
+            "event/recovery_attempt",
+            "event/recovery_exhausted",
+            "event/recovery_required",
+            "event/recovery_resolved",
+            "event/recovery_started",
+            "event/server_heartbeat",
+            "event/step",
+            "event/task_complete",
+            "event/task_started",
+            "event/timeout_decision",
+            "event/todo_updated",
+            "event/token_usage",
+            "event/tool_begin",
+            "event/tool_end",
+            "event/workspace_changed",
+            "initialized"
+          ],
           "title": "Method",
           "type": "string"
         },
@@ -8756,6 +8799,68 @@
         "code"
       ],
       "title": "WebDiagnostic",
+      "type": "object"
+    },
+    "ToolCall": {
+      "description": "Versioned tool call frame generated into the schema. Version must be at least 1.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "version": {
+          "title": "Version",
+          "type": "integer"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "target_id",
+        "version"
+      ],
+      "title": "ToolCall",
+      "type": "object"
+    },
+    "ToolChunk": {
+      "description": "One chunk of a tool result. Generated into the schema with ToolCall.",
+      "properties": {
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "final": {
+          "title": "Final",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "call_id",
+        "index",
+        "text",
+        "final"
+      ],
+      "title": "ToolChunk",
       "type": "object"
     },
     "ClientRequest": {
@@ -9400,6 +9505,12 @@
         },
         {
           "$ref": "#/$defs/WebDiagnostic"
+        },
+        {
+          "$ref": "#/$defs/ToolCall"
+        },
+        {
+          "$ref": "#/$defs/ToolChunk"
         }
       ]
     }
@@ -9427,5 +9538,5 @@
       "$ref": "#/$defs/WebProtocol"
     }
   ],
-  "schema_digest": "8cd64e7ddc1b82e4a25b3b4a256db6d21d6471e5bed4c98531828ab1c207ad0c"
+  "schema_digest": "990cfc8f66c65f4b6acb649210d764f04747528ff9720638c195fec7186268c3"
 }
