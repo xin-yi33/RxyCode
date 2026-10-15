@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.auth import router as auth_router
 from rxycode_server.api.projects import router as projects_router
+from rxycode_server.events.sse import router as sse_router
 
 _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
 
@@ -46,6 +47,7 @@ def create_app(
 
     app = FastAPI(title="RxyCode Web", version="1.4.3", lifespan=lifespan)
     app.state.engine = create_engine(database_url, poolclass=NullPool)
+    app.state.database_url = database_url
     app.state.secret = checked
     app.state.mode = mode
     app.state.secure = mode == "cloud"
@@ -58,6 +60,7 @@ def create_app(
     app.state.github_transport = github_transport
     app.include_router(auth_router)
     app.include_router(projects_router)
+    app.include_router(sse_router)
 
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:

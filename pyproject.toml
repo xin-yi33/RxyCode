@@ -80,6 +80,7 @@ packages = [
   "rxycode_server.alembic.versions",
   "rxycode_server.api",
   "rxycode_server.runs",
+  "rxycode_server.events",
   "rxycode_worker",
 ]
 
@@ -95,6 +96,7 @@ packages = [
 "rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
 "rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
 "rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
+"rxycode_server.events" = "packages/rxycode-server/src/rxycode_server/events"
 "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
 
 [tool.setuptools.dynamic]
