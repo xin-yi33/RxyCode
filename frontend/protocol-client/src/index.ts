@@ -1,4 +1,9 @@
 export {
+  webTransportAdapter,
+  type WebTransportAdapter,
+} from "./webTransport.ts";
+
+export {
   ProtocolClient,
   ProtocolDisconnectError,
   ProtocolRpcError,

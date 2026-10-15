@@ -1,0 +1,6 @@
+WEB-W1-C05 RED before the shared core facade existed.
+
+python -m pytest tests/web/w1/test_w1_c05_unit.py tests/web/w1/test_w1_c05_module.py -q --tb=line
+ERROR tests/web/w1/test_w1_c05_unit.py
+ImportError: cannot import name 'browser_entry_status' from RxyCode.RxyCode1_1_0.main
+1 error in 0.54s

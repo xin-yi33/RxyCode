@@ -1,5 +1,6 @@
 """RxyCode CLI and Ink frontend launcher."""
 
+import re
 import sys
 import os
 
@@ -688,6 +689,40 @@ def _resolve_model_label(model):
     return "default"
 
 
+_ENTRY_SURFACES = ("cli", "opentui", "desktop", "web")
+_ELECTRON_PRELOAD = re.compile(
+    r"""(?:from\s+['\"]electron['\"]|require\(\s*['\"]electron['\"]|['\"][^'\"]*preload[^'\"]*['\"])""",
+    re.IGNORECASE,
+)
+
+
+def core_facade() -> dict[str, type]:
+    """The one Session, AgentRuntime, and ToolOrchestrator for every surface."""
+    from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
+    from RxyCode.RxyCode1_1_0.core.session import Session
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    return {
+        "session": Session,
+        "agent_runtime": AgentRuntime,
+        "tool_orchestrator": ToolOrchestrator,
+    }
+
+
+def core_for_surface(surface: str) -> dict[str, type]:
+    """CLI, OpenTUI, Desktop, and Web initialize this same facade."""
+    if surface not in _ENTRY_SURFACES:
+        raise ValueError(f"unknown surface: {surface}")
+    return core_facade()
+
+
+def browser_entry_status(source: str) -> str:
+    """Reject a browser entry that imports Electron or a preload script."""
+    if _ELECTRON_PRELOAD.search(source):
+        return "BLOCKED"
+    return "OK"
+
+
 class _CaseInsensitiveCommandGroup(click.Group):
     """Resolve registered subcommands without changing option values.
 
@@ -940,6 +975,20 @@ def _config_model_limits(action: str, model_name: str, *, dry_run: bool = False)
         return
 
     print("model-limits actions: inspect, set-auto")
+
+
+@cli.group("web")
+def web():
+    """Web core facade entry. Device connect is not delivered in this card."""
+
+
+@web.command("connect")
+def web_connect():
+    """Reserved device connect. Not implemented in this card."""
+    raise click.ClickException(
+        "rxycode web connect is not implemented in this card. "
+        "No device session is started."
+    )
 
 
 if __name__ == "__main__":

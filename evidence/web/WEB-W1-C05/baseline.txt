@@ -1,0 +1,8 @@
+parent branch: feat/rxycode-web
+parent HEAD before WEB-W1-C05: 9a889edce3a7e25fec5e5fa8172728381ac94853
+upstream: none
+anchors present: main.py def cli, appserver/agent_worker.py Session, frontend/protocol-client/
+main.py already had an unrelated unstaged desktop-launcher edit. This card does not stage that hunk.
+frontend/protocol-client exists. This card adds webTransport.ts as a reserved adapter and does not import Electron preload.
+W0 exit is not claimed. CW03 and CW04 stay P0 OPEN.
+Device connect is not implemented. rxycode web connect is a reserved command.

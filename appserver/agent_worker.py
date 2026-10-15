@@ -350,6 +350,13 @@ def _question_timeout_from_config() -> float | None:
         return None
 
 
+def session_type_for_worker():
+    """Desktop/worker prompts use the same Session class as the other surfaces."""
+    from RxyCode.RxyCode1_1_0.main import core_for_surface
+
+    return core_for_surface("desktop")["session"]
+
+
 class AgentWorker:
     def __init__(self) -> None:
         install_tui_context_hook()
@@ -410,7 +417,7 @@ class AgentWorker:
             existing.emit = emit
             existing.drain_steers = self._take_steers
             return existing
-        session = Session(
+        session = session_type_for_worker()(
             session_id=session_id,
             workspace_root=workspace_root,
             emit=emit,
@@ -1213,7 +1220,7 @@ class AgentWorker:
             cancelled = True
             asyncio.create_task(self._await_cancelled_prompt(run_task))
         elif self._agent is not None:
-            session = Session(
+            session = session_type_for_worker()(
                 session_id=self._session_id,
                 workspace_root=self._workspace_root,
                 emit=lambda _n: None,
