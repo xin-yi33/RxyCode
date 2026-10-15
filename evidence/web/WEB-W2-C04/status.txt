@@ -1,0 +1,8 @@
+branch=feat/rxycode-web
+upstream=none
+parent_code=b1ef0ae2
+nested_whitelist=d65bbf2
+base=651eecba
+unit=2 passed
+module=1 passed
+pushed=no
