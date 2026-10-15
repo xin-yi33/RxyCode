@@ -1,8 +1,55 @@
 diff --git a/execution/tool_journal.py b/execution/tool_journal.py
-index dfb0b290..2be2e990 100644
+index dfb0b290..f41c642c 100644
 --- a/execution/tool_journal.py
 +++ b/execution/tool_journal.py
-@@ -629,3 +629,88 @@ class ToolExecutionJournal:
+@@ -249,6 +249,7 @@ class ToolJournalBinding:
+         journal: "ToolExecutionJournal",
+         attempt_id: str,
+         checkpoint_id: str | None = None,
++        remote_call_id: str | None = None,
+     ) -> None:
+         self.journal = journal
+         self.attempt_id = validate_attempt_id(attempt_id)
+@@ -257,12 +258,22 @@ class ToolJournalBinding:
+         ):
+             raise ValueError(f"Invalid checkpoint_id: {checkpoint_id!r}")
+         self.checkpoint_id = checkpoint_id
++        if remote_call_id is not None:
++            remote_call_key(remote_call_id)
++        self.remote_call_id = remote_call_id
+         self._ordinals: dict[tuple[str, str], int] = {}
+         self._lock = threading.Lock()
+ 
+     def next_call(self, tool: str, args: Any) -> JournalCall:
+         canonical_tool = str(tool).strip().lower()
+         digest = arguments_digest(args)
++        if self.remote_call_id is not None:
++            return JournalCall(
++                key=remote_call_key(self.remote_call_id),
++                tool=canonical_tool,
++                args_digest=digest,
++                ordinal=0,
++            )
+         signature = (canonical_tool, digest)
+         with self._lock:
+             ordinal = self._ordinals.get(signature, 0)
+@@ -310,8 +321,14 @@ class ToolExecutionJournal:
+         self,
+         attempt_id: str,
+         checkpoint_id: str | None = None,
++        remote_call_id: str | None = None,
+     ) -> ToolJournalBinding:
+-        return ToolJournalBinding(self, attempt_id, checkpoint_id)
++        return ToolJournalBinding(
++            self,
++            attempt_id,
++            checkpoint_id,
++            remote_call_id,
++        )
+ 
+     def _path(self, attempt_id: str) -> Path:
+         validate_attempt_id(attempt_id)
+@@ -629,3 +646,98 @@ class ToolExecutionJournal:
          completed.sort(key=lambda item: (item[0], item[1].name))
          for _updated_at, path in completed[:excess]:
              path.unlink(missing_ok=True)
@@ -16,6 +63,16 @@ index dfb0b290..2be2e990 100644
 +    if not isinstance(call_id, str) or not _REMOTE_CALL_ID_PATTERN.fullmatch(call_id):
 +        raise ValueError(f"Invalid remote call_id: {call_id!r}")
 +    return "call_" + hashlib.sha256(call_id.encode("utf-8")).hexdigest()
++
++
++def remote_checkpoint_id(run_id: str) -> str:
++    """One checkpoint scope for every attempt of a run.
++
++    A later attempt id cannot step past a pending entry from this run.
++    """
++    if not isinstance(run_id, str) or not run_id or "\x00" in run_id:
++        raise ValueError(f"invalid run_id: {run_id!r}")
++    return "cp_" + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:32]
 +
 +
 +def remote_journal_state(
@@ -91,12 +148,29 @@ index dfb0b290..2be2e990 100644
 +            return "not_started"
 +        status = entry.get("status")
 +        return remote_journal_state(status if isinstance(status, str) else None)
+diff --git a/execution/tool_orchestrator.py b/execution/tool_orchestrator.py
+index 8b7a89f1..dac79908 100644
+--- a/execution/tool_orchestrator.py
++++ b/execution/tool_orchestrator.py
+@@ -402,10 +402,11 @@ class ToolOrchestrator:
+         journal: Any | None,
+         attempt_id: str | None,
+         checkpoint_id: str | None = None,
++        remote_call_id: str | None = None,
+     ) -> Token:
+         """Bind one durable side-effect journal to the current request."""
+         binding = (
+-            journal.binding(attempt_id, checkpoint_id)
++            journal.binding(attempt_id, checkpoint_id, remote_call_id)
+             if journal is not None and attempt_id is not None
+             else None
+         )
 diff --git a/packages/rxycode-worker/src/rxycode_worker/checkpoints.py b/packages/rxycode-worker/src/rxycode_worker/checkpoints.py
 new file mode 100644
-index 00000000..90c69ad9
+index 00000000..8bd4ee83
 --- /dev/null
 +++ b/packages/rxycode-worker/src/rxycode_worker/checkpoints.py
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,255 @@
 +"""One LangGraph thread per session and run, stored in AsyncPostgresSaver.
 +
 +A restarted worker reads that checkpoint. It does not continue into a later
@@ -297,12 +371,11 @@ index 00000000..90c69ad9
 +    )
 +
 +
-+async def _accept_run(
++async def _probe_checkpointer(
 +    database_url: str,
 +    *,
 +    session_id: str,
 +    run_id: str,
-+    effect: Callable[[], object],
 +) -> dict[str, object]:
 +    thread_id = graph_thread_id(session_id, run_id)
 +    try:
@@ -314,8 +387,24 @@ index 00000000..90c69ad9
 +            "status": "recovery_required",
 +            "thread_id": thread_id,
 +        }
-+    effect()
 +    return {"started": True, "status": "running", "thread_id": thread_id}
++
++
++async def checkpointer_ready(
++    database_url: str,
++    *,
++    session_id: str,
++    run_id: str,
++) -> bool:
++    """True only after AsyncPostgresSaver setup and a read succeed."""
++    outcome = await _call_on_selector(
++        lambda: _probe_checkpointer(
++            database_url,
++            session_id=session_id,
++            run_id=run_id,
++        )
++    )
++    return bool(outcome["started"])
 +
 +
 +async def accept_run(
@@ -326,30 +415,33 @@ index 00000000..90c69ad9
 +    effect: Callable[[], object],
 +) -> dict[str, object]:
 +    """Prove the checkpointer is usable before any unjournaled side effect."""
-+    return await _call_on_selector(
-+        lambda: _accept_run(
++    outcome = await _call_on_selector(
++        lambda: _probe_checkpointer(
 +            database_url,
 +            session_id=session_id,
 +            run_id=run_id,
-+            effect=effect,
 +        )
 +    )
++    if not outcome["started"]:
++        return outcome
++    effect()
++    return outcome
 diff --git a/packages/rxycode-worker/src/rxycode_worker/recovery.py b/packages/rxycode-worker/src/rxycode_worker/recovery.py
 new file mode 100644
-index 00000000..fadc079b
+index 00000000..dc4bf169
 --- /dev/null
 +++ b/packages/rxycode-worker/src/rxycode_worker/recovery.py
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,427 @@
 +"""Resume a shell write without repeating an unknown side effect.
 +
-+The shell runs only when the journal reservation says ``execute``. A pending
-+entry means the ACK was lost: recovery marks the run ``recovery_required``
-+and does not start the command again.
++The shell runs only through ToolOrchestrator, and only when this worker still
++holds the lease, the checkpointer is open, and the journal says execute.
++A pending entry means the ACK was lost.
 +"""
 +
 +from __future__ import annotations
 +
-+import subprocess
++import asyncio
 +import uuid
 +from typing import Any
 +
@@ -357,23 +449,64 @@ index 00000000..fadc079b
 +from sqlalchemy.exc import SQLAlchemyError
 +from sqlalchemy.pool import NullPool
 +
++from rxycode_worker.checkpoints import checkpointer_ready
++
 +from RxyCode.RxyCode1_1_0.execution.tool_journal import (
 +    RemoteJournalAdapter,
 +    ToolJournalError,
 +    arguments_digest,
++    remote_checkpoint_id,
 +)
 +
 +
-+def _shell_args(command: list[str]) -> dict[str, list[str]]:
-+    return {"command": list(command)}
++def _engine(database_url: str):
++    url = database_url
++    if url.startswith("postgresql://"):
++        url = "postgresql+psycopg://" + url[len("postgresql://") :]
++    elif url.startswith("postgres://"):
++        url = "postgresql+psycopg://" + url[len("postgres://") :]
++    return create_engine(url, poolclass=NullPool)
 +
 +
-+def _blocked(journal_state: str = "unknown") -> dict[str, object]:
-+    return {
-+        "executed": False,
-+        "journal_state": journal_state,
-+        "run_status": "recovery_required" if journal_state == "unknown" else "running",
-+    }
++def _lease_session(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    worker_id: str,
++    epoch: int,
++) -> str | None:
++    """Return session_id when this worker's epoch still owns an unexpired lease."""
++    engine = _engine(database_url)
++    try:
++        with engine.connect() as conn:
++            row = conn.execute(
++                text(
++                    """
++                    SELECT session_id
++                    FROM runs
++                    WHERE id = :run_id
++                      AND tenant_id = :tenant_id
++                      AND lease_owner = :worker
++                      AND lease_epoch = :epoch
++                      AND status IN ('leased', 'running', 'cancel_requested')
++                      AND lease_until >= clock_timestamp()
++                    """
++                ),
++                {
++                    "run_id": run_id,
++                    "tenant_id": tenant_id,
++                    "worker": worker_id,
++                    "epoch": epoch,
++                },
++            ).first()
++    except Exception:
++        return None
++    finally:
++        engine.dispose()
++    if row is None:
++        return None
++    return str(row[0])
 +
 +
 +def _persist_unknown(
@@ -383,11 +516,13 @@ index 00000000..fadc079b
 +    run_id: str,
 +    call_id: str,
 +    attempt_id: str,
-+    command: list[str],
-+) -> None:
-+    """Record unknown on the owning run. A missing table must not unlock a retry."""
-+    digest = arguments_digest(_shell_args(command))
-+    engine = create_engine(database_url, poolclass=NullPool)
++    command: str,
++    worker_id: str,
++    epoch: int,
++) -> bool:
++    """Mark recovery_required only for the current lease owner and epoch."""
++    digest = arguments_digest({"command": command})
++    engine = _engine(database_url)
 +    try:
 +        with engine.begin() as conn:
 +            updated = conn.execute(
@@ -398,26 +533,42 @@ index 00000000..fadc079b
 +                        revision = revision + 1
 +                    WHERE id = :run_id
 +                      AND tenant_id = :tenant_id
-+                      AND status IN (
-+                          'pending', 'leased', 'running', 'cancel_requested'
-+                      )
++                      AND lease_owner = :worker
++                      AND lease_epoch = :epoch
++                      AND status IN ('leased', 'running', 'cancel_requested')
++                      AND lease_until >= clock_timestamp()
 +                    RETURNING target_id
 +                    """
 +                ),
-+                {"run_id": run_id, "tenant_id": tenant_id},
++                {
++                    "run_id": run_id,
++                    "tenant_id": tenant_id,
++                    "worker": worker_id,
++                    "epoch": epoch,
++                },
 +            ).first()
 +            if updated is None:
 +                existing = conn.execute(
 +                    text(
 +                        """
-+                        SELECT target_id, status FROM runs
-+                        WHERE id = :run_id AND tenant_id = :tenant_id
++                        SELECT target_id
++                        FROM runs
++                        WHERE id = :run_id
++                          AND tenant_id = :tenant_id
++                          AND lease_owner = :worker
++                          AND lease_epoch = :epoch
++                          AND status = 'recovery_required'
 +                        """
 +                    ),
-+                    {"run_id": run_id, "tenant_id": tenant_id},
++                    {
++                        "run_id": run_id,
++                        "tenant_id": tenant_id,
++                        "worker": worker_id,
++                        "epoch": epoch,
++                    },
 +                ).first()
 +                if existing is None:
-+                    return
++                    return False
 +                target_id = existing[0]
 +            else:
 +                target_id = updated[0]
@@ -450,9 +601,87 @@ index 00000000..fadc079b
 +                },
 +            )
 +    except SQLAlchemyError:
-+        return
++        return False
 +    finally:
 +        engine.dispose()
++    return True
++
++
++def _looks_executed(text: str) -> bool:
++    if "side-effect completed" in text:
++        return True
++    lowered = text.lower()
++    if text.startswith(("[error", "[blocked", "[dry-run")):
++        return False
++    if "rejected" in lowered or "not executed" in lowered:
++        return False
++    if "journal unavailable" in lowered or "sandbox_error" in lowered:
++        return False
++    return True
++
++
++async def _execute_through_orchestrator(
++    *,
++    journal: Any,
++    attempt_id: str,
++    call_id: str,
++    checkpoint_id: str,
++    command: str,
++    workdir: str,
++) -> str:
++    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
++    from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
++
++    orchestrator = ToolOrchestrator()
++    orchestrator.register("bash", bash_tool)
++    token = orchestrator.bind_tool_journal(
++        journal,
++        attempt_id,
++        checkpoint_id,
++        call_id,
++    )
++    try:
++        return await orchestrator.execute_tool(
++            "bash",
++            {
++                "command": command,
++                "description": "journaled shell write",
++                "workdir": workdir,
++            },
++            {
++                "safety": {
++                    "enabled": True,
++                    "permission_mode": "full_auto",
++                    "allowed_write_paths": [workdir] if workdir else [],
++                },
++                "execution": {
++                    "workspace_root": workdir,
++                    "tool_retry_attempts": 1,
++                },
++            },
++            call_id=call_id,
++        )
++    finally:
++        orchestrator.reset_tool_journal(token)
++
++
++def _journal_state(journal: Any, attempt_id: str, call_id: str) -> str:
++    try:
++        return RemoteJournalAdapter(journal).state(
++            attempt_id=attempt_id,
++            call_id=call_id,
++        )
++    except (ToolJournalError, ValueError):
++        return "unknown"
++
++
++def _rejected(journal_state: str = "unknown") -> dict[str, object]:
++    return {
++        "executed": False,
++        "acked": False,
++        "journal_state": journal_state,
++        "run_status": "lease_rejected",
++    }
 +
 +
 +def run_shell_before_ack(
@@ -462,28 +691,73 @@ index 00000000..fadc079b
 +    run_id: str,
 +    call_id: str,
 +    attempt_id: str,
-+    command: list[str],
++    command: str,
++    workdir: str,
 +    journal: Any,
++    worker_id: str,
++    epoch: int,
 +) -> dict[str, object]:
-+    """Reserve and run the shell. Returning without complete leaves the ACK lost."""
-+    del database_url, tenant_id, run_id
-+    adapter = RemoteJournalAdapter(journal)
-+    reservation = adapter.reserve(
-+        attempt_id=attempt_id,
-+        call_id=call_id,
-+        tool="shell",
-+        args=_shell_args(command),
++    """Reserve through ToolOrchestrator and run bash. A lost ACK stays pending."""
++    session_id = _lease_session(
++        database_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        worker_id=worker_id,
++        epoch=epoch,
 +    )
-+    if reservation.action != "execute":
-+        outcome = _blocked()
-+        outcome["acked"] = False
-+        return outcome
-+    subprocess.run(list(command), check=True, timeout=60)
++    if session_id is None:
++        return _rejected(_journal_state(journal, attempt_id, call_id))
++    if not asyncio.run(
++        checkpointer_ready(
++            database_url,
++            session_id=session_id,
++            run_id=run_id,
++        )
++    ):
++        _persist_unknown(
++            database_url,
++            tenant_id=tenant_id,
++            run_id=run_id,
++            call_id=call_id,
++            attempt_id=attempt_id,
++            command=command,
++            worker_id=worker_id,
++            epoch=epoch,
++        )
++        return {
++            "executed": False,
++            "acked": False,
++            "journal_state": "unknown",
++            "run_status": "recovery_required",
++        }
++    before = _journal_state(journal, attempt_id, call_id)
++    if before == "unknown":
++        return {
++            "executed": False,
++            "acked": False,
++            "journal_state": "unknown",
++            "run_status": "running",
++        }
++    checkpoint_id = remote_checkpoint_id(run_id)
++    text_result = asyncio.run(
++        _execute_through_orchestrator(
++            journal=journal,
++            attempt_id=attempt_id,
++            call_id=call_id,
++            checkpoint_id=checkpoint_id,
++            command=command,
++            workdir=workdir,
++        )
++    )
++    after = _journal_state(journal, attempt_id, call_id)
++    acked = after == "completed"
++    executed = acked or (before == "not_started" and after == "unknown" and _looks_executed(text_result))
 +    return {
-+        "executed": True,
-+        "acked": False,
-+        "journal_state": adapter.state(attempt_id=attempt_id, call_id=call_id),
++        "executed": executed,
++        "acked": acked,
++        "journal_state": after,
 +        "run_status": "running",
++        "output": text_result,
 +    }
 +
 +
@@ -494,31 +768,23 @@ index 00000000..fadc079b
 +    run_id: str,
 +    call_id: str,
 +    attempt_id: str,
-+    command: list[str],
++    command: str,
++    workdir: str,
 +    journal: Any,
++    worker_id: str,
++    epoch: int,
 +) -> dict[str, object]:
-+    """Reserve again. Unknown, corrupt, or refused reservations do not run the shell."""
-+    adapter = RemoteJournalAdapter(journal)
-+    try:
-+        reservation = adapter.reserve(
-+            attempt_id=attempt_id,
-+            call_id=call_id,
-+            tool="shell",
-+            args=_shell_args(command),
-+        )
-+    except (ToolJournalError, ValueError):
-+        _persist_unknown(
-+            database_url,
-+            tenant_id=tenant_id,
-+            run_id=run_id,
-+            call_id=call_id,
-+            attempt_id=attempt_id,
-+            command=command,
-+        )
-+        return _blocked("unknown")
-+    if reservation.action != "execute":
-+        state = "completed" if reservation.action == "reuse" else "unknown"
-+        if state == "unknown":
++    """Do not run the shell again when the previous ACK is missing."""
++    state = _journal_state(journal, attempt_id, call_id)
++    session_id = _lease_session(
++        database_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        worker_id=worker_id,
++        epoch=epoch,
++    )
++    if state == "unknown":
++        if session_id is not None:
 +            _persist_unknown(
 +                database_url,
 +                tenant_id=tenant_id,
@@ -526,19 +792,71 @@ index 00000000..fadc079b
 +                call_id=call_id,
 +                attempt_id=attempt_id,
 +                command=command,
++                worker_id=worker_id,
++                epoch=epoch,
 +            )
-+        return _blocked(state)
-+    subprocess.run(list(command), check=True, timeout=60)
-+    adapter.complete(
-+        attempt_id=attempt_id,
-+        call_id=call_id,
-+        tool="shell",
-+        args=_shell_args(command),
-+        result="completed",
++            return {
++                "executed": False,
++                "journal_state": "unknown",
++                "run_status": "recovery_required",
++            }
++        return _rejected("unknown")
++    if session_id is None:
++        return _rejected(state)
++    if not asyncio.run(
++        checkpointer_ready(
++            database_url,
++            session_id=session_id,
++            run_id=run_id,
++        )
++    ):
++        _persist_unknown(
++            database_url,
++            tenant_id=tenant_id,
++            run_id=run_id,
++            call_id=call_id,
++            attempt_id=attempt_id,
++            command=command,
++            worker_id=worker_id,
++            epoch=epoch,
++        )
++        return {
++            "executed": False,
++            "journal_state": "unknown",
++            "run_status": "recovery_required",
++        }
++    before = state
++    text_result = asyncio.run(
++        _execute_through_orchestrator(
++            journal=journal,
++            attempt_id=attempt_id,
++            call_id=call_id,
++            checkpoint_id=remote_checkpoint_id(run_id),
++            command=command,
++            workdir=workdir,
++        )
 +    )
++    after = _journal_state(journal, attempt_id, call_id)
++    if after == "unknown":
++        _persist_unknown(
++            database_url,
++            tenant_id=tenant_id,
++            run_id=run_id,
++            call_id=call_id,
++            attempt_id=attempt_id,
++            command=command,
++            worker_id=worker_id,
++            epoch=epoch,
++        )
++        executed = before == "not_started" and _looks_executed(text_result)
++        return {
++            "executed": executed,
++            "journal_state": "unknown",
++            "run_status": "recovery_required",
++        }
 +    return {
-+        "executed": True,
-+        "journal_state": "completed",
++        "executed": after == "completed" and before == "not_started",
++        "journal_state": after,
 +        "run_status": "running",
 +    }
 diff --git a/requirements.txt b/requirements.txt
@@ -552,15 +870,17 @@ index 8a7ba08f..1d8be4bc 100644
 +langgraph-checkpoint-postgres>=3,<4
 diff --git a/tests/web/w2/test_w2_c05_module.py b/tests/web/w2/test_w2_c05_module.py
 new file mode 100644
-index 00000000..1752f5ed
+index 00000000..dc6dcda1
 --- /dev/null
 +++ b/tests/web/w2/test_w2_c05_module.py
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,189 @@
 +"""WEB-W2-C05. A shell write whose ACK was lost is not executed a second time."""
 +
 +from __future__ import annotations
 +
++import shutil
 +import sys
++import tempfile
 +import uuid
 +from pathlib import Path
 +
@@ -588,10 +908,18 @@ index 00000000..1752f5ed
 +    recover_unknown_shell,
 +    run_shell_before_ack,
 +)
++from rxycode_worker.supervisor import claim  # noqa: E402
 +
 +from RxyCode.RxyCode1_1_0.execution.tool_journal import (  # noqa: E402
 +    ToolExecutionJournal,
 +)
++
++
++class _LostAckJournal(ToolExecutionJournal):
++    """The shell can finish while the durable ACK still fails."""
++
++    def complete(self, attempt_id: str, call: object, result: object) -> str:
++        raise OSError("ack lost")
 +
 +
 +def _seed(url: str) -> str:
@@ -627,37 +955,83 @@ index 00000000..1752f5ed
 +        permission_profile="workspace-write",
 +        request_id="req-c05",
 +    )
-+    journal = ToolExecutionJournal(tmp_path / "journal")
-+    target = tmp_path / "shell-write.txt"
++    journal = _LostAckJournal(tmp_path / "journal")
++    # The shell sandbox only allows the configured workspace, which is this repo.
++    workdir = Path(tempfile.mkdtemp(prefix="w2c05-shell-", dir=REPO))
++    try:
++        _assert_lost_ack(postgres_url, created, workdir, journal)
++    finally:
++        shutil.rmtree(workdir, ignore_errors=True)
++
++
++def _assert_lost_ack(postgres_url: str, created, workdir: Path, journal) -> None:
++    target = workdir / "shell-write.txt"
 +    attempt_id = "att_" + uuid.uuid4().hex
 +    call_id = "call_" + uuid.uuid4().hex
-+    command = [
-+        "pwsh",
-+        "-NoProfile",
-+        "-Command",
-+        f"Add-Content -LiteralPath '{target}' -Value 'shell-write' -Encoding utf8",
-+    ]
-+    started = run_shell_before_ack(
++    command = "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
++    epoch = claim(postgres_url, created.run_id, "worker-c05")
++    assert epoch == 1
++    common = {
++        "tenant_id": "tenant-c05",
++        "run_id": created.run_id,
++        "command": command,
++        "workdir": str(workdir),
++        "journal": journal,
++    }
++    stale = run_shell_before_ack(
 +        postgres_url,
-+        tenant_id="tenant-c05",
-+        run_id=created.run_id,
 +        call_id=call_id,
 +        attempt_id=attempt_id,
-+        command=command,
-+        journal=journal,
++        worker_id="other-worker",
++        epoch=1,
++        **common,
 +    )
-+    assert started["executed"] is True
-+    assert started["acked"] is False
++    assert stale["executed"] is False
++    assert stale["run_status"] == "lease_rejected"
++    assert not target.exists()
++
++    started = run_shell_before_ack(
++        postgres_url,
++        call_id=call_id,
++        attempt_id=attempt_id,
++        worker_id="worker-c05",
++        epoch=epoch,
++        **common,
++    )
++    assert started["executed"] is True, started.get("output")
++    assert started["acked"] is False, started.get("output")
++    assert target.exists(), started.get("output")
 +    assert target.read_text(encoding="utf-8").count("shell-write") == 1
++
++    bypass = run_shell_before_ack(
++        postgres_url,
++        call_id="call_" + uuid.uuid4().hex,
++        attempt_id="att_" + uuid.uuid4().hex,
++        worker_id="worker-c05",
++        epoch=epoch,
++        **common,
++    )
++    assert bypass["executed"] is False
++    assert target.read_text(encoding="utf-8").count("shell-write") == 1
++
++    denied = recover_unknown_shell(
++        postgres_url,
++        call_id=call_id,
++        attempt_id=attempt_id,
++        worker_id="other-worker",
++        epoch=2,
++        **common,
++    )
++    assert denied["executed"] is False
++    assert denied["run_status"] == "lease_rejected"
 +
 +    recovered = recover_unknown_shell(
 +        postgres_url,
-+        tenant_id="tenant-c05",
-+        run_id=created.run_id,
 +        call_id=call_id,
 +        attempt_id=attempt_id,
-+        command=command,
-+        journal=journal,
++        worker_id="worker-c05",
++        epoch=epoch,
++        **common,
 +    )
 +    assert recovered["executed"] is False
 +    assert recovered["journal_state"] == "unknown"
@@ -666,12 +1040,11 @@ index 00000000..1752f5ed
 +
 +    again = recover_unknown_shell(
 +        postgres_url,
-+        tenant_id="tenant-c05",
-+        run_id=created.run_id,
 +        call_id=call_id,
 +        attempt_id=attempt_id,
-+        command=command,
-+        journal=journal,
++        worker_id="worker-c05",
++        epoch=epoch,
++        **common,
 +    )
 +    assert again["executed"] is False
 +    assert target.read_text(encoding="utf-8").count("shell-write") == 1
@@ -692,10 +1065,10 @@ index 00000000..1752f5ed
 +    assert rows[0].target_id == "local:c05"
 diff --git a/tests/web/w2/test_w2_c05_unit.py b/tests/web/w2/test_w2_c05_unit.py
 new file mode 100644
-index 00000000..f546dba7
+index 00000000..029e75fa
 --- /dev/null
 +++ b/tests/web/w2/test_w2_c05_unit.py
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,215 @@
 +"""WEB-W2-C05. A restarted worker restores a read-only checkpoint and fails closed."""
 +
 +from __future__ import annotations
@@ -721,7 +1094,10 @@ index 00000000..f546dba7
 +    record_readonly_checkpoint,
 +    resume_readonly,
 +)
-+from rxycode_worker.recovery import recover_unknown_shell  # noqa: E402
++from rxycode_worker.recovery import (  # noqa: E402
++    recover_unknown_shell,
++    run_shell_before_ack,
++)
 +
 +from RxyCode.RxyCode1_1_0.execution.tool_journal import (  # noqa: E402
 +    RemoteJournalAdapter,
@@ -831,24 +1207,40 @@ index 00000000..f546dba7
 +    journal = ToolExecutionJournal(tmp_path / "journal")
 +    (journal.directory / f"{attempt_id}.json").write_text("{not-json", encoding="utf-8")
 +    marker = tmp_path / "corrupt-write.txt"
-+    command = [
-+        "pwsh",
-+        "-NoProfile",
-+        "-Command",
-+        f"Set-Content -LiteralPath '{marker}' -Value 'should-not-run'",
-+    ]
 +    outcome = recover_unknown_shell(
 +        postgres_url,
 +        tenant_id="tenant-c05",
 +        run_id="run-missing",
 +        call_id=call_id,
 +        attempt_id=attempt_id,
-+        command=command,
++        command="Set-Content -LiteralPath 'corrupt-write.txt' -Value 'should-not-run'",
++        workdir=str(tmp_path),
 +        journal=journal,
++        worker_id="worker-c05",
++        epoch=1,
 +    )
 +    assert outcome["executed"] is False
 +    assert outcome["journal_state"] == "unknown"
-+    assert outcome["run_status"] == "recovery_required"
++    assert not marker.exists()
++
++
++def test_w2_c05_shell_requires_checkpointer(tmp_path: Path):
++    """A closed database does not start the shell from the recovery helper."""
++    marker = tmp_path / "closed.txt"
++    journal = ToolExecutionJournal(tmp_path / "journal")
++    outcome = run_shell_before_ack(
++        "postgresql://postgres@127.0.0.1:1/rxycode?connect_timeout=2",
++        tenant_id="tenant-c05",
++        run_id="run-closed",
++        call_id="call_" + "ab" * 16,
++        attempt_id="att_" + "cd" * 16,
++        command="Set-Content -LiteralPath 'closed.txt' -Value 'nope'",
++        workdir=str(tmp_path),
++        journal=journal,
++        worker_id="worker-c05",
++        epoch=1,
++    )
++    assert outcome["executed"] is False
 +    assert not marker.exists()
 +
 +
