@@ -14,5 +14,6 @@ web_local_secret_check=.env credentials.yaml history.rar under rxycode -web are 
 unrelated_dirty_left_unstaged=yes
 status_output=evidence/web/WEB-W0-C01/status.txt
 version_conflict_scan=evidence/web/WEB-W0-C01/version-conflict.txt
-isolated_worktree=detached checkout of b4fa2d3b; git status --porcelain was empty; see worktree-status.txt
+isolated_worktree=detached checkout of ed9cacb3 before this card; status empty; AGENTS.md and .gitignore anchors read there; see worktree-baseline.txt
+version_conflict_scan=version_conflict_scan conflicts empty; see version-conflict.txt
 whitelist=PHASE-W0 WEB-W0-C01 now names scripts/check_plan.py

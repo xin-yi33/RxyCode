@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
+DEV_ORDER = REPO / "docs" / "plans" / "opus5-plan" / "rxycode" / "architecture" / "DEV-ORDER.md"
 
 
 def _scanner():
@@ -27,3 +28,5 @@ def test_w0_c01_integration():
     assert report["web_local_credentials_ignored"] is True
     assert report["web_local_archive_ignored"] is True
     assert report["web_local_secrets_ignored"] is True
+    conflicts = _scanner().version_conflict_scan(PLAN, DEV_ORDER)
+    assert conflicts["conflicts"] == []
