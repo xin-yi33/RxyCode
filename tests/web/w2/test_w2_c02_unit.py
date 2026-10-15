@@ -28,11 +28,11 @@ CLOUD = "https://cloud.example"
 
 
 def _headers(token: str, origin: str = ORIGIN) -> dict[str, str]:
-    return {"X-CSRF-Token": token, "Origin": origin}
+    return {"X-CSRF-Token": token, "Origin": origin, "X-Local-Secret": SECRET}
 
 
-def _login_cookie(app, token: str, origin: str) -> str:
-    """Read the session Set-Cookie from the ASGI response itself."""
+def _callback_cookie(app, state: str, oauth_cookie: str) -> str:
+    """Read the cloud session Set-Cookie from the OAuth callback response."""
     messages: list[dict] = []
 
     async def receive():
@@ -41,20 +41,17 @@ def _login_cookie(app, token: str, origin: str) -> str:
     async def send(message):
         messages.append(message)
 
+    query = f"state={state}&code=cloud-code".encode()
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "POST",
+        "method": "GET",
         "scheme": "https",
-        "path": "/api/v1/auth/local/login",
-        "raw_path": b"/api/v1/auth/local/login",
-        "query_string": b"",
-        "headers": [
-            (b"origin", origin.encode()),
-            (b"x-csrf-token", token.encode()),
-            (b"cookie", f"rxy_csrf={token}".encode()),
-        ],
+        "path": "/api/v1/auth/github/callback",
+        "raw_path": b"/api/v1/auth/github/callback",
+        "query_string": query,
+        "headers": [(b"cookie", f"rxy_oauth={oauth_cookie}".encode())],
         "client": ("127.0.0.1", 50000),
         "server": ("testserver", 443),
     }
@@ -116,6 +113,14 @@ def test_w2_c02_contract(postgres_url: str):
     assert body["user"]["kind"] == user.kind == "local"
     assert body["organization"]["tenant_id"] == org.tenant_id
     assert body["membership"]["role"] == "owner"
+    user_id = body["user"]["id"]
+    token = _csrf(client)
+    created = client.post(
+        "/api/v1/projects",
+        json={"name": "kept", "repo_config": {}},
+        headers=_headers(token),
+    )
+    assert created.status_code == 200
     token = _csrf(client)
     again = client.post("/api/v1/auth/local/login", headers=_headers(token))
     assert again.status_code == 200
@@ -124,6 +129,10 @@ def test_w2_c02_contract(postgres_url: str):
     denied = stale.get("/api/v1/me")
     assert denied.status_code == 401
     assert denied.json()["code"] == "UNAUTHORIZED"
+    again_me = client.get("/api/v1/me")
+    assert again_me.json()["user"]["id"] == user_id
+    kept = client.get(f"/api/v1/projects/{created.json()['id']}")
+    assert kept.status_code == 200
     started = client.get("/api/v1/auth/github/start")
     assert started.status_code == 200
     state = started.json()["state"]
@@ -144,6 +153,9 @@ def test_w2_c02_contract(postgres_url: str):
         return httpx.Response(200, json={"id": 4242, "login": "octo"})
 
     app.state.github_transport = httpx.MockTransport(handler)
+    stranger = TestClient(app)
+    stolen = stranger.get("/api/v1/auth/github/callback", params={"state": state, "code": "abc"})
+    assert stolen.status_code == 400
     callback = client.get("/api/v1/auth/github/callback", params={"state": state, "code": "abc"})
     assert callback.status_code == 200
     github_me = client.get("/api/v1/me")
@@ -161,7 +173,23 @@ def test_w2_c02_contract(postgres_url: str):
     )
     cloud_client = TestClient(cloud)
     cloud_token = _csrf(cloud_client)
-    cookie = _login_cookie(cloud, cloud_token, CLOUD)
+    refused = cloud_client.post("/api/v1/auth/local/login", headers=_headers(cloud_token, CLOUD))
+    assert refused.status_code == 403
+    cloud.state.github_client_id = "iv1.client"
+    cloud.state.github_client_secret = "github-secret-not-stored"
+    cloud.state.github_redirect_uri = "https://cloud.example/callback"
+    def cloud_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "github.com":
+            return httpx.Response(200, json={"access_token": "ghs_other", "token_type": "bearer"})
+        return httpx.Response(200, json={"id": 777, "login": "cloud-user"})
+
+    cloud.state.github_transport = httpx.MockTransport(cloud_handler)
+    cloud_start = cloud_client.get("/api/v1/auth/github/start")
+    cookie = _callback_cookie(
+        cloud,
+        cloud_start.json()["state"],
+        cloud_client.cookies.get("rxy_oauth"),
+    )
     assert "httponly" in cookie
     assert "samesite=lax" in cookie
     assert "secure" in cookie

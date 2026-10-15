@@ -26,6 +26,7 @@ _STATE_TTL = 10 * 60
 @dataclass
 class OAuthState:
     verifier: str
+    browser: str
     created: float
 
 
@@ -105,7 +106,19 @@ def _set_session(response: Response, token: str, *, secure: bool) -> None:
     )
 
 
+def _same(left: str, right: str) -> bool:
+    if len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
 def _local_account(db: Session) -> tuple[User, Organization]:
+    """Local mode has one user. A later login keeps that user and tenant."""
+    user = db.scalars(select(User).where(User.kind == "local")).one_or_none()
+    if user is not None:
+        tenant_id = db.scalars(select(Membership.tenant_id).where(Membership.user_id == user.id)).one()
+        org = db.scalars(select(Organization).where(Organization.tenant_id == tenant_id)).one()
+        return user, org
     user = User(id=uuid.uuid4().hex, github_id=None, kind="local")
     org = Organization(id=uuid.uuid4().hex, tenant_id=uuid.uuid4().hex)
     db.add(user)
@@ -177,6 +190,11 @@ def local_login(
     response: Response,
     db: Session = Depends(db_session),
 ) -> dict[str, str]:
+    if request.app.state.mode != "local":
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    provided = request.headers.get("x-local-secret", "")
+    if not _same(provided, request.app.state.secret):
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
     require_write(request)
     _drop_current(request)
     user, org = _local_account(db)
@@ -185,12 +203,26 @@ def local_login(
 
 
 @router.get("/api/v1/auth/github/start")
-def github_start(request: Request) -> dict[str, str]:
+def github_start(request: Request, response: Response) -> dict[str, str]:
     verifier = secrets.token_urlsafe(48)
     digest = hashlib.sha256(verifier.encode()).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     state = secrets.token_urlsafe(32)
-    request.app.state.oauth_states[state] = OAuthState(verifier=verifier, created=time.monotonic())
+    nonce = secrets.token_urlsafe(32)
+    request.app.state.oauth_states[state] = OAuthState(
+        verifier=verifier,
+        browser=_hash_token(request.app.state.secret, nonce),
+        created=time.monotonic(),
+    )
+    response.set_cookie(
+        "rxy_oauth",
+        nonce,
+        httponly=True,
+        secure=_secure(request),
+        samesite="lax",
+        path="/",
+        max_age=_STATE_TTL,
+    )
     query = httpx.QueryParams(
         {
             "client_id": request.app.state.github_client_id,
@@ -216,9 +248,15 @@ def github_callback(
     code: str,
     db: Session = Depends(db_session),
 ) -> dict[str, str]:
-    record = request.app.state.oauth_states.pop(state, None)
-    if record is None or time.monotonic() - record.created > _STATE_TTL:
+    record = request.app.state.oauth_states.get(state)
+    nonce = request.cookies.get("rxy_oauth", "")
+    browser_ok = bool(record) and bool(nonce) and _same(
+        _hash_token(request.app.state.secret, nonce),
+        record.browser,
+    )
+    if record is None or not browser_ok or time.monotonic() - record.created > _STATE_TTL:
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    request.app.state.oauth_states.pop(state, None)
     github_id = exchange_github_code(request, code, record.verifier)
     _drop_current(request)
     user, tenant_id = _github_account(db, github_id)

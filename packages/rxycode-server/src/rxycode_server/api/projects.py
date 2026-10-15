@@ -87,6 +87,31 @@ def get_project(
     return {"id": project.id, "name": project.name, "tenant_id": project.tenant_id}
 
 
+@router.get("/api/v1/projects/{project_id}/sessions")
+def list_sessions(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(db_session),
+) -> dict[str, list]:
+    record = current_record(request)
+    project = db.scalars(
+        select(Project).where(Project.id == project_id, Project.tenant_id == record.tenant_id)
+    ).one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
+    rows = db.scalars(
+        select(SessionRow).where(
+            SessionRow.project_id == project.id,
+            SessionRow.tenant_id == record.tenant_id,
+        )
+    ).all()
+    return {
+        "sessions": [
+            {"id": row.id, "title": row.title, "project_id": project.id} for row in rows
+        ]
+    }
+
+
 @router.post("/api/v1/projects/{project_id}/sessions")
 def create_session(
     project_id: str,
