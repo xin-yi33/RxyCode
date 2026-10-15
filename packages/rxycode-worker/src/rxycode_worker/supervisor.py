@@ -171,10 +171,14 @@ def request_cancel(database_url: str, run_id: str) -> str:
                     """
                     UPDATE runs
                     SET status = 'cancel_requested',
-                        revision = revision + 1
+                        revision = revision + 1,
+                        event_seq = GREATEST(
+                            event_seq,
+                            COALESCE((SELECT MAX(seq) FROM run_events WHERE run_id = runs.id), 0)
+                        ) + 1
                     WHERE id = :id
                       AND status IN ('pending', 'leased', 'running')
-                    RETURNING tenant_id
+                    RETURNING tenant_id, event_seq
                     """
                 ),
                 {"id": run_id},
@@ -186,10 +190,7 @@ def request_cancel(database_url: str, run_id: str) -> str:
                 ).scalar()
                 return str(current)
             event_id = conn.execute(text("SELECT gen_random_uuid()::text")).scalar()
-            seq = conn.execute(
-                text("SELECT COALESCE(MAX(seq), 0) + 1 FROM run_events WHERE run_id = :id"),
-                {"id": run_id},
-            ).scalar()
+            seq = int(row.event_seq)
             conn.execute(
                 text(
                     """

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-import time
 from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, Query, Request
@@ -70,7 +70,22 @@ def _pull(database_url: str, tenant_id: str, run_id: str, cursor: int, sent: set
     return cursor, frames
 
 
-def iter_frames(
+_TERMINAL = {"succeeded", "failed", "cancelled", "recovery_required"}
+
+
+def _run_status(database_url: str, run_id: str) -> str:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            return str(conn.execute(text("SELECT status FROM runs WHERE id = :id"), {"id": run_id}).scalar())
+    finally:
+        engine.dispose()
+
+
+async def iter_frames(
     database_url: str,
     *,
     tenant_id: str,
@@ -78,28 +93,37 @@ def iter_frames(
     after_seq: int,
     redis_client=None,
     follow: bool = False,
-) -> Iterator[str]:
-    """Subscribe before the first read. A later heartbeat reads the database again."""
+    is_disconnected: Callable[[], bool] | None = None,
+):
+    """Subscribe before the first read. Follow keeps polling until disconnect or a terminal run."""
     pubsub = None
-    if redis_client is not None:
-        pubsub = redis_client.pubsub()
-        pubsub.subscribe(f"rxycode:run:{run_id}")
     sent: set[int] = set()
-    cursor, frames = _pull(database_url, tenant_id, run_id, after_seq, sent)
-    yield from frames
-    cursor, frames = _pull(database_url, tenant_id, run_id, cursor, sent)
-    yield from frames
-    if not follow:
+    cursor = after_seq
+    try:
+        yield ": open\n\n"
+        if redis_client is not None:
+            pubsub = redis_client.pubsub()
+            await asyncio.to_thread(pubsub.subscribe, f"rxycode:run:{run_id}")
+        while True:
+            if is_disconnected is not None:
+                try:
+                    if await asyncio.wait_for(is_disconnected(), timeout=0.05):
+                        return
+                except TimeoutError:
+                    pass
+            cursor, frames = _pull(database_url, tenant_id, run_id, cursor, sent)
+            for frame in frames:
+                yield frame
+            if not follow:
+                return
+            if _run_status(database_url, run_id) in _TERMINAL and not frames:
+                return
+            if pubsub is not None:
+                pubsub.get_message(timeout=0.05)
+            await asyncio.sleep(0.25)
+    finally:
         if pubsub is not None:
             pubsub.close()
-        return
-    if pubsub is not None:
-        pubsub.get_message(timeout=0.05)
-    time.sleep(0.6)
-    _cursor, frames = _pull(database_url, tenant_id, run_id, cursor, sent)
-    yield from frames
-    if pubsub is not None:
-        pubsub.close()
 
 
 @router.get("/api/v1/runs/{run_id}/events")
@@ -132,14 +156,16 @@ def stream_events(
         )
     redis_client = getattr(request.app.state, "redis", None)
 
-    def generate():
-        yield from iter_frames(
+    async def generate():
+        async for frame in iter_frames(
             request.app.state.database_url,
             tenant_id=record.tenant_id,
             run_id=run_id,
             after_seq=cursor,
             redis_client=redis_client,
             follow=bool(follow),
-        )
+            is_disconnected=request.is_disconnected,
+        ):
+            yield frame
 
     return StreamingResponse(generate(), media_type="text/event-stream")
