@@ -207,9 +207,11 @@ def classify_workflow(
         "not on prompt length or keyword lists. "
         "task_kind is development, question, or read_only. "
         "stage_actions keys are project_docs, clarify, design, build_verify, doc_sync. "
-        "Each value is inspect, run, or skip. development must set build_verify to run "
-        "and include at least one required_checks item with check_id, command, cwd, "
-        "and success_predicate exit_zero or tests_passed_nonempty. "
+        "Each value is inspect, run, or skip. Choose project_docs, clarify, design, "
+        "and doc_sync per goal. development must set build_verify to run and include "
+        "the relevant required_checks, not the repository's full CI, with check_id, "
+        "command, cwd, and success_predicate exit_zero or tests_passed_nonempty. "
+        "Permissions, execution boundaries, and evidence checks stay on. "
         f"Goal:\n{goal}"
     )
     try:

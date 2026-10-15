@@ -90,6 +90,21 @@ def test_instruction_discovery_does_not_walk_the_whole_tree(tmp_path):
     assert found == ()
 
 
+def test_default_harness_is_on_and_the_model_cannot_disable_safety():
+    from RxyCode.RxyCode1_1_0.config.settings import _default_config
+    from RxyCode.RxyCode1_1_0.core.build_workflow import workflow_enabled
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel, classify_tool_risk
+
+    assert workflow_enabled(_default_config()) is True
+    body = json.loads(_json_decision())
+    body["disable_safety"] = True
+    body["write_anywhere"] = True
+    decision = validate_decision(body, goal="fix parser")
+    assert decision.stage_actions["build_verify"] == "run"
+    assert not hasattr(decision, "disable_safety")
+    assert classify_tool_risk("bash", {"command": "rm -rf /"}) >= RiskLevel.DANGER
+
+
 def test_development_cannot_skip_verification_or_use_a_vague_acceptance():
     with pytest.raises(WorkflowContractError):
         _decision(stage_actions={
@@ -861,7 +876,7 @@ def test_sc_bw_6_sessions_do_not_share_receipts_or_reclassify_children():
     from RxyCode.RxyCode1_1_0.config.settings import _default_config
     from RxyCode.RxyCode1_1_0.core.build_workflow import workflow_enabled
 
-    assert workflow_enabled(_default_config()) is False
+    assert workflow_enabled(_default_config()) is True
     assert "build_workflow" not in StatusBand.__annotations__
     system = get_system_prompt()
     assert "wf-session-a" not in system
