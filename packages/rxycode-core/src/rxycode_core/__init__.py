@@ -12,7 +12,11 @@ __all__ = ["Session", "audit_class_identity", "reuse_or_create_session"]
 
 
 def audit_class_identity(classes: list[type]) -> str:
-    """Return OK when every entry is the same class object, otherwise BLOCKED."""
-    if len(set(classes)) > 1:
+    """Return OK when every entry is the same class object, otherwise BLOCKED.
+
+    Identity is ``is``, not ``==``. A metaclass that makes distinct classes
+    compare equal must still be BLOCKED.
+    """
+    if len({id(item) for item in classes}) > 1:
         return "BLOCKED"
     return "OK"

@@ -35,5 +35,20 @@ def test_w1_c01_negative():
         pass
 
     assert audit_class_identity([Legacy, _SecondAgent]) == "BLOCKED"
-    with pytest.raises(AssertionError):
-        assert audit_class_identity([Legacy, _SecondAgent]) == "OK"
+
+    class _EqualMeta(type):
+        def __eq__(cls, other: object) -> bool:
+            return isinstance(other, type)
+
+        def __hash__(cls) -> int:
+            return 1
+
+    class _Left(metaclass=_EqualMeta):
+        pass
+
+    class _Right(metaclass=_EqualMeta):
+        pass
+
+    assert _Left == _Right
+    assert _Left is not _Right
+    assert audit_class_identity([_Left, _Right]) == "BLOCKED"
