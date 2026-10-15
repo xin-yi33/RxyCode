@@ -1,0 +1,882 @@
+diff --git a/frontend/protocol-client/src/generated/types.ts b/frontend/protocol-client/src/generated/types.ts
+index 29566628..3d1fc1af 100644
+--- a/frontend/protocol-client/src/generated/types.ts
++++ b/frontend/protocol-client/src/generated/types.ts
+@@ -6,7 +6,8 @@ export type RxyCodeProtocol =
+   | ServerRequestMessage
+   | AgentProtocol
+   | HandshakeProtocol
+-  | TimeoutDecisionProtocol;
++  | TimeoutDecisionProtocol
++  | WebProtocol;
+ export type ClientRequest =
+   | InitializeRequest
+   | NewSessionRequest
+@@ -239,6 +240,14 @@ export type Capability = ("no_tools" | "edit_only" | "full") | null;
+  * Client turn UUID for idempotent retries. Never the JSON-RPC message id.
+  */
+ export type RequestId = string | null;
++/**
++ * Optional server-minted run id. Old clients omit it.
++ */
++export type RunId = string | null;
++/**
++ * Optional device id. Old clients omit it.
++ */
++export type DeviceId = string | null;
+ export type Method3 = "session/interrupt";
+ export type SessionId1 = string;
+ export type Method4 = "session/set_thinking_expanded";
+@@ -778,7 +787,7 @@ export type Method136 =
+   | "event/agent_team_created";
+ export type SessionId65 = string;
+ export type AgentId2 = string;
+-export type RunId = string | null;
++export type RunId1 = string | null;
+ export type Seq = number;
+ export type ExperimentTag = ("E0" | "E1" | "E2") | null;
+ export type CacheMissWarning = boolean;
+@@ -873,7 +882,7 @@ export type Kind2 = "needs_input";
+ export type Preview = string | null;
+ export type Method150 = "event/final";
+ export type SessionId79 = string;
+-export type RunId1 = string;
++export type RunId2 = string;
+ export type Text8 = string;
+ export type Thinking = string | null;
+ export type InputTokens2 = number | null;
+@@ -884,7 +893,7 @@ export type CacheHitRate2 = number | null;
+ export type ReportingStatus2 = "reported" | "partial" | "not_reported";
+ export type SessionSchemaVersion = number | null;
+ export type SessionId80 = string;
+-export type RunId2 = string;
++export type RunId3 = string;
+ export type RecoveryId = string;
+ export type EventId = string;
+ export type Seq2 = number;
+@@ -895,14 +904,14 @@ export type RecoveryKind = "transport_retry" | "model_recovery" | "graph_replan"
+ export type ErrorKind = string;
+ export type MaxAttempts = number;
+ export type SessionId81 = string;
+-export type RunId3 = string;
++export type RunId4 = string;
+ export type RecoveryId1 = string;
+ export type EventId1 = string;
+ export type Seq3 = number;
+ export type Timestamp1 = string;
+ export type Method152 = "event/recovery_analyzing";
+ export type SessionId82 = string;
+-export type RunId4 = string;
++export type RunId5 = string;
+ export type RecoveryId2 = string;
+ export type EventId2 = string;
+ export type Seq4 = number;
+@@ -913,7 +922,7 @@ export type Strategy = "same_tool" | "corrected_arguments" | "alternative_tool"
+ export type ReplacementCallId = string | null;
+ export type DisplaySummary = string;
+ export type SessionId83 = string;
+-export type RunId5 = string;
++export type RunId6 = string;
+ export type RecoveryId3 = string;
+ export type EventId3 = string;
+ export type Seq5 = number;
+@@ -922,7 +931,7 @@ export type Method154 = "event/recovery_resolved";
+ export type Attempts = number;
+ export type DisplaySummary1 = string;
+ export type SessionId84 = string;
+-export type RunId6 = string;
++export type RunId7 = string;
+ export type RecoveryId4 = string;
+ export type EventId4 = string;
+ export type Seq6 = number;
+@@ -933,11 +942,11 @@ export type FinalError = string;
+ export type Method156 = "event/error";
+ export type SessionId85 = string;
+ export type Message1 = string;
+-export type RunId7 = string | null;
++export type RunId8 = string | null;
+ export type Status3 = ("succeeded" | "failed" | "cancelled" | "timed_out") | null;
+ export type Method157 = "event/done";
+ export type SessionId86 = string;
+-export type RunId8 = string;
++export type RunId9 = string;
+ export type Status4 = "succeeded" | "failed" | "cancelled" | "timed_out";
+ export type Method158 = "event/job_status";
+ export type SessionId87 = string;
+@@ -950,7 +959,7 @@ export type Seq7 = number;
+ export type Timestamp5 = string;
+ export type SessionId88 = string;
+ export type RootSessionId8 = string;
+-export type RunId9 = string | null;
++export type RunId10 = string | null;
+ export type ListId = string;
+ export type Revision = number;
+ export type Scope3 = "turn" | "goal" | "compose" | "child";
+@@ -992,7 +1001,7 @@ export type WorkspaceRoot4 = string;
+ export type DisplayName1 = string;
+ export type Method167 = "event/timeout_decision";
+ export type SessionId90 = string;
+-export type RunId10 = string;
++export type RunId11 = string;
+ export type EventId6 = string;
+ export type Seq8 = number;
+ export type Timestamp6 = string;
+@@ -1271,7 +1280,7 @@ export type Details1 = {
+ export type TimeoutDecisionProtocol = TimeoutEvidence | TimeoutDecisionResponse | TimeoutDecisionEvent;
+ export type TriggerPoint1 = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
+ export type SessionId96 = string;
+-export type RunId11 = string;
++export type RunId12 = string;
+ export type SubjectId = string;
+ export type TaskHint = string;
+ export type ElapsedSeconds1 = number;
+@@ -1283,6 +1292,20 @@ export type Action6 = "continue" | "steer" | "stop";
+ export type ExtendSeconds1 = number;
+ export type Note1 = string;
+ export type Confidence1 = number;
++/**
++ * Additive Run, Event, Device, and diagnostic models. Not a session envelope. Old initialize, session/prompt, and approval/request methods are unchanged.
++ */
++export type WebProtocol = RunRecord | WebEvent | DeviceRecord | WebDiagnostic;
++export type RunId13 = string;
++export type SessionId97 = string;
++export type Status9 = "running" | "succeeded" | "failed" | "cancelled";
++export type Method179 = string;
++export type RunId14 = string | null;
++export type DeviceId1 = string;
++export type Kind3 = "desktop" | "cli" | "web";
++export type Capabilities2 = string[];
++export type Code1 = "RUN_CANCELLED" | "DEVICE_UNSUPPORTED" | "CAPABILITY_DENIED";
++export type Retryable1 = boolean;
+ 
+ /**
+  * JSON-RPC handshake on connect (future ``python -m appserver``).
+@@ -1338,6 +1361,8 @@ export interface PromptRequest {
+   thinking_expanded?: ThinkingExpanded;
+   capability?: Capability;
+   request_id?: RequestId;
++  run_id?: RunId;
++  device_id?: DeviceId;
+   [k: string]: unknown;
+ }
+ /**
+@@ -2794,7 +2819,7 @@ export interface AgentEvent {
+   method: Method136;
+   session_id: SessionId65;
+   agent_id: AgentId2;
+-  run_id?: RunId;
++  run_id?: RunId1;
+   payload?: Payload;
+   seq: Seq;
+   experiment_tag?: ExperimentTag;
+@@ -2979,7 +3004,7 @@ export interface AgentNeedsInput {
+ export interface FinalAnswer {
+   method?: Method150;
+   session_id: SessionId79;
+-  run_id: RunId1;
++  run_id: RunId2;
+   text: Text8;
+   thinking?: Thinking;
+   input_tokens?: InputTokens2;
+@@ -2996,7 +3021,7 @@ export interface FinalAnswer {
+  */
+ export interface RecoveryStarted {
+   session_id: SessionId80;
+-  run_id: RunId2;
++  run_id: RunId3;
+   recovery_id: RecoveryId;
+   event_id: EventId;
+   seq: Seq2;
+@@ -3013,7 +3038,7 @@ export interface RecoveryStarted {
+  */
+ export interface RecoveryAnalyzing {
+   session_id: SessionId81;
+-  run_id: RunId3;
++  run_id: RunId4;
+   recovery_id: RecoveryId1;
+   event_id: EventId1;
+   seq: Seq3;
+@@ -3026,7 +3051,7 @@ export interface RecoveryAnalyzing {
+  */
+ export interface RecoveryAttempt {
+   session_id: SessionId82;
+-  run_id: RunId4;
++  run_id: RunId5;
+   recovery_id: RecoveryId2;
+   event_id: EventId2;
+   seq: Seq4;
+@@ -3043,7 +3068,7 @@ export interface RecoveryAttempt {
+  */
+ export interface RecoveryResolved {
+   session_id: SessionId83;
+-  run_id: RunId5;
++  run_id: RunId6;
+   recovery_id: RecoveryId3;
+   event_id: EventId3;
+   seq: Seq5;
+@@ -3058,7 +3083,7 @@ export interface RecoveryResolved {
+  */
+ export interface RecoveryExhausted {
+   session_id: SessionId84;
+-  run_id: RunId6;
++  run_id: RunId7;
+   recovery_id: RecoveryId4;
+   event_id: EventId4;
+   seq: Seq6;
+@@ -3075,7 +3100,7 @@ export interface ErrorNotification {
+   method?: Method156;
+   session_id: SessionId85;
+   message: Message1;
+-  run_id?: RunId7;
++  run_id?: RunId8;
+   status?: Status3;
+   [k: string]: unknown;
+ }
+@@ -3085,7 +3110,7 @@ export interface ErrorNotification {
+ export interface RunComplete {
+   method?: Method157;
+   session_id: SessionId86;
+-  run_id: RunId8;
++  run_id: RunId9;
+   status: Status4;
+   [k: string]: unknown;
+ }
+@@ -3113,7 +3138,7 @@ export interface TodoUpdatedNotification {
+ export interface TodoSnapshot {
+   session_id: SessionId88;
+   root_session_id: RootSessionId8;
+-  run_id?: RunId9;
++  run_id?: RunId10;
+   list_id: ListId;
+   revision: Revision;
+   scope: Scope3;
+@@ -3204,7 +3229,7 @@ export interface WorkspaceChanged {
+ export interface TimeoutDecisionEvent {
+   method?: Method167;
+   session_id: SessionId90;
+-  run_id: RunId10;
++  run_id: RunId11;
+   event_id: EventId6;
+   seq: Seq8;
+   timestamp: Timestamp6;
+@@ -3640,7 +3665,7 @@ export interface ProtocolErrorData {
+ export interface TimeoutEvidence {
+   trigger_point: TriggerPoint1;
+   session_id: SessionId96;
+-  run_id: RunId11;
++  run_id: RunId12;
+   subject_id: SubjectId;
+   task_hint: TaskHint;
+   elapsed_seconds: ElapsedSeconds1;
+@@ -3660,3 +3685,41 @@ export interface TimeoutDecisionResponse {
+   confidence: Confidence1;
+   [k: string]: unknown;
+ }
++/**
++ * One server-minted run. This is not a second session and not a new RPC method.
++ */
++export interface RunRecord {
++  run_id: RunId13;
++  session_id: SessionId97;
++  status: Status9;
++  [k: string]: unknown;
++}
++/**
++ * One envelope around an existing notification method. It does not add a wire method.
++ */
++export interface WebEvent {
++  method: Method179;
++  run_id?: RunId14;
++  payload?: Payload1;
++  [k: string]: unknown;
++}
++export interface Payload1 {
++  [k: string]: unknown;
++}
++/**
++ * A client device. Capability names are not execution grants.
++ */
++export interface DeviceRecord {
++  device_id: DeviceId1;
++  kind: Kind3;
++  capabilities?: Capabilities2;
++  [k: string]: unknown;
++}
++/**
++ * Additive web diagnostic. Existing ProtocolErrorCode values stay unchanged.
++ */
++export interface WebDiagnostic {
++  code: Code1;
++  retryable?: Retryable1;
++  [k: string]: unknown;
++}
+diff --git a/frontend/protocol-client/src/generated/web_digest.ts b/frontend/protocol-client/src/generated/web_digest.ts
+new file mode 100644
+index 00000000..0a8afa85
+--- /dev/null
++++ b/frontend/protocol-client/src/generated/web_digest.ts
+@@ -0,0 +1,2 @@
++/* Auto-generated by python -m protocol.schema. Do not edit. */
++export const WEB_SCHEMA_DIGEST = "8cd64e7ddc1b82e4a25b3b4a256db6d21d6471e5bed4c98531828ab1c207ad0c";
+diff --git a/frontend/protocol-client/src/index.ts b/frontend/protocol-client/src/index.ts
+index c606b74d..eaa80465 100644
+--- a/frontend/protocol-client/src/index.ts
++++ b/frontend/protocol-client/src/index.ts
+@@ -36,6 +36,15 @@ export {
+   type ProtocolMatch,
+ } from "./handshake.ts";
+ 
++export type {
++  DeviceRecord,
++  RunRecord,
++  WebDiagnostic,
++  WebEvent,
++} from "./generated/types.ts";
++
++export { WEB_SCHEMA_DIGEST } from "./generated/web_digest.ts";
++
+ export type {
+   ApprovalRequest,
+   ApprovalResponse,
+diff --git a/protocol/notifications.py b/protocol/notifications.py
+index 0c5ae493..9f8bef0d 100644
+--- a/protocol/notifications.py
++++ b/protocol/notifications.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ from typing import Annotated, Literal
+ 
+-from pydantic import BaseModel, Field, Strict, model_validator
++from pydantic import BaseModel, Field, Strict, field_validator, model_validator
+ 
+ from .timeout_decision import TimeoutDecisionEvent
+ from .todo import TodoSnapshot
+@@ -495,3 +495,29 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
+     WorkspaceChanged,
+     TimeoutDecisionEvent,
+ )
++
++
++def frozen_event_methods() -> frozenset[str]:
++    """Method constants already on the notification union. WebEvent may only map these."""
++    found: list[str] = []
++    for model in NOTIFICATION_MODELS:
++        field = model.model_fields.get("method")
++        default = getattr(field, "default", None)
++        if isinstance(default, str):
++            found.append(default)
++    return frozenset(found)
++
++
++class WebEvent(BaseModel):
++    """One envelope around an existing notification method. It does not add a wire method."""
++
++    method: str
++    run_id: str | None = None
++    payload: JsonObject = Field(default_factory=dict)
++
++    @field_validator("method")
++    @classmethod
++    def known_method(cls, value: str) -> str:
++        if value not in frozen_event_methods():
++            raise ValueError(f"unknown event method: {value}")
++        return value
+diff --git a/protocol/requests.py b/protocol/requests.py
+index 6facd4e5..fd1bc558 100644
+--- a/protocol/requests.py
++++ b/protocol/requests.py
+@@ -85,6 +85,14 @@ class PromptRequest(BaseModel):
+         default=None,
+         description="Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
+     )
++    run_id: str | None = Field(
++        default=None,
++        description="Optional server-minted run id. Old clients omit it.",
++    )
++    device_id: str | None = Field(
++        default=None,
++        description="Optional device id. Old clients omit it.",
++    )
+ 
+ 
+ class InterruptRequest(BaseModel):
+@@ -1445,6 +1453,29 @@ class PluginConnectCallbackRequest(BaseModel):
+     state: str
+ 
+ 
++class RunRecord(BaseModel):
++    """One server-minted run. This is not a second session and not a new RPC method."""
++
++    run_id: str
++    session_id: str
++    status: Literal["running", "succeeded", "failed", "cancelled"]
++
++
++class DeviceRecord(BaseModel):
++    """A client device. Capability names are not execution grants."""
++
++    device_id: str
++    kind: Literal["desktop", "cli", "web"]
++    capabilities: list[str] = Field(default_factory=list)
++
++
++class WebDiagnostic(BaseModel):
++    """Additive web diagnostic. Existing ProtocolErrorCode values stay unchanged."""
++
++    code: Literal["RUN_CANCELLED", "DEVICE_UNSUPPORTED", "CAPABILITY_DENIED"]
++    retryable: bool = False
++
++
+ CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (
+     InitializeRequest,
+     NewSessionRequest,
+diff --git a/protocol/schema.json b/protocol/schema.json
+index 224978bd..0c611b41 100644
+--- a/protocol/schema.json
++++ b/protocol/schema.json
+@@ -243,6 +243,32 @@
+           "default": null,
+           "description": "Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
+           "title": "Request Id"
++        },
++        "run_id": {
++          "anyOf": [
++            {
++              "type": "string"
++            },
++            {
++              "type": "null"
++            }
++          ],
++          "default": null,
++          "description": "Optional server-minted run id. Old clients omit it.",
++          "title": "Run Id"
++        },
++        "device_id": {
++          "anyOf": [
++            {
++              "type": "string"
++            },
++            {
++              "type": "null"
++            }
++          ],
++          "default": null,
++          "description": "Optional device id. Old clients omit it.",
++          "title": "Device Id"
+         }
+       },
+       "required": [
+@@ -8616,6 +8642,122 @@
+       "title": "TimeoutDecisionResponse",
+       "type": "object"
+     },
++    "RunRecord": {
++      "description": "One server-minted run. This is not a second session and not a new RPC method.",
++      "properties": {
++        "run_id": {
++          "title": "Run Id",
++          "type": "string"
++        },
++        "session_id": {
++          "title": "Session Id",
++          "type": "string"
++        },
++        "status": {
++          "enum": [
++            "running",
++            "succeeded",
++            "failed",
++            "cancelled"
++          ],
++          "title": "Status",
++          "type": "string"
++        }
++      },
++      "required": [
++        "run_id",
++        "session_id",
++        "status"
++      ],
++      "title": "RunRecord",
++      "type": "object"
++    },
++    "WebEvent": {
++      "description": "One envelope around an existing notification method. It does not add a wire method.",
++      "properties": {
++        "method": {
++          "title": "Method",
++          "type": "string"
++        },
++        "run_id": {
++          "anyOf": [
++            {
++              "type": "string"
++            },
++            {
++              "type": "null"
++            }
++          ],
++          "default": null,
++          "title": "Run Id"
++        },
++        "payload": {
++          "additionalProperties": true,
++          "title": "Payload",
++          "type": "object"
++        }
++      },
++      "required": [
++        "method"
++      ],
++      "title": "WebEvent",
++      "type": "object"
++    },
++    "DeviceRecord": {
++      "description": "A client device. Capability names are not execution grants.",
++      "properties": {
++        "device_id": {
++          "title": "Device Id",
++          "type": "string"
++        },
++        "kind": {
++          "enum": [
++            "desktop",
++            "cli",
++            "web"
++          ],
++          "title": "Kind",
++          "type": "string"
++        },
++        "capabilities": {
++          "items": {
++            "type": "string"
++          },
++          "title": "Capabilities",
++          "type": "array"
++        }
++      },
++      "required": [
++        "device_id",
++        "kind"
++      ],
++      "title": "DeviceRecord",
++      "type": "object"
++    },
++    "WebDiagnostic": {
++      "description": "Additive web diagnostic. Existing ProtocolErrorCode values stay unchanged.",
++      "properties": {
++        "code": {
++          "enum": [
++            "RUN_CANCELLED",
++            "DEVICE_UNSUPPORTED",
++            "CAPABILITY_DENIED"
++          ],
++          "title": "Code",
++          "type": "string"
++        },
++        "retryable": {
++          "default": false,
++          "title": "Retryable",
++          "type": "boolean"
++        }
++      },
++      "required": [
++        "code"
++      ],
++      "title": "WebDiagnostic",
++      "type": "object"
++    },
+     "ClientRequest": {
+       "oneOf": [
+         {
+@@ -9242,6 +9384,24 @@
+           "$ref": "#/$defs/TimeoutDecisionEvent"
+         }
+       ]
++    },
++    "WebProtocol": {
++      "title": "WebProtocol",
++      "description": "Additive Run, Event, Device, and diagnostic models. Not a session envelope. Old initialize, session/prompt, and approval/request methods are unchanged.",
++      "oneOf": [
++        {
++          "$ref": "#/$defs/RunRecord"
++        },
++        {
++          "$ref": "#/$defs/WebEvent"
++        },
++        {
++          "$ref": "#/$defs/DeviceRecord"
++        },
++        {
++          "$ref": "#/$defs/WebDiagnostic"
++        }
++      ]
+     }
+   },
+   "oneOf": [
+@@ -9262,6 +9422,10 @@
+     },
+     {
+       "$ref": "#/$defs/TimeoutDecisionProtocol"
++    },
++    {
++      "$ref": "#/$defs/WebProtocol"
+     }
+-  ]
++  ],
++  "schema_digest": "8cd64e7ddc1b82e4a25b3b4a256db6d21d6471e5bed4c98531828ab1c207ad0c"
+ }
+diff --git a/protocol/schema.py b/protocol/schema.py
+index 139c4ca7..de115a01 100644
+--- a/protocol/schema.py
++++ b/protocol/schema.py
+@@ -2,15 +2,19 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ import sys
++from collections.abc import Mapping
+ from typing import Any
+ 
++from pydantic import BaseModel
++
+ from .agents import AGENT_PROTOCOL_MODELS
+-from .errors import ERROR_MODELS
++from .errors import ERROR_MODELS, ProtocolErrorCode
+ from .handshake import HANDSHAKE_MODELS
+-from .notifications import NOTIFICATION_MODELS
+-from .requests import CLIENT_REQUEST_MODELS
++from .notifications import NOTIFICATION_MODELS, WebEvent, frozen_event_methods
++from .requests import CLIENT_REQUEST_MODELS, DeviceRecord, RunRecord, WebDiagnostic
+ from .server_requests import SERVER_REQUEST_MODELS
+ from .timeout_decision import (
+     TimeoutDecisionEvent,
+@@ -25,6 +29,46 @@ TIMEOUT_DECISION_MODELS: tuple[type, ...] = (
+     TimeoutDecisionEvent,
+ )
+ 
++WEB_PROTOCOL_MODELS: tuple[type, ...] = (
++    RunRecord,
++    WebEvent,
++    DeviceRecord,
++    WebDiagnostic,
++)
++
++
++def required_field_breaks_legacy(model: type[BaseModel], fixture: Mapping[str, Any]) -> bool:
++    """True when a required schema field is absent from an old client payload."""
++    required = set(model.model_json_schema().get("required") or [])
++    return any(name not in fixture for name in required)
++
++
++def schema_digest(schema: Mapping[str, Any]) -> str:
++    """Digest of the frozen version, event names, error codes, and web models."""
++    capability = (
++        schema.get("$defs", {})
++        .get("PromptRequest", {})
++        .get("properties", {})
++        .get("capability", {})
++    )
++    names: list[str] = []
++    if isinstance(capability.get("enum"), list):
++        names = [str(item) for item in capability["enum"]]
++    else:
++        for item in capability.get("anyOf") or []:
++            if isinstance(item, dict) and isinstance(item.get("enum"), list):
++                names = [str(value) for value in item["enum"]]
++                break
++    frozen = {
++        "protocol_version": schema.get("protocol_version"),
++        "events": sorted(frozen_event_methods()),
++        "errors": [str(code) for code in ProtocolErrorCode.__args__],
++        "capabilities": names,
++        "web_models": [model.__name__ for model in WEB_PROTOCOL_MODELS],
++    }
++    raw = json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    return hashlib.sha256(raw).hexdigest()
++
+ 
+ def export_schema() -> dict[str, Any]:
+     """Export the full protocol schema for TS codegen and compatibility clients."""
+@@ -37,6 +81,7 @@ def export_schema() -> dict[str, Any]:
+         *HANDSHAKE_MODELS,
+         *ERROR_MODELS,
+         *TIMEOUT_DECISION_MODELS,
++        *WEB_PROTOCOL_MODELS,
+     )
+     defs: dict[str, Any] = {}
+     for model in models:
+@@ -90,8 +135,20 @@ def export_schema() -> dict[str, Any]:
+             for model in TIMEOUT_DECISION_MODELS
+         ],
+     }
++    defs["WebProtocol"] = {
++        "title": "WebProtocol",
++        "description": (
++            "Additive Run, Event, Device, and diagnostic models. "
++            "Not a session envelope. Old initialize, session/prompt, "
++            "and approval/request methods are unchanged."
++        ),
++        "oneOf": [
++            {"$ref": f"#/$defs/{model.__name__}"}
++            for model in WEB_PROTOCOL_MODELS
++        ],
++    }
+ 
+-    return {
++    exported = {
+         "$schema": "https://json-schema.org/draft/2020-12/schema",
+         "$id": "https://rxycode.dev/protocol/schema.json",
+         "title": "RxyCode Protocol",
+@@ -104,8 +161,11 @@ def export_schema() -> dict[str, Any]:
+             {"$ref": "#/$defs/AgentProtocol"},
+             {"$ref": "#/$defs/HandshakeProtocol"},
+             {"$ref": "#/$defs/TimeoutDecisionProtocol"},
++            {"$ref": "#/$defs/WebProtocol"},
+         ],
+     }
++    exported["schema_digest"] = schema_digest(exported)
++    return exported
+ 
+ 
+ def main() -> None:
+diff --git a/tests/web/w1/test_w1_c04_module.py b/tests/web/w1/test_w1_c04_module.py
+new file mode 100644
+index 00000000..9c975c57
+--- /dev/null
++++ b/tests/web/w1/test_w1_c04_module.py
+@@ -0,0 +1,68 @@
++"""WEB-W1-C04. The TypeScript client is compiled from the Python schema."""
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++SCHEMA_PATH = REPO / "protocol" / "schema.json"
++CLIENT = REPO / "frontend" / "protocol-client"
++
++
++def _bun() -> str:
++    exe = shutil.which("bun")
++    if exe:
++        return exe
++    fallback = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
++    if fallback.is_file():
++        return str(fallback)
++    raise FileNotFoundError("bun")
++
++
++def test_w1_c04_integration(tmp_path: Path):
++    """Export the schema, generate TS, and typecheck the real client."""
++    from protocol.schema import export_schema, schema_digest
++
++    schema = export_schema()
++    digest = schema_digest(schema)
++    assert schema["schema_digest"] == digest
++    assert schema["protocol_version"] == "1.1.0"
++    rendered = json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
++    assert SCHEMA_PATH.read_text(encoding="utf-8") == rendered
++    generated = tmp_path / "types.ts"
++    bun = _bun()
++    gen = subprocess.run(
++        [
++            bun,
++            "x",
++            "json2ts",
++            "-i",
++            str(SCHEMA_PATH),
++            "-o",
++            str(generated),
++            "--unreachableDefinitions",
++        ],
++        cwd=CLIENT,
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert gen.returncode == 0, gen.stderr
++    text = generated.read_text(encoding="utf-8")
++    for name in ("RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic"):
++        assert f"export interface {name}" in text
++    committed = (CLIENT / "src" / "generated" / "types.ts").read_text(encoding="utf-8")
++    for name in ("RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic"):
++        assert f"export interface {name}" in committed
++    digest_ts = (CLIENT / "src" / "generated" / "web_digest.ts").read_text(encoding="utf-8")
++    assert digest in digest_ts
++    check = subprocess.run(
++        [bun, "x", "tsc", "--noEmit"],
++        cwd=CLIENT,
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert check.returncode == 0, check.stdout + check.stderr
+diff --git a/tests/web/w1/test_w1_c04_unit.py b/tests/web/w1/test_w1_c04_unit.py
+new file mode 100644
+index 00000000..cd61d956
+--- /dev/null
++++ b/tests/web/w1/test_w1_c04_unit.py
+@@ -0,0 +1,57 @@
++"""WEB-W1-C04. New schema fields stay optional for old JSON-RPC clients."""
++from __future__ import annotations
++
++from protocol.requests import InitializeRequest, PromptRequest
++from protocol.schema import export_schema, required_field_breaks_legacy
++from protocol.server_requests import ApprovalRequest
++
++LEGACY_PROMPT = {
++    "method": "session/prompt",
++    "session_id": "s1",
++    "text": "hello",
++}
++LEGACY_INITIALIZE = {
++    "method": "initialize",
++    "client_name": "cli",
++    "client_version": "1.4.3",
++    "protocol_version": "1.1.0",
++}
++LEGACY_APPROVAL = {
++    "method": "approval/request",
++    "session_id": "s1",
++    "request_id": "r1",
++    "risk_level": "WRITE",
++    "action": "bash",
++}
++
++
++def test_w1_c04_contract():
++    """A legacy JSON-RPC fixture still parses to the old method and fields."""
++    schema = export_schema()
++    prompt = PromptRequest.model_validate(LEGACY_PROMPT)
++    initialize = InitializeRequest.model_validate(LEGACY_INITIALIZE)
++    approval = ApprovalRequest.model_validate(LEGACY_APPROVAL)
++    assert prompt.model_dump()["method"] == "session/prompt"
++    assert prompt.model_dump()["session_id"] == "s1"
++    assert prompt.model_dump()["text"] == "hello"
++    assert initialize.method == "initialize"
++    assert approval.method == "approval/request"
++    prompt_def = schema["$defs"]["PromptRequest"]
++    assert prompt_def["properties"]["method"]["const"] == "session/prompt"
++    assert "run_id" in prompt_def["properties"]
++    assert "run_id" not in prompt_def.get("required", [])
++    assert schema["$defs"]["InitializeRequest"]["properties"]["method"]["const"] == "initialize"
++    assert schema["$defs"]["ApprovalRequest"]["properties"]["method"]["const"] == "approval/request"
++    assert {"RunRecord", "WebEvent", "DeviceRecord", "WebDiagnostic"} <= set(schema["$defs"])
++
++
++def test_w1_c04_negative():
++    """A new required field makes the legacy fixture incompatible."""
++    assert required_field_breaks_legacy(PromptRequest, LEGACY_PROMPT) is False
++
++    class RequiredRun(PromptRequest):
++        """Temporary break used only to prove the checker fails closed."""
++
++        run_id: str
++
++    assert required_field_breaks_legacy(RequiredRun, LEGACY_PROMPT) is True

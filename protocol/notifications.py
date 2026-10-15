@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, Strict, model_validator
+from pydantic import BaseModel, Field, Strict, field_validator, model_validator
 
 from .timeout_decision import TimeoutDecisionEvent
 from .todo import TodoSnapshot
@@ -495,3 +495,29 @@ NOTIFICATION_MODELS: tuple[type[BaseModel], ...] = (
     WorkspaceChanged,
     TimeoutDecisionEvent,
 )
+
+
+def frozen_event_methods() -> frozenset[str]:
+    """Method constants already on the notification union. WebEvent may only map these."""
+    found: list[str] = []
+    for model in NOTIFICATION_MODELS:
+        field = model.model_fields.get("method")
+        default = getattr(field, "default", None)
+        if isinstance(default, str):
+            found.append(default)
+    return frozenset(found)
+
+
+class WebEvent(BaseModel):
+    """One envelope around an existing notification method. It does not add a wire method."""
+
+    method: str
+    run_id: str | None = None
+    payload: JsonObject = Field(default_factory=dict)
+
+    @field_validator("method")
+    @classmethod
+    def known_method(cls, value: str) -> str:
+        if value not in frozen_event_methods():
+            raise ValueError(f"unknown event method: {value}")
+        return value

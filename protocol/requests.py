@@ -85,6 +85,14 @@ class PromptRequest(BaseModel):
         default=None,
         description="Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
     )
+    run_id: str | None = Field(
+        default=None,
+        description="Optional server-minted run id. Old clients omit it.",
+    )
+    device_id: str | None = Field(
+        default=None,
+        description="Optional device id. Old clients omit it.",
+    )
 
 
 class InterruptRequest(BaseModel):
@@ -1443,6 +1451,29 @@ class PluginConnectCallbackRequest(BaseModel):
     name: str
     code: str
     state: str
+
+
+class RunRecord(BaseModel):
+    """One server-minted run. This is not a second session and not a new RPC method."""
+
+    run_id: str
+    session_id: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+
+
+class DeviceRecord(BaseModel):
+    """A client device. Capability names are not execution grants."""
+
+    device_id: str
+    kind: Literal["desktop", "cli", "web"]
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class WebDiagnostic(BaseModel):
+    """Additive web diagnostic. Existing ProtocolErrorCode values stay unchanged."""
+
+    code: Literal["RUN_CANCELLED", "DEVICE_UNSUPPORTED", "CAPABILITY_DENIED"]
+    retryable: bool = False
 
 
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (

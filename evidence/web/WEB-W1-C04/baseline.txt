@@ -1,0 +1,8 @@
+parent branch: feat/rxycode-web
+parent HEAD before WEB-W1-C04: 187285b077c88e90b0a6334e3188742fd9a35d12
+upstream: none
+anchors present: protocol/requests.py class PromptRequest, protocol/notifications.py class, protocol/schema.py export_schema, protocol/schema.json $defs, frontend/protocol-client/
+frontend/protocol-client exists and already generates src/generated/types.ts from schema.json. This card consumes the new generated types from that file. It does not add a second handwritten DTO.
+protocol version stays 1.1.0.
+The previous schema.json blob is CRLF. The exporter and tests/test_protocol_schema.py compare LF JSON. Regeneration writes LF. git diff --ignore-space-at-eol is the content delta.
+W0 exit is not claimed. CW03 and CW04 stay P0 OPEN.

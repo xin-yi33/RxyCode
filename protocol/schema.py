@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+from collections.abc import Mapping
 from typing import Any
 
+from pydantic import BaseModel
+
 from .agents import AGENT_PROTOCOL_MODELS
-from .errors import ERROR_MODELS
+from .errors import ERROR_MODELS, ProtocolErrorCode
 from .handshake import HANDSHAKE_MODELS
-from .notifications import NOTIFICATION_MODELS
-from .requests import CLIENT_REQUEST_MODELS
+from .notifications import NOTIFICATION_MODELS, WebEvent, frozen_event_methods
+from .requests import CLIENT_REQUEST_MODELS, DeviceRecord, RunRecord, WebDiagnostic
 from .server_requests import SERVER_REQUEST_MODELS
 from .timeout_decision import (
     TimeoutDecisionEvent,
@@ -25,6 +29,46 @@ TIMEOUT_DECISION_MODELS: tuple[type, ...] = (
     TimeoutDecisionEvent,
 )
 
+WEB_PROTOCOL_MODELS: tuple[type, ...] = (
+    RunRecord,
+    WebEvent,
+    DeviceRecord,
+    WebDiagnostic,
+)
+
+
+def required_field_breaks_legacy(model: type[BaseModel], fixture: Mapping[str, Any]) -> bool:
+    """True when a required schema field is absent from an old client payload."""
+    required = set(model.model_json_schema().get("required") or [])
+    return any(name not in fixture for name in required)
+
+
+def schema_digest(schema: Mapping[str, Any]) -> str:
+    """Digest of the frozen version, event names, error codes, and web models."""
+    capability = (
+        schema.get("$defs", {})
+        .get("PromptRequest", {})
+        .get("properties", {})
+        .get("capability", {})
+    )
+    names: list[str] = []
+    if isinstance(capability.get("enum"), list):
+        names = [str(item) for item in capability["enum"]]
+    else:
+        for item in capability.get("anyOf") or []:
+            if isinstance(item, dict) and isinstance(item.get("enum"), list):
+                names = [str(value) for value in item["enum"]]
+                break
+    frozen = {
+        "protocol_version": schema.get("protocol_version"),
+        "events": sorted(frozen_event_methods()),
+        "errors": [str(code) for code in ProtocolErrorCode.__args__],
+        "capabilities": names,
+        "web_models": [model.__name__ for model in WEB_PROTOCOL_MODELS],
+    }
+    raw = json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
 
 def export_schema() -> dict[str, Any]:
     """Export the full protocol schema for TS codegen and compatibility clients."""
@@ -37,6 +81,7 @@ def export_schema() -> dict[str, Any]:
         *HANDSHAKE_MODELS,
         *ERROR_MODELS,
         *TIMEOUT_DECISION_MODELS,
+        *WEB_PROTOCOL_MODELS,
     )
     defs: dict[str, Any] = {}
     for model in models:
@@ -90,8 +135,20 @@ def export_schema() -> dict[str, Any]:
             for model in TIMEOUT_DECISION_MODELS
         ],
     }
+    defs["WebProtocol"] = {
+        "title": "WebProtocol",
+        "description": (
+            "Additive Run, Event, Device, and diagnostic models. "
+            "Not a session envelope. Old initialize, session/prompt, "
+            "and approval/request methods are unchanged."
+        ),
+        "oneOf": [
+            {"$ref": f"#/$defs/{model.__name__}"}
+            for model in WEB_PROTOCOL_MODELS
+        ],
+    }
 
-    return {
+    exported = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://rxycode.dev/protocol/schema.json",
         "title": "RxyCode Protocol",
@@ -104,8 +161,11 @@ def export_schema() -> dict[str, Any]:
             {"$ref": "#/$defs/AgentProtocol"},
             {"$ref": "#/$defs/HandshakeProtocol"},
             {"$ref": "#/$defs/TimeoutDecisionProtocol"},
+            {"$ref": "#/$defs/WebProtocol"},
         ],
     }
+    exported["schema_digest"] = schema_digest(exported)
+    return exported
 
 
 def main() -> None:
