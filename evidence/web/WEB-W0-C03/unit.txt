@@ -1,4 +1,4 @@
-..                                                                       [100%]
+...                                                                      [100%]
 ============================== warnings summary ===============================
 tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
 tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
@@ -11,4 +11,4 @@ tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
     from .prompt_attachments import (
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-2 passed, 4 warnings in 0.25s
+3 passed, 4 warnings in 1.53s

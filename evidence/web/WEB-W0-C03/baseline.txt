@@ -10,5 +10,5 @@ python=3.13.9
 ruff=0.12.0
 ruff_check=tests/web/w0/test_w0_c03_unit.py and test_w0_c03_module.py All checks passed
 typescript=bun x tsc --noEmit in frontend/protocol-client exit 0
-installed_wheel=python -m pip show rxycode exit 1, package not found
+installed_wheel=built rxycode-1.4.3-py3-none-any.whl and pip install --target succeeded; importlib.metadata.version is 1.4.3. The wheel file was not committed.
 desktop_ui=not launched; no desktop assertion is marked passed

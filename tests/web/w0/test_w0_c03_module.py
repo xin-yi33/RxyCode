@@ -98,22 +98,19 @@ console.log(JSON.stringify(seen));
         from appserver.server import AppServer
 
         server = AppServer(stub=True)
-
-        class Host:
-            def alive(self) -> bool:
-                return True
-
-            degraded = False
-            retiring = False
-
-        host = Host()
-        server._session_hosts["ses-a"] = host
-        assert await server._host_for_session("ses-a") is host
+        first_record = server._sessions.create(tmp_path / "ws-host")
+        first = await server._host_for_session(first_record.session_id)
         try:
-            await server._host_for_session("ses-b")
-        except RuntimeError as exc:
-            assert "unknown session" in str(exc)
-        else:
-            raise AssertionError("ses-b reused or created without a session record")
+            assert first.session_id == first_record.session_id
+            assert await server._host_for_session(first_record.session_id) is first
+            second_record = server._sessions.create(tmp_path / "ws-other")
+            second = await server._host_for_session(second_record.session_id)
+            try:
+                assert second is not first
+                assert second.session_id == second_record.session_id
+            finally:
+                await server._kill_session_host(second_record.session_id)
+        finally:
+            await server._kill_session_host(first_record.session_id)
 
     asyncio.run(host_for_one_session())
