@@ -1,5 +1,7 @@
 parent branch: feat/rxycode-web
 parent HEAD before WEB-W1-C02: 6301907ac9d55a1801fe0921b18f2fd02bce34ad
+card commits: 12c4a953 then 81b61d1976854fe5f7285c69d729bda2de72146e
+nested card amendment: 746885d
 nested docs/plans/opus5-plan HEAD: ecc3e73
 upstream: none
 anchors present: core/session.py class PromptResult, appserver/runtime.py bind_prompt_context
