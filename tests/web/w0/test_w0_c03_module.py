@@ -1,6 +1,7 @@
 """WEB-W0-C03. Appserver wire events are consumed by the protocol client."""
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -85,3 +86,34 @@ console.log(JSON.stringify(seen));
     assert journal.has_pending(attempt_id) is True
     retry = binding.next_call("write", {"path": "a.txt"})
     assert journal.reserve(attempt_id, retry).action == "uncertain"
+
+    definitions = sorted(
+        path.relative_to(REPO).as_posix()
+        for path in (REPO / "execution").rglob("*.py")
+        if "async def execute_tool" in path.read_text(encoding="utf-8")
+    )
+    assert definitions == ["execution/tool_orchestrator.py"]
+
+    async def host_for_one_session() -> None:
+        from appserver.server import AppServer
+
+        server = AppServer(stub=True)
+
+        class Host:
+            def alive(self) -> bool:
+                return True
+
+            degraded = False
+            retiring = False
+
+        host = Host()
+        server._session_hosts["ses-a"] = host
+        assert await server._host_for_session("ses-a") is host
+        try:
+            await server._host_for_session("ses-b")
+        except RuntimeError as exc:
+            assert "unknown session" in str(exc)
+        else:
+            raise AssertionError("ses-b reused or created without a session record")
+
+    asyncio.run(host_for_one_session())
