@@ -61,6 +61,12 @@ def create_app(
     app = FastAPI(title="RxyCode Web", version="1.4.3", lifespan=lifespan)
     app.state.engine = create_engine(database_url, poolclass=NullPool)
     app.state.database_url = database_url
+    try:
+        from rxycode_worker.agent_events import publish_database_url
+    except ImportError:
+        publish_database_url = None
+    if publish_database_url is not None:
+        publish_database_url(database_url)
     app.state.secret = checked
     app.state.mode = mode
     app.state.secure = mode == "cloud"

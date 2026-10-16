@@ -10,6 +10,31 @@ from typing import Any
 
 _INTERMEDIATE = {"intermediate", "partial_result", "progress", "reasoning.summary"}
 _BOUND: dict[str, dict[str, Any]] = {}
+_CURRENT: dict[str, str] = {}
+_APPLIED: dict[str, int] = {}
+
+
+def publish_database_url(database_url: str) -> None:
+    """Remember the web database for this process and its worker children."""
+    import os
+
+    os.environ["RXYCODE_WEB_DATABASE_URL"] = database_url
+    _CURRENT["database_url"] = database_url
+
+
+def clear_web_run() -> None:
+    """Drop the process-local run coordinates. The database URL stays published."""
+    for key in ("tenant_id", "run_id", "parent_id"):
+        _CURRENT.pop(key, None)
+    _APPLIED.clear()
+
+
+def remember_web_run(database_url: str, tenant_id: str, run_id: str, parent_id: str = "") -> None:
+    """Record the run a worker is executing so spawn can write its log."""
+    _CURRENT["database_url"] = database_url
+    _CURRENT["tenant_id"] = tenant_id
+    _CURRENT["run_id"] = run_id
+    _CURRENT["parent_id"] = parent_id or run_id
 
 
 def bind_run(run_id: str, *, worker: Any | None = None, manager: Any | None = None) -> None:
@@ -45,12 +70,12 @@ async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[
 
 
 def default_run_journal() -> RunJournal | None:
-    """Journal configured for this process, if the web run coordinates are set."""
+    """Journal for the run this process is executing."""
     import os
 
-    database_url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
-    tenant_id = os.environ.get("RXYCODE_WEB_TENANT_ID", "")
-    run_id = os.environ.get("RXYCODE_WEB_RUN_ID", "")
+    database_url = _CURRENT.get("database_url") or os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
+    tenant_id = _CURRENT.get("tenant_id") or os.environ.get("RXYCODE_WEB_TENANT_ID", "")
+    run_id = _CURRENT.get("run_id") or os.environ.get("RXYCODE_WEB_RUN_ID", "")
     if not database_url or not tenant_id or not run_id:
         return None
     return RunJournal(database_url, tenant_id, run_id)
@@ -59,7 +84,88 @@ def default_run_journal() -> RunJournal | None:
 def default_parent_id() -> str:
     import os
 
-    return os.environ.get("RXYCODE_WEB_PARENT_ID", "")
+    return _CURRENT.get("parent_id") or os.environ.get("RXYCODE_WEB_PARENT_ID", "")
+
+
+def lookup_web_run(database_url: str, session_id: str) -> dict[str, str] | None:
+    """Find the run row for this worker session. The id or the session id matches."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    if not database_url or not session_id:
+        return None
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT id, tenant_id
+                    FROM runs
+                    WHERE id = :session OR session_id = :session
+                    ORDER BY CASE WHEN id = :session THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """
+                ),
+                {"session": session_id},
+            ).first()
+    finally:
+        engine.dispose()
+    if row is None:
+        return None
+    return {"run_id": str(row.id), "tenant_id": str(row.tenant_id)}
+
+
+def load_command_events(database_url: str, run_id: str, after_seq: int) -> list[dict[str, Any]]:
+    """Read steer and child-cancel commands committed after the last applied seq."""
+    import json
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT seq, type, payload
+                    FROM run_events
+                    WHERE run_id = :run_id
+                      AND seq > :after_seq
+                      AND type IN ('steer.accepted', 'child.cancel')
+                    ORDER BY seq
+                    """
+                ),
+                {"run_id": run_id, "after_seq": after_seq},
+            ).all()
+    finally:
+        engine.dispose()
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        payload = row.payload
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        events.append({"seq": int(row.seq), "type": str(row.type), "payload": dict(payload or {})})
+    return events
+
+
+async def consume_persisted_commands(database_url: str, run_id: str) -> list[dict[str, object]]:
+    """Deliver committed commands to the worker bound in this process."""
+    applied: list[dict[str, object]] = []
+    after = _APPLIED.get(run_id, 0)
+    for event in load_command_events(database_url, run_id, after):
+        result = await deliver_persisted_command(
+            run_id,
+            str(event["type"]),
+            dict(event["payload"]),
+        )
+        delivered = bool(result.get("delivered") or result.get("accepted"))
+        if not delivered:
+            break
+        _APPLIED[run_id] = int(event["seq"])
+        applied.append(result)
+    return applied
 
 
 class RunJournal:

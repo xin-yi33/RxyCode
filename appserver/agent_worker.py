@@ -1690,10 +1690,55 @@ class AgentWorker:
                     }
                 )
 
+    def activate_web_database(self) -> None:
+        """Bind this worker to the web run stored for its session."""
+        try:
+            from rxycode_worker.agent_events import (
+                bind_run,
+                lookup_web_run,
+                remember_web_run,
+            )
+        except ImportError:
+            return
+        url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
+        session_id = str(getattr(self, "_session_id", "") or "")
+        if not url or not session_id:
+            return
+        found = lookup_web_run(url, session_id)
+        if found is None:
+            return
+        remember_web_run(url, found["tenant_id"], found["run_id"], parent_id=found["run_id"])
+        bind_run(found["run_id"], worker=self)
+        self._web_run_id = found["run_id"]
+
+    async def drain_web_commands(self) -> list[dict[str, object]]:
+        """Apply steer and child-cancel rows committed for this run."""
+        try:
+            from rxycode_worker.agent_events import consume_persisted_commands
+        except ImportError:
+            return []
+        url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
+        run_id = str(getattr(self, "_web_run_id", "") or getattr(self, "_session_id", "") or "")
+        if not url or not run_id:
+            return []
+        return await consume_persisted_commands(url, run_id)
+
+    async def _watch_web_commands(self) -> None:
+        while True:
+            try:
+                await self.drain_web_commands()
+            except Exception:
+                _logger.warning("web command drain failed", exc_info=True)
+            await asyncio.sleep(0.2)
+
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         pending: set[asyncio.Task[Any]] = set()
         self._ensure_writer()
+        self.activate_web_database()
+        watcher: asyncio.Task[Any] | None = None
+        if os.environ.get("RXYCODE_WEB_DATABASE_URL"):
+            watcher = asyncio.create_task(self._watch_web_commands())
         try:
             while True:
                 line = await loop.run_in_executor(None, sys.stdin.readline)
@@ -1751,6 +1796,10 @@ class AgentWorker:
         except Exception:
             raise
         finally:
+            if watcher is not None:
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
             for task in list(self._subagent_tasks):
                 task.cancel()
             await asyncio.gather(*self._subagent_tasks, return_exceptions=True)

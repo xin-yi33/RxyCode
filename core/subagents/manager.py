@@ -169,6 +169,24 @@ class ChildSessionManager:
         """Attach the authoritative append-only event store for this tree."""
         self._event_store = store
 
+    def _journal_child(self, method: str, session: ChildSession, payload: dict) -> None:
+        """Write the same lifecycle notice into the web run log, when one is active."""
+        try:
+            from rxycode_worker.agent_events import default_run_journal
+        except ImportError:
+            return
+        journal = default_run_journal()
+        if journal is None:
+            return
+        root = str(getattr(session, "root_session_id", "") or "")
+        if journal.run_id not in {root, str(getattr(session, "session_id", "") or "")}:
+            return
+        parent = str(getattr(session, "parent_session_id", "") or "") or root
+        try:
+            journal.record(method, str(session.session_id), payload, parent_id=parent)
+        except Exception:
+            return
+
     def _emit(self, event_name: str, payload: dict) -> None:
         session_id = str(payload.get("session_id", ""))
         if (
@@ -662,6 +680,7 @@ class ChildSessionManager:
                 )
 
         self._emit("child_session/started", {"session_id": session.session_id})
+        self._journal_child("event/agent_started", session, {"status": "running"})
 
         # The manager owns leases for its entire Primary tree.  A child never
         # self-asserts a lease id: requested paths are acquired atomically here
@@ -726,6 +745,11 @@ class ChildSessionManager:
             except Exception:
                 pass
 
+            self._journal_child(
+                "event/agent_done",
+                session,
+                {"status": terminal_status.value},
+            )
             self._emit(f"child_session/{terminal_status.value}", {
                 "session_id": session.session_id,
                 "status": terminal_status.value,

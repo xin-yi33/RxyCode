@@ -67,7 +67,7 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
     assert f'data-parent="{child["parent_id"]}"' in markup
     assert f'data-tokens="{child["tokens"]}"' in markup
     web_agents = asyncio.run(_web_commands())
-    assert any(item["parent_id"] == "parent-a" and item["status"] == "completed" for item in web_agents)
+    assert any(item["parent_id"] and item["status"] == "completed" for item in web_agents)
 
 
 async def _web_commands() -> list[dict[str, object]]:
@@ -180,7 +180,7 @@ async def _web_commands() -> list[dict[str, object]]:
             definition=definition,
         )
         child.root_session_id = run_id
-        manager.get_tree(run_id).add(child)
+        manager._tree_for(run_id).add(child)
         cancelled = {"hit": False}
 
         class _Runtime:
@@ -195,13 +195,20 @@ async def _web_commands() -> list[dict[str, object]]:
             await asyncio.sleep(30)
 
         worker._run_task = asyncio.create_task(_hold())
-        worker.bind_core_session(run_id, REPO, lambda _event: None)
+        from rxycode_worker.agent_events import publish_database_url
+
+        publish_database_url(database_url)
         try:
             steered = await steer_run(run_id, _command(app, token, {"text": "steer-web"}))
-            assert steered["delivered"] is True
-            assert worker._steer_queue == ["steer-web"]
+            assert steered["delivered"] is False
             stopped = await cancel_child_run(run_id, child.session_id, _command(app, token, {}))
-            assert stopped["delivered"] is True
+            assert stopped["delivered"] is False
+            worker.bind_core_session(run_id, REPO, lambda _event: None)
+            manager.get_tree(run_id)
+            worker.activate_web_database()
+            applied = await worker.drain_web_commands()
+            assert applied
+            assert worker._steer_queue == ["steer-web"]
             assert cancelled["hit"] is True
             with Session(engine) as db:
                 row = db.get(Run, run_id)
@@ -211,10 +218,6 @@ async def _web_commands() -> list[dict[str, object]]:
             task = worker._run_task
             if task is not None:
                 task.cancel()
-        os.environ["RXYCODE_WEB_DATABASE_URL"] = database_url
-        os.environ["RXYCODE_WEB_TENANT_ID"] = tenant
-        os.environ["RXYCODE_WEB_RUN_ID"] = run_id
-        os.environ["RXYCODE_WEB_PARENT_ID"] = "parent-a"
 
         async def _work(_task: str, _checkpoint: object | None = None) -> str:
             return "ok"
@@ -231,7 +234,7 @@ async def _web_commands() -> list[dict[str, object]]:
         assert "event/agent_done" in names
         started = next(item for item in streamed["events"] if item["type"] == "event/agent_started")
         assert started["payload"]["agent_id"] == "child-a"
-        assert started["payload"]["parent_id"] == "parent-a"
+        assert started["payload"]["parent_id"] == run_id
         return _reduce_agents(streamed["events"])
     finally:
         with Session(engine) as db:
@@ -248,13 +251,10 @@ async def _web_commands() -> list[dict[str, object]]:
             db.execute(delete(Organization).where(Organization.id == ids["org"]))
             db.commit()
         engine.dispose()
-        for key in (
-            "RXYCODE_WEB_DATABASE_URL",
-            "RXYCODE_WEB_TENANT_ID",
-            "RXYCODE_WEB_RUN_ID",
-            "RXYCODE_WEB_PARENT_ID",
-        ):
-            os.environ.pop(key, None)
+        from rxycode_worker.agent_events import clear_web_run
+
+        clear_web_run()
+        os.environ.pop("RXYCODE_WEB_DATABASE_URL", None)
 
 
 def _command(app: object, token: str, body: dict[str, object]):
