@@ -104,6 +104,7 @@ def _expect_run(page) -> None:
     answer = page.locator("[data-answer]")
     expect(answer).to_have_text("final user answer")
     expect(answer).not_to_contain_text("hidden reasoning")
+    expect(page.locator("[data-run-status='pending']")).to_be_visible()
 
 
 def test_w3_c03_integration() -> None:

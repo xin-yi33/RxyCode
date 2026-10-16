@@ -15,7 +15,7 @@ export function ChatPage() {
   const { projection } = live
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
-      <p data-connection={live.connected ? "open" : "closed"}>
+      <p data-connection={live.connected ? "open" : "closed"} data-run-status={live.projection.runStatus}>
         {live.connected ? "已连接" : "正在连接"}
       </p>
       <section data-answer>{projection.answer}</section>

@@ -91,3 +91,28 @@ def test_w3_c03_negative() -> None:
     assert done["answer"].endswith("final user answer")
     assert "thought" not in done["answer"]
     assert done["intermediate"] == ["earlier thought", "child thought"]
+    streamed = reduce_events(
+        [
+            {"seq": 1, "type": "assistant.delta", "payload": {"text": "Hello"}},
+            {"seq": 2, "type": "assistant.delta", "payload": {"text": " there"}},
+        ]
+    )
+    assert streamed["answer"] == "Hello there"
+    resolved = reduce_events(
+        [
+            {"seq": 1, "type": "approval.requested", "payload": {"approval_id": "appr-9"}},
+            {
+                "seq": 2,
+                "type": "approval.resolved",
+                "payload": {"approval_id": "appr-9", "decision": "rejected"},
+            },
+        ]
+    )
+    assert resolved["approvals"][0]["status"] == "rejected"
+    failed = reduce_events(
+        [
+            {"seq": 1, "type": "run.started", "payload": {}},
+            {"seq": 2, "type": "run.failed", "payload": {}},
+        ]
+    )
+    assert failed["runStatus"] == "failed"
