@@ -8,4 +8,4 @@
 - Unit 2 passed. Module 1 passed. No skip. Cache regression: 30 passed, 2 skipped with the existing "no tools registered in global test registry" message. See unit.txt, integration.txt, and regression.txt.
 - E2E-WEB-04 has no separate UI harness. tools/edit.py was not rewritten. A live jest binary was not run. Not claimed as 已落实.
 - Audit 1 returned VERDICT: PROBLEMS because the first RXY_PYTEST_EXIT marker could be printed by the test. The parser now uses the last marker, which the wrapper prints after pytest returns. The negative test prints RXY_PYTEST_EXIT 0 and still fails the assertion. The report stays failed.
-- gpt-6-luna max re-audit is not recorded yet. Session 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w6c02-audit-2.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
