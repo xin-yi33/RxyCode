@@ -598,7 +598,7 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
     # Drop -Value/-Content payloads and PowerShell here-strings so report
     # bodies that quote blocked paths do not false-trigger.
     scrubbed = re.sub(
-        r"(?is)(-(?:Value|Content))\s+(@\"[\s\S]*?\"@|'[^']*'|\"[^\"]*\")",
+        r"(?is)(?<![A-Za-z])(-(?:Value|Content))\s+(@\"[\s\S]*?\"@|'[^']*'|\"[^\"]*\")",
         " ",
         cmd,
     )
