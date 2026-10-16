@@ -9,6 +9,9 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
+
 from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
 from rxycode_runner.sandbox.provider import AttachRefused
 
@@ -137,6 +140,33 @@ class PreviewProxy:
         if not rows:
             raise PreviewRefused("preview refused")
         return max(rows, key=lambda row: float(row["expires"]))
+
+    def build_router(self) -> APIRouter:
+        proxy = self
+        router = APIRouter()
+
+        @router.get("/api/v1/previews/{sandbox_id}/{port}")
+        def get_preview(sandbox_id: str, port: int, request: Request) -> Response:
+            owner = request.headers.get("x-owner-id", "")
+            tenant = request.headers.get("x-tenant-id", "")
+            try:
+                page = proxy.fetch(
+                    tenant_id=tenant,
+                    owner_id=owner,
+                    sandbox_id=sandbox_id,
+                    port=port,
+                )
+            except PreviewRefused as exc:
+                raise HTTPException(status_code=403, detail="preview refused") from exc
+            except TargetUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return Response(
+                page.body,
+                media_type="text/html",
+                headers={"Content-Security-Policy": page.csp},
+            )
+
+        return router
 
 
 def _same_caller(

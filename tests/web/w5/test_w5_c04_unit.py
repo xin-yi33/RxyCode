@@ -133,6 +133,24 @@ def test_w5_c04_contract() -> None:
         )
         assert nonce in page.body
         assert page.proxy_path == granted.proxy_path
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        app.include_router(proxy.build_router())
+        client = TestClient(app)
+        shown = client.get(
+            page.proxy_path,
+            headers={"x-owner-id": "user-a", "x-tenant-id": "tenant-a"},
+        )
+        assert shown.status_code == 200
+        assert nonce in shown.text
+        assert "default-src" in shown.headers["content-security-policy"]
+        denied = client.get(
+            page.proxy_path,
+            headers={"x-owner-id": "user-b", "x-tenant-id": "tenant-b"},
+        )
+        assert denied.status_code == 403
         assert page.proxy_path.startswith("/api/v1/previews/")
         assert "default-src" in page.csp
         viewed = _render(page.proxy_path, page.body, False)
