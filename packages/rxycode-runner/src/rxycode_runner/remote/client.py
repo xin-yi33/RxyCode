@@ -8,6 +8,7 @@ import logging
 import ssl
 import threading
 from typing import Any
+from urllib.parse import urlparse
 
 import websockets
 
@@ -49,8 +50,23 @@ def writer_count(device_id: str) -> int:
         return len(_WRITERS.get(device_id, ()))
 
 
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def require_outbound_tls(url: str) -> None:
+    """Only loopback may use ws://. Any other host must be wss://."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme == "wss":
+        return
+    if parsed.scheme == "ws" and host in _LOOPBACK:
+        return
+    raise ConnectRejected("TLS_REQUIRED")
+
+
 def tls_context_for(url: str) -> ssl.SSLContext | None:
     """WSS keeps the default certificate check. Verification is not turned off."""
+    require_outbound_tls(url)
     if not url.startswith("wss://"):
         return None
     return ssl.create_default_context()
@@ -67,6 +83,7 @@ def run_connect(
     protocol_version: str = _PROTOCOL,
     heartbeat_seconds: float = 15.0,
 ) -> None:
+    require_outbound_tls(url)
     asyncio.run(
         _connect(
             url=url,

@@ -13,8 +13,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket
+from fastapi import APIRouter, FastAPI, Request, WebSocket
 
+from rxycode_server.api.auth import AuthRecord, _hash_token, current_record, require_write
 from rxycode_server.devices.pairing import PairingBook, PairingRejected
 
 logger = logging.getLogger(__name__)
@@ -42,21 +43,9 @@ class Registry:
     def __init__(self, *, clock: Callable[[], float], pairing_ttl: float, ttl: float) -> None:
         self.clock = clock
         self.ttl = ttl
-        self.browsers: dict[str, str] = {}
         self.devices: dict[str, DeviceRecord] = {}
         self.sockets: dict[str, WebSocket] = {}
         self.pairings = PairingBook(clock=clock, ttl=pairing_ttl)
-
-    def open_browser(self, tenant_id: str) -> str:
-        token = secrets.token_urlsafe(32)
-        self.browsers[token] = tenant_id
-        return token
-
-    def tenant_for_browser(self, token: str) -> str:
-        tenant_id = self.browsers.get(token)
-        if tenant_id is None:
-            raise HTTPException(status_code=401, detail="UNAUTHORIZED")
-        return tenant_id
 
     def issue(self, tenant_id: str) -> str:
         return self.pairings.issue(tenant_id)
@@ -187,11 +176,18 @@ async def _close(socket: WebSocket) -> None:
 
 def create_device_app(
     *,
+    secret: str,
     clock: Callable[[], float] | None = None,
     pairing_ttl: float = 300.0,
     ttl: float = 30.0,
 ) -> FastAPI:
+    if len(secret) < 32:
+        raise RuntimeError("device gateway requires a local random secret")
     app = FastAPI(title="RxyCode Devices")
+    app.state.secret = secret
+    app.state.sessions = {}
+    app.state.allowed_origins = ()
+    app.state.secure = False
     app.state.device_registry = Registry(
         clock=clock or time.time,
         pairing_ttl=pairing_ttl,
@@ -207,29 +203,16 @@ def build_router() -> APIRouter:
     def registry(request: Request) -> Registry:
         return request.app.state.device_registry
 
-    @router.post("/api/v1/devices/browser-sessions")
-    def open_browser(body: dict[str, str], request: Request) -> dict[str, str]:
-        tenant_id = str(body.get("tenant_id") or "")
-        if not tenant_id:
-            raise HTTPException(status_code=400, detail="TENANT_REQUIRED")
-        token = registry(request).open_browser(tenant_id)
-        return {"token": token}
-
     @router.post("/api/v1/devices/pairings")
     def issue_pairing(request: Request) -> dict[str, str]:
-        header = request.headers.get("authorization", "")
-        token = header.removeprefix("Bearer ").strip()
-        book = registry(request)
-        tenant_id = book.tenant_for_browser(token)
-        return {"code": book.issue(tenant_id)}
+        require_write(request)
+        record = current_record(request)
+        return {"code": registry(request).issue(record.tenant_id)}
 
     @router.get("/api/v1/devices")
     def list_devices(request: Request) -> dict[str, object]:
-        header = request.headers.get("authorization", "")
-        token = header.removeprefix("Bearer ").strip()
-        book = registry(request)
-        tenant_id = book.tenant_for_browser(token)
-        return {"devices": book.list_for(tenant_id)}
+        record = current_record(request)
+        return {"devices": registry(request).list_for(record.tenant_id)}
 
     @router.websocket("/api/v1/devices/socket")
     async def device_socket(socket: WebSocket) -> None:
@@ -266,6 +249,7 @@ class RunningGateway:
         self.port = port
         self.http = f"http://127.0.0.1:{port}"
         self.ws = f"ws://127.0.0.1:{port}/api/v1/devices/socket"
+        self.app.state.allowed_origins = (self.http,)
 
     def _registry(self) -> Registry:
         return self.app.state.device_registry
@@ -281,6 +265,17 @@ class RunningGateway:
 
     def token_accepted(self, token: str) -> bool:
         return self._registry().token_accepted(token)
+
+    def browser_session(self, tenant_id: str) -> str:
+        """Store a browser session the same way local login does. No HTTP mint."""
+        token = secrets.token_urlsafe(32)
+        digest = _hash_token(self.app.state.secret, token)
+        self.app.state.sessions[digest] = AuthRecord(
+            user_id="local-user",
+            tenant_id=tenant_id,
+            created=time.monotonic(),
+        )
+        return token
 
     def client_token(self, device_id: str) -> str:
         from rxycode_runner.remote.client import token_for
@@ -318,11 +313,12 @@ class RunningGateway:
 
 def serve_in_thread(
     *,
+    secret: str,
     clock: Callable[[], float] | None = None,
     pairing_ttl: float = 300.0,
     ttl: float = 30.0,
 ) -> RunningGateway:
-    app = create_device_app(clock=clock, pairing_ttl=pairing_ttl, ttl=ttl)
+    app = create_device_app(secret=secret, clock=clock, pairing_ttl=pairing_ttl, ttl=ttl)
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     ready = threading.Event()

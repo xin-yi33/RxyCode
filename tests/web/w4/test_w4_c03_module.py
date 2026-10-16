@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from click.testing import CliRunner
 
+_SECRET = "local-web-secret-value-32bytes!!"
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
@@ -24,19 +25,18 @@ def test_w4_c03_integration() -> None:
     from rxycode_runner.remote.client import request_stop, reset_stop
     from rxycode_server.devices.gateway import serve_in_thread
 
-    gateway = serve_in_thread()
+    gateway = serve_in_thread(secret=_SECRET)
     reset_stop()
     thread: threading.Thread | None = None
     try:
-        opened = httpx.post(
-            f"{gateway.http}/api/v1/devices/browser-sessions",
-            json={"tenant_id": "tenant-a"},
-            timeout=5,
-        )
-        browser = opened.json()["token"]
+        csrf = "csrf-token-value-for-c03"
+        browser = gateway.browser_session("tenant-a")
+        cookies = {"rxy_session": browser, "rxy_csrf": csrf}
+        headers = {"Origin": gateway.http, "X-CSRF-Token": csrf}
         issued = httpx.post(
             f"{gateway.http}/api/v1/devices/pairings",
-            headers={"Authorization": f"Bearer {browser}"},
+            headers=headers,
+            cookies=cookies,
             timeout=5,
         )
         code = issued.json()["code"]

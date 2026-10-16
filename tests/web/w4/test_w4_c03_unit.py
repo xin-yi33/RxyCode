@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 from click.testing import CliRunner
 
+_SECRET = "local-web-secret-value-32bytes!!"
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
@@ -34,6 +35,14 @@ def _capture_logs() -> tuple[logging.Handler, list[str]]:
     return handler, found
 
 
+def _authorized(gateway: object, tenant_id: str = "tenant-a") -> tuple[str, dict[str, str], dict[str, str]]:
+    token = gateway.browser_session(tenant_id)  # type: ignore[attr-defined]
+    csrf = "csrf-token-value-for-c03"
+    cookies = {"rxy_session": token, "rxy_csrf": csrf}
+    headers = {"Origin": gateway.http, "X-CSRF-Token": csrf}  # type: ignore[attr-defined]
+    return token, cookies, headers
+
+
 def test_w4_c03_contract() -> None:
     """A local connect with an authorized pairing shows device, OS, and capability."""
     from RxyCode.RxyCode1_1_0.main import cli
@@ -48,20 +57,24 @@ def test_w4_c03_contract() -> None:
     assert context.check_hostname is True
 
     handler, lines = _capture_logs()
-    gateway = serve_in_thread()
+    gateway = serve_in_thread(secret=_SECRET)
     reset_stop()
     thread: threading.Thread | None = None
     try:
-        opened = httpx.post(
-            f"{gateway.http}/api/v1/devices/browser-sessions",
-            json={"tenant_id": "tenant-a"},
+        browser, cookies, headers = _authorized(gateway)
+        forged = httpx.post(f"{gateway.http}/api/v1/devices/pairings", timeout=5)
+        assert forged.status_code == 403
+        unsigned = httpx.post(
+            f"{gateway.http}/api/v1/devices/pairings",
+            headers=headers,
+            cookies={"rxy_csrf": cookies["rxy_csrf"]},
             timeout=5,
         )
-        opened.raise_for_status()
-        browser = opened.json()["token"]
+        assert unsigned.status_code == 401
         issued = httpx.post(
             f"{gateway.http}/api/v1/devices/pairings",
-            headers={"Authorization": f"Bearer {browser}"},
+            headers=headers,
+            cookies=cookies,
             timeout=5,
         )
         issued.raise_for_status()
@@ -95,7 +108,7 @@ def test_w4_c03_contract() -> None:
         while time.time() < deadline:
             response = httpx.get(
                 f"{gateway.http}/api/v1/devices",
-                headers={"Authorization": f"Bearer {browser}"},
+                cookies=cookies,
                 timeout=5,
             )
             response.raise_for_status()
@@ -117,7 +130,7 @@ def test_w4_c03_contract() -> None:
         assert device_token != browser
         denied = httpx.get(
             f"{gateway.http}/api/v1/devices",
-            headers={"Authorization": f"Bearer {device_token}"},
+            cookies={"rxy_session": device_token},
             timeout=5,
         )
         assert denied.status_code == 401
@@ -140,18 +153,20 @@ def test_w4_c03_negative() -> None:
     from rxycode_server.devices.gateway import serve_in_thread
 
     reset_stop()
+    plain = CliRunner().invoke(
+        cli,
+        ["connect", "--url", "ws://cloud.example/socket", "--code", "code", "--device-id", "desk-1"],
+    )
+    assert plain.exit_code != 0
+    assert "TLS_REQUIRED" in plain.output
     clock = {"now": 1_000.0}
-    gateway = serve_in_thread(clock=lambda: clock["now"], pairing_ttl=5)
+    gateway = serve_in_thread(secret=_SECRET, clock=lambda: clock["now"], pairing_ttl=5)
     try:
-        opened = httpx.post(
-            f"{gateway.http}/api/v1/devices/browser-sessions",
-            json={"tenant_id": "tenant-a"},
-            timeout=5,
-        )
-        browser = opened.json()["token"]
+        _browser, cookies, headers = _authorized(gateway)
         issued = httpx.post(
             f"{gateway.http}/api/v1/devices/pairings",
-            headers={"Authorization": f"Bearer {browser}"},
+            headers=headers,
+            cookies=cookies,
             timeout=5,
         )
         code = issued.json()["code"]
@@ -194,7 +209,7 @@ def test_w4_c03_negative() -> None:
         assert "BAD_VERSION" in version.output
         listed = httpx.get(
             f"{gateway.http}/api/v1/devices",
-            headers={"Authorization": f"Bearer {browser}"},
+            cookies=cookies,
             timeout=5,
         )
         assert listed.json()["devices"] == []
