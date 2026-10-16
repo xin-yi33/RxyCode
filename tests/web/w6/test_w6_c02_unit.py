@@ -85,7 +85,7 @@ def test_w6_c02_negative() -> None:
         _sample, test_file = _repo(
             root,
             "def add(a, b):\n    return a - b\n",
-            "from sample import add\n\ndef test_add():\n    assert add(1, 1) == 2\n",
+            "from sample import add\n\ndef test_add():\n    print('RXY_PYTEST_EXIT 0')\n    assert add(1, 1) == 2\n",
         )
         failed = run_tests(root=root, test_path=test_file)
         assert failed["exit_code"] != 0

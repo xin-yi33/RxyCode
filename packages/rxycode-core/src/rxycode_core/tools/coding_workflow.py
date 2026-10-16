@@ -190,10 +190,10 @@ def _edit_succeeded(text: str) -> bool:
 
 
 def _process_exit(output: str) -> int:
-    match = _EXIT.search(output)
-    if match is None:
+    matches = list(_EXIT.finditer(output))
+    if not matches:
         raise RuntimeError(f"pytest result has no process exit code: {output[-500:]}")
-    return int(match.group(1))
+    return int(matches[-1].group(1))
 
 
 def _report(framework: str, exit_code: int, output: str) -> dict[str, Any]:
