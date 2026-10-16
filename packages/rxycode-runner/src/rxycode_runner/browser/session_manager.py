@@ -18,6 +18,7 @@ from typing import Any
 
 _SESSIONS: dict[str, "Session"] = {}
 _HANDOFF: dict[str, tuple[Any, Any]] = {}
+_PROFILE_KIND: dict[str, str] = {}
 _PLAYWRIGHT: Any = None
 
 
@@ -39,12 +40,20 @@ def open_agent_context(*, profile_dir: str | Path, kind: str) -> dict[str, objec
     target = Path(profile_dir)
     if _user_browser_dir(target):
         return _refused("user Chrome data is not shared")
+    key = _profile_key(target)
+    previous = _PROFILE_KIND.get(key)
+    if previous is not None and previous != kind:
+        return _refused("agent and preview profiles must stay distinct")
+    for existing in _SESSIONS.values():
+        if _profile_key(existing.profile_dir) == key:
+            return _refused("browser profile is already open")
     target.mkdir(parents=True, exist_ok=True)
     try:
         playwright, context, page = _launch(target)
     except Exception as exc:
         return _refused(f"browser launch failed: {type(exc).__name__}: {exc}")
     session_id = "br-" + uuid.uuid4().hex[:12]
+    _PROFILE_KIND[key] = kind
     _SESSIONS[session_id] = Session(
         session_id=session_id,
         profile_dir=target,
@@ -153,10 +162,11 @@ def present_handoff(*, agent_session_id: str, url: str) -> dict[str, object]:
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page()
 
-    def grant(requested: str) -> None:
+    def grant(requested: str) -> bool:
         if requested != agent_session_id:
-            return
-        authorize_handoff(session_id=agent_session_id, authorized=True)
+            return False
+        result = authorize_handoff(session_id=agent_session_id, authorized=True)
+        return result.get("status") == "authorized"
 
     try:
         page.expose_function("rxyAuthorizeHandoff", grant)
@@ -169,22 +179,31 @@ def present_handoff(*, agent_session_id: str, url: str) -> dict[str, object]:
     return _view(agent, status="open")
 
 
-def click_handoff(*, agent_session_id: str) -> dict[str, object]:
-    """Click the shipped handoff button. The page calls rxyAuthorizeHandoff."""
+def run_on_handoff_page(*, agent_session_id: str, action: Any) -> dict[str, object]:
+    """Let the caller perform the user action. This function does not click."""
     pair = _HANDOFF.get(agent_session_id)
     agent = _SESSIONS.get(agent_session_id)
     if pair is None or agent is None:
         return _refused("handoff is not open")
     _browser, page = pair
     try:
-        page.click("button", timeout=8000)
-        page.wait_for_selector('[data-authorized="true"]', timeout=10000)
+        action(page)
         dom = page.content()
     except Exception as exc:
-        return _refused(f"handoff click failed: {type(exc).__name__}: {exc}")
-    if not agent.authorized:
-        return _refused("handoff click did not authorize the agent session")
-    return _view(agent, status="authorized", dom=dom, url=page.url, title=_title_page(page))
+        return _refused(f"handoff action failed: {type(exc).__name__}: {exc}")
+    status = "authorized" if agent.authorized else "open"
+    return _view(agent, status=status, dom=dom, url=page.url, title=_title_page(page))
+
+
+def close_handoff_page(*, agent_session_id: str) -> None:
+    handoff = _HANDOFF.pop(agent_session_id, None)
+    if handoff is None:
+        return
+    browser, _page = handoff
+    try:
+        browser.close()
+    except Exception:
+        pass
 
 
 def close_session(*, session_id: str) -> None:
@@ -269,6 +288,10 @@ def _install_chromium() -> None:
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise RuntimeError(detail or "playwright install chromium failed")
+
+
+def _profile_key(path: Path) -> str:
+    return str(_safe_resolve(path)).lower()
 
 
 def _user_browser_dir(path: Path) -> bool:

@@ -51,8 +51,21 @@ def test_w6_c03_integration() -> None:
     opened: list[str] = []
     try:
         agent = open_agent_context(profile_dir=agent_dir, kind="agent")
-        preview = open_agent_context(profile_dir=preview_dir, kind="preview")
         assert agent["status"] == "open"
+        reused = open_agent_context(profile_dir=agent_dir, kind="preview")
+        assert reused["status"] == "refused"
+        alias = root / "preview-alias"
+        linked = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), str(agent_dir)],
+            capture_output=True,
+            check=False,
+        )
+        detail = (linked.stderr or linked.stdout).decode("utf-8", "replace")
+        assert linked.returncode == 0, detail
+        aliased = open_agent_context(profile_dir=alias, kind="preview")
+        assert aliased["status"] == "refused"
+        os.rmdir(alias)
+        preview = open_agent_context(profile_dir=preview_dir, kind="preview")
         assert preview["status"] == "open"
         assert agent["profile_kind"] == "agent"
         assert preview["profile_kind"] == "preview"
@@ -78,8 +91,14 @@ def test_w6_c03_integration() -> None:
         )
         assert preview_hit["status"] != "ok"
         assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
-        granted = _click_shipped_handoff(str(agent["session_id"]))
-        assert granted["status"] == "authorized"
+        denied = _user_clicks_handoff(str(agent["session_id"]), _DENY_ENTRY, _click_denied)
+        assert denied["status"] != "authorized"
+        assert 'data-authorized="false"' in denied["dom"]
+        assert "agent session continued" not in denied["dom"]
+        still_blocked = continue_session(session_id=str(agent["session_id"]))
+        assert still_blocked["status"] == "refused"
+        granted = _user_clicks_handoff(str(agent["session_id"]), _ENTRY, _click_granted)
+        assert granted["status"] == "authorized", granted.get("reason")
         assert granted["shared"] is False
         assert 'data-authorized="true"' in granted["dom"]
         assert "agent session continued" in granted["dom"]
@@ -122,6 +141,9 @@ def test_w6_c03_integration() -> None:
         for session_id in opened:
             close_session(session_id=session_id)
         server.shutdown()
+        alias = root / "preview-alias"
+        if os.path.isjunction(alias):
+            os.rmdir(alias)
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -168,6 +190,33 @@ if (root) {
 }
 """
 
+_DENY_ENTRY = """
+import { createRoot } from "react-dom/client"
+import { BrowserHandoff } from "./BrowserHandoff.tsx"
+
+const root = document.getElementById("root")
+const sessionId = (window as Window & { sessionId: string }).sessionId
+if (root) {
+  createRoot(root).render(
+    <BrowserHandoff
+      sessionId={sessionId}
+      authorized={false}
+      onAuthorize={() => Promise.resolve(false)}
+    />
+  )
+}
+"""
+
+
+def _click_denied(page: object) -> None:
+    page.click("button", timeout=8000)  # type: ignore[attr-defined]
+    page.wait_for_timeout(500)  # type: ignore[attr-defined]
+
+
+def _click_granted(page: object) -> None:
+    page.click("button", timeout=8000)  # type: ignore[attr-defined]
+    page.wait_for_selector('[data-authorized="true"]', timeout=10000)  # type: ignore[attr-defined]
+
 
 class _Bundle(BaseHTTPRequestHandler):
     html = b""
@@ -188,14 +237,18 @@ class _Bundle(BaseHTTPRequestHandler):
         return
 
 
-def _click_shipped_handoff(session_id: str) -> dict[str, object]:
-    """Bundle the shipped component and click its button in a real browser."""
-    from rxycode_runner.browser.session_manager import click_handoff, present_handoff
+def _user_clicks_handoff(session_id: str, source: str, action: object) -> dict[str, object]:
+    """The test performs the button click. The product only mounts the page."""
+    from rxycode_runner.browser.session_manager import (
+        close_handoff_page,
+        present_handoff,
+        run_on_handoff_page,
+    )
 
     entry = REPO / "apps" / "web" / "src" / "features" / "browser" / "_c03_handoff_entry.tsx"
     bundle_dir = Path(tempfile.mkdtemp(prefix="rxy-w6c03-bundle-"))
     bundle = bundle_dir / "bundle.js"
-    entry.write_text(_ENTRY, encoding="utf-8")
+    entry.write_text(source, encoding="utf-8")
     server: ThreadingHTTPServer | None = None
     try:
         built = subprocess.run(
@@ -220,8 +273,9 @@ def _click_shipped_handoff(session_id: str) -> dict[str, object]:
         page = f"http://127.0.0.1:{server.server_address[1]}/"
         presented = present_handoff(agent_session_id=session_id, url=page)
         assert presented["status"] == "open", presented
-        return click_handoff(agent_session_id=session_id)
+        return run_on_handoff_page(agent_session_id=session_id, action=action)
     finally:
+        close_handoff_page(agent_session_id=session_id)
         entry.unlink(missing_ok=True)
         if server is not None:
             server.shutdown()

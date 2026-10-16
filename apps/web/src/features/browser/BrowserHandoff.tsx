@@ -1,7 +1,7 @@
 import { useState } from "react"
 
 type HandoffWindow = Window & {
-  rxyAuthorizeHandoff?: (sessionId: string) => void | Promise<void>
+  rxyAuthorizeHandoff?: (sessionId: string) => boolean | Promise<boolean>
 }
 
 export function BrowserHandoff({
@@ -11,25 +11,30 @@ export function BrowserHandoff({
 }: {
   sessionId: string
   authorized: boolean
-  onAuthorize?: () => void
+  onAuthorize?: () => boolean | Promise<boolean>
 }) {
   const [granted, setGranted] = useState(authorized)
 
   async function authorize() {
-    let accepted = false
-    if (onAuthorize) {
-      onAuthorize()
-      accepted = true
-    }
-    if (typeof window !== "undefined") {
-      const bridge = (window as HandoffWindow).rxyAuthorizeHandoff
-      if (bridge) {
-        await bridge(sessionId)
-        accepted = true
+    try {
+      if (onAuthorize) {
+        if (!(await onAuthorize())) {
+          return
+        }
       }
-    }
-    if (accepted) {
+      const bridge =
+        typeof window !== "undefined" ? (window as HandoffWindow).rxyAuthorizeHandoff : undefined
+      if (bridge) {
+        if (!(await bridge(sessionId))) {
+          return
+        }
+      }
+      if (!onAuthorize && !bridge) {
+        return
+      }
       setGranted(true)
+    } catch {
+      return
     }
   }
 
