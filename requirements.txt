@@ -29,3 +29,4 @@ alembic>=1.17,<2
 psycopg[binary]>=3.2,<4
 redis>=5,<7
 langgraph-checkpoint-postgres>=3,<4
+boto3>=1.34,<2

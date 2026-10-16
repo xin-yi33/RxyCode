@@ -82,6 +82,8 @@ packages = [
   "rxycode_server.runs",
   "rxycode_server.events",
   "rxycode_server.approvals",
+  "rxycode_server.artifacts",
+  "rxycode_server.usage",
   "rxycode_worker",
 ]
 
@@ -99,6 +101,8 @@ packages = [
 "rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
 "rxycode_server.events" = "packages/rxycode-server/src/rxycode_server/events"
 "rxycode_server.approvals" = "packages/rxycode-server/src/rxycode_server/approvals"
+"rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
+"rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
 "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
 
 [tool.setuptools.dynamic]

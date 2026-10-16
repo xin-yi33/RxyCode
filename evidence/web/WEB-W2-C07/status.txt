@@ -1,0 +1,11 @@
+A  packages/rxycode-server/src/rxycode_server/api/artifacts.py
+A  packages/rxycode-server/src/rxycode_server/artifacts/__init__.py
+A  packages/rxycode-server/src/rxycode_server/artifacts/service.py
+M  packages/rxycode-server/src/rxycode_server/main.py
+A  packages/rxycode-server/src/rxycode_server/usage/__init__.py
+A  packages/rxycode-server/src/rxycode_server/usage/service.py
+M  pyproject.toml
+M  requirements.txt
+A  tests/web/w2/test_w2_c07_module.py
+A  tests/web/w2/test_w2_c07_unit.py
+?? evidence/web/WEB-W2-C07/

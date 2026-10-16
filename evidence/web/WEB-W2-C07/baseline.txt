@@ -1,0 +1,4 @@
+Parent HEAD before this card: 5738de61 feat/rxycode-web. Not pushed.
+Nested whitelist: a6163df on docs/plans/opus5-plan feat/rxycode-web. Not pushed.
+RED: evidence/web/WEB-W2-C07/red.txt collected before the modules existed.
+MinIO: docker hub minio/minio is gone and quay.io/minio/minio returns 401. The local tag minio/minio is the MinIO server binary from bitnamilegacy/minio:2025.7.23 (DEVELOPMENT.2025-07-23T15-54-02Z), entrypoint set to that binary so the test command `minio server /data` is the real server.
