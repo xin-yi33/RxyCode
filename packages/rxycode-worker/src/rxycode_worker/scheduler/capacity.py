@@ -113,6 +113,8 @@ class Capacity:
 
     def __init__(self) -> None:
         self.workers: list[tuple[str, str, str]] = []
+        self._deadlines: dict[str, float] = {}
+        self._worker_timers: dict[str, threading.Timer] = {}
         self._records: dict[str, _Record] = {}
         self._samples: list[float] = []
         self._lock = threading.Lock()
@@ -122,8 +124,16 @@ class Capacity:
         with self._lock:
             return list(self._records)
 
-    def acquire(self, tenant_id: str, user_id: str, *, limit: int) -> str:
-        """Occupy one worker, or refuse when this user is already at the ceiling."""
+    def acquire(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        limit: int,
+        ttl_seconds: float = 3600,
+    ) -> str:
+        """Occupy one worker until complete_run or the TTL, whichever comes first."""
+        self._reap_workers()
         with self._lock:
             held = sum(
                 1 for owner, user, _worker in self.workers if owner == tenant_id and user == user_id
@@ -132,15 +142,42 @@ class Capacity:
                 raise CapacityFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
             worker_id = "worker-" + uuid.uuid4().hex[:8]
             self.workers.append((tenant_id, user_id, worker_id))
-            return worker_id
+            self._deadlines[worker_id] = time.monotonic() + ttl_seconds
+        timer = threading.Timer(ttl_seconds, self._reap_workers)
+        timer.daemon = True
+        with self._lock:
+            self._worker_timers[worker_id] = timer
+        timer.start()
+        return worker_id
 
     def release(self, tenant_id: str, user_id: str) -> None:
+        timer: threading.Timer | None = None
         with self._lock:
             for index in range(len(self.workers) - 1, -1, -1):
                 owner, user, _worker = self.workers[index]
                 if owner == tenant_id and user == user_id:
                     del self.workers[index]
-                    return
+                    timer = self._worker_timers.pop(_worker, None)
+                    self._deadlines.pop(_worker, None)
+                    break
+        if timer is not None:
+            timer.cancel()
+
+    def _reap_workers(self) -> None:
+        now = time.monotonic()
+        expired: list[threading.Timer | None] = []
+        with self._lock:
+            kept: list[tuple[str, str, str]] = []
+            for owner, user, worker_id in self.workers:
+                if self._deadlines.get(worker_id, now + 1) <= now:
+                    expired.append(self._worker_timers.pop(worker_id, None))
+                    self._deadlines.pop(worker_id, None)
+                else:
+                    kept.append((owner, user, worker_id))
+            self.workers[:] = kept
+        for timer in expired:
+            if timer is not None:
+                timer.cancel()
 
     def provision(
         self,

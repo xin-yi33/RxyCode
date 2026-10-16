@@ -9,6 +9,7 @@ run.created event so the next admission sees it.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Protocol
@@ -33,7 +34,7 @@ class WorkerCapacity(Protocol):
 
     workers: list[tuple[str, str, str]]
 
-    def acquire(self, tenant_id: str, user_id: str, *, limit: int) -> str:
+    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
         """Occupy one worker, or refuse when the live count is at the ceiling."""
 
     def release(self, tenant_id: str, user_id: str) -> None:
@@ -110,36 +111,62 @@ class RunWorkers:
 
     def __init__(self) -> None:
         self.workers: list[tuple[str, str, str]] = []
+        self._deadlines: dict[str, float] = {}
+        self._timers: dict[str, threading.Timer] = {}
         self._lock = threading.Lock()
 
     @property
     def live_ids(self) -> list[str]:
         return []
 
-    def acquire(self, tenant_id: str, user_id: str, *, limit: int) -> str:
+    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
+        self._reap()
         with self._lock:
             held = _held(self.workers, tenant_id, user_id)
             if limit < 1 or held >= limit:
                 raise WorkerFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
             worker_id = "worker-" + uuid.uuid4().hex[:8]
             self.workers.append((tenant_id, user_id, worker_id))
-            return worker_id
+            self._deadlines[worker_id] = time.monotonic() + ttl_seconds
+        timer = threading.Timer(ttl_seconds, self._reap)
+        timer.daemon = True
+        with self._lock:
+            self._timers[worker_id] = timer
+        timer.start()
+        return worker_id
 
     def release(self, tenant_id: str, user_id: str) -> None:
+        timer: threading.Timer | None = None
         with self._lock:
-            _drop(self.workers, tenant_id, user_id)
+            for index in range(len(self.workers) - 1, -1, -1):
+                owner, user, worker_id = self.workers[index]
+                if owner == tenant_id and user == user_id:
+                    del self.workers[index]
+                    self._deadlines.pop(worker_id, None)
+                    timer = self._timers.pop(worker_id, None)
+                    break
+        if timer is not None:
+            timer.cancel()
+
+    def _reap(self) -> None:
+        now = time.monotonic()
+        expired: list[threading.Timer | None] = []
+        with self._lock:
+            kept: list[tuple[str, str, str]] = []
+            for owner, user, worker_id in self.workers:
+                if self._deadlines.get(worker_id, now + 1) <= now:
+                    expired.append(self._timers.pop(worker_id, None))
+                    self._deadlines.pop(worker_id, None)
+                else:
+                    kept.append((owner, user, worker_id))
+            self.workers[:] = kept
+        for timer in expired:
+            if timer is not None:
+                timer.cancel()
 
 
 def _held(workers: list[tuple[str, str, str]], tenant_id: str, user_id: str) -> int:
     return sum(1 for owner, user, _worker in workers if owner == tenant_id and user == user_id)
-
-
-def _drop(workers: list[tuple[str, str, str]], tenant_id: str, user_id: str) -> None:
-    for index in range(len(workers) - 1, -1, -1):
-        owner, user, _worker = workers[index]
-        if owner == tenant_id and user == user_id:
-            del workers[index]
-            return
 
 
 def _token_count(message: str) -> int:
@@ -149,9 +176,16 @@ def _token_count(message: str) -> int:
 class QuotaGate:
     """Admit a Run only when this user still has credentials, budget, and quota."""
 
-    def __init__(self, *, limits: Limits, capacity: WorkerCapacity) -> None:
+    def __init__(
+        self,
+        *,
+        limits: Limits,
+        capacity: WorkerCapacity,
+        worker_ttl: float = 3600,
+    ) -> None:
         self._limits = limits
         self.capacity = capacity
+        self._worker_ttl = worker_ttl
         self._events: dict[str, list[dict[str, object]]] = {}
 
     def events_for(self, tenant_id: str) -> list[dict[str, object]]:
@@ -200,7 +234,12 @@ class QuotaGate:
         if usage.sandbox_fee + 1 > limits.sandbox_fee:
             return self._refuse(tenant_id, user_id, "sandbox")
         try:
-            self.capacity.acquire(tenant_id, user_id, limit=limits.concurrency)
+            self.capacity.acquire(
+                tenant_id,
+                user_id,
+                limit=limits.concurrency,
+                ttl_seconds=self._worker_ttl,
+            )
         except Exception as exc:
             if isinstance(exc, WorkerFull) or exc.__class__.__name__ == "CapacityFull":
                 return self._refuse(tenant_id, user_id, "concurrency")

@@ -108,7 +108,7 @@ def test_w5_c06_contract() -> None:
     from rxycode_server.persistence.migrate import upgrade_head
     from rxycode_server.persistence.models import Organization, Project, Run, SessionRow, User
     from rxycode_server.quotas.service import Limits, QuotaGate, QuotaRefused, install_gate
-    from rxycode_server.runs.service import create_run
+    from rxycode_server.runs.service import complete_run, create_run
     from rxycode_worker.scheduler.capacity import Capacity, CapacityFull, TopologyRefused, load_compose
 
     topo = load_compose(COMPOSE)
@@ -252,6 +252,7 @@ def test_w5_c06_contract() -> None:
                 "visitor-conc",
                 "visitor-preview",
                 "visitor-sandbox",
+                "visitor-ttl",
             ):
                 db.add(User(id=f"user-{tenant}", github_id=f"gh-{tenant}", kind="github"))
                 db.add(Organization(id=f"org-{tenant}", tenant_id=tenant))
@@ -261,7 +262,7 @@ def test_w5_c06_contract() -> None:
             db.commit()
         engine.dispose()
 
-        def admit(tenant: str, gate: QuotaGate, model: OkModel, request: str, session: str) -> None:
+        def admit(tenant: str, gate: QuotaGate, model: OkModel, request: str, session: str):
             accepted = create_run(
                 url,
                 tenant_id=tenant,
@@ -279,6 +280,7 @@ def test_w5_c06_contract() -> None:
                 quota=gate,
             )
             assert accepted.http_status == 202
+            return accepted
 
         def count(tenant: str) -> int:
             checker = create_engine(url)
@@ -314,7 +316,7 @@ def test_w5_c06_contract() -> None:
         conc_cap = Capacity()
         conc_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5), capacity=conc_cap)
         conc_ok = OkModel()
-        admit("visitor-conc", conc_gate, conc_ok, "req-conc-1", "sess-a-visitor-conc")
+        conc_first = admit("visitor-conc", conc_gate, conc_ok, "req-conc-1", "sess-a-visitor-conc")
         conc_boom = BoomModel()
         conc_hit = deny(
             conc_gate,
@@ -332,6 +334,34 @@ def test_w5_c06_contract() -> None:
         assert conc_boom.calls == 0
         assert len(conc_cap.workers) == 1
         assert count("visitor-conc") == 1
+        assert complete_run(
+            url,
+            run_id=conc_first.run_id,
+            tenant_id="visitor-conc",
+            user_id="visitor-user",
+            quota=conc_gate,
+        ) == "succeeded"
+        assert len(conc_cap.workers) == 0
+        conc_again = OkModel()
+        admit("visitor-conc", conc_gate, conc_again, "req-conc-3", "sess-a-visitor-conc")
+        assert conc_again.calls == 1
+        assert len(conc_cap.workers) == 1
+
+        ttl_cap = Capacity()
+        ttl_gate = QuotaGate(
+            limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5),
+            capacity=ttl_cap,
+            worker_ttl=1,
+        )
+        ttl_ok = OkModel()
+        admit("visitor-ttl", ttl_gate, ttl_ok, "req-ttl-1", "sess-a-visitor-ttl")
+        assert len(ttl_cap.workers) == 1
+        time.sleep(2)
+        assert len(ttl_cap.workers) == 0
+        ttl_next = OkModel()
+        admit("visitor-ttl", ttl_gate, ttl_next, "req-ttl-2", "sess-b-visitor-ttl")
+        assert ttl_next.calls == 1
+        assert len(ttl_cap.workers) == 1
 
         preview_cap = Capacity()
         preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)

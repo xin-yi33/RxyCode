@@ -186,6 +186,33 @@ def create_run(
     return _accepted(run_id)
 
 
+def complete_run(
+    database_url: str,
+    *,
+    run_id: str,
+    tenant_id: str,
+    user_id: str,
+    quota: object | None = None,
+) -> str:
+    """Mark a Run succeeded and return its worker slot before the TTL."""
+    from rxycode_server.quotas.service import active_gate
+
+    gate = quota if quota is not None else active_gate()
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.get(Run, run_id)
+            if row is None or row.tenant_id != tenant_id:
+                raise RunConflict(run_id)
+            if row.status not in {"succeeded", "failed", "cancelled"}:
+                row.status = "succeeded"
+                db.commit()
+    finally:
+        engine.dispose()
+    gate.release(tenant_id, user_id)
+    return "succeeded"
+
+
 def load_run(database_url: str, run_id: str) -> dict[str, str]:
     """Read the accepted task back from the durable event, not from the digest."""
     engine = create_engine(database_url, poolclass=NullPool)
