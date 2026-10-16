@@ -4,9 +4,20 @@ export type JourneyState = {
   status: string
 }
 
-export function journeyState(mode: "local" | "cloud" | "remote" | null): JourneyState {
-  if (mode === "local") return { permission: "full", target: "local", status: "ready" }
-  if (mode === "cloud") return { permission: "cloud", target: "cloud", status: "needs-github" }
+export function journeyState(
+  mode: "local" | "cloud" | "remote" | null,
+  authenticated: boolean,
+): JourneyState {
+  if (mode === "local") {
+    return authenticated
+      ? { permission: "full", target: "local", status: "ready" }
+      : { permission: "", target: "local", status: "needs-login" }
+  }
+  if (mode === "cloud") {
+    return authenticated
+      ? { permission: "cloud", target: "cloud", status: "ready" }
+      : { permission: "", target: "cloud", status: "needs-github" }
+  }
   if (mode === "remote") {
     return { permission: "", target: "remote", status: "waiting_for_local_confirmation" }
   }

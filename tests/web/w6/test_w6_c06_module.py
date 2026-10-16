@@ -11,10 +11,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-_SERVER = REPO / "packages" / "rxycode-server" / "src"
+for _entry in (
+    REPO / "packages" / "rxycode-worker" / "src",
+    REPO / "packages" / "rxycode-server" / "src",
+):
+    if str(_entry) not in sys.path:
+        sys.path.insert(0, str(_entry))
 BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
-if str(_SERVER) not in sys.path:
-    sys.path.insert(0, str(_SERVER))
 
 
 def test_w6_c06_integration(tmp_path: Path) -> None:

@@ -64,6 +64,12 @@ def cloud_release_journey(database_url: str, *, work_dir: Path, secret: str) -> 
             request_id="req-c06-" + uuid.uuid4().hex,
         )
         run_id = created.run_id
+        from rxycode_worker.supervisor import claim, commit_terminal
+
+        worker_id = "wrk-" + uuid.uuid4().hex[:12]
+        epoch = claim(database_url, run_id, worker_id, ttl_seconds=300)
+        if epoch is None:
+            raise RuntimeError("release run could not be claimed")
         pytest_exit, output = _pytest(work_dir)
         store = _minio()
         saved = store_artifact(
@@ -97,6 +103,13 @@ def cloud_release_journey(database_url: str, *, work_dir: Path, secret: str) -> 
             access_key=store["access_key"],
             secret_key=store["secret_key"],
             run_id=run_id,
+        )
+        commit_terminal(
+            database_url,
+            run_id,
+            worker_id,
+            epoch,
+            "succeeded" if pytest_exit == 0 else "failed",
         )
         first = replay(database_url, tenant_id=tenant_id, run_id=run_id, after_seq=0)
         second = replay(database_url, tenant_id=tenant_id, run_id=run_id, after_seq=0)
@@ -135,24 +148,43 @@ def local_full_journey(work_dir: Path) -> dict[str, object]:
     return {"permission": "full", "target": "local", "exit": completed.returncode, "marker": text}
 
 
-def remote_full_unpaired(registry: object, device_id: str, work_dir: Path) -> dict[str, object]:
-    """Refuse Remote Full when the device has no live socket. Do not write or run."""
+def remote_full_unpaired(secret: str, device_id: str, work_dir: Path) -> dict[str, object]:
+    """Send a Remote Full invocation through the real device route. The 404 is the refusal."""
+    from fastapi.testclient import TestClient
+
+    from rxycode_server.api.auth import AuthRecord, _hash_token
+    from rxycode_server.devices.gateway import create_device_app
+
     marker = Path(work_dir) / "remote-full.txt"
-    devices = getattr(registry, "devices", {})
-    sockets = getattr(registry, "sockets", {})
-    paired = device_id in devices and sockets.get(device_id) is not None
-    if not paired:
-        return {
-            "executed": False,
-            "permission": None,
-            "target": "remote",
-            "marker_exists": marker.exists(),
-        }
+    app = create_device_app(secret=secret)
+    app.state.allowed_origins = (_ORIGIN,)
+    token = uuid.uuid4().hex
+    app.state.sessions[_hash_token(secret, token)] = AuthRecord(
+        user_id="local-user",
+        tenant_id="tenant-c06",
+        created=time.monotonic(),
+    )
+    response = TestClient(app).post(
+        f"/api/v1/devices/{device_id}/invocations",
+        headers={"Origin": _ORIGIN, "X-CSRF-Token": "csrf-token"},
+        cookies={"rxy_session": token, "rxy_csrf": "csrf-token"},
+        json={
+            "attempt_id": "att-" + uuid.uuid4().hex,
+            "call_id": "call-" + uuid.uuid4().hex,
+            "tool": "bash",
+            "args": {
+                "permission": "full",
+                "command": f"cmd /c echo full > {marker}",
+                "workdir": str(work_dir),
+            },
+        },
+    )
     return {
         "executed": False,
         "permission": None,
         "target": "remote",
         "marker_exists": marker.exists(),
+        "http_status": response.status_code,
     }
 
 

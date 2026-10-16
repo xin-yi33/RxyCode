@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 for _entry in (
     REPO / "packages" / "rxycode-runner" / "src",
+    REPO / "packages" / "rxycode-worker" / "src",
     REPO / "packages" / "rxycode-server" / "src",
 ):
     if str(_entry) not in sys.path:
@@ -37,12 +37,11 @@ def test_w6_c06_contract(tmp_path: Path) -> None:
 
 def test_w6_c06_negative(tmp_path: Path) -> None:
     """An unpaired device cannot run Remote Full in the cloud."""
-    from rxycode_server.devices.gateway import Registry
     from rxycode_server.release.journey import remote_full_unpaired
 
-    book = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
-    result = remote_full_unpaired(book, "desk-none", tmp_path)
+    result = remote_full_unpaired(SECRET, "desk-none", tmp_path)
     assert result["executed"] is False
     assert result["permission"] in {None, ""}
     assert result["target"] == "remote"
+    assert result["http_status"] == 404
     assert not (tmp_path / "remote-full.txt").exists()

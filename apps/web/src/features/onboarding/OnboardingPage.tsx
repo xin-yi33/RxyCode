@@ -20,7 +20,7 @@ export function OnboardingPage() {
     retry: false,
   })
   const loggedOut = me.isError && me.error instanceof ApiError && me.error.status === 401
-  const journey = journeyState(mode)
+  const journey = journeyState(mode, me.isSuccess)
   return (
     <main className="mx-auto min-h-screen max-w-3xl bg-background px-4 py-6 text-foreground">
       <h1 className="text-xl font-semibold">选择运行位置</h1>
