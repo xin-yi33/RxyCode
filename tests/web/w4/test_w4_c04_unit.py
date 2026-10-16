@@ -185,6 +185,21 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             timeout=30,
         )
         assert slow.json()["state"] == "recovery_required"
+        outsider = gateway.browser_session("tenant-b")
+        denied = httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/invocations",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": outsider, "rxy_csrf": csrf},
+            json={
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": f"call_{uuid4().hex}",
+                "tool": "write",
+                "args": {"path": str(note), "text": "nope"},
+            },
+            timeout=10,
+        )
+        assert denied.status_code == 404
+        assert note.read_text(encoding="utf-8") == "once"
     finally:
         request_stop()
         thread.join(5)

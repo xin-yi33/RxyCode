@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, WebSocket
+from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket
 
 from rxycode_server.api.auth import AuthRecord, _hash_token, current_record, require_write
 from rxycode_server.devices.pairing import PairingBook, PairingRejected
@@ -229,7 +229,12 @@ def build_router() -> APIRouter:
     @router.post("/api/v1/devices/{device_id}/invocations")
     async def invoke_device(device_id: str, request: Request) -> dict[str, object]:
         require_write(request)
-        current_record(request)
+        record = current_record(request)
+        book = request.app.state.device_registry
+        device = book.devices.get(device_id)
+        if device is None or device.tenant_id != record.tenant_id:
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
+        request.app.state.loop = asyncio.get_running_loop()
         body = await request.json()
         from rxycode_worker.supervisor import attempt_tool
 
