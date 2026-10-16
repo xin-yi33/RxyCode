@@ -12,4 +12,4 @@
 - Cold-start p50 and p95 are the nearest-rank percentiles of the measured create durations.
 - compose.yaml names postgres:16, redis:7, and minio/minio:latest with healthchecks and privileged false. load_compose refuses privileged true and a service with no healthcheck. docker compose up was not run.
 - E2E-CLOUD-04 has no separate harness. The locked integration and negative tests are the parallel-tenant and forced-cleanup process evidence. No browser session. No live model provider. core/ was not touched. Not claimed as 已落实.
-- gpt-6-luna max re-audit after the durable concurrency count is not recorded yet. Session 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w5c06-audit-7.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
