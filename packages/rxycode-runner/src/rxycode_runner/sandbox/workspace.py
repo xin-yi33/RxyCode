@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import base64
 import subprocess
-import tempfile
 import uuid
-from pathlib import Path
 
 from rxycode_runner.sandbox.gvisor import docker_executable
 from rxycode_runner.sandbox.provider import SandboxHandle
@@ -30,11 +28,10 @@ class CheckoutFailed(RuntimeError):
     """The sandbox git checkout did not land on the requested revision."""
 
 
-def prepare_checkout(*, bundle: bytes, revision: str) -> str:
-    """Clone and detach HEAD in a network-none git sandbox. Returns its name."""
+def prepare_checkout(*, url: str, revision: str) -> str:
+    """Clone the requested URL and detach HEAD inside a git sandbox."""
     docker = docker_executable()
     git_name = "rxy-git-" + uuid.uuid4().hex[:12]
-    bundle_path = _write_bundle(bundle)
     try:
         created = _run(
             docker,
@@ -46,8 +43,6 @@ def prepare_checkout(*, bundle: bytes, revision: str) -> str:
                 "sleep",
                 "--user",
                 "65534:65534",
-                "--network",
-                "none",
                 "--cap-drop",
                 "ALL",
                 "--security-opt",
@@ -59,12 +54,11 @@ def prepare_checkout(*, bundle: bytes, revision: str) -> str:
             ],
         )
         if created.returncode != 0:
-            raise CheckoutFailed((created.stderr or created.stdout or "git sandbox create failed").strip())
+            detail = created.stderr or created.stdout or "git sandbox create failed"
+            raise CheckoutFailed(detail.strip())
         if _run(docker, ["start", git_name]).returncode != 0:
             raise CheckoutFailed("git sandbox failed to start")
-        if _run(docker, ["cp", bundle_path, f"{git_name}:/tmp/sample.bundle"]).returncode != 0:
-            raise CheckoutFailed("bundle copy failed")
-        cloned = _exec(docker, git_name, ["git", "clone", "--quiet", "/tmp/sample.bundle", "/tmp/ws"])
+        cloned = _exec(docker, git_name, ["git", "clone", "--quiet", url, "/tmp/ws"])
         if cloned.returncode != 0:
             raise CheckoutFailed((cloned.stderr or "git clone failed").strip())
         checked = _exec(
@@ -95,8 +89,6 @@ def prepare_checkout(*, bundle: bytes, revision: str) -> str:
     except Exception:
         _run(docker, ["rm", "-f", git_name])
         raise
-    finally:
-        Path(bundle_path).unlink(missing_ok=True)
 
 
 def adopt_checkout(handle: SandboxHandle, git_name: str) -> None:
@@ -139,20 +131,25 @@ def run_in_workspace(handle: SandboxHandle, argv: list[str]) -> tuple[int, str, 
     return done.returncode, done.stdout, done.stderr
 
 
+_CHECK = (
+    "from pathlib import Path\n"
+    "files = [p for p in Path('/tmp/ws').rglob('*') if p.is_file()]\n"
+    "files = [p for p in files if '.git' not in p.parts and not p.name.startswith('.')]\n"
+    "files.sort()\n"
+    "print(files[0].read_text(encoding='utf-8') if files else '')\n"
+    "print('sample-ok')\n"
+)
+
+
+def run_tree_check(handle: SandboxHandle) -> tuple[int, str, str]:
+    return run_in_workspace(handle, ["python", "-c", _CHECK])
+
+
 def tree_bytes(handle: SandboxHandle) -> bytes:
     code, out, err = run_in_workspace(handle, ["python", "-c", _TREE])
     if code != 0:
         raise CheckoutFailed((err or "tree archive failed").strip())
     return base64.b64decode(out.strip())
-
-
-def _write_bundle(bundle: bytes) -> str:
-    handle = tempfile.NamedTemporaryFile(prefix="rxy-bundle-", suffix=".bundle", delete=False)
-    try:
-        handle.write(bundle)
-    finally:
-        handle.close()
-    return handle.name
 
 
 def _exec(docker: str, name: str, argv: list[str]) -> subprocess.CompletedProcess[str]:

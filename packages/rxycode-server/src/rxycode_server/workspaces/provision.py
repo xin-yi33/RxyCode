@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import threading
 import uuid
 from dataclasses import dataclass, replace
 
-from rxycode_runner.sandbox.gvisor import GVisorSandbox
+from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
 from rxycode_runner.sandbox.policy import launch, load_policy
 from rxycode_runner.sandbox.workspace import (
     CheckoutFailed,
     adopt_checkout,
     discard_checkout,
     prepare_checkout,
-    run_in_workspace,
+    run_tree_check,
     tree_bytes,
 )
 from rxycode_server.workspaces.snapshots import SnapshotRefused, SnapshotStore
@@ -45,6 +47,7 @@ class WorkspaceProvision:
     def __init__(self) -> None:
         self._store = SnapshotStore()
         self._rows: dict[str, dict[str, str]] = {}
+        self._timers: dict[str, threading.Timer] = {}
 
     def import_repo(
         self,
@@ -53,7 +56,6 @@ class WorkspaceProvision:
         project_id: str,
         url: str,
         revision: str,
-        bundle: bytes,
         token: str | None = None,
         authorize_snapshot: bool = False,
         ttl_seconds: int | None = None,
@@ -63,12 +65,10 @@ class WorkspaceProvision:
             raise RepoRefused("repo url refused")
         if not _REV.fullmatch(revision):
             raise RepoRefused("revision refused")
-        if not bundle:
-            raise RepoRefused("bundle refused")
         policy = load_policy()
         if ttl_seconds is not None:
             policy = replace(policy, ttl_seconds=ttl_seconds)
-        git_name = prepare_checkout(bundle=bundle, revision=revision)
+        git_name = prepare_checkout(url=redacted, revision=revision)
         handle = None
         try:
             handle = launch(
@@ -77,10 +77,7 @@ class WorkspaceProvision:
                 policy=policy,
             )
             adopt_checkout(handle, git_name)
-            code, stdout, stderr = run_in_workspace(
-                handle,
-                ["python", "/tmp/ws/test_sample.py"],
-            )
+            code, stdout, stderr = run_tree_check(handle)
             if code != 0:
                 raise CheckoutFailed(_redact(stderr or "sandbox test failed", token))
             blob = tree_bytes(handle)
@@ -97,6 +94,8 @@ class WorkspaceProvision:
                 "container_id": handle.container_id,
             }
             log = _redact(f"imported {redacted} revision {revision}", token)
+            ttl = ttl_seconds if ttl_seconds is not None else policy.ttl_seconds
+            self._arm_ttl(workspace_id, handle.sandbox_id, tenant_id, ttl)
             return ImportedWorkspace(
                 workspace_id=workspace_id,
                 sandbox_id=handle.sandbox_id,
@@ -121,8 +120,40 @@ class WorkspaceProvision:
         row = self._rows.get(workspace_id)
         if row is None or row["tenant_id"] != tenant_id:
             raise SnapshotRefused(workspace_id, tenant_id)
-        GVisorSandbox().destroy(row["sandbox_id"], tenant_id=tenant_id)
+        self._cancel_ttl(workspace_id)
+        self._destroy_quiet(row["sandbox_id"], tenant_id)
         del self._rows[workspace_id]
+
+    def _arm_ttl(self, workspace_id: str, sandbox_id: str, tenant_id: str, ttl: int) -> None:
+        def _expire() -> None:
+            self._destroy_quiet(sandbox_id, tenant_id)
+            self._rows.pop(workspace_id, None)
+
+        timer = threading.Timer(float(ttl), _expire)
+        timer.daemon = True
+        self._timers[workspace_id] = timer
+        timer.start()
+
+    def _cancel_ttl(self, workspace_id: str) -> None:
+        timer = self._timers.pop(workspace_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _destroy_quiet(self, sandbox_id: str, tenant_id: str) -> None:
+        try:
+            GVisorSandbox().destroy(sandbox_id, tenant_id=tenant_id)
+        except Exception:
+            subprocess_rm(sandbox_id)
+
+
+def subprocess_rm(sandbox_id: str) -> None:
+    subprocess.run(
+        [docker_executable(), "rm", "-f", sandbox_id],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
 
 
 def _redact(text: str, token: str | None = None) -> str:

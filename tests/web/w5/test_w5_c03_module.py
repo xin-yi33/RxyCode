@@ -7,25 +7,14 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+_URL = "https://github.com/octocat/Hello-World"
+_SHA = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
 for _entry in (
     REPO / "packages" / "rxycode-runner" / "src",
     REPO / "packages" / "rxycode-server" / "src",
 ):
     if str(_entry) not in sys.path:
         sys.path.insert(0, str(_entry))
-
-
-def _git(repo: Path, *args: str) -> str:
-    done = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr
-    return done.stdout.strip()
 
 
 def _remove(docker: str, container_id: str) -> None:
@@ -40,33 +29,31 @@ def _remove(docker: str, container_id: str) -> None:
     )
 
 
-def test_w5_c03_integration(tmp_path: Path) -> None:
+def _readme(docker: str, container_id: str) -> str:
+    done = subprocess.run(
+        [
+            docker,
+            "exec",
+            container_id,
+            "python",
+            "-c",
+            "print(open('/tmp/ws/README').read(), end='')",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_w5_c03_integration() -> None:
     """Two runs of one task check out the same commit and the same base file."""
     from rxycode_runner.sandbox.gvisor import docker_executable
     from rxycode_server.workspaces.provision import WorkspaceProvision
 
     docker = docker_executable()
-    repo = tmp_path / "sample"
-    repo.mkdir()
-    _git(repo, "init")
-    _git(repo, "config", "core.autocrlf", "false")
-    (repo / "test_sample.py").write_bytes(b"print('sample-ok')\n")
-    (repo / "base.txt").write_bytes(b"fixed-base\n")
-    _git(repo, "add", "test_sample.py", "base.txt")
-    _git(
-        repo,
-        "-c",
-        "user.email=c03@example.test",
-        "-c",
-        "user.name=c03",
-        "commit",
-        "-m",
-        "sample",
-    )
-    sha = _git(repo, "rev-parse", "HEAD")
-    bundle_path = tmp_path / "sample.bundle"
-    _git(repo, "bundle", "create", str(bundle_path), "--all")
-    bundle = bundle_path.read_bytes()
     provision = WorkspaceProvision()
     first = None
     second = None
@@ -74,45 +61,21 @@ def test_w5_c03_integration(tmp_path: Path) -> None:
         kwargs = {
             "tenant_id": "tenant-a",
             "project_id": "proj-repeat",
-            "url": "https://github.com/rxycode/w5-sample",
-            "revision": sha,
-            "bundle": bundle,
+            "url": _URL,
+            "revision": _SHA,
             "authorize_snapshot": True,
         }
         first = provision.import_repo(**kwargs)
         second = provision.import_repo(**kwargs)
-        assert first.revision == sha
-        assert second.revision == sha
+        assert first.revision == _SHA
+        assert second.revision == _SHA
         assert first.snapshot_sha256 == second.snapshot_sha256
         assert first.container_id != second.container_id
-        left = subprocess.run(
-            [docker, "exec", first.container_id, "python", "-c", "print(open('/tmp/ws/base.txt').read(), end='')"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        right = subprocess.run(
-            [docker, "exec", second.container_id, "python", "-c", "print(open('/tmp/ws/base.txt').read(), end='')"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        assert left.returncode == 0, left.stderr
-        assert right.returncode == 0, right.stderr
-        assert left.stdout == right.stdout == "fixed-base\n"
+        assert _readme(docker, first.container_id) == _readme(docker, second.container_id)
+        assert "Hello World!" in _readme(docker, first.container_id)
         provision.cleanup(tenant_id="tenant-a", workspace_id=first.workspace_id)
         first = None
-        again = subprocess.run(
-            [docker, "exec", second.container_id, "python", "/tmp/ws/test_sample.py"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        assert again.returncode == 0, again.stderr
-        assert "sample-ok" in again.stdout
+        assert "Hello World!" in _readme(docker, second.container_id)
         provision.cleanup(tenant_id="tenant-a", workspace_id=second.workspace_id)
         second = None
     finally:
