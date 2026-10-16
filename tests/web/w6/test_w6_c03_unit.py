@@ -110,6 +110,13 @@ def test_w6_c03_contract() -> None:
         assert stored["value"] == token
         cookie_jar = profile / "Default" / "Network" / "Cookies"
         assert cookie_jar.is_file()
+        child = subprocess.run(
+            [sys.executable, "-c", _preview_reopen(profile)],
+            capture_output=True,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr.decode("utf-8", "replace")
+        assert child.stdout.decode("utf-8", "replace").strip() == "refused"
     finally:
         if session_id:
             close_session(session_id=session_id)
@@ -162,6 +169,14 @@ def test_w6_c03_negative() -> None:
         assert _listing(user_chrome) == before
         assert secret_path.read_bytes() == secret
         os.rmdir(alias)
+        custom = root / "custom-profile"
+        custom.mkdir()
+        (custom / "Local State").write_text("chrome-profile", encoding="utf-8")
+        custom_before = _listing(custom)
+        foreign = open_agent_context(profile_dir=custom, kind="agent")
+        assert foreign["status"] == "refused"
+        assert foreign["shared"] is False
+        assert _listing(custom) == custom_before
         opened = open_agent_context(profile_dir=agent, kind="agent")
         assert opened["status"] == "open"
         session_id = str(opened["session_id"])
@@ -181,6 +196,16 @@ def test_w6_c03_negative() -> None:
         if os.path.isjunction(alias):
             os.rmdir(alias)
         _remove(root)
+
+
+def _preview_reopen(profile: Path) -> str:
+    return (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_RUNNER)!r})\n"
+        "from rxycode_runner.browser.session_manager import open_agent_context\n"
+        f"result = open_agent_context(profile_dir={str(profile)!r}, kind='preview')\n"
+        "print(result['status'])\n"
+    )
 
 
 def _remove(root: Path) -> None:

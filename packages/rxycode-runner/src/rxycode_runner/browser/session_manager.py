@@ -38,16 +38,18 @@ def open_agent_context(*, profile_dir: str | Path, kind: str) -> dict[str, objec
     if kind not in {"agent", "preview"}:
         return _refused("profile kind must be agent or preview")
     target = Path(profile_dir)
-    if _user_browser_dir(target):
+    if _user_browser_dir(target) or _foreign_browser_profile(target):
         return _refused("user Chrome data is not shared")
     key = _profile_key(target)
-    previous = _PROFILE_KIND.get(key)
-    if previous is not None and previous != kind:
+    stored = _stored_kind(target)
+    previous = stored or _PROFILE_KIND.get(key, "")
+    if previous and previous != kind:
         return _refused("agent and preview profiles must stay distinct")
     for existing in _SESSIONS.values():
         if _profile_key(existing.profile_dir) == key:
             return _refused("browser profile is already open")
     target.mkdir(parents=True, exist_ok=True)
+    _write_kind(target, kind)
     try:
         playwright, context, page = _launch(target)
     except Exception as exc:
@@ -290,8 +292,39 @@ def _install_chromium() -> None:
         raise RuntimeError(detail or "playwright install chromium failed")
 
 
+_KIND_FILE = "rxy-profile-kind"
+_CHROME_FILES = (
+    Path("Local State"),
+    Path("Default") / "Preferences",
+    Path("Default") / "Network" / "Cookies",
+    Path("Default") / "Cookies",
+)
+
+
 def _profile_key(path: Path) -> str:
     return str(_safe_resolve(path)).lower()
+
+
+def _stored_kind(path: Path) -> str:
+    marker = _safe_resolve(path) / _KIND_FILE
+    if not marker.is_file():
+        return ""
+    return marker.read_text(encoding="utf-8").strip()
+
+
+def _write_kind(path: Path, kind: str) -> None:
+    marker = path / _KIND_FILE
+    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == kind:
+        return
+    marker.write_text(kind + "\n", encoding="utf-8")
+
+
+def _foreign_browser_profile(path: Path) -> bool:
+    """An existing Chrome profile has no kind marker written by this manager."""
+    resolved = _safe_resolve(path)
+    if (resolved / _KIND_FILE).is_file():
+        return False
+    return any((resolved / rel).exists() for rel in _CHROME_FILES)
 
 
 def _user_browser_dir(path: Path) -> bool:

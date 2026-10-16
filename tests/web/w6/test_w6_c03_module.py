@@ -74,6 +74,9 @@ def test_w6_c03_integration() -> None:
         blocked = continue_session(session_id=str(agent["session_id"]))
         assert blocked["status"] == "refused"
         assert token not in blocked.get("dom", "")
+        app_text = (REPO / "apps" / "web" / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
+        assert "BrowserHandoff" in app_text
+        assert 'path: "/browser/:sessionId"' in app_text
         pending = _render(session_id=str(agent["session_id"]), authorized=False)
         assert 'aria-label="browser-handoff"' in pending
         assert 'data-authorized="false"' in pending

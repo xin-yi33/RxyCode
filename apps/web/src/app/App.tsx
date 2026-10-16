@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider, useParams } from "react-
 
 import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
+import { BrowserHandoff } from "../features/browser/BrowserHandoff"
 import { ChatPage } from "../features/chat/ChatPage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { DiffReview } from "../features/workspace/DiffReview"
@@ -231,6 +232,34 @@ function TerminalPage() {
   return <TerminalPane sessionId={sessionId} />
 }
 
+function BrowserHandoffPage() {
+  const { sessionId = "" } = useParams()
+  const [authorized, setAuthorized] = useState(false)
+  return (
+    <main>
+      <BrowserHandoff
+        sessionId={sessionId}
+        authorized={authorized}
+        onAuthorize={async () => {
+          const bridge = (
+            window as Window & {
+              rxyAuthorizeHandoff?: (id: string) => boolean | Promise<boolean>
+            }
+          ).rxyAuthorizeHandoff
+          if (!bridge) {
+            return false
+          }
+          const ok = Boolean(await bridge(sessionId))
+          if (ok) {
+            setAuthorized(true)
+          }
+          return ok
+        }}
+      />
+    </main>
+  )
+}
+
 const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/login" replace /> },
   { path: "/login", element: <LoginPage /> },
@@ -240,6 +269,7 @@ const router = createBrowserRouter([
   { path: "/runs/:runId", element: <ChatPage /> },
   { path: "/projects/:projectId/workspace", element: <WorkspacePage /> },
   { path: "/terminal/:sessionId", element: <TerminalPage /> },
+  { path: "/browser/:sessionId", element: <BrowserHandoffPage /> },
 ])
 
 export function App() {
