@@ -137,8 +137,11 @@ def lookup_web_run(database_url: str, session_id: str) -> dict[str, str] | None:
                     """
                     SELECT id, tenant_id, session_id
                     FROM runs
-                    WHERE id = :session OR session_id = :session
-                    ORDER BY CASE WHEN session_id = :session THEN 0 ELSE 1 END
+                    WHERE (id = :session OR session_id = :session)
+                      AND status IN (
+                        'pending', 'leased', 'running', 'cancel_requested'
+                      )
+                    ORDER BY revision DESC
                     LIMIT 1
                     """
                 ),

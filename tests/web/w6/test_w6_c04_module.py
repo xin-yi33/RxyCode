@@ -108,6 +108,7 @@ async def _web_commands() -> list[dict[str, object]]:
     origin = "http://test.example"
     tenant = "ten-w6c04-" + uuid.uuid4().hex[:8]
     run_id = "run-w6c04-" + uuid.uuid4().hex[:8]
+    old_run_id = "old-" + run_id
     class _App:
         def __init__(self) -> None:
             self.state = type("State", (), {})()
@@ -126,6 +127,20 @@ async def _web_commands() -> list[dict[str, object]]:
             db.add(Organization(id=ids["org"], tenant_id=tenant))
             db.add(Project(id=ids["project"], tenant_id=tenant, name="c04-" + tenant, repo_config={}))
             db.add(SessionRow(id=ids["session"], tenant_id=tenant, project_id=ids["project"], title="c04"))
+            db.add(
+                Run(
+                    id=old_run_id,
+                    tenant_id=tenant,
+                    session_id=ids["session"],
+                    status="cancelled",
+                    revision=99,
+                    lease_epoch=0,
+                    request_id="old-" + tenant,
+                    input_digest="",
+                    event_seq=0,
+                    target_id="",
+                )
+            )
             db.add(
                 Run(
                     id=run_id,
@@ -207,6 +222,7 @@ async def _web_commands() -> list[dict[str, object]]:
             worker.bind_core_session(ids["session"], REPO, lambda _event: None)
             manager.get_tree(ids["session"])
             applied = await worker.drain_web_commands()
+            assert worker._web_run_id == run_id
             assert applied
             assert worker._steer_queue == ["steer-web"]
             assert cancelled["hit"] is True
@@ -244,8 +260,8 @@ async def _web_commands() -> list[dict[str, object]]:
             ]
             if event_ids:
                 db.query(Outbox).filter(Outbox.event_id.in_(event_ids)).delete(synchronize_session=False)
-            db.execute(delete(RunEvent).where(RunEvent.run_id == run_id))
-            db.execute(delete(Run).where(Run.id == run_id))
+            db.execute(delete(RunEvent).where(RunEvent.run_id.in_([run_id, old_run_id])))
+            db.execute(delete(Run).where(Run.id.in_([run_id, old_run_id])))
             db.execute(delete(SessionRow).where(SessionRow.id == ids["session"]))
             db.execute(delete(Project).where(Project.id == ids["project"]))
             db.execute(delete(Organization).where(Organization.id == ids["org"]))
