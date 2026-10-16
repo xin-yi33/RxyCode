@@ -1,0 +1,2 @@
+parent HEAD before WEB-W3-C07: 3e993aaf7bf63da6f30d3d8040958d538f17c9f2
+E2E-WEB-06 screenshots are not produced.

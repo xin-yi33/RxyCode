@@ -3,6 +3,7 @@ import { useParams } from "react-router"
 import { AgentTree } from "../agents/AgentTree"
 import { ApprovalCard } from "../approvals/ApprovalCard"
 import { ArtifactPanel } from "../artifacts/ArtifactPanel"
+import { RunStatusBanner } from "../notifications/RunStatusBanner"
 import { PlanDock } from "../plan/PlanDock"
 import { useRunEvents } from "../runs/useRunEvents"
 
@@ -12,6 +13,7 @@ export function ChatPage() {
   if (live.cursorExpired) {
     return (
       <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
+        <RunStatusBanner runId={runId} />
         <p role="alert">重新同步 {live.snapshotSeq ?? ""}</p>
       </main>
     )
@@ -19,6 +21,7 @@ export function ChatPage() {
   const { projection } = live
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
+      <RunStatusBanner runId={runId} />
       <p data-connection={live.connected ? "open" : "closed"} data-run-status={live.projection.runStatus}>
         {live.connected ? "已连接" : "正在连接"}
       </p>

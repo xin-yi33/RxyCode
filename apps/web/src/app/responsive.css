@@ -1,0 +1,46 @@
+html {
+  color-scheme: light;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+  text-wrap: pretty;
+}
+
+main,
+p,
+button,
+a,
+li,
+pre,
+code,
+section,
+article {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 375px) {
+  main {
+    padding-inline: 12px;
+  }
+}
+
+@media (min-width: 768px) {
+  main {
+    max-width: 720px;
+  }
+}
+
+@media (min-width: 1440px) {
+  main {
+    max-width: 960px;
+  }
+}
