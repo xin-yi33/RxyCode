@@ -10,4 +10,4 @@
 - A URL with an embedded token is stored and logged only in redacted form. The snapshot bytes, the log, and `docker inspect` do not contain the token. Tenant B cannot read the snapshot or clean the workspace. `file://`, metadata, and non-GitHub URLs are refused before a container is created.
 - An 8 second ttl removes the tenant container. runsc is not installed. No independent UI E2E. core/ was not touched. Not claimed as 已落实.
 - Nested ruling 332faaf63c6e8b2425b773a05cffcd981e53dd03 names the workspaces package marker.
-- gpt-6-luna max re-audit has not run yet. Session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w5c03-audit-2.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
