@@ -18,11 +18,21 @@ DATABASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
 SECRET = "local-web-secret-value-32bytes!!"
 
 
-def test_w6_c06_contract(tmp_path: Path) -> None:
+def test_w6_c06_contract() -> None:
     """Login starts, a real pytest runs, and the artifact download matches that output."""
     from rxycode_server.release.journey import cloud_release_journey
 
-    result = cloud_release_journey(DATABASE, work_dir=tmp_path, secret=SECRET)
+    work = REPO / "tests" / "web" / "w6" / "_release_c06"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        result = cloud_release_journey(DATABASE, work_dir=work, secret=SECRET)
+    finally:
+        for child in sorted(work.rglob("*"), reverse=True):
+            if child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        work.rmdir()
     assert result["authorization_url"].startswith("https://github.com/login/oauth/authorize")
     assert result["callback_completed"] is False
     assert result["pytest_exit"] == 0

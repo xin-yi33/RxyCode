@@ -7,8 +7,12 @@ import { test, expect } from "@playwright/test"
  * Playwright is not a dependency of apps/web, and playwright.config.ts
  * points testDir at tests/web/w3. Do not treat an unrun spec as a pass.
  */
-test("cloud onboarding shows the github gate and the current target", async ({ page }) => {
+test("cloud onboarding requires github even with a local session", async ({ page }) => {
   await page.goto("/onboarding")
+  await page.getByRole("button", { name: "本地" }).click()
+  await page.locator('input[type="password"]').fill(process.env.RXY_LOCAL_SECRET ?? "")
+  await page.getByRole("button", { name: "登录" }).click()
+  await expect(page.locator("[data-journey]")).toHaveAttribute("data-status", "ready")
   await page.getByRole("button", { name: "云端" }).click()
   await expect(page.locator("[data-journey]")).toHaveAttribute("data-permission", "")
   await expect(page.locator("[data-journey]")).toHaveAttribute("data-target", "cloud")

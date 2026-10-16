@@ -6,15 +6,15 @@ export type JourneyState = {
 
 export function journeyState(
   mode: "local" | "cloud" | "remote" | null,
-  authenticated: boolean,
+  authKind: string,
 ): JourneyState {
   if (mode === "local") {
-    return authenticated
+    return authKind
       ? { permission: "full", target: "local", status: "ready" }
       : { permission: "", target: "local", status: "needs-login" }
   }
   if (mode === "cloud") {
-    return authenticated
+    return authKind === "github"
       ? { permission: "cloud", target: "cloud", status: "ready" }
       : { permission: "", target: "cloud", status: "needs-github" }
   }

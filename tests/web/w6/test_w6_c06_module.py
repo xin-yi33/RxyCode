@@ -12,6 +12,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 for _entry in (
+    REPO / "packages" / "rxycode-runner" / "src",
     REPO / "packages" / "rxycode-worker" / "src",
     REPO / "packages" / "rxycode-server" / "src",
 ):
@@ -20,15 +21,26 @@ for _entry in (
 BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
 
 
-def test_w6_c06_integration(tmp_path: Path) -> None:
+def test_w6_c06_integration() -> None:
     """rxycode web local Full writes a real file. The page shows that permission and target."""
     from rxycode_server.release.journey import local_full_journey
 
-    result = local_full_journey(tmp_path)
-    assert result["permission"] == "full"
-    assert result["target"] == "local"
-    assert result["exit"] == 0
-    assert (tmp_path / "harmless.txt").read_text(encoding="utf-8") == "local-full"
+    work = REPO / "tests" / "web" / "w6" / "_full_c06"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        result = local_full_journey(work)
+        assert result["permission"] == "full"
+        assert result["target"] == "local"
+        assert result["exit"] == 0
+        assert result["marker"] == "local-full"
+        assert (work / "harmless.txt").read_text(encoding="utf-8") == "local-full"
+    finally:
+        for child in sorted(work.rglob("*"), reverse=True):
+            if child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        work.rmdir()
     markup = _render_journey(result["permission"], result["target"])
     assert 'data-permission="full"' in markup
     assert 'data-target="local"' in markup
