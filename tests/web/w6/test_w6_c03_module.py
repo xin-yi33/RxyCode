@@ -8,8 +8,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -26,7 +28,6 @@ def test_w6_c03_integration() -> None:
     """A handoff click authorizes the same agent session and leaves Chrome alone."""
     from test_w6_c03_unit import start_page
     from rxycode_runner.browser.session_manager import (
-        authorize_handoff,
         close_session,
         continue_session,
         navigate_click,
@@ -77,19 +78,19 @@ def test_w6_c03_integration() -> None:
         )
         assert preview_hit["status"] != "ok"
         assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
-        granted = authorize_handoff(session_id=str(agent["session_id"]), authorized=True)
+        granted = _click_shipped_handoff(str(agent["session_id"]))
         assert granted["status"] == "authorized"
         assert granted["shared"] is False
+        assert 'data-authorized="true"' in granted["dom"]
+        assert "agent session continued" in granted["dom"]
+        assert "user Chrome data is not shared" in granted["dom"]
+        assert "<iframe" not in granted["dom"].lower()
         continued = continue_session(session_id=str(agent["session_id"]))
         assert continued["status"] == "ok"
         assert continued["session_id"] == agent["session_id"]
         assert continued["profile_kind"] == "agent"
         assert token in continued["dom"]
         assert read_storage(session_id=str(agent["session_id"]), key="rxy-marker")["value"] == token
-        live = _render(session_id=str(agent["session_id"]), authorized=True)
-        assert 'data-authorized="true"' in live
-        assert "agent session continued" in live
-        assert "user Chrome data is not shared" in live
         cookies = request_user_cookies(authorized=True, user_chrome_dir=user_chrome)
         assert cookies["shared"] is False
         assert secret.decode("ascii") not in str(cookies)
@@ -154,6 +155,77 @@ def _assert_wheel_contains_session_manager() -> None:
             names.update(bundle.namelist())
     assert "rxycode_runner/browser/session_manager.py" in names
     assert "rxycode_runner/browser/__init__.py" in names
+
+
+_ENTRY = """
+import { createRoot } from "react-dom/client"
+import { BrowserHandoff } from "./BrowserHandoff.tsx"
+
+const root = document.getElementById("root")
+const sessionId = (window as Window & { sessionId: string }).sessionId
+if (root) {
+  createRoot(root).render(<BrowserHandoff sessionId={sessionId} authorized={false} />)
+}
+"""
+
+
+class _Bundle(BaseHTTPRequestHandler):
+    html = b""
+    script = b""
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.startswith("/bundle.js"):
+            body, kind = self.script, "text/javascript"
+        else:
+            body, kind = self.html, "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+def _click_shipped_handoff(session_id: str) -> dict[str, object]:
+    """Bundle the shipped component and click its button in a real browser."""
+    from rxycode_runner.browser.session_manager import click_handoff, present_handoff
+
+    entry = REPO / "apps" / "web" / "src" / "features" / "browser" / "_c03_handoff_entry.tsx"
+    bundle_dir = Path(tempfile.mkdtemp(prefix="rxy-w6c03-bundle-"))
+    bundle = bundle_dir / "bundle.js"
+    entry.write_text(_ENTRY, encoding="utf-8")
+    server: ThreadingHTTPServer | None = None
+    try:
+        built = subprocess.run(
+            [str(BUN), "build", str(entry), "--outfile", str(bundle), "--target", "browser"],
+            cwd=REPO / "apps" / "web",
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert built.returncode == 0, built.stderr
+        html = (
+            '<!doctype html><html><body><div id="root"></div>'
+            f"<script>window.sessionId = {json.dumps(session_id)}</script>"
+            '<script src="/bundle.js"></script></body></html>'
+        )
+        _Bundle.html = html.encode("utf-8")
+        _Bundle.script = bundle.read_bytes()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Bundle)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        page = f"http://127.0.0.1:{server.server_address[1]}/"
+        presented = present_handoff(agent_session_id=session_id, url=page)
+        assert presented["status"] == "open", presented
+        return click_handoff(agent_session_id=session_id)
+    finally:
+        entry.unlink(missing_ok=True)
+        if server is not None:
+            server.shutdown()
+        shutil.rmtree(bundle_dir, ignore_errors=True)
 
 
 def _render(*, session_id: str, authorized: bool) -> str:

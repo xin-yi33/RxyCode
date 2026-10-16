@@ -1,671 +1,383 @@
 diff --git a/apps/web/src/features/browser/BrowserHandoff.tsx b/apps/web/src/features/browser/BrowserHandoff.tsx
-new file mode 100644
-index 00000000..83f92bce
---- /dev/null
+index 83f92bce..a7218996 100644
+--- a/apps/web/src/features/browser/BrowserHandoff.tsx
 +++ b/apps/web/src/features/browser/BrowserHandoff.tsx
-@@ -0,0 +1,23 @@
-+export function BrowserHandoff({
-+  sessionId,
-+  authorized,
-+}: {
-+  sessionId: string
-+  authorized: boolean
-+}) {
-+  return (
-+    <section
-+      aria-label="browser-handoff"
-+      data-session={sessionId}
-+      data-authorized={authorized ? "true" : "false"}
-+      data-profile-kind="agent"
-+    >
-+      {authorized ? (
-+        <p data-state="continued">agent session continued</p>
-+      ) : (
-+        <button type="button">授权接管</button>
-+      )}
-+      <p data-chrome="isolated">user Chrome data is not shared</p>
-+    </section>
-+  )
+@@ -1,21 +1,51 @@
++import { useState } from "react"
++
++type HandoffWindow = Window & {
++  rxyAuthorizeHandoff?: (sessionId: string) => void | Promise<void>
 +}
-diff --git a/evidence/web/WEB-W6-C03/baseline.txt b/evidence/web/WEB-W6-C03/baseline.txt
-new file mode 100644
-index 00000000..4c8c3021
---- /dev/null
-+++ b/evidence/web/WEB-W6-C03/baseline.txt
-@@ -0,0 +1,7 @@
-+WEB-W6-C03 baseline
-+parent HEAD b0e5172885f977f7f7d6436da37be6695a0c0a52
-+branch feat/rxycode-web
-+core/cu/ present
-+Playwright importable; Chromium 148.0.7778.96 launches headless
-+RED: ModuleNotFoundError: No module named rxycode_runner.browser
-+3 failed in 0.36s
++
+ export function BrowserHandoff({
+   sessionId,
+   authorized,
++  onAuthorize,
+ }: {
+   sessionId: string
+   authorized: boolean
++  onAuthorize?: () => void
+ }) {
++  const [granted, setGranted] = useState(authorized)
++
++  async function authorize() {
++    let accepted = false
++    if (onAuthorize) {
++      onAuthorize()
++      accepted = true
++    }
++    if (typeof window !== "undefined") {
++      const bridge = (window as HandoffWindow).rxyAuthorizeHandoff
++      if (bridge) {
++        await bridge(sessionId)
++        accepted = true
++      }
++    }
++    if (accepted) {
++      setGranted(true)
++    }
++  }
++
+   return (
+     <section
+       aria-label="browser-handoff"
+       data-session={sessionId}
+-      data-authorized={authorized ? "true" : "false"}
++      data-authorized={granted ? "true" : "false"}
+       data-profile-kind="agent"
+     >
+-      {authorized ? (
++      {granted ? (
+         <p data-state="continued">agent session continued</p>
+       ) : (
+-        <button type="button">授权接管</button>
++        <button type="button" onClick={authorize}>
++          授权接管
++        </button>
+       )}
+       <p data-chrome="isolated">user Chrome data is not shared</p>
+     </section>
 diff --git a/evidence/web/WEB-W6-C03/handoff.md b/evidence/web/WEB-W6-C03/handoff.md
-new file mode 100644
-index 00000000..77689eea
---- /dev/null
+index 77689eea..7505087d 100644
+--- a/evidence/web/WEB-W6-C03/handoff.md
 +++ b/evidence/web/WEB-W6-C03/handoff.md
-@@ -0,0 +1,8 @@
-+# WEB-W6-C03 handoff
-+
-+Parent branch feat/rxycode-web. Not pushed.
-+Audit model for this card: gpt-6-luna, reasoning effort max.
-+Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
-+Feature commit follows this evidence. Verdict commit is separate, after the audit.
-+E2E-BROWSER-01 ran inside test_w6_c03_integration against https://example.com/ (click the link, snapshot contains iana.org, planted Chrome secret stays out of the agent profile). No separate harness.
-+Not claimed as 已落实.
+@@ -3,6 +3,6 @@
+ Parent branch feat/rxycode-web. Not pushed.
+ Audit model for this card: gpt-6-luna, reasoning effort max.
+ Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+-Feature commit follows this evidence. Verdict commit is separate, after the audit.
++Feature commit 256199e4. The follow-up fix addresses audit-1: the handoff button now authorizes the agent session, and profile checks follow junctions.
+ E2E-BROWSER-01 ran inside test_w6_c03_integration against https://example.com/ (click the link, snapshot contains iana.org, planted Chrome secret stays out of the agent profile). No separate harness.
+ Not claimed as 已落实.
 diff --git a/evidence/web/WEB-W6-C03/integration.txt b/evidence/web/WEB-W6-C03/integration.txt
-new file mode 100644
-index 00000000..fa6b4686
---- /dev/null
+index fa6b4686..bfdf6d0a 100644
+--- a/evidence/web/WEB-W6-C03/integration.txt
 +++ b/evidence/web/WEB-W6-C03/integration.txt
-@@ -0,0 +1,2 @@
-+.                                                                        [100%]
-+1 passed in 21.17s
-diff --git a/evidence/web/WEB-W6-C03/red.txt b/evidence/web/WEB-W6-C03/red.txt
-new file mode 100644
-index 00000000..ea8ac0d2
---- /dev/null
-+++ b/evidence/web/WEB-W6-C03/red.txt
-@@ -0,0 +1,20 @@
-+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-ibjccufq
-+
-+================================== FAILURES ===================================
-+____________________________ test_w6_c03_contract _____________________________
-+tests\web\w6\test_w6_c03_unit.py:73: in test_w6_c03_contract
-+    from rxycode_runner.browser.session_manager import (
-+E   ModuleNotFoundError: No module named 'rxycode_runner.browser'
-+____________________________ test_w6_c03_negative _____________________________
-+tests\web\w6\test_w6_c03_unit.py:119: in test_w6_c03_negative
-+    from rxycode_runner.browser.session_manager import (
-+E   ModuleNotFoundError: No module named 'rxycode_runner.browser'
-+___________________________ test_w6_c03_integration ___________________________
-+tests\web\w6\test_w6_c03_module.py:28: in test_w6_c03_integration
-+    from rxycode_runner.browser.session_manager import (
-+E   ModuleNotFoundError: No module named 'rxycode_runner.browser'
-+=========================== short test summary info ===========================
-+FAILED tests/web/w6/test_w6_c03_unit.py::test_w6_c03_contract - ModuleNotFoun...
-+FAILED tests/web/w6/test_w6_c03_unit.py::test_w6_c03_negative - ModuleNotFoun...
-+FAILED tests/web/w6/test_w6_c03_module.py::test_w6_c03_integration - ModuleNo...
-+3 failed in 0.36s
+@@ -1,2 +1,2 @@
+ .                                                                        [100%]
+-1 passed in 21.17s
++1 passed in 26.34s
 diff --git a/evidence/web/WEB-W6-C03/regression.txt b/evidence/web/WEB-W6-C03/regression.txt
-new file mode 100644
-index 00000000..cc5dfc92
---- /dev/null
+index cc5dfc92..64819e8e 100644
+--- a/evidence/web/WEB-W6-C03/regression.txt
 +++ b/evidence/web/WEB-W6-C03/regression.txt
-@@ -0,0 +1,5 @@
-+..............s.s...............                                         [100%]
-+=========================== short test summary info ===========================
-+SKIPPED [1] tests\test_cache\test_stable_prefix.py:142: no tools registered in global test registry
-+SKIPPED [1] tests\test_cache\test_stable_prefix.py:158: no tools registered in global test registry
-+30 passed, 2 skipped in 2.02s
+@@ -2,4 +2,4 @@
+ =========================== short test summary info ===========================
+ SKIPPED [1] tests\test_cache\test_stable_prefix.py:142: no tools registered in global test registry
+ SKIPPED [1] tests\test_cache\test_stable_prefix.py:158: no tools registered in global test registry
+-30 passed, 2 skipped in 2.02s
++30 passed, 2 skipped in 2.62s
 diff --git a/evidence/web/WEB-W6-C03/self-audit.md b/evidence/web/WEB-W6-C03/self-audit.md
-new file mode 100644
-index 00000000..df927a7c
---- /dev/null
+index df927a7c..5c235151 100644
+--- a/evidence/web/WEB-W6-C03/self-audit.md
 +++ b/evidence/web/WEB-W6-C03/self-audit.md
-@@ -0,0 +1,15 @@
-+# WEB-W6-C03 self-audit
-+
-+Scope is the card whitelist plus the nested ruling for the empty browser package marker and the pyproject package entry.
-+
-+- core/cu/browser.py was read. browser_open, browser_snapshot, and browser_act are still there. The file was not edited.
-+- tools/virtual_browser.py still registers browser_navigate, browser_snapshot, and browser_click. Those names were not rewritten.
-+- Agent and preview contexts use different persistent Chromium profiles on one Playwright driver. A second sync driver is not started.
-+- request_user_cookies does not read or copy the user Chrome directory. open_agent_context refuses a path that is a Chrome/Edge/Chromium/Brave User Data directory.
-+- Handoff continues the same agent session only after authorize_handoff. continue_session before that returns refused.
-+- The contract page token is not in the static HTML. It appears after a real click navigates to /done.
-+- E2E-BROWSER-01 ran inside test_w6_c03_integration: navigate https://example.com/, click a, snapshot contained iana.org. The planted Chrome secret was not in the snapshot or the agent Cookies file. There is no separate harness.
-+- A live jest binary was not run. gVisor was not involved. This card does not say 已落实.
-+- Cache: 30 passed, 2 skipped. The skips are the pre-existing global test registry messages at tests/test_cache/test_stable_prefix.py:142 and :158.
-+- ruff check on the new Python files passed.
-+- Audit with gpt-6-luna max is the next step. No verdict is claimed in this file yet.
+@@ -5,11 +5,11 @@ Scope is the card whitelist plus the nested ruling for the empty browser package
+ - core/cu/browser.py was read. browser_open, browser_snapshot, and browser_act are still there. The file was not edited.
+ - tools/virtual_browser.py still registers browser_navigate, browser_snapshot, and browser_click. Those names were not rewritten.
+ - Agent and preview contexts use different persistent Chromium profiles on one Playwright driver. A second sync driver is not started.
+-- request_user_cookies does not read or copy the user Chrome directory. open_agent_context refuses a path that is a Chrome/Edge/Chromium/Brave User Data directory.
+-- Handoff continues the same agent session only after authorize_handoff. continue_session before that returns refused.
++- request_user_cookies does not read or copy the user Chrome directory. open_agent_context refuses a Chrome/Edge/Chromium/Brave User Data path, including after resolve() and realpath(), and a junction whose own name does not contain those words.
++- The handoff button's onClick awaits window.rxyAuthorizeHandoff. present_handoff exposes that function, and click_handoff clicks the bundled shipped component. The test does not call authorize_handoff itself. continue_session stays refused until that click.
+ - The contract page token is not in the static HTML. It appears after a real click navigates to /done.
+ - E2E-BROWSER-01 ran inside test_w6_c03_integration: navigate https://example.com/, click a, snapshot contained iana.org. The planted Chrome secret was not in the snapshot or the agent Cookies file. There is no separate harness.
+ - A live jest binary was not run. gVisor was not involved. This card does not say 已落实.
+ - Cache: 30 passed, 2 skipped. The skips are the pre-existing global test registry messages at tests/test_cache/test_stable_prefix.py:142 and :158.
+ - ruff check on the new Python files passed.
+-- Audit with gpt-6-luna max is the next step. No verdict is claimed in this file yet.
++- First gpt-6-luna max audit (w6c03-audit-1.json) returned VERDICT: PROBLEMS. The button had no handler, and the profile check did not resolve symlinks or junctions. This fix is the response. The re-audit has not returned a verdict yet.
 diff --git a/evidence/web/WEB-W6-C03/unit.txt b/evidence/web/WEB-W6-C03/unit.txt
-new file mode 100644
-index 00000000..1c802583
---- /dev/null
+index 1c802583..e1fd29b1 100644
+--- a/evidence/web/WEB-W6-C03/unit.txt
 +++ b/evidence/web/WEB-W6-C03/unit.txt
-@@ -0,0 +1,2 @@
-+..                                                                       [100%]
-+2 passed in 1.91s
-diff --git a/packages/rxycode-runner/src/rxycode_runner/browser/__init__.py b/packages/rxycode-runner/src/rxycode_runner/browser/__init__.py
-new file mode 100644
-index 00000000..b43c6a56
---- /dev/null
-+++ b/packages/rxycode-runner/src/rxycode_runner/browser/__init__.py
-@@ -0,0 +1 @@
-+"""Agent browser sessions. Empty package marker. No tool registration lives here."""
+@@ -1,2 +1,2 @@
+ ..                                                                       [100%]
+-2 passed in 1.91s
++2 passed in 2.05s
 diff --git a/packages/rxycode-runner/src/rxycode_runner/browser/session_manager.py b/packages/rxycode-runner/src/rxycode_runner/browser/session_manager.py
-new file mode 100644
-index 00000000..8e42519f
---- /dev/null
+index 8e42519f..0b3bda7b 100644
+--- a/packages/rxycode-runner/src/rxycode_runner/browser/session_manager.py
 +++ b/packages/rxycode-runner/src/rxycode_runner/browser/session_manager.py
-@@ -0,0 +1,256 @@
-+"""Isolated agent and preview browser contexts.
-+
-+U24 tool names stay in tools/virtual_browser.py. Computer Use browser_open
-+stays in core/cu/browser.py. This module does not attach to the user's Chrome
-+and does not call webfetch.
-+"""
-+
-+from __future__ import annotations
-+
-+import subprocess
-+import sys
-+import uuid
-+from dataclasses import dataclass
-+from pathlib import Path
-+from typing import Any
-+
-+
-+_SESSIONS: dict[str, "Session"] = {}
-+_PLAYWRIGHT: Any = None
-+
-+
-+@dataclass
-+class Session:
-+    session_id: str
-+    profile_dir: Path
-+    kind: str
-+    authorized: bool
-+    playwright: Any
-+    context: Any
-+    page: Any
-+
-+
-+def open_agent_context(*, profile_dir: str | Path, kind: str) -> dict[str, object]:
-+    """Open a persistent Chromium profile that is not the user's browser."""
-+    if kind not in {"agent", "preview"}:
-+        return _refused("profile kind must be agent or preview")
-+    target = Path(profile_dir)
-+    if _user_browser_dir(target):
-+        return _refused("user Chrome data is not shared")
-+    target.mkdir(parents=True, exist_ok=True)
-+    try:
-+        playwright, context, page = _launch(target)
-+    except Exception as exc:
-+        return _refused(f"browser launch failed: {type(exc).__name__}: {exc}")
-+    session_id = "br-" + uuid.uuid4().hex[:12]
-+    _SESSIONS[session_id] = Session(
-+        session_id=session_id,
-+        profile_dir=target,
-+        kind=kind,
-+        authorized=False,
-+        playwright=playwright,
-+        context=context,
-+        page=page,
-+    )
-+    return _view(
-+        _SESSIONS[session_id],
-+        status="open",
-+    )
-+
-+
-+def navigate_click(*, session_id: str, url: str, selector: str) -> dict[str, object]:
-+    """Open an http(s) URL and click. The DOM comes from that page."""
-+    session = _SESSIONS.get(session_id)
-+    if session is None:
+@@ -7,6 +7,7 @@ and does not call webfetch.
+
+ from __future__ import annotations
+
++import os
+ import subprocess
+ import sys
+ import uuid
+@@ -16,6 +17,7 @@ from typing import Any
+
+
+ _SESSIONS: dict[str, "Session"] = {}
++_HANDOFF: dict[str, tuple[Any, Any]] = {}
+ _PLAYWRIGHT: Any = None
+
+
+@@ -139,9 +141,63 @@ def snapshot(*, session_id: str) -> dict[str, object]:
+     return _view(session, dom=dom, url=url, title=title)
+
+
++def present_handoff(*, agent_session_id: str, url: str) -> dict[str, object]:
++    """Open the handoff page. Its button is the only grant for this session."""
++    agent = _SESSIONS.get(agent_session_id)
++    if agent is None:
 +        return _refused("unknown browser session")
 +    target = (url or "").strip()
 +    if not target.startswith(("http://", "https://")):
 +        return _refused("browser requires an http(s) URL")
++    playwright = _driver()
++    browser = playwright.chromium.launch(headless=True)
++    page = browser.new_page()
++
++    def grant(requested: str) -> None:
++        if requested != agent_session_id:
++            return
++        authorize_handoff(session_id=agent_session_id, authorized=True)
++
 +    try:
-+        session.page.goto(target, wait_until="domcontentloaded", timeout=20000)
-+        session.page.click(selector, timeout=15000)
++        page.expose_function("rxyAuthorizeHandoff", grant)
++        page.goto(target, wait_until="domcontentloaded", timeout=20000)
++        page.wait_for_selector("button", timeout=10000)
 +    except Exception as exc:
-+        return _refused(f"navigate/click failed: {type(exc).__name__}: {exc}")
-+    return _view(
-+        session,
-+        dom=session.page.content(),
-+        url=session.page.url,
-+        title=_title(session),
-+    )
++        browser.close()
++        return _refused(f"handoff page failed: {type(exc).__name__}: {exc}")
++    _HANDOFF[agent_session_id] = (browser, page)
++    return _view(agent, status="open")
 +
 +
-+def read_storage(*, session_id: str, key: str) -> dict[str, object]:
-+    session = _SESSIONS.get(session_id)
-+    if session is None:
-+        return _refused("unknown browser session")
++def click_handoff(*, agent_session_id: str) -> dict[str, object]:
++    """Click the shipped handoff button. The page calls rxyAuthorizeHandoff."""
++    pair = _HANDOFF.get(agent_session_id)
++    agent = _SESSIONS.get(agent_session_id)
++    if pair is None or agent is None:
++        return _refused("handoff is not open")
++    _browser, page = pair
 +    try:
-+        value = session.page.evaluate(
-+            "(name) => window.localStorage.getItem(name) || ''",
-+            key,
-+        )
++        page.click("button", timeout=8000)
++        page.wait_for_selector('[data-authorized="true"]', timeout=10000)
++        dom = page.content()
 +    except Exception as exc:
-+        return _refused(f"storage read failed: {type(exc).__name__}: {exc}")
-+    return _view(session, value=value or "")
++        return _refused(f"handoff click failed: {type(exc).__name__}: {exc}")
++    if not agent.authorized:
++        return _refused("handoff click did not authorize the agent session")
++    return _view(agent, status="authorized", dom=dom, url=page.url, title=_title_page(page))
 +
 +
-+def request_user_cookies(*, authorized: bool, user_chrome_dir: str | Path) -> dict[str, object]:
-+    """Never read or copy the user's Chrome profile, authorized or not."""
-+    del authorized, user_chrome_dir
-+    return _refused("user Chrome data is not shared")
-+
-+
-+def authorize_handoff(*, session_id: str, authorized: bool) -> dict[str, object]:
-+    session = _SESSIONS.get(session_id)
-+    if session is None:
-+        return _refused("unknown browser session")
-+    if not authorized:
-+        session.authorized = False
-+        return _refused("handoff is not authorized")
-+    session.authorized = True
-+    return _view(session, status="authorized")
-+
-+
-+def continue_session(*, session_id: str) -> dict[str, object]:
-+    """Return the same agent page only after an explicit handoff."""
-+    session = _SESSIONS.get(session_id)
-+    if session is None:
-+        return _refused("unknown browser session")
-+    if not session.authorized:
-+        return _refused("handoff is not authorized")
-+    try:
-+        dom = session.page.content()
-+        url = session.page.url
-+        title = _title(session)
-+    except Exception as exc:
-+        return _refused(f"continue failed: {type(exc).__name__}: {exc}")
-+    return _view(session, dom=dom, url=url, title=title)
-+
-+
-+def snapshot(*, session_id: str) -> dict[str, object]:
-+    session = _SESSIONS.get(session_id)
-+    if session is None:
-+        return _refused("unknown browser session")
-+    try:
-+        dom = session.page.content()
-+        url = session.page.url
-+        title = _title(session)
-+    except Exception as exc:
-+        return _refused(f"snapshot failed: {type(exc).__name__}: {exc}")
-+    return _view(session, dom=dom, url=url, title=title)
-+
-+
-+def close_session(*, session_id: str) -> None:
-+    session = _SESSIONS.pop(session_id, None)
-+    if session is None:
-+        return
-+    try:
-+        session.context.close()
-+    except Exception:
-+        pass
-+    _stop_driver_when_idle()
-+
-+
-+def _stop_driver_when_idle() -> None:
-+    global _PLAYWRIGHT
-+    if _SESSIONS or _PLAYWRIGHT is None:
-+        return
-+    try:
-+        _PLAYWRIGHT.stop()
-+    except Exception:
-+        pass
-+    _PLAYWRIGHT = None
+ def close_session(*, session_id: str) -> None:
++    handoff = _HANDOFF.pop(session_id, None)
++    if handoff is not None:
++        browser, _page = handoff
++        try:
++            browser.close()
++        except Exception:
++            pass
+     session = _SESSIONS.pop(session_id, None)
+     if session is None:
++        _stop_driver_when_idle()
+         return
+     try:
+         session.context.close()
+@@ -161,23 +217,29 @@ def _stop_driver_when_idle() -> None:
+     _PLAYWRIGHT = None
+
+
+-def _launch(profile_dir: Path) -> tuple[Any, Any, Any]:
+-    """One sync driver can own several persistent profiles. A second driver fails."""
++def _driver() -> Any:
+     global _PLAYWRIGHT
+     from playwright.sync_api import sync_playwright
+
+-    created = _PLAYWRIGHT is None
+     if _PLAYWRIGHT is None:
+         _PLAYWRIGHT = sync_playwright().start()
++    return _PLAYWRIGHT
 +
 +
 +def _launch(profile_dir: Path) -> tuple[Any, Any, Any]:
 +    """One sync driver can own several persistent profiles. A second driver fails."""
 +    global _PLAYWRIGHT
-+    from playwright.sync_api import sync_playwright
-+
 +    created = _PLAYWRIGHT is None
-+    if _PLAYWRIGHT is None:
-+        _PLAYWRIGHT = sync_playwright().start()
-+    try:
-+        context = _start_context(_PLAYWRIGHT, profile_dir)
-+    except Exception:
-+        if created:
-+            _PLAYWRIGHT.stop()
-+            _PLAYWRIGHT = None
-+        raise
-+    page = context.pages[0] if context.pages else context.new_page()
-+    return _PLAYWRIGHT, context, page
++    playwright = _driver()
+     try:
+-        context = _start_context(_PLAYWRIGHT, profile_dir)
++        context = _start_context(playwright, profile_dir)
+     except Exception:
+         if created:
+-            _PLAYWRIGHT.stop()
++            playwright.stop()
+             _PLAYWRIGHT = None
+         raise
+     page = context.pages[0] if context.pages else context.new_page()
+-    return _PLAYWRIGHT, context, page
++    return playwright, context, page
+
+
+ def _start_context(playwright: Any, profile_dir: Path) -> Any:
+@@ -210,6 +272,17 @@ def _install_chromium() -> None:
+
+
+ def _user_browser_dir(path: Path) -> bool:
++    """Refuse the real profile and any symlink or junction that points at it."""
++    candidates = [path]
++    for resolver in (_safe_resolve, _safe_realpath):
++        candidates.append(resolver(path))
++    for candidate in candidates:
++        if _looks_like_user_browser(candidate) or _is_known_user_data(candidate):
++            return True
++    return False
 +
 +
-+def _start_context(playwright: Any, profile_dir: Path) -> Any:
-+    kwargs = {
-+        "headless": True,
-+        "viewport": {"width": 800, "height": 600},
-+        "args": ["--no-first-run", "--no-default-browser-check"],
-+    }
-+    try:
-+        return playwright.chromium.launch_persistent_context(str(profile_dir), **kwargs)
-+    except Exception as exc:
-+        text = str(exc)
-+        missing = "Executable doesn't exist" in text or "playwright install" in text
-+        if not missing:
-+            raise
-+        _install_chromium()
-+        return playwright.chromium.launch_persistent_context(str(profile_dir), **kwargs)
-+
-+
-+def _install_chromium() -> None:
-+    completed = subprocess.run(
-+        [sys.executable, "-m", "playwright", "install", "chromium"],
-+        check=False,
-+        capture_output=True,
-+        text=True,
-+    )
-+    if completed.returncode != 0:
-+        detail = (completed.stderr or completed.stdout or "").strip()
-+        raise RuntimeError(detail or "playwright install chromium failed")
-+
-+
-+def _user_browser_dir(path: Path) -> bool:
-+    text = str(path).replace("/", "\\").lower()
-+    if "user data" not in text:
++def _looks_like_user_browser(path: Path) -> bool:
+     text = str(path).replace("/", "\\").lower()
+     if "user data" not in text:
+         return False
+@@ -217,9 +290,51 @@ def _user_browser_dir(path: Path) -> bool:
+     return any(name in text for name in names)
+
+
++def _is_known_user_data(path: Path) -> bool:
++    local = os.environ.get("LOCALAPPDATA", "")
++    if not local:
 +        return False
-+    names = ("chrome", "edge", "chromium", "brave")
-+    return any(name in text for name in names)
-+
-+
-+def _title(session: Session) -> str:
++    roots = (
++        Path(local) / "Google" / "Chrome" / "User Data",
++        Path(local) / "Microsoft" / "Edge" / "User Data",
++        Path(local) / "Chromium" / "User Data",
++        Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data",
++    )
 +    try:
-+        return session.page.title()
-+    except Exception:
-+        return ""
++        resolved = _safe_resolve(path)
++    except OSError:
++        return False
++    for root in roots:
++        try:
++            known = _safe_resolve(root)
++        except OSError:
++            continue
++        if resolved == known or known in resolved.parents:
++            return True
++    return False
 +
 +
-+def _refused(reason: str) -> dict[str, object]:
-+    return {
-+        "status": "refused",
-+        "shared": False,
-+        "reason": reason,
-+        "session_id": "",
-+        "profile_dir": "",
-+        "profile_kind": "",
-+        "dom": "",
-+        "url": "",
-+        "title": "",
-+        "value": "",
-+    }
++def _safe_resolve(path: Path) -> Path:
++    try:
++        return path.resolve()
++    except OSError:
++        return path
 +
 +
-+def _view(session: Session, **extra: object) -> dict[str, object]:
-+    body: dict[str, object] = {
-+        "status": "ok",
-+        "shared": False,
-+        "reason": "",
-+        "session_id": session.session_id,
-+        "profile_dir": str(session.profile_dir),
-+        "profile_kind": session.kind,
-+        "dom": "",
-+        "url": "",
-+        "title": "",
-+        "value": "",
-+    }
-+    body.update(extra)
-+    return body
-diff --git a/pyproject.toml b/pyproject.toml
-index 12462c8a..7b7e5437 100644
---- a/pyproject.toml
-+++ b/pyproject.toml
-@@ -92,6 +92,7 @@ packages = [
-   "rxycode_runner.desktop",
-   "rxycode_runner.remote",
-   "rxycode_runner.transport",
-+  "rxycode_runner.browser",
- ]
++def _safe_realpath(path: Path) -> Path:
++    try:
++        return Path(os.path.realpath(path))
++    except OSError:
++        return path
++
++
+ def _title(session: Session) -> str:
++    return _title_page(session.page)
++
++
++def _title_page(page: Any) -> str:
+     try:
+-        return session.page.title()
++        return str(page.title())
+     except Exception:
+         return ""
 
- [tool.setuptools.package-dir]
-@@ -118,6 +119,7 @@ packages = [
- "rxycode_runner.desktop" = "packages/rxycode-runner/src/rxycode_runner/desktop"
- "rxycode_runner.remote" = "packages/rxycode-runner/src/rxycode_runner/remote"
- "rxycode_runner.transport" = "packages/rxycode-runner/src/rxycode_runner/transport"
-+"rxycode_runner.browser" = "packages/rxycode-runner/src/rxycode_runner/browser"
-
- [tool.setuptools.dynamic]
- dependencies = { file = ["requirements.txt"] }
 diff --git a/tests/web/w6/test_w6_c03_module.py b/tests/web/w6/test_w6_c03_module.py
-new file mode 100644
-index 00000000..30e553e4
---- /dev/null
+index 30e553e4..06ecac98 100644
+--- a/tests/web/w6/test_w6_c03_module.py
 +++ b/tests/web/w6/test_w6_c03_module.py
-@@ -0,0 +1,196 @@
-+"""WEB-W6-C03. Authorized handoff continues one agent session, not user Chrome."""
-+
-+from __future__ import annotations
-+
-+import json
-+import os
-+import shutil
-+import subprocess
-+import sys
-+import tempfile
-+import uuid
-+import zipfile
-+from pathlib import Path
-+
-+import pytest
-+
-+REPO = Path(__file__).resolve().parents[3]
-+_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
-+BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
-+for _entry in (REPO, _RUNNER, REPO / "tests" / "web" / "w6"):
-+    if str(_entry) not in sys.path:
-+        sys.path.insert(0, str(_entry))
-+
-+
-+def test_w6_c03_integration() -> None:
-+    """A handoff click authorizes the same agent session and leaves Chrome alone."""
-+    from test_w6_c03_unit import start_page
-+    from rxycode_runner.browser.session_manager import (
-+        authorize_handoff,
-+        close_session,
-+        continue_session,
-+        navigate_click,
-+        open_agent_context,
-+        read_storage,
-+        request_user_cookies,
-+        snapshot,
-+    )
-+
-+    token = "rxy-hand-" + uuid.uuid4().hex
-+    server, url = start_page(token)
-+    root = Path(tempfile.mkdtemp(prefix="rxy-w6c03-mod-"))
-+    user_chrome = root / "Google" / "Chrome" / "User Data"
-+    secret_path = user_chrome / "Default" / "Cookies"
-+    secret_path.parent.mkdir(parents=True)
-+    secret = b"CHROME-SECRET-" + uuid.uuid4().hex.encode("ascii")
-+    secret_path.write_bytes(secret)
-+    before = sorted(str(path.relative_to(user_chrome)) for path in user_chrome.rglob("*") if path.is_file())
-+    agent_dir = root / "agent-profile"
-+    preview_dir = root / "preview-profile"
-+    opened: list[str] = []
-+    try:
-+        agent = open_agent_context(profile_dir=agent_dir, kind="agent")
-+        preview = open_agent_context(profile_dir=preview_dir, kind="preview")
-+        assert agent["status"] == "open"
-+        assert preview["status"] == "open"
-+        assert agent["profile_kind"] == "agent"
-+        assert preview["profile_kind"] == "preview"
-+        assert Path(agent["profile_dir"]) != Path(preview["profile_dir"])
-+        opened.extend([str(agent["session_id"]), str(preview["session_id"])])
-+        blocked = continue_session(session_id=str(agent["session_id"]))
-+        assert blocked["status"] == "refused"
-+        assert token not in blocked.get("dom", "")
-+        pending = _render(session_id=str(agent["session_id"]), authorized=False)
-+        assert 'aria-label="browser-handoff"' in pending
-+        assert 'data-authorized="false"' in pending
-+        assert f'data-session="{agent["session_id"]}"' in pending
-+        assert "授权接管" in pending
-+        assert "<iframe" not in pending.lower()
-+        assert secret.decode("ascii") not in pending
-+        clicked = navigate_click(session_id=str(agent["session_id"]), url=url, selector="#go")
-+        assert clicked["status"] == "ok"
-+        assert token in clicked["dom"]
-+        preview_hit = navigate_click(
-+            session_id=str(preview["session_id"]),
-+            url=url,
-+            selector="#missing",
-+        )
-+        assert preview_hit["status"] != "ok"
-+        assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
-+        granted = authorize_handoff(session_id=str(agent["session_id"]), authorized=True)
-+        assert granted["status"] == "authorized"
-+        assert granted["shared"] is False
-+        continued = continue_session(session_id=str(agent["session_id"]))
-+        assert continued["status"] == "ok"
-+        assert continued["session_id"] == agent["session_id"]
-+        assert continued["profile_kind"] == "agent"
-+        assert token in continued["dom"]
-+        assert read_storage(session_id=str(agent["session_id"]), key="rxy-marker")["value"] == token
-+        live = _render(session_id=str(agent["session_id"]), authorized=True)
-+        assert 'data-authorized="true"' in live
-+        assert "agent session continued" in live
-+        assert "user Chrome data is not shared" in live
-+        cookies = request_user_cookies(authorized=True, user_chrome_dir=user_chrome)
-+        assert cookies["shared"] is False
-+        assert secret.decode("ascii") not in str(cookies)
-+        public = navigate_click(
-+            session_id=str(agent["session_id"]),
-+            url="https://example.com/",
-+            selector="a",
-+        )
-+        assert public["status"] == "ok", public
-+        shot = snapshot(session_id=str(agent["session_id"]))
-+        assert shot["status"] == "ok"
-+        blob = (shot["dom"] + shot.get("title", "") + shot["url"]).lower()
-+        assert "iana.org" in blob or "example domain" in blob
-+        assert secret.decode("ascii") not in blob
-+        assert secret_path.read_bytes() == secret
-+        after = sorted(
-+            str(path.relative_to(user_chrome))
-+            for path in user_chrome.rglob("*")
-+            if path.is_file()
-+        )
-+        assert after == before
-+        for session_id in opened:
-+            close_session(session_id=session_id)
-+        opened.clear()
-+        for cookies_file in agent_dir.rglob("Cookies"):
-+            assert secret not in cookies_file.read_bytes()
-+        _assert_wheel_contains_session_manager()
-+    finally:
-+        for session_id in opened:
-+            close_session(session_id=session_id)
-+        server.shutdown()
-+        shutil.rmtree(root, ignore_errors=True)
-+
-+
-+def _assert_wheel_contains_session_manager() -> None:
-+    """The installed wheel contains the browser session manager."""
-+    out = Path(tempfile.mkdtemp(prefix="rxy-w6c03-wheel-"))
-+    built = subprocess.run(
-+        [
-+            sys.executable,
-+            "-m",
-+            "pip",
-+            "wheel",
-+            "--no-deps",
-+            "--no-build-isolation",
-+            "-w",
-+            str(out),
-+            str(REPO),
-+        ],
-+        cwd=REPO,
-+        text=True,
-+        capture_output=True,
-+        check=False,
-+        timeout=180,
-+    )
-+    assert built.returncode == 0, built.stderr[-2000:]
-+    wheels = list(out.glob("*.whl"))
-+    assert wheels
-+    names: set[str] = set()
-+    for wheel in wheels:
-+        with zipfile.ZipFile(wheel) as bundle:
-+            names.update(bundle.namelist())
-+    assert "rxycode_runner/browser/session_manager.py" in names
-+    assert "rxycode_runner/browser/__init__.py" in names
-+
-+
-+def _render(*, session_id: str, authorized: bool) -> str:
-+    if not BUN.is_file():
-+        pytest.fail("bun is not installed")
-+    env = os.environ.copy()
-+    env["RXY_SESSION"] = session_id
-+    env["RXY_AUTHORIZED"] = "true" if authorized else "false"
-+    component = REPO / "apps" / "web" / "src" / "features" / "browser" / "BrowserHandoff.tsx"
-+    env["RXY_COMPONENT"] = str(component)
-+    script = r"""
-+import { createRequire } from "module"
-+import { pathToFileURL } from "url"
-+const require = createRequire(pathToFileURL(process.env.RXY_COMPONENT).href)
-+const React = require(require.resolve("react", { paths: [process.cwd() + "/apps/web"] }))
-+const { renderToStaticMarkup } = require(require.resolve("react-dom/server", { paths: [process.cwd() + "/apps/web"] }))
-+const { BrowserHandoff } = await import(pathToFileURL(process.env.RXY_COMPONENT).href)
-+const html = renderToStaticMarkup(React.createElement(BrowserHandoff, {
-+  sessionId: process.env.RXY_SESSION,
-+  authorized: process.env.RXY_AUTHORIZED === "true",
-+}))
-+process.stdout.write(html)
-+"""
-+    program = Path(tempfile.mkdtemp(prefix="rxy-w6c03-ui-")) / "render.ts"
-+    program.write_text(script, encoding="utf-8")
-+    try:
-+        rendered = subprocess.run(
-+            [str(BUN), str(program)],
-+            cwd=REPO,
-+            env=env,
-+            text=True,
-+            capture_output=True,
-+            check=False,
-+            timeout=60,
-+        )
-+    finally:
-+        program.unlink(missing_ok=True)
-+    assert rendered.returncode == 0, rendered.stderr
-+    json.dumps({"session_id": session_id, "authorized": authorized})
-+    return rendered.stdout
-diff --git a/tests/web/w6/test_w6_c03_unit.py b/tests/web/w6/test_w6_c03_unit.py
-new file mode 100644
-index 00000000..20146e6d
---- /dev/null
-+++ b/tests/web/w6/test_w6_c03_unit.py
-@@ -0,0 +1,170 @@
-+"""WEB-W6-C03. Isolated agent browser DOM, and no user Chrome sharing."""
-+
-+from __future__ import annotations
-+
-+import sys
-+import tempfile
+@@ -8,8 +8,10 @@ import shutil
+ import subprocess
+ import sys
+ import tempfile
 +import threading
-+import uuid
-+import urllib.request
+ import uuid
+ import zipfile
 +from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-+from pathlib import Path
+ from pathlib import Path
+
+ import pytest
+@@ -26,7 +28,6 @@ def test_w6_c03_integration() -> None:
+     """A handoff click authorizes the same agent session and leaves Chrome alone."""
+     from test_w6_c03_unit import start_page
+     from rxycode_runner.browser.session_manager import (
+-        authorize_handoff,
+         close_session,
+         continue_session,
+         navigate_click,
+@@ -77,19 +78,19 @@ def test_w6_c03_integration() -> None:
+         )
+         assert preview_hit["status"] != "ok"
+         assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
+-        granted = authorize_handoff(session_id=str(agent["session_id"]), authorized=True)
++        granted = _click_shipped_handoff(str(agent["session_id"]))
+         assert granted["status"] == "authorized"
+         assert granted["shared"] is False
++        assert 'data-authorized="true"' in granted["dom"]
++        assert "agent session continued" in granted["dom"]
++        assert "user Chrome data is not shared" in granted["dom"]
++        assert "<iframe" not in granted["dom"].lower()
+         continued = continue_session(session_id=str(agent["session_id"]))
+         assert continued["status"] == "ok"
+         assert continued["session_id"] == agent["session_id"]
+         assert continued["profile_kind"] == "agent"
+         assert token in continued["dom"]
+         assert read_storage(session_id=str(agent["session_id"]), key="rxy-marker")["value"] == token
+-        live = _render(session_id=str(agent["session_id"]), authorized=True)
+-        assert 'data-authorized="true"' in live
+-        assert "agent session continued" in live
+-        assert "user Chrome data is not shared" in live
+         cookies = request_user_cookies(authorized=True, user_chrome_dir=user_chrome)
+         assert cookies["shared"] is False
+         assert secret.decode("ascii") not in str(cookies)
+@@ -156,6 +157,77 @@ def _assert_wheel_contains_session_manager() -> None:
+     assert "rxycode_runner/browser/__init__.py" in names
+
+
++_ENTRY = """
++import { createRoot } from "react-dom/client"
++import { BrowserHandoff } from "./BrowserHandoff.tsx"
 +
-+REPO = Path(__file__).resolve().parents[3]
-+_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
-+for _entry in (REPO, _RUNNER):
-+    if str(_entry) not in sys.path:
-+        sys.path.insert(0, str(_entry))
++const root = document.getElementById("root")
++const sessionId = (window as Window & { sessionId: string }).sessionId
++if (root) {
++  createRoot(root).render(<BrowserHandoff sessionId={sessionId} authorized={false} />)
++}
++"""
 +
 +
-+class _Page(BaseHTTPRequestHandler):
-+    token = ""
++class _Bundle(BaseHTTPRequestHandler):
++    html = b""
++    script = b""
 +
 +    def do_GET(self) -> None:  # noqa: N802
-+        if self.path.startswith("/done"):
-+            body = (
-+                "<!doctype html><html><body>"
-+                f"<p id=\"out\">{self.token}</p>"
-+                "<script>localStorage.setItem('rxy-marker', "
-+                "document.getElementById('out').textContent)</script>"
-+                "</body></html>"
-+            ).encode("utf-8")
-+            kind = "text/html"
++        if self.path.startswith("/bundle.js"):
++            body, kind = self.script, "text/javascript"
 +        else:
-+            body = (
-+                "<!doctype html><html><body>"
-+                "<p id=\"out\">before</p><button id=\"go\">Go</button>"
-+                "<script>document.getElementById('go').addEventListener('click', function () {"
-+                " window.location = '/done';"
-+                "});</script></body></html>"
-+            ).encode("utf-8")
-+            kind = "text/html"
++            body, kind = self.html, "text/html"
 +        self.send_response(200)
 +        self.send_header("Content-Type", kind)
 +        self.send_header("Content-Length", str(len(body)))
@@ -676,122 +388,90 @@ index 00000000..20146e6d
 +        return
 +
 +
-+def start_page(token: str) -> tuple[ThreadingHTTPServer, str]:
-+    _Page.token = token
-+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Page)
-+    thread = threading.Thread(target=server.serve_forever, daemon=True)
-+    thread.start()
-+    port = server.server_address[1]
-+    return server, f"http://127.0.0.1:{port}/"
++def _click_shipped_handoff(session_id: str) -> dict[str, object]:
++    """Bundle the shipped component and click its button in a real browser."""
++    from rxycode_runner.browser.session_manager import click_handoff, present_handoff
 +
-+
-+def _listing(root: Path) -> list[str]:
-+    if not root.exists():
-+        return []
-+    return sorted(
-+        str(path.relative_to(root))
-+        for path in root.rglob("*")
-+        if path.is_file()
-+    )
-+
-+
-+def test_w6_c03_contract() -> None:
-+    """Navigate and click in an isolated agent profile and read the clicked DOM."""
-+    from rxycode_runner.browser.session_manager import (
-+        close_session,
-+        navigate_click,
-+        open_agent_context,
-+        read_storage,
-+    )
-+
-+    cu = (REPO / "core" / "cu" / "browser.py").read_text(encoding="utf-8")
-+    assert "def browser_open(" in cu
-+    assert "def browser_snapshot(" in cu
-+    assert "def browser_act(" in cu
-+    tools = (REPO / "tools" / "virtual_browser.py").read_text(encoding="utf-8")
-+    assert 'name="browser_navigate"' in tools
-+    assert 'name="browser_snapshot"' in tools
-+    assert 'name="browser_click"' in tools
-+
-+    token = "rxy-dom-" + uuid.uuid4().hex
-+    server, url = start_page(token)
-+    profile = Path(tempfile.mkdtemp(prefix="rxy-w6c03-agent-"))
-+    session_id = ""
++    entry = REPO / "apps" / "web" / "src" / "features" / "browser" / "_c03_handoff_entry.tsx"
++    bundle_dir = Path(tempfile.mkdtemp(prefix="rxy-w6c03-bundle-"))
++    bundle = bundle_dir / "bundle.js"
++    entry.write_text(_ENTRY, encoding="utf-8")
++    server: ThreadingHTTPServer | None = None
 +    try:
-+        static = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
-+        assert token not in static
-+        opened = open_agent_context(profile_dir=profile, kind="agent")
-+        assert opened["status"] == "open"
-+        assert opened["profile_kind"] == "agent"
-+        assert Path(opened["profile_dir"]) == profile
-+        assert opened["shared"] is False
-+        session_id = str(opened["session_id"])
-+        result = navigate_click(session_id=session_id, url=url, selector="#go")
-+        assert result["status"] == "ok"
-+        assert result["profile_kind"] == "agent"
-+        assert token in result["dom"]
-+        assert result["url"].startswith(url)
-+        stored = read_storage(session_id=session_id, key="rxy-marker")
-+        assert stored["value"] == token
-+        cookie_jar = profile / "Default" / "Network" / "Cookies"
-+        assert cookie_jar.is_file()
++        built = subprocess.run(
++            [str(BUN), "build", str(entry), "--outfile", str(bundle), "--target", "browser"],
++            cwd=REPO / "apps" / "web",
++            text=True,
++            capture_output=True,
++            check=False,
++            timeout=60,
++        )
++        assert built.returncode == 0, built.stderr
++        html = (
++            '<!doctype html><html><body><div id="root"></div>'
++            f"<script>window.sessionId = {json.dumps(session_id)}</script>"
++            '<script src="/bundle.js"></script></body></html>'
++        )
++        _Bundle.html = html.encode("utf-8")
++        _Bundle.script = bundle.read_bytes()
++        server = ThreadingHTTPServer(("127.0.0.1", 0), _Bundle)
++        thread = threading.Thread(target=server.serve_forever, daemon=True)
++        thread.start()
++        page = f"http://127.0.0.1:{server.server_address[1]}/"
++        presented = present_handoff(agent_session_id=session_id, url=page)
++        assert presented["status"] == "open", presented
++        return click_handoff(agent_session_id=session_id)
 +    finally:
-+        if session_id:
-+            close_session(session_id=session_id)
-+        server.shutdown()
-+        _remove(profile)
++        entry.unlink(missing_ok=True)
++        if server is not None:
++            server.shutdown()
++        shutil.rmtree(bundle_dir, ignore_errors=True)
 +
 +
-+def test_w6_c03_negative() -> None:
-+    """Unauthorized cookie handoff must not read or copy the user's Chrome data."""
-+    from rxycode_runner.browser.session_manager import (
-+        close_session,
-+        navigate_click,
-+        open_agent_context,
-+        request_user_cookies,
-+    )
-+
-+    root = Path(tempfile.mkdtemp(prefix="rxy-w6c03-neg-"))
-+    user_chrome = root / "Google" / "Chrome" / "User Data"
-+    secret_path = user_chrome / "Default" / "Cookies"
-+    secret_path.parent.mkdir(parents=True)
-+    secret = b"CHROME-SECRET-" + uuid.uuid4().hex.encode("ascii")
-+    secret_path.write_bytes(secret)
-+    before = _listing(user_chrome)
-+    agent = root / "agent-profile"
-+    session_id = ""
-+    try:
-+        refused = request_user_cookies(authorized=False, user_chrome_dir=user_chrome)
-+        assert refused["status"] == "refused"
-+        assert refused["shared"] is False
-+        assert secret.decode("ascii") not in str(refused)
-+        attached = open_agent_context(profile_dir=user_chrome, kind="agent")
-+        assert attached["status"] == "refused"
-+        assert attached["shared"] is False
+ def _render(*, session_id: str, authorized: bool) -> str:
+     if not BUN.is_file():
+         pytest.fail("bun is not installed")
+diff --git a/tests/web/w6/test_w6_c03_unit.py b/tests/web/w6/test_w6_c03_unit.py
+index 20146e6d..772d5ad3 100644
+--- a/tests/web/w6/test_w6_c03_unit.py
++++ b/tests/web/w6/test_w6_c03_unit.py
+@@ -2,6 +2,8 @@
+
+ from __future__ import annotations
+
++import os
++import subprocess
+ import sys
+ import tempfile
+ import threading
+@@ -146,6 +148,20 @@ def test_w6_c03_negative() -> None:
+         for path in root.rglob("*"):
+             if path.is_file() and path != secret_path:
+                 assert secret not in path.read_bytes()
++        alias = root / "alias-profile"
++        linked = subprocess.run(
++            ["cmd", "/c", "mklink", "/J", str(alias), str(user_chrome)],
++            capture_output=True,
++            check=False,
++        )
++        detail = (linked.stderr or linked.stdout).decode("utf-8", "replace")
++        assert linked.returncode == 0, detail
++        aliased = open_agent_context(profile_dir=alias, kind="agent")
++        assert aliased["status"] == "refused"
++        assert aliased["shared"] is False
 +        assert _listing(user_chrome) == before
 +        assert secret_path.read_bytes() == secret
-+        for path in root.rglob("*"):
-+            if path.is_file() and path != secret_path:
-+                assert secret not in path.read_bytes()
-+        opened = open_agent_context(profile_dir=agent, kind="agent")
-+        assert opened["status"] == "open"
-+        session_id = str(opened["session_id"])
-+        bad = navigate_click(
-+            session_id=session_id,
-+            url="file:///C:/Users/Administrator/AppData/Local/Google/Chrome/User Data/Local State",
-+            selector="#go",
-+        )
-+        assert bad["status"] == "refused"
-+        assert "Local State" not in bad.get("dom", "")
-+        assert secret.decode("ascii") not in str(bad)
-+        assert _listing(user_chrome) == before
-+    finally:
-+        if session_id:
-+            close_session(session_id=session_id)
-+        _remove(root)
-+
-+
-+def _remove(root: Path) -> None:
-+    import shutil
-+
-+    shutil.rmtree(root, ignore_errors=True)
++        os.rmdir(alias)
+         opened = open_agent_context(profile_dir=agent, kind="agent")
+         assert opened["status"] == "open"
+         session_id = str(opened["session_id"])
+@@ -161,6 +177,9 @@ def test_w6_c03_negative() -> None:
+     finally:
+         if session_id:
+             close_session(session_id=session_id)
++        alias = root / "alias-profile"
++        if os.path.isjunction(alias):
++            os.rmdir(alias)
+         _remove(root)
+
+

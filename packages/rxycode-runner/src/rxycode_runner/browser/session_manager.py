@@ -7,6 +7,7 @@ and does not call webfetch.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import uuid
@@ -16,6 +17,7 @@ from typing import Any
 
 
 _SESSIONS: dict[str, "Session"] = {}
+_HANDOFF: dict[str, tuple[Any, Any]] = {}
 _PLAYWRIGHT: Any = None
 
 
@@ -139,9 +141,63 @@ def snapshot(*, session_id: str) -> dict[str, object]:
     return _view(session, dom=dom, url=url, title=title)
 
 
+def present_handoff(*, agent_session_id: str, url: str) -> dict[str, object]:
+    """Open the handoff page. Its button is the only grant for this session."""
+    agent = _SESSIONS.get(agent_session_id)
+    if agent is None:
+        return _refused("unknown browser session")
+    target = (url or "").strip()
+    if not target.startswith(("http://", "https://")):
+        return _refused("browser requires an http(s) URL")
+    playwright = _driver()
+    browser = playwright.chromium.launch(headless=True)
+    page = browser.new_page()
+
+    def grant(requested: str) -> None:
+        if requested != agent_session_id:
+            return
+        authorize_handoff(session_id=agent_session_id, authorized=True)
+
+    try:
+        page.expose_function("rxyAuthorizeHandoff", grant)
+        page.goto(target, wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_selector("button", timeout=10000)
+    except Exception as exc:
+        browser.close()
+        return _refused(f"handoff page failed: {type(exc).__name__}: {exc}")
+    _HANDOFF[agent_session_id] = (browser, page)
+    return _view(agent, status="open")
+
+
+def click_handoff(*, agent_session_id: str) -> dict[str, object]:
+    """Click the shipped handoff button. The page calls rxyAuthorizeHandoff."""
+    pair = _HANDOFF.get(agent_session_id)
+    agent = _SESSIONS.get(agent_session_id)
+    if pair is None or agent is None:
+        return _refused("handoff is not open")
+    _browser, page = pair
+    try:
+        page.click("button", timeout=8000)
+        page.wait_for_selector('[data-authorized="true"]', timeout=10000)
+        dom = page.content()
+    except Exception as exc:
+        return _refused(f"handoff click failed: {type(exc).__name__}: {exc}")
+    if not agent.authorized:
+        return _refused("handoff click did not authorize the agent session")
+    return _view(agent, status="authorized", dom=dom, url=page.url, title=_title_page(page))
+
+
 def close_session(*, session_id: str) -> None:
+    handoff = _HANDOFF.pop(session_id, None)
+    if handoff is not None:
+        browser, _page = handoff
+        try:
+            browser.close()
+        except Exception:
+            pass
     session = _SESSIONS.pop(session_id, None)
     if session is None:
+        _stop_driver_when_idle()
         return
     try:
         session.context.close()
@@ -161,23 +217,29 @@ def _stop_driver_when_idle() -> None:
     _PLAYWRIGHT = None
 
 
-def _launch(profile_dir: Path) -> tuple[Any, Any, Any]:
-    """One sync driver can own several persistent profiles. A second driver fails."""
+def _driver() -> Any:
     global _PLAYWRIGHT
     from playwright.sync_api import sync_playwright
 
-    created = _PLAYWRIGHT is None
     if _PLAYWRIGHT is None:
         _PLAYWRIGHT = sync_playwright().start()
+    return _PLAYWRIGHT
+
+
+def _launch(profile_dir: Path) -> tuple[Any, Any, Any]:
+    """One sync driver can own several persistent profiles. A second driver fails."""
+    global _PLAYWRIGHT
+    created = _PLAYWRIGHT is None
+    playwright = _driver()
     try:
-        context = _start_context(_PLAYWRIGHT, profile_dir)
+        context = _start_context(playwright, profile_dir)
     except Exception:
         if created:
-            _PLAYWRIGHT.stop()
+            playwright.stop()
             _PLAYWRIGHT = None
         raise
     page = context.pages[0] if context.pages else context.new_page()
-    return _PLAYWRIGHT, context, page
+    return playwright, context, page
 
 
 def _start_context(playwright: Any, profile_dir: Path) -> Any:
@@ -210,6 +272,17 @@ def _install_chromium() -> None:
 
 
 def _user_browser_dir(path: Path) -> bool:
+    """Refuse the real profile and any symlink or junction that points at it."""
+    candidates = [path]
+    for resolver in (_safe_resolve, _safe_realpath):
+        candidates.append(resolver(path))
+    for candidate in candidates:
+        if _looks_like_user_browser(candidate) or _is_known_user_data(candidate):
+            return True
+    return False
+
+
+def _looks_like_user_browser(path: Path) -> bool:
     text = str(path).replace("/", "\\").lower()
     if "user data" not in text:
         return False
@@ -217,9 +290,51 @@ def _user_browser_dir(path: Path) -> bool:
     return any(name in text for name in names)
 
 
-def _title(session: Session) -> str:
+def _is_known_user_data(path: Path) -> bool:
+    local = os.environ.get("LOCALAPPDATA", "")
+    if not local:
+        return False
+    roots = (
+        Path(local) / "Google" / "Chrome" / "User Data",
+        Path(local) / "Microsoft" / "Edge" / "User Data",
+        Path(local) / "Chromium" / "User Data",
+        Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data",
+    )
     try:
-        return session.page.title()
+        resolved = _safe_resolve(path)
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            known = _safe_resolve(root)
+        except OSError:
+            continue
+        if resolved == known or known in resolved.parents:
+            return True
+    return False
+
+
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _safe_realpath(path: Path) -> Path:
+    try:
+        return Path(os.path.realpath(path))
+    except OSError:
+        return path
+
+
+def _title(session: Session) -> str:
+    return _title_page(session.page)
+
+
+def _title_page(page: Any) -> str:
+    try:
+        return str(page.title())
     except Exception:
         return ""
 

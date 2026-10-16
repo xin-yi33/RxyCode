@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -146,6 +148,20 @@ def test_w6_c03_negative() -> None:
         for path in root.rglob("*"):
             if path.is_file() and path != secret_path:
                 assert secret not in path.read_bytes()
+        alias = root / "alias-profile"
+        linked = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(alias), str(user_chrome)],
+            capture_output=True,
+            check=False,
+        )
+        detail = (linked.stderr or linked.stdout).decode("utf-8", "replace")
+        assert linked.returncode == 0, detail
+        aliased = open_agent_context(profile_dir=alias, kind="agent")
+        assert aliased["status"] == "refused"
+        assert aliased["shared"] is False
+        assert _listing(user_chrome) == before
+        assert secret_path.read_bytes() == secret
+        os.rmdir(alias)
         opened = open_agent_context(profile_dir=agent, kind="agent")
         assert opened["status"] == "open"
         session_id = str(opened["session_id"])
@@ -161,6 +177,9 @@ def test_w6_c03_negative() -> None:
     finally:
         if session_id:
             close_session(session_id=session_id)
+        alias = root / "alias-profile"
+        if os.path.isjunction(alias):
+            os.rmdir(alias)
         _remove(root)
 
 
