@@ -137,6 +137,41 @@ export function createClient() {
       const url = `/api/v1/workspaces/${encodeURIComponent(projectId)}/review`
       return writeJson(url, body) as Promise<{ status: string; base_revision: string }>
     },
+    listApprovals(runId: string, signal?: AbortSignal): Promise<{
+      approvals: {
+        approval_id: string
+        tool: string
+        arguments?: { path?: string; file?: string }
+        deadline?: string | null
+        revision: number
+      }[]
+    }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/approvals`
+      return readJson(path, signal) as Promise<{
+        approvals: {
+          approval_id: string
+          tool: string
+          arguments?: { path?: string; file?: string }
+          deadline?: string | null
+          revision: number
+        }[]
+      }>
+    },
+    decideApproval(
+      runId: string,
+      body: { approval_id: string; decision: string; revision: number },
+    ): Promise<{ status: string; revision: number }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/approvals`
+      return writeJson(path, body) as Promise<{ status: string; revision: number }>
+    },
+    listArtifacts(runId: string, signal?: AbortSignal): Promise<{
+      artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
+    }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/artifacts`
+      return readJson(path, signal) as Promise<{
+        artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
+      }>
+    },
     openRunEvents(runId: string): EventSource {
       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
     },

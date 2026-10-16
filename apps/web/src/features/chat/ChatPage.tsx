@@ -1,5 +1,9 @@
 import { useParams } from "react-router"
 
+import { AgentTree } from "../agents/AgentTree"
+import { ApprovalCard } from "../approvals/ApprovalCard"
+import { ArtifactPanel } from "../artifacts/ArtifactPanel"
+import { PlanDock } from "../plan/PlanDock"
 import { useRunEvents } from "../runs/useRunEvents"
 
 export function ChatPage() {
@@ -40,6 +44,10 @@ export function ChatPage() {
           </li>
         ))}
       </ul>
+      <PlanDock plans={projection.plans} todos={projection.todos} />
+      <ApprovalCard runId={runId} />
+      <AgentTree agents={projection.agents} />
+      <ArtifactPanel runId={runId} />
     </main>
   )
 }

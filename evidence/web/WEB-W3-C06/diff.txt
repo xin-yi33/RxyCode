@@ -1,0 +1,576 @@
+diff --git a/apps/web/src/features/agents/AgentTree.tsx b/apps/web/src/features/agents/AgentTree.tsx
+new file mode 100644
+index 00000000..f03b7950
+--- /dev/null
++++ b/apps/web/src/features/agents/AgentTree.tsx
+@@ -0,0 +1,18 @@
++export function AgentTree({
++  agents,
++}: {
++  agents: { id: string; name: string; status: string }[]
++}) {
++  return (
++    <section data-agents>
++      <h2>子代理</h2>
++      <ul>
++        {agents.map((item) => (
++          <li key={item.id} data-agent-id={item.id} data-agent-status={item.status}>
++            {item.name}
++          </li>
++        ))}
++      </ul>
++    </section>
++  )
++}
+diff --git a/apps/web/src/features/approvals/ApprovalCard.tsx b/apps/web/src/features/approvals/ApprovalCard.tsx
+new file mode 100644
+index 00000000..4099b4e3
+--- /dev/null
++++ b/apps/web/src/features/approvals/ApprovalCard.tsx
+@@ -0,0 +1,58 @@
++import { useState } from "react"
++import { useQuery } from "@tanstack/react-query"
++
++import { ApiError, createClient } from "../../sdk/client"
++
++type Ask = {
++  approval_id: string
++  tool: string
++  arguments?: { path?: string; file?: string }
++  deadline?: string | null
++  revision: number
++}
++
++export function ApprovalCard({ runId }: { runId: string }) {
++  const client = createClient()
++  const query = useQuery({
++    queryKey: ["approvals", runId],
++    queryFn: () => client.listApprovals(runId),
++  })
++  const [conflict, setConflict] = useState(false)
++
++  async function decide(item: Ask, decision: "approved" | "rejected") {
++    setConflict(false)
++    try {
++      await client.decideApproval(runId, {
++        approval_id: item.approval_id,
++        decision,
++        revision: item.revision,
++      })
++      await query.refetch()
++    } catch (error) {
++      if (error instanceof ApiError && error.status === 409) setConflict(true)
++    }
++  }
++
++  return (
++    <section>
++      {query.data?.approvals.map((item) => {
++        const args = item.arguments ?? {}
++        const path = String(args.path ?? args.file ?? "")
++        return (
++          <article key={item.approval_id} data-approval-card data-approval-id={item.approval_id}>
++            <p>{item.tool}</p>
++            <p>{path}</p>
++            <p>{item.deadline ?? ""}</p>
++            <button type="button" onClick={() => void decide(item, "approved")}>
++              批准
++            </button>
++            <button type="button" onClick={() => void decide(item, "rejected")}>
++              拒绝
++            </button>
++          </article>
++        )
++      })}
++      {conflict ? <p role="alert">冲突</p> : null}
++    </section>
++  )
++}
+diff --git a/apps/web/src/features/artifacts/ArtifactPanel.tsx b/apps/web/src/features/artifacts/ArtifactPanel.tsx
+new file mode 100644
+index 00000000..c2a948b6
+--- /dev/null
++++ b/apps/web/src/features/artifacts/ArtifactPanel.tsx
+@@ -0,0 +1,25 @@
++import { useQuery } from "@tanstack/react-query"
++
++import { createClient } from "../../sdk/client"
++
++export function ArtifactPanel({ runId }: { runId: string }) {
++  const client = createClient()
++  const query = useQuery({
++    queryKey: ["artifacts", runId],
++    queryFn: () => client.listArtifacts(runId),
++  })
++  return (
++    <section data-artifacts>
++      <h2>产物</h2>
++      <ul>
++        {query.data?.artifacts.map((item) => (
++          <li key={item.artifact_id}>
++            <a href={`/api/v1/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(item.artifact_id)}`}>
++              {item.artifact_id}
++            </a>
++          </li>
++        ))}
++      </ul>
++    </section>
++  )
++}
+diff --git a/apps/web/src/features/chat/ChatPage.tsx b/apps/web/src/features/chat/ChatPage.tsx
+index 0373dce3..3754ca74 100644
+--- a/apps/web/src/features/chat/ChatPage.tsx
++++ b/apps/web/src/features/chat/ChatPage.tsx
+@@ -1,5 +1,9 @@
+ import { useParams } from "react-router"
+ 
++import { AgentTree } from "../agents/AgentTree"
++import { ApprovalCard } from "../approvals/ApprovalCard"
++import { ArtifactPanel } from "../artifacts/ArtifactPanel"
++import { PlanDock } from "../plan/PlanDock"
+ import { useRunEvents } from "../runs/useRunEvents"
+ 
+ export function ChatPage() {
+@@ -40,6 +44,10 @@ export function ChatPage() {
+           </li>
+         ))}
+       </ul>
++      <PlanDock plans={projection.plans} todos={projection.todos} />
++      <ApprovalCard runId={runId} />
++      <AgentTree agents={projection.agents} />
++      <ArtifactPanel runId={runId} />
+     </main>
+   )
+ }
+diff --git a/apps/web/src/features/plan/PlanDock.tsx b/apps/web/src/features/plan/PlanDock.tsx
+new file mode 100644
+index 00000000..f44d867c
+--- /dev/null
++++ b/apps/web/src/features/plan/PlanDock.tsx
+@@ -0,0 +1,27 @@
++export function PlanDock({
++  plans,
++  todos,
++}: {
++  plans: { id: string; title: string; status: string }[]
++  todos: { id: string; title: string; status: string }[]
++}) {
++  return (
++    <section data-plan>
++      <h2>计划</h2>
++      <ul>
++        {plans.map((item) => (
++          <li key={item.id} data-plan-id={item.id}>
++            {item.title} {item.status}
++          </li>
++        ))}
++      </ul>
++      <ul>
++        {todos.map((item) => (
++          <li key={item.id} data-todo-id={item.id}>
++            {item.title} {item.status}
++          </li>
++        ))}
++      </ul>
++    </section>
++  )
++}
+diff --git a/apps/web/src/features/runs/eventReducer.ts b/apps/web/src/features/runs/eventReducer.ts
+index 5b493844..1cd6c1ea 100644
+--- a/apps/web/src/features/runs/eventReducer.ts
++++ b/apps/web/src/features/runs/eventReducer.ts
+@@ -15,12 +15,19 @@ export type ApprovalCard = {
+   status: string
+ }
+ 
++export type PlanItem = { id: string; title: string; status: string }
++
++export type AgentItem = { id: string; name: string; status: string }
++
+ export type Projection = {
+   order: number[]
+   answer: string
+   intermediate: string[]
+   tools: ToolCard[]
+   approvals: ApprovalCard[]
++  plans: PlanItem[]
++  todos: PlanItem[]
++  agents: AgentItem[]
+   runStatus: string
+ }
+ 
+@@ -52,6 +59,9 @@ export function reduceEvents(
+     intermediate: [],
+     tools: [],
+     approvals: [],
++    plans: [],
++    todos: [],
++    agents: [],
+     runStatus: initialStatus,
+   }
+ 
+@@ -89,6 +99,23 @@ export function reduceEvents(
+       })
+       return
+     }
++    if (event.type === "plan.updated" || event.type === "todo.updated") {
++      const bucket = event.type === "plan.updated" ? projection.plans : projection.todos
++      bucket.push({
++        id: String(payload.plan_id ?? payload.todo_id ?? ""),
++        title: String(payload.title ?? ""),
++        status: String(payload.status ?? ""),
++      })
++      return
++    }
++    if (event.type === "agent.started" || event.type === "agent.completed") {
++      const id = String(payload.agent_id ?? "")
++      const status = event.type === "agent.started" ? "started" : "completed"
++      const found = projection.agents.find((item) => item.id === id)
++      if (found) found.status = status
++      else projection.agents.push({ id, name: String(payload.name ?? ""), status })
++      return
++    }
+     if (event.type === "approval.resolved") {
+       const id = String(payload.approval_id ?? "")
+       const status = String(payload.decision ?? payload.status ?? "")
+diff --git a/apps/web/src/sdk/client.ts b/apps/web/src/sdk/client.ts
+index b3d4760f..6f1b2322 100644
+--- a/apps/web/src/sdk/client.ts
++++ b/apps/web/src/sdk/client.ts
+@@ -137,6 +137,41 @@ export function createClient() {
+       const url = `/api/v1/workspaces/${encodeURIComponent(projectId)}/review`
+       return writeJson(url, body) as Promise<{ status: string; base_revision: string }>
+     },
++    listApprovals(runId: string, signal?: AbortSignal): Promise<{
++      approvals: {
++        approval_id: string
++        tool: string
++        arguments?: { path?: string; file?: string }
++        deadline?: string | null
++        revision: number
++      }[]
++    }> {
++      const path = `/api/v1/runs/${encodeURIComponent(runId)}/approvals`
++      return readJson(path, signal) as Promise<{
++        approvals: {
++          approval_id: string
++          tool: string
++          arguments?: { path?: string; file?: string }
++          deadline?: string | null
++          revision: number
++        }[]
++      }>
++    },
++    decideApproval(
++      runId: string,
++      body: { approval_id: string; decision: string; revision: number },
++    ): Promise<{ status: string; revision: number }> {
++      const path = `/api/v1/runs/${encodeURIComponent(runId)}/approvals`
++      return writeJson(path, body) as Promise<{ status: string; revision: number }>
++    },
++    listArtifacts(runId: string, signal?: AbortSignal): Promise<{
++      artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
++    }> {
++      const path = `/api/v1/runs/${encodeURIComponent(runId)}/artifacts`
++      return readJson(path, signal) as Promise<{
++        artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
++      }>
++    },
+     openRunEvents(runId: string): EventSource {
+       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
+     },
+diff --git a/evidence/web/WEB-W3-C06/baseline.txt b/evidence/web/WEB-W3-C06/baseline.txt
+new file mode 100644
+index 00000000..7ec8cfee
+--- /dev/null
++++ b/evidence/web/WEB-W3-C06/baseline.txt
+@@ -0,0 +1,3 @@
++Parent HEAD before this card: 34a77f2b feat/rxycode-web. Not pushed.
++RED: ApprovalCard.tsx was missing. 3 failed in 0.89s.
++E2E-WEB-03 screenshots are not produced.
+diff --git a/evidence/web/WEB-W3-C06/handoff.md b/evidence/web/WEB-W3-C06/handoff.md
+new file mode 100644
+index 00000000..c8613002
+--- /dev/null
++++ b/evidence/web/WEB-W3-C06/handoff.md
+@@ -0,0 +1,9 @@
++# WEB-W3-C06 handoff
++
++Parent code commit is recorded after this file is committed. Branch feat/rxycode-web. Not pushed.
++Nested whitelist is the C06 rows in docs/plans/opus5-plan. Not pushed.
++Audit model for this card: gpt-6-luna, reasoning effort max.
++Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
++Verdict is not written yet.
++Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
++E2E-WEB-03 screenshots are not produced.
+diff --git a/evidence/web/WEB-W3-C06/integration.txt b/evidence/web/WEB-W3-C06/integration.txt
+new file mode 100644
+index 00000000..d426071f
+--- /dev/null
++++ b/evidence/web/WEB-W3-C06/integration.txt
+@@ -0,0 +1,12 @@
++.                                                                        [100%]
++============================== warnings summary ===============================
++tests/web/w3/test_w3_c06_module.py::test_w3_c06_integration
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w3/test_w3_c06_module.py::test_w3_c06_integration
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++1 passed, 2 warnings in 4.49s
+diff --git a/evidence/web/WEB-W3-C06/red.txt b/evidence/web/WEB-W3-C06/red.txt
+new file mode 100644
+index 00000000..1ad64ed1
+--- /dev/null
++++ b/evidence/web/WEB-W3-C06/red.txt
+@@ -0,0 +1,10 @@
++FFF                                                                      [100%]
++================================== FAILURES ===================================
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c06_unit.py:102: AssertionError: ApprovalCard.tsx is missing
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c06_unit.py:123: AssertionError: ApprovalCard.tsx is missing
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c06_module.py:21: AssertionError: ApprovalCard.tsx is missing
++=========================== short test summary info ===========================
++FAILED tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract - AssertionError: ApprovalCard.tsx is missing
++FAILED tests/web/w3/test_w3_c06_unit.py::test_w3_c06_negative - AssertionError: ApprovalCard.tsx is missing
++FAILED tests/web/w3/test_w3_c06_module.py::test_w3_c06_integration - AssertionError: ApprovalCard.tsx is missing
++3 failed in 0.89s
+diff --git a/evidence/web/WEB-W3-C06/self-audit.md b/evidence/web/WEB-W3-C06/self-audit.md
+new file mode 100644
+index 00000000..b5273c36
+--- /dev/null
++++ b/evidence/web/WEB-W3-C06/self-audit.md
+@@ -0,0 +1,8 @@
++# WEB-W3-C06 self-audit
++
++- RED: ApprovalCard.tsx was missing. See red.txt.
++- The card reads GET /api/v1/runs/{id}/approvals and shows the server tool, path, and deadline.
++- 批准 and 拒绝 POST that same approval id and revision. A 409 shows 冲突 and does not mark the run succeeded.
++- While the POST is still open, the page does not say succeeded. The server decision is approved or pending, not succeeded.
++- Plan, todo, and agent rows come from the existing event reducer. Artifacts come from the artifact list API.
++- Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
+diff --git a/evidence/web/WEB-W3-C06/unit.txt b/evidence/web/WEB-W3-C06/unit.txt
+new file mode 100644
+index 00000000..3224285d
+--- /dev/null
++++ b/evidence/web/WEB-W3-C06/unit.txt
+@@ -0,0 +1,12 @@
++..                                                                       [100%]
++============================== warnings summary ===============================
++tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++2 passed, 2 warnings in 6.29s
+diff --git a/tests/web/w3/test_w3_c06_module.py b/tests/web/w3/test_w3_c06_module.py
+new file mode 100644
+index 00000000..e9bfb22e
+--- /dev/null
++++ b/tests/web/w3/test_w3_c06_module.py
+@@ -0,0 +1,53 @@
++"""WEB-W3-C06. Approve does not mark the run succeeded before the server says so."""
++
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++REPO = Path(__file__).resolve().parents[3]
++CARD = REPO / "apps" / "web" / "src" / "features" / "approvals" / "ApprovalCard.tsx"
++_UNIT = Path(__file__).with_name("test_w3_c06_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c06_unit_mod", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_unit = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_unit)
++
++
++def test_w3_c06_integration() -> None:
++    """While the approve request is still open, the page does not say succeeded."""
++    assert CARD.is_file(), "ApprovalCard.tsx is missing"
++    from datetime import datetime, timedelta, timezone
++
++    stack = _unit._c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _unit._c02._login(page, stack.origin)
++            run_id, _approval_id = _unit._seed(datetime.now(timezone.utc) + timedelta(minutes=10))
++            held: list = []
++
++            def gate(route) -> None:
++                if route.request.method == "POST" and "/approvals" in route.request.url:
++                    held.append(route)
++                    return
++                route.continue_()
++
++            page.route("**/*", gate)
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            page.locator("[data-approval-card]").get_by_role("button", name="批准").click()
++            for _ in range(50):
++                if held:
++                    break
++                page.wait_for_timeout(100)
++            assert held, "the approve request never reached the server"
++            expect(page.locator("body")).not_to_contain_text("succeeded")
++            held[0].continue_()
++            page.wait_for_timeout(500)
++            expect(page.locator("body")).not_to_contain_text("succeeded")
++            browser.close()
++    finally:
++        stack.close()
+diff --git a/tests/web/w3/test_w3_c06_unit.py b/tests/web/w3/test_w3_c06_unit.py
+new file mode 100644
+index 00000000..853ffd52
+--- /dev/null
++++ b/tests/web/w3/test_w3_c06_unit.py
+@@ -0,0 +1,140 @@
++"""WEB-W3-C06. The approval card shows the real ask, and an expired one conflicts."""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++import uuid
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++CARD = REPO / "apps" / "web" / "src" / "features" / "approvals" / "ApprovalCard.tsx"
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++for _path in (_SERVER, _WORKER):
++    if str(_path) not in sys.path:
++        sys.path.insert(0, str(_path))
++
++_UNIT = Path(__file__).with_name("test_w3_c02_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c02_stack_c06", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_c02 = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_c02)
++
++from rxycode_server.approvals.service import request_approval  # noqa: E402
++from rxycode_server.persistence.models import Approval, Membership, Project, SessionRow, User  # noqa: E402
++from rxycode_server.runs.service import create_run  # noqa: E402
++from rxycode_worker.supervisor import claim  # noqa: E402
++
++
++def _seed(deadline: datetime) -> tuple[str, str]:
++    engine = create_engine(_c02.URL)
++    with Session(engine) as db:
++        user = db.scalars(select(User).where(User.kind == "local")).one()
++        tenant_id = db.scalars(
++            select(Membership.tenant_id).where(Membership.user_id == user.id)
++        ).one()
++        project_id = uuid.uuid4().hex
++        session_id = uuid.uuid4().hex
++        db.add(
++            Project(
++                id=project_id,
++                tenant_id=tenant_id,
++                name="c06",
++                repo_config={},
++            )
++        )
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id=tenant_id,
++                project_id=project_id,
++                title="approve",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    created = create_run(
++        _c02.URL,
++        tenant_id=tenant_id,
++        session_id=session_id,
++        message="needs approval",
++        target_id="local:c06",
++        permission_profile="confirm_all",
++        request_id="req-" + uuid.uuid4().hex,
++    )
++    epoch = claim(_c02.URL, created.run_id, "worker-c06")
++    assert epoch == 1
++    requested = request_approval(
++        _c02.URL,
++        tenant_id=tenant_id,
++        run_id=created.run_id,
++        call_id="call-" + uuid.uuid4().hex,
++        tool="shell.exec",
++        permission_scope="workspace-write",
++        arguments={"path": "src/app.py"},
++        deadline=deadline,
++        worker_id="worker-c06",
++        epoch=epoch,
++        command="python src/app.py",
++        workdir="src",
++    )
++    return created.run_id, requested["approval_id"]
++
++
++def _expire(approval_id: str) -> None:
++    engine = create_engine(_c02.URL)
++    with Session(engine) as db:
++        row = db.get(Approval, approval_id)
++        assert row is not None
++        row.deadline = datetime.now(timezone.utc) - timedelta(seconds=5)
++        db.commit()
++    engine.dispose()
++
++
++def test_w3_c06_contract() -> None:
++    """A waiting approval shows the tool, path, and deadline from the server."""
++    assert CARD.is_file(), "ApprovalCard.tsx is missing"
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            deadline = datetime(2099, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
++            run_id, _approval_id = _seed(deadline)
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            card = page.locator("[data-approval-card]")
++            expect(card).to_contain_text("shell.exec", timeout=10000)
++            expect(card).to_contain_text("src/app.py")
++            expect(card).to_contain_text("2099-01-02")
++            browser.close()
++    finally:
++        stack.close()
++
++
++def test_w3_c06_negative() -> None:
++    """Approving an expired ask shows a conflict and does not continue the run."""
++    assert CARD.is_file(), "ApprovalCard.tsx is missing"
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            run_id, approval_id = _seed(datetime.now(timezone.utc) + timedelta(minutes=10))
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            expect(page.get_by_role("button", name="批准")).to_be_visible(timeout=10000)
++            _expire(approval_id)
++            page.get_by_role("button", name="批准").click()
++            expect(page.get_by_role("alert")).to_contain_text("冲突", timeout=10000)
++            expect(page.locator("body")).not_to_contain_text("succeeded")
++            expect(page.locator("body")).not_to_contain_text("继续")
++            browser.close()
++    finally:
++        stack.close()
