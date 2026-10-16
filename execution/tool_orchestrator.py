@@ -1066,6 +1066,7 @@ class ToolOrchestrator:
                     args,
                     _invoke_registered,
                     config,
+                    tool,
                 )
             return await _invoke_registered()
 
@@ -1802,6 +1803,7 @@ class ToolOrchestrator:
         args: Any,
         runner: Any,
         config: dict | None = None,
+        tool: Any = None,
     ) -> str:
         """Terminal shell/read/edit calls go through NativeBackend, not around it.
 
@@ -1821,7 +1823,18 @@ class ToolOrchestrator:
         call.name = name
         call.target_id = target_id
         call.version = 1
-        if permission == "full" and target_id == "local" and name in {"bash", "shell"}:
+        production_bash = False
+        if name in {"bash", "shell"}:
+            try:
+                from tools.bash import bash_tool
+            except ImportError:
+                bash_tool = None
+            production_bash = tool is bash_tool or name == "shell"
+        if (
+            permission in {"full", "full_auto"}
+            and target_id == "local"
+            and production_bash
+        ):
             argv = _local_full_argv(args)
             if argv:
                 async def native_runner() -> str:

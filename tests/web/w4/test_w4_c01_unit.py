@@ -31,26 +31,19 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     """A local full shell is a native pid in this session and is not wrapped."""
     import asyncio
 
-    from langchain_core.tools import StructuredTool
-
     from execution.tool_orchestrator import ToolOrchestrator
     from rxycode_core.runtime.execution_port import (
         ExecutionPort,
         bind_execution_port,
         reset_execution_port,
     )
+    from tools.bash import bash_tool
 
     wrapped: list[object] = []
-    body: list[str] = []
 
     def spy(*args: object, **kwargs: object) -> object:
         wrapped.append(args)
         raise AssertionError("full mode called wrap_command")
-
-    def sandbox_body(command: str = "", argv: list[str] | None = None, target: str = "local") -> str:
-        del argv, target
-        body.append(command)
-        return "sandbox-body"
 
     monkeypatch.setattr("core.sandbox.manager.wrap_command", spy)
     code = (
@@ -60,10 +53,7 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     )
     argv = [sys.executable, "-c", code]
     orchestrator = ToolOrchestrator()
-    orchestrator.register(
-        "bash",
-        StructuredTool.from_function(func=sandbox_body, name="bash", description="shell"),
-    )
+    orchestrator.register("bash", bash_tool)
     port = ExecutionPort()
     token = bind_execution_port(port)
     try:
@@ -71,12 +61,11 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
             orchestrator.execute_tool(
                 "bash",
                 {"argv": argv, "command": code, "target": "local", "cwd": str(tmp_path)},
-                config={"safety": {"enabled": True, "permission_mode": "full"}},
+                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
             )
         )
     finally:
         reset_execution_port(token)
-    assert body == []
     assert wrapped == []
     assert str(_session(os.getpid())) in text
     assert port.local_full is not None

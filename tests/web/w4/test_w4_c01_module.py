@@ -18,8 +18,6 @@ for _rel in (
 
 def test_w4_c01_integration(tmp_path: Path) -> None:
     """The same command is rejected under ask and runs under full."""
-    from langchain_core.tools import StructuredTool
-
     from core.safety.approval import (
         ApprovalBroker,
         ApprovalDecision,
@@ -31,19 +29,14 @@ def test_w4_c01_integration(tmp_path: Path) -> None:
         bind_execution_port,
         reset_execution_port,
     )
+    from tools.bash import bash_tool
 
     asked: list[str] = []
-    body: list[str] = []
 
     class Reject(ApprovalBroker):
         async def _ask(self, request: object) -> ApprovalDecision:
             asked.append(str(getattr(request, "tool_name", "")))
             return ApprovalDecision.REJECTED
-
-    def sandbox_body(command: str = "", argv: list[str] | None = None, target: str = "local") -> str:
-        del argv, target
-        body.append(command)
-        return "sandbox-body"
 
     marker = tmp_path / "ran.txt"
     argv = [sys.executable, "-c", f"open(r'{marker}', 'w', encoding='utf-8').write('ok')"]
@@ -53,29 +46,24 @@ def test_w4_c01_integration(tmp_path: Path) -> None:
     token = bind_execution_port(port)
     try:
         orchestrator = ToolOrchestrator()
-        orchestrator.register(
-            "bash",
-            StructuredTool.from_function(func=sandbox_body, name="bash", description="shell"),
-        )
+        orchestrator.register("bash", bash_tool)
         refused = asyncio.run(
             orchestrator.execute_tool(
                 "bash",
                 payload,
-                config={"safety": {"enabled": True, "permission_mode": "ask"}},
+                config={"safety": {"enabled": True, "permission_mode": "confirm_all"}},
             )
         )
         assert "rejected" in refused
-        assert body == []
         assert not marker.exists()
         assert asked == ["bash"]
         ran = asyncio.run(
             orchestrator.execute_tool(
                 "bash",
                 payload,
-                config={"safety": {"enabled": True, "permission_mode": "full"}},
+                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
             )
         )
-        assert body == []
         assert marker.read_text(encoding="utf-8") == "ok"
         assert asked == ["bash"]
         assert "sandbox-body" not in ran
