@@ -142,13 +142,23 @@ def _git(
     if token:
         command.extend(["-c", f"http.extraHeader=Authorization: Bearer {token}"])
     command.extend(args)
-    done = _run(docker_executable(), ["exec", box.name, *command])
+    try:
+        done = _run(docker_executable(), ["exec", box.name, *command])
+    except subprocess.TimeoutExpired as exc:
+        raise _redacted_failure(exc, token) from None
     if done.returncode != 0:
         detail = (done.stderr or done.stdout or "git failed").strip()
-        if token:
-            detail = detail.replace(token, "[redacted]")
-        raise RuntimeError(detail)
+        raise _redacted_failure(RuntimeError(detail), token) from None
     return done
+
+
+def _redacted_failure(exc: BaseException, token: str | None) -> RuntimeError:
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return RuntimeError("git command timed out")
+    detail = str(exc)
+    if token and token in detail:
+        detail = detail.replace(token, "[redacted]")
+    return RuntimeError(detail)
 
 
 def _run(docker: str, args: list[str]) -> subprocess.CompletedProcess[str]:

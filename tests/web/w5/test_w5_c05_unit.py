@@ -312,6 +312,15 @@ def test_w5_c05_negative() -> None:
         assert "refused" in str(refused.value).lower()
         assert secret not in str(refused.value)
         assert secret not in journal.text()
+        from rxycode_runner.sandbox.git_workflow import _redacted_failure
+
+        timed_out = subprocess.TimeoutExpired(
+            ["git", "-c", f"http.extraHeader=Authorization: Bearer {secret}", "push"],
+            60,
+        )
+        hidden = _redacted_failure(timed_out, secret)
+        assert secret not in str(hidden)
+        assert "timed out" in str(hidden)
         assert flow.rev(box, "main") == main_sha
         panel = _render("", "", "write permission refused")
         assert "write permission refused" in panel
