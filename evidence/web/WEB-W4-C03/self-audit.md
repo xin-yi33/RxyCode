@@ -10,4 +10,5 @@
 - After the cloud socket drops, the runner reconnects with a new session id, the same scope, and a rotated token. The previous token is rejected.
 - Outbound frames for one live socket go through one writer task.
 - `rxycode web connect` remains the unimplemented W1 stub.
+- gpt-6-luna max in session 01a140a7-2cc1-7f61-bdab-2af627f08e80 returned VERDICT: NO_REMAINING_PROBLEMS on 8fbf6b2c.
 - Not claimed as 已落实. E2E-FULL-03 stays BLOCKED.
