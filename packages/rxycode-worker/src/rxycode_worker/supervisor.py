@@ -158,6 +158,9 @@ def commit_terminal(
                 {"status": status, "run_id": run_id},
             )
         _release_quota(database_url, run_id)
+        from rxycode_server.notifications.service import notify_run_terminal
+
+        notify_run_terminal(database_url, run_id, status)
     finally:
         engine.dispose()
 

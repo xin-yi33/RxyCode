@@ -74,6 +74,8 @@ async def test_w6_c05_contract() -> None:
 async def test_w6_c05_negative() -> None:
     """Tenant B cannot read or delete tenant A's memory or notifications."""
     from rxycode_server.notifications.service import (
+        ScheduleForbidden,
+        create_web_schedule,
         delete_memory,
         list_memory,
         list_notifications,
@@ -107,6 +109,20 @@ async def test_w6_c05_negative() -> None:
         assert any(item["body"] == secret for item in still["memories"])
         await unsubscribe(_write(_session(tenant_a, ids_a["token"]), ids_a["token"], {"kind": "run.completed"}))
         complete_run(DATABASE, tenant_id=tenant_a, run_id=ids_a["run_b"], user_id="user-a")
+        blocked = False
+        try:
+            create_web_schedule(
+                DATABASE,
+                tenant_id=tenant_b,
+                project_id=ids_a["project"],
+                session_id=ids_a["session_a"],
+                rule={"kind": "interval", "every": 1, "unit": "minutes"},
+                now=datetime(2026, 10, 16, 12, 0, 0),
+                user_id="user-b",
+            )
+        except ScheduleForbidden:
+            blocked = True
+        assert blocked
         own = list_notifications(_get(_session(tenant_a, ids_a["token"]), ids_a["token"]))
         assert any(item["run_id"] == ids_a["run_a"] for item in own["notifications"])
         assert all(item["run_id"] != ids_a["run_b"] for item in own["notifications"])

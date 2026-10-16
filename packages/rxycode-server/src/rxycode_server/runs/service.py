@@ -200,6 +200,7 @@ def complete_run(
 
     gate = quota if quota is not None else active_gate()
     engine = create_engine(database_url, poolclass=NullPool)
+    final = "succeeded"
     try:
         with Session(engine) as db:
             row = db.get(Run, run_id)
@@ -208,6 +209,7 @@ def complete_run(
             if row.status not in {"succeeded", "failed", "cancelled"}:
                 row.status = "succeeded"
                 db.commit()
+            final = row.status
     finally:
         engine.dispose()
     release_worker_for_run(database_url, run_id, quota=gate)
@@ -217,10 +219,10 @@ def complete_run(
         database_url,
         tenant_id=tenant_id,
         run_id=run_id,
-        status="succeeded",
+        status=final,
         user_id=user_id,
     )
-    return "succeeded"
+    return final
 
 
 def release_worker_for_run(

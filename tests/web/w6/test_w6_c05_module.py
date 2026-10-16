@@ -15,9 +15,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
+_WORKER = REPO / "packages" / "rxycode-worker" / "src"
 BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
 _W6 = REPO / "tests" / "web" / "w6"
-for _entry in (str(_SERVER), str(_W6)):
+for _entry in (str(_SERVER), str(_WORKER), str(_W6)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
@@ -35,8 +36,8 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
         fire_due_schedules,
         list_notifications,
     )
-    from rxycode_server.runs.service import complete_run
-    from rxycode_server.persistence.models import Run
+    from rxycode_server.persistence.models import Outbox, Run, RunEvent
+    from rxycode_worker.supervisor import LeaseRejected, claim, commit_terminal
     from rxycode_server.usage.service import record_terminal_usage
     from test_w6_c05_unit import _get, _seed, _session, _wipe
 
@@ -52,6 +53,7 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
             rule={"kind": "interval", "every": 1, "unit": "minutes"},
             now=started,
             notify=True,
+            user_id="user-a",
         )
         fired = fire_due_schedules(DATABASE, now=started + timedelta(minutes=2))
         assert fired
@@ -62,10 +64,20 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
                 row = db.scalar(select(Run).where(Run.id == run_id, Run.tenant_id == tenant))
                 assert row is not None
                 assert row.session_id == ids["session_a"]
+                event = db.scalar(
+                    select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.type == "run.created")
+                )
+                assert event is not None
+                queued = db.scalar(select(Outbox).where(Outbox.event_id == event.event_id))
+                assert queued is not None
+                assert queued.dispatch_status == "pending"
         finally:
             engine.dispose()
-        complete_run(DATABASE, tenant_id=tenant, run_id=run_id, user_id="user-a")
-        complete_run(DATABASE, tenant_id=tenant, run_id=run_id, user_id="user-a")
+        epoch = claim(DATABASE, run_id, "worker-c05")
+        assert epoch is not None
+        commit_terminal(DATABASE, run_id, "worker-c05", epoch, "succeeded")
+        with pytest.raises(LeaseRejected):
+            commit_terminal(DATABASE, run_id, "worker-c05", epoch, "succeeded")
         notes = list_notifications(_get(_session(tenant, ids["token"]), ids["token"]))
         matched = [item for item in notes["notifications"] if item["run_id"] == run_id]
         assert len(matched) == 1
