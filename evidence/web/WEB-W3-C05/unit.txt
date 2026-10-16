@@ -9,9 +9,10 @@ tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract
     from websockets.server import WebSocketServerProtocol
 
 tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract
+tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract
 tests/web/w3/test_w3_c05_unit.py::test_w3_c05_negative
   D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
     warnings.warn("remove second argument of ws_handler", DeprecationWarning)
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-2 passed, 4 warnings in 6.14s
+2 passed, 5 warnings in 6.32s

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import subprocess
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -26,14 +28,24 @@ def get_session(session_id: str) -> "Session | None":
 
 
 class Session:
-    def __init__(self, argv: list[str], cols: int, rows: int, tenant_id: str, sandboxed: bool) -> None:
+    def __init__(
+        self,
+        argv: list[str],
+        cols: int,
+        rows: int,
+        tenant_id: str,
+        user_id: str,
+        sandboxed: bool,
+        workspace_root: Path | None,
+    ) -> None:
         self.id = uuid.uuid4().hex
         self.tenant_id = tenant_id
+        self.user_id = user_id
         self.exit_code: int | None = None
         self._scroll = ""
         self._listeners: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict[str, Any]]]] = []
         self._lock = threading.Lock()
-        self._backend = _spawn(argv, cols, rows, sandboxed)
+        self._backend = _spawn(argv, cols, rows, sandboxed, workspace_root)
         self.pid = self._backend.pid
         self._backend.start(self._on_output, self._on_exit)
 
@@ -51,12 +63,13 @@ class Session:
     def resize(self, cols: int, rows: int) -> None:
         self._backend.resize(cols, rows)
 
-    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
+    def attach(self) -> tuple[str, asyncio.Queue[dict[str, Any]]]:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         with self._lock:
+            snapshot = self._scroll
             self._listeners.append((loop, queue))
-        return queue
+        return snapshot, queue
 
     def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         with self._lock:
@@ -87,9 +100,11 @@ def open_session(
     cols: int,
     rows: int,
     tenant_id: str,
+    user_id: str,
     sandboxed: bool,
+    workspace_root: Path | None = None,
 ) -> Session:
-    session = Session(argv, cols, rows, tenant_id, sandboxed)
+    session = Session(argv, cols, rows, tenant_id, user_id, sandboxed, workspace_root)
     with _GUARD:
         _SESSIONS[session.id] = session
     return session
@@ -111,48 +126,86 @@ class _Backend:
         raise NotImplementedError
 
 
-def _spawn(argv: list[str], cols: int, rows: int, sandboxed: bool) -> _Backend:
+def _spawn(
+    argv: list[str],
+    cols: int,
+    rows: int,
+    sandboxed: bool,
+    workspace_root: Path | None,
+) -> _Backend:
     if sandboxed:
-        return _sandboxed_spawn(argv, cols, rows)
+        return _sandboxed_spawn(argv, cols, rows, workspace_root)
     if os.name == "nt":
-        return _WinPty(argv, cols, rows)
-    return _PosixPty(argv, cols, rows)
+        return _WinPty(argv, cols, rows, None)
+    return _PosixPty(argv, cols, rows, None)
 
 
-def _sandboxed_spawn(argv: list[str], cols: int, rows: int) -> _Backend:
-    from core.sandbox.manager import open_sandbox_job, wrap_command
-    from core.sandbox.policy import SandboxPolicy
+def _private_workspace(workspace_root: Path | None) -> Path:
+    if workspace_root is not None:
+        root = workspace_root.resolve()
+    else:
+        root = Path(tempfile.mkdtemp(prefix="rxy-terminal-")).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
-    policy = SandboxPolicy(
-        enabled=True,
-        mode="workspace",
-        workspace_root=Path.cwd(),
-        network="inherit",
-        on_missing_capability="fail_closed",
-    )
-    wrapped = wrap_command(policy, argv, Path.cwd())
-    if wrapped.downgraded or not wrapped.applied:
-        raise PermissionError("SANDBOX_REQUIRED")
-    if os.name == "nt":
-        from core.sandbox import windows as win_sandbox
 
-        backend = _WinPty(list(wrapped.argv), cols, rows)
-        job = open_sandbox_job(wrapped)
+def _load_sandbox(module: str):
+    last: ModuleNotFoundError | None = None
+    for prefix in ("RxyCode.RxyCode1_1_0.core.sandbox", "core.sandbox"):
         try:
-            win_sandbox.assign_pid_to_job_handle(job, backend.pid)
-        except Exception as exc:
-            backend.terminate()
-            raise PermissionError("SANDBOX_REQUIRED") from exc
-        backend.job = job
-        return backend
-    return _PosixPty(list(wrapped.argv), cols, rows)
+            return importlib.import_module(f"{prefix}.{module}")
+        except ModuleNotFoundError as exc:
+            last = exc
+    raise PermissionError("SANDBOX_REQUIRED") from last
+
+
+def _sandboxed_spawn(
+    argv: list[str],
+    cols: int,
+    rows: int,
+    workspace_root: Path | None,
+) -> _Backend:
+    root = _private_workspace(workspace_root)
+    try:
+        manager = _load_sandbox("manager")
+        policy_mod = _load_sandbox("policy")
+        policy = policy_mod.SandboxPolicy(
+            enabled=True,
+            mode="workspace",
+            workspace_root=root,
+            network="none",
+            on_missing_capability="fail_closed",
+        )
+        wrapped = manager.wrap_command(policy, argv, root)
+        if wrapped.downgraded or not wrapped.applied:
+            raise PermissionError("SANDBOX_REQUIRED")
+        if os.name == "nt":
+            windows = _load_sandbox("windows")
+            backend = _WinPty(list(wrapped.argv), cols, rows, root)
+            job = manager.open_sandbox_job(wrapped)
+            try:
+                windows.assign_pid_to_job_handle(job, backend.pid)
+            except Exception as exc:
+                backend.terminate()
+                raise PermissionError("SANDBOX_REQUIRED") from exc
+            backend.job = job
+            return backend
+        return _PosixPty(list(wrapped.argv), cols, rows, root)
+    except PermissionError:
+        raise
+    except Exception as exc:
+        raise PermissionError("SANDBOX_REQUIRED") from exc
 
 
 class _WinPty(_Backend):
-    def __init__(self, argv: list[str], cols: int, rows: int) -> None:
+    def __init__(self, argv: list[str], cols: int, rows: int, cwd: Path | None) -> None:
         from winpty import PtyProcess
 
-        self._proc = PtyProcess.spawn(argv, dimensions=(rows, cols))
+        self._proc = PtyProcess.spawn(
+            argv,
+            cwd=str(cwd) if cwd is not None else None,
+            dimensions=(rows, cols),
+        )
         self.pid = int(self._proc.pid)
         self.job = 0
 
@@ -190,7 +243,7 @@ class _WinPty(_Backend):
 
 
 class _PosixPty(_Backend):
-    def __init__(self, argv: list[str], cols: int, rows: int) -> None:
+    def __init__(self, argv: list[str], cols: int, rows: int, cwd: Path | None) -> None:
         import fcntl
         import pty
         import termios
@@ -203,6 +256,7 @@ class _PosixPty(_Backend):
             stdin=slave,
             stdout=slave,
             stderr=slave,
+            cwd=str(cwd) if cwd is not None else None,
             start_new_session=True,
             close_fds=True,
         )

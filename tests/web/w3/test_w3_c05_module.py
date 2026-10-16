@@ -31,7 +31,7 @@ def test_w3_c05_integration() -> None:
             cookies = {item["name"]: item["value"] for item in page.context.cookies()}
             from websockets.sync.client import connect
 
-            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/stream"
+            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/ws"
             with connect(
                 uri,
                 additional_headers={"Cookie": f"rxy_session={cookies['rxy_session']}"},

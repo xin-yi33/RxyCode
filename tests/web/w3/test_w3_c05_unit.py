@@ -65,7 +65,7 @@ def test_w3_c05_contract() -> None:
             _c02._login(page, stack.origin)
             opened = _open(page, stack.origin)
             cookies = {item["name"]: item["value"] for item in page.context.cookies()}
-            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/stream"
+            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/ws"
             with connect(
                 uri,
                 additional_headers={"Cookie": f"rxy_session={cookies['rxy_session']}"},
@@ -123,7 +123,7 @@ def test_w3_c05_negative() -> None:
             _c02._login(page, stack.origin)
             opened = _open(page, stack.origin)
             before = set(live_pids())
-            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/stream"
+            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/ws"
             refused = False
             try:
                 with connect(

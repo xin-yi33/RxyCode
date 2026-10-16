@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,6 +35,10 @@ class OpenIn(BaseModel):
     host: str | None = None
 
 
+def _owns(session: object, tenant_id: str, user_id: str) -> bool:
+    return getattr(session, "tenant_id", None) == tenant_id and getattr(session, "user_id", None) == user_id
+
+
 def _record(websocket: WebSocket):
     raw = websocket.cookies.get("rxy_session", "")
     if not raw:
@@ -53,13 +58,17 @@ def open_terminal(payload: OpenIn, request: Request) -> dict[str, object]:
     if any(not isinstance(item, str) or not item or "\x00" in item for item in payload.argv):
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
     backend = _runner()
+    sandboxed = request.app.state.mode == "cloud"
+    workspace = Path(tempfile.mkdtemp(prefix="rxy-terminal-")) if sandboxed else None
     try:
         session = backend.open_session(
             list(payload.argv),
             cols=payload.cols,
             rows=payload.rows,
             tenant_id=record.tenant_id,
-            sandboxed=request.app.state.mode == "cloud",
+            user_id=record.user_id,
+            sandboxed=sandboxed,
+            workspace_root=workspace,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="SANDBOX_REQUIRED") from exc
@@ -70,7 +79,7 @@ def open_terminal(payload: OpenIn, request: Request) -> dict[str, object]:
 def read_terminal(terminal_id: str, request: Request) -> dict[str, object]:
     record = current_record(request)
     session = _runner().get_session(terminal_id)
-    if session is None or session.tenant_id != record.tenant_id:
+    if session is None or not _owns(session, record.tenant_id, record.user_id):
         raise HTTPException(status_code=404, detail="NOT_FOUND")
     return {
         "id": session.id,
@@ -81,16 +90,15 @@ def read_terminal(terminal_id: str, request: Request) -> dict[str, object]:
     }
 
 
-@router.websocket("/api/v1/terminals/{terminal_id}/stream")
+@router.websocket("/api/v1/terminals/{terminal_id}/ws")
 async def stream_terminal(websocket: WebSocket, terminal_id: str) -> None:
     record = _record(websocket)
     session = _runner().get_session(terminal_id)
-    if record is None or session is None or session.tenant_id != record.tenant_id:
+    if record is None or session is None or not _owns(session, record.tenant_id, record.user_id):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    queue = session.subscribe()
-    queued = session.text()
+    queued, queue = session.attach()
     if queued:
         await websocket.send_json({"type": "output", "data": queued})
 

@@ -124,7 +124,42 @@ class _Stack:
                 self.end_headers()
                 self.wfile.write(payload)
 
+            def _tunnel(self) -> None:
+                upstream = socket.create_connection(("127.0.0.1", api_port))
+                lines = [f"{self.command} {self.path} HTTP/1.1", f"Host: 127.0.0.1:{api_port}"]
+                for key, value in self.headers.items():
+                    if key.lower() != "host":
+                        lines.append(f"{key}: {value}")
+                upstream.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+                client = self.connection
+
+                def pump(src: socket.socket, dst: socket.socket) -> None:
+                    try:
+                        while True:
+                            chunk = src.recv(65536)
+                            if not chunk:
+                                break
+                            dst.sendall(chunk)
+                    except OSError:
+                        pass
+                    finally:
+                        try:
+                            dst.shutdown(socket.SHUT_WR)
+                        except OSError:
+                            pass
+
+                left = threading.Thread(target=pump, args=(upstream, client), daemon=True)
+                right = threading.Thread(target=pump, args=(client, upstream), daemon=True)
+                left.start()
+                right.start()
+                left.join()
+                right.join()
+                upstream.close()
+
             def do_GET(self) -> None:  # noqa: N802
+                if self.headers.get("upgrade", "").lower() == "websocket":
+                    self._tunnel()
+                    return
                 if urlparse(self.path).path.startswith("/api/"):
                     self._proxy()
                 else:
