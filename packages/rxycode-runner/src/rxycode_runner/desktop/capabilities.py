@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+_TASK_CAPABILITIES: dict[str, frozenset[str]] = {}
+
+
+def bind_task_capabilities(task_id: str, capabilities: frozenset[str]) -> None:
+    """Record the capabilities that belong to this task. A later click cannot borrow another task's grant."""
+    if not task_id:
+        raise ValueError("task_id required")
+    _TASK_CAPABILITIES[task_id] = frozenset(capabilities)
+
+
+def task_capabilities(task_id: str) -> frozenset[str]:
+    return _TASK_CAPABILITIES.get(task_id, frozenset())
+
 
 def click_allowed(
     *,

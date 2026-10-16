@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .capabilities import click_allowed
+from .capabilities import click_allowed, task_capabilities
 
 _SRCCOPY = 0x00CC0020
 _WM_CLOSE = 0x0010
@@ -59,12 +59,13 @@ def click(
     locked: bool,
     wayland: bool,
 ) -> ClickResult:
-    del task_id
-    if not click_allowed(
+    requested = frozenset(capabilities)
+    granted = task_capabilities(task_id)
+    if not requested <= granted or not click_allowed(
         system=system,
         locked=locked,
         wayland=wayland,
-        capabilities=capabilities,
+        capabilities=requested,
     ):
         return ClickResult(ok=False, code="CAPABILITY_UNAVAILABLE")
     point = physical_point(monitors[monitor_index], logical_x, logical_y)

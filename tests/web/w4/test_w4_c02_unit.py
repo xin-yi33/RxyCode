@@ -13,8 +13,10 @@ if str(_RUNNER) not in sys.path:
 
 def test_w4_c02_contract() -> None:
     """A logical point on the second monitor becomes the physical click point."""
+    from rxycode_runner.desktop.capabilities import bind_task_capabilities
     from rxycode_runner.desktop.windows_adapter import Monitor, click
 
+    bind_task_capabilities("task-c02", frozenset({"click"}))
     monitors = (
         Monitor(x=0, y=0, width=1920, height=1080, dpi=96),
         Monitor(x=1920, y=0, width=2560, height=1440, dpi=144),
@@ -38,8 +40,11 @@ def test_w4_c02_contract() -> None:
 
 def test_w4_c02_negative() -> None:
     """Lock screen and Wayland refuse the click and do not call another tool."""
+    from rxycode_runner.desktop.capabilities import bind_task_capabilities
     from rxycode_runner.desktop.windows_adapter import Monitor, click
 
+    bind_task_capabilities("task-c02", frozenset({"click"}))
+    bind_task_capabilities("other-task", frozenset({"click"}))
     monitors = (Monitor(x=0, y=0, width=1920, height=1080, dpi=96),)
     sent: list[tuple[int, int]] = []
     locked = click(
@@ -78,7 +83,20 @@ def test_w4_c02_negative() -> None:
         locked=False,
         wayland=False,
     )
+    forged = click(
+        task_id="task-not-granted",
+        capabilities=frozenset({"click"}),
+        monitors=monitors,
+        monitor_index=0,
+        logical_x=10,
+        logical_y=10,
+        send=sent.append,
+        system="Windows",
+        locked=False,
+        wayland=False,
+    )
     assert locked.code == "CAPABILITY_UNAVAILABLE"
     assert wayland.code == "CAPABILITY_UNAVAILABLE"
     assert unbound.code == "CAPABILITY_UNAVAILABLE"
+    assert forged.code == "CAPABILITY_UNAVAILABLE"
     assert sent == []
