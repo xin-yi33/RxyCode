@@ -54,13 +54,29 @@ class PipeQuestionBroker(SseQuestionBroker):
             "input_type": "choice" if request.options else "text",
         }
         try:
-            if self.timeout and self.timeout > 0:
-                payload = await asyncio.wait_for(
-                    self._send_request("question/request", params),
-                    timeout=self.timeout,
-                )
-            else:
-                payload = await self._send_request("question/request", params)
+            from core.question import mark_question_pending, take_question_answer
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.question import (
+                mark_question_pending,
+                take_question_answer,
+            )
+
+        mark_question_pending(
+            request.question_id,
+            session_id=session_id or "",
+            prompt=request.question,
+        )
+        rpc = asyncio.create_task(self._send_request("question/request", params))
+        try:
+            while True:
+                mailed = take_question_answer(request.question_id)
+                if mailed is not None:
+                    rpc.cancel()
+                    return QuestionResponse(question_id=request.question_id, answer=mailed)
+                if rpc.done():
+                    break
+                await asyncio.sleep(0.2)
+            payload = rpc.result()
         except asyncio.TimeoutError:
             return QuestionResponse(question_id=request.question_id, timed_out=True)
         except Exception:

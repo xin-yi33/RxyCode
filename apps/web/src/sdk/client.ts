@@ -164,6 +164,14 @@ export function createClient() {
       const path = `/api/v1/runs/${encodeURIComponent(runId)}/approvals`
       return writeJson(path, body) as Promise<{ status: string; revision: number }>
     },
+    listQuestions(runId: string, signal?: AbortSignal): Promise<{
+      questions: { question_id: string; prompt: string }[]
+    }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/questions`
+      return readJson(path, signal) as Promise<{
+        questions: { question_id: string; prompt: string }[]
+      }>
+    },
     answerQuestion(
       runId: string,
       body: { question_id: string; answer: string },

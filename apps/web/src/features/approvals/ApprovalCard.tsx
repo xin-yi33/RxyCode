@@ -25,6 +25,11 @@ export function ApprovalCard({
     queryKey: ["approvals", runId, refreshKey],
     queryFn: () => client.listApprovals(runId),
   })
+  const liveQuestions = useQuery({
+    queryKey: ["questions", runId, refreshKey],
+    queryFn: () => client.listQuestions(runId),
+    refetchInterval: 2000,
+  })
   const [conflict, setConflict] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [shown, setShown] = useState<Ask[]>([])
@@ -74,7 +79,12 @@ export function ApprovalCard({
           </article>
         )
       })}
-      {questions.map((item) => (
+      {[
+        ...questions,
+        ...(liveQuestions.data?.questions ?? [])
+          .filter((item) => !questions.some((existing) => existing.id === item.question_id))
+          .map((item) => ({ id: item.question_id, prompt: item.prompt, answer: "" })),
+      ].map((item) => (
         <form
           key={item.id}
           data-question-id={item.id}

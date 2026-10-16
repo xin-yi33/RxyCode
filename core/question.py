@@ -8,8 +8,11 @@ separate request/response registry and transport.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 
@@ -86,6 +89,7 @@ class SseQuestionBroker:
         event = asyncio.Event()
         owner_loop = asyncio.get_running_loop()
         question_id = request.question_id
+        mark_question_pending(question_id, prompt=request.question)
         self._pending[question_id] = event
         self._pending_loops[question_id] = owner_loop
         self._requests[question_id] = request
@@ -99,10 +103,28 @@ class SseQuestionBroker:
             self._requests.pop(question_id, None)
             return QuestionResponse(question_id=question_id, unavailable=True)
         try:
+            deadline = None
             if self.timeout and self.timeout > 0:
-                await asyncio.wait_for(event.wait(), timeout=self.timeout)
-            else:
-                await event.wait()
+                deadline = asyncio.get_running_loop().time() + self.timeout
+            while not event.is_set():
+                mailed = take_question_answer(question_id)
+                if mailed is not None:
+                    self._responses[question_id] = QuestionResponse(
+                        question_id=question_id,
+                        answer=mailed,
+                    )
+                    event.set()
+                    break
+                remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
+                if remaining is not None and remaining <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    await asyncio.wait_for(
+                        event.wait(),
+                        timeout=0.2 if remaining is None else min(0.2, remaining),
+                    )
+                except asyncio.TimeoutError:
+                    continue
         except asyncio.TimeoutError:
             return QuestionResponse(question_id=question_id, timed_out=True)
         else:
@@ -185,6 +207,72 @@ class SseQuestionBroker:
         for question_id in list(self._pending):
             cancelled += int(self.cancel(question_id))
         return cancelled
+
+
+def _question_dir() -> Path:
+    folder = Path.home() / ".rxycode" / "questions"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _question_token(question_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", question_id):
+        raise ValueError("question_id is not a safe token")
+    return question_id
+
+
+def mark_question_pending(question_id: str, *, session_id: str = "", prompt: str = "") -> None:
+    token = _question_token(question_id)
+    payload = {"question_id": token, "session_id": session_id, "prompt": prompt}
+    (_question_dir() / f"{token}.pending.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def publish_question_answer(question_id: str, answer: str) -> bool:
+    token = _question_token(question_id)
+    pending = _question_dir() / f"{token}.pending.json"
+    if not pending.is_file():
+        return False
+    (_question_dir() / f"{token}.answer.json").write_text(
+        json.dumps({"question_id": token, "answer": answer}),
+        encoding="utf-8",
+    )
+    return True
+
+
+def take_question_answer(question_id: str) -> str | None:
+    token = _question_token(question_id)
+    path = _question_dir() / f"{token}.answer.json"
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.unlink(missing_ok=True)
+    (_question_dir() / f"{token}.pending.json").unlink(missing_ok=True)
+    answer = payload.get("answer")
+    return str(answer) if answer is not None else None
+
+
+def list_pending_questions(session_id: str = "") -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    for path in _question_dir().glob("*.pending.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if session_id and str(payload.get("session_id") or "") not in {"", session_id}:
+            continue
+        if (_question_dir() / f"{payload.get('question_id')}.answer.json").is_file():
+            continue
+        found.append(
+            {
+                "question_id": str(payload.get("question_id") or ""),
+                "prompt": str(payload.get("prompt") or ""),
+                "session_id": str(payload.get("session_id") or ""),
+            }
+        )
+    return found
 
 
 _broker: Optional[SseQuestionBroker] = None

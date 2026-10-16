@@ -140,6 +140,26 @@ def _resolve_broker(question_id: str, answer: str) -> None:
         broker.resolve(question_id, answer)
 
 
+@router.get("/api/v1/runs/{run_id}/questions")
+def get_questions(run_id: str, request: Request) -> dict[str, list[dict[str, str]]]:
+    record = current_record(request)
+    database_url = request.app.state.database_url
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.get(Run, run_id)
+            if row is None or row.tenant_id != record.tenant_id:
+                raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
+            session_id = row.session_id
+    finally:
+        engine.dispose()
+    try:
+        from core.question import list_pending_questions
+    except ModuleNotFoundError:
+        from RxyCode.RxyCode1_1_0.core.question import list_pending_questions
+    return {"questions": list_pending_questions(session_id)}
+
+
 @router.post("/api/v1/runs/{run_id}/questions")
 def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str, str]:
     require_write(request)
@@ -148,7 +168,16 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
     _owned_run(database_url, record.tenant_id, run_id)
     if not payload.question_id.strip():
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
-    if not _question_pending(database_url, record.tenant_id, run_id, payload.question_id):
+    pending_event = _question_pending(database_url, record.tenant_id, run_id, payload.question_id)
+    try:
+        from core.question import publish_question_answer
+    except ModuleNotFoundError:
+        from RxyCode.RxyCode1_1_0.core.question import publish_question_answer
+    try:
+        mailed = publish_question_answer(payload.question_id, payload.answer)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="INVALID_INPUT") from exc
+    if not pending_event and not mailed:
         raise HTTPException(status_code=409, detail="QUESTION_STALE")
     append_event(
         database_url,
