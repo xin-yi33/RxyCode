@@ -90,10 +90,13 @@ def request_approval(
     worker_id: str,
     epoch: int,
     attempt_id: str | None = None,
+    approval_id: str | None = None,
+    command: str = "",
+    workdir: str = "",
 ) -> dict[str, Any]:
     """Persist the ask, emit approval.requested, and release the worker lease."""
     engine = _engine(database_url)
-    approval_id = uuid.uuid4().hex
+    approval_id = approval_id or uuid.uuid4().hex
     stored_attempt = attempt_id or f"att_{uuid.uuid4().hex}"
     try:
         with Session(engine) as db:
@@ -124,6 +127,8 @@ def request_approval(
                     "permission_scope": permission_scope,
                     "arguments": arguments,
                     "attempt_id": stored_attempt,
+                    "command": command,
+                    "workdir": workdir,
                     "revision": 0,
                 },
             )
@@ -213,19 +218,42 @@ def get_approval(database_url: str, *, tenant_id: str, approval_id: str) -> dict
                 "attempt_id": str(payload.get("attempt_id") or ""),
                 "tool": payload.get("tool", ""),
                 "permission_scope": payload.get("permission_scope", ""),
+                "command": str(payload.get("command") or ""),
+                "workdir": str(payload.get("workdir") or ""),
             }
     finally:
         engine.dispose()
 
 
-def _reject_if_closed(row: Approval, expected_revision: int, now: datetime) -> None:
+def _closed_reason(row: Approval, expected_revision: int, now: datetime) -> str | None:
     if int(row.revision or 0) != int(expected_revision) or row.status != "pending":
-        raise ApprovalStale(row.id)
+        return "stale"
     deadline = _aware(row.deadline)
     if deadline is not None and deadline <= now:
-        row.status = "expired"
-        row.revision = int(row.revision or 0) + 1
-        raise ApprovalStale(row.id)
+        return "expired"
+    return None
+
+
+def _mark_expired(db: Session, row: Approval) -> None:
+    """Expire the ask and leave the session free for another run."""
+    row.status = "expired"
+    row.revision = int(row.revision or 0) + 1
+    run = _lock_run(db, row.tenant_id, row.run_id)
+    _append(
+        db,
+        run,
+        "approval.resolved",
+        {
+            "approval_id": row.id,
+            "call_id": row.call_id,
+            "decision": "expired",
+            "revision": int(row.revision),
+        },
+    )
+    run.status = "cancelled"
+    run.lease_owner = None
+    run.lease_until = None
+    run.revision = int(run.revision or 0) + 1
 
 
 def decide_approval(
@@ -249,11 +277,13 @@ def decide_approval(
                 .with_for_update()
             ).scalar_one()
             current = datetime.now(timezone.utc) if now is None else _now(now)
-            try:
-                _reject_if_closed(row, expected_revision, current)
-            except ApprovalStale:
+            reason = _closed_reason(row, expected_revision, current)
+            if reason == "expired":
+                _mark_expired(db, row)
                 db.commit()
-                raise
+                raise ApprovalStale(row.id)
+            if reason == "stale":
+                raise ApprovalStale(row.id)
             row.status = decision
             row.revision = int(row.revision or 0) + 1
             run = _lock_run(db, tenant_id, row.run_id)
@@ -297,11 +327,13 @@ def cancel_approval(
                 .with_for_update()
             ).scalar_one()
             current = datetime.now(timezone.utc) if now is None else _now(now)
-            try:
-                _reject_if_closed(row, expected_revision, current)
-            except ApprovalStale:
+            reason = _closed_reason(row, expected_revision, current)
+            if reason == "expired":
+                _mark_expired(db, row)
                 db.commit()
-                raise
+                raise ApprovalStale(row.id)
+            if reason == "stale":
+                raise ApprovalStale(row.id)
             row.status = "cancelled"
             row.revision = int(row.revision or 0) + 1
             run = _lock_run(db, tenant_id, row.run_id)
@@ -324,3 +356,31 @@ def cancel_approval(
     finally:
         engine.dispose()
     return {"status": "cancelled", "http_status": 200}
+
+
+def settle_run(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    worker_id: str,
+    status: str,
+) -> bool:
+    """Move a leased run to a terminal status after the graph finishes."""
+    if status not in {"succeeded", "cancelled", "failed"}:
+        return False
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            run = _lock_run(db, tenant_id, run_id)
+            now = datetime.now(timezone.utc)
+            if not _lease_is_current(run, worker_id, int(run.lease_epoch), now):
+                return False
+            run.status = status
+            run.lease_owner = None
+            run.lease_until = None
+            run.revision = int(run.revision or 0) + 1
+            db.commit()
+            return True
+    finally:
+        engine.dispose()

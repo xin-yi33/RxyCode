@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
 
+from rxycode_server.api.approvals import router as approvals_router
 from rxycode_server.api.auth import router as auth_router
 from rxycode_server.api.projects import router as projects_router
 from rxycode_server.api.sse import router as sse_router
@@ -61,6 +62,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(projects_router)
     app.include_router(sse_router)
+    app.include_router(approvals_router)
 
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:

@@ -156,6 +156,12 @@ def test_w2_c06_negative(postgres_url: str, tmp_path: Path):
         )
     assert expired_decision.value.http_status == 409
     assert expired_decision.value.code == "APPROVAL_STALE"
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        expired_run = db.get(Run, run_id)
+        assert expired_run is not None
+        assert expired_run.status == "cancelled"
+    engine.dispose()
     refused = resume_approved(
         postgres_url,
         tenant_id="tenant-c06",
@@ -243,3 +249,76 @@ def test_w2_c06_full_skips_ask(postgres_url: str, tmp_path: Path):
         now=datetime.now(timezone.utc),
     ) == []
     assert not marker.exists()
+
+
+def test_w2_c06_http_stale(postgres_url: str):
+    """POST /api/v1/runs/{id}/approvals returns 409 APPROVAL_STALE."""
+    from fastapi.testclient import TestClient
+
+    from rxycode_server.main import create_app
+
+    origin = "http://127.0.0.1"
+    secret = "local-web-secret-value-32bytes!!"
+    upgrade_head(postgres_url)
+    app = create_app(postgres_url, mode="local", secret=secret, allowed_origins=[origin])
+    client = TestClient(app)
+    token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
+    headers = {"X-CSRF-Token": token, "Origin": origin, "X-Local-Secret": secret}
+    assert client.post("/api/v1/auth/local/login", headers=headers).status_code == 200
+    tenant_id = client.get("/api/v1/me").json()["organization"]["tenant_id"]
+    token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
+    headers["X-CSRF-Token"] = token
+    project = client.post(
+        "/api/v1/projects",
+        json={"name": "approve", "repo_config": {}},
+        headers=headers,
+    )
+    assert project.status_code == 200
+    token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
+    headers["X-CSRF-Token"] = token
+    opened = client.post(
+        f"/api/v1/projects/{project.json()['id']}/sessions",
+        json={"title": "approve"},
+        headers=headers,
+    )
+    assert opened.status_code == 200
+    created = create_run(
+        postgres_url,
+        tenant_id=tenant_id,
+        session_id=opened.json()["id"],
+        message="stale",
+        target_id="local:c06",
+        permission_profile="confirm_all",
+        request_id="req-c06-http",
+    )
+    epoch = claim(postgres_url, created.run_id, "worker-http")
+    assert epoch == 1
+    now = datetime.now(timezone.utc)
+    requested = request_approval(
+        postgres_url,
+        tenant_id=tenant_id,
+        run_id=created.run_id,
+        call_id="call_" + uuid.uuid4().hex,
+        tool="bash",
+        permission_scope="workspace-write",
+        arguments={"command": "echo http"},
+        deadline=now - timedelta(seconds=5),
+        worker_id="worker-http",
+        epoch=epoch,
+    )
+    token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
+    headers["X-CSRF-Token"] = token
+    stale = client.post(
+        f"/api/v1/runs/{created.run_id}/approvals",
+        json={
+            "approval_id": requested["approval_id"],
+            "decision": "approved",
+            "revision": 0,
+        },
+        headers=headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "APPROVAL_STALE"
+    listed = client.get(f"/api/v1/runs/{created.run_id}/approvals")
+    assert listed.status_code == 200
+    assert listed.json()["approvals"] == []

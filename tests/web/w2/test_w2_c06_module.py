@@ -145,6 +145,25 @@ def test_w2_c06_integration(postgres_url: str, tmp_path: Path):
         )
         assert first["executed"] is True, first
         assert target.read_text(encoding="utf-8").count("shell-write") == 1
+        finished = create_engine(postgres_url)
+        with Session(finished) as db:
+            from rxycode_server.persistence.models import Run
+
+            done = db.get(Run, created.run_id)
+            assert done is not None
+            assert done.status == "succeeded"
+            assert done.lease_owner is None
+        finished.dispose()
+        follow = create_run(
+            postgres_url,
+            tenant_id="tenant-c06m",
+            session_id=session_id,
+            message="next",
+            target_id="local:c06",
+            permission_profile="confirm_all",
+            request_id="req-c06-next",
+        )
+        assert follow.run_id != created.run_id
         second = _resume_in_new_process(
             {
                 "C06_URL": postgres_url,

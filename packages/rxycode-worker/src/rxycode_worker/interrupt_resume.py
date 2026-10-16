@@ -11,7 +11,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from rxycode_server.approvals.service import get_approval, request_approval
+from rxycode_server.approvals.service import get_approval, request_approval, settle_run
 from rxycode_server.runs.service import load_run
 from rxycode_worker.checkpoints import _call_on_selector, _open_saver, graph_thread_id
 from rxycode_worker.supervisor import claim
@@ -109,11 +109,24 @@ async def _pause_graph(database_url: str, session_id: str, run_id: str, initial:
         await graph.ainvoke(initial, config)
 
 
-async def _resume_graph(database_url: str, session_id: str, run_id: str) -> None:
+async def _resume_graph(
+    database_url: str,
+    session_id: str,
+    run_id: str,
+    *,
+    command: str,
+    workdir: str,
+) -> None:
     async with _open_saver(database_url) as saver:
         graph = _compile(saver)
         config = {"configurable": {"thread_id": graph_thread_id(session_id, run_id)}}
-        await graph.ainvoke(Command(resume="approved"), config)
+        await graph.ainvoke(
+            Command(
+                resume="approved",
+                update={"command": command, "workdir": workdir},
+            ),
+            config,
+        )
 
 
 def _journal_state(journal_dir: str, attempt_id: str, call_id: str) -> str:
@@ -151,19 +164,11 @@ def pause_for_approval(
     if loaded["permission_profile"] == "full_auto":
         return {"asked": False, "approval_id": None, "executed": False}
     attempt_id = f"att_{uuid.uuid4().hex}"
-    requested = request_approval(
-        database_url,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        call_id=call_id,
-        tool=tool,
-        permission_scope=permission_scope,
-        arguments=arguments,
-        deadline=deadline,
-        worker_id=worker_id,
-        epoch=epoch,
-        attempt_id=attempt_id,
-    )
+    approval_id = uuid.uuid4().hex
+    stored_arguments = dict(arguments)
+    stored_arguments["command"] = command
+    # The interrupt checkpoint is written before the approval row. A saver
+    # failure must not leave an approvable request with nothing to resume.
     asyncio.run(
         _call_on_selector(
             lambda: _pause_graph(
@@ -171,7 +176,7 @@ def pause_for_approval(
                 loaded["session_id"],
                 run_id,
                 {
-                    "approval_id": requested["approval_id"],
+                    "approval_id": approval_id,
                     "attempt_id": attempt_id,
                     "call_id": call_id,
                     "run_id": run_id,
@@ -181,6 +186,22 @@ def pause_for_approval(
                 },
             )
         )
+    )
+    requested = request_approval(
+        database_url,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        call_id=call_id,
+        tool=tool,
+        permission_scope=permission_scope,
+        arguments=stored_arguments,
+        deadline=deadline,
+        worker_id=worker_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
+        approval_id=approval_id,
+        command=command,
+        workdir=workdir,
     )
     return {
         "asked": True,
@@ -203,7 +224,11 @@ def resume_approved(
     """Continue the interrupted graph. A completed or unknown journal does not run again."""
     del workdir, command
     record = get_approval(database_url, tenant_id=tenant_id, approval_id=approval_id)
-    if record is None or record["status"] != "approved":
+    if (
+        record is None
+        or record["run_id"] != run_id
+        or record["status"] != "approved"
+    ):
         return {"executed": False}
     before = _journal_state(journal_dir, record["attempt_id"], record["call_id"])
     if before in {"completed", "unknown"}:
@@ -211,10 +236,25 @@ def resume_approved(
     if claim(database_url, run_id, worker_id) is None:
         return {"executed": False}
     loaded = load_run(database_url, run_id)
+    stored_command = record["command"]
+    stored_workdir = record["workdir"]
     asyncio.run(
         _call_on_selector(
-            lambda: _resume_graph(database_url, loaded["session_id"], run_id)
+            lambda: _resume_graph(
+                database_url,
+                loaded["session_id"],
+                run_id,
+                command=stored_command,
+                workdir=stored_workdir,
+            )
         )
     )
     after = _journal_state(journal_dir, record["attempt_id"], record["call_id"])
+    settle_run(
+        database_url,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        worker_id=worker_id,
+        status="succeeded" if after == "completed" else "cancelled",
+    )
     return {"executed": before == "not_started" and after == "completed"}
