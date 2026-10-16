@@ -11,4 +11,4 @@
 - The response CSP allows framing by 'self' and same-origin scripts. The iframe sandbox is allow-scripts.
 - E2E-CLOUD-02, a separate React dev server harness, was not run. runsc was not used. core/ was not touched. Not claimed as 已落实.
 - Nested ruling 569538a010def5500e455596e9ba649262738519 names the previews package marker.
-- gpt-6-luna max re-audit has not run yet. Session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w5c04-audit-3.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
