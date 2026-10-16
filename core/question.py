@@ -265,29 +265,77 @@ def mark_question_pending(question_id: str, *, session_id: str = "", prompt: str
     )
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel.OpenProcess(0x00100000, False, pid)
+    if handle:
+        kernel.CloseHandle(handle)
+        return True
+    return ctypes.get_last_error() != 87
+
+
 def _question_lock(token: str):
-    folder = _question_dir()
-    path = folder / f"{token}.lock"
+    path = _question_dir() / f"{token}.lock"
+    owner = f"{os.getpid()}:{uuid.uuid4().hex}".encode()
 
     class _Lock:
         def __enter__(self):
             while True:
                 try:
                     self._fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    return self
                 except FileExistsError:
-                    try:
-                        stale = time.time() - path.stat().st_mtime > 5
-                    except OSError:
-                        stale = False
-                    if stale:
-                        path.unlink(missing_ok=True)
-                        continue
+                    self._release_dead_owner()
                     time.sleep(0.01)
+                    continue
+                os.write(self._fd, owner)
+                return self
+
+        def _release_dead_owner(self) -> None:
+            try:
+                current = path.read_bytes()
+            except OSError:
+                return
+            if not current.strip():
+                try:
+                    if time.time() - path.stat().st_mtime > 5:
+                        if path.read_bytes() == current:
+                            path.unlink(missing_ok=True)
+                except OSError:
+                    return
+                return
+            pid_text = current.split(b":", 1)[0]
+            try:
+                pid = int(pid_text)
+            except ValueError:
+                return
+            if _pid_alive(pid):
+                return
+            try:
+                if path.read_bytes() != current:
+                    return
+                path.unlink(missing_ok=True)
+            except OSError:
+                return
 
         def __exit__(self, exc_type, exc, tb):
             os.close(self._fd)
-            path.unlink(missing_ok=True)
+            try:
+                if path.read_bytes() == owner:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
             return False
 
     return _Lock()
@@ -370,8 +418,8 @@ def take_question_answer(question_id: str) -> str | None:
             return None
         if not isinstance(payload, dict) or "answer" not in payload:
             return None
-        path.unlink(missing_ok=True)
         (_question_dir() / f"{token}.pending.json").unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         answer = payload.get("answer")
         return str(answer) if answer is not None else None
 
