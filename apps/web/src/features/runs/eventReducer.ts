@@ -37,7 +37,11 @@ function textOf(payload: Record<string, unknown>): string {
   return String(payload.text ?? "")
 }
 
-export function reduceEvents(events: RunEvent[], initialStatus = ""): Projection {
+export function reduceEvents(
+  events: RunEvent[],
+  initialStatus = "",
+  statusWatermark = 0,
+): Projection {
   const seen = new Set<number>()
   const pending = new Map<number, RunEvent>()
   let next = 1
@@ -54,9 +58,10 @@ export function reduceEvents(events: RunEvent[], initialStatus = ""): Projection
   const apply = (event: RunEvent) => {
     projection.order.push(event.seq)
     const payload = event.payload ?? {}
+    const historical = event.seq <= statusWatermark
     const mapped = STATUS_BY_TYPE[event.type]
-    if (mapped) projection.runStatus = mapped
-    if (event.type === "run.status") {
+    if (!historical && mapped) projection.runStatus = mapped
+    if (!historical && event.type === "run.status") {
       projection.runStatus = String(payload.status ?? projection.runStatus)
     }
     if (event.type === "assistant.final") {

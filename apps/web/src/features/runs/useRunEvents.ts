@@ -74,6 +74,7 @@ async function readEvents(
 export function useRunEvents(runId: string): LiveRun {
   const [events, setEvents] = useState<RunEvent[]>([])
   const [runStatus, setRunStatus] = useState("")
+  const [watermark, setWatermark] = useState(0)
   const [cursorExpired, setCursorExpired] = useState(false)
   const [snapshotSeq, setSnapshotSeq] = useState<number | null>(null)
   const [connected, setConnected] = useState(false)
@@ -85,6 +86,7 @@ export function useRunEvents(runId: string): LiveRun {
     let cursor = 0
     setEvents([])
     setRunStatus("")
+    setWatermark(0)
     setCursorExpired(false)
     setSnapshotSeq(null)
     setConnected(false)
@@ -107,7 +109,8 @@ export function useRunEvents(runId: string): LiveRun {
 
     const openFollow = () => {
       source?.close()
-      const follow = `/api/v1/runs/${encodeURIComponent(runId)}/events?follow=1`
+      const query = cursor > 0 ? `after_seq=${cursor}&follow=1` : "follow=1"
+      const follow = `/api/v1/runs/${encodeURIComponent(runId)}/events?${query}`
       source = new EventSource(follow)
       source.onopen = () => setConnected(true)
       source.onmessage = (message) => {
@@ -130,16 +133,25 @@ export function useRunEvents(runId: string): LiveRun {
         }
         setConnected(false)
         source?.close()
-        void readEvents(runId, cursor).then((result) => {
-          if (stopped) return
-          if (result.status === 409 || result.parsed?.expired) {
-            expire(result.snapshotSeq ?? result.parsed?.snapshotSeq ?? null)
-            return
-          }
-          if (result.parsed) remember(result.parsed.events)
-          setConnected(true)
-          if (!stopped) openFollow()
-        })
+        const recover = () => {
+          if (stopped || dead) return
+          void readEvents(runId, cursor)
+            .then((result) => {
+              if (stopped || dead) return
+              if (result.status === 409 || result.parsed?.expired) {
+                expire(result.snapshotSeq ?? result.parsed?.snapshotSeq ?? null)
+                return
+              }
+              if (result.parsed) remember(result.parsed.events)
+              setConnected(true)
+              openFollow()
+            })
+            .catch(() => {
+              if (stopped || dead) return
+              window.setTimeout(recover, 400)
+            })
+        }
+        recover()
       })
     }
 
@@ -150,8 +162,10 @@ export function useRunEvents(runId: string): LiveRun {
       })
       if (stopped) return
       if (state.ok) {
-        const body = (await state.json()) as { status?: string }
+        const body = (await state.json()) as { status?: string; event_seq?: number }
+        if (stopped) return
         setRunStatus(String(body.status ?? ""))
+        setWatermark(Number(body.event_seq ?? 0))
       }
       const snapshot = await readEvents(runId, 0)
       if (stopped) return
@@ -171,7 +185,7 @@ export function useRunEvents(runId: string): LiveRun {
   }, [runId])
 
   return {
-    projection: reduceEvents(events, runStatus),
+    projection: reduceEvents(events, runStatus, watermark),
     cursorExpired,
     snapshotSeq,
     connected,

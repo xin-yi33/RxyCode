@@ -22,7 +22,7 @@ def _bun() -> str:
     raise FileNotFoundError("bun")
 
 
-def reduce_events(events: list[dict]) -> dict:
+def reduce_events(events: list[dict], initial_status: str = "", watermark: int = 0) -> dict:
     """Run the shipped reducer. The assertions stay in this test."""
     assert REDUCER.is_file(), "eventReducer.ts is missing"
     _SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -32,7 +32,11 @@ def reduce_events(events: list[dict]) -> dict:
         + json.dumps(REDUCER.as_posix())
         + "\nconst events = "
         + json.dumps(events)
-        + "\nconsole.log(JSON.stringify(reduceEvents(events)))\n",
+        + "\nconsole.log(JSON.stringify(reduceEvents(events, "
+        + json.dumps(initial_status)
+        + ", "
+        + str(int(watermark))
+        + ")))\n",
         encoding="utf-8",
     )
     proc = subprocess.run([_bun(), str(driver)], capture_output=True, text=True, check=False)
@@ -116,3 +120,9 @@ def test_w3_c03_negative() -> None:
         ]
     )
     assert failed["runStatus"] == "failed"
+    history = [
+        {"seq": 1, "type": "run.started", "payload": {}},
+        {"seq": 2, "type": "approval.requested", "payload": {"approval_id": "appr-2"}},
+    ]
+    assert reduce_events(history)["runStatus"] == "running"
+    assert reduce_events(history, "waiting_approval", 2)["runStatus"] == "waiting_approval"
