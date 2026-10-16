@@ -52,6 +52,9 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
         parent_text="ship the health endpoint",
         child_events=[{"kind": "intermediate", "text": marker}],
     )
+    legacy = _render_legacy()
+    assert 'data-agents' in legacy
+    assert 'data-agent-id="coder"' in legacy
     markup = _render(first["nodes"], answer["text"])
     assert 'aria-label="agent-tree"' in markup
     assert 'data-final="ship the health endpoint"' in markup
@@ -91,6 +94,42 @@ process.stdout.write(html)
 """
     program = Path(tempfile.mkdtemp(prefix="rxy-w6c04-ui-")) / "render.ts"
     program.write_text(script, encoding="utf-8")
+    try:
+        rendered = subprocess.run(
+            [str(BUN), str(program)],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    finally:
+        program.unlink(missing_ok=True)
+    assert rendered.returncode == 0, rendered.stderr
+    return rendered.stdout
+
+
+def _render_legacy() -> str:
+    if not BUN.is_file():
+        pytest.fail("bun is not installed")
+    component = REPO / "apps" / "web" / "src" / "features" / "agents" / "AgentTree.tsx"
+    script = r"""
+import { createRequire } from "module"
+import { pathToFileURL } from "url"
+const require = createRequire(pathToFileURL(process.env.RXY_COMPONENT).href)
+const React = require(require.resolve("react", { paths: [process.cwd() + "/apps/web"] }))
+const { renderToStaticMarkup } = require(require.resolve("react-dom/server", { paths: [process.cwd() + "/apps/web"] }))
+const { AgentTree } = await import(pathToFileURL(process.env.RXY_COMPONENT).href)
+const html = renderToStaticMarkup(React.createElement(AgentTree, {
+  agents: [{ id: "coder", name: "coder", status: "running", cost: "0" }],
+}))
+process.stdout.write(html)
+"""
+    program = Path(tempfile.mkdtemp(prefix="rxy-w6c04-legacy-")) / "render.ts"
+    program.write_text(script, encoding="utf-8")
+    env = os.environ.copy()
+    env["RXY_COMPONENT"] = str(component)
     try:
         rendered = subprocess.run(
             [str(BUN), str(program)],
