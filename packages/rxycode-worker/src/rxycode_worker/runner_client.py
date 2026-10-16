@@ -88,8 +88,8 @@ class RunnerClient:
     async def _send(self, gateway: Any, device_id: str, frame: dict[str, Any]) -> None:
         await asyncio.to_thread(gateway.send_tool, device_id, frame)
 
-    async def _recv(self, gateway: Any, device_id: str) -> dict[str, Any]:
-        frame = await asyncio.to_thread(gateway.recv_tool, device_id, 5)
+    async def _recv(self, gateway: Any, device_id: str, call_id: str) -> dict[str, Any]:
+        frame = await asyncio.to_thread(gateway.recv_tool, device_id, call_id, 5)
         return frame
 
     async def _invoke(
@@ -118,7 +118,7 @@ class RunnerClient:
             },
         )
         while True:
-            frame = await self._recv(gateway, device_id)
+            frame = await self._recv(gateway, device_id, call_id)
             kind = frame.get("type")
             if kind == "chunk":
                 seq = int(frame["seq"])
@@ -166,7 +166,7 @@ class RunnerClient:
             },
         )
         while True:
-            frame = await self._recv(gateway, device_id)
+            frame = await self._recv(gateway, device_id, call_id)
             kind = frame.get("type")
             if kind == "chunk":
                 seq = int(frame["seq"])
@@ -228,5 +228,18 @@ class RunnerClient:
             device_id,
             {"type": "cancel", "device_id": device_id, "call_id": call_id},
         )
-        frame = await self._recv(gateway, device_id)
+        frame = await self._recv(gateway, device_id, call_id)
         return DispatchResult(str(frame.get("state")), frame.get("result"), [], False)
+
+
+def dispatch_device_call(**kwargs: Any) -> DispatchResult:
+    """Worker entry point. Cloud code calls this, not the socket class."""
+    return RunnerClient().invoke(**kwargs)
+
+
+def dispatch_device_resume(**kwargs: Any) -> DispatchResult:
+    return RunnerClient().resume(**kwargs)
+
+
+def dispatch_device_cancel(**kwargs: Any) -> DispatchResult:
+    return RunnerClient().invoke_and_cancel(**kwargs)

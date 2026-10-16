@@ -28,26 +28,13 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
         ToolExecutionJournal,
     )
     from RxyCode.RxyCode1_1_0.main import cli
-    from rxycode_runner.remote.client import request_stop, reset_stop, writer_count
-    from rxycode_runner.transport.tool_rpc import CHUNK_LIMIT, bind_local_tools, clear_local_tools
+    from rxycode_runner.remote.client import request_stop, reset_stop
+    from rxycode_runner.transport.tool_rpc import CHUNK_LIMIT, clear_local_tools
     from rxycode_server.devices.gateway import serve_in_thread
-    from rxycode_worker.runner_client import RunnerClient
+    from rxycode_worker.runner_client import dispatch_device_call, dispatch_device_resume
 
-    writes: list[int] = []
     body = "你" * 5000
-
-    def execute(args: dict[str, object], *, cancel: threading.Event) -> str:
-        del args, cancel
-        writes.append(1)
-        assert writer_count("desk-1") == 1
-        (tmp_path / "note.txt").write_text("hello-once", encoding="utf-8")
-        return body
-
-    bind_local_tools(
-        device_id="desk-1",
-        journal=RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal")),
-        execute=execute,
-    )
+    note = tmp_path / "note.txt"
     gateway = serve_in_thread(secret=_SECRET)
     reset_stop()
     browser = gateway.browser_session("tenant-a")
@@ -83,18 +70,17 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
     deadline = time.time() + 10
     while time.time() < deadline and not gateway.session_id("desk-1"):
         time.sleep(0.05)
-    client = RunnerClient()
     attempt_id = f"att_{uuid4().hex}"
     call_id = f"call_{uuid4().hex}"
     try:
         assert gateway.session_id("desk-1")
-        partial = client.invoke(
+        partial = dispatch_device_call(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=attempt_id,
             tool="write",
-            args={"marker": "stream"},
+            args={"path": str(note), "text": "hello-once", "body": body},
             ack=False,
             stop_after_chunks=2,
         )
@@ -110,7 +96,7 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
                 break
             time.sleep(0.05)
         assert second_session and second_session != first_session
-        resumed = client.resume(
+        resumed = dispatch_device_resume(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
@@ -127,8 +113,7 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
         replayed = "".join(merged[seq] for seq in sorted(merged))
         assert replayed == body or resumed.truncated
         assert all(len(item.encode("utf-8")) <= CHUNK_LIMIT for item in merged.values())
-        assert writes == [1]
-        assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "hello-once"
+        assert note.read_text(encoding="utf-8") == "hello-once"
     finally:
         request_stop()
         thread.join(5)

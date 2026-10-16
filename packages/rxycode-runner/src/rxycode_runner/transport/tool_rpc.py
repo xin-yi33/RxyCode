@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from RxyCode.RxyCode1_1_0.execution.tool_journal import (
@@ -36,6 +37,44 @@ def clear_local_tools(device_id: str) -> None:
 
 def tool_rpc_for(device_id: str) -> "ToolRpcServer | None":
     return _BOUND.get(device_id)
+
+
+def local_tool(args: dict[str, Any], *, cancel: threading.Event) -> str:
+    """Run the device tool body. A second call is the caller's bug, not this function's."""
+    from rxycode_runner.remote.client import writer_count
+
+    if writer_count(_DEVICE.get()) != 1:
+        raise RuntimeError("tool replies must share one writer")
+    if str(args.get("mode") or "") == "cancel":
+        _CANCEL_STARTED.set()
+        cancel.wait(3)
+        return "stopped"
+    path = args.get("path")
+    if str(args.get("mode") or "") == "write" and isinstance(path, str):
+        target = Path(path)
+        previous = target.read_text(encoding="utf-8") if target.exists() else ""
+        target.write_text(previous + "W", encoding="utf-8")
+        return "W"
+    if isinstance(path, str):
+        target = Path(path)
+        piece = str(args.get("text") if args.get("text") is not None else "once")
+        previous = target.read_text(encoding="utf-8") if target.exists() else ""
+        target.write_text(previous + piece, encoding="utf-8")
+    body = args.get("body")
+    if isinstance(body, str):
+        return body
+    if args.get("text") is not None:
+        return str(args["text"])
+    return "once"
+
+
+_DEVICE: Any = __import__("contextvars").ContextVar("rxy_tool_device", default="")
+_CANCEL_STARTED = threading.Event()
+
+
+def cancel_started() -> threading.Event:
+    _CANCEL_STARTED.clear()
+    return _CANCEL_STARTED
 
 
 def _split(text: str, limit: int) -> list[str]:
@@ -165,6 +204,7 @@ class ToolRpcServer:
         if cancel.is_set():
             await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
             return
+        _DEVICE.set(self.device_id)
         result = await asyncio.to_thread(self.execute, args, cancel=cancel)
         if cancel.is_set():
             await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})

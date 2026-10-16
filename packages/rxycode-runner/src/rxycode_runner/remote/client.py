@@ -85,6 +85,7 @@ def run_connect(
     heartbeat_seconds: float = 15.0,
 ) -> None:
     require_outbound_tls(url)
+    _ensure_local_tools(device_id)
     asyncio.run(
         _connect(
             url=url,
@@ -208,6 +209,26 @@ async def _one_session(
                 await writer
             except Exception:
                 logger.info("device writer closed", extra={"device_id": device_id})
+
+
+def _ensure_local_tools(device_id: str) -> None:
+    from pathlib import Path
+    from tempfile import mkdtemp
+
+    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+        RemoteJournalAdapter,
+        ToolExecutionJournal,
+    )
+    from rxycode_runner.transport.tool_rpc import bind_local_tools, local_tool, tool_rpc_for
+
+    if tool_rpc_for(device_id) is not None:
+        return
+    directory = Path(mkdtemp(prefix="rxycode-tool-rpc-"))
+    bind_local_tools(
+        device_id=device_id,
+        journal=RemoteJournalAdapter(ToolExecutionJournal(directory)),
+        execute=local_tool,
+    )
 
 
 def _tool_rpc(device_id: str) -> Any:

@@ -76,57 +76,66 @@ def _pair(gateway: object) -> threading.Thread:
 
 def test_w4_c04_contract(tmp_path: Path) -> None:
     """A second invoke of a completed call returns the first result."""
-    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
-        RemoteJournalAdapter,
-        ToolExecutionJournal,
-    )
     from rxycode_runner.remote.client import request_stop
-    from rxycode_runner.transport.tool_rpc import bind_local_tools, clear_local_tools
+    from rxycode_runner.transport.tool_rpc import clear_local_tools
     from rxycode_server.devices.gateway import serve_in_thread
-    from rxycode_worker.runner_client import RunnerClient
+    from rxycode_worker.runner_client import dispatch_device_call
 
-    writes: list[str] = []
-
-    def execute(args: dict[str, object], *, cancel: threading.Event) -> str:
-        del cancel
-        target = tmp_path / "note.txt"
-        target.write_text("once", encoding="utf-8")
-        writes.append(str(args["marker"]))
-        return "once"
-
-    bind_local_tools(
-        device_id="desk-1",
-        journal=RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal")),
-        execute=execute,
-    )
     gateway = serve_in_thread(secret=_SECRET)
     thread = _pair(gateway)
-    client = RunnerClient()
+    note = tmp_path / "note.txt"
+    left = tmp_path / "left.txt"
+    right = tmp_path / "right.txt"
     _attempt_a, call_id = _ids()
     attempt_b = f"att_{uuid4().hex}"
     try:
-        first = client.invoke(
+        first = dispatch_device_call(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=_attempt_a,
             tool="write",
-            args={"marker": "a"},
+            args={"path": str(note), "text": "once"},
         )
-        second = client.invoke(
+        second = dispatch_device_call(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=attempt_b,
             tool="write",
-            args={"marker": "a"},
+            args={"path": str(note), "text": "once"},
         )
         assert first.state == "completed"
         assert first.result == "once"
         assert second.state == "completed"
         assert second.result == "once"
-        assert writes == ["a"]
-        assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "once"
+        assert note.read_text(encoding="utf-8") == "once"
+        call_left = f"call_{uuid4().hex}"
+        call_right = f"call_{uuid4().hex}"
+        found: dict[str, object] = {}
+
+        def one(name: str, call: str, path: Path, text: str) -> None:
+            found[name] = dispatch_device_call(
+                gateway=gateway,
+                device_id="desk-1",
+                call_id=call,
+                attempt_id=f"att_{uuid4().hex}",
+                tool="write",
+                args={"path": str(path), "text": text},
+            )
+
+        pair = (
+            threading.Thread(target=one, args=("left", call_left, left, "A")),
+            threading.Thread(target=one, args=("right", call_right, right, "B")),
+        )
+        for item in pair:
+            item.start()
+        for item in pair:
+            item.join(10)
+        assert getattr(found["left"], "result", None) == "A"
+        assert getattr(found["right"], "result", None) == "B"
+        assert left.read_text(encoding="utf-8") == "A"
+        assert right.read_text(encoding="utf-8") == "B"
     finally:
         request_stop()
         thread.join(5)
@@ -136,70 +145,46 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
 
 def test_w4_c04_negative(tmp_path: Path) -> None:
     """A lost result ack stays unknown and does not write again."""
-    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
-        RemoteJournalAdapter,
-        ToolExecutionJournal,
-    )
     from rxycode_runner.remote.client import request_stop
-    from rxycode_runner.transport.tool_rpc import bind_local_tools, clear_local_tools
+    from rxycode_runner.transport.tool_rpc import cancel_started, clear_local_tools
     from rxycode_server.devices.gateway import serve_in_thread
-    from rxycode_worker.runner_client import RunnerClient
+    from rxycode_worker.runner_client import dispatch_device_call, dispatch_device_cancel
 
     target = tmp_path / "side.txt"
-    writes: list[int] = []
-    started = threading.Event()
-
-    def execute(args: dict[str, object], *, cancel: threading.Event) -> str:
-        if args.get("mode") == "cancel":
-            started.set()
-            cancel.wait(3)
-            return "stopped"
-        writes.append(1)
-        previous = target.read_text(encoding="utf-8") if target.exists() else ""
-        target.write_text(previous + "W", encoding="utf-8")
-        return "W"
-
-    bind_local_tools(
-        device_id="desk-1",
-        journal=RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal")),
-        execute=execute,
-    )
     gateway = serve_in_thread(secret=_SECRET)
     thread = _pair(gateway)
-    client = RunnerClient()
     attempt_id, call_id = _ids()
     try:
-        dropped = client.invoke(
+        dropped = dispatch_device_call(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=attempt_id,
             tool="write",
-            args={"mode": "write"},
+            args={"mode": "write", "path": str(target)},
             ack=False,
         )
         assert dropped.state == "unacked"
         assert target.read_text(encoding="utf-8") == "W"
-        retried = client.invoke(
+        retried = dispatch_device_call(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=f"att_{uuid4().hex}",
             tool="write",
-            args={"mode": "write"},
+            args={"mode": "write", "path": str(target)},
         )
         assert retried.state == "recovery_required"
-        assert writes == [1]
         assert target.read_text(encoding="utf-8") == "W"
         cancel_attempt, cancel_call = _ids()
-        cancelled = client.invoke_and_cancel(
+        cancelled = dispatch_device_cancel(
             gateway=gateway,
             device_id="desk-1",
             call_id=cancel_call,
             attempt_id=cancel_attempt,
             tool="write",
-            args={"mode": "cancel"},
-            started=started,
+            args={"mode": "cancel", "path": str(target)},
+            started=cancel_started(),
         )
         assert cancelled.state == "cancelled"
         assert target.read_text(encoding="utf-8") == "W"
