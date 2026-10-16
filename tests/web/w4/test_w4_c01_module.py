@@ -44,6 +44,7 @@ def test_w4_c01_integration() -> None:
             return ApprovalDecision.REJECTED
 
     marker = nested / "ran.txt"
+    marker.unlink(missing_ok=True)
     command = f'''{sys.executable} -c "open('ran.txt', 'w', encoding='utf-8').write('ok')"'''
     payload = {
         "command": command,

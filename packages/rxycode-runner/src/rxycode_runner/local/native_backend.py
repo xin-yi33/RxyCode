@@ -28,6 +28,7 @@ class LocalNativeBackend:
     permission: str
     audit: list[dict[str, object]] = field(default_factory=list)
     _children: dict[int, subprocess.Popen[bytes]] = field(default_factory=dict)
+    _live: set[int] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.target != "local":
@@ -87,6 +88,7 @@ class LocalNativeBackend:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._live.add(proc.pid)
         timed_out = False
         try:
             out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -101,6 +103,8 @@ class LocalNativeBackend:
         except asyncio.CancelledError:
             _kill_tree(proc.pid)
             raise
+        finally:
+            self._live.discard(proc.pid)
         stdout = (out_b or b"").decode("utf-8", errors="replace")
         stderr = (err_b or b"").decode("utf-8", errors="replace")
         result = NativeResult(
@@ -126,11 +130,17 @@ class LocalNativeBackend:
         return result
 
     def kill(self, pid: int) -> None:
-        proc = self._children.get(pid)
-        if proc is None or proc.poll() is not None:
+        known = pid in self._live or pid in self._children
+        if not known:
             return
-        proc.kill()
-        proc.wait(timeout=5)
+        _kill_tree(pid)
+        proc = self._children.get(pid)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        self._live.discard(pid)
         self.audit.append({"pid": pid, "approval": "killed", "wrapped": False})
 
     async def _ask(self, argv: list[str]) -> str:

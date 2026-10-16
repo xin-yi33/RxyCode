@@ -125,6 +125,38 @@ def test_w4_c01_contract(monkeypatch: pytest.MonkeyPatch) -> None:
 
         slow, stamped, finished = asyncio.run(slow_call())
         assert stamped < finished - 0.3
+        kill_file = work / "kill.pid"
+
+        async def kill_call() -> None:
+            async def stop() -> None:
+                for _ in range(50):
+                    backend = port.local_full
+                    if kill_file.is_file() and backend is not None and backend._live:
+                        backend.kill(next(iter(backend._live)))
+                        return
+                    await asyncio.sleep(0.05)
+
+            stopper = asyncio.create_task(stop())
+            await orchestrator.execute_tool(
+                "bash",
+                {
+                    "command": (
+                        f"{sys.executable} -c \"import os,time,pathlib; "
+                        f"pathlib.Path(r'{kill_file}').write_text(str(os.getpid())); "
+                        "time.sleep(30)\""
+                    ),
+                    "target": "local",
+                    "workdir": str(work),
+                    "timeout": 10,
+                },
+                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
+            )
+            await stopper
+
+        asyncio.run(kill_call())
+        assert kill_file.is_file()
+        assert _alive(int(kill_file.read_text(encoding="utf-8").strip())) is False
+        assert any(item.get("approval") == "killed" for item in port.local_full.audit)
     finally:
         reset_execution_port(token)
     assert "exit code: 3" in failed
