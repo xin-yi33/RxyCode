@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -135,8 +136,8 @@ def _spawn(
     if sandboxed:
         return _sandboxed_spawn(argv, cols, rows, workspace_root)
     if os.name == "nt":
-        return _WinPty(argv, cols, rows, None)
-    return _PosixPty(argv, cols, rows, None)
+        return _WinPty(argv, cols, rows, None, None)
+    return _PosixPty(argv, cols, rows, None, None)
 
 
 def _hidden_by_sandbox_tmpfs(path: Path) -> bool:
@@ -170,7 +171,45 @@ def _private_workspace(workspace_root: Path | None) -> Path:
     if _hidden_by_sandbox_tmpfs(root):
         raise PermissionError("SANDBOX_REQUIRED")
     root.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(root.parent, 0o700)
+        os.chmod(root, 0o700)
     return root
+
+
+def _cloud_env(workspace: Path) -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(workspace),
+        "TERM": "xterm-256color",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHON_BASIC_REPL": "1",
+    }
+    if os.name == "nt":
+        for key in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "PROGRAMFILES"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        env["TEMP"] = str(workspace)
+        env["TMP"] = str(workspace)
+        env["USERPROFILE"] = str(workspace)
+    return env
+
+
+def _hide_sibling_workspaces(wrapped: Any, root: Path) -> Any:
+    if getattr(wrapped, "backend", "") != "bwrap":
+        return wrapped
+    argv = list(wrapped.argv)
+    try:
+        index = argv.index("--chdir")
+    except ValueError as exc:
+        raise PermissionError("SANDBOX_REQUIRED") from exc
+    workspace = str(root)
+    argv[index:index] = ["--tmpfs", str(root.parent), "--bind", workspace, workspace]
+    return replace(wrapped, argv=argv)
 
 
 def _load_sandbox(module: str):
@@ -200,12 +239,13 @@ def _sandboxed_spawn(
             network="none",
             on_missing_capability="fail_closed",
         )
-        wrapped = manager.wrap_command(policy, argv, root)
+        wrapped = _hide_sibling_workspaces(manager.wrap_command(policy, argv, root), root)
         if wrapped.downgraded or not wrapped.applied:
             raise PermissionError("SANDBOX_REQUIRED")
+        env = _cloud_env(root)
         if os.name == "nt":
             windows = _load_sandbox("windows")
-            backend = _WinPty(list(wrapped.argv), cols, rows, root)
+            backend = _WinPty(list(wrapped.argv), cols, rows, root, env)
             job = manager.open_sandbox_job(wrapped)
             try:
                 windows.assign_pid_to_job_handle(job, backend.pid)
@@ -214,7 +254,7 @@ def _sandboxed_spawn(
                 raise PermissionError("SANDBOX_REQUIRED") from exc
             backend.job = job
             return backend
-        return _PosixPty(list(wrapped.argv), cols, rows, root)
+        return _PosixPty(list(wrapped.argv), cols, rows, root, env)
     except PermissionError:
         raise
     except Exception as exc:
@@ -222,12 +262,20 @@ def _sandboxed_spawn(
 
 
 class _WinPty(_Backend):
-    def __init__(self, argv: list[str], cols: int, rows: int, cwd: Path | None) -> None:
+    def __init__(
+        self,
+        argv: list[str],
+        cols: int,
+        rows: int,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+    ) -> None:
         from winpty import PtyProcess
 
         self._proc = PtyProcess.spawn(
             argv,
             cwd=str(cwd) if cwd is not None else None,
+            env=env,
             dimensions=(rows, cols),
         )
         self.pid = int(self._proc.pid)
@@ -267,7 +315,15 @@ class _WinPty(_Backend):
 
 
 class _PosixPty(_Backend):
-    def __init__(self, argv: list[str], cols: int, rows: int, cwd: Path | None) -> None:
+    def __init__(
+        self,
+        argv: list[str],
+        cols: int,
+        rows: int,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+    ) -> None:
+        self._env = env
         import fcntl
         import pty
         import termios
@@ -281,6 +337,7 @@ class _PosixPty(_Backend):
             stdout=slave,
             stderr=slave,
             cwd=str(cwd) if cwd is not None else None,
+            env=self._env,
             start_new_session=True,
             close_fds=True,
         )
