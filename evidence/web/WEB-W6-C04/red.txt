@@ -1,0 +1,7 @@
+FFF
+ModuleNotFoundError: No module named rxycode_worker.agent_events
+FAILED tests/web/w6/test_w6_c04_unit.py::test_w6_c04_contract
+FAILED tests/web/w6/test_w6_c04_unit.py::test_w6_c04_negative
+FAILED tests/web/w6/test_w6_c04_module.py::test_w6_c04_integration
+3 failed in 0.54s
+parent HEAD 27e6100a4f1418c7b6c57d828a0ef472b6c28adb
