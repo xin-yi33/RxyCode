@@ -73,6 +73,7 @@ packages = [
   "RxyCode.RxyCode1_1_0.validation",
   "rxycode_core",
   "rxycode_core.runtime",
+  "rxycode_core.tools",
   "rxycode_protocol",
   "rxycode_server",
   "rxycode_server.persistence",
@@ -98,6 +99,7 @@ packages = [
 "RxyCode.RxyCode1_1_0" = "."
 "rxycode_core" = "packages/rxycode-core/src/rxycode_core"
 "rxycode_core.runtime" = "packages/rxycode-core/src/rxycode_core/runtime"
+"rxycode_core.tools" = "packages/rxycode-core/src/rxycode_core/tools"
 "rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
 "rxycode_server" = "packages/rxycode-server/src/rxycode_server"
 "rxycode_server.persistence" = "packages/rxycode-server/src/rxycode_server/persistence"

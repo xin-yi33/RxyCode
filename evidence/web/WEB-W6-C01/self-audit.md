@@ -10,4 +10,5 @@
 - classify_mcp sends readOnlyHint through apply_mcp_hint. A new MCP tool stays WRITE. destructiveHint raises that tool to DANGER. Risk is not lowered to READ.
 - Cache regression: 30 passed, 2 skipped. The skips say "no tools registered in global test registry" and are the existing stable-prefix conditions. See regression.txt.
 - No separate UI E2E for this card. core/builtin_tool_registration.py was checked and not rewritten. Not claimed as 已落实.
-- gpt-6-luna max verdict is not recorded yet. Session 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- Audit 1 returned VERDICT: PROBLEMS because pyproject.toml did not ship rxycode_core.tools. The module test now builds a wheel with pip and checks the zip contains capability_catalog.py. The src path insert is not that check.
+- gpt-6-luna max re-audit is not recorded yet. Session 01a140a7-2cc1-7f61-bdab-2af627f08e80.
