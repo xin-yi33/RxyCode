@@ -106,6 +106,13 @@ def test_w7_c01_integration() -> None:
         f'$p = @"Set-Content {PAYLOAD_FILE} pwned"@; Invoke-Expression $p',
         f'Clear-Content "{PAYLOAD_FILE}"',
         'Set-Content "$env:TEMP\\rxy_w7c01_pwned.txt" "pwned"',
+        'Set-Content "$Env:TEMP\\rxy_w7c01_pwned.txt" "pwned"',
+        'Set-Content "$env:RXY_UNSET_VAR_9x\\rxy_w7c01_pwned.txt" "pwned"',
+        f'sc "{PAYLOAD_FILE}" "pwned"',
+        f'ac "{PAYLOAD_FILE}" "pwned"',
+        f'clc "{PAYLOAD_FILE}"',
+        "Remove-Item ~ -Recurse -Force",
+        "Remove-Item $HOME -Recurse -Force",
     ):
         blocked = asyncio.run(
             orchestrator.execute_tool(

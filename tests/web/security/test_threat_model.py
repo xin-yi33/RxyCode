@@ -167,6 +167,31 @@ def test_threat_ws_origin(postgres_url: str) -> None:
     assert owned.value.code == 1008
     assert owned.value.reason != "ORIGIN_FORBIDDEN"
 
+    # Cloud mode must enforce Origin even with an empty allowlist.
+    from rxycode_server.main import create_app
+    from rxycode_server.persistence.migrate import upgrade_head
+
+    upgrade_head(postgres_url)
+    empty_app = create_app(
+        postgres_url,
+        mode="cloud",
+        secret=SECRET,
+        allowed_origins=[],
+        github_client_id="iv1.client",
+        github_client_secret="github-secret-not-stored",
+        github_redirect_uri="https://cloud.example/callback",
+    )
+    empty_client = TestClient(empty_app, base_url="https://cloud.example")
+    _github(empty_app, empty_client, 805)
+    with pytest.raises(starlette.websockets.WebSocketDisconnect) as empty:
+        with empty_client.websocket_connect(
+            "/api/v1/terminals/t-1/ws",
+            headers={"Origin": "https://evil.example"},
+        ):
+            pass
+    assert empty.value.code == 1008
+    assert empty.value.reason == "ORIGIN_FORBIDDEN"
+
 
 def test_threat_prompt_injection_grant(tmp_path: Path) -> None:
     """ATTACK: injected call replays a real grant id with changed scope/run/capability."""

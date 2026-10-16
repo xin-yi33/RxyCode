@@ -569,15 +569,16 @@ _ABS_PATH_RE = re.compile(
 _ABS_TARGET = (
     r"[A-Za-z]:[\\/][^\s'\"|;>&]+"
     r"|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*"
-    r"|\$env:[A-Za-z_]\w*[\\/][^\s'\"|;>&]+"
-    r"|\$HOME[\\/][^\s'\"|;>&]+"
-    r"|%[A-Za-z_]\w*%[\\/][^\s'\"|;>&]+"
-    r"|~[\\/][^\s'\"|;>&]+"
+    r"|\$env:[A-Za-z_]\w*(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$HOME(?:[\\/][^\s'\"|;>&]*)?"
+    r"|%[A-Za-z_]\w*%(?:[\\/][^\s'\"|;>&]*)?"
+    r"|~[^\s'\"|;>&]*"
 )
 _BASH_MUTATING_TARGET_RE = re.compile(
     r"(?ix)"
     r"(?:"
     r"\b(?:Remove-Item|ri|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"sc|ac|clc|ni|cpi|"
     r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|install)\b"
     r"[^\n;|&]{0,200}?"
     r"(?:-(?:Literal)?Path\s+|-(?:File)?Path\s+|)"
@@ -588,22 +589,27 @@ _BASH_MUTATING_TARGET_RE = re.compile(
 )
 
 
-def _expand_env_candidate(raw: str) -> str:
+def _expand_env_candidate(raw: str) -> str | None:
     """Resolve ``$env:``/``%VAR%``/``$HOME``/``~`` prefixes to the real path.
 
-    Unresolvable forms are returned unchanged so the whitelist check still
-    fails closed on them.
+    Returns ``None`` when an env-prefixed target cannot be resolved — the
+    caller must then fail closed instead of letting the literal form count
+    as a relative in-workspace path.
     """
-    match = re.match(r"^\$env:([A-Za-z_]\w*)", raw)
+    match = re.match(r"^\$env:([A-Za-z_]\w*)", raw, re.IGNORECASE)
     if match:
-        value = os.environ.get(match.group(1), "")
-        return value + raw[match.end() :] if value else raw
-    if raw.startswith("$HOME"):
+        value = os.environ.get(match.group(1)) or os.environ.get(
+            match.group(1).upper(), ""
+        )
+        return value + raw[match.end() :] if value else None
+    if raw.upper().startswith("$HOME"):
         return str(Path.home()) + raw[5:]
     if raw.startswith("~"):
-        return os.path.expanduser(raw)
+        expanded = os.path.expanduser(raw)
+        return expanded if expanded != raw else None
     if raw.startswith("%"):
-        return os.path.expandvars(raw)
+        expanded = os.path.expandvars(raw)
+        return expanded if expanded != raw else None
     return raw
 
 
@@ -625,7 +631,8 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
     # Drop -Value/-Content payloads and PowerShell here-strings so report
     # bodies that quote blocked paths do not false-trigger.
     scrubbed = re.sub(
-        r"(?is)(?<![A-Za-z])(-(?:Value|Content))\s+(@\"[\s\S]*?\"@|'[^']*'|\"[^\"]*\")",
+        r"(?is)(?<![A-Za-z])(-(?:Value|Content))\s+"
+        r"(@\"[\s\S]*?\"@|@'[\s\S]*?'@|'[^']*'|\"[^\"]*\")",
         " ",
         cmd,
     )
@@ -644,7 +651,8 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
         if raw.startswith(".\\") or raw.startswith("./"):
             continue
         seen.add(raw)
-        if not is_write_allowed(_expand_env_candidate(raw), config):
+        candidate = _expand_env_candidate(raw)
+        if candidate is None or not is_write_allowed(candidate, config):
             blocked.append(raw)
     return blocked
 

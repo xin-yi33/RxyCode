@@ -92,7 +92,8 @@ def read_terminal(terminal_id: str, request: Request) -> dict[str, object]:
 async def stream_terminal(websocket: WebSocket, terminal_id: str) -> None:
     origin = websocket.headers.get("origin") or ""
     allowed = getattr(websocket.app.state, "allowed_origins", None) or ()
-    if allowed and origin not in allowed:
+    mode = getattr(websocket.app.state, "mode", "")
+    if (mode == "cloud" or allowed) and origin not in allowed:
         await websocket.close(code=1008, reason="ORIGIN_FORBIDDEN")
         return
     record = _record(websocket)
