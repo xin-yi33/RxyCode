@@ -159,10 +159,9 @@ def test_w5_c06_contract() -> None:
         "x-preview-fee": "1000000",
     }
     slot = Capacity()
-    held = slot.acquire("tenant-slot", "user-slot", limit=1)
+    held = slot.acquire("tenant-slot", "user-slot", limit=1, held=0)
     with pytest.raises(CapacityFull):
-        slot.acquire("tenant-slot", "user-slot", limit=1)
-    assert len(slot.workers) == 1
+        slot.acquire("tenant-slot", "user-slot", limit=1, held=1)
     slot.release_worker(held)
 
     def deny(gate: QuotaGate, **kwargs: object) -> QuotaRefused:
@@ -312,7 +311,6 @@ def test_w5_c06_contract() -> None:
         )
         assert token_hit.decision.event["kind"] == "token"
         assert token_again.calls == 0
-        assert len(token_cap.workers) == 1
         assert count("visitor-token") == 1
 
         conc_cap = Capacity()
@@ -334,94 +332,126 @@ def test_w5_c06_contract() -> None:
         )
         assert conc_hit.decision.event["kind"] == "concurrency"
         assert conc_boom.calls == 0
-        assert len(conc_cap.workers) == 1
         assert count("visitor-conc") == 1
+        fresh_conc = QuotaGate(
+            limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5),
+            capacity=Capacity(),
+        )
+        fresh_boom = BoomModel()
+        fresh_hit = deny(
+            fresh_conc,
+            database_url=url,
+            tenant_id="visitor-conc",
+            session_id="sess-b-visitor-conc",
+            message="hello",
+            request_id="req-conc-fresh",
+            credentials="cred-present",
+            budget=10,
+            model=fresh_boom,
+            quota=fresh_conc,
+        )
+        assert fresh_hit.decision.event["kind"] == "concurrency"
+        assert fresh_boom.calls == 0
         assert complete_run(
             url,
             run_id=conc_first.run_id,
             tenant_id="visitor-conc",
             user_id="visitor-user",
-            quota=conc_gate,
+            quota=fresh_conc,
         ) == "succeeded"
-        assert len(conc_cap.workers) == 0
         conc_again = OkModel()
-        admit("visitor-conc", conc_gate, conc_again, "req-conc-3", "sess-a-visitor-conc")
+        admit("visitor-conc", fresh_conc, conc_again, "req-conc-3", "sess-a-visitor-conc")
         assert conc_again.calls == 1
-        assert len(conc_cap.workers) == 1
 
-        ttl_cap = Capacity()
         ttl_gate = QuotaGate(
             limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5),
-            capacity=ttl_cap,
+            capacity=Capacity(),
             worker_ttl=1,
         )
         ttl_ok = OkModel()
         admit("visitor-ttl", ttl_gate, ttl_ok, "req-ttl-1", "sess-a-visitor-ttl")
-        assert len(ttl_cap.workers) == 1
-        time.sleep(2)
-        assert len(ttl_cap.workers) == 0
-        ttl_next = OkModel()
-        admit("visitor-ttl", ttl_gate, ttl_next, "req-ttl-2", "sess-b-visitor-ttl")
-        assert ttl_next.calls == 1
-        assert len(ttl_cap.workers) == 1
-
-        overlap_cap = Capacity()
-        overlap_gate = QuotaGate(
-            limits=Limits(tasks=5, tokens=100, concurrency=2, preview_fee=5, sandbox_fee=5),
-            capacity=overlap_cap,
+        ttl_soon = BoomModel()
+        ttl_blocked = deny(
+            QuotaGate(
+                limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5),
+                capacity=Capacity(),
+                worker_ttl=1,
+            ),
+            database_url=url,
+            tenant_id="visitor-ttl",
+            session_id="sess-b-visitor-ttl",
+            message="hello",
+            request_id="req-ttl-blocked",
+            credentials="cred-present",
+            budget=10,
+            model=ttl_soon,
         )
+        assert ttl_blocked.decision.event["kind"] == "concurrency"
+        assert ttl_soon.calls == 0
+        time.sleep(2)
+        ttl_next = OkModel()
+        admit(
+            "visitor-ttl",
+            QuotaGate(
+                limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5),
+                capacity=Capacity(),
+                worker_ttl=1,
+            ),
+            ttl_next,
+            "req-ttl-2",
+            "sess-b-visitor-ttl",
+        )
+        assert ttl_next.calls == 1
+
+
+        limits = Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5)
+        overlap_gate = QuotaGate(limits=limits, capacity=Capacity())
         left = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-1", "sess-a-visitor-overlap")
-        right = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-2", "sess-b-visitor-overlap")
-        assert len(overlap_cap.workers) == 2
-
-        def worker_of(run_id: str) -> str:
-            checker = create_engine(url)
-            try:
-                with Session(checker) as db:
-                    event = db.scalars(
-                        select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
-                    ).one()
-            finally:
-                checker.dispose()
-            return str(event.payload["quota"]["worker_id"])
-
-        left_id = worker_of(left.run_id)
-        right_id = worker_of(right.run_id)
-        assert left_id != right_id
+        other = QuotaGate(limits=limits, capacity=Capacity())
+        blocked = BoomModel()
+        blocked_hit = deny(
+            other,
+            database_url=url,
+            tenant_id="visitor-overlap",
+            session_id="sess-b-visitor-overlap",
+            message="hello",
+            request_id="req-over-blocked",
+            credentials="cred-present",
+            budget=10,
+            model=blocked,
+            quota=other,
+        )
+        assert blocked_hit.decision.event["kind"] == "concurrency"
+        assert blocked.calls == 0
         from datetime import datetime, timedelta, timezone
 
         from sqlalchemy import text
         from rxycode_worker.supervisor import commit_terminal
 
-        install_gate(overlap_gate)
-        try:
-            leaser = create_engine(url)
-            with leaser.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        UPDATE runs
-                        SET status = 'leased',
-                            lease_owner = 'worker-c06',
-                            lease_epoch = 1,
-                            lease_until = :until
-                        WHERE id = :id
-                        """
-                    ),
-                    {
-                        "id": left.run_id,
-                        "until": datetime.now(timezone.utc) + timedelta(minutes=5),
-                    },
-                )
-            leaser.dispose()
-            commit_terminal(url, left.run_id, "worker-c06", 1, "succeeded")
-        finally:
-            install_gate(None)
-        assert {item[2] for item in overlap_cap.workers} == {right_id}
-        third = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-3", "sess-c-visitor-overlap")
-        assert len(overlap_cap.workers) == 2
-        assert right_id in {item[2] for item in overlap_cap.workers}
-        assert worker_of(third.run_id) != right_id
+        leaser = create_engine(url)
+        with leaser.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE runs
+                    SET status = 'leased',
+                        lease_owner = 'worker-c06',
+                        lease_epoch = 1,
+                        lease_until = :until
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "id": left.run_id,
+                    "until": datetime.now(timezone.utc) + timedelta(minutes=5),
+                },
+            )
+        leaser.dispose()
+        commit_terminal(url, left.run_id, "worker-c06", 1, "succeeded")
+        follow = QuotaGate(limits=limits, capacity=Capacity())
+        followed = OkModel()
+        admit("visitor-overlap", follow, followed, "req-over-2", "sess-b-visitor-overlap")
+        assert followed.calls == 1
 
         preview_cap = Capacity()
         preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)
@@ -442,7 +472,6 @@ def test_w5_c06_contract() -> None:
         )
         assert preview_hit.decision.event["kind"] == "preview"
         assert preview_boom.calls == 0
-        assert len(preview_cap.workers) == 1
         assert preview_cap.live_ids == []
         assert count("visitor-preview") == 1
 
@@ -465,7 +494,6 @@ def test_w5_c06_contract() -> None:
         )
         assert sandbox_hit.decision.event["kind"] == "sandbox"
         assert sandbox_boom.calls == 0
-        assert len(sandbox_cap.workers) == 1
         assert count("visitor-sandbox") == 1
 
         task_cap = Capacity()
@@ -517,7 +545,6 @@ def test_w5_c06_contract() -> None:
             assert task_decision.event["user_id"] == "visitor-user"
             assert task_decision.event in task_gate.events_for("visitor-task")
             assert task_boom.calls == 0
-            assert len(task_cap.workers) == 1
             assert count("visitor-task") == 1
             checker = create_engine(url)
             try:

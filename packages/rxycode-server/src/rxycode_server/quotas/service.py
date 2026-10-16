@@ -9,9 +9,9 @@ run.created event so the next admission sees it.
 from __future__ import annotations
 
 import threading
-import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from sqlalchemy import func, select
@@ -34,8 +34,16 @@ class WorkerCapacity(Protocol):
 
     workers: list[tuple[str, str, str]]
 
-    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
-        """Occupy one worker, or refuse when the live count is at the ceiling."""
+    def acquire(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        limit: int,
+        held: int,
+        ttl_seconds: float = 3600,
+    ) -> str:
+        """Refuse when the durable held count is already at the ceiling."""
 
     def release_worker(self, worker_id: str) -> None:
         """Return the exact worker reserved for one Run."""
@@ -120,21 +128,19 @@ class RunWorkers:
     def live_ids(self) -> list[str]:
         return []
 
-    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
-        self._reap()
-        with self._lock:
-            held = _held(self.workers, tenant_id, user_id)
-            if limit < 1 or held >= limit:
-                raise WorkerFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
-            worker_id = "worker-" + uuid.uuid4().hex[:8]
-            self.workers.append((tenant_id, user_id, worker_id))
-            self._deadlines[worker_id] = time.monotonic() + ttl_seconds
-        timer = threading.Timer(ttl_seconds, self._reap)
-        timer.daemon = True
-        with self._lock:
-            self._timers[worker_id] = timer
-        timer.start()
-        return worker_id
+    def acquire(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        limit: int,
+        held: int,
+        ttl_seconds: float = 3600,
+    ) -> str:
+        del tenant_id, user_id, ttl_seconds
+        if limit < 1 or held >= limit:
+            raise WorkerFull(f"concurrency ceiling {limit} already holds {held}")
+        return "worker-" + uuid.uuid4().hex[:8]
 
     def release_worker(self, worker_id: str) -> None:
         timer: threading.Timer | None = None
@@ -147,26 +153,6 @@ class RunWorkers:
                     break
         if timer is not None:
             timer.cancel()
-
-    def _reap(self) -> None:
-        now = time.monotonic()
-        expired: list[threading.Timer | None] = []
-        with self._lock:
-            kept: list[tuple[str, str, str]] = []
-            for owner, user, worker_id in self.workers:
-                if self._deadlines.get(worker_id, now + 1) <= now:
-                    expired.append(self._timers.pop(worker_id, None))
-                    self._deadlines.pop(worker_id, None)
-                else:
-                    kept.append((owner, user, worker_id))
-            self.workers[:] = kept
-        for timer in expired:
-            if timer is not None:
-                timer.cancel()
-
-
-def _held(workers: list[tuple[str, str, str]], tenant_id: str, user_id: str) -> int:
-    return sum(1 for owner, user, _worker in workers if owner == tenant_id and user == user_id)
 
 
 def _token_count(message: str) -> int:
@@ -233,11 +219,13 @@ class QuotaGate:
             return self._refuse(tenant_id, user_id, "preview")
         if usage.sandbox_fee + 1 > limits.sandbox_fee:
             return self._refuse(tenant_id, user_id, "sandbox")
+        held = _active_slots(db, tenant_id, user_id, self._worker_ttl)
         try:
             worker_id = self.capacity.acquire(
                 tenant_id,
                 user_id,
                 limit=limits.concurrency,
+                held=held,
                 ttl_seconds=self._worker_ttl,
             )
         except Exception as exc:
@@ -300,6 +288,34 @@ def active_gate() -> QuotaGate:
     if _default is None:
         _default = QuotaGate(limits=DEFAULT_LIMITS, capacity=RunWorkers())
     return _default
+
+
+_ACTIVE = {"pending", "running", "leased", "cancel_requested", "waiting_approval"}
+
+
+def _active_slots(db: Session, tenant_id: str, user_id: str, ttl_seconds: float) -> int:
+    """Count this user's runs that are still active and inside the TTL."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+    rows = db.execute(
+        select(Run.status, RunEvent.payload, RunEvent.at)
+        .join(RunEvent, (RunEvent.run_id == Run.id) & (RunEvent.seq == 1))
+        .where(Run.tenant_id == tenant_id, RunEvent.type == "run.created")
+    ).all()
+    held = 0
+    for status, payload, created_at in rows:
+        if status not in _ACTIVE:
+            continue
+        quota = payload.get("quota") if isinstance(payload, dict) else {}
+        owner = str((quota or {}).get("user_id") or "")
+        if owner and owner != user_id:
+            continue
+        moment = created_at
+        if isinstance(moment, datetime) and moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if isinstance(moment, datetime) and moment < cutoff:
+            continue
+        held += 1
+    return held
 
 
 def _usage(db: Session, tenant_id: str) -> _Usage:

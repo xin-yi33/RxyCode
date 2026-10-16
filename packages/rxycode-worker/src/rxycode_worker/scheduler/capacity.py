@@ -130,25 +130,14 @@ class Capacity:
         user_id: str,
         *,
         limit: int,
+        held: int,
         ttl_seconds: float = 3600,
     ) -> str:
-        """Occupy one worker until complete_run or the TTL, whichever comes first."""
-        self._reap_workers()
-        with self._lock:
-            held = sum(
-                1 for owner, user, _worker in self.workers if owner == tenant_id and user == user_id
-            )
-            if limit < 1 or held >= limit:
-                raise CapacityFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
-            worker_id = "worker-" + uuid.uuid4().hex[:8]
-            self.workers.append((tenant_id, user_id, worker_id))
-            self._deadlines[worker_id] = time.monotonic() + ttl_seconds
-        timer = threading.Timer(ttl_seconds, self._reap_workers)
-        timer.daemon = True
-        with self._lock:
-            self._worker_timers[worker_id] = timer
-        timer.start()
-        return worker_id
+        """Refuse when the durable held count is already at the ceiling."""
+        del tenant_id, user_id, ttl_seconds
+        if limit < 1 or held >= limit:
+            raise CapacityFull(f"concurrency ceiling {limit} already holds {held}")
+        return "worker-" + uuid.uuid4().hex[:8]
 
     def release_worker(self, worker_id: str) -> None:
         timer: threading.Timer | None = None
