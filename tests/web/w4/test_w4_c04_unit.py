@@ -135,6 +135,14 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             "p.write_text(old + 'x', encoding='utf-8')\n",
             encoding="utf-8",
         )
+        from core.safety.approval import ApprovalDecision, set_approval_broker
+
+        class _Approve:
+            async def request_approval(self, req: object) -> ApprovalDecision:
+                del req
+                return ApprovalDecision.APPROVED
+
+        set_approval_broker(_Approve())
         command = "cmd /c python mark.py"
         bash_call = f"call_{uuid4().hex}"
         bash_args = {"command": command, "workdir": str(work), "timeout": 30}
@@ -226,6 +234,8 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         thread.join(5)
         gateway.close()
         clear_local_tools("desk-1")
+        from core.safety.approval import set_approval_broker
+        set_approval_broker(None)
         bash_dir = REPO / "tests" / "web" / "w4" / "_bash_c04"
         if bash_dir.exists():
             for child in bash_dir.iterdir():

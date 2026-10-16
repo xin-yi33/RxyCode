@@ -39,7 +39,13 @@ def tool_rpc_for(device_id: str) -> "ToolRpcServer | None":
     return _BOUND.get(device_id)
 
 
-def local_tool(args: dict[str, Any], *, cancel: threading.Event, tool: str = "write") -> str:
+def local_tool(
+    args: dict[str, Any],
+    *,
+    cancel: threading.Event,
+    tool: str = "write",
+    call_id: str = "",
+) -> str:
     """Run the named device tool. write appends text; bash runs the command string."""
     from rxycode_runner.remote.client import writer_count
 
@@ -49,12 +55,24 @@ def local_tool(args: dict[str, Any], *, cancel: threading.Event, tool: str = "wr
         command = str(args.get("command") or "")
         if not command:
             raise ValueError("bash command required")
-        from RxyCode.RxyCode1_1_0.tools.bash import run_bash
+        from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+        from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
 
         workdir = str(args.get("workdir") or "")
         raw_timeout = args.get("timeout", None)
         timeout = 1800 if raw_timeout is None else int(raw_timeout)
-        outcome = run_bash(command, workdir=workdir, timeout=timeout)
+        orchestrator = ToolOrchestrator()
+        orchestrator.register("bash", bash_tool)
+
+        async def _through_gate() -> str:
+            return await orchestrator.execute_tool(
+                "bash",
+                {"command": command, "workdir": workdir, "timeout": timeout},
+                {"safety": {"permission_mode": "confirm_all"}},
+                call_id=call_id or None,
+            )
+
+        outcome = asyncio.run(_through_gate())
         if outcome.startswith(("[error", "[rejected", "[blocked")):
             raise RuntimeError(outcome)
         return outcome
@@ -221,7 +239,9 @@ class ToolRpcServer:
             return
         _DEVICE.set(self.device_id)
         try:
-            result = await asyncio.to_thread(self.execute, args, cancel=cancel, tool=tool)
+            result = await asyncio.to_thread(
+                self.execute, args, cancel=cancel, tool=tool, call_id=call_id
+            )
         except Exception as exc:
             await queue.put(
                 {

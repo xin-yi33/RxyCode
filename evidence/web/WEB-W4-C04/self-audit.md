@@ -2,7 +2,7 @@
 
 - RED: rxycode_runner.transport was missing. 3 failed in 0.34s. See red.txt.
 - `rxycode connect` binds local_tool on a journal directory that stays under the data dir for that device.
-- POST /api/v1/devices/{id}/invocations checks the browser tenant, runs the existing bash write-path policy, then calls attempt_tool. bash goes through tools.bash.run_bash with workdir and the given timeout, including 0. It does not use permission full.
+- POST /api/v1/devices/{id}/invocations checks the browser tenant and the bash write-path policy, then calls attempt_tool. bash runs through ToolOrchestrator.execute_tool in confirm_all, so a missing or rejecting broker does not run the command. workdir and timeout, including 0, are passed through. permission full is not used.
 - Tool replies are queued per call id, so two in-flight calls do not read each other's frames.
 - Tool frames travel on the paired outbound device socket. The runner does not open a second listen port.
 - The journal attempt is derived from device id and call id, so a later attempt id cannot run that call again.
