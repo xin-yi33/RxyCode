@@ -7,7 +7,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-_SECRET = re.compile(r"sk-[A-Za-z0-9_-]+")
+_SECRET = re.compile(
+    r"(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]+",
+)
+_SECRET_KEYS = {"clipboard", "api_key", "token", "secret", "password"}
 
 
 class AuditLog:
@@ -17,7 +20,7 @@ class AuditLog:
     def write(self, row: dict[str, Any]) -> None:
         cleaned: dict[str, str] = {}
         for key, value in row.items():
-            if key == "clipboard":
+            if key.casefold() in _SECRET_KEYS:
                 cleaned[key] = "[redacted]"
                 continue
             cleaned[key] = _SECRET.sub("[redacted]", str(value))

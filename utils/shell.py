@@ -1322,6 +1322,20 @@ class ShellExecutor:
                 process_kwargs["creationflags"] = process_kwargs.get(
                     "creationflags", 0
                 ) | 0x00000004
+        from rxycode_runner.local.supervisor import (
+            active_supervisor,
+            adopt_suspended,
+            tracking_shell,
+        )
+
+        if tracking_shell() and active_supervisor().stopped:
+            return _failure(
+                "[rejected] emergency_stop",
+                error_type="rejected",
+            )
+        track_this = tracking_shell() and sys.platform == "win32"
+        if track_this:
+            process_kwargs["creationflags"] = process_kwargs.get("creationflags", 0) | 0x00000004
         process: asyncio.subprocess.Process | None = None
         capture_roots = tuple(
             root for root in (policy.workspace_root, policy.cwd) if root is not None
@@ -1337,6 +1351,14 @@ class ShellExecutor:
                 *spawn_argv,
                 **process_kwargs,
             )
+            if track_this and process.pid:
+                adopt_suspended(process.pid)
+                if not os_job_handle:
+                    from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
+                        resume_process_main_thread,
+                    )
+
+                    resume_process_main_thread(process.pid)
             if os_job_handle:
                 # root 此刻一行代码未跑（suspended），不存在先发子孙——
                 # 指派即全覆盖，随后恢复主线程。失败即 fail-closed：

@@ -142,11 +142,20 @@ def _run_remote_full(
         raise ValueError("bash command required")
     if cancel.is_set():
         raise RuntimeError("cancelled before execution")
+    from rxycode_runner.local.supervisor import active_supervisor
+
+    if active_supervisor().stopped:
+        raise RuntimeError("emergency_stop")
     from RxyCode.RxyCode1_1_0.tools.bash import run_bash
+    from rxycode_runner.local.supervisor import reset_shell_tracking, track_shell
 
     raw_timeout = args.get("timeout", None)
     timeout = 1800 if raw_timeout is None else int(raw_timeout)
-    outcome = run_bash(command, workdir=workdir, timeout=timeout)
+    token = track_shell(True)
+    try:
+        outcome = run_bash(command, workdir=workdir, timeout=timeout)
+    finally:
+        reset_shell_tracking(token)
     if outcome.startswith(("[error", "[rejected", "[blocked", "[sandbox")):
         raise RuntimeError(outcome)
     return outcome

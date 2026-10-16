@@ -25,16 +25,26 @@ def _alive(pid: int) -> bool:
 
 
 def test_w4_c06_contract(tmp_path: Path) -> None:
-    """Local emergency stop ends the parent, the child, and the next command."""
-    from rxycode_runner.local.emergency import EmergencyStop, bind_local_hotkey, press_local_hotkey
-    from rxycode_runner.local.supervisor import ProcessSupervisor
+    """Local emergency stop ends the parent, the child, and the next full command."""
+    import threading
 
-    work = tmp_path / "tree"
-    work.mkdir()
-    child_script = work / "child.py"
-    child_script.write_text("import os,time\nfrom pathlib import Path\nPath('child.pid').write_text(str(os.getpid()))\ntime.sleep(60)\n", encoding="utf-8")
-    parent_script = work / "parent.py"
-    parent_script.write_text(
+    from rxycode_runner.local.emergency import EmergencyStop, bind_local_hotkey, press_local_hotkey
+    from rxycode_runner.local.grant_store import (
+        GrantStore,
+        clear_grant_store,
+        confirm_from_local_ui,
+        install_grant_store,
+    )
+    from rxycode_runner.local.supervisor import ProcessSupervisor, bind_supervisor
+    from rxycode_runner.transport.tool_rpc import _DEVICE, _run_remote_full
+
+    work = REPO / "tests" / "web" / "w4" / "_bash_c06"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "child.py").write_text(
+        "import os,time\nfrom pathlib import Path\nPath('child.pid').write_text(str(os.getpid()))\ntime.sleep(60)\n",
+        encoding="utf-8",
+    )
+    (work / "parent.py").write_text(
         "import subprocess,sys,time\nfrom pathlib import Path\n"
         "subprocess.Popen([sys.executable, 'child.py'])\n"
         "Path('parent.pid').write_text(str(__import__('os').getpid()))\n"
@@ -42,24 +52,92 @@ def test_w4_c06_contract(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     supervisor = ProcessSupervisor()
-    started = supervisor.spawn([sys.executable, str(parent_script)], cwd=work)
-    assert started.started is True
-    deadline = time.time() + 8
-    while time.time() < deadline and not (work / "child.pid").exists():
-        time.sleep(0.05)
-    assert (work / "child.pid").exists()
-    parent_pid = int((work / "parent.pid").read_text(encoding="utf-8"))
-    child_pid = int((work / "child.pid").read_text(encoding="utf-8"))
-    assert _alive(parent_pid) and _alive(child_pid)
-    bind_local_hotkey(EmergencyStop(supervisor))
-    press_local_hotkey()
-    deadline = time.time() + 5
-    while time.time() < deadline and (_alive(parent_pid) or _alive(child_pid)):
-        time.sleep(0.05)
-    assert not _alive(parent_pid)
-    assert not _alive(child_pid)
-    blocked = supervisor.spawn([sys.executable, "-c", "print('no')"], cwd=work)
-    assert blocked.started is False
+    bind_supervisor(supervisor)
+    store = GrantStore(tmp_path / "grants")
+    install_grant_store("desk-c06", store)
+    confirm_from_local_ui(
+        store,
+        {
+            "device_id": "desk-c06",
+            "session_id": "sess-c06",
+            "run_id": "run-c06",
+            "workspace": str(work),
+            "capabilities": ["shell"],
+            "expires_at": time.time() + 60,
+        },
+    )
+    token = _DEVICE.set("desk-c06")
+    holder: dict[str, object] = {}
+
+    def _full() -> None:
+        local = _DEVICE.set("desk-c06")
+        try:
+            holder["out"] = _run_remote_full(
+                {
+                    "permission": "full",
+                    "session_id": "sess-c06",
+                    "run_id": "run-c06",
+                    "workspace": str(work),
+                    "workdir": str(work),
+                    "command": "cmd /c python parent.py",
+                    "timeout": 30,
+                },
+                tool="bash",
+                call_id="call-c06",
+                cancel=threading.Event(),
+            )
+        except Exception as exc:
+            holder["err"] = exc
+        finally:
+            _DEVICE.reset(local)
+
+    try:
+        worker = threading.Thread(target=_full)
+        worker.start()
+        deadline = time.time() + 8
+        while time.time() < deadline and not (work / "child.pid").exists():
+            time.sleep(0.05)
+        assert (work / "child.pid").exists(), holder
+        parent_pid = int((work / "parent.pid").read_text(encoding="utf-8"))
+        child_pid = int((work / "child.pid").read_text(encoding="utf-8"))
+        assert _alive(parent_pid) and _alive(child_pid)
+        bind_local_hotkey(EmergencyStop(supervisor))
+        press_local_hotkey()
+        deadline = time.time() + 5
+        while time.time() < deadline and (_alive(parent_pid) or _alive(child_pid)):
+            time.sleep(0.05)
+        assert not _alive(parent_pid)
+        assert not _alive(child_pid)
+        worker.join(5)
+        try:
+            _run_remote_full(
+                {
+                    "permission": "full",
+                    "session_id": "sess-c06",
+                    "run_id": "run-c06",
+                    "workspace": str(work),
+                    "workdir": str(work),
+                    "command": "cmd /c echo no",
+                    "timeout": 5,
+                },
+                tool="bash",
+                call_id="call-c06-next",
+                cancel=threading.Event(),
+            )
+        except RuntimeError as exc:
+            assert "emergency_stop" in str(exc)
+        else:
+            raise AssertionError("full command ran after emergency stop")
+    finally:
+        supervisor.kill_tree()
+        bind_supervisor(None)
+        _DEVICE.reset(token)
+        clear_grant_store("desk-c06")
+        if work.exists():
+            for child in work.iterdir():
+                if child.is_file():
+                    child.unlink()
+            work.rmdir()
 
 
 def test_w4_c06_negative(tmp_path: Path) -> None:
@@ -67,17 +145,20 @@ def test_w4_c06_negative(tmp_path: Path) -> None:
     from rxycode_runner.local.audit import AuditLog
 
     secret = "sk-proj-c06-secret-value"
+    github = "ghp_c06secretvalue0123456789abcd"
     clipboard = "clipboard plaintext c06"
     log = AuditLog(tmp_path / "audit.jsonl")
     log.write(
         {
             "tool": "bash",
-            "output": f"token={secret}",
+            "output": f"token={secret} {github}",
             "clipboard": clipboard,
+            "api_key": github,
             "note": "stopped",
         }
     )
     text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
     assert "stopped" in text
     assert secret not in text
+    assert github not in text
     assert clipboard not in text
