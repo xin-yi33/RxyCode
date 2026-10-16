@@ -1,0 +1,742 @@
+diff --git a/evidence/web/WEB-W4-C01/baseline.txt b/evidence/web/WEB-W4-C01/baseline.txt
+new file mode 100644
+index 00000000..c36715ce
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/baseline.txt
+@@ -0,0 +1,2 @@
++parent HEAD before WEB-W4-C01: 80ae90c4512f81e49215d6f24b8dc748abad2ba0
++E2E-FULL-01 destructive commands are not run.
+diff --git a/evidence/web/WEB-W4-C01/cache.txt b/evidence/web/WEB-W4-C01/cache.txt
+new file mode 100644
+index 00000000..29a7c95e
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/cache.txt
+@@ -0,0 +1,5 @@
++..............s.s...............                                         [100%]
++=========================== short test summary info ===========================
++SKIPPED [1] tests\test_cache\test_stable_prefix.py:142: no tools registered in global test registry
++SKIPPED [1] tests\test_cache\test_stable_prefix.py:158: no tools registered in global test registry
++30 passed, 2 skipped in 2.01s
+diff --git a/evidence/web/WEB-W4-C01/handoff.md b/evidence/web/WEB-W4-C01/handoff.md
+new file mode 100644
+index 00000000..097e3826
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/handoff.md
+@@ -0,0 +1,8 @@
++# WEB-W4-C01 handoff
++
++Parent branch feat/rxycode-web. Not pushed.
++Audit model for this card: gpt-6-luna, reasoning effort max.
++Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
++Verdict is not written yet.
++Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
++E2E-FULL-01 screenshot and destructive-command proof are not produced. That item stays BLOCKED.
+diff --git a/evidence/web/WEB-W4-C01/integration.txt b/evidence/web/WEB-W4-C01/integration.txt
+new file mode 100644
+index 00000000..e26b8f16
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/integration.txt
+@@ -0,0 +1,2 @@
++.                                                                        [100%]
++1 passed in 0.76s
+diff --git a/evidence/web/WEB-W4-C01/red.txt b/evidence/web/WEB-W4-C01/red.txt
+new file mode 100644
+index 00000000..808f8d62
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/red.txt
+@@ -0,0 +1,11 @@
++FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-4ytkjxbo
++
++================================== FAILURES ===================================
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c01_unit.py:28: ModuleNotFoundError: No module named 'rxycode_runner.local.native_backend'
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c01_unit.py:56: ModuleNotFoundError: No module named 'rxycode_runner.local.native_backend'
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c01_module.py:22: ModuleNotFoundError: No module named 'rxycode_runner.local.native_backend'
++=========================== short test summary info ===========================
++FAILED tests/web/w4/test_w4_c01_unit.py::test_w4_c01_contract - ModuleNotFoun...
++FAILED tests/web/w4/test_w4_c01_unit.py::test_w4_c01_negative - ModuleNotFoun...
++FAILED tests/web/w4/test_w4_c01_module.py::test_w4_c01_integration - ModuleNo...
++3 failed in 0.16s
+diff --git a/evidence/web/WEB-W4-C01/self-audit.md b/evidence/web/WEB-W4-C01/self-audit.md
+new file mode 100644
+index 00000000..16bde734
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/self-audit.md
+@@ -0,0 +1,9 @@
++# WEB-W4-C01 self-audit
++
++- RED: native_backend was missing. 3 failed in 0.16s. See red.txt.
++- Local full starts the requested argv with subprocess and does not call wrap_command.
++- The child pid is in the same Windows session as this process.
++- Injecting a sandbox object raises SANDBOX_FORBIDDEN.
++- permission=ask asks the real approval broker and does not start the process when the broker rejects.
++- permission=full runs the same command without another ask.
++- Not claimed as 已落实. E2E-FULL-01 stays BLOCKED.
+diff --git a/evidence/web/WEB-W4-C01/unit.txt b/evidence/web/WEB-W4-C01/unit.txt
+new file mode 100644
+index 00000000..788f83e9
+--- /dev/null
++++ b/evidence/web/WEB-W4-C01/unit.txt
+@@ -0,0 +1,2 @@
++..                                                                       [100%]
++2 passed in 2.46s
+diff --git a/execution/tool_orchestrator.py b/execution/tool_orchestrator.py
+index dac79908..65bea5fe 100644
+--- a/execution/tool_orchestrator.py
++++ b/execution/tool_orchestrator.py
+@@ -1048,7 +1048,13 @@ class ToolOrchestrator:
+ 
+         async def _invoke_body() -> str:
+             if _routes_through_port(name):
+-                return await self._invoke_through_port(name, args, _invoke_registered)
++                return await self._invoke_through_port(
++                    name,
++                    args,
++                    _invoke_registered,
++                    config,
++                    tool,
++                )
+             return await _invoke_registered()
+ 
+         async def _invoke_registered() -> str:
+@@ -1669,7 +1675,7 @@ class ToolOrchestrator:
+                 "str_replace", "create_file", "write_file",
+             }
+             canonical = self._canonical_name(name)
+-            if permission_mode == "full_auto":
++            if permission_mode in {"full_auto", "full"}:
+                 auto_levels.update({"write", "danger"})
+             elif permission_mode == "auto_edit" and canonical in _AUTO_EDIT_TOOLS:
+                 auto_levels.add(risk.name.lower())
+@@ -1778,20 +1784,81 @@ class ToolOrchestrator:
+                 return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
+         return await self._invoke_in_executor(tool, args)
+ 
+-    async def _invoke_through_port(self, name: str, args: Any, runner: Any) -> str:
++    async def _invoke_through_port(
++        self,
++        name: str,
++        args: Any,
++        runner: Any,
++        config: dict | None = None,
++        tool: Any = None,
++    ) -> str:
+         """Terminal shell/read/edit calls go through NativeBackend, not around it.
+ 
+         ``runner`` is the existing retry-aware invocation, so READ retries stay.
++        Local full shell uses the native backend and does not wrap the argv.
+         """
+         port_module = _execution_port_module()
+         port = port_module.current_execution_port() or port_module.default_execution_port()
+         target_id = "local"
+         if isinstance(args, dict):
+             target_id = str(args.get("target") or args.get("target_id") or "local")
++        safety = ((config or {}).get("safety") or {}) if isinstance(config, dict) else {}
++        permission = str(
++            _permission_mode_override.get() or safety.get("permission_mode") or ""
++        ).strip().lower()
+         call = type("PortCall", (), {})()
+         call.name = name
+         call.target_id = target_id
+         call.version = 1
++        production_bash = False
++        if name in {"bash", "shell"}:
++            try:
++                from tools.bash import bash_tool
++            except ImportError:
++                bash_tool = None
++            production_bash = tool is bash_tool or name == "shell"
++        if (
++            permission in {"full", "full_auto"}
++            and target_id == "local"
++            and production_bash
++        ):
++            command = args.get("command") if isinstance(args, dict) else None
++            if isinstance(command, str) and command.strip():
++                async def native_runner() -> str:
++                    from rxycode_runner.local.native_backend import LocalNativeBackend
++
++                    backend = LocalNativeBackend(target="local", permission="full")
++                    port.register_local_full(backend)
++                    workdir = ""
++                    timeout = 1800
++                    if isinstance(args, dict):
++                        workdir = str(args.get("workdir") or "")
++                        if args.get("timeout") is not None:
++                            try:
++                                timeout = max(1, int(args.get("timeout")))
++                            except (TypeError, ValueError):
++                                timeout = 1800
++                    from utils.shell import shell_executor
++
++                    try:
++                        cwd = shell_executor.resolved_workdir(workdir)
++                    except ValueError as exc:
++                        return f"[error executing bash: {exc}]"
++                    result = await backend.run_command(command, cwd, timeout=timeout)
++                    if not result.started:
++                        return ""
++                    if result.timed_out:
++                        return f"[error executing bash: timeout after {timeout}s]"
++                    text = result.stdout
++                    if result.stderr:
++                        text += ("\n" if text else "") + result.stderr
++                    if result.exit_code not in (0, None):
++                        body = text or "command failed"
++                        return f"[error executing bash: {body}\n[exit code: {result.exit_code}]]"
++                    return text
++
++                event = await port.backend.ainvoke(call, native_runner)
++                return event.text
+         event = await port.backend.ainvoke(call, runner)
+         return event.text
+ 
+diff --git a/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py b/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py
+index 99ad7b90..e364aebe 100644
+--- a/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py
++++ b/packages/rxycode-core/src/rxycode_core/runtime/execution_port.py
+@@ -129,6 +129,10 @@ class ExecutionPort:
+         self.targets: dict[str, Capabilities] = {}
+         self.specs: dict[str, ToolSpec] = {}
+         self.backend = NativeBackend()
++        self.local_full: object | None = None
++
++    def register_local_full(self, backend: object) -> None:
++        self.local_full = backend
+ 
+     def register_target(self, target_id: str, capabilities: Capabilities) -> None:
+         self.targets[target_id] = capabilities
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/native_backend.py b/packages/rxycode-runner/src/rxycode_runner/local/native_backend.py
+new file mode 100644
+index 00000000..e774a180
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/native_backend.py
+@@ -0,0 +1,250 @@
++"""Local full runs on this machine. It does not call the sandbox wrapper."""
++
++from __future__ import annotations
++
++import asyncio
++import os
++import subprocess
++from dataclasses import dataclass, field
++from pathlib import Path
++
++
++@dataclass
++class NativeResult:
++    started: bool
++    wrapped: bool
++    argv: list[str]
++    approval: str
++    pid: int | None = None
++    exit_code: int | None = None
++    stdout: str = ""
++    stderr: str = ""
++    timed_out: bool = False
++
++
++@dataclass
++class LocalNativeBackend:
++    target: str
++    permission: str
++    audit: list[dict[str, object]] = field(default_factory=list)
++    _children: dict[int, subprocess.Popen[bytes]] = field(default_factory=dict)
++    _live: set[int] = field(default_factory=set)
++
++    def __post_init__(self) -> None:
++        if self.target != "local":
++            raise ValueError("target must be local")
++        if self.permission not in {"full", "ask"}:
++            raise ValueError("permission must be full or ask")
++
++    def attach_sandbox(self, backend: object) -> None:
++        del backend
++        raise PermissionError("SANDBOX_FORBIDDEN")
++
++    def start(self, argv: list[str], cwd: Path) -> NativeResult:
++        if self.permission != "full":
++            raise PermissionError("ASK_REQUIRED")
++        return self._spawn(argv, cwd, approval="skipped", wait=False, timeout=None)
++
++    async def shell(self, argv: list[str], cwd: Path, *, timeout: float = 1800) -> NativeResult:
++        if self.permission == "ask":
++            decision = await self._ask(argv)
++            if decision != "approved":
++                self.audit.append(
++                    {
++                        "argv": list(argv),
++                        "approval": "rejected",
++                        "started": False,
++                        "wrapped": False,
++                    }
++                )
++                return NativeResult(
++                    started=False,
++                    wrapped=False,
++                    argv=list(argv),
++                    approval="rejected",
++                )
++            return await asyncio.to_thread(
++                self._spawn,
++                argv,
++                cwd,
++                approval="approved",
++                wait=True,
++                timeout=timeout,
++            )
++        return await asyncio.to_thread(
++            self._spawn,
++            argv,
++            cwd,
++            approval="skipped",
++            wait=True,
++            timeout=timeout,
++        )
++
++    async def run_command(self, command: str, cwd: Path, *, timeout: float = 1800) -> NativeResult:
++        """Run the exact command string the policy already checked."""
++        proc = await asyncio.create_subprocess_shell(
++            command,
++            cwd=str(cwd),
++            stdout=asyncio.subprocess.PIPE,
++            stderr=asyncio.subprocess.PIPE,
++        )
++        self._live.add(proc.pid)
++        timed_out = False
++        try:
++            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
++        except asyncio.TimeoutError:
++            _kill_tree(proc.pid)
++            timed_out = True
++            try:
++                out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=5)
++            except asyncio.TimeoutError:
++                proc.kill()
++                out_b, err_b = await proc.communicate()
++        except asyncio.CancelledError:
++            _kill_tree(proc.pid)
++            raise
++        finally:
++            self._live.discard(proc.pid)
++        stdout = (out_b or b"").decode("utf-8", errors="replace")
++        stderr = (err_b or b"").decode("utf-8", errors="replace")
++        result = NativeResult(
++            started=True,
++            wrapped=False,
++            argv=[command],
++            approval="skipped",
++            pid=proc.pid,
++            exit_code=proc.returncode,
++            stdout=stdout,
++            stderr=stderr,
++            timed_out=timed_out,
++        )
++        self.audit.append(
++            {
++                "pid": proc.pid,
++                "argv": [command],
++                "approval": "skipped",
++                "started": True,
++                "wrapped": False,
++            }
++        )
++        return result
++
++    def kill(self, pid: int) -> None:
++        known = pid in self._live or pid in self._children
++        if not known:
++            return
++        _kill_tree(pid)
++        proc = self._children.get(pid)
++        if proc is not None and proc.poll() is None:
++            try:
++                proc.wait(timeout=5)
++            except subprocess.TimeoutExpired:
++                proc.kill()
++        self._live.discard(pid)
++        self.audit.append({"pid": pid, "approval": "killed", "wrapped": False})
++
++    async def _ask(self, argv: list[str]) -> str:
++        try:
++            from core.safety.approval import (
++                ApprovalDecision,
++                ApprovalRequest,
++                get_approval_broker,
++            )
++            from core.safety.policy import RiskLevel
++        except ImportError:
++            from RxyCode.RxyCode1_1_0.core.safety.approval import (
++                ApprovalDecision,
++                ApprovalRequest,
++                get_approval_broker,
++            )
++            from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
++        broker = get_approval_broker()
++        if broker is None:
++            return "rejected"
++        decision = await broker.request_approval(
++            ApprovalRequest(
++                tool_name="shell",
++                args_summary={"argv": list(argv)},
++                risk=RiskLevel.DANGER,
++            )
++        )
++        allowed = {
++            ApprovalDecision.APPROVED,
++            ApprovalDecision.ALLOW_ONCE,
++            ApprovalDecision.ALWAYS_ALLOW_LEVEL,
++        }
++        return "approved" if decision in allowed else "rejected"
++
++    def _spawn(
++        self,
++        argv: list[str] | str,
++        cwd: Path,
++        *,
++        approval: str,
++        wait: bool,
++        timeout: float | None,
++        shell: bool = False,
++    ) -> NativeResult:
++        recorded = [argv] if isinstance(argv, str) else list(argv)
++        proc = subprocess.Popen(
++            argv,
++            cwd=str(cwd),
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            shell=shell,
++        )
++        self._children[proc.pid] = proc
++        stdout = ""
++        stderr = ""
++        exit_code = None
++        timed_out = False
++        if wait:
++            try:
++                out, err = proc.communicate(timeout=timeout)
++            except subprocess.TimeoutExpired:
++                _kill_tree(proc.pid)
++                try:
++                    out, err = proc.communicate(timeout=5)
++                except subprocess.TimeoutExpired:
++                    proc.kill()
++                    out, err = proc.communicate()
++                timed_out = True
++            stdout = out.decode("utf-8", errors="replace")
++            stderr = err.decode("utf-8", errors="replace")
++            exit_code = proc.returncode
++        result = NativeResult(
++            started=True,
++            wrapped=False,
++            argv=recorded,
++            approval=approval,
++            pid=proc.pid,
++            exit_code=exit_code,
++            stdout=stdout,
++            stderr=stderr,
++            timed_out=timed_out,
++        )
++        self.audit.append(
++            {
++                "pid": proc.pid,
++                "argv": recorded,
++                "approval": approval,
++                "started": True,
++                "wrapped": False,
++            }
++        )
++        return result
++
++
++def _kill_tree(pid: int) -> None:
++    if os.name == "nt":
++        subprocess.run(
++            ["taskkill", "/F", "/T", "/PID", str(pid)],
++            stdout=subprocess.DEVNULL,
++            stderr=subprocess.DEVNULL,
++            check=False,
++        )
++        return
++    try:
++        os.kill(pid, 9)
++    except OSError:
++        return
+diff --git a/tests/web/w4/test_w4_c01_module.py b/tests/web/w4/test_w4_c01_module.py
+new file mode 100644
+index 00000000..34f07031
+--- /dev/null
++++ b/tests/web/w4/test_w4_c01_module.py
+@@ -0,0 +1,83 @@
++"""WEB-W4-C01. Ask mode still uses the approval broker. Full does not."""
++
++from __future__ import annotations
++
++import asyncio
++import sys
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++for _rel in (
++    Path("packages") / "rxycode-runner" / "src",
++    Path("packages") / "rxycode-core" / "src",
++):
++    _src = REPO / _rel
++    if str(_src) not in sys.path:
++        sys.path.insert(0, str(_src))
++
++
++def test_w4_c01_integration() -> None:
++    """The same command is rejected under ask and runs under full."""
++    from core.safety.approval import (
++        ApprovalBroker,
++        ApprovalDecision,
++        set_approval_broker,
++    )
++    from execution.tool_orchestrator import ToolOrchestrator
++    from rxycode_core.runtime.execution_port import (
++        ExecutionPort,
++        bind_execution_port,
++        reset_execution_port,
++    )
++    from core.session_runtime import set_working_directory
++    from tools.bash import bash_tool
++
++    asked: list[str] = []
++    work = REPO / "tests" / "web" / "w4" / "_run"
++    nested = work / "sub"
++    nested.mkdir(parents=True, exist_ok=True)
++    set_working_directory(work, persist=False)
++
++    class Reject(ApprovalBroker):
++        async def _ask(self, request: object) -> ApprovalDecision:
++            asked.append(str(getattr(request, "tool_name", "")))
++            return ApprovalDecision.REJECTED
++
++    marker = nested / "ran.txt"
++    marker.unlink(missing_ok=True)
++    command = f'''{sys.executable} -c "open('ran.txt', 'w', encoding='utf-8').write('ok')"'''
++    payload = {
++        "command": command,
++        "target": "local",
++        "workdir": "sub",
++        "timeout": 30,
++    }
++    set_approval_broker(Reject())
++    port = ExecutionPort()
++    token = bind_execution_port(port)
++    try:
++        orchestrator = ToolOrchestrator()
++        orchestrator.register("bash", bash_tool)
++        refused = asyncio.run(
++            orchestrator.execute_tool(
++                "bash",
++                payload,
++                config={"safety": {"enabled": True, "permission_mode": "confirm_all"}},
++            )
++        )
++        assert "rejected" in refused
++        assert not marker.exists()
++        assert asked == ["bash"]
++        ran = asyncio.run(
++            orchestrator.execute_tool(
++                "bash",
++                payload,
++                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
++            )
++        )
++        assert marker.read_text(encoding="utf-8") == "ok"
++        assert asked == ["bash"]
++        assert "sandbox-body" not in ran
++    finally:
++        reset_execution_port(token)
++        set_approval_broker(None)
+diff --git a/tests/web/w4/test_w4_c01_unit.py b/tests/web/w4/test_w4_c01_unit.py
+new file mode 100644
+index 00000000..e2d2443d
+--- /dev/null
++++ b/tests/web/w4/test_w4_c01_unit.py
+@@ -0,0 +1,184 @@
++"""WEB-W4-C01. Local full runs a native process and refuses a sandbox."""
++
++from __future__ import annotations
++
++import ctypes
++import os
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++for _rel in (
++    Path("packages") / "rxycode-runner" / "src",
++    Path("packages") / "rxycode-core" / "src",
++):
++    _src = REPO / _rel
++    if str(_src) not in sys.path:
++        sys.path.insert(0, str(_src))
++
++
++def _alive(pid: int) -> bool:
++    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
++    if not handle:
++        return False
++    code = ctypes.c_ulong()
++    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
++    ctypes.windll.kernel32.CloseHandle(handle)
++    return int(code.value) == 259
++
++
++def _session(pid: int) -> int:
++    value = ctypes.c_ulong()
++    ok = ctypes.windll.kernel32.ProcessIdToSessionId(ctypes.c_uint(pid), ctypes.byref(value))
++    if not ok:
++        raise OSError(ctypes.GetLastError())
++    return int(value.value)
++
++
++def test_w4_c01_contract(monkeypatch: pytest.MonkeyPatch) -> None:
++    """A local full shell is a native pid in this session and is not wrapped."""
++    import asyncio
++
++    from execution.tool_orchestrator import ToolOrchestrator
++    from rxycode_core.runtime.execution_port import (
++        ExecutionPort,
++        bind_execution_port,
++        reset_execution_port,
++    )
++    from tools.bash import bash_tool
++
++    wrapped: list[object] = []
++
++    def spy(*args: object, **kwargs: object) -> object:
++        wrapped.append(args)
++        raise AssertionError("full mode called wrap_command")
++
++    monkeypatch.setattr("core.sandbox.manager.wrap_command", spy)
++    code = (
++        "import ctypes,os; v=ctypes.c_ulong(); "
++        "ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(v)); "
++        "print(int(v.value))"
++    )
++    work = REPO / "tests" / "web" / "w4" / "_run"
++    work.mkdir(parents=True, exist_ok=True)
++    command = f'{sys.executable} -c "{code}"'
++    orchestrator = ToolOrchestrator()
++    orchestrator.register("bash", bash_tool)
++    port = ExecutionPort()
++    token = bind_execution_port(port)
++    try:
++        text = asyncio.run(
++            orchestrator.execute_tool(
++                "bash",
++                {
++                    "command": command,
++                    "target": "local",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
++            )
++        )
++        failed = asyncio.run(
++            orchestrator.execute_tool(
++                "bash",
++                {
++                    "command": f'{sys.executable} -c "import sys; sys.exit(3)"',
++                    "target": "local",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
++            )
++        )
++        pidfile = work / "slow.pid"
++
++        async def slow_call() -> tuple[str, float, float]:
++            import time
++
++            stamps: list[float] = []
++
++            async def tick() -> None:
++                await asyncio.sleep(0.2)
++                stamps.append(time.perf_counter())
++
++            task = asyncio.create_task(tick())
++            text = await orchestrator.execute_tool(
++                "bash",
++                {
++                    "command": (
++                        f"{sys.executable} -c \"import os,time,pathlib; "
++                        f"pathlib.Path(r'{pidfile}').write_text(str(os.getpid())); "
++                        "time.sleep(30)\""
++                    ),
++                    "target": "local",
++                    "workdir": str(work),
++                    "timeout": 1,
++                },
++                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
++            )
++            finished = time.perf_counter()
++            await task
++            return text, (stamps[0] if stamps else finished), finished
++
++        slow, stamped, finished = asyncio.run(slow_call())
++        assert stamped < finished - 0.3
++        kill_file = work / "kill.pid"
++
++        async def kill_call() -> None:
++            async def stop() -> None:
++                for _ in range(50):
++                    backend = port.local_full
++                    if kill_file.is_file() and backend is not None and backend._live:
++                        backend.kill(next(iter(backend._live)))
++                        return
++                    await asyncio.sleep(0.05)
++
++            stopper = asyncio.create_task(stop())
++            await orchestrator.execute_tool(
++                "bash",
++                {
++                    "command": (
++                        f"{sys.executable} -c \"import os,time,pathlib; "
++                        f"pathlib.Path(r'{kill_file}').write_text(str(os.getpid())); "
++                        "time.sleep(30)\""
++                    ),
++                    "target": "local",
++                    "workdir": str(work),
++                    "timeout": 10,
++                },
++                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
++            )
++            await stopper
++
++        asyncio.run(kill_call())
++        assert kill_file.is_file()
++        assert _alive(int(kill_file.read_text(encoding="utf-8").strip())) is False
++        assert any(item.get("approval") == "killed" for item in port.local_full.audit)
++    finally:
++        reset_execution_port(token)
++    assert "exit code: 3" in failed
++    assert "timeout" in slow
++    assert pidfile.is_file()
++    slow_pid = int(pidfile.read_text(encoding="utf-8").strip())
++    assert _alive(slow_pid) is False
++    assert wrapped == []
++    assert str(_session(os.getpid())) in text
++    assert port.local_full is not None
++    assert any(item["approval"] == "skipped" for item in port.local_full.audit)
++
++
++def test_w4_c01_negative() -> None:
++    """Full mode rejects an injected sandbox instead of wrapping the command."""
++    from rxycode_runner.local.native_backend import LocalNativeBackend
++
++    backend = LocalNativeBackend(target="local", permission="full")
++
++    class SandboxBackend:
++        def wrap_command(self, argv: list[str]) -> list[str]:
++            return ["bwrap", *argv]
++
++    with pytest.raises(PermissionError, match="SANDBOX_FORBIDDEN"):
++        backend.attach_sandbox(SandboxBackend())

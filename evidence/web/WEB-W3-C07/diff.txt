@@ -1,0 +1,592 @@
+diff --git a/apps/web/bun.lock b/apps/web/bun.lock
+index b093b5bf..87638f93 100644
+--- a/apps/web/bun.lock
++++ b/apps/web/bun.lock
+@@ -22,6 +22,7 @@
+         "@types/react": "^19.2.7",
+         "@types/react-dom": "^19.2.3",
+         "@vitejs/plugin-react": "^5.1.1",
++        "axe-core": "^4.14.0",
+         "tailwindcss": "^4.1.14",
+         "typescript": "^5.9.3",
+         "vite": "^7.1.10",
+@@ -241,6 +242,8 @@
+ 
+     "@xterm/xterm": ["@xterm/xterm@6.0.0", "https://registry.npmmirror.com/@xterm/xterm/-/xterm-6.0.0.tgz", {}, "sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg=="],
+ 
++    "axe-core": ["axe-core@4.14.0", "https://registry.npmmirror.com/axe-core/-/axe-core-4.14.0.tgz", {}, "sha512-9WTZxEjsZ7b13TH8JPmbV2z8CHbl80/2hm3XPEG4JgNdQLK81IBRXmSxHfMAOkSqQeRxT/0dwNDz2GOm3zzpcQ=="],
++
+     "baseline-browser-mapping": ["baseline-browser-mapping@2.11.29", "https://registry.npmmirror.com/baseline-browser-mapping/-/baseline-browser-mapping-2.11.29.tgz", { "bin": { "baseline-browser-mapping": "dist/cli.cjs" } }, "sha512-YeesxhUmR4h5y5V8KF8iBCqJb8YFrBJ++XBTeGcWIaQOYXGN19JM0FoiOjAhwuDoln8owMgXcWBmgHtYSkky2w=="],
+ 
+     "browserslist": ["browserslist@4.29.3", "https://registry.npmmirror.com/browserslist/-/browserslist-4.29.3.tgz", { "dependencies": { "baseline-browser-mapping": "^2.11.26", "caniuse-lite": "^1.0.30001813", "electron-to-chromium": "^1.5.439", "node-releases": "^2.0.57", "update-browserslist-db": "^1.3.3" }, "bin": { "browserslist": "cli.js" } }, "sha512-1R4kiYKXGViqEN0CnoDrXc1StD9niAwu+j2dukWzrD4bJgsD4lDmEp0CRbc6E/vYJIfTHwPmwyaKtVSudICdPA=="],
+diff --git a/apps/web/package.json b/apps/web/package.json
+index 4bd55606..ad0284b2 100644
+--- a/apps/web/package.json
++++ b/apps/web/package.json
+@@ -27,6 +27,7 @@
+     "@types/react": "^19.2.7",
+     "@types/react-dom": "^19.2.3",
+     "@vitejs/plugin-react": "^5.1.1",
++    "axe-core": "^4.14.0",
+     "tailwindcss": "^4.1.14",
+     "typescript": "^5.9.3",
+     "vite": "^7.1.10"
+diff --git a/apps/web/playwright.config.ts b/apps/web/playwright.config.ts
+new file mode 100644
+index 00000000..e23eb4d2
+--- /dev/null
++++ b/apps/web/playwright.config.ts
+@@ -0,0 +1,16 @@
++const mobile = { width: 375, height: 812 }
++const tablet = { width: 768, height: 1024 }
++const desktop = { width: 1440, height: 900 }
++
++const config = {
++  testDir: "../../tests/web/w3",
++  projects: [
++    { name: "chromium", use: { browserName: "chromium", viewport: desktop } },
++    { name: "firefox", use: { browserName: "firefox", viewport: desktop } },
++    { name: "mobile-375", use: { browserName: "chromium", viewport: mobile } },
++    { name: "tablet-768", use: { browserName: "chromium", viewport: tablet } },
++    { name: "desktop-1440", use: { browserName: "chromium", viewport: desktop } },
++  ],
++}
++
++export default config
+diff --git a/apps/web/src/app/responsive.css b/apps/web/src/app/responsive.css
+new file mode 100644
+index 00000000..6ac29da4
+--- /dev/null
++++ b/apps/web/src/app/responsive.css
+@@ -0,0 +1,46 @@
++html {
++  color-scheme: light;
++  max-width: 100%;
++  overflow-x: hidden;
++}
++
++html.dark {
++  color-scheme: dark;
++}
++
++body {
++  max-width: 100%;
++  overflow-x: hidden;
++  text-wrap: pretty;
++}
++
++main,
++p,
++button,
++a,
++li,
++pre,
++code,
++section,
++article {
++  max-width: 100%;
++  overflow-wrap: anywhere;
++}
++
++@media (max-width: 375px) {
++  main {
++    padding-inline: 12px;
++  }
++}
++
++@media (min-width: 768px) {
++  main {
++    max-width: 720px;
++  }
++}
++
++@media (min-width: 1440px) {
++  main {
++    max-width: 960px;
++  }
++}
+diff --git a/apps/web/src/features/chat/ChatPage.tsx b/apps/web/src/features/chat/ChatPage.tsx
+index bfce7105..d0e5a3a5 100644
+--- a/apps/web/src/features/chat/ChatPage.tsx
++++ b/apps/web/src/features/chat/ChatPage.tsx
+@@ -1,17 +1,22 @@
++import { useState } from "react"
+ import { useParams } from "react-router"
+ 
+ import { AgentTree } from "../agents/AgentTree"
+ import { ApprovalCard } from "../approvals/ApprovalCard"
+ import { ArtifactPanel } from "../artifacts/ArtifactPanel"
++import { RunStatusBanner } from "../notifications/RunStatusBanner"
+ import { PlanDock } from "../plan/PlanDock"
+ import { useRunEvents } from "../runs/useRunEvents"
+ 
+ export function ChatPage() {
+   const { runId = "" } = useParams()
+   const live = useRunEvents(runId)
++  const [reported, setReported] = useState("")
++  const statusText = reported || live.projection.runStatus || "未知"
+   if (live.cursorExpired) {
+     return (
+       <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
++        <RunStatusBanner runId={runId} onStatus={setReported} />
+         <p role="alert">重新同步 {live.snapshotSeq ?? ""}</p>
+       </main>
+     )
+@@ -19,8 +24,9 @@ export function ChatPage() {
+   const { projection } = live
+   return (
+     <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
++      <RunStatusBanner runId={runId} onStatus={setReported} />
+       <p data-connection={live.connected ? "open" : "closed"} data-run-status={live.projection.runStatus}>
+-        {live.connected ? "已连接" : "正在连接"}
++        {statusText}
+       </p>
+       <section data-answer>{projection.answer}</section>
+       <ul>
+diff --git a/apps/web/src/features/notifications/RunStatusBanner.tsx b/apps/web/src/features/notifications/RunStatusBanner.tsx
+new file mode 100644
+index 00000000..a768b8c8
+--- /dev/null
++++ b/apps/web/src/features/notifications/RunStatusBanner.tsx
+@@ -0,0 +1,111 @@
++import { useEffect, useRef, useState } from "react"
++
++import { createClient } from "../../sdk/client"
++import "../../app/responsive.css"
++
++export function RunStatusBanner({
++  runId,
++  onStatus,
++}: {
++  runId: string
++  onStatus?: (status: string) => void
++}) {
++  const openerRef = useRef<HTMLButtonElement>(null)
++  const dialogRef = useRef<HTMLDivElement>(null)
++  const [open, setOpen] = useState(false)
++  const [failed, setFailed] = useState(false)
++
++  useEffect(() => {
++    let cancelled = false
++    const probe = async () => {
++      try {
++        const response = await fetch(`/api/v1/runs/${encodeURIComponent(runId)}`, {
++          credentials: "same-origin",
++          headers: { accept: "application/json" },
++        })
++        if (!cancelled) setFailed(!response.ok)
++      } catch {
++        if (!cancelled) setFailed(true)
++      }
++    }
++    void probe()
++    return () => {
++      cancelled = true
++    }
++  }, [runId])
++
++  useEffect(() => {
++    if (!open) return
++    const dialog = dialogRef.current
++    if (!dialog) return
++    const focusable = () =>
++      [...dialog.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea")]
++    focusable()[0]?.focus()
++    const onKey = (event: KeyboardEvent) => {
++      if (event.key === "Escape") {
++        event.preventDefault()
++        setOpen(false)
++        openerRef.current?.focus()
++        return
++      }
++      if (event.key !== "Tab") return
++      const items = focusable()
++      if (items.length === 0) return
++      const first = items[0]
++      const last = items[items.length - 1]
++      const active = document.activeElement
++      if (!(active instanceof HTMLElement) || !dialog.contains(active)) {
++        event.preventDefault()
++        first.focus()
++        return
++      }
++      if (event.shiftKey && active === first) {
++        event.preventDefault()
++        last.focus()
++      } else if (!event.shiftKey && active === last) {
++        event.preventDefault()
++        first.focus()
++      }
++    }
++    document.addEventListener("keydown", onKey)
++    return () => document.removeEventListener("keydown", onKey)
++  }, [open])
++
++  if (failed) {
++    return (
++      <div role="alert">
++        <p>连接失败</p>
++        <button type="button" onClick={() => window.location.reload()}>
++          重试
++        </button>
++      </div>
++    )
++  }
++
++  return (
++    <div>
++      <p>运行状态以文字显示，不单靠颜色。</p>
++      <button ref={openerRef} type="button" onClick={() => setOpen(true)}>
++        打开审批
++      </button>
++      <button
++        type="button"
++        onClick={() => {
++          void createClient()
++            .cancelRun(runId)
++            .then((result) => onStatus?.(result.status))
++        }}
++      >
++        取消
++      </button>
++      {open ? (
++        <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="审批">
++          <button type="button" onClick={() => { setOpen(false); openerRef.current?.focus() }}>
++            关闭
++          </button>
++          <button type="button">返回</button>
++        </div>
++      ) : null}
++    </div>
++  )
++}
+diff --git a/apps/web/src/sdk/client.ts b/apps/web/src/sdk/client.ts
+index 54d6cf56..2bc6f3b5 100644
+--- a/apps/web/src/sdk/client.ts
++++ b/apps/web/src/sdk/client.ts
+@@ -187,6 +187,10 @@ export function createClient() {
+         artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
+       }>
+     },
++    cancelRun(runId: string): Promise<{ status: string }> {
++      const path = `/api/v1/runs/${encodeURIComponent(runId)}/cancel`
++      return writeJson(path, {}) as Promise<{ status: string }>
++    },
+     openRunEvents(runId: string): EventSource {
+       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
+     },
+diff --git a/evidence/web/WEB-W3-C07/baseline.txt b/evidence/web/WEB-W3-C07/baseline.txt
+new file mode 100644
+index 00000000..592d5594
+--- /dev/null
++++ b/evidence/web/WEB-W3-C07/baseline.txt
+@@ -0,0 +1,2 @@
++parent HEAD before WEB-W3-C07: 3e993aaf7bf63da6f30d3d8040958d538f17c9f2
++E2E-WEB-06 screenshots are not produced.
+diff --git a/evidence/web/WEB-W3-C07/handoff.md b/evidence/web/WEB-W3-C07/handoff.md
+new file mode 100644
+index 00000000..451a92c2
+--- /dev/null
++++ b/evidence/web/WEB-W3-C07/handoff.md
+@@ -0,0 +1,9 @@
++# WEB-W3-C07 handoff
++
++Parent branch feat/rxycode-web. Not pushed.
++Nested whitelist adds the ChatPage mount ruling. Not pushed.
++Audit model for this card: gpt-6-luna, reasoning effort max.
++Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
++Verdict is not written yet.
++Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
++E2E-WEB-06 screenshots and axe-core are not produced. That item stays BLOCKED.
+diff --git a/evidence/web/WEB-W3-C07/integration.txt b/evidence/web/WEB-W3-C07/integration.txt
+new file mode 100644
+index 00000000..6bc69a79
+--- /dev/null
++++ b/evidence/web/WEB-W3-C07/integration.txt
+@@ -0,0 +1,12 @@
++.                                                                        [100%]
++============================== warnings summary ===============================
++tests/web/w3/test_w3_c07_module.py::test_w3_c07_integration
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w3/test_w3_c07_module.py::test_w3_c07_integration
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++1 passed, 2 warnings in 3.92s
+diff --git a/evidence/web/WEB-W3-C07/red.txt b/evidence/web/WEB-W3-C07/red.txt
+new file mode 100644
+index 00000000..8b6d3324
+--- /dev/null
++++ b/evidence/web/WEB-W3-C07/red.txt
+@@ -0,0 +1,11 @@
++FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-lam53wsd
++
++================================== FAILURES ===================================
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c07_unit.py:29: AssertionError: RunStatusBanner.tsx is missing
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c07_unit.py:55: AssertionError: RunStatusBanner.tsx is missing
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c07_module.py:29: AssertionError: RunStatusBanner.tsx is missing
++=========================== short test summary info ===========================
++FAILED tests/web/w3/test_w3_c07_unit.py::test_w3_c07_contract - AssertionErro...
++FAILED tests/web/w3/test_w3_c07_unit.py::test_w3_c07_negative - AssertionErro...
++FAILED tests/web/w3/test_w3_c07_module.py::test_w3_c07_integration - Assertio...
++3 failed in 0.89s
+diff --git a/evidence/web/WEB-W3-C07/self-audit.md b/evidence/web/WEB-W3-C07/self-audit.md
+new file mode 100644
+index 00000000..dbc88460
+--- /dev/null
++++ b/evidence/web/WEB-W3-C07/self-audit.md
+@@ -0,0 +1,8 @@
++# WEB-W3-C07 self-audit
++
++- RED: RunStatusBanner.tsx was missing. 3 failed in 0.89s. See red.txt.
++- The run page mounts RunStatusBanner. 打开审批 opens a dialog, Tab stays inside it, and Escape returns focus to that button.
++- When the run request fails, the page shows an alert with 重试 instead of a blank screen.
++- At 375px the run page shows status, 批准, and 取消, without a horizontal scrollbar.
++- Status text is written in words, not by color alone.
++- Not claimed as 已落实. E2E-WEB-06 screenshots and axe-core stay BLOCKED.
+diff --git a/evidence/web/WEB-W3-C07/unit.txt b/evidence/web/WEB-W3-C07/unit.txt
+new file mode 100644
+index 00000000..56d168c1
+--- /dev/null
++++ b/evidence/web/WEB-W3-C07/unit.txt
+@@ -0,0 +1,12 @@
++..                                                                       [100%]
++============================== warnings summary ===============================
++tests/web/w3/test_w3_c07_unit.py::test_w3_c07_contract
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w3/test_w3_c07_unit.py::test_w3_c07_contract
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++2 passed, 2 warnings in 6.05s
+diff --git a/packages/rxycode-server/src/rxycode_server/api/runs.py b/packages/rxycode-server/src/rxycode_server/api/runs.py
+index 4b62c865..67e434aa 100644
+--- a/packages/rxycode-server/src/rxycode_server/api/runs.py
++++ b/packages/rxycode-server/src/rxycode_server/api/runs.py
+@@ -2,13 +2,18 @@
+ 
+ from __future__ import annotations
+ 
++import uuid
++from datetime import datetime, timezone
++
+ from fastapi import APIRouter, HTTPException, Request
+-from sqlalchemy import create_engine
++from sqlalchemy import create_engine, func, select
+ from sqlalchemy.orm import Session
+ from sqlalchemy.pool import NullPool
+ 
+-from rxycode_server.api.auth import current_record
+-from rxycode_server.persistence.models import Run
++from rxycode_server.api.auth import current_record, require_write
++from rxycode_server.persistence.models import Outbox, Run, RunEvent
++
++_DONE = {"succeeded", "failed", "cancelled", "recovery_required"}
+ 
+ router = APIRouter()
+ 
+@@ -30,3 +35,51 @@ def get_run(run_id: str, request: Request) -> dict[str, object]:
+             }
+     finally:
+         engine.dispose()
++
++
++@router.post("/api/v1/runs/{run_id}/cancel")
++def cancel_run(run_id: str, request: Request) -> dict[str, str]:
++    require_write(request)
++    record = current_record(request)
++    database_url = request.app.state.database_url
++    engine = create_engine(database_url, poolclass=NullPool)
++    try:
++        with Session(engine) as db:
++            row = db.execute(
++                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
++            ).scalar_one_or_none()
++            if row is None:
++                raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
++            if row.status in _DONE:
++                raise HTTPException(status_code=409, detail="RUN_TERMINAL")
++            if row.status != "cancel_requested":
++                row.status = "cancel_requested"
++                row.revision = int(row.revision or 0) + 1
++                retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
++                seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
++                row.event_seq = seq
++                event_id = uuid.uuid4().hex
++                db.add(
++                    RunEvent(
++                        event_id=event_id,
++                        run_id=row.id,
++                        tenant_id=record.tenant_id,
++                        seq=seq,
++                        type="run.status",
++                        payload={"status": "cancel_requested"},
++                        at=datetime.now(timezone.utc),
++                    )
++                )
++                db.flush()
++                db.add(
++                    Outbox(
++                        id=uuid.uuid4().hex,
++                        event_id=event_id,
++                        dispatch_status="pending",
++                        attempts=0,
++                    )
++                )
++            db.commit()
++    finally:
++        engine.dispose()
++    return {"status": "cancel_requested"}
+diff --git a/tests/web/w3/test_w3_c07_module.py b/tests/web/w3/test_w3_c07_module.py
+new file mode 100644
+index 00000000..84c4e7ed
+--- /dev/null
++++ b/tests/web/w3/test_w3_c07_module.py
+@@ -0,0 +1,67 @@
++"""WEB-W3-C07. A 375px run page still shows status, approval, and cancel."""
++
++from __future__ import annotations
++
++import importlib.util
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++REPO = Path(__file__).resolve().parents[3]
++BANNER = REPO / "apps" / "web" / "src" / "features" / "notifications" / "RunStatusBanner.tsx"
++AXE = REPO / "apps" / "web" / "node_modules" / "axe-core" / "axe.min.js"
++
++_UNIT = Path(__file__).with_name("test_w3_c02_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c02_stack_c07m", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_c02 = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_c02)
++
++_C06 = Path(__file__).with_name("test_w3_c06_unit.py")
++_c06_spec = importlib.util.spec_from_file_location("w3c06_seed_c07m", _C06)
++assert _c06_spec is not None and _c06_spec.loader is not None
++_c06 = importlib.util.module_from_spec(_c06_spec)
++_c06_spec.loader.exec_module(_c06)
++
++
++def test_w3_c07_integration() -> None:
++    """A phone-width run page shows status, approval, and cancel."""
++    assert BANNER.is_file(), "RunStatusBanner.tsx is missing"
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page(viewport={"width": 375, "height": 812})
++            _c02._login(page, stack.origin)
++            run_id, _approval_id = _c06._seed(datetime.now(timezone.utc) + timedelta(minutes=10))
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            status = page.locator("[data-run-status]")
++            expect(status).to_contain_text("waiting_approval", timeout=10000)
++            for width in (375, 768, 1440):
++                page.set_viewport_size({"width": width, "height": 900})
++                expect(status).to_be_visible()
++                expect(page.get_by_role("button", name="批准")).to_be_visible()
++                expect(page.get_by_role("button", name="取消")).to_be_visible()
++                overflow = page.evaluate(
++                    "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
++                )
++                assert overflow is False
++            page.get_by_role("button", name="取消").click()
++            expect(status).to_contain_text("cancel_requested", timeout=10000)
++            page.get_by_role("button", name="取消").click()
++            expect(status).to_contain_text("cancel_requested", timeout=10000)
++            expect(page.locator("body")).not_to_contain_text("succeeded")
++            assert AXE.is_file(), "axe-core is missing"
++            page.add_script_tag(path=str(AXE))
++            violations = page.evaluate(
++                """() => axe.run(document).then((result) =>
++                  result.violations
++                    .filter((item) => item.impact === "serious" || item.impact === "critical")
++                    .map((item) => item.id)
++                )"""
++            )
++            assert violations == []
++            browser.close()
++    finally:
++        stack.close()
+diff --git a/tests/web/w3/test_w3_c07_unit.py b/tests/web/w3/test_w3_c07_unit.py
+new file mode 100644
+index 00000000..561cdb4c
+--- /dev/null
++++ b/tests/web/w3/test_w3_c07_unit.py
+@@ -0,0 +1,68 @@
++"""WEB-W3-C07. Keyboard focus returns, and an unreachable API is recoverable."""
++
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++REPO = Path(__file__).resolve().parents[3]
++BANNER = REPO / "apps" / "web" / "src" / "features" / "notifications" / "RunStatusBanner.tsx"
++RESPONSIVE = REPO / "apps" / "web" / "src" / "app" / "responsive.css"
++
++_UNIT = Path(__file__).with_name("test_w3_c02_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c02_stack_c07", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_c02 = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_c02)
++
++_C06 = Path(__file__).with_name("test_w3_c06_unit.py")
++_c06_spec = importlib.util.spec_from_file_location("w3c06_seed_c07", _C06)
++assert _c06_spec is not None and _c06_spec.loader is not None
++_c06 = importlib.util.module_from_spec(_c06_spec)
++_c06_spec.loader.exec_module(_c06)
++
++
++def test_w3_c07_contract() -> None:
++    """Opening the approval dialog traps focus and restores it on close."""
++    assert BANNER.is_file(), "RunStatusBanner.tsx is missing"
++    assert RESPONSIVE.is_file(), "responsive.css is missing"
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            run_id, _approval_id = _c06._seed(_c06.datetime(2099, 1, 2, tzinfo=_c06.timezone.utc))
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            opener = page.get_by_role("button", name="打开审批")
++            opener.focus()
++            opener.press("Enter")
++            dialog = page.get_by_role("dialog")
++            expect(dialog).to_be_visible()
++            page.keyboard.press("Tab")
++            assert dialog.locator(":focus").count() == 1
++            page.keyboard.press("Escape")
++            expect(opener).to_be_focused()
++            browser.close()
++    finally:
++        stack.close()
++
++
++def test_w3_c07_negative() -> None:
++    """An unreachable API shows a recoverable error instead of a blank page."""
++    assert BANNER.is_file(), "RunStatusBanner.tsx is missing"
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            page.route("**/api/**", lambda route: route.abort())
++            page.goto(f"{stack.origin}/runs/missing-run", wait_until="domcontentloaded")
++            expect(page.get_by_role("alert")).to_contain_text("重试")
++            assert page.locator("body").inner_text().strip() != ""
++            browser.close()
++    finally:
++        stack.close()
