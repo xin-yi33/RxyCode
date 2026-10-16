@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -59,7 +58,6 @@ def open_terminal(payload: OpenIn, request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
     backend = _runner()
     sandboxed = request.app.state.mode == "cloud"
-    workspace = Path(tempfile.mkdtemp(prefix="rxy-terminal-")) if sandboxed else None
     try:
         session = backend.open_session(
             list(payload.argv),
@@ -68,7 +66,7 @@ def open_terminal(payload: OpenIn, request: Request) -> dict[str, object]:
             tenant_id=record.tenant_id,
             user_id=record.user_id,
             sandboxed=sandboxed,
-            workspace_root=workspace,
+            workspace_root=None,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="SANDBOX_REQUIRED") from exc

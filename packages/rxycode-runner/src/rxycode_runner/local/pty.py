@@ -6,7 +6,6 @@ import asyncio
 import importlib
 import os
 import subprocess
-import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -140,11 +139,36 @@ def _spawn(
     return _PosixPty(argv, cols, rows, None)
 
 
+def _hidden_by_sandbox_tmpfs(path: Path) -> bool:
+    if os.name == "nt":
+        return False
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(Path("/tmp").resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _workspace_base() -> Path:
+    candidates = (
+        Path.home() / ".rxycode" / "terminal-workspaces",
+        Path("/var/lib/rxycode/terminal-workspaces"),
+        Path("/opt/rxycode/terminal-workspaces"),
+    )
+    for candidate in candidates:
+        if not _hidden_by_sandbox_tmpfs(candidate):
+            return candidate
+    raise PermissionError("SANDBOX_REQUIRED")
+
+
 def _private_workspace(workspace_root: Path | None) -> Path:
     if workspace_root is not None:
         root = workspace_root.resolve()
     else:
-        root = Path(tempfile.mkdtemp(prefix="rxy-terminal-")).resolve()
+        root = (_workspace_base() / uuid.uuid4().hex).resolve()
+    if _hidden_by_sandbox_tmpfs(root):
+        raise PermissionError("SANDBOX_REQUIRED")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
