@@ -157,6 +157,7 @@ def commit_terminal(
                 ),
                 {"status": status, "run_id": run_id},
             )
+        _release_quota(database_url, run_id)
     finally:
         engine.dispose()
 
@@ -261,9 +262,17 @@ def confirm_cancel(
                 ),
                 {"status": status, "run_id": run_id},
             )
+        _release_quota(database_url, run_id)
     finally:
         engine.dispose()
     return status
+
+
+def _release_quota(database_url: str, run_id: str) -> None:
+    """A terminal Run no longer holds its concurrency slot."""
+    from rxycode_server.runs.service import release_worker_for_run
+
+    release_worker_for_run(database_url, run_id)
 
 
 def attempt_tool(

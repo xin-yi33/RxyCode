@@ -364,7 +364,7 @@ index 00000000..d5826a6a
 +        usage.sandbox_fee += int(quota.get("sandbox_fee") or 0)
 +    return usage
 diff --git a/packages/rxycode-server/src/rxycode_server/runs/service.py b/packages/rxycode-server/src/rxycode_server/runs/service.py
-index 49477ac4..01888432 100644
+index 49477ac4..1973085e 100644
 --- a/packages/rxycode-server/src/rxycode_server/runs/service.py
 +++ b/packages/rxycode-server/src/rxycode_server/runs/service.py
 @@ -72,11 +72,33 @@ def create_run(
@@ -451,7 +451,7 @@ index 49477ac4..01888432 100644
              except IntegrityError as exc:
                  db.rollback()
                  detail = str(exc.orig)
-@@ -145,10 +181,48 @@ def create_run(
+@@ -145,10 +181,67 @@ def create_run(
                      return _accepted(winner.id)
                  raise
      finally:
@@ -475,26 +475,45 @@ index 49477ac4..01888432 100644
 +    del user_id
 +    gate = quota if quota is not None else active_gate()
 +    engine = create_engine(database_url, poolclass=NullPool)
-+    worker_id = ""
 +    try:
 +        with Session(engine) as db:
 +            row = db.get(Run, run_id)
 +            if row is None or row.tenant_id != tenant_id:
 +                raise RunConflict(run_id)
-+            event = db.scalars(
-+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
-+            ).one()
-+            payload = event.payload if isinstance(event.payload, dict) else {}
-+            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
-+            worker_id = str(quota_payload.get("worker_id") or "")
 +            if row.status not in {"succeeded", "failed", "cancelled"}:
 +                row.status = "succeeded"
 +                db.commit()
 +    finally:
 +        engine.dispose()
++    release_worker_for_run(database_url, run_id, quota=gate)
++    return "succeeded"
++
++
++def release_worker_for_run(
++    database_url: str,
++    run_id: str,
++    quota: object | None = None,
++) -> None:
++    """Return the slot stored on this Run. A missing id is already gone."""
++    from rxycode_server.quotas.service import active_gate
++
++    gate = quota if quota is not None else active_gate()
++    engine = create_engine(database_url, poolclass=NullPool)
++    worker_id = ""
++    try:
++        with Session(engine) as db:
++            event = db.scalars(
++                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
++            ).one_or_none()
++            if event is None:
++                return
++            payload = event.payload if isinstance(event.payload, dict) else {}
++            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
++            worker_id = str(quota_payload.get("worker_id") or "")
++    finally:
++        engine.dispose()
 +    if worker_id:
 +        gate.release_worker(worker_id)
-+    return "succeeded"
 +
 +
  def load_run(database_url: str, run_id: str) -> dict[str, str]:
@@ -857,12 +876,44 @@ index 00000000..f89d54e6
 +            record.backend.destroy(record.sandbox_id, tenant_id=record.tenant_id)
 +        except Exception:
 +            record.backend._docker(["rm", "-f", record.sandbox_id], timeout=30)
+diff --git a/packages/rxycode-worker/src/rxycode_worker/supervisor.py b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+index af2b36f4..d0a3e6d3 100644
+--- a/packages/rxycode-worker/src/rxycode_worker/supervisor.py
++++ b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+@@ -157,6 +157,7 @@ def commit_terminal(
+                 ),
+                 {"status": status, "run_id": run_id},
+             )
++        _release_quota(database_url, run_id)
+     finally:
+         engine.dispose()
+
+@@ -261,11 +262,19 @@ def confirm_cancel(
+                 ),
+                 {"status": status, "run_id": run_id},
+             )
++        _release_quota(database_url, run_id)
+     finally:
+         engine.dispose()
+     return status
+
+
++def _release_quota(database_url: str, run_id: str) -> None:
++    """A terminal Run no longer holds its concurrency slot."""
++    from rxycode_server.runs.service import release_worker_for_run
++
++    release_worker_for_run(database_url, run_id)
++
++
+ def attempt_tool(
+     journal,
+     attempt_id: str,
 diff --git a/tests/web/w5/test_w5_c06_unit.py b/tests/web/w5/test_w5_c06_unit.py
 new file mode 100644
-index 00000000..541fbb26
+index 00000000..88699b28
 --- /dev/null
 +++ b/tests/web/w5/test_w5_c06_unit.py
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,580 @@
 +"""WEB-W5-C06. An over-quota visitor gets 429 and a failed sandbox is removed."""
 +
 +from __future__ import annotations
@@ -1253,13 +1304,35 @@ index 00000000..541fbb26
 +        left_id = worker_of(left.run_id)
 +        right_id = worker_of(right.run_id)
 +        assert left_id != right_id
-+        complete_run(
-+            url,
-+            run_id=left.run_id,
-+            tenant_id="visitor-overlap",
-+            user_id="visitor-user",
-+            quota=overlap_gate,
-+        )
++        from datetime import datetime, timedelta, timezone
++
++        from sqlalchemy import text
++        from rxycode_worker.supervisor import commit_terminal
++
++        install_gate(overlap_gate)
++        try:
++            leaser = create_engine(url)
++            with leaser.begin() as conn:
++                conn.execute(
++                    text(
++                        """
++                        UPDATE runs
++                        SET status = 'leased',
++                            lease_owner = 'worker-c06',
++                            lease_epoch = 1,
++                            lease_until = :until
++                        WHERE id = :id
++                        """
++                    ),
++                    {
++                        "id": left.run_id,
++                        "until": datetime.now(timezone.utc) + timedelta(minutes=5),
++                    },
++                )
++            leaser.dispose()
++            commit_terminal(url, left.run_id, "worker-c06", 1, "succeeded")
++        finally:
++            install_gate(None)
 +        assert {item[2] for item in overlap_cap.workers} == {right_id}
 +        third = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-3", "sess-c-visitor-overlap")
 +        assert len(overlap_cap.workers) == 2

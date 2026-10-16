@@ -201,26 +201,45 @@ def complete_run(
     del user_id
     gate = quota if quota is not None else active_gate()
     engine = create_engine(database_url, poolclass=NullPool)
-    worker_id = ""
     try:
         with Session(engine) as db:
             row = db.get(Run, run_id)
             if row is None or row.tenant_id != tenant_id:
                 raise RunConflict(run_id)
-            event = db.scalars(
-                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
-            ).one()
-            payload = event.payload if isinstance(event.payload, dict) else {}
-            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
-            worker_id = str(quota_payload.get("worker_id") or "")
             if row.status not in {"succeeded", "failed", "cancelled"}:
                 row.status = "succeeded"
                 db.commit()
     finally:
         engine.dispose()
+    release_worker_for_run(database_url, run_id, quota=gate)
+    return "succeeded"
+
+
+def release_worker_for_run(
+    database_url: str,
+    run_id: str,
+    quota: object | None = None,
+) -> None:
+    """Return the slot stored on this Run. A missing id is already gone."""
+    from rxycode_server.quotas.service import active_gate
+
+    gate = quota if quota is not None else active_gate()
+    engine = create_engine(database_url, poolclass=NullPool)
+    worker_id = ""
+    try:
+        with Session(engine) as db:
+            event = db.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
+            ).one_or_none()
+            if event is None:
+                return
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
+            worker_id = str(quota_payload.get("worker_id") or "")
+    finally:
+        engine.dispose()
     if worker_id:
         gate.release_worker(worker_id)
-    return "succeeded"
 
 
 def load_run(database_url: str, run_id: str) -> dict[str, str]:

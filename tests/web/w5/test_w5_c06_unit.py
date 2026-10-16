@@ -388,13 +388,35 @@ def test_w5_c06_contract() -> None:
         left_id = worker_of(left.run_id)
         right_id = worker_of(right.run_id)
         assert left_id != right_id
-        complete_run(
-            url,
-            run_id=left.run_id,
-            tenant_id="visitor-overlap",
-            user_id="visitor-user",
-            quota=overlap_gate,
-        )
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import text
+        from rxycode_worker.supervisor import commit_terminal
+
+        install_gate(overlap_gate)
+        try:
+            leaser = create_engine(url)
+            with leaser.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE runs
+                        SET status = 'leased',
+                            lease_owner = 'worker-c06',
+                            lease_epoch = 1,
+                            lease_until = :until
+                        WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": left.run_id,
+                        "until": datetime.now(timezone.utc) + timedelta(minutes=5),
+                    },
+                )
+            leaser.dispose()
+            commit_terminal(url, left.run_id, "worker-c06", 1, "succeeded")
+        finally:
+            install_gate(None)
         assert {item[2] for item in overlap_cap.workers} == {right_id}
         third = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-3", "sess-c-visitor-overlap")
         assert len(overlap_cap.workers) == 2
