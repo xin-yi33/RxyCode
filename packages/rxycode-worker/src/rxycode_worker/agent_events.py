@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any
 
 
-_STEERS: dict[str, list[str]] = {}
 _INTERMEDIATE = {"intermediate", "partial_result", "progress", "reasoning.summary"}
 
 
@@ -66,26 +65,49 @@ def explain_spend(spans: list[Any]) -> dict[str, object]:
     }
 
 
-def cancel_child(tree: dict[str, object], child_id: str) -> dict[str, object]:
-    """Cancel one child. The parent status, role, and the other nodes stay."""
+def cancel_child(
+    tree: dict[str, object],
+    child_id: str,
+    *,
+    manager: Any,
+) -> dict[str, object]:
+    """Cancel the live child session, then reflect that status on the tree."""
+    outcome = str(manager.cancel_child(child_id))
     nodes: list[dict[str, object]] = []
     for node in tree["nodes"]:  # type: ignore[index]
         copied = dict(node)
-        if copied.get("id") == child_id:
+        if copied.get("id") == child_id and outcome.startswith("cancelled"):
             copied["status"] = "cancelled"
         nodes.append(copied)
-    return {"run_id": tree["run_id"], "nodes": nodes}
+    return {"run_id": tree["run_id"], "nodes": nodes, "outcome": outcome}
 
 
-def accept_steer(*, run_id: str, text: str, store: object | None = None) -> dict[str, object]:
-    """Queue a steer on this run. EventStore is not updated."""
+async def accept_steer(
+    *,
+    run_id: str,
+    text: str,
+    worker: Any,
+    store: object | None = None,
+) -> dict[str, object]:
+    """Hand the text to the running worker's prompt/steer handler."""
     del store
-    applied = _STEERS.setdefault(run_id, [])
-    applied.append(text)
+    if str(getattr(worker, "_session_id", "") or "") != run_id:
+        return {
+            "run_id": run_id,
+            "store_written": False,
+            "accepted": False,
+            "applied": [],
+            "reason": "run mismatch",
+        }
+    request_id = int(getattr(worker, "_next_id", 1) or 1)
+    worker._next_id = request_id + 1
+    await worker._handle_steer({"text": text, "session_id": run_id}, request_id)
+    queued = [str(item) for item in getattr(worker, "_steer_queue", [])]
     return {
         "run_id": run_id,
         "store_written": False,
-        "applied": [{"text": item, "seq": index + 1} for index, item in enumerate(applied)],
+        "accepted": text in queued,
+        "applied": [{"text": item, "seq": index + 1} for index, item in enumerate(queued)],
     }
 
 

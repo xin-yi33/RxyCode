@@ -34,6 +34,97 @@ def _run(tmp_path: Path, session_id: str) -> tuple[list[object], list[object]]:
     return coord._tracer.get_spans(), emitted
 
 
+_MANAGER = None
+_CANCELLED: dict[str, bool] = {"hit": False}
+
+
+def _live_child() -> tuple[str, str]:
+    """A real child session whose runtime cancel is what the tree reflects."""
+    global _MANAGER
+    from protocol.subagents import (
+        AgentDefinition,
+        AgentMode,
+        PermissionSpec,
+        PermissionVerdict,
+        TaskPermissionSpec,
+        TaskRequest,
+        ToolPermission,
+        TriggerKind,
+    )
+    from RxyCode.RxyCode1_1_0.core.subagents.definitions import AgentDefinitionRegistry
+    from RxyCode.RxyCode1_1_0.core.subagents.manager import ChildSessionManager
+    from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
+    from RxyCode.RxyCode1_1_0.core.subagents.sessions import create_child_session
+
+    registry = AgentDefinitionRegistry()
+    registry.register_builtin(
+        AgentDefinition(
+            id="explore",
+            description="read",
+            mode=AgentMode.SUBAGENT,
+            steps=4,
+            permission=PermissionSpec(
+                read=ToolPermission.from_raw({"**": "allow"}),
+                edit=ToolPermission.from_raw({"**": "deny"}),
+                external_directory=PermissionVerdict.DENY,
+            ),
+            task_permission=TaskPermissionSpec(default_verdict=PermissionVerdict.DENY),
+        )
+    )
+    manager = ChildSessionManager(
+        registry=registry,
+        config=SubagentConfig(
+            flags=SubagentFeatureFlags(
+                subagents_enabled=True,
+                subagents_task=True,
+                subagents_mention=True,
+                subagents_child_tasks=True,
+            )
+        ),
+    )
+    request = TaskRequest(
+        parent_session_id="ses_primary_1",
+        agent_id="explore",
+        prompt="inspect",
+        trigger=TriggerKind.AUTOMATIC,
+    )
+    definition = registry.get("explore")
+    session = create_child_session(
+        request,
+        manager._compute_policy(request, definition),
+        definition=definition,
+    )
+    session.root_session_id = "ses_primary_1"
+    manager.get_tree("ses_primary_1").add(session)
+
+    class _Runtime:
+        def cancel(self) -> None:
+            _CANCELLED["hit"] = True
+
+    manager._live_runtimes[session.session_id] = _Runtime()
+    _MANAGER = manager
+    return session.session_id, "ses_primary_1"
+
+
+async def _steer(run_id: str, text: str, store: EventStore) -> dict[str, object]:
+    from appserver.agent_worker import AgentWorker
+    from rxycode_worker.agent_events import accept_steer
+
+    worker = AgentWorker()
+    worker._session_id = run_id
+
+    async def _hold() -> None:
+        await asyncio.sleep(30)
+
+    worker._run_task = asyncio.create_task(_hold())
+    try:
+        return await accept_steer(run_id=run_id, text=text, worker=worker, store=store)
+    finally:
+        task = worker._run_task
+        if task is not None:
+            task.cancel()
+
+
 def test_w6_c04_contract(tmp_path: Path) -> None:
     """Child start and end keep the real parent id and a status."""
     from rxycode_worker.agent_events import explain_spend, project_run
@@ -72,18 +163,31 @@ def test_w6_c04_negative(tmp_path: Path) -> None:
     )
     assert answer["text"] == "ship the health endpoint"
     assert marker not in answer["text"]
-    child = next(node for node in tree["nodes"] if node["parent_id"])
-    parent = next(node for node in tree["nodes"] if node["id"] == child["parent_id"])
-    cancelled = cancel_child(tree, child["id"])
-    after_child = next(node for node in cancelled["nodes"] if node["id"] == child["id"])
-    after_parent = next(node for node in cancelled["nodes"] if node["id"] == parent["id"])
+    child_id, parent_id = _live_child()
+    view = {
+        "run_id": "ses_primary_1",
+        "nodes": [
+            {"id": parent_id, "parent_id": "", "role": "primary", "status": "running", "tokens": 1},
+            {
+                "id": child_id,
+                "parent_id": parent_id,
+                "role": "explore",
+                "status": "running",
+                "tokens": 2,
+            },
+        ],
+    }
+    cancelled = cancel_child(view, child_id, manager=_MANAGER)
+    after_child = next(node for node in cancelled["nodes"] if node["id"] == child_id)
+    after_parent = next(node for node in cancelled["nodes"] if node["id"] == parent_id)
+    assert str(cancelled["outcome"]).startswith("cancelled")
     assert after_child["status"] == "cancelled"
-    assert after_child["role"] == child["role"]
-    assert after_parent["status"] == parent["status"]
+    assert after_child["role"] == "explore"
+    assert after_parent["status"] == "running"
+    assert _CANCELLED["hit"] is True
     store = EventStore()
     before = store.latest_cursor()
-    from rxycode_worker.agent_events import accept_steer
-
-    steered = accept_steer(run_id=tree["run_id"], text="do not write the store", store=store)
+    steered = asyncio.run(_steer(str(tree["run_id"]), "do not write the store", store))
     assert steered["store_written"] is False
+    assert steered["accepted"] is True
     assert store.latest_cursor() == before

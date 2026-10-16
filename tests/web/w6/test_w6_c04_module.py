@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -22,7 +23,7 @@ for _entry in (str(_WORKER), str(REPO / "tests" / "web" / "w6")):
 def test_w6_c04_integration(tmp_path: Path) -> None:
     """Two steers apply in order on the original run. Refresh drops no node."""
     from test_w6_c04_unit import _run
-    from rxycode_worker.agent_events import accept_steer, final_answer, project_run
+    from rxycode_worker.agent_events import final_answer, project_run
     from RxyCode.RxyCode1_1_0.core.subagents.events import EventStore
     from RxyCode.RxyCode1_1_0.protocol.agents import TeamEvent
 
@@ -40,12 +41,12 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
     store = EventStore()
     before = store.latest_cursor()
     run_id = str(first["run_id"])
-    one = accept_steer(run_id=run_id, text="steer-one", store=store)
-    two = accept_steer(run_id=run_id, text="steer-two", store=store)
+    one, two, queued = asyncio.run(_steer_pair(run_id, store))
     assert one["run_id"] == run_id
     assert two["run_id"] == run_id
     assert [item["text"] for item in two["applied"]] == ["steer-one", "steer-two"]
     assert [item["seq"] for item in two["applied"]] == [1, 2]
+    assert queued == ["steer-one", "steer-two"]
     assert store.latest_cursor() == before
     marker = "secret-child-draft-99"
     answer = final_answer(
@@ -63,6 +64,30 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
     child = next(node for node in first["nodes"] if node["parent_id"])
     assert f'data-id="{child["id"]}"' in markup
     assert f'data-parent="{child["parent_id"]}"' in markup
+    assert f'data-tokens="{child["tokens"]}"' in markup
+
+
+async def _steer_pair(run_id: str, store: object) -> tuple[dict[str, object], dict[str, object], list[str]]:
+    import asyncio
+
+    from appserver.agent_worker import AgentWorker
+    from rxycode_worker.agent_events import accept_steer
+
+    worker = AgentWorker()
+    worker._session_id = run_id
+
+    async def _hold() -> None:
+        await asyncio.sleep(30)
+
+    worker._run_task = asyncio.create_task(_hold())
+    try:
+        one = await accept_steer(run_id=run_id, text="steer-one", worker=worker, store=store)
+        two = await accept_steer(run_id=run_id, text="steer-two", worker=worker, store=store)
+        return one, two, list(worker._steer_queue)
+    finally:
+        task = worker._run_task
+        if task is not None:
+            task.cancel()
 
 
 def _round_trip(span: object) -> object:

@@ -9,8 +9,11 @@ export function AgentTree({
     parent_id: string
     role: string
     status: string
+    tokens?: number
   }>
   finalText?: string
+  onSteer?: (text: string) => void
+  onCancel?: (id: string) => void
 }) {
   if (nodes && nodes.length > 0) {
     return (
@@ -22,13 +25,18 @@ export function AgentTree({
             data-parent={node.parent_id}
             data-status={node.status}
             data-role={node.role}
+            data-tokens={node.tokens ?? 0}
           >
             {node.role}
+            <button type="button" onClick={() => onCancel?.(node.id)}>
+              cancel
+            </button>
           </article>
         ))}
         <p data-final={finalText ?? ""}>{finalText ?? ""}</p>
-        <button type="button">steer</button>
-        <button type="button">cancel</button>
+        <button type="button" onClick={() => onSteer?.("")}>
+          steer
+        </button>
       </section>
     )
   }

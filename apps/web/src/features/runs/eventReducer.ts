@@ -17,7 +17,14 @@ export type ApprovalCard = {
 
 export type PlanItem = { id: string; title: string; status: string }
 
-export type AgentItem = { id: string; name: string; status: string; cost: string }
+export type AgentItem = {
+  id: string
+  name: string
+  status: string
+  cost: string
+  parent_id?: string
+  tokens?: number
+}
 
 export type QuestionItem = { id: string; prompt: string; answer: string }
 
@@ -122,11 +129,24 @@ export function reduceEvents(
       const id = String(payload.agent_id ?? "")
       const status = event.type === "agent.started" ? "started" : "completed"
       const cost = String(payload.cost ?? "")
+      const parentId = String(payload.parent_id ?? "")
+      const tokens = Number(payload.tokens ?? 0)
       const found = projection.agents.find((item) => item.id === id)
       if (found) {
         found.status = status
         if (cost) found.cost = cost
-      } else projection.agents.push({ id, name: String(payload.name ?? ""), status, cost })
+        if (parentId) found.parent_id = parentId
+        if (tokens) found.tokens = tokens
+      } else {
+        projection.agents.push({
+          id,
+          name: String(payload.name ?? ""),
+          status,
+          cost,
+          parent_id: parentId,
+          tokens,
+        })
+      }
       return
     }
     if (event.type === "question.requested") {

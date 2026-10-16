@@ -56,7 +56,17 @@ export function ChatPage() {
         refreshKey={projection.approvals.map((item) => item.id).join(" ")}
         questions={projection.questions}
       />
-      <AgentTree agents={projection.agents} />
+      <AgentTree
+        agents={projection.agents}
+        nodes={projection.agents.map((agent) => ({
+          id: agent.id,
+          parent_id: agent.parent_id ?? "",
+          role: agent.name,
+          status: agent.status,
+          tokens: agent.tokens ?? 0,
+        }))}
+        finalText={projection.answer}
+      />
       <ArtifactPanel runId={runId} />
     </main>
   )
