@@ -6,12 +6,13 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.auth import current_record, require_write
 from rxycode_server.events.store import append_event
+from rxycode_server.persistence.models import RunEvent
 from rxycode_server.approvals.service import (
     ApprovalStale,
     decide_approval,
@@ -86,6 +87,59 @@ def post_approval(run_id: str, payload: DecisionIn, request: Request) -> dict:
         raise HTTPException(status_code=409, detail="APPROVAL_STALE") from exc
 
 
+def _question_pending(database_url: str, tenant_id: str, run_id: str, question_id: str) -> bool:
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            rows = db.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.tenant_id == tenant_id,
+                    RunEvent.type.in_(("question.requested", "question.resolved")),
+                )
+            ).all()
+            requested = False
+            resolved = False
+            for row in rows:
+                body = row.payload or {}
+                if str(body.get("question_id") or "") != question_id:
+                    continue
+                if row.type == "question.requested":
+                    requested = True
+                if row.type == "question.resolved":
+                    resolved = True
+            return requested and not resolved
+    finally:
+        engine.dispose()
+
+
+def _resume_question(database_url: str, tenant_id: str, run_id: str) -> None:
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.get(Run, run_id)
+            if row is None or row.tenant_id != tenant_id:
+                return
+            if row.status in {"leased", "running"}:
+                row.status = "pending"
+                row.lease_owner = None
+                row.lease_until = None
+                row.revision = int(row.revision or 0) + 1
+                db.commit()
+    finally:
+        engine.dispose()
+
+
+def _resolve_broker(question_id: str, answer: str) -> None:
+    try:
+        from core.question import get_question_broker
+    except ModuleNotFoundError:
+        from RxyCode.RxyCode1_1_0.core.question import get_question_broker
+    broker = get_question_broker()
+    if broker is not None:
+        broker.resolve(question_id, answer)
+
+
 @router.post("/api/v1/runs/{run_id}/questions")
 def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str, str]:
     require_write(request)
@@ -94,6 +148,8 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
     _owned_run(database_url, record.tenant_id, run_id)
     if not payload.question_id.strip():
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    if not _question_pending(database_url, record.tenant_id, run_id, payload.question_id):
+        raise HTTPException(status_code=409, detail="QUESTION_STALE")
     append_event(
         database_url,
         tenant_id=record.tenant_id,
@@ -101,4 +157,6 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
         event_type="question.resolved",
         payload={"question_id": payload.question_id, "answer": payload.answer},
     )
+    _resolve_broker(payload.question_id, payload.answer)
+    _resume_question(database_url, record.tenant_id, run_id)
     return {"status": "accepted"}

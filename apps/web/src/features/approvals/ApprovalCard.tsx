@@ -28,6 +28,12 @@ export function ApprovalCard({
   const [conflict, setConflict] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [shown, setShown] = useState<Ask[]>([])
+  const [shownRun, setShownRun] = useState(runId)
+  if (shownRun !== runId) {
+    setShownRun(runId)
+    setShown([])
+    setConflict(false)
+  }
   useEffect(() => {
     const next = query.data?.approvals
     if (!next || next.length === 0) return
