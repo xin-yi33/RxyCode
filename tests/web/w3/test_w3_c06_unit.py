@@ -138,3 +138,70 @@ def test_w3_c06_negative() -> None:
             browser.close()
     finally:
         stack.close()
+
+
+def test_w3_c06_question_reaches_waiting_worker() -> None:
+    """The worker keeps waiting until this session's answer arrives."""
+    import asyncio
+
+    from appserver.question import PipeQuestionBroker
+    from appserver.runtime import bind_prompt_context, reset_prompt_context
+    from core.question import (
+        QuestionRequest,
+        clear_question_pending,
+        list_pending_questions,
+        publish_question_answer,
+    )
+
+    question_id = "c06" + uuid.uuid4().hex[:20]
+    session_id = "ses" + uuid.uuid4().hex[:20]
+
+    async def hang(_method: str, _params: dict) -> dict:
+        await asyncio.Event().wait()
+        return {"answer": "from-rpc"}
+
+    async def scenario() -> None:
+        broker = PipeQuestionBroker(hang, timeout=2)
+        tokens = bind_prompt_context(session_id, None)
+        ask_task = asyncio.create_task(
+            broker.ask(QuestionRequest(question="继续吗？", question_id=question_id))
+        )
+        try:
+            found = False
+            for _ in range(40):
+                rows = list_pending_questions(session_id)
+                if any(row["question_id"] == question_id for row in rows):
+                    found = True
+                    break
+                await asyncio.sleep(0.05)
+            assert found, "the waiting worker did not register the question"
+            hidden = list_pending_questions("other-session")
+            assert all(row["question_id"] != question_id for row in hidden)
+            stolen = publish_question_answer(
+                question_id,
+                "stolen",
+                session_id="other-session",
+            )
+            assert stolen is False
+            assert ask_task.done() is False
+            delivered = publish_question_answer(
+                question_id,
+                "yes",
+                session_id=session_id,
+            )
+            assert delivered is True
+            result = await asyncio.wait_for(ask_task, timeout=2)
+            assert result.answer == "yes"
+            assert result.timed_out is False
+            assert result.unavailable is False
+        finally:
+            reset_prompt_context(tokens)
+            if not ask_task.done():
+                ask_task.cancel()
+                try:
+                    await ask_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            clear_question_pending(question_id)
+
+    asyncio.run(scenario())

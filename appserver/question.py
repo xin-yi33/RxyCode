@@ -54,9 +54,14 @@ class PipeQuestionBroker(SseQuestionBroker):
             "input_type": "choice" if request.options else "text",
         }
         try:
-            from core.question import mark_question_pending, take_question_answer
+            from core.question import (
+                clear_question_pending,
+                mark_question_pending,
+                take_question_answer,
+            )
         except ImportError:
             from RxyCode.RxyCode1_1_0.core.question import (
+                clear_question_pending,
                 mark_question_pending,
                 take_question_answer,
             )
@@ -68,19 +73,38 @@ class PipeQuestionBroker(SseQuestionBroker):
         )
         rpc = asyncio.create_task(self._send_request("question/request", params))
         try:
+            loop = asyncio.get_running_loop()
+            deadline = None
+            if self.timeout and self.timeout > 0:
+                deadline = loop.time() + self.timeout
+            first_wait = True
             while True:
                 mailed = take_question_answer(request.question_id)
                 if mailed is not None:
-                    rpc.cancel()
                     return QuestionResponse(question_id=request.question_id, answer=mailed)
                 if rpc.done():
                     break
-                await asyncio.sleep(0.2)
+                now = loop.time()
+                if deadline is not None and now >= deadline:
+                    return QuestionResponse(question_id=request.question_id, timed_out=True)
+                step = 0.0 if first_wait else 0.2
+                first_wait = False
+                if deadline is not None:
+                    step = min(step, max(0.0, deadline - now))
+                await asyncio.sleep(step)
             payload = rpc.result()
         except asyncio.TimeoutError:
             return QuestionResponse(question_id=request.question_id, timed_out=True)
         except Exception:
             return QuestionResponse(question_id=request.question_id, unavailable=True)
+        finally:
+            if not rpc.done():
+                rpc.cancel()
+                try:
+                    await rpc
+                except (asyncio.CancelledError, Exception):
+                    pass
+            clear_question_pending(request.question_id)
 
         if not isinstance(payload, dict):
             return QuestionResponse(question_id=request.question_id, unavailable=True)

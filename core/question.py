@@ -101,6 +101,7 @@ class SseQuestionBroker:
             self._pending.pop(question_id, None)
             self._pending_loops.pop(question_id, None)
             self._requests.pop(question_id, None)
+            clear_question_pending(question_id)
             return QuestionResponse(question_id=question_id, unavailable=True)
         try:
             deadline = None
@@ -137,6 +138,7 @@ class SseQuestionBroker:
             self._pending_loops.pop(question_id, None)
             self._requests.pop(question_id, None)
             self._responses.pop(question_id, None)
+            clear_question_pending(question_id)
 
     def _resolve_on_owner_loop(
         self,
@@ -230,9 +232,23 @@ def mark_question_pending(question_id: str, *, session_id: str = "", prompt: str
     )
 
 
-def publish_question_answer(question_id: str, answer: str) -> bool:
+def publish_question_answer(
+    question_id: str,
+    answer: str,
+    *,
+    session_id: str | None = None,
+) -> bool:
     token = _question_token(question_id)
     pending = _question_dir() / f"{token}.pending.json"
+    if not pending.is_file():
+        return False
+    try:
+        pending_body = json.loads(pending.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    owner = str(pending_body.get("session_id") or "")
+    if session_id is not None and owner != session_id:
+        return False
     if not pending.is_file():
         return False
     (_question_dir() / f"{token}.answer.json").write_text(
@@ -240,6 +256,13 @@ def publish_question_answer(question_id: str, answer: str) -> bool:
         encoding="utf-8",
     )
     return True
+
+
+def clear_question_pending(question_id: str) -> None:
+    token = _question_token(question_id)
+    folder = _question_dir()
+    (folder / f"{token}.pending.json").unlink(missing_ok=True)
+    (folder / f"{token}.answer.json").unlink(missing_ok=True)
 
 
 def take_question_answer(question_id: str) -> str | None:
@@ -261,7 +284,7 @@ def list_pending_questions(session_id: str = "") -> list[dict[str, str]]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if session_id and str(payload.get("session_id") or "") not in {"", session_id}:
+        if session_id and str(payload.get("session_id") or "") != session_id:
             continue
         if (_question_dir() / f"{payload.get('question_id')}.answer.json").is_file():
             continue

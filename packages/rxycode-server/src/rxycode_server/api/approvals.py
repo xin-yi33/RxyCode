@@ -35,13 +35,14 @@ class AnswerIn(BaseModel):
     answer: str
 
 
-def _owned_run(database_url: str, tenant_id: str, run_id: str) -> None:
+def _owned_run(database_url: str, tenant_id: str, run_id: str) -> str:
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with Session(engine) as db:
             row = db.get(Run, run_id)
             if row is None or row.tenant_id != tenant_id:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
+            return str(row.session_id)
     finally:
         engine.dispose()
 
@@ -165,7 +166,7 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
     require_write(request)
     record = current_record(request)
     database_url = request.app.state.database_url
-    _owned_run(database_url, record.tenant_id, run_id)
+    session_id = _owned_run(database_url, record.tenant_id, run_id)
     if not payload.question_id.strip():
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
     pending_event = _question_pending(database_url, record.tenant_id, run_id, payload.question_id)
@@ -174,7 +175,11 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
     except ModuleNotFoundError:
         from RxyCode.RxyCode1_1_0.core.question import publish_question_answer
     try:
-        mailed = publish_question_answer(payload.question_id, payload.answer)
+        mailed = publish_question_answer(
+            payload.question_id,
+            payload.answer,
+            session_id=session_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="INVALID_INPUT") from exc
     if not pending_event and not mailed:
@@ -187,5 +192,6 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
         payload={"question_id": payload.question_id, "answer": payload.answer},
     )
     _resolve_broker(payload.question_id, payload.answer)
-    _resume_question(database_url, record.tenant_id, run_id)
+    if not mailed:
+        _resume_question(database_url, record.tenant_id, run_id)
     return {"status": "accepted"}
