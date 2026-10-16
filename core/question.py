@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -264,6 +265,46 @@ def mark_question_pending(question_id: str, *, session_id: str = "", prompt: str
     )
 
 
+def _question_lock(token: str):
+    folder = _question_dir()
+    path = folder / f"{token}.lock"
+
+    class _Lock:
+        def __enter__(self):
+            while True:
+                try:
+                    self._fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    return self
+                except FileExistsError:
+                    try:
+                        stale = time.time() - path.stat().st_mtime > 5
+                    except OSError:
+                        stale = False
+                    if stale:
+                        path.unlink(missing_ok=True)
+                        continue
+                    time.sleep(0.01)
+
+        def __exit__(self, exc_type, exc, tb):
+            os.close(self._fd)
+            path.unlink(missing_ok=True)
+            return False
+
+    return _Lock()
+
+
+def question_pending_for_session(question_id: str, session_id: str) -> bool:
+    token = _question_token(question_id)
+    pending = _question_dir() / f"{token}.pending.json"
+    if not pending.is_file():
+        return False
+    try:
+        body = json.loads(pending.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return str(body.get("session_id") or "") == session_id
+
+
 def publish_question_answer(
     question_id: str,
     answer: str,
@@ -271,34 +312,37 @@ def publish_question_answer(
     session_id: str | None = None,
 ) -> bool:
     token = _question_token(question_id)
-    pending = _question_dir() / f"{token}.pending.json"
-    if not pending.is_file():
-        return False
-    try:
-        pending_body = json.loads(pending.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    owner = str(pending_body.get("session_id") or "")
-    if session_id is not None and owner != session_id:
-        return False
-    if not pending.is_file():
-        return False
-    folder = _question_dir()
-    answer_path = folder / f"{token}.answer.json"
-    if answer_path.exists():
-        return False
-    payload = json.dumps({"question_id": token, "answer": answer})
-    temporary = folder / f"{token}.answer.{uuid.uuid4().hex}.tmp"
-    temporary.write_text(payload, encoding="utf-8")
-    linked = False
-    try:
-        os.link(temporary, answer_path)
-        linked = True
-    except FileExistsError:
-        linked = False
-    finally:
+    with _question_lock(token):
+        pending = _question_dir() / f"{token}.pending.json"
+        if not pending.is_file():
+            return False
+        try:
+            pending_body = json.loads(pending.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        owner = str(pending_body.get("session_id") or "")
+        if session_id is not None and owner != session_id:
+            return False
+        folder = _question_dir()
+        answer_path = folder / f"{token}.answer.json"
+        if answer_path.exists() or not pending.is_file():
+            return False
+        payload = json.dumps({"question_id": token, "answer": answer})
+        temporary = folder / f"{token}.answer.{uuid.uuid4().hex}.tmp"
+        temporary.write_text(payload, encoding="utf-8")
+        if not pending.is_file():
+            temporary.unlink(missing_ok=True)
+            return False
+        try:
+            os.link(temporary, answer_path)
+        except FileExistsError:
+            temporary.unlink(missing_ok=True)
+            return False
         temporary.unlink(missing_ok=True)
-    return linked
+        if not pending.is_file():
+            answer_path.unlink(missing_ok=True)
+            return False
+        return True
 
 
 def question_has_answer(question_id: str) -> bool:
@@ -308,26 +352,28 @@ def question_has_answer(question_id: str) -> bool:
 
 def clear_question_pending(question_id: str) -> None:
     token = _question_token(question_id)
-    folder = _question_dir()
-    (folder / f"{token}.pending.json").unlink(missing_ok=True)
-    (folder / f"{token}.answer.json").unlink(missing_ok=True)
+    with _question_lock(token):
+        folder = _question_dir()
+        (folder / f"{token}.pending.json").unlink(missing_ok=True)
+        (folder / f"{token}.answer.json").unlink(missing_ok=True)
 
 
 def take_question_answer(question_id: str) -> str | None:
     token = _question_token(question_id)
-    path = _question_dir() / f"{token}.answer.json"
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or "answer" not in payload:
-        return None
-    path.unlink(missing_ok=True)
-    (_question_dir() / f"{token}.pending.json").unlink(missing_ok=True)
-    answer = payload.get("answer")
-    return str(answer) if answer is not None else None
+    with _question_lock(token):
+        path = _question_dir() / f"{token}.answer.json"
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or "answer" not in payload:
+            return None
+        path.unlink(missing_ok=True)
+        (_question_dir() / f"{token}.pending.json").unlink(missing_ok=True)
+        answer = payload.get("answer")
+        return str(answer) if answer is not None else None
 
 
 def list_pending_questions(session_id: str = "") -> list[dict[str, str]]:

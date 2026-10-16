@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.auth import current_record, require_write
-from rxycode_server.events.store import append_event
-from rxycode_server.persistence.models import RunEvent
+from rxycode_server.persistence.models import Outbox, RunEvent
 from rxycode_server.approvals.service import (
     ApprovalStale,
     decide_approval,
@@ -166,6 +166,61 @@ def get_questions(run_id: str, request: Request) -> dict[str, list[dict[str, str
     return {"questions": list_pending_questions(session_id)}
 
 
+def _append_resolution_once(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    question_id: str,
+    answer: str,
+) -> bool:
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            run = db.execute(
+                select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                return False
+            rows = db.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.tenant_id == tenant_id,
+                    RunEvent.type == "question.resolved",
+                )
+            ).all()
+            for row in rows:
+                if str((row.payload or {}).get("question_id") or "") == question_id:
+                    return False
+            retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
+            seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
+            run.event_seq = seq
+            event_id = uuid.uuid4().hex
+            db.add(
+                RunEvent(
+                    event_id=event_id,
+                    run_id=run.id,
+                    tenant_id=tenant_id,
+                    seq=seq,
+                    type="question.resolved",
+                    payload={"question_id": question_id, "answer": answer},
+                    at=datetime.now(timezone.utc),
+                )
+            )
+            db.flush()
+            db.add(
+                Outbox(
+                    id=uuid.uuid4().hex,
+                    event_id=event_id,
+                    dispatch_status="pending",
+                    attempts=0,
+                )
+            )
+            db.commit()
+            return True
+    finally:
+        engine.dispose()
+
+
 @router.post("/api/v1/runs/{run_id}/questions")
 def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str, str]:
     require_write(request)
@@ -184,13 +239,14 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
         raise HTTPException(status_code=409, detail="QUESTION_STALE")
     pending_event = requested and not resolved
     try:
-        from core.question import publish_question_answer, question_has_answer
+        from core.question import publish_question_answer, question_pending_for_session
     except ModuleNotFoundError:
         from RxyCode.RxyCode1_1_0.core.question import (
             publish_question_answer,
-            question_has_answer,
+            question_pending_for_session,
         )
     try:
+        pending_before = question_pending_for_session(payload.question_id, session_id)
         mailed = publish_question_answer(
             payload.question_id,
             payload.answer,
@@ -198,17 +254,16 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="INVALID_INPUT") from exc
-    if question_has_answer(payload.question_id) and not mailed:
+    if not mailed and (pending_before or not pending_event):
         raise HTTPException(status_code=409, detail="QUESTION_STALE")
-    if not pending_event and not mailed:
-        raise HTTPException(status_code=409, detail="QUESTION_STALE")
-    append_event(
+    if not _append_resolution_once(
         database_url,
-        tenant_id=record.tenant_id,
-        run_id=run_id,
-        event_type="question.resolved",
-        payload={"question_id": payload.question_id, "answer": payload.answer},
-    )
+        record.tenant_id,
+        run_id,
+        payload.question_id,
+        payload.answer,
+    ):
+        raise HTTPException(status_code=409, detail="QUESTION_STALE")
     _resolve_broker(payload.question_id, payload.answer)
     if not mailed:
         _resume_question(database_url, record.tenant_id, run_id)
