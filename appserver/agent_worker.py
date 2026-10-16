@@ -416,6 +416,12 @@ class AgentWorker:
         ):
             existing.emit = emit
             existing.drain_steers = self._take_steers
+            try:
+                from rxycode_worker.agent_events import bind_run
+            except ImportError:
+                bind_run = None
+            if bind_run is not None:
+                bind_run(session_id, worker=self)
             return existing
         session = session_type_for_worker()(
             session_id=session_id,
@@ -424,6 +430,12 @@ class AgentWorker:
         )
         self._core_session = session
         session.drain_steers = self._take_steers
+        try:
+            from rxycode_worker.agent_events import bind_run
+        except ImportError:
+            bind_run = None
+        if bind_run is not None:
+            bind_run(session_id, worker=self)
         return session
 
     def _take_steers(self) -> list[str]:

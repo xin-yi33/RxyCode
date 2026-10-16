@@ -157,6 +157,7 @@ class ChildSessionManager:
     _requests_by_session: dict[str, TaskRequest] = field(default_factory=dict, repr=False)
     _lease_manager: LeaseManager = field(default_factory=LeaseManager, repr=False)
     _book_lock: RLock = field(default_factory=RLock, repr=False)
+    _live_runtimes: dict = field(default_factory=dict, repr=False)
 
     # -- event wiring --------------------------------------------------------
 
@@ -233,6 +234,12 @@ class ChildSessionManager:
 
     def get_tree(self, root_session_id: str) -> SessionTree:
         """Return the session tree for a Primary session."""
+        try:
+            from rxycode_worker.agent_events import bind_run
+        except ImportError:
+            bind_run = None
+        if bind_run is not None:
+            bind_run(root_session_id, manager=self)
         return self._tree_for(root_session_id)
 
     def get_session(self, root_session_id: str, session_id: str) -> ChildSession:

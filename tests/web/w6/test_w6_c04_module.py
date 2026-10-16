@@ -98,7 +98,6 @@ async def _web_commands() -> list[dict[str, object]]:
     from rxycode_server.api.runs import cancel_child_run, steer_run
     from rxycode_server.events.store import replay
     from rxycode_server.persistence.models import Organization, Outbox, Project, Run, RunEvent, SessionRow
-    from rxycode_worker.agent_events import RunJournal, bind_run
     from RxyCode.RxyCode1_1_0.core.subagents.definitions import AgentDefinitionRegistry
     from RxyCode.RxyCode1_1_0.core.subagents.manager import ChildSessionManager
     from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
@@ -196,7 +195,7 @@ async def _web_commands() -> list[dict[str, object]]:
             await asyncio.sleep(30)
 
         worker._run_task = asyncio.create_task(_hold())
-        bind_run(run_id, worker=worker, manager=manager)
+        worker.bind_core_session(run_id, REPO, lambda _event: None)
         try:
             steered = await steer_run(run_id, _command(app, token, {"text": "steer-web"}))
             assert steered["delivered"] is True
@@ -212,15 +211,18 @@ async def _web_commands() -> list[dict[str, object]]:
             task = worker._run_task
             if task is not None:
                 task.cancel()
-        journal = RunJournal(database_url, tenant, run_id)
+        os.environ["RXYCODE_WEB_DATABASE_URL"] = database_url
+        os.environ["RXYCODE_WEB_TENANT_ID"] = tenant
+        os.environ["RXYCODE_WEB_RUN_ID"] = run_id
+        os.environ["RXYCODE_WEB_PARENT_ID"] = "parent-a"
 
-        async def _work(_task: str) -> str:
+        async def _work(_task: str, _checkpoint: object | None = None) -> str:
             return "ok"
 
-        agent = AgentTask("child-a", EventBus(AppendOnlyLog()), object(), _work)
-        agent.parent_id = "parent-a"
-        agent._run_journal = journal
-        await agent.spawn("work")
+        from appserver.agent_runtime import AgentConfig, AgentRuntime
+
+        runtime = AgentRuntime(EventBus(AppendOnlyLog()), run_factory=lambda _cfg: _work)
+        agent = await runtime.spawn(AgentConfig(agent_id="child-a", mechanical=True))
         if agent._main_task is not None:
             await agent._main_task
         streamed = replay(database_url, tenant_id=tenant, run_id=run_id, after_seq=0)
@@ -246,6 +248,13 @@ async def _web_commands() -> list[dict[str, object]]:
             db.execute(delete(Organization).where(Organization.id == ids["org"]))
             db.commit()
         engine.dispose()
+        for key in (
+            "RXYCODE_WEB_DATABASE_URL",
+            "RXYCODE_WEB_TENANT_ID",
+            "RXYCODE_WEB_RUN_ID",
+            "RXYCODE_WEB_PARENT_ID",
+        ):
+            os.environ.pop(key, None)
 
 
 def _command(app: object, token: str, body: dict[str, object]):

@@ -44,6 +44,24 @@ async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[
     return {"delivered": False, "reason": "unknown command", "run_id": run_id}
 
 
+def default_run_journal() -> RunJournal | None:
+    """Journal configured for this process, if the web run coordinates are set."""
+    import os
+
+    database_url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
+    tenant_id = os.environ.get("RXYCODE_WEB_TENANT_ID", "")
+    run_id = os.environ.get("RXYCODE_WEB_RUN_ID", "")
+    if not database_url or not tenant_id or not run_id:
+        return None
+    return RunJournal(database_url, tenant_id, run_id)
+
+
+def default_parent_id() -> str:
+    import os
+
+    return os.environ.get("RXYCODE_WEB_PARENT_ID", "")
+
+
 class RunJournal:
     """Write agent lifecycle notifications into the web run log."""
 

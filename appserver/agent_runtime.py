@@ -232,6 +232,14 @@ class AgentRuntime:
             self._run_factory(config) if self._run_factory is not None else self._default_run
         )
         task = AgentTask(config.agent_id, self._bus, self, raw_target)
+        try:
+            from rxycode_worker.agent_events import default_parent_id, default_run_journal
+        except ImportError:
+            default_parent_id = None
+            default_run_journal = None
+        if default_parent_id is not None and default_run_journal is not None:
+            task.parent_id = str(getattr(self, "parent_id", "") or "") or default_parent_id()
+            task._run_journal = getattr(self, "run_journal", None) or default_run_journal()
         self.agents[config.agent_id] = task
         self.configs[config.agent_id] = config
         self.quotas[config.agent_id] = sem
