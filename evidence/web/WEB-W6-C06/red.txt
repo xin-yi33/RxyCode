@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-kuq0ic7e
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w6\test_w6_c06_unit.py:20: ModuleNotFoundError: No module named 'rxycode_server.release'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w6\test_w6_c06_unit.py:38: ModuleNotFoundError: No module named 'rxycode_server.release'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w6\test_w6_c06_module.py:22: ModuleNotFoundError: No module named 'rxycode_server.release'
+=========================== short test summary info ===========================
+FAILED tests/web/w6/test_w6_c06_unit.py::test_w6_c06_contract - ModuleNotFoun...
+FAILED tests/web/w6/test_w6_c06_unit.py::test_w6_c06_negative - ModuleNotFoun...
+FAILED tests/web/w6/test_w6_c06_module.py::test_w6_c06_integration - ModuleNo...
+3 failed in 0.67s

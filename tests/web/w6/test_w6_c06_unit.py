@@ -1,0 +1,48 @@
+"""WEB-W6-C06. A new user can finish a real run and download its artifact."""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[3]
+for _entry in (
+    REPO / "packages" / "rxycode-runner" / "src",
+    REPO / "packages" / "rxycode-server" / "src",
+):
+    if str(_entry) not in sys.path:
+        sys.path.insert(0, str(_entry))
+
+DATABASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+SECRET = "local-web-secret-value-32bytes!!"
+
+
+def test_w6_c06_contract(tmp_path: Path) -> None:
+    """Login starts, a real pytest runs, and the artifact download matches that output."""
+    from rxycode_server.release.journey import cloud_release_journey
+
+    result = cloud_release_journey(DATABASE, work_dir=tmp_path, secret=SECRET)
+    assert result["authorization_url"].startswith("https://github.com/login/oauth/authorize")
+    assert result["callback_completed"] is False
+    assert result["pytest_exit"] == 0
+    assert b"1 passed" in result["artifact"]
+    assert result["recovered_event"] == "artifact.created"
+    if result["import"]["status"] == "imported":
+        assert result["import"]["workspace_id"]
+    else:
+        assert result["import"]["status"] == "blocked"
+        assert result["import"]["reason"]
+
+
+def test_w6_c06_negative(tmp_path: Path) -> None:
+    """An unpaired device cannot run Remote Full in the cloud."""
+    from rxycode_server.devices.gateway import Registry
+    from rxycode_server.release.journey import remote_full_unpaired
+
+    book = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
+    result = remote_full_unpaired(book, "desk-none", tmp_path)
+    assert result["executed"] is False
+    assert result["permission"] in {None, ""}
+    assert result["target"] == "remote"
+    assert not (tmp_path / "remote-full.txt").exists()

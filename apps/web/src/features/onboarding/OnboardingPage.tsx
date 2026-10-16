@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router"
 import { useLocalLogin } from "../auth/useLocalLogin"
 import { ProjectPanel } from "../projects/ProjectPanel"
 import { ApiError, createClient } from "../../sdk/client"
+import { journeyState } from "./journey"
 
 type Mode = "local" | "cloud" | "remote"
 
@@ -19,6 +20,7 @@ export function OnboardingPage() {
     retry: false,
   })
   const loggedOut = me.isError && me.error instanceof ApiError && me.error.status === 401
+  const journey = journeyState(mode)
   return (
     <main className="mx-auto min-h-screen max-w-3xl bg-background px-4 py-6 text-foreground">
       <h1 className="text-xl font-semibold">选择运行位置</h1>
@@ -33,6 +35,16 @@ export function OnboardingPage() {
           远程
         </button>
       </div>
+      <section
+        className="mt-4 text-sm"
+        data-journey=""
+        data-permission={journey.permission}
+        data-target={journey.target}
+        data-status={journey.status}
+      >
+        <p>当前权限 {journey.permission || "未授予"}</p>
+        <p>执行目标 {journey.target || "未选择"}</p>
+      </section>
       {mode === "local" ? <p className="mt-4 text-sm">本机回环，不需要 GitHub 账户。</p> : null}
       {mode === "cloud" ? (
         <div className="mt-4 grid gap-3">
