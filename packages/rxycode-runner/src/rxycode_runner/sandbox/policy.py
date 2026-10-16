@@ -35,7 +35,7 @@ class SandboxPolicy:
     security_opt: tuple[str, ...]
 
 
-def load_policy(path: Path | None = None) -> SandboxPolicy:
+def _parse(path: Path | None = None) -> SandboxPolicy:
     file = path or _default_path()
     text = file.read_text(encoding="utf-8")
     values: dict[str, str] = {}
@@ -67,6 +67,11 @@ def load_policy(path: Path | None = None) -> SandboxPolicy:
         cap_drop=lists.get("cap_drop", ()),
         security_opt=lists.get("security_opt", ()),
     )
+    return policy
+
+
+def load_policy(path: Path | None = None) -> SandboxPolicy:
+    policy = _parse(path)
     reject_if_unsafe(policy)
     return policy
 
@@ -88,7 +93,16 @@ def reject_if_unsafe(policy: SandboxPolicy) -> None:
         raise PolicyRejected("sandbox user must be a non-root uid:gid")
     if "ALL" not in policy.cap_drop:
         raise PolicyRejected("capabilities must be dropped")
-    memory_bytes(policy.memory)
+    cpu_value(policy.cpu)
+    limit = _parse(None)
+    if memory_bytes(policy.memory) > memory_bytes(limit.memory):
+        raise PolicyRejected(f"memory {policy.memory} exceeds ceiling {limit.memory}")
+    if cpu_value(policy.cpu) > cpu_value(limit.cpu):
+        raise PolicyRejected(f"cpu {policy.cpu} exceeds ceiling {limit.cpu}")
+    if policy.pids > limit.pids:
+        raise PolicyRejected(f"pids {policy.pids} exceeds ceiling {limit.pids}")
+    if policy.ttl_seconds > limit.ttl_seconds:
+        raise PolicyRejected(f"ttl {policy.ttl_seconds} exceeds ceiling {limit.ttl_seconds}")
 
 
 def with_memory(policy: SandboxPolicy, memory: str) -> SandboxPolicy:
@@ -97,6 +111,16 @@ def with_memory(policy: SandboxPolicy, memory: str) -> SandboxPolicy:
     tightened = replace(policy, memory=memory)
     reject_if_unsafe(tightened)
     return tightened
+
+
+def cpu_value(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise PolicyRejected(f"cpu {text} is refused") from exc
+    if value <= 0:
+        raise PolicyRejected(f"cpu {text} is refused")
+    return value
 
 
 def memory_bytes(text: str) -> int:

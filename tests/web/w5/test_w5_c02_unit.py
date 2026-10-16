@@ -146,6 +146,21 @@ def test_w5_c02_negative(tmp_path: Path) -> None:
     ):
         with pytest.raises(PolicyRejected):
             launch(tenant_id="tenant-a", workspace_id=workspace, policy=bad)
+    provider = GVisorSandbox(image="python:3.12-slim")
+    above_ceiling = (
+        replace(policy, memory="999g"),
+        replace(policy, cpu="4"),
+        replace(policy, pids=100000),
+        replace(policy, ttl_seconds=999999),
+    )
+    for raised in above_ceiling:
+        with pytest.raises(PolicyRejected):
+            provider.create(
+                tenant_id="tenant-a",
+                workspace_id=workspace,
+                retain=True,
+                policy=raised,
+            )
     listed = subprocess.run(
         [docker, "ps", "-aq", "--filter", f"label=rxy.workspace={workspace}"],
         capture_output=True,
