@@ -179,7 +179,10 @@ class ChildSessionManager:
         if journal is None:
             return
         root = str(getattr(session, "root_session_id", "") or "")
-        if journal.run_id not in {root, str(getattr(session, "session_id", "") or "")}:
+        from rxycode_worker.agent_events import run_matches_session
+
+        child_id = str(getattr(session, "session_id", "") or "")
+        if not run_matches_session(journal.run_id, root, child_id):
             return
         parent = str(getattr(session, "parent_session_id", "") or "") or root
         try:
@@ -257,7 +260,10 @@ class ChildSessionManager:
         except ImportError:
             bind_run = None
         if bind_run is not None:
-            bind_run(root_session_id, manager=self)
+            bind_run(root_session_id, manager=self, tree_root=root_session_id)
+            from rxycode_worker.agent_events import bind_manager_for_active_run
+
+            bind_manager_for_active_run(root_session_id, self)
         return self._tree_for(root_session_id)
 
     def get_session(self, root_session_id: str, session_id: str) -> ChildSession:

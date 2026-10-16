@@ -650,6 +650,7 @@ class AgentWorker:
                 {"jsonrpc": "2.0", "method": method, "params": payload}
             ),
         )
+        self.activate_web_database(self._session_id)
         set_approval_broker(self._approval)
         set_question_broker(self._question)
         # RLI-1: this per-session worker subprocess owns the process, so
@@ -1714,9 +1715,19 @@ class AgentWorker:
         found = lookup_web_run(url, session_id)
         if found is None:
             return
-        remember_web_run(url, found["tenant_id"], found["run_id"], parent_id=found["run_id"])
-        bind_run(found["run_id"], worker=self)
+        root = found["session_id"] or found["run_id"]
+        remember_web_run(
+            url,
+            found["tenant_id"],
+            found["run_id"],
+            parent_id=root,
+            session_id=root,
+        )
+        bind_run(found["run_id"], worker=self, tree_root=root)
         self._web_run_id = found["run_id"]
+        manager = getattr(self, "_subagent_manager", None)
+        if manager is not None:
+            bind_run(found["run_id"], manager=manager, tree_root=root)
 
     async def drain_web_commands(self) -> list[dict[str, object]]:
         """Apply steer and child-cancel rows committed for this run."""

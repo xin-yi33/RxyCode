@@ -24,26 +24,57 @@ def publish_database_url(database_url: str) -> None:
 
 def clear_web_run() -> None:
     """Drop the process-local run coordinates. The database URL stays published."""
-    for key in ("tenant_id", "run_id", "parent_id"):
+    for key in ("tenant_id", "run_id", "parent_id", "session_id"):
         _CURRENT.pop(key, None)
     _APPLIED.clear()
 
 
-def remember_web_run(database_url: str, tenant_id: str, run_id: str, parent_id: str = "") -> None:
+def remember_web_run(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    parent_id: str = "",
+    session_id: str = "",
+) -> None:
     """Record the run a worker is executing so spawn can write its log."""
     _CURRENT["database_url"] = database_url
     _CURRENT["tenant_id"] = tenant_id
     _CURRENT["run_id"] = run_id
-    _CURRENT["parent_id"] = parent_id or run_id
+    _CURRENT["parent_id"] = parent_id or session_id or run_id
+    if session_id:
+        _CURRENT["session_id"] = session_id
 
 
-def bind_run(run_id: str, *, worker: Any | None = None, manager: Any | None = None) -> None:
+def bind_run(
+    run_id: str,
+    *,
+    worker: Any | None = None,
+    manager: Any | None = None,
+    tree_root: str | None = None,
+) -> None:
     """Attach the live worker and child manager that should receive this run's commands."""
     slot = _BOUND.setdefault(run_id, {})
     if worker is not None:
         slot["worker"] = worker
     if manager is not None:
         slot["manager"] = manager
+    if tree_root:
+        slot["tree_root"] = tree_root
+
+
+def bind_manager_for_active_run(tree_root: str, manager: Any) -> None:
+    """Also register the session tree under the web run id when they differ."""
+    run_id = _CURRENT.get("run_id", "")
+    session_id = _CURRENT.get("session_id", "")
+    if run_id and tree_root in {run_id, session_id}:
+        bind_run(run_id, manager=manager, tree_root=session_id or tree_root)
+
+
+def run_matches_session(run_id: str, root: str, child_id: str) -> bool:
+    """True when this child tree belongs to the active web run."""
+    if run_id in {root, child_id}:
+        return True
+    return bool(root) and root == _CURRENT.get("session_id", "") and _CURRENT.get("run_id") == run_id
 
 
 async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, object]:
@@ -63,7 +94,11 @@ async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[
         if manager is None:
             return {"delivered": False, "reason": "no manager", "run_id": run_id}
         session_id = str(payload.get("session_id") or "")
-        tree = {"run_id": run_id, "nodes": [{"id": session_id, "parent_id": run_id, "status": "running", "role": ""}]}
+        root = str(slot.get("tree_root") or run_id)
+        tree = {
+            "run_id": root,
+            "nodes": [{"id": session_id, "parent_id": root, "status": "running", "role": ""}],
+        }
         result = cancel_child(tree, session_id, manager=manager)
         return {"delivered": str(result["outcome"]).startswith("cancelled"), "run_id": run_id, "outcome": result["outcome"]}
     return {"delivered": False, "reason": "unknown command", "run_id": run_id}
@@ -100,10 +135,10 @@ def lookup_web_run(database_url: str, session_id: str) -> dict[str, str] | None:
             row = conn.execute(
                 text(
                     """
-                    SELECT id, tenant_id
+                    SELECT id, tenant_id, session_id
                     FROM runs
                     WHERE id = :session OR session_id = :session
-                    ORDER BY CASE WHEN id = :session THEN 0 ELSE 1 END
+                    ORDER BY CASE WHEN session_id = :session THEN 0 ELSE 1 END
                     LIMIT 1
                     """
                 ),
@@ -113,7 +148,11 @@ def lookup_web_run(database_url: str, session_id: str) -> dict[str, str] | None:
         engine.dispose()
     if row is None:
         return None
-    return {"run_id": str(row.id), "tenant_id": str(row.tenant_id)}
+    return {
+        "run_id": str(row.id),
+        "tenant_id": str(row.tenant_id),
+        "session_id": str(row.session_id or ""),
+    }
 
 
 def load_command_events(database_url: str, run_id: str, after_seq: int) -> list[dict[str, Any]]:
@@ -280,7 +319,9 @@ async def accept_steer(
 ) -> dict[str, object]:
     """Hand the text to the running worker's prompt/steer handler."""
     del store
-    if str(getattr(worker, "_session_id", "") or "") != run_id:
+    session_id = str(getattr(worker, "_session_id", "") or "")
+    web_run = str(getattr(worker, "_web_run_id", "") or "")
+    if run_id not in {session_id, web_run}:
         return {
             "run_id": run_id,
             "store_written": False,

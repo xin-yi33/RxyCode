@@ -167,8 +167,9 @@ async def _web_commands() -> list[dict[str, object]]:
                 )
             ),
         )
+        session_id = ids["session"]
         request = TaskRequest(
-            parent_session_id=run_id,
+            parent_session_id=session_id,
             agent_id="explore",
             prompt="inspect",
             trigger=TriggerKind.AUTOMATIC,
@@ -179,8 +180,8 @@ async def _web_commands() -> list[dict[str, object]]:
             manager._compute_policy(request, definition),
             definition=definition,
         )
-        child.root_session_id = run_id
-        manager._tree_for(run_id).add(child)
+        child.root_session_id = session_id
+        manager._tree_for(session_id).add(child)
         cancelled = {"hit": False}
 
         class _Runtime:
@@ -202,9 +203,9 @@ async def _web_commands() -> list[dict[str, object]]:
             assert steered["delivered"] is False
             stopped = await cancel_child_run(run_id, child.session_id, _command(app, token, {}))
             assert stopped["delivered"] is False
-            worker.bind_web_session(run_id)
-            worker.bind_core_session(run_id, REPO, lambda _event: None)
-            manager.get_tree(run_id)
+            worker.bind_web_session(ids["session"])
+            worker.bind_core_session(ids["session"], REPO, lambda _event: None)
+            manager.get_tree(ids["session"])
             applied = await worker.drain_web_commands()
             assert applied
             assert worker._steer_queue == ["steer-web"]
@@ -233,7 +234,7 @@ async def _web_commands() -> list[dict[str, object]]:
         assert "event/agent_done" in names
         started = next(item for item in streamed["events"] if item["type"] == "event/agent_started")
         assert started["payload"]["agent_id"] == "child-a"
-        assert started["payload"]["parent_id"] == run_id
+        assert started["payload"]["parent_id"] == ids["session"]
         return _reduce_agents(streamed["events"])
     finally:
         with Session(engine) as db:
