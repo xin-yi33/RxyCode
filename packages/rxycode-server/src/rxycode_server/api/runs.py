@@ -83,3 +83,54 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     finally:
         engine.dispose()
     return {"status": "cancel_requested"}
+
+
+@router.post("/api/v1/runs/{run_id}/steer")
+async def steer_run(run_id: str, request: Request) -> dict[str, object]:
+    """Queue a steer on this run. The event log is the command, not EventStore."""
+    require_write(request)
+    body = await request.json()
+    text = str((body or {}).get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    record = current_record(request)
+    database_url = request.app.state.database_url
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.execute(
+                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
+            if row.status in _DONE:
+                raise HTTPException(status_code=409, detail="RUN_TERMINAL")
+            retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
+            seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
+            row.event_seq = seq
+            row.revision = int(row.revision or 0) + 1
+            event_id = uuid.uuid4().hex
+            db.add(
+                RunEvent(
+                    event_id=event_id,
+                    run_id=row.id,
+                    tenant_id=record.tenant_id,
+                    seq=seq,
+                    type="steer.accepted",
+                    payload={"text": text, "seq": seq},
+                    at=datetime.now(timezone.utc),
+                )
+            )
+            db.flush()
+            db.add(
+                Outbox(
+                    id=uuid.uuid4().hex,
+                    event_id=event_id,
+                    dispatch_status="pending",
+                    attempts=0,
+                )
+            )
+            db.commit()
+    finally:
+        engine.dispose()
+    return {"run_id": run_id, "status": "accepted", "text": text}

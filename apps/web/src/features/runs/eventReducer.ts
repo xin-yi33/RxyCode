@@ -125,9 +125,17 @@ export function reduceEvents(
       } else if (id) bucket.push(next)
       return
     }
-    if (event.type === "agent.started" || event.type === "agent.completed") {
+    if (
+      event.type === "agent.started" ||
+      event.type === "agent.completed" ||
+      event.type === "event/agent_started" ||
+      event.type === "event/agent_done"
+    ) {
       const id = String(payload.agent_id ?? "")
-      const status = event.type === "agent.started" ? "started" : "completed"
+      const status =
+        event.type === "agent.completed" || event.type === "event/agent_done"
+          ? "completed"
+          : "started"
       const cost = String(payload.cost ?? "")
       const parentId = String(payload.parent_id ?? "")
       const tokens = Number(payload.tokens ?? 0)

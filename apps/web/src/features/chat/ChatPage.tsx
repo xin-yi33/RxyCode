@@ -72,16 +72,20 @@ export function ChatPage() {
         onSteer={(text) => {
           const command = text.trim()
           if (!command) return
-          const bridge = (window as Window & {
-            rxySteer?: (runId: string, text: string) => void
-          }).rxySteer
-          if (bridge) bridge(runId, command)
+          void fetch(`/api/v1/runs/${encodeURIComponent(runId)}/steer`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text: command }),
+          })
         }}
         onCancel={(id) => {
-          const bridge = (window as Window & {
-            rxyCancelChild?: (runId: string, id: string) => void
-          }).rxyCancelChild
-          if (bridge) bridge(runId, id)
+          void fetch(`/api/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ session_id: id }),
+          })
         }}
       />
       <ArtifactPanel runId={runId} />
