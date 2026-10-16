@@ -31,7 +31,7 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
     from rxycode_runner.remote.client import request_stop, reset_stop
     from rxycode_runner.transport.tool_rpc import CHUNK_LIMIT, clear_local_tools
     from rxycode_server.devices.gateway import serve_in_thread
-    from rxycode_worker.runner_client import dispatch_device_call, dispatch_device_resume
+    from rxycode_worker.supervisor import attempt_tool, resume_device_tool
 
     body = "你" * 5000
     note = tmp_path / "note.txt"
@@ -74,18 +74,14 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
     call_id = f"call_{uuid4().hex}"
     try:
         assert gateway.session_id("desk-1")
-        partial = dispatch_device_call(
-            gateway=gateway,
-            device_id="desk-1",
-            call_id=call_id,
-            attempt_id=attempt_id,
-            tool="write",
-            args={"path": str(note), "text": "hello-once", "body": body},
-            ack=False,
-            stop_after_chunks=2,
+        partial = attempt_tool(
+            None, attempt_id, "write",
+            {"path": str(note), "text": "hello-once", "body": body}, None,
+            gateway=gateway, device_id="desk-1", call_id=call_id,
+            ack=False, stop_after_chunks=2,
         )
-        assert [item[0] for item in partial.chunks] == [1, 2]
-        assert all(len(item[1].encode("utf-8")) <= CHUNK_LIMIT for item in partial.chunks)
+        assert [item[0] for item in partial["chunks"]] == [1, 2]
+        assert all(len(item[1].encode("utf-8")) <= CHUNK_LIMIT for item in partial["chunks"])
         first_session = gateway.session_id("desk-1")
         gateway.drop()
         second_session = ""
@@ -96,7 +92,7 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
                 break
             time.sleep(0.05)
         assert second_session and second_session != first_session
-        resumed = dispatch_device_resume(
+        resumed = resume_device_tool(
             gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
@@ -108,7 +104,7 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
         assert len(seqs) == len(set(seqs))
         assert all(seq > 2 for seq in seqs)
         merged: dict[int, str] = {}
-        for seq, data in partial.chunks + resumed.chunks:
+        for seq, data in partial["chunks"] + resumed.chunks:
             merged.setdefault(seq, data)
         replayed = "".join(merged[seq] for seq in sorted(merged))
         assert replayed == body or resumed.truncated

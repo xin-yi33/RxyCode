@@ -10,8 +10,9 @@ tests/web/w4/test_w4_c04_unit.py::test_w4_c04_contract
 
 tests/web/w4/test_w4_c04_unit.py::test_w4_c04_contract
 tests/web/w4/test_w4_c04_unit.py::test_w4_c04_negative
+tests/web/w4/test_w4_c04_unit.py::test_w4_c04_negative
   D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
     warnings.warn("remove second argument of ws_handler", DeprecationWarning)
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-2 passed, 4 warnings in 1.72s
+2 passed, 5 warnings in 2.14s

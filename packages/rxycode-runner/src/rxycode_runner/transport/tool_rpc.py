@@ -39,12 +39,26 @@ def tool_rpc_for(device_id: str) -> "ToolRpcServer | None":
     return _BOUND.get(device_id)
 
 
-def local_tool(args: dict[str, Any], *, cancel: threading.Event) -> str:
-    """Run the device tool body. A second call is the caller's bug, not this function's."""
+def local_tool(args: dict[str, Any], *, cancel: threading.Event, tool: str = "write") -> str:
+    """Run the named device tool. write appends text; bash runs the command string."""
     from rxycode_runner.remote.client import writer_count
 
     if writer_count(_DEVICE.get()) != 1:
         raise RuntimeError("tool replies must share one writer")
+    if tool == "bash":
+        command = str(args.get("command") or "")
+        if not command:
+            raise ValueError("bash command required")
+        from rxycode_runner.local.native_backend import LocalNativeBackend
+
+        cwd = Path(str(args.get("cwd") or "."))
+        backend = LocalNativeBackend(target="local", permission="full")
+        outcome = asyncio.run(backend.run_command(command, cwd, timeout=30))
+        if outcome.exit_code not in (0, None):
+            raise RuntimeError(outcome.stderr or "bash failed")
+        return outcome.stdout
+    if tool != "write":
+        raise RuntimeError(f"tool {tool} is not available on this device")
     if str(args.get("mode") or "") == "cancel":
         _CANCEL_STARTED.set()
         cancel.wait(3)
@@ -205,7 +219,7 @@ class ToolRpcServer:
             await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
             return
         _DEVICE.set(self.device_id)
-        result = await asyncio.to_thread(self.execute, args, cancel=cancel)
+        result = await asyncio.to_thread(self.execute, args, cancel=cancel, tool=tool)
         if cancel.is_set():
             await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
             return

@@ -212,9 +212,7 @@ async def _one_session(
 
 
 def _ensure_local_tools(device_id: str) -> None:
-    from pathlib import Path
-    from tempfile import mkdtemp
-
+    from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         RemoteJournalAdapter,
         ToolExecutionJournal,
@@ -223,7 +221,8 @@ def _ensure_local_tools(device_id: str) -> None:
 
     if tool_rpc_for(device_id) is not None:
         return
-    directory = Path(mkdtemp(prefix="rxycode-tool-rpc-"))
+    directory = get_data_dir() / "device-tool-rpc" / device_id
+    directory.mkdir(parents=True, exist_ok=True)
     bind_local_tools(
         device_id=device_id,
         journal=RemoteJournalAdapter(ToolExecutionJournal(directory)),

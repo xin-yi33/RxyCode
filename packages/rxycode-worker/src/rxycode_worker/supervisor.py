@@ -266,8 +266,42 @@ def confirm_cancel(
     return status
 
 
-def attempt_tool(journal, attempt_id: str, tool: str, args: dict, execute):
-    """Reserve the existing tool journal. A network failure leaves the write pending."""
+def attempt_tool(
+    journal,
+    attempt_id: str,
+    tool: str,
+    args: dict,
+    execute,
+    *,
+    gateway: object | None = None,
+    device_id: str = "",
+    call_id: str = "",
+    ack: bool = True,
+    stop_after_chunks: int | None = None,
+):
+    """Reserve the existing tool journal. A device target goes out on its socket."""
+    if gateway is not None and device_id and call_id:
+        from rxycode_worker.runner_client import dispatch_device_call
+
+        outcome = dispatch_device_call(
+            gateway=gateway,
+            device_id=device_id,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            tool=tool,
+            args=args,
+            ack=ack,
+            stop_after_chunks=stop_after_chunks,
+        )
+        return {
+            "executed": outcome.state == "completed",
+            "action": outcome.state,
+            "run_status": "running" if outcome.state == "completed" else "recovery_required",
+            "result": outcome.result,
+            "state": outcome.state,
+            "chunks": outcome.chunks,
+            "truncated": outcome.truncated,
+        }
     binding = journal.binding(attempt_id)
     call = binding.next_call(tool, args)
     reservation = journal.reserve(attempt_id, call)
@@ -283,3 +317,31 @@ def attempt_tool(journal, attempt_id: str, tool: str, args: dict, execute):
         return {"executed": True, "action": "uncertain", "run_status": "recovery_required"}
     journal.complete(attempt_id, call, result)
     return {"executed": True, "action": "execute", "run_status": "running", "result": result}
+
+
+def resume_device_tool(gateway, device_id: str, call_id: str, attempt_id: str, resume_from: int):
+    """Ask the paired device for chunks after the socket returns."""
+    from rxycode_worker.runner_client import dispatch_device_resume
+
+    return dispatch_device_resume(
+        gateway=gateway,
+        device_id=device_id,
+        call_id=call_id,
+        attempt_id=attempt_id,
+        resume_from=resume_from,
+    )
+
+
+def cancel_device_tool(gateway, device_id: str, call_id: str, attempt_id: str, tool: str, args: dict, started):
+    """Tell the paired device to stop the in-flight tool."""
+    from rxycode_worker.runner_client import dispatch_device_cancel
+
+    return dispatch_device_cancel(
+        gateway=gateway,
+        device_id=device_id,
+        call_id=call_id,
+        attempt_id=attempt_id,
+        tool=tool,
+        args=args,
+        started=started,
+    )

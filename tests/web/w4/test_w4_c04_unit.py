@@ -79,7 +79,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
     from rxycode_runner.remote.client import request_stop
     from rxycode_runner.transport.tool_rpc import clear_local_tools
     from rxycode_server.devices.gateway import serve_in_thread
-    from rxycode_worker.runner_client import dispatch_device_call
+    from rxycode_worker.supervisor import attempt_tool
 
     gateway = serve_in_thread(secret=_SECRET)
     thread = _pair(gateway)
@@ -89,39 +89,27 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
     _attempt_a, call_id = _ids()
     attempt_b = f"att_{uuid4().hex}"
     try:
-        first = dispatch_device_call(
-            gateway=gateway,
-            device_id="desk-1",
-            call_id=call_id,
-            attempt_id=_attempt_a,
-            tool="write",
-            args={"path": str(note), "text": "once"},
+        first = attempt_tool(
+            None, _attempt_a, "write", {"path": str(note), "text": "once"}, None,
+            gateway=gateway, device_id="desk-1", call_id=call_id,
         )
-        second = dispatch_device_call(
-            gateway=gateway,
-            device_id="desk-1",
-            call_id=call_id,
-            attempt_id=attempt_b,
-            tool="write",
-            args={"path": str(note), "text": "once"},
+        second = attempt_tool(
+            None, attempt_b, "write", {"path": str(note), "text": "once"}, None,
+            gateway=gateway, device_id="desk-1", call_id=call_id,
         )
-        assert first.state == "completed"
-        assert first.result == "once"
-        assert second.state == "completed"
-        assert second.result == "once"
+        assert first["state"] == "completed"
+        assert first["result"] == "once"
+        assert second["state"] == "completed"
+        assert second["result"] == "once"
         assert note.read_text(encoding="utf-8") == "once"
         call_left = f"call_{uuid4().hex}"
         call_right = f"call_{uuid4().hex}"
         found: dict[str, object] = {}
 
         def one(name: str, call: str, path: Path, text: str) -> None:
-            found[name] = dispatch_device_call(
-                gateway=gateway,
-                device_id="desk-1",
-                call_id=call,
-                attempt_id=f"att_{uuid4().hex}",
-                tool="write",
-                args={"path": str(path), "text": text},
+            found[name] = attempt_tool(
+                None, f"att_{uuid4().hex}", "write", {"path": str(path), "text": text}, None,
+                gateway=gateway, device_id="desk-1", call_id=call,
             )
 
         pair = (
@@ -132,10 +120,33 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             item.start()
         for item in pair:
             item.join(10)
-        assert getattr(found["left"], "result", None) == "A"
-        assert getattr(found["right"], "result", None) == "B"
+        assert found["left"]["result"] == "A"
+        assert found["right"]["result"] == "B"
         assert left.read_text(encoding="utf-8") == "A"
         assert right.read_text(encoding="utf-8") == "B"
+        marker = tmp_path / "bash-mark.txt"
+        script = tmp_path / "mark.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(marker)!r})\n"
+            "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
+            "p.write_text(old + 'x', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        command = f"\"{sys.executable}\" \"{script}\""
+        bash_call = f"call_{uuid4().hex}"
+        bash_args = {"command": command, "cwd": str(tmp_path)}
+        first_bash = attempt_tool(
+            None, f"att_{uuid4().hex}", "bash", bash_args, None,
+            gateway=gateway, device_id="desk-1", call_id=bash_call,
+        )
+        second_bash = attempt_tool(
+            None, f"att_{uuid4().hex}", "bash", bash_args, None,
+            gateway=gateway, device_id="desk-1", call_id=bash_call,
+        )
+        assert first_bash["state"] == "completed"
+        assert second_bash["result"] == first_bash["result"]
+        assert marker.read_text(encoding="utf-8") == "x"
     finally:
         request_stop()
         thread.join(5)
@@ -146,38 +157,42 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
 def test_w4_c04_negative(tmp_path: Path) -> None:
     """A lost result ack stays unknown and does not write again."""
     from rxycode_runner.remote.client import request_stop
+    from rxycode_runner.remote.client import reset_stop
     from rxycode_runner.transport.tool_rpc import cancel_started, clear_local_tools
     from rxycode_server.devices.gateway import serve_in_thread
-    from rxycode_worker.runner_client import dispatch_device_call, dispatch_device_cancel
+    from rxycode_worker.supervisor import attempt_tool, cancel_device_tool
 
     target = tmp_path / "side.txt"
     gateway = serve_in_thread(secret=_SECRET)
     thread = _pair(gateway)
     attempt_id, call_id = _ids()
     try:
-        dropped = dispatch_device_call(
-            gateway=gateway,
-            device_id="desk-1",
-            call_id=call_id,
-            attempt_id=attempt_id,
-            tool="write",
-            args={"mode": "write", "path": str(target)},
-            ack=False,
+        dropped = attempt_tool(
+            None, attempt_id, "write", {"mode": "write", "path": str(target)}, None,
+            gateway=gateway, device_id="desk-1", call_id=call_id, ack=False,
         )
-        assert dropped.state == "unacked"
+        assert dropped["state"] == "unacked"
         assert target.read_text(encoding="utf-8") == "W"
-        retried = dispatch_device_call(
-            gateway=gateway,
-            device_id="desk-1",
-            call_id=call_id,
-            attempt_id=f"att_{uuid4().hex}",
-            tool="write",
-            args={"mode": "write", "path": str(target)},
+        retried = attempt_tool(
+            None, f"att_{uuid4().hex}", "write", {"mode": "write", "path": str(target)}, None,
+            gateway=gateway, device_id="desk-1", call_id=call_id,
         )
-        assert retried.state == "recovery_required"
+        assert retried["state"] == "recovery_required"
+        assert target.read_text(encoding="utf-8") == "W"
+        request_stop()
+        thread.join(5)
+        clear_local_tools("desk-1")
+        reset_stop()
+        restarted = _pair(gateway)
+        thread = restarted
+        after_restart = attempt_tool(
+            None, f"att_{uuid4().hex}", "write", {"mode": "write", "path": str(target)}, None,
+            gateway=gateway, device_id="desk-1", call_id=call_id,
+        )
+        assert after_restart["state"] == "recovery_required"
         assert target.read_text(encoding="utf-8") == "W"
         cancel_attempt, cancel_call = _ids()
-        cancelled = dispatch_device_cancel(
+        cancelled = cancel_device_tool(
             gateway=gateway,
             device_id="desk-1",
             call_id=cancel_call,
