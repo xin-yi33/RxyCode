@@ -5,4 +5,6 @@
 - Windows support_matrix reports desktop input, ConPTY, and local full as available. Darwin without Accessibility and Linux Wayland report desktop input unsupported.
 - release_status marks only platforms that were actually run as supported. macos and linux stay unverified when only windows is listed.
 - A runner install without the RxyCode tree still keeps the socket after hello. Tool binding is skipped when that import is missing. The full tree still publishes approvals.
+- Darwin stays unsupported for desktop input and click even when accessibility is granted. The grant is recorded separately.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w4c07-audit-2.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
 - Not claimed as 已落实. macOS and Linux were not run on this host.
