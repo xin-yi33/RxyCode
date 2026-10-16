@@ -8,6 +8,21 @@ import { RunStatusBanner } from "../notifications/RunStatusBanner"
 import { PlanDock } from "../plan/PlanDock"
 import { useRunEvents } from "../runs/useRunEvents"
 
+async function postCommand(path: string, body: unknown) {
+  const csrfResponse = await fetch("/api/v1/auth/csrf", { credentials: "same-origin" })
+  const csrf = (await csrfResponse.json()) as { csrf_token?: string }
+  await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "x-csrf-token": csrf.csrf_token ?? "",
+    },
+    body: JSON.stringify(body),
+  })
+}
+
 export function ChatPage() {
   const { runId = "" } = useParams()
   const live = useRunEvents(runId)
@@ -72,20 +87,13 @@ export function ChatPage() {
         onSteer={(text) => {
           const command = text.trim()
           if (!command) return
-          void fetch(`/api/v1/runs/${encodeURIComponent(runId)}/steer`, {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ text: command }),
-          })
+          void postCommand(`/api/v1/runs/${encodeURIComponent(runId)}/steer`, { text: command })
         }}
         onCancel={(id) => {
-          void fetch(`/api/v1/runs/${encodeURIComponent(runId)}/cancel`, {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ session_id: id }),
-          })
+          void postCommand(
+            `/api/v1/runs/${encodeURIComponent(runId)}/children/${encodeURIComponent(id)}/cancel`,
+            {},
+          )
         }}
       />
       <ArtifactPanel runId={runId} />

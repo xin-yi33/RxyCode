@@ -134,3 +134,49 @@ async def steer_run(run_id: str, request: Request) -> dict[str, object]:
     finally:
         engine.dispose()
     return {"run_id": run_id, "status": "accepted", "text": text}
+
+
+@router.post("/api/v1/runs/{run_id}/children/{session_id}/cancel")
+def cancel_child_run(run_id: str, session_id: str, request: Request) -> dict[str, str]:
+    """Record a child cancel. The parent run status stays unchanged."""
+    require_write(request)
+    record = current_record(request)
+    engine = create_engine(request.app.state.database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.execute(
+                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
+            if row.status in _DONE:
+                raise HTTPException(status_code=409, detail="RUN_TERMINAL")
+            retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
+            seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
+            row.event_seq = seq
+            row.revision = int(row.revision or 0) + 1
+            event_id = uuid.uuid4().hex
+            db.add(
+                RunEvent(
+                    event_id=event_id,
+                    run_id=row.id,
+                    tenant_id=record.tenant_id,
+                    seq=seq,
+                    type="child.cancel",
+                    payload={"session_id": session_id},
+                    at=datetime.now(timezone.utc),
+                )
+            )
+            db.flush()
+            db.add(
+                Outbox(
+                    id=uuid.uuid4().hex,
+                    event_id=event_id,
+                    dispatch_status="pending",
+                    attempts=0,
+                )
+            )
+            db.commit()
+    finally:
+        engine.dispose()
+    return {"run_id": run_id, "session_id": session_id, "status": "cancel_requested"}
