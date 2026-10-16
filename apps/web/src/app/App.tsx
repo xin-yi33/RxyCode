@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider, useParams } from "react-
 
 import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
-import { BrowserHandoff, requestHandoff } from "../features/browser/BrowserHandoff"
+import { BrowserHandoff, handoffPageUrl } from "../features/browser/BrowserHandoff"
 import { ChatPage } from "../features/chat/ChatPage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { DiffReview } from "../features/workspace/DiffReview"
@@ -234,20 +234,10 @@ function TerminalPage() {
 
 function BrowserHandoffPage() {
   const { sessionId = "" } = useParams()
-  const [authorized, setAuthorized] = useState(false)
   return (
     <main>
-      <BrowserHandoff
-        sessionId={sessionId}
-        authorized={authorized}
-        onAuthorize={async () => {
-          const ok = await requestHandoff(sessionId)
-          if (ok) {
-            setAuthorized(true)
-          }
-          return ok
-        }}
-      />
+      <a href={handoffPageUrl(sessionId)}>打开授权页</a>
+      <BrowserHandoff sessionId={sessionId} authorized={false} />
     </main>
   )
 }

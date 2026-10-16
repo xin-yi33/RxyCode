@@ -2,10 +2,14 @@ import { useState } from "react"
 
 export const HANDOFF_ORIGIN = "http://127.0.0.1:47321"
 
-export async function requestHandoff(sessionId: string): Promise<boolean> {
+export function handoffPageUrl(sessionId: string): string {
+  return `${HANDOFF_ORIGIN}/browser/${encodeURIComponent(sessionId)}`
+}
+
+export async function requestHandoff(sessionId: string, handoffToken: string): Promise<boolean> {
   const response = await fetch(
     `${HANDOFF_ORIGIN}/sessions/${encodeURIComponent(sessionId)}/authorize`,
-    { method: "POST" },
+    { method: "POST", headers: { "X-Handoff-Token": handoffToken } },
   )
   if (!response.ok) {
     return false

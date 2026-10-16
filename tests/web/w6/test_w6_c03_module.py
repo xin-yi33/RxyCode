@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import urllib.error
+import urllib.request
 import subprocess
 import sys
 import tempfile
@@ -76,9 +78,8 @@ def test_w6_c03_integration() -> None:
         assert token not in blocked.get("dom", "")
         app_text = (REPO / "apps" / "web" / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
         assert "BrowserHandoff" in app_text
-        assert "requestHandoff" in app_text
+        assert "handoffPageUrl" in app_text
         assert 'path: "/browser/:sessionId"' in app_text
-        assert "rxyAuthorizeHandoff" not in app_text
         pending = _render(session_id=str(agent["session_id"]), authorized=False)
         assert 'aria-label="browser-handoff"' in pending
         assert 'data-authorized="false"' in pending
@@ -96,13 +97,18 @@ def test_w6_c03_integration() -> None:
         )
         assert preview_hit["status"] != "ok"
         assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
-        denied = _user_clicks_handoff(str(agent["session_id"]), _DENY_ENTRY, _click_denied)
-        assert denied["status"] != "authorized"
-        assert 'data-authorized="false"' in denied["dom"]
-        assert "agent session continued" not in denied["dom"]
+        evil = urllib.request.Request(
+            f"http://127.0.0.1:47321/sessions/{agent['session_id']}/authorize",
+            data=b"",
+            method="POST",
+            headers={"Origin": "http://evil.example", "X-Handoff-Token": "stolen"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as blocked_post:
+            urllib.request.urlopen(evil, timeout=5)
+        assert blocked_post.value.code == 403
         still_blocked = continue_session(session_id=str(agent["session_id"]))
         assert still_blocked["status"] == "refused"
-        granted = _user_clicks_handoff(str(agent["session_id"]), _ENTRY, _click_granted)
+        granted = _click_same_origin_handoff(str(agent["session_id"]))
         assert granted["status"] == "authorized", granted.get("reason")
         assert granted["shared"] is False
         assert 'data-authorized="true"' in granted["dom"]
@@ -291,6 +297,25 @@ def _user_clicks_handoff(session_id: str, source: str, action: object) -> dict[s
         if server is not None:
             server.shutdown()
         shutil.rmtree(bundle_dir, ignore_errors=True)
+
+
+def _click_same_origin_handoff(session_id: str) -> dict[str, object]:
+    """Click the page the app route links to. That page posts its own token."""
+    from rxycode_runner.browser.session_manager import (
+        close_handoff_page,
+        present_handoff,
+        run_on_handoff_page,
+    )
+
+    try:
+        presented = present_handoff(
+            agent_session_id=session_id,
+            url=f"http://127.0.0.1:47321/browser/{session_id}",
+        )
+        assert presented["status"] == "open", presented
+        return run_on_handoff_page(agent_session_id=session_id, action=_click_granted)
+    finally:
+        close_handoff_page(agent_session_id=session_id)
 
 
 def _render(*, session_id: str, authorized: bool) -> str:

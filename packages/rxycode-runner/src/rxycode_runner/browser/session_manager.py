@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -34,6 +35,7 @@ class Session:
     profile_dir: Path
     kind: str
     authorized: bool
+    handoff_token: str
     playwright: Any
     context: Any
     page: Any
@@ -68,6 +70,7 @@ def open_agent_context(*, profile_dir: str | Path, kind: str) -> dict[str, objec
         profile_dir=target,
         kind=kind,
         authorized=False,
+        handoff_token=secrets.token_urlsafe(32),
         playwright=playwright,
         context=context,
         page=page,
@@ -241,25 +244,40 @@ def _stop_driver_when_idle() -> None:
 class _HandoffApi(BaseHTTPRequestHandler):
     """Local endpoint the /browser/:sessionId page calls when the user clicks."""
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        self._send(204, b"")
+    def do_GET(self) -> None:  # noqa: N802
+        parts = _parts(self.path)
+        if len(parts) == 2 and parts[0] == "browser":
+            session = _SESSIONS.get(parts[1])
+            if session is None:
+                self._send(404, b"", "text/plain")
+                return
+            self._send(200, _handoff_document(session), "text/html; charset=utf-8")
+            return
+        self._send(404, b"", "text/plain")
 
     def do_POST(self) -> None:  # noqa: N802
-        parts = [unquote(part) for part in self.path.split("?")[0].split("/") if part]
+        origin = self.headers.get("Origin", "")
+        allowed = f"http://127.0.0.1:{HANDOFF_PORT}"
+        if origin and origin != allowed:
+            self._send(403, b'{"ok":false}', "application/json")
+            return
+        parts = _parts(self.path)
         if len(parts) != 3 or parts[0] != "sessions" or parts[2] != "authorize":
-            self._send(404, b'{"ok":false}')
+            self._send(404, b'{"ok":false}', "application/json")
+            return
+        session = _SESSIONS.get(parts[1])
+        token = self.headers.get("X-Handoff-Token", "")
+        if session is None or not token or token != session.handoff_token:
+            self._send(403, b'{"ok":false}', "application/json")
             return
         result = authorize_handoff(session_id=parts[1], authorized=True)
         ok = result.get("status") == "authorized"
         body = json.dumps({"ok": ok}).encode("utf-8")
-        self._send(200 if ok else 403, body)
+        self._send(200 if ok else 403, body, "application/json")
 
-    def _send(self, status: int, body: bytes) -> None:
+    def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if body:
@@ -267,6 +285,40 @@ class _HandoffApi(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: object) -> None:
         return
+
+
+def _parts(path: str) -> list[str]:
+    return [unquote(part) for part in path.split("?")[0].split("/") if part]
+
+
+def _handoff_document(session: Session) -> bytes:
+    session_id = session.session_id
+    token = session.handoff_token
+    html = f"""<!doctype html>
+<html><body>
+<section aria-label="browser-handoff" data-session="{session_id}" data-authorized="false" data-profile-kind="agent">
+<button type="button">授权接管</button>
+<p data-chrome="isolated">user Chrome data is not shared</p>
+</section>
+<script>
+document.querySelector("button").addEventListener("click", async () => {{
+  const response = await fetch("/sessions/{session_id}/authorize", {{
+    method: "POST",
+    headers: {{"X-Handoff-Token": "{token}"}}
+  }});
+  if (!response.ok) return;
+  const body = await response.json();
+  if (!body.ok) return;
+  const root = document.querySelector('[aria-label="browser-handoff"]');
+  root.setAttribute("data-authorized", "true");
+  const note = document.createElement("p");
+  note.setAttribute("data-state", "continued");
+  note.textContent = "agent session continued";
+  root.prepend(note);
+}});
+</script>
+</body></html>"""
+    return html.encode("utf-8")
 
 
 def _start_handoff_server() -> None:
