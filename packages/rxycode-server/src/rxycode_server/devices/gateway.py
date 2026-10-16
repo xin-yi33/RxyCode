@@ -236,14 +236,25 @@ def build_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
         request.app.state.loop = asyncio.get_running_loop()
         body = await request.json()
+        tool_name = str(body.get("tool") or "")
+        tool_args = body.get("args") if isinstance(body.get("args"), dict) else {}
+        if tool_name == "bash":
+            from core.safety.policy import find_bash_disallowed_write_paths
+
+            blocked = find_bash_disallowed_write_paths(
+                str(tool_args.get("command") or ""),
+                {"safety": {"permission_mode": "confirm_all"}},
+            )
+            if blocked:
+                raise HTTPException(status_code=403, detail="FORBIDDEN")
         from rxycode_worker.supervisor import attempt_tool
 
         outcome = await asyncio.to_thread(
             attempt_tool,
             None,
             str(body.get("attempt_id") or ""),
-            str(body.get("tool") or ""),
-            body.get("args") if isinstance(body.get("args"), dict) else {},
+            tool_name,
+            tool_args,
             None,
             gateway=_SocketGateway(request.app),
             device_id=device_id,

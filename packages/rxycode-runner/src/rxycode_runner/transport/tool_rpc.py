@@ -49,15 +49,15 @@ def local_tool(args: dict[str, Any], *, cancel: threading.Event, tool: str = "wr
         command = str(args.get("command") or "")
         if not command:
             raise ValueError("bash command required")
-        from rxycode_runner.local.native_backend import LocalNativeBackend
+        from RxyCode.RxyCode1_1_0.tools.bash import run_bash
 
-        cwd = Path(str(args.get("workdir") or "."))
-        timeout = float(args.get("timeout") or 1800)
-        backend = LocalNativeBackend(target="local", permission="full")
-        outcome = asyncio.run(backend.run_command(command, cwd, timeout=timeout))
-        if outcome.exit_code not in (0, None):
-            raise RuntimeError(outcome.stderr or "bash failed")
-        return outcome.stdout
+        workdir = str(args.get("workdir") or "")
+        raw_timeout = args.get("timeout", None)
+        timeout = 1800 if raw_timeout is None else int(raw_timeout)
+        outcome = run_bash(command, workdir=workdir, timeout=timeout)
+        if outcome.startswith(("[error", "[rejected", "[blocked")):
+            raise RuntimeError(outcome)
+        return outcome
     if tool != "write":
         raise RuntimeError(f"tool {tool} is not available on this device")
     if str(args.get("mode") or "") == "cancel":
@@ -222,8 +222,15 @@ class ToolRpcServer:
         _DEVICE.set(self.device_id)
         try:
             result = await asyncio.to_thread(self.execute, args, cancel=cancel, tool=tool)
-        except Exception:
-            await queue.put({"type": "status", "call_id": call_id, "state": "recovery_required"})
+        except Exception as exc:
+            await queue.put(
+                {
+                    "type": "status",
+                    "call_id": call_id,
+                    "state": "recovery_required",
+                    "result": str(exc),
+                }
+            )
             return
         if cancel.is_set():
             await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})

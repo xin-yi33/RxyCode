@@ -124,8 +124,10 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         assert found["right"]["result"] == "B"
         assert left.read_text(encoding="utf-8") == "A"
         assert right.read_text(encoding="utf-8") == "B"
-        marker = tmp_path / "bash-mark.txt"
-        script = tmp_path / "mark.py"
+        work = REPO / "tests" / "web" / "w4" / "_bash_c04"
+        work.mkdir(parents=True, exist_ok=True)
+        marker = work / "bash-mark.txt"
+        script = work / "mark.py"
         script.write_text(
             "from pathlib import Path\n"
             f"p = Path({str(marker)!r})\n"
@@ -133,9 +135,9 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             "p.write_text(old + 'x', encoding='utf-8')\n",
             encoding="utf-8",
         )
-        command = f"\"{sys.executable}\" mark.py"
+        command = "cmd /c python mark.py"
         bash_call = f"call_{uuid4().hex}"
-        bash_args = {"command": command, "workdir": str(tmp_path), "timeout": 30}
+        bash_args = {"command": command, "workdir": str(work), "timeout": 30}
         browser = gateway.browser_session("tenant-a")
         csrf = "csrf-token-value-for-c04"
         posted = httpx.post(
@@ -165,7 +167,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             timeout=30,
         )
         second_bash = again.json()
-        assert first_bash["state"] == "completed"
+        assert first_bash["state"] == "completed", first_bash
         assert second_bash["result"] == first_bash["result"]
         assert marker.read_text(encoding="utf-8") == "x"
         slow = httpx.post(
@@ -177,14 +179,33 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                 "call_id": f"call_{uuid4().hex}",
                 "tool": "bash",
                 "args": {
-                    "command": f"\"{sys.executable}\" -c \"import time; time.sleep(3)\"",
-                    "workdir": str(tmp_path),
+                    "command": "cmd /c python -c \"import time; time.sleep(3)\"",
+                    "workdir": str(work),
                     "timeout": 1,
                 },
             },
             timeout=30,
         )
         assert slow.json()["state"] == "recovery_required"
+        zero_started = time.time()
+        zero = httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/invocations",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": f"call_{uuid4().hex}",
+                "tool": "bash",
+                "args": {
+                    "command": "cmd /c python -c \"import time; time.sleep(3)\"",
+                    "workdir": str(work),
+                    "timeout": 0,
+                },
+            },
+            timeout=30,
+        )
+        assert time.time() - zero_started < 2.5
+        assert zero.json()["state"] == "recovery_required"
         outsider = gateway.browser_session("tenant-b")
         denied = httpx.post(
             f"{gateway.http}/api/v1/devices/desk-1/invocations",
@@ -205,6 +226,12 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         thread.join(5)
         gateway.close()
         clear_local_tools("desk-1")
+        bash_dir = REPO / "tests" / "web" / "w4" / "_bash_c04"
+        if bash_dir.exists():
+            for child in bash_dir.iterdir():
+                if child.is_file():
+                    child.unlink()
+            bash_dir.rmdir()
 
 
 def test_w4_c04_negative(tmp_path: Path) -> None:

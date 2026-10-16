@@ -141,7 +141,7 @@ class RunnerClient:
                 )
                 return DispatchResult("completed", frame.get("result"), chunks, False)
             if kind == "status":
-                return DispatchResult(str(frame.get("state")), None, chunks, False)
+                return DispatchResult(str(frame.get("state")), frame.get("result"), chunks, False)
 
     async def _resume(
         self,
