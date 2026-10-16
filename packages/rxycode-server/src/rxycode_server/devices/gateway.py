@@ -257,19 +257,53 @@ def build_router() -> APIRouter:
                 raise HTTPException(status_code=403, detail="FORBIDDEN")
         from rxycode_worker.supervisor import attempt_tool
 
-        outcome = await asyncio.to_thread(
-            attempt_tool,
-            None,
-            str(body.get("attempt_id") or ""),
-            tool_name,
-            tool_args,
-            None,
-            gateway=_SocketGateway(request.app),
-            device_id=device_id,
-            call_id=str(body.get("call_id") or ""),
-            ack=bool(body.get("ack", True)),
-            stop_after_chunks=body.get("stop_after_chunks"),
+        call_id = str(body.get("call_id") or "")
+
+        async def _cancel_call() -> None:
+            socket = book.sockets.get(device_id)
+            if socket is None:
+                return
+            await socket.send_text(
+                json.dumps(
+                    {"type": "cancel", "device_id": device_id, "call_id": call_id}
+                )
+            )
+
+        work = asyncio.create_task(
+            asyncio.to_thread(
+                attempt_tool,
+                None,
+                str(body.get("attempt_id") or ""),
+                tool_name,
+                tool_args,
+                None,
+                gateway=_SocketGateway(request.app),
+                device_id=device_id,
+                call_id=call_id,
+                ack=bool(body.get("ack", True)),
+                stop_after_chunks=body.get("stop_after_chunks"),
+            )
         )
+        try:
+            while not work.done():
+                await asyncio.wait({work}, timeout=0.25)
+                if work.done():
+                    break
+                if await request.is_disconnected():
+                    await _cancel_call()
+                    return {
+                        "state": "recovery_required",
+                        "executed": False,
+                        "action": "recovery_required",
+                        "run_status": "recovery_required",
+                        "result": None,
+                        "chunks": [],
+                        "truncated": False,
+                    }
+        except asyncio.CancelledError:
+            await _cancel_call()
+            raise
+        outcome = work.result()
         chunks = [list(item) for item in outcome.get("chunks") or []]
         return {**outcome, "chunks": chunks}
 
@@ -362,14 +396,26 @@ class _SocketGateway:
 
         asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
 
-    def recv_tool(self, device_id: str, call_id: str, timeout: float = 5) -> dict[str, object]:
+    def recv_tool(
+        self,
+        device_id: str,
+        call_id: str,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
+        if timeout is None:
+            timeout = 135.0
         loop = self.app.state.loop
 
         async def _recv() -> dict[str, object]:
             inbox = self.app.state.device_registry.lane(device_id, call_id)
             return await asyncio.wait_for(inbox.get(), timeout)
 
-        return asyncio.run_coroutine_threadsafe(_recv(), loop).result(timeout=timeout + 1)
+        future = asyncio.run_coroutine_threadsafe(_recv(), loop)
+        try:
+            return future.result(timeout=timeout + 5)
+        except TimeoutError:
+            future.cancel()
+            raise
 
 
 class RunningGateway:
@@ -429,7 +475,14 @@ class RunningGateway:
 
         asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
 
-    def recv_tool(self, device_id: str, call_id: str, timeout: float = 5) -> dict[str, object]:
+    def recv_tool(
+        self,
+        device_id: str,
+        call_id: str,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
+        if timeout is None:
+            timeout = 135.0
         loop = getattr(self.server, "_rxy_loop", None)
         if loop is None:
             raise RuntimeError("device gateway loop is not running")
@@ -438,7 +491,12 @@ class RunningGateway:
             inbox = self._registry().lane(device_id, call_id)
             return await asyncio.wait_for(inbox.get(), timeout)
 
-        return asyncio.run_coroutine_threadsafe(_recv(), loop).result(timeout=timeout + 1)
+        future = asyncio.run_coroutine_threadsafe(_recv(), loop)
+        try:
+            return future.result(timeout=timeout + 5)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     def drop(self) -> None:
         registry = self._registry()

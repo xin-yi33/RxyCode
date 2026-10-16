@@ -248,6 +248,12 @@ def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: s
     loop = asyncio.get_running_loop()
 
     def sink(event: dict[str, Any]) -> None:
+        try:
+            from rxycode_runner.transport.tool_rpc import observe_approval
+
+            observe_approval(device_id, event)
+        except Exception:
+            logger.info("approval watch failed", extra={"device_id": device_id})
         frame = {"type": "approval_request", "device_id": device_id}
         frame.update(event)
         loop.call_soon_threadsafe(queue.put_nowait, frame)

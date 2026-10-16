@@ -7,6 +7,35 @@ from dataclasses import dataclass
 from typing import Any
 
 
+# SseApproval waits 120s. The tool lane stays empty until that decision
+# becomes a frame, then the command may run for its own budget.
+_APPROVAL_WINDOW_SECONDS = 120.0
+_REPLY_MARGIN_SECONDS = 15.0
+
+
+def reply_wait_seconds(args: dict[str, Any] | None) -> float:
+    """How long one tool-lane read may block before the caller gives up."""
+    window = _APPROVAL_WINDOW_SECONDS
+    try:
+        from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
+
+        broker = get_approval_broker()
+        raw_window = getattr(broker, "timeout", None) if broker is not None else None
+        if raw_window is not None:
+            window = max(window, float(raw_window))
+    except Exception:
+        window = _APPROVAL_WINDOW_SECONDS
+    raw_budget = None if not isinstance(args, dict) else args.get("timeout", None)
+    if raw_budget is None:
+        tool_budget = 1800.0
+    else:
+        try:
+            tool_budget = max(0.0, float(raw_budget))
+        except (TypeError, ValueError):
+            tool_budget = 1800.0
+    return window + tool_budget + _REPLY_MARGIN_SECONDS
+
+
 @dataclass
 class DispatchResult:
     state: str
@@ -88,9 +117,26 @@ class RunnerClient:
     async def _send(self, gateway: Any, device_id: str, frame: dict[str, Any]) -> None:
         await asyncio.to_thread(gateway.send_tool, device_id, frame)
 
-    async def _recv(self, gateway: Any, device_id: str, call_id: str) -> dict[str, Any]:
-        frame = await asyncio.to_thread(gateway.recv_tool, device_id, call_id, 5)
+    async def _recv(
+        self,
+        gateway: Any,
+        device_id: str,
+        call_id: str,
+        timeout: float,
+    ) -> dict[str, Any]:
+        frame = await asyncio.to_thread(gateway.recv_tool, device_id, call_id, timeout)
         return frame
+
+    async def _abandon(self, gateway: Any, device_id: str, call_id: str) -> None:
+        """Caller gave up. Tell the device so a later approval cannot run."""
+        try:
+            await self._send(
+                gateway,
+                device_id,
+                {"type": "cancel", "device_id": device_id, "call_id": call_id},
+            )
+        except Exception:
+            return
 
     async def _invoke(
         self,
@@ -105,6 +151,7 @@ class RunnerClient:
         stop_after_chunks: int | None,
     ) -> DispatchResult:
         chunks: list[tuple[int, str]] = []
+        wait = reply_wait_seconds(args)
         await self._send(
             gateway,
             device_id,
@@ -118,7 +165,11 @@ class RunnerClient:
             },
         )
         while True:
-            frame = await self._recv(gateway, device_id, call_id)
+            try:
+                frame = await self._recv(gateway, device_id, call_id, wait)
+            except TimeoutError:
+                await self._abandon(gateway, device_id, call_id)
+                return DispatchResult("recovery_required", None, chunks, False)
             kind = frame.get("type")
             if kind == "chunk":
                 seq = int(frame["seq"])
@@ -154,6 +205,7 @@ class RunnerClient:
     ) -> DispatchResult:
         chunks: list[tuple[int, str]] = []
         seen: set[int] = set()
+        wait = reply_wait_seconds(None)
         await self._send(
             gateway,
             device_id,
@@ -166,7 +218,10 @@ class RunnerClient:
             },
         )
         while True:
-            frame = await self._recv(gateway, device_id, call_id)
+            try:
+                frame = await self._recv(gateway, device_id, call_id, wait)
+            except TimeoutError:
+                return DispatchResult("recovery_required", None, chunks, False)
             kind = frame.get("type")
             if kind == "chunk":
                 seq = int(frame["seq"])
@@ -228,7 +283,12 @@ class RunnerClient:
             device_id,
             {"type": "cancel", "device_id": device_id, "call_id": call_id},
         )
-        frame = await self._recv(gateway, device_id, call_id)
+        try:
+            frame = await self._recv(
+                gateway, device_id, call_id, reply_wait_seconds(args)
+            )
+        except TimeoutError:
+            return DispatchResult("recovery_required", None, [], False)
         return DispatchResult(str(frame.get("state")), frame.get("result"), [], False)
 
 

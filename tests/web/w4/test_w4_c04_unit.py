@@ -165,7 +165,8 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         bash_args = {"command": command, "workdir": str(work), "timeout": 30}
         browser = gateway.browser_session("tenant-a")
         csrf = "csrf-token-value-for-c04"
-        threading.Thread(target=_approve, daemon=True).start()
+        approver = threading.Thread(target=_approve, daemon=True)
+        approver.start()
         posted = httpx.post(
             f"{gateway.http}/api/v1/devices/desk-1/invocations",
             headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
@@ -232,6 +233,141 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         )
         assert time.time() - zero_started < 2.5
         assert zero.json()["state"] == "recovery_required"
+        stop_approver.set()
+        approver.join(5)
+        from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
+        from rxycode_worker.runner_client import reply_wait_seconds
+
+        broker = get_approval_broker()
+        assert broker is not None and float(broker.timeout) >= 120
+        assert reply_wait_seconds({"timeout": 0}) >= 135
+        delay_mark = work / "bash-delay.txt"
+        (work / "delay.py").write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(delay_mark)!r})\n"
+            "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
+            "p.write_text(old + 'd', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        def _approve_after_five() -> None:
+            time.sleep(6)
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                try:
+                    pending = httpx.get(
+                        f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
+                        cookies={"rxy_session": browser},
+                        timeout=3,
+                    )
+                except httpx.HTTPError:
+                    continue
+                if pending.status_code != 200:
+                    continue
+                approval_id = str(pending.json().get("approval_id") or "")
+                if not approval_id:
+                    continue
+                httpx.post(
+                    f"{gateway.http}/api/v1/devices/desk-1/approvals/{approval_id}",
+                    headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+                    cookies={"rxy_session": browser, "rxy_csrf": csrf},
+                    json={"decision": "approved"},
+                    timeout=5,
+                )
+                return
+
+        threading.Thread(target=_approve_after_five, daemon=True).start()
+        delay_started = time.time()
+        delayed = httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/invocations",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": f"call_{uuid4().hex}",
+                "tool": "bash",
+                "args": {
+                    "command": "cmd /c python delay.py",
+                    "workdir": str(work),
+                    "timeout": 30,
+                },
+            },
+            timeout=40,
+        )
+        delay_body = delayed.json()
+        assert delayed.status_code == 200, delayed.text
+        assert delay_body["state"] == "completed" and time.time() - delay_started >= 5, (
+            round(time.time() - delay_started, 3),
+            delay_body,
+        )
+        assert delay_mark.read_text(encoding="utf-8") == "d"
+        abandoned = work / "bash-abandoned.txt"
+        (work / "abandon.py").write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(abandoned)!r})\n"
+            "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
+            "p.write_text(old + 'z', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        abandon_call = f"call_{uuid4().hex}"
+        abandon_holder: dict[str, object] = {}
+
+        def _post_abandon() -> None:
+            abandon_holder["response"] = httpx.post(
+                f"{gateway.http}/api/v1/devices/desk-1/invocations",
+                headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+                cookies={"rxy_session": browser, "rxy_csrf": csrf},
+                json={
+                    "attempt_id": f"att_{uuid4().hex}",
+                    "call_id": abandon_call,
+                    "tool": "bash",
+                    "args": {
+                        "command": "cmd /c python abandon.py",
+                        "workdir": str(work),
+                        "timeout": 30,
+                    },
+                },
+                timeout=40,
+            )
+
+        threading.Thread(target=_post_abandon, daemon=True).start()
+        late_approval = ""
+        seen_pending = time.time() + 15
+        while time.time() < seen_pending and not late_approval:
+            try:
+                pending = httpx.get(
+                    f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
+                    cookies={"rxy_session": browser},
+                    timeout=3,
+                )
+            except httpx.HTTPError:
+                continue
+            if pending.status_code == 200:
+                late_approval = str(pending.json().get("approval_id") or "")
+            else:
+                time.sleep(0.1)
+        assert late_approval
+        gateway.send_tool(
+            "desk-1",
+            {"type": "cancel", "device_id": "desk-1", "call_id": abandon_call},
+        )
+        time.sleep(0.5)
+        httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/approvals/{late_approval}",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={"decision": "approved"},
+            timeout=5,
+        )
+        wait_abandon = time.time() + 15
+        while time.time() < wait_abandon and "response" not in abandon_holder:
+            time.sleep(0.1)
+        assert "response" in abandon_holder
+        abandon_response = abandon_holder["response"]
+        assert abandon_response.status_code == 200, abandon_response.text
+        assert abandon_response.json()["state"] in {"cancelled", "recovery_required"}
+        time.sleep(2)
+        assert not abandoned.exists()
         outsider = gateway.browser_session("tenant-b")
         denied = httpx.post(
             f"{gateway.http}/api/v1/devices/desk-1/invocations",

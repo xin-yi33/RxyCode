@@ -39,6 +39,31 @@ def tool_rpc_for(device_id: str) -> "ToolRpcServer | None":
     return _BOUND.get(device_id)
 
 
+def observe_approval(device_id: str, event: dict[str, Any]) -> None:
+    """Record which call owns an approval request published on this device."""
+    server = _BOUND.get(device_id)
+    if server is not None:
+        server.observe_approval(event)
+
+
+class _CancelGate:
+    """Refuse the shell body when the caller already gave up."""
+
+    coroutine = None
+
+    def __init__(self, cancel: threading.Event, inner: Any) -> None:
+        self._cancel = cancel
+        self._inner = inner
+        self.name = getattr(inner, "name", "bash")
+        self.description = getattr(inner, "description", "")
+        self.args_schema = getattr(inner, "args_schema", None)
+
+    def invoke(self, payload: Any) -> str:
+        if self._cancel.is_set():
+            raise RuntimeError("cancelled before execution")
+        return self._inner.invoke(payload)
+
+
 def local_tool(
     args: dict[str, Any],
     *,
@@ -55,6 +80,8 @@ def local_tool(
         command = str(args.get("command") or "")
         if not command:
             raise ValueError("bash command required")
+        if cancel.is_set():
+            raise RuntimeError("cancelled before execution")
         from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
         from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
 
@@ -62,17 +89,39 @@ def local_tool(
         raw_timeout = args.get("timeout", None)
         timeout = 1800 if raw_timeout is None else int(raw_timeout)
         orchestrator = ToolOrchestrator()
-        orchestrator.register("bash", bash_tool)
+        orchestrator.register("bash", _CancelGate(cancel, bash_tool))
+        rpc = tool_rpc_for(_DEVICE.get())
+
+        def _watch(event: dict[str, Any]) -> None:
+            if str(event.get("tool") or "") != "bash" or rpc is None:
+                return
+            rpc.bind_approval(call_id, str(event.get("approval_id") or ""))
+
+        if rpc is not None:
+            rpc.add_approval_watcher(_watch)
 
         async def _through_gate() -> str:
             return await orchestrator.execute_tool(
                 "bash",
                 {"command": command, "workdir": workdir, "timeout": timeout},
-                {"safety": {"permission_mode": "confirm_all"}},
+                {
+                    "safety": {
+                        "enabled": True,
+                        "permission_mode": "confirm_all",
+                        "auto_approve": [],
+                        "dry_run": False,
+                    }
+                },
                 call_id=call_id or None,
             )
 
-        outcome = asyncio.run(_through_gate())
+        try:
+            outcome = asyncio.run(_through_gate())
+        finally:
+            if rpc is not None:
+                rpc.remove_approval_watcher(_watch)
+        if cancel.is_set():
+            raise RuntimeError("cancelled before execution")
         if outcome.startswith(("[error", "[rejected", "[blocked")):
             raise RuntimeError(outcome)
         return outcome
@@ -149,6 +198,8 @@ class ToolRpcServer:
         self.results: dict[str, str] = {}
         self.meta: dict[str, tuple[str, str, dict[str, Any]]] = {}
         self.cancel_flags: dict[str, threading.Event] = {}
+        self.approval_ids: dict[str, str] = {}
+        self._approval_watchers: list[Callable[[dict[str, Any]], None]] = []
         self.chunk_acks: dict[str, int] = {}
         self.ack_events: dict[str, asyncio.Event] = {}
         self._performs: set[asyncio.Task[None]] = set()
@@ -156,6 +207,33 @@ class ToolRpcServer:
     def cancel_performs(self) -> None:
         for task in list(self._performs):
             task.cancel()
+
+    def add_approval_watcher(self, watcher: Callable[[dict[str, Any]], None]) -> None:
+        self._approval_watchers.append(watcher)
+
+    def remove_approval_watcher(self, watcher: Callable[[dict[str, Any]], None]) -> None:
+        try:
+            self._approval_watchers.remove(watcher)
+        except ValueError:
+            return
+
+    def observe_approval(self, event: dict[str, Any]) -> None:
+        for watcher in list(self._approval_watchers):
+            watcher(event)
+
+    def bind_approval(self, call_id: str, approval_id: str) -> None:
+        if call_id and approval_id:
+            self.approval_ids[call_id] = approval_id
+
+    def _reject_pending(self, call_id: str) -> None:
+        approval_id = self.approval_ids.get(call_id) or ""
+        if not approval_id:
+            return
+        from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
+
+        broker = get_approval_broker()
+        if broker is not None:
+            broker.resolve(approval_id, "rejected")
 
     def _journal_attempt(self, call_id: str) -> str:
         digest = hashlib.sha256(f"{self.device_id}:{call_id}".encode("utf-8")).hexdigest()
@@ -192,6 +270,7 @@ class ToolRpcServer:
         if kind == "cancel":
             call_id = str(frame.get("call_id") or "")
             self.cancel_flags.setdefault(call_id, threading.Event()).set()
+            self._reject_pending(call_id)
             await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
 
     async def _invoke(
@@ -243,6 +322,9 @@ class ToolRpcServer:
                 self.execute, args, cancel=cancel, tool=tool, call_id=call_id
             )
         except Exception as exc:
+            if cancel.is_set():
+                await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
+                return
             await queue.put(
                 {
                     "type": "status",

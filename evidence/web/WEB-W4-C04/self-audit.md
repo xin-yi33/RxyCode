@@ -2,7 +2,8 @@
 
 - RED: rxycode_runner.transport was missing. 3 failed in 0.34s. See red.txt.
 - `rxycode connect` binds local_tool on a journal directory that stays under the data dir for that device.
-- `rxycode connect` installs SseApproval and publishes approval_request on the device socket. The browser tenant approves with POST /api/v1/devices/{id}/approvals/{approval_id}. Device bash goes through ToolOrchestrator in confirm_all. workdir and timeout, including 0, are passed through. permission full is not used.
+- `rxycode connect` installs SseApproval and publishes approval_request on the device socket. The browser tenant approves with POST /api/v1/devices/{id}/approvals/{approval_id}. Device bash goes through ToolOrchestrator with safety.enabled and confirm_all. workdir and timeout, including 0, are passed through. permission full is not used.
+- The tool-lane read waits for the 120s approval window, the tool timeout, and 15s. An approval that arrives after 5 seconds still completes. If that read times out, the caller sends cancel and returns recovery_required. Cancel rejects the pending approval, and the shell body does not run once that flag is set, so a later approve does not append.
 - Tool replies are queued per call id, so two in-flight calls do not read each other's frames.
 - Tool frames travel on the paired outbound device socket. The runner does not open a second listen port.
 - The journal attempt is derived from device id and call id, so a later attempt id cannot run that call again.
@@ -12,5 +13,6 @@
 - Cancel before the write returns sets the in-flight flag and does not append another write.
 - Stdout larger than 4096 bytes is split with sequence numbers. Two chunks can leave before an ack. After the socket drops, resume replays only later sequence numbers. The write still ran once.
 - Outbound frames for one socket are sent by one writer task.
-- Cache tests: 30 passed, 2 skipped in 2.03s. The skips are the existing global tool-registry skips. core/ was not edited.
+- Cache tests: 30 passed, 2 skipped in 2.06s. The skips are the existing global tool-registry skips. core/ was not edited.
+- Unit: 2 passed, 5 warnings in 15.67s. Module: 1 passed, 4 warnings in 1.49s. The combined C03 and C04 run immediately before these logs was 6 passed, 15 warnings in 17.42s. Warnings are uvicorn and websockets.legacy.
 - Not claimed as 已落实. E2E-FULL-04 stays BLOCKED.
