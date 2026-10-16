@@ -106,8 +106,20 @@ async def _execute_approved(state: _GateState) -> str:
         orchestrator.reset_tool_journal(token)
 
 
-async def _pause_graph(database_url: str, session_id: str, run_id: str, initial: dict) -> None:
-    async with _open_saver(database_url) as saver:
+async def _ensure_saver(database_url: str) -> None:
+    async with _open_saver(database_url) as _saver:
+        return None
+
+
+async def _pause_graph(
+    database_url: str,
+    session_id: str,
+    run_id: str,
+    initial: dict,
+    *,
+    setup: bool,
+) -> None:
+    async with _open_saver(database_url, setup=setup) as saver:
         graph = _compile(saver)
         config = {"configurable": {"thread_id": graph_thread_id(session_id, run_id)}}
         await graph.ainvoke(initial, config)
@@ -164,6 +176,7 @@ def pause_for_approval(
     command: str,
 ) -> dict[str, Any]:
     """Ask only when the run is not already fully authorized. Never run the tool here."""
+    asyncio.run(_call_on_selector(lambda: _ensure_saver(database_url)))
 
     def write_checkpoint(session_id: str, approval_id: str, attempt_id: str) -> None:
         asyncio.run(
@@ -181,6 +194,7 @@ def pause_for_approval(
                         "workdir": workdir,
                         "command": command,
                     },
+                    setup=False,
                 )
             )
         )

@@ -74,7 +74,7 @@ def _compile(saver: object):
 
 
 @asynccontextmanager
-async def _open_saver(database_url: str):
+async def _open_saver(database_url: str, *, setup: bool = True):
     """Yield a ready AsyncPostgresSaver. Setup failure stays fail-closed."""
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -86,7 +86,8 @@ async def _open_saver(database_url: str):
     try:
         saver = await saver_cm.__aenter__()
         entered = True
-        await saver.setup()
+        if setup:
+            await saver.setup()
     except CheckpointerUnavailable:
         if entered:
             await saver_cm.__aexit__(*sys.exc_info())
