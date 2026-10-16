@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider, useParams } from "react-
 
 import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
-import { BrowserHandoff } from "../features/browser/BrowserHandoff"
+import { BrowserHandoff, requestHandoff } from "../features/browser/BrowserHandoff"
 import { ChatPage } from "../features/chat/ChatPage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { DiffReview } from "../features/workspace/DiffReview"
@@ -241,15 +241,7 @@ function BrowserHandoffPage() {
         sessionId={sessionId}
         authorized={authorized}
         onAuthorize={async () => {
-          const bridge = (
-            window as Window & {
-              rxyAuthorizeHandoff?: (id: string) => boolean | Promise<boolean>
-            }
-          ).rxyAuthorizeHandoff
-          if (!bridge) {
-            return false
-          }
-          const ok = Boolean(await bridge(sessionId))
+          const ok = await requestHandoff(sessionId)
           if (ok) {
             setAuthorized(true)
           }

@@ -7,19 +7,25 @@ and does not call webfetch.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 
 _SESSIONS: dict[str, "Session"] = {}
 _HANDOFF: dict[str, tuple[Any, Any]] = {}
 _PROFILE_KIND: dict[str, str] = {}
 _PLAYWRIGHT: Any = None
+_HANDOFF_SERVER: ThreadingHTTPServer | None = None
+HANDOFF_PORT = 47321
 
 
 @dataclass
@@ -56,6 +62,7 @@ def open_agent_context(*, profile_dir: str | Path, kind: str) -> dict[str, objec
         return _refused(f"browser launch failed: {type(exc).__name__}: {exc}")
     session_id = "br-" + uuid.uuid4().hex[:12]
     _PROFILE_KIND[key] = kind
+    _start_handoff_server()
     _SESSIONS[session_id] = Session(
         session_id=session_id,
         profile_dir=target,
@@ -164,14 +171,7 @@ def present_handoff(*, agent_session_id: str, url: str) -> dict[str, object]:
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page()
 
-    def grant(requested: str) -> bool:
-        if requested != agent_session_id:
-            return False
-        result = authorize_handoff(session_id=agent_session_id, authorized=True)
-        return result.get("status") == "authorized"
-
     try:
-        page.expose_function("rxyAuthorizeHandoff", grant)
         page.goto(target, wait_until="domcontentloaded", timeout=20000)
         page.wait_for_selector("button", timeout=10000)
     except Exception as exc:
@@ -236,6 +236,46 @@ def _stop_driver_when_idle() -> None:
     except Exception:
         pass
     _PLAYWRIGHT = None
+
+
+class _HandoffApi(BaseHTTPRequestHandler):
+    """Local endpoint the /browser/:sessionId page calls when the user clicks."""
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._send(204, b"")
+
+    def do_POST(self) -> None:  # noqa: N802
+        parts = [unquote(part) for part in self.path.split("?")[0].split("/") if part]
+        if len(parts) != 3 or parts[0] != "sessions" or parts[2] != "authorize":
+            self._send(404, b'{"ok":false}')
+            return
+        result = authorize_handoff(session_id=parts[1], authorized=True)
+        ok = result.get("status") == "authorized"
+        body = json.dumps({"ok": ok}).encode("utf-8")
+        self._send(200 if ok else 403, body)
+
+    def _send(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+def _start_handoff_server() -> None:
+    global _HANDOFF_SERVER
+    if _HANDOFF_SERVER is not None:
+        return
+    server = ThreadingHTTPServer(("127.0.0.1", HANDOFF_PORT), _HandoffApi)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _HANDOFF_SERVER = server
 
 
 def _driver() -> Any:

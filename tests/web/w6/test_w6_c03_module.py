@@ -76,7 +76,9 @@ def test_w6_c03_integration() -> None:
         assert token not in blocked.get("dom", "")
         app_text = (REPO / "apps" / "web" / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
         assert "BrowserHandoff" in app_text
+        assert "requestHandoff" in app_text
         assert 'path: "/browser/:sessionId"' in app_text
+        assert "rxyAuthorizeHandoff" not in app_text
         pending = _render(session_id=str(agent["session_id"]), authorized=False)
         assert 'aria-label="browser-handoff"' in pending
         assert 'data-authorized="false"' in pending
@@ -184,12 +186,18 @@ def _assert_wheel_contains_session_manager() -> None:
 
 _ENTRY = """
 import { createRoot } from "react-dom/client"
-import { BrowserHandoff } from "./BrowserHandoff.tsx"
+import { BrowserHandoff, requestHandoff } from "./BrowserHandoff.tsx"
 
 const root = document.getElementById("root")
 const sessionId = (window as Window & { sessionId: string }).sessionId
 if (root) {
-  createRoot(root).render(<BrowserHandoff sessionId={sessionId} authorized={false} />)
+  createRoot(root).render(
+    <BrowserHandoff
+      sessionId={sessionId}
+      authorized={false}
+      onAuthorize={() => requestHandoff(sessionId)}
+    />
+  )
 }
 """
 

@@ -1,5 +1,19 @@
 import { useState } from "react"
 
+export const HANDOFF_ORIGIN = "http://127.0.0.1:47321"
+
+export async function requestHandoff(sessionId: string): Promise<boolean> {
+  const response = await fetch(
+    `${HANDOFF_ORIGIN}/sessions/${encodeURIComponent(sessionId)}/authorize`,
+    { method: "POST" },
+  )
+  if (!response.ok) {
+    return false
+  }
+  const body = (await response.json()) as { ok?: boolean }
+  return body.ok === true
+}
+
 type HandoffWindow = Window & {
   rxyAuthorizeHandoff?: (sessionId: string) => boolean | Promise<boolean>
 }
