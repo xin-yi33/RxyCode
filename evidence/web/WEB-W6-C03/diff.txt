@@ -473,5 +473,3 @@ index 20146e6d..772d5ad3 100644
 +        if os.path.isjunction(alias):
 +            os.rmdir(alias)
          _remove(root)
-
-
