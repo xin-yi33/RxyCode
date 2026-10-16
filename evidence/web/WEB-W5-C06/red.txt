@@ -1,0 +1,25 @@
+command: D:\Anaconda3\python.exe -m pytest tests/web/w5/test_w5_c06_unit.py tests/web/w5/test_w5_c06_module.py -q --tb=short
+cwd: D:\agent-demo\RxyCode\RxyCode1_1_0
+parent HEAD: f6e167e3
+result: 3 failed in 0.32s
+
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-w80pzs7v
+
+================================== FAILURES ===================================
+____________________________ test_w5_c06_contract _____________________________
+tests\web\w5\test_w5_c06_unit.py:51: in test_w5_c06_contract
+    from rxycode_server.quotas.service import Limits, QuotaGate
+E   ModuleNotFoundError: No module named 'rxycode_server.quotas'
+____________________________ test_w5_c06_negative _____________________________
+tests\web\w5\test_w5_c06_unit.py:231: in test_w5_c06_negative
+    from rxycode_worker.scheduler.capacity import Capacity
+E   ModuleNotFoundError: No module named 'rxycode_worker.scheduler'
+___________________________ test_w5_c06_integration ___________________________
+tests\web\w5\test_w5_c06_module.py:36: in test_w5_c06_integration
+    from rxycode_worker.scheduler.capacity import Capacity
+E   ModuleNotFoundError: No module named 'rxycode_worker.scheduler'
+=========================== short test summary info ===========================
+FAILED tests/web/w5/test_w5_c06_unit.py::test_w5_c06_contract - ModuleNotFoundError: No module named 'rxycode_server.quotas'
+FAILED tests/web/w5/test_w5_c06_unit.py::test_w5_c06_negative - ModuleNotFoundError: No module named 'rxycode_worker.scheduler'
+FAILED tests/web/w5/test_w5_c06_module.py::test_w5_c06_integration - ModuleNotFoundError: No module named 'rxycode_worker.scheduler'
+3 failed in 0.32s

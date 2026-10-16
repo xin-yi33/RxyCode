@@ -1,0 +1,35 @@
+# Self-hosted RxyCode web dependencies. Privileged mode stays off.
+# Passwords come from the environment and are not stored in this file.
+services:
+  postgres:
+    image: postgres:16
+    privileged: false
+    environment:
+      POSTGRES_USER: rxycode
+      POSTGRES_DB: rxycode
+      POSTGRES_PASSWORD: ${RXYCODE_POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rxycode"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7
+    privileged: false
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  minio:
+    image: minio/minio:latest
+    privileged: false
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${RXYCODE_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${RXYCODE_MINIO_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

@@ -1,0 +1,8 @@
+parent HEAD f6e167e3
+branch feat/rxycode-web
+upstream: none
+packages/rxycode-server/src/rxycode_server/quotas/ absent
+packages/rxycode-worker/src/rxycode_worker/scheduler/ absent
+infra/compose/compose.yaml absent
+create_run in runs/service.py is not called by api/runs.py
+E2E-CLOUD-04 not run at baseline
