@@ -11,4 +11,4 @@
 - Cache regression: 30 passed, 2 skipped. The skips say "no tools registered in global test registry" and are the existing stable-prefix conditions. See regression.txt.
 - No separate UI E2E for this card. core/builtin_tool_registration.py was checked and not rewritten. Not claimed as 已落实.
 - Audit 1 returned VERDICT: PROBLEMS because pyproject.toml did not ship rxycode_core.tools. The module test now builds a wheel with pip and checks the zip contains capability_catalog.py. The src path insert is not that check.
-- gpt-6-luna max re-audit is not recorded yet. Session 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w6c01-audit-2.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
