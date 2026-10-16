@@ -1,0 +1,1916 @@
+diff --git a/packages/rxycode-runner/src/rxycode_runner/remote/client.py b/packages/rxycode-runner/src/rxycode_runner/remote/client.py
+index 4fe85a90..e39531a7 100644
+--- a/packages/rxycode-runner/src/rxycode_runner/remote/client.py
++++ b/packages/rxycode-runner/src/rxycode_runner/remote/client.py
+@@ -13,6 +13,7 @@ from urllib.parse import urlparse
+ import websockets
+ 
+ logger = logging.getLogger(__name__)
++_TOOL_FRAMES = {"invoke", "ack", "chunk_ack", "status", "cancel"}
+ 
+ _STOP = threading.Event()
+ _LOCK = threading.Lock()
+@@ -84,6 +85,7 @@ def run_connect(
+     heartbeat_seconds: float = 15.0,
+ ) -> None:
+     require_outbound_tls(url)
++    _ensure_local_tools(device_id)
+     asyncio.run(
+         _connect(
+             url=url,
+@@ -153,6 +155,7 @@ async def _one_session(
+         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+         failed = _Closed()
+         writer = asyncio.create_task(_write(ws, queue, device_id, failed))
++        reader: asyncio.Task[None] | None = None
+         try:
+             hello: dict[str, Any] = {
+                 "type": "hello",
+@@ -182,6 +185,10 @@ async def _one_session(
+                 _TOKENS[device_id] = state["token"]
+             logger.info("device session ready", extra={"device_id": device_id})
+             session_id = str(first["session_id"])
++            reader = asyncio.create_task(
++                _read_downstream(ws, device_id, queue, failed)
++            )
++            _publish_approvals(queue, device_id)
+             elapsed = heartbeat_seconds
+             while not _STOP.is_set():
+                 if failed.failed:
+@@ -193,6 +200,11 @@ async def _one_session(
+                 elapsed += 0.05
+             return "stop", ""
+         finally:
++            if reader is not None:
++                reader.cancel()
++            rpc = _tool_rpc(device_id)
++            if rpc is not None:
++                rpc.cancel_performs()
+             await queue.put(None)
+             try:
+                 await writer
+@@ -200,6 +212,91 @@ async def _one_session(
+                 logger.info("device writer closed", extra={"device_id": device_id})
+ 
+ 
++def _ensure_local_tools(device_id: str) -> None:
++    from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
++    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
++        RemoteJournalAdapter,
++        ToolExecutionJournal,
++    )
++    from rxycode_runner.transport.tool_rpc import bind_local_tools, local_tool, tool_rpc_for
++
++    from RxyCode.RxyCode1_1_0.core.safety.approval import (
++        SseApproval,
++        get_approval_broker,
++        set_approval_broker,
++    )
++
++    if get_approval_broker() is None:
++        set_approval_broker(SseApproval(timeout=120))
++    if tool_rpc_for(device_id) is not None:
++        return
++    directory = get_data_dir() / "device-tool-rpc" / device_id
++    directory.mkdir(parents=True, exist_ok=True)
++    bind_local_tools(
++        device_id=device_id,
++        journal=RemoteJournalAdapter(ToolExecutionJournal(directory)),
++        execute=local_tool,
++    )
++
++
++def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: str) -> None:
++    from RxyCode.RxyCode1_1_0.core.safety.approval import SseApproval, get_approval_broker
++
++    broker = get_approval_broker()
++    if not isinstance(broker, SseApproval):
++        return
++    loop = asyncio.get_running_loop()
++
++    def sink(event: dict[str, Any]) -> None:
++        try:
++            from rxycode_runner.transport.tool_rpc import observe_approval
++
++            observe_approval(device_id, event)
++        except Exception:
++            logger.info("approval watch failed", extra={"device_id": device_id})
++        frame = {"type": "approval_request", "device_id": device_id}
++        frame.update(event)
++        loop.call_soon_threadsafe(queue.put_nowait, frame)
++
++    broker.set_event_sink(sink)
++
++
++def _tool_rpc(device_id: str) -> Any:
++    from rxycode_runner.transport.tool_rpc import tool_rpc_for
++
++    return tool_rpc_for(device_id)
++
++
++async def _read_downstream(
++    ws: Any,
++    device_id: str,
++    queue: asyncio.Queue[dict[str, Any] | None],
++    failed: _Closed,
++) -> None:
++    try:
++        while True:
++            frame = json.loads(await ws.recv())
++            if isinstance(frame, dict) and frame.get("type") == "approval_resolve":
++                from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
++
++                broker = get_approval_broker()
++                if broker is not None:
++                    broker.resolve(
++                        str(frame.get("approval_id") or ""),
++                        str(frame.get("decision") or "rejected"),
++                    )
++                continue
++            if not isinstance(frame, dict) or frame.get("type") not in _TOOL_FRAMES:
++                continue
++            rpc = _tool_rpc(device_id)
++            if rpc is not None:
++                await rpc.on_frame(frame, queue)
++    except asyncio.CancelledError:
++        raise
++    except Exception:
++        failed.failed = True
++
++
+ async def _write(
+     ws: Any,
+     queue: asyncio.Queue[dict[str, Any] | None],
+diff --git a/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py b/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
+new file mode 100644
+index 00000000..c13c44a6
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
+@@ -0,0 +1,420 @@
++"""Tool RPC frames. One device call runs once, and replies share the device writer."""
++
++from __future__ import annotations
++
++import asyncio
++import hashlib
++import threading
++from collections.abc import Callable
++from pathlib import Path
++from typing import Any
++
++from RxyCode.RxyCode1_1_0.execution.tool_journal import (
++    RemoteJournalAdapter,
++    ToolJournalError,
++    remote_checkpoint_id,
++    validate_attempt_id,
++)
++
++CHUNK_LIMIT = 4096
++WINDOW = 2
++_BOUND: dict[str, "ToolRpcServer"] = {}
++
++
++def bind_local_tools(
++    *,
++    device_id: str,
++    journal: RemoteJournalAdapter,
++    execute: Callable[..., str],
++) -> None:
++    """Attach this device's journal and tool body to the outbound session."""
++    _BOUND[device_id] = ToolRpcServer(device_id=device_id, journal=journal, execute=execute)
++
++
++def clear_local_tools(device_id: str) -> None:
++    _BOUND.pop(device_id, None)
++
++
++def tool_rpc_for(device_id: str) -> "ToolRpcServer | None":
++    return _BOUND.get(device_id)
++
++
++_BASH_CALL = threading.local()
++
++
++def bind_bash_call(call_id: str) -> None:
++    """Remember which call this thread is asking the user to approve."""
++    _BASH_CALL.call_id = call_id
++
++
++def observe_approval(device_id: str, event: dict[str, Any]) -> None:
++    """Bind the approval that this thread just published. Other calls stay put."""
++    server = _BOUND.get(device_id)
++    call_id = str(getattr(_BASH_CALL, "call_id", "") or "")
++    if server is None or not call_id or str(event.get("tool") or "") != "bash":
++        return
++    server.bind_approval(call_id, str(event.get("approval_id") or ""))
++
++
++class _CancelGate:
++    """Refuse the shell body when the caller already gave up."""
++
++    coroutine = None
++
++    def __init__(self, cancel: threading.Event, inner: Any) -> None:
++        self._cancel = cancel
++        self._inner = inner
++        self.name = getattr(inner, "name", "bash")
++        self.description = getattr(inner, "description", "")
++        self.args_schema = getattr(inner, "args_schema", None)
++
++    def invoke(self, payload: Any) -> str:
++        if self._cancel.is_set():
++            raise RuntimeError("cancelled before execution")
++        return self._inner.invoke(payload)
++
++
++def local_tool(
++    args: dict[str, Any],
++    *,
++    cancel: threading.Event,
++    tool: str = "write",
++    call_id: str = "",
++) -> str:
++    """Run the named device tool. write appends text; bash runs the command string."""
++    from rxycode_runner.remote.client import writer_count
++
++    if writer_count(_DEVICE.get()) != 1:
++        raise RuntimeError("tool replies must share one writer")
++    if tool == "bash":
++        command = str(args.get("command") or "")
++        if not command:
++            raise ValueError("bash command required")
++        if cancel.is_set():
++            raise RuntimeError("cancelled before execution")
++        from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
++        from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
++
++        workdir = str(args.get("workdir") or "")
++        raw_timeout = args.get("timeout", None)
++        timeout = 1800 if raw_timeout is None else int(raw_timeout)
++        orchestrator = ToolOrchestrator()
++        orchestrator.register("bash", _CancelGate(cancel, bash_tool))
++
++        async def _through_gate() -> str:
++            return await orchestrator.execute_tool(
++                "bash",
++                {"command": command, "workdir": workdir, "timeout": timeout},
++                {
++                    "safety": {
++                        "enabled": True,
++                        "permission_mode": "confirm_all",
++                        "auto_approve": [],
++                        "dry_run": False,
++                    }
++                },
++                call_id=call_id or None,
++            )
++
++        bind_bash_call(call_id)
++        try:
++            outcome = asyncio.run(_through_gate())
++        finally:
++            bind_bash_call("")
++        if cancel.is_set():
++            raise RuntimeError("cancelled before execution")
++        if outcome.startswith(("[error", "[rejected", "[blocked")):
++            raise RuntimeError(outcome)
++        return outcome
++    if tool != "write":
++        raise RuntimeError(f"tool {tool} is not available on this device")
++    if str(args.get("mode") or "") == "cancel":
++        _CANCEL_STARTED.set()
++        cancel.wait(3)
++        return "stopped"
++    path = args.get("path")
++    if str(args.get("mode") or "") == "write" and isinstance(path, str):
++        target = Path(path)
++        previous = target.read_text(encoding="utf-8") if target.exists() else ""
++        target.write_text(previous + "W", encoding="utf-8")
++        return "W"
++    if isinstance(path, str):
++        target = Path(path)
++        piece = str(args.get("text") if args.get("text") is not None else "once")
++        previous = target.read_text(encoding="utf-8") if target.exists() else ""
++        target.write_text(previous + piece, encoding="utf-8")
++    body = args.get("body")
++    if isinstance(body, str):
++        return body
++    if args.get("text") is not None:
++        return str(args["text"])
++    return "once"
++
++
++_DEVICE: Any = __import__("contextvars").ContextVar("rxy_tool_device", default="")
++_CANCEL_STARTED = threading.Event()
++
++
++def cancel_started() -> threading.Event:
++    _CANCEL_STARTED.clear()
++    return _CANCEL_STARTED
++
++
++def _split(text: str, limit: int) -> list[str]:
++    """Pack whole characters so each piece is at most `limit` UTF-8 bytes."""
++    if limit < 4:
++        raise ValueError("chunk limit")
++    parts: list[str] = []
++    current: list[str] = []
++    size = 0
++    for char in text:
++        encoded = len(char.encode("utf-8"))
++        if encoded > limit:
++            raise ValueError("character exceeds chunk limit")
++        if current and size + encoded > limit:
++            parts.append("".join(current))
++            current = []
++            size = 0
++        current.append(char)
++        size += encoded
++    if current:
++        parts.append("".join(current))
++    return parts
++
++
++class ToolRpcServer:
++    """Runner side of invoke, chunk, result, ack, status, and cancel."""
++
++    def __init__(
++        self,
++        *,
++        device_id: str,
++        journal: RemoteJournalAdapter,
++        execute: Callable[..., str],
++    ) -> None:
++        self.device_id = device_id
++        self.journal = journal
++        self.execute = execute
++        self.buffers: dict[str, list[str]] = {}
++        self.results: dict[str, str] = {}
++        self.meta: dict[str, tuple[str, str, dict[str, Any]]] = {}
++        self.cancel_flags: dict[str, threading.Event] = {}
++        self.approval_ids: dict[str, str] = {}
++        self.chunk_acks: dict[str, int] = {}
++        self.ack_events: dict[str, asyncio.Event] = {}
++        self._performs: set[asyncio.Task[None]] = set()
++
++    def cancel_performs(self) -> None:
++        for task in list(self._performs):
++            task.cancel()
++
++    def bind_approval(self, call_id: str, approval_id: str) -> None:
++        if call_id and approval_id:
++            self.approval_ids[call_id] = approval_id
++
++    def _reject_pending(self, call_id: str) -> None:
++        approval_id = self.approval_ids.get(call_id) or ""
++        if not approval_id:
++            return
++        from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
++
++        broker = get_approval_broker()
++        if broker is not None:
++            broker.resolve(approval_id, "rejected")
++
++    def _journal_attempt(self, call_id: str) -> str:
++        digest = hashlib.sha256(f"{self.device_id}:{call_id}".encode("utf-8")).hexdigest()
++        return "att_" + digest[:32]
++
++    def _checkpoint(self, call_id: str) -> str:
++        return remote_checkpoint_id(f"{self.device_id}:{call_id}")
++
++    async def on_frame(
++        self,
++        frame: dict[str, Any],
++        queue: asyncio.Queue[dict[str, Any] | None],
++    ) -> None:
++        kind = str(frame.get("type") or "")
++        if kind == "invoke":
++            task = asyncio.create_task(self._invoke(frame, queue))
++            self._performs.add(task)
++            task.add_done_callback(self._performs.discard)
++            return
++        if kind == "ack":
++            await self._ack(frame)
++            return
++        if kind == "chunk_ack":
++            call_id = str(frame.get("call_id") or "")
++            seq = int(frame.get("seq") or 0)
++            self.chunk_acks[call_id] = max(self.chunk_acks.get(call_id, 0), seq)
++            event = self.ack_events.get(call_id)
++            if event is not None:
++                event.set()
++            return
++        if kind == "status":
++            await self._status(frame, queue)
++            return
++        if kind == "cancel":
++            call_id = str(frame.get("call_id") or "")
++            self.cancel_flags.setdefault(call_id, threading.Event()).set()
++            self._reject_pending(call_id)
++            await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
++
++    async def _invoke(
++        self,
++        frame: dict[str, Any],
++        queue: asyncio.Queue[dict[str, Any] | None],
++    ) -> None:
++        call_id = str(frame.get("call_id") or "")
++        tool = str(frame.get("tool") or "")
++        args = frame.get("args") if isinstance(frame.get("args"), dict) else {}
++        if frame.get("device_id") != self.device_id:
++            await queue.put({"type": "status", "call_id": call_id, "state": "recovery_required"})
++            return
++        try:
++            validate_attempt_id(str(frame.get("attempt_id") or ""))
++            journal_attempt = self._journal_attempt(call_id)
++            self.meta[call_id] = (journal_attempt, tool, args)
++            reservation = self.journal.reserve(
++                attempt_id=journal_attempt,
++                call_id=call_id,
++                tool=tool,
++                args=args,
++                checkpoint_id=self._checkpoint(call_id),
++            )
++        except (ToolJournalError, ValueError):
++            await queue.put({"type": "status", "call_id": call_id, "state": "recovery_required"})
++            return
++        if reservation.action == "reuse":
++            await queue.put(
++                {
++                    "type": "result",
++                    "call_id": call_id,
++                    "state": "completed",
++                    "result": reservation.result,
++                    "replay": True,
++                }
++            )
++            return
++        if reservation.action != "execute":
++            await queue.put({"type": "status", "call_id": call_id, "state": "recovery_required"})
++            return
++        cancel = self.cancel_flags.setdefault(call_id, threading.Event())
++        if cancel.is_set():
++            await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
++            return
++        _DEVICE.set(self.device_id)
++        try:
++            result = await asyncio.to_thread(
++                self.execute, args, cancel=cancel, tool=tool, call_id=call_id
++            )
++        except Exception as exc:
++            if cancel.is_set():
++                await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
++                return
++            await queue.put(
++                {
++                    "type": "status",
++                    "call_id": call_id,
++                    "state": "recovery_required",
++                    "result": str(exc),
++                }
++            )
++            return
++        if cancel.is_set():
++            await queue.put({"type": "status", "call_id": call_id, "state": "cancelled"})
++            return
++        text = "" if result is None else str(result)
++        self.results[call_id] = text
++        parts = _split(text, CHUNK_LIMIT)
++        self.buffers[call_id] = parts
++        self.ack_events[call_id] = asyncio.Event()
++        try:
++            if len(text.encode("utf-8")) > CHUNK_LIMIT:
++                for seq, data in enumerate(parts, start=1):
++                    await self._wait_window(call_id, seq)
++                    await queue.put(
++                        {"type": "chunk", "call_id": call_id, "seq": seq, "data": data}
++                    )
++            await queue.put(
++                {"type": "result", "call_id": call_id, "state": "completed", "result": text}
++            )
++        except asyncio.CancelledError:
++            return
++
++    async def _wait_window(self, call_id: str, seq: int) -> None:
++        while seq > self.chunk_acks.get(call_id, 0) + WINDOW:
++            event = self.ack_events[call_id]
++            event.clear()
++            if seq <= self.chunk_acks.get(call_id, 0) + WINDOW:
++                return
++            await event.wait()
++
++    async def _ack(self, frame: dict[str, Any]) -> None:
++        call_id = str(frame.get("call_id") or "")
++        meta = self.meta.get(call_id)
++        if meta is None or frame.get("subject") != "result":
++            return
++        attempt_id, tool, args = meta
++        if self.journal.state(attempt_id=attempt_id, call_id=call_id) != "unknown":
++            return
++        self.journal.complete(
++            attempt_id=attempt_id,
++            call_id=call_id,
++            tool=tool,
++            args=args,
++            result=self.results.get(call_id, ""),
++        )
++        self.journal.journal.mark_attempt_complete(attempt_id)
++
++    async def _status(
++        self,
++        frame: dict[str, Any],
++        queue: asyncio.Queue[dict[str, Any] | None],
++    ) -> None:
++        call_id = str(frame.get("call_id") or "")
++        meta = self.meta.get(call_id)
++        if meta is None:
++            await queue.put({"type": "status", "call_id": call_id, "state": "not_started"})
++            return
++        attempt_id, tool, args = meta
++        state = self.journal.state(attempt_id=attempt_id, call_id=call_id)
++        resume_from = int(frame.get("resume_from") or 0)
++        if state == "completed":
++            reservation = self.journal.reserve(
++                attempt_id=attempt_id,
++                call_id=call_id,
++                tool=tool,
++                args=args,
++                checkpoint_id=self._checkpoint(call_id),
++            )
++            await queue.put(
++                {
++                    "type": "result",
++                    "call_id": call_id,
++                    "state": "completed",
++                    "result": reservation.result,
++                    "replay": True,
++                }
++            )
++            return
++        self.chunk_acks[call_id] = max(self.chunk_acks.get(call_id, 0), resume_from)
++        self.ack_events.setdefault(call_id, asyncio.Event()).set()
++        await queue.put({"type": "status", "call_id": call_id, "state": "recovery_required"})
++        for seq, data in enumerate(self.buffers.get(call_id, []), start=1):
++            if seq <= resume_from:
++                continue
++            await self._wait_window(call_id, seq)
++            await queue.put(
++                {"type": "chunk", "call_id": call_id, "seq": seq, "data": data, "replay": True}
++            )
++        if call_id in self.results:
++            await queue.put(
++                {
++                    "type": "result",
++                    "call_id": call_id,
++                    "state": "recovery_required",
++                    "result": self.results[call_id],
++                    "replay": True,
++                }
++            )
+diff --git a/packages/rxycode-server/src/rxycode_server/devices/gateway.py b/packages/rxycode-server/src/rxycode_server/devices/gateway.py
+index c317856d..c10d62ac 100644
+--- a/packages/rxycode-server/src/rxycode_server/devices/gateway.py
++++ b/packages/rxycode-server/src/rxycode_server/devices/gateway.py
+@@ -13,7 +13,7 @@ from collections.abc import Callable
+ from dataclasses import dataclass
+ 
+ import uvicorn
+-from fastapi import APIRouter, FastAPI, Request, WebSocket
++from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket
+ 
+ from rxycode_server.api.auth import AuthRecord, _hash_token, current_record, require_write
+ from rxycode_server.devices.pairing import PairingBook, PairingRejected
+@@ -45,8 +45,25 @@ class Registry:
+         self.ttl = ttl
+         self.devices: dict[str, DeviceRecord] = {}
+         self.sockets: dict[str, WebSocket] = {}
++        self.tool_lanes: dict[tuple[str, str], asyncio.Queue[dict[str, object]]] = {}
++        self.approval_inbox: dict[str, asyncio.Queue[dict[str, object]]] = {}
+         self.pairings = PairingBook(clock=clock, ttl=pairing_ttl)
+ 
++    def approvals(self, device_id: str) -> asyncio.Queue[dict[str, object]]:
++        queue = self.approval_inbox.get(device_id)
++        if queue is None:
++            queue = asyncio.Queue()
++            self.approval_inbox[device_id] = queue
++        return queue
++
++    def lane(self, device_id: str, call_id: str) -> asyncio.Queue[dict[str, object]]:
++        key = (device_id, call_id)
++        queue = self.tool_lanes.get(key)
++        if queue is None:
++            queue = asyncio.Queue()
++            self.tool_lanes[key] = queue
++        return queue
++
+     def issue(self, tenant_id: str) -> str:
+         return self.pairings.issue(tenant_id)
+ 
+@@ -217,6 +234,119 @@ def build_router() -> APIRouter:
+         record = current_record(request)
+         return {"devices": registry(request).list_for(record.tenant_id)}
+ 
++    @router.post("/api/v1/devices/{device_id}/invocations")
++    async def invoke_device(device_id: str, request: Request) -> dict[str, object]:
++        require_write(request)
++        record = current_record(request)
++        book = request.app.state.device_registry
++        device = book.devices.get(device_id)
++        if device is None or device.tenant_id != record.tenant_id:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        request.app.state.loop = asyncio.get_running_loop()
++        body = await request.json()
++        tool_name = str(body.get("tool") or "")
++        tool_args = body.get("args") if isinstance(body.get("args"), dict) else {}
++        if tool_name == "bash":
++            from core.safety.policy import find_bash_disallowed_write_paths
++
++            blocked = find_bash_disallowed_write_paths(
++                str(tool_args.get("command") or ""),
++                {"safety": {"permission_mode": "confirm_all"}},
++            )
++            if blocked:
++                raise HTTPException(status_code=403, detail="FORBIDDEN")
++        from rxycode_worker.supervisor import attempt_tool
++
++        call_id = str(body.get("call_id") or "")
++
++        async def _cancel_call() -> None:
++            socket = book.sockets.get(device_id)
++            if socket is None:
++                return
++            await socket.send_text(
++                json.dumps(
++                    {"type": "cancel", "device_id": device_id, "call_id": call_id}
++                )
++            )
++
++        work = asyncio.create_task(
++            asyncio.to_thread(
++                attempt_tool,
++                None,
++                str(body.get("attempt_id") or ""),
++                tool_name,
++                tool_args,
++                None,
++                gateway=_SocketGateway(request.app),
++                device_id=device_id,
++                call_id=call_id,
++                ack=bool(body.get("ack", True)),
++                stop_after_chunks=body.get("stop_after_chunks"),
++            )
++        )
++        try:
++            while not work.done():
++                await asyncio.wait({work}, timeout=0.25)
++                if work.done():
++                    break
++                if await request.is_disconnected():
++                    await _cancel_call()
++                    return {
++                        "state": "recovery_required",
++                        "executed": False,
++                        "action": "recovery_required",
++                        "run_status": "recovery_required",
++                        "result": None,
++                        "chunks": [],
++                        "truncated": False,
++                    }
++        except asyncio.CancelledError:
++            await _cancel_call()
++            raise
++        outcome = work.result()
++        chunks = [list(item) for item in outcome.get("chunks") or []]
++        return {**outcome, "chunks": chunks}
++
++    @router.get("/api/v1/devices/{device_id}/approvals/pending")
++    async def pending_approval(device_id: str, request: Request) -> dict[str, object]:
++        record = current_record(request)
++        book = request.app.state.device_registry
++        device = book.devices.get(device_id)
++        if device is None or device.tenant_id != record.tenant_id:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        try:
++            item = await asyncio.wait_for(book.approvals(device_id).get(), timeout=2)
++        except asyncio.TimeoutError as exc:
++            raise HTTPException(status_code=404, detail="NOT_FOUND") from exc
++        return item
++
++    @router.post("/api/v1/devices/{device_id}/approvals/{approval_id}")
++    async def resolve_device_approval(
++        device_id: str,
++        approval_id: str,
++        request: Request,
++    ) -> dict[str, str]:
++        require_write(request)
++        record = current_record(request)
++        book = request.app.state.device_registry
++        device = book.devices.get(device_id)
++        if device is None or device.tenant_id != record.tenant_id:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        body = await request.json()
++        socket = book.sockets.get(device_id)
++        if socket is None:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        await socket.send_text(
++            json.dumps(
++                {
++                    "type": "approval_resolve",
++                    "approval_id": approval_id,
++                    "decision": str(body.get("decision") or "rejected"),
++                }
++            )
++        )
++        return {"status": "sent"}
++
+     @router.websocket("/api/v1/devices/socket")
+     async def device_socket(socket: WebSocket) -> None:
+         await socket.accept()
+@@ -235,6 +365,13 @@ def build_router() -> APIRouter:
+                 incoming = json.loads(await socket.receive_text())
+                 if incoming.get("type") == "heartbeat":
+                     book.touch(device_id, str(incoming.get("session_id") or session_id))
++                    continue
++                if incoming.get("type") == "approval_request":
++                    await book.approvals(device_id).put(incoming)
++                    continue
++                call_id = str(incoming.get("call_id") or "")
++                if incoming.get("type") in {"chunk", "result", "status"} and call_id:
++                    await book.lane(device_id, call_id).put(incoming)
+         except Exception:
+             logger.info("device socket ended", extra={"device_id": device_id})
+         finally:
+@@ -244,6 +381,43 @@ def build_router() -> APIRouter:
+     return router
+ 
+ 
++class _SocketGateway:
++    """In-process device socket used by the worker tool entry."""
++
++    def __init__(self, app: FastAPI) -> None:
++        self.app = app
++
++    def send_tool(self, device_id: str, frame: dict[str, object]) -> None:
++        loop = self.app.state.loop
++
++        async def _send() -> None:
++            socket = self.app.state.device_registry.sockets[device_id]
++            await socket.send_text(json.dumps(frame))
++
++        asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
++
++    def recv_tool(
++        self,
++        device_id: str,
++        call_id: str,
++        timeout: float | None = None,
++    ) -> dict[str, object]:
++        if timeout is None:
++            timeout = 135.0
++        loop = self.app.state.loop
++
++        async def _recv() -> dict[str, object]:
++            inbox = self.app.state.device_registry.lane(device_id, call_id)
++            return await asyncio.wait_for(inbox.get(), timeout)
++
++        future = asyncio.run_coroutine_threadsafe(_recv(), loop)
++        try:
++            return future.result(timeout=timeout + 5)
++        except TimeoutError:
++            future.cancel()
++            raise
++
++
+ class RunningGateway:
+     def __init__(self, app: FastAPI, server: uvicorn.Server, thread: threading.Thread, port: int) -> None:
+         self.app = app
+@@ -290,6 +464,40 @@ class RunningGateway:
+ 
+         return writer_count(device_id)
+ 
++    def send_tool(self, device_id: str, frame: dict[str, object]) -> None:
++        loop = getattr(self.server, "_rxy_loop", None)
++        if loop is None:
++            raise RuntimeError("device gateway loop is not running")
++
++        async def _send() -> None:
++            socket = self._registry().sockets[device_id]
++            await socket.send_text(json.dumps(frame))
++
++        asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
++
++    def recv_tool(
++        self,
++        device_id: str,
++        call_id: str,
++        timeout: float | None = None,
++    ) -> dict[str, object]:
++        if timeout is None:
++            timeout = 135.0
++        loop = getattr(self.server, "_rxy_loop", None)
++        if loop is None:
++            raise RuntimeError("device gateway loop is not running")
++
++        async def _recv() -> dict[str, object]:
++            inbox = self._registry().lane(device_id, call_id)
++            return await asyncio.wait_for(inbox.get(), timeout)
++
++        future = asyncio.run_coroutine_threadsafe(_recv(), loop)
++        try:
++            return future.result(timeout=timeout + 5)
++        except TimeoutError:
++            future.cancel()
++            raise
++
+     def drop(self) -> None:
+         registry = self._registry()
+         sockets = list(registry.sockets.values())
+@@ -330,6 +538,7 @@ def serve_in_thread(
+         loop = asyncio.new_event_loop()
+         asyncio.set_event_loop(loop)
+         server._rxy_loop = loop  # type: ignore[attr-defined]
++        app.state.loop = loop
+ 
+         async def go() -> None:
+             task = loop.create_task(server.serve())
+diff --git a/packages/rxycode-worker/src/rxycode_worker/runner_client.py b/packages/rxycode-worker/src/rxycode_worker/runner_client.py
+new file mode 100644
+index 00000000..7094f4e1
+--- /dev/null
++++ b/packages/rxycode-worker/src/rxycode_worker/runner_client.py
+@@ -0,0 +1,305 @@
++"""Cloud-side dispatch onto the device's outbound websocket."""
++
++from __future__ import annotations
++
++import asyncio
++from dataclasses import dataclass
++from typing import Any
++
++
++# SseApproval waits 120s. The tool lane stays empty until that decision
++# becomes a frame, then the command may run for its own budget.
++_APPROVAL_WINDOW_SECONDS = 120.0
++_REPLY_MARGIN_SECONDS = 15.0
++
++
++def reply_wait_seconds(args: dict[str, Any] | None) -> float:
++    """How long one tool-lane read may block before the caller gives up."""
++    window = _APPROVAL_WINDOW_SECONDS
++    try:
++        from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
++
++        broker = get_approval_broker()
++        raw_window = getattr(broker, "timeout", None) if broker is not None else None
++        if raw_window is not None:
++            window = max(window, float(raw_window))
++    except Exception:
++        window = _APPROVAL_WINDOW_SECONDS
++    raw_budget = None if not isinstance(args, dict) else args.get("timeout", None)
++    if raw_budget is None:
++        tool_budget = 1800.0
++    else:
++        try:
++            tool_budget = max(0.0, float(raw_budget))
++        except (TypeError, ValueError):
++            tool_budget = 1800.0
++    return window + tool_budget + _REPLY_MARGIN_SECONDS
++
++
++@dataclass
++class DispatchResult:
++    state: str
++    result: str | None
++    chunks: list[tuple[int, str]]
++    truncated: bool = False
++
++
++class RunnerClient:
++    """Send tool frames on the paired device socket and read the replies."""
++
++    def invoke(
++        self,
++        *,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        attempt_id: str,
++        tool: str,
++        args: dict[str, Any],
++        ack: bool = True,
++        stop_after_chunks: int | None = None,
++    ) -> DispatchResult:
++        return asyncio.run(
++            self._invoke(
++                gateway=gateway,
++                device_id=device_id,
++                call_id=call_id,
++                attempt_id=attempt_id,
++                tool=tool,
++                args=args,
++                ack=ack,
++                stop_after_chunks=stop_after_chunks,
++            )
++        )
++
++    def resume(
++        self,
++        *,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        attempt_id: str,
++        resume_from: int,
++    ) -> DispatchResult:
++        return asyncio.run(
++            self._resume(
++                gateway=gateway,
++                device_id=device_id,
++                call_id=call_id,
++                attempt_id=attempt_id,
++                resume_from=resume_from,
++            )
++        )
++
++    def invoke_and_cancel(
++        self,
++        *,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        attempt_id: str,
++        tool: str,
++        args: dict[str, Any],
++        started: Any,
++    ) -> DispatchResult:
++        return asyncio.run(
++            self._cancel(
++                gateway=gateway,
++                device_id=device_id,
++                call_id=call_id,
++                attempt_id=attempt_id,
++                tool=tool,
++                args=args,
++                started=started,
++            )
++        )
++
++    async def _send(self, gateway: Any, device_id: str, frame: dict[str, Any]) -> None:
++        await asyncio.to_thread(gateway.send_tool, device_id, frame)
++
++    async def _recv(
++        self,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        timeout: float,
++    ) -> dict[str, Any]:
++        frame = await asyncio.to_thread(gateway.recv_tool, device_id, call_id, timeout)
++        return frame
++
++    async def _abandon(self, gateway: Any, device_id: str, call_id: str) -> None:
++        """Caller gave up. Tell the device so a later approval cannot run."""
++        try:
++            await self._send(
++                gateway,
++                device_id,
++                {"type": "cancel", "device_id": device_id, "call_id": call_id},
++            )
++        except Exception:
++            return
++
++    async def _invoke(
++        self,
++        *,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        attempt_id: str,
++        tool: str,
++        args: dict[str, Any],
++        ack: bool,
++        stop_after_chunks: int | None,
++    ) -> DispatchResult:
++        chunks: list[tuple[int, str]] = []
++        wait = reply_wait_seconds(args)
++        await self._send(
++            gateway,
++            device_id,
++            {
++                "type": "invoke",
++                "device_id": device_id,
++                "call_id": call_id,
++                "attempt_id": attempt_id,
++                "tool": tool,
++                "args": args,
++            },
++        )
++        while True:
++            try:
++                frame = await self._recv(gateway, device_id, call_id, wait)
++            except TimeoutError:
++                await self._abandon(gateway, device_id, call_id)
++                return DispatchResult("recovery_required", None, chunks, False)
++            kind = frame.get("type")
++            if kind == "chunk":
++                seq = int(frame["seq"])
++                chunks.append((seq, str(frame.get("data") or "")))
++                if stop_after_chunks is not None and len(chunks) >= stop_after_chunks:
++                    return DispatchResult("unacked", None, chunks, False)
++                await self._send(
++                    gateway,
++                    device_id,
++                    {"type": "chunk_ack", "device_id": device_id, "call_id": call_id, "seq": seq},
++                )
++                continue
++            if kind == "result":
++                if not ack:
++                    return DispatchResult("unacked", frame.get("result"), chunks, False)
++                await self._send(
++                    gateway,
++                    device_id,
++                    {"type": "ack", "device_id": device_id, "call_id": call_id, "subject": "result"},
++                )
++                return DispatchResult("completed", frame.get("result"), chunks, False)
++            if kind == "status":
++                return DispatchResult(str(frame.get("state")), frame.get("result"), chunks, False)
++
++    async def _resume(
++        self,
++        *,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        attempt_id: str,
++        resume_from: int,
++    ) -> DispatchResult:
++        chunks: list[tuple[int, str]] = []
++        seen: set[int] = set()
++        wait = reply_wait_seconds(None)
++        await self._send(
++            gateway,
++            device_id,
++            {
++                "type": "status",
++                "device_id": device_id,
++                "call_id": call_id,
++                "attempt_id": attempt_id,
++                "resume_from": resume_from,
++            },
++        )
++        while True:
++            try:
++                frame = await self._recv(gateway, device_id, call_id, wait)
++            except TimeoutError:
++                return DispatchResult("recovery_required", None, chunks, False)
++            kind = frame.get("type")
++            if kind == "chunk":
++                seq = int(frame["seq"])
++                if seq in seen or seq <= resume_from:
++                    continue
++                seen.add(seq)
++                chunks.append((seq, str(frame.get("data") or "")))
++                await self._send(
++                    gateway,
++                    device_id,
++                    {"type": "chunk_ack", "device_id": device_id, "call_id": call_id, "seq": seq},
++                )
++                continue
++            if kind == "result":
++                await self._send(
++                    gateway,
++                    device_id,
++                    {"type": "ack", "device_id": device_id, "call_id": call_id, "subject": "result"},
++                )
++                return DispatchResult(
++                    str(frame.get("state") or "completed"),
++                    frame.get("result"),
++                    chunks,
++                    bool(frame.get("truncated")),
++                )
++            if kind == "status" and frame.get("state") == "recovery_required":
++                continue
++            if kind == "status":
++                return DispatchResult(str(frame.get("state")), None, chunks, bool(frame.get("truncated")))
++
++    async def _cancel(
++        self,
++        *,
++        gateway: Any,
++        device_id: str,
++        call_id: str,
++        attempt_id: str,
++        tool: str,
++        args: dict[str, Any],
++        started: Any,
++    ) -> DispatchResult:
++        await self._send(
++            gateway,
++            device_id,
++            {
++                "type": "invoke",
++                "device_id": device_id,
++                "call_id": call_id,
++                "attempt_id": attempt_id,
++                "tool": tool,
++                "args": args,
++            },
++        )
++        found = await asyncio.to_thread(started.wait, 3)
++        if not found:
++            raise TimeoutError("tool did not start")
++        await self._send(
++            gateway,
++            device_id,
++            {"type": "cancel", "device_id": device_id, "call_id": call_id},
++        )
++        try:
++            frame = await self._recv(
++                gateway, device_id, call_id, reply_wait_seconds(args)
++            )
++        except TimeoutError:
++            return DispatchResult("recovery_required", None, [], False)
++        return DispatchResult(str(frame.get("state")), frame.get("result"), [], False)
++
++
++def dispatch_device_call(**kwargs: Any) -> DispatchResult:
++    """Worker entry point. Cloud code calls this, not the socket class."""
++    return RunnerClient().invoke(**kwargs)
++
++
++def dispatch_device_resume(**kwargs: Any) -> DispatchResult:
++    return RunnerClient().resume(**kwargs)
++
++
++def dispatch_device_cancel(**kwargs: Any) -> DispatchResult:
++    return RunnerClient().invoke_and_cancel(**kwargs)
+diff --git a/packages/rxycode-worker/src/rxycode_worker/supervisor.py b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+index e5c89d88..af2b36f4 100644
+--- a/packages/rxycode-worker/src/rxycode_worker/supervisor.py
++++ b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+@@ -266,8 +266,42 @@ def confirm_cancel(
+     return status
+ 
+ 
+-def attempt_tool(journal, attempt_id: str, tool: str, args: dict, execute):
+-    """Reserve the existing tool journal. A network failure leaves the write pending."""
++def attempt_tool(
++    journal,
++    attempt_id: str,
++    tool: str,
++    args: dict,
++    execute,
++    *,
++    gateway: object | None = None,
++    device_id: str = "",
++    call_id: str = "",
++    ack: bool = True,
++    stop_after_chunks: int | None = None,
++):
++    """Reserve the existing tool journal. A device target goes out on its socket."""
++    if gateway is not None and device_id and call_id:
++        from rxycode_worker.runner_client import dispatch_device_call
++
++        outcome = dispatch_device_call(
++            gateway=gateway,
++            device_id=device_id,
++            call_id=call_id,
++            attempt_id=attempt_id,
++            tool=tool,
++            args=args,
++            ack=ack,
++            stop_after_chunks=stop_after_chunks,
++        )
++        return {
++            "executed": outcome.state == "completed",
++            "action": outcome.state,
++            "run_status": "running" if outcome.state == "completed" else "recovery_required",
++            "result": outcome.result,
++            "state": outcome.state,
++            "chunks": outcome.chunks,
++            "truncated": outcome.truncated,
++        }
+     binding = journal.binding(attempt_id)
+     call = binding.next_call(tool, args)
+     reservation = journal.reserve(attempt_id, call)
+@@ -283,3 +317,31 @@ def attempt_tool(journal, attempt_id: str, tool: str, args: dict, execute):
+         return {"executed": True, "action": "uncertain", "run_status": "recovery_required"}
+     journal.complete(attempt_id, call, result)
+     return {"executed": True, "action": "execute", "run_status": "running", "result": result}
++
++
++def resume_device_tool(gateway, device_id: str, call_id: str, attempt_id: str, resume_from: int):
++    """Ask the paired device for chunks after the socket returns."""
++    from rxycode_worker.runner_client import dispatch_device_resume
++
++    return dispatch_device_resume(
++        gateway=gateway,
++        device_id=device_id,
++        call_id=call_id,
++        attempt_id=attempt_id,
++        resume_from=resume_from,
++    )
++
++
++def cancel_device_tool(gateway, device_id: str, call_id: str, attempt_id: str, tool: str, args: dict, started):
++    """Tell the paired device to stop the in-flight tool."""
++    from rxycode_worker.runner_client import dispatch_device_cancel
++
++    return dispatch_device_cancel(
++        gateway=gateway,
++        device_id=device_id,
++        call_id=call_id,
++        attempt_id=attempt_id,
++        tool=tool,
++        args=args,
++        started=started,
++    )
+diff --git a/pyproject.toml b/pyproject.toml
+index cc5d92f5..1ef091d8 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -90,6 +90,7 @@ packages = [
+   "rxycode_runner.local",
+   "rxycode_runner.desktop",
+   "rxycode_runner.remote",
++  "rxycode_runner.transport",
+ ]
+ 
+ [tool.setuptools.package-dir]
+@@ -114,6 +115,7 @@ packages = [
+ "rxycode_runner.local" = "packages/rxycode-runner/src/rxycode_runner/local"
+ "rxycode_runner.desktop" = "packages/rxycode-runner/src/rxycode_runner/desktop"
+ "rxycode_runner.remote" = "packages/rxycode-runner/src/rxycode_runner/remote"
++"rxycode_runner.transport" = "packages/rxycode-runner/src/rxycode_runner/transport"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/tests/web/w4/test_w4_c04_module.py b/tests/web/w4/test_w4_c04_module.py
+new file mode 100644
+index 00000000..8fd72ba4
+--- /dev/null
++++ b/tests/web/w4/test_w4_c04_module.py
+@@ -0,0 +1,117 @@
++"""WEB-W4-C04. Reconnect dedups chunk sequence numbers."""
++
++from __future__ import annotations
++
++import sys
++import threading
++import time
++from pathlib import Path
++from uuid import uuid4
++
++import httpx
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++for entry in (str(REPO), str(_RUNNER), str(_WORKER), str(_SERVER)):
++    if entry not in sys.path:
++        sys.path.insert(0, entry)
++
++
++def test_w4_c04_integration(tmp_path: Path) -> None:
++    """After the device socket drops, later chunk seqs are replayed once."""
++    from click.testing import CliRunner
++    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
++        RemoteJournalAdapter,
++        ToolExecutionJournal,
++    )
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import request_stop, reset_stop
++    from rxycode_runner.transport.tool_rpc import CHUNK_LIMIT, clear_local_tools
++    from rxycode_server.devices.gateway import serve_in_thread
++    from rxycode_worker.supervisor import attempt_tool, resume_device_tool
++
++    body = "你" * 5000
++    note = tmp_path / "note.txt"
++    gateway = serve_in_thread(secret=_SECRET)
++    reset_stop()
++    browser = gateway.browser_session("tenant-a")
++    csrf = "csrf-token-value-for-c04"
++    issued = httpx.post(
++        f"{gateway.http}/api/v1/devices/pairings",
++        headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++        cookies={"rxy_session": browser, "rxy_csrf": csrf},
++        timeout=5,
++    )
++    code = issued.json()["code"]
++    thread = threading.Thread(
++        target=lambda: CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,
++                "--code",
++                code,
++                "--device-id",
++                "desk-1",
++                "--os-name",
++                "Windows",
++                "--capability",
++                "click",
++                "--heartbeat-seconds",
++                "0.2",
++            ],
++        )
++    )
++    thread.start()
++    deadline = time.time() + 10
++    while time.time() < deadline and not gateway.session_id("desk-1"):
++        time.sleep(0.05)
++    attempt_id = f"att_{uuid4().hex}"
++    call_id = f"call_{uuid4().hex}"
++    try:
++        assert gateway.session_id("desk-1")
++        partial = attempt_tool(
++            None, attempt_id, "write",
++            {"path": str(note), "text": "hello-once", "body": body}, None,
++            gateway=gateway, device_id="desk-1", call_id=call_id,
++            ack=False, stop_after_chunks=2,
++        )
++        assert [item[0] for item in partial["chunks"]] == [1, 2]
++        assert all(len(item[1].encode("utf-8")) <= CHUNK_LIMIT for item in partial["chunks"])
++        first_session = gateway.session_id("desk-1")
++        gateway.drop()
++        second_session = ""
++        deadline = time.time() + 10
++        while time.time() < deadline:
++            second_session = gateway.session_id("desk-1")
++            if second_session and second_session != first_session:
++                break
++            time.sleep(0.05)
++        assert second_session and second_session != first_session
++        resumed = resume_device_tool(
++            gateway=gateway,
++            device_id="desk-1",
++            call_id=call_id,
++            attempt_id=attempt_id,
++            resume_from=2,
++        )
++        seqs = [item[0] for item in resumed.chunks]
++        assert seqs
++        assert len(seqs) == len(set(seqs))
++        assert all(seq > 2 for seq in seqs)
++        merged: dict[int, str] = {}
++        for seq, data in partial["chunks"] + resumed.chunks:
++            merged.setdefault(seq, data)
++        replayed = "".join(merged[seq] for seq in sorted(merged))
++        assert replayed == body or resumed.truncated
++        assert all(len(item.encode("utf-8")) <= CHUNK_LIMIT for item in merged.values())
++        assert note.read_text(encoding="utf-8") == "hello-once"
++    finally:
++        request_stop()
++        thread.join(5)
++        gateway.close()
++        clear_local_tools("desk-1")
+diff --git a/tests/web/w4/test_w4_c04_unit.py b/tests/web/w4/test_w4_c04_unit.py
+new file mode 100644
+index 00000000..56191bd7
+--- /dev/null
++++ b/tests/web/w4/test_w4_c04_unit.py
+@@ -0,0 +1,540 @@
++"""WEB-W4-C04. A repeated call_id replays the result and does not run twice."""
++
++from __future__ import annotations
++
++import sys
++import threading
++import time
++from pathlib import Path
++from uuid import uuid4
++
++import httpx
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++for entry in (str(REPO), str(_RUNNER), str(_WORKER), str(_SERVER)):
++    if entry not in sys.path:
++        sys.path.insert(0, entry)
++
++
++def _ids() -> tuple[str, str]:
++    return f"att_{uuid4().hex}", f"call_{uuid4().hex}"
++
++
++def _pair(gateway: object) -> threading.Thread:
++    from click.testing import CliRunner
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import reset_stop
++
++    reset_stop()
++    browser = gateway.browser_session("tenant-a")  # type: ignore[attr-defined]
++    csrf = "csrf-token-value-for-c04"
++    cookies = {"rxy_session": browser, "rxy_csrf": csrf}
++    headers = {"Origin": gateway.http, "X-CSRF-Token": csrf}  # type: ignore[attr-defined]
++    issued = httpx.post(
++        f"{gateway.http}/api/v1/devices/pairings",  # type: ignore[attr-defined]
++        headers=headers,
++        cookies=cookies,
++        timeout=5,
++    )
++    issued.raise_for_status()
++    code = issued.json()["code"]
++    holder: dict[str, object] = {}
++
++    def launch() -> None:
++        holder["result"] = CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,  # type: ignore[attr-defined]
++                "--code",
++                code,
++                "--device-id",
++                "desk-1",
++                "--os-name",
++                "Windows",
++                "--capability",
++                "click",
++                "--heartbeat-seconds",
++                "0.2",
++            ],
++        )
++
++    thread = threading.Thread(target=launch)
++    thread.start()
++    deadline = time.time() + 10
++    while time.time() < deadline and not gateway.session_id("desk-1"):  # type: ignore[attr-defined]
++        time.sleep(0.05)
++    if not gateway.session_id("desk-1"):  # type: ignore[attr-defined]
++        raise AssertionError(holder.get("result"))
++    return thread
++
++
++def test_w4_c04_contract(tmp_path: Path) -> None:
++    """A second invoke of a completed call returns the first result."""
++    from rxycode_runner.remote.client import request_stop
++    from rxycode_runner.transport.tool_rpc import clear_local_tools
++    from rxycode_server.devices.gateway import serve_in_thread
++    from rxycode_worker.supervisor import attempt_tool
++
++    gateway = serve_in_thread(secret=_SECRET)
++    thread = _pair(gateway)
++    note = tmp_path / "note.txt"
++    left = tmp_path / "left.txt"
++    right = tmp_path / "right.txt"
++    _attempt_a, call_id = _ids()
++    attempt_b = f"att_{uuid4().hex}"
++    try:
++        first = attempt_tool(
++            None, _attempt_a, "write", {"path": str(note), "text": "once"}, None,
++            gateway=gateway, device_id="desk-1", call_id=call_id,
++        )
++        second = attempt_tool(
++            None, attempt_b, "write", {"path": str(note), "text": "once"}, None,
++            gateway=gateway, device_id="desk-1", call_id=call_id,
++        )
++        assert first["state"] == "completed"
++        assert first["result"] == "once"
++        assert second["state"] == "completed"
++        assert second["result"] == "once"
++        assert note.read_text(encoding="utf-8") == "once"
++        call_left = f"call_{uuid4().hex}"
++        call_right = f"call_{uuid4().hex}"
++        found: dict[str, object] = {}
++
++        def one(name: str, call: str, path: Path, text: str) -> None:
++            found[name] = attempt_tool(
++                None, f"att_{uuid4().hex}", "write", {"path": str(path), "text": text}, None,
++                gateway=gateway, device_id="desk-1", call_id=call,
++            )
++
++        pair = (
++            threading.Thread(target=one, args=("left", call_left, left, "A")),
++            threading.Thread(target=one, args=("right", call_right, right, "B")),
++        )
++        for item in pair:
++            item.start()
++        for item in pair:
++            item.join(10)
++        assert found["left"]["result"] == "A"
++        assert found["right"]["result"] == "B"
++        assert left.read_text(encoding="utf-8") == "A"
++        assert right.read_text(encoding="utf-8") == "B"
++        work = REPO / "tests" / "web" / "w4" / "_bash_c04"
++        work.mkdir(parents=True, exist_ok=True)
++        marker = work / "bash-mark.txt"
++        script = work / "mark.py"
++        script.write_text(
++            "from pathlib import Path\n"
++            f"p = Path({str(marker)!r})\n"
++            "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
++            "p.write_text(old + 'x', encoding='utf-8')\n",
++            encoding="utf-8",
++        )
++        stop_approver = threading.Event()
++
++        def _approve() -> None:
++            while not stop_approver.is_set():
++                try:
++                    pending = httpx.get(
++                        f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
++                        cookies={"rxy_session": browser},
++                        timeout=3,
++                    )
++                except httpx.HTTPError:
++                    continue
++                if pending.status_code != 200:
++                    continue
++                approval_id = str(pending.json().get("approval_id") or "")
++                if not approval_id:
++                    continue
++                httpx.post(
++                    f"{gateway.http}/api/v1/devices/desk-1/approvals/{approval_id}",
++                    headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++                    cookies={"rxy_session": browser, "rxy_csrf": csrf},
++                    json={"decision": "approved"},
++                    timeout=5,
++                )
++
++        command = "cmd /c python mark.py"
++        bash_call = f"call_{uuid4().hex}"
++        bash_args = {"command": command, "workdir": str(work), "timeout": 30}
++        browser = gateway.browser_session("tenant-a")
++        csrf = "csrf-token-value-for-c04"
++        approver = threading.Thread(target=_approve, daemon=True)
++        approver.start()
++        posted = httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": bash_call,
++                "tool": "bash",
++                "args": bash_args,
++            },
++            timeout=30,
++        )
++        posted.raise_for_status()
++        first_bash = posted.json()
++        again = httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": bash_call,
++                "tool": "bash",
++                "args": bash_args,
++            },
++            timeout=30,
++        )
++        second_bash = again.json()
++        assert first_bash["state"] == "completed", first_bash
++        assert second_bash["result"] == first_bash["result"]
++        assert marker.read_text(encoding="utf-8") == "x"
++        slow = httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "command": "cmd /c python -c \"import time; time.sleep(3)\"",
++                    "workdir": str(work),
++                    "timeout": 1,
++                },
++            },
++            timeout=30,
++        )
++        assert slow.json()["state"] == "recovery_required"
++        zero_started = time.time()
++        zero = httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "command": "cmd /c python -c \"import time; time.sleep(3)\"",
++                    "workdir": str(work),
++                    "timeout": 0,
++                },
++            },
++            timeout=30,
++        )
++        assert time.time() - zero_started < 2.5
++        assert zero.json()["state"] == "recovery_required"
++        stop_approver.set()
++        approver.join(5)
++        from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
++        from rxycode_worker.runner_client import reply_wait_seconds
++
++        broker = get_approval_broker()
++        assert broker is not None and float(broker.timeout) >= 120
++        assert reply_wait_seconds({"timeout": 0}) >= 135
++        delay_mark = work / "bash-delay.txt"
++        (work / "delay.py").write_text(
++            "from pathlib import Path\n"
++            f"p = Path({str(delay_mark)!r})\n"
++            "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
++            "p.write_text(old + 'd', encoding='utf-8')\n",
++            encoding="utf-8",
++        )
++
++        def _approve_after_five() -> None:
++            time.sleep(6)
++            deadline = time.time() + 20
++            while time.time() < deadline:
++                try:
++                    pending = httpx.get(
++                        f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
++                        cookies={"rxy_session": browser},
++                        timeout=3,
++                    )
++                except httpx.HTTPError:
++                    continue
++                if pending.status_code != 200:
++                    continue
++                approval_id = str(pending.json().get("approval_id") or "")
++                if not approval_id:
++                    continue
++                httpx.post(
++                    f"{gateway.http}/api/v1/devices/desk-1/approvals/{approval_id}",
++                    headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++                    cookies={"rxy_session": browser, "rxy_csrf": csrf},
++                    json={"decision": "approved"},
++                    timeout=5,
++                )
++                return
++
++        threading.Thread(target=_approve_after_five, daemon=True).start()
++        delay_started = time.time()
++        delayed = httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "command": "cmd /c python delay.py",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++            },
++            timeout=40,
++        )
++        delay_body = delayed.json()
++        assert delayed.status_code == 200, delayed.text
++        assert delay_body["state"] == "completed" and time.time() - delay_started >= 5, (
++            round(time.time() - delay_started, 3),
++            delay_body,
++        )
++        assert delay_mark.read_text(encoding="utf-8") == "d"
++        abandoned = work / "bash-abandoned.txt"
++        (work / "abandon.py").write_text(
++            "from pathlib import Path\n"
++            f"p = Path({str(abandoned)!r})\n"
++            "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
++            "p.write_text(old + 'z', encoding='utf-8')\n",
++            encoding="utf-8",
++        )
++        abandon_call = f"call_{uuid4().hex}"
++        abandon_holder: dict[str, object] = {}
++
++        def _post_abandon() -> None:
++            abandon_holder["response"] = httpx.post(
++                f"{gateway.http}/api/v1/devices/desk-1/invocations",
++                headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++                cookies={"rxy_session": browser, "rxy_csrf": csrf},
++                json={
++                    "attempt_id": f"att_{uuid4().hex}",
++                    "call_id": abandon_call,
++                    "tool": "bash",
++                    "args": {
++                        "command": "cmd /c python abandon.py",
++                        "workdir": str(work),
++                        "timeout": 30,
++                    },
++                },
++                timeout=40,
++            )
++
++        threading.Thread(target=_post_abandon, daemon=True).start()
++        late_approval = ""
++        seen_pending = time.time() + 15
++        while time.time() < seen_pending and not late_approval:
++            try:
++                pending = httpx.get(
++                    f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
++                    cookies={"rxy_session": browser},
++                    timeout=3,
++                )
++            except httpx.HTTPError:
++                continue
++            if pending.status_code == 200:
++                late_approval = str(pending.json().get("approval_id") or "")
++            else:
++                time.sleep(0.1)
++        assert late_approval
++        gateway.send_tool(
++            "desk-1",
++            {"type": "cancel", "device_id": "desk-1", "call_id": abandon_call},
++        )
++        time.sleep(0.5)
++        httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/approvals/{late_approval}",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={"decision": "approved"},
++            timeout=5,
++        )
++        wait_abandon = time.time() + 15
++        while time.time() < wait_abandon and "response" not in abandon_holder:
++            time.sleep(0.1)
++        assert "response" in abandon_holder
++        abandon_response = abandon_holder["response"]
++        assert abandon_response.status_code == 200, abandon_response.text
++        assert abandon_response.json()["state"] in {"cancelled", "recovery_required"}
++        time.sleep(2)
++        assert not abandoned.exists()
++        pair_marks = {"left": work / "bash-left.txt", "right": work / "bash-right.txt"}
++        pair_calls: dict[str, str] = {}
++        for name, mark, piece in (("left", pair_marks["left"], "L"), ("right", pair_marks["right"], "R")):
++            (work / f"{name}.py").write_text(
++                "from pathlib import Path\n"
++                f"p = Path({str(mark)!r})\n"
++                "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
++                f"p.write_text(old + {piece!r}, encoding='utf-8')\n",
++                encoding="utf-8",
++            )
++            pair_calls[name] = f"call_{uuid4().hex}"
++        pair_holder: dict[str, httpx.Response] = {}
++
++        def _post_pair(name: str) -> None:
++            pair_holder[name] = httpx.post(
++                f"{gateway.http}/api/v1/devices/desk-1/invocations",
++                headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++                cookies={"rxy_session": browser, "rxy_csrf": csrf},
++                json={
++                    "attempt_id": f"att_{uuid4().hex}",
++                    "call_id": pair_calls[name],
++                    "tool": "bash",
++                    "args": {
++                        "command": f"cmd /c python {name}.py",
++                        "workdir": str(work),
++                        "timeout": 30,
++                    },
++                },
++                timeout=40,
++            )
++
++        for name in ("left", "right"):
++            threading.Thread(target=_post_pair, args=(name,), daemon=True).start()
++        paired: dict[str, str] = {}
++        pair_deadline = time.time() + 15
++        while time.time() < pair_deadline and len(paired) < 2:
++            try:
++                pending = httpx.get(
++                    f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
++                    cookies={"rxy_session": browser},
++                    timeout=3,
++                )
++            except httpx.HTTPError:
++                continue
++            if pending.status_code != 200:
++                time.sleep(0.05)
++                continue
++            body = pending.json()
++            command = str((body.get("args") or {}).get("command") or "")
++            approval_id = str(body.get("approval_id") or "")
++            if "left.py" in command and approval_id:
++                paired["left"] = approval_id
++            elif "right.py" in command and approval_id:
++                paired["right"] = approval_id
++        assert set(paired) == {"left", "right"}, paired
++        gateway.send_tool(
++            "desk-1",
++            {"type": "cancel", "device_id": "desk-1", "call_id": pair_calls["left"]},
++        )
++        time.sleep(0.5)
++        httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/approvals/{paired['right']}",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={"decision": "approved"},
++            timeout=5,
++        )
++        httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/approvals/{paired['left']}",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={"decision": "approved"},
++            timeout=5,
++        )
++        pair_wait = time.time() + 20
++        while time.time() < pair_wait and len(pair_holder) < 2:
++            time.sleep(0.1)
++        assert set(pair_holder) == {"left", "right"}
++        assert pair_holder["right"].status_code == 200, pair_holder["right"].text
++        assert pair_holder["right"].json()["state"] == "completed", pair_holder["right"].text
++        assert pair_marks["right"].read_text(encoding="utf-8") == "R"
++        assert pair_holder["left"].json()["state"] in {"cancelled", "recovery_required"}
++        time.sleep(1)
++        assert not pair_marks["left"].exists()
++        outsider = gateway.browser_session("tenant-b")
++        denied = httpx.post(
++            f"{gateway.http}/api/v1/devices/desk-1/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": outsider, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "write",
++                "args": {"path": str(note), "text": "nope"},
++            },
++            timeout=10,
++        )
++        assert denied.status_code == 404
++        assert note.read_text(encoding="utf-8") == "once"
++    finally:
++        request_stop()
++        thread.join(5)
++        gateway.close()
++        clear_local_tools("desk-1")
++        from core.safety.approval import set_approval_broker
++        if "stop_approver" in locals():
++            stop_approver.set()
++        set_approval_broker(None)
++        bash_dir = REPO / "tests" / "web" / "w4" / "_bash_c04"
++        if bash_dir.exists():
++            for child in bash_dir.iterdir():
++                if child.is_file():
++                    child.unlink()
++            bash_dir.rmdir()
++
++
++def test_w4_c04_negative(tmp_path: Path) -> None:
++    """A lost result ack stays unknown and does not write again."""
++    from rxycode_runner.remote.client import request_stop
++    from rxycode_runner.remote.client import reset_stop
++    from rxycode_runner.transport.tool_rpc import cancel_started, clear_local_tools
++    from rxycode_server.devices.gateway import serve_in_thread
++    from rxycode_worker.supervisor import attempt_tool, cancel_device_tool
++
++    target = tmp_path / "side.txt"
++    gateway = serve_in_thread(secret=_SECRET)
++    thread = _pair(gateway)
++    attempt_id, call_id = _ids()
++    try:
++        dropped = attempt_tool(
++            None, attempt_id, "write", {"mode": "write", "path": str(target)}, None,
++            gateway=gateway, device_id="desk-1", call_id=call_id, ack=False,
++        )
++        assert dropped["state"] == "unacked"
++        assert target.read_text(encoding="utf-8") == "W"
++        retried = attempt_tool(
++            None, f"att_{uuid4().hex}", "write", {"mode": "write", "path": str(target)}, None,
++            gateway=gateway, device_id="desk-1", call_id=call_id,
++        )
++        assert retried["state"] == "recovery_required"
++        assert target.read_text(encoding="utf-8") == "W"
++        request_stop()
++        thread.join(5)
++        clear_local_tools("desk-1")
++        reset_stop()
++        restarted = _pair(gateway)
++        thread = restarted
++        after_restart = attempt_tool(
++            None, f"att_{uuid4().hex}", "write", {"mode": "write", "path": str(target)}, None,
++            gateway=gateway, device_id="desk-1", call_id=call_id,
++        )
++        assert after_restart["state"] == "recovery_required"
++        assert target.read_text(encoding="utf-8") == "W"
++        cancel_attempt, cancel_call = _ids()
++        cancelled = cancel_device_tool(
++            gateway=gateway,
++            device_id="desk-1",
++            call_id=cancel_call,
++            attempt_id=cancel_attempt,
++            tool="write",
++            args={"mode": "cancel", "path": str(target)},
++            started=cancel_started(),
++        )
++        assert cancelled.state == "cancelled"
++        assert target.read_text(encoding="utf-8") == "W"
++    finally:
++        request_stop()
++        thread.join(5)
++        gateway.close()
++        clear_local_tools("desk-1")
