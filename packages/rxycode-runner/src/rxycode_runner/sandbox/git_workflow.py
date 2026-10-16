@@ -59,8 +59,8 @@ class GitWorkflow:
             raise RuntimeError("git sandbox failed to start")
         return SandboxRepo(name, tenant_id)
 
-    def clone_remote(self, box: SandboxRepo, remote: str) -> str:
-        _git(box, ["clone", remote, "/tmp/ws"])
+    def clone_remote(self, box: SandboxRepo, remote: str, *, token: str) -> str:
+        _git(box, ["clone", remote, "/tmp/ws"], token=token)
         return self.rev(box, "HEAD")
 
     def commit_fix(
@@ -93,7 +93,15 @@ class GitWorkflow:
         )
         return self.rev(box, "HEAD")
 
-    def push(self, box: SandboxRepo, *, branch: str, remote: str, journal: object) -> None:
+    def push(
+        self,
+        box: SandboxRepo,
+        *,
+        branch: str,
+        remote: str,
+        journal: object,
+        token: str,
+    ) -> None:
         if branch in _PROTECTED:
             raise ProtectedBranch(branch)
         reserve = getattr(journal, "reserve_remote", None)
@@ -101,7 +109,7 @@ class GitWorkflow:
         if not callable(reserve) or not callable(complete):
             raise RuntimeError("tool journal required")
         call = reserve(action="git.push", branch=branch, remote=remote)
-        _git(box, ["-C", "/tmp/ws", "push", remote, f"HEAD:refs/heads/{branch}"])
+        _git(box, ["-C", "/tmp/ws", "push", remote, f"HEAD:refs/heads/{branch}"], token=token)
         complete(call, f"pushed {branch}")
 
     def rev(self, box: SandboxRepo, ref: str) -> str:
@@ -125,10 +133,21 @@ def _write(box: SandboxRepo, path: str, content: str) -> None:
         raise RuntimeError((done.stderr or "write failed").strip())
 
 
-def _git(box: SandboxRepo, args: list[str]) -> subprocess.CompletedProcess[str]:
-    done = _run(docker_executable(), ["exec", box.name, "git", *args])
+def _git(
+    box: SandboxRepo,
+    args: list[str],
+    token: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = ["git"]
+    if token:
+        command.extend(["-c", f"http.extraHeader=Authorization: Bearer {token}"])
+    command.extend(args)
+    done = _run(docker_executable(), ["exec", box.name, *command])
     if done.returncode != 0:
-        raise RuntimeError((done.stderr or done.stdout or "git failed").strip())
+        detail = (done.stderr or done.stdout or "git failed").strip()
+        if token:
+            detail = detail.replace(token, "[redacted]")
+        raise RuntimeError(detail)
     return done
 
 

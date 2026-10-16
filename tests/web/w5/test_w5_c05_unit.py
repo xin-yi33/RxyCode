@@ -31,8 +31,9 @@ def _pkt(data: bytes) -> bytes:
 class GitHubApi:
     """GitHub pulls API plus smart HTTP for the same sample repo."""
 
-    def __init__(self, *, write: bool) -> None:
+    def __init__(self, *, write: bool, token: str) -> None:
         self.write = write
+        self.token = token
         self.pulls: list[dict[str, object]] = []
         self.posts = 0
         self.seen_auth: list[str] = []
@@ -67,6 +68,9 @@ class GitHubApi:
         self._thread = threading.Thread(target=server.serve_forever, daemon=True)
         self._thread.start()
 
+    def _bearer(self, handler: BaseHTTPRequestHandler) -> bool:
+        return handler.headers.get("Authorization", "") == f"Bearer {self.token}"
+
     def has_branch(self, branch: str) -> bool:
         done = subprocess.run(
             ["git", "--git-dir", self.bare, "rev-parse", "--verify", f"refs/heads/{branch}"],
@@ -97,6 +101,10 @@ class GitHubApi:
 
     def _get(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)
+        if not self._bearer(handler):
+            handler.send_response(401)
+            handler.end_headers()
+            return
         if parsed.path.endswith("/info/refs"):
             service = parse_qs(parsed.query).get("service", [""])[0]
             binary = "upload-pack" if service == "git-upload-pack" else "receive-pack"
@@ -126,6 +134,10 @@ class GitHubApi:
     def _post(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)
         raw = handler.rfile.read(int(handler.headers.get("Content-Length", "0")))
+        if not self._bearer(handler):
+            handler.send_response(401)
+            handler.end_headers()
+            return
         if parsed.path.endswith("/git-upload-pack") or parsed.path.endswith("/git-receive-pack"):
             binary = "upload-pack" if parsed.path.endswith("/git-upload-pack") else "receive-pack"
             packed = subprocess.run(
@@ -213,9 +225,9 @@ def test_w5_c05_contract() -> None:
     journal = ToolJournal()
     flow = GitWorkflow()
     box = flow.open_sandbox(tenant_id="tenant-a")
-    api = GitHubApi(write=True)
+    api = GitHubApi(write=True, token=secret)
     try:
-        main_sha = flow.clone_remote(box, api.git_url)
+        main_sha = flow.clone_remote(box, api.git_url, token=secret)
         sha = flow.commit_fix(
             box,
             branch="rxy/fix-sample",
@@ -224,7 +236,7 @@ def test_w5_c05_contract() -> None:
             message="fix sample",
         )
         assert sha != main_sha
-        flow.push(box, branch="rxy/fix-sample", remote=api.git_url, journal=journal)
+        flow.push(box, branch="rxy/fix-sample", remote=api.git_url, journal=journal, token=secret)
         assert api.has_branch("rxy/fix-sample")
         assert flow.rev(box, "main") == main_sha
         client = GitHubClient(base_url=api.url, token=secret, journal=journal)
@@ -262,9 +274,9 @@ def test_w5_c05_negative() -> None:
     journal = ToolJournal()
     flow = GitWorkflow()
     box = flow.open_sandbox(tenant_id="tenant-a")
-    api = GitHubApi(write=False)
+    api = GitHubApi(write=False, token=secret)
     try:
-        main_sha = flow.clone_remote(box, api.git_url)
+        main_sha = flow.clone_remote(box, api.git_url, token=secret)
         sha = flow.commit_fix(
             box,
             branch="rxy/fix-denied",
@@ -273,7 +285,7 @@ def test_w5_c05_negative() -> None:
             message="fix denied",
         )
         with pytest.raises(ProtectedBranch):
-            flow.push(box, branch="main", remote=api.git_url, journal=journal)
+            flow.push(box, branch="main", remote=api.git_url, journal=journal, token=secret)
         assert flow.rev(box, "main") == main_sha
         client = GitHubClient(base_url=api.url, token=secret, journal=journal)
         held = client.publish(

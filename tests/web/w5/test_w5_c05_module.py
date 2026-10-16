@@ -25,9 +25,9 @@ def test_w5_c05_integration() -> None:
     journal = ToolJournal()
     flow = GitWorkflow()
     box = flow.open_sandbox(tenant_id="tenant-a")
-    api = GitHubApi(write=True)
+    api = GitHubApi(write=True, token=secret)
     try:
-        flow.clone_remote(box, api.git_url)
+        flow.clone_remote(box, api.git_url, token=secret)
         sha = flow.commit_fix(
             box,
             branch="rxy/fix-retry",
@@ -35,7 +35,7 @@ def test_w5_c05_integration() -> None:
             content="fixed\n",
             message="fix retry",
         )
-        flow.push(box, branch="rxy/fix-retry", remote=api.git_url, journal=journal)
+        flow.push(box, branch="rxy/fix-retry", remote=api.git_url, journal=journal, token=secret)
         assert api.has_branch("rxy/fix-retry")
         client = GitHubClient(base_url=api.url, token=secret, journal=journal)
         kwargs = {
