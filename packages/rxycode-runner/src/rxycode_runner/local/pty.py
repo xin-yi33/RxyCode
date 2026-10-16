@@ -199,17 +199,39 @@ def _cloud_env(workspace: Path) -> dict[str, str]:
     return env
 
 
-def _hide_sibling_workspaces(wrapped: Any, root: Path) -> Any:
+def _tight_bwrap(command: list[str], workspace: Path) -> list[str]:
+    """Mount only the system loader paths and this workspace. Do not expose the host root."""
+    argv = [
+        "bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-pid",
+        "--unshare-net",
+    ]
+    for folder in ("/usr", "/lib", "/lib64", "/bin", "/sbin"):
+        if Path(folder).is_dir():
+            argv.extend(["--ro-bind", folder, folder])
+    if command and command[0].startswith("/"):
+        exe = Path(command[0]).resolve()
+        covered = ("/usr/", "/lib/", "/lib64/", "/bin/", "/sbin/")
+        text = str(exe)
+        if not any(text == root.rstrip("/") or text.startswith(root) for root in covered):
+            argv.extend(["--ro-bind", text, text])
+    if Path("/dev").is_dir():
+        argv.extend(["--dev", "/dev"])
+    if Path("/proc").is_dir():
+        argv.extend(["--proc", "/proc"])
+    argv.extend(["--tmpfs", "/tmp"])
+    folder = str(workspace)
+    argv.extend(["--bind", folder, folder, "--chdir", folder])
+    argv.extend(command)
+    return argv
+
+
+def _confine_filesystem(wrapped: Any, command: list[str], root: Path) -> Any:
     if getattr(wrapped, "backend", "") != "bwrap":
         return wrapped
-    argv = list(wrapped.argv)
-    try:
-        index = argv.index("--chdir")
-    except ValueError as exc:
-        raise PermissionError("SANDBOX_REQUIRED") from exc
-    workspace = str(root)
-    argv[index:index] = ["--tmpfs", str(root.parent), "--bind", workspace, workspace]
-    return replace(wrapped, argv=argv)
+    return replace(wrapped, argv=_tight_bwrap(command, root))
 
 
 def _load_sandbox(module: str):
@@ -239,7 +261,7 @@ def _sandboxed_spawn(
             network="none",
             on_missing_capability="fail_closed",
         )
-        wrapped = _hide_sibling_workspaces(manager.wrap_command(policy, argv, root), root)
+        wrapped = _confine_filesystem(manager.wrap_command(policy, argv, root), argv, root)
         if wrapped.downgraded or not wrapped.applied:
             raise PermissionError("SANDBOX_REQUIRED")
         env = _cloud_env(root)
