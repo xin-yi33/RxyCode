@@ -1,4 +1,4 @@
-...                                                                      [100%]
+....                                                                     [100%]
 ============================== warnings summary ===============================
 tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract
   D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -9,4 +9,4 @@ tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract
     from websockets.server import WebSocketServerProtocol
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-3 passed, 2 warnings in 6.45s
+4 passed, 2 warnings in 6.85s

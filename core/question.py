@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -89,7 +90,11 @@ class SseQuestionBroker:
         event = asyncio.Event()
         owner_loop = asyncio.get_running_loop()
         question_id = request.question_id
-        mark_question_pending(question_id, prompt=request.question)
+        mark_question_pending(
+            question_id,
+            session_id=_caller_session_id(),
+            prompt=request.question,
+        )
         self._pending[question_id] = event
         self._pending_loops[question_id] = owner_loop
         self._requests[question_id] = request
@@ -223,6 +228,33 @@ def _question_token(question_id: str) -> str:
     return question_id
 
 
+def _caller_session_id() -> str:
+    try:
+        from appserver.runtime import get_bound_session_id
+    except ImportError:
+        get_bound_session_id = None
+    if get_bound_session_id is not None:
+        bound = str(get_bound_session_id() or "").strip()
+        if bound and bound != "latest":
+            return bound
+    else:
+        bound = ""
+    try:
+        from core.session_runtime import current_session_id
+    except ImportError:
+        try:
+            from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
+        except ImportError:
+            return bound
+    try:
+        current = str(current_session_id() or "").strip()
+    except (TypeError, ValueError):
+        return bound
+    if current and current != "latest":
+        return current
+    return bound or current
+
+
 def mark_question_pending(question_id: str, *, session_id: str = "", prompt: str = "") -> None:
     token = _question_token(question_id)
     payload = {"question_id": token, "session_id": session_id, "prompt": prompt}
@@ -251,11 +283,20 @@ def publish_question_answer(
         return False
     if not pending.is_file():
         return False
-    (_question_dir() / f"{token}.answer.json").write_text(
-        json.dumps({"question_id": token, "answer": answer}),
-        encoding="utf-8",
-    )
+    answer_path = _question_dir() / f"{token}.answer.json"
+    payload = json.dumps({"question_id": token, "answer": answer})
+    try:
+        fd = os.open(answer_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(payload)
     return True
+
+
+def question_has_answer(question_id: str) -> bool:
+    token = _question_token(question_id)
+    return (_question_dir() / f"{token}.answer.json").is_file()
 
 
 def clear_question_pending(question_id: str) -> None:

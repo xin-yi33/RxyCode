@@ -88,7 +88,12 @@ def post_approval(run_id: str, payload: DecisionIn, request: Request) -> dict:
         raise HTTPException(status_code=409, detail="APPROVAL_STALE") from exc
 
 
-def _question_pending(database_url: str, tenant_id: str, run_id: str, question_id: str) -> bool:
+def _question_flags(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    question_id: str,
+) -> tuple[bool, bool]:
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with Session(engine) as db:
@@ -109,7 +114,7 @@ def _question_pending(database_url: str, tenant_id: str, run_id: str, question_i
                     requested = True
                 if row.type == "question.resolved":
                     resolved = True
-            return requested and not resolved
+            return requested, resolved
     finally:
         engine.dispose()
 
@@ -169,11 +174,22 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
     session_id = _owned_run(database_url, record.tenant_id, run_id)
     if not payload.question_id.strip():
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
-    pending_event = _question_pending(database_url, record.tenant_id, run_id, payload.question_id)
+    requested, resolved = _question_flags(
+        database_url,
+        record.tenant_id,
+        run_id,
+        payload.question_id,
+    )
+    if resolved:
+        raise HTTPException(status_code=409, detail="QUESTION_STALE")
+    pending_event = requested and not resolved
     try:
-        from core.question import publish_question_answer
+        from core.question import publish_question_answer, question_has_answer
     except ModuleNotFoundError:
-        from RxyCode.RxyCode1_1_0.core.question import publish_question_answer
+        from RxyCode.RxyCode1_1_0.core.question import (
+            publish_question_answer,
+            question_has_answer,
+        )
     try:
         mailed = publish_question_answer(
             payload.question_id,
@@ -182,6 +198,8 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="INVALID_INPUT") from exc
+    if question_has_answer(payload.question_id) and not mailed:
+        raise HTTPException(status_code=409, detail="QUESTION_STALE")
     if not pending_event and not mailed:
         raise HTTPException(status_code=409, detail="QUESTION_STALE")
     append_event(
