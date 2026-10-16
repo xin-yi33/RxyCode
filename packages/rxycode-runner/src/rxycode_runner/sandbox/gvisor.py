@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 
@@ -72,6 +73,7 @@ class GVisorSandbox:
         self._image = image
         self._hostname = hostname
         self._docker_bin = docker_bin or docker_executable()
+        self._timers: dict[str, threading.Timer] = {}
         if not Path(self._docker_bin).is_file():
             raise IsolationUnavailable("docker", "docker executable is not installed")
 
@@ -94,30 +96,45 @@ class GVisorSandbox:
         tenant_id: str,
         workspace_id: str,
         retain: bool = True,
+        policy: object | None = None,
     ) -> SandboxHandle:
+        from rxycode_runner.sandbox.policy import load_policy, reject_if_unsafe
+
         _require_id(tenant_id)
         _require_id(workspace_id)
+        chosen = load_policy() if policy is None else policy
+        reject_if_unsafe(chosen)
         runtime = self._select_runtime()
         sandbox_id = "rxy-sbx-" + uuid.uuid4().hex[:12]
-        created = self._docker(
+        args = [
+            "create",
+            "--name",
+            sandbox_id,
+            "--hostname",
+            self._hostname,
+            "--network",
+            chosen.network_mode,
+            "--user",
+            chosen.user,
+            "--workdir",
+            "/tmp",
+            "--memory",
+            chosen.memory,
+            "--memory-swap",
+            chosen.memory,
+            "--cpus",
+            chosen.cpu,
+            "--pids-limit",
+            str(chosen.pids),
+            "--runtime",
+            runtime,
+        ]
+        for cap in chosen.cap_drop:
+            args.extend(["--cap-drop", cap])
+        for opt in chosen.security_opt:
+            args.extend(["--security-opt", opt])
+        args.extend(
             [
-                "create",
-                "--name",
-                sandbox_id,
-                "--hostname",
-                self._hostname,
-                "--network",
-                "none",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--memory",
-                "256m",
-                "--pids-limit",
-                "64",
-                "--runtime",
-                runtime,
                 "--label",
                 "rxy.card=w5c01",
                 "--label",
@@ -128,12 +145,14 @@ class GVisorSandbox:
                 f"rxy.sandbox={sandbox_id}",
                 "--label",
                 f"rxy.retain={'true' if retain else 'false'}",
+                "--label",
+                f"rxy.ttl={chosen.ttl_seconds}",
                 self._image,
                 "sleep",
                 "infinity",
-            ],
-            timeout=60,
+            ]
         )
+        created = self._docker(args, timeout=60)
         if created.returncode != 0:
             detail = (created.stderr or created.stdout or "docker create failed").strip()
             raise IsolationUnavailable(runtime, detail)
@@ -143,6 +162,7 @@ class GVisorSandbox:
             self._docker(["rm", "-f", sandbox_id], timeout=30)
             detail = (started.stderr or started.stdout or "docker start failed").strip()
             raise IsolationUnavailable(runtime, detail)
+        self._arm_ttl(sandbox_id, int(chosen.ttl_seconds))
         return SandboxHandle(
             sandbox_id=sandbox_id,
             container_id=container_id,
@@ -158,6 +178,7 @@ class GVisorSandbox:
 
     def stop(self, sandbox_id: str, *, tenant_id: str) -> SandboxHandle:
         self._load(sandbox_id, tenant_id=tenant_id)
+        self._cancel_ttl(sandbox_id)
         stopped = self._docker(["stop", "-t", "1", sandbox_id], timeout=30)
         if stopped.returncode != 0:
             detail = (stopped.stderr or stopped.stdout or "docker stop failed").strip()
@@ -166,6 +187,7 @@ class GVisorSandbox:
 
     def destroy(self, sandbox_id: str, *, tenant_id: str) -> None:
         self._load(sandbox_id, tenant_id=tenant_id)
+        self._cancel_ttl(sandbox_id)
         removed = self._docker(["rm", "-f", sandbox_id], timeout=30)
         if removed.returncode != 0:
             detail = (removed.stderr or removed.stdout or "docker rm failed").strip()
@@ -201,6 +223,20 @@ class GVisorSandbox:
             stdout=proc.stdout,
             stderr=proc.stderr,
         )
+
+    def _arm_ttl(self, sandbox_id: str, ttl_seconds: int) -> None:
+        def _expire() -> None:
+            self._docker(["stop", "-t", "1", sandbox_id], timeout=30)
+
+        timer = threading.Timer(float(ttl_seconds), _expire)
+        timer.daemon = True
+        self._timers[sandbox_id] = timer
+        timer.start()
+
+    def _cancel_ttl(self, sandbox_id: str) -> None:
+        timer = self._timers.pop(sandbox_id, None)
+        if timer is not None:
+            timer.cancel()
 
     def _select_runtime(self) -> str:
         names = set(self.installed_runtimes())
