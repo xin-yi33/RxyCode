@@ -48,7 +48,9 @@ export function OnboardingPage() {
         <p>当前权限 {journey.permission || "未授予"}</p>
         <p>执行目标 {journey.target || "未选择"}</p>
       </section>
-      {mode === "local" ? <p className="mt-4 text-sm">本机回环，不需要 GitHub 账户。</p> : null}
+      {mode === "local" ? (
+        <p className="mt-4 text-sm">本机回环，不需要 GitHub 账户。Full 权限仍需在本机确认。</p>
+      ) : null}
       {mode === "cloud" ? (
         <div className="mt-4 grid gap-3">
           <p className="text-sm">云端必须完成 GitHub 授权。未授权的 OAuth 会被拒绝。</p>

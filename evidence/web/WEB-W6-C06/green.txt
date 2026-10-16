@@ -9,4 +9,4 @@ tests/web/w6/test_w6_c06_unit.py::test_w6_c06_negative
     return super().request(
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-3 passed, 2 warnings in 6.65s
+3 passed, 2 warnings in 6.71s

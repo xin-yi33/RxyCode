@@ -10,7 +10,7 @@ export function journeyState(
 ): JourneyState {
   if (mode === "local") {
     return authKind
-      ? { permission: "full", target: "local", status: "ready" }
+      ? { permission: "", target: "local", status: "waiting_for_local_confirmation" }
       : { permission: "", target: "local", status: "needs-login" }
   }
   if (mode === "cloud") {

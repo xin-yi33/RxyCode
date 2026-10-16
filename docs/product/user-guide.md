@@ -8,8 +8,8 @@
 
 打开 `/onboarding`。页面始终显示当前权限和执行目标。
 
-- 本地：目标 `local`。登录前权限为空，状态 `needs-login`；用本机口令登录后权限变为 `full`，状态 `ready`。本机回环，不需要 GitHub 账户。
-- 云端：目标 `cloud`。授权前权限为空，状态 `needs-github`；完成 GitHub 授权后权限为 `cloud`，状态 `ready`。未授权的回调会被拒绝。
+- 本地：目标 `local`。登录前权限为空，状态 `needs-login`；用本机口令登录后，权限仍为空，状态变为 `waiting_for_local_confirmation`，因为 Full 权限必须在本机界面上确认授予，浏览器只能看到镜像状态，看不到 `full` 本身。本机回环，不需要 GitHub 账户。
+- 云端：目标 `cloud`。授权前权限为空，状态 `needs-github`；完成 GitHub 授权后权限为 `cloud`，状态 `ready`。未授权的回调会被拒绝。只完成本机登录而没有 GitHub 授权时，云端仍显示 `needs-github`。
 - 远程：权限为空，目标 `remote`，状态 `waiting_for_local_confirmation`。没有已配对且在线的本机设备时，云端会以 404 拒绝 Remote Full 调用，也不会写入 `remote-full.txt`。
 
 断线时页面显示「无法连接」，点「重试」会重新读取当前身份。
