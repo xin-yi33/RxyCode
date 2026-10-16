@@ -57,7 +57,10 @@ def create_project(
 ) -> dict[str, str]:
     require_write(request)
     record = current_record(request)
-    _reject_plaintext_keys(payload.repo_config)
+    config = dict(payload.repo_config)
+    config.pop("workspace_root", None)
+    config.pop("target_id", None)
+    _reject_plaintext_keys(config)
     name = payload.name.strip()
     if not name or len(name) > 200:
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
@@ -65,7 +68,7 @@ def create_project(
         id=uuid.uuid4().hex,
         tenant_id=record.tenant_id,
         name=name,
-        repo_config=payload.repo_config,
+        repo_config=config,
     )
     db.add(project)
     db.flush()

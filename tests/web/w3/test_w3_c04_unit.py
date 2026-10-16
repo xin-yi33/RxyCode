@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import tempfile
 import uuid
@@ -68,6 +69,7 @@ def _project(root: Path, target: str) -> str:
         )
         db.commit()
     engine.dispose()
+    os.environ["RXYCODE_WORKSPACE_BASE"] = str(root.parent.resolve())
     return project_id
 
 

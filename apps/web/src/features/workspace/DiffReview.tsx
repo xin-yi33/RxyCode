@@ -14,13 +14,13 @@ export function DiffReview(props: { projectId: string; path: string }) {
     enabled: props.path.length > 0,
     retry: false,
   })
-  const accept = async (hunkId: string) => {
+  const submit = async (hunkId: string, decision: "accept" | "reject") => {
     if (!diff.data) return
     try {
       await client.reviewHunk(props.projectId, {
         path: props.path,
         hunk_id: hunkId,
-        decision: "accept",
+        decision,
         base_revision: diff.data.base_revision,
       })
       setConflict(false)
@@ -56,8 +56,11 @@ export function DiffReview(props: { projectId: string; path: string }) {
               {line}
             </p>
           ))}
-          <button type="button" onClick={() => void accept(hunk.id)}>
+          <button type="button" onClick={() => void submit(hunk.id, "accept")}>
             接受
+          </button>
+          <button type="button" onClick={() => void submit(hunk.id, "reject")}>
+            拒绝
           </button>
         </article>
       ))}

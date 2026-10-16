@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -30,9 +32,18 @@ def _project(db: Session, tenant_id: str, project_id: str) -> tuple[Project, Pat
         select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id)
     ).one_or_none()
     config = dict(row.repo_config or {}) if row is not None else {}
-    root = Path(str(config.get("workspace_root") or ""))
-    if row is None or not root.is_dir():
+    raw = str(config.get("workspace_root") or "").strip()
+    base_raw = os.environ.get("RXYCODE_WORKSPACE_BASE", "").strip()
+    if row is None or not raw or not base_raw:
         raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
+    root = Path(raw).resolve()
+    base = Path(base_raw).resolve()
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
+    try:
+        root.relative_to(base)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="WORKSPACE_FORBIDDEN") from exc
     return row, root, str(config.get("target_id") or "")
 
 
@@ -84,11 +95,81 @@ def _hunks(diff_text: str) -> list[dict[str, object]]:
     return hunks
 
 
-def _hunk_text(hunk: dict[str, object], marker: str) -> str:
-    lines = hunk["lines"]
-    assert isinstance(lines, list)
-    kept = [str(line)[1:] for line in lines if str(line).startswith((marker, " "))]
-    return "\n".join(kept)
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _spec(root: Path, relative: str) -> tuple[Path, str]:
+    top_text = _git(root, "rev-parse", "--show-toplevel").strip()
+    if not top_text:
+        raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
+    top = Path(top_text).resolve()
+    workspace = root.resolve()
+    try:
+        prefix = workspace.relative_to(top).as_posix()
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="WORKSPACE_FORBIDDEN") from exc
+    spec = relative if prefix in {"", "."} else f"{prefix}/{relative}"
+    try:
+        (top / spec).resolve().relative_to(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="WORKSPACE_FORBIDDEN") from exc
+    return top, spec
+
+
+def _sides(hunk: dict[str, object]) -> tuple[list[str], list[str], int, int]:
+    header = str(hunk["header"])
+    match = _HUNK.match(header)
+    raw_lines = hunk["lines"]
+    if match is None or not isinstance(raw_lines, list):
+        raise HTTPException(status_code=409, detail="CONFLICT")
+    new_start = int(match.group(3))
+    new_count = int(match.group(4) if match.group(4) is not None else "1")
+    old_lines: list[str] = []
+    new_lines: list[str] = []
+    for raw in raw_lines:
+        text = str(raw)
+        if text.startswith("+"):
+            new_lines.append(text[1:])
+        elif text.startswith("-"):
+            old_lines.append(text[1:])
+        elif text.startswith(" "):
+            old_lines.append(text[1:])
+            new_lines.append(text[1:])
+    return old_lines, new_lines, new_start, new_count
+
+
+def _reject_at(text: str, hunk: dict[str, object]) -> str:
+    old_lines, new_lines, new_start, new_count = _sides(hunk)
+    lines = text.splitlines()
+    start = new_start - 1
+    end = start + new_count
+    if start < 0 or end > len(lines) or lines[start:end] != new_lines:
+        raise HTTPException(status_code=409, detail="CONFLICT")
+    return "\n".join([*lines[:start], *old_lines, *lines[end:]]) + ("\n" if text.endswith("\n") else "")
+
+
+def _lock(handle) -> None:
+    if os.name != "nt":
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return
+    import msvcrt
+
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def _unlock(handle) -> None:
+    if os.name != "nt":
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return
+    import msvcrt
+
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 @router.get("/api/v1/workspaces/{project_id}/tree")
@@ -132,18 +213,18 @@ def workspace_diff(project_id: str, request: Request, path: str) -> dict[str, ob
         if not target.is_file():
             raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
         relative = target.relative_to(root.resolve()).as_posix()
-        before = _git(root, "show", f"HEAD:{relative}")
-        after = target.read_text(encoding="utf-8")
-        diff_text = _git(root, "diff", "--unified=3", "--", relative)
-        status = _git(root, "status", "--porcelain", "--", relative)
+        top, spec = _spec(root, relative)
+        data = target.read_bytes()
+        before = _git(top, "show", f"HEAD:{spec}")
+        diff_text = _git(top, "diff", "HEAD", "--unified=3", "--", spec)
         return {
             "path": relative,
             "target_id": target_id,
-            "base_revision": _revision(target),
+            "base_revision": hashlib.sha256(data).hexdigest(),
             "before": before,
-            "after": after,
+            "after": data.decode("utf-8"),
             "hunks": _hunks(diff_text),
-            "changed": bool(status.strip()),
+            "changed": bool(diff_text.strip()),
         }
     finally:
         engine.dispose()
@@ -162,21 +243,29 @@ def review_hunk(project_id: str, payload: ReviewIn, request: Request) -> dict[st
         target = _inside(root, payload.path)
         if not target.is_file():
             raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
-        current = _revision(target)
-        if current != payload.base_revision:
-            raise HTTPException(status_code=409, detail="CONFLICT")
         relative = target.relative_to(root.resolve()).as_posix()
-        hunks = _hunks(_git(root, "diff", "--unified=3", "--", relative))
-        chosen = next((item for item in hunks if item["id"] == payload.hunk_id), None)
-        if chosen is None:
-            raise HTTPException(status_code=409, detail="CONFLICT")
-        if payload.decision == "reject":
-            new_text = _hunk_text(chosen, "+")
-            old_text = _hunk_text(chosen, "-")
-            file_text = target.read_text(encoding="utf-8")
-            if new_text not in file_text:
-                raise HTTPException(status_code=409, detail="CONFLICT")
-            target.write_text(file_text.replace(new_text, old_text, 1), encoding="utf-8", newline="\n")
-        return {"status": payload.decision, "base_revision": _revision(target)}
+        top, spec = _spec(root, relative)
+        with target.open("r+b") as handle:
+            _lock(handle)
+            try:
+                data = handle.read()
+                if hashlib.sha256(data).hexdigest() != payload.base_revision:
+                    raise HTTPException(status_code=409, detail="CONFLICT")
+                hunks = _hunks(_git(top, "diff", "HEAD", "--unified=3", "--", spec))
+                chosen = next((item for item in hunks if item["id"] == payload.hunk_id), None)
+                if chosen is None:
+                    raise HTTPException(status_code=409, detail="CONFLICT")
+                text = data.decode("utf-8")
+                if payload.decision == "reject":
+                    updated = _reject_at(text, chosen).encode("utf-8")
+                    handle.seek(0)
+                    handle.write(updated)
+                    handle.truncate()
+                    revised = hashlib.sha256(updated).hexdigest()
+                else:
+                    revised = hashlib.sha256(data).hexdigest()
+            finally:
+                _unlock(handle)
+        return {"status": payload.decision, "base_revision": revised}
     finally:
         engine.dispose()
