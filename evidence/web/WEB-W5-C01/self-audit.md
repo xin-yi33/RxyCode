@@ -10,4 +10,4 @@
 - The only subprocess in the adapter is the docker CLI. There is no host fallback for the tool argv.
 - No independent UI E2E. core/ was not touched. RiskLevel was not changed. Not claimed as 已落实.
 - Nested ruling dd1602dc90dfa77fba07c26af43dd3e1093ebf40 names the package markers, exec, and the fail-closed runtime choice.
-- gpt-6-luna max audit has not run yet. Session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w5c01-audit-1.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
