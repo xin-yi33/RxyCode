@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -18,6 +19,18 @@ from rxycode_server.api.auth import current_record, require_write
 from rxycode_server.persistence.models import Project
 
 router = APIRouter()
+_REVIEW_GUARD = threading.Lock()
+_REVIEW_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _review_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _REVIEW_GUARD:
+        lock = _REVIEW_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _REVIEW_LOCKS[key] = lock
+        return lock
 
 
 class ReviewIn(BaseModel):
@@ -116,7 +129,7 @@ def _spec(root: Path, relative: str) -> tuple[Path, str]:
     return top, spec
 
 
-def _sides(hunk: dict[str, object]) -> tuple[list[str], list[str], int, int]:
+def _sides(hunk: dict[str, object]) -> tuple[list[str], list[str], int, int, bool, bool]:
     header = str(hunk["header"])
     match = _HUNK.match(header)
     raw_lines = hunk["lines"]
@@ -126,20 +139,32 @@ def _sides(hunk: dict[str, object]) -> tuple[list[str], list[str], int, int]:
     new_count = int(match.group(4) if match.group(4) is not None else "1")
     old_lines: list[str] = []
     new_lines: list[str] = []
+    old_missing = False
+    new_missing = False
+    last_side = ""
     for raw in raw_lines:
         text = str(raw)
+        if text.startswith("\\"):
+            if last_side in {"old", "both"}:
+                old_missing = True
+            if last_side in {"new", "both"}:
+                new_missing = True
+            continue
         if text.startswith("+"):
             new_lines.append(text[1:])
+            last_side = "new"
         elif text.startswith("-"):
             old_lines.append(text[1:])
+            last_side = "old"
         elif text.startswith(" "):
             old_lines.append(text[1:])
             new_lines.append(text[1:])
-    return old_lines, new_lines, new_start, new_count
+            last_side = "both"
+    return old_lines, new_lines, new_start, new_count, old_missing, new_missing
 
 
 def _reject_at(text: str, hunk: dict[str, object]) -> str:
-    old_lines, new_lines, new_start, new_count = _sides(hunk)
+    old_lines, new_lines, new_start, new_count, old_missing, _new_missing = _sides(hunk)
     newline = "\r\n" if "\r\n" in text else "\n"
     ends = text.endswith("\n")
     lines = text.splitlines()
@@ -152,8 +177,12 @@ def _reject_at(text: str, hunk: dict[str, object]) -> str:
     if start < 0 or end > len(lines) or lines[start:end] != new_lines:
         raise HTTPException(status_code=409, detail="CONFLICT")
     merged = [*lines[:start], *old_lines, *lines[end:]]
+    at_end = end == len(lines)
     body = newline.join(merged)
-    if ends and merged:
+    if at_end:
+        if merged and not old_missing:
+            body += newline
+    elif ends and merged:
         body += newline
     return body
 
@@ -252,37 +281,23 @@ def review_hunk(project_id: str, payload: ReviewIn, request: Request) -> dict[st
             raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
         relative = target.relative_to(root.resolve()).as_posix()
         top, spec = _spec(root, relative)
-        data = target.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
-        if digest != payload.base_revision:
-            raise HTTPException(status_code=409, detail="CONFLICT")
-        hunks = _hunks(_snapshot_diff(top, spec, data))
-        chosen = next((item for item in hunks if item["id"] == payload.hunk_id), None)
-        if chosen is None:
-            raise HTTPException(status_code=409, detail="CONFLICT")
-        updated = data
-        if payload.decision == "reject":
-            updated = _reject_at(data.decode("utf-8"), chosen).encode("utf-8")
-        with target.open("r+b") as handle:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            try:
-                again = handle.read()
-                if hashlib.sha256(again).hexdigest() != digest:
-                    raise HTTPException(status_code=409, detail="CONFLICT")
-                if updated != again:
-                    handle.seek(0)
-                    handle.write(updated)
-                    handle.truncate()
-            finally:
-                if os.name == "nt":
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        with _review_lock(target):
+            data = target.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest != payload.base_revision:
+                raise HTTPException(status_code=409, detail="CONFLICT")
+            hunks = _hunks(_snapshot_diff(top, spec, data))
+            chosen = next((item for item in hunks if item["id"] == payload.hunk_id), None)
+            if chosen is None:
+                raise HTTPException(status_code=409, detail="CONFLICT")
+            updated = data
+            if payload.decision == "reject":
+                updated = _reject_at(data.decode("utf-8"), chosen).encode("utf-8")
+            again = target.read_bytes()
+            if hashlib.sha256(again).hexdigest() != digest:
+                raise HTTPException(status_code=409, detail="CONFLICT")
+            if updated != again:
+                target.write_bytes(updated)
         return {"status": payload.decision, "base_revision": hashlib.sha256(updated).hexdigest()}
     finally:
         engine.dispose()
