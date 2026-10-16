@@ -211,12 +211,24 @@ def _tight_bwrap(command: list[str], workspace: Path) -> list[str]:
     for folder in ("/usr", "/lib", "/lib64", "/bin", "/sbin"):
         if Path(folder).is_dir():
             argv.extend(["--ro-bind", folder, folder])
+    command = list(command)
     if command and command[0].startswith("/"):
-        exe = Path(command[0]).resolve()
-        covered = ("/usr/", "/lib/", "/lib64/", "/bin/", "/sbin/")
-        text = str(exe)
-        if not any(text == root.rstrip("/") or text.startswith(root) for root in covered):
-            argv.extend(["--ro-bind", text, text])
+        original = command[0]
+        resolved = os.path.realpath(original) if os.name != "nt" else original
+        roots = ("/usr/", "/lib/", "/lib64/", "/bin/", "/sbin/")
+
+        def covered(text: str) -> bool:
+            return any(text == root[:-1] or text.startswith(root) for root in roots)
+
+        if covered(resolved):
+            command[0] = resolved
+        else:
+            for source in dict.fromkeys((original, resolved)):
+                for parent in reversed(Path(source).parents):
+                    if parent == Path("/") or covered(str(parent)):
+                        continue
+                    argv.extend(["--dir", str(parent)])
+                argv.extend(["--ro-bind", source, source])
     if Path("/dev").is_dir():
         argv.extend(["--dev", "/dev"])
     if Path("/proc").is_dir():
