@@ -6,10 +6,11 @@ tests/web/w5/test_w5_c04_unit.py::test_w5_c04_contract
 
 tests/web/w5/test_w5_c04_unit.py::test_w5_c04_contract
 tests/web/w5/test_w5_c04_unit.py::test_w5_c04_contract
+tests/web/w5/test_w5_c04_unit.py::test_w5_c04_contract
 tests/web/w5/test_w5_c04_unit.py::test_w5_c04_negative
 tests/web/w5/test_w5_c04_unit.py::test_w5_c04_negative
   D:\Anaconda3\Lib\site-packages\starlette\testclient.py:454: DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.
     return super().request(
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-2 passed, 5 warnings in 6.57s
+2 passed, 6 warnings in 6.90s

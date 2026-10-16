@@ -75,8 +75,13 @@ def _start_react(docker: str, sandbox_id: str, port: int, nonce: str) -> None:
         "    res.end('globalThis.__previewLive = true;');\n"
         "    return;\n"
         "  }\n"
+        "  if (req.url === '/app.css') {\n"
+        "    res.setHeader('content-type', 'text/css');\n"
+        "    res.end('p{color:black}');\n"
+        "    return;\n"
+        "  }\n"
         "  res.setHeader('content-type', 'text/html; charset=utf-8');\n"
-        "  res.end(html + '<script src=\"/app.js\"></script>');\n"
+        "  res.end(html + '<link rel=\"stylesheet\" href=\"app.css\"><script src=\"app.js\"></script>');\n"
         f"}}).listen({port}, '127.0.0.1');\n"
     )
     saved = subprocess.run(
@@ -178,10 +183,17 @@ def test_w5_c04_contract(tmp_path: Path) -> None:
         shown = client.get(granted.proxy_path, cookies={"rxy_session": token})
         assert shown.status_code == 200, shown.text
         assert nonce in shown.text
-        assert "<p" in shown.text
-        script = client.get(granted.proxy_path + "/app.js", cookies={"rxy_session": token})
+        assert 'src="app.js"' in shown.text
+        assert 'href="app.css"' in shown.text
+        assert 'src="/app.js"' not in shown.text
+        script = client.get(granted.proxy_path + "app.js", cookies={"rxy_session": token})
         assert script.status_code == 200
+        assert script.headers["content-type"].startswith("text/javascript")
         assert "__previewLive" in script.text
+        style = client.get(granted.proxy_path + "app.css", cookies={"rxy_session": token})
+        assert style.status_code == 200
+        assert style.headers["content-type"].startswith("text/css")
+        assert "color" in style.text
         viewed = _render(granted.proxy_path, False)
         assert f'src="{granted.proxy_path}"' in viewed
         assert 'sandbox="allow-scripts"' in viewed

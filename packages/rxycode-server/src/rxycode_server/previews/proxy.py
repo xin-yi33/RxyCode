@@ -67,7 +67,7 @@ class PreviewProxy:
             raise PreviewRefused("preview ttl refused")
         _owned(sandbox_id, tenant_id)
         grant_id = "prv-" + uuid.uuid4().hex[:12]
-        proxy_path = f"/api/v1/previews/{sandbox_id}/{port}"
+        proxy_path = f"/api/v1/previews/{sandbox_id}/{port}/"
         self._grants[grant_id] = {
             "grant_id": grant_id,
             "proxy_path": proxy_path,
@@ -114,7 +114,7 @@ class PreviewProxy:
         body = _read_loopback(sandbox_id, port, upstream)
         if body is None:
             raise TargetUnavailable(f"sandbox:{sandbox_id}:{port}")
-        kind = "text/javascript; charset=utf-8" if upstream.endswith(".js") else "text/html; charset=utf-8"
+        kind = _media_type(upstream)
         return PreviewPage(
             body=body,
             content_type=kind,
@@ -150,6 +150,7 @@ def build_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/v1/previews/{sandbox_id}/{port}")
+    @router.get("/api/v1/previews/{sandbox_id}/{port}/")
     @router.get("/api/v1/previews/{sandbox_id}/{port}/{asset_path:path}")
     def get_preview(
         sandbox_id: str,
@@ -223,6 +224,22 @@ def _blocked(url: str, port: int) -> bool:
     if address.is_loopback:
         return parts.port not in {None, port}
     return True
+
+
+def _media_type(path: str) -> str:
+    if path.endswith(".js"):
+        return "text/javascript; charset=utf-8"
+    if path.endswith(".css"):
+        return "text/css; charset=utf-8"
+    if path.endswith(".json"):
+        return "application/json"
+    if path.endswith(".svg"):
+        return "image/svg+xml"
+    if path.endswith(".png"):
+        return "image/png"
+    if path in {"", "/"}:
+        return "text/html; charset=utf-8"
+    return "application/octet-stream"
 
 
 def _upstream_path(asset_path: str) -> str:

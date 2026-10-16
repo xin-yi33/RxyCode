@@ -10,4 +10,4 @@ tests/web/w5/test_w5_c04_module.py::test_w5_c04_integration
     return super().request(
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-1 passed, 3 warnings in 2.85s
+1 passed, 3 warnings in 2.84s
