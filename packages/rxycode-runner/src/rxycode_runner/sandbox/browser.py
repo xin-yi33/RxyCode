@@ -27,13 +27,8 @@ def open_profile(*, sandbox_id: str, tenant_id: str) -> BrowserProfile:
     _owned(sandbox_id, tenant_id)
     profile_id = "prf-" + uuid.uuid4().hex[:12]
     path = f"/tmp/{profile_id}"
-    script = (
-        "import os\n"
-        f"root = {path!r}\n"
-        "os.makedirs(root, exist_ok=True)\n"
-        "open(root + '/lifetime', 'w', encoding='utf-8').write('sandbox-only')\n"
-    )
-    done = _python(sandbox_id, script)
+    script = f"mkdir -p {path} && printf '%s' sandbox-only > {path}/lifetime"
+    done = _shell(sandbox_id, script)
     if done.returncode != 0:
         raise ProfileRefused("profile create failed")
     _PROFILES[profile_id] = {
@@ -49,11 +44,8 @@ def close_profile(*, profile_id: str, sandbox_id: str, tenant_id: str) -> None:
     if row is None or row["sandbox_id"] != sandbox_id or row["tenant_id"] != tenant_id:
         raise ProfileRefused("profile refused")
     _owned(sandbox_id, tenant_id)
-    script = (
-        "import shutil\n"
-        f"shutil.rmtree({row['path']!r}, ignore_errors=True)\n"
-    )
-    done = _python(sandbox_id, script)
+    script = f"rm -rf {row['path']}"
+    done = _shell(sandbox_id, script)
     if done.returncode != 0:
         raise ProfileRefused("profile close failed")
     del _PROFILES[profile_id]
@@ -66,9 +58,9 @@ def _owned(sandbox_id: str, tenant_id: str) -> None:
         raise ProfileRefused("profile refused") from exc
 
 
-def _python(sandbox_id: str, script: str) -> subprocess.CompletedProcess[str]:
+def _shell(sandbox_id: str, script: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [docker_executable(), "exec", sandbox_id, "python", "-c", script],
+        [docker_executable(), "exec", sandbox_id, "sh", "-c", script],
         capture_output=True,
         text=True,
         timeout=30,

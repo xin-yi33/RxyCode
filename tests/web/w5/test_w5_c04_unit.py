@@ -1,9 +1,10 @@
-"""WEB-W5-C04. The owner sees the sandbox page. Metadata and other tenants are refused."""
+"""WEB-W5-C04. A session sees the React preview. Forged headers and metadata are refused."""
 
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -14,6 +15,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+SECRET = "local-web-secret-value-32bytes!!"
+MODULES = REPO / "apps" / "web" / "node_modules"
 for _entry in (
     REPO / "packages" / "rxycode-runner" / "src",
     REPO / "packages" / "rxycode-server" / "src",
@@ -22,68 +25,115 @@ for _entry in (
         sys.path.insert(0, str(_entry))
 
 
-def _remove(docker: str, container_id: str) -> None:
-    if not container_id:
-        return
-    subprocess.run(
-        [docker, "rm", "-f", container_id],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-
-def _exec(docker: str, sandbox_id: str, argv: list[str], detach: bool = False) -> subprocess.CompletedProcess[str]:
+def _exec(docker: str, sandbox_id: str, argv: list[str], detach: bool = False, cwd: str = "") -> subprocess.CompletedProcess[str]:
     args = [docker, "exec"]
     if detach:
         args.append("-d")
+    if cwd:
+        args.extend(["-w", cwd])
     args.extend([sandbox_id, *argv])
-    return subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
+    return subprocess.run(args, capture_output=True, text=True, timeout=60, check=False)
 
 
-def _start_page(docker: str, sandbox_id: str, port: int, html: str) -> None:
-    script = (
-        "import os\n"
-        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
-        f"HTML = {html!r}.encode()\n"
-        "class H(BaseHTTPRequestHandler):\n"
-        "    def do_GET(self):\n"
-        "        self.send_response(200)\n"
-        "        self.send_header('Content-Type', 'text/html; charset=utf-8')\n"
-        "        self.end_headers()\n"
-        "        self.wfile.write(HTML)\n"
-        "    def log_message(self, *args):\n"
-        "        return\n"
-        "open('/tmp/preview.pid', 'w').write(str(os.getpid()))\n"
-        f"HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
+def _sandbox(tenant_id: str, workspace_id: str):
+    from rxycode_runner.sandbox.gvisor import GVisorSandbox
+    from rxycode_runner.sandbox.policy import load_policy
+
+    box = GVisorSandbox(image="node:22-slim")
+    return box.create(tenant_id=tenant_id, workspace_id=workspace_id, retain=True, policy=load_policy())
+
+
+def _start_react(docker: str, sandbox_id: str, port: int, nonce: str) -> None:
+    made = _exec(docker, sandbox_id, ["mkdir", "-p", "/tmp/app/node_modules"])
+    assert made.returncode == 0, made.stderr
+    reader = subprocess.Popen(
+        ["tar", "-C", str(MODULES), "-cf", "-", "react", "react-dom", "scheduler"],
+        stdout=subprocess.PIPE,
     )
-    started = _exec(docker, sandbox_id, ["python", "-c", script], detach=True)
+    writer = subprocess.run(
+        [docker, "exec", "-i", sandbox_id, "tar", "-C", "/tmp/app/node_modules", "-xf", "-"],
+        stdin=reader.stdout,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if reader.stdout is not None:
+        reader.stdout.close()
+    assert reader.wait(timeout=60) == 0
+    assert writer.returncode == 0, writer.stderr
+    server = (
+        "import http from 'node:http';\n"
+        "import { writeFileSync } from 'node:fs';\n"
+        "import { createElement } from 'react';\n"
+        "import { renderToStaticMarkup } from 'react-dom/server';\n"
+        f"const nonce = {nonce!r};\n"
+        "const html = '<!doctype html>' + renderToStaticMarkup(createElement('p', { id: 'root' }, nonce));\n"
+        "writeFileSync('/tmp/preview.pid', String(process.pid));\n"
+        "http.createServer((req, res) => {\n"
+        "  if (req.url === '/app.js') {\n"
+        "    res.setHeader('content-type', 'text/javascript');\n"
+        "    res.end('globalThis.__previewLive = true;');\n"
+        "    return;\n"
+        "  }\n"
+        "  res.setHeader('content-type', 'text/html; charset=utf-8');\n"
+        "  res.end(html + '<script src=\"/app.js\"></script>');\n"
+        f"}}).listen({port}, '127.0.0.1');\n"
+    )
+    saved = subprocess.run(
+        [docker, "exec", "-i", sandbox_id, "sh", "-c", "cat > /tmp/app/server.mjs"],
+        input=server,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert saved.returncode == 0, saved.stderr
+    started = _exec(docker, sandbox_id, ["node", "/tmp/app/server.mjs"], detach=True, cwd="/tmp/app")
     assert started.returncode == 0, started.stderr
-    deadline = time.time() + 10
+    deadline = time.time() + 15
     while time.time() < deadline:
         probe = _exec(
             docker,
             sandbox_id,
-            ["python", "-c", f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{port}/', timeout=1).read().decode())"],
+            ["node", "-e", f"fetch('http://127.0.0.1:{port}/').then(r=>r.text()).then(t=>{{ if(!t.includes({nonce!r})) process.exit(1); console.log(t); }})"],
         )
-        if probe.returncode == 0 and html in probe.stdout:
+        if probe.returncode == 0 and nonce in probe.stdout:
             return
-        time.sleep(0.2)
-    raise AssertionError("dev server did not start")
+        time.sleep(0.3)
+    raise AssertionError(probe.stderr or "react preview did not start")
 
 
-def _render(proxy_path: str, html: str, unavailable: bool) -> str:
+def _session_app(proxy, user_id: str, tenant_id: str, database: Path):
+    from fastapi.testclient import TestClient
+
+    from rxycode_server.api.auth import AuthRecord, _hash_token
+    from rxycode_server.main import create_app
+
+    app = create_app(
+        "sqlite:///" + database.as_posix(),
+        mode="local",
+        secret=SECRET,
+        allowed_origins=["http://127.0.0.1"],
+    )
+    app.state.preview_proxy = proxy
+    token = secrets.token_urlsafe(32)
+    app.state.sessions[_hash_token(app.state.secret, token)] = AuthRecord(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        created=time.monotonic(),
+    )
+    return TestClient(app), token
+
+
+def _render(proxy_path: str, unavailable: bool) -> str:
     script = (
         "import { createElement } from 'react';\n"
         "import { renderToStaticMarkup } from 'react-dom/server';\n"
         "import { BrowserPreview } from './src/features/preview/BrowserPreview.tsx';\n"
-        "const html = renderToStaticMarkup(createElement(BrowserPreview, {\n"
+        "process.stdout.write(renderToStaticMarkup(createElement(BrowserPreview, {\n"
         "  proxyPath: process.env.PREVIEW_PATH,\n"
-        "  html: process.env.PREVIEW_HTML,\n"
         "  unavailable: process.env.PREVIEW_DOWN === '1',\n"
-        "}));\n"
-        "process.stdout.write(html);\n"
+        "})));\n"
     )
     done = subprocess.run(
         [str(BUN), "-e", script],
@@ -92,32 +142,26 @@ def _render(proxy_path: str, html: str, unavailable: bool) -> str:
         text=True,
         timeout=30,
         check=False,
-        env={
-            **os.environ,
-            "PREVIEW_PATH": proxy_path,
-            "PREVIEW_HTML": html,
-            "PREVIEW_DOWN": "1" if unavailable else "0",
-        },
+        env={**os.environ, "PREVIEW_PATH": proxy_path, "PREVIEW_DOWN": "1" if unavailable else "0"},
     )
     assert done.returncode == 0, done.stderr
     return done.stdout
 
 
-def test_w5_c04_contract() -> None:
-    """The owner's preview is the real sandbox page, and the browser profile has no OAuth token."""
+def test_w5_c04_contract(tmp_path: Path) -> None:
+    """The session cookie sees the React page. The browser profile does not copy OAuth."""
     from rxycode_runner.sandbox.browser import close_profile, open_profile
     from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
-    from rxycode_runner.sandbox.policy import launch
-    from rxycode_server.previews.proxy import PreviewProxy
 
     docker = docker_executable()
     nonce = "preview-" + uuid.uuid4().hex
-    html = f"<html><body>{nonce}</body></html>"
     secret = "oauth-" + uuid.uuid4().hex
-    handle = launch(tenant_id="tenant-a", workspace_id="proj-c04")
+    handle = _sandbox("tenant-a", "proj-c04")
+    from rxycode_server.previews.proxy import PreviewProxy
+
     proxy = PreviewProxy()
     try:
-        _start_page(docker, handle.sandbox_id, 8765, html)
+        _start_react(docker, handle.sandbox_id, 8765, nonce)
         granted = proxy.expose_port(
             tenant_id="tenant-a",
             owner_id="user-a",
@@ -125,40 +169,25 @@ def test_w5_c04_contract() -> None:
             port=8765,
             ttl_seconds=60,
         )
-        page = proxy.fetch(
-            tenant_id="tenant-a",
-            owner_id="user-a",
-            sandbox_id=handle.sandbox_id,
-            port=8765,
-        )
-        assert nonce in page.body
-        assert page.proxy_path == granted.proxy_path
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-
-        app = FastAPI()
-        app.include_router(proxy.build_router())
-        client = TestClient(app)
-        shown = client.get(
-            page.proxy_path,
+        client, token = _session_app(proxy, "user-a", "tenant-a", tmp_path / "c04.db")
+        forged = client.get(
+            granted.proxy_path,
             headers={"x-owner-id": "user-a", "x-tenant-id": "tenant-a"},
         )
-        assert shown.status_code == 200
+        assert forged.status_code == 401
+        shown = client.get(granted.proxy_path, cookies={"rxy_session": token})
+        assert shown.status_code == 200, shown.text
         assert nonce in shown.text
-        assert "default-src" in shown.headers["content-security-policy"]
-        denied = client.get(
-            page.proxy_path,
-            headers={"x-owner-id": "user-b", "x-tenant-id": "tenant-b"},
-        )
-        assert denied.status_code == 403
-        assert page.proxy_path.startswith("/api/v1/previews/")
-        assert "default-src" in page.csp
-        viewed = _render(page.proxy_path, page.body, False)
-        assert nonce in viewed
-        assert 'sandbox=""' in viewed or "sandbox=\"\"" in viewed
-        hidden = _render(page.proxy_path, page.body, True)
+        assert "<p" in shown.text
+        script = client.get(granted.proxy_path + "/app.js", cookies={"rxy_session": token})
+        assert script.status_code == 200
+        assert "__previewLive" in script.text
+        viewed = _render(granted.proxy_path, False)
+        assert f'src="{granted.proxy_path}"' in viewed
+        assert 'sandbox="allow-scripts"' in viewed
+        assert "srcDoc" not in viewed
+        hidden = _render(granted.proxy_path, True)
         assert "target unavailable" in hidden
-        assert nonce not in hidden
         os.environ["OAUTH_TOKEN"] = secret
         try:
             profile = open_profile(sandbox_id=handle.sandbox_id, tenant_id="tenant-a")
@@ -167,32 +196,23 @@ def test_w5_c04_contract() -> None:
         listed = _exec(
             docker,
             handle.sandbox_id,
-            ["python", "-c", f"import os; root={profile.path!r}\nprint(''.join(os.listdir(root)))\n"],
-        )
-        assert listed.returncode == 0, listed.stderr
-        assert secret not in listed.stdout
-        dumped = _exec(
-            docker,
-            handle.sandbox_id,
             [
-                "python",
-                "-c",
+                "node",
+                "-e",
                 (
-                    "import os\n"
-                    f"root={profile.path!r}\n"
-                    "buf=[]\n"
-                    "for name in os.listdir(root):\n"
-                    "    buf.append(open(os.path.join(root, name), encoding='utf-8', errors='replace').read())\n"
-                    "print(''.join(buf))\n"
+                    "const fs=require('fs');"
+                    f"const root={profile.path!r};"
+                    "console.log(fs.readdirSync(root).map(n=>fs.readFileSync(root+'/'+n,'utf8')).join(''));"
                 ),
             ],
         )
-        assert secret not in dumped.stdout
+        assert listed.returncode == 0, listed.stderr
+        assert secret not in listed.stdout
         close_profile(profile_id=profile.profile_id, sandbox_id=handle.sandbox_id, tenant_id="tenant-a")
         gone = _exec(
             docker,
             handle.sandbox_id,
-            ["python", "-c", f"import os; raise SystemExit(0 if not os.path.exists({profile.path!r}) else 1)"],
+            ["node", "-e", f"process.exit(require('fs').existsSync({profile.path!r}) ? 1 : 0)"],
         )
         assert gone.returncode == 0
         info = json.loads(
@@ -209,20 +229,18 @@ def test_w5_c04_contract() -> None:
         GVisorSandbox().destroy(handle.sandbox_id, tenant_id="tenant-a")
 
 
-def test_w5_c04_negative() -> None:
-    """Metadata URLs and another tenant are refused. An unregistered port is not proxied."""
+def test_w5_c04_negative(tmp_path: Path) -> None:
+    """Metadata URLs and another tenant are refused. An expired grant is refused."""
     from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
-    from rxycode_runner.sandbox.policy import launch
     from rxycode_server.previews.proxy import PreviewProxy, PreviewRefused
 
     docker = docker_executable()
     nonce = "preview-" + uuid.uuid4().hex
-    html = f"<html><body>{nonce}</body></html>"
-    handle = launch(tenant_id="tenant-a", workspace_id="proj-c04n")
+    handle = _sandbox("tenant-a", "proj-c04n")
     proxy = PreviewProxy()
     try:
-        _start_page(docker, handle.sandbox_id, 8766, html)
-        proxy.expose_port(
+        _start_react(docker, handle.sandbox_id, 8766, nonce)
+        granted = proxy.expose_port(
             tenant_id="tenant-a",
             owner_id="user-a",
             sandbox_id=handle.sandbox_id,
@@ -252,21 +270,21 @@ def test_w5_c04_negative() -> None:
                 port=8766,
                 ttl_seconds=60,
             )
+        client, token = _session_app(proxy, "user-a", "tenant-a", tmp_path / "c04n.db")
+        other, other_token = _session_app(proxy, "user-b", "tenant-b", tmp_path / "c04b.db")
+        assert other.get(granted.proxy_path, cookies={"rxy_session": other_token}).status_code == 403
         with pytest.raises(PreviewRefused):
             proxy.fetch(
                 tenant_id="tenant-a",
                 owner_id="user-a",
                 sandbox_id=handle.sandbox_id,
-                port=9,
+                port=8766,
+                asset_path="../etc/passwd",
             )
-        still = proxy.fetch(
-            tenant_id="tenant-a",
-            owner_id="user-a",
-            sandbox_id=handle.sandbox_id,
-            port=8766,
-        )
-        assert nonce in still.body
-        assert "169.254.169.254" not in still.body
+        still = client.get(granted.proxy_path, cookies={"rxy_session": token})
+        assert still.status_code == 200
+        assert nonce in still.text
+        assert "169.254.169.254" not in still.text
         short = proxy.expose_port(
             tenant_id="tenant-a",
             owner_id="user-a",

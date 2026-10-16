@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import subprocess
 import time
 import uuid
@@ -14,8 +15,9 @@ from fastapi.responses import Response
 
 from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
 from rxycode_runner.sandbox.provider import AttachRefused
+from rxycode_server.api.auth import current_record
 
-_CSP = "default-src 'none'; frame-ancestors 'none'"
+_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"
 _METADATA = {"169.254.169.254", "metadata.google.internal"}
 
 
@@ -93,8 +95,10 @@ class PreviewProxy:
         port: int,
         requested_url: str | None = None,
         grant_id: str | None = None,
+        asset_path: str = "",
     ) -> PreviewPage:
         _require_port(port)
+        upstream = _upstream_path(asset_path)
         if requested_url is not None and _blocked(requested_url, port):
             raise PreviewRefused("preview url refused")
         _owned(sandbox_id, tenant_id)
@@ -107,12 +111,13 @@ class PreviewProxy:
         )
         if time.monotonic() >= float(grant["expires"]):
             raise PreviewRefused("preview expired")
-        body = _read_loopback(sandbox_id, port)
+        body = _read_loopback(sandbox_id, port, upstream)
         if body is None:
             raise TargetUnavailable(f"sandbox:{sandbox_id}:{port}")
+        kind = "text/javascript; charset=utf-8" if upstream.endswith(".js") else "text/html; charset=utf-8"
         return PreviewPage(
             body=body,
-            content_type="text/html; charset=utf-8",
+            content_type=kind,
             csp=_CSP,
             proxy_path=str(grant["proxy_path"]),
         )
@@ -141,32 +146,38 @@ class PreviewProxy:
             raise PreviewRefused("preview refused")
         return max(rows, key=lambda row: float(row["expires"]))
 
-    def build_router(self) -> APIRouter:
-        proxy = self
-        router = APIRouter()
+def build_router() -> APIRouter:
+    router = APIRouter()
 
-        @router.get("/api/v1/previews/{sandbox_id}/{port}")
-        def get_preview(sandbox_id: str, port: int, request: Request) -> Response:
-            owner = request.headers.get("x-owner-id", "")
-            tenant = request.headers.get("x-tenant-id", "")
-            try:
-                page = proxy.fetch(
-                    tenant_id=tenant,
-                    owner_id=owner,
-                    sandbox_id=sandbox_id,
-                    port=port,
-                )
-            except PreviewRefused as exc:
-                raise HTTPException(status_code=403, detail="preview refused") from exc
-            except TargetUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            return Response(
-                page.body,
-                media_type="text/html",
-                headers={"Content-Security-Policy": page.csp},
+    @router.get("/api/v1/previews/{sandbox_id}/{port}")
+    @router.get("/api/v1/previews/{sandbox_id}/{port}/{asset_path:path}")
+    def get_preview(
+        sandbox_id: str,
+        port: int,
+        request: Request,
+        asset_path: str = "",
+    ) -> Response:
+        record = current_record(request)
+        proxy = request.app.state.preview_proxy
+        try:
+            page = proxy.fetch(
+                tenant_id=record.tenant_id,
+                owner_id=record.user_id,
+                sandbox_id=sandbox_id,
+                port=port,
+                asset_path=asset_path,
             )
+        except PreviewRefused as exc:
+            raise HTTPException(status_code=403, detail="preview refused") from exc
+        except TargetUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return Response(
+            page.body,
+            media_type=page.content_type,
+            headers={"Content-Security-Policy": page.csp},
+        )
 
-        return router
+    return router
 
 
 def _same_caller(
@@ -214,21 +225,31 @@ def _blocked(url: str, port: int) -> bool:
     return True
 
 
-def _read_loopback(sandbox_id: str, port: int) -> str | None:
+def _upstream_path(asset_path: str) -> str:
+    if asset_path in {"", "/"}:
+        return "/"
+    if ".." in asset_path or "\\" in asset_path or "://" in asset_path:
+        raise PreviewRefused("preview path refused")
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", asset_path):
+        raise PreviewRefused("preview path refused")
+    return "/" + asset_path.lstrip("/")
+
+
+def _read_loopback(sandbox_id: str, port: int, path: str) -> str | None:
     script = (
-        "import http.client, sys\n"
-        f"conn = http.client.HTTPConnection('127.0.0.1', {int(port)}, timeout=3)\n"
-        "try:\n"
-        "    conn.request('GET', '/')\n"
-        "    resp = conn.getresponse()\n"
-        "    if resp.status != 200:\n"
-        "        raise SystemExit(1)\n"
-        "    sys.stdout.write(resp.read().decode('utf-8', 'replace'))\n"
-        "except Exception:\n"
-        "    raise SystemExit(1)\n"
+        "const http = require('node:http');\n"
+        f"const req = http.get({{hostname:'127.0.0.1', port:{int(port)}, path:{path!r}}}, res => {{\n"
+        "  const chunks = [];\n"
+        "  res.on('data', chunk => chunks.push(chunk));\n"
+        "  res.on('end', () => {\n"
+        "    if (res.statusCode !== 200) process.exit(1);\n"
+        "    process.stdout.write(Buffer.concat(chunks));\n"
+        "  });\n"
+        "});\n"
+        "req.on('error', () => process.exit(1));\n"
     )
     done = subprocess.run(
-        [docker_executable(), "exec", sandbox_id, "python", "-c", script],
+        [docker_executable(), "exec", sandbox_id, "node", "-e", script],
         capture_output=True,
         text=True,
         timeout=15,

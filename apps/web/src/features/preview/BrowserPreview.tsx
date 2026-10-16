@@ -1,10 +1,8 @@
 export function BrowserPreview({
   proxyPath,
-  html,
   unavailable,
 }: {
   proxyPath: string
-  html?: string
   unavailable?: boolean
 }) {
   const allowed = proxyPath.startsWith("/api/v1/previews/")
@@ -17,7 +15,7 @@ export function BrowserPreview({
   }
   return (
     <section aria-label="preview">
-      <iframe title="preview" sandbox="" src={proxyPath} srcDoc={html} referrerPolicy="no-referrer" />
+      <iframe title="preview" sandbox="allow-scripts" src={proxyPath} referrerPolicy="no-referrer" />
     </section>
   )
 }
