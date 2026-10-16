@@ -1,0 +1,4 @@
+Parent HEAD before this card: a94f0b63 feat/rxycode-web. Not pushed.
+Nested whitelist: 4571134 on docs/plans/opus5-plan feat/rxycode-web. Not pushed.
+RED: eventReducer.ts and ChatPage.tsx were missing.
+E2E-WEB-02 close-and-reopen screenshots are not produced. The integration covers reload against the real event rows.

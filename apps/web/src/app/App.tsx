@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router"
 
 import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
+import { ChatPage } from "../features/chat/ChatPage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { createClient } from "../sdk/client"
 import { useUi } from "../state/ui"
@@ -195,6 +196,7 @@ const router = createBrowserRouter([
   { path: "/onboarding", element: <OnboardingPage /> },
   { path: "/oauth/callback", element: <OAuthCallbackPage /> },
   { path: "/projects", element: <ProjectsPage /> },
+  { path: "/runs/:runId", element: <ChatPage /> },
 ])
 
 export function App() {
