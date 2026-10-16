@@ -139,7 +139,8 @@ def lookup_web_run(database_url: str, session_id: str) -> dict[str, str] | None:
                     FROM runs
                     WHERE (id = :session OR session_id = :session)
                       AND status IN (
-                        'pending', 'leased', 'running', 'cancel_requested'
+                        'pending', 'running', 'leased',
+                        'cancel_requested', 'waiting_approval'
                       )
                     ORDER BY revision DESC
                     LIMIT 1

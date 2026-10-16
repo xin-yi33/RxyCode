@@ -146,7 +146,7 @@ async def _web_commands() -> list[dict[str, object]]:
                     id=run_id,
                     tenant_id=tenant,
                     session_id=ids["session"],
-                    status="running",
+                    status="waiting_approval",
                     revision=0,
                     lease_epoch=0,
                     request_id="req-" + tenant,
@@ -229,7 +229,7 @@ async def _web_commands() -> list[dict[str, object]]:
             with Session(engine) as db:
                 row = db.get(Run, run_id)
                 assert row is not None
-                assert row.status == "running"
+                assert row.status == "waiting_approval"
         finally:
             task = worker._run_task
             if task is not None:
