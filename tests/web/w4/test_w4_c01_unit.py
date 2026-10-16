@@ -10,9 +10,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
-if str(_RUNNER) not in sys.path:
-    sys.path.insert(0, str(_RUNNER))
+for _rel in (
+    Path("packages") / "rxycode-runner" / "src",
+    Path("packages") / "rxycode-core" / "src",
+):
+    _src = REPO / _rel
+    if str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
 
 
 def _session(pid: int) -> int:
@@ -25,30 +29,58 @@ def _session(pid: int) -> int:
 
 def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A local full shell is a native pid in this session and is not wrapped."""
-    from rxycode_runner.local.native_backend import LocalNativeBackend
+    import asyncio
+
+    from langchain_core.tools import StructuredTool
+
+    from execution.tool_orchestrator import ToolOrchestrator
+    from rxycode_core.runtime.execution_port import (
+        ExecutionPort,
+        bind_execution_port,
+        reset_execution_port,
+    )
 
     wrapped: list[object] = []
+    body: list[str] = []
 
     def spy(*args: object, **kwargs: object) -> object:
         wrapped.append(args)
         raise AssertionError("full mode called wrap_command")
 
+    def sandbox_body(command: str = "", argv: list[str] | None = None, target: str = "local") -> str:
+        del argv, target
+        body.append(command)
+        return "sandbox-body"
+
     monkeypatch.setattr("core.sandbox.manager.wrap_command", spy)
-    backend = LocalNativeBackend(target="local", permission="full")
-    handle = backend.start(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
-        tmp_path,
+    code = (
+        "import ctypes,os; v=ctypes.c_ulong(); "
+        "ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(v)); "
+        "print(int(v.value))"
     )
+    argv = [sys.executable, "-c", code]
+    orchestrator = ToolOrchestrator()
+    orchestrator.register(
+        "bash",
+        StructuredTool.from_function(func=sandbox_body, name="bash", description="shell"),
+    )
+    port = ExecutionPort()
+    token = bind_execution_port(port)
     try:
-        assert handle.started is True
-        assert handle.wrapped is False
-        assert handle.argv[0] == sys.executable
-        assert handle.pid is not None
-        assert _session(handle.pid) == _session(os.getpid())
-        assert wrapped == []
-        assert any(item["approval"] == "skipped" for item in backend.audit)
+        text = asyncio.run(
+            orchestrator.execute_tool(
+                "bash",
+                {"argv": argv, "command": code, "target": "local", "cwd": str(tmp_path)},
+                config={"safety": {"enabled": True, "permission_mode": "full"}},
+            )
+        )
     finally:
-        backend.kill(handle.pid or 0)
+        reset_execution_port(token)
+    assert body == []
+    assert wrapped == []
+    assert str(_session(os.getpid())) in text
+    assert port.local_full is not None
+    assert any(item["approval"] == "skipped" for item in port.local_full.audit)
 
 
 def test_w4_c01_negative() -> None:

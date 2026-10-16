@@ -129,6 +129,10 @@ class ExecutionPort:
         self.targets: dict[str, Capabilities] = {}
         self.specs: dict[str, ToolSpec] = {}
         self.backend = NativeBackend()
+        self.local_full: object | None = None
+
+    def register_local_full(self, backend: object) -> None:
+        self.local_full = backend
 
     def register_target(self, target_id: str, capabilities: Capabilities) -> None:
         self.targets[target_id] = capabilities

@@ -191,6 +191,19 @@ def _execution_port_module() -> Any:
 _PORT_TOOLS = frozenset({"bash", "read", "edit", "write", "patch"})
 
 
+def _local_full_argv(args: Any) -> list[str] | None:
+    if not isinstance(args, dict):
+        return None
+    raw = args.get("argv")
+    if isinstance(raw, list) and raw and all(isinstance(item, str) and item for item in raw):
+        return list(raw)
+    command = args.get("command")
+    if isinstance(command, str) and command.strip():
+        shell = os.environ.get("COMSPEC") or "cmd.exe"
+        return [shell, "/d", "/c", command]
+    return None
+
+
 def _routes_through_port(name: str) -> bool:
     if name in _PORT_TOOLS:
         return True
@@ -1048,7 +1061,12 @@ class ToolOrchestrator:
 
         async def _invoke_body() -> str:
             if _routes_through_port(name):
-                return await self._invoke_through_port(name, args, _invoke_registered)
+                return await self._invoke_through_port(
+                    name,
+                    args,
+                    _invoke_registered,
+                    config,
+                )
             return await _invoke_registered()
 
         async def _invoke_registered() -> str:
@@ -1669,7 +1687,7 @@ class ToolOrchestrator:
                 "str_replace", "create_file", "write_file",
             }
             canonical = self._canonical_name(name)
-            if permission_mode == "full_auto":
+            if permission_mode in {"full_auto", "full"}:
                 auto_levels.update({"write", "danger"})
             elif permission_mode == "auto_edit" and canonical in _AUTO_EDIT_TOOLS:
                 auto_levels.add(risk.name.lower())
@@ -1778,20 +1796,48 @@ class ToolOrchestrator:
                 return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
         return await self._invoke_in_executor(tool, args)
 
-    async def _invoke_through_port(self, name: str, args: Any, runner: Any) -> str:
+    async def _invoke_through_port(
+        self,
+        name: str,
+        args: Any,
+        runner: Any,
+        config: dict | None = None,
+    ) -> str:
         """Terminal shell/read/edit calls go through NativeBackend, not around it.
 
         ``runner`` is the existing retry-aware invocation, so READ retries stay.
+        Local full shell uses the native backend and does not wrap the argv.
         """
         port_module = _execution_port_module()
         port = port_module.current_execution_port() or port_module.default_execution_port()
         target_id = "local"
         if isinstance(args, dict):
             target_id = str(args.get("target") or args.get("target_id") or "local")
+        safety = ((config or {}).get("safety") or {}) if isinstance(config, dict) else {}
+        permission = str(
+            _permission_mode_override.get() or safety.get("permission_mode") or ""
+        ).strip().lower()
         call = type("PortCall", (), {})()
         call.name = name
         call.target_id = target_id
         call.version = 1
+        if permission == "full" and target_id == "local" and name in {"bash", "shell"}:
+            argv = _local_full_argv(args)
+            if argv:
+                async def native_runner() -> str:
+                    from pathlib import Path
+
+                    from rxycode_runner.local.native_backend import LocalNativeBackend
+
+                    backend = LocalNativeBackend(target="local", permission="full")
+                    port.register_local_full(backend)
+                    cwd_value = args.get("cwd") if isinstance(args, dict) else None
+                    cwd = Path(str(cwd_value)) if cwd_value else Path.cwd()
+                    result = await backend.shell(argv, cwd)
+                    return result.stdout if result.started else ""
+
+                event = await port.backend.ainvoke(call, native_runner)
+                return event.text
         event = await port.backend.ainvoke(call, runner)
         return event.text
 
