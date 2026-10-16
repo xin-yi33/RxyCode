@@ -69,20 +69,20 @@ def support_matrix(
             "click": "available",
         }
     if system in {"Darwin", "macOS"}:
-        desktop = "available" if accessibility else "unsupported"
         return {
-            "desktop_input": desktop,
+            "desktop_input": "unsupported",
             "conpty": "unsupported",
             "local_full": "unverified",
-            "click": desktop,
+            "click": "unsupported",
+            "accessibility": "granted" if accessibility else "missing",
         }
     if system == "Linux":
-        desktop = "unsupported" if wayland or not accessibility else "unverified"
         return {
-            "desktop_input": desktop,
+            "desktop_input": "unsupported",
             "conpty": "unsupported",
             "local_full": "unverified",
-            "click": desktop,
+            "click": "unsupported",
+            "wayland": "yes" if wayland else "no",
         }
     return {
         "desktop_input": "unsupported",

@@ -18,6 +18,11 @@ def test_w4_c07_integration() -> None:
     matrix = support_matrix("Darwin", accessibility=False, wayland=False)
     assert matrix["desktop_input"] != "available"
     assert matrix["desktop_input"] == "unsupported"
+    assert matrix["click"] != "available"
+    granted = support_matrix("Darwin", accessibility=True, wayland=False)
+    assert granted["desktop_input"] != "available"
+    assert granted["click"] != "available"
+    assert granted["accessibility"] == "granted"
     wayland = support_matrix("Linux", accessibility=False, wayland=True)
     assert wayland["desktop_input"] == "unsupported"
     windows = support_matrix("Windows", accessibility=False, wayland=False)
