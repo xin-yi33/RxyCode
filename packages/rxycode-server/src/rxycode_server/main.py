@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -17,6 +18,7 @@ from rxycode_server.api.runs import router as runs_router
 from rxycode_server.api.sse import router as sse_router
 from rxycode_server.api.terminal_ws import router as terminal_router
 from rxycode_server.api.workspace import router as workspace_router
+from rxycode_server.devices.gateway import Registry, build_router
 
 _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
 
@@ -79,6 +81,8 @@ def create_app(
     app.include_router(sse_router)
     app.include_router(approvals_router)
     app.include_router(artifacts_router)
+    app.state.device_registry = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
+    app.include_router(build_router())
 
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:

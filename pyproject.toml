@@ -84,10 +84,12 @@ packages = [
   "rxycode_server.approvals",
   "rxycode_server.artifacts",
   "rxycode_server.usage",
+  "rxycode_server.devices",
   "rxycode_worker",
   "rxycode_runner",
   "rxycode_runner.local",
   "rxycode_runner.desktop",
+  "rxycode_runner.remote",
 ]
 
 [tool.setuptools.package-dir]
@@ -106,10 +108,12 @@ packages = [
 "rxycode_server.approvals" = "packages/rxycode-server/src/rxycode_server/approvals"
 "rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
 "rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
+"rxycode_server.devices" = "packages/rxycode-server/src/rxycode_server/devices"
 "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
 "rxycode_runner" = "packages/rxycode-runner/src/rxycode_runner"
 "rxycode_runner.local" = "packages/rxycode-runner/src/rxycode_runner/local"
 "rxycode_runner.desktop" = "packages/rxycode-runner/src/rxycode_runner/desktop"
+"rxycode_runner.remote" = "packages/rxycode-runner/src/rxycode_runner/remote"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

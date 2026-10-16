@@ -920,6 +920,40 @@ def gui(desktop_dir):
         proc.wait(timeout=5)
 
 
+@cli.command("connect")
+@click.option("--url", required=True, help="Outbound cloud websocket URL.")
+@click.option("--code", default="", help="One-time pairing code.")
+@click.option("--token", default="", help="Device token for a reconnect. Not printed.")
+@click.option("--device-id", required=True)
+@click.option("--os-name", default="", help="Reported OS. Defaults to this machine.")
+@click.option("--capability", multiple=True)
+@click.option("--protocol-version", default="1.1.0")
+@click.option("--heartbeat-seconds", default=15.0, type=float)
+def connect(url, code, token, device_id, os_name, capability, protocol_version, heartbeat_seconds):
+    """Pair this machine with the cloud. The device token is not printed."""
+    import platform
+
+    from rxycode_runner.remote.client import ConnectRejected, run_connect
+
+    if not code and not token:
+        raise click.ClickException("PAIRING_INVALID")
+    reported = os_name or platform.system()
+    capabilities = list(capability) or ["click"]
+    try:
+        run_connect(
+            url=url,
+            pairing_code=code,
+            token=token,
+            device_id=device_id,
+            os_name=reported,
+            capabilities=capabilities,
+            protocol_version=protocol_version,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+    except ConnectRejected as exc:
+        raise click.ClickException(exc.code) from None
+
+
 @cli.command()
 @click.argument("subcommand", default="list")
 @click.argument("name", default="")
