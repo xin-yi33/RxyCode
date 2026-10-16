@@ -27,6 +27,11 @@ class UsageForbidden(Exception):
         self.code = "FORBIDDEN"
 
 
+def usage_cost_kind(price_version: str) -> str:
+    """A published price is confirmed. Anything else is an estimate."""
+    return "confirmed" if price_version in _PRICE_PER_TOKEN else "estimate"
+
+
 def _amount(tokens: int, price_version: str) -> str:
     rate = _PRICE_PER_TOKEN.get(price_version, Decimal("0"))
     value = (Decimal(tokens) * rate).quantize(Decimal("0.00000001"))

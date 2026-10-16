@@ -6,6 +6,9 @@ import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
 import { BrowserHandoff, handoffPageUrl } from "../features/browser/BrowserHandoff"
 import { ChatPage } from "../features/chat/ChatPage"
+import { MemoryPage } from "../features/memory/MemoryPage"
+import { SchedulePage } from "../features/schedule/SchedulePage"
+import { UsagePage } from "../features/usage/UsagePage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { DiffReview } from "../features/workspace/DiffReview"
 import { FileTree } from "../features/workspace/FileTree"
@@ -249,6 +252,9 @@ const router = createBrowserRouter([
   { path: "/oauth/callback", element: <OAuthCallbackPage /> },
   { path: "/projects", element: <ProjectsPage /> },
   { path: "/runs/:runId", element: <ChatPage /> },
+  { path: "/usage", element: <UsagePage /> },
+  { path: "/projects/:projectId/memory", element: <MemoryPage /> },
+  { path: "/projects/:projectId/schedule", element: <SchedulePage /> },
   { path: "/projects/:projectId/workspace", element: <WorkspacePage /> },
   { path: "/terminal/:sessionId", element: <TerminalPage /> },
   { path: "/browser/:sessionId", element: <BrowserHandoffPage /> },

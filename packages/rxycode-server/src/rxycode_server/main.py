@@ -19,6 +19,7 @@ from rxycode_server.api.sse import router as sse_router
 from rxycode_server.api.terminal_ws import router as terminal_router
 from rxycode_server.api.workspace import router as workspace_router
 from rxycode_server.devices.gateway import Registry, build_router
+from rxycode_server.notifications.service import router as product_router
 from rxycode_server.previews.proxy import PreviewProxy
 from rxycode_server.previews.proxy import build_router as preview_router
 
@@ -89,6 +90,7 @@ def create_app(
     app.include_router(sse_router)
     app.include_router(approvals_router)
     app.include_router(artifacts_router)
+    app.include_router(product_router)
     app.state.device_registry = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
     app.include_router(build_router())
     app.state.preview_proxy = PreviewProxy()
