@@ -53,7 +53,9 @@ def _safe_name(filename: str) -> str:
     return (cleaned or "artifact.bin")[:120]
 
 
-def _signature(signing_key: str, artifact_id: str, tenant_id: str, expires: int, sha256: str) -> str:
+def _signature(
+    signing_key: str, artifact_id: str, tenant_id: str, expires: int, sha256: str
+) -> str:
     message = f"{artifact_id}\n{tenant_id}\n{expires}\n{sha256}".encode()
     return hmac.new(signing_key.encode(), message, hashlib.sha256).hexdigest()
 
@@ -119,7 +121,9 @@ def _add_event(db: Session, run: Run, event_type: str, payload: dict) -> None:
     db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
 
 
-def _owned(db: Session, artifact_id: str, tenant_id: str, run_id: str | None) -> tuple[Artifact, Run]:
+def _owned(
+    db: Session, artifact_id: str, tenant_id: str, run_id: str | None
+) -> tuple[Artifact, Run]:
     row = db.get(Artifact, artifact_id)
     if row is None:
         raise ArtifactForbidden()
@@ -274,7 +278,7 @@ def read_download(
     if not matches:
         raise ArtifactForbidden()
     if not s3_endpoint or not bucket or not access_key or not secret_key:
-        raise ArtifactForbidden()
+        raise RuntimeError("artifact storage is not configured")
     client = _client(s3_endpoint, access_key, secret_key)
     found = client.get_object(Bucket=bucket, Key=object_key)
     data = found["Body"].read()

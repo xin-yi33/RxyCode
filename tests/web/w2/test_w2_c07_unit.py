@@ -30,7 +30,14 @@ from rxycode_server.artifacts.service import (  # noqa: E402
 )
 from rxycode_server.main import create_app  # noqa: E402
 from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
-from rxycode_server.persistence.models import Organization, Project, Run, SessionRow, User  # noqa: E402
+from rxycode_server.persistence.models import (  # noqa: E402
+    Membership,
+    Organization,
+    Project,
+    Run,
+    SessionRow,
+    User,
+)
 from rxycode_server.runs.service import create_run  # noqa: E402
 
 ORIGIN = "http://127.0.0.1"
@@ -157,6 +164,40 @@ def test_w2_c07_contract(postgres_url: str):
     )
     assert hashlib.sha256(body).hexdigest() == saved["sha256"]
     assert body == _BODY
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.add(User(id="user-c07-local", github_id=None, kind="local"))
+        db.add(
+            Membership(
+                id="mem-c07",
+                tenant_id="tenant-c07",
+                user_id="user-c07-local",
+                role="owner",
+            )
+        )
+        db.commit()
+    engine.dispose()
+    app = create_app(
+        postgres_url,
+        mode="local",
+        secret=SECRET,
+        allowed_origins=[ORIGIN],
+        s3_endpoint=store["endpoint"],
+        s3_bucket=store["bucket"],
+        s3_access_key=store["access_key"],
+        s3_secret_key=store["secret_key"],
+    )
+    client = TestClient(app)
+    token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
+    headers = {"X-CSRF-Token": token, "Origin": ORIGIN, "X-Local-Secret": SECRET}
+    assert client.post("/api/v1/auth/local/login", headers=headers).status_code == 200
+    downloaded = client.get(
+        f"/api/v1/runs/{run_id}/artifacts/{saved['artifact_id']}",
+        params={"expires": opened["expires"], "signature": opened["signature"]},
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == _BODY
+    assert downloaded.headers["content-type"].startswith("text/plain")
 
 
 def test_w2_c07_negative(postgres_url: str):
@@ -205,7 +246,16 @@ def test_w2_c07_negative(postgres_url: str):
         )
     assert expired.value.http_status == 403
     assert b"artifact-secret-c07" not in str(expired.value).encode()
-    app = create_app(postgres_url, mode="local", secret=SECRET, allowed_origins=[ORIGIN])
+    app = create_app(
+        postgres_url,
+        mode="local",
+        secret=SECRET,
+        allowed_origins=[ORIGIN],
+        s3_endpoint=store["endpoint"],
+        s3_bucket=store["bucket"],
+        s3_access_key=store["access_key"],
+        s3_secret_key=store["secret_key"],
+    )
     client = TestClient(app)
     token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
     headers = {"X-CSRF-Token": token, "Origin": ORIGIN, "X-Local-Secret": SECRET}

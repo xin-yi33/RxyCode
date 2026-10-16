@@ -8,3 +8,4 @@
 - Price version `2026-10` is 0.000002 USD per token. An unknown price version still records tokens and stores amount 0.
 - Nested whitelist is a6163df. ToolOutcome and Trace source files were not edited. That ruling is in the nested phase doc.
 - Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
+- Owner HTTP download now goes through create_app S3 settings. A local user in tenant-c07 receives the object bytes and text/plain. Missing storage config after a valid signature raises RuntimeError instead of ARTIFACT_FORBIDDEN.

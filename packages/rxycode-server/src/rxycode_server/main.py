@@ -36,6 +36,10 @@ def create_app(
     github_client_secret: str = "",
     github_redirect_uri: str = "",
     github_transport: object | None = None,
+    s3_endpoint: str = "",
+    s3_bucket: str = "",
+    s3_access_key: str = "",
+    s3_secret_key: str = "",
 ) -> FastAPI:
     """Build the cloud or local gateway. It does not mount the legacy /chat app."""
     checked = _require_secret(secret)
@@ -60,6 +64,10 @@ def create_app(
     app.state.github_client_secret = github_client_secret
     app.state.github_redirect_uri = github_redirect_uri
     app.state.github_transport = github_transport
+    app.state.s3_endpoint = s3_endpoint or None
+    app.state.s3_bucket = s3_bucket or None
+    app.state.s3_access_key = s3_access_key or None
+    app.state.s3_secret_key = s3_secret_key or None
     app.include_router(auth_router)
     app.include_router(projects_router)
     app.include_router(sse_router)

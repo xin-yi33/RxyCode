@@ -15,6 +15,18 @@ from rxycode_server.persistence.models import Artifact, Run
 router = APIRouter()
 
 
+def _content_type(database_url: str, artifact_id: str) -> str:
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.get(Artifact, artifact_id)
+            if row is None or not row.content_type:
+                return "application/octet-stream"
+            return row.content_type
+    finally:
+        engine.dispose()
+
+
 def _rows(database_url: str, run_id: str) -> tuple[str, list[dict[str, object]]] | None:
     engine = create_engine(database_url, poolclass=NullPool)
     try:
@@ -75,4 +87,4 @@ def download_artifact(
         )
     except ArtifactForbidden as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
-    return Response(content=body, media_type="application/octet-stream")
+    return Response(content=body, media_type=_content_type(state.database_url, artifact_id))
