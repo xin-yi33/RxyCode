@@ -48,7 +48,9 @@ def test_w3_c07_integration() -> None:
                 )
                 assert overflow is False
             page.get_by_role("button", name="取消").click()
-            expect(status).to_contain_text("cancelled", timeout=10000)
+            expect(status).to_contain_text("cancel_requested", timeout=10000)
+            page.get_by_role("button", name="取消").click()
+            expect(status).to_contain_text("cancel_requested", timeout=10000)
             expect(page.locator("body")).not_to_contain_text("succeeded")
             assert AXE.is_file(), "axe-core is missing"
             page.add_script_tag(path=str(AXE))

@@ -11,7 +11,6 @@ from rxycode_server.api.auth import current_record, require_write
 from rxycode_server.events.store import append_event
 from rxycode_server.persistence.models import Run
 
-_RUNNING = {"leased", "running"}
 _DONE = {"succeeded", "failed", "cancelled", "recovery_required"}
 
 router = APIRouter()
@@ -51,18 +50,21 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
             if row.status in _DONE:
                 raise HTTPException(status_code=409, detail="RUN_TERMINAL")
-            row.status = "cancel_requested" if row.status in _RUNNING else "cancelled"
-            row.revision = int(row.revision or 0) + 1
-            status = str(row.status)
-            db.commit()
+            if row.status != "cancel_requested":
+                row.status = "cancel_requested"
+                row.revision = int(row.revision or 0) + 1
+                db.commit()
+                changed = True
+            else:
+                changed = False
     finally:
         engine.dispose()
-    event_type = "run.status" if status == "cancel_requested" else "run.cancelled"
-    append_event(
-        database_url,
-        tenant_id=record.tenant_id,
-        run_id=run_id,
-        event_type=event_type,
-        payload={"status": status},
-    )
-    return {"status": status}
+    if changed:
+        append_event(
+            database_url,
+            tenant_id=record.tenant_id,
+            run_id=run_id,
+            event_type="run.status",
+            payload={"status": "cancel_requested"},
+        )
+    return {"status": "cancel_requested"}
