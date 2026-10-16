@@ -422,6 +422,7 @@ class AgentWorker:
                 bind_run = None
             if bind_run is not None:
                 bind_run(session_id, worker=self)
+            self.activate_web_database(session_id)
             return existing
         session = session_type_for_worker()(
             session_id=session_id,
@@ -436,6 +437,7 @@ class AgentWorker:
             bind_run = None
         if bind_run is not None:
             bind_run(session_id, worker=self)
+        self.activate_web_database(session_id)
         return session
 
     def _take_steers(self) -> list[str]:
@@ -638,7 +640,7 @@ class AgentWorker:
         self._stub = stub
         workspace = Path(str(params.get("workspace_root", ".")))
         self._workspace_root = workspace.resolve()
-        self._session_id = str(params.get("session_id", "worker"))
+        self.bind_web_session(str(params.get("session_id", "worker")))
         model_id = str(params.get("model_id") or "").strip() or None
         self._subagents_enabled = _subagents_enabled_from_env()
         self._subagent_manager, self._subagent_event_store = bootstrap_subagent_manager(
@@ -1690,7 +1692,12 @@ class AgentWorker:
                     }
                 )
 
-    def activate_web_database(self) -> None:
+    def bind_web_session(self, session_id: str) -> None:
+        """Record the session id from bootstrap, then attach the web run."""
+        self._session_id = str(session_id or "worker")
+        self.activate_web_database(self._session_id)
+
+    def activate_web_database(self, session_id: str | None = None) -> None:
         """Bind this worker to the web run stored for its session."""
         try:
             from rxycode_worker.agent_events import (
@@ -1701,7 +1708,7 @@ class AgentWorker:
         except ImportError:
             return
         url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
-        session_id = str(getattr(self, "_session_id", "") or "")
+        session_id = str(session_id or getattr(self, "_session_id", "") or "")
         if not url or not session_id:
             return
         found = lookup_web_run(url, session_id)
@@ -1718,7 +1725,9 @@ class AgentWorker:
         except ImportError:
             return []
         url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
-        run_id = str(getattr(self, "_web_run_id", "") or getattr(self, "_session_id", "") or "")
+        if not str(getattr(self, "_web_run_id", "") or ""):
+            self.activate_web_database()
+        run_id = str(getattr(self, "_web_run_id", "") or "")
         if not url or not run_id:
             return []
         return await consume_persisted_commands(url, run_id)
@@ -1735,7 +1744,6 @@ class AgentWorker:
         loop = asyncio.get_running_loop()
         pending: set[asyncio.Task[Any]] = set()
         self._ensure_writer()
-        self.activate_web_database()
         watcher: asyncio.Task[Any] | None = None
         if os.environ.get("RXYCODE_WEB_DATABASE_URL"):
             watcher = asyncio.create_task(self._watch_web_commands())

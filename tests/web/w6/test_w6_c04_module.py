@@ -189,7 +189,6 @@ async def _web_commands() -> list[dict[str, object]]:
 
         manager._live_runtimes[child.session_id] = _Runtime()
         worker = AgentWorker()
-        worker._session_id = run_id
 
         async def _hold() -> None:
             await asyncio.sleep(30)
@@ -203,9 +202,9 @@ async def _web_commands() -> list[dict[str, object]]:
             assert steered["delivered"] is False
             stopped = await cancel_child_run(run_id, child.session_id, _command(app, token, {}))
             assert stopped["delivered"] is False
+            worker.bind_web_session(run_id)
             worker.bind_core_session(run_id, REPO, lambda _event: None)
             manager.get_tree(run_id)
-            worker.activate_web_database()
             applied = await worker.drain_web_commands()
             assert applied
             assert worker._steer_queue == ["steer-web"]
