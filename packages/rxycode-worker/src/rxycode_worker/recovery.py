@@ -75,15 +75,18 @@ def _lease_is_current(row, *, tenant_id: str, worker_id: str, epoch: int, now: d
     return until is not None and until >= now
 
 
-def _lease_session(
+def _lease_view(
     database_url: str,
     *,
     tenant_id: str,
     run_id: str,
     worker_id: str,
     epoch: int,
-) -> str | None:
-    """Return session_id when this worker's epoch still owns an unexpired lease."""
+) -> tuple[str | None, str]:
+    """Return (session_id, kind). kind is live, recovering, or none.
+
+    recovering does not grant another shell. The lease clock is read after the row lock.
+    """
     engine = _engine(database_url)
     try:
         with engine.begin() as conn:
@@ -96,16 +99,16 @@ def _lease_session(
                 epoch=epoch,
                 now=now,
             ):
-                return str(row.session_id)
+                return str(row.session_id), "live"
             if _owns(row, tenant_id=tenant_id, worker_id=worker_id, epoch=epoch) and str(
                 row.status
             ) == "recovery_required":
-                return str(row.session_id)
+                return str(row.session_id), "recovering"
     except Exception:
-        return None
+        return None, "none"
     finally:
         engine.dispose()
-    return None
+    return None, "none"
 
 
 def _persist_unknown(
@@ -325,14 +328,21 @@ def run_shell_before_ack(
     epoch: int,
 ) -> dict[str, object]:
     """Reserve through ToolOrchestrator and run bash. A lost ACK stays pending."""
-    session_id = _lease_session(
+    session_id, lease_kind = _lease_view(
         database_url,
         tenant_id=tenant_id,
         run_id=run_id,
         worker_id=worker_id,
         epoch=epoch,
     )
-    if session_id is None:
+    if lease_kind != "live":
+        if lease_kind == "recovering":
+            return {
+                "executed": False,
+                "acked": False,
+                "journal_state": "unknown",
+                "run_status": "recovery_required",
+            }
         return _rejected(_journal_state(journal, attempt_id, call_id))
     if not asyncio.run(
         checkpointer_ready(
@@ -410,6 +420,24 @@ def run_shell_before_ack(
     executed = acked or (
         before == "not_started" and after == "unknown" and _looks_executed(text_result)
     )
+    if executed and not acked:
+        _persist_unknown(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            command=command,
+            worker_id=worker_id,
+            epoch=epoch,
+        )
+        return {
+            "executed": True,
+            "acked": False,
+            "journal_state": "unknown",
+            "run_status": "recovery_required",
+            "output": text_result,
+        }
     return {
         "executed": executed,
         "acked": acked,
@@ -434,7 +462,7 @@ def recover_unknown_shell(
 ) -> dict[str, object]:
     """Do not run the shell again when the previous ACK is missing."""
     state = _journal_state(journal, attempt_id, call_id)
-    session_id = _lease_session(
+    session_id, lease_kind = _lease_view(
         database_url,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -442,7 +470,7 @@ def recover_unknown_shell(
         epoch=epoch,
     )
     if state == "unknown":
-        if session_id is not None:
+        if lease_kind == "live":
             _persist_unknown(
                 database_url,
                 tenant_id=tenant_id,
@@ -458,8 +486,14 @@ def recover_unknown_shell(
                 "journal_state": "unknown",
                 "run_status": "recovery_required",
             }
+        if lease_kind == "recovering":
+            return {
+                "executed": False,
+                "journal_state": "unknown",
+                "run_status": "recovery_required",
+            }
         return _rejected("unknown")
-    if session_id is None:
+    if lease_kind != "live":
         return _rejected(state)
     if not asyncio.run(
         checkpointer_ready(
