@@ -37,6 +37,7 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
         list_notifications,
     )
     from rxycode_server.persistence.models import Outbox, Run, RunEvent
+    from rxycode_server.runs.service import load_run
     from rxycode_worker.supervisor import LeaseRejected, claim, commit_terminal
     from rxycode_server.usage.service import record_terminal_usage
     from test_w6_c05_unit import _get, _seed, _session, _wipe
@@ -71,6 +72,11 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
                 queued = db.scalar(select(Outbox).where(Outbox.event_id == event.event_id))
                 assert queued is not None
                 assert queued.dispatch_status == "pending"
+            loaded = load_run(DATABASE, run_id)
+            assert loaded["message"] == "scheduled run"
+            assert loaded["permission_profile"] == "default"
+            assert loaded["target_id"] == ""
+            assert loaded["session_id"] == ids["session_a"]
         finally:
             engine.dispose()
         epoch = claim(DATABASE, run_id, "worker-c05")

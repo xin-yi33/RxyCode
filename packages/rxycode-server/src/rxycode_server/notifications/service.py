@@ -448,8 +448,10 @@ def _fire_one(engine: object, row: object, stamp: datetime, compute_next: object
                 type="run.created",
                 payload={
                     "message": "scheduled run",
-                    "session_id": row.session_id,
+                    "permission_profile": "default",
                     "request_id": request_id,
+                    "session_id": row.session_id,
+                    "target_id": "",
                     "schedule_id": row.id,
                 },
                 at=datetime.now(timezone.utc),
