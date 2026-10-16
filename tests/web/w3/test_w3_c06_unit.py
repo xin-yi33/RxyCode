@@ -264,3 +264,28 @@ def test_w3_c06_sse_question_uses_bound_session() -> None:
             clear_question_pending(question_id)
 
     asyncio.run(scenario())
+
+
+def test_w3_c06_answer_file_is_complete() -> None:
+    """The visible answer file is finished JSON, and a second publish does not replace it."""
+    import json
+
+    from core.question import (
+        clear_question_pending,
+        mark_question_pending,
+        publish_question_answer,
+    )
+
+    question_id = "c06atom" + uuid.uuid4().hex[:12]
+    answer_path = Path.home() / ".rxycode" / "questions" / f"{question_id}.answer.json"
+    try:
+        mark_question_pending(question_id, session_id="ses-atom", prompt="哪一步")
+        assert publish_question_answer(question_id, "yes", session_id="ses-atom") is True
+        assert json.loads(answer_path.read_text(encoding="utf-8")) == {
+            "question_id": question_id,
+            "answer": "yes",
+        }
+        assert publish_question_answer(question_id, "no", session_id="ses-atom") is False
+        assert json.loads(answer_path.read_text(encoding="utf-8"))["answer"] == "yes"
+    finally:
+        clear_question_pending(question_id)

@@ -283,15 +283,22 @@ def publish_question_answer(
         return False
     if not pending.is_file():
         return False
-    answer_path = _question_dir() / f"{token}.answer.json"
-    payload = json.dumps({"question_id": token, "answer": answer})
-    try:
-        fd = os.open(answer_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+    folder = _question_dir()
+    answer_path = folder / f"{token}.answer.json"
+    if answer_path.exists():
         return False
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-    return True
+    payload = json.dumps({"question_id": token, "answer": answer})
+    temporary = folder / f"{token}.answer.{uuid.uuid4().hex}.tmp"
+    temporary.write_text(payload, encoding="utf-8")
+    linked = False
+    try:
+        os.link(temporary, answer_path)
+        linked = True
+    except FileExistsError:
+        linked = False
+    finally:
+        temporary.unlink(missing_ok=True)
+    return linked
 
 
 def question_has_answer(question_id: str) -> bool:
@@ -311,7 +318,12 @@ def take_question_answer(question_id: str) -> str | None:
     path = _question_dir() / f"{token}.answer.json"
     if not path.is_file():
         return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or "answer" not in payload:
+        return None
     path.unlink(missing_ok=True)
     (_question_dir() / f"{token}.pending.json").unlink(missing_ok=True)
     answer = payload.get("answer")
