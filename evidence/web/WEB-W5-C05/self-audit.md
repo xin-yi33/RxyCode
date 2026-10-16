@@ -2,7 +2,8 @@
 
 - RED: git_workflow was missing. 3 failed in 0.19s. See red.txt.
 - Unit: 2 passed in 14.36s. Module: 1 passed in 7.27s. No skip.
-- The sandbox is alpine/git, uid 65534, network none. seed commits main, commit_fix creates rxy/fix-* and leaves main at the old sha. push of main raises before git push. The work branch is pushed to a bare repo inside the same sandbox.
+- Audit w5c05-audit-1.json returned PROBLEMS: the work branch was only pushed inside the sandbox, and the journal could be skipped. push now requires ToolExecutionJournal.reserve before git push, then complete. The remote is the authorized repo over smart HTTP. POST /pulls returns 422 if that branch ref is absent.
+- The sandbox is alpine/git as uid 65534. It clones and pushes through host.docker.internal. push of main raises before git push. main's sha stays the seed sha.
 - GitHubClient speaks GET/POST /repos/{owner}/{repo}/pulls. The token is only the Bearer header. follow_redirects is false. The journal records the branch and sha and does not contain the token.
 - confirm=False returns recovery_required and does not POST. A 403 from the API raises GitHubRefused with a fixed message. A second publish of the same head returns the existing number and does not POST again.
 - PullRequestPanel renders the PR URL and the permission error. The rendered markup does not contain the token.

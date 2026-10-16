@@ -38,8 +38,8 @@ class GitWorkflow:
                 "sleep",
                 "--user",
                 "65534:65534",
-                "--network",
-                "none",
+                "--add-host",
+                "host.docker.internal:host-gateway",
                 "--cap-drop",
                 "ALL",
                 "--security-opt",
@@ -59,28 +59,9 @@ class GitWorkflow:
             raise RuntimeError("git sandbox failed to start")
         return SandboxRepo(name, tenant_id)
 
-    def seed(self, box: SandboxRepo, *, files: dict[str, str]) -> str:
-        _git(box, ["init", "-b", "main", "/tmp/ws"])
-        for path, content in files.items():
-            _write(box, f"/tmp/ws/{path}", content)
-        _git(box, ["-C", "/tmp/ws", "add", "."])
-        _git(
-            box,
-            [
-                "-C",
-                "/tmp/ws",
-                "-c",
-                "user.email=c05@example.test",
-                "-c",
-                "user.name=c05",
-                "commit",
-                "-m",
-                "init",
-            ],
-        )
-        _git(box, ["init", "--bare", "/tmp/remote.git"])
-        _git(box, ["-C", "/tmp/ws", "push", "/tmp/remote.git", "main"])
-        return self.rev(box, "main")
+    def clone_remote(self, box: SandboxRepo, remote: str) -> str:
+        _git(box, ["clone", remote, "/tmp/ws"])
+        return self.rev(box, "HEAD")
 
     def commit_fix(
         self,
@@ -112,13 +93,16 @@ class GitWorkflow:
         )
         return self.rev(box, "HEAD")
 
-    def push(self, box: SandboxRepo, *, branch: str, journal: object) -> None:
+    def push(self, box: SandboxRepo, *, branch: str, remote: str, journal: object) -> None:
         if branch in _PROTECTED:
             raise ProtectedBranch(branch)
-        record = getattr(journal, "record", None)
-        if callable(record):
-            record(action="git.push", branch=branch, remote="sandbox")
-        _git(box, ["-C", "/tmp/ws", "push", "/tmp/remote.git", branch])
+        reserve = getattr(journal, "reserve_remote", None)
+        complete = getattr(journal, "complete_remote", None)
+        if not callable(reserve) or not callable(complete):
+            raise RuntimeError("tool journal required")
+        call = reserve(action="git.push", branch=branch, remote=remote)
+        _git(box, ["-C", "/tmp/ws", "push", remote, f"HEAD:refs/heads/{branch}"])
+        complete(call, f"pushed {branch}")
 
     def rev(self, box: SandboxRepo, ref: str) -> str:
         done = _git(box, ["-C", "/tmp/ws", "rev-parse", ref])
