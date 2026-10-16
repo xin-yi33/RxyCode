@@ -1,0 +1,3 @@
+parent: c99829f7ccf0a15e32d2af8110d4be1776b61da3
+branch: feat/rxycode-web
+e2e: E2E-CLOUD-02 React dev server harness is not in this card; the locked tests use a real HTTP server inside the sandbox

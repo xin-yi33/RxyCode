@@ -1,0 +1,724 @@
+diff --git a/apps/web/src/features/preview/BrowserPreview.tsx b/apps/web/src/features/preview/BrowserPreview.tsx
+new file mode 100644
+index 00000000..6894aaeb
+--- /dev/null
++++ b/apps/web/src/features/preview/BrowserPreview.tsx
+@@ -0,0 +1,23 @@
++export function BrowserPreview({
++  proxyPath,
++  html,
++  unavailable,
++}: {
++  proxyPath: string
++  html?: string
++  unavailable?: boolean
++}) {
++  const allowed = proxyPath.startsWith("/api/v1/previews/")
++  if (unavailable || !allowed) {
++    return (
++      <section aria-label="preview">
++        <p>target unavailable</p>
++      </section>
++    )
++  }
++  return (
++    <section aria-label="preview">
++      <iframe title="preview" sandbox="" src={proxyPath} srcDoc={html} referrerPolicy="no-referrer" />
++    </section>
++  )
++}
+diff --git a/packages/rxycode-runner/src/rxycode_runner/sandbox/browser.py b/packages/rxycode-runner/src/rxycode_runner/sandbox/browser.py
+new file mode 100644
+index 00000000..c5dce8ef
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/sandbox/browser.py
+@@ -0,0 +1,76 @@
++"""Sandbox browser profile. Host OAuth credentials are not copied in."""
++
++from __future__ import annotations
++
++import subprocess
++import uuid
++
++from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
++from rxycode_runner.sandbox.provider import AttachRefused
++
++
++class ProfileRefused(PermissionError):
++    """This tenant does not own the browser profile."""
++
++
++class BrowserProfile:
++    def __init__(self, profile_id: str, sandbox_id: str, path: str) -> None:
++        self.profile_id = profile_id
++        self.sandbox_id = sandbox_id
++        self.path = path
++
++
++_PROFILES: dict[str, dict[str, str]] = {}
++
++
++def open_profile(*, sandbox_id: str, tenant_id: str) -> BrowserProfile:
++    _owned(sandbox_id, tenant_id)
++    profile_id = "prf-" + uuid.uuid4().hex[:12]
++    path = f"/tmp/{profile_id}"
++    script = (
++        "import os\n"
++        f"root = {path!r}\n"
++        "os.makedirs(root, exist_ok=True)\n"
++        "open(root + '/lifetime', 'w', encoding='utf-8').write('sandbox-only')\n"
++    )
++    done = _python(sandbox_id, script)
++    if done.returncode != 0:
++        raise ProfileRefused("profile create failed")
++    _PROFILES[profile_id] = {
++        "sandbox_id": sandbox_id,
++        "tenant_id": tenant_id,
++        "path": path,
++    }
++    return BrowserProfile(profile_id, sandbox_id, path)
++
++
++def close_profile(*, profile_id: str, sandbox_id: str, tenant_id: str) -> None:
++    row = _PROFILES.get(profile_id)
++    if row is None or row["sandbox_id"] != sandbox_id or row["tenant_id"] != tenant_id:
++        raise ProfileRefused("profile refused")
++    _owned(sandbox_id, tenant_id)
++    script = (
++        "import shutil\n"
++        f"shutil.rmtree({row['path']!r}, ignore_errors=True)\n"
++    )
++    done = _python(sandbox_id, script)
++    if done.returncode != 0:
++        raise ProfileRefused("profile close failed")
++    del _PROFILES[profile_id]
++
++
++def _owned(sandbox_id: str, tenant_id: str) -> None:
++    try:
++        GVisorSandbox().attach(sandbox_id, tenant_id=tenant_id)
++    except AttachRefused as exc:
++        raise ProfileRefused("profile refused") from exc
++
++
++def _python(sandbox_id: str, script: str) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        [docker_executable(), "exec", sandbox_id, "python", "-c", script],
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++    )
+diff --git a/packages/rxycode-server/src/rxycode_server/previews/__init__.py b/packages/rxycode-server/src/rxycode_server/previews/__init__.py
+new file mode 100644
+index 00000000..e1f1a6ae
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/previews/__init__.py
+@@ -0,0 +1 @@
++"""Authenticated preview proxy. Arbitrary URLs are not fetched."""
+diff --git a/packages/rxycode-server/src/rxycode_server/previews/proxy.py b/packages/rxycode-server/src/rxycode_server/previews/proxy.py
+new file mode 100644
+index 00000000..ce6aab5e
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/previews/proxy.py
+@@ -0,0 +1,209 @@
++"""Owner-authenticated preview proxy. It only reads a registered sandbox port."""
++
++from __future__ import annotations
++
++import ipaddress
++import subprocess
++import time
++import uuid
++from dataclasses import dataclass
++from urllib.parse import urlsplit
++
++from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
++from rxycode_runner.sandbox.provider import AttachRefused
++
++_CSP = "default-src 'none'; frame-ancestors 'none'"
++_METADATA = {"169.254.169.254", "metadata.google.internal"}
++
++
++class PreviewRefused(PermissionError):
++    """The caller, tenant, port, or URL is not allowed to preview."""
++
++
++class TargetUnavailable(RuntimeError):
++    def __init__(self, target: str) -> None:
++        self.target = target
++        super().__init__(f"target unavailable: {target}")
++
++
++@dataclass(frozen=True)
++class PreviewGrant:
++    grant_id: str
++    proxy_path: str
++    sandbox_id: str
++    port: int
++    tenant_id: str
++    owner_id: str
++
++
++@dataclass(frozen=True)
++class PreviewPage:
++    body: str
++    content_type: str
++    csp: str
++    proxy_path: str
++
++
++class PreviewProxy:
++    def __init__(self) -> None:
++        self._grants: dict[str, dict[str, object]] = {}
++
++    def expose_port(
++        self,
++        *,
++        tenant_id: str,
++        owner_id: str,
++        sandbox_id: str,
++        port: int,
++        ttl_seconds: int,
++    ) -> PreviewGrant:
++        _require_port(port)
++        if ttl_seconds < 1:
++            raise PreviewRefused("preview ttl refused")
++        _owned(sandbox_id, tenant_id)
++        grant_id = "prv-" + uuid.uuid4().hex[:12]
++        proxy_path = f"/api/v1/previews/{sandbox_id}/{port}"
++        self._grants[grant_id] = {
++            "grant_id": grant_id,
++            "proxy_path": proxy_path,
++            "sandbox_id": sandbox_id,
++            "port": port,
++            "tenant_id": tenant_id,
++            "owner_id": owner_id,
++            "expires": time.monotonic() + ttl_seconds,
++        }
++        return PreviewGrant(
++            grant_id=grant_id,
++            proxy_path=proxy_path,
++            sandbox_id=sandbox_id,
++            port=port,
++            tenant_id=tenant_id,
++            owner_id=owner_id,
++        )
++
++    def fetch(
++        self,
++        *,
++        tenant_id: str,
++        owner_id: str,
++        sandbox_id: str,
++        port: int,
++        requested_url: str | None = None,
++        grant_id: str | None = None,
++    ) -> PreviewPage:
++        _require_port(port)
++        if requested_url is not None and _blocked(requested_url, port):
++            raise PreviewRefused("preview url refused")
++        _owned(sandbox_id, tenant_id)
++        grant = self._grant(
++            tenant_id=tenant_id,
++            owner_id=owner_id,
++            sandbox_id=sandbox_id,
++            port=port,
++            grant_id=grant_id,
++        )
++        if time.monotonic() >= float(grant["expires"]):
++            raise PreviewRefused("preview expired")
++        body = _read_loopback(sandbox_id, port)
++        if body is None:
++            raise TargetUnavailable(f"sandbox:{sandbox_id}:{port}")
++        return PreviewPage(
++            body=body,
++            content_type="text/html; charset=utf-8",
++            csp=_CSP,
++            proxy_path=str(grant["proxy_path"]),
++        )
++
++    def _grant(
++        self,
++        *,
++        tenant_id: str,
++        owner_id: str,
++        sandbox_id: str,
++        port: int,
++        grant_id: str | None,
++    ) -> dict[str, object]:
++        if grant_id is not None:
++            row = self._grants.get(grant_id)
++            if row is None or not _same_caller(row, tenant_id, owner_id, sandbox_id, port):
++                raise PreviewRefused("preview refused")
++            return row
++        rows = [
++            row
++            for row in self._grants.values()
++            if _same_caller(row, tenant_id, owner_id, sandbox_id, port)
++            and time.monotonic() < float(row["expires"])
++        ]
++        if not rows:
++            raise PreviewRefused("preview refused")
++        return max(rows, key=lambda row: float(row["expires"]))
++
++
++def _same_caller(
++    row: dict[str, object],
++    tenant_id: str,
++    owner_id: str,
++    sandbox_id: str,
++    port: int,
++) -> bool:
++    return (
++        row["tenant_id"] == tenant_id
++        and row["owner_id"] == owner_id
++        and row["sandbox_id"] == sandbox_id
++        and row["port"] == port
++    )
++
++
++def _owned(sandbox_id: str, tenant_id: str) -> None:
++    try:
++        GVisorSandbox().attach(sandbox_id, tenant_id=tenant_id)
++    except AttachRefused as exc:
++        raise PreviewRefused("preview refused") from exc
++
++
++def _require_port(port: int) -> None:
++    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
++        raise PreviewRefused("preview port refused")
++
++
++def _blocked(url: str, port: int) -> bool:
++    parts = urlsplit(url)
++    host = (parts.hostname or "").lower().rstrip(".")
++    if host in _METADATA or parts.scheme != "http":
++        return True
++    try:
++        address = ipaddress.ip_address(host)
++    except ValueError:
++        if host != "localhost":
++            return True
++        return parts.port not in {None, port}
++    if address.is_link_local or address.is_multicast or address.is_unspecified:
++        return True
++    if address.is_loopback:
++        return parts.port not in {None, port}
++    return True
++
++
++def _read_loopback(sandbox_id: str, port: int) -> str | None:
++    script = (
++        "import http.client, sys\n"
++        f"conn = http.client.HTTPConnection('127.0.0.1', {int(port)}, timeout=3)\n"
++        "try:\n"
++        "    conn.request('GET', '/')\n"
++        "    resp = conn.getresponse()\n"
++        "    if resp.status != 200:\n"
++        "        raise SystemExit(1)\n"
++        "    sys.stdout.write(resp.read().decode('utf-8', 'replace'))\n"
++        "except Exception:\n"
++        "    raise SystemExit(1)\n"
++    )
++    done = subprocess.run(
++        [docker_executable(), "exec", sandbox_id, "python", "-c", script],
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++    if done.returncode != 0:
++        return None
++    return done.stdout
+diff --git a/tests/web/w5/test_w5_c04_module.py b/tests/web/w5/test_w5_c04_module.py
+new file mode 100644
+index 00000000..665b20a2
+--- /dev/null
++++ b/tests/web/w5/test_w5_c04_module.py
+@@ -0,0 +1,110 @@
++"""WEB-W5-C04. A closed dev server comes back as target unavailable."""
++
++from __future__ import annotations
++
++import subprocess
++import sys
++import time
++import uuid
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++for _entry in (
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++
++def _exec(docker: str, sandbox_id: str, argv: list[str], detach: bool = False) -> subprocess.CompletedProcess[str]:
++    args = [docker, "exec"]
++    if detach:
++        args.append("-d")
++    args.extend([sandbox_id, *argv])
++    return subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
++
++
++def test_w5_c04_integration() -> None:
++    """After the sandbox port closes, the proxy says the target is unavailable."""
++    from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
++    from rxycode_runner.sandbox.policy import launch
++    from rxycode_server.previews.proxy import PreviewProxy, TargetUnavailable
++
++    docker = docker_executable()
++    nonce = "preview-" + uuid.uuid4().hex
++    html = f"<html><body>{nonce}</body></html>"
++    port = 8767
++    script = (
++        "import os\n"
++        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
++        f"HTML = {html!r}.encode()\n"
++        "class H(BaseHTTPRequestHandler):\n"
++        "    def do_GET(self):\n"
++        "        self.send_response(200)\n"
++        "        self.send_header('Content-Type', 'text/html; charset=utf-8')\n"
++        "        self.end_headers()\n"
++        "        self.wfile.write(HTML)\n"
++        "    def log_message(self, *args):\n"
++        "        return\n"
++        "open('/tmp/preview.pid', 'w').write(str(os.getpid()))\n"
++        f"HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
++    )
++    handle = launch(tenant_id="tenant-a", workspace_id="proj-c04i")
++    proxy = PreviewProxy()
++    try:
++        started = _exec(docker, handle.sandbox_id, ["python", "-c", script], detach=True)
++        assert started.returncode == 0, started.stderr
++        deadline = time.time() + 10
++        while time.time() < deadline:
++            probe = _exec(
++                docker,
++                handle.sandbox_id,
++                [
++                    "python",
++                    "-c",
++                    f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{port}/', timeout=1).read().decode())",
++                ],
++            )
++            if probe.returncode == 0 and nonce in probe.stdout:
++                break
++            time.sleep(0.2)
++        else:
++            raise AssertionError("dev server did not start")
++        proxy.expose_port(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=port,
++            ttl_seconds=60,
++        )
++        opened = proxy.fetch(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=port,
++        )
++        assert nonce in opened.body
++        killed = _exec(
++            docker,
++            handle.sandbox_id,
++            [
++                "python",
++                "-c",
++                "import os, signal; os.kill(int(open('/tmp/preview.pid').read()), signal.SIGTERM)",
++            ],
++        )
++        assert killed.returncode == 0, killed.stderr
++        with pytest.raises(TargetUnavailable) as closed:
++            proxy.fetch(
++                tenant_id="tenant-a",
++                owner_id="user-a",
++                sandbox_id=handle.sandbox_id,
++                port=port,
++            )
++        assert "unavailable" in str(closed.value).lower()
++        assert handle.sandbox_id in closed.value.target
++    finally:
++        GVisorSandbox().destroy(handle.sandbox_id, tenant_id="tenant-a")
+diff --git a/tests/web/w5/test_w5_c04_unit.py b/tests/web/w5/test_w5_c04_unit.py
+new file mode 100644
+index 00000000..575cef9d
+--- /dev/null
++++ b/tests/web/w5/test_w5_c04_unit.py
+@@ -0,0 +1,269 @@
++"""WEB-W5-C04. The owner sees the sandbox page. Metadata and other tenants are refused."""
++
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++import time
++import uuid
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
++for _entry in (
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++
++def _remove(docker: str, container_id: str) -> None:
++    if not container_id:
++        return
++    subprocess.run(
++        [docker, "rm", "-f", container_id],
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++    )
++
++
++def _exec(docker: str, sandbox_id: str, argv: list[str], detach: bool = False) -> subprocess.CompletedProcess[str]:
++    args = [docker, "exec"]
++    if detach:
++        args.append("-d")
++    args.extend([sandbox_id, *argv])
++    return subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
++
++
++def _start_page(docker: str, sandbox_id: str, port: int, html: str) -> None:
++    script = (
++        "import os\n"
++        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
++        f"HTML = {html!r}.encode()\n"
++        "class H(BaseHTTPRequestHandler):\n"
++        "    def do_GET(self):\n"
++        "        self.send_response(200)\n"
++        "        self.send_header('Content-Type', 'text/html; charset=utf-8')\n"
++        "        self.end_headers()\n"
++        "        self.wfile.write(HTML)\n"
++        "    def log_message(self, *args):\n"
++        "        return\n"
++        "open('/tmp/preview.pid', 'w').write(str(os.getpid()))\n"
++        f"HTTPServer(('127.0.0.1', {port}), H).serve_forever()\n"
++    )
++    started = _exec(docker, sandbox_id, ["python", "-c", script], detach=True)
++    assert started.returncode == 0, started.stderr
++    deadline = time.time() + 10
++    while time.time() < deadline:
++        probe = _exec(
++            docker,
++            sandbox_id,
++            ["python", "-c", f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{port}/', timeout=1).read().decode())"],
++        )
++        if probe.returncode == 0 and html in probe.stdout:
++            return
++        time.sleep(0.2)
++    raise AssertionError("dev server did not start")
++
++
++def _render(proxy_path: str, html: str, unavailable: bool) -> str:
++    script = (
++        "import { createElement } from 'react';\n"
++        "import { renderToStaticMarkup } from 'react-dom/server';\n"
++        "import { BrowserPreview } from './src/features/preview/BrowserPreview.tsx';\n"
++        "const html = renderToStaticMarkup(createElement(BrowserPreview, {\n"
++        "  proxyPath: process.env.PREVIEW_PATH,\n"
++        "  html: process.env.PREVIEW_HTML,\n"
++        "  unavailable: process.env.PREVIEW_DOWN === '1',\n"
++        "}));\n"
++        "process.stdout.write(html);\n"
++    )
++    done = subprocess.run(
++        [str(BUN), "-e", script],
++        cwd=REPO / "apps" / "web",
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++        env={
++            **os.environ,
++            "PREVIEW_PATH": proxy_path,
++            "PREVIEW_HTML": html,
++            "PREVIEW_DOWN": "1" if unavailable else "0",
++        },
++    )
++    assert done.returncode == 0, done.stderr
++    return done.stdout
++
++
++def test_w5_c04_contract() -> None:
++    """The owner's preview is the real sandbox page, and the browser profile has no OAuth token."""
++    from rxycode_runner.sandbox.browser import close_profile, open_profile
++    from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
++    from rxycode_runner.sandbox.policy import launch
++    from rxycode_server.previews.proxy import PreviewProxy
++
++    docker = docker_executable()
++    nonce = "preview-" + uuid.uuid4().hex
++    html = f"<html><body>{nonce}</body></html>"
++    secret = "oauth-" + uuid.uuid4().hex
++    handle = launch(tenant_id="tenant-a", workspace_id="proj-c04")
++    proxy = PreviewProxy()
++    try:
++        _start_page(docker, handle.sandbox_id, 8765, html)
++        granted = proxy.expose_port(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=8765,
++            ttl_seconds=60,
++        )
++        page = proxy.fetch(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=8765,
++        )
++        assert nonce in page.body
++        assert page.proxy_path == granted.proxy_path
++        assert page.proxy_path.startswith("/api/v1/previews/")
++        assert "default-src" in page.csp
++        viewed = _render(page.proxy_path, page.body, False)
++        assert nonce in viewed
++        assert 'sandbox=""' in viewed or "sandbox=\"\"" in viewed
++        hidden = _render(page.proxy_path, page.body, True)
++        assert "target unavailable" in hidden
++        assert nonce not in hidden
++        os.environ["OAUTH_TOKEN"] = secret
++        try:
++            profile = open_profile(sandbox_id=handle.sandbox_id, tenant_id="tenant-a")
++        finally:
++            os.environ.pop("OAUTH_TOKEN", None)
++        listed = _exec(
++            docker,
++            handle.sandbox_id,
++            ["python", "-c", f"import os; root={profile.path!r}\nprint(''.join(os.listdir(root)))\n"],
++        )
++        assert listed.returncode == 0, listed.stderr
++        assert secret not in listed.stdout
++        dumped = _exec(
++            docker,
++            handle.sandbox_id,
++            [
++                "python",
++                "-c",
++                (
++                    "import os\n"
++                    f"root={profile.path!r}\n"
++                    "buf=[]\n"
++                    "for name in os.listdir(root):\n"
++                    "    buf.append(open(os.path.join(root, name), encoding='utf-8', errors='replace').read())\n"
++                    "print(''.join(buf))\n"
++                ),
++            ],
++        )
++        assert secret not in dumped.stdout
++        close_profile(profile_id=profile.profile_id, sandbox_id=handle.sandbox_id, tenant_id="tenant-a")
++        gone = _exec(
++            docker,
++            handle.sandbox_id,
++            ["python", "-c", f"import os; raise SystemExit(0 if not os.path.exists({profile.path!r}) else 1)"],
++        )
++        assert gone.returncode == 0
++        info = json.loads(
++            subprocess.run(
++                [docker, "inspect", handle.container_id],
++                capture_output=True,
++                text=True,
++                timeout=30,
++                check=False,
++            ).stdout
++        )[0]
++        assert info["HostConfig"]["NetworkMode"] == "none"
++    finally:
++        GVisorSandbox().destroy(handle.sandbox_id, tenant_id="tenant-a")
++
++
++def test_w5_c04_negative() -> None:
++    """Metadata URLs and another tenant are refused. An unregistered port is not proxied."""
++    from rxycode_runner.sandbox.gvisor import GVisorSandbox, docker_executable
++    from rxycode_runner.sandbox.policy import launch
++    from rxycode_server.previews.proxy import PreviewProxy, PreviewRefused
++
++    docker = docker_executable()
++    nonce = "preview-" + uuid.uuid4().hex
++    html = f"<html><body>{nonce}</body></html>"
++    handle = launch(tenant_id="tenant-a", workspace_id="proj-c04n")
++    proxy = PreviewProxy()
++    try:
++        _start_page(docker, handle.sandbox_id, 8766, html)
++        proxy.expose_port(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=8766,
++            ttl_seconds=60,
++        )
++        with pytest.raises(PreviewRefused):
++            proxy.fetch(
++                tenant_id="tenant-b",
++                owner_id="user-b",
++                sandbox_id=handle.sandbox_id,
++                port=8766,
++            )
++        with pytest.raises(PreviewRefused):
++            proxy.fetch(
++                tenant_id="tenant-a",
++                owner_id="user-a",
++                sandbox_id=handle.sandbox_id,
++                port=8766,
++                requested_url="http://169.254.169.254/latest/meta-data",
++            )
++        with pytest.raises(PreviewRefused):
++            proxy.expose_port(
++                tenant_id="tenant-b",
++                owner_id="user-b",
++                sandbox_id=handle.sandbox_id,
++                port=8766,
++                ttl_seconds=60,
++            )
++        with pytest.raises(PreviewRefused):
++            proxy.fetch(
++                tenant_id="tenant-a",
++                owner_id="user-a",
++                sandbox_id=handle.sandbox_id,
++                port=9,
++            )
++        still = proxy.fetch(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=8766,
++        )
++        assert nonce in still.body
++        assert "169.254.169.254" not in still.body
++        short = proxy.expose_port(
++            tenant_id="tenant-a",
++            owner_id="user-a",
++            sandbox_id=handle.sandbox_id,
++            port=8766,
++            ttl_seconds=1,
++        )
++        time.sleep(1.3)
++        with pytest.raises(PreviewRefused):
++            proxy.fetch(
++                tenant_id="tenant-a",
++                owner_id="user-a",
++                sandbox_id=handle.sandbox_id,
++                port=8766,
++                grant_id=short.grant_id,
++            )
++    finally:
++        GVisorSandbox().destroy(handle.sandbox_id, tenant_id="tenant-a")
