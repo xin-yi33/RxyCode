@@ -14,8 +14,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
+_SERVER = REPO / "packages" / "rxycode-server" / "src"
 BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
-for _entry in (str(_WORKER), str(REPO / "tests" / "web" / "w6")):
+for _entry in (str(_WORKER), str(_SERVER), str(REPO / "tests" / "web" / "w6")):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
@@ -65,6 +66,248 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
     assert f'data-id="{child["id"]}"' in markup
     assert f'data-parent="{child["parent_id"]}"' in markup
     assert f'data-tokens="{child["tokens"]}"' in markup
+    web_agents = asyncio.run(_web_commands())
+    assert any(item["parent_id"] == "parent-a" and item["status"] == "completed" for item in web_agents)
+
+
+async def _web_commands() -> list[dict[str, object]]:
+    """HTTP steer and child cancel hit the bound worker. AgentTask writes the run log."""
+    import json
+    import time
+    import uuid
+
+    from sqlalchemy import create_engine, delete
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+    from starlette.requests import Request
+
+    from appserver.agent_task import AgentTask
+    from appserver.agent_worker import AgentWorker
+    from appserver.eventbus import AppendOnlyLog, EventBus
+    from protocol.subagents import (
+        AgentDefinition,
+        AgentMode,
+        PermissionSpec,
+        PermissionVerdict,
+        TaskPermissionSpec,
+        TaskRequest,
+        ToolPermission,
+        TriggerKind,
+    )
+    from rxycode_server.api.auth import AuthRecord, _hash_token
+    from rxycode_server.api.runs import cancel_child_run, steer_run
+    from rxycode_server.events.store import replay
+    from rxycode_server.persistence.models import Organization, Outbox, Project, Run, RunEvent, SessionRow
+    from rxycode_worker.agent_events import RunJournal, bind_run
+    from RxyCode.RxyCode1_1_0.core.subagents.definitions import AgentDefinitionRegistry
+    from RxyCode.RxyCode1_1_0.core.subagents.manager import ChildSessionManager
+    from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
+    from RxyCode.RxyCode1_1_0.core.subagents.sessions import create_child_session
+
+    database_url = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+    secret = "local-web-secret-value-32bytes!!"
+    origin = "http://test.example"
+    tenant = "ten-w6c04-" + uuid.uuid4().hex[:8]
+    run_id = "run-w6c04-" + uuid.uuid4().hex[:8]
+    class _App:
+        def __init__(self) -> None:
+            self.state = type("State", (), {})()
+
+    app = _App()
+    app.state.database_url = database_url
+    app.state.allowed_origins = (origin,)
+    app.state.secret = secret
+    app.state.sessions = {}
+    token = "c04-session"
+    app.state.sessions[_hash_token(secret, token)] = AuthRecord("user-w6c04", tenant, time.monotonic())
+    engine = create_engine(database_url, poolclass=NullPool)
+    ids = {"org": "org-" + tenant, "project": "prj-" + tenant, "session": "ses-" + tenant}
+    try:
+        with Session(engine) as db:
+            db.add(Organization(id=ids["org"], tenant_id=tenant))
+            db.add(Project(id=ids["project"], tenant_id=tenant, name="c04-" + tenant, repo_config={}))
+            db.add(SessionRow(id=ids["session"], tenant_id=tenant, project_id=ids["project"], title="c04"))
+            db.add(
+                Run(
+                    id=run_id,
+                    tenant_id=tenant,
+                    session_id=ids["session"],
+                    status="running",
+                    revision=0,
+                    lease_epoch=0,
+                    request_id="req-" + tenant,
+                    input_digest="",
+                    event_seq=0,
+                    target_id="",
+                )
+            )
+            db.commit()
+        registry = AgentDefinitionRegistry()
+        registry.register_builtin(
+            AgentDefinition(
+                id="explore",
+                description="read",
+                mode=AgentMode.SUBAGENT,
+                steps=4,
+                permission=PermissionSpec(
+                    read=ToolPermission.from_raw({"**": "allow"}),
+                    edit=ToolPermission.from_raw({"**": "deny"}),
+                    external_directory=PermissionVerdict.DENY,
+                ),
+                task_permission=TaskPermissionSpec(default_verdict=PermissionVerdict.DENY),
+            )
+        )
+        manager = ChildSessionManager(
+            registry=registry,
+            config=SubagentConfig(
+                flags=SubagentFeatureFlags(
+                    subagents_enabled=True,
+                    subagents_task=True,
+                    subagents_mention=True,
+                    subagents_child_tasks=True,
+                )
+            ),
+        )
+        request = TaskRequest(
+            parent_session_id=run_id,
+            agent_id="explore",
+            prompt="inspect",
+            trigger=TriggerKind.AUTOMATIC,
+        )
+        definition = registry.get("explore")
+        child = create_child_session(
+            request,
+            manager._compute_policy(request, definition),
+            definition=definition,
+        )
+        child.root_session_id = run_id
+        manager.get_tree(run_id).add(child)
+        cancelled = {"hit": False}
+
+        class _Runtime:
+            def cancel(self) -> None:
+                cancelled["hit"] = True
+
+        manager._live_runtimes[child.session_id] = _Runtime()
+        worker = AgentWorker()
+        worker._session_id = run_id
+
+        async def _hold() -> None:
+            await asyncio.sleep(30)
+
+        worker._run_task = asyncio.create_task(_hold())
+        bind_run(run_id, worker=worker, manager=manager)
+        try:
+            steered = await steer_run(run_id, _command(app, token, {"text": "steer-web"}))
+            assert steered["delivered"] is True
+            assert worker._steer_queue == ["steer-web"]
+            stopped = await cancel_child_run(run_id, child.session_id, _command(app, token, {}))
+            assert stopped["delivered"] is True
+            assert cancelled["hit"] is True
+            with Session(engine) as db:
+                row = db.get(Run, run_id)
+                assert row is not None
+                assert row.status == "running"
+        finally:
+            task = worker._run_task
+            if task is not None:
+                task.cancel()
+        journal = RunJournal(database_url, tenant, run_id)
+
+        async def _work(_task: str) -> str:
+            return "ok"
+
+        agent = AgentTask("child-a", EventBus(AppendOnlyLog()), object(), _work)
+        agent.parent_id = "parent-a"
+        agent._run_journal = journal
+        await agent.spawn("work")
+        if agent._main_task is not None:
+            await agent._main_task
+        streamed = replay(database_url, tenant_id=tenant, run_id=run_id, after_seq=0)
+        names = [item["type"] for item in streamed["events"]]
+        assert "event/agent_started" in names
+        assert "event/agent_done" in names
+        started = next(item for item in streamed["events"] if item["type"] == "event/agent_started")
+        assert started["payload"]["agent_id"] == "child-a"
+        assert started["payload"]["parent_id"] == "parent-a"
+        return _reduce_agents(streamed["events"])
+    finally:
+        with Session(engine) as db:
+            event_ids = [
+                row.event_id
+                for row in db.query(RunEvent).filter(RunEvent.run_id == run_id).all()
+            ]
+            if event_ids:
+                db.query(Outbox).filter(Outbox.event_id.in_(event_ids)).delete(synchronize_session=False)
+            db.execute(delete(RunEvent).where(RunEvent.run_id == run_id))
+            db.execute(delete(Run).where(Run.id == run_id))
+            db.execute(delete(SessionRow).where(SessionRow.id == ids["session"]))
+            db.execute(delete(Project).where(Project.id == ids["project"]))
+            db.execute(delete(Organization).where(Organization.id == ids["org"]))
+            db.commit()
+        engine.dispose()
+
+
+def _command(app: object, token: str, body: dict[str, object]):
+    import json
+
+    from starlette.requests import Request
+
+    payload = json.dumps(body).encode("utf-8")
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [
+            (b"origin", b"http://test.example"),
+            (b"x-csrf-token", b"csrf-token"),
+            (b"cookie", f"rxy_session={token}; rxy_csrf=csrf-token".encode("ascii")),
+            (b"content-type", b"application/json"),
+        ],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 80),
+        "app": app,
+    }
+    return Request(scope, receive)
+
+
+def _reduce_agents(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    if not BUN.is_file():
+        pytest.fail("bun is not installed")
+    component = REPO / "apps" / "web" / "src" / "features" / "runs" / "eventReducer.ts"
+    env = os.environ.copy()
+    env["RXY_EVENTS"] = json.dumps(events)
+    env["RXY_COMPONENT"] = str(component)
+    script = r"""
+import { pathToFileURL } from "url"
+const { reduceEvents } = await import(pathToFileURL(process.env.RXY_COMPONENT).href)
+const projection = reduceEvents(JSON.parse(process.env.RXY_EVENTS))
+process.stdout.write(JSON.stringify(projection.agents))
+"""
+    program = Path(tempfile.mkdtemp(prefix="rxy-w6c04-reduce-")) / "reduce.ts"
+    program.write_text(script, encoding="utf-8")
+    try:
+        rendered = subprocess.run(
+            [str(BUN), str(program)],
+            cwd=REPO,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    finally:
+        program.unlink(missing_ok=True)
+    assert rendered.returncode == 0, rendered.stderr
+    return json.loads(rendered.stdout)
 
 
 async def _steer_pair(run_id: str, store: object) -> tuple[dict[str, object], dict[str, object], list[str]]:

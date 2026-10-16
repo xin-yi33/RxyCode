@@ -138,7 +138,7 @@ export function reduceEvents(
           : "started"
       const cost = String(payload.cost ?? "")
       const parentId = String(payload.parent_id ?? "")
-      const tokens = Number(payload.tokens ?? 0)
+      const tokens = Number(payload.tokens ?? payload.total_tokens ?? 0)
       const found = projection.agents.find((item) => item.id === id)
       if (found) {
         found.status = status

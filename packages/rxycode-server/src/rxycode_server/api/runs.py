@@ -133,11 +133,14 @@ async def steer_run(run_id: str, request: Request) -> dict[str, object]:
             db.commit()
     finally:
         engine.dispose()
-    return {"run_id": run_id, "status": "accepted", "text": text}
+    from rxycode_worker.agent_events import deliver_persisted_command
+
+    delivered = await deliver_persisted_command(run_id, "steer.accepted", {"text": text})
+    return {"run_id": run_id, "status": "accepted", "text": text, "delivered": bool(delivered.get("delivered") or delivered.get("accepted"))}
 
 
 @router.post("/api/v1/runs/{run_id}/children/{session_id}/cancel")
-def cancel_child_run(run_id: str, session_id: str, request: Request) -> dict[str, str]:
+async def cancel_child_run(run_id: str, session_id: str, request: Request) -> dict[str, object]:
     """Record a child cancel. The parent run status stays unchanged."""
     require_write(request)
     record = current_record(request)
@@ -179,4 +182,16 @@ def cancel_child_run(run_id: str, session_id: str, request: Request) -> dict[str
             db.commit()
     finally:
         engine.dispose()
-    return {"run_id": run_id, "session_id": session_id, "status": "cancel_requested"}
+    from rxycode_worker.agent_events import deliver_persisted_command
+
+    delivered = await deliver_persisted_command(
+        run_id,
+        "child.cancel",
+        {"session_id": session_id},
+    )
+    return {
+        "run_id": run_id,
+        "session_id": session_id,
+        "status": "cancel_requested",
+        "delivered": bool(delivered.get("delivered")),
+    }

@@ -91,6 +91,8 @@ class AgentTask:
         self._task: str = ""
         self._checkpoint: object | None = None
         self._last_error: BaseException | None = None
+        self.parent_id = ""
+        self._run_journal: Any | None = None
 
     # ------------------------------------------------------------------
     # lifecycle entry points
@@ -111,14 +113,16 @@ class AgentTask:
     async def spawn(self, task: str) -> None:
         """IDLE -> BOOTSTRAP -> RUNNING; starts the main task."""
         await self._set_state(LifecycleState.BOOTSTRAP)
+        payload = self._event_payload()
         await self._bus.publish(
             BusEvent(
                 method="event/agent_started",
                 session_id="",
                 agent_id=self.agent_id,
-                payload=self._event_payload(),
+                payload=payload,
             )
         )
+        self._journal("event/agent_started", payload)
         try:
             await self._set_state(LifecycleState.RUNNING)
         except InvalidTransition:
@@ -258,15 +262,23 @@ class AgentTask:
             await self._set_state(LifecycleState.FAILED)
         else:
             await self._set_state(LifecycleState.DONE)
+            done_payload = self._event_payload()
             await self._bus.publish(
                 BusEvent(
                     method="event/agent_done",
                     session_id="",
                     agent_id=self.agent_id,
-                    payload=self._event_payload(),
+                    payload=done_payload,
                 )
             )
+            self._journal("event/agent_done", done_payload)
             return result
+
+    def _journal(self, method: str, payload: dict[str, Any]) -> None:
+        journal = getattr(self, "_run_journal", None)
+        if journal is None:
+            return
+        journal.record(method, self.agent_id, payload, parent_id=str(getattr(self, "parent_id", "") or ""))
 
     async def _run_from(self, checkpoint: object) -> Any:
         """Resumed execution; the run target may consume the checkpoint."""
@@ -286,12 +298,14 @@ class AgentTask:
             await self._set_state(LifecycleState.FAILED)
         else:
             await self._set_state(LifecycleState.DONE)
+            resumed = self._event_payload()
             await self._bus.publish(
                 BusEvent(
                     method="event/agent_done",
                     session_id="",
                     agent_id=self.agent_id,
-                    payload=self._event_payload(),
+                    payload=resumed,
                 )
             )
+            self._journal("event/agent_done", resumed)
             return result

@@ -9,6 +9,65 @@ from typing import Any
 
 
 _INTERMEDIATE = {"intermediate", "partial_result", "progress", "reasoning.summary"}
+_BOUND: dict[str, dict[str, Any]] = {}
+
+
+def bind_run(run_id: str, *, worker: Any | None = None, manager: Any | None = None) -> None:
+    """Attach the live worker and child manager that should receive this run's commands."""
+    slot = _BOUND.setdefault(run_id, {})
+    if worker is not None:
+        slot["worker"] = worker
+    if manager is not None:
+        slot["manager"] = manager
+
+
+async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, object]:
+    """Run a committed steer or child-cancel command on the bound worker."""
+    slot = _BOUND.get(run_id, {})
+    if event_type == "steer.accepted":
+        worker = slot.get("worker")
+        if worker is None:
+            return {"delivered": False, "reason": "no worker", "run_id": run_id}
+        return await accept_steer(
+            run_id=run_id,
+            text=str(payload.get("text") or ""),
+            worker=worker,
+        )
+    if event_type == "child.cancel":
+        manager = slot.get("manager")
+        if manager is None:
+            return {"delivered": False, "reason": "no manager", "run_id": run_id}
+        session_id = str(payload.get("session_id") or "")
+        tree = {"run_id": run_id, "nodes": [{"id": session_id, "parent_id": run_id, "status": "running", "role": ""}]}
+        result = cancel_child(tree, session_id, manager=manager)
+        return {"delivered": str(result["outcome"]).startswith("cancelled"), "run_id": run_id, "outcome": result["outcome"]}
+    return {"delivered": False, "reason": "unknown command", "run_id": run_id}
+
+
+class RunJournal:
+    """Write agent lifecycle notifications into the web run log."""
+
+    def __init__(self, database_url: str, tenant_id: str, run_id: str) -> None:
+        self.database_url = database_url
+        self.tenant_id = tenant_id
+        self.run_id = run_id
+
+    def record(self, method: str, agent_id: str, payload: dict[str, Any], *, parent_id: str = "") -> int:
+        from rxycode_server.events.store import append_event
+
+        body = dict(payload)
+        body["agent_id"] = agent_id
+        if parent_id:
+            body["parent_id"] = parent_id
+        if "tokens" not in body and "total_tokens" in body:
+            body["tokens"] = body["total_tokens"]
+        return append_event(
+            self.database_url,
+            tenant_id=self.tenant_id,
+            run_id=self.run_id,
+            event_type=method,
+            payload=body,
+        )
 
 
 def project_run(*, spans: list[Any], events: list[Any]) -> dict[str, object]:
