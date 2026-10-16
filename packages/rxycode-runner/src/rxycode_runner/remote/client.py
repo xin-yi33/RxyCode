@@ -188,6 +188,7 @@ async def _one_session(
             reader = asyncio.create_task(
                 _read_downstream(ws, device_id, queue, failed)
             )
+            _publish_approvals(queue, device_id)
             elapsed = heartbeat_seconds
             while not _STOP.is_set():
                 if failed.failed:
@@ -238,6 +239,22 @@ def _ensure_local_tools(device_id: str) -> None:
     )
 
 
+def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: str) -> None:
+    from RxyCode.RxyCode1_1_0.core.safety.approval import SseApproval, get_approval_broker
+
+    broker = get_approval_broker()
+    if not isinstance(broker, SseApproval):
+        return
+    loop = asyncio.get_running_loop()
+
+    def sink(event: dict[str, Any]) -> None:
+        frame = {"type": "approval_request", "device_id": device_id}
+        frame.update(event)
+        loop.call_soon_threadsafe(queue.put_nowait, frame)
+
+    broker.set_event_sink(sink)
+
+
 def _tool_rpc(device_id: str) -> Any:
     from rxycode_runner.transport.tool_rpc import tool_rpc_for
 
@@ -253,6 +270,16 @@ async def _read_downstream(
     try:
         while True:
             frame = json.loads(await ws.recv())
+            if isinstance(frame, dict) and frame.get("type") == "approval_resolve":
+                from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
+
+                broker = get_approval_broker()
+                if broker is not None:
+                    broker.resolve(
+                        str(frame.get("approval_id") or ""),
+                        str(frame.get("decision") or "rejected"),
+                    )
+                continue
             if not isinstance(frame, dict) or frame.get("type") not in _TOOL_FRAMES:
                 continue
             rpc = _tool_rpc(device_id)

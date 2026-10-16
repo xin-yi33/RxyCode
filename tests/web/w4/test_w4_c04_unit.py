@@ -135,26 +135,37 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             "p.write_text(old + 'x', encoding='utf-8')\n",
             encoding="utf-8",
         )
-        from core.safety.approval import get_approval_broker
-
         stop_approver = threading.Event()
 
         def _approve() -> None:
             while not stop_approver.is_set():
-                broker = get_approval_broker()
-                if broker is None or not hasattr(broker, "wait_for_request"):
-                    time.sleep(0.05)
+                try:
+                    pending = httpx.get(
+                        f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
+                        cookies={"rxy_session": browser},
+                        timeout=3,
+                    )
+                except httpx.HTTPError:
                     continue
-                approval_id = broker.wait_for_request(0.2)
-                if approval_id:
-                    broker.resolve(approval_id, "approved")
+                if pending.status_code != 200:
+                    continue
+                approval_id = str(pending.json().get("approval_id") or "")
+                if not approval_id:
+                    continue
+                httpx.post(
+                    f"{gateway.http}/api/v1/devices/desk-1/approvals/{approval_id}",
+                    headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+                    cookies={"rxy_session": browser, "rxy_csrf": csrf},
+                    json={"decision": "approved"},
+                    timeout=5,
+                )
 
-        threading.Thread(target=_approve, daemon=True).start()
         command = "cmd /c python mark.py"
         bash_call = f"call_{uuid4().hex}"
         bash_args = {"command": command, "workdir": str(work), "timeout": 30}
         browser = gateway.browser_session("tenant-a")
         csrf = "csrf-token-value-for-c04"
+        threading.Thread(target=_approve, daemon=True).start()
         posted = httpx.post(
             f"{gateway.http}/api/v1/devices/desk-1/invocations",
             headers={"Origin": gateway.http, "X-CSRF-Token": csrf},

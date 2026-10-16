@@ -46,7 +46,15 @@ class Registry:
         self.devices: dict[str, DeviceRecord] = {}
         self.sockets: dict[str, WebSocket] = {}
         self.tool_lanes: dict[tuple[str, str], asyncio.Queue[dict[str, object]]] = {}
+        self.approval_inbox: dict[str, asyncio.Queue[dict[str, object]]] = {}
         self.pairings = PairingBook(clock=clock, ttl=pairing_ttl)
+
+    def approvals(self, device_id: str) -> asyncio.Queue[dict[str, object]]:
+        queue = self.approval_inbox.get(device_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self.approval_inbox[device_id] = queue
+        return queue
 
     def lane(self, device_id: str, call_id: str) -> asyncio.Queue[dict[str, object]]:
         key = (device_id, call_id)
@@ -265,6 +273,46 @@ def build_router() -> APIRouter:
         chunks = [list(item) for item in outcome.get("chunks") or []]
         return {**outcome, "chunks": chunks}
 
+    @router.get("/api/v1/devices/{device_id}/approvals/pending")
+    async def pending_approval(device_id: str, request: Request) -> dict[str, object]:
+        record = current_record(request)
+        book = request.app.state.device_registry
+        device = book.devices.get(device_id)
+        if device is None or device.tenant_id != record.tenant_id:
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
+        try:
+            item = await asyncio.wait_for(book.approvals(device_id).get(), timeout=2)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=404, detail="NOT_FOUND") from exc
+        return item
+
+    @router.post("/api/v1/devices/{device_id}/approvals/{approval_id}")
+    async def resolve_device_approval(
+        device_id: str,
+        approval_id: str,
+        request: Request,
+    ) -> dict[str, str]:
+        require_write(request)
+        record = current_record(request)
+        book = request.app.state.device_registry
+        device = book.devices.get(device_id)
+        if device is None or device.tenant_id != record.tenant_id:
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
+        body = await request.json()
+        socket = book.sockets.get(device_id)
+        if socket is None:
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
+        await socket.send_text(
+            json.dumps(
+                {
+                    "type": "approval_resolve",
+                    "approval_id": approval_id,
+                    "decision": str(body.get("decision") or "rejected"),
+                }
+            )
+        )
+        return {"status": "sent"}
+
     @router.websocket("/api/v1/devices/socket")
     async def device_socket(socket: WebSocket) -> None:
         await socket.accept()
@@ -283,6 +331,9 @@ def build_router() -> APIRouter:
                 incoming = json.loads(await socket.receive_text())
                 if incoming.get("type") == "heartbeat":
                     book.touch(device_id, str(incoming.get("session_id") or session_id))
+                    continue
+                if incoming.get("type") == "approval_request":
+                    await book.approvals(device_id).put(incoming)
                     continue
                 call_id = str(incoming.get("call_id") or "")
                 if incoming.get("type") in {"chunk", "result", "status"} and call_id:
