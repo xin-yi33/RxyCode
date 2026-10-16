@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { useParams } from "react-router"
 
 import { AgentTree } from "../agents/AgentTree"
@@ -10,10 +11,12 @@ import { useRunEvents } from "../runs/useRunEvents"
 export function ChatPage() {
   const { runId = "" } = useParams()
   const live = useRunEvents(runId)
+  const [reported, setReported] = useState("")
+  const statusText = reported || live.projection.runStatus || "未知"
   if (live.cursorExpired) {
     return (
       <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
-        <RunStatusBanner runId={runId} />
+        <RunStatusBanner runId={runId} onStatus={setReported} />
         <p role="alert">重新同步 {live.snapshotSeq ?? ""}</p>
       </main>
     )
@@ -21,9 +24,9 @@ export function ChatPage() {
   const { projection } = live
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
-      <RunStatusBanner runId={runId} />
+      <RunStatusBanner runId={runId} onStatus={setReported} />
       <p data-connection={live.connected ? "open" : "closed"} data-run-status={live.projection.runStatus}>
-        {live.connected ? "已连接" : "正在连接"}
+        {statusText}
       </p>
       <section data-answer>{projection.answer}</section>
       <ul>

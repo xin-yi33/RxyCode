@@ -187,6 +187,10 @@ export function createClient() {
         artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
       }>
     },
+    cancelRun(runId: string): Promise<{ status: string }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/cancel`
+      return writeJson(path, {}) as Promise<{ status: string }>
+    },
     openRunEvents(runId: string): EventSource {
       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
     },

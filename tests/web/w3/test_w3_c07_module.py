@@ -35,13 +35,20 @@ def test_w3_c07_integration() -> None:
             _c02._login(page, stack.origin)
             run_id, _approval_id = _c06._seed(datetime.now(timezone.utc) + timedelta(minutes=10))
             page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
-            expect(page.locator("[data-run-status]")).to_be_visible()
-            expect(page.get_by_role("button", name="批准")).to_be_visible()
-            expect(page.get_by_role("button", name="取消")).to_be_visible()
-            overflow = page.evaluate(
-                "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
-            )
-            assert overflow is False
+            status = page.locator("[data-run-status]")
+            expect(status).to_contain_text("waiting_approval", timeout=10000)
+            for width in (375, 768, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                expect(status).to_be_visible()
+                expect(page.get_by_role("button", name="批准")).to_be_visible()
+                expect(page.get_by_role("button", name="取消")).to_be_visible()
+                overflow = page.evaluate(
+                    "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"
+                )
+                assert overflow is False
+            page.get_by_role("button", name="取消").click()
+            expect(status).to_contain_text("cancelled", timeout=10000)
+            expect(page.locator("body")).not_to_contain_text("succeeded")
             browser.close()
     finally:
         stack.close()

@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from "react"
 
+import { createClient } from "../../sdk/client"
 import "../../app/responsive.css"
 
-export function RunStatusBanner({ runId }: { runId: string }) {
+export function RunStatusBanner({
+  runId,
+  onStatus,
+}: {
+  runId: string
+  onStatus?: (status: string) => void
+}) {
   const openerRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -26,7 +32,7 @@ export function RunStatusBanner({ runId }: { runId: string }) {
     return () => {
       cancelled = true
     }
-  }, [runId, attempt])
+  }, [runId])
 
   useEffect(() => {
     if (!open) return
@@ -69,7 +75,7 @@ export function RunStatusBanner({ runId }: { runId: string }) {
     return (
       <div role="alert">
         <p>连接失败</p>
-        <button type="button" onClick={() => setAttempt((current) => current + 1)}>
+        <button type="button" onClick={() => window.location.reload()}>
           重试
         </button>
       </div>
@@ -82,7 +88,16 @@ export function RunStatusBanner({ runId }: { runId: string }) {
       <button ref={openerRef} type="button" onClick={() => setOpen(true)}>
         打开审批
       </button>
-      <button type="button">取消</button>
+      <button
+        type="button"
+        onClick={() => {
+          void createClient()
+            .cancelRun(runId)
+            .then((result) => onStatus?.(result.status))
+        }}
+      >
+        取消
+      </button>
       {open ? (
         <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="审批">
           <button type="button" onClick={() => { setOpen(false); openerRef.current?.focus() }}>
