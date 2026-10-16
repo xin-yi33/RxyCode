@@ -72,7 +72,13 @@ def cancel_child(
     manager: Any,
 ) -> dict[str, object]:
     """Cancel the live child session, then reflect that status on the tree."""
-    outcome = str(manager.cancel_child(child_id))
+    root_id = str(tree.get("run_id") or "")
+    manager.cancel_session(root_id, child_id)
+    runtime = getattr(manager, "_live_runtimes", {}).get(child_id)
+    cancel = getattr(runtime, "cancel", None)
+    if callable(cancel):
+        cancel()
+    outcome = f"cancelled: {child_id}"
     nodes: list[dict[str, object]] = []
     for node in tree["nodes"]:  # type: ignore[index]
         copied = dict(node)

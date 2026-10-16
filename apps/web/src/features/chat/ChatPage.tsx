@@ -12,6 +12,7 @@ export function ChatPage() {
   const { runId = "" } = useParams()
   const live = useRunEvents(runId)
   const [reported, setReported] = useState("")
+  const [steerText, setSteerText] = useState("")
   const statusText = reported || live.projection.runStatus || "未知"
   if (live.cursorExpired) {
     return (
@@ -66,6 +67,22 @@ export function ChatPage() {
           tokens: agent.tokens ?? 0,
         }))}
         finalText={projection.answer}
+        steerText={steerText}
+        onSteerText={setSteerText}
+        onSteer={(text) => {
+          const command = text.trim()
+          if (!command) return
+          const bridge = (window as Window & {
+            rxySteer?: (runId: string, text: string) => void
+          }).rxySteer
+          if (bridge) bridge(runId, command)
+        }}
+        onCancel={(id) => {
+          const bridge = (window as Window & {
+            rxyCancelChild?: (runId: string, id: string) => void
+          }).rxyCancelChild
+          if (bridge) bridge(runId, id)
+        }}
       />
       <ArtifactPanel runId={runId} />
     </main>

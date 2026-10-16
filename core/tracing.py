@@ -438,9 +438,18 @@ def format_team_tree(spans: list[NodeSpan]) -> str:
     ]
     by_parent: dict[str, list[NodeSpan]] = {}
     roots: list[NodeSpan] = []
-    for span in spans:
-        if span.parent_id:
-            by_parent.setdefault(span.parent_id, []).append(span)
+    # The web tree and this replay share one projection of the recorded spans.
+    from rxycode_worker.agent_events import project_run
+
+    projected = project_run(spans=list(spans), events=[])
+    span_by_id = {span.span_id: span for span in spans}
+    for node in projected["nodes"]:
+        span = span_by_id.get(str(node["id"]))
+        if span is None:
+            continue
+        parent_id = str(node["parent_id"] or "")
+        if parent_id:
+            by_parent.setdefault(parent_id, []).append(span)
         else:
             roots.append(span)
 

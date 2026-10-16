@@ -2,6 +2,10 @@ export function AgentTree({
   agents,
   nodes,
   finalText,
+  steerText,
+  onSteerText,
+  onSteer,
+  onCancel,
 }: {
   agents?: { id: string; name: string; status: string; cost: string }[]
   nodes?: Array<{
@@ -12,6 +16,8 @@ export function AgentTree({
     tokens?: number
   }>
   finalText?: string
+  steerText?: string
+  onSteerText?: (text: string) => void
   onSteer?: (text: string) => void
   onCancel?: (id: string) => void
 }) {
@@ -34,7 +40,18 @@ export function AgentTree({
           </article>
         ))}
         <p data-final={finalText ?? ""}>{finalText ?? ""}</p>
-        <button type="button" onClick={() => onSteer?.("")}>
+        <input
+          aria-label="steer-text"
+          value={steerText ?? ""}
+          onChange={(event) => onSteerText?.(event.target.value)}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            const text = (steerText ?? "").trim()
+            if (text) onSteer?.(text)
+          }}
+        >
           steer
         </button>
       </section>
