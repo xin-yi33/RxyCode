@@ -97,6 +97,13 @@ def test_w6_c03_integration() -> None:
         )
         assert preview_hit["status"] != "ok"
         assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
+        framed = urllib.request.urlopen(
+            f"http://127.0.0.1:47321/browser/{agent['session_id']}",
+            timeout=5,
+        )
+        assert framed.headers["X-Frame-Options"] == "DENY"
+        assert framed.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+        framed.close()
         evil = urllib.request.Request(
             f"http://127.0.0.1:47321/sessions/{agent['session_id']}/authorize",
             data=b"",
