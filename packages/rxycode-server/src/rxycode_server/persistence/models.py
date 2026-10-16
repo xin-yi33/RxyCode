@@ -115,7 +115,7 @@ class Run(Base):
             "session_id",
             unique=True,
             postgresql_where=text(
-                "status IN ('pending', 'running', 'leased', 'cancel_requested')"
+                "status IN ('pending', 'running', 'leased', 'cancel_requested', 'waiting_approval')"
             ),
         ),
     )
