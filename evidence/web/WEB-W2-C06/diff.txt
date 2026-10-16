@@ -1,0 +1,1071 @@
+diff --git a/packages/rxycode-server/alembic/versions/004_waiting_approval.py b/packages/rxycode-server/alembic/versions/004_waiting_approval.py
+new file mode 100644
+index 00000000..fae282fd
+--- /dev/null
++++ b/packages/rxycode-server/alembic/versions/004_waiting_approval.py
+@@ -0,0 +1,35 @@
++"""Keep a run that is waiting for approval as the session's active run.
++
++Revision ID: 004_waiting_approval
++Revises: 003_event_seq
++"""
++
++from __future__ import annotations
++
++from alembic import op
++
++revision = "004_waiting_approval"
++down_revision = "003_event_seq"
++branch_labels = None
++depends_on = None
++
++_PREDICATE = (
++    "status IN ('pending', 'running', 'leased', 'cancel_requested', 'waiting_approval')"
++)
++_PREVIOUS = "status IN ('pending', 'running', 'leased', 'cancel_requested')"
++
++
++def upgrade() -> None:
++    op.execute("DROP INDEX IF EXISTS uq_runs_one_active_per_session")
++    op.execute(
++        "CREATE UNIQUE INDEX uq_runs_one_active_per_session ON runs (session_id) "
++        f"WHERE {_PREDICATE}"
++    )
++
++
++def downgrade() -> None:
++    op.execute("DROP INDEX IF EXISTS uq_runs_one_active_per_session")
++    op.execute(
++        "CREATE UNIQUE INDEX uq_runs_one_active_per_session ON runs (session_id) "
++        f"WHERE {_PREVIOUS}"
++    )
+diff --git a/packages/rxycode-server/src/rxycode_server/approvals/__init__.py b/packages/rxycode-server/src/rxycode_server/approvals/__init__.py
+new file mode 100644
+index 00000000..2d4956eb
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/approvals/__init__.py
+@@ -0,0 +1 @@
++"""Durable approval requests."""
+diff --git a/packages/rxycode-server/src/rxycode_server/approvals/service.py b/packages/rxycode-server/src/rxycode_server/approvals/service.py
+new file mode 100644
+index 00000000..852f6c3b
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/approvals/service.py
+@@ -0,0 +1,326 @@
++"""Durable approval requests. A decision is one CAS update and never runs a tool."""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime, timezone
++from typing import Any
++
++from sqlalchemy import func, select
++from sqlalchemy import create_engine
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.persistence.models import Approval, Outbox, Run, RunEvent
++
++
++def _engine(database_url: str):
++    return create_engine(database_url, poolclass=NullPool)
++
++
++class ApprovalStale(Exception):
++    """The approval was already decided, cancelled, or past its deadline."""
++
++    def __init__(self, approval_id: str) -> None:
++        super().__init__(approval_id)
++        self.approval_id = approval_id
++        self.http_status = 409
++        self.code = "APPROVAL_STALE"
++
++
++def _aware(value: datetime | None) -> datetime | None:
++    if value is not None and value.tzinfo is None:
++        return value.replace(tzinfo=timezone.utc)
++    return value
++
++
++def _now(value: datetime | None) -> datetime:
++    if value is None:
++        return datetime.now(timezone.utc)
++    current = _aware(value)
++    assert current is not None
++    return current
++
++
++def _lease_is_current(run: Run, worker_id: str, epoch: int, now: datetime) -> bool:
++    if run.lease_owner != worker_id or int(run.lease_epoch) != int(epoch):
++        return False
++    if run.status not in {"leased", "running", "cancel_requested"}:
++        return False
++    until = _aware(run.lease_until)
++    return until is not None and until >= now
++
++
++def _append(db: Session, run: Run, event_type: str, payload: dict[str, Any]) -> None:
++    retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
++    seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
++    run.event_seq = seq
++    event_id = uuid.uuid4().hex
++    db.add(
++        RunEvent(
++            event_id=event_id,
++            run_id=run.id,
++            tenant_id=run.tenant_id,
++            seq=seq,
++            type=event_type,
++            payload=payload,
++            at=datetime.now(timezone.utc),
++        )
++    )
++    db.flush()
++    db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
++
++
++def _lock_run(db: Session, tenant_id: str, run_id: str) -> Run:
++    return db.execute(
++        select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
++    ).scalar_one()
++
++
++def request_approval(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    call_id: str,
++    tool: str,
++    permission_scope: str,
++    arguments: dict[str, Any],
++    deadline: datetime,
++    worker_id: str,
++    epoch: int,
++    attempt_id: str | None = None,
++) -> dict[str, Any]:
++    """Persist the ask, emit approval.requested, and release the worker lease."""
++    engine = _engine(database_url)
++    approval_id = uuid.uuid4().hex
++    stored_attempt = attempt_id or f"att_{uuid.uuid4().hex}"
++    try:
++        with Session(engine) as db:
++            run = _lock_run(db, tenant_id, run_id)
++            now = datetime.now(timezone.utc)
++            if not _lease_is_current(run, worker_id, epoch, now):
++                raise ApprovalStale(approval_id)
++            db.add(
++                Approval(
++                    id=approval_id,
++                    tenant_id=tenant_id,
++                    run_id=run_id,
++                    call_id=call_id,
++                    status="pending",
++                    revision=0,
++                    deadline=_aware(deadline),
++                )
++            )
++            db.flush()
++            _append(
++                db,
++                run,
++                "approval.requested",
++                {
++                    "approval_id": approval_id,
++                    "call_id": call_id,
++                    "tool": tool,
++                    "permission_scope": permission_scope,
++                    "arguments": arguments,
++                    "attempt_id": stored_attempt,
++                    "revision": 0,
++                },
++            )
++            run.status = "waiting_approval"
++            run.lease_owner = None
++            run.lease_until = None
++            run.revision = int(run.revision or 0) + 1
++            db.commit()
++    finally:
++        engine.dispose()
++    return {
++        "approval_id": approval_id,
++        "status": "pending",
++        "revision": 0,
++        "attempt_id": stored_attempt,
++    }
++
++
++def _requested_payload(db: Session, approval_id: str) -> dict[str, Any]:
++    events = db.scalars(
++        select(RunEvent).where(RunEvent.type == "approval.requested").order_by(RunEvent.seq)
++    ).all()
++    for event in events:
++        payload = event.payload or {}
++        if payload.get("approval_id") == approval_id:
++            return dict(payload)
++    return {}
++
++
++def list_pending(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    now: datetime | None = None,
++) -> list[dict[str, Any]]:
++    """Return asks that are still pending at `now`, including the original scope."""
++    current = _now(now)
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            rows = db.scalars(
++                select(Approval).where(
++                    Approval.tenant_id == tenant_id,
++                    Approval.run_id == run_id,
++                    Approval.status == "pending",
++                )
++            ).all()
++            found: list[dict[str, Any]] = []
++            for row in rows:
++                deadline = _aware(row.deadline)
++                if deadline is not None and deadline <= current:
++                    continue
++                payload = _requested_payload(db, row.id)
++                found.append(
++                    {
++                        "approval_id": row.id,
++                        "call_id": row.call_id,
++                        "tool": payload.get("tool", ""),
++                        "permission_scope": payload.get("permission_scope", ""),
++                        "arguments": payload.get("arguments", {}),
++                        "attempt_id": payload.get("attempt_id", ""),
++                        "status": row.status,
++                        "revision": int(row.revision or 0),
++                        "deadline": deadline.isoformat() if deadline is not None else None,
++                    }
++                )
++            return found
++    finally:
++        engine.dispose()
++
++
++def get_approval(database_url: str, *, tenant_id: str, approval_id: str) -> dict[str, Any] | None:
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            row = db.get(Approval, approval_id)
++            if row is None or row.tenant_id != tenant_id:
++                return None
++            payload = _requested_payload(db, row.id)
++            return {
++                "approval_id": row.id,
++                "run_id": row.run_id,
++                "call_id": row.call_id,
++                "status": row.status,
++                "revision": int(row.revision or 0),
++                "attempt_id": str(payload.get("attempt_id") or ""),
++                "tool": payload.get("tool", ""),
++                "permission_scope": payload.get("permission_scope", ""),
++            }
++    finally:
++        engine.dispose()
++
++
++def _reject_if_closed(row: Approval, expected_revision: int, now: datetime) -> None:
++    if int(row.revision or 0) != int(expected_revision) or row.status != "pending":
++        raise ApprovalStale(row.id)
++    deadline = _aware(row.deadline)
++    if deadline is not None and deadline <= now:
++        row.status = "expired"
++        row.revision = int(row.revision or 0) + 1
++        raise ApprovalStale(row.id)
++
++
++def decide_approval(
++    database_url: str,
++    *,
++    tenant_id: str,
++    approval_id: str,
++    decision: str,
++    expected_revision: int,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """Record one decision. This function does not execute a tool."""
++    if decision not in {"approved", "rejected"}:
++        raise ApprovalStale(approval_id)
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            row = db.execute(
++                select(Approval)
++                .where(Approval.id == approval_id, Approval.tenant_id == tenant_id)
++                .with_for_update()
++            ).scalar_one()
++            current = datetime.now(timezone.utc) if now is None else _now(now)
++            try:
++                _reject_if_closed(row, expected_revision, current)
++            except ApprovalStale:
++                db.commit()
++                raise
++            row.status = decision
++            row.revision = int(row.revision or 0) + 1
++            run = _lock_run(db, tenant_id, row.run_id)
++            _append(
++                db,
++                run,
++                "approval.resolved",
++                {
++                    "approval_id": row.id,
++                    "call_id": row.call_id,
++                    "decision": decision,
++                    "revision": int(row.revision),
++                },
++            )
++            run.lease_owner = None
++            run.lease_until = None
++            run.status = "pending" if decision == "approved" else "cancelled"
++            run.revision = int(run.revision or 0) + 1
++            revision = int(row.revision)
++            db.commit()
++    finally:
++        engine.dispose()
++    return {"status": decision, "revision": revision, "http_status": 200}
++
++
++def cancel_approval(
++    database_url: str,
++    *,
++    tenant_id: str,
++    approval_id: str,
++    expected_revision: int,
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    """Cancel a pending ask. A later approve is APPROVAL_STALE."""
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            row = db.execute(
++                select(Approval)
++                .where(Approval.id == approval_id, Approval.tenant_id == tenant_id)
++                .with_for_update()
++            ).scalar_one()
++            current = datetime.now(timezone.utc) if now is None else _now(now)
++            try:
++                _reject_if_closed(row, expected_revision, current)
++            except ApprovalStale:
++                db.commit()
++                raise
++            row.status = "cancelled"
++            row.revision = int(row.revision or 0) + 1
++            run = _lock_run(db, tenant_id, row.run_id)
++            _append(
++                db,
++                run,
++                "approval.resolved",
++                {
++                    "approval_id": row.id,
++                    "call_id": row.call_id,
++                    "decision": "cancelled",
++                    "revision": int(row.revision),
++                },
++            )
++            run.status = "cancelled"
++            run.lease_owner = None
++            run.lease_until = None
++            run.revision = int(run.revision or 0) + 1
++            db.commit()
++    finally:
++        engine.dispose()
++    return {"status": "cancelled", "http_status": 200}
+diff --git a/packages/rxycode-server/src/rxycode_server/persistence/models.py b/packages/rxycode-server/src/rxycode_server/persistence/models.py
+index 19e66180..59abb589 100644
+--- a/packages/rxycode-server/src/rxycode_server/persistence/models.py
++++ b/packages/rxycode-server/src/rxycode_server/persistence/models.py
+@@ -115,7 +115,7 @@ class Run(Base):
+             "session_id",
+             unique=True,
+             postgresql_where=text(
+-                "status IN ('pending', 'running', 'leased', 'cancel_requested')"
++                "status IN ('pending', 'running', 'leased', 'cancel_requested', 'waiting_approval')"
+             ),
+         ),
+     )
+diff --git a/packages/rxycode-worker/src/rxycode_worker/interrupt_resume.py b/packages/rxycode-worker/src/rxycode_worker/interrupt_resume.py
+new file mode 100644
+index 00000000..c9ba227d
+--- /dev/null
++++ b/packages/rxycode-worker/src/rxycode_worker/interrupt_resume.py
+@@ -0,0 +1,220 @@
++"""Pause a run on a LangGraph interrupt. The tool runs only after resume."""
++
++from __future__ import annotations
++
++import asyncio
++import threading
++import uuid
++from datetime import datetime
++from typing import Any, TypedDict
++
++from langgraph.graph import END, START, StateGraph
++from langgraph.types import Command, interrupt
++
++from rxycode_server.approvals.service import get_approval, request_approval
++from rxycode_server.runs.service import load_run
++from rxycode_worker.checkpoints import _call_on_selector, _open_saver, graph_thread_id
++from rxycode_worker.supervisor import claim
++
++
++class _GateState(TypedDict, total=False):
++    approval_id: str
++    attempt_id: str
++    call_id: str
++    run_id: str
++    journal_dir: str
++    workdir: str
++    command: str
++    decision: str
++    output: str
++
++
++def _gate(state: _GateState) -> dict[str, str]:
++    """Interrupt before any later node. Resume re-enters here, then continues."""
++    decision = interrupt({"approval_id": state.get("approval_id", "")})
++    return {"decision": str(decision)}
++
++
++def _effect(state: _GateState) -> dict[str, str]:
++    if str(state.get("decision") or "") != "approved":
++        return {"output": ""}
++    box: dict[str, str] = {}
++
++    def _run() -> None:
++        box["text"] = asyncio.run(_execute_approved(state))
++
++    thread = threading.Thread(target=_run)
++    thread.start()
++    thread.join()
++    return {"output": box.get("text", "")}
++
++
++def _compile(saver: object):
++    graph = StateGraph(_GateState)
++    graph.add_node("gate", _gate)
++    graph.add_node("effect", _effect)
++    graph.add_edge(START, "gate")
++    graph.add_edge("gate", "effect")
++    graph.add_edge("effect", END)
++    return graph.compile(checkpointer=saver)
++
++
++async def _execute_approved(state: _GateState) -> str:
++    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
++        ToolExecutionJournal,
++        remote_checkpoint_id,
++    )
++    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
++    from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
++
++    journal = ToolExecutionJournal(state["journal_dir"])
++    orchestrator = ToolOrchestrator()
++    orchestrator.register("bash", bash_tool)
++    token = orchestrator.bind_tool_journal(
++        journal,
++        state["attempt_id"],
++        remote_checkpoint_id(state["run_id"]),
++        state["call_id"],
++    )
++    try:
++        return await orchestrator.execute_tool(
++            "bash",
++            {
++                "command": state.get("command", ""),
++                "description": "approved shell",
++                "workdir": state.get("workdir", ""),
++            },
++            {
++                "safety": {
++                    "enabled": True,
++                    "permission_mode": "confirm_all",
++                    "allowed_write_paths": [state.get("workdir", "")],
++                },
++                "execution": {
++                    "workspace_root": state.get("workdir", ""),
++                    "tool_retry_attempts": 1,
++                },
++            },
++            approval_source="explicit_command",
++            call_id=state.get("call_id"),
++        )
++    finally:
++        orchestrator.reset_tool_journal(token)
++
++
++async def _pause_graph(database_url: str, session_id: str, run_id: str, initial: dict) -> None:
++    async with _open_saver(database_url) as saver:
++        graph = _compile(saver)
++        config = {"configurable": {"thread_id": graph_thread_id(session_id, run_id)}}
++        await graph.ainvoke(initial, config)
++
++
++async def _resume_graph(database_url: str, session_id: str, run_id: str) -> None:
++    async with _open_saver(database_url) as saver:
++        graph = _compile(saver)
++        config = {"configurable": {"thread_id": graph_thread_id(session_id, run_id)}}
++        await graph.ainvoke(Command(resume="approved"), config)
++
++
++def _journal_state(journal_dir: str, attempt_id: str, call_id: str) -> str:
++    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
++        RemoteJournalAdapter,
++        ToolExecutionJournal,
++    )
++
++    if not attempt_id or not call_id:
++        return "not_started"
++    return RemoteJournalAdapter(ToolExecutionJournal(journal_dir)).state(
++        attempt_id=attempt_id,
++        call_id=call_id,
++    )
++
++
++def pause_for_approval(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    call_id: str,
++    tool: str,
++    permission_scope: str,
++    arguments: dict[str, Any],
++    deadline: datetime,
++    worker_id: str,
++    epoch: int,
++    journal_dir: str,
++    workdir: str,
++    command: str,
++) -> dict[str, Any]:
++    """Ask only when the run is not already fully authorized. Never run the tool here."""
++    loaded = load_run(database_url, run_id)
++    if loaded["permission_profile"] == "full_auto":
++        return {"asked": False, "approval_id": None, "executed": False}
++    attempt_id = f"att_{uuid.uuid4().hex}"
++    requested = request_approval(
++        database_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        call_id=call_id,
++        tool=tool,
++        permission_scope=permission_scope,
++        arguments=arguments,
++        deadline=deadline,
++        worker_id=worker_id,
++        epoch=epoch,
++        attempt_id=attempt_id,
++    )
++    asyncio.run(
++        _call_on_selector(
++            lambda: _pause_graph(
++                database_url,
++                loaded["session_id"],
++                run_id,
++                {
++                    "approval_id": requested["approval_id"],
++                    "attempt_id": attempt_id,
++                    "call_id": call_id,
++                    "run_id": run_id,
++                    "journal_dir": journal_dir,
++                    "workdir": workdir,
++                    "command": command,
++                },
++            )
++        )
++    )
++    return {
++        "asked": True,
++        "approval_id": requested["approval_id"],
++        "executed": False,
++    }
++
++
++def resume_approved(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    approval_id: str,
++    worker_id: str,
++    journal_dir: str,
++    workdir: str,
++    command: str,
++) -> dict[str, Any]:
++    """Continue the interrupted graph. A completed or unknown journal does not run again."""
++    del workdir, command
++    record = get_approval(database_url, tenant_id=tenant_id, approval_id=approval_id)
++    if record is None or record["status"] != "approved":
++        return {"executed": False}
++    before = _journal_state(journal_dir, record["attempt_id"], record["call_id"])
++    if before in {"completed", "unknown"}:
++        return {"executed": False}
++    if claim(database_url, run_id, worker_id) is None:
++        return {"executed": False}
++    loaded = load_run(database_url, run_id)
++    asyncio.run(
++        _call_on_selector(
++            lambda: _resume_graph(database_url, loaded["session_id"], run_id)
++        )
++    )
++    after = _journal_state(journal_dir, record["attempt_id"], record["call_id"])
++    return {"executed": before == "not_started" and after == "completed"}
+diff --git a/pyproject.toml b/pyproject.toml
+index 03908023..58ac6679 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -81,6 +81,7 @@ packages = [
+   "rxycode_server.api",
+   "rxycode_server.runs",
+   "rxycode_server.events",
++  "rxycode_server.approvals",
+   "rxycode_worker",
+ ]
+ 
+@@ -97,6 +98,7 @@ packages = [
+ "rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
+ "rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
+ "rxycode_server.events" = "packages/rxycode-server/src/rxycode_server/events"
++"rxycode_server.approvals" = "packages/rxycode-server/src/rxycode_server/approvals"
+ "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+ 
+ [tool.setuptools.dynamic]
+diff --git a/tests/web/w2/test_w2_c06_module.py b/tests/web/w2/test_w2_c06_module.py
+new file mode 100644
+index 00000000..4f1503b5
+--- /dev/null
++++ b/tests/web/w2/test_w2_c06_module.py
+@@ -0,0 +1,175 @@
++"""WEB-W2-C06. After approve, a restarted worker runs the tool at most once."""
++
++from __future__ import annotations
++
++import json
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++import uuid
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++for _path in (REPO, _SERVER, _WORKER):
++    if str(_path) not in sys.path:
++        sys.path.insert(0, str(_path))
++
++from rxycode_server.approvals.service import ApprovalStale, decide_approval  # noqa: E402
++from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
++from rxycode_server.persistence.models import Organization, Project, SessionRow, User  # noqa: E402
++from rxycode_server.runs.service import create_run  # noqa: E402
++from rxycode_worker.interrupt_resume import pause_for_approval, resume_approved  # noqa: E402
++from rxycode_worker.supervisor import claim  # noqa: E402
++
++
++def _seed(url: str) -> str:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c06m", github_id="gh-c06m", kind="github"))
++        db.add(Organization(id="org-c06m", tenant_id="tenant-c06m"))
++        db.add(Project(id="project-c06m", tenant_id="tenant-c06m", name="app", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-c06m",
++                project_id="project-c06m",
++                title="resume",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    return session_id
++
++
++def _resume_in_new_process(env: dict[str, str]) -> dict:
++    script = (
++        "import json, os\n"
++        "from rxycode_worker.interrupt_resume import resume_approved\n"
++        "result = resume_approved(\n"
++        "    os.environ['C06_URL'],\n"
++        "    tenant_id=os.environ['C06_TENANT'],\n"
++        "    run_id=os.environ['C06_RUN'],\n"
++        "    approval_id=os.environ['C06_APPROVAL'],\n"
++        "    worker_id=os.environ['C06_WORKER'],\n"
++        "    journal_dir=os.environ['C06_JOURNAL'],\n"
++        "    workdir=os.environ['C06_WORKDIR'],\n"
++        "    command=os.environ['C06_COMMAND'],\n"
++        ")\n"
++        "print('C06_RESUME ' + json.dumps(result))\n"
++    )
++    child = os.environ.copy()
++    child.update(env)
++    previous = child.get("PYTHONPATH", "")
++    parts = [str(REPO), str(_SERVER), str(_WORKER)]
++    if previous:
++        parts.append(previous)
++    child["PYTHONPATH"] = os.pathsep.join(parts)
++    proc = subprocess.run(
++        [sys.executable, "-c", script],
++        env=child,
++        capture_output=True,
++        text=True,
++        timeout=90,
++        check=False,
++    )
++    assert proc.returncode == 0, proc.stderr or proc.stdout
++    line = next(item for item in proc.stdout.splitlines() if item.startswith("C06_RESUME "))
++    return json.loads(line.removeprefix("C06_RESUME "))
++
++
++def test_w2_c06_integration(postgres_url: str, tmp_path: Path):
++    """Approve, restart the worker, and the shell still runs only once."""
++    session_id = _seed(postgres_url)
++    created = create_run(
++        postgres_url,
++        tenant_id="tenant-c06m",
++        session_id=session_id,
++        message="write once",
++        target_id="local:c06",
++        permission_profile="confirm_all",
++        request_id="req-c06-once",
++    )
++    epoch = claim(postgres_url, created.run_id, "worker-c06")
++    assert epoch == 1
++    workdir = Path(tempfile.mkdtemp(prefix="w2c06-shell-", dir=REPO))
++    try:
++        target = workdir / "shell-write.txt"
++        command = "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
++        journal_dir = tmp_path / "journal"
++        paused = pause_for_approval(
++            postgres_url,
++            tenant_id="tenant-c06m",
++            run_id=created.run_id,
++            call_id="call_" + uuid.uuid4().hex,
++            tool="bash",
++            permission_scope="workspace-write",
++            arguments={"command": command},
++            deadline=datetime.now(timezone.utc) + timedelta(hours=4),
++            worker_id="worker-c06",
++            epoch=epoch,
++            journal_dir=str(journal_dir),
++            workdir=str(workdir),
++            command=command,
++        )
++        assert paused["asked"] is True
++        assert not target.exists()
++        decided = decide_approval(
++            postgres_url,
++            tenant_id="tenant-c06m",
++            approval_id=paused["approval_id"],
++            decision="approved",
++            expected_revision=0,
++            now=datetime.now(timezone.utc),
++        )
++        assert decided["status"] == "approved"
++        first = resume_approved(
++            postgres_url,
++            tenant_id="tenant-c06m",
++            run_id=created.run_id,
++            approval_id=paused["approval_id"],
++            worker_id="worker-c06",
++            journal_dir=str(journal_dir),
++            workdir=str(workdir),
++            command=command,
++        )
++        assert first["executed"] is True, first
++        assert target.read_text(encoding="utf-8").count("shell-write") == 1
++        second = _resume_in_new_process(
++            {
++                "C06_URL": postgres_url,
++                "C06_TENANT": "tenant-c06m",
++                "C06_RUN": created.run_id,
++                "C06_APPROVAL": paused["approval_id"],
++                "C06_WORKER": "worker-c06b",
++                "C06_JOURNAL": str(journal_dir),
++                "C06_WORKDIR": str(workdir),
++                "C06_COMMAND": command,
++            }
++        )
++        assert second["executed"] is False
++        assert target.read_text(encoding="utf-8").count("shell-write") == 1
++        with pytest.raises(ApprovalStale) as again:
++            decide_approval(
++                postgres_url,
++                tenant_id="tenant-c06m",
++                approval_id=paused["approval_id"],
++                decision="approved",
++                expected_revision=0,
++                now=datetime.now(timezone.utc),
++            )
++        assert again.value.http_status == 409
++        assert again.value.code == "APPROVAL_STALE"
++        assert target.read_text(encoding="utf-8").count("shell-write") == 1
++    finally:
++        shutil.rmtree(workdir, ignore_errors=True)
+diff --git a/tests/web/w2/test_w2_c06_unit.py b/tests/web/w2/test_w2_c06_unit.py
+new file mode 100644
+index 00000000..b4cbf12c
+--- /dev/null
++++ b/tests/web/w2/test_w2_c06_unit.py
+@@ -0,0 +1,245 @@
++"""WEB-W2-C06. A pending approval survives overnight, and a stale decision does nothing."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++for _path in (REPO, _SERVER, _WORKER):
++    if str(_path) not in sys.path:
++        sys.path.insert(0, str(_path))
++
++from rxycode_server.approvals.service import (  # noqa: E402
++    ApprovalStale,
++    cancel_approval,
++    decide_approval,
++    list_pending,
++    request_approval,
++)
++from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
++from rxycode_server.persistence.models import (  # noqa: E402
++    Organization,
++    Project,
++    Run,
++    SessionRow,
++    User,
++)
++from rxycode_server.runs.service import RunAlreadyActive, create_run  # noqa: E402
++from rxycode_worker.interrupt_resume import (  # noqa: E402
++    pause_for_approval,
++    resume_approved,
++)
++from rxycode_worker.supervisor import claim  # noqa: E402
++
++
++def _seed(url: str) -> str:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c06", github_id="gh-c06", kind="github"))
++        db.add(Organization(id="org-c06", tenant_id="tenant-c06"))
++        db.add(Project(id="project-c06", tenant_id="tenant-c06", name="app", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-c06",
++                project_id="project-c06",
++                title="approve",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    return session_id
++
++
++def _run(url: str, session_id: str, request_id: str, profile: str = "confirm_all"):
++    created = create_run(
++        url,
++        tenant_id="tenant-c06",
++        session_id=session_id,
++        message="needs approval",
++        target_id="local:c06",
++        permission_profile=profile,
++        request_id=request_id,
++    )
++    epoch = claim(url, created.run_id, "worker-c06")
++    assert epoch == 1
++    return created.run_id, epoch
++
++
++def test_w2_c06_contract(postgres_url: str):
++    """The next day the same pending request and permission scope are still there."""
++    session_id = _seed(postgres_url)
++    run_id, epoch = _run(postgres_url, session_id, "req-c06-pending")
++    call_id = "call_" + uuid.uuid4().hex
++    now = datetime.now(timezone.utc)
++    requested = request_approval(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        call_id=call_id,
++        tool="bash",
++        permission_scope="workspace-write",
++        arguments={"command": "echo hi"},
++        deadline=now + timedelta(days=2),
++        worker_id="worker-c06",
++        epoch=epoch,
++    )
++    tomorrow = now + timedelta(days=1)
++    pending = list_pending(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        now=tomorrow,
++    )
++    assert len(pending) == 1
++    assert pending[0]["approval_id"] == requested["approval_id"]
++    assert pending[0]["call_id"] == call_id
++    assert pending[0]["tool"] == "bash"
++    assert pending[0]["permission_scope"] == "workspace-write"
++    assert pending[0]["status"] == "pending"
++    engine = create_engine(postgres_url)
++    with Session(engine) as db:
++        run = db.get(Run, run_id)
++        assert run is not None
++        assert run.status == "waiting_approval"
++        assert run.lease_owner is None
++    engine.dispose()
++    with pytest.raises(RunAlreadyActive):
++        create_run(
++            postgres_url,
++            tenant_id="tenant-c06",
++            session_id=session_id,
++            message="second",
++            target_id="local:c06",
++            permission_profile="confirm_all",
++            request_id="req-c06-second",
++        )
++
++
++def test_w2_c06_negative(postgres_url: str, tmp_path: Path):
++    """Expired and cancelled approvals reject a later approve and do not run a tool."""
++    session_id = _seed(postgres_url)
++    run_id, epoch = _run(postgres_url, session_id, "req-c06-stale")
++    now = datetime.now(timezone.utc)
++    expired = request_approval(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        call_id="call_" + uuid.uuid4().hex,
++        tool="bash",
++        permission_scope="workspace-write",
++        arguments={"command": "echo stale"},
++        deadline=now - timedelta(seconds=1),
++        worker_id="worker-c06",
++        epoch=epoch,
++    )
++    marker = tmp_path / "stale-write.txt"
++    with pytest.raises(ApprovalStale) as expired_decision:
++        decide_approval(
++            postgres_url,
++            tenant_id="tenant-c06",
++            approval_id=expired["approval_id"],
++            decision="approved",
++            expected_revision=0,
++            now=now,
++        )
++    assert expired_decision.value.http_status == 409
++    assert expired_decision.value.code == "APPROVAL_STALE"
++    refused = resume_approved(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        approval_id=expired["approval_id"],
++        worker_id="worker-c06",
++        journal_dir=str(tmp_path / "journal"),
++        workdir=str(tmp_path),
++        command=f"Set-Content -LiteralPath '{marker}' -Value 'ran'",
++    )
++    assert refused["executed"] is False
++    assert not marker.exists()
++
++    engine = create_engine(postgres_url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-c06",
++                project_id="project-c06",
++                title="cancel",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    run_id, epoch = _run(postgres_url, session_id, "req-c06-cancel")
++    live = request_approval(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        call_id="call_" + uuid.uuid4().hex,
++        tool="bash",
++        permission_scope="workspace-write",
++        arguments={"command": "echo cancel"},
++        deadline=now + timedelta(hours=2),
++        worker_id="worker-c06",
++        epoch=epoch,
++    )
++    cancel_approval(
++        postgres_url,
++        tenant_id="tenant-c06",
++        approval_id=live["approval_id"],
++        expected_revision=0,
++        now=now,
++    )
++    with pytest.raises(ApprovalStale) as cancelled:
++        decide_approval(
++            postgres_url,
++            tenant_id="tenant-c06",
++            approval_id=live["approval_id"],
++            decision="approved",
++            expected_revision=0,
++            now=now,
++        )
++    assert cancelled.value.http_status == 409
++    assert cancelled.value.code == "APPROVAL_STALE"
++
++
++def test_w2_c06_full_skips_ask(postgres_url: str, tmp_path: Path):
++    """A full local grant does not open a per-call ask or run the tool by itself."""
++    session_id = _seed(postgres_url)
++    run_id, epoch = _run(postgres_url, session_id, "req-c06-full", profile="full_auto")
++    marker = tmp_path / "full-write.txt"
++    paused = pause_for_approval(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        call_id="call_" + uuid.uuid4().hex,
++        tool="bash",
++        permission_scope="full",
++        arguments={"command": "echo full"},
++        deadline=datetime.now(timezone.utc) + timedelta(hours=1),
++        worker_id="worker-c06",
++        epoch=epoch,
++        journal_dir=str(tmp_path / "journal"),
++        workdir=str(tmp_path),
++        command=f"Set-Content -LiteralPath '{marker}' -Value 'ran'",
++    )
++    assert paused["asked"] is False
++    assert list_pending(
++        postgres_url,
++        tenant_id="tenant-c06",
++        run_id=run_id,
++        now=datetime.now(timezone.utc),
++    ) == []
++    assert not marker.exists()
