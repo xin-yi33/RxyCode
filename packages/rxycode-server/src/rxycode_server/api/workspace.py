@@ -86,7 +86,7 @@ def _hunks(diff_text: str) -> list[dict[str, object]]:
             continue
         if current is None:
             continue
-        if line.startswith(("+", "-", " ")) and not line.startswith(("+++", "---")):
+        if line[:1] in {"+", "-", " ", "\\"}:
             lines = current["lines"]
             assert isinstance(lines, list)
             lines.append(line)
@@ -140,36 +140,43 @@ def _sides(hunk: dict[str, object]) -> tuple[list[str], list[str], int, int]:
 
 def _reject_at(text: str, hunk: dict[str, object]) -> str:
     old_lines, new_lines, new_start, new_count = _sides(hunk)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    ends = text.endswith("\n")
     lines = text.splitlines()
-    start = new_start - 1
-    end = start + new_count
+    if new_count == 0:
+        start = 0 if new_start == 0 else new_start - 1
+        end = start
+    else:
+        start = max(new_start - 1, 0)
+        end = start + new_count
     if start < 0 or end > len(lines) or lines[start:end] != new_lines:
         raise HTTPException(status_code=409, detail="CONFLICT")
-    return "\n".join([*lines[:start], *old_lines, *lines[end:]]) + ("\n" if text.endswith("\n") else "")
+    merged = [*lines[:start], *old_lines, *lines[end:]]
+    body = newline.join(merged)
+    if ends and merged:
+        body += newline
+    return body
 
 
-def _lock(handle) -> None:
-    if os.name != "nt":
-        import fcntl
+def _snapshot_diff(top: Path, spec: str, data: bytes) -> str:
+    import tempfile
 
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        return
-    import msvcrt
-
-    handle.seek(0)
-    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-
-
-def _unlock(handle) -> None:
-    if os.name != "nt":
-        import fcntl
-
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        return
-    import msvcrt
-
-    handle.seek(0)
-    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    before = _git(top, "show", f"HEAD:{spec}")
+    with tempfile.TemporaryDirectory(prefix="w3c04-diff-") as folder:
+        base = Path(folder) / "before"
+        current = Path(folder) / "after"
+        base.write_bytes(before.encode("utf-8"))
+        current.write_bytes(data)
+        proc = subprocess.run(
+            ["git", "diff", "--no-index", "--unified=3", "--", base.name, current.name],
+            cwd=folder,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    if proc.returncode not in {0, 1}:
+        return ""
+    return proc.stdout
 
 
 @router.get("/api/v1/workspaces/{project_id}/tree")
@@ -216,7 +223,7 @@ def workspace_diff(project_id: str, request: Request, path: str) -> dict[str, ob
         top, spec = _spec(root, relative)
         data = target.read_bytes()
         before = _git(top, "show", f"HEAD:{spec}")
-        diff_text = _git(top, "diff", "HEAD", "--unified=3", "--", spec)
+        diff_text = _snapshot_diff(top, spec, data)
         return {
             "path": relative,
             "target_id": target_id,
@@ -245,27 +252,37 @@ def review_hunk(project_id: str, payload: ReviewIn, request: Request) -> dict[st
             raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
         relative = target.relative_to(root.resolve()).as_posix()
         top, spec = _spec(root, relative)
+        data = target.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != payload.base_revision:
+            raise HTTPException(status_code=409, detail="CONFLICT")
+        hunks = _hunks(_snapshot_diff(top, spec, data))
+        chosen = next((item for item in hunks if item["id"] == payload.hunk_id), None)
+        if chosen is None:
+            raise HTTPException(status_code=409, detail="CONFLICT")
+        updated = data
+        if payload.decision == "reject":
+            updated = _reject_at(data.decode("utf-8"), chosen).encode("utf-8")
         with target.open("r+b") as handle:
-            _lock(handle)
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             try:
-                data = handle.read()
-                if hashlib.sha256(data).hexdigest() != payload.base_revision:
+                again = handle.read()
+                if hashlib.sha256(again).hexdigest() != digest:
                     raise HTTPException(status_code=409, detail="CONFLICT")
-                hunks = _hunks(_git(top, "diff", "HEAD", "--unified=3", "--", spec))
-                chosen = next((item for item in hunks if item["id"] == payload.hunk_id), None)
-                if chosen is None:
-                    raise HTTPException(status_code=409, detail="CONFLICT")
-                text = data.decode("utf-8")
-                if payload.decision == "reject":
-                    updated = _reject_at(text, chosen).encode("utf-8")
+                if updated != again:
                     handle.seek(0)
                     handle.write(updated)
                     handle.truncate()
-                    revised = hashlib.sha256(updated).hexdigest()
-                else:
-                    revised = hashlib.sha256(data).hexdigest()
             finally:
-                _unlock(handle)
-        return {"status": payload.decision, "base_revision": revised}
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return {"status": payload.decision, "base_revision": hashlib.sha256(updated).hexdigest()}
     finally:
         engine.dispose()
