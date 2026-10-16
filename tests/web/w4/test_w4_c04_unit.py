@@ -135,14 +135,21 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             "p.write_text(old + 'x', encoding='utf-8')\n",
             encoding="utf-8",
         )
-        from core.safety.approval import ApprovalDecision, set_approval_broker
+        from core.safety.approval import get_approval_broker
 
-        class _Approve:
-            async def request_approval(self, req: object) -> ApprovalDecision:
-                del req
-                return ApprovalDecision.APPROVED
+        stop_approver = threading.Event()
 
-        set_approval_broker(_Approve())
+        def _approve() -> None:
+            while not stop_approver.is_set():
+                broker = get_approval_broker()
+                if broker is None or not hasattr(broker, "wait_for_request"):
+                    time.sleep(0.05)
+                    continue
+                approval_id = broker.wait_for_request(0.2)
+                if approval_id:
+                    broker.resolve(approval_id, "approved")
+
+        threading.Thread(target=_approve, daemon=True).start()
         command = "cmd /c python mark.py"
         bash_call = f"call_{uuid4().hex}"
         bash_args = {"command": command, "workdir": str(work), "timeout": 30}
@@ -235,6 +242,8 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         gateway.close()
         clear_local_tools("desk-1")
         from core.safety.approval import set_approval_broker
+        if "stop_approver" in locals():
+            stop_approver.set()
         set_approval_broker(None)
         bash_dir = REPO / "tests" / "web" / "w4" / "_bash_c04"
         if bash_dir.exists():

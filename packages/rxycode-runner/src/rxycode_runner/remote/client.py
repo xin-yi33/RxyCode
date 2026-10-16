@@ -219,6 +219,14 @@ def _ensure_local_tools(device_id: str) -> None:
     )
     from rxycode_runner.transport.tool_rpc import bind_local_tools, local_tool, tool_rpc_for
 
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        SseApproval,
+        get_approval_broker,
+        set_approval_broker,
+    )
+
+    if get_approval_broker() is None:
+        set_approval_broker(SseApproval(timeout=120))
     if tool_rpc_for(device_id) is not None:
         return
     directory = get_data_dir() / "device-tool-rpc" / device_id
