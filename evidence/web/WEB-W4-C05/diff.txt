@@ -224,31 +224,43 @@ index 00000000..e7b5b88b
 +        return False
 +    return True
 diff --git a/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py b/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
-index c13c44a6..6a9701cd 100644
+index c13c44a6..b55aa251 100644
 --- a/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
 +++ b/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
-@@ -74,6 +74,71 @@ class _CancelGate:
+@@ -74,6 +74,84 @@ class _CancelGate:
          return self._inner.invoke(payload)
  
  
-+def _run_remote_full(args: dict[str, Any], *, tool: str, call_id: str) -> str:
++def _run_remote_full(
++    args: dict[str, Any],
++    *,
++    tool: str,
++    call_id: str,
++    cancel: threading.Event,
++) -> str:
 +    """Remote Full uses the local grant. A cloud permission string is not enough."""
 +    from rxycode_runner.local.grant_store import click_sender_for, store_for
 +
++    if cancel.is_set():
++        raise RuntimeError("cancelled before execution")
 +    device_id = str(_DEVICE.get() or "")
 +    capability = "shell" if tool == "bash" else "click"
++    workspace = str(args.get("workspace") or "")
++    workdir = str(args.get("workdir") or workspace)
 +    allowed, reason = store_for(device_id).evaluate(
 +        {
 +            "permission": "full",
 +            "session_id": str(args.get("session_id") or ""),
 +            "run_id": str(args.get("run_id") or ""),
 +            "capability": capability,
-+            "workspace": str(args.get("workspace") or ""),
-+            "workdir": str(args.get("workdir") or args.get("workspace") or ""),
++            "workspace": workspace,
++            "workdir": workdir,
 +        }
 +    )
 +    if not allowed:
 +        raise RuntimeError(reason)
++    if cancel.is_set():
++        raise RuntimeError("cancelled before execution")
 +    if tool == "click":
 +        from rxycode_runner.desktop.capabilities import bind_task_capabilities
 +        from rxycode_runner.desktop.windows_adapter import Monitor, click
@@ -285,9 +297,10 @@ index c13c44a6..6a9701cd 100644
 +    command = str(args.get("command") or "")
 +    if not command:
 +        raise ValueError("bash command required")
++    if cancel.is_set():
++        raise RuntimeError("cancelled before execution")
 +    from RxyCode.RxyCode1_1_0.tools.bash import run_bash
 +
-+    workdir = str(args.get("workdir") or "")
 +    raw_timeout = args.get("timeout", None)
 +    timeout = 1800 if raw_timeout is None else int(raw_timeout)
 +    outcome = run_bash(command, workdir=workdir, timeout=timeout)
@@ -299,12 +312,14 @@ index c13c44a6..6a9701cd 100644
  def local_tool(
      args: dict[str, Any],
      *,
-@@ -86,6 +151,8 @@ def local_tool(
+@@ -86,6 +164,10 @@ def local_tool(
  
      if writer_count(_DEVICE.get()) != 1:
          raise RuntimeError("tool replies must share one writer")
 +    if str(args.get("permission") or "") == "full" and tool in {"bash", "click"}:
-+        return _run_remote_full(args, tool=tool, call_id=call_id)
++        if cancel.is_set():
++            raise RuntimeError("cancelled before execution")
++        return _run_remote_full(args, tool=tool, call_id=call_id, cancel=cancel)
      if tool == "bash":
          command = str(args.get("command") or "")
          if not command:
@@ -600,10 +615,10 @@ index 00000000..daebc67a
 +            work.rmdir()
 diff --git a/tests/web/w4/test_w4_c05_unit.py b/tests/web/w4/test_w4_c05_unit.py
 new file mode 100644
-index 00000000..54f2229a
+index 00000000..9d8bb9c1
 --- /dev/null
 +++ b/tests/web/w4/test_w4_c05_unit.py
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,444 @@
 +"""WEB-W4-C05. Remote Full runs only after this machine confirms the grant."""
 +
 +from __future__ import annotations
@@ -846,6 +861,58 @@ index 00000000..54f2229a
 +        assert click.json()["state"] == "completed", click.text
 +        assert points == [(2070, 300)]
 +        assert seen["n"] == 0
++        where = work / "where.txt"
++        inherited = _invoke(
++            gateway,
++            browser,
++            csrf,
++            {
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "permission": "full",
++                    "session_id": session_id,
++                    "run_id": run_id,
++                    "workspace": str(work),
++                    "command": "cmd /c python -c \"from pathlib import Path; Path('where.txt').write_text(str(Path.cwd()))\"",
++                    "timeout": 30,
++                },
++            },
++        )
++        assert inherited.status_code == 200, inherited.text
++        assert inherited.json()["state"] == "completed", inherited.text
++        assert where.is_file()
++        assert Path(where.read_text(encoding="utf-8").strip()).resolve() == work.resolve()
++        assert not (REPO / "where.txt").exists()
++        from rxycode_runner.transport.tool_rpc import _DEVICE, local_tool
++
++        stopped = threading.Event()
++        stopped.set()
++        token = _DEVICE.set(device_id)
++        try:
++            try:
++                local_tool(
++                    {
++                        "permission": "full",
++                        "session_id": session_id,
++                        "run_id": run_id,
++                        "workspace": str(work),
++                        "command": "cmd /c python mark.py",
++                        "workdir": str(work),
++                        "timeout": 30,
++                    },
++                    cancel=stopped,
++                    tool="bash",
++                    call_id=f"call_{uuid4().hex}",
++                )
++            except RuntimeError as exc:
++                assert "cancelled before execution" in str(exc)
++            else:
++                raise AssertionError("cancelled full bash ran")
++        finally:
++            _DEVICE.reset(token)
++        assert marker.read_text(encoding="utf-8") == "x"
 +    finally:
 +        request_stop()
 +        thread.join(5)

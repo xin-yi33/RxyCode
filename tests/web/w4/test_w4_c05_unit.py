@@ -240,6 +240,58 @@ def test_w4_c05_contract(tmp_path: Path) -> None:
         assert click.json()["state"] == "completed", click.text
         assert points == [(2070, 300)]
         assert seen["n"] == 0
+        where = work / "where.txt"
+        inherited = _invoke(
+            gateway,
+            browser,
+            csrf,
+            {
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": f"call_{uuid4().hex}",
+                "tool": "bash",
+                "args": {
+                    "permission": "full",
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "workspace": str(work),
+                    "command": "cmd /c python -c \"from pathlib import Path; Path('where.txt').write_text(str(Path.cwd()))\"",
+                    "timeout": 30,
+                },
+            },
+        )
+        assert inherited.status_code == 200, inherited.text
+        assert inherited.json()["state"] == "completed", inherited.text
+        assert where.is_file()
+        assert Path(where.read_text(encoding="utf-8").strip()).resolve() == work.resolve()
+        assert not (REPO / "where.txt").exists()
+        from rxycode_runner.transport.tool_rpc import _DEVICE, local_tool
+
+        stopped = threading.Event()
+        stopped.set()
+        token = _DEVICE.set(device_id)
+        try:
+            try:
+                local_tool(
+                    {
+                        "permission": "full",
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "workspace": str(work),
+                        "command": "cmd /c python mark.py",
+                        "workdir": str(work),
+                        "timeout": 30,
+                    },
+                    cancel=stopped,
+                    tool="bash",
+                    call_id=f"call_{uuid4().hex}",
+                )
+            except RuntimeError as exc:
+                assert "cancelled before execution" in str(exc)
+            else:
+                raise AssertionError("cancelled full bash ran")
+        finally:
+            _DEVICE.reset(token)
+        assert marker.read_text(encoding="utf-8") == "x"
     finally:
         request_stop()
         thread.join(5)
