@@ -10,4 +10,4 @@
 - No separate E2E-CLOUD-01 harness. The module test is the two-sandbox process check. core/ was not touched. Not claimed as 已落实.
 - Nested ruling 581c1c4cf476110ef5c53989d18937759ea43afa lets gvisor.create apply SandboxPolicy.
 - Audit w5c02-audit-1.json returned PROBLEMS: create accepted a policy above the yaml ceiling. create and launch now reject memory, cpu, pids, and ttl above that file. The negative test calls GVisorSandbox.create with those policies. Unit re-run: 2 passed in 6.73s.
-- gpt-6-luna max re-audit has not run yet. Session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
+- gpt-6-luna max, session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Final log w5c02-audit-2.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
