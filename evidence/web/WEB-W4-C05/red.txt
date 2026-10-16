@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-6lspmmh4
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c05_unit.py:123: ModuleNotFoundError: No module named 'rxycode_runner.local.grant_store'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c05_unit.py:265: ModuleNotFoundError: No module named 'rxycode_runner.local.grant_store'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c05_module.py:74: ModuleNotFoundError: No module named 'rxycode_runner.local.grant_store'
+=========================== short test summary info ===========================
+FAILED tests/web/w4/test_w4_c05_unit.py::test_w4_c05_contract - ModuleNotFoun...
+FAILED tests/web/w4/test_w4_c05_unit.py::test_w4_c05_negative - ModuleNotFoun...
+FAILED tests/web/w4/test_w4_c05_module.py::test_w4_c05_integration - ModuleNo...
+3 failed in 0.19s

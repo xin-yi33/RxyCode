@@ -1,0 +1,998 @@
+diff --git a/apps/web/src/features/devices/DeviceGrants.tsx b/apps/web/src/features/devices/DeviceGrants.tsx
+new file mode 100644
+index 00000000..68e9e47b
+--- /dev/null
++++ b/apps/web/src/features/devices/DeviceGrants.tsx
+@@ -0,0 +1,27 @@
++export type DeviceGrantView = {
++  status?: string
++  device_id?: string
++  capabilities?: string[]
++  expires_at?: string | number
++}
++
++export function DeviceGrants({ view }: { view: DeviceGrantView }) {
++  if (view.status !== "granted") {
++    return (
++      <section aria-label="device-grants">
++        <p>waiting_for_local_confirmation</p>
++      </section>
++    )
++  }
++  return (
++    <section aria-label="device-grants">
++      <p>{view.device_id}</p>
++      <ul>
++        {(view.capabilities ?? []).map((item) => (
++          <li key={item}>{item}</li>
++        ))}
++      </ul>
++      <p>{String(view.expires_at ?? "")}</p>
++    </section>
++  )
++}
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/grant_store.py b/packages/rxycode-runner/src/rxycode_runner/local/grant_store.py
+new file mode 100644
+index 00000000..e7b5b88b
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/grant_store.py
+@@ -0,0 +1,186 @@
++"""Local Remote Full grants. The cloud permission string is not authority."""
++
++from __future__ import annotations
++
++import json
++import time
++from collections.abc import Callable
++from pathlib import Path
++from typing import Any
++from uuid import uuid4
++
++_STORES: dict[str, "GrantStore"] = {}
++_SENDERS: dict[str, Callable[[tuple[int, int]], None]] = {}
++
++
++class GrantStore:
++    """Grants this machine confirmed. Expiry and revoke are checked on each call."""
++
++    def __init__(self, directory: Path, clock: Callable[[], float] | None = None) -> None:
++        self.directory = Path(directory)
++        self.directory.mkdir(parents=True, exist_ok=True)
++        self._clock = clock or time.time
++
++    def clock(self) -> float:
++        return float(self._clock())
++
++    def confirmed_count(self) -> int:
++        return sum(1 for item in self._read_grants() if item.get("confirmed") is True)
++
++    def latest_grant_id(self) -> str:
++        confirmed = [item for item in self._read_grants() if item.get("confirmed") is True]
++        if not confirmed:
++            raise LookupError("no confirmed grant")
++        return str(confirmed[-1]["grant_id"])
++
++    def confirm(self, request: dict[str, Any]) -> dict[str, Any]:
++        expires_at = float(request["expires_at"])
++        if self.clock() >= expires_at:
++            raise PermissionError("GRANT_EXPIRED")
++        record = {
++            "grant_id": "gr_" + uuid4().hex,
++            "device_id": str(request.get("device_id") or ""),
++            "session_id": str(request.get("session_id") or ""),
++            "run_id": str(request.get("run_id") or ""),
++            "workspace": str(request.get("workspace") or ""),
++            "capabilities": [str(item) for item in request.get("capabilities") or []],
++            "expires_at": expires_at,
++            "revoke_epoch": self._epoch(),
++            "confirmed": True,
++        }
++        grants = self._read_grants()
++        grants.append(record)
++        self._write_grants(grants)
++        return record
++
++    def revoke(self, grant_id: str) -> int:
++        epoch = self._epoch() + 1
++        (self.directory / "epoch.txt").write_text(str(epoch), encoding="utf-8")
++        grants = self._read_grants()
++        for item in grants:
++            if item.get("grant_id") == grant_id:
++                item["confirmed"] = False
++        self._write_grants(grants)
++        return epoch
++
++    def evaluate(self, call: dict[str, Any]) -> tuple[bool, str]:
++        reason = self._reason(call)
++        self._audit(
++            {
++                "permission": str(call.get("permission") or ""),
++                "allowed": reason == "",
++                "reason": reason or "granted",
++                "session_id": str(call.get("session_id") or ""),
++                "run_id": str(call.get("run_id") or ""),
++                "capability": str(call.get("capability") or ""),
++                "workspace": str(call.get("workspace") or ""),
++            }
++        )
++        return reason == "", reason
++
++    def audit_entries(self) -> list[dict[str, Any]]:
++        path = self.directory / "audit.jsonl"
++        if not path.exists():
++            return []
++        rows: list[dict[str, Any]] = []
++        for line in path.read_text(encoding="utf-8").splitlines():
++            if line.strip():
++                rows.append(json.loads(line))
++        return rows
++
++    def _reason(self, call: dict[str, Any]) -> str:
++        grants = self._read_grants()
++        if not grants:
++            return "GRANT_REQUIRED"
++        session_id = str(call.get("session_id") or "")
++        matched = [item for item in grants if item.get("session_id") == session_id]
++        if not matched:
++            return "SESSION_MISMATCH"
++        grant = matched[-1]
++        stored_epoch = grant.get("revoke_epoch")
++        if stored_epoch is None or int(stored_epoch) != self._epoch() or grant.get("confirmed") is not True:
++            return "GRANT_REVOKED"
++        if self.clock() >= float(grant.get("expires_at") or 0):
++            return "GRANT_EXPIRED"
++        if str(call.get("run_id") or "") != str(grant.get("run_id") or ""):
++            return "RUN_MISMATCH"
++        capability = str(call.get("capability") or "")
++        if capability not in {str(item) for item in grant.get("capabilities") or []}:
++            return "CAPABILITY_MISMATCH"
++        root = str(grant.get("workspace") or "")
++        workspace = str(call.get("workspace") or "")
++        workdir = str(call.get("workdir") or workspace)
++        if not _within(root, workspace) or not _within(root, workdir):
++            return "WORKSPACE_MISMATCH"
++        return ""
++
++    def _epoch(self) -> int:
++        path = self.directory / "epoch.txt"
++        if not path.exists():
++            return 0
++        return int(path.read_text(encoding="utf-8").strip() or "0")
++
++    def _read_grants(self) -> list[dict[str, Any]]:
++        path = self.directory / "grants.json"
++        if not path.exists():
++            return []
++        payload = json.loads(path.read_text(encoding="utf-8"))
++        if not isinstance(payload, list):
++            return []
++        return [item for item in payload if isinstance(item, dict)]
++
++    def _write_grants(self, grants: list[dict[str, Any]]) -> None:
++        (self.directory / "grants.json").write_text(
++            json.dumps(grants, ensure_ascii=False),
++            encoding="utf-8",
++        )
++
++    def _audit(self, row: dict[str, Any]) -> None:
++        path = self.directory / "audit.jsonl"
++        with path.open("a", encoding="utf-8") as handle:
++            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
++
++
++def confirm_from_local_ui(store: GrantStore, request: dict[str, Any]) -> dict[str, Any]:
++    """Trusted local confirm. A cloud permission string is not a confirm."""
++    return store.confirm(request)
++
++
++def install_grant_store(device_id: str, store: GrantStore) -> None:
++    _STORES[device_id] = store
++
++
++def clear_grant_store(device_id: str) -> None:
++    _STORES.pop(device_id, None)
++    _SENDERS.pop(device_id, None)
++
++
++def bind_click_sender(device_id: str, sender: Callable[[tuple[int, int]], None]) -> None:
++    _SENDERS[device_id] = sender
++
++
++def click_sender_for(device_id: str) -> Callable[[tuple[int, int]], None] | None:
++    return _SENDERS.get(device_id)
++
++
++def store_for(device_id: str) -> GrantStore:
++    existing = _STORES.get(device_id)
++    if existing is not None:
++        return existing
++    from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
++
++    store = GrantStore(get_data_dir() / "device-grants" / device_id)
++    _STORES[device_id] = store
++    return store
++
++
++def _within(root: str, candidate: str) -> bool:
++    if not root or not candidate:
++        return False
++    base = Path(root).resolve()
++    target = Path(candidate).resolve()
++    try:
++        target.relative_to(base)
++    except ValueError:
++        return False
++    return True
+diff --git a/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py b/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
+index c13c44a6..6a9701cd 100644
+--- a/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
++++ b/packages/rxycode-runner/src/rxycode_runner/transport/tool_rpc.py
+@@ -74,6 +74,71 @@ class _CancelGate:
+         return self._inner.invoke(payload)
+ 
+ 
++def _run_remote_full(args: dict[str, Any], *, tool: str, call_id: str) -> str:
++    """Remote Full uses the local grant. A cloud permission string is not enough."""
++    from rxycode_runner.local.grant_store import click_sender_for, store_for
++
++    device_id = str(_DEVICE.get() or "")
++    capability = "shell" if tool == "bash" else "click"
++    allowed, reason = store_for(device_id).evaluate(
++        {
++            "permission": "full",
++            "session_id": str(args.get("session_id") or ""),
++            "run_id": str(args.get("run_id") or ""),
++            "capability": capability,
++            "workspace": str(args.get("workspace") or ""),
++            "workdir": str(args.get("workdir") or args.get("workspace") or ""),
++        }
++    )
++    if not allowed:
++        raise RuntimeError(reason)
++    if tool == "click":
++        from rxycode_runner.desktop.capabilities import bind_task_capabilities
++        from rxycode_runner.desktop.windows_adapter import Monitor, click
++
++        sender = click_sender_for(device_id)
++        if sender is None:
++            raise RuntimeError("CLICK_SENDER_REQUIRED")
++        monitor = args.get("monitor") if isinstance(args.get("monitor"), dict) else {}
++        task_id = call_id or "remote-full"
++        bind_task_capabilities(task_id, frozenset({"click"}))
++        result = click(
++            task_id=task_id,
++            capabilities=frozenset({"click"}),
++            monitors=(
++                Monitor(
++                    x=int(monitor.get("x") or 0),
++                    y=int(monitor.get("y") or 0),
++                    width=int(monitor.get("width") or 0),
++                    height=int(monitor.get("height") or 0),
++                    dpi=int(monitor.get("dpi") or 96),
++                ),
++            ),
++            monitor_index=0,
++            logical_x=int(args.get("logical_x") or 0),
++            logical_y=int(args.get("logical_y") or 0),
++            send=sender,
++            system="Windows",
++            locked=False,
++            wayland=False,
++        )
++        if not result.ok:
++            raise RuntimeError(result.code)
++        return result.code
++    command = str(args.get("command") or "")
++    if not command:
++        raise ValueError("bash command required")
++    from RxyCode.RxyCode1_1_0.tools.bash import run_bash
++
++    workdir = str(args.get("workdir") or "")
++    raw_timeout = args.get("timeout", None)
++    timeout = 1800 if raw_timeout is None else int(raw_timeout)
++    outcome = run_bash(command, workdir=workdir, timeout=timeout)
++    if outcome.startswith(("[error", "[rejected", "[blocked", "[sandbox")):
++        raise RuntimeError(outcome)
++    return outcome
++
++
+ def local_tool(
+     args: dict[str, Any],
+     *,
+@@ -86,6 +151,8 @@ def local_tool(
+ 
+     if writer_count(_DEVICE.get()) != 1:
+         raise RuntimeError("tool replies must share one writer")
++    if str(args.get("permission") or "") == "full" and tool in {"bash", "click"}:
++        return _run_remote_full(args, tool=tool, call_id=call_id)
+     if tool == "bash":
+         command = str(args.get("command") or "")
+         if not command:
+diff --git a/packages/rxycode-server/src/rxycode_server/devices/grants.py b/packages/rxycode-server/src/rxycode_server/devices/grants.py
+new file mode 100644
+index 00000000..0b303a1b
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/devices/grants.py
+@@ -0,0 +1,62 @@
++"""Cloud-side Remote Full requests. This mirror cannot confirm a local grant."""
++
++from __future__ import annotations
++
++from typing import Any
++
++
++class GrantMirror:
++    """What the browser is allowed to see while the runner keeps the real grant."""
++
++    def __init__(self) -> None:
++        self.rows: dict[str, dict[str, Any]] = {}
++
++    def request_remote_full(
++        self,
++        *,
++        device_id: str,
++        session_id: str,
++        run_id: str,
++        workspace: str,
++        capabilities: list[str],
++        expires_at: float,
++    ) -> dict[str, Any]:
++        row = {
++            "device_id": device_id,
++            "session_id": session_id,
++            "run_id": run_id,
++            "workspace": workspace,
++            "capabilities": list(capabilities),
++            "expires_at": expires_at,
++            "status": "waiting_for_local_confirmation",
++            "permission": None,
++            "grant_id": None,
++        }
++        self.rows[device_id] = row
++        return dict(row)
++
++    def forge_full(self, device_id: str) -> dict[str, Any]:
++        row = self.rows.setdefault(
++            device_id,
++            {
++                "device_id": device_id,
++                "status": "waiting_for_local_confirmation",
++                "permission": None,
++            },
++        )
++        row["permission"] = "full"
++        return dict(row)
++
++    def ack(self, device_id: str, *, grant_id: str, revoke_epoch: int) -> dict[str, Any]:
++        row = self.rows[device_id]
++        row["status"] = "granted"
++        row["grant_id"] = grant_id
++        row["revoke_epoch"] = revoke_epoch
++        row["permission"] = None
++        return dict(row)
++
++    def view(self, device_id: str) -> dict[str, Any]:
++        row = self.rows.get(device_id)
++        if row is None:
++            return {"device_id": device_id, "status": "waiting_for_local_confirmation"}
++        return dict(row)
+diff --git a/tests/web/w4/test_w4_c05_module.py b/tests/web/w4/test_w4_c05_module.py
+new file mode 100644
+index 00000000..daebc67a
+--- /dev/null
++++ b/tests/web/w4/test_w4_c05_module.py
+@@ -0,0 +1,216 @@
++"""WEB-W4-C05. An expired or revoked grant rejects the next tool call."""
++
++from __future__ import annotations
++
++import sys
++import threading
++import time
++from pathlib import Path
++from uuid import uuid4
++
++import httpx
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++for entry in (
++    REPO,
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-worker" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(entry) not in sys.path:
++        sys.path.insert(0, str(entry))
++
++
++def _pair(gateway: object, device_id: str) -> threading.Thread:
++    from click.testing import CliRunner
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import reset_stop
++
++    reset_stop()
++    browser = gateway.browser_session("tenant-a")  # type: ignore[attr-defined]
++    csrf = "csrf-token-value-for-c05"
++    issued = httpx.post(
++        f"{gateway.http}/api/v1/devices/pairings",  # type: ignore[attr-defined]
++        headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++        cookies={"rxy_session": browser, "rxy_csrf": csrf},
++        timeout=5,
++    )
++    issued.raise_for_status()
++    holder: dict[str, object] = {}
++
++    def launch() -> None:
++        holder["result"] = CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,  # type: ignore[attr-defined]
++                "--code",
++                issued.json()["code"],
++                "--device-id",
++                device_id,
++                "--os-name",
++                "Windows",
++                "--capability",
++                "shell",
++                "--heartbeat-seconds",
++                "0.2",
++            ],
++        )
++
++    thread = threading.Thread(target=launch)
++    thread.start()
++    deadline = time.time() + 10
++    while time.time() < deadline and not gateway.session_id(device_id):  # type: ignore[attr-defined]
++        time.sleep(0.05)
++    if not gateway.session_id(device_id):  # type: ignore[attr-defined]
++        raise AssertionError(holder.get("result"))
++    return thread
++
++
++def test_w4_c05_integration(tmp_path: Path) -> None:
++    """A temporary grant stops working after expiry and after revoke."""
++    from rxycode_runner.local.grant_store import (
++        GrantStore,
++        clear_grant_store,
++        confirm_from_local_ui,
++        install_grant_store,
++    )
++    from rxycode_runner.remote.client import request_stop
++    from rxycode_runner.transport.tool_rpc import clear_local_tools
++    from rxycode_server.devices.gateway import serve_in_thread
++    from rxycode_server.devices.grants import GrantMirror
++
++    device_id = "desk-c05"
++    clock = {"t": 2_000.0}
++    work = REPO / "tests" / "web" / "w4" / "_bash_c05"
++    work.mkdir(parents=True, exist_ok=True)
++    marker = work / "expire-mark.txt"
++    script = work / "mark.py"
++    script.write_text(
++        "from pathlib import Path\n"
++        f"p = Path({str(marker)!r})\n"
++        "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
++        "p.write_text(old + 'x', encoding='utf-8')\n",
++        encoding="utf-8",
++    )
++    gateway = serve_in_thread(secret=_SECRET)
++    thread = _pair(gateway, device_id)
++    browser = gateway.browser_session("tenant-a")
++    csrf = "csrf-token-value-for-c05"
++    store = GrantStore(tmp_path / "grants", clock=lambda: clock["t"])
++    install_grant_store(device_id, store)
++    mirror = GrantMirror()
++    session_id, run_id = "sess-expire", "run-expire"
++    try:
++        request = mirror.request_remote_full(
++            device_id=device_id,
++            session_id=session_id,
++            run_id=run_id,
++            workspace=str(work),
++            capabilities=["shell"],
++            expires_at=clock["t"] + 10,
++        )
++        saved = confirm_from_local_ui(store, request)
++
++        def _bash() -> httpx.Response:
++            return httpx.post(
++                f"{gateway.http}/api/v1/devices/{device_id}/invocations",
++                headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++                cookies={"rxy_session": browser, "rxy_csrf": csrf},
++                json={
++                    "attempt_id": f"att_{uuid4().hex}",
++                    "call_id": f"call_{uuid4().hex}",
++                    "tool": "bash",
++                    "args": {
++                        "permission": "full",
++                        "session_id": session_id,
++                        "run_id": run_id,
++                        "workspace": str(work),
++                        "command": "cmd /c python mark.py",
++                        "workdir": str(work),
++                        "timeout": 30,
++                    },
++                },
++                timeout=20,
++            )
++
++        first = _bash()
++        assert first.status_code == 200, first.text
++        assert first.json()["state"] == "completed", first.text
++        assert marker.read_text(encoding="utf-8") == "x"
++        clock["t"] = float(saved["expires_at"])
++        expired = _bash()
++        assert expired.json()["state"] == "recovery_required", expired.text
++        assert marker.read_text(encoding="utf-8") == "x"
++        assert any(item.get("reason") == "GRANT_EXPIRED" for item in store.audit_entries())
++        clock["t"] = 3_000.0
++        again = mirror.request_remote_full(
++            device_id=device_id,
++            session_id="sess-revoke",
++            run_id="run-revoke",
++            workspace=str(work),
++            capabilities=["shell"],
++            expires_at=clock["t"] + 30,
++        )
++        confirm_from_local_ui(store, again)
++        revived = httpx.post(
++            f"{gateway.http}/api/v1/devices/{device_id}/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "permission": "full",
++                    "session_id": "sess-revoke",
++                    "run_id": "run-revoke",
++                    "workspace": str(work),
++                    "command": "cmd /c python mark.py",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++            },
++            timeout=20,
++        )
++        assert revived.json()["state"] == "completed", revived.text
++        store.revoke(str(store.latest_grant_id()))
++        revoked = httpx.post(
++            f"{gateway.http}/api/v1/devices/{device_id}/invocations",
++            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++            cookies={"rxy_session": browser, "rxy_csrf": csrf},
++            json={
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "permission": "full",
++                    "session_id": "sess-revoke",
++                    "run_id": "run-revoke",
++                    "workspace": str(work),
++                    "command": "cmd /c python mark.py",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++            },
++            timeout=20,
++        )
++        assert revoked.json()["state"] == "recovery_required", revoked.text
++        assert marker.read_text(encoding="utf-8") == "xx"
++        assert any(item.get("reason") == "GRANT_REVOKED" for item in store.audit_entries())
++    finally:
++        request_stop()
++        thread.join(5)
++        gateway.close()
++        clear_local_tools(device_id)
++        clear_grant_store(device_id)
++        from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
++
++        set_approval_broker(None)
++        if work.exists():
++            for child in work.iterdir():
++                if child.is_file():
++                    child.unlink()
++            work.rmdir()
+diff --git a/tests/web/w4/test_w4_c05_unit.py b/tests/web/w4/test_w4_c05_unit.py
+new file mode 100644
+index 00000000..54f2229a
+--- /dev/null
++++ b/tests/web/w4/test_w4_c05_unit.py
+@@ -0,0 +1,392 @@
++"""WEB-W4-C05. Remote Full runs only after this machine confirms the grant."""
++
++from __future__ import annotations
++
++import json
++import subprocess
++import sys
++import threading
++import time
++from pathlib import Path
++
++import httpx
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++WEB = REPO / "apps" / "web"
++BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
++for entry in (
++    REPO,
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-worker" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(entry) not in sys.path:
++        sys.path.insert(0, str(entry))
++
++
++def _render(view: dict[str, object]) -> str:
++    script = REPO / "tests" / "web" / "w4" / "_render_c05.mjs"
++    payload = REPO / "tests" / "web" / "w4" / "_render_c05.json"
++    payload.write_text(json.dumps(view), encoding="utf-8")
++    component = REPO / "apps" / "web" / "src" / "features" / "devices" / "DeviceGrants.tsx"
++    script.write_text(
++        "\n".join(
++            [
++                'import { createElement } from "react";',
++                'import { renderToStaticMarkup } from "react-dom/server";',
++                'import { readFileSync } from "node:fs";',
++                f"import {{ DeviceGrants }} from {json.dumps(component.as_posix())};",
++                f"const view = JSON.parse(readFileSync({json.dumps(payload.as_posix())}, 'utf8'));",
++                "process.stdout.write(renderToStaticMarkup(createElement(DeviceGrants, { view })));",
++            ]
++        ),
++        encoding="utf-8",
++    )
++    ran = subprocess.run(
++        [str(BUN), str(script)],
++        cwd=WEB,
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++    )
++    script.unlink(missing_ok=True)
++    payload.unlink(missing_ok=True)
++    if ran.returncode != 0:
++        raise AssertionError(ran.stderr or ran.stdout)
++    return ran.stdout
++
++
++def _pair(gateway: object, device_id: str) -> threading.Thread:
++    from click.testing import CliRunner
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import reset_stop
++
++    reset_stop()
++    browser = gateway.browser_session("tenant-a")  # type: ignore[attr-defined]
++    csrf = "csrf-token-value-for-c05"
++    issued = httpx.post(
++        f"{gateway.http}/api/v1/devices/pairings",  # type: ignore[attr-defined]
++        headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++        cookies={"rxy_session": browser, "rxy_csrf": csrf},
++        timeout=5,
++    )
++    issued.raise_for_status()
++    holder: dict[str, object] = {}
++
++    def launch() -> None:
++        holder["result"] = CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,  # type: ignore[attr-defined]
++                "--code",
++                issued.json()["code"],
++                "--device-id",
++                device_id,
++                "--os-name",
++                "Windows",
++                "--capability",
++                "click",
++                "--heartbeat-seconds",
++                "0.2",
++            ],
++        )
++
++    thread = threading.Thread(target=launch)
++    thread.start()
++    deadline = time.time() + 10
++    while time.time() < deadline and not gateway.session_id(device_id):  # type: ignore[attr-defined]
++        time.sleep(0.05)
++    if not gateway.session_id(device_id):  # type: ignore[attr-defined]
++        raise AssertionError(holder.get("result"))
++    return thread
++
++
++def _invoke(gateway: object, browser: str, csrf: str, body: dict[str, object]) -> httpx.Response:
++    return httpx.post(
++        f"{gateway.http}/api/v1/devices/desk-c05/invocations",  # type: ignore[attr-defined]
++        headers={"Origin": gateway.http, "X-CSRF-Token": csrf},  # type: ignore[attr-defined]
++        cookies={"rxy_session": browser, "rxy_csrf": csrf},
++        json=body,
++        timeout=20,
++    )
++
++
++def test_w4_c05_contract(tmp_path: Path) -> None:
++    """A local confirm lets shell and click in scope skip per-item approval."""
++    from uuid import uuid4
++
++    from RxyCode.RxyCode1_1_0.core.safety.approval import get_approval_broker
++    from rxycode_runner.local.grant_store import (
++        GrantStore,
++        bind_click_sender,
++        confirm_from_local_ui,
++        install_grant_store,
++    )
++    from rxycode_runner.remote.client import request_stop
++    from rxycode_runner.transport.tool_rpc import clear_local_tools
++    from rxycode_server.devices.gateway import serve_in_thread
++    from rxycode_server.devices.grants import GrantMirror
++
++    device_id = "desk-c05"
++    clock = {"t": 1_000.0}
++    work = REPO / "tests" / "web" / "w4" / "_bash_c05"
++    work.mkdir(parents=True, exist_ok=True)
++    marker = work / "grant-mark.txt"
++    script = work / "mark.py"
++    script.write_text(
++        "from pathlib import Path\n"
++        f"p = Path({str(marker)!r})\n"
++        "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
++        "p.write_text(old + 'x', encoding='utf-8')\n",
++        encoding="utf-8",
++    )
++    gateway = serve_in_thread(secret=_SECRET)
++    thread = _pair(gateway, device_id)
++    browser = gateway.browser_session("tenant-a")
++    csrf = "csrf-token-value-for-c05"
++    points: list[tuple[int, int]] = []
++    store = GrantStore(tmp_path / "grants", clock=lambda: clock["t"])
++    install_grant_store(device_id, store)
++    bind_click_sender(device_id, points.append)
++    mirror = GrantMirror()
++    session_id, run_id = "sess-c05", "run-c05"
++    try:
++        request = mirror.request_remote_full(
++            device_id=device_id,
++            session_id=session_id,
++            run_id=run_id,
++            workspace=str(work),
++            capabilities=["shell", "click"],
++            expires_at=clock["t"] + 50,
++        )
++        assert request["status"] == "waiting_for_local_confirmation"
++        assert request.get("permission") in {None, ""}
++        assert store.confirmed_count() == 0
++        waiting = _render(mirror.view(device_id))
++        assert "waiting_for_local_confirmation" in waiting
++        assert "完全控制" not in waiting
++        forged = mirror.forge_full(device_id)
++        assert forged["permission"] == "full"
++        assert store.confirmed_count() == 0
++        assert "waiting_for_local_confirmation" in _render(mirror.view(device_id))
++        saved = confirm_from_local_ui(store, request)
++        acked = mirror.ack(
++            device_id,
++            grant_id=str(saved["grant_id"]),
++            revoke_epoch=int(saved["revoke_epoch"]),
++        )
++        assert acked["status"] == "granted"
++        granted = _render(mirror.view(device_id))
++        assert "waiting_for_local_confirmation" not in granted
++        assert "shell" in granted and "click" in granted and device_id in granted
++        broker = get_approval_broker()
++        seen = {"n": 0}
++        previous = getattr(broker, "_sink", None)
++
++        def _count(event: dict[str, object]) -> None:
++            seen["n"] += 1
++            if previous is not None:
++                previous(event)
++
++        if broker is not None:
++            broker.set_event_sink(_count)
++        bash = _invoke(
++            gateway,
++            browser,
++            csrf,
++            {
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "permission": "full",
++                    "session_id": session_id,
++                    "run_id": run_id,
++                    "workspace": str(work),
++                    "command": "cmd /c python mark.py",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++            },
++        )
++        assert bash.status_code == 200, bash.text
++        assert bash.json()["state"] == "completed", bash.text
++        assert marker.read_text(encoding="utf-8") == "x"
++        assert seen["n"] == 0
++        click = _invoke(
++            gateway,
++            browser,
++            csrf,
++            {
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "click",
++                "args": {
++                    "permission": "full",
++                    "session_id": session_id,
++                    "run_id": run_id,
++                    "workspace": str(work),
++                    "logical_x": 100,
++                    "logical_y": 200,
++                    "monitor": {"x": 1920, "y": 0, "width": 1920, "height": 1080, "dpi": 144},
++                },
++            },
++        )
++        assert click.status_code == 200, click.text
++        assert click.json()["state"] == "completed", click.text
++        assert points == [(2070, 300)]
++        assert seen["n"] == 0
++    finally:
++        request_stop()
++        thread.join(5)
++        gateway.close()
++        clear_local_tools(device_id)
++        from rxycode_runner.local.grant_store import clear_grant_store
++
++        clear_grant_store(device_id)
++        from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
++
++        set_approval_broker(None)
++        if work.exists():
++            for child in work.iterdir():
++                if child.is_file():
++                    child.unlink()
++            work.rmdir()
++
++
++def test_w4_c05_negative(tmp_path: Path) -> None:
++    """A forged full permission does nothing when this machine has no grant."""
++    from uuid import uuid4
++
++    from rxycode_runner.local.grant_store import (
++        GrantStore,
++        confirm_from_local_ui,
++        install_grant_store,
++    )
++    from rxycode_runner.remote.client import request_stop
++    from rxycode_runner.transport.tool_rpc import clear_local_tools
++    from rxycode_server.devices.gateway import serve_in_thread
++    from rxycode_server.devices.grants import GrantMirror
++
++    device_id = "desk-c05"
++    work = REPO / "tests" / "web" / "w4" / "_bash_c05"
++    work.mkdir(parents=True, exist_ok=True)
++    marker = work / "forged-mark.txt"
++    gateway = serve_in_thread(secret=_SECRET)
++    thread = _pair(gateway, device_id)
++    browser = gateway.browser_session("tenant-a")
++    csrf = "csrf-token-value-for-c05"
++    store = GrantStore(tmp_path / "grants")
++    install_grant_store(device_id, store)
++    mirror = GrantMirror()
++    try:
++        mirror.forge_full(device_id)
++        denied = _invoke(
++            gateway,
++            browser,
++            csrf,
++            {
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "bash",
++                "args": {
++                    "permission": "full",
++                    "session_id": "sess-c05",
++                    "run_id": "run-c05",
++                    "workspace": str(work),
++                    "command": "cmd /c python -c \"print(1)\"",
++                    "workdir": str(work),
++                    "timeout": 30,
++                },
++            },
++        )
++        assert denied.status_code == 200, denied.text
++        assert denied.json()["state"] == "recovery_required", denied.text
++        assert not marker.exists()
++        reasons = [str(item.get("reason")) for item in store.audit_entries()]
++        assert "GRANT_REQUIRED" in reasons
++        assert any(
++            item.get("permission") == "full" and item.get("allowed") is False
++            for item in store.audit_entries()
++        )
++        saved = confirm_from_local_ui(
++            store,
++            mirror.request_remote_full(
++                device_id=device_id,
++                session_id="sess-c05",
++                run_id="run-c05",
++                workspace=str(work),
++                capabilities=["shell"],
++                expires_at=time.time() + 60,
++            ),
++        )
++        assert saved["confirmed"] is True
++
++        def _denied(args: dict[str, object]) -> str:
++            response = _invoke(
++                gateway,
++                browser,
++                csrf,
++                {
++                    "attempt_id": f"att_{uuid4().hex}",
++                    "call_id": f"call_{uuid4().hex}",
++                    "tool": "bash",
++                    "args": args,
++                },
++            )
++            assert response.status_code == 200, response.text
++            assert response.json()["state"] == "recovery_required", response.text
++            return str(response.json().get("result") or "")
++
++        base = {
++            "permission": "full",
++            "session_id": "sess-c05",
++            "run_id": "run-c05",
++            "workspace": str(work),
++            "command": "cmd /c python -c \"print(1)\"",
++            "workdir": str(work),
++            "timeout": 30,
++        }
++        assert "RUN_MISMATCH" in _denied({**base, "run_id": "run-other"})
++        assert "SESSION_MISMATCH" in _denied({**base, "session_id": "sess-other"})
++        outside = REPO / "tests" / "web" / "w4"
++        assert "WORKSPACE_MISMATCH" in _denied({**base, "workspace": str(outside), "workdir": str(outside)})
++        assert "CAPABILITY_MISMATCH" in _invoke(
++            gateway,
++            browser,
++            csrf,
++            {
++                "attempt_id": f"att_{uuid4().hex}",
++                "call_id": f"call_{uuid4().hex}",
++                "tool": "click",
++                "args": {
++                    "permission": "full",
++                    "session_id": "sess-c05",
++                    "run_id": "run-c05",
++                    "workspace": str(work),
++                    "logical_x": 1,
++                    "logical_y": 1,
++                    "monitor": {"x": 0, "y": 0, "width": 100, "height": 100, "dpi": 96},
++                },
++            },
++        ).json()["result"]
++    finally:
++        request_stop()
++        thread.join(5)
++        gateway.close()
++        clear_local_tools(device_id)
++        from rxycode_runner.local.grant_store import clear_grant_store
++
++        clear_grant_store(device_id)
++        from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
++
++        set_approval_broker(None)
++        if work.exists():
++            for child in work.iterdir():
++                if child.is_file():
++                    child.unlink()
++            work.rmdir()

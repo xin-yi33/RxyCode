@@ -74,6 +74,71 @@ class _CancelGate:
         return self._inner.invoke(payload)
 
 
+def _run_remote_full(args: dict[str, Any], *, tool: str, call_id: str) -> str:
+    """Remote Full uses the local grant. A cloud permission string is not enough."""
+    from rxycode_runner.local.grant_store import click_sender_for, store_for
+
+    device_id = str(_DEVICE.get() or "")
+    capability = "shell" if tool == "bash" else "click"
+    allowed, reason = store_for(device_id).evaluate(
+        {
+            "permission": "full",
+            "session_id": str(args.get("session_id") or ""),
+            "run_id": str(args.get("run_id") or ""),
+            "capability": capability,
+            "workspace": str(args.get("workspace") or ""),
+            "workdir": str(args.get("workdir") or args.get("workspace") or ""),
+        }
+    )
+    if not allowed:
+        raise RuntimeError(reason)
+    if tool == "click":
+        from rxycode_runner.desktop.capabilities import bind_task_capabilities
+        from rxycode_runner.desktop.windows_adapter import Monitor, click
+
+        sender = click_sender_for(device_id)
+        if sender is None:
+            raise RuntimeError("CLICK_SENDER_REQUIRED")
+        monitor = args.get("monitor") if isinstance(args.get("monitor"), dict) else {}
+        task_id = call_id or "remote-full"
+        bind_task_capabilities(task_id, frozenset({"click"}))
+        result = click(
+            task_id=task_id,
+            capabilities=frozenset({"click"}),
+            monitors=(
+                Monitor(
+                    x=int(monitor.get("x") or 0),
+                    y=int(monitor.get("y") or 0),
+                    width=int(monitor.get("width") or 0),
+                    height=int(monitor.get("height") or 0),
+                    dpi=int(monitor.get("dpi") or 96),
+                ),
+            ),
+            monitor_index=0,
+            logical_x=int(args.get("logical_x") or 0),
+            logical_y=int(args.get("logical_y") or 0),
+            send=sender,
+            system="Windows",
+            locked=False,
+            wayland=False,
+        )
+        if not result.ok:
+            raise RuntimeError(result.code)
+        return result.code
+    command = str(args.get("command") or "")
+    if not command:
+        raise ValueError("bash command required")
+    from RxyCode.RxyCode1_1_0.tools.bash import run_bash
+
+    workdir = str(args.get("workdir") or "")
+    raw_timeout = args.get("timeout", None)
+    timeout = 1800 if raw_timeout is None else int(raw_timeout)
+    outcome = run_bash(command, workdir=workdir, timeout=timeout)
+    if outcome.startswith(("[error", "[rejected", "[blocked", "[sandbox")):
+        raise RuntimeError(outcome)
+    return outcome
+
+
 def local_tool(
     args: dict[str, Any],
     *,
@@ -86,6 +151,8 @@ def local_tool(
 
     if writer_count(_DEVICE.get()) != 1:
         raise RuntimeError("tool replies must share one writer")
+    if str(args.get("permission") or "") == "full" and tool in {"bash", "click"}:
+        return _run_remote_full(args, tool=tool, call_id=call_id)
     if tool == "bash":
         command = str(args.get("command") or "")
         if not command:
