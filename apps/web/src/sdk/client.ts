@@ -88,6 +88,12 @@ export function createClient() {
       const path = `/api/v1/projects/${encodeURIComponent(projectId)}/sessions`
       return writeJson(path, { title }) as Promise<SessionInfo>
     },
+    githubStart(): Promise<{ authorization_url: string; state: string }> {
+      return readJson("/api/v1/auth/github/start") as Promise<{
+        authorization_url: string
+        state: string
+      }>
+    },
     finishGithub(state: string, code: string): Promise<Me> {
       const query = new URLSearchParams({ state, code })
       return readJson(`/api/v1/auth/github/callback?${query}`) as Promise<Me>

@@ -200,6 +200,19 @@ def test_w3_c02_negative() -> None:
             )
             expect(failed.get_by_role("alert")).to_contain_text("授权失败", timeout=10000)
             expect(failed.locator("[data-project-id]")).to_have_count(0)
+            cloud = browser.new_page()
+            cloud.route("https://github.com/**", lambda route: route.abort())
+            cloud.goto(f"{stack.origin}/onboarding", wait_until="domcontentloaded")
+            cloud.get_by_role("button", name="云端").click()
+            with cloud.expect_response(
+                lambda item: item.url.endswith("/api/v1/auth/github/start")
+            ) as started:
+                with cloud.expect_request(
+                    lambda item: "github.com/login/oauth/authorize" in item.url
+                ) as oauth:
+                    cloud.get_by_role("button", name="使用 GitHub").click()
+            assert started.value.status == 200
+            assert "client_id=" in oauth.value.url
             browser.close()
     finally:
         stack.close()
