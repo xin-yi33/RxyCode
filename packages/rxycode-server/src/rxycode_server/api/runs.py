@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.auth import current_record, require_write
-from rxycode_server.events.store import append_event
-from rxycode_server.persistence.models import Run
+from rxycode_server.persistence.models import Outbox, Run, RunEvent
 
 _DONE = {"succeeded", "failed", "cancelled", "recovery_required"}
 
@@ -53,18 +55,31 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
             if row.status != "cancel_requested":
                 row.status = "cancel_requested"
                 row.revision = int(row.revision or 0) + 1
-                db.commit()
-                changed = True
-            else:
-                changed = False
+                retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
+                seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
+                row.event_seq = seq
+                event_id = uuid.uuid4().hex
+                db.add(
+                    RunEvent(
+                        event_id=event_id,
+                        run_id=row.id,
+                        tenant_id=record.tenant_id,
+                        seq=seq,
+                        type="run.status",
+                        payload={"status": "cancel_requested"},
+                        at=datetime.now(timezone.utc),
+                    )
+                )
+                db.flush()
+                db.add(
+                    Outbox(
+                        id=uuid.uuid4().hex,
+                        event_id=event_id,
+                        dispatch_status="pending",
+                        attempts=0,
+                    )
+                )
+            db.commit()
     finally:
         engine.dispose()
-    if changed:
-        append_event(
-            database_url,
-            tenant_id=record.tenant_id,
-            run_id=run_id,
-            event_type="run.status",
-            payload={"status": "cancel_requested"},
-        )
     return {"status": "cancel_requested"}
