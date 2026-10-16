@@ -14,4 +14,4 @@ Scope is the card whitelist plus the nested ruling for the empty browser package
 - A live jest binary was not run. gVisor was not involved. This card does not say 已落实.
 - Cache: 30 passed, 2 skipped. The skips are the pre-existing global test registry messages at tests/test_cache/test_stable_prefix.py:142 and :158.
 - ruff check on the new Python files passed.
-- w6c03-audit-1.json and w6c03-audit-2.json both ended VERDICT: PROBLEMS. Audit-2 asked for a checked async authorization result, no product-owned click, and distinct agent versus preview profiles. This fix is that response. The next audit has not returned a verdict yet.
+- Later audits fixed the app route, foreign Chrome profiles, the same-origin token, and framing. w6c03-audit-7.json on commit 20189e28 ends with VERDICT: NO_REMAINING_PROBLEMS. Thread 01a140a7-2cc1-7f61-bdab-2af627f08e80.
