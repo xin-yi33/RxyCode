@@ -86,6 +86,10 @@ def _run_remote_full(
 
     if cancel.is_set():
         raise RuntimeError("cancelled before execution")
+    from rxycode_runner.local.supervisor import active_supervisor
+
+    if active_supervisor().stopped:
+        raise RuntimeError("emergency_stop")
     device_id = str(_DEVICE.get() or "")
     capability = "shell" if tool == "bash" else "click"
     workspace = str(args.get("workspace") or "")

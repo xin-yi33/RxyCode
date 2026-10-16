@@ -10,7 +10,17 @@ from typing import Any
 _SECRET = re.compile(
     r"(?:sk-|ghp_|github_pat_)[A-Za-z0-9_-]+",
 )
-_SECRET_KEYS = {"clipboard", "api_key", "token", "secret", "password"}
+_SECRET_KEYS = {
+    "clipboard",
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "access_token",
+    "device_token",
+}
+_BEARER = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
 
 
 class AuditLog:
@@ -23,7 +33,8 @@ class AuditLog:
             if key.casefold() in _SECRET_KEYS:
                 cleaned[key] = "[redacted]"
                 continue
-            cleaned[key] = _SECRET.sub("[redacted]", str(value))
+            text = _SECRET.sub("[redacted]", str(value))
+            cleaned[key] = _BEARER.sub("Bearer [redacted]", text)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(cleaned, ensure_ascii=False) + "\n")

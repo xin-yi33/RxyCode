@@ -128,6 +128,25 @@ def test_w4_c06_contract(tmp_path: Path) -> None:
             assert "emergency_stop" in str(exc)
         else:
             raise AssertionError("full command ran after emergency stop")
+        try:
+            _run_remote_full(
+                {
+                    "permission": "full",
+                    "session_id": "sess-c06",
+                    "run_id": "run-c06",
+                    "workspace": str(work),
+                    "logical_x": 1,
+                    "logical_y": 1,
+                    "monitor": {"x": 0, "y": 0, "width": 10, "height": 10, "dpi": 96},
+                },
+                tool="click",
+                call_id="call-c06-click",
+                cancel=threading.Event(),
+            )
+        except RuntimeError as exc:
+            assert "emergency_stop" in str(exc)
+        else:
+            raise AssertionError("full click ran after emergency stop")
     finally:
         supervisor.kill_tree()
         bind_supervisor(None)
@@ -154,6 +173,9 @@ def test_w4_c06_negative(tmp_path: Path) -> None:
             "output": f"token={secret} {github}",
             "clipboard": clipboard,
             "api_key": github,
+            "authorization": "Bearer super-secret-token",
+            "access_token": "access-secret-c06",
+            "device_token": "device-secret-c06",
             "note": "stopped",
         }
     )
@@ -162,3 +184,6 @@ def test_w4_c06_negative(tmp_path: Path) -> None:
     assert secret not in text
     assert github not in text
     assert clipboard not in text
+    assert "super-secret-token" not in text
+    assert "access-secret-c06" not in text
+    assert "device-secret-c06" not in text
