@@ -10,6 +10,7 @@ from playwright.sync_api import expect, sync_playwright
 
 REPO = Path(__file__).resolve().parents[3]
 BANNER = REPO / "apps" / "web" / "src" / "features" / "notifications" / "RunStatusBanner.tsx"
+AXE = REPO / "apps" / "web" / "node_modules" / "axe-core" / "axe.min.js"
 
 _UNIT = Path(__file__).with_name("test_w3_c02_unit.py")
 _spec = importlib.util.spec_from_file_location("w3c02_stack_c07m", _UNIT)
@@ -49,6 +50,16 @@ def test_w3_c07_integration() -> None:
             page.get_by_role("button", name="取消").click()
             expect(status).to_contain_text("cancelled", timeout=10000)
             expect(page.locator("body")).not_to_contain_text("succeeded")
+            assert AXE.is_file(), "axe-core is missing"
+            page.add_script_tag(path=str(AXE))
+            violations = page.evaluate(
+                """() => axe.run(document).then((result) =>
+                  result.violations
+                    .filter((item) => item.impact === "serious" || item.impact === "critical")
+                    .map((item) => item.id)
+                )"""
+            )
+            assert violations == []
             browser.close()
     finally:
         stack.close()

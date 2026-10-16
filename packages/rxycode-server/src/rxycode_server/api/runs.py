@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -44,8 +44,10 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with Session(engine) as db:
-            row = db.get(Run, run_id)
-            if row is None or row.tenant_id != record.tenant_id:
+            row = db.execute(
+                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
             if row.status in _DONE:
                 raise HTTPException(status_code=409, detail="RUN_TERMINAL")
