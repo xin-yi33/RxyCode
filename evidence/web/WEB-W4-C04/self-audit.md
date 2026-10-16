@@ -2,7 +2,7 @@
 
 - RED: rxycode_runner.transport was missing. 3 failed in 0.34s. See red.txt.
 - `rxycode connect` binds local_tool on a journal directory that stays under the data dir for that device.
-- The worker calls attempt_tool, which calls dispatch_device_call when a device gateway is present. write appends a file. bash runs through LocalNativeBackend.
+- POST /api/v1/devices/{id}/invocations calls attempt_tool. bash uses args.workdir and args.timeout through LocalNativeBackend.
 - Tool replies are queued per call id, so two in-flight calls do not read each other's frames.
 - Tool frames travel on the paired outbound device socket. The runner does not open a second listen port.
 - The journal attempt is derived from device id and call id, so a later attempt id cannot run that call again.

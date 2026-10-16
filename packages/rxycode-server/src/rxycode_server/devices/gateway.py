@@ -226,6 +226,29 @@ def build_router() -> APIRouter:
         record = current_record(request)
         return {"devices": registry(request).list_for(record.tenant_id)}
 
+    @router.post("/api/v1/devices/{device_id}/invocations")
+    async def invoke_device(device_id: str, request: Request) -> dict[str, object]:
+        require_write(request)
+        current_record(request)
+        body = await request.json()
+        from rxycode_worker.supervisor import attempt_tool
+
+        outcome = await asyncio.to_thread(
+            attempt_tool,
+            None,
+            str(body.get("attempt_id") or ""),
+            str(body.get("tool") or ""),
+            body.get("args") if isinstance(body.get("args"), dict) else {},
+            None,
+            gateway=_SocketGateway(request.app),
+            device_id=device_id,
+            call_id=str(body.get("call_id") or ""),
+            ack=bool(body.get("ack", True)),
+            stop_after_chunks=body.get("stop_after_chunks"),
+        )
+        chunks = [list(item) for item in outcome.get("chunks") or []]
+        return {**outcome, "chunks": chunks}
+
     @router.websocket("/api/v1/devices/socket")
     async def device_socket(socket: WebSocket) -> None:
         await socket.accept()
@@ -255,6 +278,31 @@ def build_router() -> APIRouter:
                 book.detach(device_id, socket)
 
     return router
+
+
+class _SocketGateway:
+    """In-process device socket used by the worker tool entry."""
+
+    def __init__(self, app: FastAPI) -> None:
+        self.app = app
+
+    def send_tool(self, device_id: str, frame: dict[str, object]) -> None:
+        loop = self.app.state.loop
+
+        async def _send() -> None:
+            socket = self.app.state.device_registry.sockets[device_id]
+            await socket.send_text(json.dumps(frame))
+
+        asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
+
+    def recv_tool(self, device_id: str, call_id: str, timeout: float = 5) -> dict[str, object]:
+        loop = self.app.state.loop
+
+        async def _recv() -> dict[str, object]:
+            inbox = self.app.state.device_registry.lane(device_id, call_id)
+            return await asyncio.wait_for(inbox.get(), timeout)
+
+        return asyncio.run_coroutine_threadsafe(_recv(), loop).result(timeout=timeout + 1)
 
 
 class RunningGateway:
@@ -365,6 +413,7 @@ def serve_in_thread(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         server._rxy_loop = loop  # type: ignore[attr-defined]
+        app.state.loop = loop
 
         async def go() -> None:
             task = loop.create_task(server.serve())

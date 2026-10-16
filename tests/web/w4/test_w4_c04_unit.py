@@ -133,20 +133,58 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
             "p.write_text(old + 'x', encoding='utf-8')\n",
             encoding="utf-8",
         )
-        command = f"\"{sys.executable}\" \"{script}\""
+        command = f"\"{sys.executable}\" mark.py"
         bash_call = f"call_{uuid4().hex}"
-        bash_args = {"command": command, "cwd": str(tmp_path)}
-        first_bash = attempt_tool(
-            None, f"att_{uuid4().hex}", "bash", bash_args, None,
-            gateway=gateway, device_id="desk-1", call_id=bash_call,
+        bash_args = {"command": command, "workdir": str(tmp_path), "timeout": 30}
+        browser = gateway.browser_session("tenant-a")
+        csrf = "csrf-token-value-for-c04"
+        posted = httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/invocations",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": bash_call,
+                "tool": "bash",
+                "args": bash_args,
+            },
+            timeout=30,
         )
-        second_bash = attempt_tool(
-            None, f"att_{uuid4().hex}", "bash", bash_args, None,
-            gateway=gateway, device_id="desk-1", call_id=bash_call,
+        posted.raise_for_status()
+        first_bash = posted.json()
+        again = httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/invocations",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": bash_call,
+                "tool": "bash",
+                "args": bash_args,
+            },
+            timeout=30,
         )
+        second_bash = again.json()
         assert first_bash["state"] == "completed"
         assert second_bash["result"] == first_bash["result"]
         assert marker.read_text(encoding="utf-8") == "x"
+        slow = httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/invocations",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={
+                "attempt_id": f"att_{uuid4().hex}",
+                "call_id": f"call_{uuid4().hex}",
+                "tool": "bash",
+                "args": {
+                    "command": f"\"{sys.executable}\" -c \"import time; time.sleep(3)\"",
+                    "workdir": str(tmp_path),
+                    "timeout": 1,
+                },
+            },
+            timeout=30,
+        )
+        assert slow.json()["state"] == "recovery_required"
     finally:
         request_stop()
         thread.join(5)
