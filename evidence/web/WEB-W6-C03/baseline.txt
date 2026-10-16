@@ -1,0 +1,7 @@
+WEB-W6-C03 baseline
+parent HEAD b0e5172885f977f7f7d6436da37be6695a0c0a52
+branch feat/rxycode-web
+core/cu/ present
+Playwright importable; Chromium 148.0.7778.96 launches headless
+RED: ModuleNotFoundError: No module named rxycode_runner.browser
+3 failed in 0.36s

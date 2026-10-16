@@ -1,0 +1,20 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-ibjccufq
+
+================================== FAILURES ===================================
+____________________________ test_w6_c03_contract _____________________________
+tests\web\w6\test_w6_c03_unit.py:73: in test_w6_c03_contract
+    from rxycode_runner.browser.session_manager import (
+E   ModuleNotFoundError: No module named 'rxycode_runner.browser'
+____________________________ test_w6_c03_negative _____________________________
+tests\web\w6\test_w6_c03_unit.py:119: in test_w6_c03_negative
+    from rxycode_runner.browser.session_manager import (
+E   ModuleNotFoundError: No module named 'rxycode_runner.browser'
+___________________________ test_w6_c03_integration ___________________________
+tests\web\w6\test_w6_c03_module.py:28: in test_w6_c03_integration
+    from rxycode_runner.browser.session_manager import (
+E   ModuleNotFoundError: No module named 'rxycode_runner.browser'
+=========================== short test summary info ===========================
+FAILED tests/web/w6/test_w6_c03_unit.py::test_w6_c03_contract - ModuleNotFoun...
+FAILED tests/web/w6/test_w6_c03_unit.py::test_w6_c03_negative - ModuleNotFoun...
+FAILED tests/web/w6/test_w6_c03_module.py::test_w6_c03_integration - ModuleNo...
+3 failed in 0.36s

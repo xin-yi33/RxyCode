@@ -92,6 +92,7 @@ packages = [
   "rxycode_runner.desktop",
   "rxycode_runner.remote",
   "rxycode_runner.transport",
+  "rxycode_runner.browser",
 ]
 
 [tool.setuptools.package-dir]
@@ -118,6 +119,7 @@ packages = [
 "rxycode_runner.desktop" = "packages/rxycode-runner/src/rxycode_runner/desktop"
 "rxycode_runner.remote" = "packages/rxycode-runner/src/rxycode_runner/remote"
 "rxycode_runner.transport" = "packages/rxycode-runner/src/rxycode_runner/transport"
+"rxycode_runner.browser" = "packages/rxycode-runner/src/rxycode_runner/browser"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
