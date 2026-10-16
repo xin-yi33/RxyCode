@@ -1825,8 +1825,6 @@ class ToolOrchestrator:
             command = args.get("command") if isinstance(args, dict) else None
             if isinstance(command, str) and command.strip():
                 async def native_runner() -> str:
-                    from pathlib import Path
-
                     from rxycode_runner.local.native_backend import LocalNativeBackend
 
                     backend = LocalNativeBackend(target="local", permission="full")
@@ -1840,7 +1838,12 @@ class ToolOrchestrator:
                                 timeout = max(1, int(args.get("timeout")))
                             except (TypeError, ValueError):
                                 timeout = 1800
-                    cwd = Path(workdir) if workdir else Path.cwd()
+                    from utils.shell import shell_executor
+
+                    try:
+                        cwd = shell_executor.resolved_workdir(workdir)
+                    except ValueError as exc:
+                        return f"[error executing bash: {exc}]"
                     result = await backend.run_command(command, cwd, timeout=timeout)
                     if not result.started:
                         return ""

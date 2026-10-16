@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -141,8 +142,12 @@ class LocalNativeBackend:
             try:
                 out, err = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                out, err = proc.communicate()
+                _kill_tree(proc.pid)
+                try:
+                    out, err = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    out, err = proc.communicate()
                 timed_out = True
             stdout = out.decode("utf-8", errors="replace")
             stderr = err.decode("utf-8", errors="replace")
@@ -168,3 +173,18 @@ class LocalNativeBackend:
             }
         )
         return result
+
+
+def _kill_tree(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        return

@@ -19,6 +19,16 @@ for _rel in (
         sys.path.insert(0, str(_src))
 
 
+def _alive(pid: int) -> bool:
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    code = ctypes.c_ulong()
+    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return int(code.value) == 259
+
+
 def _session(pid: int) -> int:
     value = ctypes.c_ulong()
     ok = ctypes.windll.kernel32.ProcessIdToSessionId(ctypes.c_uint(pid), ctypes.byref(value))
@@ -27,7 +37,7 @@ def _session(pid: int) -> int:
     return int(value.value)
 
 
-def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_w4_c01_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     """A local full shell is a native pid in this session and is not wrapped."""
     import asyncio
 
@@ -51,6 +61,8 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         "ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(v)); "
         "print(int(v.value))"
     )
+    work = REPO / "tests" / "web" / "w4" / "_run"
+    work.mkdir(parents=True, exist_ok=True)
     command = f'{sys.executable} -c "{code}"'
     orchestrator = ToolOrchestrator()
     orchestrator.register("bash", bash_tool)
@@ -63,7 +75,7 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
                 {
                     "command": command,
                     "target": "local",
-                    "workdir": str(tmp_path),
+                    "workdir": str(work),
                     "timeout": 30,
                 },
                 config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
@@ -75,19 +87,24 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
                 {
                     "command": f'{sys.executable} -c "import sys; sys.exit(3)"',
                     "target": "local",
-                    "workdir": str(tmp_path),
+                    "workdir": str(work),
                     "timeout": 30,
                 },
                 config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
             )
         )
+        pidfile = work / "slow.pid"
         slow = asyncio.run(
             orchestrator.execute_tool(
                 "bash",
                 {
-                    "command": f'{sys.executable} -c "import time; time.sleep(5)"',
+                    "command": (
+                        f"{sys.executable} -c \"import os,time,pathlib; "
+                        f"pathlib.Path(r'{pidfile}').write_text(str(os.getpid())); "
+                        "time.sleep(30)\""
+                    ),
                     "target": "local",
-                    "workdir": str(tmp_path),
+                    "workdir": str(work),
                     "timeout": 1,
                 },
                 config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
@@ -97,6 +114,9 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         reset_execution_port(token)
     assert "exit code: 3" in failed
     assert "timeout" in slow
+    assert pidfile.is_file()
+    slow_pid = int(pidfile.read_text(encoding="utf-8").strip())
+    assert _alive(slow_pid) is False
     assert wrapped == []
     assert str(_session(os.getpid())) in text
     assert port.local_full is not None

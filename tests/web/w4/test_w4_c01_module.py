@@ -16,7 +16,7 @@ for _rel in (
         sys.path.insert(0, str(_src))
 
 
-def test_w4_c01_integration(tmp_path: Path) -> None:
+def test_w4_c01_integration() -> None:
     """The same command is rejected under ask and runs under full."""
     from core.safety.approval import (
         ApprovalBroker,
@@ -29,21 +29,26 @@ def test_w4_c01_integration(tmp_path: Path) -> None:
         bind_execution_port,
         reset_execution_port,
     )
+    from core.session_runtime import set_working_directory
     from tools.bash import bash_tool
 
     asked: list[str] = []
+    work = REPO / "tests" / "web" / "w4" / "_run"
+    nested = work / "sub"
+    nested.mkdir(parents=True, exist_ok=True)
+    set_working_directory(work, persist=False)
 
     class Reject(ApprovalBroker):
         async def _ask(self, request: object) -> ApprovalDecision:
             asked.append(str(getattr(request, "tool_name", "")))
             return ApprovalDecision.REJECTED
 
-    marker = tmp_path / "ran.txt"
+    marker = nested / "ran.txt"
     command = f'''{sys.executable} -c "open('ran.txt', 'w', encoding='utf-8').write('ok')"'''
     payload = {
         "command": command,
         "target": "local",
-        "workdir": str(tmp_path),
+        "workdir": "sub",
         "timeout": 30,
     }
     set_approval_broker(Reject())
