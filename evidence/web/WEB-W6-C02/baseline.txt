@@ -1,0 +1,7 @@
+parent HEAD d3df8710
+branch feat/rxycode-web
+upstream: none
+packages/rxycode-core/src/rxycode_core/tools/coding_workflow.py absent
+apps/web/src/features/tests/TestResults.tsx absent
+tools/edit.py edit_file is the existing mutation entry
+E2E-WEB-04 has no separate harness yet
