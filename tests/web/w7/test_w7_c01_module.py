@@ -95,12 +95,17 @@ def test_w7_c01_integration() -> None:
     assert "blocked" in result or "rejected" in result or "not allowed" in result, result
     assert not PAYLOAD_FILE.exists()
 
-    # Positional-path variants that used to slip past the write-path gate when
-    # the payload scrubber ate the verb's own "-Content" suffix (P1 bypass).
+    # Positional-path variants that used to slip past the write-path gate:
+    # the "-Content" scrub bug, executable here-strings, Clear-Content, and
+    # environment-variable paths (all confirmed P1 bypasses pre-fix).
     for variant in (
         f'Add-Content "{PAYLOAD_FILE}" "pwned"',
         f'Set-Content "{PAYLOAD_FILE}" "pwned"',
         f'powershell -c "Set-Content \\"{PAYLOAD_FILE}\\" \\"pwned\\""',
+        f'iex @"Set-Content {PAYLOAD_FILE} pwned"@',
+        f'$p = @"Set-Content {PAYLOAD_FILE} pwned"@; Invoke-Expression $p',
+        f'Clear-Content "{PAYLOAD_FILE}"',
+        'Set-Content "$env:TEMP\\rxy_w7c01_pwned.txt" "pwned"',
     ):
         blocked = asyncio.run(
             orchestrator.execute_tool(

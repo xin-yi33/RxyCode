@@ -133,6 +133,40 @@ def test_threat_tampered_session(postgres_url: str) -> None:
     )
     assert refused.status_code == 403
 
+    # An expired session cookie must not authenticate: age the record past TTL.
+    from rxycode_server.api.auth import _SESSION_TTL, _hash_token
+
+    raw = attacker.cookies.get("rxy_session")
+    record = app.state.sessions[_hash_token(app.state.secret, raw)]
+    record.created = time.monotonic() - _SESSION_TTL - 1
+    assert attacker.get("/api/v1/me").status_code == 401
+
+
+def test_threat_ws_origin(postgres_url: str) -> None:
+    """ATTACK: a foreign-Origin browser must not open the terminal WebSocket."""
+    app, _owner, _h, _pid, _sid, _tenant = _owner_with_session(postgres_url)
+    attacker = TestClient(app, base_url="https://cloud.example")
+    _github(app, attacker, 804)
+    import starlette.websockets
+
+    with pytest.raises(starlette.websockets.WebSocketDisconnect) as foreign:
+        with attacker.websocket_connect(
+            "/api/v1/terminals/t-1/ws",
+            headers={"Origin": "https://evil.example"},
+        ):
+            pass
+    assert foreign.value.code == 1008
+    assert foreign.value.reason == "ORIGIN_FORBIDDEN"
+    # Allowed Origin proceeds past the Origin gate (fails ownership instead).
+    with pytest.raises(starlette.websockets.WebSocketDisconnect) as owned:
+        with attacker.websocket_connect(
+            "/api/v1/terminals/t-1/ws",
+            headers={"Origin": ORIGIN},
+        ):
+            pass
+    assert owned.value.code == 1008
+    assert owned.value.reason != "ORIGIN_FORBIDDEN"
+
 
 def test_threat_prompt_injection_grant(tmp_path: Path) -> None:
     """ATTACK: injected call replays a real grant id with changed scope/run/capability."""

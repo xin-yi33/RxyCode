@@ -564,20 +564,47 @@ _ABS_PATH_RE = re.compile(
     r")"
 )
 # Mutating verbs / redirects whose *target path* must stay inside the whitelist.
-# Paths that only appear inside -Value / here-string report bodies are ignored
-# by scanning verb-local windows instead of the whole command.
+# Paths that only appear inside -Value/-Content payloads are ignored; here-string
+# contents stay visible because they can be executed (iex, Invoke-Expression).
+_ABS_TARGET = (
+    r"[A-Za-z]:[\\/][^\s'\"|;>&]+"
+    r"|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*"
+    r"|\$env:[A-Za-z_]\w*[\\/][^\s'\"|;>&]+"
+    r"|\$HOME[\\/][^\s'\"|;>&]+"
+    r"|%[A-Za-z_]\w*%[\\/][^\s'\"|;>&]+"
+    r"|~[\\/][^\s'\"|;>&]+"
+)
 _BASH_MUTATING_TARGET_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    r"(?:Remove-Item|ri|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|"
-    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|install)"
+    r"\b(?:Remove-Item|ri|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|install)\b"
     r"[^\n;|&]{0,200}?"
     r"(?:-(?:Literal)?Path\s+|-(?:File)?Path\s+|)"
-    r"['\"]?(?P<path>[A-Za-z]:[\\/][^\s'\"|;>&]+|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*)"
+    rf"['\"]?(?P<path>{_ABS_TARGET})"
     r"|"
-    r"(?:^|[^>])>{1,2}\s*['\"]?(?P<redir>[A-Za-z]:[\\/][^\s'\"|;>&]+|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*)"
+    rf"(?:^|[^>])>{{1,2}}\s*['\"]?(?P<redir>{_ABS_TARGET})"
     r")"
 )
+
+
+def _expand_env_candidate(raw: str) -> str:
+    """Resolve ``$env:``/``%VAR%``/``$HOME``/``~`` prefixes to the real path.
+
+    Unresolvable forms are returned unchanged so the whitelist check still
+    fails closed on them.
+    """
+    match = re.match(r"^\$env:([A-Za-z_]\w*)", raw)
+    if match:
+        value = os.environ.get(match.group(1), "")
+        return value + raw[match.end() :] if value else raw
+    if raw.startswith("$HOME"):
+        return str(Path.home()) + raw[5:]
+    if raw.startswith("~"):
+        return os.path.expanduser(raw)
+    if raw.startswith("%"):
+        return os.path.expandvars(raw)
+    return raw
 
 
 def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
@@ -602,7 +629,11 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
         " ",
         cmd,
     )
-    scrubbed = re.sub(r"(?is)@\"[\s\S]*?\"@", " ", scrubbed)
+    # Here-strings keep their contents visible to the target scan: an
+    # ``iex @"..."@`` or ``$x = @"..."@; iex $x`` payload would otherwise hide
+    # the whole command behind the erase. -Value/-Content payloads were
+    # already scrubbed above, so report bodies stay unaffected.
+    scrubbed = re.sub(r'@\"|\"@', " ", scrubbed)
     blocked: list[str] = []
     seen: set[str] = set()
     for match in _BASH_MUTATING_TARGET_RE.finditer(scrubbed):
@@ -613,7 +644,7 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
         if raw.startswith(".\\") or raw.startswith("./"):
             continue
         seen.add(raw)
-        if not is_write_allowed(raw, config):
+        if not is_write_allowed(_expand_env_candidate(raw), config):
             blocked.append(raw)
     return blocked
 

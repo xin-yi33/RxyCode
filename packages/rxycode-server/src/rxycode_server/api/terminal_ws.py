@@ -90,6 +90,11 @@ def read_terminal(terminal_id: str, request: Request) -> dict[str, object]:
 
 @router.websocket("/api/v1/terminals/{terminal_id}/ws")
 async def stream_terminal(websocket: WebSocket, terminal_id: str) -> None:
+    origin = websocket.headers.get("origin") or ""
+    allowed = getattr(websocket.app.state, "allowed_origins", None) or ()
+    if allowed and origin not in allowed:
+        await websocket.close(code=1008, reason="ORIGIN_FORBIDDEN")
+        return
     record = _record(websocket)
     session = _runner().get_session(terminal_id)
     if record is None or session is None or not _owns(session, record.tenant_id, record.user_id):
