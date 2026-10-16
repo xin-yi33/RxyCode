@@ -85,6 +85,8 @@ packages = [
   "rxycode_server.artifacts",
   "rxycode_server.usage",
   "rxycode_worker",
+  "rxycode_runner",
+  "rxycode_runner.local",
 ]
 
 [tool.setuptools.package-dir]
@@ -104,6 +106,8 @@ packages = [
 "rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
 "rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
 "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+"rxycode_runner" = "packages/rxycode-runner/src/rxycode_runner"
+"rxycode_runner.local" = "packages/rxycode-runner/src/rxycode_runner/local"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

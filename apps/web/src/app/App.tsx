@@ -8,6 +8,7 @@ import { ChatPage } from "../features/chat/ChatPage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { DiffReview } from "../features/workspace/DiffReview"
 import { FileTree } from "../features/workspace/FileTree"
+import { TerminalPane } from "../features/terminal/TerminalPane"
 import { GitPanel } from "../features/workspace/GitPanel"
 import { createClient } from "../sdk/client"
 import { useUi } from "../state/ui"
@@ -225,6 +226,11 @@ function ProjectsPage() {
   )
 }
 
+function TerminalPage() {
+  const { sessionId = "" } = useParams()
+  return <TerminalPane sessionId={sessionId} />
+}
+
 const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/login" replace /> },
   { path: "/login", element: <LoginPage /> },
@@ -233,6 +239,7 @@ const router = createBrowserRouter([
   { path: "/projects", element: <ProjectsPage /> },
   { path: "/runs/:runId", element: <ChatPage /> },
   { path: "/projects/:projectId/workspace", element: <WorkspacePage /> },
+  { path: "/terminal/:sessionId", element: <TerminalPage /> },
 ])
 
 export function App() {

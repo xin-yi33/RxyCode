@@ -15,6 +15,7 @@ from rxycode_server.api.auth import router as auth_router
 from rxycode_server.api.projects import router as projects_router
 from rxycode_server.api.runs import router as runs_router
 from rxycode_server.api.sse import router as sse_router
+from rxycode_server.api.terminal_ws import router as terminal_router
 from rxycode_server.api.workspace import router as workspace_router
 
 _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
@@ -74,6 +75,7 @@ def create_app(
     app.include_router(projects_router)
     app.include_router(runs_router)
     app.include_router(workspace_router)
+    app.include_router(terminal_router)
     app.include_router(sse_router)
     app.include_router(approvals_router)
     app.include_router(artifacts_router)

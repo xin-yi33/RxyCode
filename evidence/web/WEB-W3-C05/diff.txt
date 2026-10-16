@@ -1,0 +1,924 @@
+diff --git a/apps/web/bun.lock b/apps/web/bun.lock
+index 2a561584..b093b5bf 100644
+--- a/apps/web/bun.lock
++++ b/apps/web/bun.lock
+@@ -7,6 +7,7 @@
+       "dependencies": {
+         "@monaco-editor/react": "^4.7.0",
+         "@tanstack/react-query": "^5.90.2",
++        "@xterm/xterm": "^6.0.0",
+         "class-variance-authority": "^0.7.1",
+         "clsx": "^2.1.1",
+         "monaco-editor": "^0.57.0",
+@@ -238,6 +239,8 @@
+ 
+     "@vitejs/plugin-react": ["@vitejs/plugin-react@5.2.0", "https://registry.npmmirror.com/@vitejs/plugin-react/-/plugin-react-5.2.0.tgz", { "dependencies": { "@babel/core": "^7.29.0", "@babel/plugin-transform-react-jsx-self": "^7.27.1", "@babel/plugin-transform-react-jsx-source": "^7.27.1", "@rolldown/pluginutils": "1.0.0-rc.3", "@types/babel__core": "^7.20.5", "react-refresh": "^0.18.0" }, "peerDependencies": { "vite": "^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0" } }, "sha512-YmKkfhOAi3wsB1PhJq5Scj3GXMn3WvtQ/JC0xoopuHoXSdmtdStOpFrYaT1kie2YgFBcIe64ROzMYRjCrYOdYw=="],
+ 
++    "@xterm/xterm": ["@xterm/xterm@6.0.0", "https://registry.npmmirror.com/@xterm/xterm/-/xterm-6.0.0.tgz", {}, "sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg=="],
++
+     "baseline-browser-mapping": ["baseline-browser-mapping@2.11.29", "https://registry.npmmirror.com/baseline-browser-mapping/-/baseline-browser-mapping-2.11.29.tgz", { "bin": { "baseline-browser-mapping": "dist/cli.cjs" } }, "sha512-YeesxhUmR4h5y5V8KF8iBCqJb8YFrBJ++XBTeGcWIaQOYXGN19JM0FoiOjAhwuDoln8owMgXcWBmgHtYSkky2w=="],
+ 
+     "browserslist": ["browserslist@4.29.3", "https://registry.npmmirror.com/browserslist/-/browserslist-4.29.3.tgz", { "dependencies": { "baseline-browser-mapping": "^2.11.26", "caniuse-lite": "^1.0.30001813", "electron-to-chromium": "^1.5.439", "node-releases": "^2.0.57", "update-browserslist-db": "^1.3.3" }, "bin": { "browserslist": "cli.js" } }, "sha512-1R4kiYKXGViqEN0CnoDrXc1StD9niAwu+j2dukWzrD4bJgsD4lDmEp0CRbc6E/vYJIfTHwPmwyaKtVSudICdPA=="],
+diff --git a/apps/web/package.json b/apps/web/package.json
+index 66d68637..4bd55606 100644
+--- a/apps/web/package.json
++++ b/apps/web/package.json
+@@ -12,6 +12,7 @@
+   "dependencies": {
+     "@monaco-editor/react": "^4.7.0",
+     "@tanstack/react-query": "^5.90.2",
++    "@xterm/xterm": "^6.0.0",
+     "class-variance-authority": "^0.7.1",
+     "clsx": "^2.1.1",
+     "monaco-editor": "^0.57.0",
+diff --git a/apps/web/src/app/App.tsx b/apps/web/src/app/App.tsx
+index 8285cea3..613b0a80 100644
+--- a/apps/web/src/app/App.tsx
++++ b/apps/web/src/app/App.tsx
+@@ -8,6 +8,7 @@ import { ChatPage } from "../features/chat/ChatPage"
+ import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
+ import { DiffReview } from "../features/workspace/DiffReview"
+ import { FileTree } from "../features/workspace/FileTree"
++import { TerminalPane } from "../features/terminal/TerminalPane"
+ import { GitPanel } from "../features/workspace/GitPanel"
+ import { createClient } from "../sdk/client"
+ import { useUi } from "../state/ui"
+@@ -225,6 +226,11 @@ function ProjectsPage() {
+   )
+ }
+ 
++function TerminalPage() {
++  const { sessionId = "" } = useParams()
++  return <TerminalPane sessionId={sessionId} />
++}
++
+ const router = createBrowserRouter([
+   { path: "/", element: <Navigate to="/login" replace /> },
+   { path: "/login", element: <LoginPage /> },
+@@ -233,6 +239,7 @@ const router = createBrowserRouter([
+   { path: "/projects", element: <ProjectsPage /> },
+   { path: "/runs/:runId", element: <ChatPage /> },
+   { path: "/projects/:projectId/workspace", element: <WorkspacePage /> },
++  { path: "/terminal/:sessionId", element: <TerminalPage /> },
+ ])
+ 
+ export function App() {
+diff --git a/apps/web/src/features/terminal/TerminalPane.tsx b/apps/web/src/features/terminal/TerminalPane.tsx
+new file mode 100644
+index 00000000..cfe6a5e7
+--- /dev/null
++++ b/apps/web/src/features/terminal/TerminalPane.tsx
+@@ -0,0 +1,36 @@
++import { useEffect, useRef, useState } from "react"
++import "@xterm/xterm/css/xterm.css"
++
++import { createClient } from "../../sdk/client"
++
++export function TerminalPane({ sessionId }: { sessionId: string }) {
++  const host = useRef<HTMLDivElement>(null)
++  const [scrollback, setScrollback] = useState("")
++
++  useEffect(() => {
++    const client = createClient()
++    let disposed = false
++    let term: { dispose: () => void } | null = null
++    void client.terminal(sessionId).then(async (session) => {
++      if (disposed || host.current === null) return
++      setScrollback(session.scrollback)
++      const { Terminal } = await import("@xterm/xterm")
++      if (disposed || host.current === null) return
++      const next = new Terminal({ convertEol: true, fontSize: 14, rows: 16, cols: 80 })
++      next.open(host.current)
++      if (session.scrollback) next.write(session.scrollback)
++      term = next
++    })
++    return () => {
++      disposed = true
++      term?.dispose()
++    }
++  }, [sessionId])
++
++  return (
++    <section className="mx-auto min-h-screen max-w-5xl px-4 py-6">
++      <div ref={host} style={{ height: 280 }} />
++      <p data-scrollback={sessionId}>{scrollback}</p>
++    </section>
++  )
++}
+diff --git a/apps/web/src/sdk/client.ts b/apps/web/src/sdk/client.ts
+index e3e9ec1a..b3d4760f 100644
+--- a/apps/web/src/sdk/client.ts
++++ b/apps/web/src/sdk/client.ts
+@@ -140,5 +140,21 @@ export function createClient() {
+     openRunEvents(runId: string): EventSource {
+       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
+     },
++    terminal(sessionId: string, signal?: AbortSignal): Promise<{
++      id: string
++      pid: number
++      alive: boolean
++      exit_code: number | null
++      scrollback: string
++    }> {
++      const path = `/api/v1/terminals/${encodeURIComponent(sessionId)}`
++      return readJson(path, signal) as Promise<{
++        id: string
++        pid: number
++        alive: boolean
++        exit_code: number | null
++        scrollback: string
++      }>
++    },
+   }
+ }
+diff --git a/apps/web/vite.config.ts b/apps/web/vite.config.ts
+index fd613493..711037dd 100644
+--- a/apps/web/vite.config.ts
++++ b/apps/web/vite.config.ts
+@@ -12,8 +12,19 @@ const sessionVisualState = fileURLToPath(
+   ),
+ )
+ 
++function stripXtermElectronProbe() {
++  return {
++    name: "strip-xterm-electron-probe",
++    transform(code: string, id: string) {
++      if (!id.includes("@xterm") && !id.includes("xterm.mjs")) return null
++      if (!code.includes("electron")) return null
++      return code.replaceAll("versions?.electron", "versions?.browser")
++    },
++  }
++}
++
+ export default defineConfig({
+-  plugins: [react(), tailwindcss()],
++  plugins: [react(), tailwindcss(), stripXtermElectronProbe()],
+   resolve: { alias: { "@desktop/sessionVisualState": sessionVisualState } },
+   build: { sourcemap: true },
+   server: {
+diff --git a/evidence/web/WEB-W3-C05/baseline.txt b/evidence/web/WEB-W3-C05/baseline.txt
+new file mode 100644
+index 00000000..5bd085b1
+--- /dev/null
++++ b/evidence/web/WEB-W3-C05/baseline.txt
+@@ -0,0 +1,3 @@
++Parent HEAD before this card: 3df9d805 feat/rxycode-web. Not pushed.
++RED: TerminalPane.tsx was missing. 3 failed in the pytest line log.
++E2E-WEB-05 screenshots are not produced.
+diff --git a/evidence/web/WEB-W3-C05/handoff.md b/evidence/web/WEB-W3-C05/handoff.md
+new file mode 100644
+index 00000000..caa58d3a
+--- /dev/null
++++ b/evidence/web/WEB-W3-C05/handoff.md
+@@ -0,0 +1,10 @@
++# WEB-W3-C05 handoff
++
++Parent code commit is recorded after this file is committed. Branch feat/rxycode-web. Not pushed.
++Nested whitelist is the C05 rows in docs/plans/opus5-plan. Not pushed.
++Audit model for this card: gpt-6.1-sol, reasoning effort high.
++Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
++Verdict is not written yet.
++WEB-W3-C06 stays closed until this card's last audit line is VERDICT: NO_REMAINING_PROBLEMS.
++Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
++E2E-WEB-05 screenshots are not produced.
+diff --git a/evidence/web/WEB-W3-C05/integration.txt b/evidence/web/WEB-W3-C05/integration.txt
+new file mode 100644
+index 00000000..0e242700
+--- /dev/null
++++ b/evidence/web/WEB-W3-C05/integration.txt
+@@ -0,0 +1,16 @@
++.                                                                        [100%]
++============================== warnings summary ===============================
++tests/web/w3/test_w3_c05_module.py::test_w3_c05_integration
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w3/test_w3_c05_module.py::test_w3_c05_integration
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++tests/web/w3/test_w3_c05_module.py::test_w3_c05_integration
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
++    warnings.warn("remove second argument of ws_handler", DeprecationWarning)
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++1 passed, 3 warnings in 3.64s
+diff --git a/evidence/web/WEB-W3-C05/red.txt b/evidence/web/WEB-W3-C05/red.txt
+new file mode 100644
+index 00000000..5139137b
+--- /dev/null
++++ b/evidence/web/WEB-W3-C05/red.txt
+@@ -0,0 +1,10 @@
++FFF                                                                      [100%]
++================================== FAILURES ===================================
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c05_unit.py:54: AssertionError: TerminalPane.tsx is missing
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c05_unit.py:111: AssertionError: TerminalPane.tsx is missing
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c05_module.py:23: AssertionError: TerminalPane.tsx is missing
++=========================== short test summary info ===========================
++FAILED tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract - AssertionError: TerminalPane.tsx is missing
++FAILED tests/web/w3/test_w3_c05_unit.py::test_w3_c05_negative - AssertionError: TerminalPane.tsx is missing
++FAILED tests/web/w3/test_w3_c05_module.py::test_w3_c05_integration - AssertionError: TerminalPane.tsx is missing
++3 failed in 0.86s
+diff --git a/evidence/web/WEB-W3-C05/self-audit.md b/evidence/web/WEB-W3-C05/self-audit.md
+new file mode 100644
+index 00000000..b1e0e6e6
+--- /dev/null
++++ b/evidence/web/WEB-W3-C05/self-audit.md
+@@ -0,0 +1,9 @@
++# WEB-W3-C05 self-audit
++
++- RED: TerminalPane.tsx was missing. See red.txt.
++- POST /api/v1/terminals starts python -i in a real ConPTY via pywinpty. The caller cannot aim it at another host or tenant.
++- The websocket sends input and resize to that PTY. print output matches the interactive process, and exit() reports exit code 0.
++- A foreign session cookie is rejected before the socket is accepted. The existing process stays the only live pid.
++- Closing the socket does not kill the PTY. Reloading /terminal/:id shows the same scrollback in xterm.
++- Local mode does not sandbox. Cloud mode assigns the OS sandbox job and refuses to start if that assignment fails.
++- Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect is not implemented.
+diff --git a/evidence/web/WEB-W3-C05/unit.txt b/evidence/web/WEB-W3-C05/unit.txt
+new file mode 100644
+index 00000000..fdd2b80f
+--- /dev/null
++++ b/evidence/web/WEB-W3-C05/unit.txt
+@@ -0,0 +1,17 @@
++..                                                                       [100%]
++============================== warnings summary ===============================
++tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract
++tests/web/w3/test_w3_c05_unit.py::test_w3_c05_negative
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
++    warnings.warn("remove second argument of ws_handler", DeprecationWarning)
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++2 passed, 4 warnings in 6.14s
+diff --git a/packages/rxycode-runner/src/rxycode_runner/__init__.py b/packages/rxycode-runner/src/rxycode_runner/__init__.py
+new file mode 100644
+index 00000000..cff9a750
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/__init__.py
+@@ -0,0 +1 @@
++"""Local and cloud runners for the web gateway."""
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/__init__.py b/packages/rxycode-runner/src/rxycode_runner/local/__init__.py
+new file mode 100644
+index 00000000..c662888b
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/__init__.py
+@@ -0,0 +1 @@
++"""Machine-local process backends."""
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/pty.py b/packages/rxycode-runner/src/rxycode_runner/local/pty.py
+new file mode 100644
+index 00000000..e479693e
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/pty.py
+@@ -0,0 +1,245 @@
++"""Interactive PTY sessions. Local mode is unsandboxed. Cloud mode stays in the OS sandbox."""
++
++from __future__ import annotations
++
++import asyncio
++import os
++import subprocess
++import threading
++import uuid
++from pathlib import Path
++from typing import Any
++
++_GUARD = threading.Lock()
++_SESSIONS: dict[str, "Session"] = {}
++_SCROLL_LIMIT = 200_000
++
++
++def live_pids() -> list[int]:
++    with _GUARD:
++        return [item.pid for item in _SESSIONS.values() if item.exit_code is None]
++
++
++def get_session(session_id: str) -> "Session | None":
++    with _GUARD:
++        return _SESSIONS.get(session_id)
++
++
++class Session:
++    def __init__(self, argv: list[str], cols: int, rows: int, tenant_id: str, sandboxed: bool) -> None:
++        self.id = uuid.uuid4().hex
++        self.tenant_id = tenant_id
++        self.exit_code: int | None = None
++        self._scroll = ""
++        self._listeners: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict[str, Any]]]] = []
++        self._lock = threading.Lock()
++        self._backend = _spawn(argv, cols, rows, sandboxed)
++        self.pid = self._backend.pid
++        self._backend.start(self._on_output, self._on_exit)
++
++    @property
++    def alive(self) -> bool:
++        return self.exit_code is None
++
++    def text(self) -> str:
++        with self._lock:
++            return self._scroll
++
++    def write(self, data: str) -> None:
++        self._backend.write(data)
++
++    def resize(self, cols: int, rows: int) -> None:
++        self._backend.resize(cols, rows)
++
++    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
++        loop = asyncio.get_running_loop()
++        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
++        with self._lock:
++            self._listeners.append((loop, queue))
++        return queue
++
++    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
++        with self._lock:
++            self._listeners = [item for item in self._listeners if item[1] is not queue]
++
++    def _on_output(self, text: str) -> None:
++        if not text:
++            return
++        with self._lock:
++            self._scroll = (self._scroll + text)[-_SCROLL_LIMIT:]
++            listeners = list(self._listeners)
++        frame = {"type": "output", "data": text}
++        for loop, queue in listeners:
++            loop.call_soon_threadsafe(queue.put_nowait, frame)
++
++    def _on_exit(self, code: int) -> None:
++        with self._lock:
++            self.exit_code = code
++            listeners = list(self._listeners)
++        frame = {"type": "exit", "exit_code": code}
++        for loop, queue in listeners:
++            loop.call_soon_threadsafe(queue.put_nowait, frame)
++
++
++def open_session(
++    argv: list[str],
++    *,
++    cols: int,
++    rows: int,
++    tenant_id: str,
++    sandboxed: bool,
++) -> Session:
++    session = Session(argv, cols, rows, tenant_id, sandboxed)
++    with _GUARD:
++        _SESSIONS[session.id] = session
++    return session
++
++
++class _Backend:
++    pid: int
++
++    def start(self, on_output, on_exit) -> None:
++        raise NotImplementedError
++
++    def write(self, data: str) -> None:
++        raise NotImplementedError
++
++    def resize(self, cols: int, rows: int) -> None:
++        raise NotImplementedError
++
++    def terminate(self) -> None:
++        raise NotImplementedError
++
++
++def _spawn(argv: list[str], cols: int, rows: int, sandboxed: bool) -> _Backend:
++    if sandboxed:
++        return _sandboxed_spawn(argv, cols, rows)
++    if os.name == "nt":
++        return _WinPty(argv, cols, rows)
++    return _PosixPty(argv, cols, rows)
++
++
++def _sandboxed_spawn(argv: list[str], cols: int, rows: int) -> _Backend:
++    from core.sandbox.manager import open_sandbox_job, wrap_command
++    from core.sandbox.policy import SandboxPolicy
++
++    policy = SandboxPolicy(
++        enabled=True,
++        mode="workspace",
++        workspace_root=Path.cwd(),
++        network="inherit",
++        on_missing_capability="fail_closed",
++    )
++    wrapped = wrap_command(policy, argv, Path.cwd())
++    if wrapped.downgraded or not wrapped.applied:
++        raise PermissionError("SANDBOX_REQUIRED")
++    if os.name == "nt":
++        from core.sandbox import windows as win_sandbox
++
++        backend = _WinPty(list(wrapped.argv), cols, rows)
++        job = open_sandbox_job(wrapped)
++        try:
++            win_sandbox.assign_pid_to_job_handle(job, backend.pid)
++        except Exception as exc:
++            backend.terminate()
++            raise PermissionError("SANDBOX_REQUIRED") from exc
++        backend.job = job
++        return backend
++    return _PosixPty(list(wrapped.argv), cols, rows)
++
++
++class _WinPty(_Backend):
++    def __init__(self, argv: list[str], cols: int, rows: int) -> None:
++        from winpty import PtyProcess
++
++        self._proc = PtyProcess.spawn(argv, dimensions=(rows, cols))
++        self.pid = int(self._proc.pid)
++        self.job = 0
++
++    def start(self, on_output, on_exit) -> None:
++        threading.Thread(target=self._read_loop, args=(on_output,), daemon=True).start()
++        threading.Thread(target=self._wait_loop, args=(on_exit,), daemon=True).start()
++
++    def write(self, data: str) -> None:
++        self._proc.write(data)
++
++    def resize(self, cols: int, rows: int) -> None:
++        self._proc.setwinsize(rows, cols)
++
++    def terminate(self) -> None:
++        self._proc.terminate(force=True)
++
++    def _read_loop(self, on_output) -> None:
++        while self._proc.isalive():
++            try:
++                chunk = self._proc.read(4096)
++            except EOFError:
++                break
++            if chunk:
++                on_output(chunk)
++
++    def _wait_loop(self, on_exit) -> None:
++        while self._proc.isalive():
++            threading.Event().wait(0.05)
++        code = self._proc.exitstatus
++        on_exit(0 if code is None else int(code))
++        if self.job:
++            import ctypes
++
++            ctypes.WinDLL("kernel32").CloseHandle(self.job)
++
++
++class _PosixPty(_Backend):
++    def __init__(self, argv: list[str], cols: int, rows: int) -> None:
++        import fcntl
++        import pty
++        import termios
++
++        master, slave = pty.openpty()
++        fcntl.ioctl(slave, termios.TIOCSWINSZ, _winsize(rows, cols))
++        self._master = master
++        self._proc = subprocess.Popen(
++            argv,
++            stdin=slave,
++            stdout=slave,
++            stderr=slave,
++            start_new_session=True,
++            close_fds=True,
++        )
++        os.close(slave)
++        self.pid = int(self._proc.pid)
++
++    def start(self, on_output, on_exit) -> None:
++        threading.Thread(target=self._read_loop, args=(on_output,), daemon=True).start()
++        threading.Thread(target=self._wait_loop, args=(on_exit,), daemon=True).start()
++
++    def write(self, data: str) -> None:
++        os.write(self._master, data.encode("utf-8"))
++
++    def resize(self, cols: int, rows: int) -> None:
++        import fcntl
++        import termios
++
++        fcntl.ioctl(self._master, termios.TIOCSWINSZ, _winsize(rows, cols))
++
++    def terminate(self) -> None:
++        self._proc.kill()
++
++    def _read_loop(self, on_output) -> None:
++        while True:
++            try:
++                chunk = os.read(self._master, 4096)
++            except OSError:
++                break
++            if not chunk:
++                break
++            on_output(chunk.decode("utf-8", errors="replace"))
++
++    def _wait_loop(self, on_exit) -> None:
++        on_exit(int(self._proc.wait()))
++
++
++def _winsize(rows: int, cols: int) -> bytes:
++    import struct
++
++    return struct.pack("HHHH", rows, cols, 0, 0)
+diff --git a/packages/rxycode-server/src/rxycode_server/api/terminal_ws.py b/packages/rxycode-server/src/rxycode_server/api/terminal_ws.py
+new file mode 100644
+index 00000000..9cb05604
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/api/terminal_ws.py
+@@ -0,0 +1,124 @@
++"""Authorized terminal sessions. The PTY outlives any one browser socket."""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import sys
++import time
++from pathlib import Path
++
++from fastapi import APIRouter, HTTPException, Request, WebSocket
++from pydantic import BaseModel, Field
++
++from rxycode_server.api.auth import _SESSION_TTL, _hash_token, current_record, require_write
++
++router = APIRouter()
++
++
++def _runner():
++    root = Path(__file__).resolve().parents[4] / "rxycode-runner" / "src"
++    entry = str(root)
++    if entry not in sys.path:
++        sys.path.insert(0, entry)
++    from rxycode_runner.local import pty as backend
++
++    return backend
++
++
++class OpenIn(BaseModel):
++    argv: list[str] = Field(min_length=1)
++    cols: int = 80
++    rows: int = 24
++    tenant_id: str | None = None
++    host: str | None = None
++
++
++def _record(websocket: WebSocket):
++    raw = websocket.cookies.get("rxy_session", "")
++    if not raw:
++        return None
++    record = websocket.app.state.sessions.get(_hash_token(websocket.app.state.secret, raw))
++    if record is None or time.monotonic() - record.created > _SESSION_TTL:
++        return None
++    return record
++
++
++@router.post("/api/v1/terminals", status_code=201)
++def open_terminal(payload: OpenIn, request: Request) -> dict[str, object]:
++    require_write(request)
++    record = current_record(request)
++    if payload.cols < 1 or payload.rows < 1 or payload.cols > 500 or payload.rows > 500:
++        raise HTTPException(status_code=400, detail="INVALID_INPUT")
++    if any(not isinstance(item, str) or not item or "\x00" in item for item in payload.argv):
++        raise HTTPException(status_code=400, detail="INVALID_INPUT")
++    backend = _runner()
++    try:
++        session = backend.open_session(
++            list(payload.argv),
++            cols=payload.cols,
++            rows=payload.rows,
++            tenant_id=record.tenant_id,
++            sandboxed=request.app.state.mode == "cloud",
++        )
++    except PermissionError as exc:
++        raise HTTPException(status_code=403, detail="SANDBOX_REQUIRED") from exc
++    return {"id": session.id, "pid": session.pid, "exit_code": None}
++
++
++@router.get("/api/v1/terminals/{terminal_id}")
++def read_terminal(terminal_id: str, request: Request) -> dict[str, object]:
++    record = current_record(request)
++    session = _runner().get_session(terminal_id)
++    if session is None or session.tenant_id != record.tenant_id:
++        raise HTTPException(status_code=404, detail="NOT_FOUND")
++    return {
++        "id": session.id,
++        "pid": session.pid,
++        "alive": session.alive,
++        "exit_code": session.exit_code,
++        "scrollback": session.text(),
++    }
++
++
++@router.websocket("/api/v1/terminals/{terminal_id}/stream")
++async def stream_terminal(websocket: WebSocket, terminal_id: str) -> None:
++    record = _record(websocket)
++    session = _runner().get_session(terminal_id)
++    if record is None or session is None or session.tenant_id != record.tenant_id:
++        await websocket.close(code=1008)
++        return
++    await websocket.accept()
++    queue = session.subscribe()
++    queued = session.text()
++    if queued:
++        await websocket.send_json({"type": "output", "data": queued})
++
++    async def pump() -> None:
++        while True:
++            frame = await queue.get()
++            await websocket.send_json(frame)
++
++    async def incoming() -> None:
++        while True:
++            raw = await websocket.receive_text()
++            message = json.loads(raw)
++            kind = str(message.get("type", ""))
++            if kind == "input":
++                session.write(str(message.get("data", "")))
++            elif kind == "resize":
++                session.resize(int(message["cols"]), int(message["rows"]))
++
++    pump_task = asyncio.create_task(pump())
++    incoming_task = asyncio.create_task(incoming())
++    try:
++        done, pending = await asyncio.wait(
++            {pump_task, incoming_task},
++            return_when=asyncio.FIRST_COMPLETED,
++        )
++        for task in pending:
++            task.cancel()
++        for task in done:
++            task.result()
++    finally:
++        session.unsubscribe(queue)
+diff --git a/packages/rxycode-server/src/rxycode_server/main.py b/packages/rxycode-server/src/rxycode_server/main.py
+index 425ce385..4cf3e056 100644
+--- a/packages/rxycode-server/src/rxycode_server/main.py
++++ b/packages/rxycode-server/src/rxycode_server/main.py
+@@ -15,6 +15,7 @@ from rxycode_server.api.auth import router as auth_router
+ from rxycode_server.api.projects import router as projects_router
+ from rxycode_server.api.runs import router as runs_router
+ from rxycode_server.api.sse import router as sse_router
++from rxycode_server.api.terminal_ws import router as terminal_router
+ from rxycode_server.api.workspace import router as workspace_router
+ 
+ _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
+@@ -74,6 +75,7 @@ def create_app(
+     app.include_router(projects_router)
+     app.include_router(runs_router)
+     app.include_router(workspace_router)
++    app.include_router(terminal_router)
+     app.include_router(sse_router)
+     app.include_router(approvals_router)
+     app.include_router(artifacts_router)
+diff --git a/pyproject.toml b/pyproject.toml
+index b94db3ba..d5a6e65d 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -85,6 +85,8 @@ packages = [
+   "rxycode_server.artifacts",
+   "rxycode_server.usage",
+   "rxycode_worker",
++  "rxycode_runner",
++  "rxycode_runner.local",
+ ]
+ 
+ [tool.setuptools.package-dir]
+@@ -104,6 +106,8 @@ packages = [
+ "rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
+ "rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
+ "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
++"rxycode_runner" = "packages/rxycode-runner/src/rxycode_runner"
++"rxycode_runner.local" = "packages/rxycode-runner/src/rxycode_runner/local"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/requirements.txt b/requirements.txt
+index bef992c3..e459a749 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -30,3 +30,4 @@ psycopg[binary]>=3.2,<4
+ redis>=5,<7
+ langgraph-checkpoint-postgres>=3,<4
+ boto3>=1.34,<2
++pywinpty>=2,<3; platform_system == 'Windows'
+diff --git a/tests/web/w3/test_w3_c05_module.py b/tests/web/w3/test_w3_c05_module.py
+new file mode 100644
+index 00000000..13cdeffc
+--- /dev/null
++++ b/tests/web/w3/test_w3_c05_module.py
+@@ -0,0 +1,57 @@
++"""WEB-W3-C05. Reloading the page leaves the PTY alive and can attach again."""
++
++from __future__ import annotations
++
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++REPO = Path(__file__).resolve().parents[3]
++PANE = REPO / "apps" / "web" / "src" / "features" / "terminal" / "TerminalPane.tsx"
++_UNIT = Path(__file__).with_name("test_w3_c05_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c05_unit_mod", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_unit = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_unit)
++
++
++def test_w3_c05_integration() -> None:
++    """A refresh does not kill the PTY, and the page can show the same output."""
++    assert PANE.is_file(), "TerminalPane.tsx is missing"
++    stack = _unit._c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _unit._c02._login(page, stack.origin)
++            opened = _unit._open(page, stack.origin)
++            cookies = {item["name"]: item["value"] for item in page.context.cookies()}
++            from websockets.sync.client import connect
++
++            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/stream"
++            with connect(
++                uri,
++                additional_headers={"Cookie": f"rxy_session={cookies['rxy_session']}"},
++                open_timeout=10,
++            ) as socket:
++                seen = ""
++                socket.send(json.dumps({"type": "input", "data": "print('c05-stay')\r\n"}))
++                while "c05-stay" not in seen:
++                    seen += str(json.loads(socket.recv(timeout=15))["data"])
++            page.goto(
++                f"{stack.origin}/terminal/{opened['id']}",
++                wait_until="domcontentloaded",
++            )
++            page.reload(wait_until="domcontentloaded")
++            status = page.request.get(f"{stack.origin}/api/v1/terminals/{opened['id']}")
++            assert status.ok
++            body = status.json()
++            assert body["alive"] is True
++            assert body["exit_code"] is None
++            expect(page.locator("body")).to_contain_text("c05-stay", timeout=10000)
++            browser.close()
++    finally:
++        stack.close()
+diff --git a/tests/web/w3/test_w3_c05_unit.py b/tests/web/w3/test_w3_c05_unit.py
+new file mode 100644
+index 00000000..61e82a38
+--- /dev/null
++++ b/tests/web/w3/test_w3_c05_unit.py
+@@ -0,0 +1,150 @@
++"""WEB-W3-C05. A real PTY echoes python -i, and another tenant cannot attach."""
++
++from __future__ import annotations
++
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++REPO = Path(__file__).resolve().parents[3]
++PANE = REPO / "apps" / "web" / "src" / "features" / "terminal" / "TerminalPane.tsx"
++_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
++_UNIT = Path(__file__).with_name("test_w3_c02_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c02_stack_c05", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_c02 = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_c02)
++
++
++def _open(page, origin: str) -> dict[str, object]:
++    csrf = page.request.get(f"{origin}/api/v1/auth/csrf")
++    assert csrf.ok
++    token = csrf.json()["csrf_token"]
++    created = page.request.post(
++        f"{origin}/api/v1/terminals",
++        data=json.dumps(
++            {
++                "argv": [sys.executable, "-i", "-u"],
++                "cols": 80,
++                "rows": 24,
++                "tenant_id": "other-tenant",
++                "host": "evil.example",
++            }
++        ),
++        headers={
++            "content-type": "application/json",
++            "origin": origin,
++            "x-csrf-token": token,
++        },
++    )
++    assert created.status == 201, created.text()
++    body = created.json()
++    assert body.get("host") != "evil.example"
++    assert body.get("tenant_id") != "other-tenant"
++    assert isinstance(body.get("pid"), int)
++    assert body.get("exit_code") is None
++    return body
++
++
++def test_w3_c05_contract() -> None:
++    """python -i prints the typed expression, resizes, and returns a real exit code."""
++    assert PANE.is_file(), "TerminalPane.tsx is missing"
++    if str(_RUNNER) not in sys.path:
++        sys.path.insert(0, str(_RUNNER))
++    from rxycode_runner.local.pty import live_pids
++    from websockets.sync.client import connect
++
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            opened = _open(page, stack.origin)
++            cookies = {item["name"]: item["value"] for item in page.context.cookies()}
++            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/stream"
++            with connect(
++                uri,
++                additional_headers={"Cookie": f"rxy_session={cookies['rxy_session']}"},
++                open_timeout=10,
++            ) as socket:
++                seen = ""
++                socket.send(json.dumps({"type": "input", "data": "print('c05-ok')\r\n"}))
++                while "c05-ok" not in seen:
++                    seen += str(json.loads(socket.recv(timeout=15))["data"])
++                socket.send(json.dumps({"type": "resize", "cols": 40, "rows": 12}))
++                socket.send(
++                    json.dumps(
++                        {
++                            "type": "input",
++                            "data": "import shutil; print(tuple(shutil.get_terminal_size()))\r\n",
++                        }
++                    )
++                )
++                while "(40, 12)" not in seen:
++                    seen += str(json.loads(socket.recv(timeout=15))["data"])
++                socket.send(json.dumps({"type": "input", "data": "exit()\r\n"}))
++                code = None
++                while code is None:
++                    frame = json.loads(socket.recv(timeout=15))
++                    if frame.get("type") == "exit":
++                        code = frame["exit_code"]
++                    elif "data" in frame:
++                        seen += str(frame["data"])
++            assert code == 0
++            assert opened["pid"] not in set(live_pids())
++            page.goto(
++                f"{stack.origin}/terminal/{opened['id']}",
++                wait_until="domcontentloaded",
++            )
++            expect(page.locator(".xterm")).to_be_visible(timeout=10000)
++            browser.close()
++    finally:
++        stack.close()
++
++
++def test_w3_c05_negative() -> None:
++    """A foreign session cookie is rejected and does not start another process."""
++    assert PANE.is_file(), "TerminalPane.tsx is missing"
++    if str(_RUNNER) not in sys.path:
++        sys.path.insert(0, str(_RUNNER))
++    from rxycode_runner.local.pty import live_pids
++    from websockets.exceptions import InvalidStatus
++    from websockets.sync.client import connect
++
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            opened = _open(page, stack.origin)
++            before = set(live_pids())
++            uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/stream"
++            refused = False
++            try:
++                with connect(
++                    uri,
++                    additional_headers={"Cookie": "rxy_session=not-the-owner"},
++                    open_timeout=10,
++                ) as socket:
++                    socket.recv(timeout=3)
++            except InvalidStatus:
++                refused = True
++            except Exception as exc:
++                refused = True
++                assert "403" in str(exc) or "401" in str(exc) or "refused" in str(exc).lower()
++            assert refused
++            assert set(live_pids()) == before
++            status = page.request.get(f"{stack.origin}/api/v1/terminals/{opened['id']}")
++            assert status.ok
++            body = status.json()
++            assert body["pid"] == opened["pid"]
++            assert body["alive"] is True
++            assert body["exit_code"] is None
++            browser.close()
++    finally:
++        stack.close()

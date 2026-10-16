@@ -12,8 +12,19 @@ const sessionVisualState = fileURLToPath(
   ),
 )
 
+function stripXtermElectronProbe() {
+  return {
+    name: "strip-xterm-electron-probe",
+    transform(code: string, id: string) {
+      if (!id.includes("@xterm") && !id.includes("xterm.mjs")) return null
+      if (!code.includes("electron")) return null
+      return code.replaceAll("versions?.electron", "versions?.browser")
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), stripXtermElectronProbe()],
   resolve: { alias: { "@desktop/sessionVisualState": sessionVisualState } },
   build: { sourcemap: true },
   server: {

@@ -140,5 +140,21 @@ export function createClient() {
     openRunEvents(runId: string): EventSource {
       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
     },
+    terminal(sessionId: string, signal?: AbortSignal): Promise<{
+      id: string
+      pid: number
+      alive: boolean
+      exit_code: number | null
+      scrollback: string
+    }> {
+      const path = `/api/v1/terminals/${encodeURIComponent(sessionId)}`
+      return readJson(path, signal) as Promise<{
+        id: string
+        pid: number
+        alive: boolean
+        exit_code: number | null
+        scrollback: string
+      }>
+    },
   }
 }
