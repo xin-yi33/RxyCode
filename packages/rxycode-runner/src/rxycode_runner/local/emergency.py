@@ -31,6 +31,10 @@ class EmergencyStop:
 
     def press(self) -> StopResult:
         self.supervisor.kill_tree()
+        from rxycode_runner.local.grant_store import installed_stores
+
+        for store in installed_stores():
+            store.revoke_all()
         cloud = ""
         if self.cloud_ack is not None:
             try:

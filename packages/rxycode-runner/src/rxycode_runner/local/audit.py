@@ -19,6 +19,8 @@ _SECRET_KEYS = {
     "authorization",
     "access_token",
     "device_token",
+    "refresh_token",
+    "client_secret",
 }
 _BEARER = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
 

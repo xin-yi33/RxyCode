@@ -147,6 +147,27 @@ def test_w4_c06_contract(tmp_path: Path) -> None:
             assert "emergency_stop" in str(exc)
         else:
             raise AssertionError("full click ran after emergency stop")
+        restarted = ProcessSupervisor()
+        bind_supervisor(restarted)
+        try:
+            _run_remote_full(
+                {
+                    "permission": "full",
+                    "session_id": "sess-c06",
+                    "run_id": "run-c06",
+                    "workspace": str(work),
+                    "workdir": str(work),
+                    "command": "cmd /c echo restored",
+                    "timeout": 5,
+                },
+                tool="bash",
+                call_id="call-c06-restart",
+                cancel=threading.Event(),
+            )
+        except RuntimeError as exc:
+            assert "GRANT_REVOKED" in str(exc)
+        else:
+            raise AssertionError("full command ran after the grant was revoked")
     finally:
         supervisor.kill_tree()
         bind_supervisor(None)
@@ -176,6 +197,8 @@ def test_w4_c06_negative(tmp_path: Path) -> None:
             "authorization": "Bearer super-secret-token",
             "access_token": "access-secret-c06",
             "device_token": "device-secret-c06",
+            "refresh_token": "refresh-secret-c06",
+            "client_secret": "client-secret-c06",
             "note": "stopped",
         }
     )
@@ -187,3 +210,5 @@ def test_w4_c06_negative(tmp_path: Path) -> None:
     assert "super-secret-token" not in text
     assert "access-secret-c06" not in text
     assert "device-secret-c06" not in text
+    assert "refresh-secret-c06" not in text
+    assert "client-secret-c06" not in text

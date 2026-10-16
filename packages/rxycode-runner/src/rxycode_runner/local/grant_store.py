@@ -54,11 +54,14 @@ class GrantStore:
         return record
 
     def revoke(self, grant_id: str) -> int:
+        return self.revoke_all(grant_id)
+
+    def revoke_all(self, grant_id: str = "") -> int:
         epoch = self._epoch() + 1
         (self.directory / "epoch.txt").write_text(str(epoch), encoding="utf-8")
         grants = self._read_grants()
         for item in grants:
-            if item.get("grant_id") == grant_id:
+            if not grant_id or item.get("grant_id") == grant_id:
                 item["confirmed"] = False
         self._write_grants(grants)
         return epoch
@@ -148,6 +151,10 @@ def confirm_from_local_ui(store: GrantStore, request: dict[str, Any]) -> dict[st
 
 def install_grant_store(device_id: str, store: GrantStore) -> None:
     _STORES[device_id] = store
+
+
+def installed_stores() -> list[GrantStore]:
+    return list(_STORES.values())
 
 
 def clear_grant_store(device_id: str) -> None:
