@@ -94,8 +94,18 @@ def test_w4_c01_contract(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         )
         pidfile = work / "slow.pid"
-        slow = asyncio.run(
-            orchestrator.execute_tool(
+
+        async def slow_call() -> tuple[str, float, float]:
+            import time
+
+            stamps: list[float] = []
+
+            async def tick() -> None:
+                await asyncio.sleep(0.2)
+                stamps.append(time.perf_counter())
+
+            task = asyncio.create_task(tick())
+            text = await orchestrator.execute_tool(
                 "bash",
                 {
                     "command": (
@@ -109,7 +119,12 @@ def test_w4_c01_contract(monkeypatch: pytest.MonkeyPatch) -> None:
                 },
                 config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
             )
-        )
+            finished = time.perf_counter()
+            await task
+            return text, (stamps[0] if stamps else finished), finished
+
+        slow, stamped, finished = asyncio.run(slow_call())
+        assert stamped < finished - 0.3
     finally:
         reset_execution_port(token)
     assert "exit code: 3" in failed

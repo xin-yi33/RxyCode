@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -61,19 +62,68 @@ class LocalNativeBackend:
                     argv=list(argv),
                     approval="rejected",
                 )
-            return self._spawn(argv, cwd, approval="approved", wait=True, timeout=timeout)
-        return self._spawn(argv, cwd, approval="skipped", wait=True, timeout=timeout)
-
-    async def run_command(self, command: str, cwd: Path, *, timeout: float = 1800) -> NativeResult:
-        """Run the exact command string the policy already checked."""
-        return self._spawn(
-            command,
+            return await asyncio.to_thread(
+                self._spawn,
+                argv,
+                cwd,
+                approval="approved",
+                wait=True,
+                timeout=timeout,
+            )
+        return await asyncio.to_thread(
+            self._spawn,
+            argv,
             cwd,
             approval="skipped",
             wait=True,
             timeout=timeout,
-            shell=True,
         )
+
+    async def run_command(self, command: str, cwd: Path, *, timeout: float = 1800) -> NativeResult:
+        """Run the exact command string the policy already checked."""
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        timed_out = False
+        try:
+            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            _kill_tree(proc.pid)
+            timed_out = True
+            try:
+                out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                out_b, err_b = await proc.communicate()
+        except asyncio.CancelledError:
+            _kill_tree(proc.pid)
+            raise
+        stdout = (out_b or b"").decode("utf-8", errors="replace")
+        stderr = (err_b or b"").decode("utf-8", errors="replace")
+        result = NativeResult(
+            started=True,
+            wrapped=False,
+            argv=[command],
+            approval="skipped",
+            pid=proc.pid,
+            exit_code=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+        )
+        self.audit.append(
+            {
+                "pid": proc.pid,
+                "argv": [command],
+                "approval": "skipped",
+                "started": True,
+                "wrapped": False,
+            }
+        )
+        return result
 
     def kill(self, pid: int) -> None:
         proc = self._children.get(pid)
