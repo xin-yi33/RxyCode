@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 
 import { ApiError, createClient } from "../../sdk/client"
@@ -11,13 +11,28 @@ type Ask = {
   revision: number
 }
 
-export function ApprovalCard({ runId }: { runId: string }) {
+export function ApprovalCard({
+  runId,
+  refreshKey,
+  questions,
+}: {
+  runId: string
+  refreshKey: string
+  questions: { id: string; prompt: string; answer: string }[]
+}) {
   const client = createClient()
   const query = useQuery({
-    queryKey: ["approvals", runId],
+    queryKey: ["approvals", runId, refreshKey],
     queryFn: () => client.listApprovals(runId),
   })
   const [conflict, setConflict] = useState(false)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [shown, setShown] = useState<Ask[]>([])
+  useEffect(() => {
+    const next = query.data?.approvals
+    if (!next || next.length === 0) return
+    setShown(next)
+  }, [query.data])
 
   async function decide(item: Ask, decision: "approved" | "rejected") {
     setConflict(false)
@@ -27,6 +42,7 @@ export function ApprovalCard({ runId }: { runId: string }) {
         decision,
         revision: item.revision,
       })
+      setShown((current) => current.filter((row) => row.approval_id !== item.approval_id))
       await query.refetch()
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) setConflict(true)
@@ -35,7 +51,7 @@ export function ApprovalCard({ runId }: { runId: string }) {
 
   return (
     <section>
-      {query.data?.approvals.map((item) => {
+      {shown.map((item) => {
         const args = item.arguments ?? {}
         const path = String(args.path ?? args.file ?? "")
         return (
@@ -52,6 +68,31 @@ export function ApprovalCard({ runId }: { runId: string }) {
           </article>
         )
       })}
+      {questions.map((item) => (
+        <form
+          key={item.id}
+          data-question-id={item.id}
+          onSubmit={(event) => {
+            event.preventDefault()
+            void client.answerQuestion(runId, {
+              question_id: item.id,
+              answer: drafts[item.id] ?? "",
+            })
+          }}
+        >
+          <p>{item.prompt}</p>
+          <label>
+            回答
+            <input
+              value={item.answer || drafts[item.id] || ""}
+              onChange={(event) =>
+                setDrafts((current) => ({ ...current, [item.id]: event.target.value }))
+              }
+            />
+          </label>
+          <button type="submit">提交</button>
+        </form>
+      ))}
       {conflict ? <p role="alert">冲突</p> : null}
     </section>
   )

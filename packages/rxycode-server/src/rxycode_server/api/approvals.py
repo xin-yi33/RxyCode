@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.auth import current_record, require_write
+from rxycode_server.events.store import append_event
 from rxycode_server.approvals.service import (
     ApprovalStale,
     decide_approval,
@@ -26,6 +27,11 @@ class DecisionIn(BaseModel):
     approval_id: str
     decision: str
     revision: int
+
+
+class AnswerIn(BaseModel):
+    question_id: str
+    answer: str
 
 
 def _owned_run(database_url: str, tenant_id: str, run_id: str) -> None:
@@ -78,3 +84,21 @@ def post_approval(run_id: str, payload: DecisionIn, request: Request) -> dict:
         )
     except ApprovalStale as exc:
         raise HTTPException(status_code=409, detail="APPROVAL_STALE") from exc
+
+
+@router.post("/api/v1/runs/{run_id}/questions")
+def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str, str]:
+    require_write(request)
+    record = current_record(request)
+    database_url = request.app.state.database_url
+    _owned_run(database_url, record.tenant_id, run_id)
+    if not payload.question_id.strip():
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    append_event(
+        database_url,
+        tenant_id=record.tenant_id,
+        run_id=run_id,
+        event_type="question.resolved",
+        payload={"question_id": payload.question_id, "answer": payload.answer},
+    )
+    return {"status": "accepted"}

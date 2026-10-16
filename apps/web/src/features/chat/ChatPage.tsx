@@ -45,7 +45,11 @@ export function ChatPage() {
         ))}
       </ul>
       <PlanDock plans={projection.plans} todos={projection.todos} />
-      <ApprovalCard runId={runId} />
+      <ApprovalCard
+        runId={runId}
+        refreshKey={projection.approvals.map((item) => item.id).join(" ")}
+        questions={projection.questions}
+      />
       <AgentTree agents={projection.agents} />
       <ArtifactPanel runId={runId} />
     </main>

@@ -1,7 +1,7 @@
 export function AgentTree({
   agents,
 }: {
-  agents: { id: string; name: string; status: string }[]
+  agents: { id: string; name: string; status: string; cost: string }[]
 }) {
   return (
     <section data-agents>
@@ -9,7 +9,7 @@ export function AgentTree({
       <ul>
         {agents.map((item) => (
           <li key={item.id} data-agent-id={item.id} data-agent-status={item.status}>
-            {item.name}
+            {item.name} {item.cost}
           </li>
         ))}
       </ul>

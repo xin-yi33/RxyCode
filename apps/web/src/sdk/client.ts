@@ -164,6 +164,13 @@ export function createClient() {
       const path = `/api/v1/runs/${encodeURIComponent(runId)}/approvals`
       return writeJson(path, body) as Promise<{ status: string; revision: number }>
     },
+    answerQuestion(
+      runId: string,
+      body: { question_id: string; answer: string },
+    ): Promise<{ status: string }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/questions`
+      return writeJson(path, body) as Promise<{ status: string }>
+    },
     listArtifacts(runId: string, signal?: AbortSignal): Promise<{
       artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
     }> {

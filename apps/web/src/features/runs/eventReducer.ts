@@ -17,7 +17,9 @@ export type ApprovalCard = {
 
 export type PlanItem = { id: string; title: string; status: string }
 
-export type AgentItem = { id: string; name: string; status: string }
+export type AgentItem = { id: string; name: string; status: string; cost: string }
+
+export type QuestionItem = { id: string; prompt: string; answer: string }
 
 export type Projection = {
   order: number[]
@@ -28,6 +30,7 @@ export type Projection = {
   plans: PlanItem[]
   todos: PlanItem[]
   agents: AgentItem[]
+  questions: QuestionItem[]
   runStatus: string
 }
 
@@ -62,6 +65,7 @@ export function reduceEvents(
     plans: [],
     todos: [],
     agents: [],
+    questions: [],
     runStatus: initialStatus,
   }
 
@@ -101,19 +105,41 @@ export function reduceEvents(
     }
     if (event.type === "plan.updated" || event.type === "todo.updated") {
       const bucket = event.type === "plan.updated" ? projection.plans : projection.todos
-      bucket.push({
-        id: String(payload.plan_id ?? payload.todo_id ?? ""),
+      const id = String(payload.plan_id ?? payload.todo_id ?? "")
+      const next = {
+        id,
         title: String(payload.title ?? ""),
         status: String(payload.status ?? ""),
-      })
+      }
+      const found = bucket.find((item) => item.id === id)
+      if (found) {
+        found.title = next.title
+        found.status = next.status
+      } else if (id) bucket.push(next)
       return
     }
     if (event.type === "agent.started" || event.type === "agent.completed") {
       const id = String(payload.agent_id ?? "")
       const status = event.type === "agent.started" ? "started" : "completed"
+      const cost = String(payload.cost ?? "")
       const found = projection.agents.find((item) => item.id === id)
-      if (found) found.status = status
-      else projection.agents.push({ id, name: String(payload.name ?? ""), status })
+      if (found) {
+        found.status = status
+        if (cost) found.cost = cost
+      } else projection.agents.push({ id, name: String(payload.name ?? ""), status, cost })
+      return
+    }
+    if (event.type === "question.requested") {
+      const id = String(payload.question_id ?? "")
+      if (id && !projection.questions.some((item) => item.id === id)) {
+        projection.questions.push({ id, prompt: String(payload.prompt ?? ""), answer: "" })
+      }
+      return
+    }
+    if (event.type === "question.resolved") {
+      const id = String(payload.question_id ?? "")
+      const found = projection.questions.find((item) => item.id === id)
+      if (found) found.answer = String(payload.answer ?? "")
       return
     }
     if (event.type === "approval.resolved") {
