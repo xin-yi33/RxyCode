@@ -368,6 +368,90 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         assert abandon_response.json()["state"] in {"cancelled", "recovery_required"}
         time.sleep(2)
         assert not abandoned.exists()
+        pair_marks = {"left": work / "bash-left.txt", "right": work / "bash-right.txt"}
+        pair_calls: dict[str, str] = {}
+        for name, mark, piece in (("left", pair_marks["left"], "L"), ("right", pair_marks["right"], "R")):
+            (work / f"{name}.py").write_text(
+                "from pathlib import Path\n"
+                f"p = Path({str(mark)!r})\n"
+                "old = p.read_text(encoding='utf-8') if p.exists() else ''\n"
+                f"p.write_text(old + {piece!r}, encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            pair_calls[name] = f"call_{uuid4().hex}"
+        pair_holder: dict[str, httpx.Response] = {}
+
+        def _post_pair(name: str) -> None:
+            pair_holder[name] = httpx.post(
+                f"{gateway.http}/api/v1/devices/desk-1/invocations",
+                headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+                cookies={"rxy_session": browser, "rxy_csrf": csrf},
+                json={
+                    "attempt_id": f"att_{uuid4().hex}",
+                    "call_id": pair_calls[name],
+                    "tool": "bash",
+                    "args": {
+                        "command": f"cmd /c python {name}.py",
+                        "workdir": str(work),
+                        "timeout": 30,
+                    },
+                },
+                timeout=40,
+            )
+
+        for name in ("left", "right"):
+            threading.Thread(target=_post_pair, args=(name,), daemon=True).start()
+        paired: dict[str, str] = {}
+        pair_deadline = time.time() + 15
+        while time.time() < pair_deadline and len(paired) < 2:
+            try:
+                pending = httpx.get(
+                    f"{gateway.http}/api/v1/devices/desk-1/approvals/pending",
+                    cookies={"rxy_session": browser},
+                    timeout=3,
+                )
+            except httpx.HTTPError:
+                continue
+            if pending.status_code != 200:
+                time.sleep(0.05)
+                continue
+            body = pending.json()
+            command = str((body.get("args") or {}).get("command") or "")
+            approval_id = str(body.get("approval_id") or "")
+            if "left.py" in command and approval_id:
+                paired["left"] = approval_id
+            elif "right.py" in command and approval_id:
+                paired["right"] = approval_id
+        assert set(paired) == {"left", "right"}, paired
+        gateway.send_tool(
+            "desk-1",
+            {"type": "cancel", "device_id": "desk-1", "call_id": pair_calls["left"]},
+        )
+        time.sleep(0.5)
+        httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/approvals/{paired['right']}",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={"decision": "approved"},
+            timeout=5,
+        )
+        httpx.post(
+            f"{gateway.http}/api/v1/devices/desk-1/approvals/{paired['left']}",
+            headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+            cookies={"rxy_session": browser, "rxy_csrf": csrf},
+            json={"decision": "approved"},
+            timeout=5,
+        )
+        pair_wait = time.time() + 20
+        while time.time() < pair_wait and len(pair_holder) < 2:
+            time.sleep(0.1)
+        assert set(pair_holder) == {"left", "right"}
+        assert pair_holder["right"].status_code == 200, pair_holder["right"].text
+        assert pair_holder["right"].json()["state"] == "completed", pair_holder["right"].text
+        assert pair_marks["right"].read_text(encoding="utf-8") == "R"
+        assert pair_holder["left"].json()["state"] in {"cancelled", "recovery_required"}
+        time.sleep(1)
+        assert not pair_marks["left"].exists()
         outsider = gateway.browser_session("tenant-b")
         denied = httpx.post(
             f"{gateway.http}/api/v1/devices/desk-1/invocations",

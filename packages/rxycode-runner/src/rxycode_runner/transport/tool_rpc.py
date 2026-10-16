@@ -39,11 +39,21 @@ def tool_rpc_for(device_id: str) -> "ToolRpcServer | None":
     return _BOUND.get(device_id)
 
 
+_BASH_CALL = threading.local()
+
+
+def bind_bash_call(call_id: str) -> None:
+    """Remember which call this thread is asking the user to approve."""
+    _BASH_CALL.call_id = call_id
+
+
 def observe_approval(device_id: str, event: dict[str, Any]) -> None:
-    """Record which call owns an approval request published on this device."""
+    """Bind the approval that this thread just published. Other calls stay put."""
     server = _BOUND.get(device_id)
-    if server is not None:
-        server.observe_approval(event)
+    call_id = str(getattr(_BASH_CALL, "call_id", "") or "")
+    if server is None or not call_id or str(event.get("tool") or "") != "bash":
+        return
+    server.bind_approval(call_id, str(event.get("approval_id") or ""))
 
 
 class _CancelGate:
@@ -90,15 +100,6 @@ def local_tool(
         timeout = 1800 if raw_timeout is None else int(raw_timeout)
         orchestrator = ToolOrchestrator()
         orchestrator.register("bash", _CancelGate(cancel, bash_tool))
-        rpc = tool_rpc_for(_DEVICE.get())
-
-        def _watch(event: dict[str, Any]) -> None:
-            if str(event.get("tool") or "") != "bash" or rpc is None:
-                return
-            rpc.bind_approval(call_id, str(event.get("approval_id") or ""))
-
-        if rpc is not None:
-            rpc.add_approval_watcher(_watch)
 
         async def _through_gate() -> str:
             return await orchestrator.execute_tool(
@@ -115,11 +116,11 @@ def local_tool(
                 call_id=call_id or None,
             )
 
+        bind_bash_call(call_id)
         try:
             outcome = asyncio.run(_through_gate())
         finally:
-            if rpc is not None:
-                rpc.remove_approval_watcher(_watch)
+            bind_bash_call("")
         if cancel.is_set():
             raise RuntimeError("cancelled before execution")
         if outcome.startswith(("[error", "[rejected", "[blocked")):
@@ -199,7 +200,6 @@ class ToolRpcServer:
         self.meta: dict[str, tuple[str, str, dict[str, Any]]] = {}
         self.cancel_flags: dict[str, threading.Event] = {}
         self.approval_ids: dict[str, str] = {}
-        self._approval_watchers: list[Callable[[dict[str, Any]], None]] = []
         self.chunk_acks: dict[str, int] = {}
         self.ack_events: dict[str, asyncio.Event] = {}
         self._performs: set[asyncio.Task[None]] = set()
@@ -207,19 +207,6 @@ class ToolRpcServer:
     def cancel_performs(self) -> None:
         for task in list(self._performs):
             task.cancel()
-
-    def add_approval_watcher(self, watcher: Callable[[dict[str, Any]], None]) -> None:
-        self._approval_watchers.append(watcher)
-
-    def remove_approval_watcher(self, watcher: Callable[[dict[str, Any]], None]) -> None:
-        try:
-            self._approval_watchers.remove(watcher)
-        except ValueError:
-            return
-
-    def observe_approval(self, event: dict[str, Any]) -> None:
-        for watcher in list(self._approval_watchers):
-            watcher(event)
 
     def bind_approval(self, call_id: str, approval_id: str) -> None:
         if call_id and approval_id:
