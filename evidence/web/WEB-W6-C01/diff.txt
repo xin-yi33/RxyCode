@@ -1,0 +1,391 @@
+diff --git a/execution/tool_orchestrator.py b/execution/tool_orchestrator.py
+index 65bea5fe..a8421ff7 100644
+--- a/execution/tool_orchestrator.py
++++ b/execution/tool_orchestrator.py
+@@ -249,6 +249,7 @@ class ToolOrchestrator:
+         # Execution-time name -> tool table (not the ToolRegistry catalog).
+         self._bound_tools: dict[str, Any] = {}
+         self._risk_overrides: dict[str, Any] = {}
++        self._selection_report: list[dict[str, str]] = []
+         self._audit_logger: Any | None = None
+         # C2: bounded executor for sync tools so a burst of sync invocations
+         # queues instead of spawning unbounded threads.  Bound = explicit
+@@ -586,17 +587,46 @@ class ToolOrchestrator:
+         """Return all registered tools."""
+         return dict(self._bound_tools)
+
+-    def select_tools(self, hints: list[str]) -> list[Any]:
+-        """Select tools matching the given hints.
+-
+-        - No hints -> all registered tools (explicit "use everything").
+-        - Hints with matches -> the matched tools.
+-        - Hints with NO matches -> only the read-only core subset
+-          (READONLY_TOOL_NAMES), so a bad hint never silently grants
+-          write/execute tools.
++    def select_tools(
++        self,
++        hints: list[str],
++        *,
++        target: str | None = None,
++        capabilities: list[str] | None = None,
++        profile: str | None = None,
++        permission: Any | None = None,
++    ) -> list[Any]:
++        """Select tools matching the given hints, then the target capability.
+
+-        Matching is case-insensitive substring match on name or description.
++        Profile full does not put every ToolSpec back into the result.
+         """
++        chosen = self._match_hints(hints)
++        if (
++            target is None
++            and capabilities is None
++            and profile is None
++            and permission is None
++        ):
++            self._selection_report = []
++            return chosen
++        from rxycode_core.tools.capability_catalog import filter_selection
++
++        kept, report = filter_selection(
++            chosen,
++            target=target,
++            capabilities=capabilities,
++            profile=profile,
++            permission=permission,
++        )
++        self._selection_report = report
++        return kept
++
++    def selection_report(self) -> list[dict[str, str]]:
++        """Reasons for the latest select_tools call."""
++        return [dict(item) for item in self._selection_report]
++
++    def _match_hints(self, hints: list[str]) -> list[Any]:
++        """Match hints. A bad hint stays inside the read-only core subset."""
+         if not hints:
+             return list(self._bound_tools.values())
+
+diff --git a/packages/rxycode-core/src/rxycode_core/tools/__init__.py b/packages/rxycode-core/src/rxycode_core/tools/__init__.py
+new file mode 100644
+index 00000000..667a7dc3
+--- /dev/null
++++ b/packages/rxycode-core/src/rxycode_core/tools/__init__.py
+@@ -0,0 +1 @@
++"""Tool capability projections."""
+diff --git a/packages/rxycode-core/src/rxycode_core/tools/capability_catalog.py b/packages/rxycode-core/src/rxycode_core/tools/capability_catalog.py
+new file mode 100644
+index 00000000..1c7fb97b
+--- /dev/null
++++ b/packages/rxycode-core/src/rxycode_core/tools/capability_catalog.py
+@@ -0,0 +1,137 @@
++"""Read-only projection of registered tools onto capability domains.
++
++A target declares capabilities. Profile full does not put every ToolSpec
++into the selection. Desktop input stays on the local machine.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++from RxyCode.RxyCode1_1_0.core.cu.spec import ACTION_TOOLS, TOOL_RISK
++from RxyCode.RxyCode1_1_0.core.safety.policy import (
++    RiskLevel,
++    apply_mcp_hint,
++    get_tool_risk,
++)
++
++DESKTOP_INPUT = frozenset(ACTION_TOOLS)
++FS_READ = frozenset(
++    {"read", "view", "grep", "glob", "ls", "datetime", "websearch", "webfetch"}
++)
++
++
++def capability_of(name: str) -> str:
++    if name in DESKTOP_INPUT:
++        return "desktop.input"
++    if name in FS_READ:
++        return "fs.read"
++    if name == "bash":
++        return "shell"
++    return "general"
++
++
++def target_of(name: str) -> str:
++    if name in DESKTOP_INPUT:
++        return "local"
++    return "any"
++
++
++def risk_of(name: str) -> RiskLevel:
++    if name in TOOL_RISK:
++        return TOOL_RISK[name]
++    return get_tool_risk(name)
++
++
++def timeout_of(name: str) -> float:
++    from execution.tool_orchestrator import ToolOrchestrator
++
++    if name in ToolOrchestrator._SLOW_START_TOOLS:
++        return float(ToolOrchestrator._SLOW_START_TOOLS[name])
++    if name in ToolOrchestrator._TOOL_STALL_SECONDS:
++        return float(ToolOrchestrator._TOOL_STALL_SECONDS[name])
++    return float(ToolOrchestrator._DEFAULT_STALL_SECONDS)
++
++
++def idempotent_of(name: str) -> bool:
++    return name not in DESKTOP_INPUT and risk_of(name) == RiskLevel.READ
++
++
++def inventory(tools: Any) -> list[dict[str, Any]]:
++    """Project tools to tool_name, capability, target, risk, timeout, idempotent."""
++    rows: list[dict[str, Any]] = []
++    for tool in tools:
++        name = str(getattr(tool, "name", "") or "")
++        rows.append(
++            {
++                "tool_name": name,
++                "capability": capability_of(name),
++                "target": target_of(name),
++                "risk": risk_of(name).name,
++                "timeout": timeout_of(name),
++                "idempotent": idempotent_of(name),
++            }
++        )
++    return rows
++
++
++def classify_mcp(name: str, annotations: dict[str, Any] | None) -> RiskLevel:
++    """Classify a new MCP tool. Hints may raise risk. They cannot lower it to READ."""
++    return apply_mcp_hint(name, get_tool_risk(name), annotations)
++
++
++def filter_selection(
++    tools: list[Any],
++    *,
++    target: str | None,
++    capabilities: list[str] | None,
++    profile: str | None,
++    permission: Any | None,
++) -> tuple[list[Any], list[dict[str, str]]]:
++    """Drop tools the target did not declare. Full profile does not add them back."""
++    del profile
++    declared = set(capabilities or [])
++    kept: list[Any] = []
++    report: list[dict[str, str]] = []
++    for tool in tools:
++        name = str(getattr(tool, "name", "") or "")
++        capability = capability_of(name)
++        if target == "cloud" and capability == "desktop.input":
++            report.append(
++                {
++                    "tool_name": name,
++                    "status": "unavailable",
++                    "reason": "cloud target does not expose local desktop input",
++                }
++            )
++            continue
++        if target == "remote" and capability not in declared and capability != "general":
++            report.append(
++                {
++                    "tool_name": name,
++                    "status": "unavailable",
++                    "reason": f"unavailable: remote does not declare {capability}",
++                }
++            )
++            continue
++        if permission is not None:
++            decision = permission.evaluate(name)
++            kind = getattr(getattr(decision, "kind", None), "name", "")
++            if kind == "DENY":
++                report.append(
++                    {
++                        "tool_name": name,
++                        "status": "denied",
++                        "reason": str(getattr(decision, "reason", "") or "permission denied"),
++                    }
++                )
++                continue
++        report.append(
++            {
++                "tool_name": name,
++                "status": "selected",
++                "reason": "target capability allows this tool",
++            }
++        )
++        kept.append(tool)
++    return kept, report
+diff --git a/tests/web/w6/test_w6_c01_module.py b/tests/web/w6/test_w6_c01_module.py
+new file mode 100644
+index 00000000..39ff1f2d
+--- /dev/null
++++ b/tests/web/w6/test_w6_c01_module.py
+@@ -0,0 +1,42 @@
++"""WEB-W6-C01. A remote target with a missing capability explains why."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++_CORE = REPO / "packages" / "rxycode-core" / "src"
++for _entry in (REPO, _CORE):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++
++class Tool:
++    def __init__(self, name: str, description: str = "") -> None:
++        self.name = name
++        self.description = description
++
++
++def test_w6_c01_integration() -> None:
++    """Remote selection says which capability the target did not declare."""
++    from execution.tool_orchestrator import ToolOrchestrator
++
++    orchestrator = ToolOrchestrator()
++    orchestrator.register("read", Tool("read", "read a file"))
++    orchestrator.register("click", Tool("click", "click a desktop element"))
++    selected = orchestrator.select_tools(
++        [],
++        target="remote",
++        capabilities=["fs.read"],
++    )
++    names = {tool.name for tool in selected}
++    assert "read" in names
++    assert "click" not in names
++    report = orchestrator.selection_report()
++    click = next(item for item in report if item["tool_name"] == "click")
++    assert click["status"] == "unavailable"
++    reason = click["reason"].lower()
++    assert "desktop.input" in reason
++    assert "remote" in reason
++    assert "not declared" in reason or "unavailable" in reason
+diff --git a/tests/web/w6/test_w6_c01_unit.py b/tests/web/w6/test_w6_c01_unit.py
+new file mode 100644
+index 00000000..67b81058
+--- /dev/null
++++ b/tests/web/w6/test_w6_c01_unit.py
+@@ -0,0 +1,119 @@
++"""WEB-W6-C01. Cloud selection hides local desktop input. MCP hints cannot lower risk."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++_CORE = REPO / "packages" / "rxycode-core" / "src"
++for _entry in (REPO, _CORE):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++
++class Tool:
++    def __init__(self, name: str, description: str = "") -> None:
++        self.name = name
++        self.description = description
++
++
++def _orchestrator():
++    from execution.tool_orchestrator import ToolOrchestrator
++
++    orchestrator = ToolOrchestrator()
++    orchestrator.register("read", Tool("read", "read a file"))
++    orchestrator.register("click", Tool("click", "click a desktop element"))
++    orchestrator.register("type_text", Tool("type_text", "type into the desktop"))
++    orchestrator.register("bash", Tool("bash", "run a shell command"))
++    return orchestrator
++
++
++def test_w6_c01_contract() -> None:
++    """A cloud target does not receive local desktop input tools."""
++    from core.safety.policy import RiskLevel
++    from core.subagents.permissions import PermissionPolicy
++    from execution.tool_orchestrator import ToolOrchestrator
++    from protocol.subagents import PermissionSpec
++    from rxycode_core.tools.capability_catalog import inventory
++
++    orchestrator = _orchestrator()
++    selected = orchestrator.select_tools([], target="cloud", profile="full")
++    names = {tool.name for tool in selected}
++    assert "read" in names
++    assert "click" not in names
++    assert "type_text" not in names
++    report = orchestrator.selection_report()
++    click = next(item for item in report if item["tool_name"] == "click")
++    assert click["status"] == "unavailable"
++    assert "desktop" in click["reason"].lower()
++    assert "input" in click["reason"].lower()
++
++    rows = {row["tool_name"]: row for row in inventory(orchestrator.get_all().values())}
++    for field in ("tool_name", "capability", "target", "risk", "timeout", "idempotent"):
++        assert field in rows["click"]
++        assert field in rows["read"]
++    assert rows["click"]["capability"] == "desktop.input"
++    assert rows["click"]["target"] == "local"
++    assert rows["click"]["idempotent"] is False
++    assert rows["read"]["capability"] == "fs.read"
++    assert rows["read"]["idempotent"] is True
++    assert rows["read"]["timeout"] == ToolOrchestrator._TOOL_STALL_SECONDS["read"]
++    assert rows["click"]["timeout"] == ToolOrchestrator._DEFAULT_STALL_SECONDS
++    assert rows["click"]["risk"] == RiskLevel.DANGER.name
++
++    denied = orchestrator.select_tools(
++        [],
++        target="local",
++        capabilities=["desktop.input", "fs.read"],
++        permission=PermissionPolicy(permission=PermissionSpec()),
++    )
++    denied_names = {tool.name for tool in denied}
++    assert "click" not in denied_names
++    click_denied = next(
++        item for item in orchestrator.selection_report() if item["tool_name"] == "click"
++    )
++    assert click_denied["status"] == "denied"
++    assert "deny" in click_denied["reason"].lower()
++
++    from core.builtin_tool_registration import register_builtin_tools
++
++    class Registry:
++        def __init__(self) -> None:
++            self.tools: dict[str, Tool] = {}
++
++        def register(self, tool: Tool, *, risk: str = "read") -> None:
++            del risk
++            self.tools[tool.name] = tool
++
++        def register_alias(self, alias: str, target_name: str) -> bool:
++            del alias, target_name
++            return True
++
++        def get_names(self) -> list[str]:
++            return list(self.tools)
++
++        def get(self, name: str) -> Tool | None:
++            return self.tools.get(name)
++
++    builtin = ToolOrchestrator()
++    register_builtin_tools(Registry(), builtin, rag_enabled=False)
++    builtin_names = set(builtin.list_names())
++    assert "read" in builtin_names
++    assert "click" not in builtin_names
++    assert "type_text" not in builtin_names
++
++
++def test_w6_c01_negative() -> None:
++    """A new MCP readOnlyHint cannot be classified down to READ."""
++    from core.safety.policy import RiskLevel
++    from rxycode_core.tools.capability_catalog import classify_mcp
++
++    readonly = classify_mcp("mcp_fresh_widget", {"readOnlyHint": True})
++    destructive = classify_mcp(
++        "mcp_fresh_wipe",
++        {"readOnlyHint": True, "destructiveHint": True},
++    )
++    assert readonly != RiskLevel.READ
++    assert readonly == RiskLevel.WRITE
++    assert destructive == RiskLevel.DANGER

@@ -249,6 +249,7 @@ class ToolOrchestrator:
         # Execution-time name -> tool table (not the ToolRegistry catalog).
         self._bound_tools: dict[str, Any] = {}
         self._risk_overrides: dict[str, Any] = {}
+        self._selection_report: list[dict[str, str]] = []
         self._audit_logger: Any | None = None
         # C2: bounded executor for sync tools so a burst of sync invocations
         # queues instead of spawning unbounded threads.  Bound = explicit
@@ -586,17 +587,46 @@ class ToolOrchestrator:
         """Return all registered tools."""
         return dict(self._bound_tools)
 
-    def select_tools(self, hints: list[str]) -> list[Any]:
-        """Select tools matching the given hints.
+    def select_tools(
+        self,
+        hints: list[str],
+        *,
+        target: str | None = None,
+        capabilities: list[str] | None = None,
+        profile: str | None = None,
+        permission: Any | None = None,
+    ) -> list[Any]:
+        """Select tools matching the given hints, then the target capability.
 
-        - No hints -> all registered tools (explicit "use everything").
-        - Hints with matches -> the matched tools.
-        - Hints with NO matches -> only the read-only core subset
-          (READONLY_TOOL_NAMES), so a bad hint never silently grants
-          write/execute tools.
-
-        Matching is case-insensitive substring match on name or description.
+        Profile full does not put every ToolSpec back into the result.
         """
+        chosen = self._match_hints(hints)
+        if (
+            target is None
+            and capabilities is None
+            and profile is None
+            and permission is None
+        ):
+            self._selection_report = []
+            return chosen
+        from rxycode_core.tools.capability_catalog import filter_selection
+
+        kept, report = filter_selection(
+            chosen,
+            target=target,
+            capabilities=capabilities,
+            profile=profile,
+            permission=permission,
+        )
+        self._selection_report = report
+        return kept
+
+    def selection_report(self) -> list[dict[str, str]]:
+        """Reasons for the latest select_tools call."""
+        return [dict(item) for item in self._selection_report]
+
+    def _match_hints(self, hints: list[str]) -> list[Any]:
+        """Match hints. A bad hint stays inside the read-only core subset."""
         if not hints:
             return list(self._bound_tools.values())
 
