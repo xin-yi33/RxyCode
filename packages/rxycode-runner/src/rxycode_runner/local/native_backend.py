@@ -16,6 +16,8 @@ class NativeResult:
     pid: int | None = None
     exit_code: int | None = None
     stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
 
 
 @dataclass
@@ -38,9 +40,9 @@ class LocalNativeBackend:
     def start(self, argv: list[str], cwd: Path) -> NativeResult:
         if self.permission != "full":
             raise PermissionError("ASK_REQUIRED")
-        return self._spawn(argv, cwd, approval="skipped", wait=False)
+        return self._spawn(argv, cwd, approval="skipped", wait=False, timeout=None)
 
-    async def shell(self, argv: list[str], cwd: Path) -> NativeResult:
+    async def shell(self, argv: list[str], cwd: Path, *, timeout: float = 1800) -> NativeResult:
         if self.permission == "ask":
             decision = await self._ask(argv)
             if decision != "approved":
@@ -58,8 +60,19 @@ class LocalNativeBackend:
                     argv=list(argv),
                     approval="rejected",
                 )
-            return self._spawn(argv, cwd, approval="approved", wait=True)
-        return self._spawn(argv, cwd, approval="skipped", wait=True)
+            return self._spawn(argv, cwd, approval="approved", wait=True, timeout=timeout)
+        return self._spawn(argv, cwd, approval="skipped", wait=True, timeout=timeout)
+
+    async def run_command(self, command: str, cwd: Path, *, timeout: float = 1800) -> NativeResult:
+        """Run the exact command string the policy already checked."""
+        return self._spawn(
+            command,
+            cwd,
+            approval="skipped",
+            wait=True,
+            timeout=timeout,
+            shell=True,
+        )
 
     def kill(self, pid: int) -> None:
         proc = self._children.get(pid)
@@ -101,33 +114,54 @@ class LocalNativeBackend:
         }
         return "approved" if decision in allowed else "rejected"
 
-    def _spawn(self, argv: list[str], cwd: Path, *, approval: str, wait: bool) -> NativeResult:
+    def _spawn(
+        self,
+        argv: list[str] | str,
+        cwd: Path,
+        *,
+        approval: str,
+        wait: bool,
+        timeout: float | None,
+        shell: bool = False,
+    ) -> NativeResult:
+        recorded = [argv] if isinstance(argv, str) else list(argv)
         proc = subprocess.Popen(
-            list(argv),
+            argv,
             cwd=str(cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            shell=shell,
         )
         self._children[proc.pid] = proc
         stdout = ""
+        stderr = ""
         exit_code = None
+        timed_out = False
         if wait:
-            out, _err = proc.communicate(timeout=30)
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                timed_out = True
             stdout = out.decode("utf-8", errors="replace")
+            stderr = err.decode("utf-8", errors="replace")
             exit_code = proc.returncode
         result = NativeResult(
             started=True,
             wrapped=False,
-            argv=list(argv),
+            argv=recorded,
             approval=approval,
             pid=proc.pid,
             exit_code=exit_code,
             stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
         )
         self.audit.append(
             {
                 "pid": proc.pid,
-                "argv": list(argv),
+                "argv": recorded,
                 "approval": approval,
                 "started": True,
                 "wrapped": False,

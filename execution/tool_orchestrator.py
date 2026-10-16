@@ -191,19 +191,6 @@ def _execution_port_module() -> Any:
 _PORT_TOOLS = frozenset({"bash", "read", "edit", "write", "patch"})
 
 
-def _local_full_argv(args: Any) -> list[str] | None:
-    if not isinstance(args, dict):
-        return None
-    raw = args.get("argv")
-    if isinstance(raw, list) and raw and all(isinstance(item, str) and item for item in raw):
-        return list(raw)
-    command = args.get("command")
-    if isinstance(command, str) and command.strip():
-        shell = os.environ.get("COMSPEC") or "cmd.exe"
-        return [shell, "/d", "/c", command]
-    return None
-
-
 def _routes_through_port(name: str) -> bool:
     if name in _PORT_TOOLS:
         return True
@@ -1835,8 +1822,8 @@ class ToolOrchestrator:
             and target_id == "local"
             and production_bash
         ):
-            argv = _local_full_argv(args)
-            if argv:
+            command = args.get("command") if isinstance(args, dict) else None
+            if isinstance(command, str) and command.strip():
                 async def native_runner() -> str:
                     from pathlib import Path
 
@@ -1844,10 +1831,28 @@ class ToolOrchestrator:
 
                     backend = LocalNativeBackend(target="local", permission="full")
                     port.register_local_full(backend)
-                    cwd_value = args.get("cwd") if isinstance(args, dict) else None
-                    cwd = Path(str(cwd_value)) if cwd_value else Path.cwd()
-                    result = await backend.shell(argv, cwd)
-                    return result.stdout if result.started else ""
+                    workdir = ""
+                    timeout = 1800
+                    if isinstance(args, dict):
+                        workdir = str(args.get("workdir") or "")
+                        if args.get("timeout") is not None:
+                            try:
+                                timeout = max(1, int(args.get("timeout")))
+                            except (TypeError, ValueError):
+                                timeout = 1800
+                    cwd = Path(workdir) if workdir else Path.cwd()
+                    result = await backend.run_command(command, cwd, timeout=timeout)
+                    if not result.started:
+                        return ""
+                    if result.timed_out:
+                        return f"[error executing bash: timeout after {timeout}s]"
+                    text = result.stdout
+                    if result.stderr:
+                        text += ("\n" if text else "") + result.stderr
+                    if result.exit_code not in (0, None):
+                        body = text or "command failed"
+                        return f"[error executing bash: {body}\n[exit code: {result.exit_code}]]"
+                    return text
 
                 event = await port.backend.ainvoke(call, native_runner)
                 return event.text

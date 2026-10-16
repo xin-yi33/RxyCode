@@ -51,7 +51,7 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         "ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(v)); "
         "print(int(v.value))"
     )
-    argv = [sys.executable, "-c", code]
+    command = f'{sys.executable} -c "{code}"'
     orchestrator = ToolOrchestrator()
     orchestrator.register("bash", bash_tool)
     port = ExecutionPort()
@@ -60,12 +60,43 @@ def test_w4_c01_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         text = asyncio.run(
             orchestrator.execute_tool(
                 "bash",
-                {"argv": argv, "command": code, "target": "local", "cwd": str(tmp_path)},
+                {
+                    "command": command,
+                    "target": "local",
+                    "workdir": str(tmp_path),
+                    "timeout": 30,
+                },
+                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
+            )
+        )
+        failed = asyncio.run(
+            orchestrator.execute_tool(
+                "bash",
+                {
+                    "command": f'{sys.executable} -c "import sys; sys.exit(3)"',
+                    "target": "local",
+                    "workdir": str(tmp_path),
+                    "timeout": 30,
+                },
+                config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
+            )
+        )
+        slow = asyncio.run(
+            orchestrator.execute_tool(
+                "bash",
+                {
+                    "command": f'{sys.executable} -c "import time; time.sleep(5)"',
+                    "target": "local",
+                    "workdir": str(tmp_path),
+                    "timeout": 1,
+                },
                 config={"safety": {"enabled": True, "permission_mode": "full_auto"}},
             )
         )
     finally:
         reset_execution_port(token)
+    assert "exit code: 3" in failed
+    assert "timeout" in slow
     assert wrapped == []
     assert str(_session(os.getpid())) in text
     assert port.local_full is not None

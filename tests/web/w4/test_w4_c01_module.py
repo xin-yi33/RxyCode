@@ -39,8 +39,13 @@ def test_w4_c01_integration(tmp_path: Path) -> None:
             return ApprovalDecision.REJECTED
 
     marker = tmp_path / "ran.txt"
-    argv = [sys.executable, "-c", f"open(r'{marker}', 'w', encoding='utf-8').write('ok')"]
-    payload = {"argv": argv, "command": "print-only", "target": "local", "cwd": str(tmp_path)}
+    command = f'''{sys.executable} -c "open('ran.txt', 'w', encoding='utf-8').write('ok')"'''
+    payload = {
+        "command": command,
+        "target": "local",
+        "workdir": str(tmp_path),
+        "timeout": 30,
+    }
     set_approval_broker(Reject())
     port = ExecutionPort()
     token = bind_execution_port(port)
