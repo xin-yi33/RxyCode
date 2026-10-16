@@ -34,8 +34,8 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
         create_web_schedule,
         fire_due_schedules,
         list_notifications,
-        publish_run_status,
     )
+    from rxycode_server.runs.service import complete_run
     from rxycode_server.persistence.models import Run
     from rxycode_server.usage.service import record_terminal_usage
     from test_w6_c05_unit import _get, _seed, _session, _wipe
@@ -64,24 +64,12 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
                 assert row.session_id == ids["session_a"]
         finally:
             engine.dispose()
-        first = publish_run_status(
-            DATABASE,
-            tenant_id=tenant,
-            run_id=run_id,
-            status="succeeded",
-            user_id="user-a",
-        )
-        second = publish_run_status(
-            DATABASE,
-            tenant_id=tenant,
-            run_id=run_id,
-            status="succeeded",
-            user_id="user-a",
-        )
-        assert first["notification_id"]
-        assert first["notification_id"] == second["notification_id"]
+        complete_run(DATABASE, tenant_id=tenant, run_id=run_id, user_id="user-a")
+        complete_run(DATABASE, tenant_id=tenant, run_id=run_id, user_id="user-a")
         notes = list_notifications(_get(_session(tenant, ids["token"]), ids["token"]))
-        assert any(item["run_id"] == run_id and item["status"] == "succeeded" for item in notes["notifications"])
+        matched = [item for item in notes["notifications"] if item["run_id"] == run_id]
+        assert len(matched) == 1
+        assert matched[0]["status"] == "succeeded"
         recorded = record_terminal_usage(
             DATABASE,
             tenant_id=tenant,
@@ -96,6 +84,8 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
         assert f'data-amount="{recorded["amount"]}"' in markup
         assert "data-notify" in markup
         assert "data-memory" in markup
+        assert "<script>" not in markup
+        assert "&lt;script&gt;" in markup
     finally:
         _wipe(tenant, ids)
         _wipe_run(run_id if "run_id" in locals() else "")
@@ -147,7 +137,7 @@ const statement = {
 }
 const html = [
   usage.usageMarkup(statement),
-  memory.memoryMarkup([{ id: "mem-1", body: "note", project_id: "prj" }]),
+  memory.memoryMarkup([{ id: "mem-1", body: "<script>alert(1)</script>", project_id: "prj" }]),
   schedule.scheduleMarkup({ id: "sch-1", enabled: true, notify: true }),
 ].join("\n")
 process.stdout.write(html)

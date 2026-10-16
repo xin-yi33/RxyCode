@@ -77,10 +77,10 @@ async def test_w6_c05_negative() -> None:
         delete_memory,
         list_memory,
         list_notifications,
-        publish_run_status,
         put_memory,
         unsubscribe,
     )
+    from rxycode_server.runs.service import complete_run
 
     tenant_a = "ten-w6c05a-" + uuid.uuid4().hex[:8]
     tenant_b = "ten-w6c05b-" + uuid.uuid4().hex[:8]
@@ -92,7 +92,7 @@ async def test_w6_c05_negative() -> None:
             ids_a["project"],
             _write(_session(tenant_a, ids_a["token"]), ids_a["token"], {"body": secret}),
         )
-        publish_run_status(DATABASE, tenant_id=tenant_a, run_id=ids_a["run_a"], status="succeeded", user_id="user-a")
+        complete_run(DATABASE, tenant_id=tenant_a, run_id=ids_a["run_a"], user_id="user-a")
         leaked = list_memory(ids_a["project"], _get(_session(tenant_b, ids_b["token"]), ids_b["token"]))
         notes = list_notifications(_get(_session(tenant_b, ids_b["token"]), ids_b["token"]))
         blob = str(leaked) + str(notes)
@@ -106,14 +106,10 @@ async def test_w6_c05_negative() -> None:
         still = list_memory(ids_a["project"], _get(_session(tenant_a, ids_a["token"]), ids_a["token"]))
         assert any(item["body"] == secret for item in still["memories"])
         await unsubscribe(_write(_session(tenant_a, ids_a["token"]), ids_a["token"], {"kind": "run.completed"}))
-        quiet = publish_run_status(
-            DATABASE,
-            tenant_id=tenant_a,
-            run_id=ids_a["run_b"],
-            status="succeeded",
-            user_id="user-a",
-        )
-        assert quiet["notification_id"] is None
+        complete_run(DATABASE, tenant_id=tenant_a, run_id=ids_a["run_b"], user_id="user-a")
+        own = list_notifications(_get(_session(tenant_a, ids_a["token"]), ids_a["token"]))
+        assert any(item["run_id"] == ids_a["run_a"] for item in own["notifications"])
+        assert all(item["run_id"] != ids_a["run_b"] for item in own["notifications"])
         foreign = list_notifications(_get(_session(tenant_b, ids_b["token"]), ids_b["token"]))
         assert secret not in str(foreign)
         assert all(item["tenant_id"] == tenant_b for item in foreign["notifications"])

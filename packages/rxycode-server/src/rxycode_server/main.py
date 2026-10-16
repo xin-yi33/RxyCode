@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -24,6 +26,21 @@ from rxycode_server.previews.proxy import PreviewProxy
 from rxycode_server.previews.proxy import build_router as preview_router
 
 _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
+
+
+async def _fire_due_schedules(app: FastAPI, stop: asyncio.Event) -> None:
+    """Fire due web schedules from the database. This process is not appserver."""
+    from rxycode_server.notifications.service import fire_due_schedules
+
+    while not stop.is_set():
+        try:
+            fire_due_schedules(app.state.database_url, now=datetime.now(timezone.utc))
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=30)
+        except TimeoutError:
+            pass
 
 
 def _require_secret(secret: str) -> str:
@@ -56,8 +73,15 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
-        app.state.engine.dispose()
+        stop = asyncio.Event()
+        ticker = asyncio.create_task(_fire_due_schedules(app, stop))
+        try:
+            yield
+        finally:
+            stop.set()
+            ticker.cancel()
+            await asyncio.gather(ticker, return_exceptions=True)
+            app.state.engine.dispose()
 
     app = FastAPI(title="RxyCode Web", version="1.4.3", lifespan=lifespan)
     app.state.engine = create_engine(database_url, poolclass=NullPool)

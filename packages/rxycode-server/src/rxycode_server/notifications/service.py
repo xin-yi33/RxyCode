@@ -316,6 +316,7 @@ def create_web_schedule(
     rule: dict[str, object],
     now: datetime | None = None,
     notify: bool = True,
+    enabled: bool = True,
 ) -> dict[str, object]:
     """Validate the rule with ScheduleService, then store the job in the web database."""
     from appserver.schedule_service import ScheduleService
@@ -325,7 +326,7 @@ def create_web_schedule(
     job = ScheduleService(persistent=False).create(
         rule=rule,
         action={"kind": "session", "session_id": session_id},
-        enabled=True,
+        enabled=enabled,
         now=stamp,
     )
     engine = create_engine(database_url, poolclass=NullPool)
@@ -340,7 +341,7 @@ def create_web_schedule(
                     )
                     VALUES (
                         :id, :tenant, :project, :session, :rule,
-                        true, :notify, :next_fire, NULL, :created
+                        :enabled, :notify, :next_fire, NULL, :created
                     )
                     """
                 ),
@@ -350,6 +351,7 @@ def create_web_schedule(
                     "project": project_id,
                     "session": session_id,
                     "rule": json.dumps(job["rule"]),
+                    "enabled": bool(enabled),
                     "notify": bool(notify),
                     "next_fire": job["next_fire"],
                     "created": _stamp(),
@@ -554,3 +556,27 @@ router.add_api_route(
 )
 router.add_api_route("/api/v1/notifications", list_notifications, methods=["GET"])
 router.add_api_route("/api/v1/notifications/unsubscribe", unsubscribe, methods=["POST"])
+
+
+async def create_schedule(request: Request) -> dict[str, object]:
+    """Create a durable schedule for the signed-in tenant."""
+    require_write(request)
+    record = current_record(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        payload = {}
+    rule = payload.get("rule")
+    if not isinstance(rule, dict):
+        rule = {"kind": "interval", "every": 1, "unit": "minutes"}
+    return create_web_schedule(
+        request.app.state.database_url,
+        tenant_id=record.tenant_id,
+        project_id=str(payload.get("project_id") or ""),
+        session_id=str(payload.get("session_id") or ""),
+        rule=rule,
+        notify=bool(payload.get("notify", True)),
+        enabled=bool(payload.get("enabled", True)),
+    )
+
+
+router.add_api_route("/api/v1/schedules", create_schedule, methods=["POST"])

@@ -16,11 +16,8 @@ export type UsageStatement = {
 
 export function usageMarkup(statement: UsageStatement): string {
   const lines = statement.lines
-    .map(
-      (line) =>
-        `<li data-model="${line.model_id}" data-kind="${line.cost_kind}">${line.tokens} ${line.amount}</li>`,
-    )
-    .join("")
+    .map((line) => `${line.model_id} ${line.cost_kind} ${line.tokens} ${line.amount}`)
+    .join("\n")
   return `<section data-usage data-tokens="${statement.tokens}" data-amount="${statement.amount}">${lines}</section>`
 }
 
@@ -48,7 +45,22 @@ export function UsagePage({ statement }: { statement?: UsageStatement }) {
         <input aria-label="model-filter" value={modelId} onChange={(event) => setModelId(event.target.value)} />
         <input aria-label="day-filter" type="date" value={day} onChange={(event) => setDay(event.target.value)} />
       </form>
-      {data ? <div dangerouslySetInnerHTML={{ __html: usageMarkup(data) }} /> : <p>没有费用记录</p>}
+      {data ? (
+        <section data-usage data-tokens={data.tokens} data-amount={data.amount}>
+          <p>
+            {data.tokens} {data.amount}
+          </p>
+          <ul>
+            {data.lines.map((line) => (
+              <li key={`${line.model_id}-${line.cost_kind}`}>
+                {line.model_id} {line.cost_kind} {line.tokens} {line.amount}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <p>没有费用记录</p>
+      )}
     </main>
   )
 }

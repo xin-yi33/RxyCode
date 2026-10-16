@@ -198,7 +198,6 @@ def complete_run(
     """Mark a Run succeeded and return only that Run's worker slot."""
     from rxycode_server.quotas.service import active_gate
 
-    del user_id
     gate = quota if quota is not None else active_gate()
     engine = create_engine(database_url, poolclass=NullPool)
     try:
@@ -212,6 +211,15 @@ def complete_run(
     finally:
         engine.dispose()
     release_worker_for_run(database_url, run_id, quota=gate)
+    from rxycode_server.notifications.service import publish_run_status
+
+    publish_run_status(
+        database_url,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        status="succeeded",
+        user_id=user_id,
+    )
     return "succeeded"
 
 
