@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router"
 
 import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
+import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
 import { createClient } from "../sdk/client"
 import { useUi } from "../state/ui"
 
@@ -191,6 +192,8 @@ function ProjectsPage() {
 const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/login" replace /> },
   { path: "/login", element: <LoginPage /> },
+  { path: "/onboarding", element: <OnboardingPage /> },
+  { path: "/oauth/callback", element: <OAuthCallbackPage /> },
   { path: "/projects", element: <ProjectsPage /> },
 ])
 

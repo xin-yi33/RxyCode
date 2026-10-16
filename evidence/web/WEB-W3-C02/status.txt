@@ -1,0 +1,8 @@
+M  apps/web/src/app/App.tsx
+A  apps/web/src/features/auth/useLocalLogin.ts
+A  apps/web/src/features/onboarding/OnboardingPage.tsx
+A  apps/web/src/features/projects/ProjectPanel.tsx
+M  apps/web/src/sdk/client.ts
+A  tests/web/w3/test_w3_c02_module.py
+A  tests/web/w3/test_w3_c02_unit.py
+?? evidence/web/WEB-W3-C02/

@@ -1,0 +1,5 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+D:\Anaconda3\Lib\site-packages\playwright\_impl\_connection.py:559: playwright._impl._errors.TimeoutError: Locator.click: Timeout 30000ms exceeded.
+FAILED tests/web/w3/test_w3_c02_unit.py::test_w3_c02_contract
+1 failed, 2 warnings in 32.96s
