@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from rxycode_server.persistence.models import Run, RunEvent
@@ -208,6 +208,10 @@ class QuotaGate:
         message: str,
     ) -> QuotaDecision | Reservation:
         """Reserve one worker, or return the refusal. The Run row is not inserted here."""
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"{tenant_id}:{user_id}"},
+        )
         usage = _usage(db, tenant_id)
         incoming = _token_count(message)
         limits = self._limits

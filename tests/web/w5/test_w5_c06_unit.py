@@ -253,6 +253,7 @@ def test_w5_c06_contract() -> None:
                 "visitor-sandbox",
                 "visitor-ttl",
                 "visitor-overlap",
+                "visitor-race",
             ):
                 db.add(User(id=f"user-{tenant}", github_id=f"gh-{tenant}", kind="github"))
                 db.add(Organization(id=f"org-{tenant}", tenant_id=tenant))
@@ -452,6 +453,50 @@ def test_w5_c06_contract() -> None:
         followed = OkModel()
         admit("visitor-overlap", follow, followed, "req-over-2", "sess-b-visitor-overlap")
         assert followed.calls == 1
+
+        import threading
+
+        race_limits = Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5)
+        race_outcomes: list[str] = []
+        race_lock = threading.Lock()
+        race_start = threading.Barrier(2)
+
+        def race(session: str, request: str) -> None:
+            race_start.wait(timeout=10)
+            gate = QuotaGate(limits=race_limits, capacity=Capacity())
+            try:
+                create_run(
+                    url,
+                    tenant_id="visitor-race",
+                    user_id="visitor-user",
+                    session_id=session,
+                    message="hello",
+                    target_id="target-1",
+                    permission_profile="default",
+                    request_id=request,
+                    headers=headers,
+                    claimed_tenant_id="tenant-b",
+                    credentials="cred-present",
+                    budget=10,
+                    model=OkModel(),
+                    quota=gate,
+                )
+                with race_lock:
+                    race_outcomes.append("ok")
+            except QuotaRefused as exc:
+                with race_lock:
+                    race_outcomes.append(str(exc.decision.event["kind"]))
+
+        racers = [
+            threading.Thread(target=race, args=("sess-a-visitor-race", "req-race-1")),
+            threading.Thread(target=race, args=("sess-b-visitor-race", "req-race-2")),
+        ]
+        for racer in racers:
+            racer.start()
+        for racer in racers:
+            racer.join(timeout=30)
+        assert sorted(race_outcomes) == ["concurrency", "ok"]
+        assert count("visitor-race") == 1
 
         preview_cap = Capacity()
         preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)
