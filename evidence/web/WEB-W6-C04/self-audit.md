@@ -1,12 +1,12 @@
 # WEB-W6-C04 self-audit
 
-- core/agents/ was read. Coordinator.run_team and TeamEvent stay in place. The directory was not edited.
-- project_run copies span_id and parent_id from the tracer. It does not invent a second team scheduler.
-- accept_steer appends to the named run in order and does not call EventStore.append.
-- final_answer drops child events whose kind or name is intermediate, partial_result, progress, or reasoning.summary.
-- cancel_child changes only that child. The parent status stays.
-- explain_spend totals equal the sum of span tokens, split into solo and team.
-- E2E-TEAM-01 replay is the integration round-trip of the same spans. Node ids and parent ids match. There is no separate harness.
-- A live jest binary was not run. This card does not say 已落实.
-- Cache: 30 passed, 2 skipped. The skips are the pre-existing registry messages at tests/test_cache/test_stable_prefix.py:142 and :158.
-- w6c04-audit-5.json ends VERDICT: PROBLEMS. The in-process steer and cancel tests pass. The web command rows are not yet consumed by a worker, and the live run log does not persist event/agent_started. The four 完成判据 stay unchecked.
+- core/agents/ was not edited. Coordinator.run_team stays the team path.
+- project_run copies span parent ids. It does not add a second scheduler.
+- accept_steer does not call EventStore.append. The HTTP route commits steer.accepted, then the worker consumes that row.
+- cancel_child calls cancel_session on the session tree. The parent run status stays waiting_approval in the integration test.
+- final_answer drops intermediate, partial_result, progress, and reasoning.summary.
+- lookup_web_run uses the one-active-run statuses, including waiting_approval, and skips a cancelled run with a higher revision.
+- E2E-TEAM-01 is the integration span round-trip. There is no separate harness.
+- A live jest binary was not run.
+- pytest of the C04 tests, agent runtime, workspace context, task dispatch, and the two cache files: 111 passed, 2 skipped in 7.80s.
+- w6c04-audit-12.json ends VERDICT: NO_REMAINING_PROBLEMS. Session 01a140a7-2cc1-7f61-bdab-2af627f08e80. Audited commit dd3cfd6af4980e36a1bf85f9b7db753c0d5c1596.
