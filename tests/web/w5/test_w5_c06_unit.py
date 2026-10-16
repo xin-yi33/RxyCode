@@ -46,10 +46,70 @@ def _inspect(sandbox_id: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+class OkModel:
+    """A model client that records a real call."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, prompt: str) -> str:
+        self.calls += 1
+        return prompt
+
+
+def _docker(*args: str) -> subprocess.CompletedProcess[str]:
+    from rxycode_runner.sandbox.gvisor import docker_executable
+
+    return subprocess.run(
+        [docker_executable(), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _postgres() -> str:
+    _docker("rm", "-f", "rxy-w5c06-pg")
+    started = _docker(
+        "run",
+        "-d",
+        "--name",
+        "rxy-w5c06-pg",
+        "-e",
+        "POSTGRES_HOST_AUTH_METHOD=trust",
+        "-e",
+        "POSTGRES_DB=rxycode",
+        "-p",
+        "127.0.0.1:55433:5432",
+        "postgres:16",
+    )
+    if started.returncode != 0:
+        raise RuntimeError(started.stderr or started.stdout)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        ready = _docker("exec", "rxy-w5c06-pg", "pg_isready", "-U", "postgres", "-d", "rxycode")
+        if ready.returncode == 0:
+            return "postgresql+psycopg://postgres@127.0.0.1:55433/rxycode"
+        time.sleep(1)
+    logs = _docker("logs", "rxy-w5c06-pg")
+    raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")
+
+
+def _stop_postgres() -> None:
+    _docker("rm", "-f", "rxy-w5c06-pg")
+
+
 def test_w5_c06_contract() -> None:
     """A visitor over quota receives 429 and does not occupy a worker."""
-    from rxycode_server.quotas.service import Limits, QuotaGate
-    from rxycode_worker.scheduler.capacity import Capacity, TopologyRefused, load_compose
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import Organization, Project, Run, SessionRow, User
+    from rxycode_server.quotas.service import Limits, QuotaGate, QuotaRefused, install_gate
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker.scheduler.capacity import Capacity, CapacityFull, TopologyRefused, load_compose
 
     topo = load_compose(COMPOSE)
     assert {"postgres", "redis", "minio"} <= set(topo)
@@ -98,132 +158,288 @@ def test_w5_c06_contract() -> None:
         "x-budget": "1000000",
         "x-preview-fee": "1000000",
     }
-    model = BoomModel()
-    capacity = Capacity()
-    gate = QuotaGate(
-        limits=Limits(tasks=1, tokens=100, concurrency=1, preview_fee=1, sandbox_fee=1),
-        capacity=capacity,
-    )
-    gate.seed_usage(tenant_id="visitor", user_id="visitor-user", tasks=1)
-    refused = gate.create_run(
-        database_url="postgresql://127.0.0.1:1/not-used",
-        tenant_id="visitor",
-        user_id="visitor-user",
-        session_id="sess-visitor",
-        message="hello",
-        target_id="target-1",
-        permission_profile="default",
-        request_id="req-over-task",
-        headers=headers,
-        credentials="cred-present",
-        budget=10,
-        model=model,
-    )
-    assert refused.http_status == 429
-    assert refused.body["error"] == "quota.exceeded"
-    assert refused.body["kind"] == "task"
-    assert refused.body["tenant_id"] == "visitor"
-    assert refused.body["user_id"] == "visitor-user"
-    assert refused.body["limit"] == 1
-    assert refused.event["type"] == "quota.exceeded"
-    assert refused.event["kind"] == "task"
-    assert refused.event["tenant_id"] == "visitor"
-    assert refused.event in gate.events_for("visitor")
-    assert model.calls == 0
-    assert capacity.workers == []
-    assert capacity.live_ids == []
+    slot = Capacity()
+    slot.acquire("tenant-slot", "user-slot", limit=1)
+    with pytest.raises(CapacityFull):
+        slot.acquire("tenant-slot", "user-slot", limit=1)
+    assert len(slot.workers) == 1
+    slot.release("tenant-slot", "user-slot")
 
-    bare = QuotaGate(
-        limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=1, sandbox_fee=1),
-        capacity=Capacity(),
-    )
-    no_cred = bare.create_run(
+    def deny(gate: QuotaGate, **kwargs: object) -> QuotaRefused:
+        with pytest.raises(QuotaRefused) as caught:
+            create_run(
+                str(kwargs.pop("database_url")),
+                tenant_id=str(kwargs.pop("tenant_id")),
+                user_id="visitor-user",
+                session_id=str(kwargs.pop("session_id")),
+                message=str(kwargs.pop("message")),
+                target_id="target-1",
+                permission_profile="default",
+                request_id=str(kwargs.pop("request_id")),
+                headers=headers,
+                claimed_tenant_id="tenant-b",
+                credentials=kwargs.pop("credentials"),  # type: ignore[arg-type]
+                budget=kwargs.pop("budget"),  # type: ignore[arg-type]
+                model=kwargs.pop("model"),
+                quota=kwargs.pop("quota", gate),
+            )
+        return caught.value
+
+    cred_model = BoomModel()
+    cred_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=Capacity())
+    cred = deny(
+        cred_gate,
         database_url="postgresql://127.0.0.1:1/not-used",
         tenant_id="visitor",
-        user_id="visitor-user",
         session_id="sess-visitor",
         message="hello",
-        target_id="target-1",
-        permission_profile="default",
         request_id="req-no-cred",
-        headers=headers,
         credentials=None,
         budget=10,
-        model=model,
+        model=cred_model,
     )
-    assert no_cred.http_status == 429
-    assert no_cred.event["kind"] == "credentials"
-    assert no_cred.event["tenant_id"] == "visitor"
-    assert model.calls == 0
-    assert bare.capacity.workers == []
+    assert cred.decision.http_status == 429
+    assert cred.decision.event["kind"] == "credentials"
+    assert cred.decision.event["tenant_id"] == "visitor"
+    assert cred.decision.event in cred_gate.events_for("visitor")
+    assert cred_model.calls == 0
+    assert cred_gate.capacity.workers == []
+    assert cred_gate.capacity.live_ids == []
 
-    no_budget = bare.create_run(
+    budget_model = BoomModel()
+    budget_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=Capacity())
+    budget = deny(
+        budget_gate,
         database_url="postgresql://127.0.0.1:1/not-used",
         tenant_id="visitor",
-        user_id="visitor-user",
         session_id="sess-visitor",
         message="hello",
-        target_id="target-1",
-        permission_profile="default",
         request_id="req-no-budget",
-        headers=headers,
         credentials="cred-present",
         budget=0,
-        model=model,
+        model=budget_model,
     )
-    assert no_budget.http_status == 429
-    assert no_budget.event["kind"] == "budget"
-    assert model.calls == 0
-    assert bare.capacity.workers == []
+    assert budget.decision.event["kind"] == "budget"
+    assert budget_model.calls == 0
+    assert budget_gate.capacity.workers == []
 
-    preview = QuotaGate(
-        limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=1, sandbox_fee=5),
-        capacity=Capacity(),
-    )
-    preview.seed_usage(tenant_id="visitor", user_id="visitor-user", preview_fee=1)
-    preview_refused = preview.create_run(
+    token_model = BoomModel()
+    token_gate = QuotaGate(limits=Limits(tasks=5, tokens=1, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=Capacity())
+    early_token = deny(
+        token_gate,
         database_url="postgresql://127.0.0.1:1/not-used",
         tenant_id="visitor",
-        user_id="visitor-user",
         session_id="sess-visitor",
-        message="hello",
-        target_id="target-1",
-        permission_profile="default",
-        request_id="req-preview",
-        headers=headers,
+        message="hello world",
+        request_id="req-token-early",
         credentials="cred-present",
         budget=10,
-        model=model,
+        model=token_model,
     )
-    assert preview_refused.http_status == 429
-    assert preview_refused.event["kind"] == "preview"
-    assert model.calls == 0
-    assert preview.capacity.live_ids == []
+    assert early_token.decision.event["kind"] == "token"
+    assert early_token.decision.body["limit"] == 1
+    assert token_model.calls == 0
+    assert token_gate.capacity.workers == []
 
-    sandbox_gate = QuotaGate(
-        limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=1),
-        capacity=Capacity(),
-    )
-    sandbox_gate.seed_usage(tenant_id="visitor", user_id="visitor-user", sandbox_fee=1)
-    sandbox_refused = sandbox_gate.create_run(
-        database_url="postgresql://127.0.0.1:1/not-used",
-        tenant_id="visitor",
-        user_id="visitor-user",
-        session_id="sess-visitor",
-        message="hello",
-        target_id="target-1",
-        permission_profile="default",
-        request_id="req-sandbox-fee",
-        headers=headers,
-        credentials="cred-present",
-        budget=10,
-        model=model,
-    )
-    assert sandbox_refused.http_status == 429
-    assert sandbox_refused.event["kind"] == "sandbox"
-    assert model.calls == 0
-    assert sandbox_gate.capacity.workers == []
-    assert sandbox_gate.capacity.live_ids == []
+    url = _postgres()
+    try:
+        upgrade_head(url)
+        engine = create_engine(url)
+        with Session(engine) as db:
+            for tenant in (
+                "visitor-task",
+                "visitor-token",
+                "visitor-conc",
+                "visitor-preview",
+                "visitor-sandbox",
+            ):
+                db.add(User(id=f"user-{tenant}", github_id=f"gh-{tenant}", kind="github"))
+                db.add(Organization(id=f"org-{tenant}", tenant_id=tenant))
+                db.add(Project(id=f"project-{tenant}", tenant_id=tenant, name="app", repo_config={}))
+                db.add(SessionRow(id=f"sess-a-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="a"))
+                db.add(SessionRow(id=f"sess-b-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="b"))
+            db.commit()
+        engine.dispose()
+
+        def admit(tenant: str, gate: QuotaGate, model: OkModel, request: str, session: str) -> None:
+            accepted = create_run(
+                url,
+                tenant_id=tenant,
+                user_id="visitor-user",
+                session_id=session,
+                message="hello",
+                target_id="target-1",
+                permission_profile="default",
+                request_id=request,
+                headers=headers,
+                claimed_tenant_id="tenant-b",
+                credentials="cred-present",
+                budget=10,
+                model=model,
+                quota=gate,
+            )
+            assert accepted.http_status == 202
+
+        def count(tenant: str) -> int:
+            checker = create_engine(url)
+            try:
+                with Session(checker) as db:
+                    return len(db.scalars(select(Run).where(Run.tenant_id == tenant)).all())
+            finally:
+                checker.dispose()
+
+        token_cap = Capacity()
+        token_db = QuotaGate(limits=Limits(tasks=5, tokens=1, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=token_cap)
+        token_ok = OkModel()
+        admit("visitor-token", token_db, token_ok, "req-token-1", "sess-a-visitor-token")
+        assert token_ok.calls == 1
+        token_again = BoomModel()
+        token_hit = deny(
+            token_db,
+            database_url=url,
+            tenant_id="visitor-token",
+            session_id="sess-b-visitor-token",
+            message="hello",
+            request_id="req-token-2",
+            credentials="cred-present",
+            budget=10,
+            model=token_again,
+            quota=token_db,
+        )
+        assert token_hit.decision.event["kind"] == "token"
+        assert token_again.calls == 0
+        assert len(token_cap.workers) == 1
+        assert count("visitor-token") == 1
+
+        conc_cap = Capacity()
+        conc_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5), capacity=conc_cap)
+        conc_ok = OkModel()
+        admit("visitor-conc", conc_gate, conc_ok, "req-conc-1", "sess-a-visitor-conc")
+        conc_boom = BoomModel()
+        conc_hit = deny(
+            conc_gate,
+            database_url=url,
+            tenant_id="visitor-conc",
+            session_id="sess-b-visitor-conc",
+            message="hello",
+            request_id="req-conc-2",
+            credentials="cred-present",
+            budget=10,
+            model=conc_boom,
+            quota=conc_gate,
+        )
+        assert conc_hit.decision.event["kind"] == "concurrency"
+        assert conc_boom.calls == 0
+        assert len(conc_cap.workers) == 1
+        assert count("visitor-conc") == 1
+
+        preview_cap = Capacity()
+        preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)
+        preview_ok = OkModel()
+        admit("visitor-preview", preview_gate, preview_ok, "req-preview-1", "sess-a-visitor-preview")
+        preview_boom = BoomModel()
+        preview_hit = deny(
+            preview_gate,
+            database_url=url,
+            tenant_id="visitor-preview",
+            session_id="sess-b-visitor-preview",
+            message="hello",
+            request_id="req-preview-2",
+            credentials="cred-present",
+            budget=10,
+            model=preview_boom,
+            quota=preview_gate,
+        )
+        assert preview_hit.decision.event["kind"] == "preview"
+        assert preview_boom.calls == 0
+        assert len(preview_cap.workers) == 1
+        assert preview_cap.live_ids == []
+        assert count("visitor-preview") == 1
+
+        sandbox_cap = Capacity()
+        sandbox_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=1), capacity=sandbox_cap)
+        sandbox_ok = OkModel()
+        admit("visitor-sandbox", sandbox_gate, sandbox_ok, "req-sandbox-1", "sess-a-visitor-sandbox")
+        sandbox_boom = BoomModel()
+        sandbox_hit = deny(
+            sandbox_gate,
+            database_url=url,
+            tenant_id="visitor-sandbox",
+            session_id="sess-b-visitor-sandbox",
+            message="hello",
+            request_id="req-sandbox-2",
+            credentials="cred-present",
+            budget=10,
+            model=sandbox_boom,
+            quota=sandbox_gate,
+        )
+        assert sandbox_hit.decision.event["kind"] == "sandbox"
+        assert sandbox_boom.calls == 0
+        assert len(sandbox_cap.workers) == 1
+        assert count("visitor-sandbox") == 1
+
+        task_cap = Capacity()
+        task_gate = QuotaGate(limits=Limits(tasks=1, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=task_cap)
+        install_gate(task_gate)
+        try:
+            task_ok = OkModel()
+            accepted = create_run(
+                url,
+                tenant_id="visitor-task",
+                user_id="visitor-user",
+                session_id="sess-a-visitor-task",
+                message="hello",
+                target_id="target-1",
+                permission_profile="default",
+                request_id="req-task-1",
+                headers=headers,
+                claimed_tenant_id="tenant-b",
+                credentials="cred-present",
+                budget=10,
+                model=task_ok,
+            )
+            assert accepted.http_status == 202
+            assert task_ok.calls == 1
+            task_boom = BoomModel()
+            with pytest.raises(QuotaRefused) as task_caught:
+                create_run(
+                    url,
+                    tenant_id="visitor-task",
+                    user_id="visitor-user",
+                    session_id="sess-b-visitor-task",
+                    message="hello",
+                    target_id="target-1",
+                    permission_profile="default",
+                    request_id="req-task-2",
+                    headers=headers,
+                    claimed_tenant_id="tenant-b",
+                    credentials="cred-present",
+                    budget=10,
+                    model=task_boom,
+                )
+            task_decision = task_caught.value.decision
+            assert task_decision.http_status == 429
+            assert task_decision.body["error"] == "quota.exceeded"
+            assert task_decision.body["kind"] == "task"
+            assert task_decision.body["limit"] == 1
+            assert task_decision.event["type"] == "quota.exceeded"
+            assert task_decision.event["tenant_id"] == "visitor-task"
+            assert task_decision.event["user_id"] == "visitor-user"
+            assert task_decision.event in task_gate.events_for("visitor-task")
+            assert task_boom.calls == 0
+            assert len(task_cap.workers) == 1
+            assert count("visitor-task") == 1
+            checker = create_engine(url)
+            try:
+                with Session(checker) as db:
+                    row = db.scalars(select(Run).where(Run.tenant_id == "visitor-task")).one()
+            finally:
+                checker.dispose()
+            assert row.tenant_id == "visitor-task"
+        finally:
+            install_gate(None)
+    finally:
+        _stop_postgres()
 
 
 def test_w5_c06_negative() -> None:
@@ -244,18 +460,14 @@ def test_w5_c06_negative() -> None:
                 raise RuntimeError("after sandbox create")
         except RuntimeError as exc:
             assert str(exc) == "after sandbox create"
+        assert _inspect(failed_id).returncode != 0
         short = capacity.provision(
             tenant_id="tenant-ttl",
             workspace_id="ws-ttl",
             ttl_seconds=1,
         )
         short_id = short.sandbox_id
-        time.sleep(1.5)
-        removed = set(capacity.gc())
-        assert failed_id in removed
-        assert short_id in removed
-        assert healthy_id not in removed
-        assert _inspect(failed_id).returncode != 0
+        time.sleep(2.5)
         assert _inspect(short_id).returncode != 0
         alive = json.loads(_inspect(healthy_id).stdout)[0]
         assert alive["State"]["Status"] == "running"

@@ -72,11 +72,33 @@ def create_run(
     permission_profile: str,
     request_id: str,
     claimed_tenant_id: str | None = None,
+    user_id: str | None = None,
+    headers: dict[str, str] | None = None,
+    credentials: str | None = None,
+    budget: int | None = None,
+    model: object | None = None,
+    quota: object | None = None,
 ) -> RunAccepted:
     """Insert run + event + outbox. The caller's tenant wins over any body claim."""
+    from rxycode_server.quotas.service import QuotaDecision, QuotaRefused, active_gate
+
     del claimed_tenant_id
+    user = user_id or tenant_id
+    gate = quota if quota is not None else active_gate()
+    early = gate.precheck(
+        tenant_id=tenant_id,
+        user_id=user,
+        message=message,
+        headers=headers,
+        credentials=credentials,
+        budget=budget,
+        model=model,
+    )
+    if isinstance(early, QuotaDecision):
+        raise QuotaRefused(early)
     digest = _digest(message, target_id, permission_profile, request_id, session_id)
     engine = create_engine(database_url, poolclass=NullPool)
+    reserved = False
     try:
         with Session(engine) as db:
             existing = db.scalars(
@@ -86,9 +108,15 @@ def create_run(
                 if existing.input_digest != digest:
                     raise RunConflict(request_id)
                 return _accepted(existing.id)
+            decision = gate.reserve(db, tenant_id=tenant_id, user_id=user, message=message)
+            if isinstance(decision, QuotaDecision):
+                raise QuotaRefused(decision)
+            reserved = True
             run_id = uuid.uuid4().hex
             event_id = uuid.uuid4().hex
             try:
+                if model is not None:
+                    model(message)
                 db.add(
                     Run(
                         id=run_id,
@@ -112,12 +140,18 @@ def create_run(
                         seq=1,
                         type="run.created",
                         payload={
-                        "message": message,
-                        "permission_profile": permission_profile,
-                        "request_id": request_id,
-                        "session_id": session_id,
-                        "target_id": target_id,
-                    },
+                            "message": message,
+                            "permission_profile": permission_profile,
+                            "request_id": request_id,
+                            "session_id": session_id,
+                            "target_id": target_id,
+                            "quota": {
+                                "tokens": decision.tokens,
+                                "preview_fee": 1,
+                                "sandbox_fee": 1,
+                                "user_id": user,
+                            },
+                        },
                         at=datetime.now(timezone.utc),
                     )
                 )
@@ -131,6 +165,7 @@ def create_run(
                     )
                 )
                 db.commit()
+                reserved = False
             except IntegrityError as exc:
                 db.rollback()
                 detail = str(exc.orig)
@@ -145,6 +180,8 @@ def create_run(
                     return _accepted(winner.id)
                 raise
     finally:
+        if reserved:
+            gate.release(tenant_id, user)
         engine.dispose()
     return _accepted(run_id)
 

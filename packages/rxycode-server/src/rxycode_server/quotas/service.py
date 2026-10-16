@@ -1,24 +1,43 @@
 """Tenant token, task, concurrency, preview, and sandbox quotas.
 
 The authenticated tenant and user are the only identity. Request headers are
-ignored. A refusal records a quota.exceeded event and does not occupy a worker
-or call the model.
+ignored. A refusal records a quota.exceeded event, does not occupy a worker,
+and does not call the model. Admitted runs add their cost to the durable
+run.created event so the next admission sees it.
 """
 
 from __future__ import annotations
 
+import threading
+import uuid
 from dataclasses import dataclass
 from typing import Protocol
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from rxycode_server.persistence.models import Run, RunEvent
+
+DEFAULT_LIMITS_TASKS = 100_000
+DEFAULT_LIMITS_TOKENS = 10_000_000
+DEFAULT_LIMITS_CONCURRENCY = 10_000
+DEFAULT_LIMITS_FEE = 100_000
+
+
+class WorkerFull(RuntimeError):
+    """This user already holds the concurrency ceiling."""
 
 
 class WorkerCapacity(Protocol):
     """The scheduler side of admission. Only an admitted Run occupies a worker."""
 
-    def acquire(self, tenant_id: str, user_id: str) -> str:
-        """Occupy one worker for this user."""
+    workers: list[tuple[str, str, str]]
+
+    def acquire(self, tenant_id: str, user_id: str, *, limit: int) -> str:
+        """Occupy one worker, or refuse when the live count is at the ceiling."""
 
     def release(self, tenant_id: str, user_id: str) -> None:
-        """Return the worker when admission cannot finish."""
+        """Return the worker when the Run was not created."""
 
 
 class ModelClient(Protocol):
@@ -39,11 +58,19 @@ class Limits:
     sandbox_fee: int
 
 
+DEFAULT_LIMITS = Limits(
+    tasks=DEFAULT_LIMITS_TASKS,
+    tokens=DEFAULT_LIMITS_TOKENS,
+    concurrency=DEFAULT_LIMITS_CONCURRENCY,
+    preview_fee=DEFAULT_LIMITS_FEE,
+    sandbox_fee=DEFAULT_LIMITS_FEE,
+)
+
+
 @dataclass
 class _Usage:
     tasks: int = 0
     tokens: int = 0
-    concurrency: int = 0
     preview_fee: int = 0
     sandbox_fee: int = 0
 
@@ -57,107 +84,131 @@ class QuotaDecision:
     event: dict[str, object]
 
 
+@dataclass(frozen=True)
+class Reservation:
+    """A worker is held until the Run row commits or the caller releases it."""
+
+    tenant_id: str
+    user_id: str
+    tokens: int
+
+
+class QuotaRefused(Exception):
+    """create_run stopped before inserting a Run."""
+
+    def __init__(self, decision: QuotaDecision) -> None:
+        self.decision = decision
+        super().__init__(str(decision.body.get("error", "quota.exceeded")))
+
+    @property
+    def http_status(self) -> int:
+        return self.decision.http_status
+
+
+class RunWorkers:
+    """In-process worker slots used when the cloud scheduler is not injected."""
+
+    def __init__(self) -> None:
+        self.workers: list[tuple[str, str, str]] = []
+        self._lock = threading.Lock()
+
+    @property
+    def live_ids(self) -> list[str]:
+        return []
+
+    def acquire(self, tenant_id: str, user_id: str, *, limit: int) -> str:
+        with self._lock:
+            held = _held(self.workers, tenant_id, user_id)
+            if limit < 1 or held >= limit:
+                raise WorkerFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
+            worker_id = "worker-" + uuid.uuid4().hex[:8]
+            self.workers.append((tenant_id, user_id, worker_id))
+            return worker_id
+
+    def release(self, tenant_id: str, user_id: str) -> None:
+        with self._lock:
+            _drop(self.workers, tenant_id, user_id)
+
+
+def _held(workers: list[tuple[str, str, str]], tenant_id: str, user_id: str) -> int:
+    return sum(1 for owner, user, _worker in workers if owner == tenant_id and user == user_id)
+
+
+def _drop(workers: list[tuple[str, str, str]], tenant_id: str, user_id: str) -> None:
+    for index in range(len(workers) - 1, -1, -1):
+        owner, user, _worker = workers[index]
+        if owner == tenant_id and user == user_id:
+            del workers[index]
+            return
+
+
+def _token_count(message: str) -> int:
+    return len([part for part in message.split() if part])
+
+
 class QuotaGate:
     """Admit a Run only when this user still has credentials, budget, and quota."""
 
     def __init__(self, *, limits: Limits, capacity: WorkerCapacity) -> None:
         self._limits = limits
         self.capacity = capacity
-        self._usage: dict[tuple[str, str], _Usage] = {}
         self._events: dict[str, list[dict[str, object]]] = {}
-
-    def seed_usage(
-        self,
-        *,
-        tenant_id: str,
-        user_id: str,
-        tasks: int = 0,
-        tokens: int = 0,
-        concurrency: int = 0,
-        preview_fee: int = 0,
-        sandbox_fee: int = 0,
-    ) -> None:
-        """Record consumption that already happened on the server ledger."""
-        self._usage[(tenant_id, user_id)] = _Usage(
-            tasks=tasks,
-            tokens=tokens,
-            concurrency=concurrency,
-            preview_fee=preview_fee,
-            sandbox_fee=sandbox_fee,
-        )
 
     def events_for(self, tenant_id: str) -> list[dict[str, object]]:
         return list(self._events.get(tenant_id, []))
 
-    def create_run(
+    def precheck(
         self,
         *,
-        database_url: str,
         tenant_id: str,
         user_id: str,
-        session_id: str,
         message: str,
-        target_id: str,
-        permission_profile: str,
-        request_id: str,
         headers: dict[str, str] | None,
         credentials: str | None,
         budget: int | None,
         model: ModelClient | None,
-    ) -> QuotaDecision:
-        """Refuse before any worker, model, or durable Run is created."""
+    ) -> QuotaDecision | None:
+        """Refuse before opening a database when the request itself cannot run."""
         del headers
-        usage = self._usage.get((tenant_id, user_id), _Usage())
-        kind = self._refusal_kind(usage, credentials=credentials, budget=budget)
-        if kind is not None:
-            return self._refuse(tenant_id, user_id, kind)
-        self.capacity.acquire(tenant_id, user_id)
-        try:
-            if model is not None:
-                model(message)
-            from rxycode_server.runs.service import create_run as persist_run
+        if model is not None and (credentials is None or credentials == ""):
+            return self._refuse(tenant_id, user_id, "credentials")
+        if model is not None and (budget is None or budget <= 0):
+            return self._refuse(tenant_id, user_id, "budget")
+        incoming = _token_count(message)
+        if incoming > self._limits.tokens:
+            return self._refuse(tenant_id, user_id, "token")
+        return None
 
-            accepted = persist_run(
-                database_url,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                message=message,
-                target_id=target_id,
-                permission_profile=permission_profile,
-                request_id=request_id,
-            )
-        except Exception:
-            self.capacity.release(tenant_id, user_id)
-            raise
-        return QuotaDecision(
-            http_status=accepted.http_status,
-            body={"status": accepted.status, "run_id": accepted.run_id},
-            event={"type": "run.accepted", "tenant_id": tenant_id, "user_id": user_id},
-        )
-
-    def _refusal_kind(
+    def reserve(
         self,
-        usage: _Usage,
+        db: Session,
         *,
-        credentials: str | None,
-        budget: int | None,
-    ) -> str | None:
-        if credentials is None or credentials == "":
-            return "credentials"
-        if budget is None or budget <= 0:
-            return "budget"
+        tenant_id: str,
+        user_id: str,
+        message: str,
+    ) -> QuotaDecision | Reservation:
+        """Reserve one worker, or return the refusal. The Run row is not inserted here."""
+        usage = _usage(db, tenant_id)
+        incoming = _token_count(message)
         limits = self._limits
         if usage.tasks >= limits.tasks:
-            return "task"
-        if usage.tokens >= limits.tokens:
-            return "token"
-        if usage.concurrency >= limits.concurrency:
-            return "concurrency"
-        if usage.preview_fee >= limits.preview_fee:
-            return "preview"
-        if usage.sandbox_fee >= limits.sandbox_fee:
-            return "sandbox"
-        return None
+            return self._refuse(tenant_id, user_id, "task")
+        if usage.tokens + incoming > limits.tokens:
+            return self._refuse(tenant_id, user_id, "token")
+        if usage.preview_fee + 1 > limits.preview_fee:
+            return self._refuse(tenant_id, user_id, "preview")
+        if usage.sandbox_fee + 1 > limits.sandbox_fee:
+            return self._refuse(tenant_id, user_id, "sandbox")
+        try:
+            self.capacity.acquire(tenant_id, user_id, limit=limits.concurrency)
+        except Exception as exc:
+            if isinstance(exc, WorkerFull) or exc.__class__.__name__ == "CapacityFull":
+                return self._refuse(tenant_id, user_id, "concurrency")
+            raise
+        return Reservation(tenant_id=tenant_id, user_id=user_id, tokens=incoming)
+
+    def release(self, tenant_id: str, user_id: str) -> None:
+        self.capacity.release(tenant_id, user_id)
 
     def _refuse(self, tenant_id: str, user_id: str, kind: str) -> QuotaDecision:
         limit = {
@@ -185,3 +236,39 @@ class QuotaGate:
             "limit": limit,
         }
         return QuotaDecision(http_status=429, body=body, event=event)
+
+
+_installed: QuotaGate | None = None
+_default: QuotaGate | None = None
+
+
+def install_gate(gate: QuotaGate | None) -> None:
+    """Install the process gate. None restores the high default ceilings."""
+    global _installed
+    _installed = gate
+
+
+def active_gate() -> QuotaGate:
+    """Return the installed gate, or a process-wide gate with high ceilings."""
+    global _default
+    if _installed is not None:
+        return _installed
+    if _default is None:
+        _default = QuotaGate(limits=DEFAULT_LIMITS, capacity=RunWorkers())
+    return _default
+
+
+def _usage(db: Session, tenant_id: str) -> _Usage:
+    task_count = db.scalar(select(func.count()).select_from(Run).where(Run.tenant_id == tenant_id))
+    events = db.scalars(
+        select(RunEvent).where(RunEvent.tenant_id == tenant_id, RunEvent.type == "run.created")
+    ).all()
+    usage = _Usage(tasks=int(task_count or 0))
+    for event in events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        quota = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
+        message = str(payload.get("message") or "")
+        usage.tokens += int(quota.get("tokens") or _token_count(message))
+        usage.preview_fee += int(quota.get("preview_fee") or 0)
+        usage.sandbox_fee += int(quota.get("sandbox_fee") or 0)
+    return usage

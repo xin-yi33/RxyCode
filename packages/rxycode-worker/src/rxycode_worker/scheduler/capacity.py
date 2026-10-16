@@ -28,6 +28,10 @@ class TopologyRefused(ValueError):
     """The compose file asks for privileged mode or omits a healthcheck."""
 
 
+class CapacityFull(RuntimeError):
+    """This user already holds every worker slot."""
+
+
 @dataclass(frozen=True)
 class ServiceSpec:
     image: str
@@ -42,6 +46,7 @@ class _Record:
     deadline: float
     failed: bool
     backend: GVisorSandbox
+    timer: threading.Timer | None = None
 
 
 def load_compose(path: Path) -> dict[str, ServiceSpec]:
@@ -117,12 +122,17 @@ class Capacity:
         with self._lock:
             return list(self._records)
 
-    def acquire(self, tenant_id: str, user_id: str) -> str:
-        """Occupy one worker. The quota gate calls this only after admission."""
-        worker_id = "worker-" + uuid.uuid4().hex[:8]
+    def acquire(self, tenant_id: str, user_id: str, *, limit: int) -> str:
+        """Occupy one worker, or refuse when this user is already at the ceiling."""
         with self._lock:
+            held = sum(
+                1 for owner, user, _worker in self.workers if owner == tenant_id and user == user_id
+            )
+            if limit < 1 or held >= limit:
+                raise CapacityFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
+            worker_id = "worker-" + uuid.uuid4().hex[:8]
             self.workers.append((tenant_id, user_id, worker_id))
-        return worker_id
+            return worker_id
 
     def release(self, tenant_id: str, user_id: str) -> None:
         with self._lock:
@@ -160,9 +170,15 @@ class Capacity:
             failed=False,
             backend=backend,
         )
+        delay = float(policy.ttl_seconds)
+        record.deadline = time.monotonic() + delay
+        timer = threading.Timer(delay, self._expire, args=(handle.sandbox_id,))
+        timer.daemon = True
+        record.timer = timer
         with self._lock:
             self._samples.append(elapsed)
             self._records[handle.sandbox_id] = record
+        timer.start()
         return handle
 
     @contextmanager
@@ -186,7 +202,16 @@ class Capacity:
                 record = self._records.get(handle.sandbox_id)
                 if record is not None:
                     record.failed = True
+            self.gc()
             raise
+
+    def _expire(self, sandbox_id: str) -> None:
+        """TTL callback. gc() is the reaper; the test does not have to call it."""
+        with self._lock:
+            record = self._records.get(sandbox_id)
+            if record is not None:
+                record.deadline = min(record.deadline, time.monotonic())
+        self.gc()
 
     def gc(self) -> list[str]:
         """Remove failed sandboxes and sandboxes whose TTL has elapsed."""
@@ -277,9 +302,14 @@ class Capacity:
         return result
 
     def _remove(self, record: _Record) -> None:
+        with self._lock:
+            current = self._records.pop(record.sandbox_id, None)
+            timer = record.timer
+        if timer is not None:
+            timer.cancel()
+        if current is None:
+            return
         try:
             record.backend.destroy(record.sandbox_id, tenant_id=record.tenant_id)
         except Exception:
             record.backend._docker(["rm", "-f", record.sandbox_id], timeout=30)
-        with self._lock:
-            self._records.pop(record.sandbox_id, None)
