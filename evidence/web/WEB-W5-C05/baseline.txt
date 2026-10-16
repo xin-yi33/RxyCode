@@ -1,0 +1,3 @@
+parent: c94cdbdbe7fc128ff0562701ddeff77a3ba68dd3
+branch: feat/rxycode-web
+e2e: E2E-CLOUD-03 against github.com is BLOCKED without a dedicated test-repo token. The locked tests speak the GitHub REST shape to a local API and commit inside the sandbox.
