@@ -9,4 +9,4 @@
 - E2E-TEAM-01 replay is the integration round-trip of the same spans. Node ids and parent ids match. There is no separate harness.
 - A live jest binary was not run. This card does not say 已落实.
 - Cache: 30 passed, 2 skipped. The skips are the pre-existing registry messages at tests/test_cache/test_stable_prefix.py:142 and :158.
-- Audit with gpt-6-luna max is the next step. No verdict is claimed in this file yet.
+- w6c04-audit-5.json ends VERDICT: PROBLEMS. The in-process steer and cancel tests pass. The web command rows are not yet consumed by a worker, and the live run log does not persist event/agent_started. The four 完成判据 stay unchecked.
