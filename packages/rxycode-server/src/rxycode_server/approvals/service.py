@@ -358,23 +358,55 @@ def cancel_approval(
     return {"status": "cancelled", "http_status": 200}
 
 
+def prepare_pause(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    worker_id: str,
+    epoch: int,
+) -> dict[str, str] | None:
+    """Confirm tenant and lease before any checkpoint write."""
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            run = db.execute(
+                select(Run).where(Run.id == run_id).with_for_update()
+            ).scalar_one_or_none()
+            now = datetime.now(timezone.utc)
+            if run is None or run.tenant_id != tenant_id:
+                return None
+            if not _lease_is_current(run, worker_id, epoch, now):
+                return None
+            event = db.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
+            ).one()
+            return {
+                "session_id": str(event.payload["session_id"]),
+                "permission_profile": str(event.payload["permission_profile"]),
+            }
+    finally:
+        engine.dispose()
+
+
 def settle_run(
     database_url: str,
     *,
     tenant_id: str,
     run_id: str,
     worker_id: str,
+    epoch: int,
     status: str,
 ) -> bool:
-    """Move a leased run to a terminal status after the graph finishes."""
-    if status not in {"succeeded", "cancelled", "failed"}:
+    """Terminalize only the lease epoch this resume just claimed."""
+    if status not in {"succeeded", "cancelled", "failed", "recovery_required"}:
         return False
     engine = _engine(database_url)
     try:
         with Session(engine) as db:
             run = _lock_run(db, tenant_id, run_id)
             now = datetime.now(timezone.utc)
-            if not _lease_is_current(run, worker_id, int(run.lease_epoch), now):
+            if not _lease_is_current(run, worker_id, epoch, now):
                 return False
             run.status = status
             run.lease_owner = None

@@ -11,8 +11,13 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from rxycode_server.approvals.service import get_approval, request_approval, settle_run
-from rxycode_server.runs.service import load_run
+from rxycode_server.approvals.service import (
+    ApprovalStale,
+    get_approval,
+    prepare_pause,
+    request_approval,
+    settle_run,
+)
 from rxycode_worker.checkpoints import _call_on_selector, _open_saver, graph_thread_id
 from rxycode_worker.supervisor import claim
 
@@ -160,7 +165,15 @@ def pause_for_approval(
     command: str,
 ) -> dict[str, Any]:
     """Ask only when the run is not already fully authorized. Never run the tool here."""
-    loaded = load_run(database_url, run_id)
+    loaded = prepare_pause(
+        database_url,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        worker_id=worker_id,
+        epoch=epoch,
+    )
+    if loaded is None:
+        raise ApprovalStale(run_id)
     if loaded["permission_profile"] == "full_auto":
         return {"asked": False, "approval_id": None, "executed": False}
     attempt_id = f"att_{uuid.uuid4().hex}"
@@ -232,10 +245,29 @@ def resume_approved(
         return {"executed": False}
     before = _journal_state(journal_dir, record["attempt_id"], record["call_id"])
     if before in {"completed", "unknown"}:
+        epoch = claim(database_url, run_id, worker_id)
+        if epoch is not None:
+            settle_run(
+                database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                epoch=epoch,
+                status="succeeded" if before == "completed" else "recovery_required",
+            )
         return {"executed": False}
-    if claim(database_url, run_id, worker_id) is None:
+    epoch = claim(database_url, run_id, worker_id)
+    if epoch is None:
         return {"executed": False}
-    loaded = load_run(database_url, run_id)
+    loaded = prepare_pause(
+        database_url,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        worker_id=worker_id,
+        epoch=epoch,
+    )
+    if loaded is None:
+        return {"executed": False}
     stored_command = record["command"]
     stored_workdir = record["workdir"]
     asyncio.run(
@@ -250,11 +282,18 @@ def resume_approved(
         )
     )
     after = _journal_state(journal_dir, record["attempt_id"], record["call_id"])
+    if after == "completed":
+        terminal = "succeeded"
+    elif after == "unknown":
+        terminal = "recovery_required"
+    else:
+        terminal = "cancelled"
     settle_run(
         database_url,
         tenant_id=tenant_id,
         run_id=run_id,
         worker_id=worker_id,
-        status="succeeded" if after == "completed" else "cancelled",
+        epoch=epoch,
+        status=terminal,
     )
     return {"executed": before == "not_started" and after == "completed"}
