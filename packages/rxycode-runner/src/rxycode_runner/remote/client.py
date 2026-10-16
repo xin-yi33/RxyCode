@@ -240,7 +240,10 @@ def _ensure_local_tools(device_id: str) -> None:
 
 
 def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: str) -> None:
-    from RxyCode.RxyCode1_1_0.core.safety.approval import SseApproval, get_approval_broker
+    try:
+        from RxyCode.RxyCode1_1_0.core.safety.approval import SseApproval, get_approval_broker
+    except ImportError:
+        return
 
     broker = get_approval_broker()
     if not isinstance(broker, SseApproval):
@@ -262,8 +265,10 @@ def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: s
 
 
 def _tool_rpc(device_id: str) -> Any:
-    from rxycode_runner.transport.tool_rpc import tool_rpc_for
-
+    try:
+        from rxycode_runner.transport.tool_rpc import tool_rpc_for
+    except ImportError:
+        return None
     return tool_rpc_for(device_id)
 
 

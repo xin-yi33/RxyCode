@@ -431,3 +431,36 @@ def test_installed_wheel_session_identity_matches_legacy(
         env=installed_package.env,
     )
     assert probe.stdout.strip() == "OK"
+
+
+def test_runner_connect_installs_in_fresh_venv(tmp_path: Path) -> None:
+    """WEB-W4-C07: the runner package installs its connect entry in an empty venv."""
+    venv = tmp_path / "runner-venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
+    python = _venv_executable(venv, "python")
+    runner = PROJECT_ROOT / "packages" / "rxycode-runner"
+    installed = subprocess.run(
+        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(runner)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+    probe = _run(
+        [
+            str(python),
+            "-c",
+            "from rxycode_runner.desktop.capabilities import release_status\n"
+            "labels = release_status({'windows'})\n"
+            "assert labels['macos'] == 'unverified'\n"
+            "assert labels['linux'] == 'unverified'\n"
+            "print('runner install OK')",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": ""},
+    )
+    assert "runner install OK" in probe.stdout
+    script_name = "rxycode-connect.exe" if os.name == "nt" else "rxycode-connect"
+    script_dir = venv / "Scripts" if os.name == "nt" else venv / "bin"
+    assert (script_dir / script_name).is_file()

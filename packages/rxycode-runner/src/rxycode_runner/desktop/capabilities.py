@@ -49,3 +49,84 @@ def describe_platform(
         "window": "unavailable",
         "click": "CAPABILITY_UNAVAILABLE",
     }
+
+
+_RELEASE_PLATFORMS = ("windows", "macos", "linux")
+
+
+def support_matrix(
+    system: str,
+    *,
+    accessibility: bool = False,
+    wayland: bool = False,
+) -> dict[str, str]:
+    """Platform facts. Unverified desktops are not reported as available."""
+    if system in {"Windows", "win32"} and not wayland:
+        return {
+            "desktop_input": "available",
+            "conpty": "available",
+            "local_full": "available",
+            "click": "available",
+        }
+    if system in {"Darwin", "macOS"}:
+        desktop = "available" if accessibility else "unsupported"
+        return {
+            "desktop_input": desktop,
+            "conpty": "unsupported",
+            "local_full": "unverified",
+            "click": desktop,
+        }
+    if system == "Linux":
+        desktop = "unsupported" if wayland or not accessibility else "unverified"
+        return {
+            "desktop_input": desktop,
+            "conpty": "unsupported",
+            "local_full": "unverified",
+            "click": desktop,
+        }
+    return {
+        "desktop_input": "unsupported",
+        "conpty": "unsupported",
+        "local_full": "unverified",
+        "click": "unsupported",
+    }
+
+
+def release_status(verified_platforms: set[str]) -> dict[str, str]:
+    """Only platforms with a real run are supported. The others stay unverified."""
+    verified = {item.casefold() for item in verified_platforms}
+    return {
+        name: "supported" if name in verified else "unverified"
+        for name in _RELEASE_PLATFORMS
+    }
+
+
+def connect_main() -> None:
+    """Installed console entry. It opens the outbound device socket."""
+    import argparse
+    import asyncio
+
+    from rxycode_runner.remote.client import _one_session, reset_stop
+
+    parser = argparse.ArgumentParser(prog="rxycode-connect")
+    parser.add_argument("command", choices=["connect"])
+    parser.add_argument("--url", required=True)
+    parser.add_argument("--code", default="")
+    parser.add_argument("--device-id", required=True)
+    parser.add_argument("--os-name", default="Windows")
+    parser.add_argument("--capability", action="append", default=[])
+    parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
+    args = parser.parse_args()
+    reset_stop()
+    asyncio.run(
+        _one_session(
+            url=args.url,
+            device_id=args.device_id,
+            os_name=args.os_name,
+            capabilities=list(args.capability or ["click"]),
+            pairing_code=args.code,
+            protocol_version="1.1.0",
+            heartbeat_seconds=args.heartbeat_seconds,
+            state={"token": "", "scope": "device"},
+        )
+    )
