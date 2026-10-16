@@ -1,13 +1,48 @@
-import { useEffect, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query"
-import { createBrowserRouter, Navigate, RouterProvider } from "react-router"
+import { createBrowserRouter, Navigate, RouterProvider, useParams } from "react-router"
 
 import { sessionVisualState } from "@desktop/sessionVisualState"
 import { Button } from "../components/ui/button"
 import { ChatPage } from "../features/chat/ChatPage"
 import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
+import { DiffReview } from "../features/workspace/DiffReview"
+import { FileTree } from "../features/workspace/FileTree"
+import { GitPanel } from "../features/workspace/GitPanel"
 import { createClient } from "../sdk/client"
 import { useUi } from "../state/ui"
+
+function WorkspacePage() {
+  const { projectId = "" } = useParams()
+  const [path, setPath] = useState("")
+  const [draft, setDraft] = useState("")
+  const [target, setTarget] = useState("")
+  return (
+    <main className="mx-auto min-h-screen max-w-5xl px-4 py-6">
+      <p data-target={target}>{target}</p>
+      <form
+        className="mt-3 flex flex-wrap gap-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          setPath(draft)
+        }}
+      >
+        <label className="text-sm">
+          路径
+          <input
+            className="ml-2 rounded-md border border-border px-2 py-1"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+        </label>
+        <button type="submit">打开</button>
+      </form>
+      <GitPanel projectId={projectId} />
+      <FileTree projectId={projectId} onOpen={setPath} onTarget={setTarget} />
+      <DiffReview projectId={projectId} path={path} />
+    </main>
+  )
+}
 
 const api = createClient()
 const queryClient = new QueryClient({
@@ -197,6 +232,7 @@ const router = createBrowserRouter([
   { path: "/oauth/callback", element: <OAuthCallbackPage /> },
   { path: "/projects", element: <ProjectsPage /> },
   { path: "/runs/:runId", element: <ChatPage /> },
+  { path: "/projects/:projectId/workspace", element: <WorkspacePage /> },
 ])
 
 export function App() {

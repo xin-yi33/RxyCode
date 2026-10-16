@@ -98,6 +98,45 @@ export function createClient() {
       const query = new URLSearchParams({ state, code })
       return readJson(`/api/v1/auth/github/callback?${query}`) as Promise<Me>
     },
+    workspaceTree(projectId: string, path = ""): Promise<{
+      target_id: string
+      entries: { name: string; type: string }[]
+      changes: string[]
+      pr_status: string
+    }> {
+      const query = new URLSearchParams({ path })
+      const url = `/api/v1/workspaces/${encodeURIComponent(projectId)}/tree?${query}`
+      return readJson(url) as Promise<{
+        target_id: string
+        entries: { name: string; type: string }[]
+        changes: string[]
+        pr_status: string
+      }>
+    },
+    workspaceDiff(projectId: string, path: string): Promise<{
+      path: string
+      base_revision: string
+      before: string
+      after: string
+      hunks: { id: string; header: string; lines: string[] }[]
+    }> {
+      const query = new URLSearchParams({ path })
+      const url = `/api/v1/workspaces/${encodeURIComponent(projectId)}/diff?${query}`
+      return readJson(url) as Promise<{
+        path: string
+        base_revision: string
+        before: string
+        after: string
+        hunks: { id: string; header: string; lines: string[] }[]
+      }>
+    },
+    reviewHunk(
+      projectId: string,
+      body: { path: string; hunk_id: string; decision: string; base_revision: string },
+    ): Promise<{ status: string; base_revision: string }> {
+      const url = `/api/v1/workspaces/${encodeURIComponent(projectId)}/review`
+      return writeJson(url, body) as Promise<{ status: string; base_revision: string }>
+    },
     openRunEvents(runId: string): EventSource {
       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
     },
