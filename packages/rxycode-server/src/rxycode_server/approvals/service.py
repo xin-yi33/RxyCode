@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -356,6 +356,99 @@ def cancel_approval(
     finally:
         engine.dispose()
     return {"status": "cancelled", "http_status": 200}
+
+
+def pause_under_lock(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    call_id: str,
+    tool: str,
+    permission_scope: str,
+    arguments: dict[str, Any],
+    deadline: datetime,
+    worker_id: str,
+    epoch: int,
+    command: str,
+    workdir: str,
+    write_checkpoint: Callable[[str, str, str], None],
+) -> dict[str, Any]:
+    """Serialize pauses for one run so a stale epoch cannot overwrite the checkpoint."""
+    engine = _engine(database_url)
+    lock = engine.connect()
+    try:
+        lock.execute(text("SELECT pg_advisory_lock(hashtextextended(:key, 0))"), {"key": run_id})
+        lock.commit()
+        with Session(engine) as db:
+            run = db.execute(
+                select(Run).where(Run.id == run_id).with_for_update()
+            ).scalar_one_or_none()
+            now = datetime.now(timezone.utc)
+            if run is None or run.tenant_id != tenant_id or not _lease_is_current(
+                run, worker_id, epoch, now
+            ):
+                raise ApprovalStale(run_id)
+            event = db.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
+            ).one()
+            if str(event.payload.get("permission_profile") or "") == "full_auto":
+                return {"asked": False, "approval_id": None, "executed": False}
+            session_id = str(event.payload["session_id"])
+        approval_id = uuid.uuid4().hex
+        attempt_id = f"att_{uuid.uuid4().hex}"
+        write_checkpoint(session_id, approval_id, attempt_id)
+        with Session(engine) as db:
+            run = _lock_run(db, tenant_id, run_id)
+            if not _lease_is_current(run, worker_id, epoch, datetime.now(timezone.utc)):
+                raise ApprovalStale(approval_id)
+            stored_arguments = dict(arguments)
+            stored_arguments["command"] = command
+            db.add(
+                Approval(
+                    id=approval_id,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    call_id=call_id,
+                    status="pending",
+                    revision=0,
+                    deadline=_aware(deadline),
+                )
+            )
+            db.flush()
+            _append(
+                db,
+                run,
+                "approval.requested",
+                {
+                    "approval_id": approval_id,
+                    "call_id": call_id,
+                    "tool": tool,
+                    "permission_scope": permission_scope,
+                    "arguments": stored_arguments,
+                    "attempt_id": attempt_id,
+                    "command": command,
+                    "workdir": workdir,
+                    "revision": 0,
+                },
+            )
+            run.status = "waiting_approval"
+            run.lease_owner = None
+            run.lease_until = None
+            run.revision = int(run.revision or 0) + 1
+            db.commit()
+            return {"asked": True, "approval_id": approval_id, "executed": False}
+    finally:
+        try:
+            lock.execute(
+                text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"),
+                {"key": run_id},
+            )
+            lock.commit()
+            lock.close()
+        except Exception:
+            pass
+        engine.dispose()
 
 
 def prepare_pause(

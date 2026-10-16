@@ -12,10 +12,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from rxycode_server.approvals.service import (
-    ApprovalStale,
     get_approval,
+    pause_under_lock,
     prepare_pause,
-    request_approval,
     settle_run,
 )
 from rxycode_worker.checkpoints import _call_on_selector, _open_saver, graph_thread_id
@@ -165,62 +164,42 @@ def pause_for_approval(
     command: str,
 ) -> dict[str, Any]:
     """Ask only when the run is not already fully authorized. Never run the tool here."""
-    loaded = prepare_pause(
-        database_url,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        worker_id=worker_id,
-        epoch=epoch,
-    )
-    if loaded is None:
-        raise ApprovalStale(run_id)
-    if loaded["permission_profile"] == "full_auto":
-        return {"asked": False, "approval_id": None, "executed": False}
-    attempt_id = f"att_{uuid.uuid4().hex}"
-    approval_id = uuid.uuid4().hex
-    stored_arguments = dict(arguments)
-    stored_arguments["command"] = command
-    # The interrupt checkpoint is written before the approval row. A saver
-    # failure must not leave an approvable request with nothing to resume.
-    asyncio.run(
-        _call_on_selector(
-            lambda: _pause_graph(
-                database_url,
-                loaded["session_id"],
-                run_id,
-                {
-                    "approval_id": approval_id,
-                    "attempt_id": attempt_id,
-                    "call_id": call_id,
-                    "run_id": run_id,
-                    "journal_dir": journal_dir,
-                    "workdir": workdir,
-                    "command": command,
-                },
+
+    def write_checkpoint(session_id: str, approval_id: str, attempt_id: str) -> None:
+        asyncio.run(
+            _call_on_selector(
+                lambda: _pause_graph(
+                    database_url,
+                    session_id,
+                    run_id,
+                    {
+                        "approval_id": approval_id,
+                        "attempt_id": attempt_id,
+                        "call_id": call_id,
+                        "run_id": run_id,
+                        "journal_dir": journal_dir,
+                        "workdir": workdir,
+                        "command": command,
+                    },
+                )
             )
         )
-    )
-    requested = request_approval(
+
+    return pause_under_lock(
         database_url,
         tenant_id=tenant_id,
         run_id=run_id,
         call_id=call_id,
         tool=tool,
         permission_scope=permission_scope,
-        arguments=stored_arguments,
+        arguments=arguments,
         deadline=deadline,
         worker_id=worker_id,
         epoch=epoch,
-        attempt_id=attempt_id,
-        approval_id=approval_id,
         command=command,
         workdir=workdir,
+        write_checkpoint=write_checkpoint,
     )
-    return {
-        "asked": True,
-        "approval_id": requested["approval_id"],
-        "executed": False,
-    }
 
 
 def resume_approved(
