@@ -1,0 +1,10 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c01_unit.py:50: AssertionError: apps/web/package.json is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c01_unit.py:50: AssertionError: apps/web/package.json is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c01_unit.py:50: AssertionError: apps/web/package.json is missing
+=========================== short test summary info ===========================
+FAILED tests/web/w3/test_w3_c01_unit.py::test_w3_c01_contract - AssertionError: apps/web/package.json is missing
+FAILED tests/web/w3/test_w3_c01_unit.py::test_w3_c01_negative - AssertionError: apps/web/package.json is missing
+FAILED tests/web/w3/test_w3_c01_module.py::test_w3_c01_integration - AssertionError: apps/web/package.json is missing
+3 failed in 0.16s

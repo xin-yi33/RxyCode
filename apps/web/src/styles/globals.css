@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  --rxy-bg: #f6f3ee;
+  --rxy-fg: #1d1a16;
+  --rxy-card: #fffdf8;
+  --rxy-muted: #6e675f;
+  --rxy-border: #e4ddd2;
+}
+
+.dark {
+  --rxy-bg: #161513;
+  --rxy-fg: #f4efe6;
+  --rxy-card: #221f1b;
+  --rxy-muted: #b7aea3;
+  --rxy-border: #3a342c;
+}
+
+@theme inline {
+  --color-background: var(--rxy-bg);
+  --color-foreground: var(--rxy-fg);
+  --color-card: var(--rxy-card);
+  --color-muted: var(--rxy-muted);
+  --color-border: var(--rxy-border);
+}
