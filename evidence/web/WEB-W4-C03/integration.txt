@@ -14,4 +14,4 @@ tests/web/w4/test_w4_c03_module.py::test_w4_c03_integration
     warnings.warn("remove second argument of ws_handler", DeprecationWarning)
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-1 passed, 4 warnings in 1.36s
+1 passed, 4 warnings in 1.38s

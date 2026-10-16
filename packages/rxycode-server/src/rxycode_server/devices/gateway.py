@@ -108,6 +108,9 @@ class Registry:
                 tenant_id = self.pairings.redeem(str(payload.get("pairing_code") or ""))
             except PairingRejected as exc:
                 return {"type": "reject", "code": exc.code, "tool_permission": False}
+            current = self.devices.get(device_id)
+            if current is not None and current.tenant_id != tenant_id:
+                return {"type": "reject", "code": "DEVICE_OWNED", "tool_permission": False}
             os_name = str(payload.get("os") or "")
             raw_caps = payload.get("capabilities") or []
             capabilities = [str(item) for item in raw_caps] if isinstance(raw_caps, list) else []

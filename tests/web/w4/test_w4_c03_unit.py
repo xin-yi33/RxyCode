@@ -149,7 +149,7 @@ def test_w4_c03_negative() -> None:
     """An expired pairing code and a wrong token are refused without tool permission."""
     from click.testing import CliRunner
     from RxyCode.RxyCode1_1_0.main import cli
-    from rxycode_runner.remote.client import reset_stop
+    from rxycode_runner.remote.client import request_stop, reset_stop
     from rxycode_server.devices.gateway import serve_in_thread
 
     reset_stop()
@@ -161,6 +161,7 @@ def test_w4_c03_negative() -> None:
     assert "TLS_REQUIRED" in plain.output
     clock = {"now": 1_000.0}
     gateway = serve_in_thread(secret=_SECRET, clock=lambda: clock["now"], pairing_ttl=5)
+    thread: threading.Thread | None = None
     try:
         _browser, cookies, headers = _authorized(gateway)
         issued = httpx.post(
@@ -214,5 +215,69 @@ def test_w4_c03_negative() -> None:
         )
         assert listed.json()["devices"] == []
         assert gateway.tool_permission("desk-1") is False
+        owned_code = httpx.post(
+            f"{gateway.http}/api/v1/devices/pairings",
+            headers=headers,
+            cookies=cookies,
+            timeout=5,
+        ).json()["code"]
+        reset_stop()
+        holder: dict[str, object] = {}
+
+        def launch() -> None:
+            holder["result"] = CliRunner().invoke(
+                cli,
+                [
+                    "connect",
+                    "--url",
+                    gateway.ws,
+                    "--code",
+                    owned_code,
+                    "--device-id",
+                    "desk-owned",
+                    "--os-name",
+                    "Windows",
+                    "--heartbeat-seconds",
+                    "0.2",
+                ],
+            )
+
+        thread = threading.Thread(target=launch)
+        thread.start()
+        deadline = time.time() + 10
+        while time.time() < deadline and not gateway.session_id("desk-owned"):
+            time.sleep(0.05)
+        assert gateway.session_id("desk-owned")
+        kept_session = gateway.session_id("desk-owned")
+        kept_token = gateway.client_token("desk-owned")
+        other = gateway.browser_session("tenant-b")
+        other_cookies = {"rxy_session": other, "rxy_csrf": cookies["rxy_csrf"]}
+        stolen_code = httpx.post(
+            f"{gateway.http}/api/v1/devices/pairings",
+            headers=headers,
+            cookies=other_cookies,
+            timeout=5,
+        ).json()["code"]
+        stolen = CliRunner().invoke(
+            cli,
+            [
+                "connect",
+                "--url",
+                gateway.ws,
+                "--code",
+                stolen_code,
+                "--device-id",
+                "desk-owned",
+                "--os-name",
+                "Windows",
+            ],
+        )
+        assert stolen.exit_code != 0
+        assert "DEVICE_OWNED" in stolen.output
+        assert gateway.session_id("desk-owned") == kept_session
+        assert gateway.token_accepted(kept_token) is True
     finally:
+        request_stop()
+        if thread is not None:
+            thread.join(5)
         gateway.close()
