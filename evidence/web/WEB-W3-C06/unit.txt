@@ -9,4 +9,4 @@ tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract
     from websockets.server import WebSocketServerProtocol
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-5 passed, 2 warnings in 6.84s
+5 passed, 2 warnings in 6.82s
