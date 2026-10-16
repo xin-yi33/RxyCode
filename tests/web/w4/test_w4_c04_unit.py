@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
+
+_SECRET = "local-web-secret-value-32bytes!!"
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
-for entry in (str(REPO), str(_RUNNER), str(_WORKER)):
+_SERVER = REPO / "packages" / "rxycode-server" / "src"
+for entry in (str(REPO), str(_RUNNER), str(_WORKER), str(_SERVER)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
@@ -19,13 +24,65 @@ def _ids() -> tuple[str, str]:
     return f"att_{uuid4().hex}", f"call_{uuid4().hex}"
 
 
+def _pair(gateway: object) -> threading.Thread:
+    from click.testing import CliRunner
+    from RxyCode.RxyCode1_1_0.main import cli
+    from rxycode_runner.remote.client import reset_stop
+
+    reset_stop()
+    browser = gateway.browser_session("tenant-a")  # type: ignore[attr-defined]
+    csrf = "csrf-token-value-for-c04"
+    cookies = {"rxy_session": browser, "rxy_csrf": csrf}
+    headers = {"Origin": gateway.http, "X-CSRF-Token": csrf}  # type: ignore[attr-defined]
+    issued = httpx.post(
+        f"{gateway.http}/api/v1/devices/pairings",  # type: ignore[attr-defined]
+        headers=headers,
+        cookies=cookies,
+        timeout=5,
+    )
+    issued.raise_for_status()
+    code = issued.json()["code"]
+    holder: dict[str, object] = {}
+
+    def launch() -> None:
+        holder["result"] = CliRunner().invoke(
+            cli,
+            [
+                "connect",
+                "--url",
+                gateway.ws,  # type: ignore[attr-defined]
+                "--code",
+                code,
+                "--device-id",
+                "desk-1",
+                "--os-name",
+                "Windows",
+                "--capability",
+                "click",
+                "--heartbeat-seconds",
+                "0.2",
+            ],
+        )
+
+    thread = threading.Thread(target=launch)
+    thread.start()
+    deadline = time.time() + 10
+    while time.time() < deadline and not gateway.session_id("desk-1"):  # type: ignore[attr-defined]
+        time.sleep(0.05)
+    if not gateway.session_id("desk-1"):  # type: ignore[attr-defined]
+        raise AssertionError(holder.get("result"))
+    return thread
+
+
 def test_w4_c04_contract(tmp_path: Path) -> None:
     """A second invoke of a completed call returns the first result."""
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         RemoteJournalAdapter,
         ToolExecutionJournal,
     )
-    from rxycode_runner.transport.tool_rpc import serve_tool_rpc
+    from rxycode_runner.remote.client import request_stop
+    from rxycode_runner.transport.tool_rpc import bind_local_tools, clear_local_tools
+    from rxycode_server.devices.gateway import serve_in_thread
     from rxycode_worker.runner_client import RunnerClient
 
     writes: list[str] = []
@@ -37,24 +94,30 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         writes.append(str(args["marker"]))
         return "once"
 
-    journal = RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal"))
-    server = serve_tool_rpc(device_id="desk-1", journal=journal, execute=execute)
+    bind_local_tools(
+        device_id="desk-1",
+        journal=RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal")),
+        execute=execute,
+    )
+    gateway = serve_in_thread(secret=_SECRET)
+    thread = _pair(gateway)
     client = RunnerClient()
-    attempt_id, call_id = _ids()
+    _attempt_a, call_id = _ids()
+    attempt_b = f"att_{uuid4().hex}"
     try:
         first = client.invoke(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
-            attempt_id=attempt_id,
+            attempt_id=_attempt_a,
             tool="write",
             args={"marker": "a"},
         )
         second = client.invoke(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
-            attempt_id=attempt_id,
+            attempt_id=attempt_b,
             tool="write",
             args={"marker": "a"},
         )
@@ -65,7 +128,10 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
         assert writes == ["a"]
         assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "once"
     finally:
-        server.close()
+        request_stop()
+        thread.join(5)
+        gateway.close()
+        clear_local_tools("desk-1")
 
 
 def test_w4_c04_negative(tmp_path: Path) -> None:
@@ -74,13 +140,14 @@ def test_w4_c04_negative(tmp_path: Path) -> None:
         RemoteJournalAdapter,
         ToolExecutionJournal,
     )
-    from rxycode_runner.transport.tool_rpc import serve_tool_rpc
+    from rxycode_runner.remote.client import request_stop
+    from rxycode_runner.transport.tool_rpc import bind_local_tools, clear_local_tools
+    from rxycode_server.devices.gateway import serve_in_thread
     from rxycode_worker.runner_client import RunnerClient
 
     target = tmp_path / "side.txt"
     writes: list[int] = []
     started = threading.Event()
-    released = threading.Event()
 
     def execute(args: dict[str, object], *, cancel: threading.Event) -> str:
         if args.get("mode") == "cancel":
@@ -92,13 +159,18 @@ def test_w4_c04_negative(tmp_path: Path) -> None:
         target.write_text(previous + "W", encoding="utf-8")
         return "W"
 
-    journal = RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal"))
-    server = serve_tool_rpc(device_id="desk-1", journal=journal, execute=execute)
+    bind_local_tools(
+        device_id="desk-1",
+        journal=RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal")),
+        execute=execute,
+    )
+    gateway = serve_in_thread(secret=_SECRET)
+    thread = _pair(gateway)
     client = RunnerClient()
     attempt_id, call_id = _ids()
     try:
         dropped = client.invoke(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=attempt_id,
@@ -109,10 +181,10 @@ def test_w4_c04_negative(tmp_path: Path) -> None:
         assert dropped.state == "unacked"
         assert target.read_text(encoding="utf-8") == "W"
         retried = client.invoke(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
-            attempt_id=attempt_id,
+            attempt_id=f"att_{uuid4().hex}",
             tool="write",
             args={"mode": "write"},
         )
@@ -121,7 +193,7 @@ def test_w4_c04_negative(tmp_path: Path) -> None:
         assert target.read_text(encoding="utf-8") == "W"
         cancel_attempt, cancel_call = _ids()
         cancelled = client.invoke_and_cancel(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=cancel_call,
             attempt_id=cancel_attempt,
@@ -131,6 +203,8 @@ def test_w4_c04_negative(tmp_path: Path) -> None:
         )
         assert cancelled.state == "cancelled"
         assert target.read_text(encoding="utf-8") == "W"
-        released.set()
     finally:
-        server.close()
+        request_stop()
+        thread.join(5)
+        gateway.close()
+        clear_local_tools("desk-1")

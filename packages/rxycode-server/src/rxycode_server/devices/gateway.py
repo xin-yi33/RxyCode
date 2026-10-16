@@ -45,7 +45,15 @@ class Registry:
         self.ttl = ttl
         self.devices: dict[str, DeviceRecord] = {}
         self.sockets: dict[str, WebSocket] = {}
+        self.tool_inbox: dict[str, asyncio.Queue[dict[str, object]]] = {}
         self.pairings = PairingBook(clock=clock, ttl=pairing_ttl)
+
+    def inbox(self, device_id: str) -> asyncio.Queue[dict[str, object]]:
+        queue = self.tool_inbox.get(device_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self.tool_inbox[device_id] = queue
+        return queue
 
     def issue(self, tenant_id: str) -> str:
         return self.pairings.issue(tenant_id)
@@ -231,10 +239,14 @@ def build_router() -> APIRouter:
             if reply["type"] != "hello_ok":
                 return
             session_id = str(reply["session_id"])
+            book.inbox(device_id)
             while True:
                 incoming = json.loads(await socket.receive_text())
                 if incoming.get("type") == "heartbeat":
                     book.touch(device_id, str(incoming.get("session_id") or session_id))
+                    continue
+                if incoming.get("type") in {"chunk", "result", "status"}:
+                    await book.inbox(device_id).put(incoming)
         except Exception:
             logger.info("device socket ended", extra={"device_id": device_id})
         finally:
@@ -289,6 +301,28 @@ class RunningGateway:
         from rxycode_runner.remote.client import writer_count
 
         return writer_count(device_id)
+
+    def send_tool(self, device_id: str, frame: dict[str, object]) -> None:
+        loop = getattr(self.server, "_rxy_loop", None)
+        if loop is None:
+            raise RuntimeError("device gateway loop is not running")
+
+        async def _send() -> None:
+            socket = self._registry().sockets[device_id]
+            await socket.send_text(json.dumps(frame))
+
+        asyncio.run_coroutine_threadsafe(_send(), loop).result(timeout=5)
+
+    def recv_tool(self, device_id: str, timeout: float = 5) -> dict[str, object]:
+        loop = getattr(self.server, "_rxy_loop", None)
+        if loop is None:
+            raise RuntimeError("device gateway loop is not running")
+
+        async def _recv() -> dict[str, object]:
+            inbox = self._registry().inbox(device_id)
+            return await asyncio.wait_for(inbox.get(), timeout)
+
+        return asyncio.run_coroutine_threadsafe(_recv(), loop).result(timeout=timeout + 1)
 
     def drop(self) -> None:
         registry = self._registry()

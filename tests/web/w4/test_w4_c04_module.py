@@ -4,45 +4,92 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
+
+_SECRET = "local-web-secret-value-32bytes!!"
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
-for entry in (str(REPO), str(_RUNNER), str(_WORKER)):
+_SERVER = REPO / "packages" / "rxycode-server" / "src"
+for entry in (str(REPO), str(_RUNNER), str(_WORKER), str(_SERVER)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
 
 def test_w4_c04_integration(tmp_path: Path) -> None:
-    """After a drop, chunk seq is replayed once and the write does not repeat."""
+    """After the device socket drops, later chunk seqs are replayed once."""
+    from click.testing import CliRunner
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         RemoteJournalAdapter,
         ToolExecutionJournal,
     )
-    from rxycode_runner.transport.tool_rpc import CHUNK_LIMIT, serve_tool_rpc
+    from RxyCode.RxyCode1_1_0.main import cli
+    from rxycode_runner.remote.client import request_stop, reset_stop, writer_count
+    from rxycode_runner.transport.tool_rpc import CHUNK_LIMIT, bind_local_tools, clear_local_tools
+    from rxycode_server.devices.gateway import serve_in_thread
     from rxycode_worker.runner_client import RunnerClient
 
     writes: list[int] = []
-    body = "abc" * (CHUNK_LIMIT + 1)
+    body = "你" * 5000
 
     def execute(args: dict[str, object], *, cancel: threading.Event) -> str:
         del args, cancel
         writes.append(1)
-        assert server.writer_count() == 1
-        target = tmp_path / "note.txt"
-        target.write_text("hello-once", encoding="utf-8")
+        assert writer_count("desk-1") == 1
+        (tmp_path / "note.txt").write_text("hello-once", encoding="utf-8")
         return body
 
-    journal = RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal"))
-    server = serve_tool_rpc(device_id="desk-1", journal=journal, execute=execute)
+    bind_local_tools(
+        device_id="desk-1",
+        journal=RemoteJournalAdapter(ToolExecutionJournal(tmp_path / "journal")),
+        execute=execute,
+    )
+    gateway = serve_in_thread(secret=_SECRET)
+    reset_stop()
+    browser = gateway.browser_session("tenant-a")
+    csrf = "csrf-token-value-for-c04"
+    issued = httpx.post(
+        f"{gateway.http}/api/v1/devices/pairings",
+        headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
+        cookies={"rxy_session": browser, "rxy_csrf": csrf},
+        timeout=5,
+    )
+    code = issued.json()["code"]
+    thread = threading.Thread(
+        target=lambda: CliRunner().invoke(
+            cli,
+            [
+                "connect",
+                "--url",
+                gateway.ws,
+                "--code",
+                code,
+                "--device-id",
+                "desk-1",
+                "--os-name",
+                "Windows",
+                "--capability",
+                "click",
+                "--heartbeat-seconds",
+                "0.2",
+            ],
+        )
+    )
+    thread.start()
+    deadline = time.time() + 10
+    while time.time() < deadline and not gateway.session_id("desk-1"):
+        time.sleep(0.05)
     client = RunnerClient()
     attempt_id = f"att_{uuid4().hex}"
     call_id = f"call_{uuid4().hex}"
     try:
+        assert gateway.session_id("desk-1")
         partial = client.invoke(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=attempt_id,
@@ -52,22 +99,38 @@ def test_w4_c04_integration(tmp_path: Path) -> None:
             stop_after_chunks=2,
         )
         assert [item[0] for item in partial.chunks] == [1, 2]
-        assert all(len(item[1]) <= CHUNK_LIMIT for item in partial.chunks)
+        assert all(len(item[1].encode("utf-8")) <= CHUNK_LIMIT for item in partial.chunks)
+        first_session = gateway.session_id("desk-1")
+        gateway.drop()
+        second_session = ""
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            second_session = gateway.session_id("desk-1")
+            if second_session and second_session != first_session:
+                break
+            time.sleep(0.05)
+        assert second_session and second_session != first_session
         resumed = client.resume(
-            url=server.url,
+            gateway=gateway,
             device_id="desk-1",
             call_id=call_id,
             attempt_id=attempt_id,
-            tool="write",
-            args={"marker": "stream"},
             resume_from=2,
         )
         seqs = [item[0] for item in resumed.chunks]
+        assert seqs
         assert len(seqs) == len(set(seqs))
         assert all(seq > 2 for seq in seqs)
-        replayed = "".join(item[1] for item in partial.chunks + resumed.chunks)
+        merged: dict[int, str] = {}
+        for seq, data in partial.chunks + resumed.chunks:
+            merged.setdefault(seq, data)
+        replayed = "".join(merged[seq] for seq in sorted(merged))
         assert replayed == body or resumed.truncated
+        assert all(len(item.encode("utf-8")) <= CHUNK_LIMIT for item in merged.values())
         assert writes == [1]
         assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "hello-once"
     finally:
-        server.close()
+        request_stop()
+        thread.join(5)
+        gateway.close()
+        clear_local_tools("desk-1")

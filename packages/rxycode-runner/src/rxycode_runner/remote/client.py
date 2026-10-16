@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import websockets
 
 logger = logging.getLogger(__name__)
+_TOOL_FRAMES = {"invoke", "ack", "chunk_ack", "status", "cancel"}
 
 _STOP = threading.Event()
 _LOCK = threading.Lock()
@@ -153,6 +154,7 @@ async def _one_session(
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         failed = _Closed()
         writer = asyncio.create_task(_write(ws, queue, device_id, failed))
+        reader: asyncio.Task[None] | None = None
         try:
             hello: dict[str, Any] = {
                 "type": "hello",
@@ -182,6 +184,9 @@ async def _one_session(
                 _TOKENS[device_id] = state["token"]
             logger.info("device session ready", extra={"device_id": device_id})
             session_id = str(first["session_id"])
+            reader = asyncio.create_task(
+                _read_downstream(ws, device_id, queue, failed)
+            )
             elapsed = heartbeat_seconds
             while not _STOP.is_set():
                 if failed.failed:
@@ -193,11 +198,42 @@ async def _one_session(
                 elapsed += 0.05
             return "stop", ""
         finally:
+            if reader is not None:
+                reader.cancel()
+            rpc = _tool_rpc(device_id)
+            if rpc is not None:
+                rpc.cancel_performs()
             await queue.put(None)
             try:
                 await writer
             except Exception:
                 logger.info("device writer closed", extra={"device_id": device_id})
+
+
+def _tool_rpc(device_id: str) -> Any:
+    from rxycode_runner.transport.tool_rpc import tool_rpc_for
+
+    return tool_rpc_for(device_id)
+
+
+async def _read_downstream(
+    ws: Any,
+    device_id: str,
+    queue: asyncio.Queue[dict[str, Any] | None],
+    failed: _Closed,
+) -> None:
+    try:
+        while True:
+            frame = json.loads(await ws.recv())
+            if not isinstance(frame, dict) or frame.get("type") not in _TOOL_FRAMES:
+                continue
+            rpc = _tool_rpc(device_id)
+            if rpc is not None:
+                await rpc.on_frame(frame, queue)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        failed.failed = True
 
 
 async def _write(

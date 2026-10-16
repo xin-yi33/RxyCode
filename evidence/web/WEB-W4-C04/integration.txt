@@ -1,2 +1,17 @@
 .                                                                        [100%]
-1 passed in 0.38s
+============================== warnings summary ===============================
+tests/web/w4/test_w4_c04_module.py::test_w4_c04_integration
+  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+tests/web/w4/test_w4_c04_module.py::test_w4_c04_integration
+  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
+    from websockets.server import WebSocketServerProtocol
+
+tests/web/w4/test_w4_c04_module.py::test_w4_c04_integration
+tests/web/w4/test_w4_c04_module.py::test_w4_c04_integration
+  D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
+    warnings.warn("remove second argument of ws_handler", DeprecationWarning)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 4 warnings in 1.44s
