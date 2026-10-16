@@ -98,7 +98,7 @@ def create_run(
         raise QuotaRefused(early)
     digest = _digest(message, target_id, permission_profile, request_id, session_id)
     engine = create_engine(database_url, poolclass=NullPool)
-    reserved = False
+    held_worker = ""
     try:
         with Session(engine) as db:
             existing = db.scalars(
@@ -111,7 +111,7 @@ def create_run(
             decision = gate.reserve(db, tenant_id=tenant_id, user_id=user, message=message)
             if isinstance(decision, QuotaDecision):
                 raise QuotaRefused(decision)
-            reserved = True
+            held_worker = decision.worker_id
             run_id = uuid.uuid4().hex
             event_id = uuid.uuid4().hex
             try:
@@ -150,6 +150,7 @@ def create_run(
                                 "preview_fee": 1,
                                 "sandbox_fee": 1,
                                 "user_id": user,
+                                "worker_id": decision.worker_id,
                             },
                         },
                         at=datetime.now(timezone.utc),
@@ -165,7 +166,7 @@ def create_run(
                     )
                 )
                 db.commit()
-                reserved = False
+                held_worker = ""
             except IntegrityError as exc:
                 db.rollback()
                 detail = str(exc.orig)
@@ -180,8 +181,8 @@ def create_run(
                     return _accepted(winner.id)
                 raise
     finally:
-        if reserved:
-            gate.release(tenant_id, user)
+        if held_worker:
+            gate.release_worker(held_worker)
         engine.dispose()
     return _accepted(run_id)
 
@@ -194,22 +195,31 @@ def complete_run(
     user_id: str,
     quota: object | None = None,
 ) -> str:
-    """Mark a Run succeeded and return its worker slot before the TTL."""
+    """Mark a Run succeeded and return only that Run's worker slot."""
     from rxycode_server.quotas.service import active_gate
 
+    del user_id
     gate = quota if quota is not None else active_gate()
     engine = create_engine(database_url, poolclass=NullPool)
+    worker_id = ""
     try:
         with Session(engine) as db:
             row = db.get(Run, run_id)
             if row is None or row.tenant_id != tenant_id:
                 raise RunConflict(run_id)
+            event = db.scalars(
+                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
+            ).one()
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
+            worker_id = str(quota_payload.get("worker_id") or "")
             if row.status not in {"succeeded", "failed", "cancelled"}:
                 row.status = "succeeded"
                 db.commit()
     finally:
         engine.dispose()
-    gate.release(tenant_id, user_id)
+    if worker_id:
+        gate.release_worker(worker_id)
     return "succeeded"
 
 

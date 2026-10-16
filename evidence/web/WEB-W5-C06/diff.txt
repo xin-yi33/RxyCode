@@ -41,10 +41,10 @@ index 00000000..d0c6466a
 +      retries: 10
 diff --git a/packages/rxycode-server/src/rxycode_server/quotas/service.py b/packages/rxycode-server/src/rxycode_server/quotas/service.py
 new file mode 100644
-index 00000000..c3c9aacd
+index 00000000..d5826a6a
 --- /dev/null
 +++ b/packages/rxycode-server/src/rxycode_server/quotas/service.py
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,318 @@
 +"""Tenant token, task, concurrency, preview, and sandbox quotas.
 +
 +The authenticated tenant and user are the only identity. Request headers are
@@ -84,8 +84,8 @@ index 00000000..c3c9aacd
 +    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
 +        """Occupy one worker, or refuse when the live count is at the ceiling."""
 +
-+    def release(self, tenant_id: str, user_id: str) -> None:
-+        """Return the worker when the Run was not created."""
++    def release_worker(self, worker_id: str) -> None:
++        """Return the exact worker reserved for one Run."""
 +
 +
 +class ModelClient(Protocol):
@@ -139,6 +139,7 @@ index 00000000..c3c9aacd
 +    tenant_id: str
 +    user_id: str
 +    tokens: int
++    worker_id: str
 +
 +
 +class QuotaRefused(Exception):
@@ -182,12 +183,11 @@ index 00000000..c3c9aacd
 +        timer.start()
 +        return worker_id
 +
-+    def release(self, tenant_id: str, user_id: str) -> None:
++    def release_worker(self, worker_id: str) -> None:
 +        timer: threading.Timer | None = None
 +        with self._lock:
-+            for index in range(len(self.workers) - 1, -1, -1):
-+                owner, user, worker_id = self.workers[index]
-+                if owner == tenant_id and user == user_id:
++            for index, (_owner, _user, current) in enumerate(self.workers):
++                if current == worker_id:
 +                    del self.workers[index]
 +                    self._deadlines.pop(worker_id, None)
 +                    timer = self._timers.pop(worker_id, None)
@@ -281,7 +281,7 @@ index 00000000..c3c9aacd
 +        if usage.sandbox_fee + 1 > limits.sandbox_fee:
 +            return self._refuse(tenant_id, user_id, "sandbox")
 +        try:
-+            self.capacity.acquire(
++            worker_id = self.capacity.acquire(
 +                tenant_id,
 +                user_id,
 +                limit=limits.concurrency,
@@ -291,10 +291,15 @@ index 00000000..c3c9aacd
 +            if isinstance(exc, WorkerFull) or exc.__class__.__name__ == "CapacityFull":
 +                return self._refuse(tenant_id, user_id, "concurrency")
 +            raise
-+        return Reservation(tenant_id=tenant_id, user_id=user_id, tokens=incoming)
++        return Reservation(
++            tenant_id=tenant_id,
++            user_id=user_id,
++            tokens=incoming,
++            worker_id=worker_id,
++        )
 +
-+    def release(self, tenant_id: str, user_id: str) -> None:
-+        self.capacity.release(tenant_id, user_id)
++    def release_worker(self, worker_id: str) -> None:
++        self.capacity.release_worker(worker_id)
 +
 +    def _refuse(self, tenant_id: str, user_id: str, kind: str) -> QuotaDecision:
 +        limit = {
@@ -359,7 +364,7 @@ index 00000000..c3c9aacd
 +        usage.sandbox_fee += int(quota.get("sandbox_fee") or 0)
 +    return usage
 diff --git a/packages/rxycode-server/src/rxycode_server/runs/service.py b/packages/rxycode-server/src/rxycode_server/runs/service.py
-index 49477ac4..3aec0d9a 100644
+index 49477ac4..01888432 100644
 --- a/packages/rxycode-server/src/rxycode_server/runs/service.py
 +++ b/packages/rxycode-server/src/rxycode_server/runs/service.py
 @@ -72,11 +72,33 @@ def create_run(
@@ -392,7 +397,7 @@ index 49477ac4..3aec0d9a 100644
 +        raise QuotaRefused(early)
      digest = _digest(message, target_id, permission_profile, request_id, session_id)
      engine = create_engine(database_url, poolclass=NullPool)
-+    reserved = False
++    held_worker = ""
      try:
          with Session(engine) as db:
              existing = db.scalars(
@@ -403,7 +408,7 @@ index 49477ac4..3aec0d9a 100644
 +            decision = gate.reserve(db, tenant_id=tenant_id, user_id=user, message=message)
 +            if isinstance(decision, QuotaDecision):
 +                raise QuotaRefused(decision)
-+            reserved = True
++            held_worker = decision.worker_id
              run_id = uuid.uuid4().hex
              event_id = uuid.uuid4().hex
              try:
@@ -412,7 +417,7 @@ index 49477ac4..3aec0d9a 100644
                  db.add(
                      Run(
                          id=run_id,
-@@ -112,12 +140,18 @@ def create_run(
+@@ -112,12 +140,19 @@ def create_run(
                          seq=1,
                          type="run.created",
                          payload={
@@ -432,25 +437,26 @@ index 49477ac4..3aec0d9a 100644
 +                                "preview_fee": 1,
 +                                "sandbox_fee": 1,
 +                                "user_id": user,
++                                "worker_id": decision.worker_id,
 +                            },
 +                        },
                          at=datetime.now(timezone.utc),
                      )
                  )
-@@ -131,6 +165,7 @@ def create_run(
+@@ -131,6 +166,7 @@ def create_run(
                      )
                  )
                  db.commit()
-+                reserved = False
++                held_worker = ""
              except IntegrityError as exc:
                  db.rollback()
                  detail = str(exc.orig)
-@@ -145,10 +180,39 @@ def create_run(
+@@ -145,10 +181,48 @@ def create_run(
                      return _accepted(winner.id)
                  raise
      finally:
-+        if reserved:
-+            gate.release(tenant_id, user)
++        if held_worker:
++            gate.release_worker(held_worker)
          engine.dispose()
      return _accepted(run_id)
 
@@ -463,22 +469,31 @@ index 49477ac4..3aec0d9a 100644
 +    user_id: str,
 +    quota: object | None = None,
 +) -> str:
-+    """Mark a Run succeeded and return its worker slot before the TTL."""
++    """Mark a Run succeeded and return only that Run's worker slot."""
 +    from rxycode_server.quotas.service import active_gate
 +
++    del user_id
 +    gate = quota if quota is not None else active_gate()
 +    engine = create_engine(database_url, poolclass=NullPool)
++    worker_id = ""
 +    try:
 +        with Session(engine) as db:
 +            row = db.get(Run, run_id)
 +            if row is None or row.tenant_id != tenant_id:
 +                raise RunConflict(run_id)
++            event = db.scalars(
++                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
++            ).one()
++            payload = event.payload if isinstance(event.payload, dict) else {}
++            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
++            worker_id = str(quota_payload.get("worker_id") or "")
 +            if row.status not in {"succeeded", "failed", "cancelled"}:
 +                row.status = "succeeded"
 +                db.commit()
 +    finally:
 +        engine.dispose()
-+    gate.release(tenant_id, user_id)
++    if worker_id:
++        gate.release_worker(worker_id)
 +    return "succeeded"
 +
 +
@@ -487,10 +502,10 @@ index 49477ac4..3aec0d9a 100644
      engine = create_engine(database_url, poolclass=NullPool)
 diff --git a/packages/rxycode-worker/src/rxycode_worker/scheduler/capacity.py b/packages/rxycode-worker/src/rxycode_worker/scheduler/capacity.py
 new file mode 100644
-index 00000000..777c5b12
+index 00000000..f89d54e6
 --- /dev/null
 +++ b/packages/rxycode-worker/src/rxycode_worker/scheduler/capacity.py
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,351 @@
 +"""Concurrency, cold-start samples, and sandbox GC.
 +
 +A failed or expired sandbox is removed with docker rm. Cold-start percentiles
@@ -643,15 +658,14 @@ index 00000000..777c5b12
 +        timer.start()
 +        return worker_id
 +
-+    def release(self, tenant_id: str, user_id: str) -> None:
++    def release_worker(self, worker_id: str) -> None:
 +        timer: threading.Timer | None = None
 +        with self._lock:
-+            for index in range(len(self.workers) - 1, -1, -1):
-+                owner, user, _worker = self.workers[index]
-+                if owner == tenant_id and user == user_id:
++            for index, (_owner, _user, current) in enumerate(self.workers):
++                if current == worker_id:
 +                    del self.workers[index]
-+                    timer = self._worker_timers.pop(_worker, None)
-+                    self._deadlines.pop(_worker, None)
++                    timer = self._worker_timers.pop(worker_id, None)
++                    self._deadlines.pop(worker_id, None)
 +                    break
 +        if timer is not None:
 +            timer.cancel()
@@ -845,10 +859,10 @@ index 00000000..777c5b12
 +            record.backend._docker(["rm", "-f", record.sandbox_id], timeout=30)
 diff --git a/tests/web/w5/test_w5_c06_unit.py b/tests/web/w5/test_w5_c06_unit.py
 new file mode 100644
-index 00000000..ae86ca70
+index 00000000..541fbb26
 --- /dev/null
 +++ b/tests/web/w5/test_w5_c06_unit.py
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,558 @@
 +"""WEB-W5-C06. An over-quota visitor gets 429 and a failed sandbox is removed."""
 +
 +from __future__ import annotations
@@ -957,7 +971,7 @@ index 00000000..ae86ca70
 +    from sqlalchemy.orm import Session
 +
 +    from rxycode_server.persistence.migrate import upgrade_head
-+    from rxycode_server.persistence.models import Organization, Project, Run, SessionRow, User
++    from rxycode_server.persistence.models import Organization, Project, Run, RunEvent, SessionRow, User
 +    from rxycode_server.quotas.service import Limits, QuotaGate, QuotaRefused, install_gate
 +    from rxycode_server.runs.service import complete_run, create_run
 +    from rxycode_worker.scheduler.capacity import Capacity, CapacityFull, TopologyRefused, load_compose
@@ -1010,11 +1024,11 @@ index 00000000..ae86ca70
 +        "x-preview-fee": "1000000",
 +    }
 +    slot = Capacity()
-+    slot.acquire("tenant-slot", "user-slot", limit=1)
++    held = slot.acquire("tenant-slot", "user-slot", limit=1)
 +    with pytest.raises(CapacityFull):
 +        slot.acquire("tenant-slot", "user-slot", limit=1)
 +    assert len(slot.workers) == 1
-+    slot.release("tenant-slot", "user-slot")
++    slot.release_worker(held)
 +
 +    def deny(gate: QuotaGate, **kwargs: object) -> QuotaRefused:
 +        with pytest.raises(QuotaRefused) as caught:
@@ -1104,12 +1118,14 @@ index 00000000..ae86ca70
 +                "visitor-preview",
 +                "visitor-sandbox",
 +                "visitor-ttl",
++                "visitor-overlap",
 +            ):
 +                db.add(User(id=f"user-{tenant}", github_id=f"gh-{tenant}", kind="github"))
 +                db.add(Organization(id=f"org-{tenant}", tenant_id=tenant))
 +                db.add(Project(id=f"project-{tenant}", tenant_id=tenant, name="app", repo_config={}))
 +                db.add(SessionRow(id=f"sess-a-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="a"))
 +                db.add(SessionRow(id=f"sess-b-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="b"))
++                db.add(SessionRow(id=f"sess-c-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="c"))
 +            db.commit()
 +        engine.dispose()
 +
@@ -1213,6 +1229,42 @@ index 00000000..ae86ca70
 +        admit("visitor-ttl", ttl_gate, ttl_next, "req-ttl-2", "sess-b-visitor-ttl")
 +        assert ttl_next.calls == 1
 +        assert len(ttl_cap.workers) == 1
++
++        overlap_cap = Capacity()
++        overlap_gate = QuotaGate(
++            limits=Limits(tasks=5, tokens=100, concurrency=2, preview_fee=5, sandbox_fee=5),
++            capacity=overlap_cap,
++        )
++        left = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-1", "sess-a-visitor-overlap")
++        right = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-2", "sess-b-visitor-overlap")
++        assert len(overlap_cap.workers) == 2
++
++        def worker_of(run_id: str) -> str:
++            checker = create_engine(url)
++            try:
++                with Session(checker) as db:
++                    event = db.scalars(
++                        select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
++                    ).one()
++            finally:
++                checker.dispose()
++            return str(event.payload["quota"]["worker_id"])
++
++        left_id = worker_of(left.run_id)
++        right_id = worker_of(right.run_id)
++        assert left_id != right_id
++        complete_run(
++            url,
++            run_id=left.run_id,
++            tenant_id="visitor-overlap",
++            user_id="visitor-user",
++            quota=overlap_gate,
++        )
++        assert {item[2] for item in overlap_cap.workers} == {right_id}
++        third = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-3", "sess-c-visitor-overlap")
++        assert len(overlap_cap.workers) == 2
++        assert right_id in {item[2] for item in overlap_cap.workers}
++        assert worker_of(third.run_id) != right_id
 +
 +        preview_cap = Capacity()
 +        preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)

@@ -150,15 +150,14 @@ class Capacity:
         timer.start()
         return worker_id
 
-    def release(self, tenant_id: str, user_id: str) -> None:
+    def release_worker(self, worker_id: str) -> None:
         timer: threading.Timer | None = None
         with self._lock:
-            for index in range(len(self.workers) - 1, -1, -1):
-                owner, user, _worker = self.workers[index]
-                if owner == tenant_id and user == user_id:
+            for index, (_owner, _user, current) in enumerate(self.workers):
+                if current == worker_id:
                     del self.workers[index]
-                    timer = self._worker_timers.pop(_worker, None)
-                    self._deadlines.pop(_worker, None)
+                    timer = self._worker_timers.pop(worker_id, None)
+                    self._deadlines.pop(worker_id, None)
                     break
         if timer is not None:
             timer.cancel()

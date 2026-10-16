@@ -106,7 +106,7 @@ def test_w5_c06_contract() -> None:
     from sqlalchemy.orm import Session
 
     from rxycode_server.persistence.migrate import upgrade_head
-    from rxycode_server.persistence.models import Organization, Project, Run, SessionRow, User
+    from rxycode_server.persistence.models import Organization, Project, Run, RunEvent, SessionRow, User
     from rxycode_server.quotas.service import Limits, QuotaGate, QuotaRefused, install_gate
     from rxycode_server.runs.service import complete_run, create_run
     from rxycode_worker.scheduler.capacity import Capacity, CapacityFull, TopologyRefused, load_compose
@@ -159,11 +159,11 @@ def test_w5_c06_contract() -> None:
         "x-preview-fee": "1000000",
     }
     slot = Capacity()
-    slot.acquire("tenant-slot", "user-slot", limit=1)
+    held = slot.acquire("tenant-slot", "user-slot", limit=1)
     with pytest.raises(CapacityFull):
         slot.acquire("tenant-slot", "user-slot", limit=1)
     assert len(slot.workers) == 1
-    slot.release("tenant-slot", "user-slot")
+    slot.release_worker(held)
 
     def deny(gate: QuotaGate, **kwargs: object) -> QuotaRefused:
         with pytest.raises(QuotaRefused) as caught:
@@ -253,12 +253,14 @@ def test_w5_c06_contract() -> None:
                 "visitor-preview",
                 "visitor-sandbox",
                 "visitor-ttl",
+                "visitor-overlap",
             ):
                 db.add(User(id=f"user-{tenant}", github_id=f"gh-{tenant}", kind="github"))
                 db.add(Organization(id=f"org-{tenant}", tenant_id=tenant))
                 db.add(Project(id=f"project-{tenant}", tenant_id=tenant, name="app", repo_config={}))
                 db.add(SessionRow(id=f"sess-a-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="a"))
                 db.add(SessionRow(id=f"sess-b-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="b"))
+                db.add(SessionRow(id=f"sess-c-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="c"))
             db.commit()
         engine.dispose()
 
@@ -362,6 +364,42 @@ def test_w5_c06_contract() -> None:
         admit("visitor-ttl", ttl_gate, ttl_next, "req-ttl-2", "sess-b-visitor-ttl")
         assert ttl_next.calls == 1
         assert len(ttl_cap.workers) == 1
+
+        overlap_cap = Capacity()
+        overlap_gate = QuotaGate(
+            limits=Limits(tasks=5, tokens=100, concurrency=2, preview_fee=5, sandbox_fee=5),
+            capacity=overlap_cap,
+        )
+        left = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-1", "sess-a-visitor-overlap")
+        right = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-2", "sess-b-visitor-overlap")
+        assert len(overlap_cap.workers) == 2
+
+        def worker_of(run_id: str) -> str:
+            checker = create_engine(url)
+            try:
+                with Session(checker) as db:
+                    event = db.scalars(
+                        select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
+                    ).one()
+            finally:
+                checker.dispose()
+            return str(event.payload["quota"]["worker_id"])
+
+        left_id = worker_of(left.run_id)
+        right_id = worker_of(right.run_id)
+        assert left_id != right_id
+        complete_run(
+            url,
+            run_id=left.run_id,
+            tenant_id="visitor-overlap",
+            user_id="visitor-user",
+            quota=overlap_gate,
+        )
+        assert {item[2] for item in overlap_cap.workers} == {right_id}
+        third = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-3", "sess-c-visitor-overlap")
+        assert len(overlap_cap.workers) == 2
+        assert right_id in {item[2] for item in overlap_cap.workers}
+        assert worker_of(third.run_id) != right_id
 
         preview_cap = Capacity()
         preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)

@@ -37,8 +37,8 @@ class WorkerCapacity(Protocol):
     def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
         """Occupy one worker, or refuse when the live count is at the ceiling."""
 
-    def release(self, tenant_id: str, user_id: str) -> None:
-        """Return the worker when the Run was not created."""
+    def release_worker(self, worker_id: str) -> None:
+        """Return the exact worker reserved for one Run."""
 
 
 class ModelClient(Protocol):
@@ -92,6 +92,7 @@ class Reservation:
     tenant_id: str
     user_id: str
     tokens: int
+    worker_id: str
 
 
 class QuotaRefused(Exception):
@@ -135,12 +136,11 @@ class RunWorkers:
         timer.start()
         return worker_id
 
-    def release(self, tenant_id: str, user_id: str) -> None:
+    def release_worker(self, worker_id: str) -> None:
         timer: threading.Timer | None = None
         with self._lock:
-            for index in range(len(self.workers) - 1, -1, -1):
-                owner, user, worker_id = self.workers[index]
-                if owner == tenant_id and user == user_id:
+            for index, (_owner, _user, current) in enumerate(self.workers):
+                if current == worker_id:
                     del self.workers[index]
                     self._deadlines.pop(worker_id, None)
                     timer = self._timers.pop(worker_id, None)
@@ -234,7 +234,7 @@ class QuotaGate:
         if usage.sandbox_fee + 1 > limits.sandbox_fee:
             return self._refuse(tenant_id, user_id, "sandbox")
         try:
-            self.capacity.acquire(
+            worker_id = self.capacity.acquire(
                 tenant_id,
                 user_id,
                 limit=limits.concurrency,
@@ -244,10 +244,15 @@ class QuotaGate:
             if isinstance(exc, WorkerFull) or exc.__class__.__name__ == "CapacityFull":
                 return self._refuse(tenant_id, user_id, "concurrency")
             raise
-        return Reservation(tenant_id=tenant_id, user_id=user_id, tokens=incoming)
+        return Reservation(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            tokens=incoming,
+            worker_id=worker_id,
+        )
 
-    def release(self, tenant_id: str, user_id: str) -> None:
-        self.capacity.release(tenant_id, user_id)
+    def release_worker(self, worker_id: str) -> None:
+        self.capacity.release_worker(worker_id)
 
     def _refuse(self, tenant_id: str, user_id: str, kind: str) -> QuotaDecision:
         limit = {
