@@ -289,7 +289,9 @@ def test_w7_c01_integration() -> None:
         "r\\m /etc/rxy_w7c01_pwned.txt",
         "r\\\\m /etc/rxy_w7c01_pwned.txt",
         "r''m /etc/rxy_w7c01_pwned.txt",
-        "c\\d /etc",
+        # Navigation alone is read-only — append a write so the
+        # escape-joined ``cd`` still exercises the outside-dir refusal.
+        "c\\d /etc; Set-Content x.txt y",
         f'Set-Co\'n\'tent "{PAYLOAD_FILE}" pwned',
         # $'...'/$"..."/backticks/$(...) evaluate at runtime — at command
         # position the executed verb is unverifiable (fail closed).
@@ -713,6 +715,124 @@ def test_w7_c01_integration() -> None:
         assert not find_bash_disallowed_write_paths(
             rel_ok, config, workdir=workdir
         ), rel_ok
+
+    # Audit round 22
+    # ``>|`` noclobber overrides and ``>&FILE``/``>>&FILE`` stdout+stderr
+    # redirects used to split on the ``|``/``&`` — the file target was
+    # never checked.
+    for redir_op in (
+        "printf x >| C:/Windows/Temp/a.txt",
+        "printf x >|C:/Windows/Temp/a.txt",
+        "bash -c 'printf x >| C:/Windows/Temp/a.txt'",
+        "printf x >&C:/Windows/Temp/a.txt",
+        "printf x >& C:/Windows/Temp/a.txt",
+        "ls >&/c/Windows/Temp/a.txt",
+    ):
+        assert find_bash_disallowed_write_paths(
+            redir_op, config, workdir=workdir
+        ), redir_op
+    # ``2>&1``/``>&2`` duplicate a descriptor — not file targets — and a
+    # plain ``|`` pipe is unaffected by the ``>|`` rewrite.
+    for fd_dup in ("cmd /c dir 2>&1", "echo x >&2", "echo a | sort > ok.txt"):
+        assert not find_bash_disallowed_write_paths(
+            fd_dup, config, workdir=workdir
+        ), fd_dup
+    assert find_bash_disallowed_write_paths(
+        "echo a | Set-Content C:\\Windows\\x", config, workdir=workdir
+    )
+    # ``-O``/``--to-stdout`` is read-only only without an archive-write
+    # mode — ``tar -cf a.tar --to-stdout`` still creates the archive.
+    for tar_o_write in (
+        "tar -cf C:\\Windows\\Temp\\audit.tar --to-stdout --files-from=/dev/null",
+        "tar -cOf C:\\Windows\\Temp\\a.tar x",
+    ):
+        assert find_bash_disallowed_write_paths(
+            tar_o_write, config, workdir=workdir
+        ), tar_o_write
+    for tar_o_read in (
+        "tar -xOf C:\\Windows\\Temp\\in.tar m",
+        "tar --to-stdout -xf ok.tar",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            tar_o_read, config, workdir=workdir
+        ), tar_o_read
+    # Carrier payloads: plain words are not script paths and the carrier
+    # is only as mutating as its payload — read-only payloads stay
+    # allowed even from an outside workdir.
+    for carrier_ro in (
+        "cmd /c echo hi",
+        "Start-Process cmd.exe -ArgumentList '/c echo hi'",
+        "cmd /c dir",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            carrier_ro, config, workdir="C:\\Windows\\Temp"
+        ), carrier_ro
+    for carrier_mut in (
+        "cmd /c evil.bat",
+        "bash x.sh",
+        "python mark.py",
+        "powershell -File x.ps1",
+        "Start-Process cmd.exe -ArgumentList '/c echo x > ok.txt'",
+    ):
+        assert find_bash_disallowed_write_paths(
+            carrier_mut, config, workdir="C:\\Windows\\Temp"
+        ), carrier_mut
+    # Start-Process arguments follow PowerShell quoting: single-quoted is
+    # always literal, ``$``/backtick make double quotes dynamic, and
+    # unquoted ``$``/``(``/``)``/backtick evaluate.
+    for stp_lit in (
+        "Start-Process python.exe -ArgumentList '-c print(1)'",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            stp_lit, config, workdir=workdir
+        ), stp_lit
+        assert not find_bash_disallowed_write_paths(
+            stp_lit, config, workdir="C:\\Windows\\Temp"
+        ), stp_lit
+    for stp_dyn in (
+        "$x='cmd.exe'; Start-Process -FilePath $x "
+        "-ArgumentList '/c echo x > C:\\Windows\\Temp\\w7.txt' -Wait",
+        'Start-Process cmd -ArgumentList "/c $p"',
+        "Start-Process (Get-Item x) -Wait",
+        "Start-Process cmd -ArgumentList '/c %X% C:\\Windows\\Temp\\v.txt'",
+    ):
+        assert find_bash_disallowed_write_paths(
+            stp_dyn, config, workdir=workdir
+        ), stp_dyn
+    # Navigation is not a write: resolvable cd/pushd/popd targets only
+    # move the tracked directory; a write outside the whitelist is
+    # refused per event, wherever it actually ran.
+    for nav_read_out in (
+        "cd .",
+        "Set-Location .",
+        "Set-Location .; Get-ChildItem .",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            nav_read_out, config, workdir="C:\\Windows\\Temp"
+        ), nav_read_out
+    for nav_read_in in (
+        "cd C:\\Windows; dir",
+        "cd C:\\Windows\\Temp; echo hi",
+        "pushd C:\\Windows; dir; popd",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            nav_read_in, config, workdir=workdir
+        ), nav_read_in
+    for nav_write in (
+        "cd C:\\Windows; Set-Content x.txt y",
+        "cd C:\\Windows\\Temp; Set-Content rxy_w7c01_pwned.txt pwned",
+        "Set-Location C:/Windows; Set-Content rxy_w7c01_pwned.txt pwned",
+        "cd ..; cd ..; cd ..; cd ..; cd ..; Set-Content rxy_w7c01_pwned.txt pwned",
+        "pushd C:\\Windows; echo x > a.txt; popd",
+        "CDPATH=/; cd tmp; echo x > rxy_w7c01_pwned.txt",
+    ):
+        assert find_bash_disallowed_write_paths(
+            nav_write, config, workdir=workdir
+        ), nav_write
+    hits = find_bash_disallowed_write_paths(
+        "echo x > a.txt; cd " + str(REPO), config, workdir="C:\\Windows\\Temp"
+    )
+    assert hits and any("C:\\Windows\\Temp" in h for h in hits), hits
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

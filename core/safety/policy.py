@@ -1254,6 +1254,36 @@ def find_bash_disallowed_write_paths(
     # line into the same command; collapse them so targets past a newline
     # stay inside the scanned segment.
     scrubbed = re.sub(r"[\\`]\r?\n", " ", scrubbed)
+
+    def _fix_redir_ops(text: str) -> str:
+        # ``>|``/``>>|`` noclobber overrides and ``>&FILE``/``>>&FILE``
+        # stdout+stderr redirects hide behind ``|``/``&`` separator
+        # parsing — ``|C:/x`` would even look like a piped program path.
+        # Rewrite the operator to a plain ``>``/``>>`` at the same length
+        # so positions stay stable. Quoted ``>`` stays inert downstream,
+        # and a quoted carrier payload is rescanned after unwrapping —
+        # so rewriting inside quotes is harmless and actually needed for
+        # ``bash -c 'x >| y'``. ``>&`` keeps its fd-duplicate meaning when
+        # followed by a digit or ``-`` (``2>&1``, ``>&-``).
+        out = list(text)
+        for i, ch in enumerate(text):
+            if ch == ">" and i + 1 < len(text):
+                nxt = text[i + 1]
+                if nxt == "|":
+                    out[i + 1] = " "
+                elif nxt == "&":
+                    k = i + 2
+                    while k < len(text) and text[k] in " \t":
+                        k += 1
+                    if (
+                        k < len(text)
+                        and not text[k].isdigit()
+                        and text[k] not in "-|;&>"
+                    ):
+                        out[i + 1] = " "
+        return "".join(out)
+
+    scrubbed = _fix_redir_ops(scrubbed)
     # A command-slot token that is a path (``C:/x/rar.exe``,
     # ``& 'C:/Program Files/y.exe'``, ``/usr/bin/rm``) runs its basename —
     # rewrite it before ``_unescape`` fuses ``\`` separators and the
@@ -1368,6 +1398,9 @@ def find_bash_disallowed_write_paths(
             last = end + 1
         rebuilt.append(_unescape(scrubbed[last:]))
         scrubbed = "".join(rebuilt)
+    # Quote-stripping above can fuse ``x'>|'y`` into ``x>|y`` — rerun the
+    # redirect-operator rewrite (it is idempotent and length-preserving).
+    scrubbed = _fix_redir_ops(scrubbed)
     base = workdir
     if not base:
         try:
@@ -1384,10 +1417,6 @@ def find_bash_disallowed_write_paths(
             eff_dir = os.path.normpath(str(base))
         except Exception:
             eff_dir = None
-    # The starting directory is where relative writes resolve from;
-    # cd/pushd/popd may move eff_dir inside the whitelist later, so the
-    # fail-closed check below must test where the command *started*.
-    start_dir = eff_dir
     dir_stack: list[str | None] = []
     shell_vars: dict[str, str] = {}
     blocked: list[str] = []
@@ -1663,6 +1692,23 @@ def find_bash_disallowed_write_paths(
             if not _in_quotes(m.start()) and _assign_prefix_ok(m.start())
         ]
     )
+    # The outside-workdir refusal is per event: every opener that still
+    # mutates at dispatch end records the directory in force when it
+    # *started* — a later ``cd`` cannot launder an earlier write.
+    mut_dirs: list[str] = []
+    ev_dir: str | None = None
+    ev_mut = False
+    prev_mut = False
+    redir_hit = False
+
+    def _read_only() -> None:
+        # A verb branch that verified it writes nothing reverts the
+        # event's mutating flag; a redirect target found in the same
+        # segment still counts as a write.
+        nonlocal mutating, ev_mut
+        mutating = prev_mut
+        ev_mut = redir_hit
+
     for _, kind, m in events:
         if kind == "as":
             name = m.group("ps") or m.group("sh") or ""
@@ -1684,6 +1730,14 @@ def find_bash_disallowed_write_paths(
                 key = ("env:" if m.group("psenv") else "") + name.lower()
                 shell_vars[key] = value
             continue
+        # Flush the previous event's mutating directory, then record the
+        # directory in force as this event starts — its relative writes
+        # resolve against it even if a later ``cd`` moves ``eff_dir``.
+        if ev_mut and ev_dir is not None:
+            mut_dirs.append(ev_dir)
+        ev_dir = eff_dir
+        ev_mut = False
+        redir_hit = False
         opener = m
         verb = (opener.group("verb") or "").lower()
         if verb:
@@ -1738,11 +1792,13 @@ def find_bash_disallowed_write_paths(
             ):
                 continue
             mutating = True
+            redir_hit = True
             _check(rtarget)
         # ``mutating`` means this invocation writes — a read-only branch
         # restores the snapshot so earlier events keep their flag.
         prev_mut = mutating
         mutating = True
+        ev_mut = True
         if opener.group("dotnetcall") is not None:
             # ``[IO.File]::WriteAllText(path, x)`` / ``$x.Save(path)`` /
             # ``New-Object IO.StreamWriter path`` write without any shell
@@ -1832,21 +1888,22 @@ def find_bash_disallowed_write_paths(
             _rescan_tail(seg)
             if dir_stack:
                 eff_dir = dir_stack.pop()
+                _read_only()
             else:
+                # ``popd`` on an empty stack fails in the shell — the
+                # resulting directory is unverifiable, so fail closed.
                 blocked.append(verb)
             continue
         tokens = list(_PATH_TOKEN_RE.finditer(seg))
         if verb in _CD_VERBS or verb in _PUSH_VERBS:
+            # Navigation itself writes nothing; a resolvable literal
+            # target only moves ``eff_dir``/``dir_stack`` so later events
+            # are checked against the directory they actually run in.
             if not tokens:
-                # Bare cd/pushd heads to the profile dir — outside the
-                # workspace and unverifiable, so fail closed.
+                # Bare cd/pushd heads to the profile dir — unverifiable,
+                # so fail closed.
                 blocked.append(verb)
                 continue
-            for match in tokens:
-                raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
-                if re.match(r"^[A-Za-z]:$", raw):
-                    raw += "\\"
-                _check(raw)
             target = next(
                 (
                     match.group("t")
@@ -1862,17 +1919,23 @@ def find_bash_disallowed_write_paths(
                 continue
             target = target.rstrip("\\/") or target[:1]
             resolved = _resolve_value(target)
-            if resolved is not None and is_write_allowed(resolved, config):
-                if (
-                    os.environ.get("CDPATH") or shell_vars.get("cdpath")
-                ) and not _ABS_FORM_RE.match(target):
-                    # CDPATH can re-root a relative cd anywhere; unverifiable.
-                    blocked.append(target)
-                    continue
-                if verb in _PUSH_VERBS:
-                    dir_stack.append(eff_dir)
-                eff_dir = os.path.normpath(resolved)
+            if (
+                resolved is not None
+                and (os.environ.get("CDPATH") or shell_vars.get("cdpath"))
+                and not _ABS_FORM_RE.match(target)
+            ):
+                # CDPATH can re-root a relative cd anywhere; unverifiable.
+                blocked.append(target)
+                continue
+            if resolved is None:
+                # ``cd $x`` — the landing directory is unverifiable.
+                blocked.append(target)
+                continue
+            if verb in _PUSH_VERBS:
+                dir_stack.append(eff_dir)
+            eff_dir = os.path.normpath(resolved)
             _rescan_tail(seg)
+            _read_only()
             continue
         if verb == "find":
             if _FIND_MUT_FLAGS_RE.search(seg):
@@ -1889,9 +1952,10 @@ def find_bash_disallowed_write_paths(
             snoun = re.match(
                 r"\s*-([A-Za-z]+)\b", seg.lstrip("'\"")
             ).group(1).lower()
-            mutating = prev_mut
+            _read_only()
             if snoun == "transcript":
                 mutating = True
+                ev_mut = True
                 tval = re.search(
                     r"(?i)-(?:literalpath|path|outputdirectory)"
                     r"\s*[:=]?\s*('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
@@ -1909,6 +1973,7 @@ def find_bash_disallowed_write_paths(
                         _check(ptok.group(1).strip("'\""))
             elif snoun == "bitstransfer":
                 mutating = True
+                ev_mut = True
                 dval = re.search(
                     r"(?i)-destination\s*[:=]?\s*"
                     r"('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
@@ -1928,6 +1993,7 @@ def find_bash_disallowed_write_paths(
                         _check(btoks[1])
             elif snoun in ("job", "threadjob"):
                 mutating = True
+                ev_mut = True
                 sblock = re.search(
                     r"(?i)-scriptblock\s+(\{[^{}]*\}|\S+)", seg
                 )
@@ -2001,14 +2067,28 @@ def find_bash_disallowed_write_paths(
                 else:
                     program = stok
                 si += 1
-            prog_text = program.strip("'\"")
-            args_text = " ".join(a.strip("'\"") for a in sargs)
-            if re.search(
-                r"[$`()]|%[^\W\d][\w()]*%|![^\W\d]\w*!",
-                prog_text + " " + args_text,
+            # Dynamism is judged on the RAW tokens with PowerShell
+            # quoting rules: single quotes are always literal; double
+            # quotes interpolate ``$``/backtick; unquoted tokens evaluate
+            # ``$``, ``(``, ``)``, ``@(`` and backtick. ``%VAR%``/``!X!``
+            # are left to the rescan's command-slot rule.
+            def _stok_dyn(tok: str) -> bool:
+                if len(tok) > 1 and tok[0] == "'" and tok[-1] == "'":
+                    return False
+                if len(tok) > 1 and tok[0] == '"' and tok[-1] == '"':
+                    return bool(re.search(r"[$`]", tok))
+                return bool(re.search(r"[$`()]", tok))
+
+            if _stok_dyn(program) or any(
+                _stok_dyn(a) for a in sargs
             ):
                 blocked.append("<opaque:start-process>")
                 continue
+            prog_text = program.strip("'\"")
+            # Raw tokens keep their quoting so the rescan can pair up
+            # ``-ArgumentList '/c','cmd …'`` array elements — stripping
+            # here would unbalance the quotes and hide the payload.
+            args_text = " ".join(sargs)
             # The launcher is only as mutating as the program it runs:
             # ``Start-Process notepad.exe`` mutates nothing itself.
             smut: list[bool] = []
@@ -2023,7 +2103,7 @@ def find_bash_disallowed_write_paths(
                 if hit not in blocked:
                     blocked.append(hit)
             if not (smut and smut[0]):
-                mutating = prev_mut
+                _read_only()
             continue
         if verb == "rar":
             # ``rar a|u|m|f ARCHIVE files`` — the archive operand writes;
@@ -2043,7 +2123,7 @@ def find_bash_disallowed_write_paths(
                 if rargs[0].lower() in ("l", "lt", "lb", "v", "vt", "vb", "t", "p"):
                     # ``rar l``/``v``/``t``/``p`` list, view and test —
                     # nothing is written.
-                    mutating = prev_mut
+                    _read_only()
                 elif rmode in ("a", "u", "m", "f") and len(rargs) > 1:
                     _check(rargs[1])
                 elif (
@@ -2066,7 +2146,7 @@ def find_bash_disallowed_write_paths(
                 ch in "tp" for ch in aargs[0].lstrip("-")
             ):
                 # ``ar t``/``ar p`` list and print members — reads only.
-                mutating = prev_mut
+                _read_only()
             elif len(aargs) > 1 and re.search(
                 r"[rqmds]", aargs[0].lstrip("-")
             ):
@@ -2083,6 +2163,18 @@ def find_bash_disallowed_write_paths(
             # stripping would unbalance quotes inside e.g. ``cmd /c``.
             if len(tail) > 1 and tail[0] in "\"'" and tail[0] == tail[-1]:
                 tail = tail[1:-1]
+            else:
+                # ``bash -c 'code'``/``cmd /c "code"`` — the code flag's
+                # quoted operand IS the payload; unwrap it so the rescan
+                # sees its operators unquoted.
+                cqm = re.match(
+                    r"(?is)^\s*(?:(?:-{1,2}|/)[\w?+-]+\s+)*?"
+                    r"(?:-[ce]|--command|--eval|/[ck])[\s,]*"
+                    r"(['\"])((?:[^'\"\\]|\\.)*)\1\s*$",
+                    tail,
+                )
+                if cqm:
+                    tail = cqm.group(2)
             resolved = tail
             # A non-literal command slot inside the payload (``iex $x``,
             # ``cmd /c %X%``) is refused by the command-slot check in the
@@ -2101,12 +2193,14 @@ def find_bash_disallowed_write_paths(
                 if len(nonflag_words) < needed:
                     blocked.append(verb)
                     continue
+            smut: list[bool] = []
             sub = find_bash_disallowed_write_paths(
                 resolved,
                 config,
                 workdir=eff_dir,
                 _depth=_depth + 1,
                 _piped=piped,
+                _mut_out=smut,
             )
             if sub:
                 blocked.append(verb)
@@ -2114,8 +2208,46 @@ def find_bash_disallowed_write_paths(
                     if hit.startswith("<opaque:") and hit not in blocked:
                         blocked.append(hit)
                 continue
-            # No nested verbs — the tail itself may be a script path;
-            # flag-looking tokens (``-c``/``/c``) are not paths.
+            payload_mut = bool(smut and smut[0])
+            # A quoted string inside the tail is itself a nested command
+            # (``cmd /c 'echo x > C:\x'``) — the rescan masks its ``>`` as
+            # quoted, so rescan each literal's inner text directly.
+            lit_hit = False
+            if resolved and _depth < _MAX_CARRIER_DEPTH:
+                for lit in _STR_LIT_RE.finditer(resolved):
+                    inner = (lit.group(1) or lit.group(2) or "").strip()
+                    if not inner or not (
+                        _MUT_VERB_WORDS_RE.search(inner)
+                        or re.search(r"[>|;&`$]", inner)
+                    ):
+                        continue
+                    lmut: list[bool] = []
+                    lsub = find_bash_disallowed_write_paths(
+                        inner,
+                        config,
+                        workdir=eff_dir,
+                        _depth=_depth + 1,
+                        _piped=piped,
+                        _mut_out=lmut,
+                    )
+                    if lsub:
+                        blocked.append(verb)
+                        for hit in lsub:
+                            if hit.startswith("<opaque:") and hit not in blocked:
+                                blocked.append(hit)
+                        lit_hit = True
+                        break
+                    if lmut and lmut[0]:
+                        payload_mut = True
+            if lit_hit:
+                continue
+            # No nested verbs — the payload's first non-flag token may be
+            # a script file (``cmd /c x.bat``). Only a file-looking token
+            # counts: it contains a path separator or ends in an
+            # extension. Plain words (``echo hi``, ``dir``) are not
+            # paths. A script file's internal writes are unverifiable,
+            # so it keeps the carrier mutating.
+            script_file = False
             if resolved:
                 for token in _PATH_TOKEN_RE.finditer(resolved):
                     t = token.group("t").rstrip("\\/") or token.group("t")[:1]
@@ -2123,7 +2255,19 @@ def find_bash_disallowed_write_paths(
                         r"^/[A-Za-z](?::|$)", t
                     ):
                         continue
+                    if (
+                        "/" not in t
+                        and "\\" not in t
+                        and not re.search(r"\.\w{1,5}$", t)
+                    ):
+                        break
+                    script_file = True
                     _check(t)
+                    break
+            if not payload_mut and not script_file:
+                # ``cmd /c echo hi`` launches a read-only payload — the
+                # carrier itself mutates nothing.
+                _read_only()
             continue
         if verb in _INTERP_VERBS and _INTERP_CODE_FLAG_RE.search(seg):
             # Literals come from the unmasked ``scrubbed`` span — ``seg``
@@ -2171,7 +2315,7 @@ def find_bash_disallowed_write_paths(
                 code_src,
             ):
                 code_vars[wm.group(2)] = wm.group(1).strip() or "?"
-            if (
+            any_api = bool(
                 _CODE_MUT_RE.search(seg)
                 or _CODE_DISP_CALL_RE.search(seg)
                 or any(
@@ -2180,7 +2324,8 @@ def find_bash_disallowed_write_paths(
                     )
                     for v in code_vars.values()
                 )
-            ):
+            )
+            if any_api:
                 # Each write-API's *target* argument must be a plain
                 # literal — a computed expression (env/argv/transforms/
                 # calls) produces the path at runtime, so fail closed.
@@ -2500,6 +2645,11 @@ def find_bash_disallowed_write_paths(
                 )):
                     blocked.append(verb)
                     continue
+            if not any_api or not seen_api:
+                # The code carries no write-API call (``python -c
+                # "print(1)"``) — the event reverts to read-only so an
+                # outside-workdir invocation does not refuse a read.
+                _read_only()
             for text in lit_texts:
                 # A literal holding a nested command string recurses —
                 # but a literal that is itself interpreter code (``import
@@ -2664,34 +2814,50 @@ def find_bash_disallowed_write_paths(
                 # write root is hidden, so fail closed.
                 blocked.append("<opaque:tar-absolute>")
                 continue
-            if re.search(r"(?i)-[a-z]*[xt][a-z]*O", seg) or _lpre(
-                "to-stdout"
+            # An archive-write mode: ``c``/``r``/``u``/``A`` in a dash
+            # cluster or the bare leading cluster, or a write long-option
+            # (GNU getopt accepts unambiguous ≥2-char prefixes).
+            tar_arch_write = (
+                re.search(r"(?:^|\s)-(?!-)[A-Za-z]*[cruA]", seg)
+                is not None
+                or re.search(r"[cruA]", bare_cl) is not None
+                or _lpre(
+                    "create",
+                    "append",
+                    "update",
+                    "catenate",
+                    "concatenate",
+                    "delete",
+                )
+            )
+            if (
+                (
+                    re.search(r"(?:^|\s)-(?!-)[A-Za-z]*O", seg) is not None
+                    or "O" in bare_cl
+                    or _lpre("to-stdout")
+                )
+                and not tar_arch_write
             ):
                 # ``-O``/``--to-stdout`` stream members to stdout — the
-                # archive operand is a read, not a write target.
-                mutating = prev_mut
+                # archive operand is a read — but only when no
+                # archive-write mode is present (``tar -cOf`` creates).
+                _read_only()
                 continue
             if not re.search(
-                # A write mode is a ``-`` cluster containing c/x/u/r
+                # A write mode is a ``-`` cluster containing c/x/u/r/a
                 # anywhere in the args, or a bare option cluster at the
                 # very start of the segment (``tar cfX:``) — but a bare
                 # ``C:`` drive spec is a path, not a cluster.
-                r"(?i)-[a-z]*[cxur][a-z]*"
-                r"|^\s*[ctxurfeajzJWbmopvdh]*[cxur][a-z]*(?![a-zA-Z]*:)",
+                r"(?i)-[a-z]*[cxura][a-z]*"
+                r"|^\s*[ctxurfeajzJWbmopvdhA]*[cxura][a-z]*(?![a-zA-Z]*:)",
                 seg,
-            ) and not _lpre(
-                "create",
+            ) and not tar_arch_write and not _lpre(
                 "extract",
-                "append",
-                "update",
-                "delete",
-                "concatenate",
-                "catenate",
                 "get",
             ):
                 # List/diff/verify modes never write — ``tar -tf a.tar``
                 # is a read.
-                mutating = prev_mut
+                _read_only()
                 continue
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
@@ -2730,17 +2896,19 @@ def find_bash_disallowed_write_paths(
                     _check(rhs)
                 continue
             _check(raw)
-    # A start directory outside the whitelist makes every relative
-    # write unverifiable — with any mutating opener or hit, refuse the
-    # whole command and mark the directory itself.
-    if (
-        _depth == 0
-        and start_dir is not None
-        and not is_write_allowed(start_dir, config)
-        and (mutating or blocked)
-        and start_dir not in blocked
-    ):
-        blocked.append(start_dir)
+    if ev_mut and ev_dir is not None:
+        mut_dirs.append(ev_dir)
+    # A directory outside the whitelist makes every relative write
+    # unverifiable — for each event that stayed mutating, refuse the
+    # directory in force when it ran, once each.
+    if _depth == 0:
+        for od in mut_dirs:
+            if (
+                od is not None
+                and not is_write_allowed(od, config)
+                and od not in blocked
+            ):
+                blocked.append(od)
     if _mut_out is not None:
         _mut_out.append(mutating or bool(blocked))
     return blocked
