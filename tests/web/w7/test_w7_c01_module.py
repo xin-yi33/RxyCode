@@ -412,6 +412,16 @@ def test_w7_c01_integration() -> None:
         "iwr -o..\\rxy_w7c01_out.txt http://a/",
     ):
         assert find_bash_disallowed_write_paths(glued, config, workdir="D:\\"), glued
+    # Colon-glued flag values handed over a space (audit round 19) and
+    # f-string interpolations are live code — ``{env}`` inside
+    # ``f'...{...}'`` must trip the dynamic-source check.
+    for post18 in (
+        "Set-Content -Path :C:\\rxy_w7c01_out.txt x",
+        'python -c "import os;os.system(f\'-o{os.environ[chr(84)]}\')"',
+        'python -c "import os;os.system(f\'x{os.environ}\')"',
+        "python -c \"import os;os.system(f'-o{os.environ[\\\"T\\\"]}')\"",
+    ):
+        assert find_bash_disallowed_write_paths(post18, config, workdir="D:\\"), post18
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

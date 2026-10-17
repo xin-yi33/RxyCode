@@ -894,6 +894,44 @@ _CODE_CALLABLE_REF_RE = re.compile(
 )
 
 
+def _find_quote_close(text: str, qpos: int) -> int:
+    """Return the index of the closing quote after ``text[qpos]``.
+
+    ``\"`` inside a ``"..."`` span is an escaped quote in bash and
+    PowerShell — an odd run of backslashes before a ``"`` means the
+    string keeps going (``\\"`` is an escaped backslash plus a real
+    close). Single quotes take no escapes, so they close naively.
+    """
+    qc = text[qpos]
+    close = text.find(qc, qpos + 1)
+    if qc != '"':
+        return close
+    while close != -1:
+        k = close - 1
+        bs = 0
+        while k > qpos and text[k] == "\\":
+            bs += 1
+            k -= 1
+        if bs % 2:
+            close = text.find(qc, close + 1)
+        else:
+            return close
+    return -1
+
+
+# ``"..."`` literal with ``\"`` escapes folded into the content; single
+# quotes keep naive POSIX/cmd semantics.
+_STR_LIT_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|\'([^\']*)\'')
+
+
+def _lit_contents(text: str) -> list:
+    """All string-literal bodies in ``text`` (quotes removed)."""
+    return [
+        m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        for m in _STR_LIT_RE.finditer(text)
+    ]
+
+
 def _code_arg_region(text: str, start: int) -> str:
     """Return the argument region after ``text[start]`` (an opening ``(``).
 
@@ -908,6 +946,15 @@ def _code_arg_region(text: str, start: int) -> str:
         ch = text[i]
         if quote:
             if ch == quote:
+                if quote == '"' and text[i - 1] == "\\":
+                    k = i - 1
+                    bs = 0
+                    while k > start and text[k] == "\\":
+                        bs += 1
+                        k -= 1
+                    if bs % 2:
+                        i += 1
+                        continue
                 quote = None
         elif ch in "\"'":
             quote = ch
@@ -919,6 +966,33 @@ def _code_arg_region(text: str, start: int) -> str:
             depth -= 1
         i += 1
     return text[start:end]
+
+
+def _code_lit_strip(text: str) -> str:
+    """Strip quoted literals from interpreter code.
+
+    ``f``-string ``{expr}`` interpolations are live code, not data — they
+    stay visible so ``os.system(f'-o{os.environ["T"]}')`` still trips the
+    dynamic-source check even though the surrounding quotes are data.
+    """
+    parts = []
+    pos = 0
+    for lm in _STR_LIT_RE.finditer( text):
+        parts.append(text[pos:lm.start()])
+        j = lm.start()
+        while j > 0 and text[j - 1] in "rRuUbBfF\\":
+            j -= 1
+        pfx = text[j:lm.start()].replace("\\", "")
+        if "f" in pfx.lower() and (
+            j == 0 or not (text[j - 1].isalnum() or text[j - 1] == "_")
+        ):
+            for expr in re.findall(r"\{([^{}]*)\}", lm.group(0)):
+                parts.append(" " + expr + " ")
+        pos = lm.end()
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
 # Two-path calls whose destination is also a write target.
 _TWO_TARGET_APIS = frozenset(
     {
@@ -1083,7 +1157,7 @@ def find_bash_disallowed_write_paths(
         qpos = 0
         while qpos < len(scrubbed):
             if scrubbed[qpos] in "\"'":
-                close = scrubbed.find(scrubbed[qpos], qpos + 1)
+                close = _find_quote_close(scrubbed, qpos)
                 end = close if close != -1 else len(scrubbed)
                 spans.append((qpos, end))
                 qpos = end + 1 if close != -1 else len(scrubbed)
@@ -1277,8 +1351,7 @@ def find_bash_disallowed_write_paths(
     qpos = 0
     while qpos < len(scrubbed):
         if scrubbed[qpos] in "\"'":
-            quote = scrubbed[qpos]
-            close = scrubbed.find(quote, qpos + 1)
+            close = _find_quote_close(scrubbed, qpos)
             quoted_spans.append((qpos, close if close != -1 else len(scrubbed)))
             qpos = close + 1 if close != -1 else len(scrubbed)
         else:
@@ -1384,8 +1457,7 @@ def find_bash_disallowed_write_paths(
                     dmasked = re.sub(
                         r'"[^"]*"|\'[^\']*\'', " ", draw[call.__len__() :]
                     )
-                    for lit in re.finditer(
-                        r'"([^"]*)"|\'([^\']*)\'', draw[call.__len__() :]
+                    for lit in _STR_LIT_RE.finditer( draw[call.__len__() :]
                     ):
                         _check(lit.group(1) or lit.group(2) or "")
                     for tok in _PATH_TOKEN_RE.finditer(dmasked):
@@ -1400,7 +1472,7 @@ def find_bash_disallowed_write_paths(
                         continue
                     region = _code_arg_region(draw, cm.end())
                     work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
-                    work = re.sub(r'"[^"]*"|\'[^\']*\'', "", work)
+                    work = _code_lit_strip(work)
                     if _CODE_DYN_RE.search(work):
                         blocked.append(member)
                         break
@@ -1414,8 +1486,7 @@ def find_bash_disallowed_write_paths(
                             break
                     if bad_arg:
                         break
-                    for lit in re.finditer(
-                        r'"([^"]*)"|\'([^\']*)\'', region
+                    for lit in _STR_LIT_RE.finditer( region
                     ):
                         _check(lit.group(1) or lit.group(2) or "")
                     for tok in _PATH_TOKEN_RE.finditer(work):
@@ -1572,7 +1643,7 @@ def find_bash_disallowed_write_paths(
             )
             lit_texts = [
                 (lit.group(1) or lit.group(2) or "").strip()
-                for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', raw_seg)
+                for lit in _STR_LIT_RE.finditer( raw_seg)
             ]
             # ``name = expr`` bindings inside the code string are statically
             # visible — ``p='ok.txt'; Path(p).unlink()`` resolves, while
@@ -1606,7 +1677,7 @@ def find_bash_disallowed_write_paths(
                 or _CODE_DISP_CALL_RE.search(seg)
                 or any(
                     _CODE_CALLABLE_REF_RE.search(
-                        re.sub(r'"[^"]*"|\'[^\']*\'', "", v).strip()
+                        _code_lit_strip(v).strip()
                     )
                     for v in code_vars.values()
                 )
@@ -1635,11 +1706,10 @@ def find_bash_disallowed_write_paths(
                     """
                     t_lits = [
                         t.strip("\"'")
-                        for t in re.findall(
-                            r'"[^"]*"|\'[^\']*\'', tail
+                        for t in _lit_contents( tail
                         )
                     ]
-                    t_clean = re.sub(r'"[^"]*"|\'[^\']*\'', "", tail)
+                    t_clean = _code_lit_strip(tail)
                     if _CODE_DYN_RE.search(t_clean):
                         return True
                     if re.search(r"[(\[{'\"=]", t_clean):
@@ -1647,9 +1717,7 @@ def find_bash_disallowed_write_paths(
                             r"[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)",
                             tail,
                         ):
-                            cwork = re.sub(
-                                r'"[^"]*"|\'[^\']*\'', "",
-                                cm.group(1),
+                            cwork = _code_lit_strip(cm.group(1),
                             )
                             if _arg_dirty(cwork, cwork.split(",")):
                                 return True
@@ -1658,13 +1726,11 @@ def find_bash_disallowed_write_paths(
                         if hn:
                             hv = _lookup(hn.group(1))
                             if hv is None or _CODE_DYN_RE.search(
-                                re.sub(
-                                    r'"[^"]*"|\'[^\']*\'', "", hv
+                                _code_lit_strip(hv
                                 )
                             ):
                                 return True
-                            for hl in re.findall(
-                                r'"[^"]*"|\'[^\']*\'', hv
+                            for hl in _lit_contents( hv
                             ):
                                 _check(hl.strip("\"'"))
                     for lit in t_lits:
@@ -1685,13 +1751,12 @@ def find_bash_disallowed_write_paths(
                             # tracked value for the bare-name argument.
                             aval = bound
                             if _CODE_DYN_RE.search(
-                                re.sub(r'"[^"]*"|\'[^\']*\'', "", aval)
+                                _code_lit_strip(aval)
                             ):
                                 return True
                             sub_lits = [
                                 t.strip("\"'")
-                                for t in re.findall(
-                                    r'"[^"]*"|\'[^\']*\'', aval
+                                for t in _lit_contents( aval
                                 )
                             ]
                             if sub_lits:
@@ -1720,7 +1785,7 @@ def find_bash_disallowed_write_paths(
                     # inspecting the argument expression: literal text such
                     # as ``'ok.pdf'`` is data, not computed code.
                     work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
-                    work = re.sub(r'"[^"]*"|\'[^\']*\'', "", work)
+                    work = _code_lit_strip(work)
                     args = work.split(",")
                     if _arg_dirty(
                         work,
@@ -1767,13 +1832,13 @@ def find_bash_disallowed_write_paths(
                         dirty = True
                         break
                     if _CODE_DYN_RE.search(
-                        re.sub(r'"[^"]*"|\'[^\']*\'', "", value)
+                        _code_lit_strip(value)
                     ):
                         dirty = True
                         break
                     n_lits = [
                         t.strip("\"'")
-                        for t in re.findall(r'"[^"]*"|\'[^\']*\'', value)
+                        for t in _lit_contents( value)
                     ]
                     if not n_lits:
                         dirty = True
@@ -1828,8 +1893,7 @@ def find_bash_disallowed_write_paths(
                         ):
                             hv = _lookup(hbase)
                             if hv is None or _CODE_DYN_RE.search(
-                                re.sub(
-                                    r'"[^"]*"|\'[^\']*\'', "", hv
+                                _code_lit_strip(hv
                                 )
                             ):
                                 dirty = True
@@ -1841,10 +1905,9 @@ def find_bash_disallowed_write_paths(
                     dwork = re.sub(
                         r"(?i)(?<![\w])[bru]+(?=['\"])", "", region
                     )
-                    dwork_lits = re.findall(
-                        r'"[^"]*"|\'[^\']*\'', dwork
+                    dwork_lits = _lit_contents( dwork
                     )
-                    dwork = re.sub(r'"[^"]*"|\'[^\']*\'', "", dwork)
+                    dwork = _code_lit_strip(dwork)
                     if not dwork.strip() and not dwork_lits:
                         continue
                     seen_api = True
@@ -1860,12 +1923,10 @@ def find_bash_disallowed_write_paths(
                     region = _code_arg_region(seg, exc.end())
                     e_lits = [
                         t.strip("\"'")
-                        for t in re.findall(
-                            r'"[^"]*"|\'[^\']*\'', region
+                        for t in _lit_contents( region
                         )
                     ]
-                    ework = re.sub(
-                        r'"[^"]*"|\'[^\']*\'', "", region
+                    ework = _code_lit_strip(region
                     )
                     bad = bool(ework.strip())
                     if not bad:
@@ -1884,7 +1945,7 @@ def find_bash_disallowed_write_paths(
                 for cname, cvalue in code_vars.items():
                     # ``x = os.remove; x(t)`` — a name bound to a mutating
                     # callable keeps the literal-only argument rule.
-                    nval = re.sub(r'"[^"]*"|\'[^\']*\'', "", cvalue)
+                    nval = _code_lit_strip(cvalue)
                     if not _CODE_CALLABLE_REF_RE.search(nval.strip()):
                         continue
                     seen_api = True
@@ -1894,12 +1955,10 @@ def find_bash_disallowed_write_paths(
                         region = _code_arg_region(seg, call.end())
                         cw_lits = [
                             t.strip("\"'")
-                            for t in re.findall(
-                                r'"[^"]*"|\'[^\']*\'', region
+                            for t in _lit_contents( region
                             )
                         ]
-                        cwork = re.sub(
-                            r'"[^"]*"|\'[^\']*\'', "", region
+                        cwork = _code_lit_strip(region
                         )
                         seen_api = True
                         if _arg_dirty(cwork, cwork.split(",")):
@@ -1922,8 +1981,7 @@ def find_bash_disallowed_write_paths(
                 # The code itself lives inside a quoted literal — strip
                 # the literals nested *inside* the code, not the code
                 # string, before the no-API dynamic check.
-                code_inner = re.sub(
-                    r'"[^"]*"|\'[^\']*\'', "", " ".join(lit_texts)
+                code_inner = _code_lit_strip(" ".join(lit_texts)
                 )
                 if dirty or (not seen_api and (
                     not lit_texts or _CODE_DYN_RE.search(code_inner)
@@ -1969,7 +2027,7 @@ def find_bash_disallowed_write_paths(
             # (``curl url > /etc/x``) or a program literal that redirects
             # inside its own language (``awk '{print > "/etc/x"}'``).
             _rescan_tail(seg)
-            for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', seg):
+            for lit in _STR_LIT_RE.finditer( seg):
                 for gt in re.finditer(
                     r">{1,2}\s*[\"']?([^\s'\";|&}]+)",
                     lit.group(1) or lit.group(2) or "",
@@ -2005,10 +2063,11 @@ def find_bash_disallowed_write_paths(
         for fvm in re.finditer(
             r"(?i)-{1,2}[A-Za-z][\w-]*[:=]([^\s'\"|;>&=]*)"
             r"|(?<![\w-])(?:of|if|out|output|target|prefix|chdir|"
-            r"destination|filepath|backup)[:=]([^\s'\"|;>&=]*)",
+            r"destination|filepath|backup)[:=]([^\s'\"|;>&=]*)"
+            r"|(?<![\w/.-]):([A-Za-z]:[\\/][^\s'\"|;>&=]*)",
             seg,
         ):
-            fval = fvm.group(1) or fvm.group(2) or ""
+            fval = fvm.group(1) or fvm.group(2) or fvm.group(3) or ""
             if (
                 re.match(r"[A-Za-z]:[\\/]", fval)
                 or fval.startswith(("/", "\\", "~", "$"))
