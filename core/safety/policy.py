@@ -602,7 +602,18 @@ _MUT_VERB_ALT = (
     r"rsync|scp|rcp|curl|wget|powershell|pwsh|cmd|bash|sh|zsh|dash|env|sudo|doas|su|nohup|nice|time|timeout|parallel|"
     r"iex|Invoke-Expression|Invoke-Command|eval|source|watch|ssh|pkexec|runas|python|python3|py|node|deno|bun|php|ruby|"
     r"osascript|rscript|julia|certutil|expand|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|at|batch|"
-    r"Invoke-WebRequest|Invoke-RestMethod"
+    r"Invoke-WebRequest|Invoke-RestMethod|"
+    # Binaries that write output artifacts (compilers, media/document
+    # tools, VCS, cloud/infra, archivers of last resort).
+    r"gcc|g\+\+|clang(?:\+\+|-cl)?|javac|rustc|cargo|dotnet|msbuild|csc|vbc|fsc|nasm|yasm|masm|cmake|ninja|meson|scons|"
+    r"bazel|buck2|gradle|mvn|tsc|webpack|vite|esbuild|rollup|parcel|swig|protoc|flatc|pip3?|gem|composer|nuget|poetry|"
+    r"apt|apt-get|dpkg|rpm|dnf|yum|pacman|zypper|brew|snap|flatpak|ffmpeg|ffprobe|ffplay|magick|gm|pandoc|soffice|"
+    r"libreoffice|aria2c|axel|yt-dlp|youtube-dl|espeak|lame|oggenc|opusenc|ps2pdf|wkhtmltopdf|weasyprint|enscript|"
+    r"a2ps|groff|nroff|tex|latex|pdflatex|xelatex|lualatex|bibtex|dvips|dvipdf|makeindex|img2pdf|pdftk|qpdf|pdfunite|"
+    r"inkscape|objcopy|ranlib|pyinstaller|nuitka|makensis|iscc|electron-packager|signtool|osslsigncode|jarsigner|"
+    r"apksigner|codesign|srm|wipe|sdelete|octave|sqlite3|mysqldump|pg_dump|mongodump|git|svn|hg|bzr|docker|podman|"
+    r"nerdctl|kubectl|helm|vagrant|packer|terraform|ansible|aws|az|gcloud|gsutil|azcopy|rclone|ftp|tftp|sftp|socat|"
+    r"systemctl|service|launchctl|gs\b|npm|yarn|pnpm|sphinx-build|hugo|jekyll|flac"
 )
 _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
@@ -760,6 +771,31 @@ _CODE_DYN_RE = re.compile(
     r"\bcwd\b|curdir|\bpwd\b|['\"]\s*\+|\+\s*['\"]|['\"]\s*\[)",
     re.IGNORECASE,
 )
+# Path-accepting calls in interpreter inline code. The target argument of
+# these must be a literal for the write gate to verify it; a call like
+# ``f.write(data)`` whose argument is content is intentionally absent.
+_CODE_TARGET_API_RE = re.compile(
+    r"(?i)(?<![\w])"
+    r"(open|fopen|NamedTemporaryFile|mkstemp|mkdtemp|expanduser|"
+    r"copy|copy2|copyfile|copytree|cp|move|rename|replace|remove|unlink|delete|"
+    r"rmtree|makedirs|mkdir|rmdir|chmod|chown|truncate|symlink|link|"
+    r"hardlink|mkfifo|mknod|setxattr|utime|touch|file_put_contents|"
+    r"file_get_contents|writeFileSync|writeFile|appendFileSync|appendFile|"
+    r"cpSync|copyFileSync|renameSync|rmSync|rmdirSync|mkdirSync|unlinkSync|"
+    r"chmodSync|chownSync|truncateSync|symlinkSync|linkSync|openSync|"
+    r"createWriteStream|mkdtempSync|utimesSync|rm|mv|io\.open|"
+    r"File\.open|File\.delete|File\.rename|File\.copy|File\.chmod|"
+    r"FileUtils\.\w+)\s*\(",
+    re.IGNORECASE,
+)
+# Two-path calls whose destination is also a write target.
+_TWO_TARGET_APIS = frozenset(
+    {
+        "copy", "copy2", "copyfile", "copytree", "cp", "move", "rename",
+        "replace", "symlink", "link", "hardlink", "cpsync", "copyfilesync",
+        "renamesync",
+    }
+)
 _MAX_CARRIER_DEPTH = 3
 
 
@@ -859,8 +895,21 @@ def find_bash_disallowed_write_paths(
         # At a word start (``\Windows``, ``\\share``) or after a
         # ``:``/``}``/``%`` it is a path root or suffix, and ``$var\``
         # binds the var's path suffix (``$PWD\inside.txt``) — all stay.
+        # `` ` `` (``Set-Cont`ent``) is the PowerShell escape: it is never
+        # a path character, so a word-internal `` `<letter>`` drops out.
         out: list[str] = []
         for i, ch in enumerate(text):
+            if (
+                ch == "`"
+                and i + 1 < len(text)
+                and text[i + 1].isalnum()
+                and i > 0
+                and (text[i - 1].isalnum() or text[i - 1] in "_-.")
+            ):
+                # Mid-word only: ``Set-Cont`ent`` is a PS escape. A leading
+                # or paired `` ` `` is bash command substitution and stays
+                # for the command-position check.
+                continue
             if ch == "\\" and i + 1 < len(text) and text[i + 1].isalpha():
                 prev = text[i - 1] if i else ""
                 if prev == "\\" or prev.isalnum() or prev == "_":
@@ -1249,12 +1298,40 @@ def find_bash_disallowed_write_paths(
                 for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', seg)
             ]
             if _CODE_MUT_RE.search(seg):
-                # A write-ish API whose target is produced at runtime
-                # (env/argv/stdin/temp/script path) or whose call carries
-                # no quoted literal is unverifiable — fail closed.
-                if _CODE_DYN_RE.search(seg) or not any(
+                # Each write-API's *target* argument must be a plain
+                # literal — a computed expression (env/argv/transforms/
+                # calls) produces the path at runtime, so fail closed.
+                # Content arguments (``f.write(data)``) and literals the
+                # code passes through stay allowed and still get checked
+                # as paths by the literal loop below.
+                dirty = False
+                seen_api = False
+                for api in _CODE_TARGET_API_RE.finditer(seg):
+                    seen_api = True
+                    region = seg[api.end() : api.end() + 240]
+                    close = region.find(")")
+                    if close != -1:
+                        region = region[:close]
+                    if _CODE_DYN_RE.search(region):
+                        dirty = True
+                        break
+                    args = region.split(",")
+                    check_args = (
+                        args[:2] if api.group(1).lower() in _TWO_TARGET_APIS else args[:1]
+                    )
+                    for arg in check_args:
+                        stripped = re.sub(r'(?i)(?<![\w])[bru]+(?=[\'"])', "", arg)
+                        stripped = re.sub(r'"[^"]*"|\'[^\']*\'', "", stripped)
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", stripped)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            dirty = True
+                            break
+                    if dirty:
+                        break
+                if dirty or (not seen_api and not any(
                     '"' in t or "'" in t for t in lit_texts
-                ):
+                )):
                     blocked.append(verb)
                     continue
             for text in lit_texts:
