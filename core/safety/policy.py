@@ -567,9 +567,9 @@ _ABS_PATH_RE = re.compile(
 # Paths that only appear inside -Value/-Content payloads are ignored; here-string
 # contents stay visible because they can be executed (iex, Invoke-Expression).
 _ABS_TARGET = (
-    r"(?<![\w~./\\])"
+    r"(?<![\w~./\\:])"
     r"(?:"
-    r"[A-Za-z]:[\\/][^\s'\"|;>&]*"
+    r"[A-Za-z]:(?:[\\/][^\s'\"|;>&]*)?"
     r"|\\{1,2}[^\s'\"|;>&]+"
     r"|/[^\s'\"|;>&]*"
     r"|\$\{env:[^\W\d]\w*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
@@ -847,6 +847,18 @@ def find_bash_disallowed_write_paths(
                 # command — the tracked value wins over the inherited one.
                 return _resolve_value(shell_vars[name] + raw[env.end():], depth + 1)
             return _bash_candidate(raw, eff_dir)
+        pct = re.match(r"^%([^\W\d][\w()]*)%", raw)
+        if pct:
+            # ``set X=v`` / env-prefix assigns rebind ``%X%`` — tracked
+            # values win over the inherited environment.
+            name = pct.group(1).lower()
+            if name in shell_vars:
+                value = shell_vars[name]
+                suffix = raw[pct.end() :]
+                if not value and not suffix:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
+            return _bash_candidate(raw, eff_dir)
         var = _SHELL_VAR_RE.match(raw)
         if var:
             braced = var.group(1) is not None
@@ -909,6 +921,16 @@ def find_bash_disallowed_write_paths(
         if candidate is None or not is_write_allowed(candidate, config):
             blocked.append(raw)
 
+    def _rescan_tail(text: str) -> None:
+        # A verb's segment swallows everything to the next top-level
+        # separator, so a ``>`` or nested verb inside it never opened its
+        # own event — rescan the tail and merge any blocks it finds.
+        for hit in find_bash_disallowed_write_paths(
+            text, config, workdir=eff_dir, _depth=_depth + 1
+        ):
+            if hit not in blocked:
+                blocked.append(hit)
+
     # Quoted spans mask assignment detection: 'X=D:\evil' inside quotes is
     # string content, not an assignment (an unclosed quote quotes to EOL).
     quoted_spans: list[tuple[int, int]] = []
@@ -946,6 +968,9 @@ def find_bash_disallowed_write_paths(
         [
             (m.start(), "op", m)
             for m in _BASH_MUTATING_OPENER_RE.finditer(masked)
+            # ``>`` inside quotes is literal text (``echo 'a > /x'``), not
+            # a shell redirect — only unquoted ``>`` opens a redir seg.
+            if not (m.group("redirseg") is not None and _in_quotes(m.start()))
         ]
         + [
             (m.start(), "as", m)
@@ -975,6 +1000,7 @@ def find_bash_disallowed_write_paths(
         verb = (opener.group("verb") or "").lower()
         seg = opener.group("verbseg") or opener.group("redirseg") or ""
         if verb in _POP_VERBS:
+            _rescan_tail(seg)
             if dir_stack:
                 eff_dir = dir_stack.pop()
             else:
@@ -1017,10 +1043,13 @@ def find_bash_disallowed_write_paths(
                 if verb in _PUSH_VERBS:
                     dir_stack.append(eff_dir)
                 eff_dir = os.path.normpath(resolved)
+            _rescan_tail(seg)
             continue
         if verb == "find":
             if _FIND_MUT_FLAGS_RE.search(seg):
                 blocked.append(verb)
+            else:
+                _rescan_tail(seg)
             continue
         if verb in _CARRIER_VERBS and not seg.startswith((".", "(")):
             # ``time.sleep(3)`` is a call expression, not the ``time``
@@ -1083,6 +1112,16 @@ def find_bash_disallowed_write_paths(
             # Fall through: path tokens in the code get the generic check.
         cond = _COND_MUT_VERBS.get(verb)
         if cond and not re.search(cond, seg, re.IGNORECASE):
+            # Read-only form — but the tail may still carry a real ``>``
+            # (``curl url > /etc/x``) or a program literal that redirects
+            # inside its own language (``awk '{print > "/etc/x"}'``).
+            _rescan_tail(seg)
+            for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', seg):
+                for gt in re.finditer(
+                    r">{1,2}\s*[\"']?([^\s'\";|&}]+)",
+                    lit.group(1) or lit.group(2) or "",
+                ):
+                    _check(gt.group(1))
             continue
         nonflag = [
             match for match in tokens if not match.group("t").startswith(("-", "+"))

@@ -198,6 +198,32 @@ def test_w7_c01_integration() -> None:
         'powershell -NoProfile -Command "[IO.File]::WriteAllText(\'C:\\\\Windows\\\\Temp\\\\rxy_w7c01_pwned.txt\',\'x\')"',
         "Write-Output TEMP=inside.txt; Set-Content $env:TEMP\\rxy_w7c01_pwned.txt x",
         'echo OUT=inside.txt; echo x > $OUT\\..\\..\\..\\rxy_w7c01_pwned.txt',
+        # Redirects past cond-verbs, program-literal redirects, bare drive
+        # roots, and %VAR% bindings from ``set`` all stay outside.
+        "curl http://a > /etc/rxy_w7c01_pwned.txt",
+        "sort f > /etc/rxy_w7c01_pwned.txt",
+        "wget http://a > /etc/rxy_w7c01_pwned.txt",
+        "openssl enc -in a > /etc/rxy_w7c01_pwned.txt",
+        "sed 'p' f > /etc/rxy_w7c01_pwned.txt",
+        'awk \'{print > "/etc/rxy_w7c01_pwned.txt"}\' f',
+        "sort -o /etc/rxy_w7c01_pwned.txt f",
+        "gpg -o /etc/rxy_w7c01_pwned.txt f",
+        "openssl enc -out /etc/rxy_w7c01_pwned.txt",
+        "awk -i inplace '{print}' /etc/rxy_w7c01_pwned.txt",
+        "iwr http://a -OutFile /etc/rxy_w7c01_pwned.txt",
+        "format C:",
+        "del C:",
+        "echo x > C:",
+        "popd > /etc/rxy_w7c01_pwned.txt",
+        "find / -name x > /etc/rxy_w7c01_pwned.txt",
+        "gzip /etc/rxy_w7c01_pwned.txt",
+        "sponge /etc/rxy_w7c01_pwned.txt",
+        "mkfs.ext4 /dev/sda",
+        "cipher /w:C:\\rxy_w7c01_pwned.txt",
+        "Start-BitsTransfer -Destination C:\\rxy_w7c01_pwned.txt",
+        "New-ItemProperty -Path C:\\rxy_w7c01_pwned.txt -Name y",
+        "set X=C:\\evil & del %X%\\rxy_w7c01_pwned.txt",
+        "set X= & del %X%\\rxy_w7c01_pwned.txt",
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -259,6 +285,22 @@ def test_w7_c01_integration() -> None:
         "Write-Output TEMP=inside.txt",
         "echo X=1",
         "Get-Process | Export-Csv -Path .\\ok.csv",
+        # Quoted ``>`` is literal text; read-only cond-verb forms and
+        # in-workspace outputs stay allowed; set binds %VAR% inside.
+        "echo 'a > /etc/x'",
+        'echo "a > /etc/x"',
+        "curl http://a",
+        "curl -o ok.html http://a",
+        "sort f > ok.txt",
+        'awk \'{print > "ok.txt"}\' f',
+        "gpg -d f",
+        "openssl version",
+        "iwr http://a",
+        "Invoke-RestMethod http://a",
+        "Get-Process | Format-List",
+        "fsutil fsinfo drives",
+        "set X=.\\safe & del %X%\\f",
+        "export X=sub && echo x > $X\\f",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from
