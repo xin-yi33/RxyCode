@@ -742,7 +742,13 @@ _CODE_MUT_RE = re.compile(
     r"copy2?|move|chmod|chown|truncate|mkfifo|mknod|symlink|link\s*\(|"
     r"os\.system|system|spawn|process\.|\.rm\b|subprocess|popen|eval\s*\(|"
     r"exec\s*\(|__import__|fs\.|do\s+shell\s+script|io\.write|"
-    r"file_put_contents|fwrite|set-content|remove-item|out-file|invoke-expression|`)",
+    r"file_put_contents|fwrite|set-content|remove-item|out-file|invoke-expression|"
+    r"save\w*\s*\(|to_csv|to_excel|to_parquet|to_pickle|to_feather|"
+    r"to_hdf|to_latex|to_json|to_html|to_xml|to_stata|to_sql|to_markdown|"
+    r"tofile|urlretrieve|ZipFile|TarFile|BZ2File|GzipFile|LZMAFile|Workbook|"
+    r"make_archive|unpack_archive|extractall|extract|sqlite3\.connect|"
+    r"FileHandler|removedirs|renames|hardlink|lchown|lchmod|chflags|lchflags|"
+    r"link_to|\.output\s*\(|`)",
     re.IGNORECASE,
 )
 # Write targets produced at runtime (env/argv/stdin/temp dirs/script
@@ -785,7 +791,13 @@ _CODE_TARGET_API_RE = re.compile(
     r"chmodSync|chownSync|truncateSync|symlinkSync|linkSync|openSync|"
     r"createWriteStream|mkdtempSync|utimesSync|rm|mv|io\.open|"
     r"File\.open|File\.delete|File\.rename|File\.copy|File\.chmod|"
-    r"FileUtils\.\w+)\s*\(",
+    r"FileUtils\.\w+|save|savefig|savetxt|savez|savez_compressed|tofile|"
+    r"to_csv|to_excel|to_parquet|to_pickle|to_feather|to_hdf|to_latex|"
+    r"to_json|to_html|to_xml|to_stata|to_sql|to_markdown|urlretrieve|"
+    r"ZipFile|TarFile|BZ2File|GzipFile|LZMAFile|Workbook|make_archive|"
+    r"unpack_archive|extractall|extract|connect|FileHandler|output|"
+    r"removedirs|renames|link_to|symlink_to|hardlink_to|lchown|lchmod|"
+    r"chflags|lchflags)\s*\(",
     re.IGNORECASE,
 )
 # Two-path calls whose destination is also a write target.
@@ -793,7 +805,7 @@ _TWO_TARGET_APIS = frozenset(
     {
         "copy", "copy2", "copyfile", "copytree", "cp", "move", "rename",
         "replace", "symlink", "link", "hardlink", "cpsync", "copyfilesync",
-        "renamesync",
+        "renamesync", "renames", "extract", "unpack_archive", "urlretrieve",
     }
 )
 _MAX_CARRIER_DEPTH = 3
@@ -1312,17 +1324,21 @@ def find_bash_disallowed_write_paths(
                     close = region.find(")")
                     if close != -1:
                         region = region[:close]
-                    if _CODE_DYN_RE.search(region):
+                    # Strip string literals (and their b/r/u prefixes —
+                    # ``f`` stays, so f-strings still fail closed) before
+                    # inspecting the argument expression: literal text such
+                    # as ``'ok.pdf'`` is data, not computed code.
+                    work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
+                    work = re.sub(r'"[^"]*"|\'[^\']*\'', "", work)
+                    if _CODE_DYN_RE.search(work):
                         dirty = True
                         break
-                    args = region.split(",")
+                    args = work.split(",")
                     check_args = (
                         args[:2] if api.group(1).lower() in _TWO_TARGET_APIS else args[:1]
                     )
                     for arg in check_args:
-                        stripped = re.sub(r'(?i)(?<![\w])[bru]+(?=[\'"])', "", arg)
-                        stripped = re.sub(r'"[^"]*"|\'[^\']*\'', "", stripped)
-                        stripped = re.sub(r"[-+]?\d[\d_]*", "", stripped)
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
                         stripped = re.sub(r"\b\w+\s*=", "", stripped)
                         if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
                             dirty = True
