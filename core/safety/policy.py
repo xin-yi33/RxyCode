@@ -601,7 +601,7 @@ _MUT_VERB_ALT = (
     r"wipefs|hdparm|pvcreate|vgcreate|lvcreate|cryptsetup|losetup|"
     r"rsync|scp|rcp|curl|wget|powershell|pwsh|cmd|bash|sh|zsh|dash|env|sudo|doas|su|nohup|nice|time|timeout|parallel|"
     r"iex|Invoke-Expression|Invoke-Command|eval|source|watch|ssh|pkexec|runas|python|python3|py|node|deno|bun|php|ruby|"
-    r"osascript|rscript|julia|certutil|expand|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|"
+    r"osascript|rscript|julia|certutil|expand|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|at|batch|"
     r"Invoke-WebRequest|Invoke-RestMethod"
 )
 _BASH_MUTATING_OPENER_RE = re.compile(
@@ -646,11 +646,12 @@ _ASSIGN_RE = re.compile(
     r"'(?P<shsq>[^']*)'|(?P<shval>[^\s;|&'\"]*))"
 )
 # A ``NAME=value`` token binds only when it leads the command segment —
-# alone, behind an env builtin, or after earlier assignments. The same
-# text as a later argument (``Write-Output TEMP=x``) is data, not a
-# binding, so it must not enter the tracked table.
+# alone or after earlier assignments. The same text as a later argument
+# (``Write-Output TEMP=x``) is data, not a binding, and env builtins are
+# dialect-dependent (``set`` binds only in cmd, ``export`` only in bash),
+# so neither is allowed to prefix a tracked assignment.
 _ASSIGN_PREFIX_RE = re.compile(
-    r"(?i)\s*(?:(?:export|set|declare|local|readonly|typeset)\s+)?"
+    r"(?i)\s*"
     r"(?:[A-Za-z_]\w*\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s'\"|;>&]*)?\s*)*$"
 )
 # Shell-provided names that map to a knowable directory; everything else a
@@ -696,8 +697,21 @@ _CARRIER_VERBS = frozenset({
     "cmd", "cmd.exe", "bash", "sh", "zsh", "dash", "env", "sudo", "doas",
     "su", "nohup", "nice", "time", "timeout", "watch", "ssh", "pkexec",
     "runas", "iex", "invoke-expression", "invoke-command", "eval", "source",
-    "cscript", "wscript",
+    "cscript", "wscript", "at", "batch",
 })
+# Carriers/interpreters that execute a payload arriving on stdin when no
+# command argument is given (``echo 'rm /etc/x' | sh``). Piped with only
+# flag args (or nothing), the payload is unverifiable — fail closed.
+# ``ssh``/``at``/``batch`` additionally need a second argument: their
+# first token is a host/time spec, not the command itself.
+_STDIN_EXECUTORS = frozenset({
+    "xargs", "parallel", "powershell", "pwsh", "powershell.exe", "pwsh.exe",
+    "cmd", "cmd.exe", "bash", "sh", "zsh", "dash", "env", "sudo", "doas",
+    "su", "nohup", "nice", "time", "timeout", "watch", "ssh", "pkexec",
+    "runas", "iex", "invoke-expression", "invoke-command", "eval", "source",
+    "cscript", "wscript", "at", "batch",
+})
+_STDIN_TWO_ARG = frozenset({"ssh", "at", "batch"})
 _ENCODED_CARRIERS = frozenset(
     {"powershell", "pwsh", "powershell.exe", "pwsh.exe", "cmd", "cmd.exe"}
 )
@@ -712,12 +726,22 @@ _INTERP_CODE_FLAG_RE = re.compile(
     r"(?:-c|-e|-E|-r|--eval|--command|-e:)\b", re.IGNORECASE
 )
 _CODE_MUT_RE = re.compile(
-    r"\b(?:open\s*\(|write(?:file|text|all|_file|_text|_bytes|bytes|lines)?s?\s*[({]|"
+    r"\b(?:open\s*\(|fopen|write(?:file|text|all|_file|_text|_bytes|bytes|lines)?s?\s*[({]|"
     r"remove|unlink|delete|rmdir|rmtree|makedirs|mkdir\s*\(|rename|replace|copyfile|"
     r"copy2?|move|chmod|chown|truncate|mkfifo|mknod|symlink|link\s*\(|"
     r"os\.system|system|spawn|process\.|\.rm\b|subprocess|popen|eval\s*\(|"
     r"exec\s*\(|__import__|fs\.|do\s+shell\s+script|io\.write|"
     r"file_put_contents|fwrite|set-content|remove-item|out-file|invoke-expression|`)",
+    re.IGNORECASE,
+)
+# Write targets produced at runtime (env/argv/stdin/temp dirs/script
+# paths) cannot be checked statically — fail closed.
+_CODE_DYN_RE = re.compile(
+    r"(?:os\.environ|environ\s*\[|getenv|sys\.argv|sys\.path|sys\.stdin|"
+    r"process\.env|process\.argv|\bENV\s*\[|\bARGV\b|expandvars|expanduser|"
+    r"Path\.home|tempfile|tmpdir|gettempdir|tempnam|mkstemp|mkdtemp|"
+    r"__file__|__dirname|__filename|__main__|input\s*\(|readline|"
+    r"getlogin|getuser|getpass|\$argv|\$args|param\s*\()",
     re.IGNORECASE,
 )
 _MAX_CARRIER_DEPTH = 3
@@ -773,7 +797,11 @@ def _bash_candidate(raw: str, eff_dir: str | None) -> str | None:
 
 
 def find_bash_disallowed_write_paths(
-    cmd: str, config: dict, workdir: str | None = None, _depth: int = 0
+    cmd: str,
+    config: dict,
+    workdir: str | None = None,
+    _depth: int = 0,
+    _piped: bool = False,
 ) -> list[str]:
     """Return mutating target paths outside the write whitelist.
 
@@ -926,7 +954,7 @@ def find_bash_disallowed_write_paths(
         # separator, so a ``>`` or nested verb inside it never opened its
         # own event — rescan the tail and merge any blocks it finds.
         for hit in find_bash_disallowed_write_paths(
-            text, config, workdir=eff_dir, _depth=_depth + 1
+            text, config, workdir=eff_dir, _depth=_depth + 1, _piped=_piped
         ):
             if hit not in blocked:
                 blocked.append(hit)
@@ -999,6 +1027,11 @@ def find_bash_disallowed_write_paths(
         opener = m
         verb = (opener.group("verb") or "").lower()
         seg = opener.group("verbseg") or opener.group("redirseg") or ""
+        # A verb reached through ``|`` receives stdin from the previous
+        # stage; shells/interpreters can then run an unseen payload.
+        sep_pos = max(masked.rfind(c, 0, m.start()) for c in ";|&\n")
+        piped = sep_pos >= 0 and masked[sep_pos] == "|"
+        piped = piped or _piped
         if verb in _POP_VERBS:
             _rescan_tail(seg)
             if dir_stack:
@@ -1072,8 +1105,23 @@ def find_bash_disallowed_write_paths(
             if resolved and _depth >= _MAX_CARRIER_DEPTH:
                 blocked.append(verb)
                 continue
+            if piped and verb in _STDIN_EXECUTORS:
+                nonflag_words = [
+                    w for w in resolved.split()
+                    if not w.startswith(("-", "+", "/"))
+                ]
+                # A piped executor with no visible command runs its stdin;
+                # ssh/at/batch consume the first token themselves.
+                needed = 2 if verb in _STDIN_TWO_ARG else 1
+                if len(nonflag_words) < needed:
+                    blocked.append(verb)
+                    continue
             sub = find_bash_disallowed_write_paths(
-                resolved, config, workdir=eff_dir, _depth=_depth + 1
+                resolved,
+                config,
+                workdir=eff_dir,
+                _depth=_depth + 1,
+                _piped=piped,
             )
             if sub:
                 blocked.append(verb)
@@ -1095,10 +1143,12 @@ def find_bash_disallowed_write_paths(
                 for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', seg)
             ]
             if _CODE_MUT_RE.search(seg):
-                # A write-ish API whose call carries no quoted literal
-                # leaves the target dynamic (argv/env) — fail closed.
-                # Otherwise the generic token check below sees the paths.
-                if not any('"' in t or "'" in t for t in lit_texts):
+                # A write-ish API whose target is produced at runtime
+                # (env/argv/stdin/temp/script path) or whose call carries
+                # no quoted literal is unverifiable — fail closed.
+                if _CODE_DYN_RE.search(seg) or not any(
+                    '"' in t or "'" in t for t in lit_texts
+                ):
                     blocked.append(verb)
                     continue
             for text in lit_texts:

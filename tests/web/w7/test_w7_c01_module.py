@@ -224,6 +224,26 @@ def test_w7_c01_integration() -> None:
         "New-ItemProperty -Path C:\\rxy_w7c01_pwned.txt -Name y",
         "set X=C:\\evil & del %X%\\rxy_w7c01_pwned.txt",
         "set X= & del %X%\\rxy_w7c01_pwned.txt",
+        # Env builtins are dialect-ambiguous, so their NAME=value argument
+        # is data, not a binding — set/export/declare stay untracked.
+        "set X=.\\safe & del %X%\\rxy_w7c01_pwned.txt",
+        "set TEMP=inside.txt; Set-Content $env:TEMP\\rxy_w7c01_pwned.txt x",
+        "export X=sub; echo x > $X\\..\\..\\..\\rxy_w7c01_pwned.txt",
+        "declare X=sub; echo x > $X\\..\\..\\..\\rxy_w7c01_pwned.txt",
+        # Piped payloads reach an executor's stdin unseen — fail closed.
+        "echo 'rm /etc/x' | sh",
+        "cat s.sh | powershell",
+        "echo 'rm /x' | iex",
+        "gen | xargs",
+        "echo 'rm /x' | ssh host",
+        "gen | at now",
+        "echo 'rm /x' | sudo sh",
+        "echo 'rm /x' | timeout 5 sh",
+        # Interpreter write targets from runtime state are unverifiable.
+        "python -c \"import os; open(os.environ['TEMP'],'w').write('x')\"",
+        "python -c \"open(__import__('sys').argv[1],'w')\"",
+        'node -e "fs.writeFileSync(process.env.T,\'x\')"',
+        'python -c "import tempfile; open(tempfile.mktemp(),\'w\')"',
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -299,8 +319,6 @@ def test_w7_c01_integration() -> None:
         "Invoke-RestMethod http://a",
         "Get-Process | Format-List",
         "fsutil fsinfo drives",
-        "set X=.\\safe & del %X%\\f",
-        "export X=sub && echo x > $X\\f",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from
