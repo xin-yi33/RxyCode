@@ -569,6 +569,95 @@ def test_w7_c01_integration() -> None:
         assert find_bash_disallowed_write_paths(
             lit_target, config, workdir="D:\\"
         ), lit_target
+    # Audit round 21: shell-keyword/CMD-grammar command slots hide the
+    # executed program — ``if``/``do``/``!`` slots fail closed.
+    for dyn_slot in (
+        "if 1==1 %X% C:\\Windows\\Temp\\victim.txt",
+        "for %i in (a) do %X% C:\\Windows\\Temp\\victim.txt",
+        "if true; then $x -rf /x; fi",
+        "while :; do $x; done",
+        "! $x /c y",
+        "if exist a (%X% C:\\Windows\\Temp\\v.txt)",
+    ):
+        hits = find_bash_disallowed_write_paths(
+            dyn_slot, config, workdir=str(REPO)
+        )
+        assert "<opaque:variable-command>" in hits, (dyn_slot, hits)
+    # Path-qualified and quoted programs still reach verb detection, and
+    # a read-mode handler branch may not swallow a redirect that follows
+    # it — ``tar -tf a > out`` writes ``out``.
+    for qualified in (
+        "& 'C:/Windows/System32/curl.exe' -o C:\\Windows\\Temp\\bad.txt "
+        "https://example.com",
+        "& 'C:/Windows/System32/cmd.exe' /d /c '%X% "
+        "C:\\Windows\\Temp\\victim.txt'",
+        "C:/tools/rar.exe a C:\\Windows\\Temp\\w7.rar f",
+        '"C:/Program Files/Git/usr/bin/tar.exe" -cf '
+        "C:\\Windows\\Temp\\w7.tar a",
+        "/usr/bin/rm -rf /etc/x",
+        "tar -tf archive.tar > C:\\Windows\\Temp\\listing.txt",
+        "tar -xOf archive.tar member > C:\\Windows\\Temp\\member.txt",
+        "ar t archive.a > C:\\Windows\\Temp\\listing.txt",
+        "rar l archive.rar > C:\\Windows\\Temp\\listing.txt",
+        "Start-Process notepad.exe > C:\\Windows\\Temp\\x.txt",
+        "echo hi 2> C:\\Windows\\Temp\\e.txt",
+        # ``Start-<Noun>`` cmdlets write through their own parameters.
+        "Start-Transcript -Path C:\\Windows\\x.log",
+        "Start-BitsTransfer -Source http://a -Destination C:\\Windows\\x",
+        "Start-Job { rm C:\\Windows\\x }",
+    ):
+        assert find_bash_disallowed_write_paths(
+            qualified, config, workdir=str(REPO)
+        ), qualified
+    # Mutating invocations from an outside workdir still refuse — the
+    # start directory itself is the marker.
+    for mut_out in (
+        "tar -xf a.tar",
+        "cargo build",
+        "Start-Process cmd.exe -ArgumentList '/c echo x > ok.txt'",
+    ):
+        hits = find_bash_disallowed_write_paths(
+            mut_out, config, workdir="C:\\Windows\\Temp"
+        )
+        assert hits, mut_out
+        assert any("C:\\Windows\\Temp" in h for h in hits), (mut_out, hits)
+    # Control-flow keywords and path-shaped data stay allowed inside the
+    # whitelisted workdir.
+    for ok_cmd in (
+        "for %i in (*.txt) do echo %i",
+        "if exist a.txt echo yes",
+        "if [ -f a ]; then echo hi; fi",
+        "if ($ok) { Set-Content ok.txt x }",
+        "foreach ($f in $files) { Set-Content ok.txt x }",
+        "while ($i -lt 3) { $i++ }",
+        "echo C:/Windows/System32/curl.exe",
+        "C:/Windows/System32/curl.exe -o ok.html http://a",
+        "cmd /c dir",
+        "tar -tf ok.tar > list.txt",
+        "awk '{print > \"ok.txt\"}' f",
+        "echo 'a > /etc/x'",
+        "cmd /c dir 2>&1",
+        "tar -tf ok.tar 2>NUL",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            ok_cmd, config, workdir=workdir
+        ), ok_cmd
+    # Read-mode invocations mutate nothing — they stay allowed even when
+    # the start directory sits outside the whitelist.
+    for ro_out in (
+        "tar -tf ok.tar",
+        "tar -xOf ok.tar m",
+        "ar t lib.a",
+        "rar l x.rar",
+        "Start-Sleep 1",
+        "Start-Service foo",
+        "Start-Process notepad.exe",
+        "dir",
+        "echo hi",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            ro_out, config, workdir="C:\\Windows\\Temp"
+        ), ro_out
     # ``-xOf``/``--to-stdout`` stream the archive to stdout — the operand
     # is a read, abbreviated or not. The workdir is the whitelisted
     # fixture dir: an outside workdir now refuses every mutating opener.

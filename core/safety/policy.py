@@ -621,7 +621,7 @@ _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?:"
     rf"(?<![$:])\b(?P<verb>(?:{_MUT_VERB_ALT})(?:\.(?:exe|com|bat|cmd|ps1))?)\b"
     r"(?P<verbseg>[^\n;|&]*)"
-    r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]*)"
+    r"|(?:^|[^>])>{1,2}\|?(?P<redirseg>[^\n;|&]*)"
     r"|(?P<dotnetcall>\[[\w.]+\]\s*::\s*\w+\s*\(|New-Object\b|"
     r"\$[^\W\d]\w*(?:\.[^\W\d]\w*)+\s*\()"
     r"(?P<dotnetseg>[^\n;|&]*)"
@@ -685,8 +685,28 @@ _ASSIGN_PREFIX_RE = re.compile(
 # What may sit between a separator and a word while that word still owns
 # the command slot: whitespace, invoke operators (``&``/``.``), leading
 # env assignments, and flag tokens (``cmd /c <prog>``).
+# Shell keywords and CMD grammar that may sit between the last separator
+# and the command slot: bash conditionals/loops, ``!`` negation, the
+# ``time``/``exec``/``command``/``builtin`` launchers, CMD ``do``/``else``
+# and a CMD ``if <cond>`` clause (``exist``/``defined``/``errorlevel``/
+# ``cmdextversion``/``==``/``equ``…``geq``).
+_CMD_SLOT_KW = (
+    r"(?:(?:if|then|else|elif|do|while|until|time|exec|command|builtin)"
+    r"[ \t]+|![ \t]+"
+    r"|if\s+(?:/i\s+)?(?:not\s+)?"
+    r"(?:exist\s+\S+|defined\s+\S+|errorlevel\s+\S+"
+    r"|cmdextversion\s+\S+|\S+?\s*==\s*\S+"
+    r"|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)\s+)"
+)
+# Anchors for the command slot itself: a separator (or command start), or
+# a mid-command ``do``/``then``/``else``/``elif`` keyword (``for %i in (a)
+# do <cmd>``). Subshell/group openers are anchored per-regex — inside
+# ``(``/``{`` a bare ``$x`` needs a following argument, unlike the
+# separator slot where ``$x`` alone already hides the program.
+_CMD_SLOT_ANCHOR = r"(?:^|[;|&\n]|\b(?:do|then|else|elif)\s)"
 _CMD_SLOT_PREFIX_RE = re.compile(
-    r"(?:[\s&.]|(?:[A-Za-z_]\w*=[^\s'\"|;>&]*|(?:-{1,2}|/|\+)[\w.?+-]+)\s+)*"
+    rf"(?ix)(?:[\s&.]|(?:[A-Za-z_]\w*=[^\s'\"|;>&]*"
+    rf"|(?:-{{1,2}}|\+)[\w.?+-]+|/[\w.?+-]+)\s+|{_CMD_SLOT_KW})*"
 )
 # A variable or expression in the command slot hides the executed program
 # — ``& $x``/``. $x``/``& (expr)``, ``"$x" args``, bare ``$x args``,
@@ -696,8 +716,8 @@ _CMD_SLOT_PREFIX_RE = re.compile(
 _CMD_SLOT_DYN_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    r"(?:^|[;|&\n])[ \t]*"
-    r"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{1,2}|/|\+)[\w.?+-]+)[ \t]+)*"
+    rf"(?:{_CMD_SLOT_ANCHOR})[ \t]*"
+    rf"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{{1,2}}|/|\+)[\w.?+-]+)[ \t]+|{_CMD_SLOT_KW})*"
     r"(?:"
     r"(?<![&|])[&.][ \t]*(?:\(|['\"]*\$)"
     r"|['\"]\$"
@@ -715,8 +735,8 @@ _CMD_SLOT_DYN_RE = re.compile(
     # a bare or quoted variable counts only when a real argument follows
     # it — ``($x = 1)``, ``($ok)``, ``foreach ($f in $files)`` and
     # ``($x -eq 1)`` are expressions, not invocations.
-    r"[$@]?[({][ \t]*"
-    r"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{1,2}|/|\+)[\w.?+-]+)[ \t]+)*"
+    rf"(?:[$@]?\(|(?<![$@])\{{)[ \t]*"
+    rf"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{{1,2}}|/|\+)[\w.?+-]+)[ \t]+|{_CMD_SLOT_KW})*"
     r"(?:"
     r"(?<![&|])[&.][ \t]*(?:\(|['\"]*\$)"
     r"|['\"]*\$(?:\{[^}]*\}|env:[^\W\d]\w*(?!\w)|[^\W\d]\w*(?![\w:]))"
@@ -729,6 +749,21 @@ _CMD_SLOT_DYN_RE = re.compile(
     r"|![^\W\d]\w*!"
     r")"
     r")"
+)
+# A program token at the command slot that is a path (``C:/x/rar.exe``,
+# ``/usr/bin/rm``, ``& 'C:/Program Files/y.exe'``) must reach verb
+# detection by basename — normalized before ``_unescape`` fuses
+# separators (``C:\tools\rar.exe`` → ``C:\toolsrar.exe``).
+_PROG_SLOT_PATH_RE = re.compile(
+    rf"(?ix)(?:{_CMD_SLOT_ANCHOR}|[$@]?\(|(?<![$@])\{{)[ \t]*"
+    rf"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{{1,2}}|/|\+)[\w.?+-]+)[ \t]+|{_CMD_SLOT_KW})*"
+    rf"(?:[&.][ \t]*)?"
+    rf"(?P<tok>'(?:[A-Za-z]:)?[^';|&]*[\\/][^';|&]*'"
+    rf'|\"(?:[A-Za-z]:)?[^";|&]*[\\/][^";|&]*\"'
+    # At least one char must follow the separator — ``NAME=/`` is an
+    # env assignment, not a path (``CDPATH=/; cd tmp`` must keep the
+    # binding so the CDPATH re-root check fires).
+    rf"|(?:[A-Za-z]:)?[^\s'\";|&(){{}}]*[\\/][^\s'\";|&(){{}}]+)"
 )
 # Verbs that only count as commands in the command slot — as arguments
 # they are data (``echo ar``, ``npm start``, ``docker start web``).
@@ -761,8 +796,10 @@ class _GlueMatch:
             {"verb": 1, "verbseg": 2}[name]
         )
 
-    def start(self):
-        return self._m.start()
+    def start(self, name=None):
+        if name is None:
+            return self._m.start()
+        return self._m.start({"verb": 1, "verbseg": 2}[name])
 
     def end(self):
         return self._m.end()
@@ -1180,6 +1217,7 @@ def find_bash_disallowed_write_paths(
     workdir: str | None = None,
     _depth: int = 0,
     _piped: bool = False,
+    _mut_out: "list[bool] | None" = None,
 ) -> list[str]:
     """Return mutating target paths outside the write whitelist.
 
@@ -1216,6 +1254,40 @@ def find_bash_disallowed_write_paths(
     # line into the same command; collapse them so targets past a newline
     # stay inside the scanned segment.
     scrubbed = re.sub(r"[\\`]\r?\n", " ", scrubbed)
+    # A command-slot token that is a path (``C:/x/rar.exe``,
+    # ``& 'C:/Program Files/y.exe'``, ``/usr/bin/rm``) runs its basename —
+    # rewrite it before ``_unescape`` fuses ``\`` separators and the
+    # ``/``-glued form hides the verb from the opener regex.
+    def _norm_slot_prog(m):
+        tok = m.group("tok")
+        if re.fullmatch(
+            r"/[A-Za-z][A-Za-z0-9+]*(?::[^\s]*)?", tok.strip("'\"")
+        ):
+            # ``/c``/``/d``/``/k`` are carrier flags, not root paths —
+            # rewriting them to a basename would eat the flag and hide
+            # the real program that follows it (``cmd /c $x``).
+            return m.group(0)
+        base = re.split(r"[\\/]", tok.strip("'\""))[-1]
+        if "\\" in tok and not tok.startswith(("'", '"')):
+            # ``\x`` inside an unquoted word is a bash escape, not a
+            # separator (``r\m`` runs ``rm``, ``c\d`` runs ``cd``) —
+            # when the collapsed word reads as a mutating verb prefer
+            # it over the Windows-path basename reading.
+            collapsed = tok
+            while True:
+                step = re.sub(r"\\([A-Za-z])", r"\1", collapsed)
+                if step == collapsed:
+                    break
+                collapsed = step
+            if re.fullmatch(
+                rf"(?i)(?:{_MUT_VERB_ALT})"
+                rf"(?:\.(?:exe|com|bat|cmd|ps1))?",
+                collapsed,
+            ):
+                base = collapsed
+        return m.group(0)[: m.start("tok") - m.start()] + base
+
+    scrubbed = _PROG_SLOT_PATH_RE.sub(_norm_slot_prog, scrubbed)
     def _unescape(text: str) -> str:
         # ``\`` mid-word (``r\m``, ``r\\m``) is a bash escape — strip it.
         # At a word start (``\Windows``, ``\\share``) or after a
@@ -1553,7 +1625,17 @@ def find_bash_disallowed_write_paths(
             for m in _BASH_MUTATING_OPENER_RE.finditer(masked)
             # ``>`` inside quotes is literal text (``echo 'a > /x'``), not
             # a shell redirect — only unquoted ``>`` opens a redir seg.
+            # ``2>&1``/``>&-`` duplicate a descriptor — the ``&`` split
+            # leaves an empty seg behind — and a ``>`` with no target
+            # (``echo x >``) writes nothing verifiable either.
             if not (m.group("redirseg") is not None and _in_quotes(m.start()))
+            and not (
+                m.group("redirseg") is not None
+                and (
+                    not m.group("redirseg").strip()
+                    or re.match(r"&[-\d]", m.group("redirseg"))
+                )
+            )
             # ``schtasks /sc`` is a flag, not Set-Content — a whole-token
             # verb glued to ``/`` is a cmd option, never an invocation.
             and not (
@@ -1623,6 +1705,43 @@ def find_bash_disallowed_write_paths(
             # ``echo ar``/``npm start``/``docker start web`` — the word
             # is an argument, not an invocation.
             continue
+        # Redirect targets swallowed inside a verb's own segment (``tar
+        # -tf a > out``, ``echo hi 2> e.txt``) are writes no per-verb
+        # branch sees. ``2>&1``/``>&-`` duplicate a descriptor; ``NUL``
+        # and ``/dev/*`` sinks discard — none are file targets.
+        seg_src = (
+            "verbseg"
+            if opener.group("verbseg") is not None
+            else "redirseg"
+            if opener.group("redirseg") is not None
+            else "dotnetseg"
+        )
+        seg_abs = (
+            opener.start(seg_src)
+            if opener.group(seg_src) is not None
+            else opener.end()
+        )
+        for rdm in re.finditer(r"(?:\d|[*&])?>{1,2}\|?", seg):
+            if _in_quotes(seg_abs + rdm.start()):
+                continue
+            rest = seg[rdm.end() :]
+            if re.match(r"[ \t]*&[-\d]", rest):
+                continue
+            tm = re.match(
+                r"[ \t]*('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)", rest
+            )
+            if tm is None:
+                continue
+            rtarget = tm.group(1).strip("'\"")
+            if re.match(
+                r"(?i)(?:nul|/dev/(?:null|stdout|stderr))$", rtarget
+            ):
+                continue
+            mutating = True
+            _check(rtarget)
+        # ``mutating`` means this invocation writes — a read-only branch
+        # restores the snapshot so earlier events keep their flag.
+        prev_mut = mutating
         mutating = True
         if opener.group("dotnetcall") is not None:
             # ``[IO.File]::WriteAllText(path, x)`` / ``$x.Save(path)`` /
@@ -1761,6 +1880,72 @@ def find_bash_disallowed_write_paths(
             else:
                 _rescan_tail(seg)
             continue
+        if verb == "start" and re.match(
+            r"\s*-(?!(?i:process)\b)([A-Za-z]+)\b", seg.lstrip("'\"")
+        ):
+            # ``Start-<Noun>`` with Noun != Process is a different cmdlet,
+            # not the cmd/PS ``start`` carrier — it does not invoke a
+            # program, so it is not mutating per se.
+            snoun = re.match(
+                r"\s*-([A-Za-z]+)\b", seg.lstrip("'\"")
+            ).group(1).lower()
+            mutating = prev_mut
+            if snoun == "transcript":
+                mutating = True
+                tval = re.search(
+                    r"(?i)-(?:literalpath|path|outputdirectory)"
+                    r"\s*[:=]?\s*('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
+                    seg,
+                )
+                if tval:
+                    _check(tval.group(1).strip("'\""))
+                else:
+                    ptok = re.match(
+                        r"\s*-[A-Za-z]+\s+"
+                        r"('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
+                        seg,
+                    )
+                    if ptok and not ptok.group(1).startswith(("-", "/")):
+                        _check(ptok.group(1).strip("'\""))
+            elif snoun == "bitstransfer":
+                mutating = True
+                dval = re.search(
+                    r"(?i)-destination\s*[:=]?\s*"
+                    r"('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
+                    seg,
+                )
+                if dval:
+                    _check(dval.group(1).strip("'\""))
+                else:
+                    btoks = [
+                        t.strip("'\"")
+                        for t in re.findall(
+                            r'"[^"]*"|\'[^\']*\'|\S+', seg
+                        )
+                        if not t.startswith("-")
+                    ]
+                    if len(btoks) >= 2:
+                        _check(btoks[1])
+            elif snoun in ("job", "threadjob"):
+                mutating = True
+                sblock = re.search(
+                    r"(?i)-scriptblock\s+(\{[^{}]*\}|\S+)", seg
+                )
+                if sblock is None:
+                    sblock = re.search(r"\{[^{}]*\}", seg)
+                if sblock is not None:
+                    for hit in find_bash_disallowed_write_paths(
+                        sblock.group(0).strip("{}'\" "),
+                        config,
+                        workdir=eff_dir,
+                        _depth=_depth + 1,
+                        _piped=piped,
+                    ):
+                        if hit not in blocked:
+                            blocked.append(hit)
+                else:
+                    blocked.append("<opaque:start-process>")
+            continue
         if verb in ("start", "start-process", "saps"):
             # ``start``/``Start-Process`` launch a program: extract the
             # program and its argument list, fail closed when either
@@ -1824,7 +2009,21 @@ def find_bash_disallowed_write_paths(
             ):
                 blocked.append("<opaque:start-process>")
                 continue
-            _rescan_tail((prog_text + " " + args_text).strip())
+            # The launcher is only as mutating as the program it runs:
+            # ``Start-Process notepad.exe`` mutates nothing itself.
+            smut: list[bool] = []
+            for hit in find_bash_disallowed_write_paths(
+                (prog_text + " " + args_text).strip(),
+                config,
+                workdir=eff_dir,
+                _depth=_depth + 1,
+                _piped=piped,
+                _mut_out=smut,
+            ):
+                if hit not in blocked:
+                    blocked.append(hit)
+            if not (smut and smut[0]):
+                mutating = prev_mut
             continue
         if verb == "rar":
             # ``rar a|u|m|f ARCHIVE files`` — the archive operand writes;
@@ -1841,7 +2040,11 @@ def find_bash_disallowed_write_paths(
             ]
             if rargs:
                 rmode = rargs[0][:1].lower()
-                if rmode in ("a", "u", "m", "f") and len(rargs) > 1:
+                if rargs[0].lower() in ("l", "lt", "lb", "v", "vt", "vb", "t", "p"):
+                    # ``rar l``/``v``/``t``/``p`` list, view and test —
+                    # nothing is written.
+                    mutating = prev_mut
+                elif rmode in ("a", "u", "m", "f") and len(rargs) > 1:
                     _check(rargs[1])
                 elif (
                     rmode in ("x", "e")
@@ -1859,7 +2062,12 @@ def find_bash_disallowed_write_paths(
                 t.strip("'\"")
                 for t in re.findall(r'"[^"]*"|\'[^\']*\'|\S+', seg)
             ]
-            if len(aargs) > 1 and re.search(
+            if aargs and all(
+                ch in "tp" for ch in aargs[0].lstrip("-")
+            ):
+                # ``ar t``/``ar p`` list and print members — reads only.
+                mutating = prev_mut
+            elif len(aargs) > 1 and re.search(
                 r"[rqmds]", aargs[0].lstrip("-")
             ):
                 _check(aargs[1])
@@ -2461,6 +2669,7 @@ def find_bash_disallowed_write_paths(
             ):
                 # ``-O``/``--to-stdout`` stream members to stdout — the
                 # archive operand is a read, not a write target.
+                mutating = prev_mut
                 continue
             if not re.search(
                 # A write mode is a ``-`` cluster containing c/x/u/r
@@ -2482,6 +2691,7 @@ def find_bash_disallowed_write_paths(
             ):
                 # List/diff/verify modes never write — ``tar -tf a.tar``
                 # is a read.
+                mutating = prev_mut
                 continue
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
@@ -2531,6 +2741,8 @@ def find_bash_disallowed_write_paths(
         and start_dir not in blocked
     ):
         blocked.append(start_dir)
+    if _mut_out is not None:
+        _mut_out.append(mutating or bool(blocked))
     return blocked
 
 
