@@ -782,8 +782,9 @@ _CODE_DYN_RE = re.compile(
     r"fromhex|unhexlify|b64|base64|\bdecode|\bencode|\bchr\s*\(|\bord\s*\(|"
     r"\bbytes\s*\(|bytearray|\bstr\s*\(|\brepr\s*\(|\bint\s*\(|\bhex\s*\(|"
     r"\boct\s*\(|\bbin\s*\(|\.join|\bjoin\s*\(|\bformat|%[sdr]\b|f[\"']|"
-    r"\\x[0-9a-f]|\\u[0-9a-f]|getattr|setattr|delattr|__import__|importlib|"
-    r"\beval\s*\(|\bexec\s*\(|\bcompile\s*\(|\bglobals|\blocals|\bvars\s*\(|"
+    r"\\x[0-9a-f]|\\u[0-9a-f]|setattr|delattr|__import__|importlib|"
+    r"\beval(?!\s*\()|\bexec(?!\s*\()|\bcompile(?!\s*\()|"
+    r"\bglobals|\blocals|\bvars\s*\(|"
     r"os\.path|os\.getcwd|os\.listdir|os\.walk|os\.scandir|os\.getlogin|"
     r"\.resolve|\babspath|\brealpath|\bglob|listdir|scandir|"
     r"(?:os|shutil|fs|File|Path|io)\.(?:remove|unlink|rmdir|rename|"
@@ -839,6 +840,51 @@ _CODE_NAMERECV_RE = re.compile(
     r"(?i)(?<![\w.])([A-Za-z_]\w*)\s*\.\s*"
     r"(?:unlink|touch|mkdir|rmdir|link_to|symlink_to|hardlink_to|utime)\s*\("
 )
+# ``exec``/``eval``/``compile`` calls: safe only when every argument is a
+# literal whose body carries no mutating call or dynamic source.
+_CODE_EXEC_RE = re.compile(r"(?i)\b(?:exec|eval|compile)\s*\(")
+# A dispatched call — ``getattr(os,'remove')(t)``, ``__builtins__['open'](t)``
+# or ``partial(os.remove,t)()`` — makes the code unverifiable even when no
+# named write API appears.
+_CODE_DISP_CALL_RE = re.compile(r"[\)\]]\s*\(")
+# A binding value that is itself a mutating callable —
+# ``x = os.remove`` / ``x = getattr(os, 'remove')`` — so a later ``x(t)``
+# call inherits the literal-only argument rule.
+_CODE_CALLABLE_REF_RE = re.compile(
+    r"(?i)(?:getattr|setattr|partial|eval|exec|compile|__import__|"
+    r"globals|locals|attrgetter|methodcaller|itemgetter)\s*\(|"
+    r"^(?:[\w.]+\.)?(?:open|remove|unlink|rename|replace|copy\w*|move|"
+    r"rmtree|system|popen|exec\w*|spawn\w*|delete|truncate|mkdir|rmdir|"
+    r"chmod|chown|symlink|link|mkfifo|mknod|save|dump|extract\w*|"
+    r"urlretrieve|put|install|run|call|check_output|write)\s*$"
+)
+
+
+def _code_arg_region(text: str, start: int) -> str:
+    """Return the argument region after ``text[start]`` (an opening ``(``).
+
+    Scans balanced brackets outside quotes so a ``)`` inside a literal or a
+    nested call does not truncate the region early.
+    """
+    depth = 0
+    quote = None
+    end = min(len(text), start + 240)
+    i = start
+    while i < end:
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return text[start:i]
+            depth -= 1
+        i += 1
+    return text[start:end]
 # Two-path calls whose destination is also a write target.
 _TWO_TARGET_APIS = frozenset(
     {
@@ -1318,10 +1364,7 @@ def find_bash_disallowed_write_paths(
                 for cm in re.finditer(r"(?<![\w$])(\w+)\s*\(", draw):
                     if _DOTNET_CONTENT_RE.match(cm.group(1)):
                         continue
-                    region = draw[cm.end() : cm.end() + 240]
-                    close = region.find(")")
-                    if close != -1:
-                        region = region[:close]
+                    region = _code_arg_region(draw, cm.end())
                     work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
                     work = re.sub(r'"[^"]*"|\'[^\']*\'', "", work)
                     if _CODE_DYN_RE.search(work):
@@ -1485,11 +1528,38 @@ def find_bash_disallowed_write_paths(
                     _check(t)
             continue
         if verb in _INTERP_VERBS and _INTERP_CODE_FLAG_RE.search(seg):
+            # Literals come from the unmasked ``scrubbed`` span — ``seg``
+            # blanks ``;`` inside quotes, which would corrupt code-level
+            # statement splitting.
+            raw_seg = (
+                scrubbed[opener.start("verbseg") : opener.end("verbseg")]
+                if opener.group("verbseg") is not None
+                else seg
+            )
             lit_texts = [
                 (lit.group(1) or lit.group(2) or "").strip()
-                for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', seg)
+                for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', raw_seg)
             ]
-            if _CODE_MUT_RE.search(seg):
+            # ``name = expr`` bindings inside the code string are statically
+            # visible — ``p='ok.txt'; Path(p).unlink()`` resolves, while
+            # ``p=Path(env); p.unlink()`` fails closed. Extracted from the
+            # raw literal text because ``seg`` masks ``;`` inside quotes.
+            code_src = " ".join(lit_texts)
+            code_vars = {}
+            for am in re.finditer(
+                r"(?<![\w.])([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]+)", code_src
+            ):
+                code_vars[am.group(1)] = am.group(2)
+            if (
+                _CODE_MUT_RE.search(seg)
+                or _CODE_DISP_CALL_RE.search(seg)
+                or any(
+                    _CODE_CALLABLE_REF_RE.search(
+                        re.sub(r'"[^"]*"|\'[^\']*\'', "", v).strip()
+                    )
+                    for v in code_vars.values()
+                )
+            ):
                 # Each write-API's *target* argument must be a plain
                 # literal — a computed expression (env/argv/transforms/
                 # calls) produces the path at runtime, so fail closed.
@@ -1499,19 +1569,25 @@ def find_bash_disallowed_write_paths(
                 dirty = False
                 seen_api = False
 
+                def _lookup(name: str, _vars: dict = code_vars):
+                    v = _vars.get(name)
+                    if v is None:
+                        v = shell_vars.get(name)
+                    return v
+
                 def _arg_dirty(work: str, check_args: list) -> bool:
                     """Non-literal argument in a target position → dirty."""
                     if _CODE_DYN_RE.search(work):
                         return True
                     for arg in check_args:
                         aval = arg.strip()
-                        if (
-                            re.fullmatch(r"[A-Za-z_]\w*", aval)
-                            and aval in shell_vars
-                        ):
+                        bound = None
+                        if re.fullmatch(r"[A-Za-z_]\w*", aval):
+                            bound = _lookup(aval)
+                        if bound is not None:
                             # ``p=Path(env); Path(p).m()`` — substitute the
                             # tracked value for the bare-name argument.
-                            aval = shell_vars[aval]
+                            aval = bound
                             if _CODE_DYN_RE.search(
                                 re.sub(r'"[^"]*"|\'[^\']*\'', "", aval)
                             ):
@@ -1542,10 +1618,7 @@ def find_bash_disallowed_write_paths(
 
                 for api in _CODE_TARGET_API_RE.finditer(seg):
                     seen_api = True
-                    region = seg[api.end() : api.end() + 240]
-                    close = region.find(")")
-                    if close != -1:
-                        region = region[:close]
+                    region = _code_arg_region(seg, api.end())
                     # Strip string literals (and their b/r/u prefixes —
                     # ``f`` stays, so f-strings still fail closed) before
                     # inspecting the argument expression: literal text such
@@ -1576,13 +1649,70 @@ def find_bash_disallowed_write_paths(
                         break
                     for lit in rwork_lits:
                         _check(lit.strip("\"'"))
+                    # Producer chain: in ``Path(env).with_name('x').write_text``
+                    # the matched head is ``with_name`` — the real target
+                    # producer (``Path(env)``) sits upstream of the match.
+                    tail = re.split(r"[;\n]", seg[: recv.start()])[-1]
+                    tail = re.split(r"(?<![=!<>])=(?!=)", tail)[-1].strip()
+                    if tail.endswith("."):
+                        tail = tail[:-1].strip()
+                    if tail:
+                        t_lits = [
+                            t.strip("\"'")
+                            for t in re.findall(
+                                r'"[^"]*"|\'[^\']*\'', tail
+                            )
+                        ]
+                        t_clean = re.sub(
+                            r'"[^"]*"|\'[^\']*\'', "", tail
+                        )
+                        if _CODE_DYN_RE.search(t_clean):
+                            dirty = True
+                            break
+                        if re.search(r"[(\[{'\"=]", t_clean):
+                            # Call args inside the producer get the same
+                            # literal-only rule (``Path(p)`` resolves).
+                            for cm in re.finditer(
+                                r"[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)",
+                                tail,
+                            ):
+                                cwork = re.sub(
+                                    r'"[^"]*"|\'[^\']*\'', "",
+                                    cm.group(1),
+                                )
+                                if _arg_dirty(
+                                    cwork, cwork.split(",")
+                                ):
+                                    dirty = True
+                                    break
+                        else:
+                            # ``p.with_name('x').write_text`` — a bare
+                            # name/attribute chain must resolve.
+                            hn = re.match(r"([A-Za-z_]\w*)", tail)
+                            if hn:
+                                hv = _lookup(hn.group(1))
+                                if hv is None or _CODE_DYN_RE.search(
+                                    re.sub(
+                                        r'"[^"]*"|\'[^\']*\'', "", hv
+                                    )
+                                ):
+                                    dirty = True
+                                    break
+                                for hl in re.findall(
+                                    r'"[^"]*"|\'[^\']*\'', hv
+                                ):
+                                    _check(hl.strip("\"'"))
+                        if dirty:
+                            break
+                        for lit in t_lits:
+                            _check(lit)
                 for recv in _CODE_NAMERECV_RE.finditer(seg):
                     # ``p.unlink()`` — a bare-name receiver that mutates
                     # the path it holds; the name must resolve to a
                     # statically checkable value.
                     seen_api = True
                     name = recv.group(1)
-                    value = shell_vars.get(name)
+                    value = _lookup(name)
                     if value is None:
                         dirty = True
                         break
@@ -1600,13 +1730,10 @@ def find_bash_disallowed_write_paths(
                         break
                     for lit in n_lits:
                         _check(lit)
-                for disp in re.finditer(r"[\)\]]\s*\(", seg):
+                for disp in _CODE_DISP_CALL_RE.finditer(seg):
                     # ``getattr(os,'remove')(target)`` — the dispatched
                     # call's argument region is the target.
-                    region = seg[disp.end() : disp.end() + 240]
-                    close = region.find(")")
-                    if close != -1:
-                        region = region[:close]
+                    region = _code_arg_region(seg, disp.end())
                     dwork = re.sub(
                         r"(?i)(?<![\w])[bru]+(?=['\"])", "", region
                     )
@@ -1622,6 +1749,72 @@ def find_bash_disallowed_write_paths(
                         break
                     for lit in dwork_lits:
                         _check(lit.strip("\"'"))
+                for exc in _CODE_EXEC_RE.finditer(seg):
+                    # ``exec(x)`` evaluates code — every argument must be a
+                    # literal whose body carries no write API, dynamic
+                    # source, or nested shell command.
+                    region = _code_arg_region(seg, exc.end())
+                    e_lits = [
+                        t.strip("\"'")
+                        for t in re.findall(
+                            r'"[^"]*"|\'[^\']*\'', region
+                        )
+                    ]
+                    ework = re.sub(
+                        r'"[^"]*"|\'[^\']*\'', "", region
+                    )
+                    bad = bool(ework.strip())
+                    if not bad:
+                        for lit in e_lits:
+                            if (
+                                _CODE_MUT_RE.search(lit)
+                                or _CODE_DYN_RE.search(lit)
+                                or _MUT_VERB_WORDS_RE.search(lit)
+                            ):
+                                bad = True
+                                break
+                    if bad:
+                        dirty = True
+                        break
+                    seen_api = True
+                for cname, cvalue in code_vars.items():
+                    # ``x = os.remove; x(t)`` — a name bound to a mutating
+                    # callable keeps the literal-only argument rule.
+                    nval = re.sub(r'"[^"]*"|\'[^\']*\'', "", cvalue)
+                    if not _CODE_CALLABLE_REF_RE.search(nval.strip()):
+                        continue
+                    seen_api = True
+                    for call in re.finditer(
+                        r"(?<![\w.])" + re.escape(cname) + r"\s*\(", seg
+                    ):
+                        region = _code_arg_region(seg, call.end())
+                        cw_lits = [
+                            t.strip("\"'")
+                            for t in re.findall(
+                                r'"[^"]*"|\'[^\']*\'', region
+                            )
+                        ]
+                        cwork = re.sub(
+                            r'"[^"]*"|\'[^\']*\'', "", region
+                        )
+                        seen_api = True
+                        if _arg_dirty(cwork, cwork.split(",")):
+                            dirty = True
+                            break
+                        for lit in cw_lits:
+                            if _MUT_VERB_WORDS_RE.search(lit) and (
+                                _depth < _MAX_CARRIER_DEPTH
+                            ) and find_bash_disallowed_write_paths(
+                                lit,
+                                config,
+                                workdir=eff_dir,
+                                _depth=_depth + 1,
+                            ):
+                                dirty = True
+                                break
+                            _check(lit)
+                    if dirty:
+                        break
                 # The code itself lives inside a quoted literal — strip
                 # the literals nested *inside* the code, not the code
                 # string, before the no-API dynamic check.
@@ -1634,7 +1827,17 @@ def find_bash_disallowed_write_paths(
                     blocked.append(verb)
                     continue
             for text in lit_texts:
-                # A literal holding a nested command string recurses.
+                # A literal holding a nested command string recurses —
+                # but a literal that is itself interpreter code (``import
+                # sqlite3``) is not a shell command.
+                if re.match(
+                    r"(?i)\s*(?:import|from|def|class|return|with|while|"
+                    r"if|elif|else|try|except|finally|lambda|global|"
+                    r"nonlocal|print|pass|raise|yield|assert|async|await|"
+                    r"continue|break)\b",
+                    text,
+                ):
+                    continue
                 if text and _MUT_VERB_WORDS_RE.search(text) and (
                     _depth < _MAX_CARRIER_DEPTH
                 ) and find_bash_disallowed_write_paths(
