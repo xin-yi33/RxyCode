@@ -276,6 +276,12 @@ def test_w7_c01_integration() -> None:
         "Set-Content -Path:C:\\Windows\\Temp\\rxy_w7c01_pwned.txt x",
         "npm install --prefix=C:\\Windows\\Temp\\rxy_w7c01_pwned x",
         "terraform -chdir=C:\\Windows\\Temp\\rxy_w7c01_pwned init",
+        # Glued short-option values — ``-oFILE``/``cfFILE``/``of=FILE``
+        # attach the target to the flag with no separator (audit round 18).
+        "curl -oC:\\Windows\\Temp\\rxy_w7c01_pwned.txt http://a/",
+        "tar cfC:\\Windows\\Temp\\rxy_w7c01_pwned.tar a",
+        "dd if=nul of=C:\\Windows\\Temp\\rxy_w7c01_pwned.bin",
+        "iwr -oC:\\Windows\\Temp\\rxy_w7c01_pwned.txt http://a/",
         # Shell quoting/escapes concatenate into the verb: r'm', r"m",
         # r\m and r\\m all reach the gate as rm.
         "r'm' /etc/rxy_w7c01_pwned.txt",
@@ -394,6 +400,18 @@ def test_w7_c01_integration() -> None:
     assert find_bash_disallowed_write_paths(
         "Set-Content -Path:..\\rxy_w7c01_out.txt x", config, workdir="D:\\"
     )
+    # Glued short-option traversal values (audit round 18): from a workdir
+    # outside every allowed root the attached ``..`` target must surface.
+    for glued in (
+        "curl -o..\\rxy_w7c01_out.txt http://a/",
+        "wget -O..\\rxy_w7c01_out.txt http://a/",
+        "sort -o..\\rxy_w7c01_out.txt f",
+        "gpg -o..\\rxy_w7c01_out.txt f",
+        "tar cf..\\rxy_w7c01_out.tar a",
+        "dd if=nul of=..\\rxy_w7c01_out.bin",
+        "iwr -o..\\rxy_w7c01_out.txt http://a/",
+    ):
+        assert find_bash_disallowed_write_paths(glued, config, workdir="D:\\"), glued
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

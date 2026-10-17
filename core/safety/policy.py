@@ -705,19 +705,19 @@ _COND_MUT_VERBS = {
     "perl": r"-\w*[ie]\b",
     # ``-oFILE``/``-OFILE`` glue the target onto the flag — no word
     # boundary after the letter.
-    "curl": r"-[oOT](?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output\b|--upload-file\b",
-    "wget": r"-O(?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output-document\b",
-    "sort": r"-o(?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output\b|/o\b",
-    "gpg": r"-o(?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output\b",
+    "curl": r"-[oOT](?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output\b|--upload-file\b",
+    "wget": r"-O(?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output-document\b",
+    "sort": r"-o(?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output\b|/o\b",
+    "gpg": r"-o(?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output\b",
     "openssl": r"-out\b",
     "awk": r"-i\b|inplace",
     "gawk": r"-i\b|inplace",
     "mawk": r"-i\b|inplace",
     "nawk": r"-i\b|inplace",
-    "iwr": r"-OutFile\b|-o\b",
-    "irm": r"-OutFile\b|-o\b",
-    "invoke-webrequest": r"-OutFile\b|-o\b",
-    "invoke-restmethod": r"-OutFile\b|-o\b",
+    "iwr": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+    "irm": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+    "invoke-webrequest": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+    "invoke-restmethod": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
 }
 # Carrier verbs execute their arguments: the nested command is scanned
 # recursively (depth-limited). Encoded-payload flags cannot be decoded
@@ -1950,6 +1950,20 @@ def find_bash_disallowed_write_paths(
                     blocked.append(verb)
             # Fall through: path tokens in the code get the generic check.
         cond = _COND_MUT_VERBS.get(verb)
+        if cond:
+            # Glued flag values (``-oFILE``/``-O..\x``) never become
+            # separate tokens — the ``-`` token gets skipped as a flag —
+            # so check whatever clings to the flag directly.
+            for cm in re.finditer(cond, seg, re.IGNORECASE):
+                gm = re.match(
+                    r"([A-Za-z]:[\\/][^\s'\"|;>&]*"
+                    r"|\.{1,2}[\\/][^\s'\"|;>&]*"
+                    r"|[\\/][^\s'\"|;>&]+"
+                    r"|[~$][^\s'\"|;>&]*)",
+                    seg[cm.end() :],
+                )
+                if gm:
+                    _check(gm.group(1))
         if cond and not re.search(cond, seg, re.IGNORECASE):
             # Read-only form — but the tail may still carry a real ``>``
             # (``curl url > /etc/x``) or a program literal that redirects
@@ -2005,7 +2019,7 @@ def find_bash_disallowed_write_paths(
             # ``tar cfX:\x a`` — the ``f`` flag glues the archive path
             # with no separator at all.
             tgl = re.search(
-                r"(?i)(?:^|\s)-?[ctx][a-z]*f([A-Za-z]:[\\/][^\s'\"|;>&]*"
+                r"(?i)(?:^|\s)-?[ctx][a-z]*f([A-Za-z]:[\\/][^\s'\"|;>&]*|\.[^\s'\"|;>&]*"
                 r"|[\\/][^\s'\"|;>&]+)",
                 seg,
             )
