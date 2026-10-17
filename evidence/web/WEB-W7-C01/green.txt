@@ -1,54 +1,30 @@
-WEB-W7-C01 green evidence — post-fix verification
-==================================================
+WEB-W7-C01 fail-closed write-path gate - verification (round 23)
 
-Suite (card-owned + adjacent regressions):
-  D:\Anaconda3\python.exe -m pytest tests/web/w7 tests/web/security tests/test_safety_policy.py tests/test_cache -q
+== ruff ==
+$ D:\Anaconda3\python.exe -m ruff check core/safety/policy.py tests/web/w7/test_w7_c01_module.py
+All checks passed!
 
-  Result: 628 passed, 3 skipped, 26 warnings in 26.84s
-  - Skips are pre-existing: two tests/test_cache/test_stable_prefix.py cases
-    ("no tools registered in global test registry") plus one
-    test_dual_track_naming_matrix.py same-pair case; unchanged by this card.
-  - tests/web/w7/test_w7_c01_module.py now covers: positional Set/Add-Content,
-    powershell -c wrapper, executable here-strings (double+single quoted),
-    Clear-Content, $env:/$Env:/${env:}/${VAR} braced and plain env targets
-    (incl. non-ASCII names), unset env vars (fail-closed), ~ and $HOME bare
-    roots, %VAR% and %VAR(x86)% cmd vars, Unix absolute roots (/opt, /run,
-    bare /), UNC shares (\\host\share), current-drive roots (\Windows\x),
-    drive root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi,
-    cd/Set-Location/pushd directory-change targets, relative '..'
-    traversal (../../x, a\..\..\x), multi-argument path scanning,
-    workdir-relative resolution (orchestrator passes args["workdir"]),
-    cumulative cd tracking, backtick/backslash line continuations,
-    bare cd/popd fail-closed, env-var expansion escape via .., tracked
-    $var assignments ($x=..., X=..., quoted values, ${X} preferring the
-    tracked assignment) with untracked names fail-closed, flag-only cd
-    (cd -, cd -L), command-local and process CDPATH fail-closed,
-    session-cwd eff fallback when workdir is omitted, pipeline-object
-    targets ($_.FullName and $args[0] fail closed while basename-style
-    $_.Name stays relative — a trailing .. segment still fails),
-    and non-blocking of /dev/null, bare pipeline vars ($_, $PSItem),
-    in-workspace tracked vars, relative mid-token separators
-    (./x, dir\x, a~b, config/x) and in-workspace cd.
-  - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
-    sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
-    tampered/expired session cookies, CSRF Origin on mutating routes,
-    terminal WS Origin refusal (incl. cloud + empty allowlist), SSRF
-    private-address refusal, secret redaction, and grant tampering.
+== card tests (full stdout) ==
+$ D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c01_unit.py tests/web/w7/test_w7_c01_module.py tests/web/security/test_threat_model.py -q --tb=short
+..........                                                               [100%]
+============================== warnings summary ===============================
+..\..\..\Anaconda3\Lib\site-packages\fastapi\testclient.py:1
+  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
 
-Focused run:
-  tests/web/w7/test_w7_c01_module.py: 1 passed (integration + ~50 variants)
-  tests/web/w7 + tests/web/security + tests/test_safety_policy.py:
-    148 passed in 8.86s
-  tests/web/w4 grant/tool_rpc regression (c05 unit+module): 3 passed.
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+10 passed, 1 warning in 5.85s
 
-Environment note: a broad `pytest tests/web/w4` run also executes
-  test_w4_c02_module.py::test_w4_c02_integration, which spawns a real
-  notepad.exe window; it fails in this headless console session with
-  "OSError: no window appeared" — a GUI-dependency unrelated to this card
-  (its code path is untouched here). All card-relevant W4 grant/tool tests
-  pass.
+== safety regression files ==
+tests/test_safety_policy.py tests/test_safety_api.py tests/test_safety_audit.py tests/test_safety_gate.py
 
-Lint:
-  D:\Anaconda3\python.exe -m ruff check core/safety/policy.py
-    tests/web/w7/test_w7_c01_module.py
-  All checks passed.
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+200 passed, 1 warning in 3.16s
+
+== cache regression files ==
+tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py
+..............s.s...............                                         [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_cache\test_stable_prefix.py:142: no tools registered in global test registry
+SKIPPED [1] tests\test_cache\test_stable_prefix.py:158: no tools registered in global test registry
+30 passed, 2 skipped in 2.13s

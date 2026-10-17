@@ -389,8 +389,55 @@ def test_w7_c01_integration() -> None:
         'python -c "from pathlib import Path; Path(\'ok\').with_name(\'ok2\').write_text(\'x\')"',
         'python -c "from pathlib import Path; (Path(\'ok\')/\'x\').unlink()"',
         'python -c "exec(\'print(1)\')"',
+        # Command-position gate (round 20): ``ar``/``rar``/``start`` as
+        # arguments or in read modes stay allowed, as do literal
+        # invocations and dot-sourcing a literal script.
+        "echo ar",
+        "echo start",
+        "npm start",
+        "pnpm run start",
+        "docker start web",
+        "ar t lib.a",
+        "rar l x.rar",
+        "tar -tf ok.tar",
+        "tar -xf ok.tar",
+        ". ./env.ps1",
+        "Start-Process -FilePath notepad.exe",
+        # Parenthesised expressions are not invocations; path-like
+        # arguments and read-mode/cluster-letter tar runs stay allowed.
+        "if ($ok) { Set-Content ok.txt x }",
+        "foreach ($f in $files) { Set-Content ok.txt x }",
+        "if ($x -eq 1) { echo hi }",
+        "($x = 1)",
+        "(Get-Item $x)",
+        "echo C:\\tools\\rar.exe",
+        "tar -cJf ok.tar.xz a",
+        "tar -xzvf ok.tgz",
+        "tar -tvf ok.tar",
+        "tar --to-stdout -xf ok.tar",
+        "Start-Sleep 1",
+        # Old-style bare clusters with only read/write letters are plain
+        # cluster parsing, not ``P``/``I``/``F`` escapes (audit round 22).
+        "tar xzf ok.tgz",
+        "tar tf ok.tar",
+        "tar cJf ok.tar.xz a",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
+    # Command-position verbs glued inside ordinary words end at the word
+    # boundary — ``garden``/``pear``/``smartctl`` are not ``ar``/``tar``
+    # invocations (repo root is inside the session cwd root).
+    for safe_word in (
+        "garden deploy",
+        "pear install pkg",
+        "cargo build --release",
+        "dart format .",
+        "clear",
+        "Restart-Service foo",
+        "smartctl -a x",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            safe_word, config, workdir=str(REPO)
+        ), safe_word
     # Relative targets resolve against the requested workdir: '..\\x' from
     # the workspace stays inside (allowed here only because tests\\web is a
     # permitted root), but from D:\\ the same command escapes every root.
@@ -428,8 +475,9 @@ def test_w7_c01_integration() -> None:
         'python -c "import os;x=f\'{os.environ[chr(84)]}\';open(x,\'w\')"',
     ):
         assert find_bash_disallowed_write_paths(post18, config, workdir="D:\\"), post18
-    # Audit round 19: ``& $var`` invokes the program the variable names —
-    # the payload must be rescanned; ``bsdtar``/``gtar`` are tar writers.
+    # Audit round 19/20: ``& $var`` hides the invoked program from the
+    # static text — the command slot fails closed (``<opaque:…>``);
+    # ``bsdtar``/``gtar`` are tar writers.
     assert find_bash_disallowed_write_paths(
         "$cmd='cmd.exe'; & $cmd /c \"echo x > %TEMP%\\rxy_w7c01_out.txt\"",
         config,
@@ -446,16 +494,136 @@ def test_w7_c01_integration() -> None:
             config,
             workdir="D:\\",
         ), archive
-        # List mode is a read — the archive operand stays allowed.
+        # List mode is a read — the archive operand stays allowed. The
+        # workdir is the whitelisted fixture dir; an outside workdir
+        # refuses every mutating opener regardless of mode.
         assert not find_bash_disallowed_write_paths(
             archive + " -tf C:\\Windows\\Temp\\rxy_w7c01_out.tar",
             config,
-            workdir="D:\\",
+            workdir=workdir,
         ), archive
+    # Audit round 20: a non-literal command slot fails closed instead of
+    # being resolved — ``<opaque:…>`` markers name the hidden construct.
+    for opaque in (
+        "$cmd='cmd.exe'; & \"$cmd\" /c \"echo x > C:\\Windows\\Temp\\w7.txt\"",
+        "$cmd='cmd.exe'; & ($cmd) /c \"echo x > C:\\Windows\\Temp\\w7.txt\"",
+        "$cmd=@('cmd.exe'); & $cmd[0] /c \"echo x > C:\\Windows\\Temp\\w7.txt\"",
+        "$x='echo x > C:\\Windows\\Temp\\w7.txt'; cmd /c $x",
+        'iex "$x"',
+        "$cmd='C:\\Windows\\Temp\\w7-payload.ps1'; . $cmd",
+        "& (gc a.txt) | out-file ok.txt",
+        "$env:COMSPEC /c dir",
+        "$x='cmd.exe'; Start-Process -FilePath $x -ArgumentList "
+        "'/c echo x > C:\\Windows\\Temp\\w7.txt' -Wait",
+        "$x='cmd.exe'; start $x '/c echo x > C:\\Windows\\Temp\\w7.txt'",
+        "bsdtar -P -xf ok.tar",
+        "tar --absolute-names -xf ok.tar",
+        "tar -xPf ok.tar",
+        "tar --to-command=cmd -xf ok.tar",
+        "tar --use-compress-program=x -xf ok.tar",
+        # Subshell/group/subexpression command slots.
+        "( $cmd -rf /x )",
+        "{ $cmd -rf /x; }",
+        'if (1) { & $cmd /c "echo x > C:\\Windows\\Temp\\w7.txt" }',
+        "ls | %{ & $_.FullName }",
+        '$( & $cmd /c "echo x > C:\\Windows\\Temp\\w7.txt" )',
+        # tar: any-case cluster letters, GNU long-option abbreviations.
+        "tar -xJPf a.tar.xz",
+        "tar --absolute -xf a.tar",
+        "tar --abs -xf a.tar",
+        "tar --xf=s/a/b/ -xf a.tar",
+        "tar --to-com=cmd -xf a.tar",
+        "tar --use-comp=x -xf a.tar",
+        "tar --checkpoint-act=exec=x -cf ok.tar a",
+        "tar -I'sh -c x' -xf a.tar",
+        # Bare leading clusters still carry ``P``/``I``/``F`` escapes, and
+        # Windows ``tar.exe`` is bsdtar — ``--absolute-paths``/
+        # ``--insecure``/``-s`` apply to the plain ``tar`` verb too.
+        "tar xPf evil.tar",
+        "tar xIf cmd a.tar",
+        "tar -xf a.tar --absolute-paths",
+        "tar -xf a.tar --insecure",
+        "tar -xf a.tar -s/^/x/",
+    ):
+        hits = find_bash_disallowed_write_paths(opaque, config, workdir="D:\\")
+        assert hits, opaque
+        assert any(h.startswith("<opaque:") for h in hits), (opaque, hits)
+    # Literal program/archive operands are still inspected directly —
+    # including quoted and directory-qualified verb forms.
+    for lit_target in (
+        "Start-Process -FilePath cmd.exe -ArgumentList "
+        "'/c echo x > C:\\Windows\\Temp\\w7.txt' -Wait",
+        "Start-Process cmd.exe -ArgumentList "
+        "'/c','echo x > C:\\Windows\\Temp\\w7.txt'",
+        "rar a C:\\Windows\\Temp\\w7.rar README.md",
+        "ar rcs C:\\Windows\\Temp\\w7.a obj.o",
+        '& "C:\\Program Files\\WinRAR\\rar.exe" a C:\\Windows\\Temp\\w7.rar f',
+        "C:\\tools\\rar.exe a C:\\Windows\\Temp\\w7.rar f",
+        "& 'rar' a C:\\Windows\\Temp\\w7.rar f",
+        "C:\\Windows\\System32\\ar.exe rcs C:\\Windows\\Temp\\w7.a o",
+        "$(printf rm) -rf C:/x",
+        "`printf rm` -rf C:/x",
+        "sudo rar a C:\\Windows\\Temp\\w7.rar f",
+        "tar cf C:\\Windows\\Temp\\w7.tar a",
+    ):
+        assert find_bash_disallowed_write_paths(
+            lit_target, config, workdir="D:\\"
+        ), lit_target
+    # ``-xOf``/``--to-stdout`` stream the archive to stdout — the operand
+    # is a read, abbreviated or not. The workdir is the whitelisted
+    # fixture dir: an outside workdir now refuses every mutating opener.
+    assert not find_bash_disallowed_write_paths(
+        "tar -xOf C:\\Windows\\Temp\\input.archive member",
+        config,
+        workdir=workdir,
+    )
+    assert not find_bash_disallowed_write_paths(
+        "tar --to-st -xf C:\\Windows\\Temp\\input.archive member",
+        config,
+        workdir=workdir,
+    )
     # An f-string without interpolation is a plain literal.
     assert not find_bash_disallowed_write_paths(
-        "python -c \"open(f'ok.txt','w')\"", config, workdir="D:\\"
+        "python -c \"open(f'ok.txt','w')\"", config, workdir=workdir
     )
+    # A start directory outside the write whitelist makes every relative
+    # write unverifiable — any mutating opener refuses the whole command
+    # and the directory itself is reported as the marker (round 22).
+    for outside in (
+        "echo x > ok.txt",
+        "Set-Content ok.txt x",
+        "Set-Content sub\\ok.txt x",
+        "tar -xf a.tar",
+        "unzip a.zip",
+        "7z x a.zip",
+        "git clone https://x/y",
+    ):
+        hits = find_bash_disallowed_write_paths(
+            outside, config, workdir="C:\\Windows"
+        )
+        assert hits, outside
+        assert any("C:\\Windows" in h for h in hits), (outside, hits)
+    # A trailing ``cd`` into the workspace does not launder the write —
+    # the check uses where the command started, not where it ended.
+    for started_outside in (
+        "echo x > a.txt; cd " + str(REPO),
+        "tar -xf a.tar; cd " + str(REPO),
+    ):
+        hits = find_bash_disallowed_write_paths(
+            started_outside, config, workdir="C:\\Windows"
+        )
+        assert hits, started_outside
+        assert any("C:\\Windows" in h for h in hits), (started_outside, hits)
+    # Read-only commands produce no mutating opener — still allowed.
+    for readonly in ("dir", "echo hi"):
+        assert not find_bash_disallowed_write_paths(
+            readonly, config, workdir="C:\\Windows"
+        ), readonly
+    # The same relative writes from inside the workspace stay allowed.
+    for rel_ok in ("echo x > ok.txt", "Set-Content sub\\ok.txt x"):
+        assert not find_bash_disallowed_write_paths(
+            rel_ok, config, workdir=workdir
+        ), rel_ok
 
     unknown = asyncio.run(
         orchestrator.execute_tool(
