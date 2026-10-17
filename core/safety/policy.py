@@ -595,7 +595,7 @@ _MUT_VERB_ALT = (
     r"installutil|regasm|regsvcs|mshta|rundll32|scrcons|forfiles|schtasks|control|"
     r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
     r"del|erase|rmdir|rd|rm|mv|cp|copy|xcopy|robocopy|move|rename|replace|mklink|tee|touch|mkdir|install|dd|truncate|"
-    r"shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|zip|gzip|gunzip|bzip2|bunzip2|xz|unxz|compress|uncompress|"
+    r"shred|patch|tar|bsdtar|gtar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|zip|gzip|gunzip|bzip2|bunzip2|xz|unxz|compress|uncompress|"
     r"split|csplit|sponge|makecab|extrac32|"
     r"chmod|chown|chgrp|chattr|setfacl|attrib|icacls|cacls|cipher|compact|takeown|xargs|find|sed|perl|ed|ex|vi|vim|nvim|"
     r"view|nano|emacs|fsutil|reg|crontab|visudo|vipw|vigr|format(?!-)|diskpart|mount|umount|mkfs|fdisk|parted|sgdisk|"
@@ -998,12 +998,15 @@ def _code_lit_strip(text: str) -> str:
                 # for a static literal below.
                 exprs = [body[1:-1]]
                 truncated = True
-            if not truncated and exprs and all(
+            if not truncated and (
+                not exprs
+                or all(
                 re.fullmatch(
                     r"\s*(?:'[^']*'|\"[^\"]*\"|[0-9][0-9_]*(?:\.[0-9]+)?)\s*",
                     e,
                 )
-                for e in exprs
+                    for e in exprs
+                )
             ):
                 # Every interpolation is static — the folded value is a
                 # plain literal, so strip it like any other string. The
@@ -1431,8 +1434,56 @@ def find_bash_disallowed_write_paths(
             for m in _ASSIGN_RE.finditer(masked)
             if not _in_quotes(m.start()) and _assign_prefix_ok(m.start())
         ]
+        + [
+            (m.start(), "varrun", m)
+            for m in re.finditer(
+                r"\$(?:env:)?[A-Za-z_]\w*(?=\s+\S)", masked
+            )
+            if not _in_quotes(m.start())
+            # Command position: start of the command text or right after
+            # a separator, optionally led by the PowerShell call
+            # operator ``&``/``.`` — ``& $cmd /c ...`` invokes the
+            # program the variable names.
+            and re.fullmatch(
+                r"[\s&.]*", masked[
+                    max(masked.rfind(c, 0, m.start()) for c in ";|&\n") + 1
+                    : m.start()
+                ]
+            )
+        ]
     )
     for _, kind, m in events:
+        if kind == "varrun":
+            var = m.group()
+            resolved = _resolve_value(var)
+            if resolved is None:
+                # The invoked program name is unverifiable — fail closed.
+                blocked.append(var)
+                continue
+            seg_end = min(
+                (
+                    masked.find(c, m.end())
+                    for c in ";|&\n"
+                    if masked.find(c, m.end()) != -1
+                ),
+                default=len(masked),
+            )
+            tail = masked[m.end():seg_end]
+            value = resolved.strip("'\"")
+            if re.match(r"(?:[A-Za-z]:[\\/]|/|\\\\)", value):
+                # ``$env:COMSPEC /c ...`` — the executable's own location
+                # is not a write target; keep the basename so carrier
+                # semantics (``cmd /c``) survive.
+                value = os.path.basename(value)
+            for hit in find_bash_disallowed_write_paths(
+                (value + " " + tail).strip(),
+                config,
+                workdir=eff_dir,
+                _depth=_depth + 1,
+            ):
+                if hit not in blocked:
+                    blocked.append(hit)
+            continue
         if kind == "as":
             name = m.group("ps") or m.group("sh") or ""
             value = (
@@ -2117,7 +2168,7 @@ def find_bash_disallowed_write_paths(
                 or _DOTDOT_SEGMENT_RE.search(fval)
             ):
                 _check(fval)
-        if verb == "tar":
+        if verb in ("tar", "bsdtar", "gtar"):
             # ``tar cfX:\x a`` — the ``f`` flag glues the archive path
             # with no separator at all.
             tgl = re.search(
@@ -2127,6 +2178,18 @@ def find_bash_disallowed_write_paths(
             )
             if tgl:
                 _check(tgl.group(1))
+            if not re.search(
+                # A write mode is a ``-`` cluster containing c/x/u/r
+                # anywhere in the args, or a bare option cluster at the
+                # very start of the segment (``tar cfX:``).
+                r"(?i)-[a-z]*[cxur][a-z]*"
+                r"|^\s*[ctxurfeajzJWbmopvdh]*[cxur][a-z]*"
+                r"|--(?:create|extract|append|update|delete|concatenate)\b",
+                seg,
+            ):
+                # List/diff/verify modes never write — ``tar -tf a.tar``
+                # is a read.
+                continue
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
             if _cmd_flag(raw):

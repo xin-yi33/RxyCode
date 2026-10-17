@@ -428,6 +428,34 @@ def test_w7_c01_integration() -> None:
         'python -c "import os;x=f\'{os.environ[chr(84)]}\';open(x,\'w\')"',
     ):
         assert find_bash_disallowed_write_paths(post18, config, workdir="D:\\"), post18
+    # Audit round 19: ``& $var`` invokes the program the variable names —
+    # the payload must be rescanned; ``bsdtar``/``gtar`` are tar writers.
+    assert find_bash_disallowed_write_paths(
+        "$cmd='cmd.exe'; & $cmd /c \"echo x > %TEMP%\\rxy_w7c01_out.txt\"",
+        config,
+        workdir="D:\\",
+    )
+    for archive in ("bsdtar", "gtar"):
+        assert find_bash_disallowed_write_paths(
+            archive + " -cf C:\\Windows\\Temp\\rxy_w7c01_out.tar README.md",
+            config,
+            workdir="D:\\",
+        ), archive
+        assert find_bash_disallowed_write_paths(
+            archive + " cfC:\\Windows\\Temp\\rxy_w7c01_out.tar README.md",
+            config,
+            workdir="D:\\",
+        ), archive
+        # List mode is a read — the archive operand stays allowed.
+        assert not find_bash_disallowed_write_paths(
+            archive + " -tf C:\\Windows\\Temp\\rxy_w7c01_out.tar",
+            config,
+            workdir="D:\\",
+        ), archive
+    # An f-string without interpolation is a plain literal.
+    assert not find_bash_disallowed_write_paths(
+        "python -c \"open(f'ok.txt','w')\"", config, workdir="D:\\"
+    )
 
     unknown = asyncio.run(
         orchestrator.execute_tool(
