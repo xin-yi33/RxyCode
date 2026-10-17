@@ -765,7 +765,7 @@ _CODE_MUT_RE = re.compile(
     r"tofile|urlretrieve|ZipFile|TarFile|BZ2File|GzipFile|LZMAFile|Workbook|"
     r"make_archive|unpack_archive|extractall|extract|sqlite3\.connect|"
     r"FileHandler|removedirs|renames|hardlink|lchown|lchmod|chflags|lchflags|"
-    r"link_to|\.output\s*\(|`)",
+    r"link_to|touch|write_text|write_bytes|getattr|\.output\s*\(|`)",
     re.IGNORECASE,
 )
 # Write targets produced at runtime (env/argv/stdin/temp dirs/script
@@ -816,6 +816,15 @@ _CODE_TARGET_API_RE = re.compile(
     r"removedirs|renames|link_to|symlink_to|hardlink_to|lchown|lchmod|"
     r"chflags|lchflags)\s*\(",
     re.IGNORECASE,
+)
+# ``Call(args).mutating_method()`` — the target lives on the receiver
+# (``Path(os.environ['T']).unlink()``), not in the method's own args.
+_CODE_RECV_RE = re.compile(
+    r"(?i)[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)\s*\.\s*"
+    r"(?:write_text|write_bytes|touch|unlink|rename|replace|mkdir|rmdir|"
+    r"chmod|chown|open|delete|remove|move|copy|link_to|symlink_to|"
+    r"hardlink_to|extract|extractall|utime|dump|truncate|"
+    r"write|writelines|append)\s*\("
 )
 # Two-path calls whose destination is also a write target.
 _TWO_TARGET_APIS = frozenset(
@@ -1503,8 +1512,67 @@ def find_bash_disallowed_write_paths(
                             break
                     if dirty:
                         break
-                if dirty or (not seen_api and not any(
-                    '"' in t or "'" in t for t in lit_texts
+                # ``Path(args).method()`` receiver args and the args of a
+                # dispatched ``getattr(...)()/exec(...)()`` call are write
+                # targets too — same literal-only rule.
+                for recv in _CODE_RECV_RE.finditer(seg):
+                    seen_api = True
+                    rwork = re.sub(
+                        r"(?i)(?<![\w])[bru]+(?=['\"])", "", recv.group(1)
+                    )
+                    rwork_lits = re.findall(
+                        r'"[^"]*"|\'[^\']*\'', rwork
+                    )
+                    rwork = re.sub(r'"[^"]*"|\'[^\']*\'', "", rwork)
+                    if _CODE_DYN_RE.search(rwork):
+                        dirty = True
+                        break
+                    for arg in rwork.split(","):
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            dirty = True
+                            break
+                    if dirty:
+                        break
+                    for lit in rwork_lits:
+                        _check(lit.strip("\"'"))
+                for disp in re.finditer(r"\)\s*\(", seg):
+                    # ``getattr(os,'remove')(target)`` — the dispatched
+                    # call's argument region is the target.
+                    seen_api = True
+                    region = seg[disp.end() : disp.end() + 240]
+                    close = region.find(")")
+                    if close != -1:
+                        region = region[:close]
+                    dwork = re.sub(
+                        r"(?i)(?<![\w])[bru]+(?=['\"])", "", region
+                    )
+                    dwork_lits = re.findall(
+                        r'"[^"]*"|\'[^\']*\'', dwork
+                    )
+                    dwork = re.sub(r'"[^"]*"|\'[^\']*\'', "", dwork)
+                    if _CODE_DYN_RE.search(dwork):
+                        dirty = True
+                        break
+                    for arg in dwork.split(","):
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            dirty = True
+                            break
+                    if dirty:
+                        break
+                    for lit in dwork_lits:
+                        _check(lit.strip("\"'"))
+                # The code itself lives inside a quoted literal — strip
+                # the literals nested *inside* the code, not the code
+                # string, before the no-API dynamic check.
+                code_inner = re.sub(
+                    r'"[^"]*"|\'[^\']*\'', "", " ".join(lit_texts)
+                )
+                if dirty or (not seen_api and (
+                    not lit_texts or _CODE_DYN_RE.search(code_inner)
                 )):
                     blocked.append(verb)
                     continue
