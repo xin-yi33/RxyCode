@@ -863,6 +863,29 @@ _STDIN_EXECUTORS = frozenset({
     "cscript", "wscript", "at", "batch",
 })
 _STDIN_TWO_ARG = frozenset({"ssh", "at", "batch"})
+# Heredoc (``cmd <<[-]['"]WORD``) owners. The body feeds the owner's
+# stdin: shells execute it (the owning event rescans it as a command),
+# interpreters run the inline-code checks on it, executors of stdin
+# fail closed, and every other command sees it as data — the body is
+# masked so a ``>`` inside cannot open a redirect event.
+_HEREDOC_SHELLS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "pwsh", "powershell", "cmd",
+    "source", "eval", "iex", "invoke-expression",
+})
+# ``perl`` heredocs also execute stdin, but there is no perl inline-code
+# branch — they fail closed with the stdin executors instead.
+_HEREDOC_INTERPS = frozenset({
+    "python", "python3", "py", "node", "deno", "bun", "ruby", "php",
+    "rscript", "osascript", "julia",
+})
+_HEREDOC_JS = frozenset({"node", "deno", "bun"})
+# Matches ``<<WORD``/``<<-WORD``/``<<'WORD'``/``<<"WORD"`` openings.
+_HEREDOC_RE = re.compile(r"<<(-)?[ \t]*(['\"]?)([A-Za-z_]\w*)\2")
+# Heredoc owners that execute stdin but have no inline-code or carrier
+# rescan path — fail closed like the piped-stdin executors.
+_HEREDOC_EXEC_FAILCLOSED = _STDIN_EXECUTORS | frozenset(
+    {"perl", "crontab"}
+)
 _ENCODED_CARRIERS = frozenset(
     {"powershell", "pwsh", "powershell.exe", "pwsh.exe", "cmd", "cmd.exe"}
 )
@@ -1669,6 +1692,112 @@ def find_bash_disallowed_write_paths(
                 masked_chars[pos] = " "
     masked = "".join(masked_chars)
 
+    # Heredoc bodies (``cmd <<[-]['"]WORD`` … ``WORD``) feed the owning
+    # command's stdin. The owner decides the semantics: shells and
+    # interpreters run the body (deferred to the owning event via
+    # ``heredoc_feed``), stdin executors fail closed, and anything else
+    # gets the body masked as inert data so a ``>`` inside cannot open
+    # a redirect event. Only body lines plus the terminator word are
+    # masked — a redirect on the ``<<`` line itself still fires. Line
+    # scanning runs on ``scrubbed``: a stray ``'`` inside the body can
+    # corrupt ``masked``'s newline map before the span filter below.
+    heredoc_feed: dict[int, tuple[str, int, int]] = {}
+    hd_mask: list[tuple[int, int]] = []
+    for hm in _HEREDOC_RE.finditer(masked):
+        if _in_quotes(hm.start()):
+            continue
+        if any(bs <= hm.start() < be for bs, be in hd_mask):
+            # A ``<<`` inside an earlier body is data, not an opener.
+            continue
+        nl = scrubbed.find("\n", hm.end())
+        if nl == -1:
+            continue
+        body_start = nl + 1
+        word = hm.group(3)
+        strip_tabs = hm.group(1) == "-"
+        body_end = len(scrubbed)
+        mask_end = len(scrubbed)
+        lpos = body_start
+        while lpos < len(scrubbed):
+            lend = scrubbed.find("\n", lpos)
+            if lend == -1:
+                lend = len(scrubbed)
+            line = scrubbed[lpos:lend]
+            if (line.lstrip("\t") if strip_tabs else line) == word:
+                body_end = lpos
+                mask_end = lend
+                break
+            lpos = lend + 1
+        # Mask the body AND the terminator line — a delimiter like
+        # ``PY`` would otherwise parse as a ``py`` verb event.
+        hd_mask.append((body_start, mask_end))
+        # Owner = first word of the segment holding the ``<<``.
+        hseg_start = max(
+            masked.rfind(c, 0, hm.start()) for c in ";|&\n"
+        ) + 1
+        head = masked[hseg_start : hm.start()]
+        pm = _CMD_SLOT_PREFIX_RE.match(head)
+        rest = head[pm.end():] if pm else head
+        wm = re.match(r"\s*['\"]?([A-Za-z_]\w*)", rest)
+        owner = wm.group(1).lower() if wm else ""
+        own_start = (
+            hseg_start + (pm.end() if pm else 0) + wm.start(1)
+            if wm
+            else -1
+        )
+        if owner in _HEREDOC_SHELLS:
+            hd_kind = "shell"
+        elif owner in _HEREDOC_INTERPS:
+            hd_kind = "interp"
+        elif owner in _HEREDOC_EXEC_FAILCLOSED:
+            blocked.append(owner)
+            continue
+        else:
+            continue
+        if own_start >= 0 and re.fullmatch(
+            r"(?i)(?:" + _MUT_VERB_ALT + r")(?:\.(?:exe|com|bat|cmd|ps1))?",
+            owner,
+        ):
+            heredoc_feed[own_start] = (hd_kind, body_start, body_end)
+        elif hd_kind == "shell" and _depth < _MAX_CARRIER_DEPTH:
+            # The owner produces no opener event (``ksh``) — rescan the
+            # body immediately against the current dir.
+            hmut: list[bool] = []
+            for hit in find_bash_disallowed_write_paths(
+                scrubbed[body_start:body_end],
+                config,
+                workdir=eff_dir,
+                _depth=_depth + 1,
+                _piped=_piped,
+                _mut_out=hmut,
+            ):
+                if hit not in blocked:
+                    blocked.append(hit)
+            if hmut and hmut[0]:
+                mutating = True
+        else:
+            blocked.append(owner)
+    if hd_mask:
+        # Body text is data — a ``'`` inside it must not extend a quoted
+        # span past the terminator into real command text. Rebuild the
+        # separator mask with those spans dropped so a stray quote in
+        # the body (``don't``) cannot hide a later ``>`` or verb.
+        quoted_spans = [
+            qs
+            for qs in quoted_spans
+            if not any(bs <= qs[0] < be for bs, be in hd_mask)
+        ]
+        masked_chars = list(scrubbed)
+        for start, end in quoted_spans:
+            for pos in range(start, end):
+                if masked_chars[pos] in ";|&\n":
+                    masked_chars[pos] = " "
+        for bs, be in hd_mask:
+            for p in range(bs, be):
+                if masked_chars[p] != "\n":
+                    masked_chars[p] = " "
+        masked = "".join(masked_chars)
+
     # ``$'...'`` ANSI-C / ``$"..."`` locale strings, ``$(...)`` and
     # backticks evaluate at runtime — when they sit where a command name
     # goes the executed verb is unverifiable, so fail closed.
@@ -2155,10 +2284,16 @@ def find_bash_disallowed_write_paths(
                     return bool(re.search(r"[$`]", tok))
                 return bool(re.search(r"[$`()]", tok))
 
+            def _sdir_dyn(tok: str) -> bool:
+                # The child dir additionally fails closed on cmd-style
+                # expansions — ``start /d %TEMP%``/``!W7_WD!`` expand at
+                # runtime even where PowerShell quoting would not.
+                return bool(re.search(r"[%!]", tok)) or _stok_dyn(tok)
+
             if (
                 _stok_dyn(program)
                 or any(_stok_dyn(a) for a in sargs)
-                or (sworkdir is not None and _stok_dyn(sworkdir))
+                or (sworkdir is not None and _sdir_dyn(sworkdir))
                 or any(_stok_dyn(t) for t in sredir)
             ):
                 blocked.append("<opaque:start-process>")
@@ -2175,7 +2310,6 @@ def find_bash_disallowed_write_paths(
                 if child_dir is None:
                     blocked.append("<opaque:start-process>")
                     continue
-                ev_dir = child_dir
             # ``-RedirectStandardOutput``/``-RedirectStandardError``
             # write in the parent location; ``-RedirectStandardInput``
             # only reads.
@@ -2202,7 +2336,14 @@ def find_bash_disallowed_write_paths(
             ):
                 if hit not in blocked:
                     blocked.append(hit)
-            if not (smut and smut[0]):
+            if smut and smut[0]:
+                # The payload's writes happened in the *child* dir —
+                # record it so an outside child is refused even when the
+                # parent's dir is whitelisted (and vice versa: redirect
+                # targets stay charged to the parent ``ev_dir``).
+                if child_dir is not None:
+                    mut_dirs.append(child_dir)
+            else:
                 _read_only()
             continue
         if verb == "rar":
@@ -2258,7 +2399,11 @@ def find_bash_disallowed_write_paths(
             if verb in _ENCODED_CARRIERS and _ENC_FLAG_RE.search(seg):
                 blocked.append(verb)
                 continue
-            tail = seg.strip()
+            # Rescan the RAW segment text, not the masked ``seg``: the
+            # quote mask rewrites ``\n``/``;``/``&`` inside quotes, which
+            # would destroy heredoc bodies and pipelines inside a
+            # carrier payload (``bash -c 'cat <<EOF\nrm x\nEOF'``).
+            tail = scrubbed[seg_abs : seg_abs + len(seg)].strip()
             # Unwrap only a fully-quoted payload (``iex 'rm x'``); blind
             # stripping would unbalance quotes inside e.g. ``cmd /c``.
             if len(tail) > 1 and tail[0] in "\"'" and tail[0] == tail[-1]:
@@ -2364,11 +2509,74 @@ def find_bash_disallowed_write_paths(
                     script_file = True
                     _check(t)
                     break
+            # ``bash <<EOF``/``sh -s <<EOF`` — the heredoc body is the
+            # executed payload; rescan it with the same workdir.
+            hd = heredoc_feed.get(opener.start())
+            if (
+                hd is not None
+                and hd[0] == "shell"
+                and _depth < _MAX_CARRIER_DEPTH
+            ):
+                hmut: list[bool] = []
+                hsub = find_bash_disallowed_write_paths(
+                    scrubbed[hd[1] : hd[2]],
+                    config,
+                    workdir=eff_dir,
+                    _depth=_depth + 1,
+                    _piped=piped,
+                    _mut_out=hmut,
+                )
+                if hsub:
+                    blocked.append(verb)
+                    for hit in hsub:
+                        if hit.startswith("<opaque:") and hit not in blocked:
+                            blocked.append(hit)
+                    continue
+                if hmut and hmut[0]:
+                    payload_mut = True
             if not payload_mut and not script_file:
                 # ``cmd /c echo hi`` launches a read-only payload — the
                 # carrier itself mutates nothing.
                 _read_only()
             continue
+        if verb in _INTERP_VERBS:
+            # ``python - <<PY``/``node <<EOF`` run the heredoc body as
+            # code — rescan it as a synthesized ``-c`` payload so the
+            # interpreter inline-code checks apply unchanged. ``#`` and
+            # ``//`` comments are data.
+            hd = heredoc_feed.get(opener.start())
+            if hd is not None and hd[0] == "interp":
+                if _depth >= _MAX_CARRIER_DEPTH:
+                    blocked.append(verb)
+                    continue
+                hbody = scrubbed[hd[1] : hd[2]]
+                hbody = "\n".join(
+                    re.sub(
+                        r"//.*$" if verb in _HEREDOC_JS else r"#.*$",
+                        "",
+                        ln,
+                    )
+                    for ln in hbody.split("\n")
+                )
+                icode = hbody.replace("\\", "\\\\").replace('"', '\\"')
+                hmut: list[bool] = []
+                hsub = find_bash_disallowed_write_paths(
+                    verb + ' -c "' + icode + '"',
+                    config,
+                    workdir=eff_dir,
+                    _depth=_depth + 1,
+                    _piped=piped,
+                    _mut_out=hmut,
+                )
+                if hsub:
+                    blocked.append(verb)
+                    for hit in hsub:
+                        if hit.startswith("<opaque:") and hit not in blocked:
+                            blocked.append(hit)
+                    continue
+                if not (hmut and hmut[0]):
+                    _read_only()
+                continue
         if verb in _INTERP_VERBS and _INTERP_CODE_FLAG_RE.search(seg):
             # Literals come from the unmasked ``scrubbed`` span — ``seg``
             # blanks ``;`` inside quotes, which would corrupt code-level

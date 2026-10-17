@@ -26,6 +26,8 @@
 1. PowerShell 命名位置栈（`Push-Location -StackName`/`Pop-Location -StackName`）按单一栈跟踪；`-StackName` 在 `-Path` 之前时会把栈名当成目标。
 2. `Set-Location HKCU:\…`、`Set-Location Env:` 等 provider 路径被当成工作区子目录，其后的 `New-Item`/`Set-Content` 写注册表或环境变量不被拒绝。
 3. 经 `cmd /c call x.bat`、`cmd /c start x.bat`、`Start-Process -FilePath x.ps1` 启动的脚本文件，以及依赖 PATHEXT 的无扩展名脚本（`cmd /c evil`），不被当作脚本文件载荷。
-4. heredoc 正文中的注释（如 `# echo hi > /etc/x`）会被误判为重定向而拒绝（多拒，不是漏放）。
+4. 实现者自查发现：`node -e "require('fs').writeFileSync('C:/Windows/x','x')"` 这种不经变量绑定、直接在 `require('fs')` 上链式调用写 API 的形式不被识别（`const fs=require('fs'); fs.writeFileSync(...)` 和裸 `fs.writeFileSync(...)` 能拦下）。heredoc 喂给 node 的同类写法同样漏判。
 
 第 24 轮审计（w7c01-audit-24.json）指出 Start-Process -WorkingDirectory 导致的白名单内误拒，已修复；原第 1、2 条限制随同修复，已从清单移除。
+
+第 25 轮审计（w7c01-audit-25.json）指出 Start-Process 子目录归属误拒与 heredoc 只读误拒，均已修复；原第 4 条（heredoc 误判）已从清单移除。

@@ -915,6 +915,76 @@ def test_w7_c01_integration() -> None:
         workdir=workdir,
     )
 
+    # Audit round 25
+    # ``Start-Process`` event attribution: ``-WorkingDirectory`` sets the
+    # child's cwd for payload writes, but ``-RedirectStandardOutput``/
+    # ``-RedirectStandardError`` targets resolve against the PARENT dir —
+    # an allowed parent-side redirect must not be refused just because
+    # the child dir is outside the whitelist.
+    for sp_ok in (
+        'Start-Process -FilePath cmd.exe -WorkingDirectory '
+        'C:\\Windows\\Temp -RedirectStandardOutput "'
+        + workdir
+        + "\\ok.log\" -ArgumentList '/c dir'",
+        "Start-Process -FilePath cmd.exe -WorkingDirectory "
+        "C:\\Windows\\Temp -ArgumentList '/c dir'",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            sp_ok, config, workdir=workdir
+        ), sp_ok
+    assert "C:\\Windows\\Temp" in find_bash_disallowed_write_paths(
+        "Start-Process -FilePath cmd.exe -WorkingDirectory "
+        "C:\\Windows\\Temp -ArgumentList '/c echo x > child.txt'",
+        config,
+        workdir=workdir,
+    )
+    assert find_bash_disallowed_write_paths(
+        "Start-Process -FilePath cmd.exe -WorkingDirectory "
+        "C:\\Windows\\Temp -RedirectStandardOutput "
+        "C:\\Windows\\x.log -ArgumentList '/c dir'",
+        config,
+        workdir=workdir,
+    )
+    # Heredoc bodies are stdin for the owning command: data for plain
+    # consumers (masked so a ``>`` inside cannot open a redirect),
+    # executed code for shell carriers and interpreters, and a
+    # fail-closed payload for stdin executors.
+    for hd_ok in (
+        "bash -c 'cat <<EOF\n# echo hi > /etc/x\nEOF'",
+        "cat <<EOF\necho hi > /etc/x\nEOF",
+        "python - <<'PY'\n# echo hi > /etc/not-really-written\n"
+        "print('ok')\nPY",
+        "grep x <<-EOF\n\trm -rf /etc\n\tEOF",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            hd_ok, config, workdir=workdir
+        ), hd_ok
+    for hd_bad in (
+        "bash <<EOF\necho x > /etc/x\nEOF",
+        "sh <<'EOF'\nrm -rf C:/Windows/x\nEOF",
+        "python - <<'PY'\nopen('C:/Windows/x','w')\nPY",
+        "cat <<EOF > C:\\Windows\\Temp\\x.txt\nhi\nEOF",
+        "xargs rm <<EOF\nx\nEOF",
+        "cat <<EOF | sh\necho x > /etc/x\nEOF",
+    ):
+        assert find_bash_disallowed_write_paths(
+            hd_bad, config, workdir=workdir
+        ), hd_bad
+    # A dynamic child dir for ``start /d``/``-WorkingDirectory``/
+    # ``-wd`` (``%VAR%``, ``!VAR!``, ``$``, backtick, unquoted ``(``)
+    # fails closed.
+    assert "<opaque:start-process>" in find_bash_disallowed_write_paths(
+        'cmd /v:on /c "set W7_WD=C:\\Windows\\Temp & '
+        'start /d !W7_WD! cmd /c echo x > child.txt"',
+        config,
+        workdir=workdir,
+    )
+    assert "<opaque:start-process>" in find_bash_disallowed_write_paths(
+        "start /d %TEMP% cmd /c echo x > child.txt",
+        config,
+        workdir=workdir,
+    )
+
     unknown = asyncio.run(
         orchestrator.execute_tool(
             "mcp_elevate_privileges",

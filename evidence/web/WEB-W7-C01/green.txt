@@ -1,4 +1,4 @@
-WEB-W7-C01 fail-closed write-path gate - verification (audit round 24)
+WEB-W7-C01 fail-closed write-path gate - verification (audit round 25)
 
 == ruff ==
 $ D:\Anaconda3\python.exe -m ruff check core/safety/policy.py tests/web/w7/test_w7_c01_module.py
@@ -13,13 +13,13 @@ $ D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c01_unit.py tests/web/w
     from starlette.testclient import TestClient as TestClient  # noqa
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-10 passed, 1 warning in 10.11s
+10 passed, 1 warning in 8.39s
 
 == safety regression files ==
 tests/test_safety_policy.py tests/test_safety_api.py tests/test_safety_audit.py tests/test_safety_gate.py
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-200 passed, 1 warning in 3.70s
+200 passed, 1 warning in 3.72s
 
 == cache regression files ==
 tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py
@@ -27,4 +27,4 @@ tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py
 =========================== short test summary info ===========================
 SKIPPED [1] tests\test_cache\test_stable_prefix.py:142: no tools registered in global test registry
 SKIPPED [1] tests\test_cache\test_stable_prefix.py:158: no tools registered in global test registry
-30 passed, 2 skipped in 2.57s
+30 passed, 2 skipped in 2.51s
