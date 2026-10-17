@@ -262,6 +262,14 @@ def test_w7_c01_integration() -> None:
         "python -c \"open('{}'.format('x'),'w')\"",
         "python -c \"open(chr(67)+':\\\\x','w')\"",
         "python -c \"import os; open(os.path.join('C:','rxy_w7c01_pwned.txt'),'w')\"",
+        # ``x+=expr`` discards the earlier literal binding — the
+        # augmented target is runtime-derived (audit round 16).
+        "python -c \"import os; x=''; x+=os.path.join(os.environ['TEMP'],'w7-audit.txt'); open(x,'w')\"",
+        # Receiver/subscript/dispatched write calls with a runtime
+        # target (audit rounds 15–16).
+        "python -c \"import os; Path(os.environ['TEMP']).with_name('x').write_text('x')\"",
+        "python -c \"import os; arr=[os.environ['T']]; arr[0].unlink()\"",
+        "python -c \"import os; __builtins__['open'](os.path.join(os.environ['T'],'x'),'w')\"",
         # Shell quoting/escapes concatenate into the verb: r'm', r"m",
         # r\m and r\\m all reach the gate as rm.
         "r'm' /etc/rxy_w7c01_pwned.txt",
@@ -362,6 +370,13 @@ def test_w7_c01_integration() -> None:
         # ``$env:X = v`` is a real PowerShell binding — an inside-workspace
         # env target stays allowed.
         '$env:OUT = ".\\ok"; Set-Content $env:OUT\\f.txt x',
+        # ``as f:`` is a binding colon, not an ``f:\\`` drive root;
+        # literal receiver/producer chains inside the workspace stay
+        # allowed (audit round 16).
+        'python -c "with open(\'ok\',\'w\') as f: f.write(\'x\')"',
+        'python -c "from pathlib import Path; Path(\'ok\').with_name(\'ok2\').write_text(\'x\')"',
+        'python -c "from pathlib import Path; (Path(\'ok\')/\'x\').unlink()"',
+        'python -c "exec(\'print(1)\')"',
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from

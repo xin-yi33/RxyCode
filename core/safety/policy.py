@@ -837,8 +837,40 @@ _CODE_RECV_RE = re.compile(
 # ``p.unlink()`` where ``p=Path(x)``. Kept narrow: ``rename``/``copy``/
 # ``write`` receivers would false-positive on streams and objects.
 _CODE_NAMERECV_RE = re.compile(
-    r"(?i)(?<![\w.])([A-Za-z_]\w*)\s*\.\s*"
+    r"(?i)(?<![\w.])([A-Za-z_]\w*(?:\s*\.\s*\w+)*)\s*\.\s*"
     r"(?:unlink|touch|mkdir|rmdir|link_to|symlink_to|hardlink_to|utime)\s*\("
+)
+# Module/class names that legitimately appear before ``.unlink`` etc —
+# ``os.unlink('x')`` is a function call covered by the API scan, not a
+# name-bound path receiver.
+_CODE_NAMERECV_HEADS = frozenset(
+    {
+        "os", "sys", "pathlib", "shutil", "io", "fs", "path", "subprocess",
+        "re", "json", "functools", "importlib", "builtins", "__builtins__",
+        "tempfile", "glob", "stat", "logging", "datetime", "time", "math",
+        "collections", "itertools", "platform", "signal", "socket",
+        "urllib", "node", "php", "ruby", "python",
+    }
+)
+# ``(expr).method()`` — a parenthesized or subscript receiver
+# (``(Path(env)/'x').unlink()``, ``arr[0].unlink()``), optionally through
+# attribute hops (``Path(env).parent.unlink()``).
+_CODE_PAREN_RECV_RE = re.compile(
+    r"(?i)[\)\]](?:\s*\.\s*[A-Za-z_]\w*)*\s*\.\s*"
+    r"(?:write_text|write_bytes|touch|unlink|rename|replace|mkdir|rmdir|"
+    r"chmod|chown|open|delete|remove|move|copy|link_to|symlink_to|"
+    r"hardlink_to|extract|extractall|utime|dump|truncate|"
+    r"write|writelines|append)\s*\("
+)
+# Call heads that construct a path from their arguments — their inner
+# expression is checked, the head name itself need not resolve.
+_CODE_RECV_CTORS = frozenset(
+    {
+        "path", "purepath", "posixpath", "windowspath", "pureposixpath",
+        "purewindowspath", "file", "directory", "open", "io.open",
+        "namedtemporaryfile", "temporaryfile", "bytesio", "stringio",
+        "iobase", "pathlib.path",
+    }
 )
 # ``exec``/``eval``/``compile`` calls: safe only when every argument is a
 # literal whose body carries no mutating call or dynamic source.
@@ -1547,9 +1579,26 @@ def find_bash_disallowed_write_paths(
             code_src = " ".join(lit_texts)
             code_vars = {}
             for am in re.finditer(
-                r"(?<![\w.])([A-Za-z_]\w*)\s*=(?!=)\s*([^;\n]+)", code_src
+                r"(?<![\w.])([A-Za-z_]\w*)\s*"
+                r"(<<=|>>=|\+=|-=|\.=|\*=|/=|%=|\|=|&=|\^=|=)"
+                r"(?!=)\s*([^;\n]+)",
+                code_src,
             ):
-                code_vars[am.group(1)] = am.group(2)
+                name, op, value = am.groups()
+                if op == "=":
+                    code_vars[name] = value
+                    continue
+                prev = code_vars.get(name, "")
+                pm = re.fullmatch(r"['\"]([^'\"]*)['\"]", prev.strip())
+                vm = re.fullmatch(r"['\"]([^'\"]*)['\"]", value.strip())
+                if pm and vm and op in ("+=", ".="):
+                    # ``x='ok'; x+='/sub'`` — pure literal concatenation
+                    # stays statically checkable.
+                    code_vars[name] = repr(pm.group(1) + vm.group(1))
+                else:
+                    # ``x+=expr`` with a runtime side — bind a poisoned
+                    # expression so later lookups fail closed.
+                    code_vars[name] = value.strip() + "+"
             if (
                 _CODE_MUT_RE.search(seg)
                 or _CODE_DISP_CALL_RE.search(seg)
@@ -1574,6 +1623,51 @@ def find_bash_disallowed_write_paths(
                     if v is None:
                         v = shell_vars.get(name)
                     return v
+
+                def _tail_dirty(tail: str) -> bool:
+                    """Check a producer/receiver expression.
+
+                    Literals get path-checked, call args get the literal-only
+                    rule, and a bare name/attribute chain must resolve to a
+                    statically known value.
+                    """
+                    t_lits = [
+                        t.strip("\"'")
+                        for t in re.findall(
+                            r'"[^"]*"|\'[^\']*\'', tail
+                        )
+                    ]
+                    t_clean = re.sub(r'"[^"]*"|\'[^\']*\'', "", tail)
+                    if _CODE_DYN_RE.search(t_clean):
+                        return True
+                    if re.search(r"[(\[{'\"=]", t_clean):
+                        for cm in re.finditer(
+                            r"[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)",
+                            tail,
+                        ):
+                            cwork = re.sub(
+                                r'"[^"]*"|\'[^\']*\'', "",
+                                cm.group(1),
+                            )
+                            if _arg_dirty(cwork, cwork.split(",")):
+                                return True
+                    else:
+                        hn = re.match(r"([A-Za-z_]\w*)", tail.strip())
+                        if hn:
+                            hv = _lookup(hn.group(1))
+                            if hv is None or _CODE_DYN_RE.search(
+                                re.sub(
+                                    r'"[^"]*"|\'[^\']*\'', "", hv
+                                )
+                            ):
+                                return True
+                            for hl in re.findall(
+                                r'"[^"]*"|\'[^\']*\'', hv
+                            ):
+                                _check(hl.strip("\"'"))
+                    for lit in t_lits:
+                        _check(lit)
+                    return False
 
                 def _arg_dirty(work: str, check_args: list) -> bool:
                     """Non-literal argument in a target position → dirty."""
@@ -1637,18 +1731,15 @@ def find_bash_disallowed_write_paths(
                 # targets too — same literal-only rule.
                 for recv in _CODE_RECV_RE.finditer(seg):
                     seen_api = True
+                    # The receiver expression is a path producer — route
+                    # it through ``_tail_dirty`` so ``Path('ok')/'x'``
+                    # literals stay allowed while ``Path(env)`` fails.
                     rwork = re.sub(
                         r"(?i)(?<![\w])[bru]+(?=['\"])", "", recv.group(1)
                     )
-                    rwork_lits = re.findall(
-                        r'"[^"]*"|\'[^\']*\'', rwork
-                    )
-                    rwork = re.sub(r'"[^"]*"|\'[^\']*\'', "", rwork)
-                    if _arg_dirty(rwork, rwork.split(",")):
+                    if _tail_dirty(rwork):
                         dirty = True
                         break
-                    for lit in rwork_lits:
-                        _check(lit.strip("\"'"))
                     # Producer chain: in ``Path(env).with_name('x').write_text``
                     # the matched head is ``with_name`` — the real target
                     # producer (``Path(env)``) sits upstream of the match.
@@ -1656,63 +1747,20 @@ def find_bash_disallowed_write_paths(
                     tail = re.split(r"(?<![=!<>])=(?!=)", tail)[-1].strip()
                     if tail.endswith("."):
                         tail = tail[:-1].strip()
-                    if tail:
-                        t_lits = [
-                            t.strip("\"'")
-                            for t in re.findall(
-                                r'"[^"]*"|\'[^\']*\'', tail
-                            )
-                        ]
-                        t_clean = re.sub(
-                            r'"[^"]*"|\'[^\']*\'', "", tail
-                        )
-                        if _CODE_DYN_RE.search(t_clean):
-                            dirty = True
-                            break
-                        if re.search(r"[(\[{'\"=]", t_clean):
-                            # Call args inside the producer get the same
-                            # literal-only rule (``Path(p)`` resolves).
-                            for cm in re.finditer(
-                                r"[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)",
-                                tail,
-                            ):
-                                cwork = re.sub(
-                                    r'"[^"]*"|\'[^\']*\'', "",
-                                    cm.group(1),
-                                )
-                                if _arg_dirty(
-                                    cwork, cwork.split(",")
-                                ):
-                                    dirty = True
-                                    break
-                        else:
-                            # ``p.with_name('x').write_text`` — a bare
-                            # name/attribute chain must resolve.
-                            hn = re.match(r"([A-Za-z_]\w*)", tail)
-                            if hn:
-                                hv = _lookup(hn.group(1))
-                                if hv is None or _CODE_DYN_RE.search(
-                                    re.sub(
-                                        r'"[^"]*"|\'[^\']*\'', "", hv
-                                    )
-                                ):
-                                    dirty = True
-                                    break
-                                for hl in re.findall(
-                                    r'"[^"]*"|\'[^\']*\'', hv
-                                ):
-                                    _check(hl.strip("\"'"))
-                        if dirty:
-                            break
-                        for lit in t_lits:
-                            _check(lit)
+                    if tail and _tail_dirty(tail):
+                        dirty = True
+                        break
                 for recv in _CODE_NAMERECV_RE.finditer(seg):
                     # ``p.unlink()`` — a bare-name receiver that mutates
                     # the path it holds; the name must resolve to a
-                    # statically checkable value.
+                    # statically checkable value. Module heads like
+                    # ``os.unlink`` are API calls, not receivers.
                     seen_api = True
                     name = recv.group(1)
-                    value = _lookup(name)
+                    head = name.split(".")[0].strip()
+                    if head.lower() in _CODE_NAMERECV_HEADS:
+                        continue
+                    value = _lookup(head)
                     if value is None:
                         dirty = True
                         break
@@ -1730,6 +1778,60 @@ def find_bash_disallowed_write_paths(
                         break
                     for lit in n_lits:
                         _check(lit)
+                for precv in _CODE_PAREN_RECV_RE.finditer(seg):
+                    # ``(expr).method()`` / ``arr[i].method()`` — the
+                    # bracketed receiver expression is the write target.
+                    seen_api = True
+                    depth2 = 0
+                    open_i = -1
+                    for j in range(precv.start(), -1, -1):
+                        if seg[j] in ")]":
+                            depth2 += 1
+                        elif seg[j] in "([":
+                            depth2 -= 1
+                            if depth2 == 0:
+                                open_i = j
+                                break
+                    if open_i < 0:
+                        dirty = True
+                        break
+                    inner = seg[open_i + 1 : precv.start()]
+                    if inner.strip() and _tail_dirty(inner):
+                        dirty = True
+                        break
+                    # The expression before the bracket decides the head —
+                    # ``arr[i]`` needs ``arr`` resolved; ``f()`` needs ``f``
+                    # bound (or a known path constructor).
+                    phead = seg[:open_i].rstrip()
+                    hm = re.search(r"([A-Za-z_]\w*(?:\.\w+)*)\s*$", phead)
+                    if hm and phead[: hm.start()].rstrip().endswith("."):
+                        # ``expr.attr(...)`` — the head is an attribute
+                        # hanging off a preceding expression; judge that
+                        # expression as the producer instead
+                        # (``Path('ok').with_name('x')``).
+                        ptail = phead[: hm.start()].rstrip()[:-1]
+                        ptail = re.split(r"[;\n]", ptail)[-1]
+                        ptail = re.split(
+                            r"(?<![=!<>])=(?!=)", ptail
+                        )[-1].strip()
+                        if ptail and _tail_dirty(ptail):
+                            dirty = True
+                            break
+                    elif hm:
+                        hname = hm.group(1).lower()
+                        hbase = hname.split(".")[0]
+                        if (
+                            hname not in _CODE_RECV_CTORS
+                            and hbase not in _CODE_NAMERECV_HEADS
+                        ):
+                            hv = _lookup(hbase)
+                            if hv is None or _CODE_DYN_RE.search(
+                                re.sub(
+                                    r'"[^"]*"|\'[^\']*\'', "", hv
+                                )
+                            ):
+                                dirty = True
+                                break
                 for disp in _CODE_DISP_CALL_RE.finditer(seg):
                     # ``getattr(os,'remove')(target)`` — the dispatched
                     # call's argument region is the target.
@@ -1893,6 +1995,12 @@ def find_bash_disallowed_write_paths(
             ):
                 # ``u:F``/``u:(OI)(CI)F`` grant strings split into a
                 # bare ``u:`` token and a perm-letter tail — not a drive.
+                continue
+            if re.match(r"^[A-Za-z]:$", raw) and re.search(
+                r"\bas\s+$", seg[: match.start()]
+            ):
+                # ``with open(...) as f:`` — a binding colon in inline
+                # interpreter code, not a drive root.
                 continue
             if re.match(r"^[A-Za-z]:$", raw):
                 raw += "\\"
