@@ -574,7 +574,7 @@ _ABS_TARGET = (
     r"|/[^\s'\"|;>&]*"
     r"|\$\{env:[^\W\d]\w*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|\$env:[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
-    r"|\$\{[^\W\d]\w*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$\{[^}\s'\"|;>&]*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|\$HOME(?!\w)(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|\$[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|%[^\W\d][\w()]*%(?:[\\/.\[][^\s'\"|;>&]*)?"
@@ -611,9 +611,12 @@ _POP_VERBS = frozenset({"popd", "pop-location"})
 # through assignments tracked earlier in the command; untracked names fail
 # closed. $HOME/$env:/${...} forms are matched by the earlier alternatives.
 _SHELL_VAR_RE = re.compile(
-    r"^\$(?:\{([^\W\d][\w()]*)\}|([^\W\d]\w*))([\\/.\[].*)?$",
+    r"^\$(?:\{([^}]*)\}|([^\W\d]\w*))([\\/.\[].*)?$",
     re.IGNORECASE,
 )
+# A braced name must be a plain identifier (optionally env:-prefixed) to be
+# resolvable; ``${arr[i]}``/``${x:-d}``/other expansion ops are not verifiable.
+_BRACED_NAME_RE = re.compile(r"(?:env:)?[^\W\d][\w()]*", re.IGNORECASE)
 # ``$x = "v"``/``$env:X = "v"`` (PowerShell) and ``X=v``/``X="v"`` (bash)
 # assignments, tracked in order.
 _ASSIGN_RE = re.compile(
@@ -750,7 +753,16 @@ def find_bash_disallowed_write_paths(
         """Resolve tracked ``$var`` names first, then env forms, vs eff_dir."""
         var = _SHELL_VAR_RE.match(raw)
         if var:
-            name = (var.group(1) or var.group(2)).lower()
+            braced = var.group(1) is not None
+            if braced:
+                inner = var.group(1)
+                if not _BRACED_NAME_RE.fullmatch(inner):
+                    return None
+                if inner[:4].lower() == "env:":
+                    return _bash_candidate(raw, eff_dir)
+                name = inner.lower()
+            else:
+                name = var.group(2).lower()
             suffix = var.group(3) or ""
             if name in _PIPELINE_VARS:
                 # ``$_``/``$args`` alone are not paths. A property or index
