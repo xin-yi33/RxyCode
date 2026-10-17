@@ -152,6 +152,17 @@ def test_w7_c01_integration() -> None:
         "Set-Content $rxy_untracked_var_9x x",
         "cd -L",
         '$d = "..\\..\\..\\.."; Set-Content "$d\\rxy_w7c01_esc.txt" x',
+        # Quoted bash assignments record the real value; braced vars prefer
+        # the tracked assignment over the process environment.
+        'OUT="/tmp/x"; echo x > $OUT',
+        "OUT=/tmp/x; echo x > ${OUT}/rxy_w7c01_pwned.txt",
+        # Pipeline objects: property/index targets are unverifiable except
+        # basename-style properties, which stay relative.
+        "Get-ChildItem C:\\Windows | % { Remove-Item $_.FullName }",
+        "Remove-Item $args[0]",
+        'Set-Content "$_.Name\\..\\..\\..\\..\\..\\rxy_w7c01_esc.txt" x',
+        # A command-local CDPATH assignment can re-root a relative cd.
+        "CDPATH=/; cd tmp; echo x > rxy_w7c01_pwned.txt",
     )
     for variant in variants:
         blocked = asyncio.run(

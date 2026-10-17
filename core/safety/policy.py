@@ -572,12 +572,12 @@ _ABS_TARGET = (
     r"[A-Za-z]:[\\/][^\s'\"|;>&]*"
     r"|\\{1,2}[^\s'\"|;>&]+"
     r"|/[^\s'\"|;>&]*"
-    r"|\$\{env:[^\W\d]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$env:[^\W\d]\w*(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$\{[^\W\d]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$HOME(?!\w)(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$[^\W\d]\w*(?:[\\/][^\s'\"|;>&]*)?"
-    r"|%[^\W\d][\w()]*%(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$\{env:[^\W\d]\w*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$env:[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$\{[^\W\d]\w*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$HOME(?!\w)(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|%[^\W\d][\w()]*%(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|~[^\s'\"|;>&]*"
     r")"
 )
@@ -610,13 +610,18 @@ _POP_VERBS = frozenset({"popd", "pop-location"})
 # Plain shell variable targets (``Set-Content $out x`` / ``> $OUT``) resolve
 # through assignments tracked earlier in the command; untracked names fail
 # closed. $HOME/$env:/${...} forms are matched by the earlier alternatives.
-_SHELL_VAR_RE = re.compile(r"^\$([^\W\d]\w*)([\\/].*)?$", re.IGNORECASE)
-# ``$x = "v"`` (PowerShell) and ``X=v`` (bash) assignments, tracked in order.
+_SHELL_VAR_RE = re.compile(
+    r"^\$(?:\{([^\W\d][\w()]*)\}|([^\W\d]\w*))([\\/.\[].*)?$",
+    re.IGNORECASE,
+)
+# ``$x = "v"``/``$env:X = "v"`` (PowerShell) and ``X=v``/``X="v"`` (bash)
+# assignments, tracked in order.
 _ASSIGN_RE = re.compile(
     r"(?is)"
-    r"\$(?P<ps>[^\W\d]\w*)\s*=\s*"
+    r"\$(?P<psenv>env:)?(?P<ps>[^\W\d]\w*)\s*=\s*"
     r"(?:\"(?P<psdq>[^\"]*)\"|'(?P<pssq>[^']*)'|(?P<psbare>[^\s;|&'\"]+))"
-    r"|\b(?P<sh>[A-Za-z_]\w*)=(?P<shval>[^\s;|&'\"]*)"
+    r"|\b(?P<sh>[A-Za-z_]\w*)="
+    r"(?:\"(?P<shdq>[^\"]*)\"|'(?P<shsq>[^']*)'|(?P<shval>[^\s;|&'\"]*))"
 )
 # Shell-provided names that map to a knowable directory; everything else a
 # mutating target could be stays unverifiable.
@@ -625,6 +630,11 @@ _BUILTIN_DIR_VARS = ("pwd", "home")
 # never path targets, so they resolve to themselves (inside the workspace).
 _PIPELINE_VARS = frozenset(
     {"_", "psitem", "input", "args", "this", "matches", "foreach", "event"}
+)
+# Basename-style properties on pipeline objects are always relative names —
+# they cannot hold an absolute path (``$_.FullName`` can, so it fails closed).
+_PIPELINE_SAFE_PROPS = re.compile(
+    r"^\.(?:name|basename|extension)(?:[\\/]|$)", re.IGNORECASE
 )
 
 
@@ -737,22 +747,40 @@ def find_bash_disallowed_write_paths(
     seen: set[tuple[str | None, str]] = set()
 
     def _resolve_value(raw: str, depth: int = 0) -> str | None:
-        """Resolve env forms, then tracked ``$var`` names, against eff_dir."""
+        """Resolve tracked ``$var`` names first, then env forms, vs eff_dir."""
         var = _SHELL_VAR_RE.match(raw)
         if var:
-            name = var.group(1).lower()
+            name = (var.group(1) or var.group(2)).lower()
+            suffix = var.group(3) or ""
             if name in _PIPELINE_VARS:
-                return raw
-            suffix = var.group(2) or ""
+                # ``$_``/``$args`` alone are not paths. A property or index
+                # (``$_.FullName``/``$args[0]``) can hold an absolute path
+                # outside the workspace — unverifiable, fail closed —
+                # except basename-style properties, which stay relative.
+                if not suffix:
+                    return raw
+                safe = _PIPELINE_SAFE_PROPS.match(suffix)
+                if safe:
+                    # Substitute a placeholder basename; a trailing
+                    # ``\..\evil`` can still traverse out of the workspace.
+                    tail = suffix[safe.end():]
+                    return _bash_candidate("x/" + tail if tail else "x", eff_dir)
+                return None
             if name in _BUILTIN_DIR_VARS:
                 base_dir = eff_dir if name == "pwd" else (
                     os.path.expanduser("~") or None
                 )
                 return base_dir + suffix if base_dir else None
             value = shell_vars.get(name)
-            if value is None or depth >= 4:
-                return None
-            return _resolve_value(value + suffix, depth + 1)
+            if value:
+                if depth >= 4:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
+            if var.group(1) is not None:
+                # Braced ``${X}`` resolves from the environment when no
+                # earlier assignment tracked it; bare ``$X`` fails closed.
+                return _bash_candidate(raw, eff_dir)
+            return None
         return _bash_candidate(raw, eff_dir)
 
     def _check(raw: str) -> None:
@@ -782,6 +810,8 @@ def find_bash_disallowed_write_paths(
                 m.group("psdq")
                 or m.group("pssq")
                 or m.group("psbare")
+                or m.group("shdq")
+                or m.group("shsq")
                 or m.group("shval")
                 or ""
             )
@@ -825,7 +855,9 @@ def find_bash_disallowed_write_paths(
             target = target.rstrip("\\/") or target[:1]
             resolved = _resolve_value(target)
             if resolved is not None and is_write_allowed(resolved, config):
-                if os.environ.get("CDPATH") and not _ABS_FORM_RE.match(target):
+                if (
+                    os.environ.get("CDPATH") or shell_vars.get("cdpath")
+                ) and not _ABS_FORM_RE.match(target):
                     # CDPATH can re-root a relative cd anywhere; unverifiable.
                     blocked.append(target)
                     continue

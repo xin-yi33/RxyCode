@@ -2,11 +2,12 @@ WEB-W7-C01 green evidence — post-fix verification
 ==================================================
 
 Suite (card-owned + adjacent regressions):
-  D:\Anaconda3\python.exe -m pytest tests/web/w7 tests/web/security tests/test_safety_policy.py tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py tests/web/w4/test_w4_c05_unit.py tests/web/w4/test_w4_c05_module.py -q --tb=line
+  D:\Anaconda3\python.exe -m pytest tests/web/w7 tests/web/security tests/test_safety_policy.py tests/test_cache -q
 
-  Result: 181 passed, 2 skipped, 6 warnings in 13.31s
-  - Skips are pre-existing tests/test_cache/test_stable_prefix.py cases
-    ("no tools registered in global test registry"), unchanged by this card.
+  Result: 628 passed, 3 skipped, 26 warnings in 26.84s
+  - Skips are pre-existing: two tests/test_cache/test_stable_prefix.py cases
+    ("no tools registered in global test registry") plus one
+    test_dual_track_naming_matrix.py same-pair case; unchanged by this card.
   - tests/web/w7/test_w7_c01_module.py now covers: positional Set/Add-Content,
     powershell -c wrapper, executable here-strings (double+single quoted),
     Clear-Content, $env:/$Env:/${env:}/${VAR} braced and plain env targets
@@ -19,12 +20,15 @@ Suite (card-owned + adjacent regressions):
     workdir-relative resolution (orchestrator passes args["workdir"]),
     cumulative cd tracking, backtick/backslash line continuations,
     bare cd/popd fail-closed, env-var expansion escape via .., tracked
-    $var assignments ($x=..., X=...) resolving to checked targets with
-    untracked names fail-closed, flag-only cd (cd -, cd -L) and CDPATH
-    fail-closed, session-cwd eff fallback when workdir is omitted, and
-    non-blocking of /dev/null, pipeline vars ($_, $PSItem), in-workspace
-    tracked vars, plus relative mid-token separators (./x, dir\x, a~b,
-    config/x) and in-workspace cd.
+    $var assignments ($x=..., X=..., quoted values, ${X} preferring the
+    tracked assignment) with untracked names fail-closed, flag-only cd
+    (cd -, cd -L), command-local and process CDPATH fail-closed,
+    session-cwd eff fallback when workdir is omitted, pipeline-object
+    targets ($_.FullName and $args[0] fail closed while basename-style
+    $_.Name stays relative — a trailing .. segment still fails),
+    and non-blocking of /dev/null, bare pipeline vars ($_, $PSItem),
+    in-workspace tracked vars, relative mid-token separators
+    (./x, dir\x, a~b, config/x) and in-workspace cd.
   - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
     sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
     tampered/expired session cookies, CSRF Origin on mutating routes,
@@ -32,8 +36,9 @@ Suite (card-owned + adjacent regressions):
     private-address refusal, secret redaction, and grant tampering.
 
 Focused run:
-  tests/web/w7/test_w7_c01_module.py: 10 passed (integration + variants)
-  tests/test_safety_policy.py: unchanged expectations still pass.
+  tests/web/w7/test_w7_c01_module.py: 1 passed (integration + ~50 variants)
+  tests/web/w7 + tests/web/security + tests/test_safety_policy.py:
+    148 passed in 8.86s
   tests/web/w4 grant/tool_rpc regression (c05 unit+module): 3 passed.
 
 Environment note: a broad `pytest tests/web/w4` run also executes
@@ -45,6 +50,5 @@ Environment note: a broad `pytest tests/web/w4` run also executes
 
 Lint:
   D:\Anaconda3\python.exe -m ruff check core/safety/policy.py
-    packages/rxycode-server/src/rxycode_server/api/terminal_ws.py
-    tests/web/w7 tests/web/security
+    tests/web/w7/test_w7_c01_module.py
   All checks passed.
