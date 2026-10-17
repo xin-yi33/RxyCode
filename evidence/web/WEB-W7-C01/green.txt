@@ -1,8 +1,39 @@
-..........                                                               [100%]
-============================== warnings summary ===============================
-..\..\..\Anaconda3\Lib\site-packages\fastapi\testclient.py:1
-  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
-    from starlette.testclient import TestClient as TestClient  # noqa
+WEB-W7-C01 green evidence — post-fix verification
+==================================================
 
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-10 passed, 1 warning in 4.14s
+Suite (card-owned + adjacent regressions):
+  D:\Anaconda3\python.exe -m pytest tests/web/w7 tests/web/security tests/test_safety_policy.py tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py tests/web/w4/test_w4_c05_unit.py tests/web/w4/test_w4_c05_module.py -q --tb=line
+
+  Result: 181 passed, 2 skipped, 6 warnings in 13.31s
+  - Skips are pre-existing tests/test_cache/test_stable_prefix.py cases
+    ("no tools registered in global test registry"), unchanged by this card.
+  - tests/web/w7/test_w7_c01_module.py now covers: positional Set/Add-Content,
+    powershell -c wrapper, executable here-strings (double+single quoted),
+    Clear-Content, $env:/$Env:/${env:}/${VAR} braced and plain env targets,
+    unset env vars (fail-closed), ~ and $HOME bare roots, %VAR% and
+    %VAR(x86)% cmd vars, Unix absolute roots (/opt, /run, bare /), drive
+    root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi, env-var
+    expansion escape via .., and /dev/null pseudo-device non-blocking.
+  - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
+    sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
+    tampered/expired session cookies, CSRF Origin on mutating routes,
+    terminal WS Origin refusal (incl. cloud + empty allowlist), SSRF
+    private-address refusal, secret redaction, and grant tampering.
+
+Focused run:
+  tests/web/w7/test_w7_c01_module.py: 10 passed (integration + variants)
+  tests/test_safety_policy.py: unchanged expectations still pass.
+  tests/web/w4 grant/tool_rpc regression (c05 unit+module): 3 passed.
+
+Environment note: a broad `pytest tests/web/w4` run also executes
+  test_w4_c02_module.py::test_w4_c02_integration, which spawns a real
+  notepad.exe window; it fails in this headless console session with
+  "OSError: no window appeared" — a GUI-dependency unrelated to this card
+  (its code path is untouched here). All card-relevant W4 grant/tool tests
+  pass.
+
+Lint:
+  D:\Anaconda3\python.exe -m ruff check core/safety/policy.py
+    packages/rxycode-server/src/rxycode_server/api/terminal_ws.py
+    tests/web/w7 tests/web/security
+  All checks passed.

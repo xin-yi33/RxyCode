@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import http.server
+import os
 import re
 import sys
 import threading
@@ -113,6 +114,18 @@ def test_w7_c01_integration() -> None:
         f'clc "{PAYLOAD_FILE}"',
         "Remove-Item ~ -Recurse -Force",
         "Remove-Item $HOME -Recurse -Force",
+        # Braced env forms, parenthesised cmd vars, bare Unix/drive roots,
+        # and the Rename-Item verb gap (all confirmed bypasses pre-fix).
+        'Set-Content "${env:TEMP}\\rxy_w7c01_pwned.txt" "pwned"',
+        'Set-Content "${env:RXY_UNSET_VAR_9x}\\rxy_w7c01_pwned.txt" "pwned"',
+        'Set-Content "${HOME}\\rxy_w7c01_pwned.txt" "pwned"',
+        "echo x > %ProgramFiles(x86)%\\rxy_w7c01_pwned.txt",
+        "echo x > /run/user/1000/rxy_w7c01_pwned.txt",
+        'Set-Content /opt/rxy_w7c01_pwned.txt "pwned"',
+        f'Rename-Item "{PAYLOAD_FILE}" renamed.txt',
+        "mkdir /opt/rxy_w7c01_dir",
+        "rm -rf /",
+        "rmdir C:\\",
     ):
         blocked = asyncio.run(
             orchestrator.execute_tool(
@@ -125,6 +138,29 @@ def test_w7_c01_integration() -> None:
             blocked
         )
         assert not PAYLOAD_FILE.exists(), variant
+
+    # Env-var expansion that resolves *inside* the workspace then escapes
+    # via ``..`` must still be refused; pseudo-device redirects must not
+    # false-block.
+    from RxyCode.RxyCode1_1_0.core.safety.policy import find_bash_disallowed_write_paths
+
+    os.environ["RXY_W7_WORK"] = workdir
+    try:
+        # ``..`` must carry the resolved target fully outside every allowed
+        # root (workdir sits inside the repo, which is itself an allowed cwd
+        # root when the suite runs from the checkout).
+        assert find_bash_disallowed_write_paths(
+            'Set-Content "${env:RXY_W7_WORK}\\..\\..\\..\\..\\..\\..\\rxy_w7c01_escape.txt" x',
+            config,
+        )
+        assert find_bash_disallowed_write_paths(
+            'Set-Content "$env:RXY_W7_WORK\\..\\..\\..\\..\\..\\..\\rxy_w7c01_escape.txt" x',
+            config,
+        )
+    finally:
+        os.environ.pop("RXY_W7_WORK", None)
+    assert not find_bash_disallowed_write_paths("echo x > /dev/null", config)
+    assert not find_bash_disallowed_write_paths("echo x 2>/dev/null", config)
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

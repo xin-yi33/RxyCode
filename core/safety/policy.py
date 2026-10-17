@@ -567,19 +567,23 @@ _ABS_PATH_RE = re.compile(
 # Paths that only appear inside -Value/-Content payloads are ignored; here-string
 # contents stay visible because they can be executed (iex, Invoke-Expression).
 _ABS_TARGET = (
-    r"[A-Za-z]:[\\/][^\s'\"|;>&]+"
-    r"|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*"
+    r"[A-Za-z]:[\\/][^\s'\"|;>&]*"
+    r"|/[^\s'\"|;>&]*"
+    r"|\$\{env:[A-Za-z_]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
     r"|\$env:[A-Za-z_]\w*(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$\{[A-Za-z_]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
     r"|\$HOME(?:[\\/][^\s'\"|;>&]*)?"
-    r"|%[A-Za-z_]\w*%(?:[\\/][^\s'\"|;>&]*)?"
+    r"|%[A-Za-z_][\w()]*%(?:[\\/][^\s'\"|;>&]*)?"
     r"|~[^\s'\"|;>&]*"
 )
+# Pseudo-device redirect targets that are not real filesystem writes.
+_REDIRECT_PSEUDO_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 _BASH_MUTATING_TARGET_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    r"\b(?:Remove-Item|ri|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"\b(?:Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
     r"sc|ac|clc|ni|cpi|"
-    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|install)\b"
+    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install)\b"
     r"[^\n;|&]{0,200}?"
     r"(?:-(?:Literal)?Path\s+|-(?:File)?Path\s+|)"
     rf"['\"]?(?P<path>{_ABS_TARGET})"
@@ -590,17 +594,26 @@ _BASH_MUTATING_TARGET_RE = re.compile(
 
 
 def _expand_env_candidate(raw: str) -> str | None:
-    """Resolve ``$env:``/``%VAR%``/``$HOME``/``~`` prefixes to the real path.
+    """Resolve ``$env:``/``${env:X}``/``%VAR%``/``$HOME``/``~`` prefixes.
 
     Returns ``None`` when an env-prefixed target cannot be resolved — the
     caller must then fail closed instead of letting the literal form count
     as a relative in-workspace path.
     """
-    match = re.match(r"^\$env:([A-Za-z_]\w*)", raw, re.IGNORECASE)
+    match = re.match(r"^\$\{env:([A-Za-z_]\w*)\}", raw, re.IGNORECASE)
+    if not match:
+        match = re.match(r"^\$env:([A-Za-z_]\w*)", raw, re.IGNORECASE)
     if match:
         value = os.environ.get(match.group(1)) or os.environ.get(
             match.group(1).upper(), ""
         )
+        return value + raw[match.end() :] if value else None
+    match = re.match(r"^\$\{([A-Za-z_]\w*)\}", raw)
+    if match:
+        name = match.group(1)
+        if name.upper() == "HOME":
+            return str(Path.home()) + raw[match.end() :]
+        value = os.environ.get(name) or os.environ.get(name.upper(), "")
         return value + raw[match.end() :] if value else None
     if raw.upper().startswith("$HOME"):
         return str(Path.home()) + raw[5:]
@@ -608,6 +621,12 @@ def _expand_env_candidate(raw: str) -> str | None:
         expanded = os.path.expanduser(raw)
         return expanded if expanded != raw else None
     if raw.startswith("%"):
+        match = re.match(r"^%([A-Za-z_][\w()]*)%", raw)
+        if match:
+            value = os.environ.get(match.group(1)) or os.environ.get(
+                match.group(1).upper(), ""
+            )
+            return value + raw[match.end() :] if value else None
         expanded = os.path.expandvars(raw)
         return expanded if expanded != raw else None
     return raw
@@ -644,11 +663,16 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
     blocked: list[str] = []
     seen: set[str] = set()
     for match in _BASH_MUTATING_TARGET_RE.finditer(scrubbed):
-        raw = (match.group("path") or match.group("redir") or "").rstrip("\\/")
+        raw = match.group("path") or match.group("redir") or ""
+        raw = raw.rstrip("\\/") or raw[:1]
+        if re.match(r"^[A-Za-z]:$", raw):
+            raw += "\\"
         if not raw or raw in seen:
             continue
-        # Relative / cwd targets are fine.
+        # Relative / cwd targets and pseudo-device redirects are fine.
         if raw.startswith(".\\") or raw.startswith("./"):
+            continue
+        if raw in _REDIRECT_PSEUDO_TARGETS:
             continue
         seen.add(raw)
         candidate = _expand_env_candidate(raw)
