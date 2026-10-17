@@ -881,11 +881,35 @@ _HEREDOC_INTERPS = frozenset({
 _HEREDOC_JS = frozenset({"node", "deno", "bun"})
 # Matches ``<<WORD``/``<<-WORD``/``<<'WORD'``/``<<"WORD"`` openings.
 _HEREDOC_RE = re.compile(r"<<(-)?[ \t]*(['\"]?)([A-Za-z_]\w*)\2")
+# Transparent prefixes — they pass stdin through to the command they
+# launch, so the heredoc belongs to that command, not to the wrapper.
+# Each is skipped along with its options, option values, and bare
+# operands (``timeout``'s duration, ``chrt``'s prio, ``taskset``'s mask).
+_HEREDOC_WRAPPERS = frozenset({
+    "env", "timeout", "nice", "nohup", "time", "stdbuf", "command",
+    "builtin", "exec", "sudo", "doas", "pkexec", "chrt", "ionice",
+    "taskset",
+})
+# Wrapper options that consume the NEXT token as their value.
+_HEREDOC_WRAPPER_VALFLAGS = {
+    "env": {"-u", "-s"},
+    "nice": {"-n"},
+    "stdbuf": {"-i", "-o", "-e"},
+    "exec": {"-a"},
+    "sudo": {"-u", "-g", "-C", "-h", "-p", "-t", "-D", "-R"},
+    "doas": {"-u", "-C"},
+    "pkexec": {"-u", "--user"},
+    "chrt": {"-p", "-m"},
+    "ionice": {"-c", "-n", "-p"},
+    "taskset": {"-c", "-p"},
+}
+# Bare operands between a wrapper's flags and the command it launches.
+_HEREDOC_WRAPPER_OPERANDS = {"timeout": 1, "chrt": 1, "taskset": 1}
 # Heredoc owners that execute stdin but have no inline-code or carrier
 # rescan path — fail closed like the piped-stdin executors.
-_HEREDOC_EXEC_FAILCLOSED = _STDIN_EXECUTORS | frozenset(
-    {"perl", "crontab"}
-)
+_HEREDOC_EXEC_FAILCLOSED = (
+    _STDIN_EXECUTORS - _HEREDOC_WRAPPERS - _HEREDOC_SHELLS
+) | frozenset({"perl", "crontab"})
 _ENCODED_CARRIERS = frozenset(
     {"powershell", "pwsh", "powershell.exe", "pwsh.exe", "cmd", "cmd.exe"}
 )
@@ -1701,7 +1725,7 @@ def find_bash_disallowed_write_paths(
     # masked — a redirect on the ``<<`` line itself still fires. Line
     # scanning runs on ``scrubbed``: a stray ``'`` inside the body can
     # corrupt ``masked``'s newline map before the span filter below.
-    heredoc_feed: dict[int, tuple[str, int, int]] = {}
+    heredoc_feed: dict[int, tuple[str, str, int, int]] = {}
     hd_mask: list[tuple[int, int]] = []
     for hm in _HEREDOC_RE.finditer(masked):
         if _in_quotes(hm.start()):
@@ -1731,20 +1755,60 @@ def find_bash_disallowed_write_paths(
         # Mask the body AND the terminator line — a delimiter like
         # ``PY`` would otherwise parse as a ``py`` verb event.
         hd_mask.append((body_start, mask_end))
-        # Owner = first word of the segment holding the ``<<``.
+        # Owner = first word of the segment holding the ``<<``, resolved
+        # through transparent wrappers — ``env``/``timeout``/``sudo``
+        # pass stdin through to the command they launch, so the body
+        # belongs to that command. Leading ``NAME=val`` assignments are
+        # skipped, and a bare wrapper with no command fails closed.
         hseg_start = max(
             masked.rfind(c, 0, hm.start()) for c in ";|&\n"
         ) + 1
         head = masked[hseg_start : hm.start()]
         pm = _CMD_SLOT_PREFIX_RE.match(head)
-        rest = head[pm.end():] if pm else head
-        wm = re.match(r"\s*['\"]?([A-Za-z_]\w*)", rest)
-        owner = wm.group(1).lower() if wm else ""
-        own_start = (
-            hseg_start + (pm.end() if pm else 0) + wm.start(1)
-            if wm
-            else -1
-        )
+        wpos = hseg_start + (pm.end() if pm else 0)
+        wt = list(re.finditer(r"[^\s]+", masked[wpos : hm.start()]))
+        wi = 0
+        owner = ""
+        last_wrapper = ""
+        while wi < len(wt):
+            wtok = wt[wi].group()
+            wbase = re.sub(
+                r"\.(?:exe|com|bat|cmd|ps1)$", "", wtok.strip("'\"").lower()
+            ).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if re.match(r"^[A-Za-z_]\w*=", wtok.strip("'\"")):
+                wi += 1
+                continue
+            if wbase not in _HEREDOC_WRAPPERS:
+                owner = wbase
+                break
+            last_wrapper = wbase
+            wi += 1
+            vflags = _HEREDOC_WRAPPER_VALFLAGS.get(wbase, set())
+            operands = _HEREDOC_WRAPPER_OPERANDS.get(wbase, 0)
+            pending_val = False
+            while wi < len(wt):
+                atok = wt[wi].group()
+                acore = atok.strip("'\"")
+                if pending_val:
+                    pending_val = False
+                    wi += 1
+                    continue
+                if re.match(r"^[A-Za-z_]\w*=", acore):
+                    wi += 1
+                    continue
+                if acore.startswith(("-", "+")):
+                    wi += 1
+                    if acore.lower() in vflags:
+                        pending_val = True
+                    continue
+                if operands:
+                    operands -= 1
+                    wi += 1
+                    continue
+                break
+        if not owner:
+            blocked.append(last_wrapper or "env")
+            continue
         if owner in _HEREDOC_SHELLS:
             hd_kind = "shell"
         elif owner in _HEREDOC_INTERPS:
@@ -1754,11 +1818,29 @@ def find_bash_disallowed_write_paths(
             continue
         else:
             continue
-        if own_start >= 0 and re.fullmatch(
-            r"(?i)(?:" + _MUT_VERB_ALT + r")(?:\.(?:exe|com|bat|cmd|ps1))?",
-            owner,
-        ):
-            heredoc_feed[own_start] = (hd_kind, body_start, body_end)
+        # The opener regex consumes a whole segment greedily — a wrapped
+        # owner (``env bash <<EOF``) is swallowed inside the wrapper's
+        # verbseg and never opens its own event. The dispatching event is
+        # therefore the FIRST mutating-verb word in the segment.
+        feed_pos = -1
+        for j in range(wi + 1):
+            jtok = wt[j].group()
+            jbase = re.sub(
+                r"\.(?:exe|com|bat|cmd|ps1)$",
+                "",
+                jtok.strip("'\"").lower(),
+            ).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if re.fullmatch(
+                r"(?i)(?:" + _MUT_VERB_ALT
+                + r")(?:\.(?:exe|com|bat|cmd|ps1))?",
+                jbase,
+            ):
+                feed_pos = wpos + wt[j].start() + (
+                    len(jtok) - len(jtok.lstrip("'\""))
+                )
+                break
+        if feed_pos >= 0:
+            heredoc_feed[feed_pos] = (hd_kind, owner, body_start, body_end)
         elif hd_kind == "shell" and _depth < _MAX_CARRIER_DEPTH:
             # The owner produces no opener event (``ksh``) — rescan the
             # body immediately against the current dir.
@@ -2509,17 +2591,32 @@ def find_bash_disallowed_write_paths(
                     script_file = True
                     _check(t)
                     break
-            # ``bash <<EOF``/``sh -s <<EOF`` — the heredoc body is the
-            # executed payload; rescan it with the same workdir.
+            # ``bash <<EOF``/``env python - <<PY`` — the heredoc body is
+            # the executed payload. A wrapped owner (``env bash``) is
+            # swallowed inside the wrapper's verbseg, so the feed is
+            # keyed at the first event-producing word and dispatched
+            # here: shell bodies rescan as commands; interpreter bodies
+            # go through the ``-c`` inline-code checks.
             hd = heredoc_feed.get(opener.start())
-            if (
-                hd is not None
-                and hd[0] == "shell"
-                and _depth < _MAX_CARRIER_DEPTH
-            ):
+            if hd is not None and _depth < _MAX_CARRIER_DEPTH:
+                hkind, howner, hbs, hbe = hd
+                if hkind == "interp":
+                    hbody = "\n".join(
+                        re.sub(
+                            r"//.*$" if howner in _HEREDOC_JS else r"#.*$",
+                            "",
+                            ln,
+                        )
+                        for ln in scrubbed[hbs:hbe].split("\n")
+                    )
+                    hsrc = howner + ' -c "' + hbody.replace(
+                        "\\", "\\\\"
+                    ).replace('"', '\\"') + '"'
+                else:
+                    hsrc = scrubbed[hbs:hbe]
                 hmut: list[bool] = []
                 hsub = find_bash_disallowed_write_paths(
-                    scrubbed[hd[1] : hd[2]],
+                    hsrc,
                     config,
                     workdir=eff_dir,
                     _depth=_depth + 1,
@@ -2549,19 +2646,18 @@ def find_bash_disallowed_write_paths(
                 if _depth >= _MAX_CARRIER_DEPTH:
                     blocked.append(verb)
                     continue
-                hbody = scrubbed[hd[1] : hd[2]]
                 hbody = "\n".join(
                     re.sub(
-                        r"//.*$" if verb in _HEREDOC_JS else r"#.*$",
+                        r"//.*$" if hd[1] in _HEREDOC_JS else r"#.*$",
                         "",
                         ln,
                     )
-                    for ln in hbody.split("\n")
+                    for ln in scrubbed[hd[2] : hd[3]].split("\n")
                 )
                 icode = hbody.replace("\\", "\\\\").replace('"', '\\"')
                 hmut: list[bool] = []
                 hsub = find_bash_disallowed_write_paths(
-                    verb + ' -c "' + icode + '"',
+                    hd[1] + ' -c "' + icode + '"',
                     config,
                     workdir=eff_dir,
                     _depth=_depth + 1,

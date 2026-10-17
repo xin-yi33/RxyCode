@@ -985,6 +985,31 @@ def test_w7_c01_integration() -> None:
         workdir=workdir,
     )
 
+    # Audit round 26
+    # Transparent wrappers (``env``/``timeout``/``nice``/``sudo``…)
+    # pass the heredoc through to the command they launch — the owner
+    # is the wrapped command, not the wrapper.
+    for wrap_ok in (
+        "env cat <<EOF\nhello\nEOF",
+        "timeout 1 cat <<EOF\nhello\nEOF",
+        "nice -n 5 grep x <<EOF\nrm -rf /etc\nEOF",
+        "env FOO=1 sort <<EOF\nb\na\nEOF",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            wrap_ok, config, workdir=workdir
+        ), wrap_ok
+    for wrap_bad in (
+        "env bash <<EOF\necho x > /etc/x\nEOF",
+        "timeout 5 sh <<EOF\nrm -rf C:/Windows/x\nEOF",
+        "sudo -u root sh <<EOF\necho x > /etc/x\nEOF",
+        "env python - <<'PY'\nopen('C:/Windows/x','w')\nPY",
+        "env xargs rm <<EOF\nx\nEOF",
+        "env <<EOF\nrm -rf /etc\nEOF",
+    ):
+        assert find_bash_disallowed_write_paths(
+            wrap_bad, config, workdir=workdir
+        ), wrap_bad
+
     unknown = asyncio.run(
         orchestrator.execute_tool(
             "mcp_elevate_privileges",
