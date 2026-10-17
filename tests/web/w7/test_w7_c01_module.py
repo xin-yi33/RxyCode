@@ -139,6 +139,12 @@ def test_w7_c01_integration() -> None:
         "cd C:\\Windows\\Temp; Set-Content rxy_w7c01_pwned.txt pwned",
         "cp ./a.txt C:\\dst\\rxy_w7c01_pwned.txt",
         "rm ok.txt also-ok.txt /etc/rxy_w7c01_pwned.txt",
+        # Cumulative cd escapes, line continuations, and bare directory
+        # changes (fail-closed).
+        "cd ..; cd ..; cd ..; cd ..; cd ..; Set-Content rxy_w7c01_pwned.txt pwned",
+        "Set-Content `\nC:\\Windows\\rxy_w7c01_pwned.txt pwned",
+        "Set-Content \\\n/etc/rxy_w7c01_pwned.txt pwned",
+        "cd",
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -186,6 +192,12 @@ def test_w7_c01_integration() -> None:
         "cd subdir; Set-Content inside.txt x",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
+    # Relative targets resolve against the requested workdir: '..\\x' from
+    # the workspace stays inside (allowed here only because tests\\web is a
+    # permitted root), but from D:\\ the same command escapes every root.
+    assert find_bash_disallowed_write_paths(
+        "Set-Content ..\\rxy_w7c01_out.txt x", config, workdir="D:\\"
+    )
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

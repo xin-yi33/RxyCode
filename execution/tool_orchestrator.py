@@ -1670,7 +1670,10 @@ class ToolOrchestrator:
             # escape the workspace write whitelist (workspace sandbox gap).
             if self._canonical_name(name) == "bash":
                 cmd = str(args.get("command") or "")
-                blocked_paths = find_bash_disallowed_write_paths(cmd, config)
+                workdir = args.get("workdir")
+                blocked_paths = find_bash_disallowed_write_paths(
+                    cmd, config, workdir=str(workdir) if workdir else None
+                )
                 if blocked_paths:
                     preview = ", ".join(blocked_paths[:3])
                     msg = (

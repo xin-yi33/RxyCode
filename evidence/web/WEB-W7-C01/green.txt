@@ -15,9 +15,12 @@ Suite (card-owned + adjacent regressions):
     bare /), UNC shares (\\host\share), current-drive roots (\Windows\x),
     drive root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi,
     cd/Set-Location/pushd directory-change targets, relative '..'
-    traversal (../../x, a\..\..\x), multi-argument path scanning, env-var
-    expansion escape via .., and non-blocking of /dev/null plus relative
-    mid-token separators (./x, dir\x, a~b, config/x) and in-workspace cd.
+    traversal (../../x, a\..\..\x), multi-argument path scanning,
+    workdir-relative resolution (orchestrator passes args["workdir"]),
+    cumulative cd tracking, backtick/backslash line continuations,
+    bare cd/popd fail-closed, env-var expansion escape via .., and
+    non-blocking of /dev/null plus relative mid-token separators
+    (./x, dir\x, a~b, config/x) and in-workspace cd.
   - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
     sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
     tampered/expired session cookies, CSRF Origin on mutating routes,

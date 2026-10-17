@@ -588,17 +588,24 @@ _REL_TARGET = r"(?<![\w~./\\])[^\s'\"|;>&:/\\]+(?:[\\/][^\s'\"|;>&:/\\]*)*"
 _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    r"\b(?:Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"\b(?P<verb>Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
     r"sc|ac|clc|ni|cpi|"
     r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
     r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install)\b"
-    r"(?P<verbseg>[^\n;|&]{0,200})"
-    r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]{0,200})"
+    r"(?P<verbseg>[^\n;|&]*)"
+    r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]*)"
     r")"
 )
 _PATH_TOKEN_RE = re.compile(rf"(?ix)(?P<t>{_ABS_TARGET}|{_REL_TARGET})")
 _DOTDOT_SEGMENT_RE = re.compile(r"\.{2}(?:[\\/]|$)")
 _ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%])")
+_ABS_FORM_RE = re.compile(r"(?i)^(?:[a-z]:[\\/]|[\\/])")
+# Directory-change verbs whose target becomes the effective cwd for the rest
+# of the command; pop-verbs restore a pushed location (fail closed on an
+# empty stack — the resulting directory cannot be verified).
+_CD_VERBS = frozenset({"cd", "chdir", "set-location", "sl"})
+_PUSH_VERBS = frozenset({"pushd", "push-location"})
+_POP_VERBS = frozenset({"popd", "pop-location"})
 
 
 def _expand_env_candidate(raw: str) -> str | None:
@@ -640,14 +647,30 @@ def _expand_env_candidate(raw: str) -> str | None:
     return raw
 
 
-def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
-    """Return absolute mutating target paths outside the write whitelist.
+def _bash_candidate(raw: str, eff_dir: str | None) -> str | None:
+    """Expand env prefixes, then resolve relative targets against ``eff_dir``."""
+    candidate = _expand_env_candidate(raw)
+    if candidate is None:
+        return None
+    if eff_dir and not _ABS_FORM_RE.match(candidate):
+        candidate = os.path.join(eff_dir, candidate)
+    return os.path.normpath(candidate)
+
+
+def find_bash_disallowed_write_paths(
+    cmd: str, config: dict, workdir: str | None = None
+) -> list[str]:
+    """Return mutating target paths outside the write whitelist.
 
     Workspace sandbox only constrains cwd; without this check, agents can still
     ``Set-Content C:\\Users\\...`` and escape. Used by ToolOrchestrator.
 
     Only verb/redirect *targets* are considered so that writing a relative
     report that *mentions* an absolute path in its body is not false-blocked.
+    Relative targets are resolved against ``workdir`` (the shell's requested
+    cwd, falling back to ``execution.workspace_root``), and cd/pushd/popd
+    verbs update the tracked effective directory so chained ``cd ..`` forms
+    cannot re-root a later relative write.
     """
     if not cmd:
         return []
@@ -668,30 +691,83 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
     # the whole command behind the erase. -Value/-Content payloads were
     # already scrubbed above, so report bodies stay unaffected.
     scrubbed = re.sub(r'@\"|\"@', " ", scrubbed)
+    # PowerShell (`` ` ``) and bash (``\``) line continuations join the next
+    # line into the same command; collapse them so targets past a newline
+    # stay inside the scanned segment.
+    scrubbed = re.sub(r"[\\`]\r?\n", " ", scrubbed)
+    base = workdir or execution.get("workspace_root") or None
+    eff_dir: str | None = None
+    if base:
+        try:
+            eff_dir = os.path.normpath(str(base))
+        except Exception:
+            eff_dir = None
+    dir_stack: list[str | None] = []
     blocked: list[str] = []
-    seen: set[str] = set()
+    seen: set[tuple[str | None, str]] = set()
+
+    def _check(raw: str) -> None:
+        if raw in _REDIRECT_PSEUDO_TARGETS:
+            return
+        # Same token is re-checked when the effective directory moved —
+        # '..' means something different after each 'cd'.
+        key = (eff_dir, raw)
+        if key in seen:
+            return
+        seen.add(key)
+        candidate = _bash_candidate(raw, eff_dir)
+        if candidate is None or not is_write_allowed(candidate, config):
+            blocked.append(raw)
+
     for opener in _BASH_MUTATING_OPENER_RE.finditer(scrubbed):
+        verb = (opener.group("verb") or "").lower()
         seg = opener.group("verbseg") or opener.group("redirseg") or ""
-        for match in _PATH_TOKEN_RE.finditer(seg):
-            raw = match.group("t")
-            raw = raw.rstrip("\\/") or raw[:1]
+        if verb in _POP_VERBS:
+            if dir_stack:
+                eff_dir = dir_stack.pop()
+            else:
+                blocked.append(verb)
+            continue
+        tokens = list(_PATH_TOKEN_RE.finditer(seg))
+        if verb in _CD_VERBS or verb in _PUSH_VERBS:
+            if not tokens:
+                # Bare cd/pushd heads to the profile dir — outside the
+                # workspace and unverifiable, so fail closed.
+                blocked.append(verb)
+                continue
+            for match in tokens:
+                raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
+                if re.match(r"^[A-Za-z]:$", raw):
+                    raw += "\\"
+                _check(raw)
+            target = next(
+                (
+                    m.group("t")
+                    for m in tokens
+                    if not m.group("t").startswith(("-", "+"))
+                ),
+                None,
+            )
+            if target is None:
+                continue
+            target = target.rstrip("\\/") or target[:1]
+            resolved = _bash_candidate(target, eff_dir)
+            if resolved is not None and is_write_allowed(resolved, config):
+                if verb in _PUSH_VERBS:
+                    dir_stack.append(eff_dir)
+                eff_dir = os.path.normpath(resolved)
+            continue
+        for match in tokens:
+            raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
             if re.match(r"^[A-Za-z]:$", raw):
                 raw += "\\"
-            if not raw or raw in seen:
-                continue
-            # Pseudo-device redirects are not real writes.
-            if raw in _REDIRECT_PSEUDO_TARGETS:
-                continue
             # Plain relative targets resolve inside the workspace; only
             # '..' traversal or absolute/env forms need the whitelist check.
             if not _ABS_TOKEN_START_RE.match(raw) and not _DOTDOT_SEGMENT_RE.search(
                 raw
             ):
                 continue
-            seen.add(raw)
-            candidate = _expand_env_candidate(raw)
-            if candidate is None or not is_write_allowed(candidate, config):
-                blocked.append(raw)
+            _check(raw)
     return blocked
 
 
