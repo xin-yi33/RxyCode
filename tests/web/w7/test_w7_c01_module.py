@@ -420,6 +420,12 @@ def test_w7_c01_integration() -> None:
         'python -c "import os;os.system(f\'-o{os.environ[chr(84)]}\')"',
         'python -c "import os;os.system(f\'x{os.environ}\')"',
         "python -c \"import os;os.system(f'-o{os.environ[\\\"T\\\"]}')\"",
+        # Bare-name receiver methods — ``p.open('w')`` targets the path
+        # bound to ``p``; dest-taking methods check their first arg too.
+        "python -c \"from pathlib import Path;import os;p=Path(os.environ['T']);p.open('w')\"",
+        "python -c \"import os;p='ok.txt';p2=os.environ['T'];p.rename(p2)\"",
+        # f-string interpolation bound to a name then used as a target.
+        'python -c "import os;x=f\'{os.environ[chr(84)]}\';open(x,\'w\')"',
     ):
         assert find_bash_disallowed_write_paths(post18, config, workdir="D:\\"), post18
 

@@ -840,7 +840,9 @@ _CODE_RECV_RE = re.compile(
 # ``write`` receivers would false-positive on streams and objects.
 _CODE_NAMERECV_RE = re.compile(
     r"(?i)(?<![\w.])([A-Za-z_]\w*(?:\s*\.\s*\w+)*)\s*\.\s*"
-    r"(?:unlink|touch|mkdir|rmdir|link_to|symlink_to|hardlink_to|utime)\s*\("
+    r"(?:unlink|touch|mkdir|rmdir|link_to|symlink_to|hardlink_to|utime|"
+    r"write_text|write_bytes|rename|replace|chmod|chown|truncate|delete|"
+    r"remove|move|copy|extract|extractall|open)\s*\("
 )
 # Module/class names that legitimately appear before ``.unlink`` etc —
 # ``os.unlink('x')`` is a function call covered by the API scan, not a
@@ -986,8 +988,30 @@ def _code_lit_strip(text: str) -> str:
         if "f" in pfx.lower() and (
             j == 0 or not (text[j - 1].isalnum() or text[j - 1] == "_")
         ):
-            for expr in re.findall(r"\{([^{}]*)\}", lm.group(0)):
-                parts.append(" " + expr + " ")
+            body = lm.group(0)
+            exprs = re.findall(r"\{([^{}]*)\}", body)
+            truncated = False
+            if not exprs and "{" in body:
+                # Truncated ``f'...{expr'' — the fragment still holds the
+                # start of a dynamic expression; keep it visible. Strip
+                # the surrounding quotes so the fragment is not mistaken
+                # for a static literal below.
+                exprs = [body[1:-1]]
+                truncated = True
+            if not truncated and exprs and all(
+                re.fullmatch(
+                    r"\s*(?:'[^']*'|\"[^\"]*\"|[0-9][0-9_]*(?:\.[0-9]+)?)\s*",
+                    e,
+                )
+                for e in exprs
+            ):
+                # Every interpolation is static — the folded value is a
+                # plain literal, so strip it like any other string. The
+                # original text still reaches the generic token scan.
+                parts[-1] = re.sub(r"[rRuUbBfF\\]+$", "", parts[-1])
+            else:
+                for expr in exprs:
+                    parts.append(" " + expr + " ")
         pos = lm.end()
     parts.append(text[pos:])
     return "".join(parts)
@@ -1672,6 +1696,12 @@ def find_bash_disallowed_write_paths(
                     # ``x+=expr`` with a runtime side — bind a poisoned
                     # expression so later lookups fail closed.
                     code_vars[name] = value.strip() + "+"
+            for wm in re.finditer(
+                r"(?<![\w])(?:with|except)\s+([^;\n]*?)\s+as\s+"
+                r"([A-Za-z_]\w*)",
+                code_src,
+            ):
+                code_vars[wm.group(2)] = wm.group(1).strip() or "?"
             if (
                 _CODE_MUT_RE.search(seg)
                 or _CODE_DISP_CALL_RE.search(seg)
@@ -1845,6 +1875,19 @@ def find_bash_disallowed_write_paths(
                         break
                     for lit in n_lits:
                         _check(lit)
+                    if re.search(
+                        r"(?i)\.(?:rename|replace|move|copy|link_to|"
+                        r"symlink_to|hardlink_to|extract|extractall)\s*\($",
+                        seg[: recv.end()],
+                    ):
+                        # ``p.rename(dst)`` — the destination argument is
+                        # a write target too.
+                        dregion = _code_lit_strip(
+                            _code_arg_region(seg, recv.end())
+                        )
+                        if _arg_dirty(dregion, dregion.split(",")[:1]):
+                            dirty = True
+                            break
                 for precv in _CODE_PAREN_RECV_RE.finditer(seg):
                     # ``(expr).method()`` / ``arr[i].method()`` — the
                     # bracketed receiver expression is the write target.
