@@ -575,7 +575,8 @@ _ABS_TARGET = (
     r"|\$\{env:[^\W\d]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
     r"|\$env:[^\W\d]\w*(?:[\\/][^\s'\"|;>&]*)?"
     r"|\$\{[^\W\d]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$HOME(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$HOME(?!\w)(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$[^\W\d]\w*(?:[\\/][^\s'\"|;>&]*)?"
     r"|%[^\W\d][\w()]*%(?:[\\/][^\s'\"|;>&]*)?"
     r"|~[^\s'\"|;>&]*"
     r")"
@@ -606,6 +607,25 @@ _ABS_FORM_RE = re.compile(r"(?i)^(?:[a-z]:[\\/]|[\\/])")
 _CD_VERBS = frozenset({"cd", "chdir", "set-location", "sl"})
 _PUSH_VERBS = frozenset({"pushd", "push-location"})
 _POP_VERBS = frozenset({"popd", "pop-location"})
+# Plain shell variable targets (``Set-Content $out x`` / ``> $OUT``) resolve
+# through assignments tracked earlier in the command; untracked names fail
+# closed. $HOME/$env:/${...} forms are matched by the earlier alternatives.
+_SHELL_VAR_RE = re.compile(r"^\$([^\W\d]\w*)$", re.IGNORECASE)
+# ``$x = "v"`` (PowerShell) and ``X=v`` (bash) assignments, tracked in order.
+_ASSIGN_RE = re.compile(
+    r"(?is)"
+    r"\$(?P<ps>[^\W\d]\w*)\s*=\s*"
+    r"(?:\"(?P<psdq>[^\"]*)\"|'(?P<pssq>[^']*)'|(?P<psbare>[^\s;|&'\"]+))"
+    r"|\b(?P<sh>[A-Za-z_]\w*)=(?P<shval>[^\s;|&'\"]*)"
+)
+# Shell-provided names that map to a knowable directory; everything else a
+# mutating target could be stays unverifiable.
+_BUILTIN_DIR_VARS = ("pwd", "home")
+# Pipeline/loop variables are objects, not paths — never tracked names and
+# never path targets, so they resolve to themselves (inside the workspace).
+_PIPELINE_VARS = frozenset(
+    {"_", "psitem", "input", "args", "this", "matches", "foreach", "event"}
+)
 
 
 def _expand_env_candidate(raw: str) -> str | None:
@@ -695,7 +715,16 @@ def find_bash_disallowed_write_paths(
     # line into the same command; collapse them so targets past a newline
     # stay inside the scanned segment.
     scrubbed = re.sub(r"[\\`]\r?\n", " ", scrubbed)
-    base = workdir or execution.get("workspace_root") or None
+    base = workdir
+    if not base:
+        try:
+            from ..session_runtime import current_working_directory
+
+            base = str(current_working_directory())
+        except Exception:
+            base = None
+    if not base:
+        base = execution.get("workspace_root") or None
     eff_dir: str | None = None
     if base:
         try:
@@ -703,8 +732,26 @@ def find_bash_disallowed_write_paths(
         except Exception:
             eff_dir = None
     dir_stack: list[str | None] = []
+    shell_vars: dict[str, str] = {}
     blocked: list[str] = []
     seen: set[tuple[str | None, str]] = set()
+
+    def _resolve_value(raw: str, depth: int = 0) -> str | None:
+        """Resolve env forms, then tracked ``$var`` names, against eff_dir."""
+        var = _SHELL_VAR_RE.match(raw)
+        if var:
+            name = var.group(1).lower()
+            if name in _PIPELINE_VARS:
+                return raw
+            if name in _BUILTIN_DIR_VARS:
+                if name == "pwd":
+                    return eff_dir
+                return os.path.expanduser("~") or None
+            value = shell_vars.get(name)
+            if value is None or depth >= 4:
+                return None
+            return _resolve_value(value, depth + 1)
+        return _bash_candidate(raw, eff_dir)
 
     def _check(raw: str) -> None:
         if raw in _REDIRECT_PSEUDO_TARGETS:
@@ -715,11 +762,31 @@ def find_bash_disallowed_write_paths(
         if key in seen:
             return
         seen.add(key)
-        candidate = _bash_candidate(raw, eff_dir)
+        candidate = _resolve_value(raw)
         if candidate is None or not is_write_allowed(candidate, config):
             blocked.append(raw)
 
-    for opener in _BASH_MUTATING_OPENER_RE.finditer(scrubbed):
+    events = sorted(
+        [
+            (m.start(), "op", m)
+            for m in _BASH_MUTATING_OPENER_RE.finditer(scrubbed)
+        ]
+        + [(m.start(), "as", m) for m in _ASSIGN_RE.finditer(scrubbed)]
+    )
+    for _, kind, m in events:
+        if kind == "as":
+            name = m.group("ps") or m.group("sh") or ""
+            value = (
+                m.group("psdq")
+                or m.group("pssq")
+                or m.group("psbare")
+                or m.group("shval")
+                or ""
+            )
+            if name:
+                shell_vars[name.lower()] = value
+            continue
+        opener = m
         verb = (opener.group("verb") or "").lower()
         seg = opener.group("verbseg") or opener.group("redirseg") or ""
         if verb in _POP_VERBS:
@@ -742,17 +809,24 @@ def find_bash_disallowed_write_paths(
                 _check(raw)
             target = next(
                 (
-                    m.group("t")
-                    for m in tokens
-                    if not m.group("t").startswith(("-", "+"))
+                    match.group("t")
+                    for match in tokens
+                    if not match.group("t").startswith(("-", "+"))
                 ),
                 None,
             )
             if target is None:
+                # ``cd -``/``cd -L`` and other flag-only forms retarget to
+                # OLDPWD/HOME — unverifiable, so fail closed.
+                blocked.append(verb)
                 continue
             target = target.rstrip("\\/") or target[:1]
-            resolved = _bash_candidate(target, eff_dir)
+            resolved = _resolve_value(target)
             if resolved is not None and is_write_allowed(resolved, config):
+                if os.environ.get("CDPATH") and not _ABS_FORM_RE.match(target):
+                    # CDPATH can re-root a relative cd anywhere; unverifiable.
+                    blocked.append(target)
+                    continue
                 if verb in _PUSH_VERBS:
                     dir_stack.append(eff_dir)
                 eff_dir = os.path.normpath(resolved)

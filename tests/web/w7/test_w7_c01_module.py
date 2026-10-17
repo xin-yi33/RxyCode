@@ -145,6 +145,12 @@ def test_w7_c01_integration() -> None:
         "Set-Content `\nC:\\Windows\\rxy_w7c01_pwned.txt pwned",
         "Set-Content \\\n/etc/rxy_w7c01_pwned.txt pwned",
         "cd",
+        # Shell-variable targets resolve through tracked assignments;
+        # untracked names and flag-only/cd - forms fail closed.
+        '$pwned = "C:\\Windows\\Temp\\rxy_w7c01_pwned.txt"; Set-Content $pwned x',
+        "OUT=C:\\Windows\\Temp\\rxy_w7c01_pwned.txt; Set-Content $OUT x",
+        "Set-Content $rxy_untracked_var_9x x",
+        "cd -L",
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -190,6 +196,11 @@ def test_w7_c01_integration() -> None:
         "Set-Content dir\\sub\\file.txt x",
         "Set-Content a~b.txt x",
         "cd subdir; Set-Content inside.txt x",
+        # Tracked vars pointing inside the workspace stay allowed, as do
+        # builtin dir vars and pipeline objects.
+        '$f = "sub\\ok.txt"; Set-Content $f x',
+        "Set-Content $PWD\\inside.txt x",
+        "ls | %{ Set-Content $_.Name x }",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from

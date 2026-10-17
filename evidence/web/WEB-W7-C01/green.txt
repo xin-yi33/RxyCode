@@ -18,9 +18,13 @@ Suite (card-owned + adjacent regressions):
     traversal (../../x, a\..\..\x), multi-argument path scanning,
     workdir-relative resolution (orchestrator passes args["workdir"]),
     cumulative cd tracking, backtick/backslash line continuations,
-    bare cd/popd fail-closed, env-var expansion escape via .., and
-    non-blocking of /dev/null plus relative mid-token separators
-    (./x, dir\x, a~b, config/x) and in-workspace cd.
+    bare cd/popd fail-closed, env-var expansion escape via .., tracked
+    $var assignments ($x=..., X=...) resolving to checked targets with
+    untracked names fail-closed, flag-only cd (cd -, cd -L) and CDPATH
+    fail-closed, session-cwd eff fallback when workdir is omitted, and
+    non-blocking of /dev/null, pipeline vars ($_, $PSItem), in-workspace
+    tracked vars, plus relative mid-token separators (./x, dir\x, a~b,
+    config/x) and in-workspace cd.
   - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
     sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
     tampered/expired session cookies, CSRF Origin on mutating routes,
