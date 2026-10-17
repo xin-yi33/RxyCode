@@ -151,7 +151,7 @@ def test_w7_c01_integration() -> None:
         "OUT=C:\\Windows\\Temp\\rxy_w7c01_pwned.txt; Set-Content $OUT x",
         "Set-Content $rxy_untracked_var_9x x",
         "cd -L",
-        '$d = ".."; Set-Content "$d\\rxy_w7c01_esc.txt" x',
+        '$d = "..\\..\\..\\.."; Set-Content "$d\\rxy_w7c01_esc.txt" x',
     )
     for variant in variants:
         blocked = asyncio.run(
