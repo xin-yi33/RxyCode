@@ -244,6 +244,40 @@ def test_w7_c01_integration() -> None:
         "python -c \"open(__import__('sys').argv[1],'w')\"",
         'node -e "fs.writeFileSync(process.env.T,\'x\')"',
         'python -c "import tempfile; open(tempfile.mktemp(),\'w\')"',
+        # A bare ``X=v`` never binds ``$env:X`` (audit round 12: it is not
+        # an env assignment in any dialect) and is dialect-ambiguous for
+        # ``$X`` — under the other shell ``$X`` stays empty and the path
+        # suffix alone becomes the target (``\pwn`` -> drive root).
+        "TEMP=inside.txt; Set-Content $env:TEMP\\rxy_w7c01_pwned.txt x",
+        "TEMP=inside.txt; Set-Content ${env:TEMP}\\rxy_w7c01_pwned.txt x",
+        "X=sub; echo x > $X\\rxy_w7c01_pwned.txt",
+        "X=sub; echo x > $X/rxy_w7c01_pwned.txt",
+        '$X = "sub"; echo x > $X\\rxy_w7c01_pwned.txt',
+        # Interpreter write targets computed by transforms (hex/base64
+        # decode, concat, format, slice, chr) resolve at runtime — the
+        # quoted literal is not the real path (audit round 12).
+        "python -c \"open(bytes.fromhex('433a5c57696e646f77735c54656d705c77372e747874').decode(),'w')\"",
+        "python -c \"import base64; open(base64.b64decode('QzovV2luZG93cw==').decode(),'w')\"",
+        "python -c \"open('C:'+'\\\\Windows\\\\rxy_w7c01_pwned.txt','w')\"",
+        "python -c \"open('{}'.format('x'),'w')\"",
+        "python -c \"open(chr(67)+':\\\\x','w')\"",
+        "python -c \"import os; open(os.path.join('C:','rxy_w7c01_pwned.txt'),'w')\"",
+        # Shell quoting/escapes concatenate into the verb: r'm', r"m",
+        # r\m and r\\m all reach the gate as rm.
+        "r'm' /etc/rxy_w7c01_pwned.txt",
+        'r"m" /etc/rxy_w7c01_pwned.txt',
+        "r\\m /etc/rxy_w7c01_pwned.txt",
+        "r\\\\m /etc/rxy_w7c01_pwned.txt",
+        "r''m /etc/rxy_w7c01_pwned.txt",
+        "c\\d /etc",
+        f'Set-Co\'n\'tent "{PAYLOAD_FILE}" pwned',
+        # $'...'/$"..."/backticks/$(...) evaluate at runtime — at command
+        # position the executed verb is unverifiable (fail closed).
+        "$'\\x72\\x6d' /etc/rxy_w7c01_pwned.txt",
+        "$\"rm\" /etc/rxy_w7c01_pwned.txt",
+        "`cat f` /etc/rxy_w7c01_pwned.txt",
+        "$(cat f) /etc/rxy_w7c01_pwned.txt",
+        "X=1 $'rm' /etc/rxy_w7c01_pwned.txt",
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -319,6 +353,15 @@ def test_w7_c01_integration() -> None:
         "Invoke-RestMethod http://a",
         "Get-Process | Format-List",
         "fsutil fsinfo drives",
+        # ``$'...'``/``$"..."``/backticks/$(...) in *argument* position are
+        # data, not the command name — only the command slot fails closed.
+        "echo $'hi'",
+        'echo $"hi"',
+        "echo `date`",
+        "echo $(date)",
+        # ``$env:X = v`` is a real PowerShell binding — an inside-workspace
+        # env target stays allowed.
+        '$env:OUT = ".\\ok"; Set-Content $env:OUT\\f.txt x',
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from

@@ -735,13 +735,29 @@ _CODE_MUT_RE = re.compile(
     re.IGNORECASE,
 )
 # Write targets produced at runtime (env/argv/stdin/temp dirs/script
-# paths) cannot be checked statically — fail closed.
+# paths) cannot be checked statically — fail closed. The second group
+# covers expressions that *compute* the target (decode/format/join/
+# concat/slice/reflection): a quoted hex string is not the real path,
+# ``bytes.fromhex('433a…').decode()`` produces it at runtime.
 _CODE_DYN_RE = re.compile(
-    r"(?:os\.environ|environ\s*\[|getenv|sys\.argv|sys\.path|sys\.stdin|"
-    r"process\.env|process\.argv|\bENV\s*\[|\bARGV\b|expandvars|expanduser|"
-    r"Path\.home|tempfile|tmpdir|gettempdir|tempnam|mkstemp|mkdtemp|"
-    r"__file__|__dirname|__filename|__main__|input\s*\(|readline|"
-    r"getlogin|getuser|getpass|\$argv|\$args|param\s*\()",
+    r"(?:os\.environ|environ\s*\[|getenv|\bsys\.|process\.env|process\.argv|"
+    r"\bENV\s*\[|\bARGV\b|expandvars|expanduser|Path\.home|Path\.cwd|"
+    r"tempfile|tmpdir|gettempdir|tempnam|mkstemp|mkdtemp|"
+    r"__file__|__dirname|__filename|__main__|__builtins__|input\s*\(|readline|"
+    r"getlogin|getuser|getpass|\$argv|\$args|param\s*\(|"
+    r"fromhex|unhexlify|b64|base64|\bdecode|\bencode|\bchr\s*\(|\bord\s*\(|"
+    r"\bbytes\s*\(|bytearray|\bstr\s*\(|\brepr\s*\(|\bint\s*\(|\bhex\s*\(|"
+    r"\boct\s*\(|\bbin\s*\(|\.join|\bjoin\s*\(|\bformat|%[sdr]\b|f[\"']|"
+    r"\\x[0-9a-f]|\\u[0-9a-f]|getattr|setattr|delattr|__import__|importlib|"
+    r"\beval\s*\(|\bexec\s*\(|\bcompile\s*\(|\bglobals|\blocals|\bvars\s*\(|"
+    r"os\.path|os\.getcwd|os\.listdir|os\.walk|os\.scandir|os\.getlogin|"
+    r"\.resolve|\babspath|\brealpath|\bglob|listdir|scandir|\.upper|\.lower|"
+    r"\.replace|\.strip|\.title|\.casefold|\.split|\.translate|\.group|"
+    r"\.sub\b|re\.search|re\.match|\bread\b|\.read|subprocess|check_output|"
+    r"popen|urllib|urlopen|requests|json\.|pickle|yaml\.|uuid|random|"
+    r"socket|\.time|datetime|\btmp|\bhome\b|homedir|appdata|programdata|"
+    r"programfiles|systemroot|windir|userprofile|homepath|homedrive|"
+    r"\bcwd\b|curdir|\bpwd\b|['\"]\s*\+|\+\s*['\"]|['\"]\s*\[)",
     re.IGNORECASE,
 )
 _MAX_CARRIER_DEPTH = 3
@@ -838,6 +854,73 @@ def find_bash_disallowed_write_paths(
     # line into the same command; collapse them so targets past a newline
     # stay inside the scanned segment.
     scrubbed = re.sub(r"[\\`]\r?\n", " ", scrubbed)
+    def _unescape(text: str) -> str:
+        # ``\`` mid-word (``r\m``, ``r\\m``) is a bash escape — strip it.
+        # At a word start (``\Windows``, ``\\share``) or after a
+        # ``:``/``}``/``%`` it is a path root or suffix, and ``$var\``
+        # binds the var's path suffix (``$PWD\inside.txt``) — all stay.
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            if ch == "\\" and i + 1 < len(text) and text[i + 1].isalpha():
+                prev = text[i - 1] if i else ""
+                if prev == "\\" or prev.isalnum() or prev == "_":
+                    j = i - 1
+                    while j >= 0 and (text[j].isalnum() or text[j] == "_"):
+                        j -= 1
+                    # ``$env:OUT\f`` — the walk stops at ``:``; a ``env:``
+                    # prefix belongs to the same ``$`` ref, so keep ``\``
+                    # there too (it is the var's path suffix).
+                    if j >= 4 and text[j] == ":" and text[j - 3 : j].lower() == "env" and text[j - 4] == "$":
+                        out.append(ch)
+                    elif not (j >= 0 and text[j] == "$"):
+                        continue
+                    else:
+                        out.append(ch)
+                    continue
+            out.append(ch)
+        return "".join(out)
+
+    # The shell concatenates words before parsing them: ``r'm' x``,
+    # ``r"m" x`` and ``r\m x`` all reach the gate as ``rm x``. Collapse
+    # word-internal quotes and backslash-escaped letters so the opener
+    # sees the verb the shell will actually run. ``\`` only escapes when
+    # unquoted — inside 'C:\Users\x' it is a literal path separator.
+    # Collapsing quotes can reveal new escapes, so loop to stable.
+    prev = None
+    while prev != scrubbed:
+        prev = scrubbed
+        spans = []
+        qpos = 0
+        while qpos < len(scrubbed):
+            if scrubbed[qpos] in "\"'":
+                close = scrubbed.find(scrubbed[qpos], qpos + 1)
+                end = close if close != -1 else len(scrubbed)
+                spans.append((qpos, end))
+                qpos = end + 1 if close != -1 else len(scrubbed)
+            else:
+                qpos += 1
+        rebuilt: list[str] = []
+        last = 0
+        for start, end in spans:
+            rebuilt.append(_unescape(scrubbed[last:start]))
+            word_before = start > 0 and (
+                scrubbed[start - 1].isalnum() or scrubbed[start - 1] == "_"
+            )
+            word_after = end + 1 < len(scrubbed) and (
+                scrubbed[end + 1].isalnum() or scrubbed[end + 1] == "_"
+            )
+            if end < len(scrubbed) and (word_before or word_after):
+                # A quote wedged inside a word (``r'm'``/``x"y"z``) is not
+                # a string delimiter — the shell concatenates it into the
+                # word, so drop the quote pair and keep the inner text.
+                # A free-standing quoted argument stays intact so code
+                # literals inside it survive for the interpreter checks.
+                rebuilt.append(scrubbed[start + 1 : end])
+            else:
+                rebuilt.append(scrubbed[start : end + 1])
+            last = end + 1
+        rebuilt.append(_unescape(scrubbed[last:]))
+        scrubbed = "".join(rebuilt)
     base = workdir
     if not base:
         try:
@@ -869,17 +952,18 @@ def find_bash_disallowed_write_paths(
             return None
         env = re.match(r"^\$\{?env:([^\W\d]\w*)\}?", raw, re.IGNORECASE)
         if env:
-            name = env.group(1).lower()
+            name = "env:" + env.group(1).lower()
             if name in shell_vars:
                 # ``$env:X = "v"`` rebinds the process env inside the
                 # command — the tracked value wins over the inherited one.
+                # A bare ``X=v`` does not bind this namespace.
                 return _resolve_value(shell_vars[name] + raw[env.end():], depth + 1)
             return _bash_candidate(raw, eff_dir)
         pct = re.match(r"^%([^\W\d][\w()]*)%", raw)
         if pct:
-            # ``set X=v`` / env-prefix assigns rebind ``%X%`` — tracked
-            # values win over the inherited environment.
-            name = pct.group(1).lower()
+            # ``%X%`` reads the process env — only an ``$env:X = v``
+            # assignment can rebind it inside the command.
+            name = "env:" + pct.group(1).lower()
             if name in shell_vars:
                 value = shell_vars[name]
                 suffix = raw[pct.end() :]
@@ -904,6 +988,15 @@ def find_bash_disallowed_write_paths(
                 value = shell_vars[name]
                 if not value and not suffix:
                     return None
+                if suffix:
+                    # ``X=v`` binds only under bash and ``$X=v`` only under
+                    # PowerShell — under the other dialect ``$X`` stays
+                    # empty and the suffix alone is the target. Check that
+                    # interpretation too: ``$X\pwn`` -> ``\pwn`` (drive
+                    # root) must not pass because one dialect binds.
+                    unset = _bash_candidate(suffix, eff_dir)
+                    if unset is not None and not is_write_allowed(unset, config):
+                        return unset
                 return _resolve_value(value + suffix, depth + 1)
             if name in _PIPELINE_VARS:
                 # ``$_``/``$args`` alone are not paths. A property or index
@@ -992,6 +1085,16 @@ def find_bash_disallowed_write_paths(
                 masked_chars[pos] = " "
     masked = "".join(masked_chars)
 
+    # ``$'...'`` ANSI-C / ``$"..."`` locale strings, ``$(...)`` and
+    # backticks evaluate at runtime — when they sit where a command name
+    # goes the executed verb is unverifiable, so fail closed.
+    for m in re.finditer(r"\$'|\$\"|`|\$\(", masked):
+        if _in_quotes(m.start()):
+            continue
+        seg_start = max(masked.rfind(c, 0, m.start()) for c in ";|&\n") + 1
+        if _ASSIGN_PREFIX_RE.match(masked[seg_start : m.start()]):
+            blocked.append(m.group())
+
     events = sorted(
         [
             (m.start(), "op", m)
@@ -1021,8 +1124,11 @@ def find_bash_disallowed_write_paths(
             if name and m.group("shansi") is None:
                 # ANSI-C ``$'...'``/locale ``$"..."`` values cannot be
                 # expanded statically — leave the name untracked so a
-                # later reference fails closed.
-                shell_vars[name.lower()] = value
+                # later reference fails closed. ``$env:X = v`` binds the
+                # ``env:`` namespace only — a bare ``X=v`` is not an env
+                # assignment in any dialect and must not satisfy it.
+                key = ("env:" if m.group("psenv") else "") + name.lower()
+                shell_vars[key] = value
             continue
         opener = m
         verb = (opener.group("verb") or "").lower()
