@@ -270,6 +270,12 @@ def test_w7_c01_integration() -> None:
         "python -c \"import os; Path(os.environ['TEMP']).with_name('x').write_text('x')\"",
         "python -c \"import os; arr=[os.environ['T']]; arr[0].unlink()\"",
         "python -c \"import os; __builtins__['open'](os.path.join(os.environ['T'],'x'),'w')\"",
+        # Option-attached drive targets — the ``-Flag:C:\`` /
+        # ``--flag=C:\`` glue hides the path behind the flag colon
+        # (audit round 17).
+        "Set-Content -Path:C:\\Windows\\Temp\\rxy_w7c01_pwned.txt x",
+        "npm install --prefix=C:\\Windows\\Temp\\rxy_w7c01_pwned x",
+        "terraform -chdir=C:\\Windows\\Temp\\rxy_w7c01_pwned init",
         # Shell quoting/escapes concatenate into the verb: r'm', r"m",
         # r\m and r\\m all reach the gate as rm.
         "r'm' /etc/rxy_w7c01_pwned.txt",
@@ -384,6 +390,9 @@ def test_w7_c01_integration() -> None:
     # permitted root), but from D:\\ the same command escapes every root.
     assert find_bash_disallowed_write_paths(
         "Set-Content ..\\rxy_w7c01_out.txt x", config, workdir="D:\\"
+    )
+    assert find_bash_disallowed_write_paths(
+        "Set-Content -Path:..\\rxy_w7c01_out.txt x", config, workdir="D:\\"
     )
 
     unknown = asyncio.run(

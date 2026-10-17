@@ -1981,6 +1981,21 @@ def find_bash_disallowed_write_paths(
             # (targets can arrive via stdin/xargs) — fail closed.
             blocked.append(verb)
             continue
+        # ``-Path:X:\``/``--flag=X:\``/``-flag=/x`` — option-attached
+        # targets: the path-token scan truncates at the ``:`` so the
+        # drive path never becomes a token. Check the flag value
+        # directly, but only when it carries a real path head —
+        # ``-std=c++17``/``-f %E`` stay data.
+        for fvm in re.finditer(
+            r"(?i)-{1,2}[A-Za-z][\w-]*[:=]([^\s'\"|;>&=]*)", seg
+        ):
+            fval = fvm.group(1)
+            if (
+                re.match(r"[A-Za-z]:[\\/]", fval)
+                or fval.startswith(("/", "\\", "~", "$"))
+                or _DOTDOT_SEGMENT_RE.search(fval)
+            ):
+                _check(fval)
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
             if _cmd_flag(raw):
