@@ -2066,32 +2066,67 @@ def find_bash_disallowed_write_paths(
             )
             program = ""
             sargs: list[str] = []
+            sworkdir: str | None = None
+            sredir: list[str] = []
             si = 0
             while si < len(stoks):
                 stok = stoks[si]
                 slow = stok.lower()
                 glued = re.match(
-                    r"(?i)^-(filepath|argumentlist)[:=](.*)$", stok
+                    r"(?i)^-(filepath|argumentlist|workingdirectory|wd|"
+                    r"redirectstandardoutput|redirectstandarderror|"
+                    r"redirectstandardinput)[:=](.*)$",
+                    stok,
                 )
                 if glued:
-                    if glued.group(1).lower() == "filepath":
-                        program = glued.group(2)
-                    elif glued.group(2):
-                        sargs.append(glued.group(2))
+                    gname = glued.group(1).lower()
+                    gval = glued.group(2)
+                    if gname == "filepath":
+                        program = gval
+                    elif gname == "argumentlist":
+                        if gval:
+                            sargs.append(gval)
+                    elif gname in ("workingdirectory", "wd"):
+                        sworkdir = gval
+                    elif gname == "redirectstandardinput":
+                        # Reads the file, does not write it.
+                        pass
+                    elif gval:
+                        sredir.append(gval)
                     si += 1
                     continue
-                if slow in ("-filepath", "-argumentlist"):
-                    if si + 1 < len(stoks):
-                        if slow == "-filepath":
-                            program = stoks[si + 1]
-                        else:
-                            sargs.append(stoks[si + 1])
+                if slow in (
+                    "-filepath",
+                    "-argumentlist",
+                    "-workingdirectory",
+                    "-wd",
+                    "-redirectstandardoutput",
+                    "-redirectstandarderror",
+                    "-redirectstandardinput",
+                ):
+                    sval = stoks[si + 1] if si + 1 < len(stoks) else None
+                    if slow == "-filepath":
+                        if sval is not None:
+                            program = sval
+                    elif slow == "-argumentlist":
+                        if sval is not None:
+                            sargs.append(sval)
+                    elif slow in ("-workingdirectory", "-wd"):
+                        sworkdir = sval
+                    elif slow == "-redirectstandardinput":
+                        pass
+                    elif sval is not None:
+                        sredir.append(sval)
+                    si += 2 if sval is not None else 1
+                    continue
+                if stok.startswith(("-", "/")):
+                    if slow == "/d" and si + 1 < len(stoks):
+                        # cmd ``start /d DIR`` sets the child cwd just
+                        # like ``-WorkingDirectory``.
+                        sworkdir = stoks[si + 1]
                         si += 2
                     else:
                         si += 1
-                    continue
-                if stok.startswith(("-", "/")):
-                    si += 2 if slow == "/d" and si + 1 < len(stoks) else 1
                     continue
                 if (
                     not program
@@ -2120,12 +2155,36 @@ def find_bash_disallowed_write_paths(
                     return bool(re.search(r"[$`]", tok))
                 return bool(re.search(r"[$`()]", tok))
 
-            if _stok_dyn(program) or any(
-                _stok_dyn(a) for a in sargs
+            if (
+                _stok_dyn(program)
+                or any(_stok_dyn(a) for a in sargs)
+                or (sworkdir is not None and _stok_dyn(sworkdir))
+                or any(_stok_dyn(t) for t in sredir)
             ):
                 blocked.append("<opaque:start-process>")
                 continue
             prog_text = program.strip("'\"")
+            # ``-WorkingDirectory``/``start /d`` relocate the child's
+            # cwd: the payload's relative writes resolve against it,
+            # not the parent's ``eff_dir``.
+            child_dir: str | None = None
+            if sworkdir is not None:
+                child_dir = _bash_candidate(
+                    sworkdir.strip("'\""), eff_dir
+                )
+                if child_dir is None:
+                    blocked.append("<opaque:start-process>")
+                    continue
+                ev_dir = child_dir
+            # ``-RedirectStandardOutput``/``-RedirectStandardError``
+            # write in the parent location; ``-RedirectStandardInput``
+            # only reads.
+            if sredir:
+                redir_hit = True
+                mutating = True
+                ev_mut = True
+                for rtarget in sredir:
+                    _check(rtarget.strip("'\""))
             # Raw tokens keep their quoting so the rescan can pair up
             # ``-ArgumentList '/c','cmd …'`` array elements — stripping
             # here would unbalance the quotes and hide the payload.
@@ -2136,7 +2195,7 @@ def find_bash_disallowed_write_paths(
             for hit in find_bash_disallowed_write_paths(
                 (prog_text + " " + args_text).strip(),
                 config,
-                workdir=eff_dir,
+                workdir=child_dir if child_dir is not None else eff_dir,
                 _depth=_depth + 1,
                 _piped=piped,
                 _mut_out=smut,

@@ -870,6 +870,51 @@ def test_w7_c01_integration() -> None:
             abs_bad, config, workdir=workdir
         ), abs_bad
 
+    # Audit round 24
+    # ``Start-Process -WorkingDirectory`` (and cmd ``start /d``) relocate
+    # the child's cwd — the payload's relative writes resolve against
+    # the child dir, not the parent's, or an in-whitelist write is
+    # falsely refused.
+    assert not find_bash_disallowed_write_paths(
+        'Start-Process -FilePath powershell.exe -WorkingDirectory "'
+        + workdir
+        + "\\sub\" -ArgumentList '-Command Set-Content ..\\inside.txt x'",
+        config,
+        workdir=workdir,
+    )
+    for child_ok in (
+        'Start-Process -FilePath cmd.exe -WorkingDirectory "'
+        + workdir
+        + "\" -ArgumentList '/c echo x > ok.txt'",
+        'start /d "' + workdir + '" cmd /c "echo x > ok.txt"',
+    ):
+        assert not find_bash_disallowed_write_paths(
+            child_ok, config, workdir=workdir
+        ), child_ok
+    for child_bad in (
+        "Start-Process -FilePath cmd.exe -WorkingDirectory "
+        "C:\\Windows\\Temp -ArgumentList '/c echo x > child.txt'",
+        "Start-Process -RedirectStandardOutput C:\\Windows\\Temp\\w7.log"
+        " -FilePath cmd.exe -ArgumentList '/c echo hi' -Wait",
+        "Start-Process -FilePath notepad.exe -RedirectStandardError"
+        " C:\\Windows\\Temp\\e.log",
+    ):
+        assert find_bash_disallowed_write_paths(
+            child_bad, config, workdir=workdir
+        ), child_bad
+    assert "<opaque:start-process>" in find_bash_disallowed_write_paths(
+        "Start-Process -WorkingDirectory $d -FilePath cmd.exe",
+        config,
+        workdir=workdir,
+    )
+    # ``-RedirectStandardInput`` only reads the file.
+    assert not find_bash_disallowed_write_paths(
+        "Start-Process notepad.exe -RedirectStandardInput"
+        " C:\\Windows\\Temp\\in.txt",
+        config,
+        workdir=workdir,
+    )
+
     unknown = asyncio.run(
         orchestrator.execute_tool(
             "mcp_elevate_privileges",

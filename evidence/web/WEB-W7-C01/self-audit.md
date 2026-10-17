@@ -23,9 +23,9 @@
 
 依据嵌套仓裁定 c9dc4d86：Full 是用户确认后在当前账户权限内解除沙箱，写路径闸在 Full 下只是尽力而为的防误写闸，不是安全边界；普通模式的写隔离由 OS 沙箱承担（Windows 写隔离另开卡）。下列写法由第 23 轮审计（w7c01-audit-23.json，审计对象 46701915）发现，按冻结语料口径记为已知限制，不在本卡修复：
 
-1. `Start-Process` 的 `-RedirectStandardOutput`/`-RedirectStandardError` 出现在 `-FilePath` 之前时，输出路径不被检查。
-2. `Start-Process -WorkingDirectory <dir>` 不改变子命令的工作目录判定，子命令里的相对写按父目录判定。
-3. PowerShell 命名位置栈（`Push-Location -StackName`/`Pop-Location -StackName`）按单一栈跟踪；`-StackName` 在 `-Path` 之前时会把栈名当成目标。
-4. `Set-Location HKCU:\…`、`Set-Location Env:` 等 provider 路径被当成工作区子目录，其后的 `New-Item`/`Set-Content` 写注册表或环境变量不被拒绝。
-5. 经 `cmd /c call x.bat`、`cmd /c start x.bat`、`Start-Process -FilePath x.ps1` 启动的脚本文件，以及依赖 PATHEXT 的无扩展名脚本（`cmd /c evil`），不被当作脚本文件载荷。
-6. heredoc 正文中的注释（如 `# echo hi > /etc/x`）会被误判为重定向而拒绝（多拒，不是漏放）。
+1. PowerShell 命名位置栈（`Push-Location -StackName`/`Pop-Location -StackName`）按单一栈跟踪；`-StackName` 在 `-Path` 之前时会把栈名当成目标。
+2. `Set-Location HKCU:\…`、`Set-Location Env:` 等 provider 路径被当成工作区子目录，其后的 `New-Item`/`Set-Content` 写注册表或环境变量不被拒绝。
+3. 经 `cmd /c call x.bat`、`cmd /c start x.bat`、`Start-Process -FilePath x.ps1` 启动的脚本文件，以及依赖 PATHEXT 的无扩展名脚本（`cmd /c evil`），不被当作脚本文件载荷。
+4. heredoc 正文中的注释（如 `# echo hi > /etc/x`）会被误判为重定向而拒绝（多拒，不是漏放）。
+
+第 24 轮审计（w7c01-audit-24.json）指出 Start-Process -WorkingDirectory 导致的白名单内误拒，已修复；原第 1、2 条限制随同修复，已从清单移除。
