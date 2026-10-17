@@ -131,6 +131,14 @@ def test_w7_c01_integration() -> None:
         "Set-Content \\\\evil.example\\share\\rxy_w7c01_pwned.txt pwned",
         "Set-Content \\Windows\\rxy_w7c01_pwned.txt pwned",
         'Set-Content "$env:RXY_W7_变量\\rxy_w7c01_pwned.txt" pwned',
+        # Relative '..' traversal, directory changes, and multi-arg paths:
+        # a relative target that resolves outside the workspace is refused.
+        "Set-Content ..\\..\\..\\..\\..\\..\\rxy_w7c01_escape.txt pwned",
+        "Set-Location C:/Windows; Set-Content rxy_w7c01_pwned.txt pwned",
+        "cd /; mkdir rxy_w7c01_dir",
+        "cd C:\\Windows\\Temp; Set-Content rxy_w7c01_pwned.txt pwned",
+        "cp ./a.txt C:\\dst\\rxy_w7c01_pwned.txt",
+        "rm ok.txt also-ok.txt /etc/rxy_w7c01_pwned.txt",
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -175,6 +183,7 @@ def test_w7_c01_integration() -> None:
         "cp ./a.txt ./b.txt",
         "Set-Content dir\\sub\\file.txt x",
         "Set-Content a~b.txt x",
+        "cd subdir; Set-Content inside.txt x",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
 

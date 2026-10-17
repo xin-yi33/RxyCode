@@ -13,9 +13,11 @@ Suite (card-owned + adjacent regressions):
     (incl. non-ASCII names), unset env vars (fail-closed), ~ and $HOME bare
     roots, %VAR% and %VAR(x86)% cmd vars, Unix absolute roots (/opt, /run,
     bare /), UNC shares (\\host\share), current-drive roots (\Windows\x),
-    drive root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi, env-var
+    drive root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi,
+    cd/Set-Location/pushd directory-change targets, relative '..'
+    traversal (../../x, a\..\..\x), multi-argument path scanning, env-var
     expansion escape via .., and non-blocking of /dev/null plus relative
-    mid-token separators (./x, dir\x, a~b, config/x).
+    mid-token separators (./x, dir\x, a~b, config/x) and in-workspace cd.
   - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
     sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
     tampered/expired session cookies, CSRF Origin on mutating routes,

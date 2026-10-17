@@ -582,19 +582,23 @@ _ABS_TARGET = (
 )
 # Pseudo-device redirect targets that are not real filesystem writes.
 _REDIRECT_PSEUDO_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
-_BASH_MUTATING_TARGET_RE = re.compile(
+# A path-shaped relative token (word + separators). Interesting only when it
+# carries a '..' segment — plain filenames resolve inside the workspace.
+_REL_TARGET = r"(?<![\w~./\\])[^\s'\"|;>&:/\\]+(?:[\\/][^\s'\"|;>&:/\\]*)*"
+_BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
     r"(?:"
     r"\b(?:Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
     r"sc|ac|clc|ni|cpi|"
+    r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
     r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install)\b"
-    r"[^\n;|&]{0,200}?"
-    r"(?:-(?:Literal)?Path\s+|-(?:File)?Path\s+|)"
-    rf"['\"]?(?P<path>{_ABS_TARGET})"
-    r"|"
-    rf"(?:^|[^>])>{{1,2}}\s*['\"]?(?P<redir>{_ABS_TARGET})"
+    r"(?P<verbseg>[^\n;|&]{0,200})"
+    r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]{0,200})"
     r")"
 )
+_PATH_TOKEN_RE = re.compile(rf"(?ix)(?P<t>{_ABS_TARGET}|{_REL_TARGET})")
+_DOTDOT_SEGMENT_RE = re.compile(r"\.{2}(?:[\\/]|$)")
+_ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%])")
 
 
 def _expand_env_candidate(raw: str) -> str | None:
@@ -666,22 +670,28 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
     scrubbed = re.sub(r'@\"|\"@', " ", scrubbed)
     blocked: list[str] = []
     seen: set[str] = set()
-    for match in _BASH_MUTATING_TARGET_RE.finditer(scrubbed):
-        raw = match.group("path") or match.group("redir") or ""
-        raw = raw.rstrip("\\/") or raw[:1]
-        if re.match(r"^[A-Za-z]:$", raw):
-            raw += "\\"
-        if not raw or raw in seen:
-            continue
-        # Relative / cwd targets and pseudo-device redirects are fine.
-        if raw.startswith(".\\") or raw.startswith("./"):
-            continue
-        if raw in _REDIRECT_PSEUDO_TARGETS:
-            continue
-        seen.add(raw)
-        candidate = _expand_env_candidate(raw)
-        if candidate is None or not is_write_allowed(candidate, config):
-            blocked.append(raw)
+    for opener in _BASH_MUTATING_OPENER_RE.finditer(scrubbed):
+        seg = opener.group("verbseg") or opener.group("redirseg") or ""
+        for match in _PATH_TOKEN_RE.finditer(seg):
+            raw = match.group("t")
+            raw = raw.rstrip("\\/") or raw[:1]
+            if re.match(r"^[A-Za-z]:$", raw):
+                raw += "\\"
+            if not raw or raw in seen:
+                continue
+            # Pseudo-device redirects are not real writes.
+            if raw in _REDIRECT_PSEUDO_TARGETS:
+                continue
+            # Plain relative targets resolve inside the workspace; only
+            # '..' traversal or absolute/env forms need the whitelist check.
+            if not _ABS_TOKEN_START_RE.match(raw) and not _DOTDOT_SEGMENT_RE.search(
+                raw
+            ):
+                continue
+            seen.add(raw)
+            candidate = _expand_env_candidate(raw)
+            if candidate is None or not is_write_allowed(candidate, config):
+                blocked.append(raw)
     return blocked
 
 
