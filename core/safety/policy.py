@@ -621,7 +621,23 @@ _BASH_MUTATING_OPENER_RE = re.compile(
     rf"(?<![$:])\b(?P<verb>{_MUT_VERB_ALT})\b"
     r"(?P<verbseg>[^\n;|&]*)"
     r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]*)"
+    r"|(?P<dotnetcall>\[[\w.]+\]\s*::\s*\w+\s*\(|New-Object\b|"
+    r"\$[^\W\d]\w*(?:\.[^\W\d]\w*)+\s*\()"
+    r"(?P<dotnetseg>[^\n;|&]*)"
     r")"
+)
+# Method names that read or produce content, not a filesystem target —
+# ``.Write(data)`` writes into an already-verified handle, ``ReadAllText``
+# touches nothing for write purposes.
+_DOTNET_CONTENT_RE = re.compile(
+    r"(?i)^(?:Read\w*|Get\w*|Exists|OpenRead|OpenText|Combine|Join|"
+    r"Enumerate\w*|List\w*|Has\w*|Test\w*|Split|Parse|TryParse|ToString|"
+    r"ChangeExtension|Resolve\w*|Measure\w*|Write|WriteLine|print|printf)$"
+)
+# ``New-Object`` types that cannot write to the path they receive.
+_DOTNET_READER_TYPE_RE = re.compile(
+    r"(?i)\b(?:StreamReader|TextReader|StringReader|XmlReader|"
+    r"BinaryReader|FileInfo|DirectoryInfo|Path)\b"
 )
 # Word-level verb matcher for carrier commands (``xargs``/``find -exec``)
 # whose own segment swallows the nested verb before it can open a segment.
@@ -1224,12 +1240,74 @@ def find_bash_disallowed_write_paths(
             continue
         opener = m
         verb = (opener.group("verb") or "").lower()
-        seg = opener.group("verbseg") or opener.group("redirseg") or ""
+        seg = (
+            opener.group("verbseg")
+            or opener.group("redirseg")
+            or opener.group("dotnetseg")
+            or ""
+        )
         # A verb reached through ``|`` receives stdin from the previous
         # stage; shells/interpreters can then run an unseen payload.
         sep_pos = max(masked.rfind(c, 0, m.start()) for c in ";|&\n")
         piped = sep_pos >= 0 and masked[sep_pos] == "|"
         piped = piped or _piped
+        if opener.group("dotnetcall") is not None:
+            # ``[IO.File]::WriteAllText(path, x)`` / ``$x.Save(path)`` /
+            # ``New-Object IO.StreamWriter path`` write without any shell
+            # verb. Literals are masked out of ``seg`` — scan the raw
+            # span: a non-content call must take only statically
+            # verifiable arguments; every literal and unquoted token in
+            # its argument region is a candidate target.
+            call = (opener.group("dotnetcall") or "").strip()
+            draw = scrubbed[opener.start("dotnetcall") : opener.end()]
+            member = call.rstrip("(").rsplit(":", 1)[-1].rsplit(".", 1)[-1].strip()
+            if call.lower().startswith("new-object"):
+                if not _DOTNET_READER_TYPE_RE.search(draw):
+                    dmasked = re.sub(
+                        r'"[^"]*"|\'[^\']*\'', " ", draw[call.__len__() :]
+                    )
+                    for lit in re.finditer(
+                        r'"([^"]*)"|\'([^\']*)\'', draw[call.__len__() :]
+                    ):
+                        _check(lit.group(1) or lit.group(2) or "")
+                    for tok in _PATH_TOKEN_RE.finditer(dmasked):
+                        t = tok.group("t").rstrip("\\/") or tok.group("t")[:1]
+                        if not t.startswith(("-", "+")):
+                            _check(t)
+                continue
+            dirty = call if not _DOTNET_CONTENT_RE.match(member) else ""
+            if dirty:
+                for cm in re.finditer(r"(?<![\w$])(\w+)\s*\(", draw):
+                    if _DOTNET_CONTENT_RE.match(cm.group(1)):
+                        continue
+                    region = draw[cm.end() : cm.end() + 240]
+                    close = region.find(")")
+                    if close != -1:
+                        region = region[:close]
+                    work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
+                    work = re.sub(r'"[^"]*"|\'[^\']*\'', "", work)
+                    if _CODE_DYN_RE.search(work):
+                        blocked.append(member)
+                        break
+                    bad_arg = False
+                    for arg in work.split(","):
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            blocked.append(member)
+                            bad_arg = True
+                            break
+                    if bad_arg:
+                        break
+                    for lit in re.finditer(
+                        r'"([^"]*)"|\'([^\']*)\'', region
+                    ):
+                        _check(lit.group(1) or lit.group(2) or "")
+                    for tok in _PATH_TOKEN_RE.finditer(work):
+                        t = tok.group("t").rstrip("\\/") or tok.group("t")[:1]
+                        if not t.startswith(("-", "+")):
+                            _check(t)
+            continue
         if verb == "for":
             # ``for X in GLOB; do <verb>`` — the loop var binds to iterated
             # names, so a mutating body makes the ``in`` set the write
