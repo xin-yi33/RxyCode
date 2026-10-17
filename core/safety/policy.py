@@ -591,7 +591,8 @@ _MUT_VERB_ALT = (
     r"Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
     r"Export-Csv|Export-Clixml|Export-Alias|Set-Item|Clear-Item|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|"
     r"Rename-ItemProperty|Copy-ItemProperty|Move-ItemProperty|Clear-ItemProperty|Start-BitsTransfer|bitsadmin|"
-    r"sc|ac|clc|ni|cpi|mi|ci|"
+    r"sc|ac|clc|ni|cpi|mi|ci|hh|regsvr32|presentationhost|msiexec|"
+    r"installutil|regasm|regsvcs|mshta|rundll32|scrcons|forfiles|schtasks|control|"
     r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
     r"del|erase|rmdir|rd|rm|mv|cp|copy|xcopy|robocopy|move|rename|replace|mklink|tee|touch|mkdir|install|dd|truncate|"
     r"shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|zip|gzip|gunzip|bzip2|bunzip2|xz|unxz|compress|uncompress|"
@@ -830,7 +831,9 @@ _TWO_TARGET_APIS = frozenset(
 _CMD_VERBS = frozenset(
     "attrib icacls cacls cipher compact takeown fsutil reg format certutil "
     "expand makecab extrac32 diskpart sort bitsadmin esentutl for del erase "
-    "rd rmdir mkdir md copy move ren xcopy robocopy replace mklink".split()
+    "rd rmdir mkdir md copy move ren xcopy robocopy replace mklink forfiles "
+    "schtasks regsvr32 msiexec control installutil regasm regsvcs rundll32 "
+    "mshta".split()
 )
 _MAX_CARRIER_DEPTH = 3
 
@@ -1050,6 +1053,12 @@ def find_bash_disallowed_write_paths(
             # ``for`` — resolve to an in-workspace basename, the same
             # treatment pipeline ``$_`` gets.
             return _resolve_value("x" + raw[loopvar.end(1) :], depth + 1)
+        atvar = re.match(r"^@[A-Za-z]+", raw)
+        if atvar:
+            # ``forfiles`` iteration variables (``@path``/``@fname``/…)
+            # bind to each iterated name — a basename placeholder, like
+            # the ``for %i`` treatment.
+            return _resolve_value("x" + raw[atvar.end() :], depth + 1)
         pct = re.match(r"^%([^\W\d][\w()]*)%", raw)
         if pct:
             # ``%X%`` reads the process env — only an ``$env:X = v``
@@ -1210,6 +1219,13 @@ def find_bash_disallowed_write_paths(
             # ``>`` inside quotes is literal text (``echo 'a > /x'``), not
             # a shell redirect — only unquoted ``>`` opens a redir seg.
             if not (m.group("redirseg") is not None and _in_quotes(m.start()))
+            # ``schtasks /sc`` is a flag, not Set-Content — a whole-token
+            # verb glued to ``/`` is a cmd option, never an invocation.
+            and not (
+                m.group("verb") is not None
+                and m.start() > 0
+                and masked[m.start() - 1] == "/"
+            )
         ]
         + [
             (m.start(), "as", m)
