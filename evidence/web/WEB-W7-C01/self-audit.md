@@ -27,6 +27,7 @@
 2. `Set-Location HKCU:\…`、`Set-Location Env:` 等 provider 路径被当成工作区子目录，其后的 `New-Item`/`Set-Content` 写注册表或环境变量不被拒绝。
 3. 经 `cmd /c call x.bat`、`cmd /c start x.bat`、`Start-Process -FilePath x.ps1` 启动的脚本文件，以及依赖 PATHEXT 的无扩展名脚本（`cmd /c evil`），不被当作脚本文件载荷。
 4. 实现者自查发现：`node -e "require('fs').writeFileSync('C:/Windows/x','x')"` 这种不经变量绑定、直接在 `require('fs')` 上链式调用写 API 的形式不被识别（`const fs=require('fs'); fs.writeFileSync(...)` 和裸 `fs.writeFileSync(...)` 能拦下）。heredoc 喂给 node 的同类写法同样漏判。
+5. 多拒（偏安全方向）：heredoc 归属按包装命令之后的全部 token 判定、不解析各包装命令的选项表，因此当选项取值恰好是 shell、解释器或执行器名时会多拒，例如 `env -u xargs cat <<EOF`、`env -u bash cat <<EOF`（第 28 轮审计 w7c01-audit-28.json 指出）。这是第 27 轮为消除选项表缺项导致的漏放而有意做的取舍。
 
 第 24 轮审计（w7c01-audit-24.json）指出 Start-Process -WorkingDirectory 导致的白名单内误拒，已修复；原第 1、2 条限制随同修复，已从清单移除。
 
