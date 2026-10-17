@@ -703,10 +703,12 @@ _FIND_MUT_FLAGS_RE = re.compile(
 _COND_MUT_VERBS = {
     "sed": r"-i\b|--in-place\b",
     "perl": r"-\w*[ie]\b",
-    "curl": r"-[oOT]\b|--output\b|--upload-file\b",
-    "wget": r"-O\b|--output-document\b",
-    "sort": r"-o\b|--output\b|/o\b",
-    "gpg": r"-o\b|--output\b",
+    # ``-oFILE``/``-OFILE`` glue the target onto the flag — no word
+    # boundary after the letter.
+    "curl": r"-[oOT](?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output\b|--upload-file\b",
+    "wget": r"-O(?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output-document\b",
+    "sort": r"-o(?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output\b|/o\b",
+    "gpg": r"-o(?:\b|[A-Za-z]:|/|\\\\|~|\$)|--output\b",
     "openssl": r"-out\b",
     "awk": r"-i\b|inplace",
     "gawk": r"-i\b|inplace",
@@ -1985,17 +1987,30 @@ def find_bash_disallowed_write_paths(
         # targets: the path-token scan truncates at the ``:`` so the
         # drive path never becomes a token. Check the flag value
         # directly, but only when it carries a real path head —
-        # ``-std=c++17``/``-f %E`` stay data.
+        # ``-std=c++17``/``-f %E``/``PATH=...`` stay data.
         for fvm in re.finditer(
-            r"(?i)-{1,2}[A-Za-z][\w-]*[:=]([^\s'\"|;>&=]*)", seg
+            r"(?i)-{1,2}[A-Za-z][\w-]*[:=]([^\s'\"|;>&=]*)"
+            r"|(?<![\w-])(?:of|if|out|output|target|prefix|chdir|"
+            r"destination|filepath|backup)[:=]([^\s'\"|;>&=]*)",
+            seg,
         ):
-            fval = fvm.group(1)
+            fval = fvm.group(1) or fvm.group(2) or ""
             if (
                 re.match(r"[A-Za-z]:[\\/]", fval)
                 or fval.startswith(("/", "\\", "~", "$"))
                 or _DOTDOT_SEGMENT_RE.search(fval)
             ):
                 _check(fval)
+        if verb == "tar":
+            # ``tar cfX:\x a`` — the ``f`` flag glues the archive path
+            # with no separator at all.
+            tgl = re.search(
+                r"(?i)(?:^|\s)-?[ctx][a-z]*f([A-Za-z]:[\\/][^\s'\"|;>&]*"
+                r"|[\\/][^\s'\"|;>&]+)",
+                seg,
+            )
+            if tgl:
+                _check(tgl.group(1))
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
             if _cmd_flag(raw):
