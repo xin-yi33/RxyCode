@@ -1298,11 +1298,21 @@ def find_bash_disallowed_write_paths(
             # the real program that follows it (``cmd /c $x``).
             return m.group(0)
         base = re.split(r"[\\/]", tok.strip("'\""))[-1]
-        if "\\" in tok and not tok.startswith(("'", '"')):
+        raw_tok = tok.strip("'\"")
+        if (
+            "\\" in tok
+            and not tok.startswith(("'", '"'))
+            and not re.match(r"[A-Za-z]:\\", raw_tok)
+            and not raw_tok.startswith("\\\\")
+        ):
             # ``\x`` inside an unquoted word is a bash escape, not a
             # separator (``r\m`` runs ``rm``, ``c\d`` runs ``cd``) —
             # when the collapsed word reads as a mutating verb prefer
-            # it over the Windows-path basename reading.
+            # it over the Windows-path basename reading. A token that
+            # opens with a drive spec (``C:\``) or UNC prefix (``\\``)
+            # is a Windows path: the executor runs PowerShell/cmd, where
+            # ``\`` is not an escape, and bash never treats a drive
+            # letter as a root — keep its separators.
             collapsed = tok
             while True:
                 step = re.sub(r"\\([A-Za-z])", r"\1", collapsed)
@@ -1341,6 +1351,37 @@ def find_bash_disallowed_write_paths(
             if ch == "\\" and i + 1 < len(text) and text[i + 1].isalpha():
                 prev = text[i - 1] if i else ""
                 if prev == "\\" or prev.isalnum() or prev == "_":
+                    # A token that opens with a drive spec (``C:\``) or
+                    # UNC prefix (``\\``) is a Windows path — ``\`` is a
+                    # separator, not a bash escape. On Windows the
+                    # executor runs PowerShell/cmd where ``\`` never
+                    # escapes; a bash host never treats a drive letter
+                    # as a root, and bash's collapsed reading (``C:x``)
+                    # is a relative name in the cwd. Token boundaries:
+                    # whitespace, quotes, ``;|&\n``, ``(``, ``{``, ``=``
+                    # or ``:`` (``-Path:C:\x``, ``of=C:\x``).
+                    k = i - 1
+                    while k >= 0 and text[k] not in " \t'\";|&\n({=:":
+                        k -= 1
+                    # A ``:`` boundary can be the drive colon itself
+                    # (``D:\x``): when it follows a lone letter that sits
+                    # right after another boundary, step back over both
+                    # so ``seg`` still starts with the drive spec.
+                    if (
+                        k >= 0
+                        and text[k] == ":"
+                        and k - 1 >= 0
+                        and text[k - 1].isalpha()
+                        and (k - 2 < 0 or text[k - 2] in " \t'\";|&\n({=:")
+                    ):
+                        k -= 2
+                    seg = text[k + 1 : i + 1]
+                    if (
+                        re.match(r"^[A-Za-z]:\\", seg)
+                        or seg.startswith("\\\\")
+                    ):
+                        out.append(ch)
+                        continue
                     j = i - 1
                     while j >= 0 and (text[j].isalnum() or text[j] == "_"):
                         j -= 1

