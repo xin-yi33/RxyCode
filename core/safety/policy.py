@@ -776,6 +776,16 @@ def find_bash_disallowed_write_paths(
             # Command substitution executes regardless of position, and an
             # xargs/find ``{}`` placeholder resolves outside our tracking.
             return None
+        if depth >= 4:
+            return None
+        env = re.match(r"^\$\{?env:([^\W\d]\w*)\}?", raw, re.IGNORECASE)
+        if env:
+            name = env.group(1).lower()
+            if name in shell_vars:
+                # ``$env:X = "v"`` rebinds the process env inside the
+                # command — the tracked value wins over the inherited one.
+                return _resolve_value(shell_vars[name] + raw[env.end():], depth + 1)
+            return _bash_candidate(raw, eff_dir)
         var = _SHELL_VAR_RE.match(raw)
         if var:
             braced = var.group(1) is not None
@@ -783,12 +793,17 @@ def find_bash_disallowed_write_paths(
                 inner = var.group(1)
                 if not _BRACED_NAME_RE.fullmatch(inner):
                     return None
-                if inner[:4].lower() == "env:":
-                    return _bash_candidate(raw, eff_dir)
                 name = inner.lower()
             else:
                 name = var.group(2).lower()
             suffix = var.group(3) or ""
+            if name in shell_vars:
+                # Membership, not truthiness: ``X=""`` is still tracked,
+                # and an empty value must not fall back to the process env.
+                value = shell_vars[name]
+                if not value and not suffix:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
             if name in _PIPELINE_VARS:
                 # ``$_``/``$args`` alone are not paths. A property or index
                 # (``$_.FullName``/``$args[0]``) can hold an absolute path
@@ -833,12 +848,32 @@ def find_bash_disallowed_write_paths(
         if candidate is None or not is_write_allowed(candidate, config):
             blocked.append(raw)
 
+    # Quoted spans mask assignment detection: 'X=D:\evil' inside quotes is
+    # string content, not an assignment (an unclosed quote quotes to EOL).
+    quoted_spans: list[tuple[int, int]] = []
+    qpos = 0
+    while qpos < len(scrubbed):
+        if scrubbed[qpos] in "\"'":
+            quote = scrubbed[qpos]
+            close = scrubbed.find(quote, qpos + 1)
+            quoted_spans.append((qpos, close if close != -1 else len(scrubbed)))
+            qpos = close + 1 if close != -1 else len(scrubbed)
+        else:
+            qpos += 1
+
+    def _in_quotes(pos: int) -> bool:
+        return any(start <= pos < end for start, end in quoted_spans)
+
     events = sorted(
         [
             (m.start(), "op", m)
             for m in _BASH_MUTATING_OPENER_RE.finditer(scrubbed)
         ]
-        + [(m.start(), "as", m) for m in _ASSIGN_RE.finditer(scrubbed)]
+        + [
+            (m.start(), "as", m)
+            for m in _ASSIGN_RE.finditer(scrubbed)
+            if not _in_quotes(m.start())
+        ]
     )
     for _, kind, m in events:
         if kind == "as":

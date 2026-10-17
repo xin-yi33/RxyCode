@@ -181,6 +181,14 @@ def test_w7_c01_integration() -> None:
         "arr=(/etc/x); rm ${arr[0]}",
         "echo x > ${x:-/tmp/rxy_w7c01_pwned.txt}",
         'X=$\'\\x2fetc\\x2frxy_w7c01_pwned.txt\'; echo x > $X',
+        # Tracked assignments win over builtins/env; quoted text is not an
+        # assignment; empty tracked values do not fall back to the env.
+        '$PWD = "C:\\Windows"; Set-Content "$PWD\\rxy_w7c01_pwned.txt" x',
+        "Write-Output 'RXY_W7_QT=D:/agent-demo'; Set-Content $RXY_W7_QT\\rxy_w7c01_pwned.txt x",
+        '$env:OUT="C:\\Windows"; Set-Content $env:OUT\\rxy_w7c01_pwned.txt x',
+        'OUT=""; echo x > ${OUT}/tmp/rxy_w7c01_pwned.txt',
+        'OUT=""; echo x > $OUT',
+        '$args = "C:\\Windows"; Remove-Item $args',
     )
     for variant in variants:
         blocked = asyncio.run(
