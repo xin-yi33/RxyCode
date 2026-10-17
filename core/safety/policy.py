@@ -890,21 +890,6 @@ _HEREDOC_WRAPPERS = frozenset({
     "builtin", "exec", "sudo", "doas", "pkexec", "chrt", "ionice",
     "taskset",
 })
-# Wrapper options that consume the NEXT token as their value.
-_HEREDOC_WRAPPER_VALFLAGS = {
-    "env": {"-u", "-s"},
-    "nice": {"-n"},
-    "stdbuf": {"-i", "-o", "-e"},
-    "exec": {"-a"},
-    "sudo": {"-u", "-g", "-C", "-h", "-p", "-t", "-D", "-R"},
-    "doas": {"-u", "-C"},
-    "pkexec": {"-u", "--user"},
-    "chrt": {"-p", "-m"},
-    "ionice": {"-c", "-n", "-p"},
-    "taskset": {"-c", "-p"},
-}
-# Bare operands between a wrapper's flags and the command it launches.
-_HEREDOC_WRAPPER_OPERANDS = {"timeout": 1, "chrt": 1, "taskset": 1}
 # Heredoc owners that execute stdin but have no inline-code or carrier
 # rescan path — fail closed like the piped-stdin executors.
 _HEREDOC_EXEC_FAILCLOSED = (
@@ -1767,74 +1752,107 @@ def find_bash_disallowed_write_paths(
         pm = _CMD_SLOT_PREFIX_RE.match(head)
         wpos = hseg_start + (pm.end() if pm else 0)
         wt = list(re.finditer(r"[^\s]+", masked[wpos : hm.start()]))
-        wi = 0
-        owner = ""
-        last_wrapper = ""
-        while wi < len(wt):
-            wtok = wt[wi].group()
-            wbase = re.sub(
-                r"\.(?:exe|com|bat|cmd|ps1)$", "", wtok.strip("'\"").lower()
+
+        def _hdbase(tok: str) -> str:
+            return re.sub(
+                r"\.(?:exe|com|bat|cmd|ps1)$",
+                "",
+                tok.strip("'\"").lower(),
             ).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if re.match(r"^[A-Za-z_]\w*=", wtok.strip("'\"")):
-                wi += 1
-                continue
-            if wbase not in _HEREDOC_WRAPPERS:
-                owner = wbase
-                break
-            last_wrapper = wbase
+
+        # Skip leading ``NAME=val`` assignments and transparent
+        # wrappers — the heredoc belongs to the wrapped command.
+        wi = 0
+        while wi < len(wt) and (
+            re.match(r"^[A-Za-z_]\w*=", wt[wi].group().strip("'\""))
+            or _hdbase(wt[wi].group()) in _HEREDOC_WRAPPERS
+        ):
             wi += 1
-            vflags = _HEREDOC_WRAPPER_VALFLAGS.get(wbase, set())
-            operands = _HEREDOC_WRAPPER_OPERANDS.get(wbase, 0)
-            pending_val = False
-            while wi < len(wt):
-                atok = wt[wi].group()
-                acore = atok.strip("'\"")
-                if pending_val:
-                    pending_val = False
-                    wi += 1
+        owner = ""
+        hd_kind = ""
+        if wt and wi == 0:
+            # Not wrapper-led — the first word owns the heredoc.
+            owner = _hdbase(wt[0].group())
+            if owner in _HEREDOC_SHELLS:
+                hd_kind = "shell"
+            elif owner in _HEREDOC_INTERPS:
+                hd_kind = "interp"
+            elif owner in _HEREDOC_EXEC_FAILCLOSED:
+                blocked.append(owner)
+                continue
+            else:
+                owner = ""
+        elif wt:
+            # Wrapper-led: classify by ALL tokens up to ``<<`` so an
+            # unrecognized option can neither masquerade as the owner
+            # nor swallow the real command. ``env cat bash`` resolves
+            # as shell — conservative, per the audit ruling.
+            first_wrap = ""
+            for j in range(wi):
+                if _hdbase(wt[j].group()) in _HEREDOC_WRAPPERS:
+                    first_wrap = _hdbase(wt[j].group())
+                    break
+            if not first_wrap:
+                # Pure ``NAME=val`` prefix with no command — the body
+                # is unconsumed data.
+                continue
+            for j in range(len(wt)):
+                if _hdbase(wt[j].group()) in _HEREDOC_SHELLS:
+                    hd_kind, owner = "shell", _hdbase(wt[j].group())
+                    break
+            if not owner:
+                for j in range(len(wt)):
+                    if _hdbase(wt[j].group()) in _HEREDOC_INTERPS:
+                        hd_kind, owner = "interp", _hdbase(wt[j].group())
+                        break
+            if not owner:
+                exec_tok = next(
+                    (
+                        _hdbase(wt[j].group())
+                        for j in range(len(wt))
+                        if _hdbase(wt[j].group())
+                        in _HEREDOC_EXEC_FAILCLOSED
+                    ),
+                    "",
+                )
+                if exec_tok:
+                    blocked.append(exec_tok)
                     continue
-                if re.match(r"^[A-Za-z_]\w*=", acore):
-                    wi += 1
+                # A "command-like" token after the wrappers makes the
+                # body plain stdin data. Flag tokens, ``NAME=val`` and
+                # pure values (``5``, ``1s``, ``0-2``, ``0x3``, ``10``)
+                # are not commands.
+                cmd_like = any(
+                    not t.startswith(("-", "+"))
+                    and not re.match(r"^[A-Za-z_]\w*=", t)
+                    and not re.match(
+                        r"(?i)^\d[\d.,:x\-]*[smhd]?$|^0x[0-9a-f]+$", t
+                    )
+                    for t in (
+                        wt[j].group().strip("'\"")
+                        for j in range(wi, len(wt))
+                    )
+                )
+                if not cmd_like:
+                    blocked.append(first_wrap)
                     continue
-                if acore.startswith(("-", "+")):
-                    wi += 1
-                    if acore.lower() in vflags:
-                        pending_val = True
-                    continue
-                if operands:
-                    operands -= 1
-                    wi += 1
-                    continue
-                break
-        if not owner:
-            blocked.append(last_wrapper or "env")
-            continue
-        if owner in _HEREDOC_SHELLS:
-            hd_kind = "shell"
-        elif owner in _HEREDOC_INTERPS:
-            hd_kind = "interp"
-        elif owner in _HEREDOC_EXEC_FAILCLOSED:
-            blocked.append(owner)
-            continue
+                continue
         else:
+            continue
+        if not owner:
             continue
         # The opener regex consumes a whole segment greedily — a wrapped
         # owner (``env bash <<EOF``) is swallowed inside the wrapper's
         # verbseg and never opens its own event. The dispatching event is
         # therefore the FIRST mutating-verb word in the segment.
         feed_pos = -1
-        for j in range(wi + 1):
-            jtok = wt[j].group()
-            jbase = re.sub(
-                r"\.(?:exe|com|bat|cmd|ps1)$",
-                "",
-                jtok.strip("'\"").lower(),
-            ).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        for j in range(len(wt)):
             if re.fullmatch(
                 r"(?i)(?:" + _MUT_VERB_ALT
                 + r")(?:\.(?:exe|com|bat|cmd|ps1))?",
-                jbase,
+                _hdbase(wt[j].group()),
             ):
+                jtok = wt[j].group()
                 feed_pos = wpos + wt[j].start() + (
                     len(jtok) - len(jtok.lstrip("'\""))
                 )

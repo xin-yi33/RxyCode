@@ -1010,6 +1010,35 @@ def test_w7_c01_integration() -> None:
             wrap_bad, config, workdir=workdir
         ), wrap_bad
 
+    # Audit round 27
+    # Wrapper-led heredocs classify by ALL tokens up to ``<<`` — an
+    # unknown wrapper option can neither masquerade as the owner nor
+    # swallow the real command.
+    for w27_bad in (
+        "env -C "
+        + workdir
+        + " bash <<EOF\necho x > C:/Windows/Temp/w7-audit.txt\nEOF",
+        "timeout -k 1 5 bash <<EOF\n"
+        "echo x > C:/Windows/Temp/w7-audit.txt\nEOF",
+        "timeout -s TERM 5 bash <<EOF\n"
+        "echo x > C:/Windows/Temp/w7-audit.txt\nEOF",
+        "ionice -c 2 -n 0 bash <<EOF\necho x > /etc/x\nEOF",
+        "sudo -E -H bash <<EOF\necho x > /etc/x\nEOF",
+        "taskset -c 0-2 <<EOF\nx\nEOF",
+    ):
+        assert find_bash_disallowed_write_paths(
+            w27_bad, config, workdir=workdir
+        ), w27_bad
+    for w27_ok in (
+        "taskset -c 0-2 cat <<EOF\nhello\nEOF",
+        "env -C " + workdir + " cat <<EOF\nhi\nEOF",
+        "timeout -k 1 5 cat <<EOF\nhi\nEOF",
+        "stdbuf -oL grep x <<EOF\nrm -rf /etc\nEOF",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            w27_ok, config, workdir=workdir
+        ), w27_ok
+
     unknown = asyncio.run(
         orchestrator.execute_tool(
             "mcp_elevate_privileges",
