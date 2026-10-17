@@ -591,7 +591,7 @@ _MUT_VERB_ALT = (
     r"Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
     r"Export-Csv|Export-Clixml|Export-Alias|Set-Item|Clear-Item|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|"
     r"Rename-ItemProperty|Copy-ItemProperty|Move-ItemProperty|Clear-ItemProperty|Start-BitsTransfer|bitsadmin|"
-    r"sc|ac|clc|ni|cpi|"
+    r"sc|ac|clc|ni|cpi|mi|ci|"
     r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
     r"del|erase|rmdir|rd|rm|mv|cp|copy|xcopy|robocopy|move|rename|replace|mklink|tee|touch|mkdir|install|dd|truncate|"
     r"shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|zip|gzip|gunzip|bzip2|bunzip2|xz|unxz|compress|uncompress|"
@@ -628,7 +628,7 @@ _BASH_MUTATING_OPENER_RE = re.compile(
 _MUT_VERB_WORDS_RE = re.compile(rf"(?i)\b(?:{_MUT_VERB_ALT})\b")
 _PATH_TOKEN_RE = re.compile(rf"(?ix)(?P<t>{_ABS_TARGET}|{_REL_TARGET})")
 _DOTDOT_SEGMENT_RE = re.compile(r"\.{2}(?:[\\/]|$)")
-_ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%])")
+_ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%!])")
 _ABS_FORM_RE = re.compile(r"(?i)^(?:[a-z]:[\\/]|[\\/])")
 # Directory-change verbs whose target becomes the effective cwd for the rest
 # of the command; pop-verbs restore a pushed location (fail closed on an
@@ -1046,6 +1046,23 @@ def find_bash_disallowed_write_paths(
                     return None
                 return _resolve_value(value + suffix, depth + 1)
             return _bash_candidate(raw, eff_dir)
+        bang = re.match(r"^!([^\W\d]\w*)!", raw)
+        if bang:
+            # ``!X!`` is cmd delayed expansion — same env/tracked lookup
+            # as ``%X%``; an unverifiable value fails closed below.
+            name = "env:" + bang.group(1).lower()
+            if name in shell_vars:
+                value = shell_vars[name]
+                suffix = raw[bang.end() :]
+                if not value and not suffix:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
+            env_hit = os.environ.get(bang.group(1)) or os.environ.get(
+                bang.group(1).upper()
+            )
+            if env_hit is None:
+                return None
+            return _resolve_value(env_hit + raw[bang.end() :], depth + 1)
         var = _SHELL_VAR_RE.match(raw)
         if var:
             braced = var.group(1) is not None
