@@ -601,7 +601,7 @@ _MUT_VERB_ALT = (
     r"wipefs|hdparm|pvcreate|vgcreate|lvcreate|cryptsetup|losetup|"
     r"rsync|scp|rcp|curl|wget|powershell|pwsh|cmd|bash|sh|zsh|dash|env|sudo|doas|su|nohup|nice|time|timeout|parallel|"
     r"iex|Invoke-Expression|Invoke-Command|eval|source|watch|ssh|pkexec|runas|python|python3|py|node|deno|bun|php|ruby|"
-    r"osascript|rscript|julia|certutil|expand|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|at|batch|"
+    r"osascript|rscript|julia|certutil|expand|esentutl|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|at|batch|for|"
     r"Invoke-WebRequest|Invoke-RestMethod|"
     # Binaries that write output artifacts (compilers, media/document
     # tools, VCS, cloud/infra, archivers of last resort).
@@ -688,7 +688,7 @@ _COND_MUT_VERBS = {
     "perl": r"-\w*[ie]\b",
     "curl": r"-[oOT]\b|--output\b|--upload-file\b",
     "wget": r"-O\b|--output-document\b",
-    "sort": r"-o\b|--output\b",
+    "sort": r"-o\b|--output\b|/o\b",
     "gpg": r"-o\b|--output\b",
     "openssl": r"-out\b",
     "awk": r"-i\b|inplace",
@@ -807,6 +807,14 @@ _TWO_TARGET_APIS = frozenset(
         "replace", "symlink", "link", "hardlink", "cpsync", "copyfilesync",
         "renamesync", "renames", "extract", "unpack_archive", "urlretrieve",
     }
+)
+# cmd.exe verbs where ``/x`` tokens are options rather than POSIX paths.
+# A ``/flag:value`` or ``/flag=value`` can still carry a target inside the
+# flag itself, so the value is checked; the bare flag is skipped.
+_CMD_VERBS = frozenset(
+    "attrib icacls cacls cipher compact takeown fsutil reg format certutil "
+    "expand makecab extrac32 diskpart sort bitsadmin esentutl for del erase "
+    "rd rmdir mkdir md copy move ren xcopy robocopy replace mklink".split()
 )
 _MAX_CARRIER_DEPTH = 3
 
@@ -1020,6 +1028,12 @@ def find_bash_disallowed_write_paths(
                 # A bare ``X=v`` does not bind this namespace.
                 return _resolve_value(shell_vars[name] + raw[env.end():], depth + 1)
             return _bash_candidate(raw, eff_dir)
+        loopvar = re.match(r"^%+([A-Za-z])($|[\\/.\[])", raw)
+        if loopvar:
+            # ``%i``/``%%i`` are cmd for-loop vars bound by the enclosing
+            # ``for`` — resolve to an in-workspace basename, the same
+            # treatment pipeline ``$_`` gets.
+            return _resolve_value("x" + raw[loopvar.end(1) :], depth + 1)
         pct = re.match(r"^%([^\W\d][\w()]*)%", raw)
         if pct:
             # ``%X%`` reads the process env — only an ``$env:X = v``
@@ -1199,6 +1213,39 @@ def find_bash_disallowed_write_paths(
         sep_pos = max(masked.rfind(c, 0, m.start()) for c in ";|&\n")
         piped = sep_pos >= 0 and masked[sep_pos] == "|"
         piped = piped or _piped
+        if verb == "for":
+            # ``for X in GLOB; do <verb>`` — the loop var binds to iterated
+            # names, so a mutating body makes the ``in`` set the write
+            # source. Register the var as a basename placeholder and check
+            # the glob; ``/f`` iterates command output (unverifiable) and
+            # ``/r <dir>`` iterates the rooted tree.
+            var_m = re.match(r"\s*[%$]?([^\W\d]\w*)\s+in\b", seg)
+            if var_m:
+                shell_vars[var_m.group(1).lower()] = "x"
+            # The mutating body lives past ``do``/``;`` — check the
+            # segment plus whatever follows this verb's span.
+            if _MUT_VERB_WORDS_RE.search(seg + masked[opener.end() :]):
+                flag = re.match(r"\s*/([A-Za-z])", seg)
+                if flag and flag.group(1).lower() == "f":
+                    blocked.append(verb)
+                    continue
+                if flag and flag.group(1).lower() == "r":
+                    root = re.search(
+                        r"(?i)/r(?:oot)?\s+(?:root=)?([^\s'\"()]+)", seg
+                    )
+                    if root is None:
+                        blocked.append(verb)
+                        continue
+                    _check(root.group(1))
+                in_m = re.search(r"(?i)\bin\s+\(?([^\s;'\"()]+)", seg)
+                if in_m is None:
+                    blocked.append(verb)
+                    continue
+                _check(in_m.group(1))
+            # ``do del C:\x`` sits inside this verb's segment — rescan so
+            # the body verb still gets its own check.
+            _rescan_tail(seg)
+            continue
         if verb in _POP_VERBS:
             _rescan_tail(seg)
             if dir_stack:
@@ -1372,8 +1419,21 @@ def find_bash_disallowed_write_paths(
                 ):
                     _check(gt.group(1))
             continue
+        def _cmd_flag(tok: str, _verb: str = verb) -> bool:
+            # ``/x`` is a cmd option only as a whole token — ``/opt/x`` or
+            # ``/etc/x`` carry a second separator and stay POSIX targets.
+            if _verb not in _CMD_VERBS or not tok.startswith("/"):
+                return False
+            if _verb == "sort":
+                # Dual-dialect: only ``/o`` is a flag on sort.
+                return tok.lower() == "/o"
+            return bool(re.match(r"^/[A-Za-z][A-Za-z0-9+]*([:=].+)?$", tok))
+
         nonflag = [
-            match for match in tokens if not match.group("t").startswith(("-", "+"))
+            match
+            for match in tokens
+            if not match.group("t").startswith(("-", "+"))
+            and not _cmd_flag(match.group("t"))
         ]
         if not nonflag:
             # A mutating verb with no verifiable target still mutates
@@ -1382,6 +1442,19 @@ def find_bash_disallowed_write_paths(
             continue
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
+            if _cmd_flag(raw):
+                # ``/x`` is a cmd option — a ``/flag:value`` form can
+                # still smuggle the target inside the flag itself.
+                flagval = re.match(r"^/[A-Za-z][A-Za-z0-9+]*[:=](.+)$", raw)
+                if flagval:
+                    _check(flagval.group(1))
+                continue
+            if verb in ("icacls", "cacls") and re.match(r"^[A-Za-z]:$", raw) and re.match(
+                r"[A-Za-z(]", seg[match.end() :].lstrip()[:1] or " "
+            ):
+                # ``u:F``/``u:(OI)(CI)F`` grant strings split into a
+                # bare ``u:`` token and a perm-letter tail — not a drive.
+                continue
             if re.match(r"^[A-Za-z]:$", raw):
                 raw += "\\"
             # Plain relative targets resolve inside the workspace; only
