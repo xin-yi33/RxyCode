@@ -21,7 +21,11 @@
   BLOCKED_PREREQUISITE/BLOCKED, not passed. No screenshots claimed. No mock
   tool events.
 - [x] `git diff --check` clean; LF endings on evidence.
-- [ ] Audit verdict: pending (this file updated after the gpt-6-luna review).
+- [x] Audit verdict: gpt-6-luna max (Codex session
+  01a140a7-2cc1-7f61-bdab-2af627f08e80) returned VERDICT: NO_REMAINING_PROBLEMS
+  for parent commit a6e8fa56f3bf3324f26ba3b5dbd6a24dbd943183 (w7c01-audit-30.json).
+  From round 24 on, the write-path gate was accepted against the frozen corpus,
+  per nested rulings c9dc4d86 / f011d1cc. Remaining gate limitations are listed below.
 
 ## 已知限制（写路径闸，非阻塞）
 
