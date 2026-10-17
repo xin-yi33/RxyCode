@@ -163,6 +163,24 @@ def test_w7_c01_integration() -> None:
         'Set-Content "$_.Name\\..\\..\\..\\..\\..\\rxy_w7c01_esc.txt" x',
         # A command-local CDPATH assignment can re-root a relative cd.
         "CDPATH=/; cd tmp; echo x > rxy_w7c01_pwned.txt",
+        # Carrier/write verbs and substitution targets: xargs feeds the
+        # verb's target list (unverifiable), find -exec/-delete mutate,
+        # sed -i / perl -pi edit in place, flag-joined paths (of=/dev/x)
+        # hide the target, and $(...)/backtick/`{}` substitutions execute.
+        "echo x | xargs rm",
+        "find / -delete",
+        "sed -i 's/a/b/' /etc/rxy_w7c01_pwned.txt",
+        "perl -pi -e 's/a/b/' /etc/rxy_w7c01_pwned.txt",
+        "dd if=a of=/etc/rxy_w7c01_pwned.txt",
+        "curl -o /etc/rxy_w7c01_pwned.txt http://a/",
+        "tar xf a.tar -C /etc",
+        "chmod 777 /etc/rxy_w7c01_pwned.txt",
+        "vim /etc/rxy_w7c01_pwned.txt",
+        "echo x > $(cat /tmp/rxy_w7c01_pwned.txt)",
+        "rm {}",
+        "arr=(/etc/x); rm ${arr[0]}",
+        "echo x > ${x:-/tmp/rxy_w7c01_pwned.txt}",
+        'X=$\'\\x2fetc\\x2frxy_w7c01_pwned.txt\'; echo x > $X',
     )
     for variant in variants:
         blocked = asyncio.run(
