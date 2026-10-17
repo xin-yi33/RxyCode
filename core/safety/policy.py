@@ -785,7 +785,13 @@ _CODE_DYN_RE = re.compile(
     r"\\x[0-9a-f]|\\u[0-9a-f]|getattr|setattr|delattr|__import__|importlib|"
     r"\beval\s*\(|\bexec\s*\(|\bcompile\s*\(|\bglobals|\blocals|\bvars\s*\(|"
     r"os\.path|os\.getcwd|os\.listdir|os\.walk|os\.scandir|os\.getlogin|"
-    r"\.resolve|\babspath|\brealpath|\bglob|listdir|scandir|\.upper|\.lower|"
+    r"\.resolve|\babspath|\brealpath|\bglob|listdir|scandir|"
+    r"(?:os|shutil|fs|File|Path|io)\.(?:remove|unlink|rmdir|rename|"
+    r"replace|mkdir|makedirs|chmod|chown|truncate|symlink|link|mkfifo|"
+    r"mknod|removexattr|setxattr|utime|rmtree|copy|copy2|copyfile|"
+    r"copytree|move|make_archive|unpack_archive|write|writeFileSync|"
+    r"appendFileSync|unlinkSync|renameSync|rmSync|mkdirSync|rm|mv|cp|"
+    r"delete|open|writeFile|appendFile|createWriteStream)(?!\s*\()|\.upper|\.lower|"
     r"\.replace|\.strip|\.title|\.casefold|\.split|\.translate|\.group|"
     r"\.sub\b|re\.search|re\.match|\bread\b|\.read|subprocess|check_output|"
     r"popen|urllib|urlopen|requests|json\.|pickle|yaml\.|uuid|random|"
@@ -825,6 +831,13 @@ _CODE_RECV_RE = re.compile(
     r"chmod|chown|open|delete|remove|move|copy|link_to|symlink_to|"
     r"hardlink_to|extract|extractall|utime|dump|truncate|"
     r"write|writelines|append)\s*\("
+)
+# Bare-name receivers whose method mutates the path the name holds —
+# ``p.unlink()`` where ``p=Path(x)``. Kept narrow: ``rename``/``copy``/
+# ``write`` receivers would false-positive on streams and objects.
+_CODE_NAMERECV_RE = re.compile(
+    r"(?i)(?<![\w.])([A-Za-z_]\w*)\s*\.\s*"
+    r"(?:unlink|touch|mkdir|rmdir|link_to|symlink_to|hardlink_to|utime)\s*\("
 )
 # Two-path calls whose destination is also a write target.
 _TWO_TARGET_APIS = frozenset(
@@ -1485,6 +1498,48 @@ def find_bash_disallowed_write_paths(
                 # as paths by the literal loop below.
                 dirty = False
                 seen_api = False
+
+                def _arg_dirty(work: str, check_args: list) -> bool:
+                    """Non-literal argument in a target position → dirty."""
+                    if _CODE_DYN_RE.search(work):
+                        return True
+                    for arg in check_args:
+                        aval = arg.strip()
+                        if (
+                            re.fullmatch(r"[A-Za-z_]\w*", aval)
+                            and aval in shell_vars
+                        ):
+                            # ``p=Path(env); Path(p).m()`` — substitute the
+                            # tracked value for the bare-name argument.
+                            aval = shell_vars[aval]
+                            if _CODE_DYN_RE.search(
+                                re.sub(r'"[^"]*"|\'[^\']*\'', "", aval)
+                            ):
+                                return True
+                            sub_lits = [
+                                t.strip("\"'")
+                                for t in re.findall(
+                                    r'"[^"]*"|\'[^\']*\'', aval
+                                )
+                            ]
+                            if sub_lits:
+                                for lit in sub_lits:
+                                    _check(lit)
+                                continue
+                            arg = aval
+                            if re.fullmatch(
+                                r"[^\s'\"|;>&(,)\[\]{}+*%/^~!-]+", arg
+                            ):
+                                # A plain tracked string value is a
+                                # literal target — check it as a path.
+                                _check(arg)
+                                continue
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            return True
+                    return False
+
                 for api in _CODE_TARGET_API_RE.finditer(seg):
                     seen_api = True
                     region = seg[api.end() : api.end() + 240]
@@ -1497,20 +1552,12 @@ def find_bash_disallowed_write_paths(
                     # as ``'ok.pdf'`` is data, not computed code.
                     work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
                     work = re.sub(r'"[^"]*"|\'[^\']*\'', "", work)
-                    if _CODE_DYN_RE.search(work):
-                        dirty = True
-                        break
                     args = work.split(",")
-                    check_args = (
-                        args[:2] if api.group(1).lower() in _TWO_TARGET_APIS else args[:1]
-                    )
-                    for arg in check_args:
-                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
-                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
-                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
-                            dirty = True
-                            break
-                    if dirty:
+                    if _arg_dirty(
+                        work,
+                        args[:2] if api.group(1).lower() in _TWO_TARGET_APIS else args[:1],
+                    ):
+                        dirty = True
                         break
                 # ``Path(args).method()`` receiver args and the args of a
                 # dispatched ``getattr(...)()/exec(...)()`` call are write
@@ -1524,23 +1571,38 @@ def find_bash_disallowed_write_paths(
                         r'"[^"]*"|\'[^\']*\'', rwork
                     )
                     rwork = re.sub(r'"[^"]*"|\'[^\']*\'', "", rwork)
-                    if _CODE_DYN_RE.search(rwork):
+                    if _arg_dirty(rwork, rwork.split(",")):
                         dirty = True
-                        break
-                    for arg in rwork.split(","):
-                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
-                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
-                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
-                            dirty = True
-                            break
-                    if dirty:
                         break
                     for lit in rwork_lits:
                         _check(lit.strip("\"'"))
-                for disp in re.finditer(r"\)\s*\(", seg):
+                for recv in _CODE_NAMERECV_RE.finditer(seg):
+                    # ``p.unlink()`` — a bare-name receiver that mutates
+                    # the path it holds; the name must resolve to a
+                    # statically checkable value.
+                    seen_api = True
+                    name = recv.group(1)
+                    value = shell_vars.get(name)
+                    if value is None:
+                        dirty = True
+                        break
+                    if _CODE_DYN_RE.search(
+                        re.sub(r'"[^"]*"|\'[^\']*\'', "", value)
+                    ):
+                        dirty = True
+                        break
+                    n_lits = [
+                        t.strip("\"'")
+                        for t in re.findall(r'"[^"]*"|\'[^\']*\'', value)
+                    ]
+                    if not n_lits:
+                        dirty = True
+                        break
+                    for lit in n_lits:
+                        _check(lit)
+                for disp in re.finditer(r"[\)\]]\s*\(", seg):
                     # ``getattr(os,'remove')(target)`` — the dispatched
                     # call's argument region is the target.
-                    seen_api = True
                     region = seg[disp.end() : disp.end() + 240]
                     close = region.find(")")
                     if close != -1:
@@ -1552,16 +1614,11 @@ def find_bash_disallowed_write_paths(
                         r'"[^"]*"|\'[^\']*\'', dwork
                     )
                     dwork = re.sub(r'"[^"]*"|\'[^\']*\'', "", dwork)
-                    if _CODE_DYN_RE.search(dwork):
+                    if not dwork.strip() and not dwork_lits:
+                        continue
+                    seen_api = True
+                    if _arg_dirty(dwork, dwork.split(",")):
                         dirty = True
-                        break
-                    for arg in dwork.split(","):
-                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
-                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
-                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
-                            dirty = True
-                            break
-                    if dirty:
                         break
                     for lit in dwork_lits:
                         _check(lit.strip("\"'"))
