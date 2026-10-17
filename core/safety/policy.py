@@ -610,7 +610,7 @@ _POP_VERBS = frozenset({"popd", "pop-location"})
 # Plain shell variable targets (``Set-Content $out x`` / ``> $OUT``) resolve
 # through assignments tracked earlier in the command; untracked names fail
 # closed. $HOME/$env:/${...} forms are matched by the earlier alternatives.
-_SHELL_VAR_RE = re.compile(r"^\$([^\W\d]\w*)$", re.IGNORECASE)
+_SHELL_VAR_RE = re.compile(r"^\$([^\W\d]\w*)([\\/].*)?$", re.IGNORECASE)
 # ``$x = "v"`` (PowerShell) and ``X=v`` (bash) assignments, tracked in order.
 _ASSIGN_RE = re.compile(
     r"(?is)"
@@ -743,14 +743,16 @@ def find_bash_disallowed_write_paths(
             name = var.group(1).lower()
             if name in _PIPELINE_VARS:
                 return raw
+            suffix = var.group(2) or ""
             if name in _BUILTIN_DIR_VARS:
-                if name == "pwd":
-                    return eff_dir
-                return os.path.expanduser("~") or None
+                base_dir = eff_dir if name == "pwd" else (
+                    os.path.expanduser("~") or None
+                )
+                return base_dir + suffix if base_dir else None
             value = shell_vars.get(name)
             if value is None or depth >= 4:
                 return None
-            return _resolve_value(value, depth + 1)
+            return _resolve_value(value + suffix, depth + 1)
         return _bash_candidate(raw, eff_dir)
 
     def _check(raw: str) -> None:
