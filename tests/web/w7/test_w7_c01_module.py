@@ -189,6 +189,15 @@ def test_w7_c01_integration() -> None:
         'OUT=""; echo x > ${OUT}/tmp/rxy_w7c01_pwned.txt',
         'OUT=""; echo x > $OUT',
         '$args = "C:\\Windows"; Remove-Item $args',
+        # Writers outside the verb table and argument-forged assignments.
+        f'Get-Process | Export-Csv -Path "{PAYLOAD_FILE}"',
+        f'Export-Clixml -Path "{PAYLOAD_FILE}"',
+        f'copy inside.txt "{PAYLOAD_FILE}"',
+        f'xcopy inside.txt "{PAYLOAD_FILE}"',
+        'robocopy . "C:\\Windows\\Temp" rxy_w7c01_pwned.txt',
+        'powershell -NoProfile -Command "[IO.File]::WriteAllText(\'C:\\\\Windows\\\\Temp\\\\rxy_w7c01_pwned.txt\',\'x\')"',
+        "Write-Output TEMP=inside.txt; Set-Content $env:TEMP\\rxy_w7c01_pwned.txt x",
+        'echo OUT=inside.txt; echo x > $OUT\\..\\..\\..\\rxy_w7c01_pwned.txt',
     )
     for variant in variants:
         blocked = asyncio.run(
@@ -245,6 +254,11 @@ def test_w7_c01_integration() -> None:
         'cmd /c python -c "import time; time.sleep(3)"',
         "cmd /c python mark.py",
         'iex "echo hi"',
+        # A NAME=value argument is data, not a binding — no target, no
+        # block. Inside-workspace writers stay allowed.
+        "Write-Output TEMP=inside.txt",
+        "echo X=1",
+        "Get-Process | Export-Csv -Path .\\ok.csv",
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from

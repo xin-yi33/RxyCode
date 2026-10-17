@@ -589,13 +589,20 @@ _REDIRECT_PSEUDO_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"}
 _REL_TARGET = r"(?<![\w~./\\])[^\s'\"|;>&:/\\]+(?:[\\/][^\s'\"|;>&:/\\]*)*"
 _MUT_VERB_ALT = (
     r"Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"Export-Csv|Export-Clixml|Export-Alias|Set-Item|Clear-Item|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|"
+    r"Rename-ItemProperty|Copy-ItemProperty|Move-ItemProperty|Clear-ItemProperty|Start-BitsTransfer|bitsadmin|"
     r"sc|ac|clc|ni|cpi|"
     r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
-    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install|dd|truncate|shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|"
-    r"chmod|chown|chgrp|chattr|setfacl|attrib|icacls|takeown|xargs|find|sed|perl|ed|ex|vi|vim|nvim|view|nano|emacs|"
+    r"del|erase|rmdir|rd|rm|mv|cp|copy|xcopy|robocopy|move|rename|replace|mklink|tee|touch|mkdir|install|dd|truncate|"
+    r"shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|zip|gzip|gunzip|bzip2|bunzip2|xz|unxz|compress|uncompress|"
+    r"split|csplit|sponge|makecab|extrac32|"
+    r"chmod|chown|chgrp|chattr|setfacl|attrib|icacls|cacls|cipher|compact|takeown|xargs|find|sed|perl|ed|ex|vi|vim|nvim|"
+    r"view|nano|emacs|fsutil|reg|crontab|visudo|vipw|vigr|format(?!-)|diskpart|mount|umount|mkfs|fdisk|parted|sgdisk|"
+    r"wipefs|hdparm|pvcreate|vgcreate|lvcreate|cryptsetup|losetup|"
     r"rsync|scp|rcp|curl|wget|powershell|pwsh|cmd|bash|sh|zsh|dash|env|sudo|doas|su|nohup|nice|time|timeout|parallel|"
     r"iex|Invoke-Expression|Invoke-Command|eval|source|watch|ssh|pkexec|runas|python|python3|py|node|deno|bun|php|ruby|"
-    r"osascript|rscript|julia|certutil|expand|cscript|wscript"
+    r"osascript|rscript|julia|certutil|expand|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|"
+    r"Invoke-WebRequest|Invoke-RestMethod"
 )
 _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
@@ -638,6 +645,14 @@ _ASSIGN_RE = re.compile(
     r"(?:(?P<shansi>\$'[^']*'|\$\"[^\"]*\")|\"(?P<shdq>[^\"]*)\"|"
     r"'(?P<shsq>[^']*)'|(?P<shval>[^\s;|&'\"]*))"
 )
+# A ``NAME=value`` token binds only when it leads the command segment —
+# alone, behind an env builtin, or after earlier assignments. The same
+# text as a later argument (``Write-Output TEMP=x``) is data, not a
+# binding, so it must not enter the tracked table.
+_ASSIGN_PREFIX_RE = re.compile(
+    r"(?i)\s*(?:(?:export|set|declare|local|readonly|typeset)\s+)?"
+    r"(?:[A-Za-z_]\w*\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s'\"|;>&]*)?\s*)*$"
+)
 # Shell-provided names that map to a knowable directory; everything else a
 # mutating target could be stays unverifiable.
 _BUILTIN_DIR_VARS = ("pwd", "home")
@@ -661,6 +676,17 @@ _COND_MUT_VERBS = {
     "perl": r"-\w*[ie]\b",
     "curl": r"-[oOT]\b|--output\b|--upload-file\b",
     "wget": r"-O\b|--output-document\b",
+    "sort": r"-o\b|--output\b",
+    "gpg": r"-o\b|--output\b",
+    "openssl": r"-out\b",
+    "awk": r"-i\b|inplace",
+    "gawk": r"-i\b|inplace",
+    "mawk": r"-i\b|inplace",
+    "nawk": r"-i\b|inplace",
+    "iwr": r"-OutFile\b|-o\b",
+    "irm": r"-OutFile\b|-o\b",
+    "invoke-webrequest": r"-OutFile\b|-o\b",
+    "invoke-restmethod": r"-OutFile\b|-o\b",
 }
 # Carrier verbs execute their arguments: the nested command is scanned
 # recursively (depth-limited). Encoded-payload flags cannot be decoded
@@ -899,6 +925,13 @@ def find_bash_disallowed_write_paths(
     def _in_quotes(pos: int) -> bool:
         return any(start <= pos < end for start, end in quoted_spans)
 
+    def _assign_prefix_ok(pos: int) -> bool:
+        # The text between the previous separator and the match must be a
+        # pure assignment chain (optionally led by an env builtin like
+        # ``export``/``set``) — a command word makes ``NAME=v`` an argument.
+        seg_start = max(masked.rfind(c, 0, pos) for c in ";|&\n") + 1
+        return bool(_ASSIGN_PREFIX_RE.match(masked[seg_start:pos]))
+
     # Separators inside quotes are literal text, not command boundaries —
     # mask them so 'os.remove("x")' inside one quoted arg stays in the
     # interpreter's segment.
@@ -917,7 +950,7 @@ def find_bash_disallowed_write_paths(
         + [
             (m.start(), "as", m)
             for m in _ASSIGN_RE.finditer(masked)
-            if not _in_quotes(m.start())
+            if not _in_quotes(m.start()) and _assign_prefix_ok(m.start())
         ]
     )
     for _, kind, m in events:
