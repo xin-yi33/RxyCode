@@ -11,8 +11,12 @@
   `Set-Content`/`Add-Content` positional-path bypass of the write-path gate.
   Fix is the minimal lookbehind; no refusal behavior loosened.
 - [x] RED captured honestly: `2 failed` (P1 bypass + my unpack bug).
-- [x] GREEN: 9/9; policy+cache regressions 168 pass; W4 grant tests 3 pass;
-  ruff clean.
+- [x] GREEN (current, see green.txt, audit round 27 code): card tests
+  w7 unit + module + security/test_threat_model 10 passed; safety files
+  (test_safety_policy/api/audit/gate) 200 passed; cache regressions
+  30 passed, 2 skipped (pre-existing); ruff clean. The first GREEN at
+  card commit 174f345c was 9/9 card tests, policy+cache regressions 168
+  pass, W4 grant tests 3 pass.
 - [x] Honest labels: Demo-compose identity audit and E2E-SECURITY-01 marked
   BLOCKED_PREREQUISITE/BLOCKED, not passed. No screenshots claimed. No mock
   tool events.
