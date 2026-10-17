@@ -239,6 +239,12 @@ def test_w7_c01_integration() -> None:
         '$f = "sub\\ok.txt"; Set-Content $f x',
         "Set-Content $PWD\\inside.txt x",
         "ls | %{ Set-Content $_.Name x }",
+        # Carrier wrapping safe inline code stays allowed: ``time.sleep``
+        # is a call expression, not the ``time`` carrier verb, and the
+        # outer quotes belong to the payload, not a quoted command.
+        'cmd /c python -c "import time; time.sleep(3)"',
+        "cmd /c python mark.py",
+        'iex "echo hi"',
     ):
         assert not find_bash_disallowed_write_paths(safe, config), safe
     # Relative targets resolve against the requested workdir: '..\\x' from

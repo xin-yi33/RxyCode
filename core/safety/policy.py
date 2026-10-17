@@ -593,12 +593,14 @@ _MUT_VERB_ALT = (
     r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
     r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install|dd|truncate|shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|"
     r"chmod|chown|chgrp|chattr|setfacl|attrib|icacls|takeown|xargs|find|sed|perl|ed|ex|vi|vim|nvim|view|nano|emacs|"
-    r"rsync|scp|rcp|curl|wget"
+    r"rsync|scp|rcp|curl|wget|powershell|pwsh|cmd|bash|sh|zsh|dash|env|sudo|doas|su|nohup|nice|time|timeout|parallel|"
+    r"iex|Invoke-Expression|Invoke-Command|eval|source|watch|ssh|pkexec|runas|python|python3|py|node|deno|bun|php|ruby|"
+    r"osascript|rscript|julia|certutil|expand|cscript|wscript"
 )
 _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    rf"\b(?P<verb>{_MUT_VERB_ALT})\b"
+    rf"(?<![$:])\b(?P<verb>{_MUT_VERB_ALT})\b"
     r"(?P<verbseg>[^\n;|&]*)"
     r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]*)"
     r")"
@@ -660,6 +662,39 @@ _COND_MUT_VERBS = {
     "curl": r"-[oOT]\b|--output\b|--upload-file\b",
     "wget": r"-O\b|--output-document\b",
 }
+# Carrier verbs execute their arguments: the nested command is scanned
+# recursively (depth-limited). Encoded-payload flags cannot be decoded
+# statically and fail closed.
+_CARRIER_VERBS = frozenset({
+    "xargs", "parallel", "powershell", "pwsh", "powershell.exe", "pwsh.exe",
+    "cmd", "cmd.exe", "bash", "sh", "zsh", "dash", "env", "sudo", "doas",
+    "su", "nohup", "nice", "time", "timeout", "watch", "ssh", "pkexec",
+    "runas", "iex", "invoke-expression", "invoke-command", "eval", "source",
+    "cscript", "wscript",
+})
+_ENCODED_CARRIERS = frozenset(
+    {"powershell", "pwsh", "powershell.exe", "pwsh.exe", "cmd", "cmd.exe"}
+)
+_ENC_FLAG_RE = re.compile(r"-(?:enc|ec|e|encodedcommand)\b", re.IGNORECASE)
+# Interpreters run opaque code strings with -c/-e; a write-ish API inside
+# makes the target unverifiable — fail closed.
+_INTERP_VERBS = frozenset(
+    {"python", "python3", "py", "node", "deno", "bun", "php", "ruby",
+     "osascript", "rscript", "julia"}
+)
+_INTERP_CODE_FLAG_RE = re.compile(
+    r"(?:-c|-e|-E|-r|--eval|--command|-e:)\b", re.IGNORECASE
+)
+_CODE_MUT_RE = re.compile(
+    r"\b(?:open\s*\(|write(?:file|text|all|_file|_text|_bytes|bytes|lines)?s?\s*[({]|"
+    r"remove|unlink|delete|rmdir|rmtree|makedirs|mkdir\s*\(|rename|replace|copyfile|"
+    r"copy2?|move|chmod|chown|truncate|mkfifo|mknod|symlink|link\s*\(|"
+    r"os\.system|system|spawn|process\.|\.rm\b|subprocess|popen|eval\s*\(|"
+    r"exec\s*\(|__import__|fs\.|do\s+shell\s+script|io\.write|"
+    r"file_put_contents|fwrite|set-content|remove-item|out-file|invoke-expression|`)",
+    re.IGNORECASE,
+)
+_MAX_CARRIER_DEPTH = 3
 
 
 def _expand_env_candidate(raw: str) -> str | None:
@@ -712,7 +747,7 @@ def _bash_candidate(raw: str, eff_dir: str | None) -> str | None:
 
 
 def find_bash_disallowed_write_paths(
-    cmd: str, config: dict, workdir: str | None = None
+    cmd: str, config: dict, workdir: str | None = None, _depth: int = 0
 ) -> list[str]:
     """Return mutating target paths outside the write whitelist.
 
@@ -864,14 +899,24 @@ def find_bash_disallowed_write_paths(
     def _in_quotes(pos: int) -> bool:
         return any(start <= pos < end for start, end in quoted_spans)
 
+    # Separators inside quotes are literal text, not command boundaries —
+    # mask them so 'os.remove("x")' inside one quoted arg stays in the
+    # interpreter's segment.
+    masked_chars = list(scrubbed)
+    for start, end in quoted_spans:
+        for pos in range(start, end):
+            if masked_chars[pos] in ";|&\n":
+                masked_chars[pos] = " "
+    masked = "".join(masked_chars)
+
     events = sorted(
         [
             (m.start(), "op", m)
-            for m in _BASH_MUTATING_OPENER_RE.finditer(scrubbed)
+            for m in _BASH_MUTATING_OPENER_RE.finditer(masked)
         ]
         + [
             (m.start(), "as", m)
-            for m in _ASSIGN_RE.finditer(scrubbed)
+            for m in _ASSIGN_RE.finditer(masked)
             if not _in_quotes(m.start())
         ]
     )
@@ -944,13 +989,65 @@ def find_bash_disallowed_write_paths(
             if _FIND_MUT_FLAGS_RE.search(seg):
                 blocked.append(verb)
             continue
-        if verb == "xargs":
-            # The piped-in target list is unverifiable, and this segment
-            # swallowed the nested verb — any mutating word in it mutates
-            # outside our path tracking.
-            if _MUT_VERB_WORDS_RE.search(seg):
+        if verb in _CARRIER_VERBS and not seg.startswith((".", "(")):
+            # ``time.sleep(3)`` is a call expression, not the ``time``
+            # carrier — a ``.``/``(`` suffix means no command tail.
+            if verb in _ENCODED_CARRIERS and _ENC_FLAG_RE.search(seg):
                 blocked.append(verb)
+                continue
+            tail = seg.strip()
+            # Unwrap only a fully-quoted payload (``iex 'rm x'``); blind
+            # stripping would unbalance quotes inside e.g. ``cmd /c``.
+            if len(tail) > 1 and tail[0] in "\"'" and tail[0] == tail[-1]:
+                tail = tail[1:-1]
+            resolved = tail
+            if _SHELL_VAR_RE.match(tail):
+                # ``iex $x``/``eval $x``: scan the resolved payload itself.
+                resolved = _resolve_value(tail)
+                if resolved is None:
+                    blocked.append(verb)
+                    continue
+            if resolved and _depth >= _MAX_CARRIER_DEPTH:
+                blocked.append(verb)
+                continue
+            sub = find_bash_disallowed_write_paths(
+                resolved, config, workdir=eff_dir, _depth=_depth + 1
+            )
+            if sub:
+                blocked.append(verb)
+                continue
+            # No nested verbs — the tail itself may be a script path;
+            # flag-looking tokens (``-c``/``/c``) are not paths.
+            if resolved:
+                for token in _PATH_TOKEN_RE.finditer(resolved):
+                    t = token.group("t").rstrip("\\/") or token.group("t")[:1]
+                    if t.startswith(("-", "+")) or re.match(
+                        r"^/[A-Za-z](?::|$)", t
+                    ):
+                        continue
+                    _check(t)
             continue
+        if verb in _INTERP_VERBS and _INTERP_CODE_FLAG_RE.search(seg):
+            lit_texts = [
+                (lit.group(1) or lit.group(2) or "").strip()
+                for lit in re.finditer(r'"([^"]*)"|\'([^\']*)\'', seg)
+            ]
+            if _CODE_MUT_RE.search(seg):
+                # A write-ish API whose call carries no quoted literal
+                # leaves the target dynamic (argv/env) — fail closed.
+                # Otherwise the generic token check below sees the paths.
+                if not any('"' in t or "'" in t for t in lit_texts):
+                    blocked.append(verb)
+                    continue
+            for text in lit_texts:
+                # A literal holding a nested command string recurses.
+                if text and _MUT_VERB_WORDS_RE.search(text) and (
+                    _depth < _MAX_CARRIER_DEPTH
+                ) and find_bash_disallowed_write_paths(
+                    text, config, workdir=eff_dir, _depth=_depth + 1
+                ):
+                    blocked.append(verb)
+            # Fall through: path tokens in the code get the generic check.
         cond = _COND_MUT_VERBS.get(verb)
         if cond and not re.search(cond, seg, re.IGNORECASE):
             continue
