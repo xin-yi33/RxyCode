@@ -9,11 +9,13 @@ Suite (card-owned + adjacent regressions):
     ("no tools registered in global test registry"), unchanged by this card.
   - tests/web/w7/test_w7_c01_module.py now covers: positional Set/Add-Content,
     powershell -c wrapper, executable here-strings (double+single quoted),
-    Clear-Content, $env:/$Env:/${env:}/${VAR} braced and plain env targets,
-    unset env vars (fail-closed), ~ and $HOME bare roots, %VAR% and
-    %VAR(x86)% cmd vars, Unix absolute roots (/opt, /run, bare /), drive
-    root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi, env-var
-    expansion escape via .., and /dev/null pseudo-device non-blocking.
+    Clear-Content, $env:/$Env:/${env:}/${VAR} braced and plain env targets
+    (incl. non-ASCII names), unset env vars (fail-closed), ~ and $HOME bare
+    roots, %VAR% and %VAR(x86)% cmd vars, Unix absolute roots (/opt, /run,
+    bare /), UNC shares (\\host\share), current-drive roots (\Windows\x),
+    drive root C:\, Rename-Item, mkdir, PS aliases sc/ac/clc/ni/cpi, env-var
+    expansion escape via .., and non-blocking of /dev/null plus relative
+    mid-token separators (./x, dir\x, a~b, config/x).
   - tests/web/security/test_threat_model.py covers cross-tenant 403/404 on
     sessions/SSE/artifacts/devices/approvals/preview/workspace/terminal,
     tampered/expired session cookies, CSRF Origin on mutating routes,

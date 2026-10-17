@@ -567,14 +567,18 @@ _ABS_PATH_RE = re.compile(
 # Paths that only appear inside -Value/-Content payloads are ignored; here-string
 # contents stay visible because they can be executed (iex, Invoke-Expression).
 _ABS_TARGET = (
+    r"(?<![\w~./\\])"
+    r"(?:"
     r"[A-Za-z]:[\\/][^\s'\"|;>&]*"
+    r"|\\{1,2}[^\s'\"|;>&]+"
     r"|/[^\s'\"|;>&]*"
-    r"|\$\{env:[A-Za-z_]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$env:[A-Za-z_]\w*(?:[\\/][^\s'\"|;>&]*)?"
-    r"|\$\{[A-Za-z_]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$\{env:[^\W\d]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$env:[^\W\d]\w*(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\$\{[^\W\d]\w*\}(?:[\\/][^\s'\"|;>&]*)?"
     r"|\$HOME(?:[\\/][^\s'\"|;>&]*)?"
-    r"|%[A-Za-z_][\w()]*%(?:[\\/][^\s'\"|;>&]*)?"
+    r"|%[^\W\d][\w()]*%(?:[\\/][^\s'\"|;>&]*)?"
     r"|~[^\s'\"|;>&]*"
+    r")"
 )
 # Pseudo-device redirect targets that are not real filesystem writes.
 _REDIRECT_PSEUDO_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
@@ -600,15 +604,15 @@ def _expand_env_candidate(raw: str) -> str | None:
     caller must then fail closed instead of letting the literal form count
     as a relative in-workspace path.
     """
-    match = re.match(r"^\$\{env:([A-Za-z_]\w*)\}", raw, re.IGNORECASE)
+    match = re.match(r"^\$\{env:([^\W\d]\w*)\}", raw, re.IGNORECASE)
     if not match:
-        match = re.match(r"^\$env:([A-Za-z_]\w*)", raw, re.IGNORECASE)
+        match = re.match(r"^\$env:([^\W\d]\w*)", raw, re.IGNORECASE)
     if match:
         value = os.environ.get(match.group(1)) or os.environ.get(
             match.group(1).upper(), ""
         )
         return value + raw[match.end() :] if value else None
-    match = re.match(r"^\$\{([A-Za-z_]\w*)\}", raw)
+    match = re.match(r"^\$\{([^\W\d]\w*)\}", raw)
     if match:
         name = match.group(1)
         if name.upper() == "HOME":
@@ -621,7 +625,7 @@ def _expand_env_candidate(raw: str) -> str | None:
         expanded = os.path.expanduser(raw)
         return expanded if expanded != raw else None
     if raw.startswith("%"):
-        match = re.match(r"^%([A-Za-z_][\w()]*)%", raw)
+        match = re.match(r"^%([^\W\d][\w()]*)%", raw)
         if match:
             value = os.environ.get(match.group(1)) or os.environ.get(
                 match.group(1).upper(), ""
