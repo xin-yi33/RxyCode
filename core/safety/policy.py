@@ -576,6 +576,7 @@ _ABS_TARGET = (
     r"|\$env:[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|\$\{[^}\s'\"|;>&]*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|\$HOME(?!\w)(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$\("
     r"|\$[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|%[^\W\d][\w()]*%(?:[\\/.\[][^\s'\"|;>&]*)?"
     r"|~[^\s'\"|;>&]*"
@@ -586,17 +587,25 @@ _REDIRECT_PSEUDO_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"}
 # A path-shaped relative token (word + separators). Interesting only when it
 # carries a '..' segment — plain filenames resolve inside the workspace.
 _REL_TARGET = r"(?<![\w~./\\])[^\s'\"|;>&:/\\]+(?:[\\/][^\s'\"|;>&:/\\]*)*"
+_MUT_VERB_ALT = (
+    r"Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"sc|ac|clc|ni|cpi|"
+    r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
+    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install|dd|truncate|shred|patch|tar|unzip|7z|cpio|unrar|mkfifo|mknod|ln|"
+    r"chmod|chown|chgrp|chattr|setfacl|attrib|icacls|takeown|xargs|find|sed|perl|ed|ex|vi|vim|nvim|view|nano|emacs|"
+    r"rsync|scp|rcp|curl|wget"
+)
 _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    r"\b(?P<verb>Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
-    r"sc|ac|clc|ni|cpi|"
-    r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
-    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|mkdir|install)\b"
+    rf"\b(?P<verb>{_MUT_VERB_ALT})\b"
     r"(?P<verbseg>[^\n;|&]*)"
     r"|(?:^|[^>])>{1,2}(?P<redirseg>[^\n;|&]*)"
     r")"
 )
+# Word-level verb matcher for carrier commands (``xargs``/``find -exec``)
+# whose own segment swallows the nested verb before it can open a segment.
+_MUT_VERB_WORDS_RE = re.compile(rf"(?i)\b(?:{_MUT_VERB_ALT})\b")
 _PATH_TOKEN_RE = re.compile(rf"(?ix)(?P<t>{_ABS_TARGET}|{_REL_TARGET})")
 _DOTDOT_SEGMENT_RE = re.compile(r"\.{2}(?:[\\/]|$)")
 _ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%])")
@@ -624,7 +633,8 @@ _ASSIGN_RE = re.compile(
     r"\$(?P<psenv>env:)?(?P<ps>[^\W\d]\w*)\s*=\s*"
     r"(?:\"(?P<psdq>[^\"]*)\"|'(?P<pssq>[^']*)'|(?P<psbare>[^\s;|&'\"]+))"
     r"|\b(?P<sh>[A-Za-z_]\w*)="
-    r"(?:\"(?P<shdq>[^\"]*)\"|'(?P<shsq>[^']*)'|(?P<shval>[^\s;|&'\"]*))"
+    r"(?:(?P<shansi>\$'[^']*'|\$\"[^\"]*\")|\"(?P<shdq>[^\"]*)\"|"
+    r"'(?P<shsq>[^']*)'|(?P<shval>[^\s;|&'\"]*))"
 )
 # Shell-provided names that map to a knowable directory; everything else a
 # mutating target could be stays unverifiable.
@@ -639,6 +649,17 @@ _PIPELINE_VARS = frozenset(
 _PIPELINE_SAFE_PROPS = re.compile(
     r"^\.(?:name|basename|extension)(?:[\\/]|$)", re.IGNORECASE
 )
+# Verbs that write only under specific flags: their path arguments are
+# search/read roots otherwise and must not be false-blocked.
+_FIND_MUT_FLAGS_RE = re.compile(
+    r"-(?:exec|execdir|delete|fls|fprint|fprintf)\b", re.IGNORECASE
+)
+_COND_MUT_VERBS = {
+    "sed": r"-i\b|--in-place\b",
+    "perl": r"-\w*[ie]\b",
+    "curl": r"-[oOT]\b|--output\b|--upload-file\b",
+    "wget": r"-O\b|--output-document\b",
+}
 
 
 def _expand_env_candidate(raw: str) -> str | None:
@@ -751,6 +772,10 @@ def find_bash_disallowed_write_paths(
 
     def _resolve_value(raw: str, depth: int = 0) -> str | None:
         """Resolve tracked ``$var`` names first, then env forms, vs eff_dir."""
+        if raw.startswith("$(") or "`" in raw or raw == "{}":
+            # Command substitution executes regardless of position, and an
+            # xargs/find ``{}`` placeholder resolves outside our tracking.
+            return None
         var = _SHELL_VAR_RE.match(raw)
         if var:
             braced = var.group(1) is not None
@@ -827,7 +852,10 @@ def find_bash_disallowed_write_paths(
                 or m.group("shval")
                 or ""
             )
-            if name:
+            if name and m.group("shansi") is None:
+                # ANSI-C ``$'...'``/locale ``$"..."`` values cannot be
+                # expanded statically — leave the name untracked so a
+                # later reference fails closed.
                 shell_vars[name.lower()] = value
             continue
         opener = m
@@ -877,15 +905,44 @@ def find_bash_disallowed_write_paths(
                     dir_stack.append(eff_dir)
                 eff_dir = os.path.normpath(resolved)
             continue
+        if verb == "find":
+            if _FIND_MUT_FLAGS_RE.search(seg):
+                blocked.append(verb)
+            continue
+        if verb == "xargs":
+            # The piped-in target list is unverifiable, and this segment
+            # swallowed the nested verb — any mutating word in it mutates
+            # outside our path tracking.
+            if _MUT_VERB_WORDS_RE.search(seg):
+                blocked.append(verb)
+            continue
+        cond = _COND_MUT_VERBS.get(verb)
+        if cond and not re.search(cond, seg, re.IGNORECASE):
+            continue
+        nonflag = [
+            match for match in tokens if not match.group("t").startswith(("-", "+"))
+        ]
+        if not nonflag:
+            # A mutating verb with no verifiable target still mutates
+            # (targets can arrive via stdin/xargs) — fail closed.
+            blocked.append(verb)
+            continue
         for match in tokens:
             raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
             if re.match(r"^[A-Za-z]:$", raw):
                 raw += "\\"
             # Plain relative targets resolve inside the workspace; only
             # '..' traversal or absolute/env forms need the whitelist check.
-            if not _ABS_TOKEN_START_RE.match(raw) and not _DOTDOT_SEGMENT_RE.search(
-                raw
+            if (
+                not _ABS_TOKEN_START_RE.match(raw)
+                and not _DOTDOT_SEGMENT_RE.search(raw)
+                and raw != "{}"
             ):
+                # Flag-joined paths (``of=/dev/sda``) hide the target in a
+                # value; check the right-hand side separately.
+                rhs = raw.split("=", 1)[1] if "=" in raw else ""
+                if _ABS_TOKEN_START_RE.match(rhs) or _DOTDOT_SEGMENT_RE.search(rhs):
+                    _check(rhs)
                 continue
             _check(raw)
     return blocked
