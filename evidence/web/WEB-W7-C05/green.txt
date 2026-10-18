@@ -1,0 +1,121 @@
+=== WEB-W7-C05 green evidence ===
+2026-10-18 (all runs on this checkout, Docker Engine 29.7.2 / Compose v5.5.1)
+
+--- python -m pytest tests/web/w7/test_w7_c05_unit.py tests/web/w7/test_w7_c05_module.py -q ---
+...                                                                      [100%]
+3 passed in 439.78s (0:07:19)
+
+The 3 tests are real, not skipped: docker CLI + engine were checked and present;
+each docker test spawned its own `rxyw7c05-*` / `rxyw7c05i-*` project with random
+secrets + free loopback ports, then `down -v`'d itself.
+
+--- contract leg: real `docker compose up -d` → full stack healthy ---
+Project rxyw7c05-xxxxxxxx, observed `docker compose ps -a` states:
+  postgres  Up (healthy)        postgres:16
+  redis     Up (healthy)        redis:7
+  minio     Up (healthy)        bitnamilegacy/minio:2025.7.23
+  reposync  Exited (0)          python:3.12-slim   (tar seed -> repo-src vol)
+  migrate   Exited (0)          python:3.12-slim   (alembic upgrade_head)
+  webbuild  Exited (0)          node:22-slim       (npm install + vite build -> web-dist)
+  api       Up (healthy)        python:3.12-slim   (uvicorn rxycode_server.main:create_app)
+  worker    Up (healthy)        python:3.12-slim   (python -m appserver, tty held)
+  gateway   Up (healthy)        caddy:2.11         (tls internal, localhost leaf)
+
+Healthchecks asserted by the test:
+  postgres: pg_isready inside container
+  api:      GET /api/v1/auth/csrf == 200 AND SELECT 1 on RXYCODE_WEB_DATABASE_URL
+  worker:   /proc/1/cmdline contains appserver AND SELECT 1 on the same DSN
+  gateway:  Caddy admin API 127.0.0.1:2019/config/ answers
+  minio:    `mc ready local`; redis: `redis-cli ping`
+
+Caddy startup log (real internal CA, not plaintext):
+  "certificate obtained successfully"  identifier=localhost  issuer=local
+  "certificate installed properly in linux trusts"
+  "serving initial configuration"
+
+--- HTTPS proxy proof (through gateway on https://localhost:<free-port>) ---
+  GET /api/v1/auth/csrf with default CA bundle -> SSLError/URLError (refused: internal CA untrusted)
+  GET /                        verify=False -> 200, html contains "<html",
+                                headers: strict-transport-security set,
+                                x-content-type-options=nosniff
+  GET /api/v1/auth/csrf        verify=False -> 200, body.csrf_token non-empty
+  GET /api/v1/me               verify=False -> 401 {"code":"UNAUTHORIZED"}  (app layer past boot, not 502/404)
+
+--- migrations on the COMPOSE postgres (published loopback port) ---
+  SELECT version_num FROM alembic_version -> "004_waiting_approval"  (real head)
+  to_regclass: runs, run_events, outbox, users, projects all present in public schema
+
+--- negative leg ---
+  base compose.yaml rendered via `docker compose config --no-interpolate` ->
+  validator in test file ACCEPTS it (no privileged, no host network, no
+  docker.sock, no literal secrets, ports bind 127.0.0.1 only).
+  Merged with bad.override.yaml (privileged:true + docker.sock mount +
+  network_mode:host + literal RXYCODE_WEB_SECRET) -> validator REFUSES.
+  Merged with literal-secret-only overlay -> REFUSED.
+  rxycode_server.main.serve(mode="local", host="0.0.0.0") ->
+  RuntimeError matching "loopback" (reject_as_public_web_gateway).
+  Same serve(mode="local", host="127.0.0.1") -> app builds, mode == "local".
+
+--- module/integration leg: 断电 restart loses nothing ---
+  Project rxyw7c05i-xxxxxxxx, stack green (same services as above).
+  Through the real spine against the compose Postgres:
+    _seed_tenant -> user/org/project/session rows
+    create_run   -> run row (status queued)
+    append_event -> "deploy.marker" seq recorded
+    claim(worker-a, ttl=5s) -> lease_epoch=N, status=leased
+  `docker compose restart postgres api` -> both bounce, health re-passes.
+  Read back after restart:
+    runs row: status=leased, lease_owner=worker-a, lease_epoch=N (unchanged)
+    replay(run): "run.created" + "deploy.marker" events identical, seq intact
+  Stale-lease proof: after 5s TTL expired,
+    claim(worker-b) -> lease_epoch=N+1 (epoch bumped = honest re-claim)
+    commit_terminal(worker-b, epoch=N+1, "succeeded") ->
+    runs row: status=succeeded, lease_owner=worker-b, lease_epoch=N+1
+  Gateway still serves after the bounce: GET /api/v1/auth/csrf -> 200.
+
+--- repo seeding note (why not a bind mount) ---
+This Docker Desktop does not mount Windows host paths (any -v/--mount of a
+host path hangs container start — verified). The checkout is streamed as a
+tar into the `repo-src` named volume via `docker compose exec -T reposync
+sh -c 'tar -xf - -C /repo'` plus a `.rxy-sync-done` marker file. Ordering is
+marker-file based (.rxy-sync-done -> .migrate-done in boot-state vol ->
+index.html in web-dist), NOT `depends_on: service_completed_successfully`,
+so `up -d` returns immediately and the seed happens after — no deadlock.
+On a Linux host the same stack could use bind mounts, but the tar path is
+what was exercised here and works everywhere; runbook documents it.
+
+--- cleanup ---
+`docker compose -p <proj> down -v` in each test's finally block.
+Post-run: `docker ps -a | grep rxyw7c05` -> none; `docker volume ls | grep
+rxyw7c05` -> none. Pre-existing rxy-w2c01-pg (55432), rxy-w2c07-minio (59000),
+rxy-w2c04-redis, rxy-w2c03-redis (56379) untouched throughout.
+
+--- other gates ---
+ruff check tests/web/w7/test_w7_c05_*.py        -> All checks passed!
+ruff format --check (same files)               -> 2 files already formatted
+docker compose -f infra/compose/compose.yaml config --quiet -> OK
+git diff --check (whitelist files)             -> clean
+   (pre-existing dirty files elsewhere have their own trailing-ws noise —
+    unrelated, untouched)
+apps/web: npm run typecheck                     -> pass (vue-tsc, no errors)
+apps/web: npm run build                         -> vite build OK in 2.64s
+   (dist/index.html 0.40kB; inside the stack the node:22-slim webbuild
+    service produced the same dist -> web-dist vol -> Caddy /srv/www)
+
+--- E2E-DEPLOY-01 honest status ---
+  compose-up leg:        DONE — real `docker compose up -d`, all services
+                         healthy, one-shot migrate/webbuild exited 0.
+  HTTPS leg:             DONE — real TLS listener (Caddy internal CA) on a
+                         loopback port; untrusted-by-default proven, then
+                         served when verification relaxed; HSTS + nosniff
+                         headers asserted.
+  run-completes leg:     BLOCKED — a cloud run that really EXECUTES needs a
+                         provider API key the agent can use inside the
+                         worker AND a session attached to the worker's stdio
+                         JSON-RPC. Neither provider credentials nor a real
+                         agent call exist in this environment, and the test
+                         suite does not fake them. Coverage to the durable-
+                         spine level is provided by test_w7_c05_integration
+                         (claim -> restart -> re-claim -> commit_terminal)
+                         plus W7-C01..C04; the remaining gap is labeled
+                         BLOCKED, not passed.

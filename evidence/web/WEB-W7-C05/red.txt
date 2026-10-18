@@ -1,0 +1,69 @@
+=== WEB-W7-C05 red evidence ===
+2026-10-18T14:32:39Z
+
+--- pytest tests/web/w7/test_w7_c05_unit.py tests/web/w7/test_w7_c05_module.py -q (pre-implementation) ---
+    def test_w7_c05_integration() -> None:
+        """Restart loses nothing; a stale lease is re-claimed by a fresh worker."""
+        if shutil.which("docker") is None:
+            pytest.skip("docker CLI is required for the real compose restart proof")
+        engine = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        if engine.returncode != 0:
+            pytest.skip("docker engine is not reachable")
+
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        from rxycode_server.events.store import append_event, replay
+        from rxycode_server.runs.service import create_run
+        from rxycode_worker.supervisor import claim, commit_terminal
+
+        project = f"rxyw7c05i-{uuid.uuid4().hex[:8]}"
+        pg_port = _free_port()
+        https_port = _free_port()
+        http_port = _free_port()
+        env = _stack_env(pg_port, https_port, http_port)
+        database_url = (
+            "postgresql+psycopg://rxycode:"
+            f"{env['RXYCODE_POSTGRES_PASSWORD']}@127.0.0.1:{pg_port}/rxycode"
+        )
+        https_base = f"https://127.0.0.1:{https_port}"
+
+        up = _compose(project, env, "up", "-d", "--remove-orphans")
+        try:
+            assert up.returncode == 0, f"compose up failed:\n{up.stdout}\n{up.stderr}"
+>           states = _wait_stack(project, env)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\web\w7\test_w7_c05_module.py:224:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+project = 'rxyw7c05i-11b44921'
+env = {'ACP_BACKEND': 'windsurf', 'ALLUSERSPROFILE': 'C:\\ProgramData', 'APPCODE_VM_OPTIONS': 'E:\\java资源\\javaweb\\...vmoptions', 'APPDATA': 'C:\\Users\\Administrator\\AppData\\Roaming', ...}
+
+    def _wait_stack(project: str, env: dict[str, str]) -> dict[str, dict[str, Any]]:
+        deadline = time.time() + STACK_TIMEOUT
+        missing_deadline = time.time() + SERVICE_MISSING_GRACE
+        last: dict[str, dict[str, Any]] = {}
+        while time.time() < deadline:
+            last = _service_states(project, env)
+            missing = [name for name in _WANTED if name not in last]
+            if missing and time.time() > missing_deadline:
+>               raise RuntimeError(f"services never appeared: {missing}; states={last}")
+E               RuntimeError: services never appeared: ['api', 'worker', 'gateway', 'migrate', 'webbuild']; states={'minio': {'Command': '"/opt/bitnami/minio/…"', 'CreatedAt': '2026-10-18 22:34:47 +0800 CST', 'Engine': '', 'ExitCode': 0, 'Health': 'healthy', 'ID': '36674b5b0d67', 'Image': 'minio/minio:latest', 'Labels': 'com.docker.compose.depends_on=,com.docker.compose.project=rxyw7c05i-11b44921,...,org.opencontainers.image.version=2025.7.23', 'LocalVolumes': '2', 'Name': 'rxyw7c05i-11b44921-minio-1', 'Ports': '9000-9001/tcp', 'Project': 'rxyw7c05i-11b44921', ...}} [truncated]
+
+tests\web\w7\test_w7_c05_module.py:134: RuntimeError
+=========================== short test summary info ===========================
+ERROR tests/web/w7/test_w7_c05_unit.py::test_w7_c05_contract - RuntimeError: ...
+FAILED tests/web/w7/test_w7_c05_module.py::test_w7_c05_integration - RuntimeE...
+1 failed, 1 passed, 1 error in 247.04s (0:04:07)
+
+(Pre-implementation compose.yaml only had dependency services — api, worker,
+gateway, migrate, webbuild never appeared. Negative test passed trivially
+because the validator already accepted the base file. This is the expected
+test-first red state.)

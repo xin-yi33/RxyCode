@@ -154,6 +154,8 @@ docs/*
 !docs/specs/**
 !docs/product/
 !docs/product/**
+!docs/deploy/
+!docs/deploy/**
 # docs/plans stays ignored, except the Web plan tracked by WEB-W0-C01.
 # Parent directories must be re-included before a nested exception can match.
 !docs/plans/
