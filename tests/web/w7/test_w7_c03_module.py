@@ -573,16 +573,22 @@ def test_w7_c03_usage_write_failure_keeps_cost(
 def test_w7_c03_oracle_crash_keeps_spend(
     postgres_url: str, tmp_path: Path, monkeypatch
 ) -> None:
-    """An oracle crash escaping run_web_task still carries the real spend.
+    """An oracle crash still carries the real spend AND finalizes the run.
 
     Fault injection (audit r3 finding): ``run_checks`` (the oracle) runs AFTER
-    the turn consumed real tokens; when it raises, the exception escapes
-    run_web_task into the run_matrix catch-all. The catch-all must recover the
+    the turn consumed real tokens; when it raises, the record must recover the
     measured spend — the token_stats delta AND what the runner recorded via
     the spend sink (ctx.outcome / runtime token counter) — count it toward the
-    cell budget, and attach the ``estimate/ledger_failed`` cost. Pre-fix the
-    catch-all wrote a fresh zero-token record, so two 1,000-token crashes
-    under a 500 cap were both "allowed" and the spend vanished.
+    cell budget, and attach an honest cost. Pre-fix the catch-all wrote a
+    fresh zero-token record, so two 1,000-token crashes under a 500 cap were
+    both "allowed" and the spend vanished.
+
+    Audit r4 finding: the same crash used to escape run_web_task entirely, so
+    the catch-all's fresh record also DROPPED run_id/session_id/trace — and
+    the claimed run stayed leased-but-unfinalized forever (no usage write, no
+    terminal commit). The crash is now contained: the record keeps the run
+    identity, ``record_terminal_usage`` persists the consumed spend, and the
+    Run row reaches a terminal status.
     """
     import evals.runner as eval_runner
     from rxycode_server.persistence.migrate import upgrade_head
@@ -634,12 +640,35 @@ def test_w7_c03_oracle_crash_keeps_spend(
     assert crashed["status"] == "error", crashed
     assert "injected oracle" in crashed["error"], crashed["error"]
     assert crashed["spine_errors"], crashed
+    # The oracle died before producing a verdict — oracle_status stays null
+    # rather than faking passed/failed.
+    assert crashed["oracle_status"] is None, crashed
     # The 1,000 journaled tokens survive the escape — never a 0-token record
     # for consumed spend.
     assert crashed["token_usage"]["total"] >= 1000, crashed["token_usage"]
     assert crashed["cost"] is not None, crashed
     assert Decimal(str(crashed["cost"]["amount"])) >= Decimal("0.002"), crashed["cost"]
-    assert "estimate" in str(crashed["cost"]["source"]), crashed["cost"]
+
+    # The record keeps the run identity and trace refs — the runner published
+    # them into the spend sink as soon as they were known.
+    assert crashed["run_id"], crashed
+    assert crashed["session_id"], crashed
+    assert crashed["trace"], crashed
+    assert crashed["trace"]["run_id"] == crashed["run_id"], crashed["trace"]
+    assert crashed["trace"].get("agent_done_tokens") == 1000, crashed["trace"]
+
+    # The orphaned lease is finalized against the real durable spine: a
+    # usage_records row for the 1,000 burned tokens and a TERMINAL run status
+    # — never left leased-but-unfinalized.
+    usage = _usage_row(postgres_url, crashed["run_id"])
+    assert usage is not None, crashed["spine_errors"]
+    assert int(usage.tokens) == 1000
+    row = _run_row(postgres_url, crashed["run_id"])
+    assert row is not None, crashed
+    assert row.status == "failed", row.status
+    # Cost now comes from the durable ledger row that landed, not $0/None.
+    assert crashed["cost"]["source"] == "usage_records", crashed["cost"]
+    assert crashed["cost"]["amount"] == "0.00200000", crashed["cost"]
 
     # The recovered spend counted toward the cell budget: task 2 never ran.
     assert records[1]["task_id"] == "w7c03crash-2"

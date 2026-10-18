@@ -801,6 +801,161 @@ def test_w7_c03_runner_crash_keeps_spend(web_run, monkeypatch, tmp_path: Path) -
     assert "budget_exceeded" in results2["records"][1]["error"], results2["records"][1]
 
 
+def test_w7_c03_orphaned_run_finalized(web_run, monkeypatch, tmp_path: Path) -> None:
+    """An escaped web failure must close out the leased run it orphaned.
+
+    Audit r4 finding: pre-fix the matrix catch-all wrote a FRESH record —
+    null run_id/session_id, no trace — and never touched the leased Run row
+    (no usage write, no terminal commit), leaving the durable spine
+    leased-but-unfinalized. The spend sink now carries the run identity as
+    soon as it is known, the error record keeps run_id/session_id/trace, and
+    the catch-all attempts failure finalization: a record_terminal_usage
+    write plus a terminal commit — with any resulting failure collected into
+    spine_errors.
+    """
+    from types import SimpleNamespace
+
+    tasks = [_mk_task(web_run, "w7c03orphan-1")]
+
+    async def _sink_then_raise(**kwargs):
+        sink = kwargs.get("spend_sink")
+        record = web_run._base_record(kwargs["cell"], kwargs["task"])
+        record["run_id"] = "run-orphan"
+        record["session_id"] = "sess-orphan"
+        if sink is not None:
+            sink.update(
+                {
+                    "record": record,
+                    "database_url": "postgresql+psycopg://stubbed.invalid/db",
+                    "tenant_id": "tenant-x",
+                    "ledger_model": "eval-stub",
+                    "session_id": "sess-orphan",
+                    "worker_id": "eval-worker-x",
+                    "run_id": "run-orphan",
+                    "epoch": 3,
+                    "lease_ttl_seconds": 720,
+                    "ctx": SimpleNamespace(
+                        outcome={
+                            "tokens": {"input": 700, "output": 300, "total": 1000}
+                        },
+                        runtime=None,
+                        agent_id="eval-primary",
+                    ),
+                }
+            )
+        raise RuntimeError("web runner exploded after claim")
+
+    calls: dict[str, list] = {"usage": [], "commit": []}
+
+    def _fake_persist(database_url, tenant_id, run_id, model, outcome, **kw):
+        calls["usage"].append(
+            {
+                "run_id": run_id,
+                "tenant_id": tenant_id,
+                "tokens_hint": kw.get("tokens_hint"),
+            }
+        )
+        return {"id": "u1", "amount": "0.00200000", "tokens": 1000}
+
+    def _fake_commit(database_url, run_id, worker_id, epoch, status):
+        calls["commit"].append(
+            {
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "epoch": epoch,
+                "status": status,
+            }
+        )
+        return None
+
+    monkeypatch.setattr(web_run, "run_web_task", _sink_then_raise)
+    # The matrix probes/seeds the web cell before tasks run — stub those so
+    # the test needs no live database.
+    monkeypatch.setattr(web_run, "probe_web", lambda _url: None)
+    monkeypatch.setattr(
+        web_run,
+        "seed_eval_tenant",
+        lambda _url, _tag: {"tenant_id": "t", "org_id": "o", "project_id": "p"},
+    )
+    monkeypatch.setattr(web_run, "_persist_usage", _fake_persist)
+    monkeypatch.setattr(web_run, "_safe_commit", _fake_commit)
+    monkeypatch.setattr(web_run, "_run_status", lambda _url, _rid: "leased")
+    monkeypatch.setattr(
+        web_run,
+        "_web_trace",
+        lambda _url, _tenant, rid: {"kind": "postgres", "run_id": rid},
+    )
+    monkeypatch.setattr(
+        web_run,
+        "_ledger_cost",
+        lambda _url, _rid, *, spine_errors=None: {
+            "amount": "0.00200000",
+            "source": "usage_records",
+        },
+    )
+
+    def _drive() -> dict:
+        return asyncio.run(
+            web_run.run_matrix(
+                tasks=tasks,
+                cells=["web-solo"],
+                model=None,
+                budget=0,
+                task_timeout=5,
+                database_url="postgresql+psycopg://stubbed.invalid/db",
+                workdir_base=tmp_path,
+                log=lambda _m: None,
+            )
+        )
+
+    results = _drive()
+    crashed = results["records"][0]
+    assert crashed["status"] == "error", crashed
+    # The record keeps the run identity — never a fresh null-identity record.
+    assert crashed["run_id"] == "run-orphan", crashed
+    assert crashed["session_id"] == "sess-orphan", crashed
+    assert crashed["trace"]["run_id"] == "run-orphan", crashed["trace"]
+    assert crashed["token_usage"]["total"] >= 1_000, crashed["token_usage"]
+    # Failure finalization was attempted on the orphaned lease: terminal
+    # usage write + a "failed" terminal commit carrying the lease epoch.
+    assert calls["usage"] == [
+        {"run_id": "run-orphan", "tenant_id": "tenant-x", "tokens_hint": 1000}
+    ], calls
+    assert calls["commit"] == [
+        {
+            "run_id": "run-orphan",
+            "worker_id": "eval-worker-x",
+            "epoch": 3,
+            "status": "failed",
+        }
+    ], calls["commit"]
+    assert crashed["cost"]["amount"] == "0.00200000", crashed["cost"]
+    assert any("unhandled task exception" in e for e in crashed["spine_errors"])
+
+    # A failed finalization attempt is collected into spine_errors — never
+    # silently dropped, and the commit is still attempted.
+    calls["commit"].clear()
+
+    def _boom_commit(database_url, run_id, worker_id, epoch, status):
+        calls["commit"].append(
+            {
+                "run_id": run_id,
+                "worker_id": worker_id,
+                "epoch": epoch,
+                "status": status,
+            }
+        )
+        return "terminal commit failed: LeaseRejected"
+
+    monkeypatch.setattr(web_run, "_safe_commit", _boom_commit)
+    crashed2 = _drive()["records"][0]
+    assert crashed2["status"] == "error", crashed2
+    assert calls["commit"], "commit was never attempted"
+    assert any(
+        "LeaseRejected" in str(e) for e in crashed2["spine_errors"]
+    ), crashed2["spine_errors"]
+
+
 def test_w7_c03_workdir_prep_failure_keeps_records(
     web_run, monkeypatch, tmp_path: Path
 ) -> None:

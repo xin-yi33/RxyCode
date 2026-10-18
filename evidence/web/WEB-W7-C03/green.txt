@@ -221,3 +221,83 @@ D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
 git diff --check: clean on the touched files. No real LLM calls (stub
 drivers, monkeypatched runners/oracle, and an injected _setup_workdir
 failure only); no records lost; no leaked processes.
+
+
+== audit round 4 fixes ==
+
+P2 oracle crashes orphan the durable Web run (evals/web/run.py). An
+exception at run_checks (the oracle, ~1360 — after the run is claimed,
+before usage persistence and terminal commit) escaped to the run_matrix
+catch-all (~1746), which recovered spend but created a FRESH record
+discarding run_id, session_id, and replay/trace refs — and never finalized
+the leased run (no usage write, no terminal commit). Auditor probe: supplied
+IDs through spend_sink; returned error record kept 1,000 tokens but null
+run/session IDs and trace.
+
+Fix (TEST-first: extended module/unit probes failed on the pre-fix code,
+then passed):
+
+1. spend_sink now publishes the run identity as soon as it is known —
+   ``record`` (the in-flight record object, so oracle_status/check_details/
+   trace refs set before the crash survive), database_url, tenant_id,
+   ledger_model, session_id, worker_id before the try (run.py ~988);
+   run_id right after create_run (~1033); epoch + lease_ttl_seconds right
+   after claim succeeds (~1043); ctx + outcome once the WebRunCtx exists
+   (~1117). An escaping failure keeps run_id/session_id/lease coordinates
+   and whatever trace refs were set — never a fresh null-identity record.
+
+2. The post-claim finalization tail moved verbatim into
+   ``_finalize_turn_record`` (~1284); run_web_task calls it inside its own
+   containment (~1219-1281). A crash there (oracle run_checks, to_eval_task,
+   or any finalization write) no longer escapes: the record keeps
+   status=error + oracle_status if known + run_id/session_id/trace, notes
+   the crash in spine_errors ("post-claim crash contained: ..."), and the
+   new ``_finalize_orphaned_web_run`` (~1752) attempts failure
+   finalization — record_terminal_usage for the consumed spend (outcome /
+   runtime counter / token_stats delta / partial record total), a fenced
+   commit_terminal "failed" attempt (skipped when the row is already
+   terminal via ``_run_status``, and reported when the lease metadata is
+   missing), _web_trace refs, and the estimate/ledger_failed cost fallback —
+   every failure collected into spine_errors instead of raising away.
+
+3. The run_matrix catch-all (~1975) is the same backstop for failures that
+   escape run_web_task entirely (setup crashes, containment-internal
+   failures, stubbed runners): it reuses spend_sink["record"] (keeping
+   run_id/session_id/oracle_status/trace), restores session_id, keeps the
+   recovered spend, then attempts the same _finalize_orphaned_web_run
+   finalization for web cells — the run can no longer remain
+   leased-but-unfinalized after the exception path. The existing
+   setup-failure except (~1184) was refactored onto the same helper.
+
+Proof (real durable spine):
+* module test_w7_c03_oracle_crash_keeps_spend — injected run_checks failure
+  on a real web task through run_matrix: record has status=error,
+  oracle_status=None, run_id/session_id/trace populated
+  (trace.agent_done_tokens==1000), the Run row reached terminal status
+  "failed", the usage_records row exists with 1,000 tokens, cost lands from
+  usage_records (0.00200000), and the 1,000 tokens still count toward the
+  500-token cell cap (task 2 blocked).
+* unit test_w7_c03_orphaned_run_finalized — a run_web_task stub that
+  publishes sink metadata then raises: the catch-all record keeps
+  run_id/session_id/trace, calls _persist_usage (tokens_hint=1000) and
+  _safe_commit(run_id, worker, epoch=3, "failed") on the orphan lease, and a
+  failed commit attempt is collected into spine_errors (LeaseRejected).
+
+Verify runs (HEAD 64dd4a9b + fix, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+16 passed in 9.58s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 67.21s (first attempt hit a transient sqlalchemy IntegrityError
+inside the chaos runner's own concurrent scenarios — 2 failed of 6 — and
+passed clean on re-run; unrelated to evals/web/run.py which the suite does
+not exercise)
+
+git diff --check: clean on the touched files. No real LLM calls (stub
+drivers, monkeypatched oracle/runner/durable helpers only); no records
+lost; no leased-but-unfinalized runs after the exception path; no leaked
+processes.

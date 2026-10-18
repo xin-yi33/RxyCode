@@ -935,17 +935,21 @@ async def run_web_task(
     is tracked in ``spine_errors``; if any of them did not land the record is
     ``error`` regardless of the oracle verdict (``oracle_status`` keeps it).
 
-    ``spend_sink`` (optional): a caller-owned dict that receives ``ctx`` once
-    the run context exists. If an exception escapes this function entirely
-    (e.g. an oracle file-read failure during finalization), the caller can
-    still recover the spend the runner journaled — ``ctx.outcome["tokens"]``
-    and the runtime token counter — instead of writing a 0-token record.
+    ``spend_sink`` (optional): a caller-owned dict that receives the run
+    identity (``record``, ``run_id``, ``session_id``, ``worker_id``,
+    ``epoch``, lease ttl, ``tenant_id``, ``ledger_model``) as it becomes
+    known, plus ``ctx`` once the run context exists. If an exception escapes
+    this function entirely (e.g. an oracle file-read failure during
+    finalization), the caller can still recover the spend the runner
+    journaled — ``ctx.outcome["tokens"]`` and the runtime token counter —
+    keep the run identity on the error record, and attempt failure
+    finalization on the orphaned lease instead of writing a 0-token
+    null-identity record.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session as SASession
     from sqlalchemy.pool import NullPool
 
-    from evals.runner import is_provider_infra_error, run_checks
     from rxycode_server.events.store import append_event
     from rxycode_server.persistence.models import SessionRow
     from rxycode_server.runs.service import create_run
@@ -981,6 +985,22 @@ async def run_web_task(
     outcome: dict[str, Any] = {}
     ctx: WebRunCtx | None = None
     poll_token0 = _token_start()
+    if spend_sink is not None:
+        # Publish the run identity as it becomes known so even a fully
+        # escaping failure lets the caller keep run_id/session_id/lease
+        # coordinates (and the partially-built record — including whatever
+        # trace refs were set) instead of writing a fresh null-identity
+        # record.
+        spend_sink.update(
+            {
+                "record": record,
+                "database_url": database_url,
+                "tenant_id": tenant_id,
+                "ledger_model": ledger_model,
+                "session_id": session_id,
+                "worker_id": worker_id,
+            }
+        )
 
     try:
         engine = create_engine(database_url, poolclass=NullPool)
@@ -1010,14 +1030,22 @@ async def run_web_task(
         run_id = accepted.run_id
         record["run_id"] = run_id
         record["session_id"] = session_id
+        if spend_sink is not None:
+            spend_sink["run_id"] = run_id
+        lease_ttl = max(600, int(task_timeout) + 120)
         epoch = claim(
             database_url,
             run_id,
             worker_id,
-            ttl_seconds=max(600, int(task_timeout) + 120),
+            ttl_seconds=lease_ttl,
         )
         if epoch is None:
             raise RuntimeError("worker lease refused for a fresh run")
+        if spend_sink is not None:
+            # The lease is held from here on — worker/epoch/ttl are exactly
+            # what a terminal commit needs if a later stage escapes.
+            spend_sink["epoch"] = epoch
+            spend_sink["lease_ttl_seconds"] = lease_ttl
 
         publish_database_url(database_url)
         remember_web_run(
@@ -1086,6 +1114,7 @@ async def run_web_task(
             # spend (outcome tokens / runtime counter) even if an exception
             # escapes this function entirely.
             spend_sink["ctx"] = ctx
+            spend_sink["outcome"] = outcome
         driver = prompt_driver or _default_web_driver
 
         async def _target(_task_str: str, checkpoint: object | None = None) -> str:
@@ -1160,37 +1189,25 @@ async def run_web_task(
         record["status"] = "error"
         record["error"] = f"{type(exc).__name__}: {exc}"
         spine_errors: list[str] = []
-        if run_id:
-            if (
-                _persist_usage(
-                    database_url, tenant_id, run_id, ledger_model, outcome
-                )
-                is None
-            ):
-                spine_errors.append("usage_records write did not durably land")
-            commit_err = _safe_commit(
-                database_url, run_id, worker_id, epoch, "failed"
+        try:
+            _finalize_orphaned_web_run(
+                record,
+                database_url=database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                epoch=epoch,
+                ledger_model=ledger_model,
+                ctx=ctx,
+                outcome=outcome,
+                tokens_hint=_token_delta(poll_token0)["total"],
+                spine_errors=spine_errors,
             )
-            if commit_err:
-                spine_errors.append(commit_err)
-            record["trace"] = _web_trace(database_url, tenant_id, run_id)
-            measured = dict(outcome.get("tokens") or {})
-            consumed = max(
-                int(measured.get("total") or 0),
-                int(ctx.runtime.token_usage(ctx.agent_id))
-                if ctx is not None and ctx.runtime is not None
-                else 0,
-                _token_delta(poll_token0)["total"],
+        except Exception as finalize_exc:
+            spine_errors.append(
+                f"orphan finalization raised: "
+                f"{type(finalize_exc).__name__}: {finalize_exc}"
             )
-            if consumed:
-                record["token_usage"] = _usage(
-                    total=consumed,
-                    input_tokens=int(measured.get("input") or 0),
-                    output_tokens=int(measured.get("output") or 0),
-                )
-            record["cost"] = _ledger_cost(
-                database_url, run_id, spine_errors=spine_errors
-            ) or _estimate_cost(consumed, source="estimate/ledger_failed")
         record["spine_errors"] = spine_errors
         return record
     finally:
@@ -1198,6 +1215,101 @@ async def run_web_task(
             clear_web_run()
         except Exception:
             pass
+
+    try:
+        return _finalize_turn_record(
+            record,
+            task=task,
+            workdir=workdir,
+            answer=answer,
+            turn_error=turn_error,
+            budget_hit=budget_hit,
+            outcome=outcome,
+            ctx=ctx,
+            poll_token0=poll_token0,
+            start=start,
+            database_url=database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            worker_id=worker_id,
+            epoch=epoch,
+            ledger_model=ledger_model,
+        )
+    except Exception as exc:
+        # The turn's finalization crashed AFTER the run was claimed — the
+        # lease is still held and no terminal status was committed. Keep the
+        # record's run identity and attempt failure finalization on the
+        # orphaned lease so the durable spine never stays
+        # leased-but-unfinalized; the matrix catch-all is the same backstop
+        # if even this fails to land.
+        record["duration_s"] = round(time.monotonic() - start, 3)
+        record["status"] = "error"
+        prior_error = str(record.get("error") or "")
+        record["error"] = (
+            f"post-claim finalization crashed: {type(exc).__name__}: {exc}"
+            + (f" | prior: {prior_error}" if prior_error else "")
+        )[:500]
+        spine_errors = list(record.get("spine_errors") or [])
+        spine_errors.append(
+            f"post-claim crash contained: {type(exc).__name__}: {exc}"
+        )
+        try:
+            _finalize_orphaned_web_run(
+                record,
+                database_url=database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                worker_id=worker_id,
+                epoch=epoch,
+                ledger_model=ledger_model,
+                ctx=ctx,
+                outcome=outcome,
+                tokens_hint=_token_delta(poll_token0)["total"],
+                spine_errors=spine_errors,
+            )
+        except Exception as finalize_exc:
+            spine_errors.append(
+                f"orphan finalization raised: "
+                f"{type(finalize_exc).__name__}: {finalize_exc}"
+            )
+        record["spine_errors"] = spine_errors
+        if record.get("cost") is None:
+            record["cost"] = _estimate_cost(
+                int((record.get("token_usage") or {}).get("total") or 0),
+                source="estimate/ledger_failed",
+            )
+        return record
+
+
+def _finalize_turn_record(
+    record: dict[str, Any],
+    *,
+    task: WebEvalTask,
+    workdir: Path,
+    answer: str,
+    turn_error: str,
+    budget_hit: _CellBudgetExceeded | None,
+    outcome: dict[str, Any],
+    ctx: "WebRunCtx | None",
+    poll_token0: tuple[int, int],
+    start: float,
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    worker_id: str,
+    epoch: int | None,
+    ledger_model: str,
+) -> dict[str, Any]:
+    """Turn a finished/cancelled/errored web turn into the final record.
+
+    Runs after the agent task resolved: budget-cancel ``blocked``, provider
+    infra ``blocked``, turn error ``error``, otherwise the oracle verdict —
+    and every path journals its durable spine (eval events, usage_records,
+    terminal commit, trace).  An exception escaping anywhere in here leaves
+    the run leased-but-unfinalized; the caller's containment converts that
+    into a failure-finalization attempt via ``_finalize_orphaned_web_run``.
+    """
+    from evals.runner import is_provider_infra_error, run_checks
 
     record["duration_s"] = round(time.monotonic() - start, 3)
     record["answer_excerpt"] = (answer or "")[:500]
@@ -1620,6 +1732,127 @@ def _web_trace(database_url: str, tenant_id: str, run_id: str) -> dict[str, Any]
     return trace
 
 
+#: Run statuses from which a lease can still be claimed or a terminal status
+#: committed — mirrors ``rxycode_worker.supervisor._ACTIVE``.
+_RUN_OPEN_STATUSES = {"pending", "leased", "running", "cancel_requested"}
+
+
+def _run_status(database_url: str, run_id: str) -> str | None:
+    """The Run row's status — ``None`` when the row or the read is missing."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.models import Run
+
+    try:
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with SASession(engine) as db:
+                row = db.get(Run, run_id)
+        finally:
+            engine.dispose()
+    except Exception:
+        return None
+    return getattr(row, "status", None) if row is not None else None
+
+
+def _finalize_orphaned_web_run(
+    record: dict[str, Any],
+    *,
+    database_url: str | None,
+    tenant_id: str | None,
+    run_id: str | None,
+    worker_id: str | None,
+    epoch: int | None,
+    ledger_model: str | None,
+    ctx: "WebRunCtx | None" = None,
+    outcome: dict[str, Any] | None = None,
+    tokens_hint: int = 0,
+    spine_errors: list[str] | None = None,
+) -> None:
+    """Best-effort failure finalization for a leased run after a crash.
+
+    An exception that escapes the normal turn-finalization path leaves the
+    Run row leased: nothing persisted the consumed spend and nothing
+    committed a terminal status.  This helper makes the same attempt every
+    other failure path makes — ``record_terminal_usage`` for the consumed
+    tokens, a fenced ``failed`` terminal commit (skipped when the row is
+    already terminal, and reported when the lease metadata needed for the
+    fence is missing), and durable trace refs — and fills ``record`` with the
+    run identity, tokens, and cost (``estimate/ledger_failed`` fallback so
+    burned tokens never report $0).  Every write failure lands in
+    ``spine_errors`` so the caller marks the record ``error``; nothing here
+    may raise the failure away a second time.
+    """
+    errors = spine_errors if spine_errors is not None else []
+    if not (database_url and run_id):
+        return  # no run was ever created — nothing leased to finalize
+    if outcome is None:
+        outcome = getattr(ctx, "outcome", None) or {}
+    measured = dict(outcome.get("tokens") or {})
+    runtime_tokens = 0
+    runtime = getattr(ctx, "runtime", None) if ctx is not None else None
+    if runtime is not None:
+        try:
+            runtime_tokens = int(runtime.token_usage(ctx.agent_id) or 0)
+        except Exception:
+            runtime_tokens = 0
+    consumed = max(
+        int(measured.get("total") or 0),
+        runtime_tokens,
+        int(tokens_hint or 0),
+        int((record.get("token_usage") or {}).get("total") or 0),
+    )
+    try:
+        usage_record = _persist_usage(
+            database_url,
+            tenant_id,
+            run_id,
+            ledger_model,
+            outcome,
+            tokens_hint=consumed,
+        )
+        if usage_record is None:
+            errors.append("usage_records write did not durably land")
+    except Exception as exc:
+        errors.append(f"usage_records write raised: {type(exc).__name__}: {exc}")
+    status = _run_status(database_url, run_id)
+    if status is not None and status not in _RUN_OPEN_STATUSES:
+        pass  # already terminal — a fenced retry would only produce noise
+    elif not worker_id or epoch is None:
+        errors.append(
+            "orphaned run could not be committed: lease metadata missing "
+            "(never claimed or claim crashed)"
+        )
+    else:
+        try:
+            commit_err = _safe_commit(
+                database_url, run_id, worker_id, epoch, "failed"
+            )
+        except Exception as exc:
+            commit_err = f"terminal commit raised: {type(exc).__name__}: {exc}"
+        if commit_err:
+            errors.append(commit_err)
+    record["run_id"] = record.get("run_id") or run_id
+    try:
+        record["trace"] = record.get("trace") or _web_trace(
+            database_url, tenant_id, run_id
+        )
+    except Exception as exc:
+        errors.append(f"trace read failed: {type(exc).__name__}: {exc}")
+    if consumed:
+        record["token_usage"] = _usage(
+            total=consumed,
+            input_tokens=int(measured.get("input") or 0),
+            output_tokens=int(measured.get("output") or 0),
+        )
+    if record.get("cost") is None:
+        record["cost"] = _ledger_cost(
+            database_url, run_id, spine_errors=errors
+        ) or _estimate_cost(consumed, source="estimate/ledger_failed")
+
+
 # ---------------------------------------------------------------------------
 # Matrix driver
 # ---------------------------------------------------------------------------
@@ -1737,18 +1970,28 @@ async def run_matrix(
                 # destroy the records already collected. Record this task as
                 # an honest error and continue the matrix.
                 #
+                # The web runner publishes its in-flight record plus the run
+                # identity (run_id/session_id/worker/epoch) into the spend
+                # sink as they become known — reuse them so the escaped
+                # failure keeps run_id / session_id / oracle_status / trace
+                # refs instead of a fresh record with null identity.
+                record = spend_sink.get("record") or _base_record(cell, task)
+                record["status"] = "error"
+                record["session_id"] = record.get("session_id") or spend_sink.get(
+                    "session_id"
+                )
+                prior_error = str(record.get("error") or "")
+                record["error"] = (
+                    f"task setup/runner crashed: {type(exc).__name__}: {exc}"
+                    + (f" | prior: {prior_error}" if prior_error else "")
+                )[:500]
+                record["duration_s"] = round(time.monotonic() - task_start, 3)
                 # Spend consumed before the crash is real: recover it from
                 # the token_stats delta and any ctx.outcome / runtime counter
                 # the runner managed to record, so the record never shows 0
                 # tokens for burned work and the cell budget (charged on
                 # ``record["token_usage"]`` below) sees the true remaining
                 # balance for subsequent tasks.
-                record = _base_record(cell, task)
-                record["status"] = "error"
-                record["error"] = (
-                    f"task setup/runner crashed: {type(exc).__name__}: {exc}"
-                )[:500]
-                record["duration_s"] = round(time.monotonic() - task_start, 3)
                 delta = _token_delta(task_token0)
                 measured: dict[str, Any] = {}
                 runtime_tokens = 0
@@ -1769,6 +2012,9 @@ async def run_matrix(
                         delta["total"],
                         int(measured.get("total") or 0),
                         runtime_tokens,
+                        int(
+                            (record.get("token_usage") or {}).get("total") or 0
+                        ),
                     ),
                     input_tokens=max(
                         delta["input"], int(measured.get("input") or 0)
@@ -1777,21 +2023,55 @@ async def run_matrix(
                         delta["output"], int(measured.get("output") or 0)
                     ),
                 )
+                spine_errors = list(record.get("spine_errors") or [])
+                spine_errors.append(
+                    f"unhandled task exception (workdir setup or runner): "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                # A web run claimed before the crash is a LEASED row — the
+                # runner's own containment normally finalizes it, but if the
+                # failure escaped anyway (or that containment itself died),
+                # make the same attempt here so the durable spine never shows
+                # leased-but-unfinalized: usage ledger + terminal commit +
+                # trace. Each resulting failure lands in spine_errors.
+                if cell.startswith("web"):
+                    try:
+                        _finalize_orphaned_web_run(
+                            record,
+                            database_url=(
+                                spend_sink.get("database_url") or database_url
+                            ),
+                            tenant_id=spend_sink.get("tenant_id"),
+                            run_id=(
+                                spend_sink.get("run_id")
+                                or record.get("run_id")
+                            ),
+                            worker_id=spend_sink.get("worker_id"),
+                            epoch=spend_sink.get("epoch"),
+                            ledger_model=spend_sink.get("ledger_model"),
+                            ctx=ctx,
+                            outcome=spend_sink.get("outcome"),
+                            tokens_hint=delta["total"],
+                            spine_errors=spine_errors,
+                        )
+                    except Exception as finalize_exc:
+                        spine_errors.append(
+                            f"orphan finalization raised: "
+                            f"{type(finalize_exc).__name__}: {finalize_exc}"
+                        )
+                record["spine_errors"] = spine_errors
                 # Same fallback as every other failure path: burned tokens
                 # must never report $0 / null cost — ledger_failed for web
                 # cells, the plain price-table estimate for CLI cells.
-                record["cost"] = _estimate_cost(
-                    record["token_usage"]["total"],
-                    source=(
-                        "estimate/ledger_failed"
-                        if cell.startswith("web")
-                        else "price_table"
-                    ),
-                )
-                record["spine_errors"] = [
-                    f"unhandled task exception (workdir setup or runner): "
-                    f"{type(exc).__name__}: {exc}"
-                ]
+                if record.get("cost") is None:
+                    record["cost"] = _estimate_cost(
+                        record["token_usage"]["total"],
+                        source=(
+                            "estimate/ledger_failed"
+                            if cell.startswith("web")
+                            else "price_table"
+                        ),
+                    )
             # A provider-level outage blocks the remainder of the cell: burning
             # through the taskset against a dead endpoint yields only noise.
             if str(record.get("error") or "").startswith("provider infra"):
