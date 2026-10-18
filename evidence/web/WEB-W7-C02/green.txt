@@ -215,3 +215,117 @@ python platform_tests/web/chaos/run_recovery.py
 rxy-w7c02-redis removed by runner teardown; no rxy-w7c02* containers remain.
 No leaked marker processes. Nothing staged or committed; unrelated
 dirty-worktree files untouched.
+
+== audit round 2 fixes ==
+
+Finding 1 (P1, concurrent-init race in reaping_job_handle):
+  core/sandbox/manager.py: _reaping_handle was published inside the lock at
+  open_job() return (~old line 138), BEFORE assign_pid_to_job_handle +
+  _reaping_self_assigned completed. A concurrent caller's lock-free fast path
+  could observe (handle!=0, inherited==False) and take the per-command
+  CREATE_SUSPENDED -> bind -> resume fallback — reopening the kill window
+  self-assignment removed. Fix: open_job result goes to a LOCAL var inside
+  _reaping_lock; worker self-assignment + _reaping_self_assigned complete
+  first; _reaping_handle = handle is the LAST statement of init (double-
+  checked re-read at lock entry unchanged). Fast-path readers now can only
+  ever see a fully-initialized state; cached-failure semantics kept
+  (creation failure -> _reaping_failed + warn once + 0; self-assign failure
+  -> handle still published with inherited False = the documented fallback).
+  Docstring now states the publish-last invariant.
+  Probe (tests/web/w7/test_w7_c02_unit.py::
+  test_w7_c02_reaping_handle_published_last): fake _windows() parks thread A
+  inside assign_pid_to_job_handle; thread B calls reaping_job_handle() +
+  reaping_is_inherited() concurrently.
+    PRE-FIX : FAILED — B observed (3074, False): handle published while
+              self-assignment still in flight (torn state reproduced).
+    POST-FIX: PASSED — B blocked on _reaping_lock and observed only
+              (3074, True); self-assignment confirmed True afterwards.
+
+Finding 2 (P2, SSE cursor advanced on the id: line before data: consumed):
+  Both SSE consumers counted an event on its `id:` line and broke mid-event,
+  so Last-Event-ID resume skipped a payload that was never received
+  (ids 1..5 "pass" while payloads are {1,2,4,5}). Fixed in
+  tests/web/w7/test_w7_c02_module.py and
+  platform_tests/web/chaos/run_recovery.py (scenario
+  sse_disconnect_reconnect): new _sse_events() accumulates field lines and
+  only commits a frame at the blank-line terminator; the reconnect cursor
+  is the last COMPLETED event's id. Connection 1 still aborts mid-run over
+  the real uvicorn socket — now deliberately consuming the next frame's
+  `id:` line and dropping the socket before its `data:` arrives, proving a
+  partially consumed event does not count as delivered. Assertions moved
+  from id-line seqs to payload seqs parsed out of each complete event's
+  `data:` JSON: the received-payload set must equal 1..final_seq exactly
+  once across both connections.
+  Probe: synthetic wire stream — old parsing counted ids [1,2,3], cursor=3,
+  id-assertion "all 1..5" PASSES while payloads actually received were
+  {1,2,4,5} (seq 3 silently lost); new parser keeps the cursor at the last
+  complete event and the payload set comes out {1,2,3,4,5} exactly once.
+    RESULT: old_defect_reproduced=True  new_correct=True
+  Real-socket proof: pytest module test + chaos scenario below.
+
+Finding 3 (P2, "?connect_timeout=3" appended unconditionally):
+  run_recovery.py scenario_postgres_unreachable passed C02_URL =
+  url + "?connect_timeout=3" to the PG-down worker; a URL already carrying
+  query parameters became ...?a=b?connect_timeout=3 — psycopg reads the
+  second '?' inside the previous value: silently no timeout. Fix: new
+  _with_connect_timeout() parses with urllib.parse (urlsplit/parse_qsl/
+  urlencode/urlunsplit), drops any existing connect_timeout key and appends
+  connect_timeout=3 — '&'-merged when a query exists, '?'-merged otherwise.
+    OLD: postgresql+psycopg://postgres@127.0.0.1:55432/rxycode?sslmode=disable?connect_timeout=3   (broken)
+    NEW: postgresql+psycopg://postgres@127.0.0.1:55432/rxycode?sslmode=disable&connect_timeout=3
+         make_url() parses query as {'sslmode': 'disable', 'connect_timeout': '3'}
+  End-to-end: full chaos CLI re-run with
+  --database-url .../rxycode?sslmode=disable — all 7 scenarios pass,
+  postgres_unreachable still fails fast with OperationalError inside the
+  pause (the & branch exercised live).
+
+== lint (audit round 2) ==
+ruff check core/sandbox/manager.py
+          tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py
+          platform_tests/web/chaos/run_recovery.py
+  -> All checks passed!   (line-length 100; touched files LF)
+
+== card tests (audit round 2) ==
+pytest tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py
+       tests/web/integration/test_chaos_suite.py -q
+  -> 7 passed, 2 warnings in 195.46s
+  (incl. NEW test_w7_c02_reaping_handle_published_last; module test runs the
+   fixed complete-event SSE parser over real sockets with the mid-event abort;
+   chaos suite drives the fixed run_recovery.py end to end)
+
+== regressions (audit round 2) ==
+pytest tests/web/w4/test_w4_c01_unit.py tests/web/w4/test_w4_c01_module.py
+       tests/web/w2/test_w2_c05_unit.py tests/web/w2/test_w2_c05_module.py
+       tests/web/w4/test_w4_c04_module.py -q
+  -> 10 passed, 4 warnings in 13.76s
+
+== chaos CLI (audit round 2) ==
+python platform_tests/web/chaos/run_recovery.py
+  --database-url postgresql+psycopg://postgres@127.0.0.1:55432/rxycode
+  --redis-url redis://127.0.0.1:56390/0
+  --report evidence/web/WEB-W7-C02/chaos-report.json
+  exit=0
+  correct  worker_kill_during_approval: approval survived the kill; one write
+  unknown  worker_kill_after_side_effect: journal_state=unknown,
+           recovery_required, exactly one write, no leaked shell
+  correct  redis_down_after_commit: seq 2 replayed from PG once; outbox
+           pending then sent; stream duplicates=0 (at-least-once)
+  correct  sse_disconnect_reconnect: real-socket abort at seq 4 of 25
+           (complete-event cursor); Last-Event-ID resume delivered every
+           seq once; run status succeeded; cross_tenant_frame=False;
+           tenant B denied
+  correct  stale_lease_after_pause: stale epoch rejected on commit_terminal
+           and run_shell_before_ack
+  correct  postgres_unreachable: exec=lease_rejected; probe=OperationalError;
+           renew=OperationalError; old epoch cannot commit
+  correct  runner_disconnect_replay: same call_id replayed stored chunks;
+           write executed once
+  counts: {'correct': 6, 'unknown': 1, 'failed': 0, 'blocked': 0}
+  process_leak: 0  cross_tenant_leak: False
+  Extra run with ?sslmode=disable database URL (Finding 3 & branch):
+  identical outcomes, exit=0.
+
+== hygiene (audit round 2) ==
+rxy-w7c02-redis removed by runner teardown; no rxy-w7c02* containers remain.
+No leaked marker processes. Nothing staged or committed; unrelated
+dirty-worktree files untouched.

@@ -29,8 +29,10 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 REPO = Path(__file__).resolve().parents[3]
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
@@ -156,6 +158,50 @@ def _read_queue(lines: "queue.Queue[str]", prefix: str, timeout: float) -> str:
 
 def _read_stdout(proc: subprocess.Popen, prefix: str, timeout: float) -> str:
     return _read_queue(_stdout_queue(proc), prefix, timeout)
+
+
+def _sse_events(
+    lines: Iterable[str], raw: list[str]
+) -> Iterator[dict[str, str]]:
+    """Yield only COMPLETE SSE events (blank-line terminated).
+
+    Field lines accumulate into a pending frame; the empty line commits
+    it. Comment lines (``: open`` heartbeat) are skipped. An abort that
+    lands mid-event leaves the partial frame unconsumed — it must never
+    count as delivered, so the reconnect cursor comes only from completed
+    events. ``raw`` collects every consumed line for the leak check.
+    """
+    pending: dict[str, str] = {}
+    for line in lines:
+        raw.append(line)
+        if line == "":
+            if pending:
+                yield pending
+            pending = {}
+            continue
+        if line.startswith(":"):
+            continue
+        field, _, value = line.partition(":")
+        pending[field.strip()] = value.lstrip(" ")
+
+
+def _with_connect_timeout(url: str, seconds: int = 3) -> str:
+    """Merge ``connect_timeout`` into a database URL's query string.
+
+    ``url + "?connect_timeout=3"`` corrupts a URL that already carries
+    parameters — ``?sslmode=disable?connect_timeout=3`` makes psycopg read
+    the second ``?`` as part of the sslmode value, so the timeout silently
+    never applies. Parse and re-encode instead: an existing query gets
+    ``&connect_timeout=N``, a bare URL gets ``?connect_timeout=N``.
+    """
+    parts = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key != "connect_timeout"
+    ]
+    query.append(("connect_timeout", str(seconds)))
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def _serve_app(app) -> tuple:
@@ -757,8 +803,8 @@ def scenario_sse_disconnect_reconnect(url: str, redis_url: str) -> dict:
         cookies={"rxy_session": token_a},
         timeout=httpx.Timeout(60.0),
     )
-    seen_a: list[int] = []
-    seen_b: list[int] = []
+    events_a: list[dict[str, str]] = []
+    events_b: list[dict[str, str]] = []
     body_parts: list[str] = []
     last_seen = 0
     final_seq = 0
@@ -769,17 +815,25 @@ def scenario_sse_disconnect_reconnect(url: str, redis_url: str) -> dict:
         events_url = f"/api/v1/runs/{run.run_id}/events?follow=1"
         # Connection 1: real streaming GET while the producer is still
         # appending; breaking out closes the response and drops the TCP
-        # connection mid-run.
+        # connection mid-run. Only COMPLETE events (blank-line terminated)
+        # count — a partially consumed frame must never advance the cursor.
         with client.stream("GET", events_url) as response:
             assert response.status_code == 200
-            for line in response.iter_lines():
-                body_parts.append(line)
-                if line.startswith("id: "):
-                    seen_a.append(int(line[4:]))
-                    if seen_a[-1] >= 4:
-                        break
+            line_iter = iter(response.iter_lines())
+            for event in _sse_events(line_iter, body_parts):
+                events_a.append(event)
+                if int(event.get("id", "0")) >= 4:
+                    # Abort mid-event: consume the next frame's first line
+                    # (its id:) without the data: payload, then drop the
+                    # socket. The half-read event is not delivered; the
+                    # resume must re-deliver it.
+                    extra = next(line_iter, None)
+                    if extra is not None:
+                        body_parts.append(extra)
+                    break
+        seen_a = [int(event["id"]) for event in events_a if "id" in event]
         assert seen_a, "connection 1 collected no seqs before the abort"
-        last_seen = max(seen_a)
+        last_seen = seen_a[-1]
 
         # Connection 2: reconnect with Last-Event-ID and read to the real
         # stream end — the server stops once the run is terminal and no
@@ -788,10 +842,9 @@ def scenario_sse_disconnect_reconnect(url: str, redis_url: str) -> dict:
             "GET", events_url, headers={"Last-Event-ID": str(last_seen)}
         ) as response:
             assert response.status_code == 200
-            for line in response.iter_lines():
-                body_parts.append(line)
-                if line.startswith("id: "):
-                    seen_b.append(int(line[4:]))
+            for event in _sse_events(response.iter_lines(), body_parts):
+                events_b.append(event)
+        seen_b = [int(event["id"]) for event in events_b if "id" in event]
         assert seen_b, "connection 2 collected no seqs after the reconnect"
 
         engine = create_engine(url)
@@ -805,12 +858,20 @@ def scenario_sse_disconnect_reconnect(url: str, redis_url: str) -> dict:
             f"connection 1 aborted at seq {last_seen} but the run ended "
             f"at {final_seq} — the disconnect was not mid-run"
         )
-        combined = seen_a + seen_b
-        assert len(combined) == len(set(combined)), (
-            "duplicate seq across reconnect"
+        # Payload-level exactly-once: seqs come from the consumed `data:`
+        # JSON of COMPLETE events only — the partially consumed frame on
+        # connection 1 (its `id:` line read, `data:` never delivered) is
+        # not in this set and must have been re-delivered by the resume.
+        received = [
+            int(json.loads(event["data"])["seq"])
+            for event in events_a + events_b
+            if "id" in event and "data" in event
+        ]
+        assert len(received) == len(set(received)), (
+            "duplicate payload across reconnect"
         )
-        assert sorted(combined) == list(range(1, final_seq + 1)), (
-            f"gaps: expected 1..{final_seq}, got {sorted(combined)}"
+        assert sorted(received) == list(range(1, final_seq + 1)), (
+            f"gaps: expected 1..{final_seq}, got {sorted(received)}"
         )
         body = "\n".join(body_parts)
         cross_leak = '"tenant": "B"' in body or '"tenant":"B"' in body
@@ -910,8 +971,11 @@ def scenario_postgres_unreachable(url: str, workdir: Path) -> dict:
     env = _child_env(
         {
             # ~3 s psycopg connect timeout on the first connection path so
-            # calls fail fast instead of hanging through the pause.
-            "C02_URL": url + "?connect_timeout=3",
+            # calls fail fast instead of hanging through the pause. Merged
+            # as a real query parameter — a raw "?" append corrupts URLs
+            # that already carry parameters (…?a=b?connect_timeout=3 →
+            # psycopg reads it as part of the previous value: no timeout).
+            "C02_URL": _with_connect_timeout(url),
             "C02_TENANT": tenant,
             "C02_RUN": run.run_id,
             "C02_WORKER": "w-s6a",

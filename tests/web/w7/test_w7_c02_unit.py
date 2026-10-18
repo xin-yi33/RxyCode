@@ -630,3 +630,82 @@ def test_w7_c02_suspended_newborn_reaped_on_crash(tmp_path: Path):
                 psutil.Process(info["pid"]).kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
+
+
+def test_w7_c02_reaping_handle_published_last(monkeypatch):
+    """Audit-round-2 race probe: the reaping Job handle must be the LAST
+    published piece of initialization.
+
+    Thread A parks inside initialization (self-assignment in flight) while
+    thread B concurrently calls reaping_job_handle() + reaping_is_inherited().
+    B may block until A finishes, or return early — but only with the fully
+    initialized state (handle != 0 AND inherited == True). A caller that
+    observes (handle != 0, inherited == False) because the handle was
+    published before self-assignment finished takes the per-command
+    CREATE_SUSPENDED -> bind -> resume fallback — reopening the exact kill
+    window self-assignment removed.
+    """
+    from RxyCode.RxyCode1_1_0.core.sandbox import manager
+
+    handle = 0xC02
+    assign_entered = threading.Event()
+    assign_release = threading.Event()
+    assign_done = threading.Event()
+
+    class _FakeWindows:
+        @staticmethod
+        def open_job(_plan) -> int:
+            return handle
+
+        @staticmethod
+        def assign_pid_to_job_handle(_handle: int, _pid: int) -> None:
+            assign_entered.set()
+            assign_release.wait(timeout=30)
+            assign_done.set()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(manager, "_windows", lambda: _FakeWindows)
+    monkeypatch.setattr(manager, "_reaping_handle", 0)
+    monkeypatch.setattr(manager, "_reaping_failed", False)
+    monkeypatch.setattr(manager, "_reaping_self_assigned", False)
+
+    outcome_a: dict[str, int] = {}
+    thread_a = threading.Thread(
+        target=lambda: outcome_a.setdefault(
+            "handle", manager.reaping_job_handle()
+        ),
+        daemon=True,
+    )
+    observations: list[tuple[int, bool]] = []
+
+    def probe() -> None:
+        got = manager.reaping_job_handle()
+        observations.append((got, manager.reaping_is_inherited()))
+
+    thread_b = threading.Thread(target=probe, daemon=True)
+    try:
+        thread_a.start()
+        assert assign_entered.wait(timeout=15), (
+            "thread A never entered self-assignment"
+        )
+        thread_b.start()
+        # Keep A parked a full second: on the raced ordering B returns
+        # instantly with the half-published state; with publish-last it
+        # must wait on _reaping_lock and can only observe the finished
+        # state once released.
+        time.sleep(1.0)
+    finally:
+        assign_release.set()
+    thread_a.join(timeout=15)
+    thread_b.join(timeout=15)
+    assert not thread_a.is_alive() and not thread_b.is_alive()
+    assert outcome_a["handle"] == handle
+    assert assign_done.is_set()
+    assert observations == [(handle, True)], (
+        "concurrent caller observed a half-published reaping job "
+        f"{observations} — it would take the suspend+bind+resume fallback "
+        "and reopen the kill window"
+    )
+    # Self-assignment demonstrably succeeded (the False above could never
+    # be a legitimate cached failure in this probe).
+    assert manager.reaping_is_inherited() is True

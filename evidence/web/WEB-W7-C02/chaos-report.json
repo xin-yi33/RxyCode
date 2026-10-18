@@ -3,7 +3,7 @@
     {
       "name": "worker_kill_during_approval",
       "outcome": "correct",
-      "details": "approval 9f5ee15eccfc4946acb9adb13949324b survived the kill; one write in c02-approve.txt"
+      "details": "approval 13f7f49bf6c848c2b8fb834c20911cbe survived the kill; one write in c02-approve.txt"
     },
     {
       "name": "worker_kill_after_side_effect",

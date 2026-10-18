@@ -125,6 +125,11 @@ def reaping_job_handle() -> int:
     不是安全边界：0 = 无回收照常执行；自指派失败时
     :func:`reaping_is_inherited` 为 False，调用方回退逐命令出生即绑定
     （suspend → assign → resume，bind 失败 warn-and-run）。
+
+    并发不变量：**句柄最后发布**。``_reaping_handle`` 只在 Job 创建、
+    worker 自指派、``_reaping_self_assigned`` 全部完成后才赋值——锁外
+    快路径读到非零句柄即意味着初始化已完成，不存在 (handle!=0,
+    inherited==False) 的半成品可见窗口。
     """
     global _reaping_handle, _reaping_failed, _reaping_self_assigned
     if _reaping_handle or _reaping_failed:
@@ -132,10 +137,11 @@ def reaping_job_handle() -> int:
     if sys.platform != "win32":  # Job 句柄只在 Windows 存在
         return 0
     with _reaping_lock:
+        # 双检：锁外读到 0/False 可能在等锁期间已被另一线程完成初始化。
         if _reaping_handle or _reaping_failed:
             return _reaping_handle
         try:
-            _reaping_handle = _windows().open_job(JobPlan())
+            handle = _windows().open_job(JobPlan())
         except Exception as exc:  # noqa: BLE001 - 回收失败绝不阻塞命令
             _reaping_failed = True
             _logger.warning(
@@ -144,7 +150,7 @@ def reaping_job_handle() -> int:
             )
             return 0
         try:
-            _windows().assign_pid_to_job_handle(_reaping_handle, os.getpid())
+            _windows().assign_pid_to_job_handle(handle, os.getpid())
             _reaping_self_assigned = True
         except Exception as exc:  # noqa: BLE001 - 自指派失败不阻塞命令
             _logger.warning(
@@ -152,6 +158,13 @@ def reaping_job_handle() -> int:
                 "出生即绑定兜底路径: %s",
                 exc,
             )
+        # 句柄发布必须是初始化的最后一步：锁外快路径把非零
+        # ``_reaping_handle`` 当作「初始化已完成」的凭据。先发布会
+        # 让并发调用方在自指派完成前看到 (handle!=0, inherited==False)
+        # 的半成品状态，错误地走逐命令 suspend+bind+resume 兜底，把
+        # 继承本来消除的 kill 窗口重新打开。自指派失败时仍发布句柄
+        # （缓存语义：Job 存在但无继承，调用方回退兜底路径）。
+        _reaping_handle = handle
     return _reaping_handle
 
 

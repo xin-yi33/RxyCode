@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import httpx
@@ -106,6 +108,32 @@ def _child_env(extra: dict[str, str]) -> dict[str, str]:
         parts.append(previous)
     env["PYTHONPATH"] = os.pathsep.join(parts)
     return env
+
+
+def _sse_events(
+    lines: Iterable[str], raw: list[str]
+) -> Iterator[dict[str, str]]:
+    """Yield only COMPLETE SSE events (blank-line terminated).
+
+    Field lines accumulate into a pending frame; the empty line commits
+    it. Comment lines (``: open`` heartbeat) are skipped. An abort that
+    lands mid-event leaves the partial frame unconsumed — it must never
+    count as delivered, so the caller's reconnect cursor comes only from
+    completed events. ``raw`` collects every consumed line for the
+    cross-tenant leak check.
+    """
+    pending: dict[str, str] = {}
+    for line in lines:
+        raw.append(line)
+        if line == "":
+            if pending:
+                yield pending
+            pending = {}
+            continue
+        if line.startswith(":"):
+            continue
+        field, _, value = line.partition(":")
+        pending[field.strip()] = value.lstrip(" ")
 
 
 def _serve_app(app) -> tuple:
@@ -256,19 +284,27 @@ def test_w7_c02_integration(postgres_url: str):
         # a real transport disconnect — closing the streaming response
         # drops the TCP connection mid-run (the server's
         # request.is_disconnected then actually reports the drop).
-        seen_a: list[int] = []
+        events_a: list[dict[str, str]] = []
         body_a: list[str] = []
         events_url = f"/api/v1/runs/{run_a.run_id}/events?follow=1"
         with client.stream("GET", events_url, timeout=httpx.Timeout(60.0)) as response:
             assert response.status_code == 200
-            for line in response.iter_lines():
-                body_a.append(line)
-                if line.startswith("id: "):
-                    seen_a.append(int(line[4:]))
-                    if seen_a[-1] >= 10:
-                        break  # abort mid-stream: closing drops the socket
+            line_iter = iter(response.iter_lines())
+            for event in _sse_events(line_iter, body_a):
+                events_a.append(event)
+                if int(event.get("id", "0")) >= 10:
+                    # Abort mid-event: consume the next frame's first line
+                    # (its id:) without the data: payload, then drop the
+                    # socket — a partially consumed event must NOT count
+                    # as delivered; the cursor stays at the last COMPLETE
+                    # event and the resume must re-deliver it.
+                    extra = next(line_iter, None)
+                    if extra is not None:
+                        body_a.append(extra)
+                    break
+        seen_a = [int(event["id"]) for event in events_a if "id" in event]
         assert seen_a, "connection 1 collected no seqs before the abort"
-        last_seen = max(seen_a)
+        last_seen = seen_a[-1]
 
         # Network drop: pause Redis; dispatches fail and rows stay pending.
         paused = _docker("pause", _REDIS)
@@ -317,7 +353,7 @@ def test_w7_c02_integration(postgres_url: str):
 
         # Connection 2: reconnect over a real socket with Last-Event-ID and
         # read to the real stream end (the server stops on terminal status).
-        seen_b: list[int] = []
+        events_b: list[dict[str, str]] = []
         body_b: list[str] = []
         with client.stream(
             "GET",
@@ -326,10 +362,9 @@ def test_w7_c02_integration(postgres_url: str):
             timeout=httpx.Timeout(60.0),
         ) as response:
             assert response.status_code == 200
-            for line in response.iter_lines():
-                body_b.append(line)
-                if line.startswith("id: "):
-                    seen_b.append(int(line[4:]))
+            for event in _sse_events(response.iter_lines(), body_b):
+                events_b.append(event)
+        seen_b = [int(event["id"]) for event in events_b if "id" in event]
         body = "\n".join(body_a + body_b)
         assert '"tenant":"B"' not in body and '"tenant": "B"' not in body, (
             "tenant B payload leaked into run A stream"
@@ -355,10 +390,20 @@ def test_w7_c02_integration(postgres_url: str):
             f"connection 1 aborted at seq {last_seen} but the run ended at "
             f"{final_seq} — the disconnect was not mid-run"
         )
-        combined = seen_a + seen_b
-        assert len(combined) == len(set(combined)), "duplicate seq across connections"
-        assert sorted(combined) == list(range(1, final_seq + 1)), (
-            f"gaps: expected 1..{final_seq}, got {sorted(combined)}"
+        # Payload-level exactly-once: seqs come from the consumed `data:`
+        # JSON of COMPLETE events only — the partially consumed frame on
+        # connection 1 (its `id:` line read, `data:` never delivered) is
+        # not in this set and must have been re-delivered by the resume.
+        received = [
+            int(json.loads(event["data"])["seq"])
+            for event in events_a + events_b
+            if "id" in event and "data" in event
+        ]
+        assert len(received) == len(set(received)), (
+            "duplicate payload across connections"
+        )
+        assert sorted(received) == list(range(1, final_seq + 1)), (
+            f"gaps: expected 1..{final_seq}, got {sorted(received)}"
         )
         assert producer.poll() is None or producer.returncode == 0
         assert reported_pid == producer.pid
