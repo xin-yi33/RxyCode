@@ -11,11 +11,16 @@ then applies the card's quality gate:
 * a covered task designed to fail (``expect == "fail"``) must never come back
   ``passed`` — that means the gate machinery is blind;
 * if designed-fail tasks were covered, at least one record must actually be
-  ``failed``/``error``;
+  ``failed``/``error`` — and with ``--taskset`` every designed-fail task must
+  have a non-blocked record somewhere (blocked is not coverage);
 * every declared cell must produce records — unless ``blocked_cells`` carries
-  an honest reason (provider outage, database down);
-* each non-blocked cell must attempt at least ``--min-tasks`` tasks
+  an honest, non-empty reason (provider outage, database down);
+* with ``--taskset``, every taskset task_id must appear per declared
+  non-blocked cell; unknown task_ids are violations; and coverage counts
+  DISTINCT task_ids — duplicate rows do not count;
+* each non-blocked cell must attempt at least ``--min-tasks`` distinct tasks
   (default 30: the full taskset);
+* an empty records list is always a violation;
 
 and lists every cost row above the abnormal threshold instead of silently
 averaging it away.
@@ -96,14 +101,26 @@ def _records_for_cell(records: Iterable[dict], cell: str | None) -> list[dict]:
     return [r for r in records if cell is None or r.get("cell") == cell]
 
 
-def _stats(records: list[dict]) -> dict[str, Any]:
+def _stats(records: list[dict], budget: int | None = None) -> dict[str, Any]:
     by_status = Counter(str(r.get("status") or "error") for r in records)
     attempted = [r for r in records if r.get("status") != "blocked"]
+    blocked = [r for r in records if r.get("status") == "blocked"]
     durations = sorted(float(r.get("duration_s") or 0.0) for r in attempted)
-    tokens_in = sum(int((r.get("token_usage") or {}).get("input") or 0) for r in attempted)
-    tokens_out = sum(int((r.get("token_usage") or {}).get("output") or 0) for r in attempted)
-    tokens_total = sum(int((r.get("token_usage") or {}).get("total") or 0) for r in attempted)
+    # Token totals are REAL spend: blocked records consumed tokens too and
+    # their spend must land in the totals even though they stay excluded from
+    # the success-rate denominator.
+    def _tokens(rs: list[dict]) -> dict[str, int]:
+        return {
+            "input": sum(int((r.get("token_usage") or {}).get("input") or 0) for r in rs),
+            "output": sum(int((r.get("token_usage") or {}).get("output") or 0) for r in rs),
+            "total": sum(int((r.get("token_usage") or {}).get("total") or 0) for r in rs),
+        }
+
+    tokens_all = _tokens(records)
+    tokens_attempted = _tokens(attempted)
+    tokens_blocked = _tokens(blocked)
     cost_amounts: list[Decimal] = []
+    blocked_costs: list[Decimal] = []
     abnormal: list[dict[str, Any]] = []
     cost_sources: set[str] = set()
     for r in records:
@@ -114,6 +131,8 @@ def _stats(records: list[dict]) -> dict[str, Any]:
         cost_sources.add(str(cost.get("source") or "unknown"))
         value = Decimal(str(amount))
         cost_amounts.append(value)
+        if r.get("status") == "blocked":
+            blocked_costs.append(value)
         if value > ABNORMAL_COST_USD:
             abnormal.append(
                 {
@@ -125,6 +144,12 @@ def _stats(records: list[dict]) -> dict[str, Any]:
                 }
             )
     attempted_n = len(attempted)
+    attempted_tokens_total = tokens_attempted["total"]
+    largest_task_tokens = max(
+        (int((r.get("token_usage") or {}).get("total") or 0) for r in records),
+        default=0,
+    )
+    overrun = max(0, tokens_all["total"] - int(budget)) if budget else 0
     return {
         "n": len(records),
         "attempted": attempted_n,
@@ -144,10 +169,31 @@ def _stats(records: list[dict]) -> dict[str, Any]:
             "total": round(sum(durations), 3),
         },
         "tokens": {
-            "input": tokens_in,
-            "output": tokens_out,
-            "total": tokens_total,
-            "mean_total": round(tokens_total / attempted_n, 1) if attempted_n else None,
+            "input": tokens_all["input"],
+            "output": tokens_all["output"],
+            "total": tokens_all["total"],
+            "attempted_total": attempted_tokens_total,
+            "blocked_total": tokens_blocked["total"],
+            "mean_total": (
+                round(attempted_tokens_total / attempted_n, 1) if attempted_n else None
+            ),
+        },
+        # Spend by blocked records: excluded from the rate, never from totals.
+        "blocked_spend": {
+            "records": len(blocked),
+            "tokens": tokens_blocked["total"],
+            "cost": str(sum(blocked_costs, Decimal(0))),
+            "currency": "USD",
+        },
+        "budget": {
+            "declared": int(budget) if budget else None,
+            "overrun_tokens": overrun,
+            "largest_single_task_tokens": largest_task_tokens,
+            # overrun beyond one in-flight task's spend means more than the
+            # documented bound leaked — flag it rather than letting it pass.
+            "suspicious_overrun": bool(
+                budget and overrun > largest_task_tokens
+            ),
         },
         "cost": {
             "total": str(sum(cost_amounts, Decimal(0))),
@@ -172,7 +218,24 @@ def build_report(results: dict[str, Any], manifest: dict[str, Any] | None = None
     records = results.get("records") or []
     cells = results.get("cells") or sorted({r.get("cell") for r in records})
     manifest = manifest if manifest is not None else results.get("manifest") or {}
-    per_cell = {cell: _stats(_records_for_cell(records, cell)) for cell in cells}
+    declared_budget = int(manifest.get("budget") or 0) or None
+    per_cell = {
+        cell: _stats(_records_for_cell(records, cell), budget=declared_budget)
+        for cell in cells
+    }
+    # The declared cap is per cell; the overall line compares against the sum.
+    overall_budget = (
+        declared_budget * len(cells) if declared_budget and cells else None
+    )
+    spine_errors = [
+        {
+            "task_id": r.get("task_id"),
+            "cell": r.get("cell"),
+            "spine_errors": list(r.get("spine_errors") or []),
+        }
+        for r in records
+        if r.get("spine_errors")
+    ]
     return {
         "schema": "evals-web-report/v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -181,9 +244,12 @@ def build_report(results: dict[str, Any], manifest: dict[str, Any] | None = None
         "model": manifest.get("model"),
         "price_version": manifest.get("price_version"),
         "mode_map": manifest.get("mode_map"),
+        "executed_sources": manifest.get("executed_sources"),
+        "budget": manifest.get("budget"),
         "cells": per_cell,
-        "overall": _stats(list(records)),
+        "overall": _stats(list(records), budget=overall_budget),
         "blocked_cells": dict(results.get("blocked_cells") or {}),
+        "spine_errors": spine_errors,
         "abnormal_cost": [
             item for cell in cells for item in per_cell[cell]["cost"]["abnormal"]
         ],
@@ -198,15 +264,17 @@ def build_report(results: dict[str, Any], manifest: dict[str, Any] | None = None
 def _expected_fail_ids(
     records: list[dict], taskset_path: Path | str | None
 ) -> set[str]:
-    """Task ids covered by records that were designed to fail."""
-    recorded_ids = {r.get("task_id") for r in records}
+    """Task ids covered by records that were designed to fail.
+
+    With a taskset the designed-fail set is authoritative — it does NOT need
+    the task to appear in records to count (coverage is checked separately).
+    """
     if taskset_path:
         from evals.web.run import load_taskset
 
-        designed = {
+        return {
             t.task_id for t in load_taskset(taskset_path) if t.expect == "fail"
         }
-        return designed & recorded_ids
     return {
         str(r.get("task_id"))
         for r in records
@@ -221,7 +289,15 @@ def gate_report(
     taskset_path: Path | str | None = None,
     min_tasks: int = 30,
 ) -> list[str]:
-    """The card's quality gate. Returns a list of violations ([] = pass)."""
+    """The card's quality gate. Returns a list of violations ([] = pass).
+
+    With ``--taskset`` the gate is strict: every taskset task must produce a
+    record per declared non-blocked cell, unknown task_ids are violations,
+    coverage counts DISTINCT task_ids (duplicate rows do not help), empty
+    records are rejected, and ``blocked_cells`` needs a non-empty reason.
+    Without it, the weaker pre-existing checks stay — except that an empty
+    records list is still a violation.
+    """
     violations: list[str] = []
     records = results.get("records") or []
     cells = results.get("cells") or sorted({r.get("cell") for r in records})
@@ -244,37 +320,112 @@ def gate_report(
                 f"({manifest.get('taskset_sha256')} != {actual})"
             )
 
+    # --- empty results -------------------------------------------------------
+    if not records:
+        violations.append(
+            "results contain no records — an empty run is not evidence"
+        )
+
+    # --- blocked_cells honesty ------------------------------------------------
+    # An empty reason is no reason: the cell is NOT excused from coverage and
+    # the empty claim is itself a violation.
+    honestly_blocked = set()
+    for cell, reason in blocked_cells.items():
+        if str(reason or "").strip():
+            honestly_blocked.add(cell)
+        else:
+            violations.append(
+                f"blocked_cells[{cell}] has an empty reason — a blocked claim "
+                "needs a concrete cause"
+            )
+
+    # --- taskset-anchored coverage --------------------------------------------
+    taskset_ids: set[str] | None = None
+    designed_fail: set[str] = set()
+    if taskset_path is not None:
+        from evals.web.run import load_taskset
+
+        taskset = load_taskset(taskset_path)
+        taskset_ids = {t.task_id for t in taskset}
+        designed_fail = {t.task_id for t in taskset if t.expect == "fail"}
+        recorded_ids = {str(r.get("task_id")) for r in records}
+        unknown = sorted(recorded_ids - taskset_ids)
+        if unknown:
+            shown = ", ".join(unknown[:5]) + (" ..." if len(unknown) > 5 else "")
+            violations.append(
+                f"{len(unknown)} record task_id(s) are not in the taskset "
+                f"(unknown provenance): {shown}"
+            )
+        for cell in cells:
+            if cell in honestly_blocked:
+                continue
+            present = {
+                str(r.get("task_id"))
+                for r in _records_for_cell(records, cell)
+            }
+            missing = sorted(taskset_ids - present)
+            if missing:
+                shown = ", ".join(missing[:5]) + (
+                    " ..." if len(missing) > 5 else ""
+                )
+                violations.append(
+                    f"cell {cell} is missing coverage for "
+                    f"{len(missing)}/{len(taskset_ids)} taskset task(s): {shown}"
+                )
+    else:
+        designed_fail = _expected_fail_ids(records, None)
+
     # --- designed-failure sanity --------------------------------------------
-    covered_fail = _expected_fail_ids(records, taskset_path)
-    if covered_fail:
+    if designed_fail:
         for r in records:
-            if r.get("task_id") in covered_fail and r.get("status") == "passed":
+            if r.get("task_id") in designed_fail and r.get("status") == "passed":
                 violations.append(
                     f"designed-to-fail task {r.get('task_id')} reported passed "
                     f"in cell {r.get('cell')} — oracle/gate broken"
                 )
-        if not any(r.get("status") in {"failed", "error"} for r in records):
-            violations.append(
-                "zero failures recorded although the covered taskset includes "
-                "known-failing tasks — failure-detection blind spot"
-            )
+        attempted_fail = {
+            str(r.get("task_id"))
+            for r in records
+            if r.get("task_id") in designed_fail and r.get("status") != "blocked"
+        }
+        has_live_cell = any(cell not in honestly_blocked for cell in cells)
+        if has_live_cell:
+            for task_id in sorted(designed_fail - attempted_fail):
+                violations.append(
+                    f"designed-to-fail task {task_id} was never attempted — "
+                    "no non-blocked record exists, so failure detection is "
+                    "unproven"
+                )
+            if attempted_fail and not any(
+                r.get("task_id") in designed_fail
+                and r.get("status") in {"failed", "error"}
+                for r in records
+            ):
+                violations.append(
+                    "zero failures recorded although the covered taskset includes "
+                    "known-failing tasks — failure-detection blind spot"
+                )
 
     # --- per-cell coverage ---------------------------------------------------
     for cell in cells:
-        if cell in blocked_cells:
+        if cell in honestly_blocked:
             continue
         recs = _records_for_cell(records, cell)
         if not recs:
             violations.append(
                 f"cell {cell} produced no records and is not marked blocked "
-                "(blocked_cells has no entry) — silent gap"
+                "(blocked_cells has no non-empty entry) — silent gap"
             )
             continue
-        attempted = [r for r in recs if r.get("status") != "blocked"]
-        if len(attempted) < min_tasks:
+        attempted_ids = {
+            str(r.get("task_id"))
+            for r in recs
+            if r.get("status") != "blocked"
+        }
+        if len(attempted_ids) < min_tasks:
             violations.append(
-                f"cell {cell} attempted {len(attempted)} tasks — below the "
-                f"required min_tasks={min_tasks}"
+                f"cell {cell} attempted {len(attempted_ids)} distinct tasks — "
+                f"below the required min_tasks={min_tasks}"
             )
 
     return violations
@@ -359,6 +510,51 @@ def render_markdown(
         lines += ["", "## Blocked cells", ""]
         for cell, reason in blocked.items():
             lines.append(f"- `{cell}`: {reason}")
+    blocked_spend = [
+        (cell, (stats.get("blocked_spend") or {}))
+        for cell, stats in cells.items()
+        if (stats.get("blocked_spend") or {}).get("tokens")
+        or Decimal(str((stats.get("blocked_spend") or {}).get("cost") or "0")) > 0
+    ]
+    if blocked_spend:
+        lines += [
+            "",
+            "## Blocked spend (excluded from success rate, counted in totals)",
+            "",
+        ]
+        for cell, spend in blocked_spend:
+            lines.append(
+                f"- `{cell}`: {spend.get('tokens')} tokens / "
+                f"${spend.get('cost')} across {spend.get('records')} "
+                "blocked record(s)"
+            )
+    budget = report.get("budget")
+    if budget:
+        lines += [
+            "",
+            f"## Budget (declared per-cell cap: {int(budget):,} tokens)",
+            "",
+        ]
+        for cell, stats in cells.items():
+            binfo = stats.get("budget") or {}
+            overrun = int(binfo.get("overrun_tokens") or 0)
+            largest = int(binfo.get("largest_single_task_tokens") or 0)
+            total = int((stats.get("tokens") or {}).get("total") or 0)
+            note = (
+                "OVERRUN BEYOND ONE-IN-FLIGHT BOUND — investigate"
+                if binfo.get("suspicious_overrun")
+                else "within one in-flight overrun bound"
+            )
+            lines.append(
+                f"- `{cell}`: {total:,} tokens recorded; overrun "
+                f"{overrun:,} vs cap (largest single task {largest:,}) — {note}"
+            )
+    spine_errors = report.get("spine_errors") or []
+    if spine_errors:
+        lines += ["", "## Spine errors (durable-path failures)", ""]
+        for item in spine_errors:
+            for err in item.get("spine_errors") or []:
+                lines.append(f"- {item.get('task_id')} [{item.get('cell')}]: {err}")
     abnormal = report.get("abnormal_cost") or []
     if abnormal:
         lines += ["", "## Abnormal cost rows (>$1/task)", ""]
@@ -379,8 +575,9 @@ def render_markdown(
     lines += [
         "",
         "Notes: `success` counts passed/(attempted) with failures in the denominator;",
-        "`blocked` tasks are excluded from the rate but reported above. Web cost rows",
-        "come from `usage_records` (ledger); CLI cost rows are price-table estimates.",
+        "`blocked` tasks are excluded from the rate but their token/cost spend is",
+        "counted in the totals above. Web cost rows come from `usage_records`",
+        "(ledger); CLI cost rows are price-table estimates.",
         "",
     ]
     return "\n".join(lines)

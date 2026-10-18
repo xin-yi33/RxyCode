@@ -254,3 +254,147 @@ def test_w7_c03_integration(postgres_url: str, tmp_path: Path) -> None:
         results, manifest=manifest, taskset_path=None, min_tasks=3
     )
     assert violations == [], violations
+
+
+def test_w7_c03_spine_failure_marks_error(
+    postgres_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    """A record whose durable spine did not land is `error`, never `passed`.
+
+    Injecting a failure into the ``eval.checks`` event write must flip the
+    record status to ``error`` while keeping the oracle verdict in
+    ``oracle_status`` — status reflects delivery of the full durable path.
+    The same holds when the terminal commit fails.
+    """
+    from rxycode_server.persistence.migrate import upgrade_head
+    import rxycode_server.events.store as event_store
+    import rxycode_worker.supervisor as supervisor
+
+    upgrade_head(postgres_url)
+    org = web_run.seed_eval_tenant(postgres_url, "w7c03spine")
+    nonce = uuid.uuid4().hex[:8]
+
+    task = _task("w7c03spine-1", "present-marker")
+
+    async def _driver(ctx: object) -> str:
+        Path(ctx.workdir, "answer.txt").write_text("present-marker", encoding="utf-8")
+        ctx.runtime.record_token_usage(ctx.agent_id, 555)
+        return "wrote answer.txt"
+
+    workdir = tmp_path / "spine-1"
+    workdir.mkdir(parents=True)
+
+    real_append = event_store.append_event
+
+    def _flaky_append(database_url, *, tenant_id, run_id, event_type, payload):
+        if event_type == "eval.checks":
+            raise RuntimeError("injected journal failure")
+        return real_append(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type=event_type,
+            payload=payload,
+        )
+
+    monkeypatch.setattr(event_store, "append_event", _flaky_append)
+    record = asyncio.run(
+        web_run.run_web_task(
+            database_url=postgres_url,
+            org=org,
+            task=task,
+            workdir=workdir,
+            cell="web-solo",
+            model="eval-stub",
+            task_timeout=120,
+            request_nonce=nonce,
+            prompt_driver=_driver,
+        )
+    )
+    assert record["status"] == "error", record
+    assert record["oracle_status"] == "passed", record
+    assert record["spine_errors"], record
+    assert any("eval.checks" in e for e in record["spine_errors"])
+    # The usage row DID land — the failure is reported, not faked.
+    usage = _usage_row(postgres_url, record["run_id"])
+    assert usage is not None and int(usage.tokens) == 555
+
+    # A terminal-commit failure also flips status to error.
+    monkeypatch.undo()
+    task2 = _task("w7c03spine-2", "present-marker")
+    workdir2 = tmp_path / "spine-2"
+    workdir2.mkdir(parents=True)
+
+    def _boom_commit(database_url, run_id, worker_id, epoch, status):
+        raise RuntimeError("injected commit failure")
+
+    monkeypatch.setattr(supervisor, "commit_terminal", _boom_commit)
+    record2 = asyncio.run(
+        web_run.run_web_task(
+            database_url=postgres_url,
+            org=org,
+            task=task2,
+            workdir=workdir2,
+            cell="web-solo",
+            model="eval-stub",
+            task_timeout=120,
+            request_nonce=nonce,
+            prompt_driver=_driver,
+        )
+    )
+    assert record2["status"] == "error", record2
+    assert record2["oracle_status"] == "passed", record2
+    assert any("commit" in e for e in record2["spine_errors"]), record2
+
+
+def test_w7_c03_budget_midrun(postgres_url: str, tmp_path: Path) -> None:
+    """The declared budget is enforced mid-flight for web cells too.
+
+    A driver that has already journaled 5M tokens against a 1M remaining
+    budget is cancelled in-flight: the record is ``blocked`` with a
+    ``budget_exceeded`` reason, the tokens burned up to cancellation are
+    recorded, and the durable spine still lands (usage row + terminal run row
+    + an ``eval.budget_exceeded`` event).
+    """
+    from rxycode_server.persistence.migrate import upgrade_head
+
+    upgrade_head(postgres_url)
+    org = web_run.seed_eval_tenant(postgres_url, "w7c03budget")
+    nonce = uuid.uuid4().hex[:8]
+
+    task = _task("w7c03budget-web", "present-marker")
+
+    async def _hungry_driver(ctx: object) -> str:
+        Path(ctx.workdir, "answer.txt").write_text("present-marker", encoding="utf-8")
+        ctx.runtime.record_token_usage(ctx.agent_id, 5_000_000)
+        await asyncio.sleep(60)  # in-flight when the poll trips
+        return "done"
+
+    workdir = tmp_path / "budget-web"
+    workdir.mkdir(parents=True)
+    record = asyncio.run(
+        web_run.run_web_task(
+            database_url=postgres_url,
+            org=org,
+            task=task,
+            workdir=workdir,
+            cell="web-solo",
+            model="eval-stub",
+            task_timeout=120,
+            request_nonce=nonce,
+            prompt_driver=_hungry_driver,
+            budget_remaining=1_000_000,
+        )
+    )
+    assert record["status"] == "blocked", record
+    assert "budget_exceeded" in record["error"], record["error"]
+    assert record["token_usage"]["total"] >= 5_000_000, record["token_usage"]
+
+    # The durable spine still landed: run row terminal, usage row, event.
+    row = _run_row(postgres_url, record["run_id"])
+    assert row is not None and row.status in {"cancelled", "failed"}
+    usage = _usage_row(postgres_url, record["run_id"])
+    assert usage is not None and int(usage.tokens) == 5_000_000
+    events = _events(postgres_url, org["tenant_id"], record["run_id"])
+    kinds = [event["type"] for event in events]
+    assert "eval.budget_exceeded" in kinds, kinds

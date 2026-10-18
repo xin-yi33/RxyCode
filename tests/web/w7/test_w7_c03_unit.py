@@ -12,6 +12,8 @@ taskset's designed-to-fail task reports ``passed``.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -196,6 +198,103 @@ def test_w7_c03_negative(web_report, tmp_path: Path, web_run) -> None:
     )
     assert not any("web-solo" in v for v in violations), violations
 
+    # --- audit round-1 probes: each must produce gate violations ------------
+
+    # 30 copies of one happy record: row count is not distinct-task coverage.
+    dup = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": [_record(pass_id, "cli-solo", "passed") for _ in range(30)],
+    }
+    violations = web_report.gate_report(
+        dup, manifest=manifest, taskset_path=TASKSET, min_tasks=30
+    )
+    assert violations, "gate accepted 30 duplicate rows of a single task"
+    assert any(
+        "missing" in v or "distinct" in v or "coverage" in v or "min_tasks" in v
+        for v in violations
+    ), violations
+
+    # Records whose task_ids are not in the taskset have unknown provenance.
+    unknown_id = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": [
+            {**_record(task.task_id, "cli-solo", "failed"), "expect": task.expect}
+            for task in tasks
+        ]
+        + [_record("w7c03-zzz-not-in-taskset", "cli-solo", "passed")],
+    }
+    violations = web_report.gate_report(
+        unknown_id, manifest=manifest, taskset_path=TASKSET, min_tasks=30
+    )
+    assert any(
+        "w7c03-zzz-not-in-taskset" in v or "unknown" in v.lower() or "provenance" in v
+        for v in violations
+    ), violations
+
+    # An empty-string blocked_cells reason is not an honest block — and the
+    # cell is not excused from coverage either.
+    empty_reason = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo", "web-solo"],
+        "blocked_cells": {"web-solo": ""},
+        "records": [
+            {**_record(task.task_id, "cli-solo", "failed"), "expect": task.expect}
+            for task in tasks
+        ],
+    }
+    violations = web_report.gate_report(
+        empty_reason, manifest=manifest, taskset_path=TASKSET, min_tasks=30
+    )
+    assert any(
+        "web-solo" in v and "reason" in v.lower() for v in violations
+    ), violations
+    assert any("web-solo" in v and ("missing" in v or "coverage" in v) for v in violations), (
+        violations
+    )
+
+    # An entirely empty results set is a violation even when cells declare work.
+    empty_results = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": [],
+    }
+    violations = web_report.gate_report(
+        empty_results, manifest=manifest, taskset_path=TASKSET, min_tasks=1
+    )
+    assert violations, "gate accepted an empty results set"
+    # Empty records are rejected even without a taskset.
+    assert web_report.gate_report(
+        empty_results, manifest=manifest, taskset_path=None, min_tasks=1
+    ), "gate accepted an empty results set without taskset"
+
+    # Missing designed-fail coverage: the designed-to-fail task present only as
+    # `blocked` was never attempted — the oracle-blindness check has no teeth.
+    blocked_fail = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": [
+            {
+                **_record(
+                    task.task_id,
+                    "cli-solo",
+                    "blocked" if task.expect == "fail" else "failed",
+                ),
+                "expect": task.expect,
+            }
+            for task in tasks
+        ],
+    }
+    violations = web_report.gate_report(
+        blocked_fail, manifest=manifest, taskset_path=TASKSET, min_tasks=30
+    )
+    assert any(fail_id in v for v in violations), violations
+
     # The CLI exits non-zero on a gate failure.
     results_path = tmp_path / "happy.json"
     results_path.write_text(json.dumps(tiny), encoding="utf-8")
@@ -219,3 +318,208 @@ def test_w7_c03_negative(web_report, tmp_path: Path, web_run) -> None:
     )
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "GATE" in proc.stdout.upper() or "GATE" in proc.stderr.upper()
+
+
+def test_w7_c03_budget_enforced(web_run, monkeypatch, tmp_path: Path) -> None:
+    """The declared per-cell token budget is enforced DURING execution.
+
+    A scripted task that burns tokens faster than the remaining budget is
+    cancelled in-flight and reported ``blocked`` with a ``budget_exceeded``
+    reason; once a cell crosses the cap, later tasks never start.
+    """
+    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+    # -- in-flight cancellation ---------------------------------------------
+    async def _burn_forever() -> str:
+        token_stats.input_tokens += 5_000
+        await asyncio.sleep(30)
+        return "done"
+
+    token0 = web_run._token_start()
+
+    async def _run_budgeted() -> None:
+        task = asyncio.ensure_future(_burn_forever())
+        await web_run._await_budgeted(
+            task,
+            timeout=60,
+            budget_remaining=100,
+            used_tokens=lambda: web_run._token_delta(token0)["total"],
+            poll_interval=0.02,
+        )
+
+    with pytest.raises(web_run._CellBudgetExceeded):
+        asyncio.run(_run_budgeted())
+    # Cancellation does not erase the spend — the delta is still visible.
+    assert web_run._token_delta(token0)["total"] >= 5_000
+
+    # -- run_cli_task honours the remaining budget mid-run -------------------
+    import evals.backends as _backends
+
+    class _HungryBackend:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def run(self, prompt, workdir, *, effect=None):
+            token_stats.input_tokens += 2_500_000
+            await asyncio.sleep(30)
+            return _backends.BackendResult(
+                answer="", token_usage={"input": 0, "output": 0, "total": 0}
+            )
+
+    monkeypatch.setattr(_backends, "AgentBackend", _HungryBackend)
+
+    task = web_run.WebEvalTask.from_dict(
+        {
+            "task_id": "w7c03budget",
+            "category": "coding",
+            "prompt": "noop",
+            "checks": [{"type": "file_exists", "path": "answer.txt"}],
+            "source_commit": "w7c03-unit",
+        }
+    )
+    record = asyncio.run(
+        web_run.run_cli_task(
+            cell="cli-solo",
+            task=task,
+            workdir=tmp_path,
+            model=None,
+            task_timeout=60,
+            budget_remaining=1_000_000,
+        )
+    )
+    assert record["status"] == "blocked", record
+    assert "budget_exceeded" in record["error"], record["error"]
+    assert record["token_usage"]["total"] >= 2_500_000
+
+    # -- run_matrix stops the cell once the cap is crossed --------------------
+    calls: list[str] = []
+
+    async def _fake_cli_task(
+        *, cell, task, workdir, model, task_timeout, budget_remaining=None
+    ):
+        calls.append(task.task_id)
+        rec = web_run._base_record(cell, task)
+        rec["status"] = "passed"
+        rec["token_usage"] = {"input": 0, "output": 0, "total": 1_500_000}
+        return rec
+
+    monkeypatch.setattr(web_run, "run_cli_task", _fake_cli_task)
+    tasks = [
+        web_run.WebEvalTask.from_dict(
+            {
+                "task_id": f"w7c03budget-{i}",
+                "category": "coding",
+                "prompt": "noop",
+                "checks": [{"type": "file_exists", "path": "answer.txt"}],
+                "source_commit": "w7c03-unit",
+            }
+        )
+        for i in range(3)
+    ]
+    results = asyncio.run(
+        web_run.run_matrix(
+            tasks=tasks,
+            cells=["cli-solo"],
+            model=None,
+            budget=2_000_000,
+            task_timeout=5,
+            database_url=None,
+            workdir_base=tmp_path,
+            log=lambda _m: None,
+        )
+    )
+    # Task 1 spends 1.5M (< 2M cap); task 2 pushes the cell to 3.0M; task 3 is
+    # never started.
+    assert calls == ["w7c03budget-0", "w7c03budget-1"], calls
+    last = results["records"][2]
+    assert last["task_id"] == "w7c03budget-2"
+    assert last["status"] == "blocked"
+    assert "budget_exceeded" in last["error"], last["error"]
+
+
+def test_w7_c03_fresh_workdir(web_run, tmp_path: Path) -> None:
+    """A stale artifact from an earlier run must not satisfy the next oracle."""
+    from evals.runner import run_checks
+
+    task = web_run.WebEvalTask.from_dict(
+        {
+            "task_id": "w7c03fresh",
+            "category": "coding",
+            "prompt": "create answer.txt",
+            "checks": [{"type": "file_exists", "path": "answer.txt"}],
+            "setup": {"files": {"seed.txt": "fresh-seed"}},
+            "source_commit": "w7c03-unit",
+        }
+    )
+    # Pre-seed the exact workdir run.py reuses with a stale oracle-satisfier.
+    stale_dir = tmp_path / "cli-solo" / task.task_id
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "answer.txt").write_text("stale artifact", encoding="utf-8")
+
+    workdir = web_run._setup_workdir(task, tmp_path, "cli-solo")
+    assert not (workdir / "answer.txt").exists(), "stale artifact survived setup"
+    assert (workdir / "seed.txt").read_text(encoding="utf-8") == "fresh-seed"
+
+    # The oracle correctly fails — nothing satisfies file_exists anymore.
+    passed, details = run_checks(
+        task.to_eval_task(), workdir=workdir, agent_answer="", tools_used=[]
+    )
+    assert not passed, details
+
+
+def test_w7_c03_blocked_spend_in_totals(web_report) -> None:
+    """Spend from blocked records is real: tokens/cost reach report totals."""
+    records = [
+        _record("t-ok", "cli-solo", "passed"),
+        {
+            **_record("t-blocked", "cli-solo", "blocked"),
+            "token_usage": {"input": 700, "output": 77, "total": 777},
+            "cost": {
+                "amount": "0.00155400",
+                "currency": "USD",
+                "source": "usage_records",
+            },
+            "error": "provider infra: error code: 429",
+        },
+    ]
+    results = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": records,
+    }
+    report = web_report.build_report(results)
+    stats = report["cells"]["cli-solo"]
+    assert stats["tokens"]["total"] == 15 + 777, stats["tokens"]
+    assert stats["blocked_spend"]["tokens"] == 777
+    assert stats["blocked_spend"]["cost"] == "0.00155400"
+    # Blocked stays out of the success-rate denominator but spend is visible.
+    assert stats["success_rate"] == 1.0
+    rendered = web_report.render_markdown(report, results, None)
+    assert "777" in rendered and "0.00155400" in rendered
+
+
+def test_w7_c03_executed_sources(web_run) -> None:
+    """The manifest pins sha256 of the exact executed source files."""
+    tasks = web_run.load_taskset(TASKSET)
+    manifest = web_run.build_manifest(
+        taskset_path=TASKSET,
+        tasks=tasks,
+        cells=["cli-solo"],
+        budget=2_000_000,
+        model=None,
+        database_url=None,
+    )
+    sources = manifest.get("executed_sources") or {}
+    for rel in (
+        "evals/web/run.py",
+        "evals/web/report.py",
+        "evals/web/taskset.jsonl",
+    ):
+        expected = hashlib.sha256((REPO / rel).read_bytes()).hexdigest()
+        assert sources.get(rel) == expected, f"executed_sources[{rel}] missing/wrong"
+    # Dirty worktrees must also carry the bounded evals/web diff + dirty paths.
+    if manifest.get("worktree_dirty"):
+        assert "evals_web_diff" in manifest
+        assert "evals_web_dirty_paths" in manifest
+        assert len(manifest["evals_web_diff"]) <= 200_100

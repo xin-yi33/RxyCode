@@ -38,6 +38,7 @@ import json
 import os
 import platform as _platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -112,6 +113,69 @@ MODE_MAP = {
 DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
 
 _TASK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]*$")
+
+
+class _CellBudgetExceeded(Exception):
+    """In-flight token spend crossed the remaining per-cell budget.
+
+    Raised by ``_await_budgeted`` after it has cancelled the in-flight task;
+    ``spent``/``remaining`` are recorded so the record can show exactly how
+    far past the cap the cancelled task ran.
+    """
+
+    def __init__(self, spent: int, remaining: int) -> None:
+        self.spent = int(spent)
+        self.remaining = int(remaining)
+        super().__init__(
+            f"budget_exceeded: in-flight spend {self.spent} tokens crossed the "
+            f"remaining cell budget {self.remaining}"
+        )
+
+
+async def _await_budgeted(
+    task: "asyncio.Task[Any]",
+    *,
+    timeout: float | None,
+    budget_remaining: int | None,
+    used_tokens,
+    poll_interval: float = 1.0,
+) -> Any:
+    """Await *task* with a wall-clock cap AND a live token budget.
+
+    The declared budget used to be consulted only between tasks; here the
+    in-flight task is cancelled at the first poll where cumulative spend
+    exceeds ``budget_remaining`` (overrun bound: one task's spend between
+    polls — documented in the manifest ``budget_scope``).  ``used_tokens``
+    is a zero-arg callable returning tokens burned by this task so far
+    (``token_stats`` delta for real drivers; the runtime counter for stubs).
+
+    Returns ``task.result()`` — including when the task completed inside the
+    cancel race window.  Raises ``asyncio.TimeoutError`` or
+    ``_CellBudgetExceeded`` after the task has been cancelled and gathered.
+    """
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    while True:
+        slice_s = max(0.0, float(poll_interval))
+        if deadline is not None:
+            slice_s = min(slice_s, max(0.0, deadline - time.monotonic()))
+        done, _pending = await asyncio.wait({task}, timeout=slice_s)
+        if done:
+            return task.result()
+        if deadline is not None and time.monotonic() >= deadline:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise asyncio.TimeoutError()
+        if budget_remaining is not None:
+            spent = int(used_tokens() or 0)
+            if spent > int(budget_remaining):
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                if task.cancelled():
+                    raise _CellBudgetExceeded(spent, int(budget_remaining))
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+                return task.result()  # completed inside the cancel race window
 
 
 # ---------------------------------------------------------------------------
@@ -280,14 +344,16 @@ def _git(args: list[str]) -> str:
         out = subprocess.run(
             ["git", *args],
             cwd=REPO,
-            text=True,
             capture_output=True,
             check=False,
             timeout=15,
         )
     except Exception:
         return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    if out.returncode != 0:
+        return ""
+    # Decode ourselves: locale codecs (e.g. GBK) cannot read diff bytes.
+    return (out.stdout or b"").decode("utf-8", errors="replace").strip()
 
 
 def _mask_url(url: str) -> str:
@@ -298,6 +364,35 @@ def _mask_url(url: str) -> str:
     scheme, _, userinfo = head.partition("://")
     user = userinfo.split(":", 1)[0]
     return f"{scheme}://{user}:***@{tail}"
+
+
+def _sha256_file(path: Path | str) -> str | None:
+    """sha256 of the file's bytes on disk — identifies the executed source even
+    when the worktree is dirty (a commit hash alone cannot)."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+#: Cap on the embedded evals/web diff so a dirty worktree cannot blow up the
+#: manifest (the diff is context; ``executed_sources`` pins content exactly).
+_DIFF_CAP = 200_000
+
+
+def _evals_web_diff() -> str:
+    """``git diff HEAD -- evals/web tests/web/w7`` — bounded, evals-web only."""
+    diff = _git(["diff", "HEAD", "--", "evals/web", "tests/web/w7"])
+    if len(diff) > _DIFF_CAP:
+        diff = diff[:_DIFF_CAP] + "\n... <diff truncated at 200000 chars>"
+    return diff
+
+
+def _evals_web_dirty_paths() -> list[str]:
+    """Porcelain lines scoped to the eval surface — catches untracked files,
+    which ``git diff`` cannot show."""
+    out = _git(["status", "--porcelain", "--", "evals/web", "tests/web/w7"])
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def _active_model_info(model: str | None) -> dict[str, str]:
@@ -338,7 +433,14 @@ def build_manifest(
     extra: dict | None = None,
 ) -> dict[str, Any]:
     """Everything needed to reproduce a run: taskset hash, code commit, model,
-    provider endpoint (never the key), price version, budget, and the mode map."""
+    provider endpoint (never the key), price version, budget, and the mode map.
+
+    ``executed_sources`` pins sha256 of the executed harness files — a dirty
+    worktree can no longer hide what actually ran behind a bare commit hash.
+    When the worktree is dirty the manifest also carries the bounded
+    ``git diff HEAD`` for the eval surface and its dirty path list.
+    """
+    dirty = bool(_git(["status", "--porcelain"]))
     return {
         "schema": "evals-web-manifest/v1",
         "taskset_sha256": taskset_sha256(taskset_path),
@@ -347,13 +449,25 @@ def build_manifest(
         "task_count": len(tasks),
         "cells": list(cells),
         "budget": int(budget),
-        "budget_scope": "max total tokens per cell; 0 = unlimited",
+        "budget_scope": (
+            "max total tokens per cell; 0 = unlimited; enforced in-flight: an "
+            "in-flight task is cancelled at the first poll where cumulative "
+            "cell spend exceeds the cap, so recorded cell usage may exceed "
+            "budget by at most one in-flight task's overrun between polls"
+        ),
         "model": (model or _active_model_info(model).get("model_name") or "active"),
         "provider": _active_model_info(model),
         "price_version": PRICE_VERSION,
         "code_commit": _git(["rev-parse", "HEAD"]) or "unknown",
         "code_branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]) or "unknown",
-        "worktree_dirty": bool(_git(["status", "--porcelain"])),
+        "worktree_dirty": dirty,
+        "executed_sources": {
+            "evals/web/run.py": _sha256_file(REPO / "evals" / "web" / "run.py"),
+            "evals/web/report.py": _sha256_file(REPO / "evals" / "web" / "report.py"),
+            "evals/web/taskset.jsonl": _sha256_file(taskset_path),
+        },
+        "evals_web_diff": _evals_web_diff() if dirty else "",
+        "evals_web_dirty_paths": _evals_web_dirty_paths() if dirty else [],
         "mode_map": {cell: dict(MODE_MAP[cell]) for cell in cells},
         "python": sys.version.split()[0],
         "platform": _platform.platform(),
@@ -408,6 +522,8 @@ def _base_record(cell: str, task: WebEvalTask) -> dict[str, Any]:
         "cell": cell,
         "category": task.category,
         "status": "error",
+        "oracle_status": None,
+        "spine_errors": [],
         "expect": task.expect,
         "expected_failure": task.expect == "fail",
         "duration_s": 0.0,
@@ -442,8 +558,15 @@ async def run_cli_task(
     workdir: Path,
     model: str | None,
     task_timeout: int,
+    budget_remaining: int | None = None,
 ) -> dict[str, Any]:
-    """One task through the real CLI path (AgentBackend / Session.prompt /team)."""
+    """One task through the real CLI path (AgentBackend / Session.prompt /team).
+
+    ``budget_remaining`` is the cell's remaining token budget: the in-flight
+    turn is cancelled at the first poll where the task's spend exceeds it
+    (status ``blocked``, reason ``budget_exceeded``; spend up to cancellation
+    is still recorded).
+    """
     from evals.backends import (
         AgentBackend,
         BackendResult,
@@ -465,20 +588,33 @@ async def run_cli_task(
     emitted: list[Any] = []
     session_id = f"eval-{cell}-{uuid.uuid4().hex[:12]}"
     local_run_id = f"cli-{uuid.uuid4().hex}"
+    budget_hit: _CellBudgetExceeded | None = None
 
     try:
         if cell == "cli-solo":
             backend = AgentBackend(make_agent_factory(model_name=model))
+            inner = asyncio.ensure_future(
+                backend.run(task.prompt, workdir, effect=task.effect)
+            )
             try:
-                result = await asyncio.wait_for(
-                    backend.run(task.prompt, workdir, effect=task.effect),
+                result = await _await_budgeted(
+                    inner,
                     timeout=task_timeout,
+                    budget_remaining=budget_remaining,
+                    used_tokens=lambda: _token_delta(token0)["total"],
                 )
             except asyncio.TimeoutError:
                 result = BackendResult(
                     answer="",
                     token_usage=_token_delta(token0),
                     error=f"task timed out after {task_timeout}s",
+                )
+            except _CellBudgetExceeded as exc:
+                budget_hit = exc
+                result = BackendResult(
+                    answer="",
+                    token_usage=_token_delta(token0),
+                    error=str(exc),
                 )
             answer = result.answer
             tools_used = result.tools_used
@@ -508,16 +644,20 @@ async def run_cli_task(
                     finally:
                         reset_session_binding(latest_token)
                     try:
-                        prompt_result = await asyncio.wait_for(
-                            dispatch_surface_prompt(
-                                "cli",
-                                session,
-                                agent,
-                                f"/team {task.prompt}",
-                                mode="build",
-                                run_id=local_run_id,
+                        prompt_result = await _await_budgeted(
+                            asyncio.ensure_future(
+                                dispatch_surface_prompt(
+                                    "cli",
+                                    session,
+                                    agent,
+                                    f"/team {task.prompt}",
+                                    mode="build",
+                                    run_id=local_run_id,
+                                )
                             ),
                             timeout=task_timeout,
+                            budget_remaining=budget_remaining,
+                            used_tokens=lambda: _token_delta(token0)["total"],
                         )
                         result_status = prompt_result.status
                         answer = prompt_result.answer or ""
@@ -529,6 +669,10 @@ async def run_cli_task(
                     except asyncio.TimeoutError:
                         answer = ""
                         error = f"task timed out after {task_timeout}s"
+                    except _CellBudgetExceeded as exc:
+                        budget_hit = exc
+                        answer = ""
+                        error = str(exc)
                 usage = _token_delta(token0)
                 tools_used = _extract_agent_tools(agent)
             except Exception as exc:
@@ -559,6 +703,12 @@ async def run_cli_task(
         record["cost"] = _estimate_cost(record["token_usage"]["total"])
         record["answer_excerpt"] = (answer or "")[:500]
 
+        if budget_hit is not None:
+            # Cancelled mid-flight at the declared cap — blocked, never counted
+            # as an oracle outcome; the spend up to cancellation stays above.
+            record["status"] = "blocked"
+            record["error"] = str(budget_hit)
+            return record
         if error and is_provider_infra_error(error):
             record["status"] = "blocked"
             record["error"] = f"provider infra: {error}"
@@ -581,7 +731,8 @@ async def run_cli_task(
             tools_used=tools_used or [],
         )
         record["check_details"] = details
-        record["status"] = "passed" if passed else "failed"
+        record["oracle_status"] = "passed" if passed else "failed"
+        record["status"] = record["oracle_status"]
         msgs = [d["message"] for d in details if not d["passed"] and d["message"]]
         if timed_out:
             note = error + " — oracle evaluated on the final workspace state"
@@ -761,6 +912,7 @@ async def run_web_task(
     request_nonce: str,
     prompt_driver=None,
     journal_cap: int = 100,
+    budget_remaining: int | None = None,
 ) -> dict[str, Any]:
     """Execute one task through the real durable web-run spine.
 
@@ -769,6 +921,13 @@ async def run_web_task(
     commit_terminal.  ``prompt_driver`` overrides only the model interaction
     (deterministic tests); everything around it — rows, events, usage ledger —
     is the real production machinery.
+
+    ``budget_remaining`` is the cell's remaining token budget: the in-flight
+    turn is cancelled at the first poll where its spend exceeds it (status
+    ``blocked``, reason ``budget_exceeded``).  Every required durable write —
+    the terminal eval event, the ``usage_records`` row, the terminal commit —
+    is tracked in ``spine_errors``; if any of them did not land the record is
+    ``error`` regardless of the oracle verdict (``oracle_status`` keeps it).
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session as SASession
@@ -804,6 +963,12 @@ async def run_web_task(
     start = time.monotonic()
     answer = ""
     turn_error = ""
+    budget_hit: _CellBudgetExceeded | None = None
+    # Hoisted so every exit path — including setup-failure cleanup and a
+    # mid-flight budget cancel — can persist the spend actually consumed.
+    outcome: dict[str, Any] = {}
+    ctx: WebRunCtx | None = None
+    poll_token0 = _token_start()
 
     try:
         engine = create_engine(database_url, poolclass=NullPool)
@@ -902,6 +1067,7 @@ async def run_web_task(
             session=session,
             agent=agent,
             emitted=emitted,
+            outcome=outcome,
         )
         driver = prompt_driver or _default_web_driver
 
@@ -917,18 +1083,33 @@ async def run_web_task(
             AgentConfig(
                 agent_id=ctx.agent_id,
                 model=model or "active",
-                # 50M is a documentation ceiling, not an eval cap: nothing in
-                # the task pipeline calls check_budget, and the stub-driver
-                # tests deliberately record ~10M tokens.
-                budget_tokens=50_000_000,
+                # The declared eval cap, not a decorative ceiling: 0 selects
+                # the runtime's shared pool (uncapped here means the eval ran
+                # with --budget 0), otherwise the remaining cell budget.
+                budget_tokens=(
+                    max(0, int(budget_remaining))
+                    if budget_remaining is not None
+                    else 0
+                ),
             )
         )
         main_task = agent_task._main_task
         assert main_task is not None
         try:
-            answer = await asyncio.wait_for(
-                asyncio.shield(main_task), timeout=task_timeout
-            )
+            answer = await _await_budgeted(
+                main_task,
+                timeout=task_timeout,
+                budget_remaining=budget_remaining,
+                # Real drivers burn via token_stats; stub drivers journal
+                # through the runtime counter — the honest in-flight spend
+                # is whichever counter is larger.
+                used_tokens=lambda: max(
+                    _token_delta(poll_token0)["total"],
+                    int(ctx.runtime.token_usage(ctx.agent_id))
+                    if ctx.runtime is not None
+                    else 0,
+                ),
+            ) or ""
             # _run_main swallows target exceptions into state FAILED; recover
             # the real error so the record is honest.
             if agent_task.state != LifecycleState.DONE:
@@ -945,6 +1126,14 @@ async def run_web_task(
                 await agent_task.interrupt()
             except Exception:
                 pass
+        except _CellBudgetExceeded as exc:
+            # The declared cap tripped mid-flight: cancel the turn like a
+            # timeout, but keep the distinct reason for the record.
+            budget_hit = exc
+            try:
+                await agent_task.interrupt()
+            except Exception:
+                pass
         except Exception as exc:
             turn_error = f"{type(exc).__name__}: {exc}"
     except Exception as exc:
@@ -953,11 +1142,23 @@ async def run_web_task(
         record["duration_s"] = round(time.monotonic() - start, 3)
         record["status"] = "error"
         record["error"] = f"{type(exc).__name__}: {exc}"
+        spine_errors: list[str] = []
         if run_id:
-            _persist_usage(database_url, tenant_id, run_id, ledger_model, {})
-            _safe_commit(database_url, run_id, worker_id, epoch, "failed")
+            if (
+                _persist_usage(
+                    database_url, tenant_id, run_id, ledger_model, outcome
+                )
+                is None
+            ):
+                spine_errors.append("usage_records write did not durably land")
+            commit_err = _safe_commit(
+                database_url, run_id, worker_id, epoch, "failed"
+            )
+            if commit_err:
+                spine_errors.append(commit_err)
             record["trace"] = _web_trace(database_url, tenant_id, run_id)
             record["cost"] = _ledger_cost(database_url, run_id)
+        record["spine_errors"] = spine_errors
         return record
     finally:
         try:
@@ -968,34 +1169,142 @@ async def run_web_task(
     record["duration_s"] = round(time.monotonic() - start, 3)
     record["answer_excerpt"] = (answer or "")[:500]
 
+    if budget_hit is not None:
+        # Cancelled at the declared cap mid-flight: blocked (excluded from the
+        # rate) with the spend so far journaled into the durable spine.
+        measured = dict(outcome.get("tokens") or {})
+        consumed = max(
+            int(measured.get("total") or 0),
+            int(ctx.runtime.token_usage(ctx.agent_id))
+            if ctx is not None and ctx.runtime is not None
+            else 0,
+            _token_delta(poll_token0)["total"],
+        )
+        record["status"] = "blocked"
+        record["error"] = str(budget_hit)
+        record["token_usage"] = _usage(
+            total=consumed,
+            input_tokens=int(measured.get("input") or 0),
+            output_tokens=int(measured.get("output") or 0),
+        )
+        spine_errors = []
+        _append_spine_event(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="eval.budget_exceeded",
+            payload={
+                "task_id": task.task_id,
+                "spent": consumed,
+                "remaining": budget_hit.remaining,
+            },
+            spine_errors=spine_errors,
+        )
+        usage_record = _persist_usage(
+            database_url, tenant_id, run_id, ledger_model, outcome,
+            tokens_hint=consumed,
+        )
+        if usage_record is None:
+            spine_errors.append("usage_records write did not durably land")
+        commit_err = _safe_commit(
+            database_url, run_id, worker_id, epoch, "cancelled"
+        )
+        if commit_err:
+            spine_errors.append(commit_err)
+        record["trace"] = _web_trace(database_url, tenant_id, run_id)
+        record["cost"] = _ledger_cost(database_url, run_id) or _estimate_cost(consumed)
+        record["spine_errors"] = spine_errors
+        if spine_errors:
+            record["status"] = "error"
+            record["error"] = (record["error"] + " | spine: " + "; ".join(spine_errors))[:500]
+        return record
+
     if turn_error and is_provider_infra_error(turn_error):
         record["status"] = "blocked"
         record["error"] = f"provider infra: {turn_error}"
-        _safe_commit(database_url, run_id, worker_id, epoch, "failed")
+        # Spend consumed before the provider died is real — persist it instead
+        # of dropping it, and keep every required spine write honest.
+        spine_errors = []
+        _append_spine_event(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="eval.turn_failed",
+            payload={
+                "error": turn_error,
+                "task_id": task.task_id,
+                "provider_infra": True,
+            },
+            spine_errors=spine_errors,
+        )
+        usage_record = _persist_usage(
+            database_url, tenant_id, run_id, ledger_model, outcome
+        )
+        if usage_record is None:
+            spine_errors.append("usage_records write did not durably land")
+        commit_err = _safe_commit(
+            database_url, run_id, worker_id, epoch, "failed"
+        )
+        if commit_err:
+            spine_errors.append(commit_err)
         record["trace"] = _web_trace(database_url, tenant_id, run_id)
+        record["cost"] = _ledger_cost(database_url, run_id)
+        measured = dict(outcome.get("tokens") or {})
+        done_tokens = int(record["trace"].get("agent_done_tokens") or 0)
+        total = max(
+            done_tokens,
+            int(measured.get("total") or 0),
+            _token_delta(poll_token0)["total"],
+        )
+        record["token_usage"] = _usage(
+            total=total,
+            input_tokens=int(measured.get("input") or 0),
+            output_tokens=int(measured.get("output") or 0),
+        )
+        if record["cost"] is None:
+            record["cost"] = _estimate_cost(total)
+        record["spine_errors"] = spine_errors
+        if spine_errors:
+            # The durable claim ("blocked by provider outage") itself did not
+            # land — the record is an error, not a clean blocked verdict.
+            record["status"] = "error"
+            record["error"] = (record["error"] + " | spine: " + "; ".join(spine_errors))[:500]
         return record
     timed_out = bool(turn_error) and turn_error.startswith("task timed out")
     if turn_error and not timed_out:
-        _append_safely(
+        spine_errors = []
+        _append_spine_event(
             database_url,
-            tenant_id,
-            run_id,
-            "eval.turn_failed",
-            {"error": turn_error, "task_id": task.task_id},
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="eval.turn_failed",
+            payload={"error": turn_error, "task_id": task.task_id},
+            spine_errors=spine_errors,
         )
-        _persist_usage(database_url, tenant_id, run_id, ledger_model, ctx.outcome)
-        _safe_commit(database_url, run_id, worker_id, epoch, "failed")
+        usage_record = _persist_usage(
+            database_url, tenant_id, run_id, ledger_model, outcome
+        )
+        if usage_record is None:
+            spine_errors.append("usage_records write did not durably land")
+        commit_err = _safe_commit(
+            database_url, run_id, worker_id, epoch, "failed"
+        )
+        if commit_err:
+            spine_errors.append(commit_err)
         record["status"] = "error"
         record["error"] = turn_error
         record["trace"] = _web_trace(database_url, tenant_id, run_id)
         record["cost"] = _ledger_cost(database_url, run_id)
         done_tokens = int(record["trace"].get("agent_done_tokens") or 0)
-        measured = dict(ctx.outcome.get("tokens") or {})
+        measured = dict(outcome.get("tokens") or {})
         record["token_usage"] = _usage(
             total=done_tokens or int(measured.get("total") or 0),
             input_tokens=int(measured.get("input") or 0),
             output_tokens=int(measured.get("output") or 0),
         )
+        record["spine_errors"] = spine_errors
+        if spine_errors:
+            record["error"] = (record["error"] + " | spine: " + "; ".join(spine_errors))[:500]
         return record
 
     # The turn completed — or hit the wall-clock cap (the agent task was
@@ -1007,10 +1316,11 @@ async def run_web_task(
         eval_task,
         workdir=workdir,
         agent_answer=answer or "",
-        tools_used=list(ctx.outcome.get("tools") or []),
+        tools_used=list(outcome.get("tools") or []),
     )
     record["check_details"] = details
-    record["status"] = "passed" if passed else "failed"
+    record["oracle_status"] = "passed" if passed else "failed"
+    record["status"] = record["oracle_status"]
     msgs = [d["message"] for d in details if not d["passed"] and d["message"]]
     if timed_out:
         note = turn_error + " — oracle evaluated on the final workspace state"
@@ -1018,36 +1328,43 @@ async def run_web_task(
     elif not passed:
         record["error"] = "; ".join(msgs)[:500] or "one or more checks failed"
 
+    spine_errors = []
     if timed_out:
         # agent_done never journals on a cancelled turn — mark why, durably.
-        _append_safely(
+        _append_spine_event(
             database_url,
-            tenant_id,
-            run_id,
-            "eval.turn_timeout",
-            {
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="eval.turn_timeout",
+            payload={
                 "task_id": task.task_id,
                 "error": turn_error,
-                "tokens": int((ctx.outcome.get("tokens") or {}).get("total") or 0),
+                "tokens": int((outcome.get("tokens") or {}).get("total") or 0),
             },
+            spine_errors=spine_errors,
         )
-    _append_safely(
+    _append_spine_event(
         database_url,
-        tenant_id,
-        run_id,
-        "eval.checks",
-        {
+        tenant_id=tenant_id,
+        run_id=run_id,
+        event_type="eval.checks",
+        payload={
             "task_id": task.task_id,
             "status": record["status"],
             "expect": task.expect,
             "timed_out": timed_out,
             "checks": details[:20],
         },
+        spine_errors=spine_errors,
     )
-    usage_record = _persist_usage(database_url, tenant_id, run_id, ledger_model, ctx.outcome)
-    _safe_commit(
+    usage_record = _persist_usage(database_url, tenant_id, run_id, ledger_model, outcome)
+    if usage_record is None:
+        spine_errors.append("usage_records write did not durably land")
+    commit_err = _safe_commit(
         database_url, run_id, worker_id, epoch, "failed" if timed_out else "succeeded"
     )
+    if commit_err:
+        spine_errors.append(commit_err)
     trace = _web_trace(database_url, tenant_id, run_id)
     record["trace"] = trace
     record["cost"] = _ledger_cost(database_url, run_id)
@@ -1055,7 +1372,7 @@ async def run_web_task(
     # Token totals come from the durable event/agent_done snapshot (via
     # replay); the measured delta is kept as an input/output split detail.
     done_tokens = int(trace.get("agent_done_tokens") or 0)
-    measured = dict(ctx.outcome.get("tokens") or {})
+    measured = dict(outcome.get("tokens") or {})
     total = done_tokens or int(measured.get("total") or 0)
     record["token_usage"] = _usage(
         total=total,
@@ -1070,10 +1387,32 @@ async def run_web_task(
             "price_version": PRICE_VERSION,
             "usage_record_id": usage_record.get("id"),
         }
+    record["spine_errors"] = spine_errors
+    if spine_errors:
+        # The oracle ran, but part of the durable spine (eval.checks event /
+        # usage_records row / terminal commit) never landed — the record is
+        # an error, not a pass/fail on oracle verdict alone.
+        record["status"] = "error"
+        record["error"] = (
+            (record["error"] + " | " if record["error"] else "")
+            + "spine: "
+            + "; ".join(spine_errors)
+        )[:500]
     return record
 
 
-def _append_safely(database_url: str, tenant_id: str, run_id: str, event_type: str, payload: dict) -> None:
+def _append_spine_event(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    event_type: str,
+    payload: dict,
+    spine_errors: list[str],
+) -> None:
+    """Journal a REQUIRED durable event; a write failure lands in spine_errors
+    so the caller can mark the record ``error`` instead of trusting the
+    oracle verdict alone."""
     from rxycode_server.events.store import append_event
 
     try:
@@ -1084,8 +1423,10 @@ def _append_safely(database_url: str, tenant_id: str, run_id: str, event_type: s
             event_type=event_type,
             payload=payload,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        spine_errors.append(
+            f"{event_type} event write failed: {type(exc).__name__}: {exc}"
+        )
 
 
 def _persist_usage(
@@ -1094,8 +1435,16 @@ def _persist_usage(
     run_id: str,
     model: str | None,
     outcome: dict,
+    *,
+    tokens_hint: int | None = None,
 ) -> dict[str, Any] | None:
-    """Harness-owned terminal accounting: production has no caller today."""
+    """Harness-owned terminal accounting: production has no caller today.
+
+    ``None`` means the ``usage_records`` row did NOT durably land — callers
+    must treat that as a spine failure, not as zero spend.  ``tokens_hint``
+    carries the driver's own measurement when no ``agent_done`` snapshot or
+    ``ctx.outcome`` total exists (e.g. a budget-cancelled turn).
+    """
     from rxycode_server.events.store import replay
     from rxycode_server.usage.service import record_terminal_usage
 
@@ -1110,7 +1459,10 @@ def _persist_usage(
     except Exception:
         tokens = 0
     if not tokens:
-        tokens = int((outcome.get("tokens") or {}).get("total") or 0)
+        tokens = max(
+            int((outcome.get("tokens") or {}).get("total") or 0),
+            int(tokens_hint or 0),
+        )
     try:
         return record_terminal_usage(
             database_url,
@@ -1131,15 +1483,18 @@ def _safe_commit(
     worker_id: str,
     epoch: int | None,
     status: str,
-) -> None:
+) -> str | None:
+    """Commit a terminal status; returns None on success, else the failure —
+    a run left non-terminal is a spine failure the caller must record."""
     if not run_id or epoch is None:
-        return
+        return None
     from rxycode_worker.supervisor import commit_terminal
 
     try:
         commit_terminal(database_url, run_id, worker_id, epoch, status)
-    except Exception:
-        pass
+    except Exception as exc:
+        return f"terminal commit failed: {type(exc).__name__}: {exc}"
+    return None
 
 
 def _ledger_cost(database_url: str, run_id: str) -> dict[str, Any] | None:
@@ -1205,7 +1560,11 @@ def _web_trace(database_url: str, tenant_id: str, run_id: str) -> dict[str, Any]
 
 
 def _setup_workdir(task: WebEvalTask, base: Path, cell: str) -> Path:
+    """A FRESH workdir per (cell, task): a stale artifact left by an earlier
+    run would otherwise satisfy the next run's oracle."""
     workdir = base / cell / task.task_id
+    if workdir.exists():
+        shutil.rmtree(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     for rel, content in task.setup_files.items():
         fp = workdir / rel
@@ -1260,11 +1619,15 @@ async def run_matrix(
                 records.append(_blocked_record(cell, task, cell_blocked_reason))
                 continue
             if budget and cell_tokens >= budget:
-                reason = f"cell budget exhausted at {cell_tokens} tokens (cap {budget})"
+                reason = (
+                    f"budget_exceeded: cell already spent {cell_tokens} tokens "
+                    f"(cap {budget})"
+                )
                 records.append(_blocked_record(cell, task, reason))
                 continue
             log(f"[{cell} {index}/{len(tasks)}] {task.task_id} ...")
             workdir = _setup_workdir(task, workdir_base, cell)
+            remaining = (budget - cell_tokens) if budget else None
             if cell.startswith("web"):
                 record = await run_web_task(
                     database_url=database_url,
@@ -1275,6 +1638,7 @@ async def run_matrix(
                     model=model,
                     task_timeout=task_timeout,
                     request_nonce=nonce,
+                    budget_remaining=remaining,
                 )
             else:
                 record = await run_cli_task(
@@ -1283,17 +1647,18 @@ async def run_matrix(
                     workdir=workdir,
                     model=model,
                     task_timeout=task_timeout,
+                    budget_remaining=remaining,
                 )
             # A provider-level outage blocks the remainder of the cell: burning
             # through the taskset against a dead endpoint yields only noise.
-            if record["status"] == "blocked" and record["error"].startswith(
-                "provider infra"
-            ):
+            if str(record.get("error") or "").startswith("provider infra"):
                 cell_blocked_reason = record["error"]
                 blocked_cells[cell] = record["error"]
             records.append(record)
-            if record["status"] != "blocked":
-                cell_tokens += int(record["token_usage"].get("total") or 0)
+            # Spend is spend — a blocked/error record that still consumed
+            # tokens (provider mid-flight failure, budget cancel) must count
+            # toward the cell cap or the budget could be overrun repeatedly.
+            cell_tokens += int(record["token_usage"].get("total") or 0)
 
     return {
         "schema": "evals-web-results/v1",

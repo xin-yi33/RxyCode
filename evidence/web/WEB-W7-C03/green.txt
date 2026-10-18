@@ -2,3 +2,85 @@ D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/
 
 ...                                                                      [100%]
 3 passed in 3.12s
+
+== audit round 1 fixes ==
+
+Six audit findings fixed in evals/web/{run.py,report.py} with TEST-first
+proof (each new test failed against the pre-fix code, then passed after):
+
+1. P1 gate_report (report.py): empty records now always a violation;
+   blocked_cells entries need a non-empty reason (empty reason also un-excuses
+   the cell); with --taskset every taskset task_id must appear per declared
+   non-blocked cell, unknown task_ids are violations, coverage/min_tasks count
+   DISTINCT task_ids (30 duplicate rows rejected), and a designed-fail task
+   never attempted (e.g. blocked-only) is a violation. Without --taskset the
+   weaker checks stay but empty records are still rejected.
+   Probes now gated: test_w7_c03_negative covers 30-dup-rows, unknown task_id,
+   empty blocked reason, empty records, missing designed-fail coverage.
+
+2. P1 budget enforcement (run.py): new _await_budgeted polls cumulative
+   in-flight spend (token_stats delta for CLI; max(token_stats delta,
+   runtime.token_usage) for web) and cancels the task at the first poll past
+   the remaining budget -> status=blocked, error starts "budget_exceeded:".
+   run.py also passes the declared cap into AgentConfig.budget_tokens
+   (replacing the unenforced 50M constant) and counts spend from ALL records
+   toward cell_tokens. manifest budget_scope documents the bound: recorded
+   cell usage may exceed budget by at most one in-flight task's overrun.
+   report.py adds per-cell/overall budget fields (declared, overrun_tokens,
+   largest_single_task_tokens, suspicious_overrun) rendered in a Budget
+   section. Tests: unit test_w7_c03_budget_enforced (mid-flight cancel +
+   run_cli_task honored cap + run_matrix stops the cell), module
+   test_w7_c03_budget_midrun (web cell cancelled mid-driver; usage row,
+   cancelled run row, eval.budget_exceeded event all landed).
+
+3. P2 fresh workdir (run.py _setup_workdir): existing <base>/<cell>/<task_id>
+   dir is rmtree'd before setup files are written — a stale artifact can no
+   longer satisfy the next oracle. Test: test_w7_c03_fresh_workdir seeds a
+   stale answer.txt, proves removal + oracle failure.
+
+4. P2 blocked spend (run.py web blocked path + report.py): provider-infra
+   blocked records now journal eval.turn_failed, persist usage_records via
+   _persist_usage, commit "failed", and carry measured token_usage + cost
+   (ledger first, price_table estimate when no row). report.py token/cost
+   totals now INCLUDE blocked records; new blocked_spend field + rendered
+   section. Test: test_w7_c03_blocked_spend_in_totals.
+
+5. P2 durable-spine failures (run.py): _append_spine_event (replaces
+   _append_safely), _persist_usage's None return, and _safe_commit's error
+   string all feed record["spine_errors"]; any missing durable write
+   (eval.* event / usage_records row / terminal commit) flips status to
+   "error" while "oracle_status" keeps the oracle verdict. Applies to all
+   exit paths incl. blocked and budget_exceeded. Module test
+   test_w7_c03_spine_failure_marks_error injects eval.checks and
+   commit_terminal failures -> status error, oracle_status passed, usage row
+   still written.
+
+6. P2 executed-source pinning (run.py build_manifest): manifest gains
+   "executed_sources" sha256 for evals/web/{run.py,report.py,taskset.jsonl}
+   (raw file bytes, at read time). When worktree_dirty, also
+   "evals_web_diff" (bounded git diff HEAD -- evals/web tests/web/w7,
+   200k cap) and "evals_web_dirty_paths". _git now decodes bytes as utf-8
+   itself (locale codecs broke on diff output). Old manifests still load —
+   report.py tolerates missing executed_sources. Test:
+   test_w7_c03_executed_sources.
+
+NOTE: the stricter --taskset gate means the pre-fix sample evidence
+(manifest/results_cli-solo + web-solo, sample=3/1) now correctly FAILS the
+gate — those runs never were full-suite evidence. They still parse and
+render fine; the wart NOTES.md documents (code_commit 606d7665 predates
+run.py) is exactly what executed_sources now fixes.
+
+Verify runs (HEAD e5c6b1c5, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+9 passed in 7.22s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 68.84s
+
+No real LLM calls were burned for these fixes (stub drivers + fault
+injection only); the pre-fix manifests/results keep their provenance and
+were not regenerated.
