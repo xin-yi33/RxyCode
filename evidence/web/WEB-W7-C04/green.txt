@@ -915,3 +915,46 @@ baseline — HEAD blobs of the same files also 'would reformat')
 
 --- git diff --check -- packages tests/web/w7 ---
 clean; all touched files LF-only, no trailing whitespace
+
+========================================================================
+Audit-r5 fix round — boundary overlap + UsagePage mirror
+========================================================================
+
+* metrics.run_trace_summary: the in-window partition checked only
+  span START, so a retry span opened just before commit_terminal that
+  exported 60s later stayed in-window — its far end_epoch stretched
+  elapsed_ms and its fresh trace_id leaked into trace_ids.  In-window
+  now means FULLY within the window: the new _in_window() requires
+  start_epoch <= boundary AND end_epoch <= boundary, and pushes any
+  span marked run.idempotent_retry to post_terminal regardless of
+  timestamps (no boundary -> every unmarked span still counts).
+* UsagePage.tsx traceSummary: same mirror — worker.run end_epoch as the
+  terminal boundary, elapsed_ms over in-window spans only, trace_id/
+  trace_ids computed from the in-window set, post_terminal spans listed
+  separately in the trace <details>; telemetry.span payloads without a
+  trace_id are dropped like _is_span_payload does.
+
+--- focused: pytest tests/web/w7/test_w7_c04_unit.py tests/web/w7/test_w7_c04_module.py -q ---
+................
+16 passed, 1 warning in 143.29s (0:02:23)
+(1 new audit-r5 test: boundary_overlapping_span [two probe spans emitted
+through the real Tracer + RunEventsSpanExporter path, opened before
+commit_terminal and exported after — a marked idempotent-retry http span
+and an UNMARKED late http span; both land in post_terminal (start <
+boundary < end), elapsed_ms and trace_ids stay the run's own, the
+unmarked tail proves the end-side check alone moves a span out].)
+
+--- full w7 suite: pytest tests/web/w7 -q (single invocation, shared pg) ---
+.........................................
+41 passed, 3 warnings in 306.53s (0:05:06)
+
+--- npm run typecheck (apps/web) ---
+tsc --noEmit -p tsconfig.json: clean
+
+--- ruff check metrics.py (+ touched test file) ---
+All checks passed! (line-length 100)
+
+--- git diff --check (all touched files) ---
+clean; all touched files LF-only, no trailing whitespace;
+appserver/tui.py untouched (pre-existing WIP left alone); nothing
+staged/committed/stashed.

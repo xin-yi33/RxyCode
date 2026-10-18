@@ -180,8 +180,8 @@ def _terminal_boundary(spans: list[dict[str, Any]]) -> float | None:
     terminal transaction, so its end is the closest durable timestamp to
     the run's terminal status write (the ``runs.status`` UPDATE carries no
     timestamp of its own, and no ``run.status`` terminal event exists).
-    A span STARTED after this — e.g. an idempotent ``create_run`` retry's
-    http span, which lands on the ORIGINAL run's event log — is real
+    A span outside this — e.g. an idempotent ``create_run`` retry's http
+    span, which lands on the ORIGINAL run's event log — is real
     telemetry but post-terminal: it must not stretch ``elapsed_ms``.
     ``None`` means the run never emitted a worker span (never claimed, or
     the span write itself was dropped) — there is then no boundary to
@@ -195,6 +195,32 @@ def _terminal_boundary(spans: list[dict[str, Any]]) -> float | None:
         and float(span["end_epoch"]) > 0.0
     ]
     return max(ends) if ends else None
+
+
+def _in_window(span: dict[str, Any], boundary: float | None) -> bool:
+    """Whether a span belongs to the run's execution window.
+
+    In-window means FULLY within the terminal boundary — the span starts
+    AND ends at/before the ``worker.run`` end.  A start-only check lets a
+    span that was still exporting when the run committed (an idempotent
+    ``create_run`` retry's http span opened just before the terminal
+    write) keep its far ``end_epoch`` inside the envelope — stretching
+    ``elapsed_ms`` and leaking the retry's fresh trace_id into the run's
+    execution ``trace_ids``.  A span marked ``run.idempotent_retry`` is
+    post-terminal by mark even when its timestamps scrape inside the
+    window — it re-ran the create path on an already-existing run, never
+    the run's own work.  With no boundary the run never produced a worker
+    span, so nothing bounds the envelope and every unmarked span counts.
+    """
+    attrs = span.get("attrs") or {}
+    if attrs.get("run.idempotent_retry"):
+        return False
+    if boundary is None:
+        return True
+    return (
+        float(span["start_epoch"] or 0.0) <= boundary
+        and float(span["end_epoch"] or 0.0) <= boundary
+    )
 
 
 def run_trace_summary(
@@ -227,31 +253,22 @@ def run_trace_summary(
     ledger = _ledger(_usage_rows_for_run(database_url, run_id))
     # Honest duration accounting: the run's elapsed wall clock is the trace
     # ENVELOPE — min(start_epoch) -> max(end_epoch) — but only over spans
-    # inside the run's TERMINAL BOUNDARY (the worker.run span's own end,
-    # written atomically with the terminal commit).  An idempotent retry of
-    # create_run exports a fresh http span onto the SAME run's log — a span
-    # STARTED after the run ended; counting it would stretch a 120ms run
-    # into a 60s one.  Those spans stay observable under ``post_terminal``
-    # (and in ``spans``/``layers`` — real work, honestly counted) instead
-    # of inflating the envelope.  trace_ids describe the run's own
-    # execution window; a post-terminal retry keeps its own trace_id
-    # visible inside its post_terminal entry rather than claiming the
-    # run's primary trace.  Summed span durations stay in
+    # FULLY inside the run's TERMINAL BOUNDARY (the worker.run span's own
+    # end, written atomically with the terminal commit): a span counts when
+    # it starts AND ends at/before the boundary.  An idempotent retry of
+    # create_run exports a fresh http span onto the SAME run's log — one
+    # that can start after the run ended, or start inside the window yet
+    # keep exporting past it; counting its far end would stretch a 120ms
+    # run into a 60s one.  Those spans stay observable under
+    # ``post_terminal`` (and in ``spans``/``layers`` — real work, honestly
+    # counted) instead of inflating the envelope.  trace_ids describe the
+    # run's own execution window; a post-terminal retry keeps its own
+    # trace_id visible inside its post_terminal entry rather than claiming
+    # the run's primary trace.  Summed span durations stay in
     # ``total_span_work_ms`` — nested spans never double-count as elapsed.
     boundary = _terminal_boundary(spans)
-    if boundary is None:
-        in_window, post_terminal = spans, []
-    else:
-        in_window = [
-            span
-            for span in spans
-            if float(span["start_epoch"] or 0.0) <= boundary
-        ]
-        post_terminal = [
-            span
-            for span in spans
-            if float(span["start_epoch"] or 0.0) > boundary
-        ]
+    in_window = [span for span in spans if _in_window(span, boundary)]
+    post_terminal = [span for span in spans if not _in_window(span, boundary)]
     trace_ids = sorted({str(span["trace_id"]) for span in in_window})
     if in_window:
         starts = [float(span["start_epoch"] or 0.0) for span in in_window]

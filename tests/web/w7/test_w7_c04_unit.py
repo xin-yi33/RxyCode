@@ -1737,3 +1737,125 @@ def test_w7_c04_post_terminal_retry_elapsed(
     # the retry's fresh trace_id does not claim it.
     assert summary["trace_id"] == before["trace_id"]
     assert summary["trace_ids"] == before["trace_ids"]
+
+
+# ---------------------------------------------------------------------------
+# Audit-r5 regressions
+# ---------------------------------------------------------------------------
+
+
+def test_w7_c04_boundary_overlapping_span(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """A span that STARTS inside the window but ENDS past the terminal
+    boundary is post-terminal too — in-window means fully within.
+
+    Regression (audit-r5): the r4 partition checked only ``start_epoch``,
+    so a span opened 20ms before ``commit_terminal`` that exports 60s
+    later stayed 'in-window' — its far ``end_epoch`` stretched
+    ``elapsed_ms`` into a 60s run and its fresh trace_id leaked into
+    ``trace_ids``.  Two probe shapes cover both legs of the rule: a
+    marked idempotent-retry http span and an UNMARKED late http span —
+    the second proves the end-side check alone moves a span out, the
+    first carries ``run.idempotent_retry`` like the production retry.
+    Both spans go through the same real export path ``create_run`` uses —
+    ``Tracer`` + ``RunEventsSpanExporter`` -> ``telemetry.span`` rows —
+    the test only controls the in-flight timing the wire can produce.
+    """
+    from rxycode_server import metrics
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import telemetry
+    from rxycode_worker.supervisor import claim, commit_terminal
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    try:
+        accepted = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_ids[0],
+            message="run with boundary-overlapping spans",
+            target_id="local:c04r5",
+            permission_profile="full_auto",
+            request_id=f"req-r5-{uuid.uuid4().hex[:12]}",
+        )
+        run_id = accepted.run_id
+        epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
+        assert epoch is not None
+        # Both probe spans are already IN FLIGHT when the run commits:
+        # opened before the terminal boundary, exported after it.
+        exporter = telemetry.RunEventsSpanExporter(postgres_url, tenant_id)
+        tracer = telemetry.Tracer(exporter, service="rxycode-web-c04-r5")
+        retry = tracer.start_span(
+            "http POST /api/v1/runs",
+            kind="server",
+            run_id=run_id,
+            attrs={"run.idempotent_retry": True},
+        )
+        tail = tracer.start_span(
+            "http GET /api/v1/runs/{id}/events",
+            kind="server",
+            run_id=run_id,
+        )
+        time.sleep(0.02)  # a measurable gap before the terminal boundary
+        commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
+        before = metrics.run_trace_summary(
+            postgres_url, tenant_id=tenant_id, run_id=run_id
+        )
+        assert before["code"] is None
+        assert before["post_terminal"] == []
+        boundary = before["terminal_boundary_epoch"]
+        assert boundary and boundary > 0
+        # Probe shape: both started INSIDE the window and are still open.
+        assert float(retry.start_epoch) < boundary
+        assert float(tail.start_epoch) < boundary
+
+        time.sleep(0.05)  # a measurable overshoot past the boundary
+        tracer.end_span(retry, attrs={"http.status_code": 202})
+        tracer.end_span(tail, attrs={"http.status_code": 200})
+    finally:
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    # Each probe began its own fresh trace — distinct from the run's own.
+    probe_trace_ids = {retry.context.trace_id, tail.context.trace_id}
+    assert before["trace_id"] not in probe_trace_ids
+
+    summary = metrics.run_trace_summary(
+        postgres_url, tenant_id=tenant_id, run_id=run_id
+    )
+    assert summary["code"] is None
+    # Started inside the window, ended after: post_terminal — the marked
+    # retry by mark AND end, the unmarked tail by END TIME ALONE.
+    post_by_id = {
+        span["span_id"]: span for span in summary["post_terminal"]
+    }
+    assert len(summary["post_terminal"]) == 2
+    for span_id, probe in (
+        (retry.context.span_id, retry),
+        (tail.context.span_id, tail),
+    ):
+        post = post_by_id[span_id]
+        assert float(post["start_epoch"]) < boundary
+        assert float(post["end_epoch"]) > boundary
+        assert post["trace_id"] == probe.context.trace_id
+    assert post_by_id[retry.context.span_id]["attrs"][
+        "run.idempotent_retry"
+    ] is True
+    assert "run.idempotent_retry" not in post_by_id[
+        tail.context.span_id
+    ]["attrs"]
+    # The far ends could not stretch the run's elapsed envelope.
+    assert summary["elapsed_ms"] == pytest.approx(
+        before["elapsed_ms"], abs=0.001
+    )
+    # …and neither probe's fresh trace_id leaked into the run's
+    # execution trace set.
+    assert summary["trace_id"] == before["trace_id"]
+    assert summary["trace_ids"] == before["trace_ids"]
+    assert probe_trace_ids.isdisjoint(summary["trace_ids"])
+    # Still observable: every span is counted and listed.
+    assert summary["span_count"] == len(
+        _spans(postgres_url, tenant_id, run_id)
+    )

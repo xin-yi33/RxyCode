@@ -34,16 +34,27 @@ export type TraceLayer = { count: number; duration_ms: number }
 
 export type RunTrace = {
   trace_id: string
+  // The run's execution trace set: only spans FULLY inside the terminal
+  // boundary contribute — a post-terminal retry keeps its own fresh
+  // trace_id visible in its post_terminal entry, never here.
+  trace_ids: string[]
   span_count: number
   layers: Record<string, TraceLayer>
   // Honest duration accounting: elapsed is the trace envelope —
-  // min(start_epoch) -> max(end_epoch) across ALL spans. The http/server
-  // root ends at create-commit, long before the async worker finishes, so
-  // a root-span duration would under-report. Summed span durations are
+  // min(start_epoch) -> max(end_epoch) — but only over spans inside the
+  // run's terminal boundary (the worker.run span's own end_epoch; the
+  // http/server root ends at create-commit, long before the async worker
+  // finishes, so a root-span duration would under-report while a
+  // post-terminal span would over-report). Summed span durations are
   // reported separately as total_span_work_ms — nested spans never
   // double-count as elapsed time.
   elapsed_ms: number
   total_span_work_ms: number
+  // Real telemetry outside the terminal boundary (e.g. an idempotent
+  // create_run retry's http span, marked run.idempotent_retry or simply
+  // still exporting when the run committed): observable, counted in
+  // span_count/layers, but excluded from elapsed_ms and trace_ids.
+  post_terminal: Record<string, unknown>[]
   tool_calls: string[]
   events_url: string
   cache_hits: number
@@ -76,17 +87,18 @@ export function parseRunEvents(sse: string): RunEventRow[] {
 }
 
 export function traceSummary(runId: string, events: RunEventRow[]): RunTrace | null {
+  // Only payloads carrying a trace_id count as spans (the same
+  // _is_span_payload gate rxycode_server.metrics applies).
   const spans = events
     .filter((event) => event.type === "telemetry.span")
     .map((event) => event.payload || {})
+    .filter((span) => Boolean(span.trace_id))
   if (spans.length === 0) return null
   const layers: Record<string, TraceLayer> = {}
   const toolCalls: string[] = []
   let cacheHits = 0
   let cacheMisses = 0
-  let traceId = ""
   for (const span of spans) {
-    if (!traceId && typeof span.trace_id === "string") traceId = span.trace_id
     const kind = String(span.kind || "internal")
     const slot = layers[kind] ?? (layers[kind] = { count: 0, duration_ms: 0 })
     slot.count += 1
@@ -98,26 +110,62 @@ export function traceSummary(runId: string, events: RunEventRow[]): RunTrace | n
     cacheHits += Number(attrs["cache.hits"] || 0)
     cacheMisses += Number(attrs["cache.misses"] || 0)
   }
-  // Run elapsed is the trace envelope — min(start) -> max(end) across ALL
-  // spans. The http server span ends at create-commit, long before the
-  // async worker finishes, so its own duration would under-report the
-  // run's real wall clock (mirrors rxycode_server.metrics.run_trace_summary).
+  // Terminal boundary — mirrors metrics._terminal_boundary: the
+  // worker.run span's own end_epoch, finalized inside the terminal
+  // commit. A span counts toward the run's execution window only when it
+  // is FULLY inside that boundary — start AND end at/before it — and is
+  // not an explicitly-marked idempotent retry: a retry's http span can
+  // start after the run ended or start inside the window yet keep
+  // exporting past it, and counting its far end would stretch a 120ms
+  // run into a 60s one (mirrors metrics._in_window). With no boundary the
+  // run never emitted a worker span, so nothing bounds the envelope.
+  const workerEnds = spans
+    .filter((span) => span.name === "worker.run")
+    .map((span) => Number(span.end_epoch || 0))
+    .filter((end) => end > 0)
+  const boundary = workerEnds.length > 0 ? Math.max(...workerEnds) : null
+  const inWindow: Record<string, unknown>[] = []
+  const postTerminal: Record<string, unknown>[] = []
+  for (const span of spans) {
+    const attrs = (span.attrs || {}) as Record<string, unknown>
+    const inside =
+      !attrs["run.idempotent_retry"] &&
+      (boundary === null ||
+        (Number(span.start_epoch || 0) <= boundary &&
+          Number(span.end_epoch || 0) <= boundary))
+    if (inside) {
+      inWindow.push(span)
+    } else {
+      postTerminal.push(span)
+    }
+  }
+  // Run elapsed is the trace envelope — min(start) -> max(end) — over the
+  // in-window spans only; post-terminal spans stay observable under
+  // post_terminal (and in span_count/layers — real work, honestly
+  // counted) but never stretch the envelope or claim the run's trace set.
   let elapsedMs = 0
-  if (spans.length > 0) {
-    const starts = spans.map((span) => Number(span.start_epoch || 0))
-    const ends = spans.map((span) => Number(span.end_epoch || 0))
+  if (inWindow.length > 0) {
+    const starts = inWindow.map((span) => Number(span.start_epoch || 0))
+    const ends = inWindow.map((span) => Number(span.end_epoch || 0))
     elapsedMs = Math.max(0, (Math.max(...ends) - Math.min(...starts)) * 1000)
   }
+  const traceIds = [
+    ...new Set(inWindow.map((span) => String(span.trace_id || ""))),
+  ]
+    .filter((id) => id.length > 0)
+    .sort()
   const totalSpanWorkMs = spans.reduce(
     (total, span) => total + Number(span.duration_ms || 0),
     0,
   )
   return {
-    trace_id: traceId,
+    trace_id: traceIds[0] ?? "",
+    trace_ids: traceIds,
     span_count: spans.length,
     layers,
     elapsed_ms: elapsedMs,
     total_span_work_ms: totalSpanWorkMs,
+    post_terminal: postTerminal,
     tool_calls: toolCalls,
     events_url: `/api/v1/runs/${runId}/events`,
     cache_hits: cacheHits,
@@ -189,6 +237,14 @@ function RunTraceRow({ runId }: { runId: string }) {
           {trace.cache_hits + trace.cache_misses > 0 ? (
             <p>
               cache: {trace.cache_hits} hits / {trace.cache_misses} misses
+            </p>
+          ) : null}
+          {trace.post_terminal.length > 0 ? (
+            <p data-post-terminal>
+              post-terminal:{" "}
+              {trace.post_terminal
+                .map((span) => String(span.name || "span"))
+                .join(", ")}
             </p>
           ) : null}
           <a href={trace.events_url}>raw events</a>
