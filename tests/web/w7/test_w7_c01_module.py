@@ -1039,6 +1039,36 @@ def test_w7_c01_integration() -> None:
             w27_ok, config, workdir=workdir
         ), w27_ok
 
+    # W7-C01 regression (nested quotes)
+    # A ``'`` inside a double-quoted python ``-c`` payload is literal shell
+    # content, not a top-level quote — the wedged-quote collapse must not
+    # strip it and turn ``r'...'`` literals dynamic. In-whitelist literal
+    # writes are allowed; the same payloads outside the whitelist, and
+    # top-level wedged-quote evasions, stay blocked.
+    for wq_ok in (
+        "python -c \"import pathlib; pathlib.Path(r'"
+        + workdir
+        + "\\x.txt').write_text('1')\"",
+        'python -c "open(rb\'' + workdir + "\\x.bin','wb')\"",
+        "python -c \"import os,pathlib; pathlib.Path(r'"
+        + workdir
+        + "\\slow.pid').write_text(str(os.getpid()))\"",
+    ):
+        assert not find_bash_disallowed_write_paths(
+            wq_ok, config, workdir=workdir
+        ), wq_ok
+    for wq_bad in (
+        "python -c \"import pathlib; pathlib.Path("
+        "r'C:\\Windows\\Temp\\x.txt').write_text('1')\"",
+        "python -c \"open(r'C:\\Windows\\x','w')\"",
+        "r'm' /etc/rxy_w7c01_pwned.txt",
+        'r"m" /etc/rxy_w7c01_pwned.txt',
+        "r''m /etc/rxy_w7c01_pwned.txt",
+    ):
+        assert find_bash_disallowed_write_paths(
+            wq_bad, config, workdir=workdir
+        ), wq_bad
+
     unknown = asyncio.run(
         orchestrator.execute_tool(
             "mcp_elevate_privileges",

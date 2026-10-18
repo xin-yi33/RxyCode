@@ -1359,7 +1359,33 @@ def find_bash_disallowed_write_paths(
                 base = collapsed
         return m.group(0)[: m.start("tok") - m.start()] + base
 
-    scrubbed = _PROG_SLOT_PATH_RE.sub(_norm_slot_prog, scrubbed)
+    # The slot anchors (``;``/``(``/``{``) are quote-blind: inside an
+    # enclosing quoted arg — ``python -c "...Path('C:\\x')..."`` — they are
+    # literal text, not command slots. Rewriting the token there would
+    # basename-eat the path literal the interpreter checks read, so skip
+    # any match that opens inside a top-level quoted span. A quoted
+    # *program* token (``& 'C:\\dir\\rar.exe'``) starts its own span, so
+    # its anchor still sits outside and keeps the rewrite.
+    slot_quote_spans: list[tuple[int, int]] = []
+    sqpos = 0
+    while sqpos < len(scrubbed):
+        if scrubbed[sqpos] in "\"'":
+            sclose = _find_quote_close(scrubbed, sqpos)
+            slot_quote_spans.append(
+                (sqpos, sclose if sclose != -1 else len(scrubbed))
+            )
+            sqpos = sclose + 1 if sclose != -1 else len(scrubbed)
+        else:
+            sqpos += 1
+
+    def _norm_slot_prog_guarded(m):
+        # Strictly-inside: a match that opens *at* the quote (``"C:\\dir\\x.exe"``)
+        # is the quoted program token itself — its anchor is outside the span.
+        if any(s < m.start() < e for s, e in slot_quote_spans):
+            return m.group(0)
+        return _norm_slot_prog(m)
+
+    scrubbed = _PROG_SLOT_PATH_RE.sub(_norm_slot_prog_guarded, scrubbed)
     def _unescape(text: str) -> str:
         # ``\`` mid-word (``r\m``, ``r\\m``) is a bash escape — strip it.
         # At a word start (``\Windows``, ``\\share``) or after a
@@ -2509,13 +2535,16 @@ def find_bash_disallowed_write_paths(
             if len(tail) > 1 and tail[0] in "\"'" and tail[0] == tail[-1]:
                 tail = tail[1:-1]
             else:
-                # ``bash -c 'code'``/``cmd /c "code"`` — the code flag's
-                # quoted operand IS the payload; unwrap it so the rescan
-                # sees its operators unquoted.
+                # ``bash -c 'code'``/``cmd /c "code"``/``powershell -Command
+                # "code"`` — the code flag's quoted operand IS the payload;
+                # unwrap it so the rescan sees its operators unquoted.
+                # ``-Command`` (single dash, PowerShell) needs its own
+                # alternative: ``-[ce]`` alone would consume only ``-C``
+                # and fail the quote lookahead at ``ommand``.
                 cqm = re.match(
                     r"(?is)^\s*(?:(?:-{1,2}|/)[\w?+-]+\s+)*?"
-                    r"(?:-[ce]|--command|--eval|/[ck])[\s,]*"
-                    r"(['\"])((?:[^'\"\\]|\\.)*)\1\s*$",
+                    r"(?:-{1,2}command\b|--eval|-[ce]|/[ck])[\s,]*"
+                    r"(['\"])((?:\\.|(?!\1).)*)\1\s*$",
                     tail,
                 )
                 if cqm:
@@ -2770,6 +2799,10 @@ def find_bash_disallowed_write_paths(
                     rule, and a bare name/attribute chain must resolve to a
                     statically known value.
                     """
+                    # ``r``/``b``/``u`` literal prefixes are quoting syntax,
+                    # not names — without this ``Path(r'x')`` reads ``r`` as
+                    # an unresolvable variable and fails closed.
+                    tail = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", tail)
                     t_lits = [
                         t.strip("\"'")
                         for t in _lit_contents( tail
