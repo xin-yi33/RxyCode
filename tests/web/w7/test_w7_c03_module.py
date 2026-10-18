@@ -398,3 +398,173 @@ def test_w7_c03_budget_midrun(postgres_url: str, tmp_path: Path) -> None:
     events = _events(postgres_url, org["tenant_id"], record["run_id"])
     kinds = [event["type"] for event in events]
     assert "eval.budget_exceeded" in kinds, kinds
+
+
+def test_w7_c03_ledger_read_failure_marks_error(
+    postgres_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    """A usage_records read exception must not abort run_matrix or lose records.
+
+    Fault injection makes the ledger read raise during the SECOND task's
+    finalization. Before the fix that exception escaped run_web_task,
+    propagated through run_matrix, and destroyed every record already
+    collected. Now it lands in that task's ``spine_errors`` (status ``error``)
+    while the matrix completes and still serializes to a results file.
+    """
+    from sqlalchemy.orm import Session as SASession
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import UsageRecord
+
+    upgrade_head(postgres_url)
+
+    ok_task = _task("w7c03led-ok", "present-marker")
+    bad_task = _task("w7c03led-bad", "present-marker")
+
+    class _InjectedLedgerRead(Exception):
+        pass
+
+    state = {"fail": False}
+    real_scalars = SASession.scalars
+
+    def _flaky_scalars(self, statement, *args, **kwargs):
+        entities = [
+            d.get("entity")
+            for d in (getattr(statement, "column_descriptions", None) or [])
+        ]
+        if state["fail"] and UsageRecord in entities:
+            raise _InjectedLedgerRead("injected ledger read failure")
+        return real_scalars(self, statement, *args, **kwargs)
+
+    async def _ok_driver(ctx: object) -> str:
+        Path(ctx.workdir, "answer.txt").write_text("present-marker", encoding="utf-8")
+        ctx.runtime.record_token_usage(ctx.agent_id, 321)
+        return "wrote answer.txt"
+
+    async def _bad_driver(ctx: object) -> str:
+        Path(ctx.workdir, "answer.txt").write_text("present-marker", encoding="utf-8")
+        ctx.runtime.record_token_usage(ctx.agent_id, 1000)
+        # Arm AFTER this task's durable writes begin: its finalization-time
+        # usage_records read is the one that dies.
+        state["fail"] = True
+        return "wrote answer.txt"
+
+    # run_matrix has no prompt_driver hook — wrap run_web_task to inject it;
+    # the serial matrix maps drivers to tasks in order.
+    real_run_web_task = web_run.run_web_task
+    drivers = iter([_ok_driver, _bad_driver])
+
+    async def _driven(**kwargs):
+        return await real_run_web_task(prompt_driver=next(drivers), **kwargs)
+
+    monkeypatch.setattr(web_run, "run_web_task", _driven)
+    monkeypatch.setattr(SASession, "scalars", _flaky_scalars)
+    results = asyncio.run(
+        web_run.run_matrix(
+            tasks=[ok_task, bad_task],
+            cells=["web-solo"],
+            model="eval-stub",
+            budget=0,
+            task_timeout=120,
+            database_url=postgres_url,
+            workdir_base=tmp_path,
+            log=lambda _m: None,
+        )
+    )
+    monkeypatch.undo()
+
+    # The matrix completed: every task produced a record, including the one
+    # that ran BEFORE the faulted finalization.
+    records = {r["task_id"]: r for r in results["records"]}
+    assert set(records) == {"w7c03led-ok", "w7c03led-bad"}, results
+    assert records["w7c03led-ok"]["status"] == "passed", records["w7c03led-ok"]
+
+    bad = records["w7c03led-bad"]
+    assert bad["status"] == "error", bad
+    # The oracle verdict is preserved — only the durable spine broke.
+    assert bad["oracle_status"] == "passed", bad
+    assert any(
+        "_InjectedLedgerRead" in str(e) for e in bad["spine_errors"]
+    ), bad["spine_errors"]
+    # The ledger WRITE had already landed — cost comes from the committed
+    # write response (1000 tokens x 0.000002 USD), never dropped.
+    assert bad["cost"] is not None, bad
+    assert Decimal(bad["cost"]["amount"]) == Decimal("0.00200000"), bad["cost"]
+
+    # Results still write out — the completed records are not lost.
+    out = tmp_path / "results.json"
+    out.write_text(json.dumps(results), encoding="utf-8")
+    reloaded = json.loads(out.read_text(encoding="utf-8"))
+    assert len(reloaded["records"]) == 2
+
+
+def test_w7_c03_usage_write_failure_keeps_cost(
+    postgres_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    """A usage_records WRITE failure must not zero the record's cost.
+
+    Tokens were consumed even when the durable ledger write fails — the
+    record falls back to the price-table estimate with an honest source
+    label (never silently $0), and the report totals still include it.
+    """
+    from rxycode_server.persistence.migrate import upgrade_head
+    import rxycode_server.usage.service as usage_service
+
+    upgrade_head(postgres_url)
+    org = web_run.seed_eval_tenant(postgres_url, "w7c03usage")
+    task = _task("w7c03usage-1", "present-marker")
+
+    async def _driver(ctx: object) -> str:
+        Path(ctx.workdir, "answer.txt").write_text("present-marker", encoding="utf-8")
+        ctx.runtime.record_token_usage(ctx.agent_id, 1000)
+        return "wrote answer.txt"
+
+    def _boom_usage(*args, **kwargs):
+        raise RuntimeError("injected usage write failure")
+
+    monkeypatch.setattr(
+        usage_service, "record_terminal_usage", _boom_usage
+    )
+
+    workdir = tmp_path / "usage-1"
+    workdir.mkdir(parents=True)
+    record = asyncio.run(
+        web_run.run_web_task(
+            database_url=postgres_url,
+            org=org,
+            task=task,
+            workdir=workdir,
+            cell="web-solo",
+            model="eval-stub",
+            task_timeout=120,
+            request_nonce=uuid.uuid4().hex[:8],
+            prompt_driver=_driver,
+        )
+    )
+    # Spine failure is still reported honestly: error status, oracle kept.
+    assert record["status"] == "error", record
+    assert record["oracle_status"] == "passed", record
+    assert record["token_usage"]["total"] == 1000, record["token_usage"]
+    assert any("usage_records" in e for e in record["spine_errors"])
+
+    # 1000 consumed tokens must not report $0: estimate fallback, labelled.
+    cost = record["cost"]
+    assert cost is not None, record
+    assert cost["source"] != "usage_records", cost
+    assert "estimate" in cost["source"] or "ledger" in cost["source"], cost
+    assert Decimal(cost["amount"]) == Decimal("0.00200000"), cost
+    # The ledger row really did not land.
+    assert _usage_row(postgres_url, record["run_id"]) is None
+
+    # Report totals reflect the estimate — spend is not silently dropped.
+    results = {
+        "schema": "evals-web-results/v1",
+        "cells": ["web-solo"],
+        "blocked_cells": {},
+        "records": [record],
+    }
+    report = web_report.build_report(results)
+    cell = report["cells"]["web-solo"]
+    assert Decimal(cell["cost"]["total"]) == Decimal("0.00200000"), cell["cost"]
+    assert cell["tokens"]["total"] == 1000
+    assert any("estimate" in s for s in cell["cost"]["sources"]), cell["cost"]

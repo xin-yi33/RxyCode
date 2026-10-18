@@ -295,6 +295,67 @@ def test_w7_c03_negative(web_report, tmp_path: Path, web_run) -> None:
     )
     assert any(fail_id in v for v in violations), violations
 
+    # --- audit round-2 probes -------------------------------------------------
+
+    # Manifest declares 4 cells but results only ran cli-solo — declared cells
+    # must not silently drop out of the gate (previously: zero violations
+    # because the gate only looked at results["cells"]).
+    manifest4 = dict(manifest)
+    manifest4["cells"] = ["cli-solo", "cli-team", "web-solo", "web-team"]
+    cli_only = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": [
+            {**_record(task.task_id, "cli-solo", "failed"), "expect": task.expect}
+            for task in tasks
+        ],
+    }
+    violations = web_report.gate_report(
+        cli_only, manifest=manifest4, taskset_path=TASKSET, min_tasks=30
+    )
+    for missing in ("cli-team", "web-solo", "web-team"):
+        assert any(missing in v for v in violations), (
+            f"gate let manifest-declared cell {missing} vanish: {violations}"
+        )
+
+    # An honest blocked claim excuses the coverage but NOT the cells entry:
+    # a declared cell must still appear in results.cells.
+    blocked_only = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {
+            "cli-team": "provider outage",
+            "web-solo": "postgres unreachable",
+            "web-team": "postgres unreachable",
+        },
+        "records": cli_only["records"],
+    }
+    violations = web_report.gate_report(
+        blocked_only, manifest=manifest4, taskset_path=TASKSET, min_tasks=30
+    )
+    for missing in ("cli-team", "web-solo", "web-team"):
+        assert any(missing in v for v in violations), violations
+
+    # The reconciliation is two-way: a results cell the manifest never
+    # declared is unaccounted provenance.
+    manifest1 = dict(manifest)
+    manifest1["cells"] = ["cli-solo"]
+    extra_cell = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo", "cli-team"],
+        "blocked_cells": {},
+        "records": [
+            {**_record(task.task_id, cell, "failed"), "expect": task.expect}
+            for cell in ("cli-solo", "cli-team")
+            for task in tasks
+        ],
+    }
+    violations = web_report.gate_report(
+        extra_cell, manifest=manifest1, taskset_path=TASKSET, min_tasks=30
+    )
+    assert any("cli-team" in v for v in violations), violations
+
     # The CLI exits non-zero on a gate failure.
     results_path = tmp_path / "happy.json"
     results_path.write_text(json.dumps(tiny), encoding="utf-8")
@@ -318,6 +379,61 @@ def test_w7_c03_negative(web_report, tmp_path: Path, web_run) -> None:
     )
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "GATE" in proc.stdout.upper() or "GATE" in proc.stderr.upper()
+
+
+def test_w7_c03_duplicate_rows(web_report, web_run) -> None:
+    """Duplicate (cell, task_id) rows are a gate violation and cannot inflate stats.
+
+    100 copies of one passed record appended to a complete 30-task run used to
+    pass the gate and lift the success rate (96.67% -> 99.23%). Now the gate
+    lists the duplicated pair, and _stats computes rates/counts on distinct
+    (cell, task_id) pairs — while token totals still count every row's real
+    spend.
+    """
+    tasks = web_run.load_taskset(TASKSET)
+    pass_id = next(t.task_id for t in tasks if t.expect != "fail")
+
+    base = [
+        {
+            **_record(
+                t.task_id, "cli-solo", "failed" if t.expect == "fail" else "passed"
+            ),
+            "expect": t.expect,
+        }
+        for t in tasks
+    ]
+    honest = web_report._stats(base)
+
+    inflated = base + [_record(pass_id, "cli-solo", "passed") for _ in range(100)]
+    results = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": inflated,
+    }
+    manifest = {"taskset_sha256": web_run.taskset_sha256(TASKSET)}
+    violations = web_report.gate_report(
+        results, manifest=manifest, taskset_path=TASKSET, min_tasks=30
+    )
+    assert any(
+        "duplicate" in v.lower() and pass_id in v for v in violations
+    ), violations
+
+    # Stats stay honest: the success rate/attempted count are computed on
+    # distinct pairs, exactly as if the 100 repeats never happened.
+    stats = web_report._stats(inflated)
+    assert stats["success_rate"] == honest["success_rate"], stats
+    assert stats["attempted"] == honest["attempted"], stats
+    assert stats["duplicate_rows"] == 100
+    assert stats["distinct_pairs"] == len(tasks)
+    # The repeated rows still burned real spend — totals keep counting it.
+    assert stats["tokens"]["total"] == 15 * (len(tasks) + 100)
+
+    # The duplicates are surfaced in the report, not hidden.
+    report = web_report.build_report(results)
+    assert report["overall"]["duplicate_rows"] == 100
+    rendered = web_report.render_markdown(report, results, manifest)
+    assert "uplicate" in rendered
 
 
 def test_w7_c03_budget_enforced(web_run, monkeypatch, tmp_path: Path) -> None:

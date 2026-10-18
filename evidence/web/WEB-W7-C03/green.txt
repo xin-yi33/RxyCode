@@ -84,3 +84,71 @@ D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
 No real LLM calls were burned for these fixes (stub drivers + fault
 injection only); the pre-fix manifests/results keep their provenance and
 were not regenerated.
+
+== audit round 2 fixes ==
+
+Four audit findings fixed in evals/web/{run.py,report.py} with TEST-first
+proof (each new test failed against the pre-fix code, then passed after):
+
+1. P1 manifest/results cell reconciliation (report.py gate_report): when the
+   manifest carries a "cells" list it is now authoritative in BOTH
+   directions — a manifest-declared cell absent from results.cells is a
+   violation (blocked_cells reasons do not excuse the missing cells entry),
+   and a results cell the manifest never declared is unaccounted
+   provenance. The per-cell coverage check below it then still requires
+   records or an honest blocked reason for every cell present.
+   Probe now gated: test_w7_c03_negative covers manifest=4-cells vs
+   results=cli-solo (all 3 missing cells listed), the blocked-but-absent
+   variant, and the reverse direction (undeclared results cell).
+
+2. P1 duplicate (cell, task_id) rows (report.py): gate_report now flags
+   every repeated pair and lists up to 5 of them (cell/task xN); _stats
+   computes by_status/attempted/blocked/durations/success_rate on the FIRST
+   row per distinct (cell, task_id) pair so repeats cannot inflate the
+   rate, while token/cost totals still sum all rows (that spend was real).
+   Stats expose "distinct_pairs" and "duplicate_rows"; render_markdown adds
+   a "Duplicate rows" section when non-zero. The 100-dup-passed-row probe
+   that lifted success 96.67% -> 99.23% now produces a gate violation and
+   leaves the rate unchanged. Test: test_w7_c03_duplicate_rows.
+
+3. P2 ledger-read exceptions (run.py _ledger_cost): the usage_records read
+   now takes spine_errors and returns None on any DB exception instead of
+   raising through finalization — the record flips to status=error with the
+   exception type in spine_errors. All five call sites pass spine_errors.
+   run_matrix also wraps the per-task run in a catch-all so even a
+   hypothetical future escape becomes an honest error record rather than
+   destroying the records already collected. Module test
+   test_w7_c03_ledger_read_failure_marks_error injects a raised
+   scalars(UsageRecord) on the second task's finalization: that record is
+   status=error with _InjectedLedgerRead in spine_errors, oracle_status
+   stays "passed", the first task's passed record survives, and the
+   results dict still serializes to a file.
+
+4. P2 usage-write failure losing cost (run.py): every web-cell cost path
+   now falls back to _estimate_cost(..., source="estimate/ledger_failed")
+   when the ledger row cannot be produced/read — oracle-completion path,
+   ordinary turn-error path, provider-infra path, budget-cancel path, and
+   the setup-exception path (which also records measured token_usage now).
+   _estimate_cost takes a source label (CLI cells keep "price_table").
+   Module test test_w7_c03_usage_write_failure_keeps_cost injects a
+   record_terminal_usage failure on 1000 consumed tokens: status=error
+   (spine honest), oracle_status=passed, cost.amount=0.00200000 with the
+   estimate/ledger_failed source, and the report totals carry the spend.
+
+Verify runs (HEAD 795ad2d9, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+12 passed
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7 -q
+21 passed in 144.85s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 68.10s
+
+git diff --check: clean on the four touched files. No real LLM calls
+(stub prompt drivers + Session.scalars/record_terminal_usage fault
+injection only); no records lost; no leaked processes.

@@ -500,9 +500,14 @@ def _usage(*, total: int, input_tokens: int = 0, output_tokens: int = 0) -> dict
     return {"input": int(input_tokens), "output": int(output_tokens), "total": int(total)}
 
 
-def _estimate_cost(tokens: int) -> dict[str, Any]:
-    """CLI cells have no durable ledger: estimate from the published rate and
-    label the source so the report can separate ledger from estimate."""
+def _estimate_cost(tokens: int, *, source: str = "price_table") -> dict[str, Any]:
+    """Price-table estimate when no durable ledger row can be trusted.
+
+    CLI cells always estimate (``price_table``); web cells fall back here
+    when the usage_records write or read failed (``estimate/ledger_failed``)
+    — consumed tokens must never report $0.  The source label lets the report
+    separate ledger rows from estimates.
+    """
     from decimal import Decimal
 
     amount = (Decimal(int(tokens)) * Decimal(PRICE_PER_TOKEN_USD)).quantize(
@@ -511,7 +516,7 @@ def _estimate_cost(tokens: int) -> dict[str, Any]:
     return {
         "amount": format(amount, "f"),
         "currency": "USD",
-        "source": "price_table",
+        "source": source,
         "price_version": PRICE_VERSION,
     }
 
@@ -1157,7 +1162,23 @@ async def run_web_task(
             if commit_err:
                 spine_errors.append(commit_err)
             record["trace"] = _web_trace(database_url, tenant_id, run_id)
-            record["cost"] = _ledger_cost(database_url, run_id)
+            measured = dict(outcome.get("tokens") or {})
+            consumed = max(
+                int(measured.get("total") or 0),
+                int(ctx.runtime.token_usage(ctx.agent_id))
+                if ctx is not None and ctx.runtime is not None
+                else 0,
+                _token_delta(poll_token0)["total"],
+            )
+            if consumed:
+                record["token_usage"] = _usage(
+                    total=consumed,
+                    input_tokens=int(measured.get("input") or 0),
+                    output_tokens=int(measured.get("output") or 0),
+                )
+            record["cost"] = _ledger_cost(
+                database_url, run_id, spine_errors=spine_errors
+            ) or _estimate_cost(consumed, source="estimate/ledger_failed")
         record["spine_errors"] = spine_errors
         return record
     finally:
@@ -1212,7 +1233,9 @@ async def run_web_task(
         if commit_err:
             spine_errors.append(commit_err)
         record["trace"] = _web_trace(database_url, tenant_id, run_id)
-        record["cost"] = _ledger_cost(database_url, run_id) or _estimate_cost(consumed)
+        record["cost"] = _ledger_cost(
+            database_url, run_id, spine_errors=spine_errors
+        ) or _estimate_cost(consumed, source="estimate/ledger_failed")
         record["spine_errors"] = spine_errors
         if spine_errors:
             record["status"] = "error"
@@ -1248,7 +1271,9 @@ async def run_web_task(
         if commit_err:
             spine_errors.append(commit_err)
         record["trace"] = _web_trace(database_url, tenant_id, run_id)
-        record["cost"] = _ledger_cost(database_url, run_id)
+        record["cost"] = _ledger_cost(
+            database_url, run_id, spine_errors=spine_errors
+        )
         measured = dict(outcome.get("tokens") or {})
         done_tokens = int(record["trace"].get("agent_done_tokens") or 0)
         total = max(
@@ -1262,7 +1287,9 @@ async def run_web_task(
             output_tokens=int(measured.get("output") or 0),
         )
         if record["cost"] is None:
-            record["cost"] = _estimate_cost(total)
+            record["cost"] = _estimate_cost(
+                total, source="estimate/ledger_failed"
+            )
         record["spine_errors"] = spine_errors
         if spine_errors:
             # The durable claim ("blocked by provider outage") itself did not
@@ -1294,7 +1321,9 @@ async def run_web_task(
         record["status"] = "error"
         record["error"] = turn_error
         record["trace"] = _web_trace(database_url, tenant_id, run_id)
-        record["cost"] = _ledger_cost(database_url, run_id)
+        record["cost"] = _ledger_cost(
+            database_url, run_id, spine_errors=spine_errors
+        )
         done_tokens = int(record["trace"].get("agent_done_tokens") or 0)
         measured = dict(outcome.get("tokens") or {})
         record["token_usage"] = _usage(
@@ -1302,6 +1331,10 @@ async def run_web_task(
             input_tokens=int(measured.get("input") or 0),
             output_tokens=int(measured.get("output") or 0),
         )
+        if record["cost"] is None:
+            record["cost"] = _estimate_cost(
+                record["token_usage"]["total"], source="estimate/ledger_failed"
+            )
         record["spine_errors"] = spine_errors
         if spine_errors:
             record["error"] = (record["error"] + " | spine: " + "; ".join(spine_errors))[:500]
@@ -1367,7 +1400,7 @@ async def run_web_task(
         spine_errors.append(commit_err)
     trace = _web_trace(database_url, tenant_id, run_id)
     record["trace"] = trace
-    record["cost"] = _ledger_cost(database_url, run_id)
+    record["cost"] = _ledger_cost(database_url, run_id, spine_errors=spine_errors)
 
     # Token totals come from the durable event/agent_done snapshot (via
     # replay); the measured delta is kept as an input/output split detail.
@@ -1387,6 +1420,11 @@ async def run_web_task(
             "price_version": PRICE_VERSION,
             "usage_record_id": usage_record.get("id"),
         }
+    elif record["cost"] is None:
+        # The ledger write/read failed but tokens WERE consumed — fall back
+        # to the price-table estimate (labelled) rather than reporting $0,
+        # same pattern as the budget/provider-failure paths.
+        record["cost"] = _estimate_cost(total, source="estimate/ledger_failed")
     record["spine_errors"] = spine_errors
     if spine_errors:
         # The oracle ran, but part of the durable spine (eval.checks event /
@@ -1497,21 +1535,37 @@ def _safe_commit(
     return None
 
 
-def _ledger_cost(database_url: str, run_id: str) -> dict[str, Any] | None:
+def _ledger_cost(
+    database_url: str,
+    run_id: str,
+    *,
+    spine_errors: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Read the durable usage_records row for cost. Never raises a DB error:
+    a read failure during finalization is a spine error on that record
+    (``status`` flips to ``error``), not a crash that could abort the matrix
+    and lose the records already collected."""
     from sqlalchemy import create_engine, select
     from sqlalchemy.orm import Session as SASession
     from sqlalchemy.pool import NullPool
 
     from rxycode_server.persistence.models import UsageRecord
 
-    engine = create_engine(database_url, poolclass=NullPool)
     try:
-        with SASession(engine) as db:
-            row = db.scalars(
-                select(UsageRecord).where(UsageRecord.run_id == run_id)
-            ).first()
-    finally:
-        engine.dispose()
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with SASession(engine) as db:
+                row = db.scalars(
+                    select(UsageRecord).where(UsageRecord.run_id == run_id)
+                ).first()
+        finally:
+            engine.dispose()
+    except Exception as exc:
+        if spine_errors is not None:
+            spine_errors.append(
+                f"usage_records read failed: {type(exc).__name__}: {exc}"
+            )
+        return None
     if row is None:
         return None
     return {
@@ -1628,27 +1682,42 @@ async def run_matrix(
             log(f"[{cell} {index}/{len(tasks)}] {task.task_id} ...")
             workdir = _setup_workdir(task, workdir_base, cell)
             remaining = (budget - cell_tokens) if budget else None
-            if cell.startswith("web"):
-                record = await run_web_task(
-                    database_url=database_url,
-                    org=org,
-                    task=task,
-                    workdir=workdir,
-                    cell=cell,
-                    model=model,
-                    task_timeout=task_timeout,
-                    request_nonce=nonce,
-                    budget_remaining=remaining,
-                )
-            else:
-                record = await run_cli_task(
-                    cell=cell,
-                    task=task,
-                    workdir=workdir,
-                    model=model,
-                    task_timeout=task_timeout,
-                    budget_remaining=remaining,
-                )
+            try:
+                if cell.startswith("web"):
+                    record = await run_web_task(
+                        database_url=database_url,
+                        org=org,
+                        task=task,
+                        workdir=workdir,
+                        cell=cell,
+                        model=model,
+                        task_timeout=task_timeout,
+                        request_nonce=nonce,
+                        budget_remaining=remaining,
+                    )
+                else:
+                    record = await run_cli_task(
+                        cell=cell,
+                        task=task,
+                        workdir=workdir,
+                        model=model,
+                        task_timeout=task_timeout,
+                        budget_remaining=remaining,
+                    )
+            except Exception as exc:
+                # Defense in depth: a harness bug that escapes the task runner
+                # (e.g. a durable-store read during finalization) must not
+                # destroy the records already collected — record this task as
+                # an honest error and continue the matrix.
+                record = _base_record(cell, task)
+                record["status"] = "error"
+                record["error"] = (
+                    f"task runner crashed: {type(exc).__name__}: {exc}"
+                )[:500]
+                record["spine_errors"] = [
+                    f"unhandled task-runner exception: "
+                    f"{type(exc).__name__}: {exc}"
+                ]
             # A provider-level outage blocks the remainder of the cell: burning
             # through the taskset against a dead endpoint yields only noise.
             if str(record.get("error") or "").startswith("provider infra"):

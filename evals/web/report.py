@@ -15,6 +15,11 @@ then applies the card's quality gate:
   have a non-blocked record somewhere (blocked is not coverage);
 * every declared cell must produce records — unless ``blocked_cells`` carries
   an honest, non-empty reason (provider outage, database down);
+* when the manifest declares ``cells``, every declared cell must appear in
+  ``results.cells`` (and then produce records or an honest blocked reason);
+  a results cell the manifest never declared is unaccounted provenance;
+* duplicate ``(cell, task_id)`` rows are violations — stats de-duplicate to
+  the first row per pair so repeats cannot inflate the success rate;
 * with ``--taskset``, every taskset task_id must appear per declared
   non-blocked cell; unknown task_ids are violations; and coverage counts
   DISTINCT task_ids — duplicate rows do not count;
@@ -102,8 +107,20 @@ def _records_for_cell(records: Iterable[dict], cell: str | None) -> list[dict]:
 
 
 def _stats(records: list[dict], budget: int | None = None) -> dict[str, Any]:
-    by_status = Counter(str(r.get("status") or "error") for r in records)
-    attempted = [r for r in records if r.get("status") != "blocked"]
+    # Duplicate (cell, task_id) rows are a gate violation; rates, status
+    # counts and durations are computed on the FIRST row per pair so repeats
+    # cannot inflate success. Token and cost totals still sum every row —
+    # repeated rows burned real spend and must not vanish from the totals.
+    deduped: list[dict] = []
+    seen: set[tuple[Any, Any]] = set()
+    for r in records:
+        key = (r.get("cell"), str(r.get("task_id")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(r)
+    by_status = Counter(str(r.get("status") or "error") for r in deduped)
+    attempted = [r for r in deduped if r.get("status") != "blocked"]
     blocked = [r for r in records if r.get("status") == "blocked"]
     durations = sorted(float(r.get("duration_s") or 0.0) for r in attempted)
     # Token totals are REAL spend: blocked records consumed tokens too and
@@ -152,8 +169,10 @@ def _stats(records: list[dict], budget: int | None = None) -> dict[str, Any]:
     overrun = max(0, tokens_all["total"] - int(budget)) if budget else 0
     return {
         "n": len(records),
+        "distinct_pairs": len(deduped),
+        "duplicate_rows": len(records) - len(deduped),
         "attempted": attempted_n,
-        "blocked": len(records) - attempted_n,
+        "blocked": len(deduped) - attempted_n,
         "by_status": dict(by_status),
         "passed": int(by_status.get("passed", 0)),
         "failed": int(by_status.get("failed", 0)),
@@ -296,7 +315,10 @@ def gate_report(
     coverage counts DISTINCT task_ids (duplicate rows do not help), empty
     records are rejected, and ``blocked_cells`` needs a non-empty reason.
     Without it, the weaker pre-existing checks stay — except that an empty
-    records list is still a violation.
+    records list is still a violation. Always enforced, with or without a
+    taskset: duplicate (cell, task_id) rows are violations, and a manifest
+    that declares ``cells`` is reconciled against ``results.cells`` in both
+    directions.
     """
     violations: list[str] = []
     records = results.get("records") or []
@@ -320,10 +342,49 @@ def gate_report(
                 f"({manifest.get('taskset_sha256')} != {actual})"
             )
 
+    # --- manifest <-> results cell reconciliation -----------------------------
+    # When the manifest declares its cells the declaration binds in BOTH
+    # directions: a declared cell absent from results.cells silently dropped
+    # out of the run (per-cell coverage below then requires its records or an
+    # honest blocked reason), and a results cell the manifest never declared
+    # is unaccounted provenance.
+    manifest_cells = manifest.get("cells") if isinstance(manifest, dict) else None
+    if isinstance(manifest_cells, list):
+        declared_cells = {str(c) for c in manifest_cells}
+        present_cells = {str(c) for c in cells}
+        for cell in sorted(declared_cells - present_cells):
+            violations.append(
+                f"manifest declares cell {cell} but results.cells omits it — "
+                "a declared cell cannot silently drop out of the run"
+            )
+        for cell in sorted(present_cells - declared_cells):
+            violations.append(
+                f"results contain cell {cell} which the manifest cells list "
+                "does not declare — unaccounted cell provenance"
+            )
+
     # --- empty results -------------------------------------------------------
     if not records:
         violations.append(
             "results contain no records — an empty run is not evidence"
+        )
+
+    # --- duplicate (cell, task_id) rows --------------------------------------
+    # One pair, one row: repeats let a single execution masquerade as many
+    # and inflate the success rate. Listed so the results can be fixed; stats
+    # already de-duplicate, so the violation is what carries the signal.
+    pair_counts = Counter(
+        (str(r.get("cell")), str(r.get("task_id"))) for r in records
+    )
+    dup_pairs = sorted(p for p, n in pair_counts.items() if n > 1)
+    if dup_pairs:
+        shown = ", ".join(
+            f"{cell}/{task_id} x{pair_counts[(cell, task_id)]}"
+            for cell, task_id in dup_pairs[:5]
+        ) + (" ..." if len(dup_pairs) > 5 else "")
+        violations.append(
+            f"{len(dup_pairs)} duplicate (cell, task_id) pair(s) — repeated "
+            f"rows cannot inflate coverage or the success rate: {shown}"
         )
 
     # --- blocked_cells honesty ------------------------------------------------
@@ -528,6 +589,16 @@ def render_markdown(
                 f"${spend.get('cost')} across {spend.get('records')} "
                 "blocked record(s)"
             )
+    duplicate_rows = int(overall.get("duplicate_rows") or 0)
+    if duplicate_rows:
+        lines += [
+            "",
+            "## Duplicate rows",
+            "",
+            f"- {duplicate_rows} repeated (cell, task_id) row(s) ignored for "
+            "rates/counts (stats use distinct pairs) — a gate violation; "
+            "their token/cost spend still counts in the totals above.",
+        ]
     budget = report.get("budget")
     if budget:
         lines += [
