@@ -143,7 +143,14 @@ def _spans(database_url: str, tenant_id: str, run_id: str) -> list[dict]:
 
 
 def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
-    """One trace_id correlates server/worker/tool spans, each with duration."""
+    """One trace_id correlates server/worker/tool spans, each with duration.
+
+    Every span in this trace is emitted BY the production wiring — the
+    http/server span by ``runs.service.create_run``, the worker run span by
+    ``supervisor.claim`` / ``supervisor.commit_terminal``, and the
+    graph/tool spans by ``agent_events.RunJournal.record`` — never
+    constructed by the test itself.
+    """
     from fastapi.testclient import TestClient
 
     from appserver.agent_runtime import AgentConfig, AgentRuntime
@@ -156,10 +163,11 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
     from rxycode_worker import telemetry
     from rxycode_worker.agent_events import (
         clear_web_run,
+        default_run_journal,
         publish_database_url,
         remember_web_run,
     )
-    from rxycode_worker.supervisor import claim, commit_terminal
+    from rxycode_worker.supervisor import attempt_tool, claim, commit_terminal
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         ToolExecutionJournal,
         new_attempt_id,
@@ -167,106 +175,65 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
 
     upgrade_head(postgres_url)
     app, owner, tenant_id, project_id, session_id = _provision_owner(postgres_url)
-    exporter = telemetry.RunEventsSpanExporter(postgres_url, tenant_id)
-    tracer = telemetry.Tracer(exporter, service="rxycode-web-c04")
     worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
     workdir = tmp_path / "c04-contract"
     workdir.mkdir(parents=True)
     message = "/solo write answer.txt with the marker"
     runtime_box: dict[str, object] = {}
-
-    # -- HTTP layer: the real run-creation write inside a SERVER span -------
-    http_span = tracer.start_span(
-        "http POST /api/v1/runs",
-        kind="server",
-        attrs={
-            "http.method": "POST",
-            "http.route": "/api/v1/runs",
-            # The full prompt is deliberately attached as an attr: the
-            # sanitizer must drop the body and keep only safe metadata.
-            "prompt": message,
-            "message_len": len(message),
-        },
-    )
-    accepted = create_run(
-        postgres_url,
-        tenant_id=tenant_id,
-        session_id=session_id,
-        message=message,
-        target_id="local:c04",
-        permission_profile="full_auto",
-        request_id=f"req-c04-{uuid.uuid4().hex[:12]}",
-    )
-    run_id = accepted.run_id
-    http_span.run_id = run_id
-    tracer.end_span(http_span)
-
-    get_span = tracer.start_span(
-        "http GET /api/v1/runs/{run_id}",
-        kind="server",
-        parent=http_span.context,
-        run_id=run_id,
-        attrs={"http.method": "GET"},
-    )
-    got = owner.get(f"/api/v1/runs/{run_id}")
-    tracer.end_span(get_span, attrs={"http.status_code": got.status_code})
-    assert got.status_code == 200
-    assert got.json()["status"] == "pending"
-
-    # -- Propagation: the server injects traceparent; the worker honors it --
-    telemetry.inject_env(http_span.context)
     try:
+        # -- HTTP layer: create_run itself emits the server span and injects
+        # the W3C traceparent into the worker's env channel ---------------
+        accepted = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message=message,
+            target_id="local:c04",
+            permission_profile="full_auto",
+            request_id=f"req-c04-{uuid.uuid4().hex[:12]}",
+        )
+        run_id = accepted.run_id
+        remote_parent = telemetry.extract_env()
+        assert remote_parent is not None
+        assert len(remote_parent.trace_id) == 32
+
+        got = owner.get(f"/api/v1/runs/{run_id}")
+        assert got.status_code == 200
+        assert got.json()["status"] == "pending"
+
         publish_database_url(postgres_url)
         remember_web_run(
             postgres_url, tenant_id, run_id, session_id=session_id
         )
-        remote_parent = telemetry.extract_env()
-        assert remote_parent is not None
 
-        # -- Worker layer: claim + real agent lifecycle inside WORKER spans --
-        claim_span = tracer.start_span(
-            "worker.claim",
-            kind="worker",
-            parent=remote_parent,
-            run_id=run_id,
-            attrs={"worker.id": worker_id},
-        )
+        # -- Worker layer: claim opens the run span (honoring the injected
+        # parent); commit_terminal closes it -------------------------------
         epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
         assert epoch is not None
-        tracer.end_span(claim_span, attrs={"worker.epoch": epoch})
-
-        agent_span = tracer.start_span(
-            "graph.agent.eval-primary",
-            kind="worker",
-            parent=claim_span.context,
-            run_id=run_id,
-            attrs={
-                "agent.id": "eval-primary",
-                "model": "eval-stub",
-                "price_version": PRICE_VERSION,
-            },
-        )
 
         async def _target(_task: str, checkpoint: object | None = None) -> str:
             runtime = runtime_box["runtime"]
-            journal = ToolExecutionJournal(tmp_path / "tool-journal")
+            journal = default_run_journal()
+            assert journal is not None
+            tool_journal = ToolExecutionJournal(tmp_path / "tool-journal")
             attempt_id = new_attempt_id()
-            call = journal.binding(attempt_id).next_call(
+            call = tool_journal.binding(attempt_id).next_call(
                 "write_file", {"path": "answer.txt"}
             )
-            # -- Tool layer: the real journaled tool call inside a TOOL span --
-            tool_span = tracer.start_span(
-                "tool.write_file",
-                kind="tool",
-                parent=agent_span.context,
-                run_id=run_id,
-                tool_call_id=call.key,
-                attrs={"tool.name": "write_file", "attempt_id": attempt_id},
+            # -- Tool layer: the journaled tool call is bracketed by the
+            # same RunJournal.record calls production uses; the tool span
+            # is emitted inside record(), not by this test ---------------
+            journal.record(
+                "event/tool_begin",
+                "eval-primary",
+                {
+                    "call_id": call.key,
+                    "tool_name": "write_file",
+                    "attempt_id": attempt_id,
+                },
             )
-            from rxycode_worker.supervisor import attempt_tool
-
             outcome = attempt_tool(
-                journal,
+                tool_journal,
                 attempt_id,
                 "write_file",
                 {"path": "answer.txt"},
@@ -275,11 +242,23 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
                 ),
             )
             assert outcome["executed"] is True
-            tracer.end_span(tool_span, attrs={"tool.executed": True})
             ctx = runtime.contexts["eval-primary"]
             ctx.record_cache(True)
             ctx.record_cache(False)
             runtime.record_token_usage("eval-primary", 1234)
+            cache = runtime._session_cache
+            journal.record(
+                "event/tool_end",
+                "eval-primary",
+                {
+                    "call_id": call.key,
+                    "tool_name": "write_file",
+                    "ok": True,
+                    "tool.executed": True,
+                    "cache.hits": cache.hits,
+                    "cache.misses": cache.misses,
+                },
+            )
             return "wrote answer.txt"
 
         async def _drive() -> object:
@@ -300,24 +279,8 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
 
         answer = asyncio.run(_drive())
         assert answer == "wrote answer.txt"
-        runtime = runtime_box["runtime"]
-        session_cache = runtime._session_cache
-        tracer.end_span(
-            agent_span,
-            attrs={
-                "cache.hits": session_cache.hits,
-                "cache.misses": session_cache.misses,
-            },
-        )
 
-        # -- Finalize layer: verdict + ledger + terminal commit (SERVER) ----
-        finalize_span = tracer.start_span(
-            "server.run.finalize",
-            kind="server",
-            parent=http_span.context,
-            run_id=run_id,
-            attrs={"model": "eval-stub", "price_version": PRICE_VERSION},
-        )
+        # -- Finalize: verdict + ledger + terminal commit (real spine) -----
         append_event(
             postgres_url,
             tenant_id=tenant_id,
@@ -335,7 +298,6 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
             event_id=uuid.uuid4().hex,
         )
         commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
-        tracer.end_span(finalize_span)
     finally:
         clear_web_run()
         os.environ.pop("RXYCODE_TRACEPARENT", None)
@@ -344,19 +306,19 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
     assert usage["amount"] == "0.00246800"
 
     # -- Durable span rows: one trace_id, three layers, real durations ------
+    # All four spans were emitted by the production wiring (create_run /
+    # claim+commit_terminal / RunJournal.record), not by this test.
     spans = _spans(postgres_url, tenant_id, run_id)
-    assert len(spans) >= 5, spans
+    assert len(spans) >= 4, spans
     trace_ids = {span["trace_id"] for span in spans}
-    assert trace_ids == {http_span.context.trace_id}
-    assert len(http_span.context.trace_id) == 32
+    assert trace_ids == {remote_parent.trace_id}
+    assert len(remote_parent.trace_id) == 32
     by_name = {span["name"]: span for span in spans}
     for name in (
         "http POST /api/v1/runs",
-        "http GET /api/v1/runs/{run_id}",
-        "worker.claim",
+        "worker.run",
         "graph.agent.eval-primary",
         "tool.write_file",
-        "server.run.finalize",
     ):
         assert name in by_name, by_name
         span = by_name[name]
@@ -365,14 +327,17 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
         assert len(span["span_id"]) == 16
         assert span["run_id"] == run_id
 
-    # Parentage: http -> worker -> graph/agent -> tool (runner).
+    # Parentage: http server span -> worker run -> graph/agent -> tool.
     tool_span = by_name["tool.write_file"]
     assert tool_span["parent_span_id"] == by_name["graph.agent.eval-primary"]["span_id"]
     assert (
         by_name["graph.agent.eval-primary"]["parent_span_id"]
-        == by_name["worker.claim"]["span_id"]
+        == by_name["worker.run"]["span_id"]
     )
-    assert by_name["worker.claim"]["parent_span_id"] == http_span.context.span_id
+    assert (
+        by_name["worker.run"]["parent_span_id"]
+        == by_name["http POST /api/v1/runs"]["span_id"]
+    )
     assert tool_span["tool_call_id"].startswith("call_")
 
     # The lifecycle journal landed through the real RunJournal too.
@@ -391,9 +356,16 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
         postgres_url, tenant_id=tenant_id, run_id=run_id
     )
     assert summary["code"] is None
-    assert summary["trace_id"] == http_span.context.trace_id
+    assert summary["trace_id"] == remote_parent.trace_id
     assert summary["events_url"] == f"/api/v1/runs/{run_id}/events"
     assert summary["span_count"] == len(spans)
+    # Honest duration accounting: the root span is the elapsed wall clock;
+    # nested durations are summed separately, never double-counted as one.
+    assert summary["elapsed_ms"] > 0
+    assert (
+        summary["total_span_work_ms"]
+        >= summary["elapsed_ms"] > 0
+    )
     for layer in ("server", "worker", "tool"):
         assert summary["layers"][layer]["count"] >= 1, summary["layers"]
         assert summary["layers"][layer]["duration_ms"] > 0
@@ -510,16 +482,21 @@ def test_w7_c04_negative(postgres_url: str, tmp_path: Path) -> None:
 
     exporter = telemetry.RunEventsSpanExporter(postgres_url, tenant_id)
     tracer = telemetry.Tracer(exporter, service="rxycode-web-c04-neg")
-    # A fabricated-but-realistic secret (never a real key) in the tool's
-    # stderr and in span attrs — the stored payload must mask both forms.
+    # Fabricated-but-realistic secrets (never real keys) in the tool's
+    # stderr, in span attrs, and nested inside a list of dicts — the stored
+    # payload must mask or drop every form.
     api_secret = "sk-c04testsecret1234567890abcdef"
     password = "hunter2-super-secret"
+    gh_token = "ghp_c04fakegithubtoken9Zxq"
+    nested_secret = "nested-hunter3"
+    inner_prompt = "inner prompt body never stored"
+    system_prompt = "system prompt body must never be stored"
     journal = ToolExecutionJournal(tmp_path / "neg-journal")
     attempt_id = new_attempt_id()
     call = journal.binding(attempt_id).next_call("bash", {"command": "deploy"})
     stderr = (
         f"fatal: authorization: bearer {api_secret} rejected; "
-        f"deploy failed (password={password})"
+        f"deploy failed (password={password}); remote used {gh_token}"
     )
     span = tracer.start_span(
         "tool.bash",
@@ -535,6 +512,16 @@ def test_w7_c04_negative(postgres_url: str, tmp_path: Path) -> None:
             "api_key": api_secret,
             "note": f"used password={password} to auth",
         },
+    )
+    # Extended probes ride the same sanitized merge path: a prompt-like key,
+    # a message container, and a credential nested inside a LIST of dicts —
+    # the sanitizer must recurse, never stringify the raw secret.
+    span.set_attrs(
+        {
+            "system_prompt": system_prompt,
+            "messages": [{"role": "user", "content": system_prompt}],
+            "events": [{"password": nested_secret, "prompt": inner_prompt}],
+        }
     )
     outcome = attempt_tool(
         journal,
@@ -553,10 +540,18 @@ def test_w7_c04_negative(postgres_url: str, tmp_path: Path) -> None:
                 RunEvent.run_id == run_id, RunEvent.type == "telemetry.span"
             )
         ).all()
+    # create_run emitted its own http/server span — the probe is the tool span.
+    rows = [
+        row for row in rows if (row.payload or {}).get("name") == "tool.bash"
+    ]
     assert len(rows) == 1
     stored = json.dumps(rows[0].payload, ensure_ascii=False)
     assert api_secret not in stored
     assert password not in stored
+    assert gh_token not in stored
+    assert nested_secret not in stored
+    assert inner_prompt not in stored
+    assert system_prompt not in stored
     assert "[REDACTED]" in stored
     # The prompt body is dropped entirely, leaving only safe metadata.
     attrs = rows[0].payload["attrs"]
@@ -568,6 +563,18 @@ def test_w7_c04_negative(postgres_url: str, tmp_path: Path) -> None:
     assert "password=[REDACTED]" in attrs["tool.stderr"]
     # The in-memory export payload was already sanitized too.
     assert api_secret not in json.dumps(span.to_dict(), ensure_ascii=False)
+    assert gh_token not in json.dumps(span.to_dict(), ensure_ascii=False)
+    assert "remote used [REDACTED]" in attrs["tool.stderr"]
+    # Prompt-like keys dropped → only len/sha metadata; nested list recursed.
+    assert "system_prompt" not in attrs
+    assert attrs["system_prompt_len"] == len(system_prompt)
+    assert "messages" not in attrs
+    assert attrs["messages_len"] > 0 and "messages_sha256" in attrs
+    events_attr = attrs["events"]
+    assert isinstance(events_attr, list) and len(events_attr) == 1
+    assert "password" not in events_attr[0]
+    assert events_attr[0]["password_len"] == len(nested_secret)
+    assert "prompt" not in events_attr[0]
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +642,59 @@ def test_w7_c04_traceparent(postgres_url: str, tmp_path: Path) -> None:
     spans = memory.spans
     assert {span["trace_id"] for span in spans} == {ctx.trace_id}
     assert exporter_dropped(memory) == 0
+
+
+def test_w7_c04_traceparent_edges(postgres_url: str, tmp_path: Path) -> None:
+    """W3C edge cases: version ff rejected, sampled is bit 0x01, a malformed
+    explicit parent inside an ambient context falls back to the ambient."""
+    from rxycode_worker import telemetry
+
+    trace_id = "a" * 32
+    span_id = "b" * 16
+    # Version ``ff`` is forbidden by the W3C spec; other versions parse.
+    assert (
+        telemetry.parse_traceparent(f"ff-{trace_id}-{span_id}-01") is None
+    )
+    parsed = telemetry.parse_traceparent(f"01-{trace_id}-{span_id}-01")
+    assert parsed is not None and parsed.trace_id == trace_id
+
+    # Flags: only the 0x01 SAMPLED bit means sampled — ``02`` is NOT sampled.
+    assert (
+        telemetry.parse_traceparent(f"00-{trace_id}-{span_id}-01").sampled
+        is True
+    )
+    assert (
+        telemetry.parse_traceparent(f"00-{trace_id}-{span_id}-00").sampled
+        is False
+    )
+    assert (
+        telemetry.parse_traceparent(f"00-{trace_id}-{span_id}-02").sampled
+        is False
+    )
+    assert (
+        telemetry.parse_traceparent(f"00-{trace_id}-{span_id}-03").sampled
+        is True
+    )
+    # Flags must be exactly two hex chars — one or three chars is malformed.
+    assert telemetry.parse_traceparent(f"00-{trace_id}-{span_id}-1") is None
+    assert telemetry.parse_traceparent(f"00-{trace_id}-{span_id}-123") is None
+
+    # A malformed explicit parent inside an active use_span falls back to
+    # the ambient context — it must NOT fork a new trace_id.
+    tracer = telemetry.Tracer(telemetry.InMemorySpanExporter())
+    root = tracer.start_span("ambient", kind="server")
+    tracer.end_span(root)
+    with tracer.use_span(root):
+        child = tracer.start_span("child", parent="malformed-string")
+        tracer.end_span(child)
+    assert child.context.trace_id == root.context.trace_id
+    assert child.context.parent_span_id == root.context.span_id
+    # Outside any ambient context the same malformed parent starts a fresh
+    # trace — there is nothing valid to fall back to.
+    orphan = tracer.start_span("orphan", parent="malformed-string")
+    tracer.end_span(orphan)
+    assert orphan.context.trace_id != root.context.trace_id
+    assert orphan.context.parent_span_id == ""
 
 
 def exporter_dropped(exporter) -> int:

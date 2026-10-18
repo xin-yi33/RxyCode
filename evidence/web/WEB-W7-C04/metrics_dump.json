@@ -2,7 +2,7 @@
   "records": [
     {
       "task_id": "w7c04ev-pass",
-      "run_id": "7322cb2e9d2547e6b432d69eb17fa3fa",
+      "run_id": "3a035ddf9d854dbbb626fface4857f0f",
       "status": "passed",
       "token_usage": {
         "input": 0,
@@ -14,13 +14,13 @@
         "currency": "USD",
         "source": "usage_records",
         "price_version": "2026-10",
-        "usage_record_id": "a3a007a5920a4e87bdcdc333f840e477"
+        "usage_record_id": "e7bf9e4926a04f198d95df0bd7126953"
       },
       "spine_errors": []
     },
     {
       "task_id": "w7c04ev-costly",
-      "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
+      "run_id": "e182688713a84d0eac75e36350105b6c",
       "status": "passed",
       "token_usage": {
         "input": 0,
@@ -32,115 +32,146 @@
         "currency": "USD",
         "source": "usage_records",
         "price_version": "2026-10",
-        "usage_record_id": "cddc8e7c423748e286bad761cf5d7843"
+        "usage_record_id": "60c064248db6476a9f013fa07530c5a7"
       },
       "spine_errors": []
     }
   ],
   "timings": {
     "pass": {
-      "wall_ms": 955.6608999992022
+      "wall_ms": 999.2962999967858
     },
     "costly": {
-      "wall_ms": 489.1863000084413
+      "wall_ms": 513.9863999938825
     }
   },
   "summaries": {
     "w7c04ev-pass": {
       "code": null,
-      "run_id": "7322cb2e9d2547e6b432d69eb17fa3fa",
-      "events_url": "/api/v1/runs/7322cb2e9d2547e6b432d69eb17fa3fa/events",
-      "trace_id": "298cbb2e1dbb4509bbf30a131ff06142",
+      "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+      "events_url": "/api/v1/runs/3a035ddf9d854dbbb626fface4857f0f/events",
+      "trace_id": "488a5569d51042ceb179ca799e700ed4",
       "trace_ids": [
-        "298cbb2e1dbb4509bbf30a131ff06142"
+        "488a5569d51042ceb179ca799e700ed4"
       ],
-      "span_count": 3,
+      "span_count": 4,
       "spans": [
         {
-          "trace_id": "298cbb2e1dbb4509bbf30a131ff06142",
-          "span_id": "25bdebb6b0c25555",
-          "parent_span_id": "dceba42db9534c6e",
-          "run_id": "7322cb2e9d2547e6b432d69eb17fa3fa",
-          "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
-          "name": "tool.write_file",
-          "kind": "tool",
-          "otel_kind": "CLIENT",
-          "status": "ok",
-          "detail": "",
-          "duration_ms": 39.692,
-          "start_epoch": 1792322143.348357,
-          "end_epoch": 1792322143.388047,
-          "attrs": {
-            "tool.name": "write_file",
-            "service.name": "rxycode-web-c04-evidence",
-            "tool.executed": true
-          }
-        },
-        {
-          "trace_id": "298cbb2e1dbb4509bbf30a131ff06142",
-          "span_id": "dceba42db9534c6e",
-          "parent_span_id": "0eb5778836ae7725",
-          "run_id": "7322cb2e9d2547e6b432d69eb17fa3fa",
-          "tool_call_id": "",
-          "name": "graph.agent.eval-primary",
-          "kind": "worker",
-          "otel_kind": "INTERNAL",
-          "status": "ok",
-          "detail": "",
-          "duration_ms": 68.326,
-          "start_epoch": 1792322143.34797,
-          "end_epoch": 1792322143.416293,
-          "attrs": {
-            "model": "eval-stub",
-            "agent.id": "eval-primary",
-            "cache.hits": 2,
-            "cache.misses": 1,
-            "service.name": "rxycode-web-c04-evidence",
-            "price_version": "2026-10"
-          }
-        },
-        {
-          "trace_id": "298cbb2e1dbb4509bbf30a131ff06142",
-          "span_id": "0eb5778836ae7725",
+          "trace_id": "488a5569d51042ceb179ca799e700ed4",
+          "span_id": "775d995f6cbf1751",
           "parent_span_id": "",
-          "run_id": "7322cb2e9d2547e6b432d69eb17fa3fa",
+          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
           "tool_call_id": "",
           "name": "http POST /api/v1/runs",
           "kind": "server",
           "otel_kind": "SERVER",
           "status": "ok",
           "detail": "",
-          "duration_ms": 931.798,
-          "start_epoch": 1792322143.050255,
-          "end_epoch": 1792322143.982054,
+          "duration_ms": 44.764,
+          "start_epoch": 1792325150.041257,
+          "end_epoch": 1792325150.08602,
           "attrs": {
+            "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
             "http.route": "/api/v1/runs",
+            "request_id": "w7c03-evidence-34b02b9d-web-solo-w7c04ev-pass",
+            "run.status": "queued",
             "http.method": "POST",
-            "service.name": "rxycode-web-c04-evidence",
+            "service.name": "rxycode-server",
             "http.status_code": 202
+          }
+        },
+        {
+          "trace_id": "488a5569d51042ceb179ca799e700ed4",
+          "span_id": "18650db89abf14f6",
+          "parent_span_id": "c01054ddefda51dd",
+          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
+          "name": "tool.write_file",
+          "kind": "tool",
+          "otel_kind": "CLIENT",
+          "status": "ok",
+          "detail": "",
+          "duration_ms": 70.378,
+          "start_epoch": 1792325150.425334,
+          "end_epoch": 1792325150.49571,
+          "attrs": {
+            "ok": true,
+            "call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
+            "agent_id": "eval-primary",
+            "tool_name": "write_file",
+            "attempt_id": "att_d27d9c687e1348889c8ff32906bdd279",
+            "cache.hits": 2,
+            "cache.misses": 1,
+            "service.name": "rxycode-worker",
+            "tool.executed": true
+          }
+        },
+        {
+          "trace_id": "488a5569d51042ceb179ca799e700ed4",
+          "span_id": "c01054ddefda51dd",
+          "parent_span_id": "c01055f3200e7505",
+          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "tool_call_id": "",
+          "name": "graph.agent.eval-primary",
+          "kind": "worker",
+          "otel_kind": "INTERNAL",
+          "status": "ok",
+          "detail": "",
+          "duration_ms": 151.585,
+          "start_epoch": 1792325150.394786,
+          "end_epoch": 1792325150.546372,
+          "attrs": {
+            "agent.id": "eval-primary",
+            "agent_id": "eval-primary",
+            "parent_id": "003e1f28b6374b9798477d63e6aa6922",
+            "budget_used": 1234,
+            "tokens_used": 1234,
+            "service.name": "rxycode-worker"
+          }
+        },
+        {
+          "trace_id": "488a5569d51042ceb179ca799e700ed4",
+          "span_id": "c01055f3200e7505",
+          "parent_span_id": "775d995f6cbf1751",
+          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "tool_call_id": "",
+          "name": "worker.run",
+          "kind": "worker",
+          "otel_kind": "INTERNAL",
+          "status": "ok",
+          "detail": "",
+          "duration_ms": 579.407,
+          "start_epoch": 1792325150.13681,
+          "end_epoch": 1792325150.716217,
+          "attrs": {
+            "worker.id": "eval-worker-7870bbe8",
+            "service.name": "rxycode-worker",
+            "worker.epoch": 1,
+            "run.terminal_status": "ok"
           }
         }
       ],
       "layers": {
-        "tool": {
-          "count": 1,
-          "duration_ms": 39.692
-        },
-        "worker": {
-          "count": 1,
-          "duration_ms": 68.326
-        },
         "server": {
           "count": 1,
-          "duration_ms": 931.798
+          "duration_ms": 44.764
+        },
+        "tool": {
+          "count": 1,
+          "duration_ms": 70.378
+        },
+        "worker": {
+          "count": 2,
+          "duration_ms": 730.992
         }
       },
-      "duration_ms": 1039.812,
+      "elapsed_ms": 44.764,
+      "total_span_work_ms": 846.134,
       "provider": {
         "tokens_used": 1234,
         "budget_used": 1234,
         "agent_id": "eval-primary",
-        "seq": 5
+        "seq": 7
       },
       "ledger": {
         "tokens": 1234,
@@ -149,14 +180,18 @@
         "price_version": "2026-10",
         "model_id": "eval-stub",
         "cost_kind": "confirmed",
-        "usage_record_id": "a3a007a5920a4e87bdcdc333f840e477"
+        "row_count": 1,
+        "usage_record_id": "e7bf9e4926a04f198d95df0bd7126953",
+        "usage_record_ids": [
+          "e7bf9e4926a04f198d95df0bd7126953"
+        ]
       },
       "usage_events": [
         {
           "amount": "0.00246800",
           "tokens": 1234,
           "currency": "USD",
-          "event_id": "47f8e3a0acce482d9dc432375ec5a3df",
+          "event_id": "390a38cf848b4e95b0b2605747913f73",
           "model_id": "eval-stub",
           "price_version": "2026-10"
         }
@@ -177,99 +212,130 @@
     },
     "w7c04ev-costly": {
       "code": null,
-      "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
-      "events_url": "/api/v1/runs/43ca436a4d0f4966a0ba9710a99be1a1/events",
-      "trace_id": "cc83ac208e6946e89dfe45d29b9883ce",
+      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "events_url": "/api/v1/runs/e182688713a84d0eac75e36350105b6c/events",
+      "trace_id": "64a4a5722d4f4a17856dda34ede63729",
       "trace_ids": [
-        "cc83ac208e6946e89dfe45d29b9883ce"
+        "64a4a5722d4f4a17856dda34ede63729"
       ],
-      "span_count": 3,
+      "span_count": 4,
       "spans": [
         {
-          "trace_id": "cc83ac208e6946e89dfe45d29b9883ce",
-          "span_id": "9febe185f5a63611",
-          "parent_span_id": "654779b088bf8211",
-          "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
-          "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
-          "name": "tool.write_file",
-          "kind": "tool",
-          "otel_kind": "CLIENT",
-          "status": "ok",
-          "detail": "",
-          "duration_ms": 42.441,
-          "start_epoch": 1792322144.098356,
-          "end_epoch": 1792322144.140796,
-          "attrs": {
-            "tool.name": "write_file",
-            "service.name": "rxycode-web-c04-evidence",
-            "tool.executed": true
-          }
-        },
-        {
-          "trace_id": "cc83ac208e6946e89dfe45d29b9883ce",
-          "span_id": "654779b088bf8211",
-          "parent_span_id": "7fb4f6b73151c14e",
-          "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
-          "tool_call_id": "",
-          "name": "graph.agent.eval-primary",
-          "kind": "worker",
-          "otel_kind": "INTERNAL",
-          "status": "ok",
-          "detail": "",
-          "duration_ms": 88.541,
-          "start_epoch": 1792322144.097851,
-          "end_epoch": 1792322144.186389,
-          "attrs": {
-            "model": "eval-stub",
-            "agent.id": "eval-primary",
-            "cache.hits": 2,
-            "cache.misses": 1,
-            "service.name": "rxycode-web-c04-evidence",
-            "price_version": "2026-10"
-          }
-        },
-        {
-          "trace_id": "cc83ac208e6946e89dfe45d29b9883ce",
-          "span_id": "7fb4f6b73151c14e",
+          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
+          "span_id": "92ef58366e500d2a",
           "parent_span_id": "",
-          "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
+          "run_id": "e182688713a84d0eac75e36350105b6c",
           "tool_call_id": "",
           "name": "http POST /api/v1/runs",
           "kind": "server",
           "otel_kind": "SERVER",
           "status": "ok",
           "detail": "",
-          "duration_ms": 457.165,
-          "start_epoch": 1792322144.006235,
-          "end_epoch": 1792322144.463396,
+          "duration_ms": 29.388,
+          "start_epoch": 1792325151.023716,
+          "end_epoch": 1792325151.053103,
           "attrs": {
+            "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
             "http.route": "/api/v1/runs",
+            "request_id": "w7c03-evidence-b559918a-web-solo-w7c04ev-costly",
+            "run.status": "queued",
             "http.method": "POST",
-            "service.name": "rxycode-web-c04-evidence",
+            "service.name": "rxycode-server",
             "http.status_code": 202
+          }
+        },
+        {
+          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
+          "span_id": "eb793d1ebbb078cc",
+          "parent_span_id": "f005ea9d26c92569",
+          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
+          "name": "tool.write_file",
+          "kind": "tool",
+          "otel_kind": "CLIENT",
+          "status": "ok",
+          "detail": "",
+          "duration_ms": 67.059,
+          "start_epoch": 1792325151.149345,
+          "end_epoch": 1792325151.216403,
+          "attrs": {
+            "ok": true,
+            "call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
+            "agent_id": "eval-primary",
+            "tool_name": "write_file",
+            "attempt_id": "att_e1ecba136c2f49539c1638d13b1004cf",
+            "cache.hits": 2,
+            "cache.misses": 1,
+            "service.name": "rxycode-worker",
+            "tool.executed": true
+          }
+        },
+        {
+          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
+          "span_id": "f005ea9d26c92569",
+          "parent_span_id": "fbffaef3444db720",
+          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "tool_call_id": "",
+          "name": "graph.agent.eval-primary",
+          "kind": "worker",
+          "otel_kind": "INTERNAL",
+          "status": "ok",
+          "detail": "",
+          "duration_ms": 142.088,
+          "start_epoch": 1792325151.12306,
+          "end_epoch": 1792325151.265147,
+          "attrs": {
+            "agent.id": "eval-primary",
+            "agent_id": "eval-primary",
+            "parent_id": "759d47b7c0da4aa59e8dd9c22580e391",
+            "budget_used": 9876543,
+            "tokens_used": 9876543,
+            "service.name": "rxycode-worker"
+          }
+        },
+        {
+          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
+          "span_id": "fbffaef3444db720",
+          "parent_span_id": "92ef58366e500d2a",
+          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "tool_call_id": "",
+          "name": "worker.run",
+          "kind": "worker",
+          "otel_kind": "INTERNAL",
+          "status": "ok",
+          "detail": "",
+          "duration_ms": 319.002,
+          "start_epoch": 1792325151.097304,
+          "end_epoch": 1792325151.416305,
+          "attrs": {
+            "worker.id": "eval-worker-146bd616",
+            "service.name": "rxycode-worker",
+            "worker.epoch": 1,
+            "run.terminal_status": "ok"
           }
         }
       ],
       "layers": {
-        "tool": {
-          "count": 1,
-          "duration_ms": 42.441
-        },
-        "worker": {
-          "count": 1,
-          "duration_ms": 88.541
-        },
         "server": {
           "count": 1,
-          "duration_ms": 457.165
+          "duration_ms": 29.388
+        },
+        "tool": {
+          "count": 1,
+          "duration_ms": 67.059
+        },
+        "worker": {
+          "count": 2,
+          "duration_ms": 461.09
         }
       },
-      "duration_ms": 588.139,
+      "elapsed_ms": 29.388,
+      "total_span_work_ms": 557.537,
       "provider": {
         "tokens_used": 9876543,
         "budget_used": 9876543,
         "agent_id": "eval-primary",
-        "seq": 5
+        "seq": 7
       },
       "ledger": {
         "tokens": 9876543,
@@ -278,14 +344,18 @@
         "price_version": "2026-10",
         "model_id": "eval-stub",
         "cost_kind": "confirmed",
-        "usage_record_id": "cddc8e7c423748e286bad761cf5d7843"
+        "row_count": 1,
+        "usage_record_id": "60c064248db6476a9f013fa07530c5a7",
+        "usage_record_ids": [
+          "60c064248db6476a9f013fa07530c5a7"
+        ]
       },
       "usage_events": [
         {
           "amount": "19.75308600",
           "tokens": 9876543,
           "currency": "USD",
-          "event_id": "37606ca681274d509bc577b87d5a6bd9",
+          "event_id": "32bc43c1e39046ae925524f3a39e22c2",
           "model_id": "eval-stub",
           "price_version": "2026-10"
         }
@@ -306,32 +376,34 @@
     }
   },
   "tenant_metrics": {
-    "tenant_id": "eval-w7c03-w7c04evidence-f1d4cd74",
+    "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
     "run_count": 2,
     "runs": [
       {
-        "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
-        "model_id": "eval-stub",
-        "tokens": 9876543,
-        "amount": "19.75308600",
-        "currency": "USD",
-        "price_version": "2026-10",
-        "cost_kind": "confirmed",
-        "provider_tokens": 9876543,
-        "aligned": true,
-        "abnormal": true
-      },
-      {
-        "run_id": "7322cb2e9d2547e6b432d69eb17fa3fa",
+        "run_id": "3a035ddf9d854dbbb626fface4857f0f",
         "model_id": "eval-stub",
         "tokens": 1234,
         "amount": "0.00246800",
         "currency": "USD",
         "price_version": "2026-10",
         "cost_kind": "confirmed",
+        "row_count": 1,
         "provider_tokens": 1234,
         "aligned": true,
         "abnormal": false
+      },
+      {
+        "run_id": "e182688713a84d0eac75e36350105b6c",
+        "model_id": "eval-stub",
+        "tokens": 9876543,
+        "amount": "19.75308600",
+        "currency": "USD",
+        "price_version": "2026-10",
+        "cost_kind": "confirmed",
+        "row_count": 1,
+        "provider_tokens": 9876543,
+        "aligned": true,
+        "abnormal": true
       }
     ],
     "totals": {
@@ -341,7 +413,7 @@
     },
     "abnormal": [
       {
-        "run_id": "43ca436a4d0f4966a0ba9710a99be1a1",
+        "run_id": "e182688713a84d0eac75e36350105b6c",
         "amount": "19.75308600",
         "currency": "USD",
         "reason": "amount exceeds 1.0 USD threshold"
@@ -349,5 +421,8 @@
     ],
     "mismatches": []
   },
-  "exporter_dropped": 0
+  "export_probe_ms": [
+    33.3571000082884,
+    39.88080000272021
+  ]
 }

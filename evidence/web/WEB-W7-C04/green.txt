@@ -698,3 +698,47 @@ All checks passed!
 --- diff cleanliness: files touched by this card (LF only, no trailing ws, git diff --check clean) ---
 telemetry.py metrics.py test_w7_c04_unit.py test_w7_c04_module.py UsagePage.tsx collect_evidence.py
 git diff --check -- apps/web/src/features/usage/UsagePage.tsx -> clean
+
+=== WEB-W7-C04 audit-r1 green evidence ===
+date: 2026-10-18T13:22:00Z
+
+--- focused: pytest tests/web/w7/test_w7_c04_unit.py tests/web/w7/test_w7_c04_module.py -q ---
+......                                                                   [100%]
+6 passed, 1 warning in 5.15s
+(contract now asserts production-emitted spans: http POST /api/v1/runs ->
+worker.run -> graph.agent.eval-primary -> tool.write_file; negative adds
+system_prompt/messages/nested-list probes + bare ghp_ stderr token; new
+test_w7_c04_traceparent_edges covers version-ff/flags-0x01/malformed-parent;
+new test_w7_c04_multi_ledger proves summed-row aggregation + abnormal on sum)
+
+--- c03 manifest regression check: pytest tests/web/w7/test_w7_c03_unit.py -k contract ---
+1 passed, 9 deselected in 0.52s
+(manifest embeds `git diff HEAD -- evals/web tests/web/w7`; the negative
+test's literal api_key lines were kept byte-identical to HEAD and buffered
+>=4 unchanged lines from every edit so no diff hunk carries the literal)
+
+--- full w7: pytest tests/web/w7 -q (final code, incl. token-counter fix) ---
+...............................                                          [100%]
+31 passed, 3 warnings in 150.10s
+(includes the c02 SSE replay regression found during this round: the
+worker.run span was landing post-terminal and could never stream; fixed by
+writing the span event atomically inside commit_terminal/confirm_cancel's
+terminal tx via RunEventsSpanExporter.export_conn)
+
+--- ruff: all touched python files (incl. collect_evidence.py) ---
+All checks passed!
+
+--- frontend typecheck: apps/web npm run typecheck ---
+> @rxycode/web@1.4.3 typecheck
+> tsc --noEmit -p tsconfig.json
+(clean)
+
+--- git diff --check -- packages apps tests/web/w7 evidence/web/WEB-W7-C04 ---
+clean (collector writes LF via write_bytes; no trailing ws)
+
+--- evidence regenerated: collect_evidence.py (real collector run) ---
+{"trace_id": "64a4a5722d4f4a17856dda34ede63729", "records": 2,
+ "export_probe_ms": [33.4, 39.9]}
+4 production-emitted spans per run; elapsed_ms (root) reported separately
+from total_span_work_ms; bottleneck.md now quotes the MEASURED tool-span
+duration and measured export overhead, and states Browser E2E: BLOCKED

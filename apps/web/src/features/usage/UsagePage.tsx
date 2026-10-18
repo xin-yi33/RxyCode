@@ -36,6 +36,12 @@ export type RunTrace = {
   trace_id: string
   span_count: number
   layers: Record<string, TraceLayer>
+  // Honest duration accounting: elapsed is the root span's duration (or
+  // the union of span intervals when no single root exists); summed span
+  // durations are reported separately as total_span_work_ms — nested
+  // spans never double-count as elapsed time.
+  elapsed_ms: number
+  total_span_work_ms: number
   tool_calls: string[]
   events_url: string
   cache_hits: number
@@ -90,10 +96,28 @@ export function traceSummary(runId: string, events: RunEventRow[]): RunTrace | n
     cacheHits += Number(attrs["cache.hits"] || 0)
     cacheMisses += Number(attrs["cache.misses"] || 0)
   }
+  const spanIds = new Set(spans.map((span) => String(span.span_id || "")))
+  const roots = spans.filter(
+    (span) => !span.parent_span_id || !spanIds.has(String(span.parent_span_id)),
+  )
+  let elapsedMs = 0
+  if (roots.length === 1) {
+    elapsedMs = Number(roots[0].duration_ms || 0)
+  } else if (spans.length > 0) {
+    const starts = spans.map((span) => Number(span.start_epoch || 0))
+    const ends = spans.map((span) => Number(span.end_epoch || 0))
+    elapsedMs = Math.max(0, (Math.max(...ends) - Math.min(...starts)) * 1000)
+  }
+  const totalSpanWorkMs = spans.reduce(
+    (total, span) => total + Number(span.duration_ms || 0),
+    0,
+  )
   return {
     trace_id: traceId,
     span_count: spans.length,
     layers,
+    elapsed_ms: elapsedMs,
+    total_span_work_ms: totalSpanWorkMs,
     tool_calls: toolCalls,
     events_url: `/api/v1/runs/${runId}/events`,
     cache_hits: cacheHits,
@@ -150,7 +174,9 @@ function RunTraceRow({ runId }: { runId: string }) {
       {trace ? (
         <section data-trace-summary>
           <p>
-            trace_id <code>{trace.trace_id}</code> · {trace.span_count} spans
+            trace_id <code>{trace.trace_id}</code> · {trace.span_count} spans ·
+            elapsed {trace.elapsed_ms.toFixed(1)} ms · span work{" "}
+            {trace.total_span_work_ms.toFixed(1)} ms
           </p>
           <ul>
             {Object.entries(trace.layers).map(([kind, stat]) => (

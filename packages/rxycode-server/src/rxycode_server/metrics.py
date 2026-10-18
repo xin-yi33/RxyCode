@@ -52,15 +52,49 @@ def _usage_rows(database_url: str, tenant_id: str) -> list[UsageRecord]:
         engine.dispose()
 
 
-def _usage_row(database_url: str, run_id: str) -> UsageRecord | None:
+def _usage_rows_for_run(database_url: str, run_id: str) -> list[UsageRecord]:
+    """ALL ledger rows for the run — one run may legitimately carry several
+    (multiple models or price versions), so callers must never read just
+    the first row."""
     engine = _engine(database_url)
     try:
         with Session(engine) as db:
-            return db.scalars(
-                select(UsageRecord).where(UsageRecord.run_id == run_id)
-            ).first()
+            return list(
+                db.scalars(
+                    select(UsageRecord).where(UsageRecord.run_id == run_id)
+                ).all()
+            )
     finally:
         engine.dispose()
+
+
+def _distinct(rows: list[UsageRecord], field: str) -> str:
+    """One value when the rows agree; a comma-joined set when they differ."""
+    values = sorted({str(getattr(row, field) or "") for row in rows if getattr(row, field)})
+    return ", ".join(values)
+
+
+def _ledger(rows: list[UsageRecord]) -> dict[str, Any] | None:
+    """Aggregate a run's ledger rows into the per-run billing total."""
+    if not rows:
+        return None
+    tokens = sum(int(row.tokens) for row in rows)
+    amount = sum(
+        (Decimal(str(row.amount or "0")) for row in rows), Decimal("0")
+    ).quantize(Decimal("0.00000001"))
+    kinds = {usage_cost_kind(str(row.price_version)) for row in rows}
+    cost_kind = kinds.pop() if len(kinds) == 1 else "mixed"
+    return {
+        "tokens": tokens,
+        "amount": format(amount, "f"),
+        "currency": _distinct(rows, "currency") or "USD",
+        "price_version": _distinct(rows, "price_version"),
+        "model_id": _distinct(rows, "model_id"),
+        "cost_kind": cost_kind,
+        "row_count": len(rows),
+        "usage_record_id": str(rows[0].id),
+        "usage_record_ids": [str(row.id) for row in rows],
+    }
 
 
 def _abnormal(amount: str | None) -> bool:
@@ -165,23 +199,29 @@ def run_trace_summary(
     ]
     spans = [_public_span(span) for span in raw_spans]
     trace_ids = sorted({str(span["trace_id"]) for span in spans})
-    epochs = [
-        float(span["end_epoch"] or 0.0) - float(span["start_epoch"] or 0.0)
-        for span in spans
-    ]
     provider = _agent_done_snapshot(events)
-    row = _usage_row(database_url, run_id)
-    ledger: dict[str, Any] | None = None
-    if row is not None:
-        ledger = {
-            "tokens": int(row.tokens),
-            "amount": row.amount,
-            "currency": row.currency,
-            "price_version": row.price_version,
-            "model_id": row.model_id,
-            "cost_kind": usage_cost_kind(row.price_version),
-            "usage_record_id": row.id,
-        }
+    ledger = _ledger(_usage_rows_for_run(database_url, run_id))
+    # Honest duration accounting: the run's elapsed wall clock is the ROOT
+    # span's duration (one root) or the union of all span intervals
+    # (max end − min start) when spans don't share a single root. The
+    # summed span durations are reported separately as total work —
+    # nested spans must never double-count as elapsed time.
+    span_ids = {str(span["span_id"]) for span in spans}
+    roots = [
+        span
+        for span in spans
+        if not span["parent_span_id"]
+        or str(span["parent_span_id"]) not in span_ids
+    ]
+    if len(roots) == 1:
+        elapsed_ms = float(roots[0]["duration_ms"] or 0.0)
+    elif spans:
+        starts = [float(span["start_epoch"] or 0.0) for span in spans]
+        ends = [float(span["end_epoch"] or 0.0) for span in spans]
+        elapsed_ms = max(0.0, (max(ends) - min(starts)) * 1000.0)
+    else:
+        elapsed_ms = 0.0
+    total_span_work_ms = sum(float(span["duration_ms"] or 0.0) for span in spans)
     usage_events = [
         dict(event.get("payload") or {})
         for event in events
@@ -199,7 +239,8 @@ def run_trace_summary(
         "span_count": len(spans),
         "spans": spans,
         "layers": _layers(spans),
-        "duration_ms": round(sum(epochs) * 1000.0, 3),
+        "elapsed_ms": round(elapsed_ms, 3),
+        "total_span_work_ms": round(total_span_work_ms, 3),
         "provider": provider,
         "ledger": ledger or {},
         "usage_events": usage_events,
@@ -226,32 +267,44 @@ def tenant_cost_metrics(database_url: str, tenant_id: str) -> dict[str, Any]:
     from rxycode_server.events.store import replay
 
     rows = _usage_rows(database_url, tenant_id)
+    # A run may carry MULTIPLE ledger rows (several models / price
+    # versions): every per-run number below is the SUM over all of that
+    # run's rows — tokens, amount, and the abnormal threshold check.
+    by_run: dict[str, list[UsageRecord]] = {}
+    for row in rows:
+        by_run.setdefault(str(row.run_id), []).append(row)
     runs: list[dict[str, Any]] = []
     abnormal: list[dict[str, Any]] = []
     mismatches: list[dict[str, Any]] = []
     total_tokens = 0
     total_amount = Decimal("0")
-    for row in sorted(rows, key=lambda r: r.run_id):
+    for run_id in sorted(by_run):
+        group = by_run[run_id]
         provider_tokens = 0
         result = replay(
-            database_url, tenant_id=tenant_id, run_id=row.run_id, after_seq=0
+            database_url, tenant_id=tenant_id, run_id=run_id, after_seq=0
         )
         if not result.get("code"):
             provider = _agent_done_snapshot(list(result.get("events") or []))
             provider_tokens = int(provider.get("tokens_used") or 0)
-        tokens = int(row.tokens)
-        amount = str(row.amount)
+        tokens = sum(int(row.tokens) for row in group)
+        amount_dec = sum(
+            (Decimal(str(row.amount or "0")) for row in group), Decimal("0")
+        ).quantize(Decimal("0.00000001"))
+        amount = format(amount_dec, "f")
+        kinds = {usage_cost_kind(str(row.price_version)) for row in group}
         is_abnormal = _abnormal(amount)
         aligned = tokens == provider_tokens
         runs.append(
             {
-                "run_id": row.run_id,
-                "model_id": row.model_id,
+                "run_id": run_id,
+                "model_id": _distinct(group, "model_id"),
                 "tokens": tokens,
                 "amount": amount,
-                "currency": row.currency,
-                "price_version": row.price_version,
-                "cost_kind": usage_cost_kind(row.price_version),
+                "currency": _distinct(group, "currency") or "USD",
+                "price_version": _distinct(group, "price_version"),
+                "cost_kind": kinds.pop() if len(kinds) == 1 else "mixed",
+                "row_count": len(group),
                 "provider_tokens": provider_tokens,
                 "aligned": aligned,
                 "abnormal": is_abnormal,
@@ -260,22 +313,22 @@ def tenant_cost_metrics(database_url: str, tenant_id: str) -> dict[str, Any]:
         if is_abnormal:
             abnormal.append(
                 {
-                    "run_id": row.run_id,
+                    "run_id": run_id,
                     "amount": amount,
-                    "currency": row.currency,
+                    "currency": _distinct(group, "currency") or "USD",
                     "reason": f"amount exceeds {ABNORMAL_COST_USD} USD threshold",
                 }
             )
         if not aligned:
             mismatches.append(
                 {
-                    "run_id": row.run_id,
+                    "run_id": run_id,
                     "ledger_tokens": tokens,
                     "provider_tokens": provider_tokens,
                 }
             )
         total_tokens += tokens
-        total_amount += Decimal(amount)
+        total_amount += amount_dec
     return {
         "tenant_id": tenant_id,
         "run_count": len(runs),

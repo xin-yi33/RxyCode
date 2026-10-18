@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import uuid
 from decimal import Decimal
@@ -86,11 +87,18 @@ def _usage_row(database_url: str, run_id: str):
 
 
 def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
-    """Ledger, provider snapshot, and spans reconcile per run; abnormal shows."""
+    """Ledger, provider snapshot, and spans reconcile per run; abnormal shows.
+
+    Every span in these traces is emitted by the production wiring —
+    ``create_run`` (http/server), ``claim`` + ``commit_terminal``
+    (worker.run) and ``RunJournal.record`` (graph.agent + tool) — the test
+    only drives the spine and journals tool events the way the agent task
+    does.
+    """
     from rxycode_server import metrics
     from rxycode_server.notifications.service import usage_statement
     from rxycode_server.persistence.migrate import upgrade_head
-    from rxycode_worker import telemetry
+    from rxycode_worker.agent_events import default_run_journal
     from rxycode_worker.supervisor import attempt_tool
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         ToolExecutionJournal,
@@ -101,8 +109,6 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
     org = web_run.seed_eval_tenant(postgres_url, "w7c04mod")
     tenant_id = org["tenant_id"]
     nonce = uuid.uuid4().hex[:8]
-    exporter = telemetry.RunEventsSpanExporter(postgres_url, tenant_id)
-    tracer = telemetry.Tracer(exporter, service="rxycode-web-c04-module")
 
     pass_task = _task("w7c04mod-pass", "present-marker")
     costly_task = _task("w7c04mod-costly", "present-marker")
@@ -112,32 +118,26 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
             Path(ctx.workdir, "answer.txt").write_text(
                 "present-marker", encoding="utf-8"
             )
-            agent_span = tracer.start_span(
-                f"graph.agent.{ctx.agent_id}",
-                kind="worker",
-                parent=http_ctx[tag],
-                run_id=ctx.run_id,
-                attrs={
-                    "agent.id": ctx.agent_id,
-                    "model": "eval-stub",
-                    "price_version": web_run.PRICE_VERSION,
-                },
-            )
-            journal = ToolExecutionJournal(tmp_path / f"journal-{tag}")
+            # The same journal handle the agent task uses; the tool span is
+            # emitted inside record(), never by this driver.
+            journal = default_run_journal()
+            assert journal is not None
+            tool_journal = ToolExecutionJournal(tmp_path / f"journal-{tag}")
             attempt_id = new_attempt_id()
-            call = journal.binding(attempt_id).next_call(
+            call = tool_journal.binding(attempt_id).next_call(
                 "write_file", {"path": "answer.txt"}
             )
-            tool_span = tracer.start_span(
-                "tool.write_file",
-                kind="tool",
-                parent=agent_span.context,
-                run_id=ctx.run_id,
-                tool_call_id=call.key,
-                attrs={"tool.name": "write_file"},
+            journal.record(
+                "event/tool_begin",
+                ctx.agent_id,
+                {
+                    "call_id": call.key,
+                    "tool_name": "write_file",
+                    "attempt_id": attempt_id,
+                },
             )
             outcome = attempt_tool(
-                journal,
+                tool_journal,
                 attempt_id,
                 "write_file",
                 {"path": "answer.txt"},
@@ -145,25 +145,30 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
                     "present-marker", encoding="utf-8"
                 ),
             )
-            tracer.end_span(tool_span, attrs={"tool.executed": outcome["executed"]})
             agent_ctx = ctx.runtime.contexts[ctx.agent_id]
             agent_ctx.record_cache(True)
             agent_ctx.record_cache(True)
             agent_ctx.record_cache(False)
             ctx.runtime.record_token_usage(ctx.agent_id, tokens)
             cache = ctx.runtime._session_cache
-            tracer.end_span(
-                agent_span,
-                attrs={"cache.hits": cache.hits, "cache.misses": cache.misses},
+            journal.record(
+                "event/tool_end",
+                ctx.agent_id,
+                {
+                    "call_id": call.key,
+                    "tool_name": "write_file",
+                    "ok": True,
+                    "tool.executed": outcome["executed"],
+                    "cache.hits": cache.hits,
+                    "cache.misses": cache.misses,
+                },
             )
             return "wrote answer.txt"
 
         return _run
 
-    # One HTTP-layer span per run, measured around the REAL durable spine
-    # call; the run id is bound the moment create_run lands (spend_sink).
-    http_ctx: dict[str, object] = {}
-
+    # Every span is journaled by the production wiring inside run_web_task:
+    # create_run -> claim -> RunJournal.record -> commit_terminal.
     async def _drive() -> list[dict]:
         records = []
         for task, tokens, tag in (
@@ -172,15 +177,8 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
         ):
             workdir = tmp_path / task.task_id
             workdir.mkdir(parents=True)
-            server_span = tracer.start_span(
-                "http POST /api/v1/runs",
-                kind="server",
-                attrs={"http.method": "POST", "http.route": "/api/v1/runs"},
-            )
-            http_ctx[tag] = server_span.context
-            sink: dict[str, object] = {}
-            try:
-                record = await web_run.run_web_task(
+            records.append(
+                await web_run.run_web_task(
                     database_url=postgres_url,
                     org=org,
                     task=task,
@@ -190,15 +188,9 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
                     task_timeout=120,
                     request_nonce=nonce,
                     prompt_driver=_driver(tokens, tag),
-                    spend_sink=sink,
+                    spend_sink={},
                 )
-            finally:
-                server_span.run_id = str(sink.get("run_id") or "")
-                tracer.end_span(
-                    server_span,
-                    attrs={"http.status_code": 202, "spine": "run_web_task"},
-                )
-            records.append(record)
+            )
         return records
 
     records = asyncio.run(_drive())
@@ -209,7 +201,6 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
     assert costly["status"] == "passed", costly
     assert passing["token_usage"]["total"] == 1234
     assert costly["token_usage"]["total"] == 9_876_543
-    assert exporter.dropped == 0
 
     # -- The summary aligns ledger <-> provider usage per run ----------------
     tenant_metrics = metrics.tenant_cost_metrics(postgres_url, tenant_id)
@@ -241,27 +232,45 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
         assert int(done["payload"]["tokens_used"]) == tokens
         assert line["provider_tokens"] == tokens
         assert line["aligned"] is True
-        # The per-run trace summary exposes the same picture.
+        # The per-run trace summary exposes the same picture — one trace_id
+        # correlating every production-emitted layer.
         summary = metrics.run_trace_summary(
             postgres_url, tenant_id=tenant_id, run_id=run_id
         )
         assert summary["code"] is None
         assert len(summary["trace_id"]) == 32
+        assert summary["trace_ids"] == [summary["trace_id"]]
         span_names = {span["name"] for span in summary["spans"]}
         assert "http POST /api/v1/runs" in span_names
+        assert "worker.run" in span_names
         assert "graph.agent.eval-primary" in span_names
         assert "tool.write_file" in span_names
         assert summary["layers"]["server"]["duration_ms"] > 0
         assert summary["layers"]["tool"]["count"] == 1
+        # Elapsed (root span) is reported separately from summed span work —
+        # nested durations never double-count as the run's wall clock.
+        assert summary["elapsed_ms"] > 0
+        assert summary["total_span_work_ms"] >= summary["elapsed_ms"]
         tool = next(
             span for span in summary["spans"] if span["name"] == "tool.write_file"
         )
         assert tool["tool_call_id"].startswith("call_")
-        assert tool["parent_span_id"] == next(
-            span["span_id"]
+        agent = next(
+            span
             for span in summary["spans"]
             if span["name"] == "graph.agent.eval-primary"
         )
+        worker = next(
+            span for span in summary["spans"] if span["name"] == "worker.run"
+        )
+        server = next(
+            span
+            for span in summary["spans"]
+            if span["name"] == "http POST /api/v1/runs"
+        )
+        assert tool["parent_span_id"] == agent["span_id"]
+        assert agent["parent_span_id"] == worker["span_id"]
+        assert worker["parent_span_id"] == server["span_id"]
         assert summary["ledger"]["tokens"] == tokens
         assert summary["provider"]["tokens_used"] == tokens
         assert summary["aligned"] is True
@@ -297,6 +306,8 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
     dump = {
         "run_id": costly["run_id"],
         "trace_id": summary["trace_id"],
+        "elapsed_ms": summary["elapsed_ms"],
+        "total_span_work_ms": summary["total_span_work_ms"],
         "spans": summary["spans"],
         "ledger": summary["ledger"],
         "provider": summary["provider"],
@@ -306,3 +317,134 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
     evidence = tmp_path / "trace_dump.json"
     evidence.write_text(json.dumps(dump, indent=2), encoding="utf-8")
     assert summary["trace_id"] in evidence.read_text(encoding="utf-8")
+
+
+def test_w7_c04_multi_ledger(postgres_url: str, tmp_path: Path) -> None:
+    """A run with MULTIPLE usage ledger rows is metered on the summed total.
+
+    Two $0.60 rows for one run must bill $1.20 — abnormal by the $1
+    threshold — and the ledger-vs-provider reconciliation must compare the
+    summed tokens, not the first row.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server import metrics
+    from rxycode_server.events.store import append_event
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import SessionRow
+    from rxycode_server.runs.service import create_run
+    from rxycode_server.usage.service import record_terminal_usage
+    from rxycode_worker.agent_events import (
+        clear_web_run,
+        publish_database_url,
+        remember_web_run,
+    )
+    from rxycode_worker.supervisor import claim, commit_terminal
+
+    upgrade_head(postgres_url)
+    org = web_run.seed_eval_tenant(postgres_url, "w7c04multi")
+    tenant_id = org["tenant_id"]
+    session_id = uuid.uuid4().hex
+    worker_id = f"w-multi-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            db.add(
+                SessionRow(
+                    id=session_id,
+                    tenant_id=tenant_id,
+                    project_id=org["project_id"],
+                    title="w7c04-multi",
+                )
+            )
+            db.commit()
+    finally:
+        engine.dispose()
+    try:
+        publish_database_url(postgres_url)
+        accepted = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message="/solo multi-ledger run",
+            target_id="local:w7c04multi",
+            permission_profile="full_auto",
+            request_id=f"multi-{uuid.uuid4().hex[:12]}",
+        )
+        run_id = accepted.run_id
+        remember_web_run(
+            postgres_url, tenant_id, run_id, session_id=session_id
+        )
+        epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
+        assert epoch is not None
+        # The provider's own statement: 5000 tokens reported at agent_done.
+        append_event(
+            postgres_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="event/agent_done",
+            payload={
+                "tokens_used": 5000,
+                "budget_used": 5000,
+                "agent_id": "eval-primary",
+            },
+        )
+        # Two ledger rows — two distinct model ids — $0.60 each.
+        row_a = record_terminal_usage(
+            postgres_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            model_id="eval-stub",
+            price_version=web_run.PRICE_VERSION,
+            tokens=300_000,
+            event_id=uuid.uuid4().hex,
+        )
+        row_b = record_terminal_usage(
+            postgres_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            model_id="eval-stub-v2",
+            price_version=web_run.PRICE_VERSION,
+            tokens=300_000,
+            event_id=uuid.uuid4().hex,
+        )
+        assert row_a["amount"] == "0.60000000"
+        assert row_b["amount"] == "0.60000000"
+        commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
+    finally:
+        clear_web_run()
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    # The per-run ledger is the SUM of all rows, not the first row.
+    summary = metrics.run_trace_summary(
+        postgres_url, tenant_id=tenant_id, run_id=run_id
+    )
+    assert summary["code"] is None
+    assert summary["ledger"]["tokens"] == 600_000
+    assert summary["ledger"]["amount"] == "1.20000000"
+    assert summary["ledger"]["row_count"] == 2
+    assert summary["aligned"] is False
+    assert summary["token_delta"] == 600_000 - 5000
+    # $1.20 total is abnormal even though neither row alone exceeds $1.
+    assert summary["cost"]["abnormal"] is True
+
+    tenant = metrics.tenant_cost_metrics(postgres_url, tenant_id)
+    lines = {line["run_id"]: line for line in tenant["runs"]}
+    line = lines[run_id]
+    assert line["tokens"] == 600_000
+    assert line["amount"] == "1.20000000"
+    assert line["row_count"] == 2
+    assert line["aligned"] is False
+    assert line["abnormal"] is True
+    # The mismatch is reported on the summed tokens, not row-by-row.
+    assert tenant["mismatches"] == [
+        {"run_id": run_id, "ledger_tokens": 600_000, "provider_tokens": 5000}
+    ]
+    # The abnormal list is not fooled by row splitting: one entry, summed.
+    abnormal = [item for item in tenant["abnormal"] if item["run_id"] == run_id]
+    assert len(abnormal) == 1
+    assert abnormal[0]["amount"] == "1.20000000"
+    assert tenant["totals"]["tokens"] == 600_000
+    assert Decimal(tenant["totals"]["amount"]) == Decimal("1.20000000")

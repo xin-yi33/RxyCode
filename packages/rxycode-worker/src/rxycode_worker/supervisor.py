@@ -2,10 +2,81 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
+
+
+_LOG = logging.getLogger(__name__)
+
+#: In-flight leased-run spans, run_id -> (tracer, span). Opened at claim,
+#: closed by the terminal commit/cancel path. Telemetry is best-effort: a
+#: run abandoned before its terminal write simply never exports the span.
+_OPEN_RUN_SPANS: dict[str, tuple[Any, Any]] = {}
+
+
+def _open_run_span(
+    database_url: str, run_id: str, tenant_id: str, worker_id: str, epoch: int
+) -> None:
+    """Best-effort worker/run span wrapping the leased execution — opened
+    at claim, closed by commit_terminal/confirm_cancel. The traceparent
+    the server injected through the env channel becomes this span's remote
+    parent; the span's own context is re-published so journaled children
+    (agent/tool spans) nest under it. Never breaks the lease flow."""
+    try:
+        from rxycode_worker import telemetry
+
+        tracer = telemetry.Tracer(
+            telemetry.RunEventsSpanExporter(database_url, tenant_id),
+            service="rxycode-worker",
+        )
+        span = tracer.start_span(
+            "worker.run",
+            kind="worker",
+            parent=telemetry.extract_env(),
+            run_id=run_id,
+            attrs={"worker.id": worker_id, "worker.epoch": epoch},
+        )
+        _OPEN_RUN_SPANS[run_id] = (tracer, span)
+        telemetry.inject_env(span.context)
+    except Exception:
+        _LOG.warning("worker.run span open failed", exc_info=True)
+
+
+def _close_run_span(run_id: str, status: str, *, conn=None) -> None:
+    """End the leased run's span. ``conn`` is the caller's OPEN terminal
+    transaction: the span event must land atomically with the status write
+    — an event appended after the commit would sit post-terminal, which the
+    follow-SSE endpoint can never deliver (it stops on terminal status).
+    Without a conn the span closes through the normal exporter path."""
+    pair = _OPEN_RUN_SPANS.pop(run_id, None)
+    if pair is None:
+        return
+    tracer, span = pair
+    try:
+        payload = tracer.finalize_span(
+            span,
+            status=status,
+            attrs={"run.terminal_status": status},
+        )
+        exporter = getattr(tracer, "exporter", None)
+        if conn is not None and hasattr(exporter, "export_conn"):
+            exporter.export_conn(conn, payload)
+        else:
+            exporter.export(payload)
+    except Exception:
+        _LOG.warning("worker.run span close failed", exc_info=True)
+
+
+_TERMINAL_SPAN_STATUS = {
+    "succeeded": "ok",
+    "failed": "error",
+    "cancelled": "cancelled",
+    "recovery_required": "error",
+}
 
 
 class LeaseRejected(Exception):
@@ -80,6 +151,7 @@ def claim(database_url: str, run_id: str, worker_id: str, *, ttl_seconds: int = 
         engine.dispose()
     if row.status not in _ACTIVE or held:
         return None
+    _open_run_span(database_url, run_id, str(row.tenant_id), worker_id, epoch)
     return epoch
 
 
@@ -156,6 +228,12 @@ def commit_terminal(
                     """
                 ),
                 {"status": status, "run_id": run_id},
+            )
+            # The span event lands in THIS tx — atomically before the
+            # terminal status becomes visible — so the follow-SSE stream
+            # always delivers it (it stops polling once status is terminal).
+            _close_run_span(
+                run_id, _TERMINAL_SPAN_STATUS.get(status, "ok"), conn=conn
             )
         _release_quota(database_url, run_id)
         from rxycode_server.notifications.service import notify_run_terminal
@@ -264,6 +342,10 @@ def confirm_cancel(
                     """
                 ),
                 {"status": status, "run_id": run_id},
+            )
+            # Atomic with the terminal write — see commit_terminal.
+            _close_run_span(
+                run_id, _TERMINAL_SPAN_STATUS.get(status, "ok"), conn=conn
             )
         _release_quota(database_url, run_id)
     finally:

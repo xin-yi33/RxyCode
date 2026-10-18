@@ -5,13 +5,28 @@ Plan changes are steer commands on the run. They are not written to EventStore.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+
+_LOG = logging.getLogger(__name__)
 
 _INTERMEDIATE = {"intermediate", "partial_result", "progress", "reasoning.summary"}
 _BOUND: dict[str, dict[str, Any]] = {}
 _CURRENT: dict[str, str] = {}
 _APPLIED: dict[str, int] = {}
+
+#: In-flight spans keyed at module level — each journal handle is a fresh
+#: RunJournal, but one run's agent/tool spans must pair across instances.
+_OPEN_AGENT_SPANS: dict[tuple[str, str], tuple[Any, Any]] = {}
+_OPEN_TOOL_SPANS: dict[tuple[str, str], tuple[Any, Any]] = {}
+
+_AGENT_OPEN_METHODS = {"event/agent_started"}
+_AGENT_CLOSE_METHODS = {
+    "event/agent_done": "ok",
+    "event/agent_failed": "error",
+    "event/agent_cancelled": "cancelled",
+}
 
 
 def publish_database_url(database_url: str) -> None:
@@ -218,6 +233,7 @@ class RunJournal:
         self.database_url = database_url
         self.tenant_id = tenant_id
         self.run_id = run_id
+        self._tracer: Any | None = None
 
     def record(self, method: str, agent_id: str, payload: dict[str, Any], *, parent_id: str = "") -> int:
         from rxycode_server.events.store import append_event
@@ -228,13 +244,115 @@ class RunJournal:
             body["parent_id"] = parent_id
         if "tokens" not in body and "total_tokens" in body:
             body["tokens"] = body["total_tokens"]
-        return append_event(
+        seq = append_event(
             self.database_url,
             tenant_id=self.tenant_id,
             run_id=self.run_id,
             event_type=method,
             payload=body,
         )
+        try:
+            self._emit_span(method, agent_id, body)
+        except Exception:
+            # Telemetry is best-effort: a span failure never blocks the
+            # journaled event that just committed.
+            _LOG.warning("run-journal span emit failed", exc_info=True)
+        return seq
+
+    # ------------------------------------------------------------------
+    # telemetry: tool/agent spans emitted alongside the journaled events
+    # ------------------------------------------------------------------
+
+    def _span_tracer(self) -> Any:
+        if self._tracer is None:
+            from rxycode_worker import telemetry
+
+            self._tracer = telemetry.Tracer(
+                telemetry.RunEventsSpanExporter(self.database_url, self.tenant_id),
+                service="rxycode-worker",
+            )
+        return self._tracer
+
+    def _remote_parent(self) -> Any:
+        """The context the leased worker published for its children."""
+        from rxycode_worker import telemetry
+
+        return telemetry.extract_env()
+
+    def _span_parent(self, agent_id: str) -> Any:
+        """Tool spans nest under the in-flight agent span when one exists."""
+        pair = _OPEN_AGENT_SPANS.get((self.run_id, agent_id))
+        if pair is not None:
+            return pair[1].context
+        return self._remote_parent()
+
+    def _emit_span(self, method: str, agent_id: str, body: dict[str, Any]) -> None:
+        """Emit one sanitized span for a journaled event when the method maps.
+
+        Agent lifecycle events open/close a ``graph.agent.<id>`` span;
+        tool-call-ish methods (``event/tool_*`` or any payload carrying a
+        call id) emit a ``tool.<name>`` span carrying the ``tool_call_id``
+        from the payload. Attrs pass through telemetry's sanitizer before
+        leaving the process.
+        """
+        call_id = str(body.get("tool_call_id") or body.get("call_id") or "")
+        if method in _AGENT_OPEN_METHODS:
+            span = self._span_tracer().start_span(
+                f"graph.agent.{agent_id}",
+                kind="worker",
+                parent=self._remote_parent(),
+                run_id=self.run_id,
+                attrs={"agent.id": agent_id, **body},
+            )
+            _OPEN_AGENT_SPANS[(self.run_id, agent_id)] = (self._tracer, span)
+            return
+        if method in _AGENT_CLOSE_METHODS:
+            pair = _OPEN_AGENT_SPANS.pop((self.run_id, agent_id), None)
+            if pair is None:
+                return
+            tracer, span = pair
+            tracer.end_span(
+                span,
+                status=_AGENT_CLOSE_METHODS[method],
+                attrs=dict(body),
+            )
+            return
+        if "tool" not in method and not call_id:
+            return
+        tool_name = str(body.get("tool_name") or body.get("tool") or "call")
+        if method.endswith("tool_begin") and call_id:
+            span = self._span_tracer().start_span(
+                f"tool.{tool_name}",
+                kind="tool",
+                parent=self._span_parent(agent_id),
+                run_id=self.run_id,
+                tool_call_id=call_id,
+                attrs=dict(body),
+            )
+            _OPEN_TOOL_SPANS[(self.run_id, call_id)] = (self._tracer, span)
+            return
+        if call_id:
+            pair = _OPEN_TOOL_SPANS.get((self.run_id, call_id))
+            if pair is not None:
+                tracer, span = pair
+                if method.endswith(("tool_end", "tool_result", "tool_error", "tool_failed")):
+                    _OPEN_TOOL_SPANS.pop((self.run_id, call_id), None)
+                    tracer.end_span(span, attrs=dict(body))
+                else:
+                    # A mid-call event (delta/output/approval) enriches the
+                    # open span — it must not end the tool's duration early.
+                    span.set_attrs(dict(body))
+                return
+        # A one-shot tool event still yields a real (point-in-time) span.
+        span = self._span_tracer().start_span(
+            f"tool.{tool_name}",
+            kind="tool",
+            parent=self._span_parent(agent_id),
+            run_id=self.run_id,
+            tool_call_id=call_id,
+            attrs=dict(body),
+        )
+        self._span_tracer().end_span(span)
 
 
 def project_run(*, spans: list[Any], events: list[Any]) -> dict[str, object]:

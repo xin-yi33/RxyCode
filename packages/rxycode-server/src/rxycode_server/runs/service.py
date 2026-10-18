@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,6 +63,59 @@ def _accepted(run_id: str) -> RunAccepted:
     )
 
 
+_LOG = logging.getLogger(__name__)
+
+
+def _trace_run_create_start(database_url: str, tenant_id: str, request_id: str):
+    """Best-effort http/server span for a run creation — opened before the
+    durable write so its duration covers the real commit. Telemetry never
+    breaks a run: any failure is logged and the caller proceeds untraced.
+    """
+    try:
+        from rxycode_worker import telemetry
+
+        tracer = telemetry.Tracer(
+            telemetry.RunEventsSpanExporter(database_url, tenant_id),
+            service="rxycode-server",
+        )
+        span = tracer.start_span(
+            "http POST /api/v1/runs",
+            kind="server",
+            attrs={
+                "http.method": "POST",
+                "http.route": "/api/v1/runs",
+                "tenant_id": tenant_id,
+                "request_id": request_id,
+            },
+        )
+        return tracer, span
+    except Exception:
+        _LOG.warning("run-create span open failed", exc_info=True)
+        return None, None
+
+
+def _trace_run_create_end(tracer, span, *, run_id: str) -> None:
+    """Close the create_run span and publish its traceparent through the
+    same env channel the worker inherits the run's database url from, so
+    the worker's leased-run span parents under this request span."""
+    if tracer is None or span is None:
+        return
+    try:
+        span.run_id = run_id
+        tracer.end_span(
+            span,
+            attrs={"http.status_code": 202, "run.status": "queued"},
+        )
+    except Exception:
+        _LOG.warning("run-create span close failed", exc_info=True)
+    try:
+        from rxycode_worker import telemetry
+
+        telemetry.inject_env(span.context)
+    except Exception:
+        _LOG.warning("run-create traceparent inject failed", exc_info=True)
+
+
 def create_run(
     database_url: str,
     *,
@@ -97,6 +151,7 @@ def create_run(
     if isinstance(early, QuotaDecision):
         raise QuotaRefused(early)
     digest = _digest(message, target_id, permission_profile, request_id, session_id)
+    tracer, span = _trace_run_create_start(database_url, tenant_id, request_id)
     engine = create_engine(database_url, poolclass=NullPool)
     held_worker = ""
     try:
@@ -107,6 +162,7 @@ def create_run(
             if existing is not None:
                 if existing.input_digest != digest:
                     raise RunConflict(request_id)
+                _trace_run_create_end(tracer, span, run_id=existing.id)
                 return _accepted(existing.id)
             decision = gate.reserve(db, tenant_id=tenant_id, user_id=user, message=message)
             if isinstance(decision, QuotaDecision):
@@ -178,12 +234,14 @@ def create_run(
                     ).one()
                     if winner.input_digest != digest:
                         raise RunConflict(request_id) from exc
+                    _trace_run_create_end(tracer, span, run_id=winner.id)
                     return _accepted(winner.id)
                 raise
     finally:
         if held_worker:
             gate.release_worker(held_worker)
         engine.dispose()
+    _trace_run_create_end(tracer, span, run_id=run_id)
     return _accepted(run_id)
 
 

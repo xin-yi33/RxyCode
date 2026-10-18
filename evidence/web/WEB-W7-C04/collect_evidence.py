@@ -3,9 +3,10 @@
 Runs two instrumented tasks through ``evals/web/run.py``'s production spine
 (``create_run -> claim -> journaled agent_* -> eval.checks ->
 record_terminal_usage -> commit_terminal``) against the shared PostgreSQL
-container, with ``rxycode_worker.telemetry`` spans exported into
-``run_events`` as ``telemetry.span`` rows — exactly the contract path the
-tests exercise.  Outputs:
+container.  Every ``telemetry.span`` row in ``run_events`` is emitted by
+the production wiring — ``create_run`` (http/server), ``claim`` +
+``commit_terminal`` (worker.run) and ``RunJournal.record`` (graph.agent +
+tool) — exactly the contract path the tests exercise.  Outputs:
 
 * ``trace_dump.json``   — one real trace_id with correlated spans,
                           ledger row, provider snapshot, cache stats
@@ -21,10 +22,10 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import shutil
 import sys
 import time
 import uuid
-from decimal import Decimal
 from pathlib import Path
 
 EVIDENCE = Path(__file__).resolve().parent
@@ -37,6 +38,12 @@ for _entry in (REPO, _SERVER, _WORKER):
         sys.path.insert(0, str(_entry))
 
 DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+
+
+def _write(path: Path, text: str) -> None:
+    """Write evidence text with LF endings on every platform — write_text()
+    on Windows would emit CRLF and git diff --check flags it."""
+    path.write_bytes(text.encode("utf-8"))
 
 
 def _load(name: str, path: Path):
@@ -69,8 +76,9 @@ def _task(task_id: str) -> object:
 
 async def _collect(tmp: Path) -> dict:
     from rxycode_server import metrics
+    from rxycode_server.events.store import append_event
     from rxycode_server.persistence.migrate import upgrade_head
-    from rxycode_worker import telemetry
+    from rxycode_worker.agent_events import RunJournal
     from rxycode_worker.supervisor import attempt_tool
     from RxyCode.RxyCode1_1_0.execution.tool_journal import (
         ToolExecutionJournal,
@@ -80,37 +88,31 @@ async def _collect(tmp: Path) -> dict:
     upgrade_head(DATABASE_URL)
     org = web_run.seed_eval_tenant(DATABASE_URL, "w7c04evidence")
     tenant_id = org["tenant_id"]
-    exporter = telemetry.RunEventsSpanExporter(DATABASE_URL, tenant_id)
-    tracer = telemetry.Tracer(exporter, service="rxycode-web-c04-evidence")
-    http_ctx: dict[str, object] = {}
     timings: dict[str, dict[str, float]] = {}
 
+    # Every span in these traces is emitted by the production wiring —
+    # create_run (http/server), claim + commit_terminal (worker.run) and
+    # RunJournal.record (graph.agent + tool). The driver only journals the
+    # tool events the way the agent task itself would.
     def _driver(tokens: int, tag: str):
         async def _run(ctx: object) -> str:
-            agent_span = tracer.start_span(
-                f"graph.agent.{ctx.agent_id}",
-                kind="worker",
-                parent=http_ctx[tag],
-                run_id=ctx.run_id,
-                attrs={
-                    "agent.id": ctx.agent_id,
-                    "model": "eval-stub",
-                    "price_version": web_run.PRICE_VERSION,
+            journal = RunJournal(DATABASE_URL, tenant_id, ctx.run_id)
+            tool_journal = ToolExecutionJournal(tmp / f"journal-{tag}")
+            attempt_id = new_attempt_id()
+            call = tool_journal.binding(attempt_id).next_call(
+                "write_file", {"path": "answer.txt"}
+            )
+            journal.record(
+                "event/tool_begin",
+                ctx.agent_id,
+                {
+                    "call_id": call.key,
+                    "tool_name": "write_file",
+                    "attempt_id": attempt_id,
                 },
             )
-            journal = ToolExecutionJournal(tmp / f"journal-{tag}")
-            attempt_id = new_attempt_id()
-            call = journal.binding(attempt_id).next_call("write_file", {"path": "answer.txt"})
-            tool_span = tracer.start_span(
-                "tool.write_file",
-                kind="tool",
-                parent=agent_span.context,
-                run_id=ctx.run_id,
-                tool_call_id=call.key,
-                attrs={"tool.name": "write_file"},
-            )
             outcome = attempt_tool(
-                journal,
+                tool_journal,
                 attempt_id,
                 "write_file",
                 {"path": "answer.txt"},
@@ -118,16 +120,23 @@ async def _collect(tmp: Path) -> dict:
                     "present-marker", encoding="utf-8"
                 ),
             )
-            tracer.end_span(tool_span, attrs={"tool.executed": outcome["executed"]})
             agent_ctx = ctx.runtime.contexts[ctx.agent_id]
             agent_ctx.record_cache(True)
             agent_ctx.record_cache(True)
             agent_ctx.record_cache(False)
             ctx.runtime.record_token_usage(ctx.agent_id, tokens)
             cache = ctx.runtime._session_cache
-            tracer.end_span(
-                agent_span,
-                attrs={"cache.hits": cache.hits, "cache.misses": cache.misses},
+            journal.record(
+                "event/tool_end",
+                ctx.agent_id,
+                {
+                    "call_id": call.key,
+                    "tool_name": "write_file",
+                    "ok": True,
+                    "tool.executed": outcome["executed"],
+                    "cache.hits": cache.hits,
+                    "cache.misses": cache.misses,
+                },
             )
             return "wrote answer.txt"
 
@@ -140,16 +149,9 @@ async def _collect(tmp: Path) -> dict:
     ):
         workdir = tmp / task.task_id
         workdir.mkdir(parents=True)
-        server_span = tracer.start_span(
-            "http POST /api/v1/runs",
-            kind="server",
-            attrs={"http.method": "POST", "http.route": "/api/v1/runs"},
-        )
-        http_ctx[tag] = server_span.context
-        sink: dict[str, object] = {}
         t0 = time.monotonic()
-        try:
-            record = await web_run.run_web_task(
+        records.append(
+            await web_run.run_web_task(
                 database_url=DATABASE_URL,
                 org=org,
                 task=task,
@@ -159,13 +161,25 @@ async def _collect(tmp: Path) -> dict:
                 task_timeout=120,
                 request_nonce=f"evidence-{uuid.uuid4().hex[:8]}",
                 prompt_driver=_driver(tokens, tag),
-                spend_sink=sink,
+                spend_sink={},
             )
-        finally:
-            server_span.run_id = str(sink.get("run_id") or "")
-            tracer.end_span(server_span, attrs={"http.status_code": 202})
+        )
         timings[tag] = {"wall_ms": (time.monotonic() - t0) * 1000.0}
-        records.append(record)
+
+    # Export-overhead probe: a span's duration_ms is stamped BEFORE export,
+    # so export cost never inflates durations — measure the real cost of
+    # the export itself (one append_event: event + outbox in one tx).
+    export_probe_ms: list[float] = []
+    for record in records:
+        t0 = time.perf_counter()
+        append_event(
+            DATABASE_URL,
+            tenant_id=tenant_id,
+            run_id=record["run_id"],
+            event_type="evidence.export_probe",
+            payload={"probe": "span-export-overhead"},
+        )
+        export_probe_ms.append((time.perf_counter() - t0) * 1000.0)
 
     summaries = {
         record["task_id"]: metrics.run_trace_summary(
@@ -190,7 +204,7 @@ async def _collect(tmp: Path) -> dict:
         "timings": timings,
         "summaries": summaries,
         "tenant_metrics": tenant,
-        "exporter_dropped": exporter.dropped,
+        "export_probe_ms": export_probe_ms,
     }
 
 
@@ -254,6 +268,9 @@ def _dashboard(data: dict, out: Path) -> None:
 
 def main() -> None:
     tmp = EVIDENCE / "_workdir"
+    # Fresh scratch each collection: stale journals/workdirs from a previous
+    # run must never contaminate the new evidence.
+    shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(exist_ok=True)
     t0 = time.monotonic()
     data = asyncio.run(_collect(tmp))
@@ -267,6 +284,8 @@ def main() -> None:
         "run_id": costly["run_id"],
         "trace_id": summary["trace_id"],
         "span_count": summary["span_count"],
+        "elapsed_ms": summary["elapsed_ms"],
+        "total_span_work_ms": summary["total_span_work_ms"],
         "spans": summary["spans"],
         "layers": summary["layers"],
         "ledger": summary["ledger"],
@@ -274,24 +293,26 @@ def main() -> None:
         "cache": summary["cache"],
         "cost": summary["cost"],
         "abnormal": data["tenant_metrics"]["abnormal"],
+        "export_probe_ms": data["export_probe_ms"],
         "events_url": summary["events_url"],
     }
-    (EVIDENCE / "trace_dump.json").write_text(
-        json.dumps(trace_dump, indent=2, ensure_ascii=False), encoding="utf-8"
+    _write(
+        EVIDENCE / "trace_dump.json",
+        json.dumps(trace_dump, indent=2, ensure_ascii=False),
     )
-    (EVIDENCE / "metrics_dump.json").write_text(
+    _write(
+        EVIDENCE / "metrics_dump.json",
         json.dumps(
             {
                 "records": data["records"],
                 "timings": data["timings"],
                 "summaries": data["summaries"],
                 "tenant_metrics": data["tenant_metrics"],
-                "exporter_dropped": data["exporter_dropped"],
+                "export_probe_ms": data["export_probe_ms"],
             },
             indent=2,
             ensure_ascii=False,
         ),
-        encoding="utf-8",
     )
     _dashboard(data, EVIDENCE / "dashboard.png")
 
@@ -308,17 +329,17 @@ def main() -> None:
         tag = "costly" if "costly" in record["task_id"] else "pass"
         wall = data["timings"][tag]["wall_ms"]
         s = data["summaries"][record["task_id"]]
-        span_total = sum(layer["duration_ms"] for layer in s["layers"].values())
         lines += [
             f"## {record['task_id']} (run {record['run_id'][:8]})",
             "",
             f"- wall: {wall:.0f} ms end-to-end through the durable spine",
             f"- spans: {s['span_count']} under trace `{s['trace_id']}`",
-            f"- per-layer span sum: {span_total:.1f} ms across "
-            f"{s['span_count']} spans (server span wraps the whole spine, "
-            "so the sum is dominated by it — nested spans are not additive)",
+            f"- elapsed_ms (root span): {s['elapsed_ms']:.1f} · "
+            f"total_span_work_ms: {s['total_span_work_ms']:.1f} across "
+            f"{s['span_count']} spans (nested spans are not additive — the "
+            "elapsed root and the summed work are reported separately)",
             "",
-            "| layer | count | duration_ms |",
+            "| layer | count | duration_ms (summed per layer) |",
             "|---|---|---|",
         ]
         for kind, stat in sorted(s["layers"].items()):
@@ -334,6 +355,11 @@ def main() -> None:
             f"{s['cost']['threshold_usd']})",
             "",
         ]
+    probe = data["export_probe_ms"]
+    probe_text = ", ".join(f"{value:.1f}" for value in probe) if probe else "n/a"
+    tool_ms = float(
+        summary["layers"].get("tool", {}).get("duration_ms") or 0.0
+    )
     lines += [
         "## Where the time actually goes",
         "",
@@ -341,12 +367,26 @@ def main() -> None:
         "spine's cost is dominated by the PostgreSQL round-trips — "
         "`create_run`, `claim` (lease row + FOR UPDATE), `append_event` "
         "(event + outbox in one tx), `record_terminal_usage`, and "
-        "`commit_terminal` — while the model interaction (stub driver) and "
-        "the journaled tool call are sub-millisecond inside their parent. "
-        "Telemetry adds one `run_events` insert per span (batched with the "
-        "outbox row it already writes); measured overhead is on the order "
-        "of a single-digit millisecond per span, same shape as any other "
-        "`append_event` — visible in the layer table above, not hidden.",
+        "`commit_terminal`. The `worker.run` span wraps claim→commit "
+        "(the leased execution); `graph.agent.*` wraps the agent lifecycle; "
+        f"the `tool.*` span ({tool_ms:.1f} ms on the costly run) brackets "
+        "two `run_events` journal writes plus the tool call itself — it is "
+        "NOT sub-millisecond, and its duration is spent mostly on the "
+        "journal appends. The stub driver's model interaction itself is "
+        "sub-millisecond inside its parent.",
+        "",
+        "Telemetry export costs one `append_event` (event + outbox INSERT "
+        "in one tx) per span. A span's `duration_ms` is stamped BEFORE "
+        "export, so export overhead never inflates durations — the "
+        f"measured export cost on this run: {probe_text} ms per append. "
+        "`elapsed_ms` is the root span's duration (or the union of span "
+        "intervals when no single root exists); `total_span_work_ms` sums "
+        "nested durations and therefore over-counts wall time by design — "
+        "both are reported, neither is hidden.",
+        "",
+        "Browser E2E: BLOCKED — apps/web has no Playwright dependency, so "
+        "no browser E2E was run for this card; the UsagePage trace block "
+        "is covered by the summary contract tests instead.",
         "",
         "## Comparison vs WEB-W7-C03 evidence (`results_web-solo.json`)",
         "",
@@ -386,9 +426,9 @@ def main() -> None:
         "are surfaced verbatim (see `metrics_dump.json`).",
         "",
     ]
-    (EVIDENCE / "bottleneck.md").write_text("\n".join(lines), encoding="utf-8")
+    _write(EVIDENCE / "bottleneck.md", "\n".join(lines))
     print(json.dumps({"trace_id": summary["trace_id"], "records": len(data["records"]),
-                      "dropped": data["exporter_dropped"]}))
+                      "export_probe_ms": data["export_probe_ms"]}))
 
 
 if __name__ == "__main__":
