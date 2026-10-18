@@ -219,7 +219,29 @@ def extract_env() -> SpanContext | None:
     return parse_traceparent(os.environ.get(_TRACE_ENV))
 
 
-def parent_for_run(database_url: str, run_id: str) -> SpanContext | None:
+@dataclass(frozen=True)
+class ParentLookup:
+    """Tri-state result of :func:`parent_for_run`.
+
+    ``context`` is the run's persisted W3C parent — ``None`` when the run
+    predates persisted traceparents or its payload is missing/malformed.
+
+    ``run_event_found`` distinguishes WHY ``context`` is ``None``:
+
+    * ``True`` — the run's own ``run.created`` event exists but carries no
+      usable traceparent: a proven pre-traceparent (legacy) run, where the
+      process-global env channel is the accepted last resort.
+    * ``False`` — the ``run.created`` row is absent or the lookup itself
+      failed (bad URL, DB down, …).  Production callers must NOT consult
+      ``extract_env`` here: the env value can name ANOTHER run's span, so
+      falling through would cross-parent two unrelated runs.
+    """
+
+    context: SpanContext | None
+    run_event_found: bool
+
+
+def parent_for_run(database_url: str, run_id: str) -> ParentLookup:
     """Read this run's persisted remote parent — the W3C ``traceparent``
     ``runs.service.create_run`` stored inside the ``run.created`` event
     payload.
@@ -227,8 +249,8 @@ def parent_for_run(database_url: str, run_id: str) -> SpanContext | None:
     This is the production propagation channel: the parent context
     travels WITH the run row, so claiming run A can never pick up run B's
     span no matter what the process-global env currently holds.  Returns
-    ``None`` for runs created before the field existed, for a
-    missing/malformed payload, and on any lookup failure — never a guess.
+    a :class:`ParentLookup` — never a guess; callers decide from
+    ``run_event_found`` whether the legacy env fallback is acceptable.
     """
     try:
         from sqlalchemy import create_engine, text
@@ -248,18 +270,24 @@ def parent_for_run(database_url: str, run_id: str) -> SpanContext | None:
         finally:
             engine.dispose()
     except Exception:
-        return None
+        # Lookup itself failed: nothing is known about this run — the env
+        # channel must not be consulted for it.
+        return ParentLookup(None, False)
     if row is None:
-        return None
+        return ParentLookup(None, False)
     payload = row[0]
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
         except ValueError:
-            return None
+            payload = None
     if not isinstance(payload, Mapping):
-        return None
-    return parse_traceparent(payload.get("traceparent"))
+        # The run's own event row exists — proven legacy run even though
+        # its payload yields no context.
+        return ParentLookup(None, True)
+    return ParentLookup(
+        parse_traceparent(payload.get("traceparent")), True
+    )
 
 
 _CURRENT: ContextVar[SpanContext | None] = ContextVar(
@@ -604,6 +632,14 @@ class RunEventsSpanExporter:
         durable worker span therefore lands atomically inside the terminal
         tx (same seq assignment as ``events.store.append_event``: the run's
         ``event_seq`` watermark, retained ``run_events`` max, +1).
+
+        Callers run this inside ``conn.begin_nested()`` (SAVEPOINT) on
+        PostgreSQL, so statement errors must PROPAGATE: only a raised
+        error lets the nested transaction issue ROLLBACK TO SAVEPOINT.
+        Swallowing the exception here would exit the block cleanly, emit
+        RELEASE SAVEPOINT on the aborted tx — itself a failure — and take
+        the caller's terminal UPDATE down with it.  The drop is still
+        counted before re-raising.
         """
         run_id = str(span.get("run_id") or "")
         if not run_id:
@@ -660,7 +696,10 @@ class RunEventsSpanExporter:
             return True
         except Exception:
             self.dropped += 1
-            return False
+            # Re-raise: the surrounding begin_nested() must see the
+            # failure to roll back to its savepoint. Returning False here
+            # would look like a clean exit and poison the terminal tx.
+            raise
 
 
 class _MultiExporter:

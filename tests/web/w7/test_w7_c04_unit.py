@@ -199,7 +199,9 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
             request_id=f"req-c04-{uuid.uuid4().hex[:12]}",
         )
         run_id = accepted.run_id
-        remote_parent = telemetry.parent_for_run(postgres_url, run_id)
+        lookup = telemetry.parent_for_run(postgres_url, run_id)
+        assert lookup.run_event_found is True
+        remote_parent = lookup.context
         assert remote_parent is not None
         assert len(remote_parent.trace_id) == 32
         created = next(
@@ -900,12 +902,19 @@ def test_w7_c04_run_scoped_traceparent(
 def test_w7_c04_terminal_export_savepoint(
     postgres_url: str, tmp_path: Path, monkeypatch
 ) -> None:
-    """A failing span-export statement inside ``commit_terminal`` must roll
+    """A REAL statement error inside the REAL ``export_conn`` must roll
     back only its own savepoint — the terminal status UPDATE still commits.
 
-    Regression: ``export_conn`` runs its SQL on the caller's open
-    transaction; on PostgreSQL a failed statement aborts the whole tx, so
-    an unprotected export would take the terminal UPDATE down with it.
+    Regression (audit-r3): the earlier version of this test swapped in a
+    fake exporter whose SQL error propagated — which masked the real bug:
+    the production ``export_conn`` caught statement exceptions and
+    returned False INSIDE the ``begin_nested`` block, so the context
+    manager emitted ``RELEASE SAVEPOINT`` on the aborted tx instead of
+    rolling back to it, and the whole terminal commit still died. This
+    test corrupts the span payload so the REAL export path's own INSERT
+    (``CAST(:payload AS jsonb)``) raises a genuine PostgreSQL statement
+    error (22P02) — ``export_conn`` must now let it propagate to the
+    savepoint, and the run must still end ``succeeded``.
     """
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
@@ -932,17 +941,18 @@ def test_w7_c04_terminal_export_savepoint(
         epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
         assert epoch is not None
 
-        def _failing_export_conn(self, conn, span) -> bool:
-            # A real PostgreSQL failure on the caller's open tx — without
-            # the savepoint this aborts the terminal UPDATE too.
-            conn.execute(
-                text("INSERT INTO telemetry_missing_table (id) VALUES ('x')")
-            )
-            return True
+        real_dumps = telemetry.json.dumps
 
-        monkeypatch.setattr(
-            telemetry.RunEventsSpanExporter, "export_conn", _failing_export_conn
-        )
+        def _corrupt_span_dump(value, *args, **kwargs):
+            # Corrupt ONLY the otel.span/v1 payload the real exporter
+            # serializes: the INSERT's CAST(:payload AS jsonb) then fails
+            # server-side inside the real export_conn — a true aborted-tx
+            # statement error on the caller's open terminal transaction.
+            if isinstance(value, dict) and value.get("schema") == "otel.span/v1":
+                return "{not valid json"
+            return real_dumps(value, *args, **kwargs)
+
+        monkeypatch.setattr(telemetry.json, "dumps", _corrupt_span_dump)
         # Must not raise: the failed span write rolls back alone.
         commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
     finally:
@@ -1121,3 +1131,271 @@ def test_w7_c04_tool_error_status(
         assert call in by_call, by_call
         assert by_call[call]["status"] == "error", by_call[call]
         assert by_call[call]["name"] == "tool.bash"
+
+
+# ---------------------------------------------------------------------------
+# Audit-r3 regressions
+# ---------------------------------------------------------------------------
+
+
+def test_w7_c04_tool_span_dedup(postgres_url: str, tmp_path: Path) -> None:
+    """The journaled tool path and the ProtocolTui open/close path share
+    ONE open-span registry per ``(run_id, call_id)``: a journaled begin
+    over an open span merges attrs instead of forking, the close keeps the
+    span's REAL start, and a second end is a no-op — exactly one exported
+    span per tool call."""
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import agent_events
+    from rxycode_worker.agent_events import (
+        clear_web_run,
+        default_run_journal,
+        publish_database_url,
+        remember_web_run,
+    )
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    created = create_run(
+        postgres_url,
+        tenant_id=tenant_id,
+        session_id=session_ids[0],
+        message="tool span dedup",
+        target_id="local:c04dup",
+        permission_profile="full_auto",
+        request_id=f"req-dup-{uuid.uuid4().hex[:12]}",
+    )
+    run_id = created.run_id
+    call_id = f"call_dedup_{uuid.uuid4().hex[:8]}"
+    try:
+        publish_database_url(postgres_url)
+        remember_web_run(
+            postgres_url, tenant_id, run_id, session_id=session_ids[0]
+        )
+        journal = default_run_journal()
+        assert journal is not None
+
+        # 1. The TUI path opens the span (production ordering: the
+        #    orchestrator's begin lands before the journaled mirror).
+        journal.open_tool_span(
+            call_id, "write_file", attrs={"origin": "tui"}
+        )
+        key = (run_id, call_id)
+        real_start = agent_events._OPEN_TOOL_SPANS[key][1].start_epoch
+        time.sleep(0.005)
+        # 2. A journaled begin over the OPEN span merges — never forks.
+        t_journal_begin = time.time()
+        journal.record(
+            "event/tool_begin",
+            "eval-primary",
+            {
+                "call_id": call_id,
+                "tool_name": "write_file",
+                "journaled": True,
+            },
+        )
+        # The registry still holds the SAME open span (same start).
+        assert (
+            agent_events._OPEN_TOOL_SPANS[key][1].start_epoch == real_start
+        )
+        # 3. The TUI path closes it.
+        journal.close_tool_span(call_id, True, attrs={"closed": "tui"})
+        assert key not in agent_events._OPEN_TOOL_SPANS
+        # 4. The journaled end arrives AFTER close — it must not emit a
+        #    second one-shot span, and a second TUI end is a no-op too.
+        journal.record(
+            "event/tool_end",
+            "eval-primary",
+            {"call_id": call_id, "tool_name": "write_file", "ok": True},
+        )
+        journal.close_tool_span(call_id, True)
+    finally:
+        clear_web_run()
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    tool_spans = [
+        span
+        for span in _spans(postgres_url, tenant_id, run_id)
+        if span["tool_call_id"] == call_id
+    ]
+    assert len(tool_spans) == 1, tool_spans
+    span = tool_spans[0]
+    assert span["name"] == "tool.write_file"
+    assert span["status"] == "ok"
+    # The exported span kept the REAL (open-time) start, not the journaled
+    # begin's later start.
+    assert span["start_epoch"] == pytest.approx(real_start, abs=0.001)
+    assert span["start_epoch"] <= t_journal_begin
+    assert span["end_epoch"] >= t_journal_begin
+    # The journaled begin's attrs merged into the open span; the TUI
+    # open/close attrs survived too.
+    assert span["attrs"]["journaled"] is True
+    assert span["attrs"]["origin"] == "tui"
+    assert span["attrs"]["closed"] == "tui"
+
+
+def test_w7_c04_parent_lookup_tri_state(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """``parent_for_run`` separates 'run predates persisted traceparents'
+    (its ``run.created`` EXISTS without one — proven legacy, env fallback
+    acceptable) from 'run.created NOT FOUND / lookup errored' — where the
+    process-global env is NEVER consulted because it can name ANOTHER
+    run's span.
+
+    Run A's ``run.created`` exists but lacks a traceparent while the env
+    holds run B's context, plus a lookup-error case: in both, the emitted
+    span's parent/trace_id must not equal B's.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import telemetry
+    from rxycode_worker.agent_events import RunJournal
+    from rxycode_worker.supervisor import (
+        _OPEN_RUN_SPANS,
+        claim,
+        commit_terminal,
+    )
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 4)
+    sess_a, sess_b, sess_c, sess_d = session_ids
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    memory = telemetry.InMemorySpanExporter()
+    run_c = f"run-nocreated-{uuid.uuid4().hex[:12]}"
+    try:
+        # Run B is ordinary: create_run re-publishes its http span's
+        # traceparent through the compat env channel.
+        create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=sess_b,
+            message="run B",
+            target_id="local:c04trib",
+            permission_profile="full_auto",
+            request_id=f"req-trib-{uuid.uuid4().hex[:12]}",
+        )
+        ctx_b = telemetry.extract_env()
+        assert ctx_b is not None
+        # Runs A and D get a run.created event that EXISTS but carries no
+        # traceparent — the shape of a pre-traceparent (legacy) run.
+        accepted_a = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=sess_a,
+            message="run A",
+            target_id="local:c04tria",
+            permission_profile="full_auto",
+            request_id=f"req-tria-{uuid.uuid4().hex[:12]}",
+        )
+        accepted_d = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=sess_d,
+            message="run D",
+            target_id="local:c04trid",
+            permission_profile="full_auto",
+            request_id=f"req-trid-{uuid.uuid4().hex[:12]}",
+        )
+        engine = create_engine(postgres_url, poolclass=NullPool)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE run_events "
+                        "SET payload = payload - 'traceparent' "
+                        "WHERE run_id IN (:ra, :rd) "
+                        "AND type = 'run.created'"
+                    ),
+                    {"ra": accepted_a.run_id, "rd": accepted_d.run_id},
+                )
+                # Run C: a runs row with NO run.created event at all.
+                conn.execute(
+                    text(
+                        "INSERT INTO runs (id, tenant_id, session_id,"
+                        " status, revision, lease_epoch, request_id,"
+                        " input_digest, event_seq, target_id)"
+                        " VALUES (:id, :tid, :sid, 'pending', 0, 0, :req,"
+                        " '', 0, 'local:c04tric')"
+                    ),
+                    {
+                        "id": run_c,
+                        "tid": tenant_id,
+                        "sid": sess_c,
+                        "req": f"req-tric-{uuid.uuid4().hex[:12]}",
+                    },
+                )
+        finally:
+            engine.dispose()
+        # The process-global env provably holds run B's context — the
+        # stale foreign value that must never cross-parent run A/C.
+        telemetry.inject_env(ctx_b)
+
+        def _journal(run_id: str, url: str = postgres_url) -> RunJournal:
+            journal = RunJournal(url, tenant_id, run_id)
+            journal._tracer = telemetry.Tracer(memory, service="c04-tri")
+            return journal
+
+        # -- RunJournal path ---------------------------------------------
+        # Proven-legacy run D: the env channel is the sanctioned last
+        # resort, so this span legitimately parents under B.
+        journal_d = _journal(accepted_d.run_id)
+        journal_d.open_tool_span("call-legacy-d", "bash")
+        journal_d.close_tool_span("call-legacy-d", True)
+        # Lookup ERROR (unreachable URL): env must not be consulted — the
+        # span is emitted unparented instead of inheriting B's context.
+        journal_bad = _journal(
+            accepted_a.run_id,
+            url="postgresql+psycopg://postgres@127.0.0.1:1/none",
+        )
+        journal_bad.open_tool_span("call-badurl", "bash")
+        journal_bad.close_tool_span("call-badurl", True)
+        # run.created NOT FOUND: env must not be consulted either.
+        journal_x = _journal(f"run-missing-{uuid.uuid4().hex[:8]}")
+        journal_x.open_tool_span("call-missing", "bash")
+        journal_x.close_tool_span("call-missing", True)
+
+        # -- claim path (worker.run span) ---------------------------------
+        # Run A: run.created exists w/o traceparent — env=B ignored.
+        epoch_a = claim(
+            postgres_url, accepted_a.run_id, worker_id, ttl_seconds=600
+        )
+        assert epoch_a is not None
+        worker_a = _OPEN_RUN_SPANS[accepted_a.run_id][1].context
+        assert worker_a.trace_id != ctx_b.trace_id
+        assert worker_a.parent_span_id != ctx_b.span_id
+        # Run C: no run.created at all — env=B ignored as well.
+        epoch_c = claim(postgres_url, run_c, worker_id, ttl_seconds=600)
+        assert epoch_c is not None
+        worker_c = _OPEN_RUN_SPANS[run_c][1].context
+        assert worker_c.trace_id != ctx_b.trace_id
+        assert worker_c.parent_span_id == ""
+        commit_terminal(
+            postgres_url, accepted_a.run_id, worker_id, epoch_a, "succeeded"
+        )
+        commit_terminal(postgres_url, run_c, worker_id, epoch_c, "succeeded")
+    finally:
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    by_call = {span["tool_call_id"]: span for span in memory.spans}
+    assert set(by_call) == {"call-legacy-d", "call-badurl", "call-missing"}
+    legacy = by_call["call-legacy-d"]
+    assert legacy["trace_id"] == ctx_b.trace_id
+    assert legacy["parent_span_id"] == ctx_b.span_id
+    for key in ("call-badurl", "call-missing"):
+        span = by_call[key]
+        assert span["trace_id"] != ctx_b.trace_id
+        # Unparented — the env fallback was NOT consulted.
+        assert span["parent_span_id"] == ""
+    # The persisted worker.run spans agree: neither cross-parented to B.
+    for run_id in (accepted_a.run_id, run_c):
+        worker = next(
+            span
+            for span in _spans(postgres_url, tenant_id, run_id)
+            if span["name"] == "worker.run"
+        )
+        assert worker["trace_id"] != ctx_b.trace_id
+        assert worker["parent_span_id"] != ctx_b.span_id

@@ -784,3 +784,60 @@ elapsed_ms is the trace ENVELOPE (min start -> max end across all
 spans: pass 702.3 / costly 396.2 ms per metrics_dump.json), covering
 the async worker tail the old root-span figure hid; parentage
 http->worker->agent->tool verified intact in trace_dump.json
+
+=== WEB-W7-C04 audit-r3 green evidence ===
+date: 2026-10-18T15:40:00Z
+
+Round-3 fixes:
+* telemetry.export_conn no longer swallows statement errors inside the
+  terminal tx: it counts the drop then RE-RAISES, so
+  supervisor._close_run_span's conn.begin_nested() __exit__ issues
+  ROLLBACK TO SAVEPOINT instead of RELEASE on the aborted tx (old path
+  left the tx aborted -> terminal UPDATE silently rolled back; verified:
+  simulated old code leaves status='leased').
+* agent_events tool spans: one shared per-(run_id,call_id) open registry
+  plus a bounded _CLOSED_TOOL_SPANS dedup set used by BOTH the journaled
+  event/tool_* path and the ProtocolTui open_tool_span/close_tool_span
+  path. begin over an open span merges attrs (never forks, keeps the
+  real start); end closes the open span or emits exactly ONE one-shot;
+  a second end / post-close event / late begin is a no-op.
+* telemetry.parent_for_run now returns ParentLookup(context,
+  run_event_found): run_event_found=True only when the run's own
+  run.created row was actually read. RunJournal._remote_parent falls
+  back to extract_env ONLY for proven-legacy runs; a missing row or a
+  failed lookup returns None (unparented) so env can never cross-parent
+  run A to run B. supervisor.claim keeps never reading env.
+
+--- focused: pytest tests/web/w7/test_w7_c04_unit.py tests/web/w7/test_w7_c04_module.py -q ---
+............
+12 passed, 1 warning in 138.98s (0:02:18)
+(2 new audit-r3 tests: tool_span_dedup [open_tool_span -> journaled
+tool_begin -> close_tool_span -> journaled tool_end exports exactly ONE
+span with the real start]; parent_lookup_tri_state [run.created exists
+w/o traceparent & env=B -> worker.run unparented; no run.created row ->
+unparented; bad-URL lookup -> unparented; proven-legacy journal ->
+documented env fallback to B]. terminal_export_savepoint now corrupts
+the span payload so the REAL export_conn INSERT hits a genuine 22P02
+statement error instead of a propagating fake exporter.)
+
+--- negative control (manual): old swallowing export_conn + failing SQL ---
+RELEASE SAVEPOINT sa_savepoint_1 -> psycopg.errors.InFailedSqlTransaction
+terminal status: leased (bug reproduced; new code commits 'succeeded')
+
+--- full w7 suite: pytest tests/web/w7 -q (single invocation, shared pg) ---
+.....................................
+37 passed, 3 warnings in 283.37s (0:04:43)
+
+--- ruff: all touched python files ---
+All checks passed! (line-length 100)
+
+--- git diff --check -- packages tests/web/w7 evidence/web/WEB-W7-C04 ---
+clean; all touched files LF-only, no trailing whitespace
+
+--- evidence dumps ---
+NOT regenerated: the collector drives only the normal successful path
+(TUI open -> journaled tool_progress merge -> TUI close -> commit), whose
+emitted span set is identical before and after this round. The r3 fixes
+touch only failure/dedup/tri-state edges not exercised by
+collect_evidence.py, so trace_dump.json / metrics_dump.json /
+dashboard.png / bottleneck.md remain accurate.

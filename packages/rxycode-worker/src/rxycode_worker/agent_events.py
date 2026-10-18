@@ -21,6 +21,20 @@ _APPLIED: dict[str, int] = {}
 _OPEN_AGENT_SPANS: dict[tuple[str, str], tuple[Any, Any]] = {}
 _OPEN_TOOL_SPANS: dict[tuple[str, str], tuple[Any, Any]] = {}
 
+#: ``(run_id, call_id)`` keys whose tool span already CLOSED (exported).
+#: The shared dedup guard for BOTH emission paths — the journaled
+#: ``event/tool_*`` path and the ProtocolTui ``open_tool_span`` /
+#: ``close_tool_span`` path — so a second end (or a late/duplicate begin)
+#: can never fork a second span for one tool call. Bounded FIFO.
+_CLOSED_TOOL_SPANS: dict[tuple[str, str], None] = {}
+_CLOSED_TOOL_SPANS_MAX = 4096
+
+
+def _mark_tool_span_closed(key: tuple[str, str]) -> None:
+    _CLOSED_TOOL_SPANS[key] = None
+    while len(_CLOSED_TOOL_SPANS) > _CLOSED_TOOL_SPANS_MAX:
+        _CLOSED_TOOL_SPANS.pop(next(iter(_CLOSED_TOOL_SPANS)), None)
+
 _AGENT_OPEN_METHODS = {"event/agent_started"}
 _AGENT_CLOSE_METHODS = {
     "event/agent_done": "ok",
@@ -343,18 +357,28 @@ class RunJournal:
         in this process; (2) the ``traceparent`` persisted in the run's
         ``run.created`` event (survives a cross-process handoff and a
         worker started before any env var existed); (3) the legacy env
-        channel — last resort only, for runs created before traceparent
-        persistence, so a stale env value is never preferred over the
-        persisted one.
+        channel — last resort only, and only when the run's own
+        ``run.created`` event PROVES it predates persisted traceparents
+        (``ParentLookup.run_event_found``).  A missing row or a failed
+        lookup returns ``None`` — an unparented span — because the env
+        value could name ANOTHER run's span.
         """
         from rxycode_worker import supervisor, telemetry
 
         pair = supervisor._OPEN_RUN_SPANS.get(self.run_id)
         if pair is not None:
             return pair[1].context
-        persisted = telemetry.parent_for_run(self.database_url, self.run_id)
-        if persisted is not None:
-            return persisted
+        lookup = telemetry.parent_for_run(self.database_url, self.run_id)
+        if lookup.context is not None:
+            return lookup.context
+        if not lookup.run_event_found:
+            # The run's own run.created event could not be proven (row
+            # absent or the lookup failed): the process-global env may
+            # hold ANOTHER run's context, so it is never consulted here —
+            # an unparented span is honest, a cross-parented one is wrong.
+            return None
+        # Proven legacy run (run.created exists, no traceparent persisted):
+        # the env channel is the accepted last resort for a parent.
         return telemetry.extract_env()
 
     def _span_parent(self, agent_id: str) -> Any:
@@ -409,7 +433,19 @@ class RunJournal:
         if "tool" not in method and not call_id:
             return
         tool_name = str(body.get("tool_name") or body.get("tool") or "call")
+        key = (self.run_id, call_id)
+        is_close = method.endswith(_TOOL_CLOSE_SUFFIXES)
         if method.endswith("tool_begin") and call_id:
+            pair = _OPEN_TOOL_SPANS.get(key)
+            if pair is not None:
+                # Shared-registry dedup: a begin over an OPEN span (from
+                # either emission path) merges attrs into it — it never
+                # forks a second span and never loses the real start.
+                _tracer, open_span = pair
+                open_span.set_attrs(dict(body))
+                return
+            if key in _CLOSED_TOOL_SPANS:
+                return  # duplicate begin after the call already closed
             span = self._span_tracer().start_span(
                 f"tool.{tool_name}",
                 kind="tool",
@@ -418,14 +454,15 @@ class RunJournal:
                 tool_call_id=call_id,
                 attrs=dict(body),
             )
-            _OPEN_TOOL_SPANS[(self.run_id, call_id)] = (self._tracer, span)
+            _OPEN_TOOL_SPANS[key] = (self._tracer, span)
             return
         if call_id:
-            pair = _OPEN_TOOL_SPANS.get((self.run_id, call_id))
+            pair = _OPEN_TOOL_SPANS.get(key)
             if pair is not None:
                 tracer, span = pair
-                if method.endswith(_TOOL_CLOSE_SUFFIXES):
-                    _OPEN_TOOL_SPANS.pop((self.run_id, call_id), None)
+                if is_close:
+                    _OPEN_TOOL_SPANS.pop(key, None)
+                    _mark_tool_span_closed(key)
                     tracer.end_span(
                         span,
                         status=_tool_span_status(method, body),
@@ -435,6 +472,10 @@ class RunJournal:
                     # A mid-call event (delta/output/approval) enriches the
                     # open span — it must not end the tool's duration early.
                     span.set_attrs(dict(body))
+                return
+            if key in _CLOSED_TOOL_SPANS:
+                # Second end / post-close noise: the span already exported
+                # exactly once — a duplicate must not fork another.
                 return
         # A one-shot tool event still yields a real (point-in-time) span —
         # with the failure status when the notification reports one.
@@ -446,12 +487,10 @@ class RunJournal:
             tool_call_id=call_id,
             attrs=dict(body),
         )
-        one_shot = (
-            _tool_span_status(method, body)
-            if method.endswith(_TOOL_CLOSE_SUFFIXES)
-            else "ok"
-        )
+        one_shot = _tool_span_status(method, body) if is_close else "ok"
         self._span_tracer().end_span(span, status=one_shot)
+        if call_id and is_close:
+            _mark_tool_span_closed(key)
 
     # ------------------------------------------------------------------
     # telemetry: spans for the REAL tool-notification path
@@ -466,10 +505,17 @@ class RunJournal:
         Emitted by ``tool_span_begin`` (the ProtocolTui hook). Keyed in
         the same ``_OPEN_TOOL_SPANS`` store the journaled path uses, so a
         journaled ``tool_end`` can still pair with it; a duplicate begin
-        for the same call_id never forks a second span.
+        for the same call_id merges attrs into the open span — never a
+        second span — and a begin after close is a no-op.
         """
         key = (self.run_id, str(call_id))
-        if key in _OPEN_TOOL_SPANS:
+        pair = _OPEN_TOOL_SPANS.get(key)
+        if pair is not None:
+            _tracer, open_span = pair
+            if attrs:
+                open_span.set_attrs(dict(attrs))
+            return
+        if key in _CLOSED_TOOL_SPANS:
             return
         span = self._span_tracer().start_span(
             f"tool.{name or 'call'}",
@@ -486,10 +532,31 @@ class RunJournal:
     ) -> None:
         """Close the span ``open_tool_span`` started — ``ok=False``
         exports status ``error`` (a non-success tool result is a failed
-        span)."""
-        pair = _OPEN_TOOL_SPANS.pop((self.run_id, str(call_id)), None)
+        span). An end with no open span emits exactly ONE one-shot span
+        (same dedup contract as the journaled path); a second end is a
+        no-op."""
+        key = (self.run_id, str(call_id))
+        pair = _OPEN_TOOL_SPANS.pop(key, None)
         if pair is None:
+            if not str(call_id) or key in _CLOSED_TOOL_SPANS:
+                return
+            _mark_tool_span_closed(key)
+            attrs_map = dict(attrs or {})
+            tracer = self._span_tracer()
+            name = str(
+                attrs_map.get("tool_name") or attrs_map.get("tool") or "call"
+            )
+            span = tracer.start_span(
+                f"tool.{name}",
+                kind="tool",
+                parent=self._span_parent_for_tool(),
+                run_id=self.run_id,
+                tool_call_id=str(call_id),
+                attrs=attrs_map,
+            )
+            tracer.end_span(span, status="ok" if ok else "error")
             return
+        _mark_tool_span_closed(key)
         tracer, span = pair
         tracer.end_span(
             span,

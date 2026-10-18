@@ -149,6 +149,29 @@ used as a call id persists as `[REDACTED]`, proven by
 secret ever lands in the payload bytes — only `[REDACTED]`/`*_len`/`*_sha256`
 forms survive. `log/log_helpers.py` is untouched.
 
+## Audit-r3 fixes
+
+* **Savepoint actually protects the terminal tx** — `export_conn` counted
+  the drop then swallowed the statement error INSIDE `conn.begin_nested()`;
+  the clean exit emitted `RELEASE SAVEPOINT` on the aborted tx (itself a
+  failure) and left the terminal UPDATE to roll back silently. It now
+  re-raises after counting `dropped`, so `__exit__` issues
+  `ROLLBACK TO SAVEPOINT`; `_close_run_span` catches after the block.
+  The regression test now corrupts the span payload so the REAL export
+  path's `CAST(:payload AS jsonb)` raises a genuine 22P02 — the old fake
+  propagating exporter had masked the bug.
+* **One dedup registry for both tool-span paths** — journaled
+  `event/tool_*` and TUI `open_tool_span`/`close_tool_span` share
+  `_OPEN_TOOL_SPANS` plus a bounded `_CLOSED_TOOL_SPANS` set: begin over
+  an open span merges attrs (keeps the real start), end closes or emits
+  ONE one-shot, second end/late begin/post-close noise is a no-op.
+* **Tri-state parent lookup** — `parent_for_run` returns
+  `ParentLookup(context, run_event_found)`. The env fallback in
+  `RunJournal._remote_parent` now engages ONLY when the run's own
+  `run.created` row proves it predates persisted traceparents; a missing
+  row or failed lookup yields an unparented span (never a foreign run's
+  context). `claim` still never reads env.
+
 ## Red → green
 
 * `red.txt` — 4/4 import errors (`rxycode_worker.telemetry`,

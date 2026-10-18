@@ -296,10 +296,6 @@ class ProtocolTui:
         self._emit(event)
 
     def write_progress(self, text: str) -> None:
-        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_stream_progress
-
-        if claim_child_stream_progress(text):
-            return
         # Progress is a replacement status line. StreamCoalescer does not
         # concatenate progress segments, so "思考中（第 N 轮）…" cannot glue
         # onto "等待模型返回…". Flushing here would raise a barrier before
@@ -307,10 +303,6 @@ class ProtocolTui:
         self._push_async("progress", text)
 
     def write_turn_liveness(self, text: str = "思考中...") -> None:
-        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_stream_progress
-
-        if claim_child_stream_progress(text):
-            return
         """PHASE-FIX LC20: visible thinking within 1s/3s without waiting on TTFT.
 
         Collapsed CoT stays hidden (``write_reasoning``). This emits a short
@@ -400,10 +392,6 @@ class ProtocolTui:
             self._reasoning_last_liveness_at = now
 
     def stream_token(self, token: str) -> None:
-        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_stream_text
-
-        if claim_child_stream_text(token):
-            return
         self._streamed_answer_chars = int(
             getattr(self, "_streamed_answer_chars", 0) or 0
         ) + len(token or "")
@@ -460,28 +448,18 @@ class ProtocolTui:
             coalescer.flush_submit_sync()
 
     def write_tool_call(self, name: str, args: Any, call_id: str | None = None) -> str:
+        self._flush_pending_stream()
         resolved_id = str(call_id or uuid.uuid4().hex)
         arguments = args if isinstance(args, dict) else {"raw": str(args)}
-        # WEB-W7-C04: emit the tool.<name> span on the REAL notification
-        # path (ToolOrchestrator -> ProtocolTui). Best-effort — it never
-        # alters the notification, and it is placed BEFORE the child-claim
-        # early return so delegated tool calls trace too.
+        # WEB-W7-C04: emit the tool.<name> span on the real notification
+        # path (ToolOrchestrator -> ProtocolTui). Best-effort - it never
+        # alters the notification.
         try:
             from rxycode_worker.agent_events import tool_span_begin
 
             tool_span_begin(resolved_id, str(name))
         except Exception:
             pass
-        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_tool_event
-
-        if claim_child_tool_event("child_session/tool_call", {
-            "call_id": resolved_id,
-            "tool": str(name),
-            "arguments": arguments,
-            "phase": "start",
-        }):
-            return resolved_id
-        self._flush_pending_stream()
         active = self._recovery.active
         if active is not None and active.recovery_kind != RecoveryKind.TRANSPORT_RETRY:
             strategy = "alternative_tool" if str(name) != "" else "retry_task"
@@ -514,25 +492,14 @@ class ProtocolTui:
         status: str = "success",
         call_id: str | None = None,
     ) -> None:
-        # WEB-W7-C04: close the span write_tool_call opened — non-success
-        # maps to an error span. Same before-claim placement so a
-        # delegated tool's end also lands on the trace.
+        # WEB-W7-C04: close the span write_tool_call opened - non-success
+        # maps to an error span. Best-effort, never alters the emit.
         try:
             from rxycode_worker.agent_events import tool_span_end
 
             tool_span_end(str(call_id or ""), status == "success")
         except Exception:
             pass
-        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_tool_event
-
-        if claim_child_tool_event("child_session/tool_result", {
-            "call_id": str(call_id or ""),
-            "status": str(status),
-            "ok": status == "success",
-            "text": _user_safe_text(result),
-            "phase": "done",
-        }):
-            return
         self._flush_pending_stream()
         self._emit(
             ToolEnd(

@@ -37,10 +37,17 @@ def _open_run_span(
             telemetry.RunEventsSpanExporter(database_url, tenant_id),
             service="rxycode-worker",
         )
+        lookup = telemetry.parent_for_run(database_url, run_id)
+        # ``lookup.context`` is None when the run predates persisted
+        # traceparents (``run_event_found`` True) AND when the lookup
+        # failed / the run.created row is absent (False). Either way this
+        # span starts an honest new trace — the process-global env is
+        # never read on the claim path, so a stale foreign context can
+        # never cross-parent this run's worker span.
         span = tracer.start_span(
             "worker.run",
             kind="worker",
-            parent=telemetry.parent_for_run(database_url, run_id),
+            parent=lookup.context,
             run_id=run_id,
             attrs={"worker.id": worker_id, "worker.epoch": epoch},
         )
@@ -70,11 +77,23 @@ def _close_run_span(run_id: str, status: str, *, conn=None) -> None:
         if conn is not None and hasattr(exporter, "export_conn"):
             # SAVEPOINT isolation: export_conn runs its SQL on the
             # caller's OPEN terminal transaction — on PostgreSQL a failed
-            # statement would otherwise abort the whole tx and take the
-            # terminal status UPDATE down with it. begin_nested() emits
-            # SAVEPOINT so a telemetry failure rolls back only itself.
-            with conn.begin_nested():
-                exporter.export_conn(conn, payload)
+            # statement aborts the whole tx and would take the terminal
+            # status UPDATE down with it. begin_nested() emits SAVEPOINT,
+            # so export_conn must let statement errors PROPAGATE out of
+            # the block: __exit__ then issues ROLLBACK TO SAVEPOINT and
+            # the telemetry write rolls back alone. (An export_conn that
+            # swallowed the error would exit the block cleanly, emit
+            # RELEASE SAVEPOINT on the aborted tx, and poison the whole
+            # terminal commit.) The failure is caught AFTER the block —
+            # the tx is already safe again.
+            try:
+                with conn.begin_nested():
+                    exporter.export_conn(conn, payload)
+            except Exception:
+                _LOG.warning(
+                    "worker.run span export failed; savepoint rolled back",
+                    exc_info=True,
+                )
         else:
             exporter.export(payload)
     except Exception:
