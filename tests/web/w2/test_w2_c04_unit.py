@@ -166,7 +166,6 @@ def test_w2_c04_negative(postgres_url: str):
     hidden = stranger.get(f"/api/v1/runs/{run_id}/events", params={"after_seq": 40})
     assert hidden.status_code == 404
     assert "secret-tip" not in hidden.text
-    owner = TestClient(app, base_url="https://cloud.example")
     # The seeded run is not this GitHub user. Call the store as tenant-c04 through the route
     # by using a direct expired cursor on a client that we authorize as tenant-c04 below.
     from rxycode_server.events.store import replay

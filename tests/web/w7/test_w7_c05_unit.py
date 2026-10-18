@@ -166,7 +166,7 @@ STACK_TIMEOUT = 1500.0
 SERVICE_MISSING_GRACE = 120.0
 SECRET_ENV_KEY = re.compile(r"(?i)(password|secret|token)")
 ENV_REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::[-?][^}]*)?\}$")
-LOOPBACK_BINDS = {"", "127.0.0.1", "::1", "localhost"}
+LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
 
 
 class ComposeRefused(RuntimeError):
@@ -209,13 +209,20 @@ def _compose(
     for override in extra_files:
         command += ["-f", str(override)]
     command += ["-p", project, *args]
-    return subprocess.run(
+    done = subprocess.run(
         command,
-        text=True,
         capture_output=True,
         check=False,
         env=env,
         timeout=900,
+    )
+    # text=True would decode with the locale codec (GBK here); docker output
+    # is UTF-8, so decode it ourselves — a decode crash leaves stdout=None.
+    return subprocess.CompletedProcess(
+        command,
+        done.returncode,
+        (done.stdout or b"").decode("utf-8", errors="replace"),
+        (done.stderr or b"").decode("utf-8", errors="replace"),
     )
 
 
@@ -301,8 +308,10 @@ def compose_stack() -> Any:
     https_port = _free_port()
     http_port = _free_port()
     env = _stack_env(pg_port, https_port, http_port)
-    up = _compose(project, env, "up", "-d", "--remove-orphans")
     try:
+        # `up` itself lives inside try/finally: a startup timeout or a failed
+        # `up` must still `down -v` the partially created project.
+        up = _compose(project, env, "up", "-d", "--remove-orphans")
         assert up.returncode == 0, f"compose up failed:\n{up.stdout}\n{up.stderr}"
         _seed_repo(project, env)
         states = _wait_stack(project, env)
@@ -358,9 +367,12 @@ def validate_compose_config(config: dict[str, Any]) -> None:
             else:
                 parts = str(port).split(":")
                 host_ip = parts[0] if len(parts) >= 3 else ""
-            if host_ip and host_ip not in LOOPBACK_BINDS:
+            # A published port without an explicit loopback host_ip listens
+            # on every interface ("8000:8000" => 0.0.0.0). That is refused:
+            # the demo must say 127.0.0.1 out loud.
+            if host_ip not in LOOPBACK_BINDS:
                 raise ComposeRefused(
-                    f"{service_name}: published port must bind loopback, got {host_ip}"
+                    f"{service_name}: published port must bind loopback, got {host_ip!r}"
                 )
 
 
@@ -475,6 +487,61 @@ def test_w7_c05_negative(tmp_path: Path) -> None:
     assert merged_literal["services"]["api"].get("privileged") is not True
     with pytest.raises(ComposeRefused):
         validate_compose_config(merged_literal)
+
+    # (a3) A published port without an explicit loopback host_ip listens on
+    # every interface — `8000:8000` means 0.0.0.0 and must be refused, not
+    # skipped.
+    wild_override = tmp_path / "wildcard.override.yaml"
+    wild_override.write_text(
+        "services:\n  api:\n    ports:\n      - '8000:8000'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    merged_wild = _config_no_interpolate(project, env, extra_files=(wild_override,))
+    with pytest.raises(ComposeRefused):
+        validate_compose_config(merged_wild)
+
+    # (a4) Deployment wiring: the api command goes through the real serve()
+    # guard (mode=local + non-loopback can never boot), the rate-limit env
+    # is wired, and the worker service runs the drain — not an idle stdio
+    # appserver.
+    api_service = base["services"]["api"]
+    api_command = " ".join(str(part) for part in api_service.get("command") or [])
+    assert "from rxycode_server.main import serve" in api_command
+    assert "serve(" in api_command
+    api_env = api_service.get("environment") or {}
+    assert "RXYCODE_WEB_RATE_LIMIT_RPM" in api_env
+    worker_service = base["services"]["worker"]
+    worker_command = " ".join(str(part) for part in worker_service.get("command") or [])
+    assert "rxycode_worker.drain" in worker_command
+
+    # (a5) The app-layer limiter itself refuses past the window — a real
+    # ASGI drive of the shipped middleware, not a config-shape check.
+    import asyncio
+
+    from rxycode_server.api.ratelimit import RateLimitMiddleware
+
+    async def _ok_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def _drive():
+        limiter = RateLimitMiddleware(_ok_app, rpm=2)
+        statuses = []
+        for _ in range(3):
+            sent: list[dict[str, Any]] = []
+
+            async def _send(message, _sink=sent):
+                _sink.append(message)
+
+            scope = {"type": "http", "client": ("203.0.113.7", 5000)}
+            await limiter(scope, None, _send)
+            statuses.append(sent[0]["status"])
+        return statuses
+
+    statuses = asyncio.run(_drive())
+    assert statuses[:2] == [200, 200]
+    assert statuses[2] == 429
 
     # (b) A local-mode public bind is refused by the shipped gateway itself.
     from rxycode_server.main import serve

@@ -2,7 +2,7 @@
 #
 # Topology (see docs/deploy/web-runbook.md):
 #   gateway (Caddy, HTTPS + internal CA) -> api (uvicorn rxycode_server) -> postgres/redis/minio
-#   worker  (python -m appserver over stdio) -> postgres via RXYCODE_WEB_DATABASE_URL
+#   worker  (python -m rxycode_worker.drain: durable queue consumer) -> postgres
 #   migrate (one-shot Alembic upgrade_head) and webbuild (one-shot vite dist) are
 #   bring-up steps, not long-running services.
 #
@@ -139,7 +139,7 @@ services:
       - repo-src:/repo:ro
       - boot-state:/boot:ro
     environment:
-      PYTHONPATH: /repo:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-protocol/src
+      PYTHONPATH: /opt/pkg:/repo:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-protocol/src
       RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
       RXYCODE_WEB_MODE: ${RXYCODE_WEB_MODE:-cloud}
       RXYCODE_WEB_SECRET: ${RXYCODE_WEB_SECRET:?set RXYCODE_WEB_SECRET}
@@ -151,6 +151,9 @@ services:
       RXYCODE_S3_BUCKET: ${RXYCODE_S3_BUCKET:-rxycode-artifacts}
       RXYCODE_S3_ACCESS_KEY: ${RXYCODE_MINIO_ROOT_USER}
       RXYCODE_S3_SECRET_KEY: ${RXYCODE_MINIO_ROOT_PASSWORD}
+      # Public-demo request throttle: per-client-IP fixed window enforced by
+      # the app's RateLimitMiddleware (stock Caddy ships no limiter plugin).
+      RXYCODE_WEB_RATE_LIMIT_RPM: ${RXYCODE_WEB_RATE_LIMIT_RPM:-240}
     healthcheck:
       test: ["CMD-SHELL", "python /opt/probe_api.py"]
       interval: 10s
@@ -194,11 +197,16 @@ services:
 
         import uvicorn
 
-        from rxycode_server.main import create_app
+        # Deployed startup MUST go through serve(): mode="local" on a
+        # non-loopback bind is refused by reject_as_public_web_gateway — the
+        # same guard the negative test exercises. create_app alone would let
+        # RXYCODE_WEB_MODE=local boot a secure-cookies-off app on 0.0.0.0.
+        from rxycode_server.main import serve
 
-        app = create_app(
-            os.environ["RXYCODE_WEB_DATABASE_URL"],
+        app = serve(
             mode=os.environ.get("RXYCODE_WEB_MODE", "cloud"),
+            host="0.0.0.0",
+            database_url=os.environ["RXYCODE_WEB_DATABASE_URL"],
             secret=os.environ["RXYCODE_WEB_SECRET"],
             allowed_origins=[
                 origin.strip()
@@ -212,6 +220,7 @@ services:
             s3_bucket=os.environ.get("RXYCODE_S3_BUCKET", ""),
             s3_access_key=os.environ.get("RXYCODE_S3_ACCESS_KEY", ""),
             s3_secret_key=os.environ.get("RXYCODE_S3_SECRET_KEY", ""),
+            rate_limit_rpm=int(os.environ.get("RXYCODE_WEB_RATE_LIMIT_RPM", "0")),
         )
         uvicorn.run(
             app,
@@ -228,27 +237,39 @@ services:
         while [ ! -f /boot/.migrate-done ]; do sleep 2; done
         exec python /opt/serve_web.py
 
-  # The honest worker: this repo has no standalone run-drain daemon — the
-  # durable claim/commit spine is rxycode_worker.supervisor and the thing
-  # that EXECUTES a web run is the appserver worker bound via
-  # bind_web_session + RXYCODE_WEB_DATABASE_URL. This service is the real
-  # `python -m appserver` stdio process, held open by an attached TTY so a
-  # session can be driven over its JSON-RPC transport.
+  # The run executor: `python -m rxycode_worker.drain` — the real durable
+  # queue consumer. It polls `runs` for claimable rows (pending, or a dead
+  # worker's expired lease), takes the fenced lease via supervisor.claim,
+  # reads the persisted message back, and drives one real turn through
+  # AgentRuntime -> Session.prompt (the same machinery an appserver session
+  # worker uses). Without this service an API-created run sits queued
+  # forever — the audit found that gap; this is the fix.
   worker:
     image: python:3.12-slim
     privileged: false
     restart: unless-stopped
-    tty: true
-    stdin_open: true
     volumes:
       - repo-src:/repo-src:ro
       - boot-state:/boot:ro
+      - worker-data:/work
     environment:
       PYTHONPATH: /opt/pkg:/repo:/repo/packages/rxycode-core/src:/repo/packages/rxycode-protocol/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src
       RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
-      RXYCODE_APPSERVER_MULTI: "1"
-      RXYCODE_APPSERVER_LOCK: /tmp/rxycode-appserver.lock
-      RXYCODE_DATA_DIR: /tmp/rxycode-data
+      RXYCODE_WORKER_ID: ${RXYCODE_WORKER_ID:-}
+      RXYCODE_WORKER_POLL_SECONDS: ${RXYCODE_WORKER_POLL_SECONDS:-2}
+      RXYCODE_WORKER_LEASE_TTL: ${RXYCODE_WORKER_LEASE_TTL:-120}
+      RXYCODE_WORKER_RUN_TIMEOUT: ${RXYCODE_WORKER_RUN_TIMEOUT:-900}
+      RXYCODE_WORKER_WORKSPACES: /work/runs
+      RXYCODE_WORKER_MODEL: ${RXYCODE_WORKER_MODEL:-}
+      # Deployed LLM endpoint: when RXYCODE_LLM_BASE_URL is set the worker
+      # writes a real model entry into its config and executes turns against
+      # it (key from RXYCODE_API_KEY). With no endpoint configured a run
+      # still claims, starts, and commits `failed` with the honest
+      # "No model configured" error — it is never faked.
+      RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:-}
+      RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
+      RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}
+      RXYCODE_DATA_DIR: /work/data
       RXYCODE_UVLOOP: "0"
     healthcheck:
       test: ["CMD-SHELL", "python /opt/probe_worker.py"]
@@ -273,9 +294,9 @@ services:
         import sys
         from pathlib import Path
 
-        # The worker is the appserver stdio process; prove it is alive as PID 1.
+        # The worker is the drain loop; prove it is alive as PID 1.
         cmdline = Path("/proc/1/cmdline").read_bytes()
-        if b"appserver" not in cmdline:
+        if b"rxycode_worker" not in cmdline:
             sys.exit(1)
         # Its durable spine is the same Postgres the api uses.
         from sqlalchemy import create_engine, text
@@ -290,8 +311,42 @@ services:
         PY
         python -m pip install --quiet --no-input \
           -r /repo/requirements.txt
+        # Deployed model config: only written when the operator pointed the
+        # worker at an LLM endpoint. api_key stays an env reference — the
+        # key itself never lands in the config file. The check lives inside
+        # python: a shell ${VAR} here would be interpolated by compose at `up`
+        # time from the HOST env instead of read from the container env.
+        python - <<'PY'
+        import os
+        import sys
+
+        base_url = os.environ.get("RXYCODE_LLM_BASE_URL", "").strip()
+        if not base_url:
+            sys.exit(0)
+        import yaml
+
+        data_dir = os.environ.get("RXYCODE_DATA_DIR", "/work/data")
+        os.makedirs(data_dir, exist_ok=True)
+        path = os.path.join(data_dir, "config.yaml")
+        cfg = {
+            "active_model": "deployed",
+            "models": {
+                "deployed": {
+                    "provider_id": "openai",
+                    "provider_name": "Deployed endpoint",
+                    "base_url": base_url,
+                    "model_name": os.environ.get("RXYCODE_LLM_MODEL") or "deployed",
+                    "api_key_env": "RXYCODE_API_KEY",
+                    "max_tokens": 8192,
+                    "temperature": 0.7,
+                }
+            },
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(cfg, fh)
+        PY
         while [ ! -f /boot/.migrate-done ]; do sleep 2; done
-        exec python -m appserver
+        exec python -m rxycode_worker.drain
 
   webbuild:
     image: node:22-slim
@@ -349,5 +404,6 @@ volumes:
   repo-src:
   boot-state:
   web-dist:
+  worker-data:
   caddy-data:
   caddy-config:

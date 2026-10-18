@@ -10,8 +10,9 @@ Compose v5.5.1. Commands are run from the **repo root**.
 browser --https(8443)--> gateway (caddy:2.11, TLS internal CA)
                           |-- /api/*  -> api:8000  (SSE + WS included)
                           '-- /*      -> /srv/www  (vite dist from `webbuild`)
-api (python:3.12-slim, uvicorn rxycode_server.main:create_app, mode=cloud)
-worker (python:3.12-slim, `python -m appserver` over stdio)
+api (python:3.12-slim, uvicorn on rxycode_server.main.serve(mode=cloud))
+worker (python:3.12-slim, `python -m rxycode_worker.drain` — durable queue
+        consumer: claim -> load_run -> real Session.prompt -> terminal commit)
 migrate (one-shot: rxycode_server.persistence.migrate.upgrade_head)
 webbuild (one-shot: node:22-slim, npm install + npm run build -> web-dist vol)
 postgres:16 | redis:7 | bitnamilegacy/minio:2025.7.23 (named volumes)
@@ -19,14 +20,15 @@ postgres:16 | redis:7 | bitnamilegacy/minio:2025.7.23 (named volumes)
 
 Honest notes:
 
-- There is **no standalone run-drain daemon** in this repo. The durable spine
-  is `rxycode_worker.supervisor.claim/commit_terminal` plus the `outbox`
-  table; the *worker service* is the real `python -m appserver` process —
-  the same entry the desktop/TUI transports spawn — running headless with
-  `RXYCODE_WEB_DATABASE_URL` set, so a web-bound session attaches via
-  `agent_worker.bind_web_session`/`lookup_web_run` when one is driven over
-  its stdio JSON-RPC. `tty: true` holds stdin open; the healthcheck proves
-  the process lives *and* reaches Postgres.
+- The durable spine is `rxycode_worker.supervisor.claim/commit_terminal`
+  plus the `outbox` table, and the worker service is a real consumer:
+  `rxycode_worker.drain` polls `runs` for claimable rows (`pending`, or a
+  dead worker's expired lease), takes the fenced lease, reads the persisted
+  message with `load_run`, and drives the turn through
+  `AgentRuntime -> Session.prompt` — the same machinery an appserver session
+  worker uses. Journaling, telemetry spans and the usage ledger all land on
+  the run's own event log. Its healthcheck proves the drain is PID 1 *and*
+  can reach Postgres.
 - The api/worker/migrate images are stock `python:3.12-slim`; the checkout is
   **not** bind-mounted — it is streamed as a tar into the shared `repo-src`
   volume through the `reposync` service (see Bring-up). That keeps the stack
@@ -35,8 +37,10 @@ Honest notes:
   a `/opt/pkg` shim makes `RxyCode.RxyCode1_1_0.*` importable. Rebuilding an
   image is *not* required — but the first cold `up` pays a few minutes of
   `pip install`/`npm install` inside the api/worker/webbuild containers.
-- `mode=cloud` is used because `rxycode_server.main.serve(mode="local")`
-  refuses non-loopback binds by design (`reject_as_public_web_gateway`).
+- The deployed api boots through `rxycode_server.main.serve()`, not bare
+  `create_app`: `mode=local` on a non-loopback bind is refused by
+  `reject_as_public_web_gateway`, so `RXYCODE_WEB_MODE=local` cannot weaken
+  the deployed stack — the same guard the negative test exercises.
 
 ## Environment
 
@@ -52,6 +56,10 @@ No `.env` file is shipped. Export (or pass inline) per deploy:
 | `RXYCODE_GITHUB_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | no | empty | real GitHub OAuth app for cloud login |
 | `RXYCODE_S3_ENDPOINT` / `_BUCKET` | no | `http://minio:9000` / `rxycode-artifacts` | artifact store |
 | `RXYCODE_PREVIEW_TOKEN` | no | empty | optional extra preview-token check at the gateway |
+| `RXYCODE_WEB_RATE_LIMIT_RPM` | no | `240` | public-demo throttle: requests/min per client IP at the app layer; `0` disables |
+| `RXYCODE_WORKER_ID` / `_POLL_SECONDS` / `_LEASE_TTL` / `_RUN_TIMEOUT` / `_MODEL` | no | hostname / `2` / `120` / `900` / active | drain worker tuning |
+| `RXYCODE_LLM_BASE_URL` / `RXYCODE_LLM_MODEL` | no | empty | when set, worker writes a real model entry (openai-compatible) into its config and executes turns against this endpoint |
+| `RXYCODE_API_KEY` | no | empty | credential for the deployed endpoint; referenced via `api_key_env`, never written into config.yaml |
 | `RXYCODE_PG_PORT` / `RXYCODE_HTTP_PORT` / `RXYCODE_HTTPS_PORT` | no | `54433` / `8080` / `8443` | loopback-published ports |
 
 Example:
@@ -167,14 +175,50 @@ usually means a missing pip dep — read its `logs` before anything else.
 - The api's bootstrap is idempotent (pip "already satisfied" → uvicorn), so a
   restarted api re-passes health without operator input.
 
-## Rollback
+## Upgrade (new source on a running stack)
+
+App services execute the checkout seeded into `repo-src` — `up -d` alone does
+**not** refresh it, and leftover markers would release the old waits
+instantly. The upgrade sequence therefore clears both markers, reseeds,
+re-migrates and rebuilds before recreating consumers:
 
 ```bash
-# pin to the previous checkout state, then recreate
-git checkout <prev-ref> -- infra/compose apps/web packages
-docker compose -f infra/compose/compose.yaml -p rxyweb up -d --force-recreate
-# schema rollback if a bad revision shipped. `run` overrides the service
-# command, so redo the tiny pip bootstrap first (stock python:3.12-slim):
+COMPOSE="docker compose -f infra/compose/compose.yaml -p rxyweb"
+
+# 1. Stop consumers so nothing boots against a half-swapped tree
+$COMPOSE stop api worker gateway
+
+# 2. Clear the ordering markers — a stale marker would release api/worker on
+#    old code. `run --no-deps` mounts the same volumes in a throwaway
+#    container (reposync/migrate are one-shot; `exec` needs a running one).
+$COMPOSE run --rm --no-deps --entrypoint sh reposync -c 'rm -f /repo/.rxy-sync-done'
+$COMPOSE run --rm --no-deps --entrypoint sh migrate -c 'rm -f /boot/.migrate-done'
+
+# 3. Reseed repo-src from the new checkout; the marker content is the new
+#    commit hash, so the seeded state is versioned. `start reposync` first —
+#    with the marker gone it runs its wait loop, ready for `exec`.
+$COMPOSE start reposync
+tar --exclude=.git --exclude=node_modules --exclude=__pycache__ \
+    --exclude=dist --exclude=build -cf - . | \
+  $COMPOSE exec -T reposync sh -c 'tar -xf - -C /repo'
+git rev-parse HEAD | $COMPOSE exec -T reposync sh -c 'cat > /repo/.rxy-sync-done'
+
+# 4. Re-run migrations and rebuild the SPA against the new source
+$COMPOSE run --rm migrate
+$COMPOSE run --rm webbuild
+
+# 5. Recreate the long-running services — api/worker wait on the fresh
+#    .migrate-done, gateway on the fresh index.html
+$COMPOSE up -d --force-recreate api worker gateway
+```
+
+## Rollback
+
+Same sequence pinned to the previous checkout (`git checkout <prev-ref>` first,
+then steps 1–5). If a bad schema revision shipped, downgrade after the reseed
+(`run` overrides the service command, so redo the tiny pip bootstrap first):
+
+```bash
 docker compose -f infra/compose/compose.yaml -p rxyweb run --rm --no-deps \
   --entrypoint sh migrate -c "
     pip install --quiet --no-input 'sqlalchemy>=2,<2.1' 'alembic>=1.17,<2' 'psycopg[binary]>=3.2,<4' &&
@@ -188,11 +232,13 @@ named revision via the same module when you only need one step back.)
 
 - **Cloud login** needs a real GitHub OAuth app (`RXYCODE_GITHUB_*`). Without
   it the UI reaches the login page and stops — everything else still serves.
-- **A cloud run that really executes** needs a provider key the agent can use
-  inside the worker *and* a session attached over the worker's stdio
-  JSON-RPC. Neither is fabricated here; E2E-DEPLOY-01's "run completes" leg
-  is covered to the durable-spine level by `test_w7_c05_integration` +
-  W7-C01..C04, and the remaining gap is marked BLOCKED in evidence.
+- **A cloud run that really executes** needs a real endpoint: set
+  `RXYCODE_LLM_BASE_URL`/`RXYCODE_LLM_MODEL`/`RXYCODE_API_KEY` so the worker
+  writes a real model entry and `Session.prompt` reaches your provider. The
+  drain worker claims the durable run and drives the turn itself — no stdio
+  client needed. Without a reachable endpoint the run still reaches a real
+  terminal state (`failed`, not a fabricated `succeeded`), recorded by
+  `test_w7_c05_module`.
 - The compose Postgres is for the web stack — the dev containers
   (`rxy-w2c01-pg` etc.) are untouched; use a distinct `-p` project name and
   the shipped loopback ports so nothing collides.

@@ -65,8 +65,15 @@ def create_app(
     s3_bucket: str = "",
     s3_access_key: str = "",
     s3_secret_key: str = "",
+    rate_limit_rpm: int = 0,
 ) -> FastAPI:
-    """Build the cloud or local gateway. It does not mount the legacy /chat app."""
+    """Build the cloud or local gateway. It does not mount the legacy /chat app.
+
+    ``rate_limit_rpm`` installs the per-client-IP fixed-window limiter
+    (``api.ratelimit.RateLimitMiddleware``); 0 disables it. The deployed
+    compose stack enables it via ``RXYCODE_WEB_RATE_LIMIT_RPM`` so the public
+    demo is throttled at the app layer (stock Caddy has no limiter plugin).
+    """
     checked = _require_secret(secret)
     if mode not in {"local", "cloud"}:
         raise RuntimeError("mode must be local or cloud")
@@ -119,6 +126,11 @@ def create_app(
     app.include_router(build_router())
     app.state.preview_proxy = PreviewProxy()
     app.include_router(preview_router())
+    app.state.rate_limit_rpm = int(rate_limit_rpm or 0)
+    if app.state.rate_limit_rpm > 0:
+        from rxycode_server.api.ratelimit import RateLimitMiddleware
+
+        app.add_middleware(RateLimitMiddleware, rpm=app.state.rate_limit_rpm)
 
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:

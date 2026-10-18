@@ -194,6 +194,17 @@ jobs:
               for key, value in items:
                   if secret_key.search(str(key)) and value and not env_ref.match(str(value)):
                       problems.append(f"{name}: {key} is a literal secret")
+              loopbacks = {"127.0.0.1", "::1", "localhost"}
+              for port in service.get("ports") or []:
+                  if isinstance(port, dict):
+                      host_ip = str(port.get("host_ip") or "")
+                  else:
+                      parts = str(port).split(":")
+                      host_ip = parts[0] if len(parts) >= 3 else ""
+                  if host_ip not in loopbacks:
+                      problems.append(
+                          f"{name}: published port must bind loopback, got {host_ip!r}"
+                      )
           if problems:
               print("\n".join(problems), file=sys.stderr)
               sys.exit(1)
