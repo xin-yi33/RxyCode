@@ -247,10 +247,17 @@ def test_w7_c04_integration(postgres_url: str, tmp_path: Path) -> None:
         assert "tool.write_file" in span_names
         assert summary["layers"]["server"]["duration_ms"] > 0
         assert summary["layers"]["tool"]["count"] == 1
-        # Elapsed (root span) is reported separately from summed span work —
-        # nested durations never double-count as the run's wall clock.
+        # Elapsed is the trace ENVELOPE (min start -> max end across ALL
+        # spans): the http root ends when create_run commits — long before
+        # the async worker finishes — so the run's wall clock must extend
+        # past every single layer's own duration. Summed span work is
+        # still reported separately, never double-counted as elapsed.
         assert summary["elapsed_ms"] > 0
-        assert summary["total_span_work_ms"] >= summary["elapsed_ms"]
+        assert (
+            summary["elapsed_ms"]
+            >= summary["layers"]["server"]["duration_ms"]
+        )
+        assert summary["total_span_work_ms"] > 0
         tool = next(
             span for span in summary["spans"] if span["name"] == "tool.write_file"
         )

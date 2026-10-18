@@ -201,21 +201,14 @@ def run_trace_summary(
     trace_ids = sorted({str(span["trace_id"]) for span in spans})
     provider = _agent_done_snapshot(events)
     ledger = _ledger(_usage_rows_for_run(database_url, run_id))
-    # Honest duration accounting: the run's elapsed wall clock is the ROOT
-    # span's duration (one root) or the union of all span intervals
-    # (max end − min start) when spans don't share a single root. The
-    # summed span durations are reported separately as total work —
-    # nested spans must never double-count as elapsed time.
-    span_ids = {str(span["span_id"]) for span in spans}
-    roots = [
-        span
-        for span in spans
-        if not span["parent_span_id"]
-        or str(span["parent_span_id"]) not in span_ids
-    ]
-    if len(roots) == 1:
-        elapsed_ms = float(roots[0]["duration_ms"] or 0.0)
-    elif spans:
+    # Honest duration accounting: the run's elapsed wall clock is the trace
+    # ENVELOPE — min(start_epoch) -> max(end_epoch) across ALL spans. The
+    # http/server root ENDS when create_run commits, long before an async
+    # worker finishes, so a root-span duration would hide the real elapsed
+    # (queue wait + execution + commit). Per-layer durations stay in
+    # ``layers`` and summed span durations in ``total_span_work_ms`` —
+    # nested spans never double-count as elapsed time.
+    if spans:
         starts = [float(span["start_epoch"] or 0.0) for span in spans]
         ends = [float(span["end_epoch"] or 0.0) for span in spans]
         elapsed_ms = max(0.0, (max(ends) - min(starts)) * 1000.0)

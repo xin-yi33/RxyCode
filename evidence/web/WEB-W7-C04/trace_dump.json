@@ -1,30 +1,30 @@
 {
-  "collected_at": "2026-10-18T12:05:51Z",
-  "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
-  "run_id": "e182688713a84d0eac75e36350105b6c",
-  "trace_id": "64a4a5722d4f4a17856dda34ede63729",
+  "collected_at": "2026-10-18T12:40:47Z",
+  "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
+  "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+  "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
   "span_count": 4,
-  "elapsed_ms": 29.388,
-  "total_span_work_ms": 557.537,
+  "elapsed_ms": 396.24,
+  "total_span_work_ms": 542.912,
   "spans": [
     {
-      "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-      "span_id": "92ef58366e500d2a",
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "14d9f906c7854632",
       "parent_span_id": "",
-      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
       "tool_call_id": "",
       "name": "http POST /api/v1/runs",
       "kind": "server",
       "otel_kind": "SERVER",
       "status": "ok",
       "detail": "",
-      "duration_ms": 29.388,
-      "start_epoch": 1792325151.023716,
-      "end_epoch": 1792325151.053103,
+      "duration_ms": 33.294,
+      "start_epoch": 1792327247.056183,
+      "end_epoch": 1792327247.089476,
       "attrs": {
-        "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
+        "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
         "http.route": "/api/v1/runs",
-        "request_id": "w7c03-evidence-b559918a-web-solo-w7c04ev-costly",
+        "request_id": "w7c03-evidence-cc0fa271-web-solo-w7c04ev-costly",
         "run.status": "queued",
         "http.method": "POST",
         "service.name": "rxycode-server",
@@ -32,25 +32,24 @@
       }
     },
     {
-      "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-      "span_id": "eb793d1ebbb078cc",
-      "parent_span_id": "f005ea9d26c92569",
-      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "7ae5fc5a6e9580a2",
+      "parent_span_id": "215b0d013b32914f",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
       "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
       "name": "tool.write_file",
       "kind": "tool",
       "otel_kind": "CLIENT",
       "status": "ok",
       "detail": "",
-      "duration_ms": 67.059,
-      "start_epoch": 1792325151.149345,
-      "end_epoch": 1792325151.216403,
+      "duration_ms": 62.962,
+      "start_epoch": 1792327247.169316,
+      "end_epoch": 1792327247.232276,
       "attrs": {
-        "ok": true,
         "call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
         "agent_id": "eval-primary",
         "tool_name": "write_file",
-        "attempt_id": "att_e1ecba136c2f49539c1638d13b1004cf",
+        "attempt_id": "att_0c8f164fd40a4f668332b9edee073638",
         "cache.hits": 2,
         "cache.misses": 1,
         "service.name": "rxycode-worker",
@@ -58,44 +57,44 @@
       }
     },
     {
-      "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-      "span_id": "f005ea9d26c92569",
-      "parent_span_id": "fbffaef3444db720",
-      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "215b0d013b32914f",
+      "parent_span_id": "574c0925da76d6fb",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
       "tool_call_id": "",
       "name": "graph.agent.eval-primary",
       "kind": "worker",
       "otel_kind": "INTERNAL",
       "status": "ok",
       "detail": "",
-      "duration_ms": 142.088,
-      "start_epoch": 1792325151.12306,
-      "end_epoch": 1792325151.265147,
+      "duration_ms": 138.498,
+      "start_epoch": 1792327247.168705,
+      "end_epoch": 1792327247.307202,
       "attrs": {
         "agent.id": "eval-primary",
         "agent_id": "eval-primary",
-        "parent_id": "759d47b7c0da4aa59e8dd9c22580e391",
+        "parent_id": "b972d5ca5ffc412894029f35944880fa",
         "budget_used": 9876543,
         "tokens_used": 9876543,
         "service.name": "rxycode-worker"
       }
     },
     {
-      "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-      "span_id": "fbffaef3444db720",
-      "parent_span_id": "92ef58366e500d2a",
-      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "574c0925da76d6fb",
+      "parent_span_id": "14d9f906c7854632",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
       "tool_call_id": "",
       "name": "worker.run",
       "kind": "worker",
       "otel_kind": "INTERNAL",
       "status": "ok",
       "detail": "",
-      "duration_ms": 319.002,
-      "start_epoch": 1792325151.097304,
-      "end_epoch": 1792325151.416305,
+      "duration_ms": 308.158,
+      "start_epoch": 1792327247.144266,
+      "end_epoch": 1792327247.452423,
       "attrs": {
-        "worker.id": "eval-worker-146bd616",
+        "worker.id": "eval-worker-01fa0697",
         "service.name": "rxycode-worker",
         "worker.epoch": 1,
         "run.terminal_status": "ok"
@@ -105,15 +104,15 @@
   "layers": {
     "server": {
       "count": 1,
-      "duration_ms": 29.388
+      "duration_ms": 33.294
     },
     "tool": {
       "count": 1,
-      "duration_ms": 67.059
+      "duration_ms": 62.962
     },
     "worker": {
       "count": 2,
-      "duration_ms": 461.09
+      "duration_ms": 446.656
     }
   },
   "ledger": {
@@ -124,16 +123,16 @@
     "model_id": "eval-stub",
     "cost_kind": "confirmed",
     "row_count": 1,
-    "usage_record_id": "60c064248db6476a9f013fa07530c5a7",
+    "usage_record_id": "6770d02db660426aa3f02857d8f20752",
     "usage_record_ids": [
-      "60c064248db6476a9f013fa07530c5a7"
+      "6770d02db660426aa3f02857d8f20752"
     ]
   },
   "provider": {
     "tokens_used": 9876543,
     "budget_used": 9876543,
     "agent_id": "eval-primary",
-    "seq": 7
+    "seq": 6
   },
   "cache": {
     "hits": 2,
@@ -148,15 +147,15 @@
   },
   "abnormal": [
     {
-      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
       "amount": "19.75308600",
       "currency": "USD",
       "reason": "amount exceeds 1.0 USD threshold"
     }
   ],
   "export_probe_ms": [
-    33.3571000082884,
-    39.88080000272021
+    44.47049999726005,
+    29.64629999769386
   ],
-  "events_url": "/api/v1/runs/e182688713a84d0eac75e36350105b6c/events"
+  "events_url": "/api/v1/runs/bef36c15a7694628b9aa462ee9d6ef1d/events"
 }

@@ -10,9 +10,14 @@ queryable by run_id; a foreign tenant reads nothing.
 Negative: a secret string in a tool's stderr/attrs is masked before the
 span is persisted — the raw secret never lands in the stored event payload.
 
-Propagation: the server injects a W3C ``traceparent`` (32-hex trace_id,
-16-hex span_id); the worker honors it as the remote parent; the tool/runner
-span is parented correctly under the worker span.
+Propagation: the server persists the http span's W3C ``traceparent``
+(32-hex trace_id, 16-hex span_id) inside the ``run.created`` event
+payload; the worker reads it back per run_id (``parent_for_run``) — never
+the process-global env — and parents its ``worker.run`` span under it.
+Tool spans are emitted by the REAL production path
+(``ToolOrchestrator -> ProtocolTui.write_tool_call/write_tool_result ->
+agent_events.tool_span_begin/tool_span_end``), and a failed tool exports
+span status ``error``.
 """
 
 from __future__ import annotations
@@ -181,8 +186,9 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
     message = "/solo write answer.txt with the marker"
     runtime_box: dict[str, object] = {}
     try:
-        # -- HTTP layer: create_run itself emits the server span and injects
-        # the W3C traceparent into the worker's env channel ---------------
+        # -- HTTP layer: create_run itself emits the server span and
+        # persists its W3C traceparent inside the run.created payload —
+        # the run-scoped propagation channel the claiming worker reads.
         accepted = create_run(
             postgres_url,
             tenant_id=tenant_id,
@@ -193,9 +199,19 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
             request_id=f"req-c04-{uuid.uuid4().hex[:12]}",
         )
         run_id = accepted.run_id
-        remote_parent = telemetry.extract_env()
+        remote_parent = telemetry.parent_for_run(postgres_url, run_id)
         assert remote_parent is not None
         assert len(remote_parent.trace_id) == 32
+        created = next(
+            event
+            for event in _events(postgres_url, tenant_id, run_id)
+            if event["type"] == "run.created"
+        )
+        persisted = telemetry.parse_traceparent(
+            created["payload"]["traceparent"]
+        )
+        assert persisted is not None
+        assert persisted.trace_id == remote_parent.trace_id
 
         got = owner.get(f"/api/v1/runs/{run_id}")
         assert got.status_code == 200
@@ -206,32 +222,38 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
             postgres_url, tenant_id, run_id, session_id=session_id
         )
 
-        # -- Worker layer: claim opens the run span (honoring the injected
-        # parent); commit_terminal closes it -------------------------------
+        # -- Worker layer: claim opens the run span, parented on the
+        # PERSISTED traceparent (read per run_id); commit_terminal closes
+        # it -----------------------------------------------------------
         epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
         assert epoch is not None
 
         async def _target(_task: str, checkpoint: object | None = None) -> str:
+            from appserver.tui import ProtocolTui
+
             runtime = runtime_box["runtime"]
             journal = default_run_journal()
             assert journal is not None
+            notifications: list[object] = []
+            tui = ProtocolTui(
+                session_id,
+                lambda notification: notifications.append(notification),
+                run_id=run_id,
+            )
             tool_journal = ToolExecutionJournal(tmp_path / "tool-journal")
             attempt_id = new_attempt_id()
             call = tool_journal.binding(attempt_id).next_call(
                 "write_file", {"path": "answer.txt"}
             )
-            # -- Tool layer: the journaled tool call is bracketed by the
-            # same RunJournal.record calls production uses; the tool span
-            # is emitted inside record(), not by this test ---------------
-            journal.record(
-                "event/tool_begin",
-                "eval-primary",
-                {
-                    "call_id": call.key,
-                    "tool_name": "write_file",
-                    "attempt_id": attempt_id,
-                },
+            # -- Tool layer: the REAL production notification path —
+            # ToolOrchestrator -> ProtocolTui.write_tool_call /
+            # write_tool_result — emits the tool.<name> span through the
+            # agent_events tool_span_begin/tool_span_end hooks, never by
+            # this test journaling a span directly ---------------------
+            returned_id = tui.write_tool_call(
+                "write_file", {"path": "answer.txt"}, call_id=call.key
             )
+            assert returned_id == call.key
             outcome = attempt_tool(
                 tool_journal,
                 attempt_id,
@@ -247,17 +269,24 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
             ctx.record_cache(False)
             runtime.record_token_usage("eval-primary", 1234)
             cache = runtime._session_cache
+            # A mid-call journaled event enriches the OPEN span (the
+            # production merge path for deltas/progress); the span itself
+            # stays opened/closed by the TUI hooks.
             journal.record(
-                "event/tool_end",
+                "event/tool_progress",
                 "eval-primary",
                 {
                     "call_id": call.key,
                     "tool_name": "write_file",
-                    "ok": True,
-                    "tool.executed": True,
+                    "attempt_id": attempt_id,
                     "cache.hits": cache.hits,
                     "cache.misses": cache.misses,
                 },
+            )
+            tui.write_tool_result("wrote answer.txt", "success", call_id=call.key)
+            assert any(
+                getattr(note, "method", "") == "event/tool_end"
+                for note in notifications
             )
             return "wrote answer.txt"
 
@@ -307,7 +336,8 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
 
     # -- Durable span rows: one trace_id, three layers, real durations ------
     # All four spans were emitted by the production wiring (create_run /
-    # claim+commit_terminal / RunJournal.record), not by this test.
+    # claim+commit_terminal / the ProtocolTui tool-span hook +
+    # RunJournal.record), not constructed by this test.
     spans = _spans(postgres_url, tenant_id, run_id)
     assert len(spans) >= 4, spans
     trace_ids = {span["trace_id"] for span in spans}
@@ -359,13 +389,22 @@ def test_w7_c04_contract(postgres_url: str, tmp_path: Path) -> None:
     assert summary["trace_id"] == remote_parent.trace_id
     assert summary["events_url"] == f"/api/v1/runs/{run_id}/events"
     assert summary["span_count"] == len(spans)
-    # Honest duration accounting: the root span is the elapsed wall clock;
-    # nested durations are summed separately, never double-counted as one.
+    # Honest duration accounting: the run's elapsed is the trace ENVELOPE
+    # (min start_epoch -> max end_epoch across ALL spans) — the http root
+    # ended when create_run committed, long before the worker finished, so
+    # elapsed must extend well past any single span's duration. Summed
+    # span durations are still reported separately as total_span_work_ms.
     assert summary["elapsed_ms"] > 0
-    assert (
-        summary["total_span_work_ms"]
-        >= summary["elapsed_ms"] > 0
+    starts = [float(span["start_epoch"]) for span in summary["spans"]]
+    ends = [float(span["end_epoch"]) for span in summary["spans"]]
+    assert summary["elapsed_ms"] == pytest.approx(
+        (max(ends) - min(starts)) * 1000.0, abs=0.01
     )
+    assert (
+        summary["elapsed_ms"]
+        > by_name["http POST /api/v1/runs"]["duration_ms"]
+    )
+    assert summary["total_span_work_ms"] > 0
     for layer in ("server", "worker", "tool"):
         assert summary["layers"][layer]["count"] >= 1, summary["layers"]
         assert summary["layers"][layer]["duration_ms"] > 0
@@ -699,3 +738,386 @@ def test_w7_c04_traceparent_edges(postgres_url: str, tmp_path: Path) -> None:
 
 def exporter_dropped(exporter) -> int:
     return int(getattr(exporter, "dropped", 0))
+
+
+# ---------------------------------------------------------------------------
+# Audit-r2 regressions
+# ---------------------------------------------------------------------------
+
+
+def _seed_tenant_sessions(
+    postgres_url: str, count: int = 1
+) -> tuple[str, list[str]]:
+    """Seed a tenant + org + project + ``count`` session rows."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.models import (
+        Organization,
+        Project,
+        SessionRow,
+        User,
+    )
+
+    tenant_id = f"tenant-c04-{uuid.uuid4().hex[:8]}"
+    session_ids = [uuid.uuid4().hex for _ in range(count)]
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            db.add(User(id=f"user-{tenant_id}", github_id=None, kind="local"))
+            db.add(Organization(id=f"org-{tenant_id}", tenant_id=tenant_id))
+            db.add(
+                Project(
+                    id=f"prj-{tenant_id}",
+                    tenant_id=tenant_id,
+                    name="c04-scoped",
+                    repo_config={},
+                )
+            )
+            for sid in session_ids:
+                db.add(
+                    SessionRow(
+                        id=sid,
+                        tenant_id=tenant_id,
+                        project_id=f"prj-{tenant_id}",
+                        title="c04-scoped",
+                    )
+                )
+            db.commit()
+    finally:
+        engine.dispose()
+    return tenant_id, session_ids
+
+
+def test_w7_c04_run_scoped_traceparent(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """Create A, create B, claim A — A's worker span parents under A's OWN
+    http span even while the process env holds B's traceparent.
+
+    Regression for the process-global ``RXYCODE_TRACEPARENT`` bug: the
+    parent must come from the ``traceparent`` persisted in each run's
+    ``run.created`` payload — read by run_id — so interleaved runs can
+    never cross-parent and a worker started before the env write still
+    finds its parent.
+    """
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import telemetry
+    from rxycode_worker.supervisor import (
+        _OPEN_RUN_SPANS,
+        claim,
+        commit_terminal,
+    )
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 2)
+    session_a, session_b = session_ids
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    try:
+        accepted_a = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_a,
+            message="run A",
+            target_id="local:c04a",
+            permission_profile="full_auto",
+            request_id=f"req-a-{uuid.uuid4().hex[:12]}",
+        )
+        accepted_b = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_b,
+            message="run B",
+            target_id="local:c04b",
+            permission_profile="full_auto",
+            request_id=f"req-b-{uuid.uuid4().hex[:12]}",
+        )
+        # The compat env channel still holds B's http traceparent — exactly
+        # the stale state that cross-parented under the old process-global
+        # read. claim() must ignore it in favor of the persisted payload.
+        stale = telemetry.extract_env()
+        assert stale is not None
+        epoch_a = claim(
+            postgres_url, accepted_a.run_id, worker_id, ttl_seconds=600
+        )
+        assert epoch_a is not None
+        open_a = _OPEN_RUN_SPANS[accepted_a.run_id][1].context
+        # env now holds A's re-published worker context — claiming B must
+        # not see it either; it reads B's persisted parent.
+        epoch_b = claim(
+            postgres_url, accepted_b.run_id, worker_id, ttl_seconds=600
+        )
+        assert epoch_b is not None
+        open_b = _OPEN_RUN_SPANS[accepted_b.run_id][1].context
+        commit_terminal(
+            postgres_url, accepted_a.run_id, worker_id, epoch_a, "succeeded"
+        )
+        commit_terminal(
+            postgres_url, accepted_b.run_id, worker_id, epoch_b, "succeeded"
+        )
+    finally:
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    spans_a = {
+        s["name"]: s for s in _spans(postgres_url, tenant_id, accepted_a.run_id)
+    }
+    spans_b = {
+        s["name"]: s for s in _spans(postgres_url, tenant_id, accepted_b.run_id)
+    }
+    http_a = spans_a["http POST /api/v1/runs"]
+    http_b = spans_b["http POST /api/v1/runs"]
+    worker_a = spans_a["worker.run"]
+    worker_b = spans_b["worker.run"]
+    assert http_a["trace_id"] != http_b["trace_id"]
+    # The stale env context really was B's http span — proof claim ignored it.
+    assert stale.trace_id == http_b["trace_id"]
+    # In-process evidence at claim time agrees with the persisted rows.
+    assert open_a.trace_id == http_a["trace_id"]
+    assert open_a.parent_span_id == http_a["span_id"]
+    assert open_b.trace_id == http_b["trace_id"]
+    assert open_b.parent_span_id == http_b["span_id"]
+    assert worker_a["trace_id"] == http_a["trace_id"]
+    assert worker_a["parent_span_id"] == http_a["span_id"]
+    assert worker_b["trace_id"] == http_b["trace_id"]
+    assert worker_b["parent_span_id"] == http_b["span_id"]
+    # The persisted run.created payload carries each run's own parent.
+    for rid, http in ((accepted_a.run_id, http_a), (accepted_b.run_id, http_b)):
+        created_event = next(
+            event
+            for event in _events(postgres_url, tenant_id, rid)
+            if event["type"] == "run.created"
+        )
+        parsed = telemetry.parse_traceparent(
+            created_event["payload"]["traceparent"]
+        )
+        assert parsed is not None
+        assert parsed.trace_id == http["trace_id"]
+        assert parsed.span_id == http["span_id"]
+
+
+def test_w7_c04_terminal_export_savepoint(
+    postgres_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    """A failing span-export statement inside ``commit_terminal`` must roll
+    back only its own savepoint — the terminal status UPDATE still commits.
+
+    Regression: ``export_conn`` runs its SQL on the caller's open
+    transaction; on PostgreSQL a failed statement aborts the whole tx, so
+    an unprotected export would take the terminal UPDATE down with it.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import telemetry
+    from rxycode_worker.supervisor import claim, commit_terminal
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    try:
+        accepted = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_ids[0],
+            message="savepoint run",
+            target_id="local:c04sp",
+            permission_profile="full_auto",
+            request_id=f"req-sp-{uuid.uuid4().hex[:12]}",
+        )
+        run_id = accepted.run_id
+        epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
+        assert epoch is not None
+
+        def _failing_export_conn(self, conn, span) -> bool:
+            # A real PostgreSQL failure on the caller's open tx — without
+            # the savepoint this aborts the terminal UPDATE too.
+            conn.execute(
+                text("INSERT INTO telemetry_missing_table (id) VALUES ('x')")
+            )
+            return True
+
+        monkeypatch.setattr(
+            telemetry.RunEventsSpanExporter, "export_conn", _failing_export_conn
+        )
+        # Must not raise: the failed span write rolls back alone.
+        commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
+    finally:
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            status = conn.execute(
+                text("SELECT status FROM runs WHERE id = :rid"),
+                {"rid": run_id},
+            ).scalar_one()
+            names = [
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT payload->>'name' FROM run_events "
+                        "WHERE run_id = :rid AND type = 'telemetry.span' "
+                        "ORDER BY seq"
+                    ),
+                    {"rid": run_id},
+                ).all()
+            ]
+    finally:
+        engine.dispose()
+    assert status == "succeeded"
+    # The http span (separate tx at create) survived; the aborted span
+    # write inside the terminal tx rolled back alone — no worker.run row.
+    assert names == ["http POST /api/v1/runs"]
+
+
+def test_w7_c04_identifier_redaction(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """A secret-shaped call_id / span name is masked in the persisted
+    payload's TOP-LEVEL fields — not only inside attrs."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import RunEvent
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import telemetry
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    created = create_run(
+        postgres_url,
+        tenant_id=tenant_id,
+        session_id=session_ids[0],
+        message="identifier redaction",
+        target_id="local:c04id",
+        permission_profile="full_auto",
+        request_id=f"req-id-{uuid.uuid4().hex[:12]}",
+    )
+    run_id = created.run_id
+    try:
+        # Fabricated-only secrets, split so no token-shaped literal lands
+        # in the source (or in any manifest embedding this file's diff).
+        gh_token = "ghp_" + "c04FakeToken0000000001"
+        api_secret = "sk-" + "c04testsecret1234567890ab"
+        exporter = telemetry.RunEventsSpanExporter(postgres_url, tenant_id)
+        tracer = telemetry.Tracer(exporter, service="c04-ident")
+        span = tracer.start_span(
+            f"tool.{api_secret}",
+            kind="tool",
+            run_id=run_id,
+            tool_call_id=gh_token,
+        )
+        tracer.end_span(span)
+    finally:
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    with Session(create_engine(postgres_url, poolclass=NullPool)) as db:
+        rows = db.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id, RunEvent.type == "telemetry.span"
+            )
+        ).all()
+    probe = [
+        row
+        for row in rows
+        if (row.payload or {}).get("name") != "http POST /api/v1/runs"
+    ]
+    assert len(probe) == 1
+    payload = probe[0].payload
+    stored = json.dumps(payload, ensure_ascii=False)
+    assert gh_token not in stored
+    assert api_secret not in stored
+    assert payload["tool_call_id"] == "[REDACTED]"
+    assert payload["name"] == "tool.[REDACTED]"
+    # In-memory payload was masked at to_dict() too.
+    assert gh_token not in json.dumps(span.to_dict(), ensure_ascii=False)
+
+
+def test_w7_c04_tool_error_status(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """A failing tool notification — journaled or via the real
+    ProtocolTui path — exports span status ``error``, never ``ok``."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from appserver.tui import ProtocolTui
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import RunEvent
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker.agent_events import (
+        clear_web_run,
+        default_run_journal,
+        publish_database_url,
+        remember_web_run,
+    )
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    created = create_run(
+        postgres_url,
+        tenant_id=tenant_id,
+        session_id=session_ids[0],
+        message="tool errors",
+        target_id="local:c04err",
+        permission_profile="full_auto",
+        request_id=f"req-err-{uuid.uuid4().hex[:12]}",
+    )
+    run_id = created.run_id
+    try:
+        publish_database_url(postgres_url)
+        remember_web_run(
+            postgres_url, tenant_id, run_id, session_id=session_ids[0]
+        )
+        journal = default_run_journal()
+        assert journal is not None
+
+        # Journaled path: tool_end with ok=False -> error span.
+        call_a = "call_err_journal"
+        journal.record(
+            "event/tool_begin",
+            "eval-primary",
+            {"call_id": call_a, "tool_name": "bash"},
+        )
+        journal.record(
+            "event/tool_end",
+            "eval-primary",
+            {"call_id": call_a, "tool_name": "bash", "ok": False},
+        )
+        # tool_error is a failure by method name alone -> error span.
+        journal.record(
+            "event/tool_error",
+            "eval-primary",
+            {"call_id": "call_err_oneshot", "tool_name": "bash"},
+        )
+
+        # Real TUI path: write_tool_result status="error" -> error span.
+        tui = ProtocolTui(session_ids[0], lambda note: None, run_id=run_id)
+        call_b = "call_err_tui"
+        tui.write_tool_call("bash", {"command": "deploy"}, call_id=call_b)
+        tui.write_tool_result("boom", "error", call_id=call_b)
+    finally:
+        clear_web_run()
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    with Session(create_engine(postgres_url, poolclass=NullPool)) as db:
+        rows = db.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id, RunEvent.type == "telemetry.span"
+            )
+        ).all()
+    by_call = {
+        (row.payload or {}).get("tool_call_id"): (row.payload or {})
+        for row in rows
+    }
+    for call in (call_a, "call_err_oneshot", call_b):
+        assert call in by_call, by_call
+        assert by_call[call]["status"] == "error", by_call[call]
+        assert by_call[call]["name"] == "tool.bash"

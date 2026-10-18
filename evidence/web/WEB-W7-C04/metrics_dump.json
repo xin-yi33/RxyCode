@@ -2,7 +2,7 @@
   "records": [
     {
       "task_id": "w7c04ev-pass",
-      "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+      "run_id": "27211e3742d24d35bdd57da08bcc73ad",
       "status": "passed",
       "token_usage": {
         "input": 0,
@@ -14,13 +14,13 @@
         "currency": "USD",
         "source": "usage_records",
         "price_version": "2026-10",
-        "usage_record_id": "e7bf9e4926a04f198d95df0bd7126953"
+        "usage_record_id": "679e61c2e9a54221aa6ab841ccff8d5e"
       },
       "spine_errors": []
     },
     {
       "task_id": "w7c04ev-costly",
-      "run_id": "e182688713a84d0eac75e36350105b6c",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
       "status": "passed",
       "token_usage": {
         "input": 0,
@@ -32,48 +32,48 @@
         "currency": "USD",
         "source": "usage_records",
         "price_version": "2026-10",
-        "usage_record_id": "60c064248db6476a9f013fa07530c5a7"
+        "usage_record_id": "6770d02db660426aa3f02857d8f20752"
       },
       "spine_errors": []
     }
   ],
   "timings": {
     "pass": {
-      "wall_ms": 999.2962999967858
+      "wall_ms": 1011.9151000108104
     },
     "costly": {
-      "wall_ms": 513.9863999938825
+      "wall_ms": 523.0320000118809
     }
   },
   "summaries": {
     "w7c04ev-pass": {
       "code": null,
-      "run_id": "3a035ddf9d854dbbb626fface4857f0f",
-      "events_url": "/api/v1/runs/3a035ddf9d854dbbb626fface4857f0f/events",
-      "trace_id": "488a5569d51042ceb179ca799e700ed4",
+      "run_id": "27211e3742d24d35bdd57da08bcc73ad",
+      "events_url": "/api/v1/runs/27211e3742d24d35bdd57da08bcc73ad/events",
+      "trace_id": "53846e20865b4a40b87bb9c48d521ba8",
       "trace_ids": [
-        "488a5569d51042ceb179ca799e700ed4"
+        "53846e20865b4a40b87bb9c48d521ba8"
       ],
       "span_count": 4,
       "spans": [
         {
-          "trace_id": "488a5569d51042ceb179ca799e700ed4",
-          "span_id": "775d995f6cbf1751",
+          "trace_id": "53846e20865b4a40b87bb9c48d521ba8",
+          "span_id": "b0123cddddff2417",
           "parent_span_id": "",
-          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "run_id": "27211e3742d24d35bdd57da08bcc73ad",
           "tool_call_id": "",
           "name": "http POST /api/v1/runs",
           "kind": "server",
           "otel_kind": "SERVER",
           "status": "ok",
           "detail": "",
-          "duration_ms": 44.764,
-          "start_epoch": 1792325150.041257,
-          "end_epoch": 1792325150.08602,
+          "duration_ms": 45.146,
+          "start_epoch": 1792327246.049764,
+          "end_epoch": 1792327246.094909,
           "attrs": {
-            "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
+            "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
             "http.route": "/api/v1/runs",
-            "request_id": "w7c03-evidence-34b02b9d-web-solo-w7c04ev-pass",
+            "request_id": "w7c03-evidence-6bd5aac2-web-solo-w7c04ev-pass",
             "run.status": "queued",
             "http.method": "POST",
             "service.name": "rxycode-server",
@@ -81,25 +81,24 @@
           }
         },
         {
-          "trace_id": "488a5569d51042ceb179ca799e700ed4",
-          "span_id": "18650db89abf14f6",
-          "parent_span_id": "c01054ddefda51dd",
-          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "trace_id": "53846e20865b4a40b87bb9c48d521ba8",
+          "span_id": "90f352911fbe466a",
+          "parent_span_id": "762ebb28ba712e9c",
+          "run_id": "27211e3742d24d35bdd57da08bcc73ad",
           "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
           "name": "tool.write_file",
           "kind": "tool",
           "otel_kind": "CLIENT",
           "status": "ok",
           "detail": "",
-          "duration_ms": 70.378,
-          "start_epoch": 1792325150.425334,
-          "end_epoch": 1792325150.49571,
+          "duration_ms": 101.945,
+          "start_epoch": 1792327246.426451,
+          "end_epoch": 1792327246.528394,
           "attrs": {
-            "ok": true,
             "call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
             "agent_id": "eval-primary",
             "tool_name": "write_file",
-            "attempt_id": "att_d27d9c687e1348889c8ff32906bdd279",
+            "attempt_id": "att_3b70b9e45648425fa961dfdbdfcba787",
             "cache.hits": 2,
             "cache.misses": 1,
             "service.name": "rxycode-worker",
@@ -107,44 +106,44 @@
           }
         },
         {
-          "trace_id": "488a5569d51042ceb179ca799e700ed4",
-          "span_id": "c01054ddefda51dd",
-          "parent_span_id": "c01055f3200e7505",
-          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "trace_id": "53846e20865b4a40b87bb9c48d521ba8",
+          "span_id": "762ebb28ba712e9c",
+          "parent_span_id": "cc8c9d69852a87e1",
+          "run_id": "27211e3742d24d35bdd57da08bcc73ad",
           "tool_call_id": "",
           "name": "graph.agent.eval-primary",
           "kind": "worker",
           "otel_kind": "INTERNAL",
           "status": "ok",
           "detail": "",
-          "duration_ms": 151.585,
-          "start_epoch": 1792325150.394786,
-          "end_epoch": 1792325150.546372,
+          "duration_ms": 236.638,
+          "start_epoch": 1792327246.342013,
+          "end_epoch": 1792327246.57865,
           "attrs": {
             "agent.id": "eval-primary",
             "agent_id": "eval-primary",
-            "parent_id": "003e1f28b6374b9798477d63e6aa6922",
+            "parent_id": "51cce85689904e4e89a0e30caf3517f5",
             "budget_used": 1234,
             "tokens_used": 1234,
             "service.name": "rxycode-worker"
           }
         },
         {
-          "trace_id": "488a5569d51042ceb179ca799e700ed4",
-          "span_id": "c01055f3200e7505",
-          "parent_span_id": "775d995f6cbf1751",
-          "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+          "trace_id": "53846e20865b4a40b87bb9c48d521ba8",
+          "span_id": "cc8c9d69852a87e1",
+          "parent_span_id": "b0123cddddff2417",
+          "run_id": "27211e3742d24d35bdd57da08bcc73ad",
           "tool_call_id": "",
           "name": "worker.run",
           "kind": "worker",
           "otel_kind": "INTERNAL",
           "status": "ok",
           "detail": "",
-          "duration_ms": 579.407,
-          "start_epoch": 1792325150.13681,
-          "end_epoch": 1792325150.716217,
+          "duration_ms": 590.454,
+          "start_epoch": 1792327246.161637,
+          "end_epoch": 1792327246.75209,
           "attrs": {
-            "worker.id": "eval-worker-7870bbe8",
+            "worker.id": "eval-worker-df937eb6",
             "service.name": "rxycode-worker",
             "worker.epoch": 1,
             "run.terminal_status": "ok"
@@ -154,24 +153,24 @@
       "layers": {
         "server": {
           "count": 1,
-          "duration_ms": 44.764
+          "duration_ms": 45.146
         },
         "tool": {
           "count": 1,
-          "duration_ms": 70.378
+          "duration_ms": 101.945
         },
         "worker": {
           "count": 2,
-          "duration_ms": 730.992
+          "duration_ms": 827.092
         }
       },
-      "elapsed_ms": 44.764,
-      "total_span_work_ms": 846.134,
+      "elapsed_ms": 702.326,
+      "total_span_work_ms": 974.183,
       "provider": {
         "tokens_used": 1234,
         "budget_used": 1234,
         "agent_id": "eval-primary",
-        "seq": 7
+        "seq": 6
       },
       "ledger": {
         "tokens": 1234,
@@ -181,9 +180,9 @@
         "model_id": "eval-stub",
         "cost_kind": "confirmed",
         "row_count": 1,
-        "usage_record_id": "e7bf9e4926a04f198d95df0bd7126953",
+        "usage_record_id": "679e61c2e9a54221aa6ab841ccff8d5e",
         "usage_record_ids": [
-          "e7bf9e4926a04f198d95df0bd7126953"
+          "679e61c2e9a54221aa6ab841ccff8d5e"
         ]
       },
       "usage_events": [
@@ -191,7 +190,7 @@
           "amount": "0.00246800",
           "tokens": 1234,
           "currency": "USD",
-          "event_id": "390a38cf848b4e95b0b2605747913f73",
+          "event_id": "2c001ca347c6429288dea3cdea5d8286",
           "model_id": "eval-stub",
           "price_version": "2026-10"
         }
@@ -212,32 +211,32 @@
     },
     "w7c04ev-costly": {
       "code": null,
-      "run_id": "e182688713a84d0eac75e36350105b6c",
-      "events_url": "/api/v1/runs/e182688713a84d0eac75e36350105b6c/events",
-      "trace_id": "64a4a5722d4f4a17856dda34ede63729",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+      "events_url": "/api/v1/runs/bef36c15a7694628b9aa462ee9d6ef1d/events",
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
       "trace_ids": [
-        "64a4a5722d4f4a17856dda34ede63729"
+        "8b54fa14a09b43a3aeadf259eb31a056"
       ],
       "span_count": 4,
       "spans": [
         {
-          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-          "span_id": "92ef58366e500d2a",
+          "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+          "span_id": "14d9f906c7854632",
           "parent_span_id": "",
-          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
           "tool_call_id": "",
           "name": "http POST /api/v1/runs",
           "kind": "server",
           "otel_kind": "SERVER",
           "status": "ok",
           "detail": "",
-          "duration_ms": 29.388,
-          "start_epoch": 1792325151.023716,
-          "end_epoch": 1792325151.053103,
+          "duration_ms": 33.294,
+          "start_epoch": 1792327247.056183,
+          "end_epoch": 1792327247.089476,
           "attrs": {
-            "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
+            "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
             "http.route": "/api/v1/runs",
-            "request_id": "w7c03-evidence-b559918a-web-solo-w7c04ev-costly",
+            "request_id": "w7c03-evidence-cc0fa271-web-solo-w7c04ev-costly",
             "run.status": "queued",
             "http.method": "POST",
             "service.name": "rxycode-server",
@@ -245,25 +244,24 @@
           }
         },
         {
-          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-          "span_id": "eb793d1ebbb078cc",
-          "parent_span_id": "f005ea9d26c92569",
-          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+          "span_id": "7ae5fc5a6e9580a2",
+          "parent_span_id": "215b0d013b32914f",
+          "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
           "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
           "name": "tool.write_file",
           "kind": "tool",
           "otel_kind": "CLIENT",
           "status": "ok",
           "detail": "",
-          "duration_ms": 67.059,
-          "start_epoch": 1792325151.149345,
-          "end_epoch": 1792325151.216403,
+          "duration_ms": 62.962,
+          "start_epoch": 1792327247.169316,
+          "end_epoch": 1792327247.232276,
           "attrs": {
-            "ok": true,
             "call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
             "agent_id": "eval-primary",
             "tool_name": "write_file",
-            "attempt_id": "att_e1ecba136c2f49539c1638d13b1004cf",
+            "attempt_id": "att_0c8f164fd40a4f668332b9edee073638",
             "cache.hits": 2,
             "cache.misses": 1,
             "service.name": "rxycode-worker",
@@ -271,44 +269,44 @@
           }
         },
         {
-          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-          "span_id": "f005ea9d26c92569",
-          "parent_span_id": "fbffaef3444db720",
-          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+          "span_id": "215b0d013b32914f",
+          "parent_span_id": "574c0925da76d6fb",
+          "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
           "tool_call_id": "",
           "name": "graph.agent.eval-primary",
           "kind": "worker",
           "otel_kind": "INTERNAL",
           "status": "ok",
           "detail": "",
-          "duration_ms": 142.088,
-          "start_epoch": 1792325151.12306,
-          "end_epoch": 1792325151.265147,
+          "duration_ms": 138.498,
+          "start_epoch": 1792327247.168705,
+          "end_epoch": 1792327247.307202,
           "attrs": {
             "agent.id": "eval-primary",
             "agent_id": "eval-primary",
-            "parent_id": "759d47b7c0da4aa59e8dd9c22580e391",
+            "parent_id": "b972d5ca5ffc412894029f35944880fa",
             "budget_used": 9876543,
             "tokens_used": 9876543,
             "service.name": "rxycode-worker"
           }
         },
         {
-          "trace_id": "64a4a5722d4f4a17856dda34ede63729",
-          "span_id": "fbffaef3444db720",
-          "parent_span_id": "92ef58366e500d2a",
-          "run_id": "e182688713a84d0eac75e36350105b6c",
+          "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+          "span_id": "574c0925da76d6fb",
+          "parent_span_id": "14d9f906c7854632",
+          "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
           "tool_call_id": "",
           "name": "worker.run",
           "kind": "worker",
           "otel_kind": "INTERNAL",
           "status": "ok",
           "detail": "",
-          "duration_ms": 319.002,
-          "start_epoch": 1792325151.097304,
-          "end_epoch": 1792325151.416305,
+          "duration_ms": 308.158,
+          "start_epoch": 1792327247.144266,
+          "end_epoch": 1792327247.452423,
           "attrs": {
-            "worker.id": "eval-worker-146bd616",
+            "worker.id": "eval-worker-01fa0697",
             "service.name": "rxycode-worker",
             "worker.epoch": 1,
             "run.terminal_status": "ok"
@@ -318,24 +316,24 @@
       "layers": {
         "server": {
           "count": 1,
-          "duration_ms": 29.388
+          "duration_ms": 33.294
         },
         "tool": {
           "count": 1,
-          "duration_ms": 67.059
+          "duration_ms": 62.962
         },
         "worker": {
           "count": 2,
-          "duration_ms": 461.09
+          "duration_ms": 446.656
         }
       },
-      "elapsed_ms": 29.388,
-      "total_span_work_ms": 557.537,
+      "elapsed_ms": 396.24,
+      "total_span_work_ms": 542.912,
       "provider": {
         "tokens_used": 9876543,
         "budget_used": 9876543,
         "agent_id": "eval-primary",
-        "seq": 7
+        "seq": 6
       },
       "ledger": {
         "tokens": 9876543,
@@ -345,9 +343,9 @@
         "model_id": "eval-stub",
         "cost_kind": "confirmed",
         "row_count": 1,
-        "usage_record_id": "60c064248db6476a9f013fa07530c5a7",
+        "usage_record_id": "6770d02db660426aa3f02857d8f20752",
         "usage_record_ids": [
-          "60c064248db6476a9f013fa07530c5a7"
+          "6770d02db660426aa3f02857d8f20752"
         ]
       },
       "usage_events": [
@@ -355,7 +353,7 @@
           "amount": "19.75308600",
           "tokens": 9876543,
           "currency": "USD",
-          "event_id": "32bc43c1e39046ae925524f3a39e22c2",
+          "event_id": "376b568d9672446c899cdce4838f2a99",
           "model_id": "eval-stub",
           "price_version": "2026-10"
         }
@@ -376,11 +374,11 @@
     }
   },
   "tenant_metrics": {
-    "tenant_id": "eval-w7c03-w7c04evidence-06c6cfe9",
+    "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
     "run_count": 2,
     "runs": [
       {
-        "run_id": "3a035ddf9d854dbbb626fface4857f0f",
+        "run_id": "27211e3742d24d35bdd57da08bcc73ad",
         "model_id": "eval-stub",
         "tokens": 1234,
         "amount": "0.00246800",
@@ -393,7 +391,7 @@
         "abnormal": false
       },
       {
-        "run_id": "e182688713a84d0eac75e36350105b6c",
+        "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
         "model_id": "eval-stub",
         "tokens": 9876543,
         "amount": "19.75308600",
@@ -413,7 +411,7 @@
     },
     "abnormal": [
       {
-        "run_id": "e182688713a84d0eac75e36350105b6c",
+        "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
         "amount": "19.75308600",
         "currency": "USD",
         "reason": "amount exceeds 1.0 USD threshold"
@@ -422,7 +420,7 @@
     "mismatches": []
   },
   "export_probe_ms": [
-    33.3571000082884,
-    39.88080000272021
+    44.47049999726005,
+    29.64629999769386
   ]
 }

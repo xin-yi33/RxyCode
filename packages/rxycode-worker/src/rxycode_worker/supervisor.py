@@ -22,10 +22,14 @@ def _open_run_span(
     database_url: str, run_id: str, tenant_id: str, worker_id: str, epoch: int
 ) -> None:
     """Best-effort worker/run span wrapping the leased execution — opened
-    at claim, closed by commit_terminal/confirm_cancel. The traceparent
-    the server injected through the env channel becomes this span's remote
-    parent; the span's own context is re-published so journaled children
-    (agent/tool spans) nest under it. Never breaks the lease flow."""
+    at claim, closed by commit_terminal/confirm_cancel. The remote parent
+    is read RUN-SCOPED: the ``traceparent`` persisted inside this run's
+    ``run.created`` event (``telemetry.parent_for_run``). The
+    process-global ``RXYCODE_TRACEPARENT`` env is deliberately NOT read —
+    it could hold another run's context (create A, create B, claim A) or
+    be missing entirely in a worker started before it was set. The span's
+    own context is still re-published to env so subprocesses and legacy
+    readers inherit a sane parent. Never breaks the lease flow."""
     try:
         from rxycode_worker import telemetry
 
@@ -36,7 +40,7 @@ def _open_run_span(
         span = tracer.start_span(
             "worker.run",
             kind="worker",
-            parent=telemetry.extract_env(),
+            parent=telemetry.parent_for_run(database_url, run_id),
             run_id=run_id,
             attrs={"worker.id": worker_id, "worker.epoch": epoch},
         )
@@ -64,7 +68,13 @@ def _close_run_span(run_id: str, status: str, *, conn=None) -> None:
         )
         exporter = getattr(tracer, "exporter", None)
         if conn is not None and hasattr(exporter, "export_conn"):
-            exporter.export_conn(conn, payload)
+            # SAVEPOINT isolation: export_conn runs its SQL on the
+            # caller's OPEN terminal transaction — on PostgreSQL a failed
+            # statement would otherwise abort the whole tx and take the
+            # terminal status UPDATE down with it. begin_nested() emits
+            # SAVEPOINT so a telemetry failure rolls back only itself.
+            with conn.begin_nested():
+                exporter.export_conn(conn, payload)
         else:
             exporter.export(payload)
     except Exception:

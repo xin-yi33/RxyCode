@@ -6,7 +6,7 @@ Plan changes are steer commands on the run. They are not written to EventStore.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Mapping
 
 
 _LOG = logging.getLogger(__name__)
@@ -27,6 +27,28 @@ _AGENT_CLOSE_METHODS = {
     "event/agent_failed": "error",
     "event/agent_cancelled": "cancelled",
 }
+
+#: Tool notifications that close an open span — and the failure subset.
+#: ``tool_end``/``tool_result`` still need the payload verdict (``ok`` /
+#: ``status``); ``tool_error``/``tool_failed`` are failures by name alone.
+_TOOL_CLOSE_SUFFIXES = ("tool_end", "tool_result", "tool_error", "tool_failed")
+_TOOL_FAIL_SUFFIXES = ("tool_error", "tool_failed")
+
+
+def _tool_span_status(method: str, body: Mapping[str, Any]) -> str:
+    """Map a tool-close notification to the span status.
+
+    An unsuccessful tool is an ERROR span — ``tool_error``/``tool_failed``
+    outright, and ``tool_end``/``tool_result`` carrying ``ok=False`` or a
+    non-success ``status`` (timeout, error, cancelled…)."""
+    if method.endswith(_TOOL_FAIL_SUFFIXES):
+        return "error"
+    if "ok" in body and not bool(body.get("ok")):
+        return "error"
+    status = str(body.get("status") or "").strip().lower()
+    if status and status not in {"success", "ok", "succeeded"}:
+        return "error"
+    return "ok"
 
 
 def publish_database_url(database_url: str) -> None:
@@ -135,6 +157,46 @@ def default_parent_id() -> str:
     import os
 
     return _CURRENT.get("parent_id") or os.environ.get("RXYCODE_WEB_PARENT_ID", "")
+
+
+def tool_span_begin(
+    call_id: str, name: str, *, attrs: dict[str, Any] | None = None
+) -> None:
+    """Best-effort ``tool.<name>`` span open for the REAL tool path.
+
+    Production tool notifications flow ``ToolOrchestrator ->
+    ProtocolTui.write_tool_call`` — they never pass through
+    ``RunJournal.record``, so the TUI hook calls this instead. The span
+    is keyed by ``(run_id, call_id)`` in the same store the journaled
+    path uses and parents under the in-flight agent span for this run
+    when one exists. No-op without an active web run; never raises —
+    telemetry must not break a tool call.
+    """
+    try:
+        journal = default_run_journal()
+        if journal is None or not call_id:
+            return
+        journal.open_tool_span(call_id, name, attrs=attrs)
+    except Exception:
+        _LOG.warning("tool span begin failed", exc_info=True)
+
+
+def tool_span_end(
+    call_id: str, ok: bool, *, attrs: dict[str, Any] | None = None
+) -> None:
+    """Close the span ``tool_span_begin`` opened for ``call_id``.
+
+    ``ok`` is ``status == "success"`` at the TUI layer — a non-success
+    tool result (error/timeout/cancelled) exports span status ``error``.
+    No-op without a matching open span; never raises.
+    """
+    try:
+        journal = default_run_journal()
+        if journal is None or not call_id:
+            return
+        journal.close_tool_span(call_id, ok, attrs=attrs)
+    except Exception:
+        _LOG.warning("tool span end failed", exc_info=True)
 
 
 def lookup_web_run(database_url: str, session_id: str) -> dict[str, str] | None:
@@ -274,9 +336,25 @@ class RunJournal:
         return self._tracer
 
     def _remote_parent(self) -> Any:
-        """The context the leased worker published for its children."""
-        from rxycode_worker import telemetry
+        """The run-scoped context this run's spans parent under.
 
+        Resolution order, all scoped to THIS run — never a process-global
+        guess: (1) the ``worker.run`` span opened by ``supervisor.claim``
+        in this process; (2) the ``traceparent`` persisted in the run's
+        ``run.created`` event (survives a cross-process handoff and a
+        worker started before any env var existed); (3) the legacy env
+        channel — last resort only, for runs created before traceparent
+        persistence, so a stale env value is never preferred over the
+        persisted one.
+        """
+        from rxycode_worker import supervisor, telemetry
+
+        pair = supervisor._OPEN_RUN_SPANS.get(self.run_id)
+        if pair is not None:
+            return pair[1].context
+        persisted = telemetry.parent_for_run(self.database_url, self.run_id)
+        if persisted is not None:
+            return persisted
         return telemetry.extract_env()
 
     def _span_parent(self, agent_id: str) -> Any:
@@ -284,6 +362,17 @@ class RunJournal:
         pair = _OPEN_AGENT_SPANS.get((self.run_id, agent_id))
         if pair is not None:
             return pair[1].context
+        return self._remote_parent()
+
+    def _span_parent_for_tool(self) -> Any:
+        """Parent for a tool span that arrives WITHOUT an agent_id (the
+        ``ProtocolTui`` path): the most recently opened in-flight agent
+        span for this run, else the run-scoped remote parent."""
+        for (run_id, _agent_id), (_tracer, span) in reversed(
+            list(_OPEN_AGENT_SPANS.items())
+        ):
+            if run_id == self.run_id:
+                return span.context
         return self._remote_parent()
 
     def _emit_span(self, method: str, agent_id: str, body: dict[str, Any]) -> None:
@@ -335,15 +424,20 @@ class RunJournal:
             pair = _OPEN_TOOL_SPANS.get((self.run_id, call_id))
             if pair is not None:
                 tracer, span = pair
-                if method.endswith(("tool_end", "tool_result", "tool_error", "tool_failed")):
+                if method.endswith(_TOOL_CLOSE_SUFFIXES):
                     _OPEN_TOOL_SPANS.pop((self.run_id, call_id), None)
-                    tracer.end_span(span, attrs=dict(body))
+                    tracer.end_span(
+                        span,
+                        status=_tool_span_status(method, body),
+                        attrs=dict(body),
+                    )
                 else:
                     # A mid-call event (delta/output/approval) enriches the
                     # open span — it must not end the tool's duration early.
                     span.set_attrs(dict(body))
                 return
-        # A one-shot tool event still yields a real (point-in-time) span.
+        # A one-shot tool event still yields a real (point-in-time) span —
+        # with the failure status when the notification reports one.
         span = self._span_tracer().start_span(
             f"tool.{tool_name}",
             kind="tool",
@@ -352,7 +446,56 @@ class RunJournal:
             tool_call_id=call_id,
             attrs=dict(body),
         )
-        self._span_tracer().end_span(span)
+        one_shot = (
+            _tool_span_status(method, body)
+            if method.endswith(_TOOL_CLOSE_SUFFIXES)
+            else "ok"
+        )
+        self._span_tracer().end_span(span, status=one_shot)
+
+    # ------------------------------------------------------------------
+    # telemetry: spans for the REAL tool-notification path
+    # (ToolOrchestrator -> ProtocolTui), which never calls record().
+    # ------------------------------------------------------------------
+
+    def open_tool_span(
+        self, call_id: str, name: str, *, attrs: dict[str, Any] | None = None
+    ) -> None:
+        """Open a ``tool.<name>`` span keyed by ``call_id``.
+
+        Emitted by ``tool_span_begin`` (the ProtocolTui hook). Keyed in
+        the same ``_OPEN_TOOL_SPANS`` store the journaled path uses, so a
+        journaled ``tool_end`` can still pair with it; a duplicate begin
+        for the same call_id never forks a second span.
+        """
+        key = (self.run_id, str(call_id))
+        if key in _OPEN_TOOL_SPANS:
+            return
+        span = self._span_tracer().start_span(
+            f"tool.{name or 'call'}",
+            kind="tool",
+            parent=self._span_parent_for_tool(),
+            run_id=self.run_id,
+            tool_call_id=str(call_id),
+            attrs=dict(attrs or {}),
+        )
+        _OPEN_TOOL_SPANS[key] = (self._tracer, span)
+
+    def close_tool_span(
+        self, call_id: str, ok: bool, *, attrs: dict[str, Any] | None = None
+    ) -> None:
+        """Close the span ``open_tool_span`` started — ``ok=False``
+        exports status ``error`` (a non-success tool result is a failed
+        span)."""
+        pair = _OPEN_TOOL_SPANS.pop((self.run_id, str(call_id)), None)
+        if pair is None:
+            return
+        tracer, span = pair
+        tracer.end_span(
+            span,
+            status="ok" if ok else "error",
+            attrs=dict(attrs or {}),
+        )
 
 
 def project_run(*, spans: list[Any], events: list[Any]) -> dict[str, object]:

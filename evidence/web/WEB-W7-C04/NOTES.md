@@ -4,11 +4,12 @@
 
 | file | lines | role |
 |---|---|---|
-| `packages/rxycode-worker/src/rxycode_worker/telemetry.py` | 637 | OTel-convention span layer: W3C `traceparent`, SpanContext/Span/Tracer, recursive sanitization, exporters |
-| `packages/rxycode-server/src/rxycode_server/metrics.py` | 343 | `run_trace_summary` + `tenant_cost_metrics` — ledger↔provider↔span reconciliation, per-run multi-row aggregation |
-| `packages/rxycode-server/src/rxycode_server/runs/service.py` | 329 | `create_run` emits the http/server span + injects `RXYCODE_TRACEPARENT` (best-effort) |
-| `packages/rxycode-worker/src/rxycode_worker/supervisor.py` | 423 | `claim` opens the `worker.run` span honoring the injected parent; `commit_terminal`/`confirm_cancel` close it |
-| `packages/rxycode-worker/src/rxycode_worker/agent_events.py` | 487 | `RunJournal.record` emits `graph.agent.*` lifecycle + `tool.*` spans alongside journaled events |
+| `packages/rxycode-worker/src/rxycode_worker/telemetry.py` | ~760 | OTel-convention span layer: W3C `traceparent`, SpanContext/Span/Tracer, recursive sanitization (attrs AND top-level fields via `sanitize_ident`), `parent_for_run` run-scoped parent read, exporters |
+| `packages/rxycode-server/src/rxycode_server/metrics.py` | ~340 | `run_trace_summary` + `tenant_cost_metrics` — ledger↔provider↔span reconciliation, per-run multi-row aggregation; `elapsed_ms` = trace envelope |
+| `packages/rxycode-server/src/rxycode_server/runs/service.py` | ~350 | `create_run` emits the http/server span AND persists its `traceparent` inside the `run.created` payload (run-scoped propagation channel) |
+| `packages/rxycode-worker/src/rxycode_worker/supervisor.py` | ~450 | `claim` opens the `worker.run` span parented on the PERSISTED traceparent (`parent_for_run`, never the process-global env); `commit_terminal`/`confirm_cancel` close it inside a SAVEPOINT on the terminal tx |
+| `packages/rxycode-worker/src/rxycode_worker/agent_events.py` | ~560 | `RunJournal.record` emits `graph.agent.*` lifecycle + `tool.*` spans; `tool_span_begin`/`tool_span_end` helpers serve the real ProtocolTui tool path; tool failures export status `error` |
+| `appserver/tui.py` | ~580 | `write_tool_call`/`write_tool_result` emit/close `tool.<name>` spans via `tool_span_begin`/`tool_span_end` (before the child-claim early return, so delegated tools trace too) |
 | `apps/web/src/features/usage/UsagePage.tsx` | 238 | per-run trace `<details>` with `elapsed_ms`/`total_span_work_ms`, abnormal-cost badge |
 | `tests/web/w7/test_w7_c04_unit.py` | 701 | contract (production-emitted spans) + negative (secret redaction) + `traceparent` propagation + W3C edge cases |
 | `tests/web/w7/test_w7_c04_module.py` | 450 | integration: two real spine runs, ledger↔provider alignment, abnormal surfaced; multi-ledger run aggregation |
@@ -21,19 +22,29 @@ collector only drive the spine:
 
 * `create_run` opens one `http POST /api/v1/runs` span (kind `server`)
   before the durable write, binds `run_id`, stamps `http.status_code=202`,
-  and publishes its context via `inject_env` — the same
-  `RXYCODE_TRACEPARENT` env channel the worker already inherits
-  `RXYCODE_WEB_DATABASE_URL` from. Idempotent-hit paths close the span on
-  the same trace; failures never export.
+  persists its `traceparent` inside the `run.created` event payload (the
+  authoritative, run-scoped propagation channel — audit r2-1), and still
+  re-publishes via `inject_env` for compat/subprocess readers.
+  Idempotent-hit paths close the span on the same trace; failures never
+  export.
 * `supervisor.claim` opens one `worker.run` span (kind `worker`) whose
-  remote parent is `extract_env()` — the server's injected context — and
-  re-publishes its own context so journaled children nest under it.
-  `commit_terminal` / `confirm_cancel` close it with the terminal status.
+  remote parent is `telemetry.parent_for_run(database_url, run_id)` — the
+  persisted traceparent — and re-publishes its own context so journaled
+  children and subprocesses nest under it. `commit_terminal` /
+  `confirm_cancel` close it with the terminal status; the in-tx export
+  runs inside `conn.begin_nested()` (SAVEPOINT) so a telemetry SQL failure
+  rolls back only itself, never the terminal UPDATE (audit r2-2).
 * `RunJournal.record` emits `graph.agent.<id>` spans for
   `event/agent_started`→`event/agent_done|failed|cancelled` and `tool.<name>`
   spans for `event/tool_begin`→`event/tool_end` (mid-call deltas merge into
   the open span; a one-shot tool event still yields a point-in-time span),
   all carrying the sanitized `tool_call_id`.
+* The REAL tool-notification path — `ToolOrchestrator` →
+  `ProtocolTui.write_tool_call`/`write_tool_result` — emits/closes the
+  same `tool.<name>` spans via `agent_events.tool_span_begin` /
+  `tool_span_end` (audit r2-3). The hook sits before the child-claim early
+  return so delegated tools trace too; a non-success result exports span
+  status `error` (audit r2-6).
 
 All three seams are strictly best-effort: open/emit/close are wrapped so a
 telemetry failure logs a warning and the business flow proceeds untraced.
@@ -50,24 +61,36 @@ tenant — proven in the contract test). No new table, no Alembic migration.
 
 ## Propagation mechanism
 
-W3C `traceparent` (`{version}-{32-hex trace_id}-{16-hex span_id}-{flags}`):
-`inject_env` publishes `RXYCODE_TRACEPARENT` into the environment — the same
-channel the worker already uses to inherit `RXYCODE_WEB_DATABASE_URL` —
-`extract_env` reads it back as the remote parent. In-process parenting uses
-either an explicit `SpanContext` or the `use_span` ContextVar. W3C edge
-cases are enforced and tested: version `ff` rejected (other versions
-accepted), flags must be exactly two hex chars, `sampled` is bit `0x01`
-(`02` is NOT sampled), and a malformed explicit parent inside an active
-`use_span` falls back to the ambient context instead of forking a new trace.
+W3C `traceparent` (`{version}-{32-hex trace_id}-{16-hex span_id}-{flags}`).
+The production channel is RUN-SCOPED (audit r2-1): `create_run` persists
+the http span's `traceparent` inside the `run.created` event payload, and
+`supervisor.claim` reads it back per run_id via
+`telemetry.parent_for_run`. Interleaved runs can never cross-parent
+(covered by `test_w7_c04_run_scoped_traceparent`: create A, create B,
+claim A parents under A's http span while the env still holds B's), and a
+worker that started before any env var existed still finds its parent.
+`inject_env`/`extract_env` (`RXYCODE_TRACEPARENT`) remain only as a
+test/compat channel and for re-publishing the worker span's context to
+subprocesses — claim never reads it. In-process parenting uses an
+explicit `SpanContext` or the `use_span` ContextVar; journaled children
+resolve their parent run-scoped (`_OPEN_RUN_SPANS` → persisted
+traceparent → env as last resort). W3C edge cases are enforced and
+tested: version `ff` rejected (other versions accepted), flags must be
+exactly two hex chars, `sampled` is bit `0x01` (`02` is NOT sampled), and
+a malformed explicit parent inside an active `use_span` falls back to the
+ambient context instead of forking a new trace.
 
-## Honest duration accounting (audit-r1)
+## Honest duration accounting (audit-r1, revised audit-r2)
 
 `run_trace_summary` (and the UsagePage `traceSummary` mirror) report two
-distinct numbers: `elapsed_ms` — the run's wall clock, i.e. the single root
-span's duration or `max(end_epoch) − min(start_epoch)` when spans do not
-share one root — and `total_span_work_ms`, the sum of all span durations.
-Nested spans are never double-counted as elapsed time; the per-layer
-breakdown (`layers`) is preserved alongside.
+distinct numbers: `elapsed_ms` — the run's wall clock, the trace ENVELOPE
+`max(end_epoch) − min(start_epoch)` across ALL spans — and
+`total_span_work_ms`, the sum of all span durations. The envelope is
+required because the http/server root ends when `create_run` commits,
+long before an async worker finishes, so a root-span duration would
+under-report queue+execution (audit r2-5). Nested spans are never
+double-counted as elapsed time; the per-layer breakdown (`layers`) is
+preserved alongside.
 
 ## Ledger aggregation (audit-r1)
 
@@ -114,8 +137,14 @@ sanitized, never stringified raw — and is idempotent (its own
 passes `log.log_helpers.redact_sensitive` (inlined fallback keeps the same
 patterns if the core package is unreachable) plus the telemetry-local
 credential shapes (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`,
-`xox[bapors]-`, `AKIA…`, `Bearer <token>`), truncated at 200 chars. The
-negative test stores a real `sk-…`/`password=`/`ghp_` stderr plus a nested
+`xox[bapors]-`, `AKIA…`, `Bearer <token>`), truncated at 200 chars.
+TOP-LEVEL span fields get the same treatment (audit r2-4): `to_dict()`
+runs `name`, `run_id`, `tool_call_id`, `trace_id`, `span_id`,
+`parent_span_id`, `kind`, `status` and `detail` through `sanitize_ident`
+(core + telemetry credential patterns, hard length cap) — a `ghp_…` token
+used as a call id persists as `[REDACTED]`, proven by
+`test_w7_c04_identifier_redaction`. The negative test stores a real
+`sk-…`/`password=`/`ghp_` stderr plus a nested
 `{"events": [{"password": …, "prompt": …}]}` attr and asserts no raw
 secret ever lands in the payload bytes — only `[REDACTED]`/`*_len`/`*_sha256`
 forms survive. `log/log_helpers.py` is untouched.

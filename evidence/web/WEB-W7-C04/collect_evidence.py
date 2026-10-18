@@ -5,8 +5,10 @@ Runs two instrumented tasks through ``evals/web/run.py``'s production spine
 record_terminal_usage -> commit_terminal``) against the shared PostgreSQL
 container.  Every ``telemetry.span`` row in ``run_events`` is emitted by
 the production wiring — ``create_run`` (http/server), ``claim`` +
-``commit_terminal`` (worker.run) and ``RunJournal.record`` (graph.agent +
-tool) — exactly the contract path the tests exercise.  Outputs:
+``commit_terminal`` (worker.run), ``RunJournal.record`` (graph.agent), and
+the real tool path ``ProtocolTui.write_tool_call``/``write_tool_result`` ->
+``agent_events.tool_span_begin``/``tool_span_end`` (tool.*) — exactly the
+contract path the tests exercise.  Outputs:
 
 * ``trace_dump.json``   — one real trace_id with correlated spans,
                           ledger row, provider snapshot, cache stats
@@ -91,25 +93,28 @@ async def _collect(tmp: Path) -> dict:
     timings: dict[str, dict[str, float]] = {}
 
     # Every span in these traces is emitted by the production wiring —
-    # create_run (http/server), claim + commit_terminal (worker.run) and
-    # RunJournal.record (graph.agent + tool). The driver only journals the
-    # tool events the way the agent task itself would.
+    # create_run (http/server), claim + commit_terminal (worker.run),
+    # RunJournal.record (graph.agent), and the REAL tool notification path
+    # ProtocolTui.write_tool_call/write_tool_result -> agent_events
+    # tool_span_begin/tool_span_end (tool.*). The driver only adds the
+    # mid-call journal record the agent itself would emit.
     def _driver(tokens: int, tag: str):
         async def _run(ctx: object) -> str:
+            from appserver.tui import ProtocolTui
+
             journal = RunJournal(DATABASE_URL, tenant_id, ctx.run_id)
+            tui = ProtocolTui(
+                ctx.session_id,
+                ctx.emitted.append,
+                run_id=ctx.run_id,
+            )
             tool_journal = ToolExecutionJournal(tmp / f"journal-{tag}")
             attempt_id = new_attempt_id()
             call = tool_journal.binding(attempt_id).next_call(
                 "write_file", {"path": "answer.txt"}
             )
-            journal.record(
-                "event/tool_begin",
-                ctx.agent_id,
-                {
-                    "call_id": call.key,
-                    "tool_name": "write_file",
-                    "attempt_id": attempt_id,
-                },
+            tui.write_tool_call(
+                "write_file", {"path": "answer.txt"}, call_id=call.key
             )
             outcome = attempt_tool(
                 tool_journal,
@@ -127,16 +132,19 @@ async def _collect(tmp: Path) -> dict:
             ctx.runtime.record_token_usage(ctx.agent_id, tokens)
             cache = ctx.runtime._session_cache
             journal.record(
-                "event/tool_end",
+                "event/tool_progress",
                 ctx.agent_id,
                 {
                     "call_id": call.key,
                     "tool_name": "write_file",
-                    "ok": True,
+                    "attempt_id": attempt_id,
                     "tool.executed": outcome["executed"],
                     "cache.hits": cache.hits,
                     "cache.misses": cache.misses,
                 },
+            )
+            tui.write_tool_result(
+                "wrote answer.txt", "success", call_id=call.key
             )
             return "wrote answer.txt"
 
@@ -334,10 +342,11 @@ def main() -> None:
             "",
             f"- wall: {wall:.0f} ms end-to-end through the durable spine",
             f"- spans: {s['span_count']} under trace `{s['trace_id']}`",
-            f"- elapsed_ms (root span): {s['elapsed_ms']:.1f} · "
+            f"- elapsed_ms (trace envelope, min start -> max end): "
+            f"{s['elapsed_ms']:.1f} · "
             f"total_span_work_ms: {s['total_span_work_ms']:.1f} across "
             f"{s['span_count']} spans (nested spans are not additive — the "
-            "elapsed root and the summed work are reported separately)",
+            "elapsed envelope and the summed work are reported separately)",
             "",
             "| layer | count | duration_ms (summed per layer) |",
             "|---|---|---|",
@@ -379,10 +388,12 @@ def main() -> None:
         "in one tx) per span. A span's `duration_ms` is stamped BEFORE "
         "export, so export overhead never inflates durations — the "
         f"measured export cost on this run: {probe_text} ms per append. "
-        "`elapsed_ms` is the root span's duration (or the union of span "
-        "intervals when no single root exists); `total_span_work_ms` sums "
-        "nested durations and therefore over-counts wall time by design — "
-        "both are reported, neither is hidden.",
+        "`elapsed_ms` is the trace envelope — min(start_epoch) -> "
+        "max(end_epoch) across ALL spans — because the http/server root "
+        "ends when create_run commits, long before the async worker "
+        "finishes; `total_span_work_ms` sums nested durations and "
+        "therefore over-counts wall time by design — both are reported, "
+        "neither is hidden.",
         "",
         "Browser E2E: BLOCKED — apps/web has no Playwright dependency, so "
         "no browser E2E was run for this card; the UsagePage trace block "

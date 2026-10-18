@@ -94,10 +94,28 @@ def _trace_run_create_start(database_url: str, tenant_id: str, request_id: str):
         return None, None
 
 
+def _created_traceparent(span) -> str:
+    """The W3C ``traceparent`` persisted inside the ``run.created`` event
+    payload — the durable, run-scoped propagation channel.  A claiming
+    worker reads it back per run_id (``telemetry.parent_for_run``), so two
+    interleaved runs can never cross-parent and a worker that started
+    before any env var existed still finds its parent."""
+    if span is None:
+        return ""
+    try:
+        from rxycode_worker import telemetry
+
+        return telemetry.format_traceparent(span.context)
+    except Exception:
+        return ""
+
+
 def _trace_run_create_end(tracer, span, *, run_id: str) -> None:
-    """Close the create_run span and publish its traceparent through the
-    same env channel the worker inherits the run's database url from, so
-    the worker's leased-run span parents under this request span."""
+    """Close the create_run span and re-publish its traceparent through
+    the env channel for COMPAT/subprocess readers — the authoritative
+    parent is the ``traceparent`` already persisted in the run.created
+    payload (see ``_created_traceparent``); the claiming worker reads THAT
+    and never trusts the process-global env."""
     if tracer is None or span is None:
         return
     try:
@@ -201,6 +219,11 @@ def create_run(
                             "request_id": request_id,
                             "session_id": session_id,
                             "target_id": target_id,
+                            # Run-scoped W3C propagation: the claiming
+                            # worker parents its span under this http span
+                            # by reading it back per run_id — never via
+                            # the process-global RXYCODE_TRACEPARENT env.
+                            "traceparent": _created_traceparent(span),
                             "quota": {
                                 "tokens": decision.tokens,
                                 "preview_fee": 1,

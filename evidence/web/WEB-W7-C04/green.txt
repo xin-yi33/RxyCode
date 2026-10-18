@@ -742,3 +742,45 @@ clean (collector writes LF via write_bytes; no trailing ws)
 4 production-emitted spans per run; elapsed_ms (root) reported separately
 from total_span_work_ms; bottleneck.md now quotes the MEASURED tool-span
 duration and measured export overhead, and states Browser E2E: BLOCKED
+
+=== WEB-W7-C04 audit-r2 green evidence ===
+date: 2026-10-18T12:41:22Z
+
+--- focused: pytest tests/web/w7/test_w7_c04_unit.py tests/web/w7/test_w7_c04_module.py -q ---
+..........
+10 passed, 1 warning in 7.30s
+(4 new audit-r2 tests: run_scoped_traceparent [create A, create B,
+claim A -> parents under A's OWN http span while env holds B's],
+terminal_export_savepoint [failing export SQL inside commit_terminal
+rolls back only its savepoint -> status still 'succeeded'],
+identifier_redaction [ghp_ call_id + sk- span name -> [REDACTED] in
+top-level payload fields], tool_error_status [journaled tool_end
+ok=False, tool_error, AND the real ProtocolTui write_tool_result
+status='error' path all persist span status 'error']; contract test
+now drives the REAL ProtocolTui write_tool_call/write_tool_result path
+for the tool span instead of journaling tool_begin/tool_end)
+
+--- full w7 suite: pytest tests/web/w7 -q (sequential, shared postgres) ---
+...................................
+35 passed, 3 warnings in 151.74s
+(c01/c02/c03 still green; c04 unit+module 10/10)
+
+--- ruff: all touched python files (incl. collect_evidence.py) ---
+All checks passed!
+
+--- frontend typecheck: apps/web npm run typecheck ---
+> @rxycode/web@1.4.3 typecheck
+> tsc --noEmit -p tsconfig.json
+(clean)
+
+--- git diff --check -- packages apps tests/web/w7 evidence/web/WEB-W7-C04 ---
+clean; all touched files LF-only, no trailing whitespace
+
+--- evidence regenerated: collect_evidence.py (real collector run) ---
+{"trace_id": "8b54fa14a09b43a3aeadf259eb31a056", "records": 2,
+ "export_probe_ms": [44.5, 29.6]}
+tool.write_file span now emitted by the REAL ProtocolTui path;
+elapsed_ms is the trace ENVELOPE (min start -> max end across all
+spans: pass 702.3 / costly 396.2 ms per metrics_dump.json), covering
+the async worker tail the old root-span figure hid; parentage
+http->worker->agent->tool verified intact in trace_dump.json

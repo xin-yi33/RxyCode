@@ -36,10 +36,12 @@ export type RunTrace = {
   trace_id: string
   span_count: number
   layers: Record<string, TraceLayer>
-  // Honest duration accounting: elapsed is the root span's duration (or
-  // the union of span intervals when no single root exists); summed span
-  // durations are reported separately as total_span_work_ms — nested
-  // spans never double-count as elapsed time.
+  // Honest duration accounting: elapsed is the trace envelope —
+  // min(start_epoch) -> max(end_epoch) across ALL spans. The http/server
+  // root ends at create-commit, long before the async worker finishes, so
+  // a root-span duration would under-report. Summed span durations are
+  // reported separately as total_span_work_ms — nested spans never
+  // double-count as elapsed time.
   elapsed_ms: number
   total_span_work_ms: number
   tool_calls: string[]
@@ -96,14 +98,12 @@ export function traceSummary(runId: string, events: RunEventRow[]): RunTrace | n
     cacheHits += Number(attrs["cache.hits"] || 0)
     cacheMisses += Number(attrs["cache.misses"] || 0)
   }
-  const spanIds = new Set(spans.map((span) => String(span.span_id || "")))
-  const roots = spans.filter(
-    (span) => !span.parent_span_id || !spanIds.has(String(span.parent_span_id)),
-  )
+  // Run elapsed is the trace envelope — min(start) -> max(end) across ALL
+  // spans. The http server span ends at create-commit, long before the
+  // async worker finishes, so its own duration would under-report the
+  // run's real wall clock (mirrors rxycode_server.metrics.run_trace_summary).
   let elapsedMs = 0
-  if (roots.length === 1) {
-    elapsedMs = Number(roots[0].duration_ms || 0)
-  } else if (spans.length > 0) {
+  if (spans.length > 0) {
     const starts = spans.map((span) => Number(span.start_epoch || 0))
     const ends = spans.map((span) => Number(span.end_epoch || 0))
     elapsedMs = Math.max(0, (Math.max(...ends) - Math.min(...starts)) * 1000)

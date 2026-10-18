@@ -8,10 +8,16 @@ SDK (or an OTLP/HTTP / Langfuse exporter) lands, the swap seam is the
 exporter: any object with ``export(span_dict)`` drops into ``Tracer`` with
 zero call-site changes.
 
-Propagation mirrors how the worker already inherits run coordinates:
-``publish_database_url`` sets ``RXYCODE_WEB_DATABASE_URL`` in the
-environment and subprocesses inherit it; ``inject_env`` does the same with
-``RXYCODE_TRACEPARENT``.  In-process propagation uses a ContextVar
+Propagation is RUN-SCOPED: ``create_run`` persists the http span's
+``traceparent`` inside the ``run.created`` event payload, and a claiming
+worker reads it back per run_id through :func:`parent_for_run`.  Two
+interleaved runs can therefore never cross-parent (a process-global
+``os.environ`` value would leak the last-created run's context into the
+next claim), and a worker started before any env var was set still finds
+its parent.  ``inject_env``/``extract_env`` (``RXYCODE_TRACEPARENT``)
+remain only as a test/compat channel and to re-publish the worker span's
+own context to subprocesses — the production claim path never reads it.
+In-process propagation uses a ContextVar
 (``use_span`` / ``current_context``), the same mechanism
 ``rxycode_protocol.run_context`` uses for run scope.
 
@@ -95,6 +101,10 @@ _SAFE_TOKEN_COUNTERS = frozenset(
     }
 )
 _MAX_VALUE_CHARS = 200
+#: Top-level identifier fields are short tokens, not blobs — a hard cap.
+_MAX_ID_CHARS = 128
+#: Span names read like "tool.<name>" / "http POST /route" — bounded too.
+_MAX_NAME_CHARS = 200
 
 
 def new_trace_id() -> str:
@@ -185,9 +195,12 @@ def parse_traceparent(value: str | Mapping[str, Any] | None) -> SpanContext | No
 def inject_env(ctx: SpanContext) -> str:
     """Publish the traceparent into the process environment.
 
-    Worker children and subprocesses inherit it exactly like
-    ``RXYCODE_WEB_DATABASE_URL`` (``agent_events.publish_database_url``).
-    Returns the header so the caller can also send it on a wire.
+    COMPAT channel only: production parenting is run-scoped
+    (``run.created`` payload -> :func:`parent_for_run`).  The env write is
+    kept for tests and so worker subprocesses still inherit a sane parent
+    exactly like ``RXYCODE_WEB_DATABASE_URL``
+    (``agent_events.publish_database_url``).  Returns the header so the
+    caller can also send it on a wire.
     """
     header = format_traceparent(ctx)
     os.environ[_TRACE_ENV] = header
@@ -195,8 +208,58 @@ def inject_env(ctx: SpanContext) -> str:
 
 
 def extract_env() -> SpanContext | None:
-    """Read the injected traceparent back as the remote parent context."""
+    """Read the injected traceparent back as the remote parent context.
+
+    Legacy/test fallback only — a process-global value can name ANOTHER
+    run's span.  Production callers (``supervisor.claim``,
+    ``RunJournal``) resolve the parent through the run-scoped channels
+    first and consult this only when the run predates persisted
+    traceparents.
+    """
     return parse_traceparent(os.environ.get(_TRACE_ENV))
+
+
+def parent_for_run(database_url: str, run_id: str) -> SpanContext | None:
+    """Read this run's persisted remote parent — the W3C ``traceparent``
+    ``runs.service.create_run`` stored inside the ``run.created`` event
+    payload.
+
+    This is the production propagation channel: the parent context
+    travels WITH the run row, so claiming run A can never pick up run B's
+    span no matter what the process-global env currently holds.  Returns
+    ``None`` for runs created before the field existed, for a
+    missing/malformed payload, and on any lookup failure — never a guess.
+    """
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT payload FROM run_events "
+                        "WHERE run_id = :rid AND type = 'run.created' "
+                        "ORDER BY seq LIMIT 1"
+                    ),
+                    {"rid": run_id},
+                ).first()
+        finally:
+            engine.dispose()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    payload = row[0]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            return None
+    if not isinstance(payload, Mapping):
+        return None
+    return parse_traceparent(payload.get("traceparent"))
 
 
 _CURRENT: ContextVar[SpanContext | None] = ContextVar(
@@ -299,6 +362,24 @@ def sanitize_value(value: Any, *, max_chars: int = _MAX_VALUE_CHARS) -> Any:
     # The core redaction plus the telemetry-local token patterns — both the
     # redact_sensitive path and the inlined fallback mask the same set.
     text = _extra_redact(_redact()(value))
+    if len(text) > max_chars:
+        text = text[:max_chars] + "…"
+    return text
+
+
+def sanitize_ident(value: Any, *, max_chars: int = _MAX_ID_CHARS) -> str:
+    """Sanitize a TOP-LEVEL span field (``name``, ``run_id``,
+    ``tool_call_id``, …) before it leaves the process.
+
+    These fields bypass ``sanitize_attrs`` because they are payload keys,
+    not attrs — yet callers control them, so a secret-shaped value (a
+    ``ghp_…`` token used as a call id, a prompt pasted into a span name)
+    would otherwise land unredacted in the persisted payload.  Same
+    treatment as attr values — core ``redact_sensitive`` plus the
+    telemetry-local credential shapes — then a hard length cap: an
+    identifier is a short token, never a blob.
+    """
+    text = _extra_redact(_redact()(str(value or "")))
     if len(text) > max_chars:
         text = text[:max_chars] + "…"
     return text
@@ -415,18 +496,22 @@ class Span:
         self.attrs.update(sanitize_attrs(attrs))
 
     def to_dict(self) -> dict[str, Any]:
+        # Top-level fields are caller-controlled strings too — they pass
+        # through sanitize_ident so a secret used as a call id or span
+        # name can never land raw in the persisted payload (the attr map
+        # is sanitized separately by start_span/finalize_span).
         return {
             "schema": _SPAN_SCHEMA,
-            "trace_id": self.context.trace_id,
-            "span_id": self.context.span_id,
-            "parent_span_id": self.context.parent_span_id,
-            "run_id": self.context.run_id,
-            "tool_call_id": self.context.tool_call_id,
-            "name": self.name,
-            "kind": self.kind,
+            "trace_id": sanitize_ident(self.context.trace_id),
+            "span_id": sanitize_ident(self.context.span_id),
+            "parent_span_id": sanitize_ident(self.context.parent_span_id),
+            "run_id": sanitize_ident(self.context.run_id),
+            "tool_call_id": sanitize_ident(self.context.tool_call_id),
+            "name": sanitize_ident(self.name, max_chars=_MAX_NAME_CHARS),
+            "kind": sanitize_ident(self.kind, max_chars=32),
             "otel_kind": OTEL_KIND.get(self.kind, "INTERNAL"),
-            "status": self.status,
-            "detail": self.detail,
+            "status": sanitize_ident(self.status, max_chars=32),
+            "detail": sanitize_value(self.detail),
             "start_epoch": round(self.start_epoch, 6),
             "end_epoch": round(self.end_epoch, 6),
             "duration_ms": round(self.duration_ms, 3),
