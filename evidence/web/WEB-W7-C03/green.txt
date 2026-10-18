@@ -1,0 +1,4 @@
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+
+...                                                                      [100%]
+3 passed in 3.12s

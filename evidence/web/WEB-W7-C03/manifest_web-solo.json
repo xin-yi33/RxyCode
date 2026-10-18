@@ -1,0 +1,39 @@
+{
+  "schema": "evals-web-manifest/v1",
+  "taskset_sha256": "b5aa349372abf990be262ffa50d7cd6fc8b1b8a2f1dd99821492f8dbaac5c94e",
+  "taskset_path": "D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\evals\\web\\taskset.jsonl",
+  "task_ids": [
+    "w7c03-c01-hello"
+  ],
+  "task_count": 1,
+  "cells": [
+    "web-solo"
+  ],
+  "budget": 2000000,
+  "budget_scope": "max total tokens per cell; 0 = unlimited",
+  "model": "deepseek-flash",
+  "provider": {
+    "requested": "active",
+    "config_key": "deepseek/deepseek-v4.1-flash",
+    "model_name": "deepseek-flash",
+    "base_url": "https://api.deepseek.com/v1"
+  },
+  "price_version": "2026-10",
+  "code_commit": "606d76654015bdbf93b8753b07d2959af6ce9196",
+  "code_branch": "feat/rxycode-web",
+  "worktree_dirty": true,
+  "mode_map": {
+    "web-solo": {
+      "mode": "solo",
+      "forcing": "slash_prefix",
+      "prefix": "/solo",
+      "detail": "create_run message + Session.prompt carry '/solo ...'; user-forced SOLO."
+    }
+  },
+  "python": "3.13.9",
+  "platform": "Windows-11-10.0.22621-SP0",
+  "started_at": "2026-10-18T08:58:59.284086+00:00",
+  "database_url": "postgresql+psycopg://postgres:***@127.0.0.1:55432/rxycode",
+  "sample": 1,
+  "task_timeout": 240
+}

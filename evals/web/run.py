@@ -1,0 +1,1449 @@
+"""WEB-W7-C03 reproducible agent-eval runner: cli|web x solo|team cells.
+
+Each cell runs the same fixed taskset (``evals/web/taskset.jsonl``) under the
+same budget, producing one record per (cell, task):
+
+* ``cli-solo`` — the existing eval path: ``evals.backends.AgentBackend`` drives
+  a real ``AgentV2.run`` inside ``_headless_eval_runtime``.
+* ``cli-team`` — the same real ``AgentV2`` driven through ``Session.prompt``
+  with a ``/team`` prefix. ``AgentV2.run`` cannot reach the Coordinator (the
+  ModeRouter lives in ``Session._dispatch_user_turn``), and ``Session.prompt``
+  is exactly what the appserver worker calls for CLI turns — so this is the
+  production CLI dispatch path, not a modeled one.
+* ``web-solo`` / ``web-team`` — the real durable web run spine:
+  ``create_run`` -> worker ``claim`` -> ``Session.prompt`` (``/solo`` or
+  ``/team`` prefix; the prefix is also stored in the durable ``run.created``
+  message) -> ``appserver`` AgentTask journals ``event/agent_started`` /
+  ``event/agent_done`` into PostgreSQL -> ``eval.checks`` verdict event ->
+  ``record_terminal_usage`` (usage_records + ``usage.updated``) ->
+  ``commit_terminal``.  Token totals are read back from the durable
+  ``event/agent_done`` snapshot via ``replay()``.
+
+There is no Run.mode column — the mode is forced by the slash prefix in the
+durable run message and recorded in the manifest ``mode_map``.  Team numbers
+come from real Coordinator execution, never ``evals.team_metrics.project_team``.
+
+Standalone usage (no ``evals.web`` package required):
+
+    python evals/web/run.py --cells cli-solo --sample 3 \
+        --out out.json --manifest manifest.json --task-timeout 300
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+import platform as _platform
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+# --------------------------------------------------------------------------
+# Standalone bootstrap: run directly as ``python evals/web/run.py`` — bind the
+# checkout like ``evals/__init__._bind_checkout`` and tests/conftest.py so the
+# editable install can never shadow this worktree's AgentV2.
+# --------------------------------------------------------------------------
+REPO = Path(__file__).resolve().parents[2]
+_PACKAGE_SRC = (
+    REPO / "packages" / "rxycode-server" / "src",
+    REPO / "packages" / "rxycode-worker" / "src",
+    REPO / "packages" / "rxycode-runner" / "src",
+    REPO / "packages" / "rxycode-protocol" / "src",
+)
+for _entry in (REPO, *_PACKAGE_SRC):
+    if str(_entry) not in sys.path:
+        sys.path.insert(0, str(_entry))
+
+import evals as _evals_pkg  # noqa: E402
+
+_evals_pkg._bind_checkout()
+
+from evals.tasks import Check, EvalTask, TaskSchemaError  # noqa: E402
+
+#: Every supported (surface x mode) cell.
+CELLS = ("cli-solo", "cli-team", "web-solo", "web-team")
+
+#: Categories allowed in the web taskset (card WEB-W7-C03).
+WEB_CATEGORIES = ("coding", "browser", "recovery", "remote")
+
+#: The price book published by rxycode_server.usage.service (_PRICE_PER_TOKEN).
+PRICE_VERSION = "2026-10"
+PRICE_PER_TOKEN_USD = "0.000002"
+
+#: How each cell forces its execution mode.  Recorded verbatim in the manifest
+#: so a reviewer can audit *how* solo/team was selected — Run rows have no mode
+#: field, so this manifest is the source of truth for the forcing method.
+MODE_MAP = {
+    "cli-solo": {
+        "mode": "solo",
+        "forcing": "agent.run-direct",
+        "detail": "AgentBackend calls AgentV2.run() directly — inherent solo path.",
+    },
+    "cli-team": {
+        "mode": "team",
+        "forcing": "slash_prefix",
+        "prefix": "/team",
+        "detail": "Session.prompt('/team ...') -> ModeRouter (decided_by=user) -> Coordinator.run_team.",
+    },
+    "web-solo": {
+        "mode": "solo",
+        "forcing": "slash_prefix",
+        "prefix": "/solo",
+        "detail": "create_run message + Session.prompt carry '/solo ...'; user-forced SOLO.",
+    },
+    "web-team": {
+        "mode": "team",
+        "forcing": "slash_prefix",
+        "prefix": "/team",
+        "detail": "create_run message + Session.prompt carry '/team ...'; user-forced TEAM.",
+    },
+}
+
+DEFAULT_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+
+_TASK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]*$")
+
+
+# ---------------------------------------------------------------------------
+# Taskset loading
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WebEvalTask:
+    """One fixed task from ``taskset.jsonl`` (same check vocabulary as EvalTask)."""
+
+    task_id: str
+    category: str
+    prompt: str
+    checks: list[Check] = field(default_factory=list)
+    setup_files: dict[str, str] = field(default_factory=dict)
+    requires: list[str] = field(default_factory=list)
+    expect: str = "pass"
+    effect: Optional[str] = None
+    source_commit: Optional[str] = None
+    pinned_ref: Optional[str] = None
+    note: Optional[str] = None
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict, *, source: str = "<dict>") -> "WebEvalTask":
+        if not isinstance(data, dict):
+            raise TaskSchemaError(f"{source}: JSONL record must be a mapping")
+        task_id = data.get("task_id")
+        if not isinstance(task_id, str) or not _TASK_ID_RE.match(task_id):
+            raise TaskSchemaError(f"{source}: invalid task_id {task_id!r}")
+        category = data.get("category")
+        if category not in WEB_CATEGORIES:
+            raise TaskSchemaError(
+                f"{source}: category must be one of {list(WEB_CATEGORIES)}, got {category!r}"
+            )
+        prompt = data.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise TaskSchemaError(f"{source}: missing or empty 'prompt'")
+        raw_checks = data.get("checks") or []
+        if not isinstance(raw_checks, list) or not raw_checks:
+            raise TaskSchemaError(f"{source}: 'checks' must be a non-empty list")
+        checks = [Check.from_dict(c, task_id=task_id) for c in raw_checks]
+        setup = data.get("setup") or {}
+        setup_files = (setup.get("files") or {}) if isinstance(setup, dict) else {}
+        if not isinstance(setup_files, dict):
+            raise TaskSchemaError(f"{source}: 'setup.files' must be a mapping")
+        for rel, content in setup_files.items():
+            if Path(rel).is_absolute() or ".." in Path(rel).parts:
+                raise TaskSchemaError(f"{source}: setup path {rel!r} must stay inside the workdir")
+            if not isinstance(content, str):
+                raise TaskSchemaError(f"{source}: setup file {rel!r} content must be a string")
+        requires = data.get("requires") or []
+        if not isinstance(requires, list) or not all(isinstance(r, str) for r in requires):
+            raise TaskSchemaError(f"{source}: 'requires' must be a list of strings")
+        expect = data.get("expect") or "pass"
+        if expect not in {"pass", "fail"}:
+            raise TaskSchemaError(f"{source}: expect must be 'pass' or 'fail', got {expect!r}")
+        source_commit = data.get("source_commit") or None
+        pinned_ref = data.get("pinned_ref") or None
+        if not source_commit and not pinned_ref:
+            raise TaskSchemaError(
+                f"{source}: task needs a pinned reference ('source_commit' or 'pinned_ref')"
+            )
+        return cls(
+            task_id=task_id,
+            category=category,
+            prompt=prompt.strip(),
+            checks=checks,
+            setup_files=dict(setup_files),
+            requires=list(requires),
+            expect=expect,
+            effect=(data.get("effect") or None),
+            source_commit=source_commit,
+            pinned_ref=pinned_ref,
+            note=(data.get("note") or None),
+            raw=dict(data),
+        )
+
+    @property
+    def needs_workdir(self) -> bool:
+        return self.to_eval_task().needs_workdir
+
+    def to_eval_task(self) -> EvalTask:
+        """Adapt to the evals scorer: identical Check objects, same semantics."""
+        return EvalTask(
+            id=self.task_id,
+            category=self.category,
+            prompt=self.prompt,
+            setup_files=dict(self.setup_files),
+            checks=list(self.checks),
+            effect=self.effect,
+        )
+
+
+def load_taskset(path: Path | str) -> list[WebEvalTask]:
+    """Load the fixed JSONL taskset, validating every record."""
+    path = Path(path)
+    tasks: list[WebEvalTask] = []
+    seen: set[str] = set()
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        task = WebEvalTask.from_dict(
+            json.loads(line), source=f"{path.name}:{lineno}"
+        )
+        if task.task_id in seen:
+            raise TaskSchemaError(f"{path.name}:{lineno}: duplicate task_id {task.task_id!r}")
+        seen.add(task.task_id)
+        tasks.append(task)
+    if not tasks:
+        raise TaskSchemaError(f"{path}: empty taskset")
+    return tasks
+
+
+def _canonical_taskset_payload(path: Path | str) -> bytes:
+    """Normalize the file: parse each JSONL record and re-serialize it with
+    sorted keys and compact separators so key order / whitespace in the source
+    file never changes the hash."""
+    records = [
+        json.loads(line)
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    text = (
+        "\n".join(
+            json.dumps(rec, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+            for rec in records
+        )
+        + "\n"
+    )
+    return text.encode("utf-8")
+
+
+def taskset_sha256(path: Path | str) -> str:
+    """sha256 of the normalized taskset file — the taskset manifest hash."""
+    return hashlib.sha256(_canonical_taskset_payload(path)).hexdigest()
+
+
+def select_tasks(
+    tasks: list[WebEvalTask],
+    *,
+    sample: int | None = None,
+    task_ids: list[str] | None = None,
+) -> list[WebEvalTask]:
+    """Deterministic selection: explicit --task-ids win, else the first --sample N."""
+    selected = list(tasks)
+    if task_ids:
+        wanted = set(task_ids)
+        missing = wanted - {t.task_id for t in selected}
+        if missing:
+            raise TaskSchemaError(f"unknown task id(s): {sorted(missing)}")
+        selected = [t for t in selected if t.task_id in wanted]
+    if sample is not None and sample > 0:
+        selected = selected[:sample]
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Manifest
+# ---------------------------------------------------------------------------
+
+
+def _git(args: list[str]) -> str:
+    try:
+        out = subprocess.run(
+            ["git", *args],
+            cwd=REPO,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+    except Exception:
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _mask_url(url: str) -> str:
+    """Keep the URL shape but never persist a password."""
+    if not url or "@" not in url:
+        return url
+    head, _, tail = url.rpartition("@")
+    scheme, _, userinfo = head.partition("://")
+    user = userinfo.split(":", 1)[0]
+    return f"{scheme}://{user}:***@{tail}"
+
+
+def _active_model_info(model: str | None) -> dict[str, str]:
+    """Read the configured model/provider WITHOUT ever copying the api key."""
+    info: dict[str, str] = {"requested": model or "active"}
+    try:
+        from RxyCode.RxyCode1_1_0.config.settings import (
+            get_active_model_config,
+            get_model_config,
+            load_config,
+        )
+
+        cfg = load_config()
+        key = model or str(cfg.get("active_model") or "")
+        if model and model in (cfg.get("models") or {}):
+            model_cfg = get_model_config(model, cfg)
+        else:
+            model_cfg = get_active_model_config(cfg)
+        info["config_key"] = key
+        info["model_name"] = str(model_cfg.get("model_name") or key or "unknown")
+        info["base_url"] = str(model_cfg.get("base_url") or "")
+    except Exception as exc:
+        # Exception text may name env vars like RXYCODE_API_KEY — keep only the
+        # exception type so the manifest can never leak a secret reference.
+        info["error"] = type(exc).__name__
+    return info
+
+
+def build_manifest(
+    *,
+    taskset_path: Path | str,
+    tasks: list[WebEvalTask],
+    cells: list[str],
+    budget: int,
+    model: str | None,
+    database_url: str | None,
+    started_at: str | None = None,
+    extra: dict | None = None,
+) -> dict[str, Any]:
+    """Everything needed to reproduce a run: taskset hash, code commit, model,
+    provider endpoint (never the key), price version, budget, and the mode map."""
+    return {
+        "schema": "evals-web-manifest/v1",
+        "taskset_sha256": taskset_sha256(taskset_path),
+        "taskset_path": str(taskset_path),
+        "task_ids": [t.task_id for t in tasks],
+        "task_count": len(tasks),
+        "cells": list(cells),
+        "budget": int(budget),
+        "budget_scope": "max total tokens per cell; 0 = unlimited",
+        "model": (model or _active_model_info(model).get("model_name") or "active"),
+        "provider": _active_model_info(model),
+        "price_version": PRICE_VERSION,
+        "code_commit": _git(["rev-parse", "HEAD"]) or "unknown",
+        "code_branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]) or "unknown",
+        "worktree_dirty": bool(_git(["status", "--porcelain"])),
+        "mode_map": {cell: dict(MODE_MAP[cell]) for cell in cells},
+        "python": sys.version.split()[0],
+        "platform": _platform.platform(),
+        "started_at": started_at or datetime.now(timezone.utc).isoformat(),
+        "database_url": _mask_url(database_url) if database_url else None,
+        **(dict(extra) if extra else {}),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Record helpers
+# ---------------------------------------------------------------------------
+
+
+def _token_delta(start: tuple[int, int]) -> dict[str, int]:
+    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+    inp = max(0, int(token_stats.input_tokens) - start[0])
+    out = max(0, int(token_stats.output_tokens) - start[1])
+    return {"input": inp, "output": out, "total": inp + out}
+
+
+def _token_start() -> tuple[int, int]:
+    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+    return (int(token_stats.input_tokens), int(token_stats.output_tokens))
+
+
+def _usage(*, total: int, input_tokens: int = 0, output_tokens: int = 0) -> dict[str, int]:
+    return {"input": int(input_tokens), "output": int(output_tokens), "total": int(total)}
+
+
+def _estimate_cost(tokens: int) -> dict[str, Any]:
+    """CLI cells have no durable ledger: estimate from the published rate and
+    label the source so the report can separate ledger from estimate."""
+    from decimal import Decimal
+
+    amount = (Decimal(int(tokens)) * Decimal(PRICE_PER_TOKEN_USD)).quantize(
+        Decimal("0.00000001")
+    )
+    return {
+        "amount": format(amount, "f"),
+        "currency": "USD",
+        "source": "price_table",
+        "price_version": PRICE_VERSION,
+    }
+
+
+def _base_record(cell: str, task: WebEvalTask) -> dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "cell": cell,
+        "category": task.category,
+        "status": "error",
+        "expect": task.expect,
+        "expected_failure": task.expect == "fail",
+        "duration_s": 0.0,
+        "token_usage": {"input": 0, "output": 0, "total": 0},
+        "cost": None,
+        "run_id": None,
+        "session_id": None,
+        "trace": None,
+        "mode_forcing": dict(MODE_MAP[cell]),
+        "error": "",
+        "check_details": [],
+        "answer_excerpt": "",
+    }
+
+
+def _blocked_record(cell: str, task: WebEvalTask, reason: str) -> dict[str, Any]:
+    record = _base_record(cell, task)
+    record["status"] = "blocked"
+    record["error"] = reason
+    return record
+
+
+# ---------------------------------------------------------------------------
+# CLI cells
+# ---------------------------------------------------------------------------
+
+
+async def run_cli_task(
+    *,
+    cell: str,
+    task: WebEvalTask,
+    workdir: Path,
+    model: str | None,
+    task_timeout: int,
+) -> dict[str, Any]:
+    """One task through the real CLI path (AgentBackend / Session.prompt /team)."""
+    from evals.backends import (
+        AgentBackend,
+        BackendResult,
+        _extract_agent_tools,
+        _headless_eval_runtime,
+        make_agent_factory,
+    )
+    from evals.runner import is_provider_infra_error, run_checks
+    from RxyCode.RxyCode1_1_0.core.session_runtime import (
+        bind_session,
+        clear_session_runtime,
+        reset_session_binding,
+        set_working_directory,
+    )
+
+    record = _base_record(cell, task)
+    start = time.monotonic()
+    token0 = _token_start()
+    emitted: list[Any] = []
+    session_id = f"eval-{cell}-{uuid.uuid4().hex[:12]}"
+    local_run_id = f"cli-{uuid.uuid4().hex}"
+
+    try:
+        if cell == "cli-solo":
+            backend = AgentBackend(make_agent_factory(model_name=model))
+            try:
+                result = await asyncio.wait_for(
+                    backend.run(task.prompt, workdir, effect=task.effect),
+                    timeout=task_timeout,
+                )
+            except asyncio.TimeoutError:
+                result = BackendResult(
+                    answer="",
+                    token_usage=_token_delta(token0),
+                    error=f"task timed out after {task_timeout}s",
+                )
+            answer = result.answer
+            tools_used = result.tools_used
+            error = result.error
+            usage = result.token_usage or _token_delta(token0)
+        else:  # cli-team — Session.prompt dispatch (production CLI turn path)
+            from RxyCode.RxyCode1_1_0.core.session import Session
+            from RxyCode.RxyCode1_1_0.main import dispatch_surface_prompt
+
+            agent = make_agent_factory(model_name=model)(session_id=session_id)
+            session_token = bind_session(session_id)
+            result_status = "failed"
+            try:
+                with _headless_eval_runtime(
+                    workspace_root=workdir,
+                    extra_write_paths=[str(workdir)],
+                ):
+                    session = Session(
+                        session_id=session_id,
+                        workspace_root=workdir,
+                        emit=emitted.append,
+                    )
+                    set_working_directory(workdir)
+                    latest_token = bind_session("latest")
+                    try:
+                        set_working_directory(workdir)
+                    finally:
+                        reset_session_binding(latest_token)
+                    try:
+                        prompt_result = await asyncio.wait_for(
+                            dispatch_surface_prompt(
+                                "cli",
+                                session,
+                                agent,
+                                f"/team {task.prompt}",
+                                mode="build",
+                                run_id=local_run_id,
+                            ),
+                            timeout=task_timeout,
+                        )
+                        result_status = prompt_result.status
+                        answer = prompt_result.answer or ""
+                        error = (
+                            ""
+                            if result_status == "succeeded"
+                            else (prompt_result.detail or f"prompt status {result_status}")
+                        )
+                    except asyncio.TimeoutError:
+                        answer = ""
+                        error = f"task timed out after {task_timeout}s"
+                usage = _token_delta(token0)
+                tools_used = _extract_agent_tools(agent)
+            except Exception as exc:
+                usage = _token_delta(token0)
+                tools_used = _extract_agent_tools(agent)
+                answer = ""
+                error = f"{type(exc).__name__}: {exc}"
+            finally:
+                reset_session_binding(session_token)
+                clear_session_runtime(session_id)
+                clear_session_runtime("latest")
+        duration = time.monotonic() - start
+        record["duration_s"] = round(duration, 3)
+        record["token_usage"] = _usage(
+            total=usage.get("total", 0),
+            input_tokens=usage.get("input", 0),
+            output_tokens=usage.get("output", 0),
+        )
+        record["session_id"] = session_id
+        record["run_id"] = local_run_id
+        record["trace"] = {
+            "kind": "in-process",
+            "local_run_id": local_run_id,
+            "session_id": session_id,
+            "notifications": len(emitted),
+            "note": "CLI cells have no durable store; see manifest mode_map.",
+        }
+        record["cost"] = _estimate_cost(record["token_usage"]["total"])
+        record["answer_excerpt"] = (answer or "")[:500]
+
+        if error and is_provider_infra_error(error):
+            record["status"] = "blocked"
+            record["error"] = f"provider infra: {error}"
+            return record
+        timed_out = bool(error) and error.startswith("task timed out")
+        if error and not timed_out:
+            record["status"] = "error"
+            record["error"] = error
+            return record
+
+        # The turn finished — or the wall-clock cap cut it mid-flight. Either
+        # way the oracle runs on the final workspace state: a timed-out task
+        # whose artifacts are complete is a pass (with the timeout annotated),
+        # not a silent error.
+        eval_task = task.to_eval_task()
+        passed, details = run_checks(
+            eval_task,
+            workdir=workdir,
+            agent_answer=answer or "",
+            tools_used=tools_used or [],
+        )
+        record["check_details"] = details
+        record["status"] = "passed" if passed else "failed"
+        msgs = [d["message"] for d in details if not d["passed"] and d["message"]]
+        if timed_out:
+            note = error + " — oracle evaluated on the final workspace state"
+            record["error"] = (note + ("; " + "; ".join(msgs)[:300] if msgs else ""))[:500]
+        elif not passed:
+            record["error"] = "; ".join(msgs)[:500] or "one or more checks failed"
+        return record
+    except Exception as exc:  # harness-level failure
+        record["duration_s"] = round(time.monotonic() - start, 3)
+        record["token_usage"] = _usage(total=_token_delta(token0)["total"])
+        record["status"] = "error"
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        record["cost"] = _estimate_cost(record["token_usage"]["total"])
+        return record
+
+
+# ---------------------------------------------------------------------------
+# Web cells — durable run spine
+# ---------------------------------------------------------------------------
+
+
+def seed_eval_tenant(database_url: str, tag: str) -> dict[str, str]:
+    """Create a fresh tenant/org/project under which eval sessions hang."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.models import Organization, Project, User
+
+    suffix = uuid.uuid4().hex[:8]
+    tenant = f"eval-w7c03-{tag}-{suffix}"
+    org_id = f"org-{tenant}"
+    project_id = f"prj-{tenant}"
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with SASession(engine) as db:
+            db.add(User(id=f"user-{tenant}", github_id=None, kind="local"))
+            db.add(Organization(id=org_id, tenant_id=tenant))
+            db.add(
+                Project(
+                    id=project_id,
+                    tenant_id=tenant,
+                    name=f"w7c03-{tag}",
+                    repo_config={},
+                )
+            )
+            db.commit()
+    finally:
+        engine.dispose()
+    return {"tenant_id": tenant, "org_id": org_id, "project_id": project_id}
+
+
+def probe_web(database_url: str) -> str | None:
+    """None when the database is reachable and migrated; an error string else."""
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        finally:
+            engine.dispose()
+    except Exception as exc:
+        return f"postgres unreachable: {type(exc).__name__}: {exc}"
+    try:
+        from rxycode_server.persistence.migrate import upgrade_head
+
+        upgrade_head(database_url)
+    except Exception as exc:
+        return f"alembic upgrade_head failed: {type(exc).__name__}: {exc}"
+    return None
+
+
+@dataclass
+class WebRunCtx:
+    """What a prompt driver sees: the journaled runtime plus run coordinates."""
+
+    runtime: Any
+    agent_id: str
+    workdir: Path
+    message: str
+    run_id: str
+    session_id: str
+    session: Any = None
+    agent: Any = None
+    emitted: list = field(default_factory=list)
+    outcome: dict = field(default_factory=dict)
+
+
+async def _default_web_driver(ctx: WebRunCtx) -> str:
+    """The real turn: Session.prompt inside the headless eval config."""
+    from evals.backends import _extract_agent_tools, _headless_eval_runtime
+    from RxyCode.RxyCode1_1_0.core.session_runtime import (
+        bind_session,
+        clear_session_runtime,
+        reset_session_binding,
+        set_working_directory,
+    )
+    from RxyCode.RxyCode1_1_0.main import dispatch_surface_prompt
+
+    token0 = _token_start()
+    session_token = bind_session(ctx.session_id)
+    result = None
+    try:
+        with _headless_eval_runtime(
+            workspace_root=ctx.workdir,
+            extra_write_paths=[str(ctx.workdir)],
+        ):
+            set_working_directory(ctx.workdir)
+            # Mirror AgentBackend: tool threads that lose the ContextVar
+            # binding resolve to "latest" — seed the same cwd there too.
+            latest_token = bind_session("latest")
+            try:
+                set_working_directory(ctx.workdir)
+            finally:
+                reset_session_binding(latest_token)
+            result = await dispatch_surface_prompt(
+                "web",
+                ctx.session,
+                ctx.agent,
+                ctx.message,
+                mode="build",
+                run_id=ctx.run_id,
+            )
+    finally:
+        reset_session_binding(session_token)
+        clear_session_runtime(ctx.session_id)
+        clear_session_runtime("latest")
+        # Token accounting runs in finally: on timeout the main task is
+        # cancelled mid-prompt, but the partial delta is real spend and must
+        # reach the runtime snapshot + record, never be written as 0.
+        delta = _token_delta(token0)
+        ctx.runtime.record_token_usage(ctx.agent_id, delta["total"])
+        ctx.outcome["tokens"] = delta
+        ctx.outcome["tools"] = _extract_agent_tools(ctx.agent)
+    if result is None:
+        raise RuntimeError("prompt produced no result")
+    ctx.outcome["prompt_status"] = getattr(result, "status", "")
+    ctx.outcome["detail"] = getattr(result, "detail", "")
+    if getattr(result, "status", "") != "succeeded":
+        raise RuntimeError(ctx.outcome["detail"] or f"prompt status {result.status}")
+    return result.answer or ""
+
+
+def _agent_done_event_id(database_url: str, run_id: str) -> str:
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.models import RunEvent
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with SASession(engine) as db:
+            row = db.scalars(
+                select(RunEvent.event_id)
+                .where(RunEvent.run_id == run_id, RunEvent.type == "event/agent_done")
+                .order_by(RunEvent.seq.desc())
+                .limit(1)
+            ).first()
+    finally:
+        engine.dispose()
+    return str(row) if row else uuid.uuid4().hex
+
+
+async def run_web_task(
+    *,
+    database_url: str,
+    org: dict[str, str],
+    task: WebEvalTask,
+    workdir: Path,
+    cell: str,
+    model: str | None,
+    task_timeout: int,
+    request_nonce: str,
+    prompt_driver=None,
+    journal_cap: int = 100,
+) -> dict[str, Any]:
+    """Execute one task through the real durable web-run spine.
+
+    Order (production order): SessionRow -> create_run -> claim -> journal ->
+    prompt -> checks -> eval.checks event -> record_terminal_usage ->
+    commit_terminal.  ``prompt_driver`` overrides only the model interaction
+    (deterministic tests); everything around it — rows, events, usage ledger —
+    is the real production machinery.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.pool import NullPool
+
+    from evals.runner import is_provider_infra_error, run_checks
+    from rxycode_server.events.store import append_event
+    from rxycode_server.persistence.models import SessionRow
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker.agent_events import (
+        clear_web_run,
+        publish_database_url,
+        remember_web_run,
+    )
+    from rxycode_worker.supervisor import claim
+
+    tenant_id = org["tenant_id"]
+    prefix = MODE_MAP[cell]["prefix"]
+    # The usage ledger records the resolved model name, never the bare "active"
+    # alias — the manifest already maps that alias to the configured provider.
+    ledger_model = (
+        model
+        or _active_model_info(model).get("model_name")
+        or "active"
+    )
+    message = f"{prefix} {task.prompt}"
+    record = _base_record(cell, task)
+    session_id = uuid.uuid4().hex
+    worker_id = f"eval-worker-{uuid.uuid4().hex[:8]}"
+    emitted: list[Any] = []
+    run_id = ""
+    epoch = None
+    start = time.monotonic()
+    answer = ""
+    turn_error = ""
+
+    try:
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with SASession(engine) as db:
+                db.add(
+                    SessionRow(
+                        id=session_id,
+                        tenant_id=tenant_id,
+                        project_id=org["project_id"],
+                        title=task.task_id,
+                    )
+                )
+                db.commit()
+        finally:
+            engine.dispose()
+
+        accepted = create_run(
+            database_url,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message=message,
+            target_id=f"local:{task.task_id}",
+            permission_profile="full_auto",
+            request_id=f"w7c03-{request_nonce}-{cell}-{task.task_id}",
+        )
+        run_id = accepted.run_id
+        record["run_id"] = run_id
+        record["session_id"] = session_id
+        epoch = claim(
+            database_url,
+            run_id,
+            worker_id,
+            ttl_seconds=max(600, int(task_timeout) + 120),
+        )
+        if epoch is None:
+            raise RuntimeError("worker lease refused for a fresh run")
+
+        publish_database_url(database_url)
+        remember_web_run(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            session_id=session_id,
+        )
+
+        journaled = {"count": 0}
+
+        def _emit(notification: Any) -> None:
+            emitted.append(notification)
+            method = getattr(notification, "method", None)
+            if (
+                isinstance(method, str)
+                and method.startswith("event/")
+                and journaled["count"] < journal_cap
+            ):
+                journaled["count"] += 1
+                try:
+                    append_event(
+                        database_url,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        event_type=f"notify.{method}",
+                        payload={"text": str(notification)[:1500]},
+                    )
+                except Exception:
+                    pass
+
+        from appserver.agent_runtime import AgentConfig, AgentRuntime
+        from appserver.agent_task import LifecycleState
+        from appserver.eventbus import AppendOnlyLog, EventBus
+
+        session = None
+        agent = None
+        if prompt_driver is None:
+            from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+            from RxyCode.RxyCode1_1_0.core.session import Session
+
+            session = Session(
+                session_id=session_id,
+                workspace_root=workdir,
+                emit=_emit,
+            )
+            agent = AgentV2(model_name=model, session_id=session_id)
+            from evals.backends import bind_eval_session
+
+            bind_eval_session(agent, session_id)
+
+        ctx = WebRunCtx(
+            runtime=None,  # filled after AgentRuntime exists
+            agent_id="eval-primary",
+            workdir=workdir,
+            message=message,
+            run_id=run_id,
+            session_id=session_id,
+            session=session,
+            agent=agent,
+            emitted=emitted,
+        )
+        driver = prompt_driver or _default_web_driver
+
+        async def _target(_task_str: str, checkpoint: object | None = None) -> str:
+            return await driver(ctx)
+
+        runtime = AgentRuntime(
+            EventBus(AppendOnlyLog()),
+            run_factory=lambda _cfg: _target,
+        )
+        ctx.runtime = runtime
+        agent_task = await runtime.spawn(
+            AgentConfig(
+                agent_id=ctx.agent_id,
+                model=model or "active",
+                # 50M is a documentation ceiling, not an eval cap: nothing in
+                # the task pipeline calls check_budget, and the stub-driver
+                # tests deliberately record ~10M tokens.
+                budget_tokens=50_000_000,
+            )
+        )
+        main_task = agent_task._main_task
+        assert main_task is not None
+        try:
+            answer = await asyncio.wait_for(
+                asyncio.shield(main_task), timeout=task_timeout
+            )
+            # _run_main swallows target exceptions into state FAILED; recover
+            # the real error so the record is honest.
+            if agent_task.state != LifecycleState.DONE:
+                last = getattr(agent_task, "_last_error", None)
+                turn_error = (
+                    f"{type(last).__name__}: {last}"
+                    if last is not None
+                    else f"agent ended in state {agent_task.state}"
+                )
+                answer = ""
+        except asyncio.TimeoutError:
+            turn_error = f"task timed out after {task_timeout}s"
+            try:
+                await agent_task.interrupt()
+            except Exception:
+                pass
+        except Exception as exc:
+            turn_error = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        # The run row still exists — close it out so the durable log ends in a
+        # terminal state and any consumed tokens reach the ledger.
+        record["duration_s"] = round(time.monotonic() - start, 3)
+        record["status"] = "error"
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        if run_id:
+            _persist_usage(database_url, tenant_id, run_id, ledger_model, {})
+            _safe_commit(database_url, run_id, worker_id, epoch, "failed")
+            record["trace"] = _web_trace(database_url, tenant_id, run_id)
+            record["cost"] = _ledger_cost(database_url, run_id)
+        return record
+    finally:
+        try:
+            clear_web_run()
+        except Exception:
+            pass
+
+    record["duration_s"] = round(time.monotonic() - start, 3)
+    record["answer_excerpt"] = (answer or "")[:500]
+
+    if turn_error and is_provider_infra_error(turn_error):
+        record["status"] = "blocked"
+        record["error"] = f"provider infra: {turn_error}"
+        _safe_commit(database_url, run_id, worker_id, epoch, "failed")
+        record["trace"] = _web_trace(database_url, tenant_id, run_id)
+        return record
+    timed_out = bool(turn_error) and turn_error.startswith("task timed out")
+    if turn_error and not timed_out:
+        _append_safely(
+            database_url,
+            tenant_id,
+            run_id,
+            "eval.turn_failed",
+            {"error": turn_error, "task_id": task.task_id},
+        )
+        _persist_usage(database_url, tenant_id, run_id, ledger_model, ctx.outcome)
+        _safe_commit(database_url, run_id, worker_id, epoch, "failed")
+        record["status"] = "error"
+        record["error"] = turn_error
+        record["trace"] = _web_trace(database_url, tenant_id, run_id)
+        record["cost"] = _ledger_cost(database_url, run_id)
+        done_tokens = int(record["trace"].get("agent_done_tokens") or 0)
+        measured = dict(ctx.outcome.get("tokens") or {})
+        record["token_usage"] = _usage(
+            total=done_tokens or int(measured.get("total") or 0),
+            input_tokens=int(measured.get("input") or 0),
+            output_tokens=int(measured.get("output") or 0),
+        )
+        return record
+
+    # The turn completed — or hit the wall-clock cap (the agent task was
+    # interrupted above). Either way the oracle runs on the final workspace
+    # state; a timeout stays visible in ``error`` and the durable run commits
+    # "failed" (the turn never finished), while the record reflects the oracle.
+    eval_task = task.to_eval_task()
+    passed, details = run_checks(
+        eval_task,
+        workdir=workdir,
+        agent_answer=answer or "",
+        tools_used=list(ctx.outcome.get("tools") or []),
+    )
+    record["check_details"] = details
+    record["status"] = "passed" if passed else "failed"
+    msgs = [d["message"] for d in details if not d["passed"] and d["message"]]
+    if timed_out:
+        note = turn_error + " — oracle evaluated on the final workspace state"
+        record["error"] = (note + ("; " + "; ".join(msgs)[:300] if msgs else ""))[:500]
+    elif not passed:
+        record["error"] = "; ".join(msgs)[:500] or "one or more checks failed"
+
+    if timed_out:
+        # agent_done never journals on a cancelled turn — mark why, durably.
+        _append_safely(
+            database_url,
+            tenant_id,
+            run_id,
+            "eval.turn_timeout",
+            {
+                "task_id": task.task_id,
+                "error": turn_error,
+                "tokens": int((ctx.outcome.get("tokens") or {}).get("total") or 0),
+            },
+        )
+    _append_safely(
+        database_url,
+        tenant_id,
+        run_id,
+        "eval.checks",
+        {
+            "task_id": task.task_id,
+            "status": record["status"],
+            "expect": task.expect,
+            "timed_out": timed_out,
+            "checks": details[:20],
+        },
+    )
+    usage_record = _persist_usage(database_url, tenant_id, run_id, ledger_model, ctx.outcome)
+    _safe_commit(
+        database_url, run_id, worker_id, epoch, "failed" if timed_out else "succeeded"
+    )
+    trace = _web_trace(database_url, tenant_id, run_id)
+    record["trace"] = trace
+    record["cost"] = _ledger_cost(database_url, run_id)
+
+    # Token totals come from the durable event/agent_done snapshot (via
+    # replay); the measured delta is kept as an input/output split detail.
+    done_tokens = int(trace.get("agent_done_tokens") or 0)
+    measured = dict(ctx.outcome.get("tokens") or {})
+    total = done_tokens or int(measured.get("total") or 0)
+    record["token_usage"] = _usage(
+        total=total,
+        input_tokens=int(measured.get("input") or 0),
+        output_tokens=int(measured.get("output") or 0),
+    )
+    if usage_record:
+        record["cost"] = {
+            "amount": usage_record.get("amount"),
+            "currency": usage_record.get("currency", "USD"),
+            "source": "usage_records",
+            "price_version": PRICE_VERSION,
+            "usage_record_id": usage_record.get("id"),
+        }
+    return record
+
+
+def _append_safely(database_url: str, tenant_id: str, run_id: str, event_type: str, payload: dict) -> None:
+    from rxycode_server.events.store import append_event
+
+    try:
+        append_event(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type=event_type,
+            payload=payload,
+        )
+    except Exception:
+        pass
+
+
+def _persist_usage(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    model: str | None,
+    outcome: dict,
+) -> dict[str, Any] | None:
+    """Harness-owned terminal accounting: production has no caller today."""
+    from rxycode_server.events.store import replay
+    from rxycode_server.usage.service import record_terminal_usage
+
+    tokens = 0
+    try:
+        events = replay(database_url, tenant_id=tenant_id, run_id=run_id, after_seq=0)[
+            "events"
+        ]
+        for event in events:
+            if event["type"] == "event/agent_done":
+                tokens = int(event["payload"].get("tokens_used") or 0)
+    except Exception:
+        tokens = 0
+    if not tokens:
+        tokens = int((outcome.get("tokens") or {}).get("total") or 0)
+    try:
+        return record_terminal_usage(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            model_id=model or "active",
+            price_version=PRICE_VERSION,
+            tokens=tokens,
+            event_id=_agent_done_event_id(database_url, run_id),
+        )
+    except Exception:
+        return None
+
+
+def _safe_commit(
+    database_url: str,
+    run_id: str,
+    worker_id: str,
+    epoch: int | None,
+    status: str,
+) -> None:
+    if not run_id or epoch is None:
+        return
+    from rxycode_worker.supervisor import commit_terminal
+
+    try:
+        commit_terminal(database_url, run_id, worker_id, epoch, status)
+    except Exception:
+        pass
+
+
+def _ledger_cost(database_url: str, run_id: str) -> dict[str, Any] | None:
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session as SASession
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.models import UsageRecord
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with SASession(engine) as db:
+            row = db.scalars(
+                select(UsageRecord).where(UsageRecord.run_id == run_id)
+            ).first()
+    finally:
+        engine.dispose()
+    if row is None:
+        return None
+    return {
+        "amount": row.amount,
+        "currency": row.currency,
+        "source": "usage_records",
+        "price_version": row.price_version,
+        "usage_record_id": row.id,
+    }
+
+
+def _web_trace(database_url: str, tenant_id: str, run_id: str) -> dict[str, Any]:
+    """Durable trace refs for the record: replayed event seqs + token snapshot."""
+    from rxycode_server.events.store import replay
+
+    trace: dict[str, Any] = {
+        "kind": "postgres",
+        "run_id": run_id,
+        "events_url": f"/api/v1/runs/{run_id}/events",
+    }
+    try:
+        events = replay(database_url, tenant_id=tenant_id, run_id=run_id, after_seq=0)[
+            "events"
+        ]
+    except Exception as exc:
+        trace["replay_error"] = f"{type(exc).__name__}: {exc}"
+        return trace
+    trace["event_count"] = len(events)
+    trace["last_seq"] = max((int(e["seq"]) for e in events), default=0)
+    for event in events:
+        if event["type"] == "event/agent_done":
+            trace["agent_done_seq"] = int(event["seq"])
+            trace["agent_done_tokens"] = int(
+                event["payload"].get("tokens_used") or 0
+            )
+        if event["type"] == "usage.updated":
+            trace["usage_event_seq"] = int(event["seq"])
+        if event["type"] == "eval.checks":
+            trace["eval_checks_seq"] = int(event["seq"])
+    return trace
+
+
+# ---------------------------------------------------------------------------
+# Matrix driver
+# ---------------------------------------------------------------------------
+
+
+def _setup_workdir(task: WebEvalTask, base: Path, cell: str) -> Path:
+    workdir = base / cell / task.task_id
+    workdir.mkdir(parents=True, exist_ok=True)
+    for rel, content in task.setup_files.items():
+        fp = workdir / rel
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content, encoding="utf-8")
+    return workdir
+
+
+async def run_matrix(
+    *,
+    tasks: list[WebEvalTask],
+    cells: list[str],
+    model: str | None,
+    budget: int,
+    task_timeout: int,
+    database_url: str | None,
+    workdir_base: Path,
+    log=print,
+) -> dict[str, Any]:
+    """Serial execution over cells x tasks. Blocked is explicit, never silent."""
+    records: list[dict[str, Any]] = []
+    blocked_cells: dict[str, str] = {}
+    web_probe: str | None = None
+    web_checked = False
+    org: dict[str, str] | None = None
+    nonce = uuid.uuid4().hex[:8]
+
+    for cell in cells:
+        cell_tokens = 0
+        cell_blocked_reason = ""
+        if cell.startswith("web"):
+            if not web_checked:
+                web_checked = True
+                if not database_url:
+                    web_probe = "no --database-url and RXYCODE_WEB_DATABASE_URL unset"
+                else:
+                    web_probe = probe_web(database_url)
+                    if web_probe is None:
+                        try:
+                            org = seed_eval_tenant(database_url, "suite")
+                        except Exception as exc:
+                            web_probe = f"tenant seed failed: {type(exc).__name__}: {exc}"
+            if web_probe is not None:
+                cell_blocked_reason = web_probe
+                blocked_cells[cell] = web_probe
+                for task in tasks:
+                    records.append(_blocked_record(cell, task, web_probe))
+                continue
+
+        for index, task in enumerate(tasks, 1):
+            if cell_blocked_reason:
+                records.append(_blocked_record(cell, task, cell_blocked_reason))
+                continue
+            if budget and cell_tokens >= budget:
+                reason = f"cell budget exhausted at {cell_tokens} tokens (cap {budget})"
+                records.append(_blocked_record(cell, task, reason))
+                continue
+            log(f"[{cell} {index}/{len(tasks)}] {task.task_id} ...")
+            workdir = _setup_workdir(task, workdir_base, cell)
+            if cell.startswith("web"):
+                record = await run_web_task(
+                    database_url=database_url,
+                    org=org,
+                    task=task,
+                    workdir=workdir,
+                    cell=cell,
+                    model=model,
+                    task_timeout=task_timeout,
+                    request_nonce=nonce,
+                )
+            else:
+                record = await run_cli_task(
+                    cell=cell,
+                    task=task,
+                    workdir=workdir,
+                    model=model,
+                    task_timeout=task_timeout,
+                )
+            # A provider-level outage blocks the remainder of the cell: burning
+            # through the taskset against a dead endpoint yields only noise.
+            if record["status"] == "blocked" and record["error"].startswith(
+                "provider infra"
+            ):
+                cell_blocked_reason = record["error"]
+                blocked_cells[cell] = record["error"]
+            records.append(record)
+            if record["status"] != "blocked":
+                cell_tokens += int(record["token_usage"].get("total") or 0)
+
+    return {
+        "schema": "evals-web-results/v1",
+        "cells": list(cells),
+        "blocked_cells": blocked_cells,
+        "records": records,
+        "tasks_per_cell": len(tasks),
+        "workdir_base": str(workdir_base),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _parse_cells(raw: str) -> list[str]:
+    cells = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    unknown = [c for c in cells if c not in CELLS]
+    if unknown:
+        raise ValueError(f"unknown cells {unknown}; choose from {list(CELLS)}")
+    if not cells:
+        raise ValueError("no cells selected")
+    return cells
+
+
+def _parse_task_ids(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="python evals/web/run.py",
+        description="WEB-W7-C03 reproducible eval: cli|web x solo|team cells.",
+    )
+    parser.add_argument(
+        "--taskset",
+        type=str,
+        default=str(REPO / "evals" / "web" / "taskset.jsonl"),
+        help="Path to the fixed JSONL taskset.",
+    )
+    parser.add_argument(
+        "--cells",
+        type=str,
+        default=",".join(CELLS),
+        help=f"Comma-separated subset of {','.join(CELLS)}.",
+    )
+    parser.add_argument("--sample", type=int, default=None, help="First N tasks.")
+    parser.add_argument(
+        "--task-ids", type=str, default=None, help="Comma-separated task ids."
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=0,
+        help="Max total tokens per cell (same for every cell; 0 = unlimited).",
+    )
+    parser.add_argument("--model", type=str, default=None, help="Model override.")
+    parser.add_argument(
+        "--task-timeout", type=int, default=600, help="Per-task seconds."
+    )
+    parser.add_argument("--out", type=str, required=True, help="Results JSON path.")
+    parser.add_argument(
+        "--manifest", type=str, required=True, help="Manifest JSON path."
+    )
+    parser.add_argument(
+        "--database-url",
+        type=str,
+        default=os.environ.get("RXYCODE_WEB_DATABASE_URL", DEFAULT_DATABASE_URL),
+        help="PostgreSQL URL for web cells.",
+    )
+    parser.add_argument(
+        "--workdir",
+        type=str,
+        default=None,
+        help="Base directory for per-task workdirs (default: temp dir).",
+    )
+    args = parser.parse_args()
+
+    try:
+        cells = _parse_cells(args.cells)
+        tasks = select_tasks(
+            load_taskset(args.taskset),
+            sample=args.sample,
+            task_ids=_parse_task_ids(args.task_ids),
+        )
+    except (TaskSchemaError, ValueError, FileNotFoundError) as exc:
+        print(f"task/cell selection failed: {exc}", file=sys.stderr)
+        return 2
+
+    database_url = args.database_url or None
+    manifest = build_manifest(
+        taskset_path=args.taskset,
+        tasks=tasks,
+        cells=cells,
+        budget=args.budget,
+        model=args.model,
+        database_url=database_url,
+        extra={"sample": args.sample, "task_timeout": args.task_timeout},
+    )
+    manifest_path = Path(args.manifest)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"manifest -> {manifest_path}", file=sys.stderr)
+
+    started = time.monotonic()
+
+    async def _go(base: Path) -> dict[str, Any]:
+        return await run_matrix(
+            tasks=tasks,
+            cells=cells,
+            model=args.model,
+            budget=args.budget,
+            task_timeout=args.task_timeout,
+            database_url=database_url,
+            workdir_base=base,
+            log=lambda m: print(m, file=sys.stderr, flush=True),
+        )
+
+    if args.workdir:
+        results = asyncio.run(_go(Path(args.workdir)))
+        results["workdir_base"] = args.workdir
+    else:
+        with tempfile.TemporaryDirectory(prefix="rxy-w7c03-") as tmpdir:
+            results = asyncio.run(_go(Path(tmpdir)))
+
+    results["manifest"] = manifest
+    results["manifest_ref"] = manifest_path.name
+    results["elapsed_s"] = round(time.monotonic() - started, 3)
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    counts: dict[str, int] = {}
+    for record in results["records"]:
+        counts[record["status"]] = counts.get(record["status"], 0) + 1
+    print(f"results -> {out_path}", file=sys.stderr)
+    print(
+        "done:",
+        ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "no records",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

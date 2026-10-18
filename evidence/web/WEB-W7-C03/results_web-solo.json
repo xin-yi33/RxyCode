@@ -1,0 +1,109 @@
+{
+  "schema": "evals-web-results/v1",
+  "cells": [
+    "web-solo"
+  ],
+  "blocked_cells": {},
+  "records": [
+    {
+      "task_id": "w7c03-c01-hello",
+      "cell": "web-solo",
+      "category": "coding",
+      "status": "passed",
+      "expect": "pass",
+      "expected_failure": false,
+      "duration_s": 243.119,
+      "token_usage": {
+        "input": 2512759,
+        "output": 21364,
+        "total": 2534123
+      },
+      "cost": {
+        "amount": "5.06824600",
+        "currency": "USD",
+        "source": "usage_records",
+        "price_version": "2026-10",
+        "usage_record_id": "bec4291602904ae8afdb480541b68855"
+      },
+      "run_id": "6c5cde6fbf43403aa1f5ceb3aa8a8fce",
+      "session_id": "4963558d5be949f6ae2bb5426ba1648a",
+      "trace": {
+        "kind": "postgres",
+        "run_id": "6c5cde6fbf43403aa1f5ceb3aa8a8fce",
+        "events_url": "/api/v1/runs/6c5cde6fbf43403aa1f5ceb3aa8a8fce/events",
+        "event_count": 6,
+        "last_seq": 6,
+        "eval_checks_seq": 5,
+        "usage_event_seq": 6
+      },
+      "mode_forcing": {
+        "mode": "solo",
+        "forcing": "slash_prefix",
+        "prefix": "/solo",
+        "detail": "create_run message + Session.prompt carry '/solo ...'; user-forced SOLO."
+      },
+      "error": "task timed out after 240s — oracle evaluated on the final workspace state",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "answer_excerpt": ""
+    }
+  ],
+  "tasks_per_cell": 1,
+  "workdir_base": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\rxy-w7c03-cmjvmdyr",
+  "manifest": {
+    "schema": "evals-web-manifest/v1",
+    "taskset_sha256": "b5aa349372abf990be262ffa50d7cd6fc8b1b8a2f1dd99821492f8dbaac5c94e",
+    "taskset_path": "D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\evals\\web\\taskset.jsonl",
+    "task_ids": [
+      "w7c03-c01-hello"
+    ],
+    "task_count": 1,
+    "cells": [
+      "web-solo"
+    ],
+    "budget": 2000000,
+    "budget_scope": "max total tokens per cell; 0 = unlimited",
+    "model": "deepseek-flash",
+    "provider": {
+      "requested": "active",
+      "config_key": "deepseek/deepseek-v4.1-flash",
+      "model_name": "deepseek-flash",
+      "base_url": "https://api.deepseek.com/v1"
+    },
+    "price_version": "2026-10",
+    "code_commit": "606d76654015bdbf93b8753b07d2959af6ce9196",
+    "code_branch": "feat/rxycode-web",
+    "worktree_dirty": true,
+    "mode_map": {
+      "web-solo": {
+        "mode": "solo",
+        "forcing": "slash_prefix",
+        "prefix": "/solo",
+        "detail": "create_run message + Session.prompt carry '/solo ...'; user-forced SOLO."
+      }
+    },
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "started_at": "2026-10-18T08:58:59.284086+00:00",
+    "database_url": "postgresql+psycopg://postgres:***@127.0.0.1:55432/rxycode",
+    "sample": 1,
+    "task_timeout": 240
+  },
+  "manifest_ref": "manifest_web-solo.json",
+  "elapsed_s": 244.154
+}

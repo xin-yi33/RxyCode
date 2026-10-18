@@ -1,0 +1,116 @@
+{
+  "report": {
+    "schema": "evals-web-report/v1",
+    "generated_at": "2026-10-18T09:04:57.317355+00:00",
+    "taskset_sha256": "b5aa349372abf990be262ffa50d7cd6fc8b1b8a2f1dd99821492f8dbaac5c94e",
+    "code_commit": "606d76654015bdbf93b8753b07d2959af6ce9196",
+    "model": "deepseek-flash",
+    "price_version": "2026-10",
+    "mode_map": {
+      "web-solo": {
+        "mode": "solo",
+        "forcing": "slash_prefix",
+        "prefix": "/solo",
+        "detail": "create_run message + Session.prompt carry '/solo ...'; user-forced SOLO."
+      }
+    },
+    "cells": {
+      "web-solo": {
+        "n": 1,
+        "attempted": 1,
+        "blocked": 0,
+        "by_status": {
+          "passed": 1
+        },
+        "passed": 1,
+        "failed": 0,
+        "error": 0,
+        "success_rate": 1.0,
+        "duration_s": {
+          "p50": 243.119,
+          "p95": 243.119,
+          "total": 243.119
+        },
+        "tokens": {
+          "input": 2512759,
+          "output": 21364,
+          "total": 2534123,
+          "mean_total": 2534123.0
+        },
+        "cost": {
+          "total": "5.06824600",
+          "currency": "USD",
+          "priced_records": 1,
+          "sources": [
+            "usage_records"
+          ],
+          "abnormal": [
+            {
+              "task_id": "w7c03-c01-hello",
+              "cell": "web-solo",
+              "amount": "5.06824600",
+              "currency": "USD",
+              "source": "usage_records"
+            }
+          ]
+        },
+        "designed_failures": []
+      }
+    },
+    "overall": {
+      "n": 1,
+      "attempted": 1,
+      "blocked": 0,
+      "by_status": {
+        "passed": 1
+      },
+      "passed": 1,
+      "failed": 0,
+      "error": 0,
+      "success_rate": 1.0,
+      "duration_s": {
+        "p50": 243.119,
+        "p95": 243.119,
+        "total": 243.119
+      },
+      "tokens": {
+        "input": 2512759,
+        "output": 21364,
+        "total": 2534123,
+        "mean_total": 2534123.0
+      },
+      "cost": {
+        "total": "5.06824600",
+        "currency": "USD",
+        "priced_records": 1,
+        "sources": [
+          "usage_records"
+        ],
+        "abnormal": [
+          {
+            "task_id": "w7c03-c01-hello",
+            "cell": "web-solo",
+            "amount": "5.06824600",
+            "currency": "USD",
+            "source": "usage_records"
+          }
+        ]
+      },
+      "designed_failures": []
+    },
+    "blocked_cells": {},
+    "abnormal_cost": [
+      {
+        "task_id": "w7c03-c01-hello",
+        "cell": "web-solo",
+        "amount": "5.06824600",
+        "currency": "USD",
+        "source": "usage_records"
+      }
+    ]
+  },
+  "gate": {
+    "passed": true,
+    "violations": []
+  }
+}
