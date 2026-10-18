@@ -918,6 +918,7 @@ async def run_web_task(
     prompt_driver=None,
     journal_cap: int = 100,
     budget_remaining: int | None = None,
+    spend_sink: dict | None = None,
 ) -> dict[str, Any]:
     """Execute one task through the real durable web-run spine.
 
@@ -933,6 +934,12 @@ async def run_web_task(
     the terminal eval event, the ``usage_records`` row, the terminal commit —
     is tracked in ``spine_errors``; if any of them did not land the record is
     ``error`` regardless of the oracle verdict (``oracle_status`` keeps it).
+
+    ``spend_sink`` (optional): a caller-owned dict that receives ``ctx`` once
+    the run context exists. If an exception escapes this function entirely
+    (e.g. an oracle file-read failure during finalization), the caller can
+    still recover the spend the runner journaled — ``ctx.outcome["tokens"]``
+    and the runtime token counter — instead of writing a 0-token record.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session as SASession
@@ -1074,6 +1081,11 @@ async def run_web_task(
             emitted=emitted,
             outcome=outcome,
         )
+        if spend_sink is not None:
+            # Publish the run context so the matrix can recover journaled
+            # spend (outcome tokens / runtime counter) even if an exception
+            # escapes this function entirely.
+            spend_sink["ctx"] = ctx
         driver = prompt_driver or _default_web_driver
 
         async def _target(_task_str: str, checkpoint: object | None = None) -> str:
@@ -1680,9 +1692,22 @@ async def run_matrix(
                 records.append(_blocked_record(cell, task, reason))
                 continue
             log(f"[{cell} {index}/{len(tasks)}] {task.task_id} ...")
-            workdir = _setup_workdir(task, workdir_base, cell)
             remaining = (budget - cell_tokens) if budget else None
+            task_start = time.monotonic()
+            # token_stats is process-global: the before/after delta measures
+            # this task's real spend regardless of how the task exits —
+            # including an exception escaping the runner.
+            task_token0 = _token_start()
+            # The web runner publishes its WebRunCtx here once it exists, so
+            # even a fully-escaping failure lets the catch-all recover spend
+            # journaled only in ctx.outcome / the runtime token counter.
+            spend_sink: dict[str, Any] = {}
             try:
+                # Workdir prep runs INSIDE the per-task containment: an
+                # rmtree failure (e.g. a locked file) becomes this task's
+                # error record instead of aborting the matrix and losing the
+                # records already collected.
+                workdir = _setup_workdir(task, workdir_base, cell)
                 if cell.startswith("web"):
                     record = await run_web_task(
                         database_url=database_url,
@@ -1694,6 +1719,7 @@ async def run_matrix(
                         task_timeout=task_timeout,
                         request_nonce=nonce,
                         budget_remaining=remaining,
+                        spend_sink=spend_sink,
                     )
                 else:
                     record = await run_cli_task(
@@ -1705,17 +1731,65 @@ async def run_matrix(
                         budget_remaining=remaining,
                     )
             except Exception as exc:
-                # Defense in depth: a harness bug that escapes the task runner
-                # (e.g. a durable-store read during finalization) must not
-                # destroy the records already collected — record this task as
+                # Defense in depth: a harness failure that escapes the task
+                # runner — a durable-store read during finalization, an
+                # oracle file read, or the workdir prep above — must not
+                # destroy the records already collected. Record this task as
                 # an honest error and continue the matrix.
+                #
+                # Spend consumed before the crash is real: recover it from
+                # the token_stats delta and any ctx.outcome / runtime counter
+                # the runner managed to record, so the record never shows 0
+                # tokens for burned work and the cell budget (charged on
+                # ``record["token_usage"]`` below) sees the true remaining
+                # balance for subsequent tasks.
                 record = _base_record(cell, task)
                 record["status"] = "error"
                 record["error"] = (
-                    f"task runner crashed: {type(exc).__name__}: {exc}"
+                    f"task setup/runner crashed: {type(exc).__name__}: {exc}"
                 )[:500]
+                record["duration_s"] = round(time.monotonic() - task_start, 3)
+                delta = _token_delta(task_token0)
+                measured: dict[str, Any] = {}
+                runtime_tokens = 0
+                ctx = spend_sink.get("ctx")
+                if ctx is not None:
+                    outcome = getattr(ctx, "outcome", None) or {}
+                    measured = dict(outcome.get("tokens") or {})
+                    runtime = getattr(ctx, "runtime", None)
+                    if runtime is not None:
+                        try:
+                            runtime_tokens = int(
+                                runtime.token_usage(ctx.agent_id) or 0
+                            )
+                        except Exception:
+                            runtime_tokens = 0
+                record["token_usage"] = _usage(
+                    total=max(
+                        delta["total"],
+                        int(measured.get("total") or 0),
+                        runtime_tokens,
+                    ),
+                    input_tokens=max(
+                        delta["input"], int(measured.get("input") or 0)
+                    ),
+                    output_tokens=max(
+                        delta["output"], int(measured.get("output") or 0)
+                    ),
+                )
+                # Same fallback as every other failure path: burned tokens
+                # must never report $0 / null cost — ledger_failed for web
+                # cells, the plain price-table estimate for CLI cells.
+                record["cost"] = _estimate_cost(
+                    record["token_usage"]["total"],
+                    source=(
+                        "estimate/ledger_failed"
+                        if cell.startswith("web")
+                        else "price_table"
+                    ),
+                )
                 record["spine_errors"] = [
-                    f"unhandled task-runner exception: "
+                    f"unhandled task exception (workdir setup or runner): "
                     f"{type(exc).__name__}: {exc}"
                 ]
             # A provider-level outage blocks the remainder of the cell: burning

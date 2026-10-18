@@ -18,6 +18,11 @@ then applies the card's quality gate:
 * when the manifest declares ``cells``, every declared cell must appear in
   ``results.cells`` (and then produce records or an honest blocked reason);
   a results cell the manifest never declared is unaccounted provenance;
+* every record's own ``cell`` must be declared too — in ``results.cells``
+  and, when the manifest lists ``cells``, in the manifest as well. Records
+  in undeclared cells would otherwise inflate ``overall`` while dodging
+  per-cell coverage; the report still counts their real spend but lists and
+  flags the undeclared cell instead of hiding it;
 * duplicate ``(cell, task_id)`` rows are violations — stats de-duplicate to
   the first row per pair so repeats cannot inflate the success rate;
 * with ``--taskset``, every taskset task_id must appear per declared
@@ -235,16 +240,31 @@ def _stats(records: list[dict], budget: int | None = None) -> dict[str, Any]:
 
 def build_report(results: dict[str, Any], manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     records = results.get("records") or []
-    cells = results.get("cells") or sorted({r.get("cell") for r in records})
+    declared = list(results.get("cells") or [])
+    record_cells = {r.get("cell") for r in records}
+    # A record can carry a cell results.cells never declared — unaccounted
+    # provenance the gate rejects. List it in the per-cell table (flagged)
+    # rather than letting it vanish into the "overall" line.
+    undeclared_cells = (
+        sorted((c for c in record_cells if c not in set(declared)), key=str)
+        if declared
+        else []
+    )
+    cells = declared + undeclared_cells if declared else sorted(record_cells, key=str)
     manifest = manifest if manifest is not None else results.get("manifest") or {}
     declared_budget = int(manifest.get("budget") or 0) or None
     per_cell = {
         cell: _stats(_records_for_cell(records, cell), budget=declared_budget)
         for cell in cells
     }
-    # The declared cap is per cell; the overall line compares against the sum.
+    for cell in undeclared_cells:
+        per_cell[cell]["undeclared_cell"] = True
+    # The declared cap is per declared cell; the overall line compares
+    # against the sum of those — undeclared cells earn no cap allowance.
     overall_budget = (
-        declared_budget * len(cells) if declared_budget and cells else None
+        declared_budget * len(declared or cells)
+        if declared_budget and (declared or cells)
+        else None
     )
     spine_errors = [
         {
@@ -255,6 +275,12 @@ def build_report(results: dict[str, Any], manifest: dict[str, Any] | None = None
         for r in records
         if r.get("spine_errors")
     ]
+    overall = _stats(list(records), budget=overall_budget)
+    # Undeclared-cell records stay in the totals — their spend was real — but
+    # the share is enumerable instead of silently inflating the line.
+    overall["undeclared_records"] = sum(
+        1 for r in records if r.get("cell") in set(undeclared_cells)
+    )
     return {
         "schema": "evals-web-report/v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -266,7 +292,8 @@ def build_report(results: dict[str, Any], manifest: dict[str, Any] | None = None
         "executed_sources": manifest.get("executed_sources"),
         "budget": manifest.get("budget"),
         "cells": per_cell,
-        "overall": _stats(list(records), budget=overall_budget),
+        "undeclared_cells": undeclared_cells,
+        "overall": overall,
         "blocked_cells": dict(results.get("blocked_cells") or {}),
         "spine_errors": spine_errors,
         "abnormal_cost": [
@@ -316,9 +343,11 @@ def gate_report(
     records are rejected, and ``blocked_cells`` needs a non-empty reason.
     Without it, the weaker pre-existing checks stay — except that an empty
     records list is still a violation. Always enforced, with or without a
-    taskset: duplicate (cell, task_id) rows are violations, and a manifest
-    that declares ``cells`` is reconciled against ``results.cells`` in both
-    directions.
+    taskset: duplicate (cell, task_id) rows are violations, a manifest that
+    declares ``cells`` is reconciled against ``results.cells`` in both
+    directions, and every record's own ``cell`` must be declared (in
+    ``results.cells``, and in ``manifest.cells`` when the manifest lists
+    cells) — a record in an undeclared cell is unaccounted work.
     """
     violations: list[str] = []
     records = results.get("records") or []
@@ -362,6 +391,39 @@ def gate_report(
                 f"results contain cell {cell} which the manifest cells list "
                 "does not declare — unaccounted cell provenance"
             )
+
+    # --- per-record cell provenance -------------------------------------------
+    # The cell LISTS reconcile above, but each record's own ``cell`` field is
+    # provenance too: it must be declared in results.cells, and in the
+    # manifest's cells list when the manifest declares one. Records in an
+    # undeclared cell used to slip past the list-level check — silently
+    # inflating "overall" while dodging per-cell coverage and the table.
+    declared_results_cells = {str(c) for c in cells}
+    manifest_cell_set = (
+        {str(c) for c in manifest_cells}
+        if isinstance(manifest_cells, list)
+        else None
+    )
+    undeclared_results: Counter[str] = Counter()
+    undeclared_manifest: Counter[str] = Counter()
+    for r in records:
+        rec_cell = str(r.get("cell"))
+        if rec_cell not in declared_results_cells:
+            undeclared_results[rec_cell] += 1
+        if manifest_cell_set is not None and rec_cell not in manifest_cell_set:
+            undeclared_manifest[rec_cell] += 1
+    for cell in sorted(undeclared_results):
+        violations.append(
+            f"{undeclared_results[cell]} record(s) carry cell {cell} which "
+            "results.cells does not declare — records in an undeclared cell "
+            "cannot inflate overall stats or dodge per-cell coverage"
+        )
+    for cell in sorted(undeclared_manifest):
+        violations.append(
+            f"{undeclared_manifest[cell]} record(s) carry cell {cell} which "
+            "the manifest cells list does not declare — unaccounted cell "
+            "provenance"
+        )
 
     # --- empty results -------------------------------------------------------
     if not records:
@@ -528,7 +590,11 @@ def render_markdown(
         lines.append(
             "| {cell} | {att} | {blk} | {ok} | {fail} | {err} | {rate} | "
             "{p50} | {p95} | {tin} | {tout} | {ttot} | {cost} |".format(
-                cell=cell,
+                cell=(
+                    f"{cell} (undeclared)"
+                    if stats.get("undeclared_cell")
+                    else cell
+                ),
                 att=stats.get("attempted"),
                 blk=stats.get("blocked"),
                 ok=stats.get("passed"),
@@ -599,6 +665,22 @@ def render_markdown(
             "rates/counts (stats use distinct pairs) — a gate violation; "
             "their token/cost spend still counts in the totals above.",
         ]
+    undeclared_cells = report.get("undeclared_cells") or []
+    if undeclared_cells:
+        lines += [
+            "",
+            "## Undeclared cells (records outside results.cells — gate "
+            "violation)",
+            "",
+        ]
+        for cell in undeclared_cells:
+            stats = cells.get(cell) or {}
+            lines.append(
+                f"- `{cell}`: {stats.get('n') or 0} record(s) of unaccounted "
+                "provenance — their spend stays in the totals above and they "
+                "are flagged in the cells table, but they earn no declared-"
+                "cell coverage and the gate fails on them."
+            )
     budget = report.get("budget")
     if budget:
         lines += [

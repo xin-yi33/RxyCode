@@ -152,3 +152,72 @@ D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
 git diff --check: clean on the four touched files. No real LLM calls
 (stub prompt drivers + Session.scalars/record_terminal_usage fault
 injection only); no records lost; no leaked processes.
+
+== audit round 3 fixes ==
+
+Three audit findings fixed in evals/web/{run.py,report.py} with TEST-first
+proof (each new test/assertion failed against the pre-fix code, then passed
+after):
+
+1. P1 per-record cell provenance (report.py gate_report ~395-426): the gate
+   reconciled the two cell LISTS but never a record's own "cell" — the
+   auditor appended 29 passed records with cell "web-team" while
+   results.cells and manifest.cells declared only cli-solo and got ZERO
+   violations (overall success inflated 96.67% -> 98.31%, web-team absent
+   from the per-cell table). Now every record's cell must be declared: in
+   results.cells always, and in manifest.cells when the manifest lists
+   cells; each direction emits its own violation with the record count.
+   build_report (241-283) unions undeclared record cells into the per-cell
+   table flagged "undeclared_cell", exposes report["undeclared_cells"] and
+   overall["undeclared_records"] so the totals stay honest-but-enumerable
+   (spend is real and still counted; the undeclared cap multiplier is NOT
+   granted — overall_budget uses declared cells only), and render_markdown
+   marks the row "(undeclared)" plus an "Undeclared cells" section
+   (589-598, 668-683). Probe now gated in test_w7_c03_negative: the exact
+   29-record web-team injection -> violations, cell listed/flagged in the
+   report, works with and without --taskset.
+
+2. P2 escaped runner failure losing spend (run.py run_matrix catch-all
+   ~1733-1792): the handler used to write a fresh _base_record — 0 tokens,
+   null cost — so consumed spend vanished and the cell budget ignored it.
+   Now the record carries the tokens actually consumed, measured via the
+   process-global token_stats delta (taken before workdir prep, so it
+   diffs correctly regardless of how the task exits) AND anything the
+   runner journaled into the new spend_sink (run_web_task publishes its
+   WebRunCtx once created, ~1082-1088: ctx.outcome["tokens"] and the
+   runtime token counter — this is also what recovers spend when the
+   oracle run_checks raise escapes run_web_task mid-finalization).
+   record["token_usage"] therefore shows real spend, cell_tokens charges
+   it, and cost falls back to the estimate (estimate/ledger_failed for
+   web, price_table for cli). Probes: unit test_w7_c03_runner_crash_keeps_spend
+   (2 tasks x 1,000 tokens then raise under a 500 cap -> crash record keeps
+   1,000 tokens + cost, task 2 becomes blocked/budget_exceeded and never
+   runs; plus a web-cell variant proving ctx.outcome recovery via the
+   sink) and module test_w7_c03_oracle_crash_keeps_spend (real durable
+   spine + injected run_checks failure: 1,000 runtime-journaled tokens
+   survive the escape, estimate cost attached, second task blocked).
+
+3. P2 _setup_workdir outside per-task containment (run.py ~1710): an
+   rmtree failure on a locked file used to escape run_matrix and destroy
+   every record already collected. Workdir prep now runs inside the
+   per-task try, so a prep failure becomes that task's status=error
+   record (error + spine_errors detail), the matrix continues, and
+   previously completed records are preserved and written. Proof: unit
+   test_w7_c03_workdir_prep_failure_keeps_records injects a
+   PermissionError on task 2 of 3 -> task 1's passed record survives,
+   task 2 is error, task 3 passes, results serialize to a file.
+
+Verify runs (HEAD 439946ab, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+15 passed in 9.48s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 68.06s
+
+git diff --check: clean on the touched files. No real LLM calls (stub
+drivers, monkeypatched runners/oracle, and an injected _setup_workdir
+failure only); no records lost; no leaked processes.

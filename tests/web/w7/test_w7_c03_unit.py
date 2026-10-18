@@ -18,6 +18,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -356,6 +357,55 @@ def test_w7_c03_negative(web_report, tmp_path: Path, web_run) -> None:
     )
     assert any("cli-team" in v for v in violations), violations
 
+    # --- audit round-3 probes -------------------------------------------------
+
+    # The auditor's exact probe: 29 passed records carrying cell "web-team"
+    # while BOTH results.cells and manifest.cells declare only cli-solo. The
+    # gate reconciled the two cell LISTS but never each record's own cell —
+    # zero violations, overall success inflated 96.67% -> 98.31%, and web-team
+    # vanished from the per-cell report. A record in an undeclared cell is a
+    # violation, and the report must list/flag the cell honestly.
+    manifest_solo = dict(manifest)
+    manifest_solo["cells"] = ["cli-solo"]
+    honest_records = [
+        {
+            **_record(
+                t.task_id, "cli-solo", "failed" if t.expect == "fail" else "passed"
+            ),
+            "expect": t.expect,
+        }
+        for t in tasks
+    ]
+    pass_task_ids = [t.task_id for t in tasks if t.expect != "fail"]
+    probe = {
+        "schema": "evals-web-results/v1",
+        "cells": ["cli-solo"],
+        "blocked_cells": {},
+        "records": honest_records
+        + [_record(tid, "web-team", "passed") for tid in pass_task_ids[:29]],
+    }
+    violations = web_report.gate_report(
+        probe, manifest=manifest_solo, taskset_path=TASKSET, min_tasks=30
+    )
+    assert violations, "gate accepted 29 records in an undeclared cell"
+    assert any("web-team" in v and "declare" in v for v in violations), violations
+    # The check binds even without a taskset (the declarations are enough).
+    violations = web_report.gate_report(
+        probe, manifest=manifest_solo, taskset_path=None, min_tasks=3
+    )
+    assert any("web-team" in v for v in violations), violations
+
+    # The undeclared cell is listed and flagged in the per-cell report instead
+    # of vanishing into "overall"; its records' real spend still counts.
+    report = web_report.build_report(probe)
+    assert "web-team" in report["cells"], sorted(report["cells"])
+    assert report["cells"]["web-team"].get("undeclared_cell") is True
+    assert "web-team" in (report.get("undeclared_cells") or [])
+    assert report["overall"]["n"] == len(tasks) + 29
+    assert report["overall"]["undeclared_records"] == 29
+    rendered = web_report.render_markdown(report, probe, manifest_solo)
+    assert "web-team" in rendered and "ndeclared" in rendered
+
     # The CLI exits non-zero on a gate failure.
     results_path = tmp_path / "happy.json"
     results_path.write_text(json.dumps(tiny), encoding="utf-8")
@@ -639,3 +689,169 @@ def test_w7_c03_executed_sources(web_run) -> None:
         assert "evals_web_diff" in manifest
         assert "evals_web_dirty_paths" in manifest
         assert len(manifest["evals_web_diff"]) <= 200_100
+
+
+def _mk_task(web_run, task_id: str) -> object:
+    return web_run.WebEvalTask.from_dict(
+        {
+            "task_id": task_id,
+            "category": "coding",
+            "prompt": "noop",
+            "checks": [{"type": "file_exists", "path": "answer.txt"}],
+            "source_commit": "w7c03-unit",
+        }
+    )
+
+
+def test_w7_c03_runner_crash_keeps_spend(web_run, monkeypatch, tmp_path: Path) -> None:
+    """An escaped runner failure must still carry the tokens it burned.
+
+    Auditor probe (audit r3 finding): stub drivers record 1,000 tokens each
+    then raise; under a 500-token cap the pre-fix catch-all wrote a fresh
+    record with ZERO tokens — the spend vanished from the cell budget and the
+    second task was wrongly "allowed". The record must now carry the measured
+    spend (the token_stats delta AND any ctx.outcome/runtime counter the
+    runner recorded via the spend sink), it must count toward the cell budget,
+    and the cost must fall back to the estimate, never $0-for-burned-tokens.
+    """
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+
+    tasks = [_mk_task(web_run, f"w7c03crash-{i}") for i in range(2)]
+
+    # -- CLI cell: spend visible through the process-global token_stats delta --
+    calls: list[str] = []
+
+    async def _burn_then_raise(
+        *, cell, task, workdir, model, task_timeout, budget_remaining=None
+    ):
+        calls.append(task.task_id)
+        token_stats.input_tokens += 1_000
+        raise RuntimeError("runner exploded after burning tokens")
+
+    monkeypatch.setattr(web_run, "run_cli_task", _burn_then_raise)
+    results = asyncio.run(
+        web_run.run_matrix(
+            tasks=tasks,
+            cells=["cli-solo"],
+            model=None,
+            budget=500,
+            task_timeout=5,
+            database_url=None,
+            workdir_base=tmp_path,
+            log=lambda _m: None,
+        )
+    )
+    records = results["records"]
+    assert records[0]["task_id"] == "w7c03crash-0"
+    assert records[0]["status"] == "error", records[0]
+    # Never 0 tokens when tokens were consumed.
+    assert records[0]["token_usage"]["total"] >= 1_000, records[0]
+    assert records[0]["cost"] is not None, records[0]
+    assert Decimal(str(records[0]["cost"]["amount"])) > 0
+    assert records[0]["spine_errors"], records[0]
+    # The 1,000 spent tokens count against the 500 cap: task 2 never starts.
+    assert records[1]["status"] == "blocked"
+    assert "budget_exceeded" in records[1]["error"], records[1]
+    assert calls == ["w7c03crash-0"], calls
+
+    # -- web cell: spend recorded only in ctx.outcome reaches the record too --
+    async def _sink_then_raise(**kwargs):
+        sink = kwargs.get("spend_sink")
+        if sink is not None:
+            sink["ctx"] = SimpleNamespace(
+                outcome={"tokens": {"input": 700, "output": 300, "total": 1_000}},
+                runtime=None,
+                agent_id="eval-primary",
+            )
+        raise RuntimeError("web runner exploded after journaling spend")
+
+    monkeypatch.setattr(web_run, "run_web_task", _sink_then_raise)
+    # The matrix probes/seed the web cell before tasks run — stub those out so
+    # the test needs no live database.
+    monkeypatch.setattr(web_run, "probe_web", lambda _url: None)
+    monkeypatch.setattr(
+        web_run,
+        "seed_eval_tenant",
+        lambda _url, _tag: {
+            "tenant_id": "t",
+            "org_id": "o",
+            "project_id": "p",
+        },
+    )
+    results2 = asyncio.run(
+        web_run.run_matrix(
+            tasks=tasks,
+            cells=["web-solo"],
+            model=None,
+            budget=500,
+            task_timeout=5,
+            database_url="postgresql+psycopg://stubbed.invalid/db",
+            workdir_base=tmp_path,
+            log=lambda _m: None,
+        )
+    )
+    crashed = results2["records"][0]
+    assert crashed["status"] == "error", crashed
+    assert crashed["token_usage"]["total"] >= 1_000, crashed["token_usage"]
+    assert crashed["token_usage"]["input"] >= 700, crashed["token_usage"]
+    assert crashed["cost"] is not None, crashed
+    assert results2["records"][1]["status"] == "blocked"
+    assert "budget_exceeded" in results2["records"][1]["error"], results2["records"][1]
+
+
+def test_w7_c03_workdir_prep_failure_keeps_records(
+    web_run, monkeypatch, tmp_path: Path
+) -> None:
+    """A workdir-prep crash must not abort the matrix or lose prior records.
+
+    _setup_workdir used to run BEFORE the per-task try: an rmtree failure on a
+    locked file escaped run_matrix entirely, destroying every record already
+    collected. Setup now runs inside the per-task containment — a prep failure
+    becomes that task's status=error record and the matrix continues.
+    """
+    tasks = [_mk_task(web_run, f"w7c03prep-{i}") for i in range(3)]
+
+    async def _ok_cli_task(
+        *, cell, task, workdir, model, task_timeout, budget_remaining=None
+    ):
+        rec = web_run._base_record(cell, task)
+        rec["status"] = "passed"
+        rec["token_usage"] = {"input": 5, "output": 5, "total": 10}
+        return rec
+
+    real_setup = web_run._setup_workdir
+
+    def _flaky_setup(task, base, cell):
+        if task.task_id == "w7c03prep-1":
+            raise PermissionError("locked file (injected)")
+        return real_setup(task, base, cell)
+
+    monkeypatch.setattr(web_run, "run_cli_task", _ok_cli_task)
+    monkeypatch.setattr(web_run, "_setup_workdir", _flaky_setup)
+    results = asyncio.run(
+        web_run.run_matrix(
+            tasks=tasks,
+            cells=["cli-solo"],
+            model=None,
+            budget=0,
+            task_timeout=5,
+            database_url=None,
+            workdir_base=tmp_path,
+            log=lambda _m: None,
+        )
+    )
+    by_id = {r["task_id"]: r for r in results["records"]}
+    assert set(by_id) == {"w7c03prep-0", "w7c03prep-1", "w7c03prep-2"}, results
+    # Task 1's already-completed record survived; task 3 still ran.
+    assert by_id["w7c03prep-0"]["status"] == "passed", by_id["w7c03prep-0"]
+    assert by_id["w7c03prep-2"]["status"] == "passed", by_id["w7c03prep-2"]
+    failed = by_id["w7c03prep-1"]
+    assert failed["status"] == "error", failed
+    assert "PermissionError" in failed["error"] or "locked file" in failed["error"]
+    assert failed["spine_errors"], failed
+    # The results still write out — completed records are not lost.
+    out = tmp_path / "results.json"
+    out.write_text(json.dumps(results), encoding="utf-8")
+    assert len(json.loads(out.read_text(encoding="utf-8"))["records"]) == 3

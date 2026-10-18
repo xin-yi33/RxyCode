@@ -568,3 +568,86 @@ def test_w7_c03_usage_write_failure_keeps_cost(
     assert Decimal(cell["cost"]["total"]) == Decimal("0.00200000"), cell["cost"]
     assert cell["tokens"]["total"] == 1000
     assert any("estimate" in s for s in cell["cost"]["sources"]), cell["cost"]
+
+
+def test_w7_c03_oracle_crash_keeps_spend(
+    postgres_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    """An oracle crash escaping run_web_task still carries the real spend.
+
+    Fault injection (audit r3 finding): ``run_checks`` (the oracle) runs AFTER
+    the turn consumed real tokens; when it raises, the exception escapes
+    run_web_task into the run_matrix catch-all. The catch-all must recover the
+    measured spend — the token_stats delta AND what the runner recorded via
+    the spend sink (ctx.outcome / runtime token counter) — count it toward the
+    cell budget, and attach the ``estimate/ledger_failed`` cost. Pre-fix the
+    catch-all wrote a fresh zero-token record, so two 1,000-token crashes
+    under a 500 cap were both "allowed" and the spend vanished.
+    """
+    import evals.runner as eval_runner
+    from rxycode_server.persistence.migrate import upgrade_head
+
+    upgrade_head(postgres_url)
+
+    tasks = [
+        _task("w7c03crash-1", "present-marker"),
+        _task("w7c03crash-2", "present-marker"),
+    ]
+
+    async def _driver(ctx: object) -> str:
+        Path(ctx.workdir, "answer.txt").write_text("present-marker", encoding="utf-8")
+        # Stub drivers journal through the runtime counter only — no
+        # token_stats delta — so this spend is recoverable ONLY via the sink.
+        ctx.runtime.record_token_usage(ctx.agent_id, 1000)
+        return "wrote answer.txt"
+
+    def _boom_checks(*args, **kwargs):
+        raise RuntimeError("injected oracle file-read failure")
+
+    # run_matrix has no prompt_driver hook — wrap run_web_task to inject it.
+    real_run_web_task = web_run.run_web_task
+
+    async def _driven(**kwargs):
+        return await real_run_web_task(prompt_driver=_driver, **kwargs)
+
+    monkeypatch.setattr(web_run, "run_web_task", _driven)
+    # run_web_task imports run_checks at call time — patching the attribute
+    # makes the oracle die after the turn's tokens were consumed.
+    monkeypatch.setattr(eval_runner, "run_checks", _boom_checks)
+    results = asyncio.run(
+        web_run.run_matrix(
+            tasks=tasks,
+            cells=["web-solo"],
+            model="eval-stub",
+            budget=500,
+            task_timeout=120,
+            database_url=postgres_url,
+            workdir_base=tmp_path,
+            log=lambda _m: None,
+        )
+    )
+    records = results["records"]
+    assert len(records) == 2, results
+
+    crashed = records[0]
+    assert crashed["task_id"] == "w7c03crash-1"
+    assert crashed["status"] == "error", crashed
+    assert "injected oracle" in crashed["error"], crashed["error"]
+    assert crashed["spine_errors"], crashed
+    # The 1,000 journaled tokens survive the escape — never a 0-token record
+    # for consumed spend.
+    assert crashed["token_usage"]["total"] >= 1000, crashed["token_usage"]
+    assert crashed["cost"] is not None, crashed
+    assert Decimal(str(crashed["cost"]["amount"])) >= Decimal("0.002"), crashed["cost"]
+    assert "estimate" in str(crashed["cost"]["source"]), crashed["cost"]
+
+    # The recovered spend counted toward the cell budget: task 2 never ran.
+    assert records[1]["task_id"] == "w7c03crash-2"
+    assert records[1]["status"] == "blocked"
+    assert "budget_exceeded" in records[1]["error"], records[1]
+
+    # The results file still serializes with both records.
+    out = tmp_path / "results.json"
+    out.write_text(json.dumps(results), encoding="utf-8")
+    reloaded = json.loads(out.read_text(encoding="utf-8"))
+    assert len(reloaded["records"]) == 2
