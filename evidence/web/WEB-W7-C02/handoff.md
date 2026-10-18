@@ -36,6 +36,7 @@
 
 ## Risk acceptance / open items
 
+- E2E-CHAOS-01 (browser-driven real Run, close connection + kill worker + recover): **BLOCKED** — apps/web has no Playwright dependency and no browser harness; no mock substituted. The same kill/disconnect/reconnect semantics are covered at the real-socket level by the module test and the chaos CLI.
 - Windows kernel WRITE isolation for normal mode is a separate card (ruling f011d1cc, items B+C after W7-C02..C06); the reaping Job deliberately does NOT restrict permissions.
 - The race-window test kills the worker at a fixed point; with inheritance the window is gone by construction — the test asserts the property, it cannot re-create the eliminated window.
 

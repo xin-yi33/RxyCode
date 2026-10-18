@@ -10,6 +10,7 @@
 - [x] at-least-once：stream 逐事件上限 max(1, attempts)，无 exactly-once 声明；queue.py 未改。
 - [x] 非权限边界：reaping Job 不限制写路径；attach_sandbox 仍 SANDBOX_FORBIDDEN；os_sandbox 启用路径 fail-closed 未动。
 - [x] 红绿证据：red.txt 记录预期失败；green.txt 记录最终测试与三轮审计修复复跑；chaos-report.json 由 CLI 生成。
+- [x] 诚实标注：E2E-CHAOS-01（浏览器真实 Run + 断连 + kill worker）标 BLOCKED（apps/web 无 Playwright 依赖、无浏览器线束），不以 mock 替代；同语义由真实 socket 层模块测试与 chaos CLI 覆盖。
 - [x] 无泄漏：无 rxy-w7c02* 容器残留，无 c02marker/c02bg 进程残留。
 - [x] `git diff --check` 干净；evidence 文件 LF/UTF-8。
 - [x] 审计结论：gpt-6.1-sol high（Codex 会话 01a140a7-2cc1-7f61-bdab-2af627f08e80，与既往同一会话）对父仓提交 ebe2bc768104622306fc6ad721aac8e3505ce8cb 返回 VERDICT: NO_REMAINING_PROBLEMS（w7c02-audit-3.json）。前两轮各发现并修复 4/3 条。
