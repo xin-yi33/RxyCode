@@ -1,0 +1,700 @@
+=== WEB-W7-C04 green evidence ===
+date: 2026-10-18T11:16:16Z
+
+--- focused: pytest tests/web/w7/test_w7_c04_unit.py tests/web/w7/test_w7_c04_module.py -q ---
+....                                                                     [100%]
+============================== warnings summary ===============================
+tests/web/w7/test_w7_c04_unit.py::test_w7_c04_contract
+  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+4 passed, 1 warning in 4.27s
+
+--- full w7 suite: pytest tests/web/w7 -q (sequential, shared postgres) ---
+.............................                                            [100%]
+============================== warnings summary ===============================
+..\..\..\Anaconda3\Lib\site-packages\fastapi\testclient.py:1
+  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/web/w7/test_w7_c02_module.py::test_w7_c02_integration
+  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+tests/web/w7/test_w7_c02_module.py::test_w7_c02_integration
+  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
+    from websockets.server import WebSocketServerProtocol
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+29 passed, 3 warnings in 142.14s (0:02:22)
+
+--- regressions: w6_c04 + w2_c07 + cache split (PYTHONUTF8=1, package srcs on PYTHONPATH) ---
+F........                                                                [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-q1l9f86a
+
+================================== FAILURES ===================================
+___________________________ test_w6_c04_integration ___________________________
+
+self = <sqlalchemy.engine.base.Connection object at 0x0000026C2E95BCB0>
+dialect = <sqlalchemy.dialects.postgresql.psycopg.PGDialect_psycopg object at 0x0000026C2E95A3C0>
+context = <sqlalchemy.dialects.postgresql.psycopg.PGExecutionContext_psycopg object at 0x0000026C2EA11E00>
+statement = <sqlalchemy.dialects.postgresql.psycopg.PGCompiler_psycopg object at 0x0000026C2EAAC590>
+parameters = [{'id': 'org-ten-w6c04-cad6fd07', 'tenant_id': 'ten-w6c04-cad6fd07'}]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+
+        effective_parameters: Optional[_AnyExecuteParams]
+
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+
+        if self._echo:
+            self._log_info(str_statement)
+
+            stats = context._get_cache_stats()
+
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1967:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\default.py:951: in do_execute
+    cursor.execute(statement, parameters)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <psycopg.Cursor [closed] [BAD] at 0x26c2e907b90>
+query = 'INSERT INTO organizations (id, tenant_id) VALUES (%(id)s::VARCHAR, %(tenant_id)s::VARCHAR)'
+params = {'id': 'org-ten-w6c04-cad6fd07', 'tenant_id': 'ten-w6c04-cad6fd07'}
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool | None = None,
+    ) -> Self:
+        """
+        Execute a query or command to the database.
+        """
+        try:
+            with self._conn.lock:
+                self._conn.wait(
+                    self._execute_gen(query, params, prepare=prepare, binary=binary)
+                )
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.UndefinedTable: relation "organizations" does not exist
+E           LINE 1: INSERT INTO organizations (id, tenant_id) VALUES ($1::VARCHA...
+E                               ^
+
+D:\Anaconda3\Lib\site-packages\psycopg\cursor.py:117: UndefinedTable
+
+The above exception was the direct cause of the following exception:
+
+    async def _web_commands() -> list[dict[str, object]]:
+        """HTTP steer and child cancel hit the bound worker. AgentTask writes the run log."""
+        import json
+        import time
+        import uuid
+
+        from sqlalchemy import create_engine, delete
+        from sqlalchemy.orm import Session
+        from sqlalchemy.pool import NullPool
+        from starlette.requests import Request
+
+        from appserver.agent_task import AgentTask
+        from appserver.agent_worker import AgentWorker
+        from appserver.eventbus import AppendOnlyLog, EventBus
+        from protocol.subagents import (
+            AgentDefinition,
+            AgentMode,
+            PermissionSpec,
+            PermissionVerdict,
+            TaskPermissionSpec,
+            TaskRequest,
+            ToolPermission,
+            TriggerKind,
+        )
+        from rxycode_server.api.auth import AuthRecord, _hash_token
+        from rxycode_server.api.runs import cancel_child_run, steer_run
+        from rxycode_server.events.store import replay
+        from rxycode_server.persistence.models import Organization, Outbox, Project, Run, RunEvent, SessionRow
+        from RxyCode.RxyCode1_1_0.core.subagents.definitions import AgentDefinitionRegistry
+        from RxyCode.RxyCode1_1_0.core.subagents.manager import ChildSessionManager
+        from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
+        from RxyCode.RxyCode1_1_0.core.subagents.sessions import create_child_session
+
+        database_url = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+        secret = "local-web-secret-value-32bytes!!"
+        origin = "http://test.example"
+        tenant = "ten-w6c04-" + uuid.uuid4().hex[:8]
+        run_id = "run-w6c04-" + uuid.uuid4().hex[:8]
+        old_run_id = "old-" + run_id
+        class _App:
+            def __init__(self) -> None:
+                self.state = type("State", (), {})()
+
+        app = _App()
+        app.state.database_url = database_url
+        app.state.allowed_origins = (origin,)
+        app.state.secret = secret
+        app.state.sessions = {}
+        token = "c04-session"
+        app.state.sessions[_hash_token(secret, token)] = AuthRecord("user-w6c04", tenant, time.monotonic())
+        engine = create_engine(database_url, poolclass=NullPool)
+        ids = {"org": "org-" + tenant, "project": "prj-" + tenant, "session": "ses-" + tenant}
+        try:
+            with Session(engine) as db:
+                db.add(Organization(id=ids["org"], tenant_id=tenant))
+                db.add(Project(id=ids["project"], tenant_id=tenant, name="c04-" + tenant, repo_config={}))
+                db.add(SessionRow(id=ids["session"], tenant_id=tenant, project_id=ids["project"], title="c04"))
+                db.add(
+                    Run(
+                        id=old_run_id,
+                        tenant_id=tenant,
+                        session_id=ids["session"],
+                        status="cancelled",
+                        revision=99,
+                        lease_epoch=0,
+                        request_id="old-" + tenant,
+                        input_digest="",
+                        event_seq=0,
+                        target_id="",
+                    )
+                )
+                db.add(
+                    Run(
+                        id=run_id,
+                        tenant_id=tenant,
+                        session_id=ids["session"],
+                        status="waiting_approval",
+                        revision=0,
+                        lease_epoch=0,
+                        request_id="req-" + tenant,
+                        input_digest="",
+                        event_seq=0,
+                        target_id="",
+                    )
+                )
+>               db.commit()
+
+tests\web\w6\test_w6_c04_module.py:158:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:2032: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:1313: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:1288: in _prepare_impl
+    self.session.flush()
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:4345: in flush
+    self._flush(objects)
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:4480: in _flush
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+D:\Anaconda3\Lib\site-packages\sqlalchemy\util\langhelpers.py:224: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:4441: in _flush
+    flush_context.execute()
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\unitofwork.py:466: in execute
+    rec.execute(self)
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\unitofwork.py:642: in execute
+    util.preloaded.orm_persistence.save_obj(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\persistence.py:93: in save_obj
+    _emit_insert_statements(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\persistence.py:1048: in _emit_insert_statements
+    result = connection.execute(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1419: in execute
+    return meth(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1641: in _execute_clauseelement
+    ret = self._execute_context(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1846: in _execute_context
+    return self._exec_single_context(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1986: in _exec_single_context
+    self._handle_dbapi_exception(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:2355: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1967: in _exec_single_context
+    self.dialect.do_execute(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\default.py:951: in do_execute
+    cursor.execute(statement, parameters)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <psycopg.Cursor [closed] [BAD] at 0x26c2e907b90>
+query = 'INSERT INTO organizations (id, tenant_id) VALUES (%(id)s::VARCHAR, %(tenant_id)s::VARCHAR)'
+params = {'id': 'org-ten-w6c04-cad6fd07', 'tenant_id': 'ten-w6c04-cad6fd07'}
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool | None = None,
+    ) -> Self:
+        """
+        Execute a query or command to the database.
+        """
+        try:
+            with self._conn.lock:
+                self._conn.wait(
+                    self._execute_gen(query, params, prepare=prepare, binary=binary)
+                )
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedTable) relation "organizations" does not exist
+E           LINE 1: INSERT INTO organizations (id, tenant_id) VALUES ($1::VARCHA...
+E                               ^
+E           [SQL: INSERT INTO organizations (id, tenant_id) VALUES (%(id)s::VARCHAR, %(tenant_id)s::VARCHAR)]
+E           [parameters: {'id': 'org-ten-w6c04-cad6fd07', 'tenant_id': 'ten-w6c04-cad6fd07'}]
+E           (Background on this error at: https://sqlalche.me/e/20/f405)
+
+D:\Anaconda3\Lib\site-packages\psycopg\cursor.py:117: ProgrammingError
+
+During handling of the above exception, another exception occurred:
+
+self = <sqlalchemy.engine.base.Connection object at 0x0000026C2E93B4D0>
+dialect = <sqlalchemy.dialects.postgresql.psycopg.PGDialect_psycopg object at 0x0000026C2E95A3C0>
+context = <sqlalchemy.dialects.postgresql.psycopg.PGExecutionContext_psycopg object at 0x0000026C2EA12060>
+statement = <sqlalchemy.dialects.postgresql.psycopg.PGCompiler_psycopg object at 0x0000026C2E93B610>
+parameters = [{'run_id_1': 'run-w6c04-48580b2a'}]
+
+    def _exec_single_context(
+        self,
+        dialect: Dialect,
+        context: ExecutionContext,
+        statement: Union[str, Compiled],
+        parameters: Optional[_AnyMultiExecuteParams],
+    ) -> CursorResult[Any]:
+        """continue the _execute_context() method for a single DBAPI
+        cursor.execute() or cursor.executemany() call.
+
+        """
+        if dialect.bind_typing is BindTyping.SETINPUTSIZES:
+            generic_setinputsizes = context._prepare_set_input_sizes()
+
+            if generic_setinputsizes:
+                try:
+                    dialect.do_set_input_sizes(
+                        context.cursor, generic_setinputsizes, context
+                    )
+                except BaseException as e:
+                    self._handle_dbapi_exception(
+                        e, str(statement), parameters, None, context
+                    )
+
+        cursor, str_statement, parameters = (
+            context.cursor,
+            context.statement,
+            context.parameters,
+        )
+
+        effective_parameters: Optional[_AnyExecuteParams]
+
+        if not context.executemany:
+            effective_parameters = parameters[0]
+        else:
+            effective_parameters = parameters
+
+        if self._has_events or self.engine._has_events:
+            for fn in self.dispatch.before_cursor_execute:
+                str_statement, effective_parameters = fn(
+                    self,
+                    cursor,
+                    str_statement,
+                    effective_parameters,
+                    context,
+                    context.executemany,
+                )
+
+        if self._echo:
+            self._log_info(str_statement)
+
+            stats = context._get_cache_stats()
+
+            if not self.engine.hide_parameters:
+                self._log_info(
+                    "[%s] %r",
+                    stats,
+                    sql_util._repr_params(
+                        effective_parameters,
+                        batches=10,
+                        ismulti=context.executemany,
+                    ),
+                )
+            else:
+                self._log_info(
+                    "[%s] [SQL parameters hidden due to hide_parameters=True]",
+                    stats,
+                )
+
+        evt_handled: bool = False
+        try:
+            if context.execute_style is ExecuteStyle.EXECUTEMANY:
+                effective_parameters = cast(
+                    "_CoreMultiExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_executemany:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_executemany(
+                        cursor,
+                        str_statement,
+                        effective_parameters,
+                        context,
+                    )
+            elif not effective_parameters and context.no_parameters:
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute_no_params:
+                        if fn(cursor, str_statement, context):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+                    self.dialect.do_execute_no_params(
+                        cursor, str_statement, context
+                    )
+            else:
+                effective_parameters = cast(
+                    "_CoreSingleExecuteParams", effective_parameters
+                )
+                if self.dialect._has_events:
+                    for fn in self.dialect.dispatch.do_execute:
+                        if fn(
+                            cursor,
+                            str_statement,
+                            effective_parameters,
+                            context,
+                        ):
+                            evt_handled = True
+                            break
+                if not evt_handled:
+>                   self.dialect.do_execute(
+                        cursor, str_statement, effective_parameters, context
+                    )
+
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1967:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\default.py:951: in do_execute
+    cursor.execute(statement, parameters)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <psycopg.Cursor [closed] [BAD] at 0x26c2e907f50>
+query = 'SELECT run_events.event_id AS run_events_event_id, run_events.run_id AS run_events_run_id, run_events.tenant_id AS ru...run_events_payload, run_events.at AS run_events_at \nFROM run_events \nWHERE run_events.run_id = %(run_id_1)s::VARCHAR'
+params = {'run_id_1': 'run-w6c04-48580b2a'}
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool | None = None,
+    ) -> Self:
+        """
+        Execute a query or command to the database.
+        """
+        try:
+            with self._conn.lock:
+                self._conn.wait(
+                    self._execute_gen(query, params, prepare=prepare, binary=binary)
+                )
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.UndefinedTable: relation "run_events" does not exist
+E           LINE 2: FROM run_events
+E                        ^
+
+D:\Anaconda3\Lib\site-packages\psycopg\cursor.py:117: UndefinedTable
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('C:/Users/Administrator/AppData/Local/Temp/pytest-of-Administrator/pytest-147/test_w6_c04_integration0')
+
+    def test_w6_c04_integration(tmp_path: Path) -> None:
+        """Two steers apply in order on the original run. Refresh drops no node."""
+        from test_w6_c04_unit import _run
+        from rxycode_worker.agent_events import final_answer, project_run
+        from RxyCode.RxyCode1_1_0.core.subagents.events import EventStore
+        from RxyCode.RxyCode1_1_0.protocol.agents import TeamEvent
+
+        spans, emitted = _run(tmp_path, "ses-w6c04-mod")
+        events = [item for item in emitted if isinstance(item, TeamEvent)]
+        first = project_run(spans=spans, events=events)
+        replayed = project_run(
+            spans=[_round_trip(span) for span in spans],
+            events=events,
+        )
+        assert {node["id"] for node in replayed["nodes"]} == {node["id"] for node in first["nodes"]}
+        assert [node["parent_id"] for node in replayed["nodes"]] == [
+            node["parent_id"] for node in first["nodes"]
+        ]
+        store = EventStore()
+        before = store.latest_cursor()
+        run_id = str(first["run_id"])
+        one, two, queued = asyncio.run(_steer_pair(run_id, store))
+        assert one["run_id"] == run_id
+        assert two["run_id"] == run_id
+        assert [item["text"] for item in two["applied"]] == ["steer-one", "steer-two"]
+        assert [item["seq"] for item in two["applied"]] == [1, 2]
+        assert queued == ["steer-one", "steer-two"]
+        assert store.latest_cursor() == before
+        marker = "secret-child-draft-99"
+        answer = final_answer(
+            parent_text="ship the health endpoint",
+            child_events=[{"kind": "intermediate", "text": marker}],
+        )
+        legacy = _render_legacy()
+        assert 'data-agents' in legacy
+        assert 'data-agent-id="coder"' in legacy
+        markup = _render(first["nodes"], answer["text"])
+        assert 'aria-label="agent-tree"' in markup
+        assert 'data-final="ship the health endpoint"' in markup
+        assert marker not in markup
+        assert "<button" in markup
+        child = next(node for node in first["nodes"] if node["parent_id"])
+        assert f'data-id="{child["id"]}"' in markup
+        assert f'data-parent="{child["parent_id"]}"' in markup
+        assert f'data-tokens="{child["tokens"]}"' in markup
+>       web_agents = asyncio.run(_web_commands())
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\web\w6\test_w6_c04_module.py:69:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+D:\Anaconda3\Lib\asyncio\runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+D:\Anaconda3\Lib\asyncio\runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Anaconda3\Lib\asyncio\base_events.py:725: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests\web\w6\test_w6_c04_module.py:259: in _web_commands
+    for row in db.query(RunEvent).filter(RunEvent.run_id == run_id).all()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\query.py:2704: in all
+    return self._iter().all()  # type: ignore
+           ^^^^^^^^^^^^
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\query.py:2857: in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:2365: in execute
+    return self._execute_internal(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\session.py:2251: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1419: in execute
+    return meth(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1641: in _execute_clauseelement
+    ret = self._execute_context(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1846: in _execute_context
+    return self._exec_single_context(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1986: in _exec_single_context
+    self._handle_dbapi_exception(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:2355: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\base.py:1967: in _exec_single_context
+    self.dialect.do_execute(
+D:\Anaconda3\Lib\site-packages\sqlalchemy\engine\default.py:951: in do_execute
+    cursor.execute(statement, parameters)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <psycopg.Cursor [closed] [BAD] at 0x26c2e907f50>
+query = 'SELECT run_events.event_id AS run_events_event_id, run_events.run_id AS run_events_run_id, run_events.tenant_id AS ru...run_events_payload, run_events.at AS run_events_at \nFROM run_events \nWHERE run_events.run_id = %(run_id_1)s::VARCHAR'
+params = {'run_id_1': 'run-w6c04-48580b2a'}
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool | None = None,
+    ) -> Self:
+        """
+        Execute a query or command to the database.
+        """
+        try:
+            with self._conn.lock:
+                self._conn.wait(
+                    self._execute_gen(query, params, prepare=prepare, binary=binary)
+                )
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           sqlalchemy.exc.ProgrammingError: (psycopg.errors.UndefinedTable) relation "run_events" does not exist
+E           LINE 2: FROM run_events
+E                        ^
+E           [SQL: SELECT run_events.event_id AS run_events_event_id, run_events.run_id AS run_events_run_id, run_events.tenant_id AS run_events_tenant_id, run_events.seq AS run_events_seq, run_events.type AS run_events_type, run_events.payload AS run_events_payload, run_events.at AS run_events_at
+E           FROM run_events
+E           WHERE run_events.run_id = %(run_id_1)s::VARCHAR]
+E           [parameters: {'run_id_1': 'run-w6c04-48580b2a'}]
+E           (Background on this error at: https://sqlalche.me/e/20/f405)
+
+D:\Anaconda3\Lib\site-packages\psycopg\cursor.py:117: ProgrammingError
+---------------------------- Captured stdout call -----------------------------
+{"jsonrpc":"2.0","method":"event/progress","params":{"session_id":"ses-w6c04-mod","text":"steer: steer-one","intermediate":false}}
+{"jsonrpc":"2.0","id":1,"result":{"ok":true,"queued":true,"session_id":"ses-w6c04-mod","pending":1}}
+{"jsonrpc":"2.0","method":"event/progress","params":{"session_id":"ses-w6c04-mod","text":"steer: steer-two","intermediate":false}}
+{"jsonrpc":"2.0","id":2,"result":{"ok":true,"queued":true,"session_id":"ses-w6c04-mod","pending":2}}
+------------------------------ Captured log call ------------------------------
+WARNING  RxyCode.RxyCode1_1_0.core.agents.coordinator:coordinator.py:415 team cache_hit_rate 0.0 < 0.85
+============================== warnings summary ===============================
+..\..\..\Anaconda3\Lib\site-packages\fastapi\testclient.py:1
+  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/web/w6/test_w6_c04_module.py::test_w6_c04_integration - sqlalche...
+1 failed, 8 passed, 1 warning in 7.47s
+
+--- regressions re-run after restoring shared web schema (w7 suite leaves it dropped) ---
+.........                                                                [100%]
+============================== warnings summary ===============================
+..\..\..\Anaconda3\Lib\site-packages\fastapi\testclient.py:1
+  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+9 passed, 1 warning in 6.88s
+
+--- ruff: all touched python files ---
+All checks passed!
+
+--- frontend typecheck: apps/web npm run typecheck ---
+
+> @rxycode/web@1.4.3 typecheck
+> tsc --noEmit -p tsconfig.json
+
+
+--- diff cleanliness: files touched by this card (LF only, no trailing ws, git diff --check clean) ---
+telemetry.py metrics.py test_w7_c04_unit.py test_w7_c04_module.py UsagePage.tsx collect_evidence.py
+git diff --check -- apps/web/src/features/usage/UsagePage.tsx -> clean
