@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -96,6 +97,7 @@ def wrap_command(
 _reaping_lock = threading.Lock()
 _reaping_handle = 0
 _reaping_failed = False
+_reaping_self_assigned = False
 
 
 def reaping_job_handle() -> int:
@@ -108,11 +110,23 @@ def reaping_job_handle() -> int:
     ``Start-Process`` 的后台进程一并杀死（行为回归），故生命周期必须
     与 worker 进程一致。
 
+    **继承式绑定**（审计修）：Job 创建后立刻把**本进程自己**指派进去
+    （``AssignProcessToJobObject(job, GetCurrentProcess())``）。此后本
+    进程 spawn 的每个子孙在 CreateProcess 内部就**原子地**成为 Job
+    成员——旧的 create suspended → bind → resume 之间 worker 死亡会
+    泄漏 suspended 子进程的 kill 窗口不复存在（窗口本身没了）。Windows
+    8+ 的嵌套 Job 语义让宿主已在其它 Job 中（pytest、CI runner）时
+    自指派仍然成功——子孙同时隶属两个 Job，两边的 kill-on-close 都
+    生效。测试宿主进程因此也会被指派：pytest 死亡时回收它自己仍在
+    运行的子孙，方向一致、无副作用断言冲突（记录在案的取舍）。
+
     失败策略：**缓存失败**（比逐次重试简单且确定性更好）——首次创建
-    失败 warning 一次，本进程后续调用直接返回 0。回收不是安全边界，
-    0 = 无回收照常执行；调用方对绑定失败同样 warn-and-run。
+    或自指派失败各 warning 一次，本进程后续调用直接返回缓存结果。回收
+    不是安全边界：0 = 无回收照常执行；自指派失败时
+    :func:`reaping_is_inherited` 为 False，调用方回退逐命令出生即绑定
+    （suspend → assign → resume，bind 失败 warn-and-run）。
     """
-    global _reaping_handle, _reaping_failed
+    global _reaping_handle, _reaping_failed, _reaping_self_assigned
     if _reaping_handle or _reaping_failed:
         return _reaping_handle
     if sys.platform != "win32":  # Job 句柄只在 Windows 存在
@@ -129,7 +143,27 @@ def reaping_job_handle() -> int:
                 exc,
             )
             return 0
+        try:
+            _windows().assign_pid_to_job_handle(_reaping_handle, os.getpid())
+            _reaping_self_assigned = True
+        except Exception as exc:  # noqa: BLE001 - 自指派失败不阻塞命令
+            _logger.warning(
+                "reaping job 自指派失败（warn once），命令将走逐命令"
+                "出生即绑定兜底路径: %s",
+                exc,
+            )
     return _reaping_handle
+
+
+def reaping_is_inherited() -> bool:
+    """本进程是否已自指派进 reaping Job（子孙经继承天然入列）。
+
+    True：spawn 路径**不必** CREATE_SUSPENDED → bind → resume——子孙
+    在创建瞬间已是成员，继承比后补指派严格更强。False（非 Windows、
+    Job 创建失败或自指派被拒）：保持逐命令出生即绑定的兜底路径。
+    """
+    reaping_job_handle()
+    return _reaping_self_assigned
 
 
 def open_sandbox_job(wrapped: WrappedCommand) -> int:

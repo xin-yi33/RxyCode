@@ -3,7 +3,7 @@
     {
       "name": "worker_kill_during_approval",
       "outcome": "correct",
-      "details": "approval 00ba9b9c5e5a4daf8a69d8eae23b12e4 survived the kill; one write in c02-approve.txt"
+      "details": "approval 9f5ee15eccfc4946acb9adb13949324b survived the kill; one write in c02-approve.txt"
     },
     {
       "name": "worker_kill_after_side_effect",
@@ -18,7 +18,7 @@
     {
       "name": "sse_disconnect_reconnect",
       "outcome": "correct",
-      "details": "seqs 1..16 delivered once across two connections; run status succeeded; cross_tenant_frame=False"
+      "details": "real-socket abort at seq 4 of 25; Last-Event-ID resume delivered every seq once; run status succeeded; cross_tenant_frame=False; tenant B denied"
     },
     {
       "name": "stale_lease_after_pause",
@@ -28,7 +28,7 @@
     {
       "name": "postgres_unreachable",
       "outcome": "correct",
-      "details": "exec=executed=False; renew raised LeaseRejected; old epoch cannot commit"
+      "details": "exec=lease_rejected; probe=OperationalError; renew=OperationalError; old epoch cannot commit"
     },
     {
       "name": "runner_disconnect_replay",

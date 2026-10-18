@@ -109,8 +109,11 @@ class LocalNativeBackend:
         ``argv`` list spawns via ``create_subprocess_exec``（orchestrator 传
         ShellExecutor 构建的 argv——full 与其它模式同一个 shell）；``str``
         保留 ``create_subprocess_shell`` 兼容路径。Windows 下子进程出生即
-        绑定 reaping-only Job（kill-on-close，无限额）：worker 死亡整树
-        回收。回收不是安全边界——创建/绑定失败仅告警并照常执行。
+        是 reaping-only Job（kill-on-close，无限额）成员：worker 死亡整树
+        回收。首选继承式绑定——worker 已自指派进进程级 Job，子孙在
+        CreateProcess 内原子入列，无 suspend/bind 窗口；自指派失败才回退
+        CREATE_SUSPENDED → 指派 → 恢复。回收不是安全边界——创建/绑定/
+        自指派失败仅告警并照常执行。
         """
         recorded = list(argv) if isinstance(argv, list) else [argv]
         spawn_kwargs: dict[str, object] = {
@@ -119,6 +122,7 @@ class LocalNativeBackend:
             "stderr": asyncio.subprocess.PIPE,
         }
         job_handle = 0
+        job_bind_needed = False
         if os.name == "nt":
             spawn_kwargs["creationflags"] = getattr(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
@@ -126,10 +130,13 @@ class LocalNativeBackend:
             # 进程级 reaping-only Job（WEB-W7-C02）：kill-on-close，无限额。
             # 句柄进程级缓存、worker 死亡时由 OS 关闭触发整树回收——按命令
             # 关闭会把 agent 有意 Start-Process 的后台进程一并杀死。回收
-            # 不是安全边界——建/绑失败只警告，命令照常执行。
-            job_handle = _reaping_manager().reaping_job_handle()
-            if job_handle:
-                # CREATE_SUSPENDED（winbase.h 0x4）：subprocess 无此常量。
+            # 不是安全边界——建/绑/自指派失败只警告，命令照常执行。
+            manager = _reaping_manager()
+            job_handle = manager.reaping_job_handle()
+            job_bind_needed = bool(job_handle) and not manager.reaping_is_inherited()
+            if job_bind_needed:
+                # 自指派未生效时的兜底：CREATE_SUSPENDED（winbase.h 0x4，
+                # subprocess 无此常量）→ spawn 后立即指派并恢复主线程。
                 spawn_kwargs["creationflags"] = int(
                     spawn_kwargs["creationflags"]
                 ) | 0x00000004
@@ -137,7 +144,7 @@ class LocalNativeBackend:
             proc = await asyncio.create_subprocess_exec(*argv, **spawn_kwargs)
         else:
             proc = await asyncio.create_subprocess_shell(argv, **spawn_kwargs)
-        if job_handle:
+        if job_bind_needed:
             try:
                 _reaping_manager().bind_spawned_process(job_handle, proc.pid)
             except Exception as exc:  # noqa: BLE001 - reaping 失败不阻塞命令
@@ -248,6 +255,9 @@ class LocalNativeBackend:
         shell: bool = False,
     ) -> NativeResult:
         recorded = [argv] if isinstance(argv, str) else list(argv)
+        # 本路径不做逐命令 Job 绑定：worker 已自指派进进程级 reaping Job
+        # 时，Popen 子孙出生即成员（继承原子生效）；自指派失败宿主上此处
+        # 维持历史无绑定语义——回收不是安全边界，不阻塞命令。
         proc = subprocess.Popen(
             argv,
             cwd=str(cwd),

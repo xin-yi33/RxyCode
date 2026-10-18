@@ -158,6 +158,43 @@ def _read_stdout(proc: subprocess.Popen, prefix: str, timeout: float) -> str:
     return _read_queue(_stdout_queue(proc), prefix, timeout)
 
 
+def _serve_app(app) -> tuple:
+    """Boot the real FastAPI app through uvicorn on an ephemeral loopback port.
+
+    A real socket means a client-side abort is a real transport disconnect
+    for the SSE generator (``request.is_disconnected`` actually reports the
+    drop) — not a simulated boolean. Same in-thread pattern as
+    ``devices.gateway.serve_in_thread``.
+    """
+    import uvicorn
+
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=0, log_level="warning", access_log=False
+    )
+    server = uvicorn.Server(config)
+    ready = threading.Event()
+
+    def run() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def go() -> None:
+            task = loop.create_task(server.serve())
+            while not server.started:
+                await asyncio.sleep(0.01)
+            ready.set()
+            await task
+
+        loop.run_until_complete(go())
+        loop.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=15), "uvicorn server did not start"
+    port = server.servers[0].sockets[0].getsockname()[1]
+    return server, thread, port
+
+
 def _run_child(
     script: str, env: dict[str, str], prefix: str, timeout: float = 120
 ) -> dict:
@@ -181,6 +218,9 @@ def _run_child(
 
 
 def _seed(database_url: str, tag: str, permission_profile: str):
+    # The shared chaos DB keeps rows from earlier runs, so every id is
+    # namespaced with a fresh suffix — the harness must be re-runnable.
+    tag = f"{tag}-{uuid.uuid4().hex[:8]}"
     engine = create_engine(database_url)
     session_id = uuid.uuid4().hex
     tenant = f"tenant-chaos-{tag}"
@@ -331,7 +371,8 @@ print("RECOVERED " + json.dumps(result, default=str), flush=True)
 """
 
 _PGDOWN_WORKER = """\
-import json, os
+import json, os, time
+from sqlalchemy import create_engine, text
 from rxycode_worker.supervisor import renew_lease
 from rxycode_worker.recovery import run_shell_before_ack
 from RxyCode.RxyCode1_1_0.execution.tool_journal import ToolExecutionJournal
@@ -340,6 +381,14 @@ run_id = os.environ["C02_RUN"]
 worker = os.environ["C02_WORKER"]
 epoch = int(os.environ["C02_EPOCH"])
 print("READY", flush=True)
+# Barrier: the parent pauses Postgres first, then drops the GO file —
+# every call below lands strictly inside the outage window.
+go = os.environ["C02_GOFILE"]
+deadline = time.time() + 60
+while not os.path.exists(go):
+    if time.time() > deadline:
+        raise SystemExit("GO file never arrived")
+    time.sleep(0.05)
 exec_error = None
 result = None
 try:
@@ -357,6 +406,16 @@ try:
     )
 except Exception as exc:
     exec_error = type(exc).__name__
+probe_error = None
+try:
+    probe = create_engine(url)
+    try:
+        with probe.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    finally:
+        probe.dispose()
+except Exception as exc:
+    probe_error = type(exc).__name__
 renew_error = None
 try:
     renew_lease(url, run_id, worker, epoch, ttl_seconds=30)
@@ -365,6 +424,8 @@ except Exception as exc:
 out = {
     "executed": bool(result and result.get("executed")),
     "exec_error": exec_error,
+    "exec_status": (result or {}).get("run_status"),
+    "probe_error": probe_error,
     "renew_error": renew_error,
     "result": result,
 }
@@ -598,7 +659,7 @@ def scenario_redis_down_after_commit(url: str, redis_url: str, workdir: Path) ->
         rows = db.execute(
             text(
                 """
-                SELECT o.dispatch_status, o.event_id FROM outbox o
+                SELECT o.dispatch_status, o.event_id, o.attempts FROM outbox o
                 JOIN run_events e ON e.event_id = o.event_id
                 WHERE e.run_id = :run
                 """
@@ -609,13 +670,20 @@ def scenario_redis_down_after_commit(url: str, redis_url: str, workdir: Path) ->
     assert rows and all(row.dispatch_status == "sent" for row in rows)
     # Redis stream is at-least-once (outbox pattern; a publish that timed
     # out during a pause may still land). Exactly-once delivery to clients
-    # is by seq from PostgreSQL.
+    # is by seq from PostgreSQL. Per-event provenance bound: the outbox
+    # ``attempts`` counter records only FAILED publishes, each of which may
+    # still have landed, plus the one successful publish that marked the
+    # row 'sent' — so event e may appear at most attempts(e) + 1 times.
     entries = client.xrange(_STREAM)
     streamed = [str(fields.get("event_id")) for _mid, fields in entries]
     duplicates = 0
     for row in rows:
         n = streamed.count(str(row.event_id))
-        assert n >= 1, row.event_id
+        dispatch_attempts = int(row.attempts) + 1
+        assert 1 <= n <= max(1, dispatch_attempts), (
+            f"event {row.event_id} appears {n}x in the stream but its "
+            f"outbox row only records {dispatch_attempts} publish call(s)"
+        )
         duplicates += n - 1
     return {
         "name": "redis_down_after_commit",
@@ -628,84 +696,154 @@ def scenario_redis_down_after_commit(url: str, redis_url: str, workdir: Path) ->
 
 
 def scenario_sse_disconnect_reconnect(url: str, redis_url: str) -> dict:
-    """Reconnect replays every seq exactly once; the run is never cancelled."""
+    """Real-socket SSE: mid-run abort, Last-Event-ID resume, all seqs once.
+
+    Two real HTTP streaming connections against a real uvicorn server. The
+    first socket is closed while the producer is still appending events —
+    a real TCP disconnect, not a simulated flag — and the second resumes
+    with Last-Event-ID. Every seq must arrive exactly once, in order,
+    and the run must still reach its terminal status.
+    """
+    import httpx
+
+    from rxycode_server.api.auth import AuthRecord, _hash_token
+    from rxycode_server.main import create_app
+
     tenant, run = _seed(url, "s4", "workspace-write")
     tenant_b, run_b = _seed(url, "s4b", "workspace-write")
-    for i in range(15):
-        append_event(
-            url,
-            tenant_id=tenant,
-            run_id=run.run_id,
-            event_type="assistant.delta",
-            payload={"n": i, "tenant": "A"},
-        )
-        append_event(
-            url,
-            tenant_id=tenant_b,
-            run_id=run_b.run_id,
-            event_type="assistant.delta",
-            payload={"n": i, "tenant": "B"},
-        )
-    epoch = claim(url, run.run_id, "w-s4", ttl_seconds=30)
-    commit_terminal(url, run.run_id, "w-s4", epoch, "succeeded")
 
-    from rxycode_server.api.sse import iter_frames
+    app = create_app(
+        url, mode="local", secret=_SECRET, allowed_origins=["http://127.0.0.1"]
+    )
+    app.state.redis = _redis_lib.Redis.from_url(redis_url, decode_responses=True)
+    server, server_thread, port = _serve_app(app)
 
-    client = _redis_lib.Redis.from_url(redis_url, decode_responses=True)
+    produced_b = threading.Event()
 
-    async def collect(after_seq: int, stop_at: int | None) -> list[str]:
-        frames: list[str] = []
-        async for frame in iter_frames(
-            url,
-            tenant_id=tenant,
-            run_id=run.run_id,
-            after_seq=after_seq,
-            redis_client=client,
-            follow=True,
-        ):
-            frames.append(frame)
-            if stop_at is not None and any(
-                line.startswith("id: ") and int(line[4:]) >= stop_at
-                for line in frame.splitlines()
-            ):
-                # Simulated network drop: abandon the connection mid-stream.
-                break
-        return frames
+    def produce_a() -> None:
+        epoch = claim(url, run.run_id, "w-s4", ttl_seconds=30)
+        for i in range(24):
+            append_event(
+                url,
+                tenant_id=tenant,
+                run_id=run.run_id,
+                event_type="assistant.delta",
+                payload={"n": i, "tenant": "A"},
+            )
+            time.sleep(0.2)
+        commit_terminal(url, run.run_id, "w-s4", epoch, "succeeded")
 
-    def frame_seqs(frames: list[str]) -> list[int]:
-        seqs: list[int] = []
-        for frame in frames:
-            for line in frame.splitlines():
+    def produce_b() -> None:
+        for i in range(24):
+            append_event(
+                url,
+                tenant_id=tenant_b,
+                run_id=run_b.run_id,
+                event_type="assistant.delta",
+                payload={"n": i, "tenant": "B"},
+            )
+            produced_b.set()
+            time.sleep(0.1)
+
+    thread_a = threading.Thread(target=produce_a, daemon=True)
+    thread_b = threading.Thread(target=produce_b, daemon=True)
+
+    token_a = uuid.uuid4().hex
+    app.state.sessions[_hash_token(_SECRET, token_a)] = AuthRecord(
+        user_id="user-s4", tenant_id=tenant, created=time.monotonic()
+    )
+    client = httpx.Client(
+        base_url=f"http://127.0.0.1:{port}",
+        cookies={"rxy_session": token_a},
+        timeout=httpx.Timeout(60.0),
+    )
+    seen_a: list[int] = []
+    seen_b: list[int] = []
+    body_parts: list[str] = []
+    last_seen = 0
+    final_seq = 0
+    cross_leak = False
+    try:
+        thread_a.start()
+        thread_b.start()
+        events_url = f"/api/v1/runs/{run.run_id}/events?follow=1"
+        # Connection 1: real streaming GET while the producer is still
+        # appending; breaking out closes the response and drops the TCP
+        # connection mid-run.
+        with client.stream("GET", events_url) as response:
+            assert response.status_code == 200
+            for line in response.iter_lines():
+                body_parts.append(line)
                 if line.startswith("id: "):
-                    seqs.append(int(line[4:]))
-        return seqs
+                    seen_a.append(int(line[4:]))
+                    if seen_a[-1] >= 4:
+                        break
+        assert seen_a, "connection 1 collected no seqs before the abort"
+        last_seen = max(seen_a)
 
-    frames1 = asyncio.run(asyncio.wait_for(collect(0, 8), timeout=30))
-    seen_a = frame_seqs(frames1)
-    last_seen = max(seen_a)
-    frames2 = asyncio.run(
-        asyncio.wait_for(collect(last_seen, None), timeout=30)
-    )
-    seen_b = frame_seqs(frames2)
-    combined = seen_a + seen_b
-    engine = create_engine(url)
-    with Session(engine) as db:
-        row = db.get(Run, run.run_id)
-        assert row is not None and row.status == "succeeded"
-        final_seq = int(row.event_seq or 0)
-    engine.dispose()
-    assert len(combined) == len(set(combined)), "duplicate seq across reconnect"
-    assert sorted(combined) == list(range(1, final_seq + 1)), (
-        f"gaps: expected 1..{final_seq}, got {sorted(combined)}"
-    )
-    all_frames = "".join(frames1 + frames2)
-    cross_leak = '"tenant": "B"' in all_frames or '"tenant":"B"' in all_frames
+        # Connection 2: reconnect with Last-Event-ID and read to the real
+        # stream end — the server stops once the run is terminal and no
+        # new frames remain.
+        with client.stream(
+            "GET", events_url, headers={"Last-Event-ID": str(last_seen)}
+        ) as response:
+            assert response.status_code == 200
+            for line in response.iter_lines():
+                body_parts.append(line)
+                if line.startswith("id: "):
+                    seen_b.append(int(line[4:]))
+        assert seen_b, "connection 2 collected no seqs after the reconnect"
+
+        engine = create_engine(url)
+        with Session(engine) as db:
+            row = db.get(Run, run.run_id)
+            assert row is not None and row.status == "succeeded"
+            assert row.status != "cancelled"
+            final_seq = int(row.event_seq or 0)
+        engine.dispose()
+        assert last_seen < final_seq, (
+            f"connection 1 aborted at seq {last_seen} but the run ended "
+            f"at {final_seq} — the disconnect was not mid-run"
+        )
+        combined = seen_a + seen_b
+        assert len(combined) == len(set(combined)), (
+            "duplicate seq across reconnect"
+        )
+        assert sorted(combined) == list(range(1, final_seq + 1)), (
+            f"gaps: expected 1..{final_seq}, got {sorted(combined)}"
+        )
+        body = "\n".join(body_parts)
+        cross_leak = '"tenant": "B"' in body or '"tenant":"B"' in body
+        assert not cross_leak, "tenant B payload leaked into run A stream"
+        assert produced_b.is_set(), (
+            "tenant B produced nothing — the leak check was vacuous"
+        )
+
+        # Tenant B cannot read run A at all: tenant-scoped replay is 404.
+        token_b = uuid.uuid4().hex
+        app.state.sessions[_hash_token(_SECRET, token_b)] = AuthRecord(
+            user_id="user-s4b", tenant_id=tenant_b, created=time.monotonic()
+        )
+        denied = httpx.get(
+            f"http://127.0.0.1:{port}/api/v1/runs/{run.run_id}/events",
+            cookies={"rxy_session": token_b},
+            timeout=10,
+        )
+        assert denied.status_code == 404, denied.status_code
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=10)
+        thread_a.join(timeout=20)
+        thread_b.join(timeout=20)
+        client.close()
     return {
         "name": "sse_disconnect_reconnect",
         "outcome": "correct",
         "details": (
-            f"seqs 1..{final_seq} delivered once across two connections; "
-            f"run status succeeded; cross_tenant_frame={cross_leak}"
+            f"real-socket abort at seq {last_seen} of {final_seq}; "
+            "Last-Event-ID resume delivered every seq once; "
+            f"run status succeeded; cross_tenant_frame={cross_leak}; "
+            "tenant B denied"
         ),
         "cross_tenant_leak": cross_leak,
     }
@@ -767,9 +905,13 @@ def scenario_postgres_unreachable(url: str, workdir: Path) -> dict:
     target = wd / "s6.txt"
     epoch1 = claim(url, run.run_id, "w-s6a", ttl_seconds=4)
     assert epoch1 == 1
+    go_dir = Path(tempfile.mkdtemp(prefix="w7c02-s6g-", dir=workdir))
+    go_file = go_dir / "go.signal"
     env = _child_env(
         {
-            "C02_URL": url,
+            # ~3 s psycopg connect timeout on the first connection path so
+            # calls fail fast instead of hanging through the pause.
+            "C02_URL": url + "?connect_timeout=3",
             "C02_TENANT": tenant,
             "C02_RUN": run.run_id,
             "C02_WORKER": "w-s6a",
@@ -778,6 +920,7 @@ def scenario_postgres_unreachable(url: str, workdir: Path) -> dict:
             "C02_ATTEMPT": "att_" + uuid.uuid4().hex,
             "C02_JOURNAL": str(journal_dir),
             "C02_WORKDIR": str(wd),
+            "C02_GOFILE": str(go_file),
             "C02_COMMAND": (
                 "Add-Content -LiteralPath 's6.txt' -Value 'x' -Encoding utf8"
             ),
@@ -785,26 +928,33 @@ def scenario_postgres_unreachable(url: str, workdir: Path) -> dict:
     )
     proc = _spawn(_PGDOWN_WORKER, env)
     lines = _stdout_queue(proc)
-    # The child prints READY once its imports finish; pausing PG after that
-    # guarantees both of its calls land inside the outage window.
+    # READY means the child is parked on the GO barrier; pausing first and
+    # signalling after puts every one of its calls strictly inside the
+    # outage window.
     _read_queue(lines, "READY", 60)
     paused = _docker("pause", _PG_CONTAINER)
     assert paused.returncode == 0, paused.stderr
     try:
-        # Two calls, each bounded by the ~3 s psycopg connect timeout.
-        time.sleep(9.0)
+        go_file.write_text("go", encoding="utf-8")
+        # At least one call must demonstrably fail while Postgres is still
+        # paused — assert the specific connectivity failure type, not just
+        # any error, before unpausing.
+        result = _read_queue(lines, "PGDOWN ", 60)
+        out = json.loads(result.removeprefix("PGDOWN "))
+        assert out["probe_error"] == "OperationalError", out
+        assert out["renew_error"] == "OperationalError", out
+        assert out["exec_error"] is None, out
+        assert out["exec_status"] == "lease_rejected", out
+        assert out["executed"] is False, out
     finally:
         unpaused = _docker("unpause", _PG_CONTAINER)
         assert unpaused.returncode == 0, unpaused.stderr
     try:
-        result = _read_queue(lines, "PGDOWN ", 45)
-    finally:
         if proc.poll() is None:
             proc.kill()
         proc.wait(timeout=15)
-    out = json.loads(result.removeprefix("PGDOWN "))
-    assert out["executed"] is False, out
-    assert out["renew_error"] is not None, out
+    except subprocess.TimeoutExpired:
+        pass
     assert not target.exists()
 
     epoch2 = claim(url, run.run_id, "w-s6b", ttl_seconds=30)
@@ -819,8 +969,9 @@ def scenario_postgres_unreachable(url: str, workdir: Path) -> dict:
         "name": "postgres_unreachable",
         "outcome": "correct",
         "details": (
-            f"exec={out['exec_error'] or 'executed=False'}; "
-            f"renew raised {out['renew_error']}; old epoch cannot commit"
+            f"exec={out['exec_error'] or out['exec_status']}; "
+            f"probe={out['probe_error']}; renew={out['renew_error']}; "
+            "old epoch cannot commit"
         ),
     }
 

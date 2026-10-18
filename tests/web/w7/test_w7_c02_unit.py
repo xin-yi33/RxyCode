@@ -564,3 +564,69 @@ def test_w7_c02_background_survives_command_reaped_on_crash(tmp_path: Path):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+_SUSPENDED_NEWBORN_WORKER = """\
+import os, subprocess, sys, time
+from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+    reaping_is_inherited,
+    reaping_job_handle,
+)
+handle = reaping_job_handle()
+inherited = reaping_is_inherited()
+# A suspended newborn the worker never gets to bind or resume: the kill
+# lands inside what used to be the suspend -> bind window. With the worker
+# self-assigned, this child is a Job member atomically at CreateProcess.
+proc = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(120)", os.environ["C02_MARKER"]],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    creationflags=0x00000004,  # CREATE_SUSPENDED（winbase.h）
+)
+print("READY " + str(proc.pid) + " inherited=" + str(inherited), flush=True)
+time.sleep(120)
+"""
+
+
+def test_w7_c02_suspended_newborn_reaped_on_crash(tmp_path: Path):
+    """A still-suspended, never-bound child must not outlive the worker.
+
+    Pre-inheritance, killing the worker between CreateProcess and
+    AssignProcessToJobObject orphaned the suspended child: it sat in no
+    Job at all. With the worker self-assigned into the process-lifetime
+    reaping Job the child is a member atomically at creation — the kill
+    window no longer exists, so a worker killed at ANY point (here: while
+    the child is still suspended and was never bound) leaves no orphan.
+    """
+    del tmp_path
+    marker = f"c02susp-{uuid.uuid4().hex}"
+    proc = _spawn(
+        _SUSPENDED_NEWBORN_WORKER,
+        _child_env({"C02_MARKER": marker}),
+    )
+    try:
+        ready = _read_stdout(proc, "READY ", 60)
+        # Self-assignment must have succeeded on this host (Windows 8+
+        # nested jobs); otherwise the birth-time bind fallback applies and
+        # this scenario cannot assert the zero-window property.
+        assert "inherited=True" in ready, ready
+        proc.kill()
+        proc.wait(timeout=15)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if not _marker_procs(marker, ignore_pid=proc.pid):
+                break
+            time.sleep(0.5)
+        leaked = _marker_procs(marker, ignore_pid=proc.pid)
+        assert not leaked, (
+            f"suspended, never-bound child survived the worker kill: {leaked}"
+        )
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=15)
+        for info in _marker_procs(marker):
+            try:
+                psutil.Process(info["pid"]).kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass

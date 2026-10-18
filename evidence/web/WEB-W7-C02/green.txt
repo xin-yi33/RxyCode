@@ -114,3 +114,104 @@ rxy-w7c02-redis removed by runner/module teardown; no rxy-w7c02* containers.
 No leaked c02marker/c02bg processes. No stray temp dirs under REPO.
 tests/web/w4/_run/sub/ (created by today's run) removed; older _run files kept.
 recovery.py, queue.py: unchanged. Nothing staged or committed.
+
+== audit round 1 fixes ==
+
+Finding 1 (P1, suspended-child leak window):
+  core/sandbox/manager.py: _reaping_self_assigned flag cached under the same
+  lock as the handle. reaping_job_handle() creates the kill-on-close Job once
+  per process and immediately assigns the worker itself into it
+  (assign_pid_to_job_handle(job, os.getpid()) ==
+  AssignProcessToJobObject(job, GetCurrentProcess()) — opens self, assigns,
+  closes the temp handle). New accessor reaping_is_inherited() exposes the
+  cached self-assignment state; failures warn once and cache, same policy as
+  job-creation failure. utils/shell.py and
+  packages/rxycode-runner/.../native_backend.py only take CREATE_SUSPENDED ->
+  bind -> resume when inheritance is unavailable; when the worker is already
+  a member, children are Job members atomically at CreateProcess and the old
+  kill window is gone. Job remains cleanup-only (never a security boundary),
+  never closed per command, no CREATE_BREAKAWAY_FROM_JOB, os_sandbox
+  per-command Jobs untouched.
+  Probe (post-fix): worker printed 'JOB <h> | READY <pid>' for a suspended
+  newborn; LEAKED: [] — the child was a Job member at birth and died with
+  the worker. New test test_w7_c02_suspended_newborn_reaped_on_crash kills
+  the worker inside the old suspend/bind window: reaped <10s, no orphan.
+
+Finding 2 (P1, at-least-once Redis stream):
+  tests/web/w7/test_w7_c02_module.py and run_recovery.py now assert per-event
+  provenance: each event appears >=1 and <= max(1, attempts+1) times in the
+  stream (attempts counts only FAILED publishes; a timed-out publish may
+  still have landed, +1 for the publish that marked the row sent).
+  Aggregate-duplicate accounting removed. Probe counterexamples: old logic
+  accepted a 4x-published event with attempts=1 (new logic rejects
+  ('A', 4, 2)) and rejected a valid spread (new logic accepts). No touched
+  comment claims exactly-once Redis publication; exactly-once applies only
+  to client-visible PG seq delivery.
+
+Finding 3 (P2, real SSE transport):
+  test_w7_c02_module.py AND run_recovery.scenario_sse_disconnect_reconnect
+  now run a real uvicorn server on 127.0.0.1:<ephemeral> and stream with
+  httpx. Connection 1 aborts mid-run (real TCP close ->
+  request.is_disconnected), connection 2 resumes with Last-Event-ID.
+  Asserts: both connection seq lists non-empty, last_seen < final_seq
+  (disconnect provably mid-run), every seq delivered exactly once across
+  both connections, no gaps, run status succeeded (not cancelled), zero
+  tenant-B frames in run A's stream, tenant-B session gets 404 on run A.
+
+Finding 4 (P2, PG outage barrier):
+  _PGDOWN_WORKER prints READY then spins on a GO file; the parent pauses
+  Postgres BEFORE signalling, so every child call lands strictly inside the
+  outage window. C02_URL gains ?connect_timeout=3 on the first connection
+  path (~3s psycopg timeout instead of hanging). Child reports probe /
+  renew / exec results; the parent asserts OperationalError on the SELECT 1
+  probe and on renew_lease and run_status=lease_rejected on
+  run_shell_before_ack BEFORE unpausing. Stale-lease-after-restore
+  assertions preserved. _seed now suffixes ids with uuid4 hex so the
+  harness is re-runnable against the shared chaos DB.
+
+== lint (audit round 1) ==
+ruff check core/sandbox/manager.py utils/shell.py
+          packages/rxycode-runner/src/rxycode_runner/local/native_backend.py
+          execution/tool_orchestrator.py
+          platform_tests/web/chaos/run_recovery.py
+          tests/web/integration/test_chaos_suite.py
+          tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py
+  -> All checks passed!   (line-length 100; touched files LF)
+
+== card tests (audit round 1) ==
+pytest tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py
+       tests/web/integration/test_chaos_suite.py -q
+  -> 6 passed, 2 warnings in 189.34s
+pytest tests/web/w4/test_w4_c01_unit.py tests/web/w4/test_w4_c01_module.py
+       tests/web/w2/test_w2_c05_unit.py tests/web/w2/test_w2_c05_module.py
+       tests/web/w4/test_w4_c04_module.py -q
+  -> 10 passed, 4 warnings in 13.91s
+
+== chaos CLI (audit round 1) ==
+python platform_tests/web/chaos/run_recovery.py
+  --database-url postgresql+psycopg://postgres@127.0.0.1:55432/rxycode
+  --redis-url redis://127.0.0.1:56390/0
+  --report evidence/web/WEB-W7-C02/chaos-report.json
+  exit=0
+  correct  worker_kill_during_approval: approval survived the kill; one write
+  unknown  worker_kill_after_side_effect: journal_state=unknown,
+           recovery_required, exactly one write, no leaked shell
+  correct  redis_down_after_commit: seq 2 replayed from PG once; per-event
+           bound 1 <= count <= attempts+1; stream duplicates=0 (at-least-once)
+  correct  sse_disconnect_reconnect: real-socket abort at seq 4 of 25;
+           Last-Event-ID resume delivered every seq once; run status
+           succeeded; cross_tenant_frame=False; tenant B denied
+  correct  stale_lease_after_pause: stale epoch rejected on commit_terminal
+           and run_shell_before_ack
+  correct  postgres_unreachable: READY->pause->GO barrier; probe=renew=
+           OperationalError inside the pause; exec=lease_rejected; old
+           epoch cannot commit
+  correct  runner_disconnect_replay: same call_id replayed stored chunks;
+           write executed once
+  counts: {'correct': 6, 'unknown': 1, 'failed': 0, 'blocked': 0}
+  process_leak: 0  cross_tenant_leak: False
+
+== hygiene (audit round 1) ==
+rxy-w7c02-redis removed by runner teardown; no rxy-w7c02* containers remain.
+No leaked marker processes. Nothing staged or committed; unrelated
+dirty-worktree files untouched.

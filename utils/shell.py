@@ -1318,21 +1318,27 @@ class ShellExecutor:
 
         wrapped_cmd = os_sandbox_pair[1] if os_sandbox_pair is not None else None
         reaping_handle = 0
+        reaping_bind_needed = False
         if (
             wrapped_cmd is None
             and self.os_name == "win32"
             and policy.mode != "docker"
         ):
-            # WEB-W7-C02 资源释放：os_sandbox 未启用时子进程出生即绑定
-            # 进程级 reaping-only Job（kill-on-close，无限额无限制）。
-            # 句柄进程级缓存、worker 死亡时由 OS 关闭触发整树回收——
+            # WEB-W7-C02 资源释放：os_sandbox 未启用时子进程出生即是
+            # 进程级 reaping-only Job（kill-on-close，无限额无限制）
+            # 成员。句柄进程级缓存、worker 死亡时由 OS 关闭触发整树回收——
             # 按命令关闭会把 agent 有意 Start-Process 的后台进程一并
-            # 杀死。回收不是安全边界——建/绑失败只警告，命令照常执行。
+            # 杀死。首选继承：worker 已自指派进 Job 时子孙在
+            # CreateProcess 内原子入列，无 suspend/bind 窗口；自指派
+            # 失败才回退逐命令出生即绑定。回收不是安全边界——建/绑/
+            # 自指派失败只警告，命令照常执行。
             from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+                reaping_is_inherited,
                 reaping_job_handle,
             )
 
             reaping_handle = reaping_job_handle()
+            reaping_bind_needed = bool(reaping_handle) and not reaping_is_inherited()
         os_job_handle = 0
         bind_fn = None
         process_kwargs = self._process_kwargs(spawn_cwd, self.os_name)
@@ -1355,7 +1361,8 @@ class ShellExecutor:
                 process_kwargs["creationflags"] = process_kwargs.get(
                     "creationflags", 0
                 ) | 0x00000004
-        elif reaping_handle:
+        elif reaping_bind_needed:
+            # 自指派未生效的兜底：CREATE_SUSPENDED 出生即绑定。
             from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
                 bind_spawned_process as bind_fn,
             )
@@ -1394,7 +1401,7 @@ class ShellExecutor:
             )
             if track_this and process.pid:
                 adopt_suspended(process.pid)
-                if not os_job_handle and not reaping_handle:
+                if not os_job_handle and not reaping_bind_needed:
                     from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
                         resume_process_main_thread,
                     )
@@ -1413,11 +1420,12 @@ class ShellExecutor:
                         f"[sandbox_error] {exc}",
                         error_type="sandbox_error",
                     )
-            elif reaping_handle:
+            elif reaping_bind_needed:
                 # reaping-only Job（WEB-W7-C02）不是安全边界：绑定失败只警告、
                 # 恢复主线程照常执行。句柄进程级存活、不在收尾关闭——worker
                 # 死亡时 OS 收句柄触发 kill-on-close；若 root 已入 Job，整树
-                # 连坐回收仍然生效。
+                # 连坐回收仍然生效。（worker 已自指派时本分支不执行——子孙
+                # 出生即成员，继承原子生效，无 suspend/bind 窗口。）
                 try:
                     bind_fn(reaping_handle, process.pid)
                 except Exception as exc:  # noqa: BLE001 - 回收失败不阻塞命令
