@@ -1,0 +1,47 @@
+{
+  "scenarios": [
+    {
+      "name": "worker_kill_during_approval",
+      "outcome": "correct",
+      "details": "approval 00ba9b9c5e5a4daf8a69d8eae23b12e4 survived the kill; one write in c02-approve.txt"
+    },
+    {
+      "name": "worker_kill_after_side_effect",
+      "outcome": "unknown",
+      "details": "journal_state=unknown, recovery_required, exactly one write, no leaked shell"
+    },
+    {
+      "name": "redis_down_after_commit",
+      "outcome": "correct",
+      "details": "seq 2 replayed from PG once; outbox pending then sent; stream duplicates=0 (at-least-once)"
+    },
+    {
+      "name": "sse_disconnect_reconnect",
+      "outcome": "correct",
+      "details": "seqs 1..16 delivered once across two connections; run status succeeded; cross_tenant_frame=False"
+    },
+    {
+      "name": "stale_lease_after_pause",
+      "outcome": "correct",
+      "details": "stale epoch rejected on commit_terminal and run_shell_before_ack"
+    },
+    {
+      "name": "postgres_unreachable",
+      "outcome": "correct",
+      "details": "exec=executed=False; renew raised LeaseRejected; old epoch cannot commit"
+    },
+    {
+      "name": "runner_disconnect_replay",
+      "outcome": "correct",
+      "details": "same call_id replayed stored chunks; write executed once"
+    }
+  ],
+  "counts": {
+    "correct": 6,
+    "unknown": 1,
+    "failed": 0,
+    "blocked": 0
+  },
+  "process_leak": 0,
+  "cross_tenant_leak": false
+}

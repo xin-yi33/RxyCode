@@ -1,0 +1,277 @@
+WEB-W7-C02 RED evidence - tests run BEFORE implementation.
+Command: python -m ruff check tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py tests/web/integration/test_chaos_suite.py
+ruff result: All checks passed!
+
+Command: python -m pytest tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py tests/web/integration/test_chaos_suite.py -q
+
+Expected RED: test_chaos_suite fails because platform_tests/web/chaos/run_recovery.py does not exist yet; test_w7_c02_negative fails because the full_auto path runs cmd.exe (defect, fix sanctioned by ruling eae903ca); test_w7_c02_integration failed on the outbox-attempts timing assertion (test-side race with dispatch_pending transaction commit, fixed in test).
+test_w7_c02_contract already passed against existing code - recorded honestly.
+
+---- pytest output ----
+.FFF                                                                     [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-r9fyioqm
+
+================================== FAILURES ===================================
+____________________________ test_w7_c02_negative _____________________________
+
+postgres_url = 'postgresql+psycopg://postgres@127.0.0.1:55432/rxycode'
+tmp_path = WindowsPath('C:/Users/Administrator/AppData/Local/Temp/pytest-of-Administrator/pytest-51/test_w7_c02_negative0')
+
+    def test_w7_c02_negative(postgres_url: str, tmp_path: Path):
+        """The side effect ran but the ACK died with the worker; never re-executed."""
+        tenant_id, session_id = _seed(postgres_url, "c02negative")
+        created = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message="write then die",
+            target_id="local:c02",
+            permission_profile="full_auto",
+            request_id="req-c02-negative",
+        )
+        workdir = Path(tempfile.mkdtemp(prefix="w7c02-side-", dir=REPO))
+        journal_dir = tmp_path / "journal-side"
+        marker = f"c02marker-{uuid.uuid4().hex}"
+        command = (
+            "Add-Content -LiteralPath 'c02-side.txt' -Value 'once' -Encoding utf8; "
+            f"Start-Sleep -Seconds 30  # {marker}"
+        )
+        target = workdir / "c02-side.txt"
+        call_id = "call_" + uuid.uuid4().hex
+        attempt_id = "att_" + uuid.uuid4().hex
+        base_env = {
+            "C02_URL": postgres_url,
+            "C02_TENANT": tenant_id,
+            "C02_RUN": created.run_id,
+            "C02_CALL": call_id,
+            "C02_ATTEMPT": attempt_id,
+            "C02_JOURNAL": str(journal_dir),
+            "C02_WORKDIR": str(workdir),
+            "C02_COMMAND": command,
+            "C02_TTL": "3",
+        }
+        leaked: list[dict] = []
+        try:
+            proc = _spawn(
+                _SHELL_WORKER, _child_env({**base_env, "C02_WORKER": "w-c02-n"})
+            )
+            deadline = time.time() + 60
+            while time.time() < deadline and not target.exists():
+                if proc.poll() is not None:
+                    out = proc.stdout.read() if proc.stdout is not None else ""
+>                   raise AssertionError(
+                        f"worker exited before the side effect:\n{out[-3000:]}"
+                    )
+E                   AssertionError: worker exited before the side effect:
+E                   RESULT {"executed": false, "acked": false, "journal_state": "unknown", "run_status": "running", "output": "[error executing bash: 'Add-Content' \ufffd\ufffd\ufffd\ufffd\ufffd\u06b2\ufffd\ufffd\ufffd\ufffd\u2cbf\ufffd\ufffd\ufffd\ue8ec\u04b2\ufffd\ufffd\ufffd\u01ff\ufffd\ufffd\ufffd\ufffd\u0435\u0133\ufffd\ufffd\ufffd\r\n\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\u013c\ufffd\ufffd\ufffd\r\n\n[exit code: 1]]"}
+
+tests\web\w7\test_w7_c02_unit.py:365: AssertionError
+___________________________ test_w7_c02_integration ___________________________
+
+postgres_url = 'postgresql+psycopg://postgres@127.0.0.1:55432/rxycode'
+
+    def test_w7_c02_integration(postgres_url: str):
+        """Disconnect mid-stream, Redis paused, reconnect: all seqs once, terminal ok."""
+        upgrade_head(postgres_url)
+        _redis_start()
+        producer = None
+        tenant_b_thread = None
+        try:
+            app = create_app(postgres_url, mode="local", secret=SECRET, allowed_origins=[ORIGIN])
+            app.state.redis = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
+            from fastapi.testclient import TestClient
+            from rxycode_server.api.sse import iter_frames
+
+            client = TestClient(app)
+            csrf = client.get("/api/v1/auth/csrf").json()["csrf_token"]
+            headers = {"X-CSRF-Token": csrf, "Origin": ORIGIN, "X-Local-Secret": SECRET}
+            assert client.post("/api/v1/auth/local/login", headers=headers).status_code == 200
+            tenant_a = client.get("/api/v1/me").json()["organization"]["tenant_id"]
+            project = client.post(
+                "/api/v1/projects", json={"name": "chaos", "repo_config": {}}, headers=headers
+            )
+            opened = client.post(
+                f"/api/v1/projects/{project.json()['id']}/sessions",
+                json={"title": "chaos"},
+                headers=headers,
+            )
+            session_a = opened.json()["id"]
+            run_a = create_run(
+                postgres_url,
+                tenant_id=tenant_a,
+                session_id=session_a,
+                message="long run",
+                target_id="local:c02",
+                permission_profile="workspace-write",
+                request_id="req-c02-module-a",
+            )
+
+            # Tenant B: separate org/session producing cross-tenant noise.
+            tenant_b = "tenant-c02-b"
+            engine = create_engine(postgres_url)
+            session_b = uuid.uuid4().hex
+            with Session(engine) as db:
+                db.add(User(id="user-c02b", github_id="gh-c02b", kind="github"))
+                db.add(Organization(id="org-c02b", tenant_id=tenant_b))
+                db.add(
+                    Project(
+                        id="project-c02b", tenant_id=tenant_b, name="b", repo_config={}
+                    )
+                )
+                db.add(
+                    SessionRow(
+                        id=session_b,
+                        tenant_id=tenant_b,
+                        project_id="project-c02b",
+                        title="b",
+                    )
+                )
+                db.commit()
+            engine.dispose()
+            run_b = create_run(
+                postgres_url,
+                tenant_id=tenant_b,
+                session_id=session_b,
+                message="other tenant",
+                target_id="local:c02b",
+                permission_profile="workspace-write",
+                request_id="req-c02-module-b",
+            )
+
+            def produce_b() -> None:
+                for i in range(40):
+                    append_event(
+                        postgres_url,
+                        tenant_id=tenant_b,
+                        run_id=run_b.run_id,
+                        event_type="assistant.delta",
+                        payload={"n": i, "tenant": "B"},
+                    )
+                    time.sleep(0.1)
+
+            tenant_b_thread = threading.Thread(target=produce_b, daemon=True)
+            tenant_b_thread.start()
+
+            producer = subprocess.Popen(
+                [sys.executable, "-c", _PRODUCER],
+                env=_child_env(
+                    {
+                        "C02_URL": postgres_url,
+                        "C02_TENANT": tenant_a,
+                        "C02_RUN": run_a.run_id,
+                        "C02_REDIS": REDIS_URL,
+                        "C02_STREAM": _STREAM,
+                    }
+                ),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            assert producer.stdout is not None
+            first_line = producer.stdout.readline()
+            assert first_line.startswith("PID "), first_line
+            reported_pid = int(first_line[4:])
+            assert reported_pid == producer.pid
+
+            # First connection: follow until seq >= 10, then simulate the drop.
+            seen_a: list[int] = []
+            dropped = {"flag": False}
+
+            async def first_connection() -> None:
+                async def closed() -> bool:
+                    return dropped["flag"]
+
+                async for frame in iter_frames(
+                    postgres_url,
+                    tenant_id=tenant_a,
+                    run_id=run_a.run_id,
+                    after_seq=0,
+                    redis_client=app.state.redis,
+                    follow=True,
+                    is_disconnected=closed,
+                ):
+                    for seq in _frame_seqs(frame):
+                        seen_a.append(seq)
+                        if seq >= 10:
+                            dropped["flag"] = True
+
+            def run_first() -> None:
+                asyncio.run(asyncio.wait_for(first_connection(), timeout=30))
+
+            conn1 = threading.Thread(target=run_first, daemon=True)
+            conn1.start()
+            conn1.join(timeout=35)
+            assert not conn1.is_alive()
+            last_seen = max(seen_a)
+
+            # Network drop: pause Redis; producer dispatches fail and stay pending.
+            paused = _docker("pause", _REDIS)
+            assert paused.returncode == 0, paused.stderr
+            try:
+                time.sleep(2.0)
+                engine = create_engine(postgres_url)
+                with Session(engine) as db:
+                    pending = db.execute(
+                        text(
+                            """
+                            SELECT o.attempts FROM outbox o
+                            JOIN run_events e ON e.event_id = o.event_id
+                            WHERE e.run_id = :run AND o.dispatch_status = 'pending'
+                            """
+                        ),
+                        {"run": run_a.run_id},
+                    ).all()
+                engine.dispose()
+                assert pending, "no pending outbox rows during the Redis outage"
+>               assert any(int(row.attempts) > 0 for row in pending), (
+                    "producer dispatches did not retry against the paused Redis"
+                )
+E               AssertionError: producer dispatches did not retry against the paused Redis
+E               assert False
+E                +  where False = any(<generator object test_w7_c02_integration.<locals>.<genexpr> at 0x000001DBA60DB920>)
+
+tests\web\w7\test_w7_c02_module.py:273: AssertionError
+______________________________ test_chaos_suite _______________________________
+
+postgres_url = 'postgresql+psycopg://postgres@127.0.0.1:55432/rxycode'
+tmp_path = WindowsPath('C:/Users/Administrator/AppData/Local/Temp/pytest-of-Administrator/pytest-51/test_chaos_suite0')
+
+    def test_chaos_suite(postgres_url: str, tmp_path: Path):
+        report_path = tmp_path / "chaos-report.json"
+        cli = REPO / "platform_tests" / "web" / "chaos" / "run_recovery.py"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(cli),
+                "--database-url",
+                postgres_url,
+                "--redis-url",
+                _REDIS_URL,
+                "--report",
+                str(report_path),
+                "--workdir",
+                str(tmp_path / "work"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+>       assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
+E       AssertionError: D:\Anaconda3\python.exe: can't open file 'D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\platform_tests\\web\\chaos\\run_recovery.py': [Errno 2] No such file or directory
+E
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['D:\\Anaconda3\\python.exe', 'D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\platform_tests\\web\\chaos...\RxyCode\\\\RxyCode1_1_0\\\\platform_tests\\\\web\\\\chaos\\\\run_recovery.py': [Errno 2] No such file or directory\n").returncode
+
+tests\web\integration\test_chaos_suite.py:103: AssertionError
+============================== warnings summary ===============================
+tests/web/w7/test_w7_c02_module.py::test_w7_c02_integration
+  D:\Anaconda3\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/web/w7/test_w7_c02_unit.py::test_w7_c02_negative - AssertionErro...
+FAILED tests/web/w7/test_w7_c02_module.py::test_w7_c02_integration - Assertio...
+FAILED tests/web/integration/test_chaos_suite.py::test_chaos_suite - Assertio...
+3 failed, 1 passed, 1 warning in 33.56s

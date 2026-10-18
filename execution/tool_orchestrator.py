@@ -1877,7 +1877,11 @@ class ToolOrchestrator:
                         cwd = shell_executor.resolved_workdir(workdir)
                     except ValueError as exc:
                         return f"[error executing bash: {exc}]"
-                    result = await backend.run_command(command, cwd, timeout=timeout)
+                    # WEB-W7-C02：与常规执行面同一 argv 构造——full_auto
+                    # 在 Windows 也走 PowerShell，不再退化 create_subprocess_shell。
+                    result = await backend.run_command(
+                        shell_executor.build_argv(command), cwd, timeout=timeout
+                    )
                     if not result.started:
                         return ""
                     if result.timed_out:

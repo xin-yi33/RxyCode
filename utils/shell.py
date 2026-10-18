@@ -323,7 +323,7 @@ def _is_within(candidate: Path, root: Path) -> bool:
 
 
 _PYTHON_C_RE = re.compile(
-    r"""^\s*(?:python3?|py)(?:\.exe)?\s+-c\s+(?P<quote>['"])(?P<code>.*)(?P=quote)\s*$""",
+    r"""^\s*(?:["'](?P<pypath>[^"']+?)["']|(?P<py>\S+?))\s+-c\s+(?P<quote>['"])(?P<code>.*)(?P=quote)\s*$""",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -334,6 +334,8 @@ def direct_python_c_argv(command: str) -> list[str] | None:
     The e14 command ``python -c "from e14_tiny import ..."`` stayed alive
     inside the agent until the tool timeout (60s, and earlier 300s at CPU 0%).
     The same text finishes immediately when ``sys.executable -c`` is used.
+    A quoted or unqualified interpreter *path* (``sys.executable -c "…"``)
+    is honored as-is; bare ``python``/``py`` resolves to this interpreter.
     """
     match = _PYTHON_C_RE.match(command or "")
     if match is None:
@@ -341,7 +343,13 @@ def direct_python_c_argv(command: str) -> list[str] | None:
     code = match.group("code")
     if not code.strip():
         return None
-    return [sys.executable, "-c", code]
+    prog = match.group("pypath") or match.group("py") or ""
+    if re.fullmatch(r"(?i)(?:python3?|py)(?:\.exe)?", prog):
+        return [sys.executable, "-c", code]
+    base = re.split(r"[\\/]", prog)[-1]
+    if re.fullmatch(r"(?i)(?:python3?|py)(?:\.exe)?", base):
+        return [prog, "-c", code]
+    return None
 
 
 class ShellExecutor:
@@ -1200,6 +1208,15 @@ class ShellExecutor:
             return policy.cwd
         return current_working_directory()
 
+    def build_argv(self, command: str) -> list[str]:
+        """argv this executor would spawn for *command*（shell 探测 + 转换）。
+
+        WEB-W7-C02：runner full 路径复用同一份 argv 构造，保证 full_auto
+        与其它权限模式跑同一个 shell（Windows = PowerShell）。
+        """
+        direct = direct_python_c_argv(command)
+        return direct if direct is not None else self._build_command(command)
+
     def execute(self, command: str, workdir: str = "", timeout: int = DEFAULT_SHELL_TIMEOUT) -> dict:
         # 废弃代码（2026-09-20）：timeout: int = 60  # 旧前台一刀切，禁止再引用。
         """Run the same controlled async implementation from synchronous callers."""
@@ -1228,10 +1245,8 @@ class ShellExecutor:
         # python -c 不经 PowerShell。agent 里同一条命令会停到 timeout
         # （e14：timeout 60 整段耗尽；更早一次 CPU 0% 停到 300s）。
         # 直接用当前解释器时，同一条命令马上输出 E14_OK。
-        direct = direct_python_c_argv(command)
-        argv = direct if direct is not None else self._build_command(command)
         return await self._execute_controlled(
-            argv,
+            self.build_argv(command),
             workdir=workdir,
             timeout=timeout,
             shell_command=command,
@@ -1302,7 +1317,24 @@ class ShellExecutor:
                 spawn_argv = os_sandbox_pair[1].argv
 
         wrapped_cmd = os_sandbox_pair[1] if os_sandbox_pair is not None else None
+        reaping_handle = 0
+        if (
+            wrapped_cmd is None
+            and self.os_name == "win32"
+            and policy.mode != "docker"
+        ):
+            # WEB-W7-C02 资源释放：os_sandbox 未启用时子进程出生即绑定
+            # 进程级 reaping-only Job（kill-on-close，无限额无限制）。
+            # 句柄进程级缓存、worker 死亡时由 OS 关闭触发整树回收——
+            # 按命令关闭会把 agent 有意 Start-Process 的后台进程一并
+            # 杀死。回收不是安全边界——建/绑失败只警告，命令照常执行。
+            from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+                reaping_job_handle,
+            )
+
+            reaping_handle = reaping_job_handle()
         os_job_handle = 0
+        bind_fn = None
         process_kwargs = self._process_kwargs(spawn_cwd, self.os_name)
         if wrapped_cmd is not None and wrapped_cmd.job_plan is not None:
             # v1.4.1 修订（2026-10-07 验收缺陷修）：Windows Job 绑定前移到
@@ -1315,6 +1347,7 @@ class ShellExecutor:
                 open_sandbox_job,
             )
 
+            bind_fn = bind_spawned_process
             os_job_handle = open_sandbox_job(wrapped_cmd)
             if os_job_handle:
                 # subprocess 无 CREATE_SUSPENDED 常量——CREATE_SUSPENDED=0x4
@@ -1322,6 +1355,14 @@ class ShellExecutor:
                 process_kwargs["creationflags"] = process_kwargs.get(
                     "creationflags", 0
                 ) | 0x00000004
+        elif reaping_handle:
+            from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+                bind_spawned_process as bind_fn,
+            )
+
+            process_kwargs["creationflags"] = process_kwargs.get(
+                "creationflags", 0
+            ) | 0x00000004
         from rxycode_runner.local.supervisor import (
             active_supervisor,
             adopt_suspended,
@@ -1353,7 +1394,7 @@ class ShellExecutor:
             )
             if track_this and process.pid:
                 adopt_suspended(process.pid)
-                if not os_job_handle:
+                if not os_job_handle and not reaping_handle:
                     from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
                         resume_process_main_thread,
                     )
@@ -1361,10 +1402,10 @@ class ShellExecutor:
                     resume_process_main_thread(process.pid)
             if os_job_handle:
                 # root 此刻一行代码未跑（suspended），不存在先发子孙——
-                # 指派即全覆盖，随后恢复主线程。失败即 fail-closed：
+                # 指派即全覆盖，随后恢复主线程。沙箱 Job 失败即 fail-closed：
                 # 清理 suspended root（无子孙可漏），不吞 GetLastError。
                 try:
-                    bind_spawned_process(os_job_handle, process.pid)
+                    bind_fn(os_job_handle, process.pid)
                 except Exception as exc:
                     await self._cleanup_process(process, cidfile)
                     process = None
@@ -1372,6 +1413,27 @@ class ShellExecutor:
                         f"[sandbox_error] {exc}",
                         error_type="sandbox_error",
                     )
+            elif reaping_handle:
+                # reaping-only Job（WEB-W7-C02）不是安全边界：绑定失败只警告、
+                # 恢复主线程照常执行。句柄进程级存活、不在收尾关闭——worker
+                # 死亡时 OS 收句柄触发 kill-on-close；若 root 已入 Job，整树
+                # 连坐回收仍然生效。
+                try:
+                    bind_fn(reaping_handle, process.pid)
+                except Exception as exc:  # noqa: BLE001 - 回收失败不阻塞命令
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "reaping job 绑定失败（%s），命令将无回收保证执行", exc
+                    )
+                    try:
+                        from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
+                            resume_process_main_thread,
+                        )
+
+                        resume_process_main_thread(process.pid)
+                    except Exception:  # noqa: BLE001 - 已告警，命令继续
+                        pass
             # GUI apps as the direct child keep pipes open until the window
             # closes (OpenCode-class hang). Opening Word/Notepad/Typora is
             # intercepted in tools/bash.py via launch_intent.

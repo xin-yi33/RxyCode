@@ -1,0 +1,116 @@
+WEB-W7-C02 GREEN — crash chaos, disconnect recovery, resource release
+Repo: D:\agent-demo\RxyCode\RxyCode1_1_0  branch: feat/rxycode-web
+Python: D:\Anaconda3\python.exe  ruff 0.12.0 (line-length 100)
+
+Post-review update: the reaping Job is now PROCESS-LIFETIME, not per-command.
+core/sandbox/manager.py exports reaping_job_handle() — one reaping-only Job
+per worker process (kill-on-close only, no limits), created lazily under a
+threading.Lock, cached, never explicitly closed; the OS closes it when the
+worker dies and reaps the tree. A per-command close killed intentionally
+detached children (Start-Process/dev servers) — that regression is gone, and
+the new test below proves both directions. Creation failure warns once and
+caches the failure (documented choice); bind failure warns and runs anyway.
+The os_sandbox-enabled path is unchanged: per-command sandbox Job, closed per
+command, fail-closed.
+
+== lint ==
+ruff check core/sandbox/manager.py utils/shell.py
+          packages/rxycode-runner/src/rxycode_runner/local/native_backend.py
+          core/safety/policy.py execution/tool_orchestrator.py
+          platform_tests/web/chaos/run_recovery.py
+          tests/web/integration/test_chaos_suite.py
+          tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py
+          tests/web/w7/test_w7_c01_module.py
+          tests/web/w2/test_w2_c05_unit.py tests/web/w2/test_w2_c05_module.py
+  -> All checks passed!
+
+== card tests (final code) ==
+pytest tests/web/w7/test_w7_c02_unit.py tests/web/w7/test_w7_c02_module.py
+       tests/web/integration/test_chaos_suite.py -q
+  -> 5 passed, 2 warnings in 177.89s
+  (contract: approval survives worker kill, one execution after approve, none after;
+   negative: journal_state=unknown + recovery_required, exactly one write, NO leaked
+   shell within 10s, live-worker output/exit-code intact;
+   background_survives_command_reaped_on_crash [NEW]: for BOTH the
+   ShellExecutor spawn path and LocalNativeBackend.run_command fed
+   shell_executor.build_argv — Start-Process'd python marker still alive 2s
+   after the command returned while the worker lives (no per-command job
+   close), then reaped within 10s of proc.kill() on the worker only;
+   module: 40-event producer, SSE disconnect+reconnect, every seq exactly once,
+   no gaps/dupes, no tenant-B frames, run succeeded, same worker PID;
+   chaos suite: report asserts below)
+
+== chaos CLI (direct) ==
+python platform_tests/web/chaos/run_recovery.py
+  --database-url postgresql+psycopg://postgres@127.0.0.1:55432/rxycode
+  --redis-url redis://127.0.0.1:56390/0
+  --report evidence/web/WEB-W7-C02/chaos-report.json
+  exit=0
+  correct  worker_kill_during_approval: approval survived the kill; one write
+  unknown  worker_kill_after_side_effect: journal_state=unknown,
+           recovery_required, exactly one write, no leaked shell
+  correct  redis_down_after_commit: seq 2 replayed from PG once; outbox
+           pending then sent; stream duplicates=0 (at-least-once)
+  correct  sse_disconnect_reconnect: seqs 1..16 delivered once across two
+           connections; run status succeeded; cross_tenant_frame=False
+  correct  stale_lease_after_pause: stale epoch rejected on commit_terminal
+           and run_shell_before_ack
+  correct  postgres_unreachable: executed=False; renew raised LeaseRejected;
+           old epoch cannot commit
+  correct  runner_disconnect_replay: same call_id replayed stored chunks;
+           write executed once
+  counts: {'correct': 6, 'unknown': 1, 'failed': 0, 'blocked': 0}
+  process_leak: 0   cross_tenant_leak: False
+  (Redis stream is at-least-once — outbox pattern; a publish that timed out
+   during a pause may still land. Exactly-once delivery to clients is by seq
+   from PostgreSQL. Per lead ruling: no change to queue.py.)
+
+== regressions ==
+pytest tests/web/w2/test_w2_c05_unit.py tests/web/w2/test_w2_c05_module.py
+  -> 6 passed in 11.21s        (ALONE — runner src sys.path fix)
+pytest tests/web/w2/test_w2_c05_unit.py tests/web/w2/test_w2_c05_module.py
+       tests/web/w4/test_w4_c04_module.py
+  -> 7 passed, 4 warnings in 12.92s   (together — required pairing)
+pytest tests/web/w2/test_w2_c03_unit.py tests/web/w2/test_w2_c03_module.py
+       tests/web/w2/test_w2_c04_unit.py tests/web/w2/test_w2_c04_module.py
+       tests/web/w2/test_w2_c06_unit.py tests/web/w2/test_w2_c06_module.py
+       tests/web/w4/test_w4_c04_unit.py tests/web/w4/test_w4_c04_module.py
+  -> 14 passed, 8 warnings in 41.42s  (sequential — the w2 conftest
+     docker-run/drop-schema fixtures race each other across pytest
+     processes; earlier parallel-run failures were harness concurrency,
+     not product)
+pytest tests/web/w4/test_w4_c01_unit.py tests/web/w4/test_w4_c01_module.py
+       tests/web/w4/test_w4_c06_unit.py tests/web/w4/test_w4_c06_module.py
+  -> 6 passed in 3.66s   (w4_c01 now green: C01 nested-quote fix lets the
+     legitimate in-whitelist python -c write through the gate, and
+     ShellExecutor's direct python -c argv preserves its real exit code;
+     w4_c06 emergency-stop tree kill preserved)
+pytest tests/web/w6/test_w6_c06_unit.py tests/web/w6/test_w6_c06_module.py
+  -> 3 passed, 2 warnings in 5.00s    (PG rxy-w2c01-pg + MinIO rxy-w2c07-minio)
+pytest tests/test_tools/test_bash_cd_question_vision_diagnostics.py
+       tests/test_core/test_bash_watchdog.py tests/test_core/test_shell.py
+       tests/test_core/test_shell_output_capture.py
+       tests/test_core/test_shell_sandbox_resources.py
+       tests/test_tools/test_shell_capture_consumers.py
+       tests/test_tools/test_launch_intent.py tests/test_core/test_sandbox_windows.py
+  -> 195 passed in 79.86s   (PYTHONPATH incl. rxycode-runner/src;
+     narrowest shell/bash/sandbox set exercising utils/shell.py + Job binding)
+pytest tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py
+  -> 30 passed, 2 skipped in 2.48s   (recovery.py untouched; run anyway)
+
+== environment notes ==
+w2_c04_unit and the tests/test_core+test_tools shell batch need
+packages/rxycode-runner/src importable; run them with PYTHONPATH including
+it (pre-existing test sys.path gap on this checkout — same class of issue
+ruling eae903ca B fixed for w2_c05). Without it they error at collection
+with ModuleNotFoundError: rxycode_runner — also reproducible on HEAD.
+Postgres-dependent test batches must run sequentially on this checkout:
+tests/web/w2/conftest.py session fixture docker rm -f + docker run's a fresh
+ephemeral rxy-w2c01-pg, and every postgres_url fixture DROPs the public
+schema — parallel pytest processes schema-stomp each other.
+
+== hygiene ==
+rxy-w7c02-redis removed by runner/module teardown; no rxy-w7c02* containers.
+No leaked c02marker/c02bg processes. No stray temp dirs under REPO.
+tests/web/w4/_run/sub/ (created by today's run) removed; older _run files kept.
+recovery.py, queue.py: unchanged. Nothing staged or committed.

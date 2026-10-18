@@ -3,10 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_logger = logging.getLogger(__name__)
+
+
+def _reaping_manager():
+    """core/sandbox manager with the checkout-local import fallback."""
+    try:
+        from core.sandbox import manager
+    except ImportError:
+        from RxyCode.RxyCode1_1_0.core.sandbox import manager
+    return manager
+
+
+def _reaping_windows():
+    """windows sandbox primitives (reaping bind-failure path only)."""
+    try:
+        from core.sandbox import windows
+    except ImportError:
+        from RxyCode.RxyCode1_1_0.core.sandbox import windows
+    return windows
 
 
 @dataclass
@@ -80,14 +101,55 @@ class LocalNativeBackend:
             timeout=timeout,
         )
 
-    async def run_command(self, command: str, cwd: Path, *, timeout: float = 1800) -> NativeResult:
-        """Run the exact command string the policy already checked."""
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    async def run_command(
+        self, argv: list[str] | str, cwd: Path, *, timeout: float = 1800
+    ) -> NativeResult:
+        """Run the exact command the policy already checked.
+
+        ``argv`` list spawns via ``create_subprocess_exec``（orchestrator 传
+        ShellExecutor 构建的 argv——full 与其它模式同一个 shell）；``str``
+        保留 ``create_subprocess_shell`` 兼容路径。Windows 下子进程出生即
+        绑定 reaping-only Job（kill-on-close，无限额）：worker 死亡整树
+        回收。回收不是安全边界——创建/绑定失败仅告警并照常执行。
+        """
+        recorded = list(argv) if isinstance(argv, list) else [argv]
+        spawn_kwargs: dict[str, object] = {
+            "cwd": str(cwd),
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        job_handle = 0
+        if os.name == "nt":
+            spawn_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+            # 进程级 reaping-only Job（WEB-W7-C02）：kill-on-close，无限额。
+            # 句柄进程级缓存、worker 死亡时由 OS 关闭触发整树回收——按命令
+            # 关闭会把 agent 有意 Start-Process 的后台进程一并杀死。回收
+            # 不是安全边界——建/绑失败只警告，命令照常执行。
+            job_handle = _reaping_manager().reaping_job_handle()
+            if job_handle:
+                # CREATE_SUSPENDED（winbase.h 0x4）：subprocess 无此常量。
+                spawn_kwargs["creationflags"] = int(
+                    spawn_kwargs["creationflags"]
+                ) | 0x00000004
+        if isinstance(argv, list):
+            proc = await asyncio.create_subprocess_exec(*argv, **spawn_kwargs)
+        else:
+            proc = await asyncio.create_subprocess_shell(argv, **spawn_kwargs)
+        if job_handle:
+            try:
+                _reaping_manager().bind_spawned_process(job_handle, proc.pid)
+            except Exception as exc:  # noqa: BLE001 - reaping 失败不阻塞命令
+                _logger.warning(
+                    "reaping job 绑定失败（%s），命令将无回收保证执行", exc
+                )
+                try:
+                    _reaping_windows().resume_process_main_thread(proc.pid)
+                except Exception:  # noqa: BLE001 - 已告警，命令继续
+                    pass
+                # 句柄不随命令关闭：进程级存活，root 若已入 Job，worker
+                # 死亡时 kill-on-close 仍生效。
         self._live.add(proc.pid)
         timed_out = False
         try:
@@ -110,7 +172,7 @@ class LocalNativeBackend:
         result = NativeResult(
             started=True,
             wrapped=False,
-            argv=[command],
+            argv=recorded,
             approval="skipped",
             pid=proc.pid,
             exit_code=proc.returncode,
@@ -121,7 +183,7 @@ class LocalNativeBackend:
         self.audit.append(
             {
                 "pid": proc.pid,
-                "argv": [command],
+                "argv": recorded,
                 "approval": "skipped",
                 "started": True,
                 "wrapped": False,

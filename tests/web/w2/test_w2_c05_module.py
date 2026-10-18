@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 REPO = Path(__file__).resolve().parents[3]
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
-for _path in (REPO, _SERVER, _WORKER):
+_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
+for _path in (REPO, _SERVER, _WORKER, _RUNNER):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 

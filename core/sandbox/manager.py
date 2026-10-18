@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 from .detect import SandboxCapabilities, detect_capabilities
@@ -90,6 +91,45 @@ def wrap_command(
     if caps.backend == "job+token":
         return _windows().plan_windows_command(policy, argv, cwd)
     raise SandboxUnavailableError(f"未知沙箱后端: {caps.backend}")
+
+
+_reaping_lock = threading.Lock()
+_reaping_handle = 0
+_reaping_failed = False
+
+
+def reaping_job_handle() -> int:
+    """进程级 reaping-only Job 句柄（WEB-W7-C02）：kill-on-close，无限额。
+
+    os_sandbox 关闭 / runner full 路径下，每个 shell 子进程出生即绑定进
+    这一个 Job。句柄创建一次、进程级缓存、**永不主动关闭**——OS 在
+    worker 死亡时回收句柄并触发 kill-on-close，整树连坐回收，这正是
+    crash reaping 语义。按命令关闭句柄会把 agent 有意
+    ``Start-Process`` 的后台进程一并杀死（行为回归），故生命周期必须
+    与 worker 进程一致。
+
+    失败策略：**缓存失败**（比逐次重试简单且确定性更好）——首次创建
+    失败 warning 一次，本进程后续调用直接返回 0。回收不是安全边界，
+    0 = 无回收照常执行；调用方对绑定失败同样 warn-and-run。
+    """
+    global _reaping_handle, _reaping_failed
+    if _reaping_handle or _reaping_failed:
+        return _reaping_handle
+    if sys.platform != "win32":  # Job 句柄只在 Windows 存在
+        return 0
+    with _reaping_lock:
+        if _reaping_handle or _reaping_failed:
+            return _reaping_handle
+        try:
+            _reaping_handle = _windows().open_job(JobPlan())
+        except Exception as exc:  # noqa: BLE001 - 回收失败绝不阻塞命令
+            _reaping_failed = True
+            _logger.warning(
+                "reaping job 创建失败（warn once），本进程命令将无回收绑定执行: %s",
+                exc,
+            )
+            return 0
+    return _reaping_handle
 
 
 def open_sandbox_job(wrapped: WrappedCommand) -> int:
