@@ -38,6 +38,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -47,6 +48,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Protocol
+
+_LOG = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # W3C trace context
@@ -715,6 +718,37 @@ class _MultiExporter:
         for exporter in self._exporters:
             ok = bool(exporter.export(dict(span))) and ok
         return ok
+
+
+def export_span_payload(
+    exporter: Any, payload: Mapping[str, Any], *, conn: Any = None
+) -> bool:
+    """Ship one finalized span payload; never raises.
+
+    With ``conn`` — the caller's OPEN terminal transaction — the write goes
+    through ``export_conn`` inside ``conn.begin_nested()`` (SAVEPOINT): on
+    PostgreSQL a failed statement aborts the surrounding tx, so it must
+    propagate out of the block for ``__exit__`` to issue ROLLBACK TO
+    SAVEPOINT — the telemetry write then rolls back ALONE instead of
+    taking the terminal commit down with it.  (An exporter that swallowed
+    the error inside the block would emit RELEASE SAVEPOINT on the aborted
+    tx — itself a failure.)  Without a conn the plain ``export`` path is
+    used.  Failures are logged and False returned — telemetry must not
+    break a terminal commit.
+    """
+    try:
+        if conn is not None and hasattr(exporter, "export_conn"):
+            with conn.begin_nested():
+                return bool(exporter.export_conn(conn, dict(payload)))
+        return bool(exporter.export(dict(payload)))
+    except Exception:
+        _LOG.warning(
+            "span export failed (run_id=%s name=%s)",
+            payload.get("run_id"),
+            payload.get("name"),
+            exc_info=True,
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------

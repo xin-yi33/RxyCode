@@ -6,6 +6,7 @@ Plan changes are steer commands on the run. They are not written to EventStore.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any, Mapping
 
 
@@ -28,6 +29,24 @@ _OPEN_TOOL_SPANS: dict[tuple[str, str], tuple[Any, Any]] = {}
 #: can never fork a second span for one tool call. Bounded FIFO.
 _CLOSED_TOOL_SPANS: dict[tuple[str, str], None] = {}
 _CLOSED_TOOL_SPANS_MAX = 4096
+
+#: The EXECUTING agent's span context — a ContextVar because the TUI hook
+#: path (``tool_span_begin``/``tool_span_end`` -> ``open_tool_span`` /
+#: ``close_tool_span``) carries no agent_id.  The binding is written when a
+#: ``graph.agent.*`` span opens: ``AgentTask.spawn`` journals
+#: ``event/agent_started`` in the spawning task right before
+#: ``asyncio.create_task``, so the agent's own task context inherits it —
+#: two concurrent agents each resolve their own bound span instead of the
+#: run's "latest" agent (the old cross-parenting bug).  It is cleared when
+#: that agent's span closes in the same context, when the terminal sweep
+#: collects it, and by ``clear_web_run``.  ``ContextVar.reset`` is
+#: deliberately NOT used: it only works in the exact Context where ``set``
+#: ran, while a close is journaled from an asyncio context COPY — clearing
+#: a self-binding plus the still-open check at use time covers every
+#: cross-context case without ever touching another agent's binding.
+_BOUND_AGENT_SPAN: ContextVar[Any | None] = ContextVar(
+    "rxycode_bound_agent_span", default=None
+)
 
 
 def _mark_tool_span_closed(key: tuple[str, str]) -> None:
@@ -78,6 +97,9 @@ def clear_web_run() -> None:
     for key in ("tenant_id", "run_id", "parent_id", "session_id"):
         _CURRENT.pop(key, None)
     _APPLIED.clear()
+    # A new run remembered into this context never inherits the previous
+    # run's bound agent span.
+    _BOUND_AGENT_SPAN.set(None)
 
 
 def remember_web_run(
@@ -390,13 +412,27 @@ class RunJournal:
 
     def _span_parent_for_tool(self) -> Any:
         """Parent for a tool span that arrives WITHOUT an agent_id (the
-        ``ProtocolTui`` path): the most recently opened in-flight agent
-        span for this run, else the run-scoped remote parent."""
-        for (run_id, _agent_id), (_tracer, span) in reversed(
-            list(_OPEN_AGENT_SPANS.items())
-        ):
-            if run_id == self.run_id:
-                return span.context
+        ``ProtocolTui`` path): the agent span bound to the EXECUTING
+        context — ``_BOUND_AGENT_SPAN``, written when that agent's span
+        opened in this task — else the run-scoped remote parent
+        (``worker.run`` / persisted traceparent).
+
+        The run's *latest* agent is never picked: with agents A and B open
+        concurrently, a tool span created in A's bound context parents
+        under A even though B opened most recently.  A binding that no
+        longer names an OPEN agent span for THIS run (closed, swept, or a
+        previous run's leftover) is ignored — a stale binding never
+        parents a live tool under a dead or foreign span.
+        """
+        bound_span_id = getattr(_BOUND_AGENT_SPAN.get(), "span_id", "")
+        if bound_span_id:
+            for (run_id, _agent_id), (_tracer, span) in _OPEN_AGENT_SPANS.items():
+                if (
+                    run_id == self.run_id
+                    and span.context.span_id == bound_span_id
+                ):
+                    return span.context
+            # Stale or foreign binding — fall through to the run parent.
         return self._remote_parent()
 
     def _emit_span(self, method: str, agent_id: str, body: dict[str, Any]) -> None:
@@ -417,7 +453,33 @@ class RunJournal:
                 run_id=self.run_id,
                 attrs={"agent.id": agent_id, **body},
             )
-            _OPEN_AGENT_SPANS[(self.run_id, agent_id)] = (self._tracer, span)
+            key = (self.run_id, agent_id)
+            displaced = _OPEN_AGENT_SPANS.pop(key, None)
+            if displaced is not None:
+                # A re-opened id (retry/resume): the displaced span can no
+                # longer be paired by a close event — export it flagged
+                # now instead of leaking it until the terminal sweep.
+                d_tracer, d_span = displaced
+                try:
+                    d_tracer.end_span(
+                        d_span,
+                        status="error",
+                        attrs={
+                            "unclosed": True,
+                            "displaced_by": span.context.span_id,
+                        },
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "displaced agent span close failed", exc_info=True
+                    )
+            _OPEN_AGENT_SPANS[key] = (self._tracer, span)
+            # Bind the EXECUTING context to this agent's span — the TUI
+            # tool-span path carries no agent_id and resolves its parent
+            # through this ContextVar.  Written into the context that
+            # journaled the start, so an asyncio task spawned right after
+            # inherits the binding (AgentTask.spawn -> create_task).
+            _BOUND_AGENT_SPAN.set(span.context)
             return
         if method in _AGENT_CLOSE_METHODS:
             pair = _OPEN_AGENT_SPANS.pop((self.run_id, agent_id), None)
@@ -429,6 +491,13 @@ class RunJournal:
                 status=_AGENT_CLOSE_METHODS[method],
                 attrs=dict(body),
             )
+            # Unbind only when THIS span is the executing-context binding
+            # — a concurrent agent's binding is never touched.  (No token
+            # reset: the close can run in a Context copy where reset of
+            # the opener's token would raise.)
+            bound = _BOUND_AGENT_SPAN.get()
+            if getattr(bound, "span_id", "") == span.context.span_id:
+                _BOUND_AGENT_SPAN.set(None)
             return
         if "tool" not in method and not call_id:
             return
@@ -563,6 +632,85 @@ class RunJournal:
             status="ok" if ok else "error",
             attrs=dict(attrs or {}),
         )
+
+
+def sweep_open_spans(
+    run_id: str,
+    status: str,
+    *,
+    conn: Any = None,
+    run_status: str = "",
+) -> int:
+    """Close every agent/tool span still open for ``run_id`` — the terminal
+    sweep.
+
+    ``AgentTask`` can reach a terminal state without a closing journal
+    event — ``_run_main`` sets FAILED with no ``event/agent_failed``, and a
+    cancel can skip ``agent_cancelled`` the same way.  Without this sweep
+    the entry leaks in ``_OPEN_AGENT_SPANS``/``_OPEN_TOOL_SPANS`` and the
+    span is never exported.  ``supervisor._close_run_span`` calls this
+    BEFORE ending ``worker.run``, so the swept spans keep their recorded
+    parent chain and — when ``conn`` is passed — land inside the same
+    terminal transaction: a span appended after the commit would sit
+    post-terminal, which the follow-SSE endpoint can never deliver.
+
+    ``status`` is the already-mapped span status for the run's terminal
+    outcome (``ok``/``error``/``cancelled``): an agent span still open at
+    terminal is always an anomaly — even when the run succeeded — so every
+    swept span is flagged ``unclosed`` on top of the mapped status, with
+    ``run.terminal_status`` recorded when the caller supplies it.
+    Children close first (tool spans), then their agent spans.  Returns
+    the number of spans closed.
+    """
+    from rxycode_worker import telemetry
+
+    mark: dict[str, Any] = {"unclosed": True}
+    if run_status:
+        mark["run.terminal_status"] = run_status
+    detail = (
+        f"unclosed at run terminal ({run_status})"
+        if run_status
+        else "unclosed at run terminal"
+    )
+    closed = 0
+
+    def _close(pair: tuple[Any, Any]) -> None:
+        tracer, span = pair
+        payload = tracer.finalize_span(
+            span, status=status, detail=detail, attrs=dict(mark)
+        )
+        telemetry.export_span_payload(
+            getattr(tracer, "exporter", None), payload, conn=conn
+        )
+
+    for key in [key for key in _OPEN_TOOL_SPANS if key[0] == run_id]:
+        pair = _OPEN_TOOL_SPANS.pop(key, None)
+        if pair is None:
+            continue
+        _mark_tool_span_closed(key)
+        try:
+            _close(pair)
+            closed += 1
+        except Exception:
+            _LOG.warning(
+                "terminal sweep: tool span close failed", exc_info=True
+            )
+    for key in [key for key in _OPEN_AGENT_SPANS if key[0] == run_id]:
+        pair = _OPEN_AGENT_SPANS.pop(key, None)
+        if pair is None:
+            continue
+        _tracer, span = pair
+        try:
+            _close(pair)
+            closed += 1
+        except Exception:
+            _LOG.warning(
+                "terminal sweep: agent span close failed", exc_info=True
+            )
+        bound = _BOUND_AGENT_SPAN.get()
+        if getattr(bound, "span_id", "") == span.context.span_id:
+            _BOUND_AGENT_SPAN.set(None)
+    return closed
 
 
 def project_run(*, spans: list[Any], events: list[Any]) -> dict[str, object]:

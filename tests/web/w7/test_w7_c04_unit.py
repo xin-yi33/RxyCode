@@ -1399,3 +1399,341 @@ def test_w7_c04_parent_lookup_tri_state(
         )
         assert worker["trace_id"] != ctx_b.trace_id
         assert worker["parent_span_id"] != ctx_b.span_id
+
+
+# ---------------------------------------------------------------------------
+# Audit-r4 regressions
+# ---------------------------------------------------------------------------
+
+
+def test_w7_c04_terminal_sweep_unclosed_spans(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """A FAILED agent that never journals its close no longer leaks the
+    span: ``commit_terminal`` sweeps still-open agent/tool spans for the
+    run BEFORE ending ``worker.run`` — exported inside the same terminal
+    transaction, with the mapped terminal status and ``unclosed=True`` —
+    and the registries no longer hold them.
+
+    Reproduces the audit probe: ``AgentTask._run_main`` moves to FAILED
+    with no ``event/agent_failed`` event, so ``_OPEN_AGENT_SPANS`` kept
+    the entry forever and no agent span was ever exported.
+    """
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import agent_events
+    from rxycode_worker.agent_events import RunJournal
+    from rxycode_worker.supervisor import claim, commit_terminal
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 2)
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    run_ids: list[str] = []
+    try:
+        # Run 1 — FAILED: agent span open (+ a tool span under it), then
+        # the agent task fails: NO event/agent_failed, NO tool_end —
+        # exactly the gap that leaked the registry entry.
+        accepted = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_ids[0],
+            message="sweep failed run",
+            target_id="local:c04sw1",
+            permission_profile="full_auto",
+            request_id=f"req-sw1-{uuid.uuid4().hex[:12]}",
+        )
+        run_id = accepted.run_id
+        run_ids.append(run_id)
+        epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
+        assert epoch is not None
+        journal = RunJournal(postgres_url, tenant_id, run_id)
+        journal.record("event/agent_started", "eval-primary", {})
+        journal.record(
+            "event/tool_begin",
+            "eval-primary",
+            {"call_id": "call-sweep-1", "tool_name": "bash"},
+        )
+        assert (run_id, "eval-primary") in agent_events._OPEN_AGENT_SPANS
+        commit_terminal(postgres_url, run_id, worker_id, epoch, "failed")
+        # The sweep ran inside the terminal close — registries are empty.
+        assert (run_id, "eval-primary") not in agent_events._OPEN_AGENT_SPANS
+        assert (run_id, "call-sweep-1") not in agent_events._OPEN_TOOL_SPANS
+
+        # Run 2 — SUCCEEDED but an agent span was still open: an anomaly,
+        # honestly exported as ok + unclosed rather than dropped.
+        accepted2 = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_ids[1],
+            message="sweep succeeded run",
+            target_id="local:c04sw2",
+            permission_profile="full_auto",
+            request_id=f"req-sw2-{uuid.uuid4().hex[:12]}",
+        )
+        run2 = accepted2.run_id
+        run_ids.append(run2)
+        epoch2 = claim(postgres_url, run2, worker_id, ttl_seconds=600)
+        assert epoch2 is not None
+        journal2 = RunJournal(postgres_url, tenant_id, run2)
+        journal2.record("event/agent_started", "eval-second", {})
+        commit_terminal(postgres_url, run2, worker_id, epoch2, "succeeded")
+        assert (run2, "eval-second") not in agent_events._OPEN_AGENT_SPANS
+    finally:
+        for rid in run_ids:
+            agent_events.sweep_open_spans(rid, "error")  # leftover cleanup
+        agent_events._BOUND_AGENT_SPAN.set(None)
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    # Run 1: swept children export BEFORE the worker.run they parent under.
+    span_events = [
+        event
+        for event in _events(postgres_url, tenant_id, run_id)
+        if event["type"] == "telemetry.span"
+    ]
+    names = [event["payload"]["name"] for event in span_events]
+    assert names.index("tool.bash") < names.index("graph.agent.eval-primary")
+    assert names.index("graph.agent.eval-primary") < names.index("worker.run")
+    by_name = {event["payload"]["name"]: event["payload"] for event in span_events}
+    agent = by_name["graph.agent.eval-primary"]
+    tool = by_name["tool.bash"]
+    worker = by_name["worker.run"]
+    assert agent["status"] == "error"  # failed terminal -> error
+    assert agent["attrs"]["unclosed"] is True
+    assert agent["attrs"]["run.terminal_status"] == "failed"
+    assert tool["status"] == "error"
+    assert tool["attrs"]["unclosed"] is True
+    # The recorded parent chain survived the sweep.
+    assert tool["parent_span_id"] == agent["span_id"]
+    assert agent["parent_span_id"] == worker["span_id"]
+    assert worker["status"] == "error"
+
+    # Run 2: succeeded -> mapped "ok" but still flagged unclosed.
+    spans2 = {s["name"]: s for s in _spans(postgres_url, tenant_id, run2)}
+    agent2 = spans2["graph.agent.eval-second"]
+    assert agent2["status"] == "ok"
+    assert agent2["attrs"]["unclosed"] is True
+    assert agent2["attrs"]["run.terminal_status"] == "succeeded"
+
+
+def test_w7_c04_agent_scoped_tool_parenting(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """Concurrent agents no longer cross-parent tool spans.
+
+    (a) A journaled ``tool_begin`` carries its agent_id and parents under
+    THAT agent's open span — never the run's latest.  (b) The TUI hook
+    path carries no agent_id: it resolves through the ContextVar bound
+    when the agent span opened in the executing context, so a tool span
+    created inside agent A's context parents under A while agent B — the
+    run's most-recently-opened span — is unaffected.  With no bound agent
+    the parent is the run's ``worker.run`` span, never a guessed sibling.
+    """
+    import contextvars
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker import agent_events, telemetry
+    from rxycode_worker.agent_events import RunJournal
+    from rxycode_worker.supervisor import _OPEN_RUN_SPANS, claim, commit_terminal
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    memory = telemetry.InMemorySpanExporter()
+    accepted = create_run(
+        postgres_url,
+        tenant_id=tenant_id,
+        session_id=session_ids[0],
+        message="concurrent agents",
+        target_id="local:c04conc",
+        permission_profile="full_auto",
+        request_id=f"req-conc-{uuid.uuid4().hex[:12]}",
+    )
+    run_id = accepted.run_id
+    try:
+        epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
+        assert epoch is not None
+        worker_ctx = _OPEN_RUN_SPANS[run_id][1].context
+        journal = RunJournal(postgres_url, tenant_id, run_id)
+        journal._tracer = telemetry.Tracer(memory, service="c04-scope")
+
+        journal.record("event/agent_started", "agent-a", {})
+        ctx_a = contextvars.copy_context()  # executing context bound to A
+        journal.record("event/agent_started", "agent-b", {})
+        ctx_b = contextvars.copy_context()  # executing context bound to B
+        span_a = agent_events._OPEN_AGENT_SPANS[(run_id, "agent-a")][1]
+        span_b = agent_events._OPEN_AGENT_SPANS[(run_id, "agent-b")][1]
+        # The ambient context here is bound to B (opened most recently) —
+        # exactly the state that used to cross-parent A's tools under B.
+
+        # (a) The journaled tool_begin for A — the explicit agent_id wins.
+        journal.record(
+            "event/tool_begin",
+            "agent-a",
+            {"call_id": "call-a-j", "tool_name": "bash"},
+        )
+        # (b) TUI hook path inside each agent's bound executing context.
+        ctx_a.run(journal.open_tool_span, "call-a-tui", "write_file")
+        ctx_b.run(journal.open_tool_span, "call-b-tui", "read_file")
+        # No bound agent at all: the run's worker span is the parent.
+        contextvars.Context().run(journal.open_tool_span, "call-none", "ls")
+
+        parent_of = {
+            key[1]: pair[1].context.parent_span_id
+            for key, pair in agent_events._OPEN_TOOL_SPANS.items()
+            if key[0] == run_id
+        }
+        assert parent_of["call-a-j"] == span_a.context.span_id
+        assert parent_of["call-a-tui"] == span_a.context.span_id
+        assert parent_of["call-b-tui"] == span_b.context.span_id
+        assert parent_of["call-none"] == worker_ctx.span_id
+        assert parent_of["call-none"] not in {
+            span_a.context.span_id,
+            span_b.context.span_id,
+        }
+
+        # Close A's tool and A itself inside A's own context; B's context
+        # stays bound to B — a new TUI-path tool still parents under B.
+        journal.record(
+            "event/tool_end",
+            "agent-a",
+            {"call_id": "call-a-j", "tool_name": "bash", "ok": True},
+        )
+        ctx_a.run(journal.close_tool_span, "call-a-tui", True)
+        ctx_a.run(
+            journal.record, "event/agent_done", "agent-a", {"tokens_used": 1}
+        )
+        ctx_b.run(journal.open_tool_span, "call-b-tui2", "grep")
+        assert (
+            agent_events._OPEN_TOOL_SPANS[(run_id, "call-b-tui2")][1]
+            .context.parent_span_id
+            == span_b.context.span_id
+        )
+        # …while A's own context — its agent span now closed — falls back
+        # to the run's worker span rather than the stale closed binding.
+        ctx_a.run(journal.open_tool_span, "call-a-late", "ls")
+        assert (
+            agent_events._OPEN_TOOL_SPANS[(run_id, "call-a-late")][1]
+            .context.parent_span_id
+            == worker_ctx.span_id
+        )
+
+        ctx_b.run(journal.close_tool_span, "call-b-tui", True)
+        ctx_b.run(journal.close_tool_span, "call-b-tui2", True)
+        ctx_a.run(journal.close_tool_span, "call-a-late", True)
+        contextvars.Context().run(journal.close_tool_span, "call-none", True)
+        ctx_b.run(
+            journal.record, "event/agent_done", "agent-b", {"tokens_used": 1}
+        )
+        commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
+    finally:
+        for registry in (
+            agent_events._OPEN_TOOL_SPANS,
+            agent_events._OPEN_AGENT_SPANS,
+        ):
+            for key in [key for key in registry if key[0] == run_id]:
+                registry.pop(key, None)
+        agent_events._BOUND_AGENT_SPAN.set(None)
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    # The exported payloads carry the same honest parentage.
+    by_call = {
+        span["tool_call_id"]: span
+        for span in memory.spans
+        if span.get("tool_call_id")
+    }
+    assert by_call["call-a-tui"]["parent_span_id"] == span_a.context.span_id
+    assert by_call["call-b-tui"]["parent_span_id"] == span_b.context.span_id
+    assert by_call["call-none"]["parent_span_id"] == worker_ctx.span_id
+    names = {span["name"] for span in memory.spans}
+    assert "graph.agent.agent-a" in names
+    assert "graph.agent.agent-b" in names
+
+
+def test_w7_c04_post_terminal_retry_elapsed(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """An idempotent ``create_run`` retry exports its http span onto the
+    ORIGINAL run — post-terminal telemetry — but ``elapsed_ms`` stays
+    bounded by the run's terminal boundary (the worker.run span's own
+    end): the retry is listed under ``post_terminal``, not folded into
+    the run's elapsed envelope.
+
+    Regression: a 120ms run reported 60010ms after a same-request_id
+    retry landed 60s later — the envelope counted a span STARTED after
+    the run ended.
+    """
+    from rxycode_server import metrics
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.runs.service import create_run
+    from rxycode_worker.supervisor import claim, commit_terminal
+
+    upgrade_head(postgres_url)
+    tenant_id, session_ids = _seed_tenant_sessions(postgres_url, 1)
+    worker_id = f"w-c04-{uuid.uuid4().hex[:8]}"
+    request_id = f"req-r4-{uuid.uuid4().hex[:12]}"
+    try:
+        accepted = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_ids[0],
+            message="run with idempotent retry",
+            target_id="local:c04r4",
+            permission_profile="full_auto",
+            request_id=request_id,
+        )
+        run_id = accepted.run_id
+        epoch = claim(postgres_url, run_id, worker_id, ttl_seconds=600)
+        assert epoch is not None
+        commit_terminal(postgres_url, run_id, worker_id, epoch, "succeeded")
+        before = metrics.run_trace_summary(
+            postgres_url, tenant_id=tenant_id, run_id=run_id
+        )
+        assert before["code"] is None
+        assert before["post_terminal"] == []
+        boundary = before["terminal_boundary_epoch"]
+        assert boundary and boundary > 0
+
+        time.sleep(0.05)  # a measurable gap past the terminal boundary
+        # Idempotent retry: same request_id + same inputs -> the existing
+        # run, and a SECOND http span lands on its event log.
+        retried = create_run(
+            postgres_url,
+            tenant_id=tenant_id,
+            session_id=session_ids[0],
+            message="run with idempotent retry",
+            target_id="local:c04r4",
+            permission_profile="full_auto",
+            request_id=request_id,
+        )
+        assert retried.run_id == run_id
+    finally:
+        os.environ.pop("RXYCODE_TRACEPARENT", None)
+
+    spans = _spans(postgres_url, tenant_id, run_id)
+    http_spans = [
+        span for span in spans if span["name"] == "http POST /api/v1/runs"
+    ]
+    assert len(http_spans) == 2
+    retry = max(http_spans, key=lambda span: float(span["start_epoch"]))
+    assert retry["attrs"].get("run.idempotent_retry") is True
+    assert float(retry["start_epoch"]) > boundary
+
+    summary = metrics.run_trace_summary(
+        postgres_url, tenant_id=tenant_id, run_id=run_id
+    )
+    assert summary["code"] is None
+    # The retry span is observable — exported, marked, listed — but it
+    # cannot stretch the run's elapsed envelope past the boundary.
+    assert summary["span_count"] == len(spans)
+    assert len(summary["post_terminal"]) == 1
+    post = summary["post_terminal"][0]
+    assert post["span_id"] == retry["span_id"]
+    assert float(post["start_epoch"]) > boundary
+    assert summary["elapsed_ms"] == pytest.approx(
+        before["elapsed_ms"], abs=0.001
+    )
+    # …and the run's primary trace is still its own execution window —
+    # the retry's fresh trace_id does not claim it.
+    assert summary["trace_id"] == before["trace_id"]
+    assert summary["trace_ids"] == before["trace_ids"]

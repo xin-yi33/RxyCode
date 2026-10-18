@@ -57,45 +57,48 @@ def _open_run_span(
         _LOG.warning("worker.run span open failed", exc_info=True)
 
 
-def _close_run_span(run_id: str, status: str, *, conn=None) -> None:
+def _close_run_span(
+    run_id: str, status: str, *, conn=None, run_status: str = ""
+) -> None:
     """End the leased run's span. ``conn`` is the caller's OPEN terminal
     transaction: the span event must land atomically with the status write
     — an event appended after the commit would sit post-terminal, which the
     follow-SSE endpoint can never deliver (it stops on terminal status).
-    Without a conn the span closes through the normal exporter path."""
+    Without a conn the span closes through the normal exporter path.
+
+    Still-open agent/tool spans for this run are swept FIRST: an agent
+    that reached FAILED (or was cancelled) without a closing journal event
+    leaves its ``graph.agent.*`` / ``tool.*`` span registered forever —
+    never exported, parent chain dangling.  Sweeping them here, inside the
+    same terminal transaction when ``conn`` is given and BEFORE worker.run
+    ends, exports each one with the terminal status (flagged ``unclosed``)
+    while keeping the recorded parent chain intact."""
+    try:
+        from rxycode_worker import agent_events
+
+        agent_events.sweep_open_spans(
+            run_id, status, conn=conn, run_status=run_status
+        )
+    except Exception:
+        _LOG.warning("unclosed span sweep failed", exc_info=True)
     pair = _OPEN_RUN_SPANS.pop(run_id, None)
     if pair is None:
         return
     tracer, span = pair
     try:
+        from rxycode_worker import telemetry
+
         payload = tracer.finalize_span(
             span,
             status=status,
             attrs={"run.terminal_status": status},
         )
-        exporter = getattr(tracer, "exporter", None)
-        if conn is not None and hasattr(exporter, "export_conn"):
-            # SAVEPOINT isolation: export_conn runs its SQL on the
-            # caller's OPEN terminal transaction — on PostgreSQL a failed
-            # statement aborts the whole tx and would take the terminal
-            # status UPDATE down with it. begin_nested() emits SAVEPOINT,
-            # so export_conn must let statement errors PROPAGATE out of
-            # the block: __exit__ then issues ROLLBACK TO SAVEPOINT and
-            # the telemetry write rolls back alone. (An export_conn that
-            # swallowed the error would exit the block cleanly, emit
-            # RELEASE SAVEPOINT on the aborted tx, and poison the whole
-            # terminal commit.) The failure is caught AFTER the block —
-            # the tx is already safe again.
-            try:
-                with conn.begin_nested():
-                    exporter.export_conn(conn, payload)
-            except Exception:
-                _LOG.warning(
-                    "worker.run span export failed; savepoint rolled back",
-                    exc_info=True,
-                )
-        else:
-            exporter.export(payload)
+        # SAVEPOINT isolation lives in export_span_payload: a failed
+        # statement propagates out of begin_nested(), the rollback covers
+        # the telemetry write alone and the terminal UPDATE survives.
+        telemetry.export_span_payload(
+            getattr(tracer, "exporter", None), payload, conn=conn
+        )
     except Exception:
         _LOG.warning("worker.run span close failed", exc_info=True)
 
@@ -262,7 +265,10 @@ def commit_terminal(
             # terminal status becomes visible — so the follow-SSE stream
             # always delivers it (it stops polling once status is terminal).
             _close_run_span(
-                run_id, _TERMINAL_SPAN_STATUS.get(status, "ok"), conn=conn
+                run_id,
+                _TERMINAL_SPAN_STATUS.get(status, "ok"),
+                conn=conn,
+                run_status=status,
             )
         _release_quota(database_url, run_id)
         from rxycode_server.notifications.service import notify_run_terminal
@@ -374,7 +380,10 @@ def confirm_cancel(
             )
             # Atomic with the terminal write — see commit_terminal.
             _close_run_span(
-                run_id, _TERMINAL_SPAN_STATUS.get(status, "ok"), conn=conn
+                run_id,
+                _TERMINAL_SPAN_STATUS.get(status, "ok"),
+                conn=conn,
+                run_status=status,
             )
         _release_quota(database_url, run_id)
     finally:

@@ -110,20 +110,30 @@ def _created_traceparent(span) -> str:
         return ""
 
 
-def _trace_run_create_end(tracer, span, *, run_id: str) -> None:
+def _trace_run_create_end(
+    tracer, span, *, run_id: str, idempotent: bool = False
+) -> None:
     """Close the create_run span and re-publish its traceparent through
     the env channel for COMPAT/subprocess readers — the authoritative
     parent is the ``traceparent`` already persisted in the run.created
     payload (see ``_created_traceparent``); the claiming worker reads THAT
-    and never trusts the process-global env."""
+    and never trusts the process-global env.
+
+    ``idempotent`` marks the replayed-create case: the span still exports
+    onto the ORIGINAL run's event log — the retry really happened and
+    dropping it would hide an observable request — but flagged
+    ``run.idempotent_retry`` so a reader can tell it apart from the run's
+    own work, and so ``metrics.run_trace_summary`` keeps it out of the
+    run's elapsed envelope (it lists it under ``post_terminal`` instead).
+    """
     if tracer is None or span is None:
         return
     try:
         span.run_id = run_id
-        tracer.end_span(
-            span,
-            attrs={"http.status_code": 202, "run.status": "queued"},
-        )
+        attrs = {"http.status_code": 202, "run.status": "queued"}
+        if idempotent:
+            attrs["run.idempotent_retry"] = True
+        tracer.end_span(span, attrs=attrs)
     except Exception:
         _LOG.warning("run-create span close failed", exc_info=True)
     try:
@@ -180,7 +190,9 @@ def create_run(
             if existing is not None:
                 if existing.input_digest != digest:
                     raise RunConflict(request_id)
-                _trace_run_create_end(tracer, span, run_id=existing.id)
+                _trace_run_create_end(
+                    tracer, span, run_id=existing.id, idempotent=True
+                )
                 return _accepted(existing.id)
             decision = gate.reserve(db, tenant_id=tenant_id, user_id=user, message=message)
             if isinstance(decision, QuotaDecision):
@@ -257,7 +269,9 @@ def create_run(
                     ).one()
                     if winner.input_digest != digest:
                         raise RunConflict(request_id) from exc
-                    _trace_run_create_end(tracer, span, run_id=winner.id)
+                    _trace_run_create_end(
+                        tracer, span, run_id=winner.id, idempotent=True
+                    )
                     return _accepted(winner.id)
                 raise
     finally:

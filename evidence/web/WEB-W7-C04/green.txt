@@ -841,3 +841,77 @@ emitted span set is identical before and after this round. The r3 fixes
 touch only failure/dedup/tri-state edges not exercised by
 collect_evidence.py, so trace_dump.json / metrics_dump.json /
 dashboard.png / bottleneck.md remain accurate.
+
+
+=== WEB-W7-C04 audit-r4 green evidence ===
+date: 2026-10-18T13:35:21Z
+
+Round-4 fixes:
+* agent_events.sweep_open_spans(run_id, status, conn, run_status):
+  supervisor._close_run_span now sweeps every still-open
+  _OPEN_AGENT_SPANS/_OPEN_TOOL_SPANS entry for the run BEFORE ending
+  worker.run (covers commit_terminal + confirm_cancel). AgentTask can
+  reach FAILED/CANCELLED with no closing journal event — previously the
+  span leaked in the registry and was never exported. Swept spans land
+  inside the same terminal tx (export_conn savepoints), keep their
+  recorded parent chain, carry the mapped terminal status
+  (failed/recovery_required->error, cancelled->cancelled, succeeded->ok)
+  plus attrs unclosed=True + run.terminal_status and a detail line, so
+  an agent span still open at terminal is always flagged — even when
+  the run succeeded.
+* Concurrent agents can no longer cross-parent tool spans: the
+  journaled tool_begin path already keys open agent spans by
+  (run_id, agent_id) via _span_parent; the TUI hook path now resolves
+  through _BOUND_AGENT_SPAN, a ContextVar set when a graph.agent span
+  opens in the executing context (AgentTask.spawn journals
+  agent_started before create_task, so the agent's own task inherits
+  its own binding). _span_parent_for_tool returns the bound agent span
+  only while it is still an OPEN span of THIS run; a closed/swept/
+  foreign binding falls back to the run's worker.run parent — never the
+  run's latest agent, never a dead span. Bindings are unbound on agent
+  close (self-binding only), on sweep, and in clear_web_run; a re-opened
+  agent_id exports the displaced span flagged unclosed instead of
+  leaking it.
+* metrics.run_trace_summary bounds elapsed_ms by the run's terminal
+  boundary — _terminal_boundary = the worker.run span's own end_epoch
+  (finalized inside the terminal commit; runs.status UPDATE carries no
+  timestamp and no terminal run.status event exists). Spans STARTED
+  after the boundary stay observable in spans/layers and are listed
+  under post_terminal; elapsed_ms and trace_ids now describe only the
+  run's execution window. runs.service._trace_run_create_end keeps
+  exporting the idempotent retry's http span onto the original run
+  (real telemetry) but marks it run.idempotent_retry=True — a 120ms run
+  can no longer report 60010ms after a retry 60s later.
+* telemetry.export_span_payload: the savepoint-protected export helper
+  shared by _close_run_span and the sweep — export_conn inside
+  conn.begin_nested() so a failed telemetry statement rolls back alone;
+  failures log + return False, never break a terminal commit.
+
+--- focused: pytest tests/web/w7/test_w7_c04_unit.py tests/web/w7/test_w7_c04_module.py -q ---
+...............
+15 passed, 1 warning in 141.29s (0:02:21)
+(3 new audit-r4 tests: terminal_sweep_unclosed_spans [agent_started +
+tool_begin journaled, commit_terminal("failed") with no close event ->
+tool.bash + graph.agent exported status error + unclosed=True inside the
+terminal tx, ordered before worker.run, registries empty; second run
+"succeeded" -> ok + unclosed]; agent_scoped_tool_parenting [agent A and B
+open concurrently: journaled tool_begin agent_id=A parents under A while
+ambient ctx is bound to B; TUI-path open_tool_span inside A's copied
+context parents under A, inside B's under B; empty context -> worker.run;
+after A closes in its own context a late TUI tool falls back to
+worker.run while B's context stays bound to B];
+post_terminal_retry_elapsed [run commits succeeded, idempotent
+create_run same request_id emits a 2nd http span marked
+run.idempotent_retry -> elapsed_ms unchanged, span listed under
+post_terminal, trace_id/trace_ids stay the run's own].)
+
+--- full w7 suite: pytest tests/web/w7 -q (single invocation, shared pg) ---
+........................................
+40 passed, 3 warnings in 287.16s (0:04:47)
+
+--- ruff check: all touched python files ---
+All checks passed! (line-length 100; repo is not ruff-format clean at
+baseline — HEAD blobs of the same files also 'would reformat')
+
+--- git diff --check -- packages tests/web/w7 ---
+clean; all touched files LF-only, no trailing whitespace
