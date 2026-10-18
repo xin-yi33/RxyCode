@@ -578,6 +578,65 @@ def test_w7_c05_integration() -> None:
         finally:
             engine.dispose()
 
+        # -- Non-local targets refuse closed, never silently execute --------
+        # A `sandbox:`/cloud target asks for isolation this stack does not
+        # ship; the drain must commit `failed` with an honest run.error and
+        # must NOT spawn the local agent (no event/agent_started).
+        session4 = uuid.uuid4().hex
+        _seed_tenant(database_url, tenant_id, session4)
+        accepted4 = create_run(
+            database_url,
+            tenant_id=tenant_id,
+            session_id=session4,
+            message="sandbox target must not execute locally",
+            target_id="sandbox:c05-unshipped",
+            permission_profile="full_auto",
+            request_id=f"req-c05d-{uuid.uuid4().hex[:12]}",
+        )
+        run4 = accepted4.run_id
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            deadline = time.time() + 120
+            status4 = ""
+            while time.time() < deadline:
+                with engine.connect() as conn:
+                    status4 = str(
+                        conn.execute(
+                            text("SELECT status FROM runs WHERE id = :run_id"),
+                            {"run_id": run4},
+                        ).scalar()
+                        or ""
+                    )
+                if status4 in ("succeeded", "failed", "cancelled"):
+                    break
+                time.sleep(3)
+            assert status4 == "failed", status4
+            with engine.connect() as conn:
+                error_row = conn.execute(
+                    text(
+                        "SELECT payload FROM run_events "
+                        "WHERE run_id = :run_id AND type = 'run.error' "
+                        "ORDER BY seq DESC LIMIT 1"
+                    ),
+                    {"run_id": run4},
+                ).first()
+                assert error_row, "unsupported target failed without run.error"
+                detail = str(error_row[0] or "")
+                assert "local" in detail and "target" in detail, detail
+                spawned = conn.execute(
+                    text(
+                        "SELECT 1 FROM run_events "
+                        "WHERE run_id = :run_id AND type = 'event/agent_started' "
+                        "LIMIT 1"
+                    ),
+                    {"run_id": run4},
+                ).first()
+                assert spawned is None, (
+                    "a sandbox: target silently executed on the local agent"
+                )
+        finally:
+            engine.dispose()
+
         # -- The gateway still serves the API after the bounce --------------
         csrf = _https_get(f"{https_base}/api/v1/auth/csrf")
         assert csrf.status == 200

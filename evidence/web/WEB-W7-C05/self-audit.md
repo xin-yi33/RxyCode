@@ -9,7 +9,7 @@ Final verdict: `<filled by the Codex audit>` (session
 | round | verdict | findings fixed |
 |---|---|---|
 | r1 | PROBLEMS | 8: no deployed queue consumer (idle stdio worker); api bypassed `serve()` mode guard; upgrade/rollback ran stale `repo-src`; CI lint failed on 3 committed files; rate limiting was text-only; validator accepted wildcard port publication; `compose up` outside try/finally skipped cleanup; NOTES/.gitignore scope disagreement |
-| r2 | `<pending>` | — |
+| r2 | PROBLEMS | 7: persisted `target_id` ignored (every target ran on local AgentV2); watchdog transient DB error killed the monitor while the turn ran; drain journaled only stringified `notify.event/*` (web reducer got nothing); failed/cancelled turns recorded zero tokens; usage-ledger write failure didn't block `succeeded`; upgrade overlay left deleted files in `repo-src`; secret pattern missed `API_KEY` literals |
 
 ## Scope rulings committed to the nested plan
 
@@ -18,6 +18,11 @@ Final verdict: `<filled by the Codex audit>` (session
    `serve()` boot path, `api/ratelimit.py` middleware, `.gitignore`
    `!docs/deploy/` negation, three lint fixes, port validator + CI port
    invariant, runbook versioned reseed sequence.
+2. r2 remediation (same files): drain `local:*` target gate +
+   `_LeaseRenewalLost` deadline semantics + `_projection_rows` reducer
+   vocabulary + metered-usage-on-every-terminal + ledger-failure→`failed`;
+   runbook exact-reseed (volume emptied before the tar stream); validator +
+   CI secret pattern extended to `api_key`/`credential`.
 
 ## What the remediation actually does (verified by hand)
 
@@ -49,7 +54,19 @@ Final verdict: `<filled by the Codex audit>` (session
   container (`lease_owner = drain-<container>-<pid>`), not the test process;
   stale-lease reclaim uses a planted expired-lease row while the worker is
   SIGKILLed (deterministic, no race); worker recreation + third run prove
-  restart recovery.
+  restart recovery; a `sandbox:`-targeted run commits `failed` with an
+  honest `run.error` and NO `event/agent_started`.
+- r2 host re-verification (dev PG 55432): a `sandbox:nope` run went
+  `worker.lease` -> `usage.updated` -> `run.error` -> `failed` with no
+  agent spawn; a `local:` run went `worker.lease` -> `event/agent_started`
+  -> `assistant.delta`/`assistant.final` projections -> `event/agent_done`
+  -> `usage.updated` -> `succeeded` (real answer "pong", 9165+1503 real
+  tokens). Both legs observed live.
+- r2 unit tests: `_lease_watchdog` driven against a monkeypatched
+  `renew_lease` — one blip retries, an outage past TTL cancels the turn and
+  raises `_LeaseRenewalLost`, `LeaseRejected`/`cancel_requested` are the
+  intentional exits. `_projection_rows` asserted directly: final/delta/
+  tool/needs_input/todo/plan all map to reducer vocabulary.
 
 ## Known limitations (accepted, documented)
 
@@ -60,6 +77,11 @@ Final verdict: `<filled by the Codex audit>` (session
   service is not part of this stack.
 - `child.cancel` persisted commands get "no manager" — the drain is
   single-agent; undeliverable commands are logged, not dropped silently.
+- Non-`local:*` targets (cloud sandbox providers this stack deliberately
+  does not ship) are REFUSED — the run fails closed rather than silently
+  downgrading its requested isolation onto the local executor. Scheduled
+  runs (`target_id=""`) are refused the same way until a placement is
+  declared.
 - Workspaces live under the `worker-data` volume (`/work/runs`) — survive
   container restart, die with `down -v` (documented).
 - Browser E2E BLOCKED: no Playwright dep in apps/web; never claimed.

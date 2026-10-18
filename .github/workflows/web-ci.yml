@@ -168,7 +168,7 @@ jobs:
           import yaml
 
           config = yaml.safe_load(open("/tmp/rendered.yaml", encoding="utf-8"))
-          secret_key = re.compile(r"(?i)(password|secret|token)")
+          secret_key = re.compile(r"(?i)(password|secret|token|api[_-]?key|credential)")
           env_ref = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::[-?][^}]*)?\}$")
           problems = []
           for name, service in (config.get("services") or {}).items():

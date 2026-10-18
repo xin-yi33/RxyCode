@@ -39,6 +39,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -197,6 +198,25 @@ class _RunCancelled(Exception):
     """The run's status flipped to cancel_requested mid-flight."""
 
 
+class _LeaseRenewalLost(Exception):
+    """Lease renewals failed past the TTL — the row's ownership is unknown.
+
+    Distinct from ``LeaseRejected`` (the fence itself said no): here the
+    store stopped answering, the lease has expired, and another worker may
+    already own the run. The turn is cancelled and the worker steps aside —
+    it never commits a terminal state it cannot prove it owns."""
+
+
+class _UnsupportedTarget(Exception):
+    """The run's persisted target_id is not one this worker can execute.
+
+    Only ``local:*`` targets run inside the shared worker container (the
+    demo's declared mode — per-session workdirs, fenced queue, no
+    docker.sock). A ``sandbox:*``/cloud target would need the cloud sandbox
+    provider, which this stack deliberately does not ship; executing it
+    locally anyway would silently downgrade the run's isolation."""
+
+
 class _DrainWorkerShim:
     """The minimal worker surface ``agent_events.accept_steer`` needs.
 
@@ -222,6 +242,117 @@ class _DrainWorkerShim:
         taken = [str(item).strip() for item in self._steer_queue if str(item).strip()]
         self._steer_queue.clear()
         return taken
+
+
+def _projection_rows(
+    method: str,
+    body: dict[str, Any],
+    tool_names: dict[str, str],
+    *,
+    run_id: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Map one protocol ``event/*`` notification to the event types apps/web's
+    ``eventReducer`` consumes. Returns ``(event_type, payload)`` rows — a
+    drained run's answer, tool calls and waits must reach the UI projection,
+    not only the ``notify.*`` audit rows."""
+    rows: list[tuple[str, dict[str, Any]]] = []
+    if method == "event/final":
+        rows.append(
+            (
+                "assistant.final",
+                {
+                    "text": str(body.get("text") or ""),
+                    "run_id": str(body.get("run_id") or run_id),
+                    "input_tokens": body.get("input_tokens"),
+                    "output_tokens": body.get("output_tokens"),
+                },
+            )
+        )
+    elif method in ("event/message_delta", "event/progress"):
+        rows.append(
+            (
+                "assistant.delta",
+                {
+                    "text": str(body.get("text") or ""),
+                    "intermediate": bool(body.get("intermediate"))
+                    or method == "event/progress",
+                },
+            )
+        )
+    elif method == "event/tool_begin":
+        call_id = str(body.get("call_id") or "")
+        if call_id:
+            tool_names[call_id] = str(body.get("tool_name") or "")
+    elif method == "event/tool_end":
+        call_id = str(body.get("call_id") or "")
+        ok = bool(body.get("ok"))
+        rows.append(
+            (
+                "tool.completed" if ok else "tool.failed",
+                {
+                    "call_id": call_id,
+                    "tool": tool_names.get(call_id, ""),
+                    "status": str(body.get("status") or ("completed" if ok else "failed")),
+                    "summary": str(body.get("summary") or ""),
+                },
+            )
+        )
+    elif method == "event/agent_needs_input":
+        # The wire's only waiting-for-input signal; the service that journals
+        # approval.requested itself isn't reachable in-process, so project
+        # both buckets the reducer reads.
+        request_id = str(body.get("request_id") or "")
+        preview = str(body.get("preview") or "")
+        rows.append(
+            ("question.requested", {"question_id": request_id, "prompt": preview})
+        )
+        rows.append(
+            (
+                "approval.requested",
+                {
+                    "approval_id": request_id,
+                    "status": "pending",
+                    "tool": "",
+                    "command": preview,
+                },
+            )
+        )
+    elif method == "event/plan":
+        # PlanUpdate carries `steps: list[str]` — project each step as a plan
+        # item so the reducer's plan bucket renders the real plan.
+        steps = body.get("steps")
+        if isinstance(steps, list):
+            for index, step in enumerate(steps):
+                rows.append(
+                    (
+                        "plan.updated",
+                        {
+                            "plan_id": f"plan-{index}",
+                            "title": str(step),
+                            "status": "pending",
+                        },
+                    )
+                )
+    elif method == "event/todo_updated":
+        # TodoUpdatedNotification is a V17 envelope: items live under
+        # `snapshot.items` as {id, content, status} rows, not flat fields.
+        snapshot = body.get("snapshot")
+        items = snapshot.get("items") if isinstance(snapshot, dict) else None
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                rows.append(
+                    (
+                        "todo.updated",
+                        {
+                            "todo_id": str(item.get("id") or ""),
+                            "title": str(item.get("content") or ""),
+                            "status": str(item.get("status") or ""),
+                        },
+                    )
+                )
+    return rows
 
 
 async def _command_watchdog(
@@ -253,10 +384,23 @@ async def _lease_watchdog(
 ) -> None:
     """Renew the lease while the prompt runs; cancel the turn on
     ``cancel_requested``. ``LeaseRejected`` cancels the turn too — a fresher
-    worker owns the run now."""
+    worker owns the run now.
+
+    A transient store error must NOT kill the watchdog: it retries on the
+    next tick. But renewals cannot be trusted past the TTL — if they keep
+    failing past expiry the turn is cancelled and ``_LeaseRenewalLost``
+    reports it: the worker never lets a turn run on a lease it cannot
+    prove it still owns.
+    """
     from rxycode_worker.supervisor import LeaseRejected, renew_lease
 
     interval = max(2.0, lease_ttl / 2.0)
+    # The lease is only owned until `deadline`: each successful renewal
+    # extends it. A transient store error retries on the next tick, but if
+    # renewals keep failing past the TTL the lease has expired — another
+    # worker may already own the row — so the turn is cancelled instead of
+    # running unowned, and the loop reports the lost lease.
+    deadline = time.monotonic() + lease_ttl
     while not turn.done():
         await asyncio.sleep(interval)
         if turn.done():
@@ -266,10 +410,28 @@ async def _lease_watchdog(
                 renew_lease, database_url, run_id, worker_id, epoch,
                 ttl_seconds=lease_ttl,
             )
+            deadline = time.monotonic() + lease_ttl
         except LeaseRejected:
             turn.cancel()
             raise
-        status = await asyncio.to_thread(run_status, database_url, run_id)
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                _LOG.error(
+                    "run %s: lease renewals failed past TTL; cancelling turn",
+                    run_id,
+                )
+                turn.cancel()
+                raise _LeaseRenewalLost(run_id) from exc
+            _LOG.warning(
+                "run %s: lease renewal failed; retrying before lease expiry",
+                run_id,
+                exc_info=True,
+            )
+        try:
+            status = await asyncio.to_thread(run_status, database_url, run_id)
+        except Exception:
+            status = ""
+            _LOG.warning("run %s: status poll failed; retrying", run_id, exc_info=True)
         if status == "cancel_requested":
             turn.cancel()
             raise _RunCancelled(run_id)
@@ -335,8 +497,45 @@ async def execute_run(
     publish_database_url(cfg.database_url)
 
     journaled = {"count": 0}
+    projected = {"count": 0}
+    tool_names: dict[str, str] = {}
+    measured = {"tokens": 0}
     message = ""
     session_id = run_id
+
+    def _params(notification: Any) -> dict[str, Any]:
+        """Structured fields of a protocol notification (pydantic or dict)."""
+        dump = getattr(notification, "model_dump", None)
+        if callable(dump):
+            try:
+                data = dump(mode="json")
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                return data
+        if isinstance(notification, dict):
+            return dict(notification)
+        params = getattr(notification, "params", None)
+        return dict(params) if isinstance(params, dict) else {}
+
+    def _project(method: str, body: dict[str, Any]) -> None:
+        """Write the run's UI-facing projection rows — the event types the
+        web ``eventReducer`` consumes (``assistant.final``/``assistant.delta``/
+        ``tool.*``/``question.*``). Without these a drained run's answer would
+        exist only as an audit row and never reach the web projection."""
+        if projected["count"] >= _JOURNAL_CAP:
+            return
+        projected["count"] += 1
+        try:
+            append_event(
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                event_type=method,
+                payload=body,
+            )
+        except Exception:
+            _LOG.warning("run %s: projection emit failed", run_id, exc_info=True)
 
     def _emit(notification: Any) -> None:
         """Journal protocol ``event/`` notifications onto the run's own event
@@ -345,20 +544,27 @@ async def execute_run(
         if (
             not isinstance(method, str)
             or not method.startswith("event/")
-            or journaled["count"] >= _JOURNAL_CAP
         ):
             return
-        journaled["count"] += 1
-        try:
-            append_event(
-                cfg.database_url,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                event_type=f"notify.{method}",
-                payload={"text": str(notification)[:1500]},
-            )
-        except Exception:
-            _LOG.warning("run %s: journal emit failed", run_id, exc_info=True)
+        body = _params(notification)
+        if journaled["count"] < _JOURNAL_CAP:
+            journaled["count"] += 1
+            try:
+                append_event(
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type=f"notify.{method}",
+                    payload={"text": str(notification)[:1500]},
+                )
+            except Exception:
+                _LOG.warning("run %s: journal emit failed", run_id, exc_info=True)
+        # Projection rows in the vocabulary apps/web's eventReducer maps:
+        # answers must land as assistant.final/delta with structured text.
+        for event_type, payload in _projection_rows(
+            method, body, tool_names, run_id=run_id
+        ):
+            _project(event_type, payload)
 
     # Mark execution start on the durable log so a consumer can distinguish
     # "queued forever" from "a worker took it and is running the turn".
@@ -387,6 +593,16 @@ async def execute_run(
         loaded = await asyncio.to_thread(load_run, cfg.database_url, run_id)
         message = loaded["message"]
         session_id = loaded["session_id"] or run_id
+        target_id = str(loaded.get("target_id") or "")
+        # target_id is authoritative placement, not decoration: only local:*
+        # runs execute inside this shared worker container. Anything else
+        # (e.g. a sandbox/cloud target) is refused honestly rather than
+        # silently executed without its requested isolation.
+        if not target_id.startswith("local:"):
+            raise _UnsupportedTarget(
+                f"target {target_id!r} is not local:*; this drain only executes "
+                "local targets inside the worker container"
+            )
         permission_mode = _PERMISSION_MODE_MAP.get(
             str(loaded.get("permission_profile") or "").strip().lower()
         )
@@ -454,6 +670,10 @@ async def execute_run(
                     - token0[0]
                     - token0[1],
                 )
+                # Keep the real delta for the ledger too: agent_done only
+                # journals on success, so a failed/cancelled turn would
+                # otherwise report zero spend.
+                measured["tokens"] = delta
                 try:
                     runtime.record_token_usage(agent_id, delta, run_id=run_id)
                 except Exception:
@@ -523,7 +743,7 @@ async def execute_run(
                 await lease_watcher
             except _RunCancelled:
                 cancelled_by_request = True
-            except LeaseRejected:
+            except (LeaseRejected, _LeaseRenewalLost):
                 lost_lease = True
             except asyncio.CancelledError:
                 pass
@@ -555,7 +775,59 @@ async def execute_run(
         _LOG.warning("run %s: lease lost mid-flight; new owner finishes", run_id)
         return False
 
+    # Real spend lands on the ledger for succeeded, failed AND cancelled runs
+    # alike — the metered delta is the truth even when agent_done never
+    # journaled (it only writes on success).
+    tokens = int(measured["tokens"])
+    agent_done_id = uuid.uuid4().hex
+    try:
+        agent_done_id_found, done_tokens = await asyncio.to_thread(
+            _agent_done_row, cfg.database_url, run_id
+        )
+        if agent_done_id_found:
+            agent_done_id = agent_done_id_found
+        if done_tokens > 0:
+            tokens = done_tokens
+    except Exception:
+        pass
+    usage_error = ""
+    try:
+        await asyncio.to_thread(
+            record_terminal_usage,
+            cfg.database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            model_id=ledger_model,
+            price_version=_PRICE_VERSION,
+            tokens=tokens,
+            event_id=agent_done_id,
+        )
+    except Exception as exc:
+        usage_error = f"terminal usage write failed: {type(exc).__name__}: {exc}"
+        _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)
+
     if cancelled_by_request:
+        # A cancelled run is still committed cancelled — the cancel was real
+        # — but a failed ledger write is surfaced on the durable log first,
+        # never dropped silently.
+        if usage_error:
+            try:
+                await asyncio.to_thread(
+                    append_event,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type="run.error",
+                    payload={
+                        "detail": usage_error[:1500],
+                        "worker_id": cfg.worker_id,
+                    },
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: run.error for usage failure failed", run_id,
+                    exc_info=True,
+                )
         try:
             await asyncio.to_thread(
                 confirm_cancel,
@@ -569,33 +841,11 @@ async def execute_run(
             return False
         return True
 
-    # Real spend lands on the ledger even when the turn failed mid-flight:
-    # the journaled agent_done snapshot is authoritative (it already carries
-    # the runtime counter); absent that the real delta is zero.
-    tokens = 0
-    agent_done_id = uuid.uuid4().hex
-    try:
-        agent_done_id_found, tokens = await asyncio.to_thread(
-            _agent_done_row, cfg.database_url, run_id
-        )
-        if agent_done_id_found:
-            agent_done_id = agent_done_id_found
-    except Exception:
-        tokens = 0
-    try:
-        await asyncio.to_thread(
-            record_terminal_usage,
-            cfg.database_url,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            model_id=ledger_model,
-            price_version=_PRICE_VERSION,
-            tokens=tokens,
-            event_id=agent_done_id,
-        )
-    except Exception:
-        _LOG.warning("run %s: terminal usage write failed", run_id, exc_info=True)
-
+    # A failed durable ledger write is a durable-write failure: it must turn
+    # the run's terminal state into `failed`, never let `succeeded` stand on
+    # a missing usage row.
+    if usage_error:
+        turn_error = f"{turn_error}; {usage_error}" if turn_error else usage_error
     terminal = "succeeded" if not turn_error else "failed"
     if turn_error:
         try:

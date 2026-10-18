@@ -21,6 +21,19 @@ reasoning `high`.
   `steer.accepted` commands into the turn, writes `record_terminal_usage` and
   `commit_terminal` (or `confirm_cancel`). Failed/provider-less runs end
   `failed` — never fabricated.
+  - Enforces the persisted `target_id`: only `local:*` runs execute inside
+    the shared container; `sandbox:`/cloud/empty targets fail closed
+    (`_UnsupportedTarget` → `run.error` → `failed`, no `agent_started`).
+  - Lease watchdog: transient renewal errors retry; renewals broken past the
+    TTL cancel the turn and raise `_LeaseRenewalLost` (the row is left for a
+    healthy claimant — no terminal write on a lease it cannot prove).
+  - `event/*` notifications land as `notify.*` audit rows AND structured
+    reducer projections (`assistant.final`/`assistant.delta`/`tool.*`/
+    `plan.updated`/`todo.updated`/`question.requested`/`approval.requested`).
+  - Real token delta is metered in `_target`'s `finally` — failed and
+    cancelled turns write the ledger too; a ledger write failure forces the
+    commit to `failed` (a `succeeded` can never stand on a missing usage
+    row), and on the cancel path it is journaled as `run.error` first.
 - `packages/rxycode-server/src/rxycode_server/api/ratelimit.py` +
   `main.py` — per-client-IP fixed-window ASGI limiter (429+Retry-After),
   installed when `RXYCODE_WEB_RATE_LIMIT_RPM>0` (compose default 240).
@@ -30,12 +43,17 @@ reasoning `high`.
   typecheck+build / compose render + deploy invariants (incl. loopback port
   publication).
 - `docs/deploy/web-runbook.md` — bring-up, seed, migrations, certs, logs,
-  VERSIONED upgrade/reseed sequence, rollback, boundaries.
+  EXACT-reseed upgrade/rollback sequence (the `repo-src` volume is emptied
+  before the tar stream — deleted files and stale alembic revisions cannot
+  survive; `.rxy-sync-done` stamps the new commit hash), boundaries.
 - `tests/web/w7/test_w7_c05_unit.py` / `test_w7_c05_module.py` — contract +
-  negative + restart-durability; the module test asserts the DEPLOYED worker
-  container drains a queued run (`worker.lease` + `event/agent_started` +
-  `usage.updated` events), a planted stale lease is reclaimed at epoch+1, and
-  a SIGKILLed+recreated worker claims a new run again.
+  negative (incl. a literal `RXYCODE_API_KEY` refusal) + drain-internal unit
+  legs (watchdog outage semantics, reducer projection vocabulary) +
+  restart-durability; the module test asserts the DEPLOYED worker container
+  drains a queued run (`worker.lease` + `event/agent_started` +
+  `usage.updated` events), a planted stale lease is reclaimed at epoch+1,
+  a SIGKILLed+recreated worker claims a new run again, and a `sandbox:`
+  target fails closed without ever spawning the local agent.
 
 ## Evidence
 
@@ -44,7 +62,8 @@ docker legs), `NOTES.md` (topology, deviations, honest labels).
 
 ## Status
 
-- 3/3 focused tests green on Docker Engine 29.7.2.
+- Focused tests green on Docker Engine 29.7.2 (contract + negative +
+  watchdog/projection unit legs + the real docker module leg).
 - ruff clean on all touched files; `docker compose config --quiet` OK;
   `git diff --check` clean on the card scope.
 - Browser E2E: BLOCKED (no Playwright dep in apps/web) — labeled, not claimed.

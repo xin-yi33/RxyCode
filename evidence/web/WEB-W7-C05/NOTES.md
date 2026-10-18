@@ -12,8 +12,8 @@
 | `packages/rxycode-worker/src/rxycode_worker/__main__.py` | `python -m rxycode_worker` entry to the drain |
 | `packages/rxycode-server/src/rxycode_server/api/ratelimit.py` | per-client-IP fixed-window ASGI limiter (429 + Retry-After) |
 | `packages/rxycode-server/src/rxycode_server/main.py` | `create_app(..., rate_limit_rpm=)` wires the limiter; `serve()` is the guarded boot path |
-| `tests/web/w7/test_w7_c05_unit.py` | contract (real compose up + HTTPS + alembic head) + negative (validator refuses unsafe overlays incl. wildcard ports, local-mode public bind refused, limiter 429 drive) |
-| `tests/web/w7/test_w7_c05_module.py` | deployed-worker drains a queued run inside the container; restart durability; deterministic stale-lease reclaim; worker-container SIGKILL + recreate recovery |
+| `tests/web/w7/test_w7_c05_unit.py` | contract (real compose up + HTTPS + alembic head) + negative (validator refuses unsafe overlays incl. wildcard ports, literal `RXYCODE_API_KEY`, local-mode public bind, limiter 429 drive) + drain internals (lease-watchdog outage semantics, reducer projection vocabulary) |
+| `tests/web/w7/test_w7_c05_module.py` | deployed-worker drains a queued run inside the container; restart durability; deterministic stale-lease reclaim; worker-container SIGKILL + recreate recovery; `sandbox:` target fails closed without spawning |
 
 ## Topology decisions worth knowing
 
@@ -23,12 +23,35 @@
   `supervisor.claim`, reads the persisted message with `runs.service.load_run`,
   and drives ONE real turn through `AgentRuntime -> Session.prompt` —
   journaled `event/agent_started`/`event/agent_done`, telemetry spans and the
-  `usage.updated` ledger row all land on the run's own event log. A lease
-  watchdog renews the fence and cancels the turn on `cancel_requested`
-  (`confirm_cancel`) or a lost epoch (honest abort — the new owner finishes).
-  Persisted `steer.accepted` commands reach the turn through a bound
-  `_DrainWorkerShim` + `consume_persisted_commands`; `child.cancel` gets an
-  honest "no manager" (the drain is single-agent).
+  `usage.updated` ledger row all land on the run's own event log.
+  - **`target_id` is enforced, not decoration**: only `local:*` runs execute
+    inside the shared worker container. `sandbox:`/cloud/empty targets raise
+    `_UnsupportedTarget` before spawn — the run commits `failed` with an
+    honest `run.error` and never journals `event/agent_started` (verified:
+    a `sandbox:` run on the host dev DB failed closed; the module test
+    asserts the same inside the compose stack).
+  - **Lease watchdog survives outages**: a transient renewal error retries
+    on the next tick; renewals broken past the TTL cancel the turn and
+    raise `_LeaseRenewalLost` (the run is left for a healthy claimant — the
+    worker never commits a terminal state it cannot prove it owns). Only
+    `LeaseRejected` and an explicit `cancel_requested` are normal exits.
+  - **Structured UI projections**: every `event/*` notification still lands
+    as a `notify.*` audit row, and `_projection_rows` additionally writes
+    reducer-vocabulary events — `assistant.final` (text + token fields),
+    `assistant.delta`, `tool.completed`/`tool.failed` (call_id + tool),
+    `plan.updated`/`todo.updated` (incl. the V17 snapshot envelope), and
+    `question.requested` + `approval.requested` for `event/agent_needs_input`.
+    Verified on the host dev DB: a real `local:` run ended `succeeded` with
+    `assistant.final {text:"pong", input_tokens:9165, output_tokens:1503}`.
+  - **Metering survives failure and is terminal-checked**: the real token
+    delta is captured in `_target`'s `finally` (`runtime.record_token_usage`
+    + a local `measured` dict) so failed AND cancelled turns still write the
+    ledger — a cancel never returns before `record_terminal_usage`. A ledger
+    write failure is itself a durable-write failure: it appends to
+    `run.error` and forces the commit to `failed`.
+  - Persisted `steer.accepted` commands reach the turn through a bound
+    `_DrainWorkerShim` + `consume_persisted_commands`; `child.cancel` gets an
+    honest "no manager" (the drain is single-agent).
 - **The worker's model comes from `RXYCODE_LLM_BASE_URL`/`_MODEL`/`RXYCODE_API_KEY`**
   — when the base URL is set, worker startup writes a real openai-compatible
   model entry into `RXYCODE_DATA_DIR/config.yaml` (the key stays an
@@ -53,11 +76,14 @@
   throttle lives at the app layer because stock `caddy:2` ships no limiter
   plugin. `uvicorn proxy_headers=True` maps the gateway's X-Forwarded-For
   into the client key.
-- **Upgrade/rollback reseeds, not just recreates**: `up -d` alone leaves
-  `repo-src` stale. The runbook sequence clears `.rxy-sync-done` +
-  `.migrate-done`, re-streams the tar, writes the marker with the new commit
-  hash, re-runs migrate + webbuild, then force-recreates api/worker/gateway
-  so consumers never boot a half-swapped tree.
+- **Upgrade/rollback reseeds EXACTLY, not just overlays**: `up -d` alone
+  leaves `repo-src` stale, and a plain `tar -xf -` overlay keeps files the
+  new revision deleted (stale modules, stale alembic revisions). The
+  runbook sequence clears `.migrate-done`, **empties the `repo-src` volume**
+  (`find /repo -mindepth 1 -delete`), re-streams the tar, stamps
+  `.rxy-sync-done` with the new commit hash, drops the stale `index.html`,
+  re-runs migrate + webbuild, then force-recreates api/worker/gateway — the
+  seeded tree is an exact copy of the selected checkout.
 - **MinIO is `bitnamilegacy/minio:2025.7.23`** — minio/minio release tags
   were pulled from Docker Hub in 2025; the bitnamilegacy tag keeps the
   `MINIO_ROOT_*` env contract. The image runs as uid 1001; the volume MUST
@@ -71,9 +97,11 @@
   to pass-through; non-empty requires `X-Preview-Token` header match.
 - **Ports/secrets**: every published port names a loopback `host_ip`
   explicitly — the validator and the CI invariant both refuse a bare
-  `8000:8000` (that means 0.0.0.0). Secrets use `${VAR:?msg}` required
-  interpolation — zero literals. Tests use per-test project names + free
-  ports so the rxy-w2c* dev containers are never touched.
+  `8000:8000` (that means 0.0.0.0). Secrets use `${VAR}` interpolation —
+  zero literals, and the validator/CI pattern now also covers
+  `api_key`/`credential` names so a literal `RXYCODE_API_KEY: sk-...` is
+  refused (negative test proves it). Tests use per-test project names +
+  free ports so the rxy-w2c* dev containers are never touched.
 
 ## Deviations / honest labels
 

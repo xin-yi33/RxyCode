@@ -164,7 +164,7 @@ for _entry in (
 COMPOSE_FILE = REPO / "infra" / "compose" / "compose.yaml"
 STACK_TIMEOUT = 1500.0
 SERVICE_MISSING_GRACE = 120.0
-SECRET_ENV_KEY = re.compile(r"(?i)(password|secret|token)")
+SECRET_ENV_KEY = re.compile(r"(?i)(password|secret|token|api[_-]?key|credential)")
 ENV_REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::[-?][^}]*)?\}$")
 LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
 
@@ -488,6 +488,19 @@ def test_w7_c05_negative(tmp_path: Path) -> None:
     with pytest.raises(ComposeRefused):
         validate_compose_config(merged_literal)
 
+    # A literal PROVIDER credential is refused the same way — names like
+    # RXYCODE_API_KEY carry secrets and must interpolate, never literal.
+    apikey_override = tmp_path / "apikey.override.yaml"
+    apikey_override.write_text(
+        "services:\n  worker:\n    environment:\n"
+        "      RXYCODE_API_KEY: sk-literal-private-credential\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    merged_key = _config_no_interpolate(project, env, extra_files=(apikey_override,))
+    with pytest.raises(ComposeRefused):
+        validate_compose_config(merged_key)
+
     # (a3) A published port without an explicit loopback host_ip listens on
     # every interface — `8000:8000` means 0.0.0.0 and must be refused, not
     # skipped.
@@ -564,3 +577,173 @@ def test_w7_c05_negative(tmp_path: Path) -> None:
         allowed_origins=["http://localhost"],
     )
     assert app.state.mode == "local"
+
+
+# ---------------------------------------------------------------------------
+# Drain internals — the deployed worker's honest-failure semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
+    """A store outage must not silently kill the watchdog while the turn
+    keeps running: one failed renewal retries, renewals broken past the TTL
+    cancel the turn and report the lost lease, and LeaseRejected /
+    cancel_requested are the intentional exits."""
+    import asyncio
+
+    import rxycode_worker.drain as drain
+    from rxycode_worker import supervisor
+
+    async def _drive() -> None:
+        # (a) One transient failure, then recovery — the turn survives; the
+        # watchdog must keep living instead of dying on the first error.
+        calls = {"n": 0}
+
+        def flaky(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("db blip")
+            return None
+
+        monkeypatch.setattr(supervisor, "renew_lease", flaky)
+        monkeypatch.setattr(drain, "run_status", lambda *_a, **_k: "running")
+        turn = asyncio.ensure_future(asyncio.sleep(5.0))
+        watcher = asyncio.ensure_future(
+            drain._lease_watchdog("db", "r1", "w1", 1, lease_ttl=3, turn=turn)
+        )
+        await asyncio.wait_for(watcher, timeout=15)
+        assert calls["n"] >= 2
+        assert not turn.cancelled()
+
+        # (b) Renewals broken past the TTL: the lease has expired — the turn
+        # is cancelled instead of running unowned, and _LeaseRenewalLost
+        # (not a silent return) reports it.
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(supervisor, "renew_lease", broken)
+        turn2 = asyncio.ensure_future(asyncio.sleep(60))
+        with pytest.raises(drain._LeaseRenewalLost):
+            await drain._lease_watchdog(
+                "db", "r2", "w1", 1, lease_ttl=2, turn=turn2
+            )
+        with pytest.raises(asyncio.CancelledError):
+            await turn2
+
+        # (c) The fence itself refusing (a newer owner claimed the row) is
+        # an intentional exit — LeaseRejected propagates, turn cancelled.
+        def rejected(*_args, **_kwargs):
+            raise supervisor.LeaseRejected("epoch moved")
+
+        monkeypatch.setattr(supervisor, "renew_lease", rejected)
+        turn3 = asyncio.ensure_future(asyncio.sleep(60))
+        with pytest.raises(supervisor.LeaseRejected):
+            await drain._lease_watchdog(
+                "db", "r3", "w1", 1, lease_ttl=2, turn=turn3
+            )
+        with pytest.raises(asyncio.CancelledError):
+            await turn3
+
+        # (d) An explicit cancel request cancels the turn too.
+        monkeypatch.setattr(supervisor, "renew_lease", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            drain, "run_status", lambda *_a, **_k: "cancel_requested"
+        )
+        turn4 = asyncio.ensure_future(asyncio.sleep(60))
+        with pytest.raises(drain._RunCancelled):
+            await drain._lease_watchdog(
+                "db", "r4", "w1", 1, lease_ttl=2, turn=turn4
+            )
+        with pytest.raises(asyncio.CancelledError):
+            await turn4
+
+    asyncio.run(_drive())
+
+
+def test_w7_c05_projection_vocabulary() -> None:
+    """Drained runs project protocol notifications into the reducer's
+    vocabulary — assistant.final/delta with text, tool.* rows keyed by
+    call_id, and waiting-for-input reaching both question and approval
+    buckets. The ``notify.*`` audit rows alone never reached the UI."""
+    from rxycode_worker import drain
+
+    tool_names: dict[str, str] = {}
+
+    rows = drain._projection_rows(
+        "event/final",
+        {
+            "text": "the answer",
+            "run_id": "r9",
+            "input_tokens": 11,
+            "output_tokens": 7,
+        },
+        tool_names,
+        run_id="r9",
+    )
+    assert rows == [
+        (
+            "assistant.final",
+            {
+                "text": "the answer",
+                "run_id": "r9",
+                "input_tokens": 11,
+                "output_tokens": 7,
+            },
+        )
+    ]
+
+    rows = drain._projection_rows(
+        "event/message_delta", {"text": "chunk"}, tool_names, run_id="r9"
+    )
+    assert rows == [("assistant.delta", {"text": "chunk", "intermediate": False})]
+
+    drain._projection_rows(
+        "event/tool_begin",
+        {"call_id": "c1", "tool_name": "shell"},
+        tool_names,
+        run_id="r9",
+    )
+    rows = drain._projection_rows(
+        "event/tool_end",
+        {"call_id": "c1", "ok": False, "summary": "exit 1"},
+        tool_names,
+        run_id="r9",
+    )
+    assert rows[0][0] == "tool.failed"
+    assert rows[0][1]["call_id"] == "c1"
+    assert rows[0][1]["tool"] == "shell"
+
+    rows = drain._projection_rows(
+        "event/agent_needs_input",
+        {"request_id": "ap1", "preview": "approve rm -rf?"},
+        tool_names,
+        run_id="r9",
+    )
+    kinds = {kind for kind, _payload in rows}
+    assert kinds == {"question.requested", "approval.requested"}
+    approval = dict(rows)["approval.requested"]
+    assert approval["approval_id"] == "ap1"
+
+    rows = drain._projection_rows(
+        "event/todo_updated",
+        {
+            "snapshot": {
+                "items": [
+                    {"id": "t1", "content": "build it", "status": "in_progress"}
+                ]
+            }
+        },
+        tool_names,
+        run_id="r9",
+    )
+    assert rows == [
+        (
+            "todo.updated",
+            {"todo_id": "t1", "title": "build it", "status": "in_progress"},
+        )
+    ]
+
+    rows = drain._projection_rows(
+        "event/plan", {"steps": ["scan", "patch"]}, tool_names, run_id="r9"
+    )
+    assert [kind for kind, _payload in rows] == ["plan.updated", "plan.updated"]

@@ -191,21 +191,24 @@ $COMPOSE stop api worker gateway
 # 2. Clear the ordering markers — a stale marker would release api/worker on
 #    old code. `run --no-deps` mounts the same volumes in a throwaway
 #    container (reposync/migrate are one-shot; `exec` needs a running one).
-$COMPOSE run --rm --no-deps --entrypoint sh reposync -c 'rm -f /repo/.rxy-sync-done'
-$COMPOSE run --rm --no-deps --entrypoint sh migrate -c 'rm -f /boot/.migrate-done'
+$COMPOSE run --rm --no-deps -T migrate sh -c 'rm -f /boot/.migrate-done'
 
-# 3. Reseed repo-src from the new checkout; the marker content is the new
-#    commit hash, so the seeded state is versioned. `start reposync` first —
-#    with the marker gone it runs its wait loop, ready for `exec`.
-$COMPOSE start reposync
+# 3. Reseed repo-src as an EXACT copy of the new checkout: a plain
+#    `tar -xf -` overlay would keep files the new revision deleted (stale
+#    modules, stale migration revisions). Empty the volume first, then
+#    stream the tar — its final entry is the `.rxy-sync-done` marker.
+$COMPOSE run --rm --no-deps -T reposync sh -c 'find /repo -mindepth 1 -delete'
 tar --exclude=.git --exclude=node_modules --exclude=__pycache__ \
     --exclude=dist --exclude=build -cf - . | \
-  $COMPOSE exec -T reposync sh -c 'tar -xf - -C /repo'
-git rev-parse HEAD | $COMPOSE exec -T reposync sh -c 'cat > /repo/.rxy-sync-done'
+  $COMPOSE run --rm --no-deps -T reposync sh -c 'tar -xf - -C /repo'
+git rev-parse HEAD | $COMPOSE run --rm --no-deps -T reposync \
+  sh -c 'cat > /repo/.rxy-sync-done'
 
-# 4. Re-run migrations and rebuild the SPA against the new source
-$COMPOSE run --rm migrate
-$COMPOSE run --rm webbuild
+# 4. Re-run migrations and rebuild the SPA against the new source (drop the
+#    stale index.html first so a restarting gateway can never serve it)
+$COMPOSE run --rm --no-deps -T webbuild sh -c 'rm -f /dist/index.html'
+$COMPOSE run --rm --no-deps migrate
+$COMPOSE run --rm --no-deps webbuild
 
 # 5. Recreate the long-running services — api/worker wait on the fresh
 #    .migrate-done, gateway on the fresh index.html

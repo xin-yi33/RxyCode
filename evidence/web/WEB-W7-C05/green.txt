@@ -1,13 +1,13 @@
 === WEB-W7-C05 green evidence ===
 2026-10-18 (all runs on this checkout, Docker Engine 29.7.2 / Compose v5.5.1)
-Post-remediation state (audit round-1 findings fixed; drain worker shipped).
+Post-remediation state (audit round-1 AND round-2 findings fixed).
 
---- python -m pytest tests/web/w7/test_w7_c05_unit.py -q ---
-2 passed in 306.90s (0:05:06)
---- python -m pytest tests/web/w7/test_w7_c05_module.py -q ---
-1 passed in 372.84s (0:06:12)
+--- r2 run: python -m pytest tests/web/w7/test_w7_c05_unit.py tests/web/w7/test_w7_c05_module.py -x ---
+5 passed in 486.91s (0:08:06)   [unit 4: contract, negative incl. literal
+RXYCODE_API_KEY refusal, lease-watchdog semantics, projection vocabulary;
+module 1: real compose drain incl. the sandbox-target fail-closed leg]
 
-The 3 tests are real, not skipped: docker CLI + engine were checked and
+The 5 tests are real, not skipped: docker CLI + engine were checked and
 present; each docker test spawned its own `rxyw7c05-*` / `rxyw7c05i-*`
 project with random secrets + free loopback ports, then `down -v`'d itself.
 
@@ -73,6 +73,15 @@ project with random secrets + free loopback ports, then `down -v`'d itself.
   `docker compose up -d worker` recreates the SIGKILLed container; after the
   pip bootstrap it reaches healthy, and a THIRD create_run is claimed by the
   revived drain (lease_owner = new drain-<newcontainer>-<pid>).
+
+--- target gate (fail closed, never spawn) ---
+  A `sandbox:c05-unshipped` run was claimed by the drain, committed
+  `failed` with run.error "target 'sandbox:...' is not local:*", and
+  journaled NO event/agent_started — isolation never silently downgraded.
+  Mirrored on host dev DB: sandbox run -> worker.lease + usage.updated +
+  run.error + failed; local run -> agent_started + assistant.delta +
+  assistant.final {text:"pong", input_tokens:9165, output_tokens:1503} +
+  agent_done + usage.updated + succeeded (real provider).
 
 --- repo seeding note (why not a bind mount) ---
   This Docker Desktop does not mount Windows host paths. The checkout is
