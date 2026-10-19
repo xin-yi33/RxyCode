@@ -825,10 +825,13 @@ def test_w7_c05_projection_terminal_survives_cap() -> None:
 
 
 def test_w7_c05_execution_gate() -> None:
-    """Audit r3-F1: the placement gate IS the public rule in code — the
-    shipped cloud-only mode executes only tenant-bound cloud:* targets and
-    refuses local:*, sandbox:*, cross-tenant and full* placements; the
-    dev opt-in keeps local:* confined rather than host-free."""
+    """The placement gate IS the public rule in code — the shipped
+    cloud-only mode executes only tenant-bound cloud:* targets and
+    refuses local:*, sandbox:*, cross-tenant placements; the dev opt-in
+    keeps local:* confined rather than host-free. Permission profile is an
+    approval semantic only: full/full_auto on a valid tenant cloud target
+    maps to full_auto INSIDE the same sandbox — it never widens placement,
+    mounts, network, or the writable domain."""
     from rxycode_worker import drain
 
     refuse = drain._UnsupportedTarget
@@ -866,16 +869,24 @@ def test_w7_c05_execution_gate() -> None:
     for target in ("local:c05", "", "sandbox:ws", "cloud::w1", "cloud:other:w1"):
         with pytest.raises(refuse):
             drain._execution_gate(target, "auto_edit", execution_mode="cloud-only", tenant_id="t1")
-    # Full authority implies unsandboxed host execution — refused even on a
-    # well-formed tenant-bound cloud target.
+    # Full = no-approval mode inside the sandbox, never unsandboxed host
+    # authority: valid tenant-owned cloud targets accept it and map to the
+    # existing full_auto permission mode.
     for profile in ("full", "full_auto"):
-        with pytest.raises(refuse):
+        assert (
             drain._execution_gate(
                 "cloud:t1:w1",
                 profile,
                 execution_mode="cloud-only",
                 tenant_id="t1",
             )
+            == "full_auto"
+        )
+    # But Full cannot launder a bad placement — cross-tenant, non-cloud
+    # and undeclared targets still refuse under a full profile.
+    for target in ("local:w1", "cloud:other:w1", "sandbox:ws", "cloud::w1", ""):
+        with pytest.raises(refuse):
+            drain._execution_gate(target, "full_auto", execution_mode="cloud-only", tenant_id="t1")
 
     # sandboxed-local (dev opt-in): local:* runs CONFINED, cloud:* tenant-bound
     # runs too; cross-tenant and undeclared placements still refuse.

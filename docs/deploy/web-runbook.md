@@ -33,15 +33,24 @@ Honest notes:
 - **Turn isolation (public rule)**: `RXYCODE_WORKER_EXECUTION=cloud-only`
   means only `cloud:{tenant}:{workspace}` targets execute — the tenant
   segment must equal the run's own `tenant_id` (a cross-tenant target is
-  refused), and `full`/`full_auto` permission profiles are refused outright:
-  Full authority means unsandboxed host execution, which does not exist on
-  this stack. Accepted targets run inside `rxycode_runner.sandbox.userns`
-  (bubblewrap): `--unshare-user --unshare-pid --unshare-ipc --unshare-uts`,
-  `--clearenv` + an explicit setenv passlist, system paths and the checkout
-  read-only, only the per-tenant workspace writable, `--die-with-parent`
-  tree reaping on cancel/stop. The agent's tool calls happen inside that
-  namespace — sibling workspaces and the worker's own data dir are simply
-  not mounted. If bwrap/userns is missing the provider raises
+  refused). Permission profile is an approval semantic only:
+  `full`/`full_auto` maps to the existing no-approval `full_auto` mode
+  INSIDE the same sandbox — it can never widen mounts, network, or the
+  writable domain. Accepted targets run inside `rxycode_runner.sandbox.userns`
+  (bubblewrap): `--unshare-user --unshare-pid --unshare-ipc --unshare-uts
+  --unshare-net`, `--clearenv` + an explicit setenv passlist, system paths
+  and the checkout read-only (optional task-private tmpfs overlays for
+  package installs), the per-tenant workspace plus a task-private home
+  and control dir writable, `--die-with-parent` tree reaping on
+  cancel/stop. The agent's tool calls happen inside that namespace —
+  sibling workspaces and the worker's own data dir are simply not mounted.
+  Control-plane credentials never enter the sandbox: events, run reads,
+  steer commands and durable approvals travel the parent-owned UNIX
+  control socket (`rxycode_worker.ctl`), and outbound connectivity rides
+  a private net namespace whose only door is the parent's filtered
+  CONNECT proxy (`rxycode_worker.egress` + `netrelay`) — metadata,
+  private ranges and non-80/443 egress die there for every profile.
+  If bwrap/userns is missing the provider raises
   `IsolationUnavailable` and the run fails honestly; there is no host
   fallback. The worker's `security_opt: seccomp=unconfined` exists solely
   because Docker's default seccomp profile forbids the `unshare`/`mount`
@@ -262,10 +271,12 @@ named revision via the same module when you only need one step back.)
   drain worker claims the durable run and drives the turn inside the per-run
   userns sandbox — no stdio client needed. Without a reachable endpoint the
   run still reaches a real terminal state (`failed`, not a fabricated
-  `succeeded`), recorded by `test_w7_c05_module`. `local:*` targets and
-  `full`/`full_auto` profiles are refused on this stack by design; on a
-  development host set `RXYCODE_WORKER_EXECUTION=sandboxed-local` to let
-  `local:*` drain (still confined — the drain never executes unconfined).
+  `succeeded`), recorded by `test_w7_c05_module`. `local:*` targets are
+  refused on this stack by design; `full`/`full_auto` profiles resolve to
+  the no-approval `full_auto` mode inside the same sandbox (isolation is
+  never an approval decision). On a development host set
+  `RXYCODE_WORKER_EXECUTION=sandboxed-local` to let `local:*` drain
+  (still confined — the drain never executes unconfined).
 - The compose Postgres is for the web stack — the dev containers
   (`rxy-w2c01-pg` etc.) are untouched; use a distinct `-p` project name and
   the shipped loopback ports so nothing collides.
