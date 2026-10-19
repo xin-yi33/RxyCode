@@ -600,3 +600,38 @@ findings, both remediated and re-verified:
   contains ``--api-key confined``, ``--api-key-file confined`` and
   ``Authorization: Digest confined`` — no ``AUDIT_*`` substring.
 - `python -m ruff check` on drain.py / tests/web/w8: clean.
+
+## Audit round 12 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 3 findings)
+
+r12 audited `3d40152f` (the depth-cap hardening `dbb83d7c` landed
+mid-audit; the audit's own deep-nesting probe had already surfaced
+the signal it fixes). Three new P1 findings, all remediated:
+
+1. **[P1] Nested parameter defaults leaked** — ``--api-key
+   ${_A:-${_B:-} KEY}``: the ``${...}`` handler searched for the
+   first ``}`` and stranded ``KEY}``. ``${`` now opens a brace-depth
+   counter in ``_shell_word_end`` (bare ``{``/``}`` inside count too,
+   matching ``${x/{a}/b}``-style patterns; interleaved ``$(``/``${``
+   depths are tracked independently).
+2. **[P1] ANSI-C ``$'...'`` truncated redaction** — ``--password
+   $'a\' KEY'`` is ONE argument in bash (``\'`` is an escaped quote);
+   treating it as a POSIX single quote closed the span at ``\'`` and
+   left ``KEY'`` mounted. A ``'`` preceded by ``$`` now takes the
+   escape-aware scan used for ``"``/`````` `` — plain ``'...'`` keeps
+   POSIX semantics (``\`` literal inside).
+3. **[P1] Digest quoted pairs with ``\"`` still exposed
+   ``response=``** — ``username="a\"b"`` is a valid Digest
+   quoted-string; the pair-value alternative closed at the escaped
+   quote and left the trailing ``response="..."`` mounted. The pair
+   value now accepts ``\"(?:\.|[^"\])*\"`` — escaped chars inside
+   the quoted value are skipped wholesale.
+
+## Test evidence (r12)
+
+- `tests/web/w8`: 58 passed, 3 environment skips — new legs:
+  ``${_A:-${_B:-} KEY}`` nested expansion consumed,
+  ``$'a\' KEY'`` ANSI-C word consumed, ``username="a\"b"`` escaped
+  pair followed by ``response=`` fully consumed.
+- Audit repro through ``_prepare_child_data_dir``-equivalent
+  ``_scrub_credential_values`` verified for all three.
+- `python -m ruff check`: clean.

@@ -1424,7 +1424,7 @@ _AUTH_HEADER_NAKED_RE = re.compile(
 _AUTH_DIGEST_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization)(\s*[:=]\s*)digest\s+"
     r"(?:[A-Za-z_][A-Za-z0-9_-]*\s*=\s*"
-    r"(?:\\?\"[^\"]*\\?\"|'[^']*'|[^,\s'\"]+)\s*,?\s*)+"
+    r"(?:\\?\"(?:\\.|[^\"\\])*\\?\"|'[^']*'|[^,\s'\"]+)\s*,?\s*)+"
 )
 #: A bare auth scheme + token-length value — ``Bearer eyJ...`` —
 #: entropy floor keeps prose ("the bearer of bad news") alive.
@@ -1446,7 +1446,8 @@ def _shell_word_end(text: str, start: int) -> int:
     value is scanned with a real depth counter (audit W8-r10)."""
     i = start
     n = len(text)
-    depth = 0
+    depth = 0   # ``$(``/``<(``/``>(`` paren substitution depth
+    bdepth = 0  # ``${`` parameter-expansion brace depth
     while i < n:
         c = text[i]
         if c == "\\" and i + 1 < n:
@@ -1455,17 +1456,20 @@ def _shell_word_end(text: str, start: int) -> int:
             # continuation (audit W8-r11).
             i += 2
             continue
-        if c == "'":
-            # Single quotes end at the next ``'`` — ``\`` is literal
-            # inside them, never an escape.
+        if c == "'" and (i == start or text[i - 1] != "$"):
+            # Plain single quotes end at the next ``'`` — ``\`` is
+            # literal inside them, never an escape. (``$'...'`` is
+            # ANSI-C quoting and falls through to the escape-aware
+            # scan below — audit W8-r12.)
             j = text.find(c, i + 1)
             i = (j + 1) if j != -1 else n
             continue
-        if c in "\"`":
-            # ``\"``/``\` `` are ESCAPED quote chars — a ``find`` that
-            # ignores the backslash count closes the span early and
-            # strands the rest of a Digest/header value (audit
-            # W8-r11). Skip quotes preceded by an odd run of ``\``.
+        if c in "'\"`":
+            # ``\"``/``\` ``/``$\'`` are ESCAPED quote chars — a
+            # ``find`` that ignores the backslash count closes the
+            # span early and strands the rest of a Digest/header or
+            # ANSI-C value (audit W8-r11/r12). Skip quotes preceded
+            # by an odd run of ``\``.
             j = i + 1
             while True:
                 j = text.find(c, j)
@@ -1486,8 +1490,10 @@ def _shell_word_end(text: str, start: int) -> int:
             i += 2
             continue
         if c == "$" and i + 1 < n and text[i + 1] == "{":
-            j = text.find("}", i + 2)
-            i = (j + 1) if j != -1 else n
+            # ``${...}`` nests too — ``${_A:-${_B:-} K}`` stops at the
+            # balanced close, not the first ``}`` (audit W8-r12).
+            bdepth += 1
+            i += 2
             continue
         if c in "<>" and i + 1 < n and text[i + 1] == "(":
             # Process substitution ``<(cmd)``/``>(cmd)`` is a WORD,
@@ -1501,6 +1507,13 @@ def _shell_word_end(text: str, start: int) -> int:
                 depth += 1
             elif c == ")":
                 depth -= 1
+            i += 1
+            continue
+        if bdepth:
+            if c == "{":
+                bdepth += 1
+            elif c == "}":
+                bdepth -= 1
             i += 1
             continue
         if c in " \t\n;|&<>":

@@ -2564,3 +2564,42 @@ def test_w8_c01_scrub_digest_auth_header() -> None:
     out = drain._scrub_inline_secrets(s)
     assert "AUDIT_DIGEST_RESP" not in out
     assert "Authorization: Digest confined" in out
+
+
+def test_w8_c01_scrub_nested_parameter_expansion() -> None:
+    """Audit W8-r12: ``${...}`` nests — ``${_A:-${_B:-} KEY}`` must be
+    consumed to the balanced close; a first-``}`` match stranded
+    ``KEY}`` mounted."""
+    import rxycode_worker.drain as drain
+
+    s = "exec server --api-key ${_RXY_A:-${_RXY_B:-} AUDIT_PARAM_KEY} -v"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_PARAM_KEY" not in out
+    assert out == "exec server --api-key confined -v"
+
+
+def test_w8_c01_scrub_ansi_c_quoted_value() -> None:
+    """Audit W8-r12: ``$'a\' KEY'`` is ONE argument — ANSI-C quoting
+    honors ``\'``; treating it as a POSIX single quote strands the
+    secret tail."""
+    import rxycode_worker.drain as drain
+
+    s = "exec server --password $'a\\' AUDIT_ANSI_KEY'"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_ANSI_KEY" not in out
+    assert out == "exec server --password confined"
+
+
+def test_w8_c01_scrub_digest_escaped_quote_pair() -> None:
+    """Audit W8-r12: a Digest pair value may itself contain ``\\"`` —
+    ``username="a\\"b"`` — closing the pair at the escaped quote
+    stranded the trailing ``response=`` pair."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        'curl -H "Authorization: Digest username=\\"a\\\\\\"b\\",'
+        ' response=\\"AUDIT_RESP3\\"" x'
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_RESP3" not in out
+    assert "Digest confined" in out
