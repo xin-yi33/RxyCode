@@ -52,3 +52,20 @@ Five findings, all fixed in pending commit:
   `（证据: …）` citations must resolve to ≥1 existing path; case-study
   token counts re-pointed to self-audit.md (which contains them) and
   stale numbers corrected (drain 2400 行, 17 轮/60 条审计).
+
+
+## Audit r2 remediation (2026-10-19, same Codex session)
+
+Four findings, all fixed in pending commit:
+
+- **Mixed working dirs/compose files in docs**: every command now runs
+  from the repo root with explicit `-f infra/compose/compose.yaml
+  -p rxyweb` (root has an unrelated legacy `docker-compose.yml`).
+- **Seeded demo tenant unreachable by the logged-in user**: demo script
+  rewritten into two honest paths — OAuth login → `/api/v1/me` → seed
+  the run into YOUR tenant/session, or (OAuth absent) an explicitly
+  backend-only psql inspection path. No more fake `demo-tenant` SSE.
+- **Finding total corrected**: 60 → 63 (per-round counts in NOTES.md:
+  8+7+5+5+5+3+2+3+3+3+3+3+4+4+4+1).
+- **`input/output tokens` metric format**: `_METRIC` now accepts an
+  optional input|output|total qualifier before `tokens`.

@@ -27,7 +27,8 @@ _TEST_REF = re.compile(r"tests/(?:web|integration|unit|test_)[\w./-]*\.py")
 # or `（证据: …）`/`(evidence: …)` on the same line; TBD/占位/BLOCKED mark an
 # honest placeholder.
 _METRIC = re.compile(
-    r"\d[\d.,]*\s*(%|ms|s\b|min|x\b|tokens?|commits?|runs?|tests?|"
+    r"\d[\d.,]*\s*(?:(?:input|output|total)\s+)?"
+    r"(%|ms|s\b|min|x\b|tokens?|commits?|runs?|tests?|"
     r"次|条|卡|轮|个|项|行|张|分钟|小时|秒|工程日)"
 )
 _CITATION = re.compile(r"\[[^\]]+\]\(|证据[:：]|evidence[:=]|TBD|占位|BLOCKED")

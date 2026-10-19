@@ -18,17 +18,17 @@ RxyCode Web 是同一份 headless 核心（`Session`/`AgentV2`）上的多租户
 
 前置：Docker Engine（含 Compose v2）、一个可写的工作目录、可选的 LLM 凭据。
 
-1. 克隆本分支并进入 `infra/compose/`。
+1. 克隆本分支；**以下命令一律在仓库根目录执行**（仓库根部另有一个与本卡无关的遗留 `docker-compose.yml`，不带 `-f` 会选错文件）。统一约定 `-f infra/compose/compose.yaml -p rxyweb`：
 2. 必填环境变量（compose 会拒绝缺失值）：
    `RXYCODE_POSTGRES_PASSWORD`、`RXYCODE_MINIO_ROOT_USER`、`RXYCODE_MINIO_ROOT_PASSWORD`、`RXYCODE_WEB_SECRET`（≥32 字节）。
 3. 可选：`RXYCODE_LLM_BASE_URL` + `RXYCODE_LLM_MODEL` + `RXYCODE_API_KEY`——不配则 turn 在 provider 边界诚实失败（`failed`，不是假成功）。
-4. `docker compose up -d`——注意这一步只拉起各服务的**等待循环**：`reposync`/`migrate`/`webbuild`/`api`/`worker` 都在等 `repo-src` 卷里的 `.rxy-sync-done` 标记，本机不灌源码则栈永远停在这里。
+4. `docker compose -f infra/compose/compose.yaml -p rxyweb up -d`——注意这一步只拉起各服务的**等待循环**：`reposync`/`migrate`/`webbuild`/`api`/`worker` 都在等 `repo-src` 卷里的 `.rxy-sync-done` 标记，本机不灌源码则栈永远停在这里。
 5. 播种代码卷（把当前 checkout tar 进 `repo-src`；精确命令见 `docs/deploy/web-runbook.md` Bring-up 节）：
 
    ```bash
    tar --exclude=.git --exclude=node_modules --exclude=__pycache__ \
        --exclude=dist --exclude=build -cf - . | \
-     docker compose -f infra/compose/compose.yaml -p <proj> exec -T reposync \
+     docker compose -f infra/compose/compose.yaml -p rxyweb exec -T reposync \
        sh -c 'tar -xf - -C /repo && touch /repo/.rxy-sync-done'
    ```
 
