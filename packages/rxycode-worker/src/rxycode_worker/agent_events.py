@@ -94,7 +94,7 @@ def publish_database_url(database_url: str) -> None:
 
 def clear_web_run() -> None:
     """Drop the process-local run coordinates. The database URL stays published."""
-    for key in ("tenant_id", "run_id", "parent_id", "session_id"):
+    for key in ("tenant_id", "run_id", "parent_id", "session_id", "channel"):
         _CURRENT.pop(key, None)
     _APPLIED.clear()
     # A new run remembered into this context never inherits the previous
@@ -108,14 +108,27 @@ def remember_web_run(
     run_id: str,
     parent_id: str = "",
     session_id: str = "",
+    channel: Any | None = None,
 ) -> None:
-    """Record the run a worker is executing so spawn can write its log."""
+    """Record the run a worker is executing so spawn can write its log.
+
+    ``channel`` is the confined-turn transport: a ``TurnChannel`` over the
+    parent-owned control socket. When set, journal/commands/span writes go
+    through it and NO platform database URL ever enters this process's
+    environment or context."""
     _CURRENT["database_url"] = database_url
     _CURRENT["tenant_id"] = tenant_id
     _CURRENT["run_id"] = run_id
     _CURRENT["parent_id"] = parent_id or session_id or run_id
     if session_id:
         _CURRENT["session_id"] = session_id
+    if channel is not None:
+        _CURRENT["channel"] = channel
+
+
+def current_channel() -> Any | None:
+    """The bound control channel when this process is a confined turn."""
+    return _CURRENT.get("channel")
 
 
 def bind_run(
@@ -190,8 +203,15 @@ def default_run_journal() -> RunJournal | None:
     import os
 
     database_url = _CURRENT.get("database_url") or os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
-    tenant_id = _CURRENT.get("tenant_id") or os.environ.get("RXYCODE_WEB_TENANT_ID", "")
-    run_id = _CURRENT.get("run_id") or os.environ.get("RXYCODE_WEB_RUN_ID", "")
+    tenant_id = _CURRENT.get("tenant_id") or os.environ.get(
+        "RXYCODE_WEB_TENANT_ID", os.environ.get("RXYCODE_TURN_TENANT", "")
+    )
+    run_id = _CURRENT.get("run_id") or os.environ.get(
+        "RXYCODE_WEB_RUN_ID", os.environ.get("RXYCODE_TURN_RUN_ID", "")
+    )
+    channel = _CURRENT.get("channel")
+    if channel is not None and tenant_id and run_id:
+        return RunJournal("", tenant_id, run_id, emitter=channel.emit)
     if not database_url or not tenant_id or not run_id:
         return None
     return RunJournal(database_url, tenant_id, run_id)
@@ -312,9 +332,20 @@ def load_command_events(database_url: str, run_id: str, after_seq: int) -> list[
 
 async def consume_persisted_commands(database_url: str, run_id: str) -> list[dict[str, object]]:
     """Deliver committed commands to the worker bound in this process."""
+    return await consume_commands_via(
+        lambda after: load_command_events(database_url, run_id, after), run_id
+    )
+
+
+async def consume_commands_via(
+    fetch: Any, run_id: str
+) -> list[dict[str, object]]:
+    """The same consume loop over any ``after_seq -> events`` fetch —
+    the confined turn passes its control-channel fetch and never touches
+    the database at all."""
     applied: list[dict[str, object]] = []
     after = _APPLIED.get(run_id, 0)
-    for event in load_command_events(database_url, run_id, after):
+    for event in fetch(after):
         result = await deliver_persisted_command(
             run_id,
             str(event["type"]),
@@ -331,17 +362,38 @@ async def consume_persisted_commands(database_url: str, run_id: str) -> list[dic
 class RunJournal:
     """Write agent lifecycle notifications into the web run log."""
 
-    def __init__(self, database_url: str, tenant_id: str, run_id: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        tenant_id: str,
+        run_id: str,
+        emitter: Any | None = None,
+    ) -> None:
         self.database_url = database_url
         self.tenant_id = tenant_id
         self.run_id = run_id
         self._tracer: Any | None = None
+        # ``emitter``: ``(event_type, payload) -> seq`` — the confined turn's
+        # control-channel transport. When set, the journal never imports or
+        # uses the platform database URL.
+        self._emitter = emitter
+
+    def _append(self, event_type: str, payload: dict[str, Any]) -> int:
+        if self._emitter is not None:
+            return int(self._emitter(event_type, payload) or 0)
+        from rxycode_server.events.store import append_event
+
+        return append_event(
+            self.database_url,
+            tenant_id=self.tenant_id,
+            run_id=self.run_id,
+            event_type=event_type,
+            payload=payload,
+        )
 
     def record(
         self, method: str, agent_id: str, payload: dict[str, Any], *, parent_id: str = ""
     ) -> int:
-        from rxycode_server.events.store import append_event
-
         body = dict(payload)
         body["agent_id"] = agent_id
         if parent_id:
@@ -354,13 +406,7 @@ class RunJournal:
         attempt = os.environ.get("RXYCODE_TURN_EPOCH", "")
         if attempt:
             body["attempt"] = attempt
-        seq = append_event(
-            self.database_url,
-            tenant_id=self.tenant_id,
-            run_id=self.run_id,
-            event_type=method,
-            payload=body,
-        )
+        seq = self._append(method, body)
         try:
             self._emit_span(method, agent_id, body)
         except Exception:
@@ -378,7 +424,9 @@ class RunJournal:
             from rxycode_worker import telemetry
 
             self._tracer = telemetry.Tracer(
-                telemetry.RunEventsSpanExporter(self.database_url, self.tenant_id),
+                telemetry.RunEventsSpanExporter(
+                    self.database_url, self.tenant_id, emitter=self._emitter
+                ),
                 service="rxycode-worker",
             )
         return self._tracer
@@ -389,19 +437,27 @@ class RunJournal:
         Resolution order, all scoped to THIS run — never a process-global
         guess: (1) the ``worker.run`` span opened by ``supervisor.claim``
         in this process; (2) the ``traceparent`` persisted in the run's
-        ``run.created`` event (survives a cross-process handoff and a
-        worker started before any env var existed); (3) the legacy env
-        channel — last resort only, and only when the run's own
-        ``run.created`` event PROVES it predates persisted traceparents
-        (``ParentLookup.run_event_found``).  A missing row or a failed
-        lookup returns ``None`` — an unparented span — because the env
-        value could name ANOTHER run's span.
+        ``run.created`` event — or, inside a confined turn, the
+        ``RXYCODE_TURN_TRACEPARENT`` the drain passed in (the same value
+        the ``run.created`` row carries; the turn has no database to look
+        it up with); (3) the legacy env channel — last resort only, and
+        only when the run's own ``run.created`` event PROVES it predates
+        persisted traceparents (``ParentLookup.run_event_found``).  A
+        missing row or a failed lookup returns ``None`` — an unparented
+        span — because the env value could name ANOTHER run's span.
         """
         from rxycode_worker import supervisor, telemetry
 
         pair = supervisor._OPEN_RUN_SPANS.get(self.run_id)
         if pair is not None:
             return pair[1].context
+        if self._emitter is not None:
+            # Confined turn: no database. The drain already resolved the
+            # run-scoped traceparent and passed it in — the identical value
+            # ``parent_for_run`` would have read back from run.created.
+            return telemetry.parse_traceparent(
+                os.environ.get("RXYCODE_TURN_TRACEPARENT", "")
+            )
         lookup = telemetry.parent_for_run(self.database_url, self.run_id)
         if lookup.context is not None:
             return lookup.context

@@ -93,6 +93,7 @@ def request_approval(
     approval_id: str | None = None,
     command: str = "",
     workdir: str = "",
+    source_call_id: str = "",
 ) -> dict[str, Any]:
     """Persist the ask, emit approval.requested, and release the worker lease."""
     engine = _engine(database_url)
@@ -129,6 +130,7 @@ def request_approval(
                     "attempt_id": stored_attempt,
                     "command": command,
                     "workdir": workdir,
+                    "source_call_id": str(source_call_id or ""),
                     "revision": 0,
                 },
             )
@@ -220,6 +222,10 @@ def get_approval(database_url: str, *, tenant_id: str, approval_id: str) -> dict
                 "permission_scope": payload.get("permission_scope", ""),
                 "command": str(payload.get("command") or ""),
                 "workdir": str(payload.get("workdir") or ""),
+                "source_call_id": str(payload.get("source_call_id") or ""),
+                # The stored verbatim call arguments — resume executes THIS,
+                # not a summary (the run was approved for these exact args).
+                "arguments": dict(payload.get("arguments") or {}),
             }
     finally:
         engine.dispose()
@@ -284,9 +290,15 @@ def decide_approval(
                 raise ApprovalStale(row.id)
             if reason == "stale":
                 raise ApprovalStale(row.id)
+            run = _lock_run(db, tenant_id, row.run_id)
+            # A late decision must never resurrect a run that already moved
+            # on: the only live pairing is run.status == waiting_approval.
+            # A cancelled/terminal/re-claimed run makes this ask stale —
+            # "approve after cancel" cannot restart the operation.
+            if run.status != "waiting_approval":
+                raise ApprovalStale(row.id)
             row.status = decision
             row.revision = int(row.revision or 0) + 1
-            run = _lock_run(db, tenant_id, row.run_id)
             _append(
                 db,
                 run,

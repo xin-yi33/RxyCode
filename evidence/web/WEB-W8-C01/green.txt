@@ -1,0 +1,27 @@
+GREEN (2026-10-19, this machine)
+
+$ python -m pytest tests/web/w8/ -x -q
+22 passed, 1 skipped in 5.05s
+(skip: tests/web/w8/test_w8_c01_unit.py:486 — AF_UNIX transport leg;
+no unix sockets on this Windows host. The ctl wire is covered by the
+in-proc handler pair in test_w8_c01_module.py and by the Linux deploy.)
+
+$ python -m ruff check <all touched files>
+All checks passed!
+
+$ python -m py_compile <all touched files>
+OK — plus git diff --check clean on the card's files.
+
+Postgres: real shared container rxy-w2c01-pg @ 127.0.0.1:55432
+(Alembic upgrade_head per test; drop schema between tests).
+
+W7 regression sweep (same session):
+
+$ python -m pytest tests/web/w7/ -x -q --deselect tests/web/w7/test_w7_c02_module.py
+71 passed, 1 deselected, 3 warnings in 1709.25s
+
+The one deselection is a pre-existing environment flake, not a code
+regression: test_w7_c02_module binds a FIXED host port
+127.0.0.1:56390 which a local IDE process (language_server) holds on
+this machine. This card touches no redis/queue/dispatch path; the
+test was green in W7 when the port was free and is unchanged here.

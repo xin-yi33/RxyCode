@@ -10,14 +10,21 @@ user namespaces — inside a container that needs ``seccomp=unconfined`` for
 * ``--unshare-pid`` gives the turn its own PID namespace; killing the bwrap
   supervisor (or the namespace init dying) SIGKILLs the whole tree —
   ``--die-with-parent`` additionally reaps the child if the drain dies.
-* Only the mounts listed are visible: system paths read-only, the run's own
-  workspace read-write, a private tmpfs ``/tmp``. Sibling workspaces and the
-  worker's data dir are simply not mounted.
+* Only the mounts listed are visible: system paths read-only (with an
+  optional task-private tmpfs overlay over /usr, /var and /etc for
+  package-manager installs), the run's own workspace read-write, the
+  task-private home and control directories, a private tmpfs ``/tmp``.
+  Sibling workspaces and the worker's data dir are simply not mounted.
 * ``--clearenv`` + an explicit ``--setenv`` passlist decides which
-  environment reaches the turn; nothing else is inherited.
-* The network namespace is intentionally NOT unshared: the turn must reach
-  Postgres (journal/steer commands) and the configured LLM endpoint over
-  the compose network. Egress policy is the egress.py seam, not this layer.
+  environment reaches the turn; nothing else is inherited. Platform
+  database credentials are never in the passlist — the turn reaches the
+  control plane only through the parent-owned UNIX control socket.
+* ``--unshare-net`` gives the turn a private network namespace with only
+  loopback: it cannot reach Postgres, the metadata endpoint, the host's
+  admin ports, or another tenant's private address at all. Filtered
+  connectivity (model endpoint, package registries, public web) arrives
+  through the parent-side CONNECT proxy over the bound UNIX socket —
+  the egress.py seam — and no permission mode can remove that filter.
 
 This is the execution boundary the public stack calls its cloud sandbox:
 every accepted target (``cloud:{tenant}:{workspace}``) is created through
@@ -50,6 +57,55 @@ _DEFAULT_RO_BINDS = ("/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64", "/
 
 #: Probe result cache — a real unshare probe costs ~50ms once per process.
 _AVAILABLE: bool | None = None
+_OVERLAY_OK: bool | None = None
+
+#: System roots that MAY get a task-private tmpfs overlay (when the kernel
+#: permits userns overlayfs): apt/dpkg/pip installs then land on a
+#: per-task ephemeral layer — never on the host's own /usr.
+_OVERLAY_CANDIDATES = ("/usr", "/var", "/etc")
+
+
+def overlay_available(*, force: bool = False) -> bool:
+    """Probe a confined ``--overlay`` mount once. False = no task-private
+    system layer — callers drop the overlay roots (apt/dpkg then honestly
+    fail read-only) instead of widening anything else."""
+    global _OVERLAY_OK
+    if _OVERLAY_OK is not None and not force:
+        return _OVERLAY_OK
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        _OVERLAY_OK = False
+        return False
+    argv = [bwrap, "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid"]
+    mounted = False
+    for path in _DEFAULT_RO_BINDS:
+        if Path(path).exists():
+            argv += ["--ro-bind", path, path]
+            if path == "/usr":
+                mounted = True
+    if not mounted:
+        _OVERLAY_OK = False
+        return False
+    argv += [
+        "--overlay",
+        "/usr",
+        "/usr",
+        "--die-with-parent",
+        "--new-session",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--chdir",
+        "/tmp",
+        "/bin/true",
+    ]
+    try:
+        done = subprocess.run(argv, capture_output=True, check=False, timeout=15)
+        _OVERLAY_OK = done.returncode == 0
+    except Exception:
+        _OVERLAY_OK = False
+    return _OVERLAY_OK
 
 
 def userns_available(*, force: bool = False) -> bool:
@@ -93,11 +149,17 @@ def build_sandbox_argv(
     argv: Sequence[str],
     env: Mapping[str, str],
     ro_binds: Sequence[str] = _DEFAULT_RO_BINDS,
+    rw_binds: Sequence[str] = (),
+    overlay_roots: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv for one confined execution.
 
     Pure function — the shape is unit-testable without a namespace-capable
-    host. ``workdir`` is the ONLY writable path besides the private /tmp.
+    host. Writable mounts: ``workdir``, the task-private dirs in
+    ``rw_binds`` (home / control-socket dir), a private tmpfs ``/tmp`` and
+    the tmpfs overlays in ``overlay_roots``. The network namespace is
+    ALWAYS unshared — the confined process's only link to the outside is
+    the parent's filtered egress socket mounted via ``rw_binds``.
     """
     bwrap = shutil.which("bwrap") or "bwrap"
     workdir = Path(workdir).resolve()
@@ -111,6 +173,7 @@ def build_sandbox_argv(
         "--unshare-pid",
         "--unshare-ipc",
         "--unshare-uts",
+        "--unshare-net",
         "--die-with-parent",
         "--new-session",
         "--clearenv",
@@ -126,6 +189,15 @@ def build_sandbox_argv(
     for path in dict.fromkeys([*_DEFAULT_RO_BINDS, *ro_binds]):
         if Path(path).exists():
             out += ["--ro-bind", str(path), str(path)]
+    # Task-private system layer: tmpfs-upper overlays make apt/dpkg/pip
+    # writes succeed *inside this task's filesystem view* and discard at
+    # exit — the host's /usr stays untouched underneath.
+    for root in dict.fromkeys(overlay_roots):
+        if Path(root).is_dir():
+            out += ["--overlay", str(root), str(root)]
+    for path in dict.fromkeys(rw_binds):
+        if Path(path).exists():
+            out += ["--bind", str(path), str(path)]
     out += [
         "--bind",
         str(workdir),
@@ -266,16 +338,28 @@ class UsernsSandboxProvider:
         argv: Sequence[str],
         env: Mapping[str, str],
         ro_binds: Sequence[str] = _DEFAULT_RO_BINDS,
+        rw_binds: Sequence[str] = (),
+        overlay_roots: Sequence[str] = (),
     ) -> list[str]:
         """bwrap argv for one confined command — the async-spawn surface the
         drain uses. The sandbox record must exist and belong to the tenant.
-        ``ro_binds`` extends the system mounts with this host's code paths."""
+        ``ro_binds`` extends the system mounts with this host's code paths;
+        ``rw_binds`` mounts task-private writable dirs (home, control dir)
+        at their own host paths; ``overlay_roots`` adds tmpfs-upper system
+        layers (apt/dpkg write domain)."""
         record = self._load(sandbox_id, tenant_id)
         workdir = Path(str(record.get("workdir") or "")) or self._workdir(
             tenant_id, str(record.get("workspace_id") or "")
         )
         workdir.mkdir(parents=True, exist_ok=True)
-        return build_sandbox_argv(workdir=workdir, argv=argv, env=env, ro_binds=ro_binds)
+        return build_sandbox_argv(
+            workdir=workdir,
+            argv=argv,
+            env=env,
+            ro_binds=ro_binds,
+            rw_binds=rw_binds,
+            overlay_roots=overlay_roots,
+        )
 
     def exec(
         self,

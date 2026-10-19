@@ -46,12 +46,15 @@ Environment (read in ``worker_config_from_env``):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -102,11 +105,14 @@ _EXECUTION_MODES = ("cloud-only", "sandboxed-local")
 #: The confined turn reports its outcome here (inside the run workspace).
 _TURN_RESULT = ".turn-result.json"
 
+#: Loopback port the in-sandbox relay listens on — each turn's private net
+#: namespace means the same port never collides between runs.
+_EGRESS_PORT = 18881
+
 #: Environment the confined turn receives. Everything else is stripped by
 #: --clearenv — a run never inherits worker secrets it was not granted.
 _CHILD_ENV_PASS = (
     "PATH",
-    "HOME",
     "USER",
     "LANG",
     "LC_ALL",
@@ -114,12 +120,16 @@ _CHILD_ENV_PASS = (
     "PYTHONPATH",
     "PYTHONIOENCODING",
     "RXYCODE_UVLOOP",
-    "RXYCODE_WEB_DATABASE_URL",
     "RXYCODE_WORKER_MODEL",
-    "RXYCODE_LLM_BASE_URL",
     "RXYCODE_LLM_MODEL",
-    "RXYCODE_API_KEY",
 )
+# Never in the passlist, by design: RXYCODE_WEB_DATABASE_URL (the platform
+# control-plane credential — a confined turn reaches it only through the
+# parent-owned control socket), RXYCODE_API_KEY / RXYCODE_LLM_BASE_URL (the
+# platform model credential — the child's model entry is rewritten to the
+# loopback gateway and the PARENT injects real auth upstream), HOME (set
+# to a task-private dir per turn), and Docker socket / other tenants'
+# credentials (never mounted, never forwarded).
 
 
 @dataclass(frozen=True)
@@ -973,13 +983,36 @@ class _RunEmit:
     the channel must never lose its answer (audit r3-F4).
     """
 
-    def __init__(self, database_url: str, tenant_id: str, run_id: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        tenant_id: str,
+        run_id: str,
+        emitter: Any | None = None,
+    ) -> None:
         self.database_url = database_url
         self.tenant_id = tenant_id
         self.run_id = run_id
         self.tool_names: dict[str, str] = {}
         self.journaled = 0
         self.projected = 0
+        # Confined turns carry no platform credentials: ``emitter`` is the
+        # parent's TurnChannel.emit — the row lands on the same event log.
+        self._emitter = emitter
+
+    def _append(self, event_type: str, body: dict[str, Any]) -> None:
+        if self._emitter is not None:
+            self._emitter(event_type, dict(body))
+            return
+        from rxycode_server.events.store import append_event
+
+        append_event(
+            self.database_url,
+            tenant_id=self.tenant_id,
+            run_id=self.run_id,
+            event_type=event_type,
+            payload=body,
+        )
 
     @staticmethod
     def _params(notification: Any) -> dict[str, Any]:
@@ -1006,15 +1039,7 @@ class _RunEmit:
             return
         self.projected += 1
         try:
-            from rxycode_server.events.store import append_event
-
-            append_event(
-                self.database_url,
-                tenant_id=self.tenant_id,
-                run_id=self.run_id,
-                event_type=event_type,
-                payload=body,
-            )
+            self._append(event_type, body)
         except Exception:
             _LOG.warning(
                 "run %s: projection emit failed (%s)",
@@ -1033,14 +1058,9 @@ class _RunEmit:
         if self.journaled < _JOURNAL_CAP:
             self.journaled += 1
             try:
-                from rxycode_server.events.store import append_event
-
-                append_event(
-                    self.database_url,
-                    tenant_id=self.tenant_id,
-                    run_id=self.run_id,
-                    event_type=f"notify.{method}",
-                    payload={"text": str(notification)[:1500]},
+                self._append(
+                    f"notify.{method}",
+                    {"text": str(notification)[:1500]},
                 )
             except Exception:
                 _LOG.warning("run %s: journal emit failed", self.run_id, exc_info=True)
@@ -1050,14 +1070,16 @@ class _RunEmit:
             self.project(event_type, payload)
 
 
-async def _command_watchdog(database_url: str, run_id: str, turn: "asyncio.Task[Any]") -> None:
+async def _command_watchdog(fetch: Any, run_id: str, turn: "asyncio.Task[Any]") -> None:
     """Deliver persisted steer/child-cancel commands while the turn runs —
-    the drain equivalent of ``AgentWorker._watch_web_commands``."""
-    from rxycode_worker.agent_events import consume_persisted_commands
+    the drain equivalent of ``AgentWorker._watch_web_commands``. ``fetch``
+    is ``after_seq -> [event]``: DB reads on the trusted side, the control
+    channel inside the confined turn."""
+    from rxycode_worker.agent_events import consume_commands_via
 
     while not turn.done():
         try:
-            results = await consume_persisted_commands(database_url, run_id)
+            results = await consume_commands_via(fetch, run_id)
             for result in results:
                 if not (result.get("delivered") or result.get("accepted")):
                     _LOG.warning("run %s: command undeliverable: %s", run_id, result)
@@ -1180,9 +1202,15 @@ def _execution_gate(
     ``cloud:{tenant}:{workspace}`` targets execute — always inside the
     per-run userns sandbox — and the tenant segment must equal the run's
     own tenant, so a target can never bind another tenant's isolation
-    context. ``local:*``/``sandbox:*`` placements and ``full``/``full_auto``
-    profiles are refused: Full means unsandboxed host authority and that
-    does not exist on the public worker.
+    context. ``local:*``/``sandbox:*`` placements are refused on the public
+    worker.
+
+    Permission profile is an APPROVAL semantic only — never an isolation
+    level. ``full``/``full_auto`` on a valid tenant-owned cloud target
+    resolves to ``full_auto`` (no prompts) INSIDE the same sandbox: same
+    mounts, same private network namespace, same egress filter, same
+    writable domain. No profile can widen the kernel boundary; local-CLI
+    Full semantics live in ``core/sandbox/policy.py`` and are untouched.
 
     ``sandboxed-local`` is the development-host opt-in: ``local:*`` and
     tenant-bound ``cloud:*`` targets execute — still confined; the drain
@@ -1213,10 +1241,10 @@ def _execution_gate(
             f"target {target!r} is not local:*/cloud:*; refusing to execute "
             "without a declared placement"
         )
-    if execution_mode == "cloud-only" and profile in {"full", "full_auto"}:
-        raise _UnsupportedTarget(
-            f"profile {profile!r} requests unsandboxed host authority; refused on the public stack"
-        )
+    # Invariants on every accepted path: execution_target is the tenant's
+    # own cloud sandbox (userns is unconditionally created below — it can
+    # never be skipped), isolation_required always holds, and the returned
+    # mode maps `full`/`full_auto` to the existing no-approval mode.
     return _PERMISSION_MODE_MAP.get(profile)
 
 
@@ -1316,20 +1344,567 @@ async def _wait_child(
                 pass
 
 
+class _RunPaused(BaseException):
+    """The run parked itself for a durable approval: the ask is persisted,
+    the lease already released by the parent-side ctl op. Raising through
+    the whole agent stack unwinds the turn WITHOUT writing — BaseException
+    so `except Exception` handlers in the runtime cannot swallow it."""
+
+
+class _CtlApproval:
+    """ApprovalBroker over the parent control channel (confined turns only).
+
+    The durable ask lives on the parent: request_approval() persists the
+    exact call (tenant/run/call/attempt + raw arguments), flips the run to
+    ``waiting_approval`` and releases the lease. The child then unwinds
+    via ``_RunPaused``; a fresh confined process executes exactly the
+    stored call after a human approval re-queues the run.
+    """
+
+    def __init__(self, channel: Any, *, run_id: str, workdir: Path) -> None:
+        from RxyCode.RxyCode1_1_0.core.safety.approval import ApprovalBroker
+
+        class _Broker(ApprovalBroker):
+            async def _ask(inner_self, request: Any) -> Any:  # noqa: ANN001
+                from RxyCode.RxyCode1_1_0.core.safety.approval import (
+                    ApprovalDecision,
+                )
+
+                args = dict(request.arguments or {})
+                command = str(args.get("command") or args.get("cmd") or "")
+                scope = str(request.risk.name.lower())
+                if request.gate_blocked_paths:
+                    scope = f"{scope}:write-path-gate"
+                deadline = (
+                    datetime.now(timezone.utc).timestamp() + _APPROVAL_DEADLINE_S
+                )
+                result = await asyncio.to_thread(
+                    channel.pause_approval,
+                    source_call_id=str(request.call_id or request.approval_id),
+                    tool=str(request.tool_name),
+                    permission_scope=scope,
+                    arguments=args,
+                    deadline=datetime.fromtimestamp(
+                        deadline, tz=timezone.utc
+                    ).isoformat(),
+                    workdir=str(workdir),
+                    command=command,
+                )
+                if result.get("asked"):
+                    raise _RunPaused()
+                reason = str(result.get("reason") or "")
+                if reason == "already_authorized":
+                    return ApprovalDecision.APPROVED
+                # no_broker / stale / any refused ask: fail closed — the
+                # call simply never executes inside the sandbox.
+                return ApprovalDecision.REJECTED
+
+        self._broker = _Broker()
+        self._run_id = run_id
+
+    def broker(self) -> Any:
+        return self._broker
+
+
+#: Approval asks die with the run; the deadline bounds how long a run may
+#: sit in waiting_approval before the service expires it.
+_APPROVAL_DEADLINE_S = 3600.0
+
+#: Journal-keyed durable call ids must match ``call_[0-9a-f]{32}`` — the
+#: shape ``remote_call_key`` accepts. Raw orchestrator/model ids (bare hex,
+#: provider strings like ``call_Xyz9``) are hashed into this shape by the
+#: trusted parent before they reach the durable approval row.
+_DURABLE_CALL_ID_RE = re.compile(r"^call_[0-9a-f]{32}$")
+
+
+def _task_turn_env(workdir: Path) -> dict[str, str]:
+    """Task-private development environment INSIDE the sandbox.
+
+    HOME, caches, package-manager and venv state all live under the
+    workspace — the only rw mount besides the private /tmp — so ``edit``,
+    ``bash`` and ``python`` operate on the SAME real paths with the same
+    write domain (allowed_write_paths is derived from this list).
+    """
+    home = workdir / ".home"
+    return {
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PIP_CACHE_DIR": str(home / ".cache" / "pip"),
+        "npm_config_cache": str(home / ".cache" / "npm"),
+        "UV_CACHE_DIR": str(home / ".cache" / "uv"),
+        "TMPDIR": "/tmp",
+    }
+
+
+def _writable_domain(workdir: Path) -> list[str]:
+    """The sandbox-real write domain for in-turn path checks — the mounted
+    rw paths, not host rules. edit/bash/python enforce against this set."""
+    return [str(workdir), str(workdir / ".home"), "/tmp"]
+
+
+def _pending_resume(
+    database_url: str, tenant_id: str, run_id: str
+) -> dict[str, Any] | None:
+    """If the run's latest durable approval was APPROVED, return its stored
+    call record for the confined resume child; else None.
+
+    The only path from ``waiting_approval`` back to a claimable status is
+    ``decide_approval(... approved)`` -> ``pending`` — so a claimed run
+    whose newest ``approval.requested`` is approved is a resume, not a
+    fresh turn."""
+    approval_id = _latest_requested_approval_id(database_url, run_id)
+    if not approval_id:
+        return None
+    return _resume_state(database_url, tenant_id, run_id, approval_id)
+
+
+def _resume_state(
+    database_url: str, tenant_id: str, run_id: str, approval_id: str
+) -> dict[str, Any] | None:
+    """Resolve an approved approval into the stored call — bound to THIS
+    run (an approval id from another run refuses)."""
+    from rxycode_server.approvals.service import get_approval
+
+    record = get_approval(database_url, tenant_id=tenant_id, approval_id=approval_id)
+    if record is None or record["run_id"] != run_id:
+        return None
+    if record["status"] != "approved":
+        return None
+    return record
+
+
+def _latest_requested_approval_id(database_url: str, run_id: str) -> str:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT payload->>'approval_id' AS aid FROM run_events "
+                    "WHERE run_id = :rid AND type = 'approval.requested' "
+                    "ORDER BY seq DESC LIMIT 1"
+                ),
+                {"rid": run_id},
+            ).first()
+    finally:
+        engine.dispose()
+    return str(row[0] or "") if row else ""
+
+
+def _ctl_handlers(
+    cfg: "WorkerConfig",
+    *,
+    tenant_id: str,
+    run_id: str,
+    epoch: int,
+    workdir: Path,
+    journal_dir: Path,
+    paused: Any,
+) -> dict[str, Any]:
+    """Parent-side ops for one run's control socket.
+
+    Every handler is bound to this drain's (tenant_id, run_id, worker_id,
+    epoch): the confined child can only ever act on its own run, and
+    lease-fenced service calls still refuse once the claim is gone."""
+
+    def _emit(args: dict[str, Any]) -> dict[str, Any]:
+        from rxycode_server.events.store import append_event
+
+        seq = append_event(
+            cfg.database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type=str(args.get("type") or "")[:120],
+            payload=dict(args.get("payload") or {}),
+        )
+        return {"seq": int(seq or 0)}
+
+    def _load_run(args: dict[str, Any]) -> dict[str, Any]:
+        from rxycode_server.runs.service import load_run
+
+        loaded = load_run(cfg.database_url, run_id)
+        # Only the fields the turn legitimately needs — the row can carry
+        # scheduling internals the child has no business reading.
+        return {
+            "message": str(loaded.get("message") or ""),
+            "session_id": str(loaded.get("session_id") or ""),
+            "target_id": str(loaded.get("target_id") or ""),
+            "permission_profile": str(loaded.get("permission_profile") or ""),
+        }
+
+    def _commands(args: dict[str, Any]) -> dict[str, Any]:
+        from rxycode_worker.agent_events import load_command_events
+
+        events = load_command_events(
+            cfg.database_url, run_id, int(args.get("after_seq") or 0)
+        )
+        return {"events": events}
+
+    def _pause_approval(args: dict[str, Any]) -> dict[str, Any]:
+        from rxycode_server.approvals.service import request_approval
+
+        try:
+            deadline_raw = str(args.get("deadline") or "")
+            deadline = datetime.fromisoformat(deadline_raw)
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+        except ValueError:
+            deadline = datetime.now(timezone.utc)
+        # Must match the journal's ``att_[0-9a-f]{32}`` attempt-id contract —
+        # a shorter id would make every resume fail closed at reserve().
+        attempt_id = f"att_{uuid.uuid4().hex}"
+        # The confined child supplies the raw orchestrator/model call id; the
+        # durable journal key is derived HERE (trusted parent) so a child can
+        # never mint a ``call_*`` key that collides with another run's call.
+        # Idempotent: a source already in durable shape is used as-is.
+        source_call_id = str(
+            args.get("source_call_id") or args.get("call_id") or ""
+        )[:200]
+        if source_call_id and _DURABLE_CALL_ID_RE.fullmatch(source_call_id):
+            durable_call_id = source_call_id
+        else:
+            seed = source_call_id or uuid.uuid4().hex
+            durable_call_id = (
+                "call_"
+                + hashlib.sha256(f"{run_id}:{seed}".encode("utf-8")).hexdigest()[:32]
+            )
+        try:
+            result = request_approval(
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                call_id=durable_call_id,
+                tool=str(args.get("tool") or "")[:80],
+                permission_scope=str(args.get("scope") or "")[:80],
+                arguments=dict(args.get("arguments") or {}),
+                deadline=deadline,
+                worker_id=cfg.worker_id,
+                epoch=epoch,
+                attempt_id=attempt_id,
+                command=str(args.get("command") or "")[:20000],
+                workdir=str(workdir),
+                source_call_id=source_call_id,
+            )
+        except Exception as exc:
+            # Stale lease / already-decided: the ask did NOT park the run.
+            return {
+                "asked": False,
+                "reason": f"refused:{type(exc).__name__}",
+            }
+        # The run is now waiting_approval and our lease is released — flag
+        # it BEFORE telling the child so the drain's post-wait check can
+        # never race the unwind into a spurious settle.
+        paused.set()
+        return {
+            "asked": True,
+            "approval_id": str(result.get("approval_id") or ""),
+            "attempt_id": attempt_id,
+        }
+
+    def _resume_state_op(args: dict[str, Any]) -> dict[str, Any]:
+        record = _resume_state(
+            cfg.database_url,
+            tenant_id,
+            run_id,
+            str(args.get("approval_id") or ""),
+        )
+        if record is None:
+            return {"record": None}
+        # Bound copy for the confined resume child — never the raw row.
+        return {
+            "record": {
+                "approval_id": str(record.get("approval_id") or ""),
+                "run_id": str(record.get("run_id") or ""),
+                "call_id": str(record.get("call_id") or ""),
+                "attempt_id": str(record.get("attempt_id") or ""),
+                "tool": str(record.get("tool") or ""),
+                "command": str(record.get("command") or ""),
+                "workdir": str(record.get("workdir") or ""),
+                "source_call_id": str(record.get("source_call_id") or ""),
+                "arguments": dict(record.get("arguments") or {}),
+            }
+        }
+
+    return {
+        "emit": _emit,
+        "load_run": _load_run,
+        "commands": _commands,
+        "pause_approval": _pause_approval,
+        "resume_state": _resume_state_op,
+    }
+
+
+def _merge_turn_config(dst: Path, workdir: Path) -> None:
+    """Merge the sandbox-real write domain into the copied config.
+
+    Path checks inside the turn must evaluate the SAME real paths the
+    mounts expose — the workspace, its task-private home, and the private
+    /tmp — never host rules. ``execution.os_sandbox`` is forced off: this
+    process IS the sandbox; a nested wrap would only double-mount or fail.
+
+    Model credentials are scrubbed for every entry (api_key/api_key_env/
+    api_key_secret): the platform key must not exist inside the sandbox —
+    the used model's base_url is rewritten to the loopback egress port and
+    the parent injects real auth on the upstream hop.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return
+    try:
+        data = yaml.safe_load(dst.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    safety = data.setdefault("safety", {})
+    if isinstance(safety, dict):
+        # A confined turn NEVER runs gate-disabled: the copied config could
+        # carry a local developer's safety.enabled=false, which inside the
+        # sandbox would silently skip the approval path entirely (Full is
+        # implemented as permission_mode=full_auto — never as this switch).
+        safety["enabled"] = True
+        extra = safety.get("allowed_write_paths")
+        merged = list(extra) if isinstance(extra, list) else []
+        for path in _writable_domain(workdir):
+            if path not in merged:
+                merged.append(path)
+        safety["allowed_write_paths"] = merged
+    execution = data.setdefault("execution", {})
+    if isinstance(execution, dict):
+        execution["workspace_root"] = str(workdir)
+        os_sandbox = execution.setdefault("os_sandbox", {})
+        if isinstance(os_sandbox, dict):
+            os_sandbox["enabled"] = False
+    models = data.get("models")
+    if isinstance(models, dict):
+        egress_port = int(os.environ.get("RXYCODE_EGRESS_PORT", "0") or 0)
+        gateway_url = f"http://127.0.0.1:{egress_port}" if egress_port else ""
+        wanted = str(
+            os.environ.get("RXYCODE_WORKER_MODEL", "")
+            or data.get("active_model")
+            or ""
+        )
+        if wanted and wanted not in models:
+            # AgentV2 falls back to the active entry for an unknown name —
+            # the rewrite must follow the same fallback.
+            wanted = str(data.get("active_model") or "")
+        for name, entry in models.items():
+            if not isinstance(entry, dict):
+                continue
+            # Every credential-shaped field dies at the boundary.
+            entry.pop("api_key_env", None)
+            entry.pop("api_key_secret", None)
+            entry["api_key"] = "confined"
+            if wanted and str(name) == wanted and gateway_url:
+                entry["base_url"] = gateway_url
+    try:
+        dst.write_text(yaml.safe_dump(data), encoding="utf-8")
+    except OSError:
+        _LOG.warning("turn config merge failed", exc_info=True)
+
+
+async def _resume_turn(
+    *,
+    channel: Any,
+    run_id: str,
+    tenant_id: str,
+    workdir: Path,
+    result_path: Path,
+) -> int:
+    """Confined resume child: replay EXACTLY the stored approved call.
+
+    The parent already verified the approval row (tenant-bound, status
+    ``approved``) and re-fetched the stored state; this process reads it
+    again through the channel so the executed call is the persisted one —
+    never anything the caller claimed. Journal state decides idempotence:
+    a ``completed``/``unknown`` call is NOT re-run.
+    """
+    from rxycode_worker.interrupt_resume import _journal_state
+
+    result: dict[str, Any] = {
+        "run_id": run_id,
+        "status": "failed",
+        "error": "",
+        "tokens": 0,
+    }
+    try:
+        approval_id = os.environ.get("RXYCODE_TURN_APPROVAL", "").strip()
+        state = await asyncio.to_thread(channel.resume_state, approval_id)
+        record = dict(state.get("record") or {})
+        if not record or str(record.get("run_id") or "") != run_id:
+            result["error"] = "approval not found, not approved, or not bound to this run"
+        else:
+            journal_dir = str(workdir / ".journal")
+            attempt_id = str(record.get("attempt_id") or "")
+            call_id = str(record.get("call_id") or "")
+            before = await asyncio.to_thread(
+                _journal_state, journal_dir, attempt_id, call_id
+            )
+            if before in {"completed", "unknown"}:
+                # Already ran (or its output is unrecoverable): never
+                # execute twice — report truthfully, the parent settles.
+                result["status"] = "succeeded" if before == "completed" else "failed"
+                result["error"] = (
+                    "" if before == "completed" else "journal state unknown"
+                )
+            else:
+                # The already-approved call replays through the same
+                # orchestrator under a grant broker (installed inside
+                # _execute_approved_call): the human decided — re-asking
+                # would deadlock — while every real gate and the kernel
+                # boundary stay in force.
+                emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
+                emit._append(
+                    "tool.call",
+                    {
+                        "call_id": call_id,
+                        "attempt_id": attempt_id,
+                        "tool": str(record.get("tool") or ""),
+                        "resumed": True,
+                    },
+                )
+                text_out = await _execute_approved_call(record, workdir, emit)
+                after = await asyncio.to_thread(
+                    _journal_state, journal_dir, attempt_id, call_id
+                )
+                if after == "completed":
+                    result["status"] = "succeeded"
+                else:
+                    result["status"] = "failed"
+                    result["error"] = f"resumed call did not complete (journal: {after})"
+                if text_out:
+                    emit._append(
+                        "tool.result",
+                        {
+                            "call_id": call_id,
+                            "attempt_id": attempt_id,
+                            "preview": str(text_out)[:2000],
+                            "resumed": True,
+                        },
+                    )
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"[:1500]
+    try:
+        result_path.write_text(
+            json.dumps(result) + "\n", encoding="utf-8"
+        )
+    except Exception:
+        _LOG.warning("run %s: resume result write failed", run_id, exc_info=True)
+    return 0
+
+
+async def _execute_approved_call(
+    record: dict[str, Any], workdir: Path, emit: Any
+) -> str:
+    """Execute the stored call through the SAME ToolOrchestrator every
+    surface uses — blacklist, write-path gate and audit intact; approval
+    was already granted (the grant broker answers prompts)."""
+    from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import (
+        register_builtin_tools,
+    )
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        ApprovalBroker,
+        ApprovalDecision,
+        set_approval_broker,
+    )
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
+        ToolOrchestrator,
+    )
+    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+        RemoteJournalAdapter,
+        ToolExecutionJournal,
+    )
+    from RxyCode.RxyCode1_1_0.tools.registry import ToolRegistry
+
+    class _GrantBroker(ApprovalBroker):
+        """The human already decided — answers any re-ask APPROVED so the
+        replayed call passes every real gate (blacklist, write-path) with
+        no second prompt; the kernel boundary is unchanged."""
+
+        async def _ask(self, request: Any) -> Any:  # noqa: ANN001
+            return ApprovalDecision.APPROVED
+
+    orchestrator = ToolOrchestrator()
+    register_builtin_tools(
+        ToolRegistry(),
+        orchestrator,
+        rag_enabled=False,
+        subagents_enabled=False,
+    )
+    journal = RemoteJournalAdapter(
+        ToolExecutionJournal(str(workdir / ".journal"))
+    )
+    tool = str(record.get("tool") or "")
+    call_id = str(record.get("call_id") or "")
+    attempt_id = str(record.get("attempt_id") or "")
+    args = dict(record.get("arguments") or {})
+    if str(record.get("command") or "") and "command" not in args:
+        args["command"] = str(record["command"])
+    # At-most-once: reserve binds (attempt, call) BEFORE the side effect —
+    # a duplicate resume observes 'reuse'/'uncertain' and never re-runs.
+    reservation = await asyncio.to_thread(
+        journal.reserve,
+        attempt_id=attempt_id,
+        call_id=call_id,
+        tool=tool,
+        args=args,
+    )
+    if reservation.action == "reuse":
+        return str(reservation.result or "")
+    if reservation.action != "execute":
+        raise RuntimeError(
+            f"resumed call {call_id} is journal-uncertain; refusing a second side effect"
+        )
+    cfg = {
+        "safety": {
+            # Without enabled=True the orchestrator bypasses blacklist,
+            # write-path gate AND approval as `safety_disabled` — an
+            # approved call must still pass every gate but the prompt.
+            "enabled": True,
+            "permission_mode": "confirm_all",
+            "allowed_write_paths": _writable_domain(workdir),
+        },
+        "execution": {"workspace_root": str(workdir)},
+    }
+    set_approval_broker(_GrantBroker())
+    try:
+        output = await orchestrator.execute_tool(
+            tool,
+            args,
+            cfg,
+            call_id=call_id,
+        )
+    finally:
+        set_approval_broker(None)
+    await asyncio.to_thread(
+        journal.complete,
+        attempt_id=attempt_id,
+        call_id=call_id,
+        tool=tool,
+        args=args,
+        result=str(output if output is not None else ""),
+    )
+    return str(output if output is not None else "")
+
+
 async def run_sandboxed_turn() -> int:
     """The confined half of a drained run — entered when this module is
     executed with ``RXYCODE_TURN_RUN_ID`` set (inside the userns sandbox).
 
-    Everything the old direct path did happens here: remember_web_run +
-    publish_database_url, the _DrainWorkerShim steer channel, a REAL
-    ProtocolTui bound through bind_prompt_context (the production producer
-    of tool/stream notifications — audit r3-F3), the command watchdog, and
-    one Session.prompt turn through AgentRuntime. The result lands in
+    The turn holds NO platform credentials: events, run reads, steer
+    commands and durable approvals all travel the parent-owned control
+    socket (``RXYCODE_CTL_SOCK``), and egress rides the parent's filtered
+    CONNECT proxy over a private net namespace. A REAL ProtocolTui bound
+    through bind_prompt_context remains the producer of tool/stream
+    notifications (audit r3-F3). The result lands in
     ``.turn-result.json`` for the drain parent; the process always exits 0
     — errors live in the result file and the journaled events.
     """
     run_id = os.environ["RXYCODE_TURN_RUN_ID"].strip()
-    database_url = os.environ["RXYCODE_WEB_DATABASE_URL"].strip()
+    ctl_sock = os.environ.get("RXYCODE_CTL_SOCK", "").strip()
     tenant_id = os.environ.get("RXYCODE_TURN_TENANT", "")
     project_id = os.environ.get("RXYCODE_TURN_PROJECT", "")
     actor_id = os.environ.get("RXYCODE_TURN_ACTOR", "")
@@ -1341,6 +1916,68 @@ async def run_sandboxed_turn() -> int:
     model = os.environ.get("RXYCODE_WORKER_MODEL", "").strip()
     workdir = Path(os.environ.get("RXYCODE_TURN_WORKDIR", ".")).resolve()
     result_path = workdir / _TURN_RESULT
+
+    turn_error = ""
+    cancelled_by_request = False
+    paused_by_approval = False
+    measured = {"tokens": 0}
+    message = ""
+
+    if not ctl_sock:
+        # Fail closed: a confined turn without its control channel cannot
+        # journal, read, or approve — running anyway would mean running
+        # deaf (and is exactly what a credential-stripped fork looks like).
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "status": "failed",
+                        "error": "confined turn started without RXYCODE_CTL_SOCK",
+                        "tokens": 0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return 0
+
+    from rxycode_worker.agent_events import (
+        bind_run,
+        clear_web_run,
+        remember_web_run,
+    )
+    from rxycode_worker.ctl import TurnChannel
+
+    channel = TurnChannel(ctl_sock)
+
+    # Private net namespace bring-up: lo down by default; the only door out
+    # is the parent's filtered egress socket via a loopback relay.
+    egress_relay = None
+    net_sock = os.environ.get("RXYCODE_NET_SOCK", "").strip()
+    egress_port = int(os.environ.get("RXYCODE_EGRESS_PORT", "0") or 0)
+    if net_sock and egress_port:
+        try:
+            from rxycode_worker.netrelay import bring_up_loopback, start_relay
+
+            bring_up_loopback()
+            egress_relay = await start_relay(egress_port, net_sock)
+        except Exception:
+            _LOG.warning("run %s: egress relay start failed", run_id, exc_info=True)
+
+    # Resume mode: a fresh confined process whose ONLY job is the stored,
+    # approved call — no agent loop, no second decision.
+    if os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1":
+        return await _resume_turn(
+            channel=channel,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            workdir=workdir,
+            result_path=result_path,
+        )
 
     # Config lives in a parent-owned ro-bound dir; the writable data dir is
     # inside this workspace. The child copies config.yaml itself — the
@@ -1354,36 +1991,25 @@ async def run_sandboxed_turn() -> int:
             dst_dir = Path(os.environ.get("RXYCODE_DATA_DIR", str(workdir / ".data")))
             dst_dir.mkdir(parents=True, exist_ok=True)
             if src_cfg.is_file():
-                shutil.copy2(src_cfg, dst_dir / "config.yaml")
+                dst = dst_dir / "config.yaml"
+                shutil.copy2(src_cfg, dst)
+                _merge_turn_config(dst, workdir)
         except OSError:
             _LOG.warning("run %s: config copy into workspace failed", run_id, exc_info=True)
 
-    from rxycode_server.runs.service import load_run
-    from rxycode_worker.agent_events import (
-        bind_run,
-        clear_web_run,
-        publish_database_url,
-        remember_web_run,
-    )
-
-    emit = _RunEmit(database_url, tenant_id, run_id)
-    publish_database_url(database_url)
+    emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
     remember_web_run(
-        database_url,
+        "",
         tenant_id,
         run_id,
         parent_id=session_id,
         session_id=session_id,
+        channel=channel,
     )
 
-    turn_error = ""
-    cancelled_by_request = False
-    measured = {"tokens": 0}
-    message = ""
-
     try:
-        loaded = await asyncio.to_thread(load_run, database_url, run_id)
-        message = loaded["message"]
+        loaded = await asyncio.to_thread(channel.load_run)
+        message = str(loaded.get("message") or "")
         workdir.mkdir(parents=True, exist_ok=True)
 
         # The production producer of tool/stream notifications (audit r3-F3):
@@ -1469,8 +2095,9 @@ async def run_sandboxed_turn() -> int:
         async def _usage_heartbeat() -> None:
             """Durable metering that also survives a PARENT crash: snapshot the
             real token_stats delta every few seconds onto the run's own event
-            log, tagged with this attempt's lease epoch so retries accumulate
-            instead of overwriting (audit r5-F4)."""
+            log — through the control channel, tagged with this attempt's
+            lease epoch so retries accumulate instead of overwriting
+            (audit r5-F4)."""
             while True:
                 await asyncio.sleep(3.0)
                 try:
@@ -1478,15 +2105,10 @@ async def run_sandboxed_turn() -> int:
                     outp = int(token_stats.output_tokens) - token0[1]
                     if inp + outp <= 0:
                         continue
-                    from rxycode_server.events.store import append_event
-
                     await asyncio.to_thread(
-                        append_event,
-                        database_url,
-                        tenant_id=tenant_id,
-                        run_id=run_id,
-                        event_type="usage.delta",
-                        payload={
+                        channel.emit,
+                        "usage.delta",
+                        {
                             "input_tokens": inp,
                             "output_tokens": outp,
                             "cumulative": True,
@@ -1499,6 +2121,16 @@ async def run_sandboxed_turn() -> int:
                     _LOG.warning("run %s: usage heartbeat failed", run_id, exc_info=True)
 
         usage_heartbeat = asyncio.ensure_future(_usage_heartbeat())
+
+        # Non-Full approvals ride the durable service through the parent:
+        # request_approval persists the exact call, parks the run and
+        # releases the lease; this process then unwinds via _RunPaused.
+        # full_auto never reaches the broker (the orchestrator auto-allows).
+        from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
+
+        set_approval_broker(
+            _CtlApproval(channel, run_id=run_id, workdir=workdir).broker()
+        )
 
         session = Session(
             session_id=session_id,
@@ -1558,7 +2190,13 @@ async def run_sandboxed_turn() -> int:
         assert main_task is not None
         shim._turn = main_task
 
-        command_watcher = asyncio.create_task(_command_watchdog(database_url, run_id, main_task))
+        command_watcher = asyncio.create_task(
+            _command_watchdog(
+                lambda after: channel.commands(after_seq=after),
+                run_id,
+                main_task,
+            )
+        )
         # Session.prompt binds the session's own ContextVar; tool work that
         # escaped it (threads started off the loop) resolves "latest" — point
         # that alias at the run workspace too so strays land inside it.
@@ -1569,6 +2207,11 @@ async def run_sandboxed_turn() -> int:
             reset_session_binding(latest_token)
         try:
             await asyncio.shield(main_task)
+        except _RunPaused:
+            # The durable ask is already persisted and the lease released
+            # by the ctl op — this process's only remaining job is to say
+            # so and die. Nothing else may write terminal state.
+            paused_by_approval = True
         except asyncio.CancelledError:
             cancelled_by_request = True
         finally:
@@ -1587,12 +2230,18 @@ async def run_sandboxed_turn() -> int:
             except Exception:
                 pass
             reset_prompt_context(context_tokens)
-        if not turn_error and agent_task.state != LifecycleState.DONE:
+        if (
+            not turn_error
+            and not paused_by_approval
+            and agent_task.state != LifecycleState.DONE
+        ):
             last = getattr(agent_task, "_last_error", None)
             if last is not None:
                 turn_error = f"{type(last).__name__}: {last}"
             elif not cancelled_by_request:
                 turn_error = f"agent ended in state {agent_task.state}"
+    except _RunPaused:
+        paused_by_approval = True
     except asyncio.CancelledError:
         cancelled_by_request = True
     except Exception as exc:
@@ -1600,6 +2249,12 @@ async def run_sandboxed_turn() -> int:
     finally:
         try:
             clear_web_run()
+        except Exception:
+            pass
+        try:
+            if egress_relay is not None:
+                egress_relay.close()
+                await egress_relay.wait_closed()
         except Exception:
             pass
         try:
@@ -1620,7 +2275,9 @@ async def run_sandboxed_turn() -> int:
                         # accepted as the outcome (audit r4-F3).
                         "run_id": run_id,
                         "status": (
-                            "cancelled"
+                            "paused"
+                            if paused_by_approval
+                            else "cancelled"
                             if cancelled_by_request
                             else "succeeded"
                             if not turn_error
@@ -1862,11 +2519,17 @@ async def execute_run(
     turn_error = ""
     cancelled_by_request = False
     lost_lease = False
+    paused_run = False
+    recovery = False
+    resume_record: dict[str, Any] | None = None
     tokens = 0
     sandbox_id = ""
     provider = None
     workdir: Path | None = None
     proc: "asyncio.subprocess.Process | None" = None
+    ctl_server: Any | None = None
+    egress: Any | None = None
+    paused_evt = threading.Event()
     stderr_tail: list[bytes] = []
     streamed: dict[str, int] = {"tokens": 0}
 
@@ -1932,29 +2595,155 @@ async def execute_run(
         if ws_data.is_dir() and not ws_data.is_symlink():
             (ws_data / "config.yaml").unlink(missing_ok=True)
 
-        child_env = _child_env(
-            {
-                "RXYCODE_TURN_RUN_ID": run_id,
-                "RXYCODE_TURN_TENANT": tenant_id,
-                "RXYCODE_TURN_PROJECT": identity["project_id"],
-                "RXYCODE_TURN_ACTOR": identity["actor_id"],
-                "RXYCODE_TURN_SESSION": session_id,
-                "RXYCODE_TURN_TARGET": target_id,
-                "RXYCODE_TURN_PROFILE": permission_profile,
-                "RXYCODE_TURN_PERMISSION": permission_mode or "",
-                "RXYCODE_TURN_TRACEPARENT": identity["traceparent"],
-                "RXYCODE_TURN_WORKDIR": str(workdir),
-                "RXYCODE_TURN_EPOCH": str(epoch),
-                # Two distinct dirs: the config source is a parent-owned
-                # path that is only ro-bound into the sandbox (the child
-                # reads config.yaml FROM it), while RXYCODE_DATA_DIR points
-                # INSIDE the writable workspace so caches/sessions write
-                # freely. The parent never writes into the workspace — the
-                # confined child copies the config itself (audit r4-F2).
-                "RXYCODE_TURN_CONFIG_SRC": str(data_dir),
-                "RXYCODE_DATA_DIR": str(workdir / ".data"),
-            }
+        journal_dir = workdir / ".journal"
+
+        # Resume detection: the ONLY way a run leaves waiting_approval for a
+        # claimable status is decide_approval(... approved) -> pending — so
+        # a claimed run whose newest durable approval is approved replays
+        # the stored call in a fresh confined child, not a fresh turn.
+        try:
+            resume_record = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _pending_resume, cfg.database_url, tenant_id, run_id
+                ),
+                timeout=_LEASE_IO_BUDGET,
+            )
+        except Exception:
+            _LOG.warning("run %s: pending-resume probe failed", run_id, exc_info=True)
+        if resume_record is not None:
+            from rxycode_worker.interrupt_resume import _journal_state
+
+            before = await asyncio.to_thread(
+                _journal_state,
+                str(journal_dir),
+                str(resume_record.get("attempt_id") or ""),
+                str(resume_record.get("call_id") or ""),
+            )
+            if before in {"completed", "unknown"}:
+                # The stored call already ran (or its outcome is
+                # unrecoverable) — never execute twice; settle the claim.
+                terminal = "succeeded" if before == "completed" else "recovery_required"
+                try:
+                    await asyncio.to_thread(
+                        append_event,
+                        cfg.database_url,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        event_type="approval.resumed",
+                        payload={
+                            "approval_id": str(
+                                resume_record.get("approval_id") or ""
+                            ),
+                            "journal_state": before,
+                            "executed": False,
+                        },
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "run %s: approval.resumed emit failed", run_id, exc_info=True
+                    )
+                from rxycode_server.approvals.service import settle_run
+
+                await asyncio.to_thread(
+                    settle_run,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    worker_id=cfg.worker_id,
+                    epoch=epoch,
+                    status=terminal,
+                )
+                return True
+
+        # Task-private control dir (parent-owned, rw-bound at the same
+        # path): the per-run ctl socket + the filtered egress socket. The
+        # confined child reaches the control plane ONLY through ctl.sock.
+        ctl_dir = provider.state_root / f"{sandbox_id}-ctl"
+        ctl_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            ctl_dir.chmod(0o700)
+        except OSError:
+            pass
+        ctl_sock = ctl_dir / "ctl.sock"
+        net_sock = ctl_dir / "net.sock"
+        from rxycode_worker.ctl import CtlServer
+        from rxycode_worker.egress import (
+            EgressProxy,
+            egress_allowlist_from_env,
+            model_gateway_from_env,
         )
+
+        ctl_server = CtlServer(
+            ctl_sock,
+            _ctl_handlers(
+                cfg,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                epoch=epoch,
+                workdir=workdir,
+                journal_dir=journal_dir,
+                paused=paused_evt,
+            ),
+        )
+        await ctl_server.start()
+        # The gateway holds the platform model key PARENT-SIDE: the child's
+        # model entry is rewritten to 127.0.0.1:<port> by _merge_turn_config
+        # and this proxy injects the real auth on the upstream hop.
+        egress = EgressProxy(
+            net_sock,
+            egress_allowlist_from_env(),
+            gateway=model_gateway_from_env(),
+        )
+        await egress.start()
+
+        turn_env: dict[str, str] = {
+            "RXYCODE_TURN_RUN_ID": run_id,
+            "RXYCODE_TURN_TENANT": tenant_id,
+            "RXYCODE_TURN_PROJECT": identity["project_id"],
+            "RXYCODE_TURN_ACTOR": identity["actor_id"],
+            "RXYCODE_TURN_SESSION": session_id,
+            "RXYCODE_TURN_TARGET": target_id,
+            "RXYCODE_TURN_PROFILE": permission_profile,
+            "RXYCODE_TURN_PERMISSION": permission_mode or "",
+            "RXYCODE_TURN_TRACEPARENT": identity["traceparent"],
+            "RXYCODE_TURN_WORKDIR": str(workdir),
+            "RXYCODE_TURN_EPOCH": str(epoch),
+            # Two distinct dirs: the config source is a parent-owned
+            # path that is only ro-bound into the sandbox (the child
+            # reads config.yaml FROM it), while RXYCODE_DATA_DIR points
+            # INSIDE the writable workspace so caches/sessions write
+            # freely. The parent never writes into the workspace — the
+            # confined child copies the config itself (audit r4-F2).
+            "RXYCODE_TURN_CONFIG_SRC": str(data_dir),
+            "RXYCODE_DATA_DIR": str(workdir / ".data"),
+            # Control channel + egress: the only two doors out of the
+            # private mount/network namespace.
+            "RXYCODE_CTL_SOCK": str(ctl_sock),
+            "RXYCODE_NET_SOCK": str(net_sock),
+            "RXYCODE_EGRESS_PORT": str(_EGRESS_PORT),
+            # The child's model base_url — the loopback gateway. Anything
+            # still reading RXYCODE_LLM_BASE_URL lands here honestly.
+            "RXYCODE_LLM_BASE_URL": f"http://127.0.0.1:{_EGRESS_PORT}",
+            # Every proxy-aware client (httpx, requests, pip, npm, curl,
+            # git, Playwright) inherits these — the loopback relay bridges
+            # to the parent's filtered CONNECT proxy.
+            "HTTP_PROXY": f"http://127.0.0.1:{_EGRESS_PORT}",
+            "HTTPS_PROXY": f"http://127.0.0.1:{_EGRESS_PORT}",
+            "ALL_PROXY": f"http://127.0.0.1:{_EGRESS_PORT}",
+            "http_proxy": f"http://127.0.0.1:{_EGRESS_PORT}",
+            "https_proxy": f"http://127.0.0.1:{_EGRESS_PORT}",
+            "all_proxy": f"http://127.0.0.1:{_EGRESS_PORT}",
+            "NO_PROXY": "localhost,127.0.0.1,::1",
+            "no_proxy": "localhost,127.0.0.1,::1",
+        }
+        # Task-private HOME + package caches under the workspace mount.
+        turn_env.update(_task_turn_env(workdir))
+        if resume_record is not None:
+            turn_env["RXYCODE_TURN_RESUME"] = "1"
+            turn_env["RXYCODE_TURN_APPROVAL"] = str(
+                resume_record.get("approval_id") or ""
+            )
+        child_env = _child_env(turn_env)
         # The same module re-entered in turn mode — the sandbox sees the
         # system paths plus every code path this host actually uses
         # (container /repo, dev-host PYTHONPATH entries) read-only, and the
@@ -1962,12 +2751,26 @@ async def execute_run(
         ro_binds = ["/repo", str(data_dir)] + [
             entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
         ]
+        # Task-private writable mounts: the control dir only — HOME and the
+        # package caches live inside the workspace mount itself.
+        rw_binds = [str(ctl_dir)]
+        # System-package installs (apt/dpkg) write to a per-task tmpfs
+        # overlay — never the host's /usr — when the kernel allows
+        # userns overlayfs; otherwise the ro mounts honestly refuse.
+        from rxycode_runner.sandbox.userns import (
+            _OVERLAY_CANDIDATES,
+            overlay_available,
+        )
+
+        overlay_roots = _OVERLAY_CANDIDATES if overlay_available() else ()
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
             argv=[sys.executable, "-m", "rxycode_worker.drain"],
             env=child_env,
             ro_binds=ro_binds,
+            rw_binds=rw_binds,
+            overlay_roots=overlay_roots,
         )
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -2033,6 +2836,13 @@ async def execute_run(
                     turn_error = (
                         f"sandboxed turn reported succeeded but exited rc={proc.returncode}"
                     )
+            elif status == "paused" or paused_evt.is_set():
+                # The ctl op already parked the run (waiting_approval +
+                # lease released); this drain's only job left is to step
+                # away — never terminalize a parked run. paused_evt is the
+                # fallback: a child killed between a successful ask and the
+                # result-file write still counts as parked.
+                paused_run = True
             elif status == "cancelled":
                 cancelled_by_request = True
             else:
@@ -2049,6 +2859,52 @@ async def execute_run(
                 if tail.strip():
                     detail = f"{detail} [stderr tail: {tail.strip()[-300:]}]"
                 turn_error = detail
+
+        if resume_record is not None and not paused_run and not lost_lease:
+            # Resume truth is the durable journal, not the child's
+            # self-report: the stored call "succeeded" only when the
+            # journal marked it completed.
+            from rxycode_worker.interrupt_resume import _journal_state
+
+            try:
+                after = await asyncio.to_thread(
+                    _journal_state,
+                    str(journal_dir),
+                    str(resume_record.get("attempt_id") or ""),
+                    str(resume_record.get("call_id") or ""),
+                )
+            except Exception:
+                after = "unknown"
+            try:
+                await asyncio.to_thread(
+                    append_event,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type="approval.resumed",
+                    payload={
+                        "approval_id": str(resume_record.get("approval_id") or ""),
+                        "call_id": str(resume_record.get("call_id") or ""),
+                        "journal_state": after,
+                        "executed": after == "completed",
+                    },
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: approval.resumed emit failed", run_id, exc_info=True
+                )
+            if after == "completed":
+                turn_error = ""
+            elif not cancelled_by_request:
+                if after == "unknown":
+                    # The call may or may not have run — the journal cannot
+                    # prove either way; label it recovery_required, not a
+                    # clean failure (same contract resume_approved had).
+                    recovery = True
+                turn_error = (
+                    f"resumed call {str(resume_record.get('call_id') or '')[:40]} "
+                    f"did not complete (journal: {after})"
+                )
     except LeaseRejected:
         lost_lease = True
     except Exception as exc:
@@ -2059,6 +2915,16 @@ async def execute_run(
             try:
                 proc.kill()
             except ProcessLookupError:
+                pass
+        if ctl_server is not None:
+            try:
+                await ctl_server.stop()
+            except Exception:
+                pass
+        if egress is not None:
+            try:
+                await egress.stop()
+            except Exception:
                 pass
         if provider is not None and sandbox_id:
             try:
@@ -2135,6 +3001,26 @@ async def execute_run(
     metering_owed = int(streamed.get("tokens") or 0) > deltas.get(
         attempt_key, 0
     )
+
+    # A parked run is done FOR THIS CLAIM: request_approval already flipped
+    # it to waiting_approval and released the lease — the watchdog's
+    # LeaseRejected/lost_lease is expected fallout, not a lost claim, and
+    # NO settle/finalize may run (the human decides next). The status read
+    # is belt for a child killed in the pause-unwind window before writing
+    # its result file.
+    if paused_run or paused_evt.is_set():
+        return True
+    try:
+        if (
+            await asyncio.wait_for(
+                asyncio.to_thread(run_status, cfg.database_url, run_id),
+                timeout=_LEASE_IO_BUDGET,
+            )
+            == "waiting_approval"
+        ):
+            return True
+    except Exception:
+        pass
 
     if lost_lease:
         # Our flushed usage.delta is durable but a retry may already have
@@ -2365,7 +3251,13 @@ async def execute_run(
     # a missing usage row.
     if usage_error:
         turn_error = f"{turn_error}; {usage_error}" if turn_error else usage_error
-    terminal = "succeeded" if not turn_error else "failed"
+    terminal = (
+        "succeeded"
+        if not turn_error
+        else "recovery_required"
+        if recovery
+        else "failed"
+    )
     if turn_error:
         try:
             await asyncio.wait_for(

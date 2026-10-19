@@ -266,14 +266,20 @@ services:
       RXYCODE_WORKER_RUN_TIMEOUT: ${RXYCODE_WORKER_RUN_TIMEOUT:-900}
       RXYCODE_WORKER_WORKSPACES: /work/runs
       # Public-stack contract: only tenant-bound cloud:* targets execute,
-      # always confined; local:* placements and full* profiles are refused.
+      # always confined; local:* placements are refused. full/full_auto
+      # profiles run as sandboxed Full Auto — same mounts, private net
+      # namespace, egress filter; Full is an approval semantic, never an
+      # isolation level.
       RXYCODE_WORKER_EXECUTION: ${RXYCODE_WORKER_EXECUTION:-cloud-only}
       RXYCODE_WORKER_MODEL: ${RXYCODE_WORKER_MODEL:-}
       # Deployed LLM endpoint: when RXYCODE_LLM_BASE_URL is set the worker
       # writes a real model entry into its config and executes turns against
-      # it (key from RXYCODE_API_KEY). With no endpoint configured a run
-      # still claims, starts, and commits `failed` with the honest
-      # "No model configured" error — it is never faked.
+      # it (key from RXYCODE_API_KEY). The key stays in the WORKER process:
+      # confined turns get a scrubbed config whose base_url points at the
+      # parent's loopback egress gateway, which injects real auth upstream —
+      # the credential never exists inside the sandbox. With no endpoint
+      # configured a run still claims, starts, and commits `failed` with the
+      # honest "No model configured" error — it is never faked.
       RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:-}
       RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
       RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}

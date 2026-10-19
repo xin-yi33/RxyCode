@@ -234,7 +234,7 @@ def commit_terminal(
     status: str,
 ) -> None:
     """Write a terminal status only when this epoch still owns an unexpired lease."""
-    if status not in {"succeeded", "failed", "cancelled"}:
+    if status not in {"succeeded", "failed", "cancelled", "recovery_required"}:
         raise ValueError(f"terminal status required, got {status}")
     engine = _engine(database_url)
     try:

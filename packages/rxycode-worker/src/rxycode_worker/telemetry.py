@@ -602,10 +602,16 @@ class RunEventsSpanExporter:
 
     event_type = "telemetry.span"
 
-    def __init__(self, database_url: str, tenant_id: str) -> None:
+    def __init__(
+        self, database_url: str, tenant_id: str, emitter: Any | None = None
+    ) -> None:
         self.database_url = database_url
         self.tenant_id = tenant_id
         self.dropped = 0
+        # Confined turns have no database credentials: their spans travel
+        # the parent-owned control channel instead (``emitter`` is
+        # ``TurnChannel.emit`` -> append_event on the drain side).
+        self._emitter = emitter
 
     def export(self, span: dict[str, Any]) -> bool:
         run_id = str(span.get("run_id") or "")
@@ -613,6 +619,9 @@ class RunEventsSpanExporter:
             self.dropped += 1
             return False
         try:
+            if self._emitter is not None:
+                self._emitter(self.event_type, dict(span))
+                return True
             from rxycode_server.events.store import append_event
 
             append_event(
