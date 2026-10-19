@@ -40,6 +40,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -57,60 +58,95 @@ _DEFAULT_RO_BINDS = ("/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64", "/
 
 #: Probe result cache — a real unshare probe costs ~50ms once per process.
 _AVAILABLE: bool | None = None
-_OVERLAY_OK: bool | None = None
+#: Per-state_root cache of overlay-probe verdicts — ``state_root -> dests``.
+_OVERLAY_DESTS: dict[str, tuple[str, ...]] = {}
 
-#: System roots that MAY get a task-private tmpfs overlay (when the kernel
-#: permits userns overlayfs): apt/dpkg/pip installs then land on a
-#: per-task ephemeral layer — never on the host's own /usr.
+#: System roots that MAY get a task-private persistent overlay (when the
+#: kernel permits userns overlayfs): apt/dpkg/pip installs then land on a
+#: per-task layer — never on the host's own tree.
 _OVERLAY_CANDIDATES = ("/usr", "/var", "/etc")
 
 
-def overlay_available(*, force: bool = False) -> bool:
-    """Probe a confined overlayfs mount once (``--tmp-overlay`` — the same
-    userns-overlayfs kernel path the persistent ``--overlay`` argv uses).
-    False = no task-private system layer — callers drop the overlays
-    (apt/dpkg then honestly fail read-only) instead of widening anything."""
-    global _OVERLAY_OK
-    if _OVERLAY_OK is not None and not force:
-        return _OVERLAY_OK
+def overlay_dests(state_root: Path, *, force: bool = False) -> list[str]:
+    """The subset of ``_OVERLAY_CANDIDATES`` the kernel will REALLY mount
+    as a persistent task overlay on ``state_root``'s filesystem.
+
+    Every candidate is probed with the PRODUCTION argv shape — real
+    ``--overlay-src`` + ``--overlay UPPER WORK DEST`` on fresh dirs under
+    ``state_root``. The old ``--tmp-overlay`` probe only proved the
+    tmpfs-upper path and greenlit ``/etc``: inside a container, Docker's
+    injected file mounts (resolv.conf/hostname/hosts) make the kernel
+    EINVAL an ``/etc`` lower even though ``--tmp-overlay`` succeeds and
+    ``/usr``/``/var`` mount fine (W8-r5 deployed-stack failure). A dest
+    that fails its probe is simply dropped — it stays ro-bound and
+    writes fail read-only, which is honest, never silently widened."""
+    global _OVERLAY_DESTS
+    key = str(state_root)
+    if not force and key in _OVERLAY_DESTS:
+        return list(_OVERLAY_DESTS[key])
+    ok: list[str] = []
     bwrap = shutil.which("bwrap")
-    if not bwrap:
-        _OVERLAY_OK = False
-        return False
-    argv = [bwrap, "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid"]
-    mounted = False
-    for path in _DEFAULT_RO_BINDS:
-        if Path(path).exists():
-            argv += ["--ro-bind", path, path]
-            if path == "/usr":
-                mounted = True
-    if not mounted:
-        _OVERLAY_OK = False
-        return False
-    # bwrap requires at least one --overlay-src before any overlay op —
-    # it names the read-only lower layer (the ro-bound /usr mounted just
-    # above); without it bubblewrap rejects the argv outright.
-    argv += [
-        "--overlay-src",
-        "/usr",
-        "--tmp-overlay",
-        "/usr",
-        "--die-with-parent",
-        "--new-session",
-        "--dev",
-        "/dev",
-        "--tmpfs",
-        "/tmp",
-        "--chdir",
-        "/tmp",
-        "/bin/true",
-    ]
+    if bwrap:
+        probe_root = Path(state_root) / ".overlay-probe"
+        try:
+            probe_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            _OVERLAY_DESTS[key] = ()
+            return []
+        try:
+            for dest in _OVERLAY_CANDIDATES:
+                if not Path(dest).is_dir():
+                    continue
+                tag = dest.strip("/") or "root"
+                upper = probe_root / f"{tag}-upper"
+                work = probe_root / f"{tag}-work"
+                try:
+                    upper.mkdir(parents=True, exist_ok=True)
+                    work.mkdir(parents=True, exist_ok=True)
+                    argv = [
+                        bwrap,
+                        "--unshare-user", "--uid", "0", "--gid", "0",
+                        "--unshare-pid",
+                        "--dev", "/dev", "--tmpfs", "/tmp",
+                    ]
+                    for path in _DEFAULT_RO_BINDS:
+                        if Path(path).exists():
+                            argv += ["--ro-bind", path, path]
+                    argv += [
+                        "--bind", str(upper), str(upper),
+                        "--bind", str(work), str(work),
+                        "--overlay-src", dest,
+                        "--overlay", str(upper), str(work), dest,
+                        "--die-with-parent", "--new-session",
+                        "--chdir", "/tmp", "/bin/true",
+                    ]
+                    done = subprocess.run(
+                        argv, capture_output=True, check=False, timeout=15
+                    )
+                    if done.returncode == 0:
+                        ok.append(dest)
+                except Exception:
+                    pass
+                finally:
+                    shutil.rmtree(upper, ignore_errors=True)
+                    shutil.rmtree(work, ignore_errors=True)
+        finally:
+            shutil.rmtree(probe_root, ignore_errors=True)
+    _OVERLAY_DESTS[key] = tuple(ok)
+    return list(ok)
+
+
+def overlay_available(state_root: Path | None = None, *, force: bool = False) -> bool:
+    """True when ANY task-private persistent overlay mounts — thin
+    wrapper over :func:`overlay_dests`; callers that need the per-dest
+    list should call it directly."""
+    root = Path(state_root) if state_root else Path(tempfile.mkdtemp(
+        prefix="rxy-ovl-probe-", dir=None))
     try:
-        done = subprocess.run(argv, capture_output=True, check=False, timeout=15)
-        _OVERLAY_OK = done.returncode == 0
-    except Exception:
-        _OVERLAY_OK = False
-    return _OVERLAY_OK
+        return bool(overlay_dests(root, force=force))
+    finally:
+        if state_root is None:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 def userns_available(*, force: bool = False) -> bool:
@@ -164,9 +200,10 @@ def build_sandbox_argv(
     ``rw_binds`` (home / control-socket dir), a private tmpfs ``/tmp`` and
     the per-task persistent overlays in ``overlays`` — each ``(upper,
     work, dest)`` triple binds the two task-private dirs writable and then
-    mounts ``--overlay UPPER WORK DEST`` (bwrap's required three-operand
-    form; upper/work must share one filesystem — they live under the same
-    state root). The network namespace is ALWAYS unshared — the confined
+    mounts ``--overlay UPPER WORK DEST`` (bwrap's three-operand form with
+    the preceding ``--overlay-src`` supplying the read-only lower; the
+    kernel requires upper/work on one filesystem — they live under the
+    same state root). The network namespace is ALWAYS unshared — the confined
     process's only link to the outside is the parent's filtered egress
     socket mounted via ``rw_binds``.
     """

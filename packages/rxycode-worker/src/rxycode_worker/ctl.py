@@ -139,10 +139,24 @@ class CtlServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
+            # The client half-closes (shutdown SHUT_WR) after its frame —
+            # read until EOF, NOT a single read(): reader.read() returns
+            # after the first chunk, so a large request split across
+            # packets was parsed as "not JSON" and dropped (audit W8-r5:
+            # a valid >64KB ask/journal frame must survive framing).
+            chunks: list[bytes] = []
             try:
-                raw = await asyncio.wait_for(reader.read(_MAX_REQUEST_BYTES + 1), timeout=60.0)
+                while True:
+                    part = await asyncio.wait_for(reader.read(65536), timeout=60.0)
+                    if not part:
+                        break
+                    chunks.append(part)
+                    if sum(len(c) for c in chunks) > _MAX_REQUEST_BYTES:
+                        chunks = []
+                        break
             except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-                raw = b""
+                chunks = []
+            raw = b"".join(chunks).strip()
             response = await self._dispatch(raw)
         except Exception as exc:  # never wedge the child on a framing bug
             _LOG.warning("ctl dispatch failed", exc_info=True)

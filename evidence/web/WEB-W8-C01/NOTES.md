@@ -260,3 +260,63 @@ against `74f4c9c7`; all remediated:
    (`_CANCELLED/_TIMEOUT/_FAILED_RESULT_PREFIXES`), keeping the r3
    coverage of workflow/search/download error forms without the
    content-match hazard.
+
+## Audit round 5 (gpt-6.1-sol, same session — terminated on quota before verdict)
+
+r5 reproduced four findings plus a fifth caught by the W7 integration
+gate on the deployed stack; all remediated:
+
+1. **[P1] separated credential flag/value pairs survived the scrub** —
+   `args: ["--api-key", "s3cr3t"]` is a supported MCP spelling: the r4
+   list-item scrub only handled `=` forms and userinfo URLs, so the
+   secret rode into the mounted config. The scrubber now redacts the
+   item FOLLOWING a credential flag (a following `--` item is a new
+   flag, not a value, and is left alone).
+2. **[P1] ctl server dropped fragmented/oversized valid frames** —
+   `_handle` read once (`reader.read(cap+1)` returns after the first
+   chunk), so a >64KB ask/journal frame split across packets was parsed
+   as partial JSON and rejected `not JSON`. The handler now reads to
+   EOF (the client half-closes after its frame) with the same size cap
+   and per-read timeout. Regression test drives a 300KB frame in two
+   delayed writes.
+3. **[P1] `.data` cleanup had a symlink check-then-use race** — the
+   parent lstat-checked `.data` then unlinked by path BEFORE the
+   teardown barrier proved the old confined child dead: a swapped
+   `.data -> /host/path` symlink would make the UNCONFINED parent
+   delete a host file. Cleanup moved after the resume probe (a missing
+   turn.paused marker raises before it) and goes through
+   `_safe_unlink_inside` — POSIX O_NOFOLLOW|O_DIRECTORY + dir_fd unlink
+   (atomic on the opened inode), realpath-equality guard elsewhere.
+4. **[P2] successful `Error:` stdout misclassified as failure** —
+   `bash` formats exit-0 output as raw stdout; output starting with
+   `Error: fixture text` was classed failed. The bare-error table now
+   contains ONLY the codebase's real unbracketed tool errors
+   (`Download failed:`, `Failed to install`, `Failed to add MCP`,
+   `Failed to save config`, `Error: File exceeded`); generic
+   `error:`/`failed to ` prefixes are ordinary output.
+5. **[P1] overlay probe proved the wrong mount — deployed spawn died**
+   — found by re-running the W7-C05 real-stack leg: `run.error` showed
+   `bwrap: Can't make overlay mount on (null) ... Invalid argument`.
+   Bisection inside `python:3.12-slim` + bwrap 0.12: the kernel
+   EINVALs an `/etc` overlay lower inside a container (Docker injects
+   file mounts for resolv.conf/hostname/hosts) while `/usr` and `/var`
+   succeed — and the `--tmp-overlay` probe passed, so the drain added
+   an argv bwrap could never mount. `overlay_dests(state_root)` now
+   probes EVERY candidate with the production argv shape on the real
+   state-root fs and returns only the dests that genuinely mount
+   (container verdict: `usr`+`var` yes, `etc` no — it stays ro-bound).
+   Verified live: `touch /usr/x` lands on the task overlay,
+   `/etc` writes fail read-only, spawn proceeds.
+
+## Test evidence (r5)
+
+- `tests/web/w8`: 43 passed, 3 environment skips (no bwrap/userns, no
+  AF_UNIX) — includes new legs: fragmented 300KB ctl frame, separated
+  credential pair scrub, symlinked-`.data` refusal, `Error:` success
+  output classification.
+- Deployed-stack repro `python:3.12-slim`+bwrap 0.12.0: `/etc` overlay
+  EINVAL reproduced at argv level; usr+var shape verified end-to-end.
+- `tests/web/w7/test_w7_c05_module.py::test_w7_c05_integration`:
+  PASSED post-fix (405s real stack: worker.lease ->
+  event/agent_started -> honest provider-boundary failed). Full W7
+  suite re-run: 71 passed + this leg = no regressions.

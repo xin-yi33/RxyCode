@@ -2024,9 +2024,8 @@ def test_w8_c01_tool_call_outcome_classification() -> None:
         "[search error: backend unavailable]",
         "[agent error: recursion]",
         "[pipeline error: stage 2]",
-        "Download failed: connection reset",
-        "error: something failed",
-        "failed to download artifact",
+        "Download failed: connection reset",  # real bare tool format
+        "Failed to install requirements: x",
     ):
         assert drain._tool_call_failed(bad), bad
     for ok in (
@@ -2038,6 +2037,12 @@ def test_w8_c01_tool_call_outcome_classification() -> None:
         # only the prefix tables may classify tool output (audit W8-r4).
         "echo output: circuit breaker tripped in stage 3",
         "docs mention 模型调用已暂停 as a design note",
+        # r5: a SUCCESSFUL command may print text starting with 'Error:' —
+        # bash.py emits raw stdout for exit-0 runs; it must not settle
+        # the replay as failed.
+        "Error: fixture text\nmore output",
+        "error: something failed",      # not a real registered-tool prefix
+        "failed to download artifact",  # real format is 'Download failed:'
     ):
         assert not drain._tool_call_failed(ok), ok
 
@@ -2095,11 +2100,14 @@ def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
                     "PATH=/usr/bin",
                     "HOME=/data",
                 ],
-                # Positional args carry secrets too (audit W8-r4).
+                # Positional args carry secrets too (audit W8-r4) — and
+                # separated flag-value pairs (W8-r5).
                 "args": [
                     "--dsn",
                     "postgres://u:p@db.internal:5432/app",
                     "--api-key=flag_secret",
+                    "--api-key",
+                    "pair_secret",
                     "--verbose",
                 ],
             },
@@ -2121,7 +2129,9 @@ def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
     args = cfg["mcpServers"]["gh"]["args"]
     assert args[1] == "confined"                    # positional userinfo URL
     assert args[2] == "--api-key=confined"          # --flag=value spelling
-    assert args[0] == "--dsn" and args[3] == "--verbose"  # non-secret args kept
+    assert args[3] == "--api-key"                   # flag kept…
+    assert args[4] == "confined"                    # …its VALUE redacted (W8-r5)
+    assert args[0] == "--dsn" and args[5] == "--verbose"  # non-secret args kept
     assert cfg["mcpServers"]["dictform"]["env"]["API_KEY"] == "confined"
     assert cfg["mcpServers"]["dictform"]["env"]["NORMAL"] == "ok"
     assert cfg["database"]["database_url"] == "confined"
@@ -2196,3 +2206,74 @@ def test_w8_c01_resume_settled_maps_to_terminal() -> None:
     assert err.status == "recovery_required" and "unproven" in err.detail
     ok = drain._ResumeSettled("succeeded")
     assert ok.status == "succeeded" and ok.detail == ""
+
+
+def test_w8_c01_ctl_fragmented_request_dispatches(tmp_path: Path) -> None:
+    """A valid request split across socket fragments must still dispatch —
+    reader.read() returned the first chunk and partial JSON was rejected
+    as 'not JSON'; any ask/journal frame >64KB died silently (W8-r5)."""
+    from rxycode_worker.ctl import CtlServer
+
+    async def go() -> dict[str, Any]:
+        server = CtlServer(
+            tmp_path / "unused.sock",
+            {"echo": lambda a: {"n": len(a["t"])}},
+        )
+        listener = await asyncio.start_server(server._handle, "127.0.0.1", 0)
+        port = listener.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        payload = (
+            json.dumps({"op": "echo", "args": {"t": "a" * 300000}}).encode()
+            + b"\n"
+        )
+        writer.write(payload[:128])          # fragment 1 — partial JSON
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        writer.write(payload[128:])          # fragment 2 — the rest
+        try:
+            writer.write_eof()
+        except (ConnectionError, OSError):
+            pass
+        response = await asyncio.wait_for(reader.readline(), 10)
+        writer.close()
+        listener.close()
+        await listener.wait_closed()
+        return json.loads(response)
+
+    resp = asyncio.run(go())
+    assert resp["ok"] is True and resp["result"]["n"] == 300000
+
+
+def test_w8_c01_safe_unlink_inside_symlinked_dir(tmp_path: Path) -> None:
+    """``.data`` planted as a symlink to a host dir must NEVER let the
+    parent's cleanup delete a host file (audit W8-r5): POSIX refuses via
+    O_NOFOLLOW, the realpath guard refuses elsewhere."""
+    import rxycode_worker.drain as drain
+
+    host_dir = tmp_path / "host"
+    host_dir.mkdir()
+    victim = host_dir / "config.yaml"
+    victim.write_text("secret", encoding="utf-8")
+    link = tmp_path / "ws" / ".data"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(host_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation needs privilege on this host")
+    drain._safe_unlink_inside(link, "config.yaml")
+    assert victim.read_text() == "secret"
+
+
+def test_w8_c01_safe_unlink_inside_real_dir(tmp_path: Path) -> None:
+    """The normal case still works — a stale config inside a REAL .data
+    directory is removed."""
+    import rxycode_worker.drain as drain
+
+    data = tmp_path / ".data"
+    data.mkdir()
+    stale = data / "config.yaml"
+    stale.write_text("old", encoding="utf-8")
+    drain._safe_unlink_inside(data, "config.yaml")
+    assert not stale.exists()
+    # Missing file is not an error.
+    drain._safe_unlink_inside(data, "config.yaml")

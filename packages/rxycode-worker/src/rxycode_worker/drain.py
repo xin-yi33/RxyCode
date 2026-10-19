@@ -1386,11 +1386,28 @@ def _scrub_credential_values(node: Any) -> None:
                         or _has_url_secret(value)
                     ):
                         node[idx] = f"{key.strip()}=confined"
-                elif _has_url_secret(item):
-                    # A positional arg carrying a credential URL —
-                    # ``args: ["--dsn", "postgres://u:p@db/app"]`` —
-                    # leaks just as much as an env entry (audit W8-r4).
-                    node[idx] = "confined"
+                else:
+                    lowered = (
+                        item.strip().lower().lstrip("-").replace("-", "_")
+                    )
+                    if _has_url_secret(item):
+                        # A positional arg carrying a credential URL —
+                        # ``args: ["--dsn", "postgres://u:p@db/app"]`` —
+                        # leaks just as much as an env entry (W8-r4).
+                        node[idx] = "confined"
+                    elif (
+                        _is_credential_key(lowered)
+                        or lowered in _CREDENTIAL_INDIRECTION_KEYS
+                    ):
+                        # Separated flag-value pairs —
+                        # ``args: ["--api-key", "s3cr3t"]`` — keep the
+                        # flag, redact the value that follows it (W8-r5).
+                        # A following ``--`` item is a new flag, not a
+                        # value — nothing to redact.
+                        if idx + 1 < len(node) and isinstance(
+                            node[idx + 1], str
+                        ) and not str(node[idx + 1]).startswith("--"):
+                            node[idx + 1] = "confined"
                 continue
             _scrub_credential_values(item)
 
@@ -1845,6 +1862,47 @@ def _old_namespace_alive(state_root: Path | None, sandbox_id: str) -> bool | Non
     return True
 
 
+def _safe_unlink_inside(dir_path: Path, name: str) -> None:
+    """Unlink ``dir_path/name`` — never through a swapped parent symlink.
+
+    A confined child can plant ``.data -> /host/path`` inside its
+    writable workspace and a naive ``(ws_data / "config.yaml").unlink``
+    by the UNCONFINED parent would then delete a host file (audit
+    W8-r5). POSIX takes the atomic route — ``O_NOFOLLOW|O_DIRECTORY``
+    open + ``dir_fd`` unlink acts on the opened inode, immune to a
+    later swap; elsewhere (Windows) a realpath equality check narrows
+    the race to the final syscall — unprivileged symlink creation makes
+    the residual window hard to hit there."""
+    if os.unlink in getattr(os, "supports_dir_fd", ()):
+        try:
+            fd = os.open(
+                str(dir_path),
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError:
+            # Missing dir — or a symlink refused by O_NOFOLLOW; either
+            # way there is nothing safe to unlink by path.
+            return
+        try:
+            try:
+                os.unlink(name, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(fd)
+        return
+    try:
+        real_dir = Path(os.path.realpath(dir_path))
+        expected = Path(os.path.realpath(dir_path.parent)) / dir_path.name
+        if real_dir != expected:
+            return
+        (dir_path / name).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _run_journal_dir(state_root: Path, tenant_id: str, run_id: str) -> Path:
     """Parent-owned at-most-once journal for the run — keyed by RUN, not
     by the per-claim sandbox id: a reclaimed run must see the previous
@@ -1862,13 +1920,18 @@ def _tool_call_failed(text: Any) -> bool:
 
     Journal completion is replay safety, not success; the stored outcome
     is classified separately (audit W8-r2). The classification shares
-    the codebase's canonical result PREFIX tables (``log.log_helpers``)
-    so registered-tool formats like ``[workflow error:``/``Download
-    failed:`` cannot slip through as success (audit W8-r3) — but only
-    the prefixes: content matches like "circuit breaker" are
-    agent-answer semantics and would falsely fail a successful tool that
-    merely PRINTED the phrase (audit W8-r4). An EMPTY stored result is
-    not proof of failure — the call ran and printed nothing."""
+    the codebase's canonical prefix tables (``log.log_helpers``) so
+    registered-tool formats like ``[workflow error:`` cannot slip
+    through as success (audit W8-r3) — but restricted to what is
+    actually a TOOL error format: every ``[``-bracketed prefix is the
+    designed failure convention (``tools/bash.py``: "Tool recovery
+    classifies the stable [error...] prefix"), while bare answer-text
+    prefixes like ``error:``/``failed to `` collide with ordinary
+    program output and would falsely terminalize a successful call
+    (audit W8-r4/r5). The only bare-text forms kept are this codebase's
+    real tool error strings — the download/installer family. An EMPTY
+    stored result is not proof of failure — the call ran and printed
+    nothing."""
     stripped = str(text).strip()
     if not stripped:
         return False
@@ -1885,12 +1948,30 @@ def _tool_call_failed(text: Any) -> bool:
             _TIMEOUT_RESULT_PREFIXES,
         )
 
-    lowered = stripped.lower()
-    return lowered.startswith(
-        _CANCELLED_RESULT_PREFIXES
-        + _TIMEOUT_RESULT_PREFIXES
-        + _FAILED_RESULT_PREFIXES
+    bracketed = tuple(
+        p
+        for p in (
+            _CANCELLED_RESULT_PREFIXES
+            + _TIMEOUT_RESULT_PREFIXES
+            + _FAILED_RESULT_PREFIXES
+        )
+        if p.startswith("[")
     )
+    lowered = stripped.lower()
+    return lowered.startswith(bracketed + _TOOL_RESULT_BARE_ERRORS)
+
+
+#: Bare-text designed tool errors in this codebase — file_download /
+#: download_tool / installer / mcp_manager return these unbracketed.
+#: Everything else bare (``error:``, ``failed to `` generically) is
+#: ordinary program output, not a failure verdict (audit W8-r5).
+_TOOL_RESULT_BARE_ERRORS = (
+    "download failed:",
+    "error: file exceeded",
+    "failed to install",
+    "failed to add mcp",
+    "failed to save config",
+)
 
 
 def _aware_dt(value: Any) -> datetime | None:
@@ -3305,15 +3386,8 @@ async def execute_run(
         # unsandboxed parent to overwrite on the next run — audit r4).
         data_dir = _prepare_child_data_dir(provider.state_root / f"{sandbox_id}-conf")
         # A stale result file from an earlier run in this workspace must
-        # never be read as this run's outcome (audit r4-F3). The copied
-        # config is dropped too — a removed provider must not survive into
-        # the next run of a reused workspace.
+        # never be read as this run's outcome (audit r4-F3).
         (workdir / _TURN_RESULT).unlink(missing_ok=True)
-        ws_data = workdir / ".data"
-        # .data is child-controlled: never follow a planted symlink — the
-        # unlink only runs when .data is a real directory (or absent).
-        if ws_data.is_dir() and not ws_data.is_symlink():
-            (ws_data / "config.yaml").unlink(missing_ok=True)
 
         # Approval-resume journal: PARENT-OWNED, outside the sandbox's
         # writable workspace and never mounted — a wiped workdir can no
@@ -3434,6 +3508,13 @@ async def execute_run(
                     )
                 raise _ResumeSettled(terminal, detail)
 
+        # Drop the stale copied config — but only now, AFTER the resume
+        # probe: a missing turn.paused marker already raised above, so a
+        # possibly-live old child can never be racing this delete, and
+        # the dir-fd path never follows a planted symlink to a host file
+        # (audit W8-r5).
+        _safe_unlink_inside(workdir / ".data", "config.yaml")
+
         # Task-private control dir (parent-owned, rw-bound at the same
         # path): the per-run ctl socket + the filtered egress socket. The
         # confined child reaches the control plane ONLY through ctl.sock.
@@ -3540,23 +3621,20 @@ async def execute_run(
         # userns overlayfs; otherwise the ro mounts honestly refuse. Upper
         # and work dirs live under the run's own state dir (same fs, as
         # --overlay requires) so installs survive across the task's turns.
-        from rxycode_runner.sandbox.userns import (
-            _OVERLAY_CANDIDATES,
-            overlay_available,
-        )
+        from rxycode_runner.sandbox.userns import overlay_dests
 
         overlays: list[tuple[str, str, str]] = []
-        if overlay_available():
-            ovl_root = provider.state_root / f"{sandbox_id}-ovl"
-            for root in _OVERLAY_CANDIDATES:
-                if not Path(root).is_dir():
-                    continue
-                tag = root.strip("/") or "root"
-                upper = ovl_root / f"{tag}-upper"
-                work = ovl_root / f"{tag}-work"
-                upper.mkdir(parents=True, exist_ok=True)
-                work.mkdir(parents=True, exist_ok=True)
-                overlays.append((str(upper), str(work), root))
+        ovl_root = provider.state_root / f"{sandbox_id}-ovl"
+        # overlay_dests probes EVERY candidate with the real argv on the
+        # real state-root fs — a dest the kernel rejects (container /etc,
+        # Docker's injected file mounts) is simply skipped, not faked.
+        for root in overlay_dests(provider.state_root):
+            tag = root.strip("/") or "root"
+            upper = ovl_root / f"{tag}-upper"
+            work = ovl_root / f"{tag}-work"
+            upper.mkdir(parents=True, exist_ok=True)
+            work.mkdir(parents=True, exist_ok=True)
+            overlays.append((str(upper), str(work), root))
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
