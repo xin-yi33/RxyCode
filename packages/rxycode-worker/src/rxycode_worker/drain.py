@@ -1416,6 +1416,16 @@ _AUTH_HEADER_NAKED_RE = re.compile(
     r"|api-key|apikey)(\s*[:=]\s*)(?!(?:bearer|basic|token|digest|oauth)"
     r"\s)([^\s;|&<>'\"(){}]{4,})"
 )
+#: ``Digest`` authorization carries a comma-separated ``k=v`` list
+#: whose ENTIRE value is credential material — username/realm/nonce/
+#: uri/response. A single-fragment match redacts ``username=`` but
+#: leaves the full ``response="..."`` mounted (audit W8-r11). The
+#: pair list is consumed wholesale; the scheme word survives.
+_AUTH_DIGEST_RE = re.compile(
+    r"(?i)\b(authorization|proxy-authorization)(\s*[:=]\s*)digest\s+"
+    r"(?:[A-Za-z_][A-Za-z0-9_-]*\s*=\s*"
+    r"(?:\\?\"[^\"]*\\?\"|'[^']*'|[^,\s'\"]+)\s*,?\s*)+"
+)
 #: A bare auth scheme + token-length value — ``Bearer eyJ...`` —
 #: entropy floor keeps prose ("the bearer of bad news") alive.
 _AUTH_SCHEME_RE = re.compile(
@@ -1439,8 +1449,36 @@ def _shell_word_end(text: str, start: int) -> int:
     depth = 0
     while i < n:
         c = text[i]
-        if c in "'\"`":
+        if c == "\\" and i + 1 < n:
+            # Escaped char — ``\$`` starts no substitution, ``\ ``
+            # stays inside the word, ``\<newline>`` is a shell line
+            # continuation (audit W8-r11).
+            i += 2
+            continue
+        if c == "'":
+            # Single quotes end at the next ``'`` — ``\`` is literal
+            # inside them, never an escape.
             j = text.find(c, i + 1)
+            i = (j + 1) if j != -1 else n
+            continue
+        if c in "\"`":
+            # ``\"``/``\` `` are ESCAPED quote chars — a ``find`` that
+            # ignores the backslash count closes the span early and
+            # strands the rest of a Digest/header value (audit
+            # W8-r11). Skip quotes preceded by an odd run of ``\``.
+            j = i + 1
+            while True:
+                j = text.find(c, j)
+                if j == -1:
+                    break
+                backslashes = 0
+                b = j - 1
+                while b >= 0 and text[b] == "\\":
+                    backslashes += 1
+                    b -= 1
+                if backslashes % 2 == 0:
+                    break
+                j += 1
             i = (j + 1) if j != -1 else n
             continue
         if c == "$" and i + 1 < n and text[i + 1] == "(":
@@ -1450,6 +1488,13 @@ def _shell_word_end(text: str, start: int) -> int:
         if c == "$" and i + 1 < n and text[i + 1] == "{":
             j = text.find("}", i + 2)
             i = (j + 1) if j != -1 else n
+            continue
+        if c in "<>" and i + 1 < n and text[i + 1] == "(":
+            # Process substitution ``<(cmd)``/``>(cmd)`` is a WORD,
+            # not a redirect — its interior can carry secrets
+            # (audit W8-r11).
+            depth += 1
+            i += 2
             continue
         if depth:
             if c == "(":
@@ -1516,11 +1561,29 @@ def _scrub_inline_secrets(text: str) -> str:
                 vstart = j + 1
             else:
                 k = j
-                while k < len(src) and src[k] in " \t":
-                    k += 1
+                while k < len(src):
+                    if src[k] in " \t":
+                        k += 1
+                    elif src[k : k + 2] == "\\\n":
+                        # ``\<newline>`` line continuation — the real
+                        # value word is on the next line (audit W8-r11).
+                        k += 2
+                    elif src[k : k + 3] == "\\\r\n":
+                        k += 3
+                    else:
+                        break
                 # A separated value must exist and not be another flag
-                # or a bare separator (r5 pair semantics kept).
-                if k == j or k >= len(src) or src[k] in "-;|&<>":
+                # or a bare separator (r5 pair semantics kept);
+                # ``<(``/``>(`` start process-substitution WORDS, not
+                # redirects (audit W8-r11).
+                if k == j or k >= len(src):
+                    continue
+                if src[k] in "-;|&" or (
+                    src[k] in "<>"
+                    and not (
+                        k + 1 < len(src) and src[k + 1] == "("
+                    )
+                ):
                     continue
                 vstart = k
             vend = _shell_word_end(src, vstart)
@@ -1558,6 +1621,9 @@ def _scrub_inline_secrets(text: str) -> str:
 
     text = _flag_pass(text)
     text = _assign_pass(text)
+    text = _AUTH_DIGEST_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}Digest confined", text
+    )
     text = _AUTH_HEADER_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)} confined", text
     )

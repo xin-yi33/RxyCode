@@ -2526,3 +2526,41 @@ def test_w8_c01_scrub_dollar_brace_word() -> None:
 
     out = drain._scrub_inline_secrets("exec srv --token ${HOME}/x now")
     assert out == "exec srv --token confined now"
+
+
+def test_w8_c01_scrub_line_continuation() -> None:
+    r"""Audit W8-r11: ``\<newline>`` is a shell line continuation —
+    the real value word sits on the next line and still belongs to
+    the credential flag."""
+    import rxycode_worker.drain as drain
+
+    s = "exec server --api-key \\nAUDIT_CONTINUED_KEY"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_CONTINUED_KEY" not in out
+    assert out == "exec server --api-key confined"
+
+
+def test_w8_c01_scrub_process_substitution() -> None:
+    """Audit W8-r11: ``<(cmd)``/``>(cmd)`` are WORDS, not redirects —
+    ``--api-key-file <(printf %s KEY)`` kept its whole secret."""
+    import rxycode_worker.drain as drain
+
+    s = "srv --api-key-file <(printf %s AUDIT_FILE_KEY) -v"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_FILE_KEY" not in out
+    assert out == "srv --api-key-file confined -v"
+
+
+def test_w8_c01_scrub_digest_auth_header() -> None:
+    """Audit W8-r11: ``Digest`` auth is a k=v list whose ENTIRE value
+    is credential material — single-fragment redaction left the full
+    ``response=`` mounted."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        'curl -H "Authorization: Digest username=\\"u\\", realm=\\"r\\",'
+        ' nonce=\\"n\\", response=\\"AUDIT_DIGEST_RESP\\"" x'
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_DIGEST_RESP" not in out
+    assert "Authorization: Digest confined" in out

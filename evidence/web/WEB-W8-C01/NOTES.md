@@ -558,3 +558,45 @@ and re-verified:
   ``--api-key confined``; ``--api-key \`printf %s K\` `` -> ``--api-key
   confined``; ``--header "api-key: K"`` -> ``"api-key: confined"``.
 - `python -m ruff check` on drain.py / tests/web/w8: clean.
+
+## Audit round 11 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 2 findings)
+
+r11 audited `456842af` and confirmed the r10 fixes hold. Two new P1
+findings, both remediated and re-verified:
+
+1. **[P1] Continuation and process-substitution values still leaked** —
+   ``--api-key \<newline>KEY``: the shell line-continuation ``\<nl>``
+   is skipped whitespace, so the real value word lives on the next
+   line — the scanner consumed only the ``\`` and left
+   ``AUDIT_CONTINUED_KEY`` mounted. ``--api-key-file <(printf %s
+   KEY)``: process substitution ``<(``/``>(`` was treated as a
+   redirect separator, so the flag and its whole substitution word
+   survived verbatim. Fixes: the SEP-value skipper now consumes
+   ``\<newline>``/``\r\n`` continuations alongside whitespace;
+   ``<(``/``>(`` open depth-tracked words in ``_shell_word_end``; the
+   escape rule ``\x`` consumes both chars (``\$`` starts no
+   substitution); and quoted-span detection ignores quotes preceded
+   by an odd run of ``\`` (``\"`` inside ``"..."`` does not close the
+   span — without this the Digest value was cut at ``username=\``
+   and the rest of the pair list survived).
+2. **[P1] Structured ``Digest`` authorization only partially
+   redacted** — ``Authorization: Digest username="u", realm="r",
+   nonce="n", uri="/mcp", response="..."`` is a comma-separated k=v
+   list whose ENTIRE value is credential material; the generic
+   header pattern consumed only the first fragment (``username=``)
+   and left the full ``response=`` mounted. New ``_AUTH_DIGEST_RE``
+   consumes the whole k=v pair list (plain ``"v"``, escaped ``\"v\"``
+   and unquoted values) before the generic header rule — the scheme
+   word survives, the list dies.
+
+## Test evidence (r11)
+
+- `tests/web/w8`: 55 passed, 3 environment skips — new legs:
+  ``\<newline>`` continuation consumes the next-line secret,
+  ``<(cmd)`` process substitution consumed, ``Digest`` k=v list
+  consumed whole (real-quote and escaped-quote forms).
+- End-to-end through ``_prepare_child_data_dir``-equivalent
+  ``_scrub_credential_values`` on the audit repro: mounted YAML
+  contains ``--api-key confined``, ``--api-key-file confined`` and
+  ``Authorization: Digest confined`` — no ``AUDIT_*`` substring.
+- `python -m ruff check` on drain.py / tests/web/w8: clean.
