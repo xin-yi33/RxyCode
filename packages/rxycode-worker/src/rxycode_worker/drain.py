@@ -286,6 +286,30 @@ def _agent_done_row(database_url: str, run_id: str) -> tuple[str, int]:
     return str(row.event_id), tokens
 
 
+def _last_usage_delta(database_url: str, run_id: str) -> int:
+    """Sum of the most recent ``usage.delta`` heartbeat — the metering that
+    survives a SIGKILLed turn (the child writes it every few seconds)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            payload = conn.execute(
+                text(
+                    "SELECT payload FROM run_events "
+                    "WHERE run_id = :id AND type = 'usage.delta' "
+                    "ORDER BY seq DESC LIMIT 1"
+                ),
+                {"id": run_id},
+            ).scalar()
+    finally:
+        engine.dispose()
+    if not isinstance(payload, dict):
+        return 0
+    return int(payload.get("input_tokens") or 0) + int(payload.get("output_tokens") or 0)
+
+
 class _RunCancelled(Exception):
     """The run's status flipped to cancel_requested mid-flight."""
 
@@ -553,26 +577,41 @@ async def _lease_watchdog(
     epoch: int,
     *,
     lease_ttl: int,
+    claimed_at: float,
     turn: "asyncio.Task[Any]",
 ) -> None:
     """Renew the lease while the turn runs; cancel it on ``cancel_requested``,
     ``LeaseRejected``, or when renewals cannot be proven before expiry.
 
-    Every store call is bounded by ``wait_for(_LEASE_IO_BUDGET)`` — a stalled
-    database cannot stall the watchdog itself past the TTL. The monotonic
-    ``deadline`` is extended only by a *proven* renewal; once it passes, the
-    lease has expired, another worker may already own the row, and the turn
-    is cancelled with ``_LeaseRenewalLost`` instead of running unowned.
+    The monotonic ``deadline`` is anchored at the claim moment (``claimed_at``)
+    and extended only by a *proven* renewal — a failed probe shortens nothing
+    and delays nothing: the next sleep is ``min(interval, deadline - now)`` so
+    the watchdog wakes at expiry even mid-outage. Every store call is bounded
+    by ``wait_for`` inside the remaining budget; once the deadline passes the
+    lease has expired and the turn is cancelled with ``_LeaseRenewalLost``
+    instead of running unowned.
     """
     from rxycode_worker.supervisor import LeaseRejected, renew_lease
 
     interval = max(2.0, lease_ttl / 2.0)
-    deadline = time.monotonic() + lease_ttl
+    deadline = claimed_at + lease_ttl
+    # Sleep wakes unprecisely — keep a margin so the renewal probe lands
+    # strictly BEFORE expiry; a probe arriving at/past deadline would already
+    # be unowned in DB terms.
+    margin = 0.25
     while not turn.done():
-        await asyncio.sleep(interval)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _LOG.error("run %s: lease expired without a proven renewal", run_id)
+            turn.cancel()
+            raise _LeaseRenewalLost(run_id)
+        await asyncio.sleep(min(interval, max(0.05, remaining - margin)))
         if turn.done():
             return
-        budget = max(1.0, min(_LEASE_IO_BUDGET, deadline - time.monotonic()))
+        now = time.monotonic()
+        if now >= deadline:
+            turn.cancel()
+            raise _LeaseRenewalLost(run_id)
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(
@@ -583,7 +622,7 @@ async def _lease_watchdog(
                     epoch,
                     ttl_seconds=lease_ttl,
                 ),
-                timeout=budget,
+                timeout=max(0.5, min(_LEASE_IO_BUDGET, deadline - now)),
             )
             deadline = time.monotonic() + lease_ttl
         except LeaseRejected:
@@ -606,10 +645,14 @@ async def _lease_watchdog(
                 run_id,
                 exc_info=True,
             )
+        now = time.monotonic()
+        if now >= deadline:
+            turn.cancel()
+            raise _LeaseRenewalLost(run_id)
         try:
             status = await asyncio.wait_for(
                 asyncio.to_thread(run_status, database_url, run_id),
-                timeout=max(1.0, min(_LEASE_IO_BUDGET, deadline - time.monotonic())),
+                timeout=max(0.5, min(_LEASE_IO_BUDGET, deadline - now)),
             )
         except Exception as exc:
             status = ""
@@ -683,21 +726,22 @@ def _child_env(turn_env: Mapping[str, str]) -> dict[str, str]:
     return env
 
 
-def _prepare_child_data_dir(workdir: Path) -> Path:
-    """Per-run config home inside the sandbox: a copy of the worker's own
-    config.yaml so model resolution reads a real file. The shared writable
-    data dir itself is never mounted into the boundary."""
-    data_dir = workdir / ".data"
-    data_dir.mkdir(parents=True, exist_ok=True)
+def _prepare_child_data_dir(conf_dir: Path) -> Path:
+    """Per-run config home under the drain-controlled state root — a copy of
+    the worker's config.yaml so model resolution reads a real file. It is
+    ro-bound into the sandbox; the confined turn can never write it (and can
+    never leave a destination symlink for the parent to follow).
+    """
+    conf_dir.mkdir(parents=True, exist_ok=True)
     source_root = os.environ.get("RXYCODE_DATA_DIR", "").strip()
     if source_root:
         source = Path(source_root) / "config.yaml"
         if source.is_file():
             try:
-                shutil.copy2(source, data_dir / "config.yaml")
+                shutil.copy2(source, conf_dir / "config.yaml")
             except OSError:
                 _LOG.warning("copying config into the run sandbox failed", exc_info=True)
-    return data_dir
+    return conf_dir
 
 
 async def _wait_child(proc: "asyncio.subprocess.Process", stderr_tail: list[bytes]) -> None:
@@ -760,6 +804,22 @@ async def run_sandboxed_turn() -> int:
     model = os.environ.get("RXYCODE_WORKER_MODEL", "").strip()
     workdir = Path(os.environ.get("RXYCODE_TURN_WORKDIR", ".")).resolve()
     result_path = workdir / _TURN_RESULT
+
+    # Config lives in a parent-owned ro-bound dir; the writable data dir is
+    # inside this workspace. The child copies config.yaml itself — the
+    # parent NEVER writes into the workspace (a confined turn could plant a
+    # destination symlink and make a later parent copy follow it onto host
+    # files — audit r4-F2).
+    config_src = os.environ.get("RXYCODE_TURN_CONFIG_SRC", "").strip()
+    if config_src:
+        try:
+            src_cfg = Path(config_src) / "config.yaml"
+            dst_dir = Path(os.environ.get("RXYCODE_DATA_DIR", str(workdir / ".data")))
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            if src_cfg.is_file():
+                shutil.copy2(src_cfg, dst_dir / "config.yaml")
+        except OSError:
+            _LOG.warning("run %s: config copy into workspace failed", run_id, exc_info=True)
 
     from rxycode_server.runs.service import load_run
     from rxycode_worker.agent_events import (
@@ -837,6 +897,45 @@ async def run_sandboxed_turn() -> int:
         from appserver.agent_task import LifecycleState
         from appserver.eventbus import AppendOnlyLog, EventBus
 
+        token0 = (
+            int(token_stats.input_tokens),
+            int(token_stats.output_tokens),
+        )
+
+        async def _usage_heartbeat() -> None:
+            """Durable metering for a turn that may be SIGKILLed: snapshot the
+            real token_stats delta every few seconds onto the run's own event
+            log. The parent recovers the last heartbeat when no result file
+            survives (audit r4-F4) — a paid response killed mid-turn still
+            writes its consumed spend."""
+            while True:
+                await asyncio.sleep(3.0)
+                try:
+                    inp = int(token_stats.input_tokens) - token0[0]
+                    outp = int(token_stats.output_tokens) - token0[1]
+                    if inp + outp <= 0:
+                        continue
+                    from rxycode_server.events.store import append_event
+
+                    await asyncio.to_thread(
+                        append_event,
+                        database_url,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        event_type="usage.delta",
+                        payload={
+                            "input_tokens": inp,
+                            "output_tokens": outp,
+                            "cumulative": True,
+                        },
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _LOG.warning("run %s: usage heartbeat failed", run_id, exc_info=True)
+
+        usage_heartbeat = asyncio.ensure_future(_usage_heartbeat())
+
         session = Session(
             session_id=session_id,
             workspace_root=workdir,
@@ -851,10 +950,6 @@ async def run_sandboxed_turn() -> int:
         agent_id = f"web-run-{run_id[:12]}"
 
         async def _target(_task_str: str, checkpoint: object | None = None) -> str:
-            token0 = (
-                int(token_stats.input_tokens),
-                int(token_stats.output_tokens),
-            )
             try:
                 result = await dispatch_surface_prompt(
                     "web",
@@ -914,8 +1009,15 @@ async def run_sandboxed_turn() -> int:
             cancelled_by_request = True
         finally:
             command_watcher.cancel()
+            usage_heartbeat.cancel()
             try:
                 await command_watcher
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            try:
+                await usage_heartbeat
             except asyncio.CancelledError:
                 pass
             except Exception:
@@ -949,6 +1051,10 @@ async def run_sandboxed_turn() -> int:
             result_path.write_text(
                 json.dumps(
                     {
+                        # run_id binds the file to THIS run — a stale file from
+                        # an earlier run in a reused workspace can never be
+                        # accepted as the outcome (audit r4-F3).
+                        "run_id": run_id,
                         "status": (
                             "cancelled"
                             if cancelled_by_request
@@ -1001,6 +1107,9 @@ async def execute_run(
     )
     if epoch is None:
         return False
+    # Lease expiry is anchored at the claim instant, not at watchdog start —
+    # sandbox setup time counts against the first TTL.
+    claimed_at = time.monotonic()
 
     from rxycode_server.events.store import append_event
     from rxycode_server.runs.service import load_run
@@ -1073,7 +1182,20 @@ async def execute_run(
         # Per-tenant workspace: the sandbox's only writable path.
         workdir = provider.workspaces_root / tenant_id / session_id
         workdir.mkdir(parents=True, exist_ok=True)
-        data_dir = _prepare_child_data_dir(workdir)
+        # The config home lives OUTSIDE the writable workspace (a confined
+        # turn could otherwise plant a symlinked config.yaml for the
+        # unsandboxed parent to overwrite on the next run — audit r4).
+        data_dir = _prepare_child_data_dir(provider.state_root / f"{sandbox_id}-conf")
+        # A stale result file from an earlier run in this workspace must
+        # never be read as this run's outcome (audit r4-F3). The copied
+        # config is dropped too — a removed provider must not survive into
+        # the next run of a reused workspace.
+        (workdir / _TURN_RESULT).unlink(missing_ok=True)
+        ws_data = workdir / ".data"
+        # .data is child-controlled: never follow a planted symlink — the
+        # unlink only runs when .data is a real directory (or absent).
+        if ws_data.is_dir() and not ws_data.is_symlink():
+            (ws_data / "config.yaml").unlink(missing_ok=True)
 
         child_env = _child_env(
             {
@@ -1087,13 +1209,21 @@ async def execute_run(
                 "RXYCODE_TURN_PERMISSION": permission_mode or "",
                 "RXYCODE_TURN_TRACEPARENT": identity["traceparent"],
                 "RXYCODE_TURN_WORKDIR": str(workdir),
-                "RXYCODE_DATA_DIR": str(data_dir),
+                # Two distinct dirs: the config source is a parent-owned
+                # path that is only ro-bound into the sandbox (the child
+                # reads config.yaml FROM it), while RXYCODE_DATA_DIR points
+                # INSIDE the writable workspace so caches/sessions write
+                # freely. The parent never writes into the workspace — the
+                # confined child copies the config itself (audit r4-F2).
+                "RXYCODE_TURN_CONFIG_SRC": str(data_dir),
+                "RXYCODE_DATA_DIR": str(workdir / ".data"),
             }
         )
         # The same module re-entered in turn mode — the sandbox sees the
         # system paths plus every code path this host actually uses
-        # (container /repo, dev-host PYTHONPATH entries) read-only.
-        ro_binds = ["/repo"] + [
+        # (container /repo, dev-host PYTHONPATH entries) read-only, and the
+        # parent-controlled config dir read-only as RXYCODE_DATA_DIR.
+        ro_binds = ["/repo", str(data_dir)] + [
             entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
         ]
         argv = provider.spawn_argv(
@@ -1122,6 +1252,7 @@ async def execute_run(
                 cfg.worker_id,
                 epoch,
                 lease_ttl=cfg.lease_ttl,
+                claimed_at=claimed_at,
                 turn=turn_task,
             )
         )
@@ -1155,8 +1286,17 @@ async def execute_run(
             result = _read_turn_result(workdir)
             tokens = int(result.get("tokens") or 0)
             status = str(result.get("status") or "")
+            # The result file must name THIS run and the child's exit code
+            # must agree — a leftover file or a crashed-after-report child
+            # can never be read as success (audit r4-F3).
+            if str(result.get("run_id") or "") != run_id:
+                status = ""
+                tokens = 0
             if status == "succeeded":
-                pass
+                if proc.returncode != 0:
+                    turn_error = (
+                        f"sandboxed turn reported succeeded but exited rc={proc.returncode}"
+                    )
             elif status == "cancelled":
                 cancelled_by_request = True
             else:
@@ -1206,6 +1346,16 @@ async def execute_run(
             agent_done_id = agent_done_id_found
         if done_tokens > 0:
             tokens = done_tokens
+    except Exception:
+        pass
+    # The result file only exists when the child exited cleanly; a killed
+    # turn's spend survives in its usage.delta heartbeats (audit r4-F4).
+    # Take the max — the heartbeat is cumulative, never double-counted.
+    try:
+        tokens = max(
+            tokens,
+            await asyncio.to_thread(_last_usage_delta, cfg.database_url, run_id),
+        )
     except Exception:
         pass
     usage_error = ""

@@ -180,5 +180,54 @@
 
 ```bash
 python -m pytest tests/web/w7/test_w7_c05_unit.py tests/web/w7/test_w7_c05_module.py -q
-# 3 passed — ~10-15 min; each docker test self-cleans its project.
+# 11 unit + 1 module passed — ~10-15 min; each docker test self-cleans its project.
 ```
+
+## Audit r4 remediation (commit pending)
+
+The same-session audit round 4 probed the sandboxed path with fault
+injection and found five real defects; all are fixed in-tree:
+
+- **Lease expiry now stops the turn on its own** (`drain.py:_lease_watchdog`).
+  The deadline is anchored at the CLAIM instant, every store call is bounded
+  by `wait_for` inside the remaining TTL, sleeps wake `0.25s` before expiry,
+  and expiry cancels the turn + raises `_LeaseRenewalLost` (no terminal
+  write). The audit probe shape (failed renewal + a status read stalling
+  past the TTL) cancels at expiry — covered by unit leg (e).
+- **Child config moved out of the writable workspace** (`_prepare_child_data_dir`
+  → `provider.state_root/<sandbox>-conf`). The parent writes it; the sandbox
+  sees it only via `--ro-bind` as `RXYCODE_DATA_DIR`. A confined turn can no
+  longer plant a `.data/config.yaml` symlink for the parent to follow.
+- **Stale `.turn-result.json` cannot fake success.** The file is unlinked
+  before spawn, carries `run_id`, and a `succeeded` report additionally
+  requires `rc == 0`. A leftover file or a crashed-after-report child
+  resolves to failure.
+- **Killed turns no longer lose their spend.** The confined child
+  heartbeats cumulative `usage.delta` rows onto the run's own event log
+  every 3 s; the parent takes `max(result, last delta, agent_done)` — a
+  SIGKILLed paid turn still writes its measured usage before `cancelled`/
+  `failed`.
+- **`/tmp` mount order fixed.** `build_sandbox_argv` now mounts the private
+  tmpfs BEFORE the workspace bind, so the default
+  `RXYCODE_WORKER_WORKSPACES=/tmp/rxycode-runs` root works outside compose's
+  `/work/runs` override instead of being shadowed.
+
+Unit coverage: 11/11 `test_w7_c05_unit.py` (placement matrix, argv shape +
+mount order, watchdog legs a–e incl. the audit probe, projection
+vocabulary, stale-result rejection, config placement, usage-delta
+recovery, compose validators).
+
+### Live-debug additions during r4 remediation
+
+- **Worker healthcheck false-positive fixed**: `probe_worker.py` checked
+  `rxycode_worker` in `/proc/1/cmdline`, but PID 1 during the install phase
+  is the startup `sh -c` whose script TEXT already contains that string —
+  the probe passed once pip finished while drain had not yet `exec`'d.
+  The module test's 90 s claim window then raced real startup. The probe
+  now also requires `/proc/1/comm == python`, so `healthy` means the drain
+  process itself owns PID 1.
+- **Config vs data dir split**: the child reads config.yaml from a
+  parent-owned ro-bound dir (`RXYCODE_TURN_CONFIG_SRC`) and copies it into
+  `RXYCODE_DATA_DIR=<workspace>/.data` itself — discovered when the ro-bound
+  data dir made `cache/precise_cache`'s mkdir fail with EROFS. The parent's
+  only workspace interaction is `mkdir` + `.turn-result.json` cleanup.

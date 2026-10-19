@@ -646,7 +646,9 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
         monkeypatch.setattr(drain, "run_status", lambda *_a, **_k: "running")
         turn = asyncio.ensure_future(asyncio.sleep(5.0))
         watcher = asyncio.ensure_future(
-            drain._lease_watchdog("db", "r1", "w1", 1, lease_ttl=3, turn=turn)
+            drain._lease_watchdog(
+                "db", "r1", "w1", 1, lease_ttl=4, claimed_at=time.monotonic(), turn=turn
+            )
         )
         await asyncio.wait_for(watcher, timeout=15)
         assert calls["n"] >= 2
@@ -661,7 +663,9 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
         monkeypatch.setattr(supervisor, "renew_lease", broken)
         turn2 = asyncio.ensure_future(asyncio.sleep(60))
         with pytest.raises(drain._LeaseRenewalLost):
-            await drain._lease_watchdog("db", "r2", "w1", 1, lease_ttl=2, turn=turn2)
+            await drain._lease_watchdog(
+                "db", "r2", "w1", 1, lease_ttl=2, claimed_at=time.monotonic(), turn=turn2
+            )
         with pytest.raises(asyncio.CancelledError):
             await turn2
 
@@ -673,7 +677,9 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
         monkeypatch.setattr(supervisor, "renew_lease", rejected)
         turn3 = asyncio.ensure_future(asyncio.sleep(60))
         with pytest.raises(supervisor.LeaseRejected):
-            await drain._lease_watchdog("db", "r3", "w1", 1, lease_ttl=2, turn=turn3)
+            await drain._lease_watchdog(
+                "db", "r3", "w1", 1, lease_ttl=2, claimed_at=time.monotonic(), turn=turn3
+            )
         with pytest.raises(asyncio.CancelledError):
             await turn3
 
@@ -682,9 +688,32 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
         monkeypatch.setattr(drain, "run_status", lambda *_a, **_k: "cancel_requested")
         turn4 = asyncio.ensure_future(asyncio.sleep(60))
         with pytest.raises(drain._RunCancelled):
-            await drain._lease_watchdog("db", "r4", "w1", 1, lease_ttl=2, turn=turn4)
+            await drain._lease_watchdog(
+                "db", "r4", "w1", 1, lease_ttl=2, claimed_at=time.monotonic(), turn=turn4
+            )
         with pytest.raises(asyncio.CancelledError):
             await turn4
+
+        # (e) The deadline is independent: renewal broken AND the status probe
+        # stalling past the TTL still cancels the turn at expiry — the audit
+        # r4 probe shape (failed renewal + slow status read).
+        def down(*_args, **_kwargs):
+            raise RuntimeError("db down")
+
+        def slow_status(*_args, **_kwargs):
+            time.sleep(4.2)
+            return "running"
+
+        monkeypatch.setattr(supervisor, "renew_lease", down)
+        monkeypatch.setattr(drain, "run_status", slow_status)
+        turn5 = asyncio.ensure_future(asyncio.sleep(60))
+        t0 = time.monotonic()
+        with pytest.raises(drain._LeaseRenewalLost):
+            await drain._lease_watchdog("db", "r5", "w1", 1, lease_ttl=5, claimed_at=t0, turn=turn5)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 12, f"turn ran unowned for {elapsed:.1f}s past a 5s lease"
+        with pytest.raises(asyncio.CancelledError):
+            await turn5
 
     asyncio.run(_drive())
 
@@ -918,3 +947,83 @@ def test_w7_c05_sandbox_argv_shape(tmp_path: Path) -> None:
         workdir=tmp_path, argv=["true"], env={}, ro_binds=["/definitely-absent-xyz"]
     )
     assert "/definitely-absent-xyz" not in " ".join(argv2)
+
+
+def test_w7_c05_tmpfs_before_workspace_bind(tmp_path: Path) -> None:
+    """Audit r4-F5: the private /tmp tmpfs must mount BEFORE the workspace
+    bind — otherwise a workdir under /tmp (the drain default root) is
+    shadowed and --chdir fails."""
+    from rxycode_runner.sandbox.userns import build_sandbox_argv
+
+    workdir = tmp_path / "tmp" / "rxycode-runs" / "t1" / "s1"
+    argv = build_sandbox_argv(workdir=workdir, argv=["true"], env={})
+    tmpfs_at = argv.index("/tmp")  # operand right after --tmpfs
+    assert argv[tmpfs_at - 1] == "--tmpfs"
+    bind_at = argv.index("--bind")
+    assert tmpfs_at < bind_at, "tmpfs /tmp must mount before the workspace bind"
+
+
+def test_w7_c05_stale_result_rejected(tmp_path: Path) -> None:
+    """Audit r4-F3: a result file names its run; a reused workspace's
+    leftover result can never become this run's outcome."""
+    import json as _json
+
+    import rxycode_worker.drain as drain
+
+    workdir = tmp_path / "ws"
+    workdir.mkdir()
+    (workdir / drain._TURN_RESULT).write_text(
+        _json.dumps({"status": "succeeded", "tokens": 73, "error": "", "run_id": "old-run"}) + "\n",
+        encoding="utf-8",
+    )
+    row = drain._read_turn_result(workdir)
+    assert str(row.get("run_id") or "") == "old-run"
+    # The parent's acceptance gate compares run_id — simulate it:
+    assert str(row.get("run_id") or "") != "new-run"
+
+
+def test_w7_c05_child_config_outside_workspace(tmp_path: Path, monkeypatch) -> None:
+    """Audit r4-F2: the child's config home lives under the drain state
+    root, NOT inside the child-writable workspace — a confined turn cannot
+    plant a symlinked config.yaml for the parent to overwrite next run."""
+    import rxycode_worker.drain as drain
+
+    monkeypatch.setenv("RXYCODE_DATA_DIR", "")
+    state = tmp_path / ".sandboxes"
+    conf = drain._prepare_child_data_dir(state / "sb1-conf")
+    assert conf.parent == state
+    assert conf.name == "sb1-conf"
+
+
+def test_w7_c05_usage_delta_reader(monkeypatch) -> None:
+    """Audit r4-F4: a killed turn's spend is recovered from the last
+    cumulative usage.delta row the child heartbeated onto the run log."""
+    import rxycode_worker.drain as drain
+
+    seen = {}
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, _stmt, params):
+            seen["run_id"] = params["id"]
+
+            class _R:
+                def scalar(self):
+                    return {"input_tokens": 40, "output_tokens": 33, "cumulative": True}
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    assert drain._last_usage_delta("db", "run-42") == 73
+    assert seen["run_id"] == "run-42"

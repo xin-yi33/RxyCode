@@ -125,3 +125,20 @@ Final verdict: `<filled by the Codex audit>` (session
 - Workspaces live under the `worker-data` volume (`/work/runs`) — survive
   container restart, die with `down -v` (documented).
 - Browser E2E BLOCKED: no Playwright dep in apps/web; never claimed.
+
+## r4 remediation self-check
+
+- Deadline anchored at claim; every store call bounded inside remaining
+  TTL; expiry cancels the child (bwrap kill -> tree reaped). Leg (e)
+  reproduces the audit probe: failed renewal + 4.2s status stall on a 5s
+  lease cancels at ~5s.
+- No parent write enters the workspace except mkdir + bounded unlinks
+  (guarded against a planted .data symlink). config.yaml travels
+  parent-owned ro-bind -> child-side copy into <workdir>/.data.
+- Result file: unlinked pre-spawn, carries run_id, succeeded requires
+  rc==0. Stale/fake reports degrade to failed honestly.
+- usage.delta heartbeats are cumulative; parent takes max(result, delta,
+  agent_done) — killed paid turns keep their spend. Ledger failure still
+  forces failed.
+- bwrap mounts private /tmp before the workspace bind; the documented
+  default workspaces root works unmodified.

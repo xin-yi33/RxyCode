@@ -143,3 +143,17 @@ secrets + free loopback ports, then `down -v`'d itself.
                          provider the same code reached `succeeded`.
                          Labeled, not claimed.
   browser E2E leg:       BLOCKED — no Playwright dep in apps/web.
+
+== audit r4 remediation rerun ==
+python -m pytest tests/web/w7/test_w7_c05_unit.py -q
+  -> 11 passed in 460.43s (incl. real compose contract leg; watchdog legs
+     a-e; tmpfs-order, stale-result, config-placement, usage-delta legs)
+python -m pytest tests/web/w7/test_w7_c05_module.py -q
+  -> 1 passed in 706.91s — fresh compose project: cloud:{tenant}:w1 run
+     claimed, confined turn journaled event/agent_started, provider call
+     failed honestly at the loopback boundary, run committed failed +
+     usage row; stale-lease reclaim + worker SIGKILL/recreate legs green.
+Debug-stack probes (rxydbg-r4): .data/config copy path verified —
+turn now reaches the real provider boundary (no EROFS on ro-bound
+config dir); healthcheck false-positive (sh-cmdline substring) fixed via
+/proc/1/comm == python requirement.

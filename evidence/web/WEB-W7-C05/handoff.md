@@ -95,3 +95,18 @@ docker legs), `NOTES.md` (topology, deviations, honest labels).
 - Live-debug boundary fixes: probe loader binds (`/lib*`), `/usr/local`
   interpreter mount, `ro_binds` union semantics — all found by running the
   shipped container, all fixed in `userns.py`.
+- **Audit r4 remediation** (this commit): claim-anchored lease deadline that
+  cancels the turn at expiry even with a stalling store probe; child config
+  moved to a parent-owned dir outside the writable workspace (symlink-safe);
+  `.turn-result.json` bound to run_id + requires `rc==0` for success;
+  cumulative `usage.delta` heartbeats recover spend for SIGKILLed turns;
+  bwrap mounts private `/tmp` before the workspace bind (default workspace
+  root unbroken). Unit file now 11 legs incl. the audit's probe shape.
+
+## What the next auditor should probe
+
+- Lease expiry while a status/renewal call stalls past the deadline.
+- A prior success report left in a reused workspace + a child exiting 37.
+- Cancel/timeout mid-provider-call: usage must still land (usage.delta).
+- Default workspace root `/tmp/rxycode-runs` under bwrap (no compose
+  override) — the /tmp shadowing regression is unit-covered.

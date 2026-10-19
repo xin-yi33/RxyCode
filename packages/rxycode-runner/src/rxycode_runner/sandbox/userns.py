@@ -120,14 +120,17 @@ def build_sandbox_argv(
     for path in dict.fromkeys([*_DEFAULT_RO_BINDS, *ro_binds]):
         if Path(path).exists():
             out += ["--ro-bind", str(path), str(path)]
+    # The private tmpfs mounts BEFORE the workspace bind — otherwise a
+    # workdir under /tmp (the drain's default root) would be shadowed and
+    # --chdir would fail (audit r4-F5).
     out += [
-        "--bind",
-        str(workdir),
-        str(workdir),
         "--dev",
         "/dev",
         "--tmpfs",
         "/tmp",
+        "--bind",
+        str(workdir),
+        str(workdir),
         "--chdir",
         str(workdir),
     ]
