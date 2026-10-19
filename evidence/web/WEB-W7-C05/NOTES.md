@@ -362,3 +362,26 @@ Round 10 (same session) pushed the ledger boundaries further — three fixes:
   (60+60 → 130 reconciles to 70+60, never 130+60). PG-backed unit leg
   `test_w7_c05_adjust_terminal_usage_multi_row` covers multi-row,
   single-row-short-ledger, and no-ledger (file-retained) shapes.
+
+## Audit r11 remediation (commit pending)
+
+Round 11 (same session) sharpened three edges further:
+
+- **Lagging-heartbeat attribution**: exact-match still mis-binds when the
+  owning attempt's last heartbeat lagged its final total (e1 metered 5
+  dead; e2 metered 90 then untagged done 100 -> old rule hit e1 -> 190).
+  A done equals its attempt's FINAL total, so the owning bucket can never
+  exceed the row's value. Untagged dones now bind to the feasible
+  (metered <= value) open epoch with the SMALLEST surplus — exact match
+  is just surplus 0. Covered by
+  `test_w7_c05_untagged_done_lagging_heartbeat_match` -> 105.
+- **Terminal-status recheck race**: replay saw no ledger, then a retry
+  committed ledger+terminal between the two reads -> file dead-lettered
+  while the ledger stayed short. Ledger writes always precede the
+  terminal commit in program order, so once a terminal status is
+  observed the reconcile is retried once — a still-empty ledger on a
+  terminal run is the only true dead-letter.
+- **Atomic journaled flag**: the in-place `path.write_text` flag update
+  could be truncated by a crash, leaving a malformed spool every later
+  pass silently skipped. The flag now uses the same tmp+replace atomic
+  rename as the initial spool write.

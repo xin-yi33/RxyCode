@@ -220,3 +220,18 @@ Final verdict: `<filled by the Codex audit>` (session
   one row at the full value. PG-backed leg seeds real 60+60 / 5 / none
   shapes on 127.0.0.1:55432.
 - Non-stack legs 18/18 green; module stack test re-running.
+
+## r11 remediation self-check
+
+- `_agent_done_by_attempt` binds untagged dones by minimum surplus among
+  feasible (metered <= value) open epochs — lagging heartbeats can no
+  longer push e2's own 100-token completion onto a dead 5-token epoch 1
+  (190 -> 105). Exact match is the surplus-0 special case; r9 and r10
+  counterexamples still resolve correctly (verified by their legs).
+- `_replay_usage_spool` re-runs `adjust_terminal_usage` after observing a
+  terminal status before dead-lettering — ledger-then-status commit order
+  guarantees any in-flight ledger is visible by then; the file survives
+  the read-gap race.
+- The `journaled` flag is written via tmp+replace (atomic), closing the
+  truncate-on-crash malformed-file window.
+- Non-stack legs 19/19 green; module stack test re-running.

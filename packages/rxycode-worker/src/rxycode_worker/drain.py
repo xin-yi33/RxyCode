@@ -382,14 +382,17 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
 
     Untagged legacy rows need attribution that cannot double-charge.
     Seq-anchoring mis-binds a delayed epoch-1 completion that commits after
-    epoch 2's claim (audit r9); "earliest epoch without a done" instead
-    overcharges when the earlier attempt crashed done-less and the row is
-    epoch 2's own completion (audit r10). The disambiguator that survives
-    both: a done row's tokens equal its own attempt's metered total, so an
-    untagged row prefers the earliest unclaimed-done candidate whose
-    metered bucket (deltas ∪ dones so far) EQUALS its value — a delayed
-    completion rejoins the attempt it completes. Absent an exact match it
-    falls to the earliest candidate lacking a done, then seq-anchoring."""
+    epoch 2's claim (audit r9); "earliest epoch without a done" overcharges
+    when the earlier attempt crashed done-less and the row is epoch 2's own
+    completion (audit r10); exact bucket equality still fails when the
+    owning attempt's last heartbeat lagged its true total (audit r11:
+    e1 metered 5 dead + e2 metered 90 then done 100 -> must not bind e1).
+    The disambiguator: a done row's tokens are its attempt's FINAL total,
+    so the owning epoch's metered bucket can never exceed it. Among open
+    candidates whose bucket fits (``metered <= done``), pick the smallest
+    surplus ``done - metered`` — the completion rejoins the attempt it
+    least extends. No feasible bucket -> earliest open epoch -> seq-anchor.
+    """
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -445,15 +448,20 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
             )
         )
         open_candidates = [e for e in candidates if e not in filled]
-        # Exact-match first: the row equals its own attempt's metered
-        # total, so it rejoins the attempt it completes.
-        target = next(
-            (
-                e
-                for e in open_candidates
-                if max(metered_by_attempt.get(e, 0), latest.get(e, 0)) == tokens
-            ),
-            None,
+        # A done equals its OWN attempt's final metered total, so the owning
+        # epoch's bucket can never exceed the row's value. Among feasible
+        # buckets pick the smallest surplus — a lagging heartbeat (metered
+        # 90, done 100) still rejoins its own epoch instead of stealing an
+        # earlier done-less one; an exact match has surplus 0 and wins.
+        feasible = [
+            e
+            for e in open_candidates
+            if max(metered_by_attempt.get(e, 0), latest.get(e, 0)) <= tokens
+        ]
+        target = min(
+            feasible,
+            key=lambda e: tokens - max(metered_by_attempt.get(e, 0), latest.get(e, 0)),
+            default=None,
         )
         if target is None:
             target = open_candidates[0] if open_candidates else (
@@ -537,10 +545,15 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
             except Exception:
                 continue  # stays on disk for the next pass
             # Mark journaled so a kept-for-reconcile file does not journal
-            # a duplicate delta row on every pass (audit r10).
+            # a duplicate delta row on every pass (audit r10). The flag
+            # update must be atomic like the initial spool write — an
+            # in-place rewrite that is truncated by a crash would leave a
+            # malformed file that every later pass silently skips (r11).
             row["journaled"] = True
             try:
-                path.write_text(json.dumps(row), encoding="utf-8")
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(row), encoding="utf-8")
+                tmp.replace(path)
             except OSError:
                 pass  # worst case: one duplicate row — max() absorbs it
 
@@ -594,6 +607,27 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 status = ""
             if status not in _TERMINAL_STATUSES:
                 continue  # a later finalize or next replay reconciles
+            # Commit order is ledger-first-then-status: observing a terminal
+            # status means any finalizer's UsageRecord is already committed
+            # — it may simply have landed after our first read (audit r11).
+            # Reconcile once more before dead-lettering; only a still-empty
+            # ledger on a terminal run is truly unrecoverable.
+            try:
+                reconciled = adjust_terminal_usage(
+                    database_url,
+                    tenant_id=str(row["tenant_id"]),
+                    run_id=run_id,
+                    tokens=total,
+                    event_id=uuid.uuid4().hex,
+                )
+            except Exception:
+                reconciled = None
+            if reconciled is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
             _LOG.warning(
                 "run %s: terminal without ledger; spool dead-lettered "
                 "(delta row already durable)", run_id,

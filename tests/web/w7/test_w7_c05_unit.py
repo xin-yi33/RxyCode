@@ -1465,3 +1465,56 @@ def test_w7_c05_adjust_terminal_usage_multi_row(postgres_url: str) -> None:
         ) is None
     finally:
         engine.dispose()
+
+
+def test_w7_c05_untagged_done_lagging_heartbeat_match(monkeypatch) -> None:
+    """Audit r11 counterexample: heartbeats lag the true total. e1 spends
+    5 and dies silently; e2's last heartbeat reports 90 but its real total
+    is 100, delivered as the run's only untagged done. No bucket EQUALS
+    100 — the min-surplus rule must still bind e2 (->105), not the
+    done-less e1 (->190)."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            sql = str(stmt)
+
+            class _R:
+                def all(self):
+                    if "worker.lease" in sql:
+                        return [
+                            (1, {"worker_id": "w", "epoch": 1}),
+                            (20, {"worker_id": "w", "epoch": 2}),
+                        ]
+                    if "event/agent_done" in sql:
+                        return [(25, {"tokens": 100})]
+                    if "usage.delta" in sql:
+                        return [
+                            (5, {"input_tokens": 5, "output_tokens": 0, "attempt": "1"}),
+                            (22, {"input_tokens": 90, "output_tokens": 0, "attempt": "2"}),
+                        ]
+                    return []
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    dones = drain._agent_done_by_attempt("db", "run-43")
+    assert dones == {"2": 100}  # lagged meter still pins e2 — not e1
+    deltas = drain._usage_deltas_by_attempt("db", "run-43")
+    per_attempt = {
+        a: max(deltas.get(a, 0), dones.get(a, 0))
+        for a in set(deltas) | set(dones)
+    }
+    assert sum(per_attempt.values()) == 105
