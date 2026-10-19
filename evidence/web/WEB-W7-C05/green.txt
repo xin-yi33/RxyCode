@@ -225,4 +225,5 @@ ruff/py_compile: clean on drain.py + usage/service.py.
 == audit r14 remediation (2026-10-19) ==
 23 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
   incl. stale-snapshot lost-lease reconcile leg (fresh DB read merge).
-module stack test: re-running on r14 code.
+1 passed in 312.63s — tests/web/w7/test_w7_c05_module.py (real stack
+  on r14 code). ruff/py_compile clean; git diff --check clean.
