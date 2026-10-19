@@ -81,6 +81,6 @@
 5. 演示拒绝：播种 `local:*` run → `run.error`+`failed`，无 `event/agent_started`。
 6. 演示账本：`usage.updated` 行 + run 事件流 SSE 重放（`GET /api/v1/runs/{id}/events`，登录态浏览器或带 cookie 的 curl）。
 
-**无 OAuth 时**：步骤 2/6 的浏览器面标 BLOCKED——退化为纯后端演示：直接 `docker compose exec postgres psql` 查 `runs`/`run_events`/`usage_records` 三表验证持久化、租约接管与账本，不伪造前端截图。
+**无 OAuth 时**：步骤 2/6 的浏览器面标 BLOCKED——退化为纯后端演示：直接 `docker compose -f infra/compose/compose.yaml -p rxyweb exec -T postgres psql -U rxycode -d rxycode` 查 `runs`/`run_events`/`usage_records` 三表验证持久化、租约接管与账本，不伪造前端截图。
 
 演示录屏：BLOCKED（无 Playwright 依赖；不剪辑假场景）。

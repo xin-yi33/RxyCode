@@ -69,3 +69,17 @@ Four findings, all fixed in pending commit:
   8+7+5+5+5+3+2+3+3+3+3+3+4+4+4+1).
 - **`input/output tokens` metric format**: `_METRIC` now accepts an
   optional input|output|total qualifier before `tokens`.
+
+
+## Audit r3 remediation (2026-10-19, same Codex session)
+
+Two findings, fixed in pending commit:
+
+- **Backend-only psql leg picked the wrong stack**: now uses the same
+  `-f infra/compose/compose.yaml -p rxyweb` form plus the configured
+  `psql -U rxycode -d rxycode` identity.
+- **Permission table overpromised sandboxing on the local runner**:
+  `LocalNativeBackend.attach_sandbox` raises `SANDBOX_FORBIDDEN` — the
+  native run backend's real boundary is the ask/full approval profile.
+  The table cell now says so explicitly and separates the shell-surface
+  OS sandbox (`execution.os_sandbox` auto-toggle) from the run backend.

@@ -50,7 +50,7 @@ RxyCode Web 是同一份 headless 核心（`Session`/`AgentV2`）上的多租户
 | 目标/模式 | 共享 worker（公网栈） | 本机 Runner |
 |---|---|---|
 | `cloud:{tenant}:{workspace}` + `auto_edit`/`confirm_all` | 在 per-run 沙箱内执行 | — |
-| `local:*` | **拒绝**（`run.error` → `failed`，不 spawn） | 本地执行（沙箱开） |
+| `local:*` | **拒绝**（`run.error` → `failed`，不 spawn） | 本地执行——native runner 不挂内核沙箱（`attach_sandbox` 即 `SANDBOX_FORBIDDEN`）；权限边界是 `ask`（审批门禁）/`full`（免审批）。本机 CLI shell 面的 OS 沙箱另由 `execution.os_sandbox` 按权限模式自动开关，与 run 后端是两回事 |
 | `full`/`full_auto` | **拒绝**（Full = 无沙箱宿主权限，公网 worker 没有） | 用户确认后解除沙箱限制、免审批 |
 | 沙箱不可用（无 bwrap/userns） | run `failed` + `IsolationUnavailable` | — |
 
