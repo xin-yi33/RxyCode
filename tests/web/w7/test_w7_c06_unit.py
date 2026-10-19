@@ -23,11 +23,47 @@ _STATUSES = ("shipped", "experimental", "planned", "blocked")
 _EVIDENCE_REF = re.compile(r"evidence/web/WEB-W\d-C\d\d")
 _TEST_REF = re.compile(r"tests/(?:web|integration|unit|test_)[\w./-]*\.py")
 # A quantitative claim: digits next to units/suffixes or an explicit count
-# like "48 cards". Citations are `[…]` links or `（证据: …）`/`(evidence: …)`
-# on the same line; TBD/占位/BLOCKED mark an honest placeholder.
-_METRIC = re.compile(r"\d[\d.,]*\s*(%|ms|s\b|min|x\b|次|条|卡|runs?|tests?)")
+# like "48 cards" / "1400 行" / "9165 input tokens". Citations are `[…]` links
+# or `（证据: …）`/`(evidence: …)` on the same line; TBD/占位/BLOCKED mark an
+# honest placeholder.
+_METRIC = re.compile(
+    r"\d[\d.,]*\s*(%|ms|s\b|min|x\b|tokens?|commits?|runs?|tests?|"
+    r"次|条|卡|轮|个|项|行|张|分钟|小时|秒|工程日)"
+)
 _CITATION = re.compile(r"\[[^\]]+\]\(|证据[:：]|evidence[:=]|TBD|占位|BLOCKED")
 _TABLE_ROW = re.compile(r"^\s*\|.*\|.*\|")
+# A `（证据: …）` citation must name at least one artifact that exists on
+# disk — the word alone is not a citation (audit r1).
+_EVIDENCE_CLAIM = re.compile(r"(?:证据|evidence)[:：]\s*([^）)\n]+)")
+_BACKTICK = re.compile(r"`([^`]+)`")
+_BARE_PATH = re.compile(r"(?:evidence|docs|tests|infra|packages|apps)/[\w\-./ ]+")
+
+
+def _row_status(cells: list[str]) -> str | None:
+    """Status cells carry the keyword first (`shipped`, `blocked: reason`);
+    an exact-match test would silently skip `blocked: …` rows entirely."""
+    for c in cells[1:]:
+        low = c.lower()
+        for s in _STATUSES:
+            if low.startswith(s):
+                return s
+    return None
+
+
+def _citation_targets_exist(line: str) -> bool:
+    """Validate the targets of `（证据: …）`/`(evidence: …)` citations —
+    every cited path must resolve on this checkout. Markdown links and
+    placeholder markers are not path claims."""
+    match = _EVIDENCE_CLAIM.search(line)
+    if not match:
+        return True
+    body = match.group(1)
+    refs = _BACKTICK.findall(body) or _BARE_PATH.findall(body)
+    if not refs:
+        return False
+    return any(
+        (REPO / r.split("::")[0].strip().rstrip("/")).exists() for r in refs
+    )
 
 
 def _readme_web_section() -> str:
@@ -48,7 +84,7 @@ def _matrix_rows() -> list[list[str]]:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) < 3 or cells[0] in {"---", ":---"} or set(cells[0]) <= {"-", ":"}:
             continue
-        if any(c.lower() in _STATUSES for c in cells[1:]):
+        if _row_status(cells):
             rows.append(cells)
     return rows
 
@@ -70,9 +106,10 @@ def test_w7_c06_contract() -> None:
     assert rows, "README Web section has no status-tagged matrix rows"
 
     shipped = 0
+    blocked = 0
     for cells in rows:
         line = " | ".join(cells)
-        status = next(s for s in _STATUSES if s in (c.lower() for c in cells[1:]))
+        status = _row_status(cells)
         if status == "shipped":
             shipped += 1
             ev = _EVIDENCE_REF.search(line)
@@ -84,10 +121,14 @@ def test_w7_c06_contract() -> None:
                 assert (REPO / ref).is_file(), f"test file missing: {ref} ({line})"
         elif status == "blocked":
             # A blocked row must name the blocker — no silent gaps.
+            blocked += 1
             assert re.search(r"(?i)blocked[:：]\s*\S", line) or any(
                 "no " in c.lower() or "需要" in c or "requires" in c.lower() for c in cells
             ), f"blocked row lacks a named blocker: {line}"
     assert shipped >= 3, "matrix ships almost nothing — matrix is dishonest"
+    # The parser must actually SEE the blocked rows — an exact-match status
+    # bug once let `blocked: reason` cells skip every assertion (audit r1).
+    assert blocked >= 1, "no blocked rows parsed — status detection regressed"
 
     # The card's three docs exist, are substantive, and are git-trackable.
     for path in (GUIDE, DESIGN, CASE):
@@ -106,6 +147,10 @@ def test_w7_c06_negative() -> None:
                 continue
             assert _CITATION.search(line), (
                 f"{path.name}:{lineno} uncited metric claim: {line.strip()[:100]}"
+            )
+            assert _citation_targets_exist(line), (
+                f"{path.name}:{lineno} cites no artifact that exists on disk: "
+                f"{line.strip()[:100]}"
             )
     # The README matrix itself must not smuggle uncited numbers either.
     for cells in _matrix_rows():

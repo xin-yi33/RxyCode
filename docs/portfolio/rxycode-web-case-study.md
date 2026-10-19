@@ -9,13 +9,13 @@
 ## 规模与工作量（均可核查）
 
 - 48 张卡（W0×4, W1×5, W2×7, W3×7, W4×7, W5×6, W6×6, W7×6），每张独立 commit + `evidence/web/WEB-W*` 证据目录（证据: `docs/plans/opus5-plan/rxycode -web/phases/`）。
-- drain worker 单文件约 1400 行，承担认领/放置闸/沙箱 spawn/租约看门狗/投影/账本/终态（证据: `packages/rxycode-worker/src/rxycode_worker/drain.py`）。
-- W7-C05 单卡经历 4 轮独立审计（r1:8、r2:7、r3:5 条发现，全部修复；r4 待终判），同一会话 `gpt-6.1-sol` high 复审（证据: `evidence/web/WEB-W7-C05/self-audit.md`）。
+- drain worker 单文件约 2400 行，承担认领/放置闸/沙箱 spawn/租约看门狗/投影/账本/终态（证据: `packages/rxycode-worker/src/rxycode_worker/drain.py`）。
+- W7-C05 单卡经历 17 轮独立审计、累计 60 条发现全部修复，终判 `VERDICT: NO_REMAINING_PROBLEMS`；全程同一会话 `gpt-6.1-sol` high 复审（证据: `evidence/web/WEB-W7-C05/self-audit.md`、`evidence/web/WEB-W7-C05/NOTES.md`）。
 - 部署栈 9 个服务（postgres/redis/minio/reposync/migrate/api/worker/webbuild/gateway），全部端口绑定 loopback（证据: `infra/compose/compose.yaml`、`tests/web/w7/test_w7_c05_unit.py`）。
 
 ## 实测数字
 
-- 宿主机真 provider 回合：一次 `local:`（旧直接路径）drain run 记录 input 9165 + output 1503 tokens，`assistant.final` 投影带真实 text（证据: `evidence/web/WEB-W7-C05/green.txt` 宿主机 smoke 段）。
+- 宿主机真 provider 回合：一次 `local:`（旧直接路径）drain run 记录 input 9165 + output 1503 tokens，`assistant.final` 投影带真实 text（证据: `evidence/web/WEB-W7-C05/self-audit.md` 宿主机 smoke 段）。
 - C05 聚焦测试（7 unit + 1 module，真实 compose 栈）：unit 296.64s，module 510.09s（证据: `evidence/web/WEB-W7-C05/green.txt` r3 run 段）。
 - 沙箱内 turn 对死端点重试 6 次后按 60s run_timeout 诚实失败，`/proc` 零残留进程（证据: `evidence/web/WEB-W7-C05/green.txt` module 腿 + r3-fix live 段）。
 - 综合 E2E 通过率 / 面试演示时长：TBD（证据缺口：apps/web 无 Playwright，浏览器腿 BLOCKED，见 `evidence/web/WEB-W7-C06/NOTES.md`）。
@@ -26,7 +26,7 @@
 2. **`docker compose exec` 输出是 UTF-8 而宿主 GBK** → `text=True` 解码炸掉 stdout；改 bytes 捕获显式 UTF-8（证据: `tests/web/w7/test_w7_c05_module.py::_compose` 注释）。
 3. **bwrap 在容器里的三个真坑**：默认 seccomp 禁 `unshare`（→ worker 单列 `seccomp=unconfined`）；探测只绑 `/usr` 漏了 `/lib` 动态加载器（execvp ENOENT）；`/usr/local` 才是 slim 镜像的解释器前缀（证据: `evidence/web/WEB-W7-C05/self-audit.md` r3-fix 段）。
 4. **审批面在部署栈不存在** → 不是"卡住"，是 confirm_all run 在 run_timeout 诚实 `failed`（证据: `docs/product/web-user-guide.md` FAQ）。
-5. **账本可以静默丢** → usage 写失败并入 turn_error，succeeded 从此不能站在缺失行上（证据: `drain.py` usage_error 路径 + r2 审计记录）。
+5. **账本可以静默丢** → usage 写失败并入 turn_error 并落 pending spool，succeeded 从此不能站在缺失行上（证据: `packages/rxycode-worker/src/rxycode_worker/drain.py` usage_error 路径 + `evidence/web/WEB-W7-C05/NOTES.md` r12-r16 审计记录）。
 
 ## 技术取舍（答辩口径）
 
@@ -37,10 +37,53 @@
 
 ## 两分钟演示脚本
 
-1. `docker compose up -d` 起栈，开 `https://localhost:8443`（证书警告=内部 CA，预期）。
-2. 本地口令登录 → 建 project/session → 发一条 run：`cloud:<tenant>:w1` + `auto_edit`。
-3. 演示恢复：kill worker → 租约到期 → 新 worker 接管（epoch+1 可见于 `runs` 行）。
-4. 演示拒绝：发 `local:*` run → `run.error`+`failed`，无 `event/agent_started`。
-5. 演示账本：`usage.updated` 行 + run 事件流 SSE 重放。
+1. `docker compose up -d` 起栈（各服务进入 marker 等待循环），然后**必须手工播种**代码卷——`reposync` 只等 `.rxy-sync-done`，不自流：
+
+   ```bash
+   tar --exclude=.git --exclude=node_modules --exclude=__pycache__ \
+       --exclude=dist --exclude=build -cf - . | \
+     docker compose -f infra/compose/compose.yaml -p <proj> exec -T reposync \
+       sh -c 'tar -xf - -C /repo && touch /repo/.rxy-sync-done'
+   ```
+
+   栈健康后开 `https://localhost:8443`（证书警告=内部 CA，预期）。
+
+2. 登录：部署栈默认 `RXYCODE_WEB_MODE=cloud`——本地口令登录在此模式下返回 `403`；交互登录需要先配 `RXYCODE_GITHUB_CLIENT_ID/SECRET/REDIRECT_URI` 指向一个真实 GitHub OAuth App。**未配置 OAuth 时标记为 BLOCKED**，改用下面的服务端播种路径演示。
+
+3. 发 run：本版没有 run 创建的 HTTP 端点（`runs` 路由只有 GET/cancel/steer）——在 `api` 容器里走 service 层播种：
+
+   ```bash
+   docker compose -p <proj> exec -T api python - <<'PY'
+   import os
+   from sqlalchemy import create_engine
+   from sqlalchemy.orm import Session
+   from sqlalchemy.pool import NullPool
+   from rxycode_server.persistence.models import (
+       Organization, Project, SessionRow, User,
+   )
+   from rxycode_server.runs.service import create_run
+
+   dsn = os.environ["RXYCODE_WEB_DATABASE_URL"]
+   eng = create_engine(dsn, poolclass=NullPool)
+   with Session(eng) as db:
+       db.add(User(id="demo-user", github_id=None, kind="local"))
+       db.add(Organization(id="demo-org", tenant_id="demo-tenant"))
+       db.add(Project(id="demo-prj", tenant_id="demo-tenant",
+                      name="demo", repo_config={}))
+       db.add(SessionRow(id="demo-sess", tenant_id="demo-tenant",
+                         project_id="demo-prj", title="demo"))
+       db.commit()
+   create_run(dsn, tenant_id="demo-tenant", session_id="demo-sess",
+              message="demo durable run",
+              target_id="cloud:demo-tenant:w1",
+              permission_profile="auto_edit", request_id="demo-req-1")
+   PY
+   ```
+
+   （租户/会话行同样可经 `POST /api/v1/projects` + session 创建端点在登录后走 HTTP——播种脚本只是一次性把两边都铺好。）
+
+4. 演示恢复：kill worker → 租约到期 → 新 worker 接管（epoch+1 可见于 `runs` 行）。
+5. 演示拒绝：播种 `local:*` run → `run.error`+`failed`，无 `event/agent_started`。
+6. 演示账本：`usage.updated` 行 + run 事件流 SSE 重放（`GET /api/v1/runs/{id}/events`）。
 
 演示录屏：BLOCKED（无 Playwright 依赖；不剪辑假场景）。

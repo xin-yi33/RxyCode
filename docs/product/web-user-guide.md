@@ -22,17 +22,28 @@ RxyCode Web 是同一份 headless 核心（`Session`/`AgentV2`）上的多租户
 2. 必填环境变量（compose 会拒绝缺失值）：
    `RXYCODE_POSTGRES_PASSWORD`、`RXYCODE_MINIO_ROOT_USER`、`RXYCODE_MINIO_ROOT_PASSWORD`、`RXYCODE_WEB_SECRET`（≥32 字节）。
 3. 可选：`RXYCODE_LLM_BASE_URL` + `RXYCODE_LLM_MODEL` + `RXYCODE_API_KEY`——不配则 turn 在 provider 边界诚实失败（`failed`，不是假成功）。
-4. `docker compose up -d` → `reposync` 把源码 tar 灌入 `repo-src` 卷 → `migrate` 跑 Alembic 到头 → `webbuild` 产出前端 → `api`/`worker`/`gateway` 起。
-5. 访问 `https://localhost:<RXYCODE_HTTPS_PORT>`——Caddy 内部 CA 签发 `localhost` 证书，浏览器首次会警告（属预期，内部 CA 不被默认信任）。
+4. `docker compose up -d`——注意这一步只拉起各服务的**等待循环**：`reposync`/`migrate`/`webbuild`/`api`/`worker` 都在等 `repo-src` 卷里的 `.rxy-sync-done` 标记，本机不灌源码则栈永远停在这里。
+5. 播种代码卷（把当前 checkout tar 进 `repo-src`；精确命令见 `docs/deploy/web-runbook.md` Bring-up 节）：
+
+   ```bash
+   tar --exclude=.git --exclude=node_modules --exclude=__pycache__ \
+       --exclude=dist --exclude=build -cf - . | \
+     docker compose -f infra/compose/compose.yaml -p <proj> exec -T reposync \
+       sh -c 'tar -xf - -C /repo && touch /repo/.rxy-sync-done'
+   ```
+
+   之后 `migrate` 跑 Alembic 到头 → `webbuild` 产出前端 → `api`/`worker`/`gateway` 起。
+6. 访问 `https://localhost:<RXYCODE_HTTPS_PORT>`——Caddy 内部 CA 签发 `localhost` 证书，浏览器首次会警告（属预期，内部 CA 不被默认信任）。
 
 升级/回滚与边界清单见 `docs/deploy/web-runbook.md`；升级必须先清空 `repo-src` 卷再重新播种（runbook 里是精确命令）。
 
 ## Onboarding / 登录
 
-- 打开站点 → 未登录访问任何 `/api/v1/*` 一律 `401`；写操作另外要求 Origin 在允许列表且 `rxy_csrf` cookie 与 `x-csrf-token` 头一致，否则 `403`。
+- `/api/v1/auth/*` 是公开面（CSRF token 领取、登录、OAuth 回调必须未登录可达）；其余 `/api/v1/*` 业务端点未登录一律 `401`；写操作另外要求 Origin 在允许列表且 `rxy_csrf` cookie 与 `x-csrf-token` 头一致，否则 `403`。
 - 本地模式：共享本机账户口令登录。
-- 云模式：走 GitHub OAuth；未完成的授权回调被拒绝。
+- 云模式（部署栈默认 `RXYCODE_WEB_MODE=cloud`）：走 GitHub OAuth，**必须先配置** `RXYCODE_GITHUB_CLIENT_ID`/`RXYCODE_GITHUB_CLIENT_SECRET`/`RXYCODE_GITHUB_REDIRECT_URI`（一个真实 GitHub OAuth App）；未配置时公网栈没有可用的交互登录面，未完成的授权回调被拒绝。本地口令接口在云模式下返回 `403`。
 - **不存在匿名 run 入口**——「访客完成受限任务」在 HTTP 面就是 401/403；这不是疏忽，是冻结决策（公网 Demo 不暴露本机执行面）。
+- **本版没有 run 创建的 HTTP 端点**：`POST /api/v1/projects`、session 创建都有 REST 面，但 `runs` 路由只暴露 GET/cancel/steer。演示用 run 需要在服务端播种（`rxycode_server.runs.service.create_run`，可在 `api` 容器内执行，示例见 case study 演示脚本）。
 
 ## 权限模式与目标
 

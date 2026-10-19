@@ -25,3 +25,30 @@
 python -m pytest tests/web/w7/test_w7_c06_unit.py tests/web/w7/test_w7_c06_module.py -q
 # 3 passed in ~1s (module uses the shared rxy-w2c01-pg dev container)
 ```
+
+
+## Audit r1 remediation (2026-10-19, same Codex session)
+
+Five findings, all fixed in pending commit:
+
+- **Install docs claimed one-command auto-seed**: `reposync` only WAITS
+  on `.rxy-sync-done`; the tar seed is mandatory. user-guide step 4/5 and
+  the case-study demo script now show the real two-step sequence;
+  README row reworded "two-step" instead of "one-command".
+- **Demo path impossible as written**: cloud-mode compose rejects local
+  login (403) and there is no run-creation HTTP endpoint. Guide now
+  states the GitHub-OAuth prerequisite (`RXYCODE_GITHUB_*`) and the
+  service-level seeding path; case-study demo script carries a real
+  `create_run` seed snippet via `docker compose exec api`.
+- **Shipped rows conflated standalone vs deployed**: approvals row now
+  notes the deployed worker has no approval-answer channel; tenant
+  fs/net isolation row now scopes net isolation to the standalone path
+  (deployed turn needs DB/LLM egress).
+- **Contract parser skipped `blocked: reason` rows** (exact-match bug):
+  `_row_status` prefix-matches and the contract asserts ≥1 blocked row
+  is actually parsed.
+- **Negative test missed CN/token metric formats and dead citations**:
+  `_METRIC` gains 行/张/轮/个/项/分钟/tokens/commits units;
+  `（证据: …）` citations must resolve to ≥1 existing path; case-study
+  token counts re-pointed to self-audit.md (which contains them) and
+  stale numbers corrected (drain 2400 行, 17 轮/60 条审计).
