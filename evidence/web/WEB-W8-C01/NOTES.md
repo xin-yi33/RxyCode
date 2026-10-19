@@ -513,3 +513,48 @@ new P1 findings, both remediated and re-verified:
   ``--api-key ""KEY`` -> ``--api-key confined``;
   ``--header "Authorization: Bearer K"`` -> ``...Bearer confined"``.
 - `python -m ruff check` on drain.py / tests/web/w8: clean.
+
+## Audit round 10 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 2 findings)
+
+r10 audited `518cf502` and confirmed the r9 fixes hold (shell-word
+consumption, auth-header scrub). Two new P1 findings, both remediated
+and re-verified:
+
+1. **[P1] Nested and backtick substitutions leak complete credentials** —
+   the regex-based shell WORD could not balance nested ``$(...)``:
+   ``--api-key $(printf %s $(printf ignored) AUDIT_NESTED_KEY)``
+   stopped at the first ``)`` and left ``AUDIT_NESTED_KEY)`` mounted;
+   a backtick substitution `` `printf %s AUDIT_BACKTICK_KEY` `` was
+   not treated as substitution syntax at all, so its interior secret
+   survived verbatim. The regex word matcher was replaced with a real
+   scanner: ``_shell_word_end`` walks the word with a depth counter —
+   single/double/backtick quoted spans, nested ``$(...)``, ``${...}``
+   all count as one word, and the word ends only at unquoted
+   whitespace or a shell separator. Flag tokens and ``KEY=`` leads are
+   located by ``_FLAG_TOKEN_RE`` / ``_ASSIGN_LEAD_RE``, then the value
+   is consumed by the scanner — credential names redact the whole
+   word, non-credential names keep the name and get the value
+   recursively re-scrubbed. An overlap guard skips flag/assign matches
+   that start inside an already-consumed value word (a
+   ``-c 'payload --password K'`` case where ``--password`` inside the
+   quoted span was reprocessed and re-appended out of place — caught
+   and fixed during remediation, not by the audit).
+2. **[P1] Azure-style ``api-key`` headers stayed verbatim** —
+   ``--header "api-key: TOKEN"`` used a header name absent from the
+   auth-header table even though the egress gateway itself accepts
+   the ``api-key`` header (egress.py). ``api-key``/``apikey`` added to
+   ``_AUTH_HEADER_RE`` and ``_AUTH_HEADER_NAKED_RE`` — the header name
+   and ``:`` survive, only the credential is redacted.
+
+## Test evidence (r10)
+
+- `tests/web/w8`: 52 passed, 3 environment skips — new legs:
+  ``$(a $(b) KEY)`` nested substitution fully consumed,
+  backtick substitution consumed, ``api-key: TOKEN`` redacted with
+  header name kept, consumed-word overlap guard (no tail artifact),
+  ``${VAR}`` glued word fully consumed.
+- Manual repro of the audit counterexamples via
+  ``_scrub_inline_secrets``: ``--api-key $(printf %s $(printf i) K)`` ->
+  ``--api-key confined``; ``--api-key \`printf %s K\` `` -> ``--api-key
+  confined``; ``--header "api-key: K"`` -> ``"api-key: confined"``.
+- `python -m ruff check` on drain.py / tests/web/w8: clean.

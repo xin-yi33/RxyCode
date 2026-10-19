@@ -1386,43 +1386,35 @@ _URL_CREDENTIAL_LEAD_RE = re.compile(
 #: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
 #: the value must not start with ``-`` — a following flag is not a
 #: value.
-#: A shell WORD — the argument glued onto a credential flag/key can
-#: continue past the first token: ``""SECRET``, ``$(printf %s KEY)``,
-#: ``${VAR}`` are ONE word. A credential name must consume the whole
-#: word or the glued remainder leaks (audit W8-r9). Quoted spans,
-#: ``$(...)`` and ``${...}`` count as part of the word.
-_SHELL_WORD_RE = (
-    r"(?:'[^']*'|\"[^\"]*\"|\$\([^)]*\)|\$\{[^}]*\}|[^\s;|&<>'\"(){}$])+"
-)
-_INLINE_FLAG_EQ_RE = re.compile(
-    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)=(" + _SHELL_WORD_RE + r")"
-)
-_INLINE_FLAG_SEP_RE = re.compile(
-    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)(\s+)(?!--)(" + _SHELL_WORD_RE + r")"
-)
-#: ``KEY=VALUE``/``KEY = value`` for a credential key inside an opaque
-#: string. The lookbehind keeps ``--flag=x`` out (the flag rule owns
-#: it); the lookaheads keep ``x == y`` and ``k = --v`` out; the word
-#: charset keeps shell separators (``;|&()``) outside the secret span.
-_INLINE_ASSIGN_RE = re.compile(
+#: ``--flag``/``-f`` token start inside an opaque string — the
+#: lookbehind keeps glued words (``x--token``) from splitting
+#: mid-token.
+_FLAG_TOKEN_RE = re.compile(r"(?<![-\w.])(--?[A-Za-z_][A-Za-z0-9_.-]*)")
+#: ``KEY=``/``KEY =`` assignment lead inside an opaque string — the
+#: lookbehind keeps ``--flag=x`` out (the flag pass owns it); the
+#: lookaheads keep ``x == y`` and ``k = --v`` out. The VALUE is located
+#: by the word scanner, not a regex, so nested substitutions cannot
+#: strand secret remainders (audit W8-r10).
+_ASSIGN_LEAD_RE = re.compile(
     r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?!=)(?!--)"
-    + "(" + _SHELL_WORD_RE + r")"
 )
 #: ``Authorization: Bearer K``-style header credentials inside opaque
 #: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9). The
 #: scheme form keeps header name + scheme, drops the credential.
+#: ``api-key`` is the Azure-style header the egress gateway itself
+#: understands (egress.py), so it is in the table too (audit W8-r10).
 _AUTH_HEADER_RE = re.compile(
-    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token)"
-    r"(\s*[:=]\s*)(bearer|basic|token|digest|oauth)\s+"
+    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token"
+    r"|api-key|apikey)(\s*[:=]\s*)(bearer|basic|token|digest|oauth)\s+"
     r"([^\s;|&<>'\"(){}]+)"
 )
 #: A header value WITHOUT a scheme word — ``X-Api-Key: RAWTOKEN``.
 #: The lookahead skips scheme-led values (the scheme rule owns them)
 #: and a 4-char floor keeps prose like ``authorization: yes`` alive.
 _AUTH_HEADER_NAKED_RE = re.compile(
-    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token)"
-    r"(\s*[:=]\s*)(?!(?:bearer|basic|token|digest|oauth)\s)"
-    r"([^\s;|&<>'\"(){}]{4,})"
+    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token"
+    r"|api-key|apikey)(\s*[:=]\s*)(?!(?:bearer|basic|token|digest|oauth)"
+    r"\s)([^\s;|&<>'\"(){}]{4,})"
 )
 #: A bare auth scheme + token-length value — ``Bearer eyJ...`` —
 #: entropy floor keeps prose ("the bearer of bad news") alive.
@@ -1434,77 +1426,145 @@ _AUTH_SCHEME_RE = re.compile(
 _URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]{1,256}:[^@\s]{1,256}@")
 
 
+def _shell_word_end(text: str, start: int) -> int:
+    """End offset of the shell word starting at ``start`` — quoted
+    spans (``'`` ``"`` `````, ``$(...)`` (nested) and ``${...}`` all
+    count as part of the word; it ends at unquoted whitespace or a
+    shell separator. A regex cannot balance nested ``$(...)`` — a
+    credential name that stops at the first ``)`` strands the rest of
+    the word (``--api-key $(a $(b) KEY)`` leaked ``KEY)``) — so the
+    value is scanned with a real depth counter (audit W8-r10)."""
+    i = start
+    n = len(text)
+    depth = 0
+    while i < n:
+        c = text[i]
+        if c in "'\"`":
+            j = text.find(c, i + 1)
+            i = (j + 1) if j != -1 else n
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            depth += 1
+            i += 2
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "{":
+            j = text.find("}", i + 2)
+            i = (j + 1) if j != -1 else n
+            continue
+        if depth:
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1
+            continue
+        if c in " \t\n;|&<>":
+            break
+        i += 1
+    return i
+
+
 def _scrub_inline_secrets(text: str) -> str:
     """Redact credential material EMBEDDED inside an opaque string —
     ``args: ["-c", "exec server --api-key K"]`` or
     ``export TOKEN=x; srv`` hides secrets from the whole-item grammar,
     and the mounted config is readable whether or not MCP ever runs
-    (audit W8-r7). Only the secret span is replaced; the surrounding
-    syntax survives. Same name tables as the whole-item grammar."""
+    (audit W8-r7). Credential names consume the whole shell WORD that
+    follows them (``$(...)``, ``${...}``, quotes and glued
+    continuations count as one word — audit W8-r9/r10); non-credential
+    names keep their value but it is recursively re-scrubbed inside.
+    Same name tables as the whole-item grammar."""
 
-    def _rescan_value(match: "re.Match[str]", value: str) -> str | None:
-        """A NON-credential flag/key whose VALUE wraps more payload —
-        ``-c 'exec srv --password K'``, ``--flag $(cmd --token K)`` —
-        keeps the name, and the value is recursively re-scrubbed
-        inside: quoted spans keep their quotes, compound words keep
-        their shape. Otherwise opaque regions would swallow inner
-        secrets (audit W8-r8/r9)."""
-        if (
-            len(value) > 1
-            and value[:1] in ("'", '"')
-            and value.endswith(value[0])
-        ):
-            inner = _scrub_inline_secrets(value[1:-1])
-            return f"{value[0]}{inner}{value[0]}"
-        if any(c in value for c in ("'", '"', "$")):
-            return _scrub_inline_secrets(value)
-        return None
-
-    def _cred_name(flag: str) -> bool:
-        name = flag.lstrip("-").lower().replace("-", "_")
+    def _cred_name(name: str) -> bool:
+        lowered = name.lstrip("-").lower().replace("-", "_")
         return (
-            _is_credential_key(name)
-            or name in _CREDENTIAL_INDIRECTION_KEYS
+            _is_credential_key(lowered)
+            or lowered in _CREDENTIAL_INDIRECTION_KEYS
         )
 
-    def _flag_eq(match: "re.Match[str]") -> str:
-        if _cred_name(match.group(1)):
-            # Whole glued WORD dies — ``--api-key ""SECRET`` keeps
-            # nothing behind (audit W8-r9).
-            return f"{match.group(1)}=confined"
-        inner = _rescan_value(match, match.group(2))
-        if inner is not None:
-            return f"{match.group(1)}={inner}"
-        return match.group(0)
+    def _rescan(value: str) -> str:
+        """Re-scrub a compound value a NON-credential name points at —
+        quoted spans keep their quotes; a ``$(...)``/mixed word is
+        scrubbed inside wholesale (audit W8-r8/r9)."""
+        if (
+            len(value) > 1
+            and value[:1] in ("'", '"', "`")
+            and value.endswith(value[0])
+        ):
+            return (
+                f"{value[0]}"
+                f"{_scrub_inline_secrets(value[1:-1])}"
+                f"{value[0]}"
+            )
+        if any(c in value for c in ("'", '"', "$", "`")):
+            return _scrub_inline_secrets(value)
+        return value
 
-    def _flag_sep(match: "re.Match[str]") -> str:
-        if _cred_name(match.group(1)):
-            return f"{match.group(1)} confined"
-        inner = _rescan_value(match, match.group(3))
-        if inner is not None:
-            return f"{match.group(1)}{match.group(2)}{inner}"
-        return match.group(0)
+    def _flag_pass(src: str) -> str:
+        out: list[str] = []
+        pos = 0
+        for match in _FLAG_TOKEN_RE.finditer(src):
+            if match.start() < pos:
+                # Inside a value word already consumed — a flag-looking
+                # span in a scrubbed/rescanned value must not be
+                # reprocessed and re-appended out of place.
+                continue
+            flag = match.group(1)
+            j = match.end()
+            eq = j < len(src) and src[j] == "="
+            if eq:
+                vstart = j + 1
+            else:
+                k = j
+                while k < len(src) and src[k] in " \t":
+                    k += 1
+                # A separated value must exist and not be another flag
+                # or a bare separator (r5 pair semantics kept).
+                if k == j or k >= len(src) or src[k] in "-;|&<>":
+                    continue
+                vstart = k
+            vend = _shell_word_end(src, vstart)
+            if vend <= vstart:
+                continue
+            value = src[vstart:vend]
+            out.append(src[pos:j])
+            if _cred_name(flag):
+                out.append("=confined" if eq else " confined")
+            else:
+                out.append(("=" if eq else src[j:vstart]) + _rescan(value))
+            pos = vend
+        out.append(src[pos:])
+        return "".join(out)
 
-    def _assign(match: "re.Match[str]") -> str:
-        if _cred_name(match.group(1)):
-            return f"{match.group(1)}=confined"
-        inner = _rescan_value(match, match.group(3))
-        if inner is not None:
-            return f"{match.group(1)}{match.group(2)}{inner}"
-        return match.group(0)
+    def _assign_pass(src: str) -> str:
+        out: list[str] = []
+        pos = 0
+        for match in _ASSIGN_LEAD_RE.finditer(src):
+            if match.start() < pos:
+                continue  # inside an already-consumed value word
+            j = match.end()
+            vend = _shell_word_end(src, j)
+            if vend <= j:
+                continue
+            value = src[j:vend]
+            out.append(src[pos:j])
+            if _cred_name(match.group(1)):
+                out.append("confined")
+            else:
+                out.append(_rescan(value))
+            pos = vend
+        out.append(src[pos:])
+        return "".join(out)
 
-    text = _INLINE_FLAG_EQ_RE.sub(_flag_eq, text)
-    text = _INLINE_FLAG_SEP_RE.sub(_flag_sep, text)
-    text = _INLINE_ASSIGN_RE.sub(_assign, text)
+    text = _flag_pass(text)
+    text = _assign_pass(text)
     text = _AUTH_HEADER_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)} confined", text
     )
     text = _AUTH_HEADER_NAKED_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}confined", text
     )
-    text = _AUTH_SCHEME_RE.sub(
-        lambda m: f"{m.group(1)} confined", text
-    )
+    text = _AUTH_SCHEME_RE.sub(lambda m: f"{m.group(1)} confined", text)
     return _URL_USERINFO_SUB_RE.sub(r"\g<1>confined:confined@", text)
 
 

@@ -2469,3 +2469,60 @@ def test_w8_c01_child_spawn_chdir_and_safepath(tmp_path: Path) -> None:
     assert (str(workdir), str(workdir)) in bind_pairs
     tail = argv[argv.index("--") + 1 :]
     assert tail == child
+
+
+def test_w8_c01_scrub_nested_shell_substitution() -> None:
+    """Audit W8-r10: nested ``$(...)`` cannot strand a secret — a
+    regex word matcher stops at the first ``)`` and left the tail
+    ``AUDIT_NESTED_KEY)`` mounted in the child config."""
+    import rxycode_worker.drain as drain
+
+    s = "exec server --api-key $(printf %s $(printf ignored) AUDIT_NESTED_KEY) -v"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_NESTED_KEY" not in out
+    assert out.startswith("exec server --api-key confined")
+    assert out.endswith(" -v")
+
+
+def test_w8_c01_scrub_backtick_substitution() -> None:
+    """Audit W8-r10: a backtick substitution `` `cmd` `` is shell
+    syntax too — its interior secret must not survive."""
+    import rxycode_worker.drain as drain
+
+    s = "exec server --api-key `printf %s AUDIT_BACKTICK_KEY` -v"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_BACKTICK_KEY" not in out
+    assert out == "exec server --api-key confined -v"
+
+
+def test_w8_c01_scrub_azure_api_key_header() -> None:
+    """Audit W8-r10: ``api-key: TOKEN`` is the Azure-style header the
+    egress gateway understands — it was missing from the header-name
+    table."""
+    import rxycode_worker.drain as drain
+
+    s = 'curl --header "api-key: AUDIT_AZURE_KEY" example'
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_AZURE_KEY" not in out
+    assert "api-key: confined" in out
+
+
+def test_w8_c01_scrub_consumed_word_no_tail_artifact() -> None:
+    """A flag-token inside an already-consumed quoted value must not
+    be reprocessed and re-appended out of place (regression guard for
+    the scanner overlap guard)."""
+    import rxycode_worker.drain as drain
+
+    s = "sh -c 'srv postgres://u:p@db --password pw1'"
+    out = drain._scrub_inline_secrets(s)
+    assert out == "sh -c 'srv postgres://confined:confined@db --password confined'"
+    assert not out.endswith("' confined")
+
+
+def test_w8_c01_scrub_dollar_brace_word() -> None:
+    """``${VAR}/path`` glued to a credential flag is one shell word —
+    the whole word must die, not just ``${VAR}``."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("exec srv --token ${HOME}/x now")
+    assert out == "exec srv --token confined now"
