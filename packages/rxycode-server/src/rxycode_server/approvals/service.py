@@ -94,6 +94,7 @@ def request_approval(
     command: str = "",
     workdir: str = "",
     source_call_id: str = "",
+    sandbox_id: str = "",
 ) -> dict[str, Any]:
     """Persist the ask, emit approval.requested, and release the worker lease."""
     engine = _engine(database_url)
@@ -103,7 +104,14 @@ def request_approval(
         with Session(engine) as db:
             run = _lock_run(db, tenant_id, run_id)
             now = datetime.now(timezone.utc)
-            if not _lease_is_current(run, worker_id, epoch, now):
+            # ``cancel_requested`` IS a current lease for settle purposes,
+            # but it must never be parked: a cancellation landing just
+            # before the ask would otherwise be overwritten by
+            # waiting_approval, and approving that ask requeues a run the
+            # user already killed (audit W8-r2).
+            if not _lease_is_current(run, worker_id, epoch, now) or (
+                run.status == "cancel_requested"
+            ):
                 raise ApprovalStale(approval_id)
             db.add(
                 Approval(
@@ -131,6 +139,10 @@ def request_approval(
                     "command": command,
                     "workdir": workdir,
                     "source_call_id": str(source_call_id or ""),
+                    # Which confined namespace asked — a later claimant uses
+                    # it to prove that supervisor is dead before replaying
+                    # the approved call (audit W8-r2).
+                    "sandbox_id": str(sandbox_id or ""),
                     "revision": 0,
                 },
             )
@@ -223,6 +235,7 @@ def get_approval(database_url: str, *, tenant_id: str, approval_id: str) -> dict
                 "command": str(payload.get("command") or ""),
                 "workdir": str(payload.get("workdir") or ""),
                 "source_call_id": str(payload.get("source_call_id") or ""),
+                "sandbox_id": str(payload.get("sandbox_id") or ""),
                 # The stored verbatim call arguments — resume executes THIS,
                 # not a summary (the run was approved for these exact args).
                 "arguments": dict(payload.get("arguments") or {}),
@@ -399,7 +412,7 @@ def pause_under_lock(
             now = datetime.now(timezone.utc)
             if run is None or run.tenant_id != tenant_id or not _lease_is_current(
                 run, worker_id, epoch, now
-            ):
+            ) or run.status == "cancel_requested":
                 raise ApprovalStale(run_id)
             event = db.scalars(
                 select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
@@ -412,7 +425,9 @@ def pause_under_lock(
         write_checkpoint(session_id, approval_id, attempt_id)
         with Session(engine) as db:
             run = _lock_run(db, tenant_id, run_id)
-            if not _lease_is_current(run, worker_id, epoch, datetime.now(timezone.utc)):
+            if not _lease_is_current(
+                run, worker_id, epoch, datetime.now(timezone.utc)
+            ) or run.status == "cancel_requested":
                 raise ApprovalStale(approval_id)
             stored_arguments = dict(arguments)
             stored_arguments["command"] = command
@@ -482,6 +497,8 @@ def prepare_pause(
             if run is None or run.tenant_id != tenant_id:
                 return None
             if not _lease_is_current(run, worker_id, epoch, now):
+                return None
+            if run.status == "cancel_requested":
                 return None
             event = db.scalars(
                 select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)

@@ -209,9 +209,13 @@ def test_w8_c01_sandbox_argv_isolation_shape(tmp_path: Path) -> None:
     assert (str(workdir), str(workdir)) in bind_pairs
     # Overlay uses bwrap's three-operand form — upper+work bound writable
     # first (task-private persistent layer), then --overlay UPPER WORK
-    # DEST so system-package installs never touch the host /usr.
+    # DEST so system-package installs never touch the host /usr. The
+    # mandatory --overlay-src DEST names the ro lower layer and must
+    # precede the overlay op (bwrap rejects overlay argv without one).
     idx = argv.index("--overlay")
     assert argv[idx + 1 : idx + 4] == [str(upper), str(work), "/usr"]
+    src_idx = argv.index("--overlay-src")
+    assert argv[src_idx + 1] == "/usr" and src_idx < idx
     upper_bind = argv.index(str(upper))
     assert argv[upper_bind - 1] == "--bind" and upper_bind < idx
     # cwd inside the workspace; the confined command runs after `--`.
@@ -310,6 +314,30 @@ def test_w8_c01_merge_turn_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 },
                 "safety": {"allowed_write_paths": ["/should-not-survive-alone"]},
                 "execution": {"os_sandbox": {"enabled": True}},
+                # Non-model credential-bearing config (audit W8-r2):
+                # supported fields outside ``models`` must also be
+                # redacted before the file mounts — while non-credential
+                # scalars like token budgets survive.
+                "rag": {
+                    "embedding": {
+                        "provider": "openai",
+                        "api_key": "sk-embed-secret",
+                        "base_url": "https://api.real.example",
+                    }
+                },
+                "mcp": {
+                    "servers": {
+                        "github": {
+                            "command": "mcp-github",
+                            "env": {
+                                "GITHUB_TOKEN": "ghp_secret",
+                                "OPENAI_API_KEY": "sk-mcp",
+                                "LOG_LEVEL": "debug",
+                            },
+                        }
+                    }
+                },
+                "agents": {"budget": {"max_tokens": 4096}},
             }
         ),
         encoding="utf-8",
@@ -332,6 +360,15 @@ def test_w8_c01_merge_turn_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     other = data["models"]["other"]
     assert other["base_url"] == "https://other.example/v1"
     assert other["api_key"] == "confined"
+    # Credential-shaped scalars die ANYWHERE in the tree; non-credential
+    # keys with similar names (token budgets, log levels) survive.
+    assert data["rag"]["embedding"]["api_key"] == "confined"
+    assert data["rag"]["embedding"]["base_url"] == "https://api.real.example"
+    mcp_env = data["mcp"]["servers"]["github"]["env"]
+    assert mcp_env["GITHUB_TOKEN"] == "confined"
+    assert mcp_env["OPENAI_API_KEY"] == "confined"
+    assert mcp_env["LOG_LEVEL"] == "debug"
+    assert data["agents"]["budget"]["max_tokens"] == 4096
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +865,44 @@ def _seed_tenant_run(
         engine.dispose()
 
 
+def _lease_run(postgres_url: str, run_id: str, worker: str, epoch: int) -> None:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE runs SET lease_owner = :w, lease_epoch = :e,"
+                    " lease_until = :u, status = 'leased' WHERE id = :r"
+                ),
+                {
+                    "w": worker,
+                    "e": epoch,
+                    "u": datetime.now(timezone.utc) + timedelta(minutes=5),
+                    "r": run_id,
+                },
+            )
+    finally:
+        engine.dispose()
+
+
+def _set_run_status(postgres_url: str, run_id: str, status: str) -> None:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE runs SET status = :s WHERE id = :r"),
+                {"s": status, "r": run_id},
+            )
+    finally:
+        engine.dispose()
+
+
 def test_w8_c01_approval_pause_decide_resume(postgres_url: str) -> None:
     """The full service chain on real Postgres: a leased run's ask parks
     it (waiting_approval + lease released + exact args journaled) —
@@ -1287,28 +1362,55 @@ def test_w8_c01_egress_connect_tunnels_end_to_end() -> None:
     assert asyncio.run(drive()) == b"ok"
 
 
-def test_w8_c01_ctl_journal_ops_roundtrip(tmp_path: Path) -> None:
+def test_w8_c01_ctl_journal_ops_roundtrip(
+    tmp_path: Path, postgres_url: str
+) -> None:
     """journal_* ops run the real RemoteJournalAdapter parent-side so the
     child never touches journal files — reserve/complete/state over the
-    handler dict, in parent-owned storage."""
+    handler dict, in parent-owned storage. The reserve is gated on the
+    run's live lease AND on (attempt,call,tool,args) being this run's
+    stored approval — anything else is refused (audit W8-r2)."""
     from types import SimpleNamespace
 
     import rxycode_worker.drain as drain
+    from rxycode_server.approvals.service import request_approval
+    from rxycode_server.events.store import append_event
 
-    cfg = SimpleNamespace(database_url="sqlite://", worker_id="w-1")
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    _seed_tenant_run(postgres_url, tenant=tenant, run_id=run_id, status="leased")
+    attempt = "att_" + "a" * 32
+    call = "call_" + "b" * 32
+    _lease_run(postgres_url, run_id, "w-1", 1)
+    request_approval(
+        postgres_url,
+        tenant_id=tenant,
+        run_id=run_id,
+        call_id=call,
+        tool="bash",
+        permission_scope="danger",
+        arguments={"command": "x"},
+        deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+        worker_id="w-1",
+        epoch=1,
+        attempt_id=attempt,
+        command="x",
+        workdir=str(tmp_path),
+    )
+    # The ask parks the run; a NEW claim owns it for the journal ops.
+    _lease_run(postgres_url, run_id, "w-1", 2)
+    cfg = SimpleNamespace(database_url=postgres_url, worker_id="w-1")
     journal_dir = tmp_path / "journal"
     handlers = drain._ctl_handlers(
         cfg,
-        tenant_id="t1",
-        run_id="r1",
-        epoch=1,
+        tenant_id=tenant,
+        run_id=run_id,
+        epoch=2,
         workdir=tmp_path,
         journal_dir=journal_dir,
         paused=threading.Event(),
         paused_info={},
     )
-    attempt = "att_" + "a" * 32
-    call = "call_" + "b" * 32
     assert handlers["journal_state"](
         {"attempt_id": attempt, "call_id": call}
     ) == {"state": "not_started"}
@@ -1346,6 +1448,98 @@ def test_w8_c01_ctl_journal_ops_roundtrip(tmp_path: Path) -> None:
     # The files live ONLY in the parent-owned dir — nothing under workdir.
     assert journal_dir.is_dir()
     assert not (tmp_path / ".journal").exists()
+
+
+def test_w8_c01_journal_ops_fences(tmp_path: Path, postgres_url: str) -> None:
+    """The reserve fences (audit W8-r2): an unbound (attempt,call) pair,
+    mismatched tool/args, or a lost/cancelled lease each refuse — no
+    side-effect grant slips past the binding."""
+    from types import SimpleNamespace
+
+    import rxycode_worker.drain as drain
+    from rxycode_server.approvals.service import request_approval
+
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    _seed_tenant_run(postgres_url, tenant=tenant, run_id=run_id, status="leased")
+    attempt = "att_" + "c" * 32
+    call = "call_" + "d" * 32
+    _lease_run(postgres_url, run_id, "w-1", 1)
+    request_approval(
+        postgres_url,
+        tenant_id=tenant,
+        run_id=run_id,
+        call_id=call,
+        tool="bash",
+        permission_scope="danger",
+        arguments={"command": "real"},
+        deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+        worker_id="w-1",
+        epoch=1,
+        attempt_id=attempt,
+        command="real",
+        workdir=str(tmp_path),
+    )
+    _lease_run(postgres_url, run_id, "w-1", 2)
+    cfg = SimpleNamespace(database_url=postgres_url, worker_id="w-1")
+    journal_dir = tmp_path / "journal"
+
+    def ops(worker: str, epoch: int) -> Any:
+        return drain._ctl_handlers(
+            cfg,
+            tenant_id=tenant,
+            run_id=run_id,
+            epoch=epoch,
+            workdir=tmp_path,
+            journal_dir=journal_dir,
+            paused=threading.Event(),
+            paused_info={},
+        )
+
+    # A pair the run never asked for: refused outright.
+    unbound = ops("w-1", 2)["journal_reserve"](
+        {"attempt_id": "att_" + "9" * 32, "call_id": "call_" + "9" * 32,
+         "tool": "bash", "args": {"command": "real"}}
+    )
+    assert unbound["action"] == "refused"
+    # The real pair with swapped args: not the approved call — refused.
+    wrong_args = ops("w-1", 2)["journal_reserve"](
+        {"attempt_id": attempt, "call_id": call,
+         "tool": "bash", "args": {"command": "rm -rf /"}}
+    )
+    assert wrong_args["action"] == "refused"
+    # The real pair under a foreign claim: refused.
+    foreign = ops("w-other", 99)["journal_reserve"](
+        {"attempt_id": attempt, "call_id": call,
+         "tool": "bash", "args": {"command": "real"}}
+    )
+    assert foreign["action"] == "refused"
+    # The real pair under THIS claim while live: granted.
+    granted = ops("w-1", 2)["journal_reserve"](
+        {"attempt_id": attempt, "call_id": call,
+         "tool": "bash", "args": {"command": "real"}}
+    )
+    assert granted["action"] == "execute"
+    # Cancel mid-flight: the SAME claim can no longer reserve — but
+    # journal_complete still records the already-made side effect so the
+    # next claimant reuses instead of re-running.
+    _set_run_status(postgres_url, run_id, "cancel_requested")
+    refused = ops("w-1", 2)["journal_reserve"](
+        {"attempt_id": attempt, "call_id": call,
+         "tool": "bash", "args": {"command": "real"}}
+    )
+    assert refused["action"] == "refused"
+    completed = ops("w-1", 2)["journal_complete"](
+        {"attempt_id": attempt, "call_id": call,
+         "tool": "bash", "args": {"command": "real"}, "result": "ok"}
+    )
+    assert completed["result"] == "ok"
+    # And completing an unbound pair never records anything.
+    denied = ops("w-1", 2)["journal_complete"](
+        {"attempt_id": "att_" + "9" * 32, "call_id": "call_" + "9" * 32,
+         "tool": "bash", "args": {}, "result": "x"}
+    )
+    assert denied.get("refused") is True
 
 
 def test_w8_c01_channel_journal_speaks_ops() -> None:
@@ -1514,3 +1708,307 @@ def test_w8_c01_paused_marker_poll_predicate() -> None:
     finally:
         monkey.undo()
     assert seen and all(p["rid"] == "r1" for p in seen)
+
+
+def test_w8_c01_child_emit_reserved_namespaces(postgres_url: str) -> None:
+    """The ctl emit surface writes agent/UI events but refuses every
+    control-plane namespace a forged child could abuse (audit W8-r2):
+    turn.paused (teardown proof), steer.accepted/child.cancel (command
+    injection), approval.requested (resume lookup), run.*/worker.*
+    (terminalization/lease)."""
+    from types import SimpleNamespace
+
+    import rxycode_worker.drain as drain
+    from rxycode_server.events.store import append_event
+
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    _seed_tenant_run(postgres_url, tenant=tenant, run_id=run_id, status="leased")
+    cfg = SimpleNamespace(database_url=postgres_url, worker_id="w-1")
+    handlers = drain._ctl_handlers(
+        cfg,
+        tenant_id=tenant,
+        run_id=run_id,
+        epoch=1,
+        workdir=Path("/w"),
+        journal_dir=Path("/j"),
+        paused=threading.Event(),
+        paused_info={},
+    )
+    emit = handlers["emit"]
+    for reserved in (
+        "turn.paused",
+        "turn.started",
+        "run.error",
+        "run.created",
+        "approval.requested",
+        "approval.resumed",
+        "worker.lease",
+        "usage.attribution",
+        "steer.accepted",
+        "child.cancel",
+    ):
+        out = emit({"type": reserved, "payload": {"approval_id": "x"}})
+        assert out.get("denied") == "reserved-namespace", reserved
+        assert out["seq"] == 0
+    for allowed in (
+        "tool.call",
+        "tool.result",
+        "assistant.delta",
+        "assistant.final",
+        "question.requested",
+        "usage.delta",
+        "telemetry.span",
+        "notify.event/tool_begin",
+    ):
+        out = emit({"type": allowed, "payload": {"n": 1}})
+        assert out["seq"] > 0, allowed
+    # The denied writes really never landed: no forged turn.paused row
+    # exists for _paused_marker_seen to find.
+    assert drain._paused_marker_seen(postgres_url, run_id, "x") is False
+
+
+def test_w8_c01_old_namespace_alive_probe(tmp_path: Path) -> None:
+    """The ctl-socket probe is the teardown discriminator (audit W8-r2):
+    no ctl dir / no socket / refused listener -> provably dead; a live
+    listener -> alive; a missing id or unprobeable path -> unknown."""
+    import socket as _socket
+
+    import rxycode_worker.drain as drain
+
+    root = tmp_path / "state"
+    root.mkdir()
+    # No id / no root -> cannot tell.
+    assert drain._old_namespace_alive(root, "") is None
+    assert drain._old_namespace_alive(None, "s1") is None
+    # No ctl dir at all -> supervisor gone.
+    assert drain._old_namespace_alive(root, "gone") is False
+    # ctl dir without a socket -> dead.
+    (root / "dead-ctl").mkdir()
+    assert drain._old_namespace_alive(root, "dead") is False
+    # A real listening unix socket -> alive.
+    if not hasattr(_socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable on this host")
+    ctl = root / "live-ctl"
+    ctl.mkdir()
+    srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    srv.bind(str(ctl / "ctl.sock"))
+    srv.listen(1)
+    try:
+        assert drain._old_namespace_alive(root, "live") is True
+    finally:
+        srv.close()
+    # Stale socket file after close: listener refuses -> dead.
+    if sys.platform != "win32":
+        assert drain._old_namespace_alive(root, "live") is False
+
+
+def test_w8_c01_pending_resume_teardown_barrier(
+    postgres_url: str, tmp_path: Path
+) -> None:
+    """Missing turn.paused marker is NOT a free pass (audit W8-r2): a
+    provably-dead old supervisor lets the claim proceed; a live or
+    unprobeable one returns teardown_unproven — the caller settles
+    recovery_required instead of replaying beside a live namespace."""
+    import socket as _socket
+    from types import SimpleNamespace
+
+    import rxycode_worker.drain as drain
+    from rxycode_server.approvals.service import decide_approval, request_approval
+
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    _seed_tenant_run(postgres_url, tenant=tenant, run_id=run_id, status="leased")
+    _lease_run(postgres_url, run_id, "wkr-1", 5)
+    asked = request_approval(
+        postgres_url,
+        tenant_id=tenant,
+        run_id=run_id,
+        call_id="call_" + "f" * 32,
+        tool="bash",
+        permission_scope="danger",
+        arguments={"command": "x"},
+        deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+        worker_id="wkr-1",
+        epoch=5,
+        attempt_id="att_" + "f" * 32,
+        command="x",
+        workdir=str(tmp_path),
+        sandbox_id="dead-sandbox",
+    )
+    decide_approval(
+        postgres_url,
+        tenant_id=tenant,
+        approval_id=asked["approval_id"],
+        decision="approved",
+        expected_revision=0,
+    )
+    root = tmp_path / "state"
+    root.mkdir()
+    # No marker, but the recorded sandbox's ctl dir is absent -> the old
+    # supervisor is provably gone: the claim proceeds with the record.
+    # (The marker wait would take _LEASE_IO_BUDGET — shrink it for the test.)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(drain, "_LEASE_IO_BUDGET", 0.01)
+    try:
+        record = drain._pending_resume(
+            postgres_url, tenant, run_id, state_root=root
+        )
+        assert record is not None
+        assert not record.get("teardown_unproven")
+        assert record["sandbox_id"] == "dead-sandbox"
+        import rxycode_worker.drain as _d
+
+        # An approval whose record names no sandbox cannot be probed at
+        # all -> unprobeable -> unproven on every platform.
+        def fake_noid(*_a: Any, **_k: Any) -> dict[str, Any]:
+            return {"sandbox_id": "", "run_id": run_id,
+                    "approval_id": asked["approval_id"],
+                    "call_id": "call_x", "attempt_id": "att_x",
+                    "status": "approved"}
+
+        monkey.setattr(_d, "_resume_state", fake_noid)
+        unproven = drain._pending_resume(
+            postgres_url, tenant, run_id, state_root=root
+        )
+        assert unproven is not None
+        assert unproven.get("teardown_unproven") is True
+        if hasattr(_socket, "AF_UNIX"):
+            # A live listener on the recorded sandbox -> unproven.
+            ctl = root / "live-ctl"
+            ctl.mkdir()
+            srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            srv.bind(str(ctl / "ctl.sock"))
+            srv.listen(1)
+            try:
+                def fake_live(*_a: Any, **_k: Any) -> dict[str, Any]:
+                    return {"sandbox_id": "live", "run_id": run_id,
+                            "approval_id": asked["approval_id"],
+                            "call_id": "call_x", "attempt_id": "att_x",
+                            "status": "approved"}
+
+                monkey.setattr(_d, "_resume_state", fake_live)
+                blocked = drain._pending_resume(
+                    postgres_url, tenant, run_id, state_root=root
+                )
+                assert blocked is not None
+                assert blocked.get("teardown_unproven") is True
+            finally:
+                srv.close()
+    finally:
+        monkey.undo()
+
+
+def test_w8_c01_request_approval_never_parks_cancel_requested(
+    postgres_url: str,
+) -> None:
+    """cancel_requested is a current lease for settling but must never
+    be PARKED: an ask landing after the kill would otherwise overwrite
+    the cancellation with waiting_approval and requeue the dead run on
+    approve (audit W8-r2)."""
+    from rxycode_server.approvals.service import ApprovalStale, request_approval
+
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    _seed_tenant_run(postgres_url, tenant=tenant, run_id=run_id, status="leased")
+    _lease_run(postgres_url, run_id, "wkr-1", 3)
+    _set_run_status(postgres_url, run_id, "cancel_requested")
+    with pytest.raises(ApprovalStale):
+        request_approval(
+            postgres_url,
+            tenant_id=tenant,
+            run_id=run_id,
+            call_id="call_" + "e" * 32,
+            tool="bash",
+            permission_scope="danger",
+            arguments={},
+            deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+            worker_id="wkr-1",
+            epoch=3,
+        )
+    # The run was NOT reparked: still cancel_requested, lease intact for
+    # the drain's own settle path.
+    assert _run_status_check(postgres_url, run_id) == "cancel_requested"
+
+
+def _run_status_check(postgres_url: str, run_id: str) -> str:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            return str(
+                conn.execute(
+                    text("SELECT status FROM runs WHERE id=:r"), {"r": run_id}
+                ).scalar()
+            )
+    finally:
+        engine.dispose()
+
+
+def test_w8_c01_run_journal_dir_is_run_keyed(tmp_path: Path) -> None:
+    """The resume journal is keyed by RUN, never by the per-claim
+    sandbox id — a reclaimed run must see the prior claimant's
+    reservations or the same approved call executes twice (W8-r2)."""
+    import rxycode_worker.drain as drain
+
+    d = drain._run_journal_dir(tmp_path, "t1", "r1")
+    assert d == tmp_path / "journals" / "t1" / "r1"
+    assert drain._run_journal_dir(tmp_path, "t1", "r2") != d
+
+
+def test_w8_c01_tool_call_outcome_classification() -> None:
+    """Journal completion is replay safety, not success — the stored
+    string is classified so error markers settle failed (W8-r2)."""
+    import rxycode_worker.drain as drain
+
+    for bad in (
+        "[error: tool 'x' not found]",
+        "[error executing bash: ValueError]",
+        "[blocked: write path not allowed: /etc]",
+        "[evidence failed: no artifact]",
+        "[rejected: no approval broker available]",
+        "[rejected by user: bash]",
+        "[cancelled: tool 'bash']",
+        "[dry-run] not executed: bash(x)",
+        "  [error: leading whitespace]",
+    ):
+        assert drain._tool_call_failed(bad), bad
+    for ok in ("wrote 3 files", "pytest: 5 passed", "", "all good [error] later"):
+        assert not drain._tool_call_failed(ok), ok
+
+
+def test_w8_c01_execute_approved_call_error_outcome(tmp_path: Path) -> None:
+    """An approved call to a missing/unavailable tool completes the
+    journal with an error outcome — ok=False, and a second resume reuses
+    the same error instead of re-running (audit W8-r2's counterexample:
+    'status: succeeded' for a not-found tool can never happen again)."""
+    import rxycode_worker.drain as drain
+    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+        RemoteJournalAdapter,
+        ToolExecutionJournal,
+    )
+
+    record = {
+        "tool": "no_such_tool_w8",
+        "call_id": "call_" + "7" * 32,
+        "attempt_id": "att_" + "7" * 32,
+        "arguments": {},
+    }
+
+    class _Emit:
+        def _append(self, *_a: Any, **_k: Any) -> None:
+            return
+
+    journal = RemoteJournalAdapter(ToolExecutionJournal(str(tmp_path / "j")))
+    ok, text = asyncio.run(
+        drain._execute_approved_call(record, tmp_path, _Emit(), journal)
+    )
+    assert ok is False
+    assert "not found" in text
+    # Second resume: journal completed -> reuse -> same error, no rerun.
+    ok2, text2 = asyncio.run(
+        drain._execute_approved_call(record, tmp_path, _Emit(), journal)
+    )
+    assert ok2 is False and text2 == text

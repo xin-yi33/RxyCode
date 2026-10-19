@@ -292,4 +292,9 @@ class TurnChannel:
             args=dict(args or {}),
             result=str(result),
         )
+        if dict(out or {}).get("refused"):
+            # The pair is not this run's stored approval — an empty
+            # return here would fake a completion, so the refusal must
+            # surface as an error.
+            raise RuntimeError("journal_complete refused: unbound call")
         return str((out or {}).get("result") or "")

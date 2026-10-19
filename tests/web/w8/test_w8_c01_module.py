@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -238,23 +239,63 @@ def test_w8_c01_chain_normal_dev_both_modes(
             orch.execute_tool("read", {"filePath": str(marker)}, cfg)
         )
         assert name in str(read_out)
-        # Dependency install lands in the task-private tree — the same
-        # write domain a real pip/venv install occupies.
-        asyncio.run(
+        # A REAL dependency install: pip installs a (locally built,
+        # index-free) wheel into the task-private tree and the import
+        # resolves from it — no installer is simulated (audit W8-r2).
+        import zipfile
+
+        pkg = f"demopkg_{name.replace('-', '_')}"
+        whl = tmp_path / f"{pkg}-0.1.0-py3-none-any.whl"
+        dist = f"{pkg}-0.1.0.dist-info"
+        with zipfile.ZipFile(whl, "w") as z:
+            z.writestr(f"{pkg}/__init__.py", "VALUE = 7\n")
+            z.writestr(
+                f"{dist}/METADATA",
+                f"Metadata-Version: 2.1\nName: {pkg}\nVersion: 0.1.0\n",
+            )
+            z.writestr(
+                f"{dist}/WHEEL",
+                "Wheel-Version: 1.0\nGenerator: w8test\n"
+                "Root-Is-Purelib: true\nTag: py3-none-any\n",
+            )
+            z.writestr(
+                f"{dist}/RECORD",
+                f"{pkg}/__init__.py,,\n{dist}/METADATA,,\n"
+                f"{dist}/WHEEL,,\n{dist}/RECORD,,\n",
+            )
+        install = asyncio.run(
             orch.execute_tool(
                 "bash",
                 {
                     "command": (
-                        "python -c \"from pathlib import Path;"
-                        " Path('.deps/pkg').mkdir(parents=True, exist_ok=True);"
-                        " Path('.deps/pkg/installed.marker').write_text('v1')\""
+                        f"python -m pip install --no-index --quiet"
+                        f" --target .deps {whl.name}"
                     ),
                     "workdir": str(tmp_path),
                 },
                 cfg,
             )
         )
-        assert (tmp_path / ".deps" / "pkg" / "installed.marker").read_text() == "v1"
+        assert (tmp_path / ".deps" / pkg / "__init__.py").exists(), str(install)[:600]
+        # Resolution proof: the interpreter imports the installed package
+        # out of the task-private target dir — proven by a side-effect
+        # marker, not by output parsing.
+        resolve = asyncio.run(
+            orch.execute_tool(
+                "bash",
+                {
+                    "command": (
+                        "python -c \"import sys,pathlib;"
+                        " sys.path.insert(0, '.deps');"
+                        f" import {pkg}; assert {pkg}.VALUE == 7;"
+                        " pathlib.Path('resolved.marker').write_text('ok')\""
+                    ),
+                    "workdir": str(tmp_path),
+                },
+                cfg,
+            )
+        )
+        assert (tmp_path / "resolved.marker").exists(), str(resolve)[:400]
         # A real test execution: python runs the suite file; its exit
         # code and its marker prove the run happened.
         suite = tmp_path / f"test_{name}.py"
@@ -371,7 +412,10 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
             return handlers["journal_reserve"](kwargs)
 
         def journal_complete(self, **kwargs: Any) -> str:
-            return str(handlers["journal_complete"](kwargs)["result"])
+            out = handlers["journal_complete"](kwargs)
+            if out.get("refused"):
+                raise RuntimeError("journal_complete refused: unbound call")
+            return str(out["result"])
 
     channel = _Channel()
     set_approval_broker(
@@ -443,11 +487,12 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
         def _append(self, kind: str, payload: dict[str, Any]) -> None:
             emitted.append({"kind": kind, **payload})
 
-    result = asyncio.run(
+    ok, result = asyncio.run(
         drain._execute_approved_call(
             record, tmp_path, _Emit(), drain._ChannelJournal(channel)
         )
     )
+    assert ok, result[:400]
     # PowerShell echo emits UTF-16LE+BOM; cmd emits OEM — decode by BOM.
     raw = (tmp_path / "calls.log").read_bytes()
     body = (
@@ -466,7 +511,7 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
             record, tmp_path, _Emit(), drain._ChannelJournal(channel)
         )
     )
-    assert again == result
+    assert again == (True, result)
     assert not (tmp_path / "calls.log").exists()  # no second side effect
 
 
@@ -757,34 +802,51 @@ def test_w8_c01_chain_cancel_kills_late_approval(
     assert _run_status(postgres_url, run_id)[0] == "cancelled"
 
 
-def test_w8_c01_chain_cancel_reaps_child() -> None:
-    """A cancelled wait kills the spawned process — _wait_child SIGKILLs
-    on cancel and (with --die-with-parent in deployment) the whole
-    namespace tree goes with it. Prove the reap on a real child."""
+def test_w8_c01_chain_cancel_reaps_child(tmp_path: Path) -> None:
+    """A cancelled wait kills the spawned TREE — _wait_child SIGKILLs
+    the supervisor and its descendants (bwrap's pid namespace +
+    --die-with-parent in deployment; the psutil sweep anywhere else).
+    Prove the reap on a real child AND its grandchild (audit W8-r2)."""
     import sys as _sys
+
+    import psutil
 
     import rxycode_worker.drain as drain
 
-    async def drive() -> None:
+    pid_file = tmp_path / "grandchild.pid"
+
+    async def drive() -> int:
         proc = await asyncio.create_subprocess_exec(
             _sys.executable,
             "-c",
-            "import subprocess,sys,time;"
-            " subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+            "import os,subprocess,sys,time;"
+            " p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+            f" open(r'{pid_file}','w').write(str(p.pid));"
             " time.sleep(60)",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
         waiter = asyncio.ensure_future(drain._wait_child(proc, []))
-        await asyncio.sleep(0.3)
+        for _ in range(200):
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
+            await asyncio.sleep(0.05)
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
         # The direct child is dead — killed by the cancel path, not by
         # the parent exiting.
         assert proc.returncode is not None
+        return int(pid_file.read_text())
 
-    asyncio.run(drive())
+    grand_pid = asyncio.run(drive())
+    # Descendant cleanup is REQUIRED: the grandchild must be dead too —
+    # no residue survives a cancelled run.
+    for _ in range(100):
+        if not psutil.pid_exists(grand_pid):
+            return
+        time.sleep(0.05)
+    pytest.fail(f"grandchild pid {grand_pid} survived the cancel")
 
 
 def test_w8_c01_chain_journal_uncertain_refuses_second_effect(

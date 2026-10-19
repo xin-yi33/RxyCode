@@ -87,7 +87,12 @@ def overlay_available(*, force: bool = False) -> bool:
     if not mounted:
         _OVERLAY_OK = False
         return False
+    # bwrap requires at least one --overlay-src before any overlay op —
+    # it names the read-only lower layer (the ro-bound /usr mounted just
+    # above); without it bubblewrap rejects the argv outright.
     argv += [
+        "--overlay-src",
+        "/usr",
         "--tmp-overlay",
         "/usr",
         "--die-with-parent",
@@ -203,9 +208,13 @@ def build_sandbox_argv(
         if dest_s in seen_dests or not (upper_p.is_dir() and work_p.is_dir()):
             continue
         seen_dests.add(dest_s)
+        # --overlay-src supplies the read-only lower layer — required by
+        # bwrap before every overlay op; it resolves DEST inside the new
+        # root, i.e. the system path already ro-bound above.
         out += [
             "--bind", str(upper_p), str(upper_p),
             "--bind", str(work_p), str(work_p),
+            "--overlay-src", dest_s,
             "--overlay", str(upper_p), str(work_p), dest_s,
         ]
     for path in dict.fromkeys(rw_binds):

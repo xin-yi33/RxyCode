@@ -1256,13 +1256,109 @@ def _child_env(turn_env: Mapping[str, str]) -> dict[str, str]:
     return env
 
 
+# Credential-shaped config keys die at the sandbox boundary — matched
+# anywhere in the copied config, not only under ``models`` (audit W8-r2:
+# ``rag.embedding.api_key`` and MCP-server env vars like GITHUB_TOKEN are
+# supported config fields that would otherwise be mounted verbatim).
+# Suffixes are exact-on-word-boundary: ``max_tokens``/``token_budget``/
+# ``sort_key`` are config, not secrets, and must survive.
+_CREDENTIAL_KEYS_EXACT = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "api_secret",
+        "token",
+        "auth_token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "client_secret",
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "private_key",
+        "credentials",
+        "bearer_token",
+        "session_token",
+        "signing_key",
+        "webhook_secret",
+        "encryption_key",
+    }
+)
+_CREDENTIAL_KEY_SUFFIXES = (
+    "_api_key",
+    "_apikey",
+    "_api_secret",
+    "_token",
+    "_secret",
+    "_password",
+    "_passwd",
+    "_private_key",
+    "_access_key",
+    "_client_secret",
+    "_auth_token",
+    "_credentials",
+    "_bearer_token",
+    "_signing_key",
+    "_webhook_secret",
+)
+# Indirection keys hold a RESOLVER (env var name / file path), not the
+# secret itself — blank them so the child-side resolver finds nothing.
+_CREDENTIAL_INDIRECTION_KEYS = frozenset(
+    {
+        "api_key_env",
+        "api_key_secret",
+        "api_key_file",
+        "token_env",
+        "token_file",
+        "secret_env",
+        "secret_file",
+        "password_env",
+        "password_file",
+        "credentials_file",
+        "credential_file",
+        "private_key_file",
+        "auth_file",
+    }
+)
+
+
+def _is_credential_key(name: str) -> bool:
+    lowered = str(name).strip().lower()
+    return lowered in _CREDENTIAL_KEYS_EXACT or lowered.endswith(
+        _CREDENTIAL_KEY_SUFFIXES
+    )
+
+
+def _scrub_credential_values(node: Any) -> None:
+    """Recursively redact credential-shaped scalars anywhere in a config
+    tree — model entries, ``rag.embedding.api_key``, MCP-server ``env``
+    maps, telemetry keys. Values become ``"confined"``; indirection
+    resolvers (``*_env``/``*_file``) are blanked."""
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            lowered = str(key).strip().lower()
+            if isinstance(value, (dict, list)):
+                _scrub_credential_values(value)
+                continue
+            if lowered in _CREDENTIAL_INDIRECTION_KEYS:
+                del node[key]
+            elif _is_credential_key(lowered):
+                node[key] = "confined"
+    elif isinstance(node, list):
+        for item in node:
+            _scrub_credential_values(item)
+
+
 def _scrub_model_credentials(
     data: dict[str, Any], *, egress_port: int, env_model: str
 ) -> None:
-    """Strip every credential-shaped field from a config's model entries
-    and point the used model at the loopback egress gateway — the parent
-    injects real auth on the upstream hop. Idempotent: safe to re-apply on
-    the already-scrubbed child copy."""
+    """Strip every credential-shaped field from the copied config and
+    point the used model at the loopback egress gateway — the parent
+    injects real auth on the upstream hop. Idempotent: safe to re-apply
+    on the already-scrubbed child copy."""
+    _scrub_credential_values(data)
     models = data.get("models")
     if not isinstance(models, dict):
         return
@@ -1275,9 +1371,7 @@ def _scrub_model_credentials(
     for name, entry in models.items():
         if not isinstance(entry, dict):
             continue
-        # Every credential-shaped field dies at the boundary.
-        entry.pop("api_key_env", None)
-        entry.pop("api_key_secret", None)
+        # The schema expects an api_key field — keep it present, redacted.
         entry["api_key"] = "confined"
         if wanted and str(name) == wanted and gateway_url:
             entry["base_url"] = gateway_url
@@ -1374,14 +1468,36 @@ async def _wait_child(
     try:
         await proc.wait()
     except asyncio.CancelledError:
+        # Kill the whole tree, not only the supervisor: inside bwrap the
+        # pid namespace + --die-with-parent already reaps descendants, but
+        # on a namespace-less host (Windows dev, degraded runners) a
+        # spawned grandchild would otherwise survive as residue
+        # (audit W8-r2: cancellation must leave nothing running).
+        descendants: list[Any] = []
+        try:
+            import psutil
+
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            descendants = []
         try:
             proc.kill()
         except ProcessLookupError:
             pass
+        for kid in descendants:
+            try:
+                kid.kill()
+            except Exception:
+                pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=10)
         except Exception:
             pass
+        for kid in descendants:
+            try:
+                kid.wait(timeout=5)
+            except Exception:
+                pass
         raise
     finally:
         # The pipe closes at process death — let the collector finish
@@ -1515,6 +1631,19 @@ _APPROVAL_DEADLINE_S = 3600.0
 #: trusted parent before they reach the durable approval row.
 _DURABLE_CALL_ID_RE = re.compile(r"^call_[0-9a-f]{32}$")
 
+#: Control-plane event namespaces a confined child may NEVER mint — they
+#: are authored exclusively by the parent/API (audit W8-r2). A forged
+#: ``turn.paused`` would fake the old-namespace-dead proof a resume
+#: claimant polls for; a forged ``steer.accepted``/``child.cancel`` row
+#: would inject commands back into the consume loop; a forged
+#: ``approval.requested`` would corrupt the resume lookup. The child's
+#: legitimate rows are ``notify.*``/``assistant.*``/``tool.*``/
+#: ``question.*``/``usage.delta``/``telemetry.span`` — none live here.
+_CHILD_EMIT_RESERVED_PREFIXES = ("turn.", "run.", "approval.", "worker.")
+_CHILD_EMIT_RESERVED_EXACT = frozenset(
+    {"usage.attribution", "steer.accepted", "child.cancel"}
+)
+
 
 def _task_turn_env(workdir: Path) -> dict[str, str]:
     """Task-private development environment INSIDE the sandbox.
@@ -1574,6 +1703,114 @@ def _lease_fenced(
     return until is not None and until >= datetime.now(timezone.utc)
 
 
+def _approval_call_binding(
+    database_url: str,
+    run_id: str,
+    *,
+    attempt_id: str,
+    call_id: str,
+) -> dict[str, Any] | None:
+    """The stored approval.requested payload for (attempt_id, call_id) of
+    THIS run — or None when the pair was never durably asked.
+
+    The journal ops bind against this row so a confined child can only
+    ever journal the exact approved call it was granted, never a pair it
+    minted itself (audit W8-r2)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT payload FROM run_events WHERE run_id = :rid "
+                    "AND type = 'approval.requested' "
+                    "AND payload->>'attempt_id' = :att "
+                    "AND payload->>'call_id' = :cid LIMIT 1"
+                ),
+                {"rid": run_id, "att": attempt_id, "cid": call_id},
+            ).first()
+    finally:
+        engine.dispose()
+    if row is None:
+        return None
+    payload = row[0]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return None
+    return dict(payload) if isinstance(payload, dict) else None
+
+
+def _old_namespace_alive(state_root: Path | None, sandbox_id: str) -> bool | None:
+    """Is the PREVIOUS claim's drain still up? Decided by probing its
+    per-run control socket on this host's state root.
+
+    ``False`` — the ctl dir or socket is gone, or the listener refuses:
+    the supervisor is dead and ``--die-with-parent`` already reaped its
+    confined child, so a new claim may proceed without the turn.paused
+    marker. ``True`` — the socket still answers: the old drain is alive
+    and its child may still run. ``None`` — cannot tell (missing id,
+    unprobeable transport): the caller must fail closed."""
+    if not state_root or not sandbox_id:
+        return None
+    ctl_dir = Path(state_root) / f"{sandbox_id}-ctl"
+    if not ctl_dir.exists():
+        return False
+    sock_path = ctl_dir / "ctl.sock"
+    if not sock_path.exists():
+        return False
+    try:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    except (AttributeError, OSError):
+        return None
+    try:
+        probe.settimeout(0.5)
+        probe.connect(str(sock_path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        return False
+    except OSError:
+        return None
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+    return True
+
+
+def _run_journal_dir(state_root: Path, tenant_id: str, run_id: str) -> Path:
+    """Parent-owned at-most-once journal for the run — keyed by RUN, not
+    by the per-claim sandbox id: a reclaimed run must see the previous
+    claimant's reservations or the same approved call executes twice
+    (audit W8-r2). Lives outside every writable mount; the child reaches
+    it only through the journal_* ctl ops."""
+    return Path(state_root) / "journals" / str(tenant_id) / str(run_id)
+
+
+#: Tool-result prefixes that mean the call did NOT produce its intended
+#: effect — gate refusals, missing tools, timeouts, cancellations, user
+#: rejections and dry-run markers (audit W8-r2: journal completion is
+#: replay safety, not success; the outcome must be classified
+#: separately).
+_TOOL_CALL_FAIL_PREFIXES = (
+    "[error",
+    "[blocked:",
+    "[evidence failed:",
+    "[rejected",
+    "[cancelled:",
+    "[dry-run]",
+)
+
+
+def _tool_call_failed(text: Any) -> bool:
+    """True when an orchestrator result string is a non-executed/error
+    marker rather than real tool output."""
+    return str(text).lstrip().startswith(_TOOL_CALL_FAIL_PREFIXES)
+
+
 def _aware_dt(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -1610,10 +1847,17 @@ def _paused_marker_seen(database_url: str, run_id: str, approval_id: str) -> boo
 
 
 def _pending_resume(
-    database_url: str, tenant_id: str, run_id: str
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    *,
+    state_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """If the run's latest durable approval was APPROVED, return its stored
     call record for the confined resume child; else None.
+
+    ``state_root`` lets the teardown barrier probe the OLD claim's
+    control socket when the turn.paused marker never arrives.
 
     The only path from ``waiting_approval`` back to a claimable status is
     ``decide_approval(... approved)`` -> ``pending`` — so a claimed run
@@ -1622,25 +1866,46 @@ def _pending_resume(
     approval_id = _latest_requested_approval_id(database_url, run_id)
     if not approval_id:
         return None
+    record = _resume_state(database_url, tenant_id, run_id, approval_id)
+    if record is None:
+        return None
     # Old-worker/new-claim handoff: approve->pending can be claimed while
     # the previous confined child is still unwinding. Wait (bounded) for
-    # the old drain's post-exit ``turn.paused`` marker — a dead drain can
-    # never produce it, but --die-with-parent already reaped that child,
-    # so proceeding after the budget is safe either way (audit W8-r1).
+    # the old drain's post-exit ``turn.paused`` marker — child-mintable
+    # namespaces are denied by _emit, so the marker is parent-authored
+    # teardown proof (audit W8-r2). A missing marker is NOT safe to
+    # proceed on: a live-but-slow drain may still have its child up.
+    # Probe the old sandbox's control socket instead — a dead listener
+    # means die-with-parent already reaped that child; anything else
+    # (alive, unprobeable, unknown sandbox) returns the unproven marker
+    # and the caller settles recovery_required rather than executing
+    # beside an unproven namespace.
     import time as _time
 
-    deadline = _time.monotonic() + 6.0
+    deadline = _time.monotonic() + _LEASE_IO_BUDGET
     while not _paused_marker_seen(database_url, run_id, approval_id):
         if _time.monotonic() >= deadline:
+            alive = _old_namespace_alive(
+                state_root, str(record.get("sandbox_id") or "")
+            )
+            if alive is False:
+                _LOG.info(
+                    "run %s: no turn.paused marker for approval %s, but "
+                    "the old supervisor is provably gone — proceeding",
+                    run_id,
+                    approval_id,
+                )
+                break
             _LOG.warning(
-                "run %s: no turn.paused marker for approval %s within "
-                "budget; relying on namespace teardown guarantees",
+                "run %s: no turn.paused marker for approval %s and the "
+                "old namespace is %s — refusing to resume unproven",
                 run_id,
                 approval_id,
+                "still alive" if alive else "unprobeable",
             )
-            break
+            return {"teardown_unproven": True, **record}
         _time.sleep(0.5)
-    return _resume_state(database_url, tenant_id, run_id, approval_id)
+    return record
 
 
 def _resume_state(
@@ -1688,6 +1953,7 @@ def _ctl_handlers(
     journal_dir: Path,
     paused: Any,
     paused_info: dict[str, Any],
+    sandbox_id: str = "",
 ) -> dict[str, Any]:
     """Parent-side ops for one run's control socket.
 
@@ -1698,11 +1964,20 @@ def _ctl_handlers(
     def _emit(args: dict[str, Any]) -> dict[str, Any]:
         from rxycode_server.events.store import append_event
 
+        event_type = str(args.get("type") or "")[:120]
+        if (
+            event_type.startswith(_CHILD_EMIT_RESERVED_PREFIXES)
+            or event_type in _CHILD_EMIT_RESERVED_EXACT
+        ):
+            # Reserved control-plane namespaces are parent-authored only —
+            # a child-forged turn.paused/steer.accepted is an injection,
+            # not an event. Deny without writing.
+            return {"seq": 0, "denied": "reserved-namespace"}
         seq = append_event(
             cfg.database_url,
             tenant_id=tenant_id,
             run_id=run_id,
-            event_type=str(args.get("type") or "")[:120],
+            event_type=event_type,
             payload=dict(args.get("payload") or {}),
         )
         return {"seq": int(seq or 0)}
@@ -1772,6 +2047,7 @@ def _ctl_handlers(
                 command=str(args.get("command") or "")[:20000],
                 workdir=str(workdir),
                 source_call_id=source_call_id,
+                sandbox_id=sandbox_id,
             )
         except Exception as exc:
             # Stale lease / already-decided: the ask did NOT park the run.
@@ -1840,15 +2116,56 @@ def _ctl_handlers(
         return {"state": str(state)}
 
     def _journal_reserve(args: dict[str, Any]) -> dict[str, Any]:
+        # Two fences before a side-effect grant (audit W8-r2):
+        # 1. the claim must still own the run — a child that lost its
+        #    lease or got cancelled between resume_state and reserve may
+        #    never execute the stored call;
+        # 2. (attempt_id, call_id, tool, args) must BE this run's stored
+        #    approval — without the binding a child could reserve a
+        #    fabricated call under journal-valid ids, or the real pair
+        #    with swapped args.
+        bound = _approval_call_binding(
+            cfg.database_url,
+            run_id,
+            attempt_id=str(args.get("attempt_id") or ""),
+            call_id=str(args.get("call_id") or ""),
+        )
+        if bound is None or not _lease_fenced(
+            cfg.database_url, run_id, cfg.worker_id, epoch
+        ):
+            return {"action": "refused", "result": None}
+        expected_args = dict(bound.get("arguments") or {})
+        if str(bound.get("command") or "") and "command" not in expected_args:
+            expected_args["command"] = str(bound["command"])
+        from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+            arguments_digest,
+        )
+
+        child_args = dict(args.get("args") or {})
+        if (
+            str(bound.get("tool") or "") != str(args.get("tool") or "")
+            or arguments_digest(expected_args) != arguments_digest(child_args)
+        ):
+            return {"action": "refused", "result": None}
         reservation = _journal_adapter().reserve(
             attempt_id=str(args.get("attempt_id") or ""),
             call_id=str(args.get("call_id") or ""),
             tool=str(args.get("tool") or ""),
-            args=dict(args.get("args") or {}),
+            args=child_args,
         )
         return {"action": str(reservation.action), "result": reservation.result}
 
     def _journal_complete(args: dict[str, Any]) -> dict[str, Any]:
+        # Completing only records an outcome, so the lease may be gone —
+        # but the pair must still be this run's stored approval.
+        bound = _approval_call_binding(
+            cfg.database_url,
+            run_id,
+            attempt_id=str(args.get("attempt_id") or ""),
+            call_id=str(args.get("call_id") or ""),
+        )
+        if bound is None:
+            return {"result": "", "refused": True}
         cleaned = _journal_adapter().complete(
             attempt_id=str(args.get("attempt_id") or ""),
             call_id=str(args.get("call_id") or ""),
@@ -1868,6 +2185,42 @@ def _ctl_handlers(
         "journal_reserve": _journal_reserve,
         "journal_complete": _journal_complete,
     }
+
+
+def _approval_args(record: dict[str, Any]) -> dict[str, Any]:
+    """The exact args the approved call replays with — stored verbatim
+    arguments plus the command field when the schema keeps it separate."""
+    args = dict(record.get("arguments") or {})
+    if str(record.get("command") or "") and "command" not in args:
+        args["command"] = str(record["command"])
+    return args
+
+
+def _journal_result(journal_dir: Path, record: dict[str, Any]) -> str:
+    """Stored result text for a COMPLETED approved call, fetched
+    parent-side. Reads state first so a non-completed lookup can never
+    create a reservation as a side effect."""
+    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+        RemoteJournalAdapter,
+        ToolExecutionJournal,
+    )
+
+    adapter = RemoteJournalAdapter(ToolExecutionJournal(str(journal_dir)))
+    state = adapter.state(
+        attempt_id=str(record.get("attempt_id") or ""),
+        call_id=str(record.get("call_id") or ""),
+    )
+    if state != "completed":
+        return ""
+    reservation = adapter.reserve(
+        attempt_id=str(record.get("attempt_id") or ""),
+        call_id=str(record.get("call_id") or ""),
+        tool=str(record.get("tool") or ""),
+        args=_approval_args(record),
+    )
+    if reservation.action == "reuse":
+        return str(reservation.result or "")
+    return ""
 
 
 def _merge_turn_config(dst: Path, workdir: Path) -> None:
@@ -1957,53 +2310,39 @@ async def _resume_turn(
         else:
             attempt_id = str(record.get("attempt_id") or "")
             call_id = str(record.get("call_id") or "")
-            before = await asyncio.to_thread(
-                journal.state, attempt_id=attempt_id, call_id=call_id
+            # The already-approved call replays through the same
+            # orchestrator under a grant broker (installed inside
+            # _execute_approved_call): the human decided — re-asking
+            # would deadlock — while every real gate and the kernel
+            # boundary stay in force. reserve() decides idempotence:
+            # completed -> reuse the STORED outcome (success or error);
+            # anything else unresolvable -> refuse, never re-execute.
+            emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
+            emit._append(
+                "tool.call",
+                {
+                    "call_id": call_id,
+                    "attempt_id": attempt_id,
+                    "tool": str(record.get("tool") or ""),
+                    "resumed": True,
+                },
             )
-            if before in {"completed", "unknown"}:
-                # Already ran (or its output is unrecoverable): never
-                # execute twice — report truthfully, the parent settles.
-                result["status"] = "succeeded" if before == "completed" else "failed"
-                result["error"] = (
-                    "" if before == "completed" else "journal state unknown"
-                )
-            else:
-                # The already-approved call replays through the same
-                # orchestrator under a grant broker (installed inside
-                # _execute_approved_call): the human decided — re-asking
-                # would deadlock — while every real gate and the kernel
-                # boundary stay in force.
-                emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
+            ok, text_out = await _execute_approved_call(
+                record, workdir, emit, journal
+            )
+            result["status"] = "succeeded" if ok else "failed"
+            if not ok:
+                result["error"] = str(text_out)[:1500]
+            if text_out:
                 emit._append(
-                    "tool.call",
+                    "tool.result",
                     {
                         "call_id": call_id,
                         "attempt_id": attempt_id,
-                        "tool": str(record.get("tool") or ""),
+                        "preview": str(text_out)[:2000],
                         "resumed": True,
                     },
                 )
-                text_out = await _execute_approved_call(
-                    record, workdir, emit, journal
-                )
-                after = await asyncio.to_thread(
-                    journal.state, attempt_id=attempt_id, call_id=call_id
-                )
-                if after == "completed":
-                    result["status"] = "succeeded"
-                else:
-                    result["status"] = "failed"
-                    result["error"] = f"resumed call did not complete (journal: {after})"
-                if text_out:
-                    emit._append(
-                        "tool.result",
-                        {
-                            "call_id": call_id,
-                            "attempt_id": attempt_id,
-                            "preview": str(text_out)[:2000],
-                            "resumed": True,
-                        },
-                    )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"[:1500]
     try:
@@ -2017,10 +2356,16 @@ async def _resume_turn(
 
 async def _execute_approved_call(
     record: dict[str, Any], workdir: Path, emit: Any, journal: Any
-) -> str:
+) -> tuple[bool, str]:
     """Execute the stored call through the SAME ToolOrchestrator every
     surface uses — blacklist, write-path gate and audit intact; approval
     was already granted (the grant broker answers prompts).
+
+    Returns ``(ok, text)``: journal completion is replay safety only —
+    a stored ``[error:``/``[blocked:`` result means the approved call did
+    NOT produce its effect and the run must settle failed, whether the
+    result came back now or was reused from a prior completion
+    (audit W8-r2).
 
     ``journal`` is the at-most-once reservation — a ``_ChannelJournal``
     in the confined child (parent-owned storage) or a file-backed
@@ -2056,9 +2401,7 @@ async def _execute_approved_call(
     tool = str(record.get("tool") or "")
     call_id = str(record.get("call_id") or "")
     attempt_id = str(record.get("attempt_id") or "")
-    args = dict(record.get("arguments") or {})
-    if str(record.get("command") or "") and "command" not in args:
-        args["command"] = str(record["command"])
+    args = _approval_args(record)
     # At-most-once: reserve binds (attempt, call) BEFORE the side effect —
     # a duplicate resume observes 'reuse'/'uncertain' and never re-runs.
     reservation = await asyncio.to_thread(
@@ -2069,10 +2412,14 @@ async def _execute_approved_call(
         args=args,
     )
     if reservation.action == "reuse":
-        return str(reservation.result or "")
+        stored = str(reservation.result or "")
+        # The stored outcome decides — a completed call whose result was
+        # an error marker is a FAILED call, not a successful replay.
+        return (not _tool_call_failed(stored)), stored
     if reservation.action != "execute":
         raise RuntimeError(
-            f"resumed call {call_id} is journal-uncertain; refusing a second side effect"
+            f"resumed call {call_id} is journal-{reservation.action}; "
+            "refusing a side effect"
         )
     cfg = {
         "safety": {
@@ -2095,15 +2442,20 @@ async def _execute_approved_call(
         )
     finally:
         set_approval_broker(None)
+    # Completing is replay safety: whatever the orchestrator returned —
+    # including an error marker — is now the durable outcome of THIS call.
+    # A raise mid-side-effect instead leaves 'reserved' → recovery_required
+    # on the next claim, never a blind second execution.
+    text_out = str(output if output is not None else "")
     await asyncio.to_thread(
         journal.complete,
         attempt_id=attempt_id,
         call_id=call_id,
         tool=tool,
         args=args,
-        result=str(output if output is not None else ""),
+        result=text_out,
     )
-    return str(output if output is not None else "")
+    return (not _tool_call_failed(text_out)), text_out
 
 
 async def run_sandboxed_turn() -> int:
@@ -2817,8 +3169,10 @@ async def execute_run(
         # Approval-resume journal: PARENT-OWNED, outside the sandbox's
         # writable workspace and never mounted — a wiped workdir can no
         # longer erase a reservation and win a second side effect (W8-r1).
-        # The child reaches it only through journal_* ctl ops.
-        journal_dir = provider.state_root / f"{sandbox_id}-journal"
+        # Keyed by RUN so a later claim sees this claim's reservations —
+        # keying by the fresh sandbox_id would recreate an empty journal
+        # per claim and execute the same approved call twice (W8-r2).
+        journal_dir = _run_journal_dir(provider.state_root, tenant_id, run_id)
         journal_dir.mkdir(parents=True, exist_ok=True)
 
         # Resume detection: the ONLY way a run leaves waiting_approval for a
@@ -2828,12 +3182,52 @@ async def execute_run(
         try:
             resume_record = await asyncio.wait_for(
                 asyncio.to_thread(
-                    _pending_resume, cfg.database_url, tenant_id, run_id
+                    _pending_resume,
+                    cfg.database_url,
+                    tenant_id,
+                    run_id,
+                    state_root=provider.state_root,
                 ),
                 timeout=_LEASE_IO_BUDGET,
             )
         except Exception:
             _LOG.warning("run %s: pending-resume probe failed", run_id, exc_info=True)
+        if resume_record is not None and resume_record.get("teardown_unproven"):
+            # The old claim's namespace could NOT be proven stopped —
+            # replaying the approved call beside it risks a doubled side
+            # effect. Fail closed: recovery_required, never a guess.
+            try:
+                await asyncio.to_thread(
+                    append_event,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type="approval.resumed",
+                    payload={
+                        "approval_id": str(
+                            resume_record.get("approval_id") or ""
+                        ),
+                        "journal_state": "skipped",
+                        "executed": False,
+                        "reason": "teardown_unproven",
+                    },
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: approval.resumed emit failed", run_id, exc_info=True
+                )
+            from rxycode_server.approvals.service import settle_run
+
+            await asyncio.to_thread(
+                settle_run,
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                worker_id=cfg.worker_id,
+                epoch=epoch,
+                status="recovery_required",
+            )
+            return True
         if resume_record is not None:
             from rxycode_worker.interrupt_resume import _journal_state
 
@@ -2846,7 +3240,18 @@ async def execute_run(
             if before in {"completed", "unknown"}:
                 # The stored call already ran (or its outcome is
                 # unrecoverable) — never execute twice; settle the claim.
-                terminal = "succeeded" if before == "completed" else "recovery_required"
+                # For completed, success is the STORED result's verdict,
+                # not the journal state alone: an error marker stored as
+                # the result is a failed call (W8-r2).
+                if before == "completed":
+                    stored = await asyncio.to_thread(
+                        _journal_result, journal_dir, resume_record
+                    )
+                    terminal = (
+                        "failed" if _tool_call_failed(stored) else "succeeded"
+                    )
+                else:
+                    terminal = "recovery_required"
                 try:
                     await asyncio.to_thread(
                         append_event,
@@ -2908,6 +3313,7 @@ async def execute_run(
                 journal_dir=journal_dir,
                 paused=paused_evt,
                 paused_info=paused_info,
+                sandbox_id=sandbox_id,
             ),
         )
         await ctl_server.start()
@@ -3132,7 +3538,13 @@ async def execute_run(
                     "run %s: approval.resumed emit failed", run_id, exc_info=True
                 )
             if after == "completed":
-                turn_error = ""
+                # completed = replay safety, not success (W8-r2): read
+                # the stored result and classify — an error marker the
+                # call produced is a failed run, not a silent success.
+                stored = await asyncio.to_thread(
+                    _journal_result, journal_dir, resume_record
+                )
+                turn_error = stored[:400] if _tool_call_failed(stored) else ""
             elif not cancelled_by_request:
                 if after == "unknown":
                     # The call may or may not have run — the journal cannot

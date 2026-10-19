@@ -117,3 +117,56 @@ Seven findings against `4771b01f`; all remediated:
    kernel feature is absent; plus a real-child cancel-reap leg and a
    stale-claim resume fence test. Misleading "in-container" header
    claims corrected.
+
+## Audit round 2 (gpt-6.1-sol, same session) — VERDICT: PROBLEMS
+
+r1 fixes verified real (CONNECT echoed bytes, approval fields
+committed). Seven new findings against `47ccfc91`; all remediated:
+
+1. **[P1] journal recreated per claim** — `journal_dir` was derived
+   from the fresh per-claim `sandbox_id`, so a reclaimed run saw an
+   empty journal and re-executed the approved call. Now
+   `_run_journal_dir(state_root, tenant, run_id)` — run-keyed, still
+   parent-owned and outside every mount.
+2. **[P1] teardown barrier fails open + child-forged proof** — the
+   6 s marker wait proceeded silently on timeout, and `_emit` let the
+   child mint `turn.paused`/`steer.accepted`/`approval.requested`
+   itself. `_emit` now denies reserved namespaces (`turn.*`, `run.*`,
+   `approval.*`, `worker.*`, `usage.attribution`, `steer.accepted`,
+   `child.cancel`); on marker timeout `_pending_resume` probes the OLD
+   sandbox's ctl socket — dead listener ⇒ reaped child ⇒ proceed;
+   alive/unprobeable ⇒ `teardown_unproven` ⇒ the claim settles
+   `recovery_required`, never a guess. `sandbox_id` rides the
+   `approval.requested` payload for that probe.
+3. **[P1] cancellation fencing holes** — `request_approval` treated
+   `cancel_requested` as parkable (a kill landing just before the ask
+   got overwritten into `waiting_approval`); `journal_reserve` granted
+   with no lease check at all. The ask paths (`request_approval`,
+   `pause_under_lock`, `prepare_pause`) now refuse `cancel_requested`
+   inside the locked txn, and `journal_reserve` requires
+   `_lease_fenced` + the (attempt,call,tool,args) pair matching this
+   run's stored approval payload — `journal_complete` keeps recording
+   post-lease-loss outcomes but refuses unbound pairs.
+4. **[P1] config scrub missed non-model credentials** —
+   `rag.embedding.api_key`, MCP-server `env` tokens and friends were
+   mounted verbatim. `_scrub_credential_values` now walks the whole
+   copied config: credential-named scalars → `"confined"`,
+   `*_env`/`*_file` indirection resolvers deleted — while
+   `max_tokens`-style budgets survive (word-boundary suffixes).
+5. **[P2] overlay argv still invalid** — bwrap requires
+   `--overlay-src` before every overlay op; both the `--tmp-overlay`
+   probe and the persistent `--overlay UPPER WORK DEST` now emit it.
+6. **[P2] error results recorded as success** — `journal_complete` is
+   replay safety, not success: `_execute_approved_call` now returns
+   `(ok, text)` by classifying the stored/returned output
+   (`[error`/`[blocked:`/`[evidence failed:`/`[rejected`/`[cancelled:`/
+   `[dry-run]` prefixes), `_resume_turn` settles failed on a stored
+   error, and BOTH parent checks (pre-spawn skip and post-spawn
+   settle) classify the stored result — the "not-found tool becomes
+   succeeded" counterexample now settles failed and stays failed on
+   re-resume.
+7. **[P2] tests overstated two chains** — the dependency leg now runs
+   a REAL `pip install --no-index` of a locally built wheel plus an
+   import-resolution check (not a marker dir); the cancel test asserts
+   the grandchild dies too — `_wait_child` now sweeps descendants via
+   psutil wherever the pid-namespace guarantee doesn't apply.
