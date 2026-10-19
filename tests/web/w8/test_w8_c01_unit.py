@@ -3520,3 +3520,186 @@ def test_w8_c01_scrub_r23_heredoc_join_linear() -> None:
     t0 = time.time()
     drain._scrub_inline_secrets(s)
     assert time.time() - t0 < 5.0
+
+
+def test_w8_c01_scrub_r24_escaped_space_before_comment() -> None:
+    r"""Audit W8-r24: ``a\ #SECRET`` — the escaped space is part of the
+    word, so ``#`` is glued content, not a comment."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("srv --token a" + chr(92) + " #AUDIT_R24A")
+    assert out == "srv --token confined"
+    # Even backslash run — the space is real and the comment still opens.
+    out = drain._scrub_inline_secrets("srv --token a" + chr(92) * 2 + " #AUDIT_R24B")
+    assert "#AUDIT_R24B" in out or "confined" in out
+
+
+def test_w8_c01_scrub_r24_quote_in_body_hides_later_heredoc() -> None:
+    r"""Audit W8-r24: a quote inside an eaten BODY is data — it must
+    not fake a context that suppresses the next ``<<`` opener."""
+    import rxycode_worker.drain as drain
+
+    nl = chr(10)
+    src = (
+        "echo $(cat <<A" + nl + "'" + nl + "A" + nl
+        + "cat <<B" + nl + "AUDIT_R24C" + nl + "B" + nl + ")"
+    )
+    out = drain._scrub_inline_secrets(src)
+    assert "AUDIT_R24C" not in out
+    assert out.count("confined") == 2
+
+
+def test_w8_c01_scrub_r24_comment_backslash_not_join() -> None:
+    r"""Audit W8-r24: ``\`` inside a heredoc opener's COMMENT is
+    comment text, not a continuation — the nested body anchor must
+    not shift a line."""
+    import rxycode_worker.drain as drain
+
+    nl = chr(10)
+    src = "echo $(cat <<E # " + chr(92) + nl + "AUDIT_R24D" + nl + "E" + nl + ")"
+    out = drain._scrub_inline_secrets(src)
+    assert out == "echo $(cat <<E # " + chr(92) + nl + "confined" + nl + "E" + nl + ")"
+
+
+def test_w8_c01_scrub_r24_heredoc_runs_before_assign() -> None:
+    r"""Audit W8-r24: the heredoc pass isolates bodies BEFORE the
+    assign pass reads them as unterminated shell quotes."""
+    import rxycode_worker.drain as drain
+
+    nl = chr(10)
+    src = "cat <<E" + nl + 'TOKEN="' + "AUDIT_R24E" + nl + "E" + nl + "echo keep"
+    out = drain._scrub_inline_secrets(src)
+    assert "AUDIT_R24E" not in out
+    assert out.endswith("E" + nl + "echo keep")
+
+
+def test_w8_c01_scrub_r24_literal_apos_keeps_dquote() -> None:
+    r"""Audit W8-r24: an apostrophe inside a ``"…"``-enclosed value is
+    literal — the enclosing closer is re-emitted after ``confined``."""
+    import rxycode_worker.drain as drain
+
+    src = 'srv "--token=a' + chr(39) + '"'
+    assert drain._scrub_inline_secrets(src) == 'srv "--token=confined"'
+
+
+def test_w8_c01_scrub_r24_ansic_U_and_nul() -> None:
+    r"""Audit W8-r24: ``\U`` (8-hex) decodes and ``\0`` truncates an
+    ANSI-C name at exec semantics — both spell ``--api-key``."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        "srv --api-$'" + chr(92) + "U0000006bey' AUDIT_R24F"
+    )
+    assert "AUDIT_R24F" not in out
+    out = drain._scrub_inline_secrets(
+        "srv --api-$'key" + chr(92) + "0junk' AUDIT_R24G"
+    )
+    assert "AUDIT_R24G" not in out
+
+
+def test_w8_c01_scrub_r24_overlong_constructs_fail_closed() -> None:
+    r"""Audit W8-r24: name/tail/subscript constructs past the scan
+    caps fail CLOSED — the value dies, not silently survives."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("X" * 4091 + "_TOKEN=AUDIT_R24H")
+    assert "AUDIT_R24H" not in out
+    out = drain._scrub_inline_secrets("srv --" + "x" * 4219 + "_token AUDIT_R24I")
+    assert "AUDIT_R24I" not in out
+    out = drain._scrub_inline_secrets("TOKEN[" + "0" * 33 + "]=AUDIT_R24J")
+    assert "AUDIT_R24J" not in out
+
+
+def test_w8_c01_scrub_r24_array_literals() -> None:
+    r"""Audit W8-r24: ``TOKEN=(a b)`` array values die with the cred
+    name — parens are preserved, contents redacted."""
+    import rxycode_worker.drain as drain
+
+    assert drain._scrub_inline_secrets("TOKEN=(AUDIT_R24K)") == "TOKEN=(confined)"
+    assert drain._scrub_inline_secrets("TOKEN+=(AUDIT_R24L)") == "TOKEN+=(confined)"
+    assert drain._scrub_inline_secrets("TOKEN[0]+=(AUDIT_R24M)") == "TOKEN[0]+=(confined)"
+    # A benign array under a non-credential name survives intact.
+    assert drain._scrub_inline_secrets("arr=(a b c)") == "arr=(a b c)"
+
+
+def test_w8_c01_scrub_r24_headers_map_cred_keys() -> None:
+    r"""Audit W8-r24: ``headers`` children die under EITHER the fixed
+    header table OR general credential-key rules."""
+    import yaml
+
+    import rxycode_worker.drain as drain
+
+    node = yaml.safe_load(
+        "headers: {X-Custom-Token: AUDIT_R24N, password: AUDIT_R24O, "
+        "content-type: application/json}"
+    )
+    drain._scrub_credential_values(node)
+    assert node["headers"]["X-Custom-Token"] == "confined"
+    assert node["headers"]["password"] == "confined"
+    assert node["headers"]["content-type"] == "application/json"
+
+
+def test_w8_c01_scrub_r24_standalone_hyphenated_key() -> None:
+    r"""Audit W8-r24: ``api-key`` as a config key is the same
+    credential as ``api_key``."""
+    import rxycode_worker.drain as drain
+
+    node = {"api-key": "AUDIT_R24P"}
+    drain._scrub_credential_values(node)
+    assert node["api-key"] == "confined"
+
+
+def test_w8_c01_scrub_r24_argv_header_whole_value() -> None:
+    r"""Audit W8-r24: an argv element's header value runs to the
+    element end — ``;``/``,`` pairs are header content."""
+    import rxycode_worker.drain as drain
+
+    node = {"args": ["-H", "Cookie: a=FIRST; b=AUDIT_R24Q"]}
+    drain._scrub_credential_values(node)
+    assert node["args"][1] == "Cookie: confined"
+    node = {
+        "args": [
+            "-H",
+            "Authorization: AWS4-HMAC-SHA256 Credential=a/b, "
+            "SignedHeaders=h, Signature=AUDIT_R24R",
+        ]
+    }
+    drain._scrub_credential_values(node)
+    assert node["args"][1] == "Authorization: AWS4-HMAC-SHA256 confined"
+
+
+def test_w8_c01_scrub_r24_amz_security_token_inline() -> None:
+    r"""Audit W8-r24: ``X-Amz-Security-Token`` is a credential header
+    in inline syntax too (it was map-only before)."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'curl -H "X-Amz-Security-Token: AUDIT_R24S"'
+    )
+    assert out == 'curl -H "X-Amz-Security-Token: confined"'
+
+
+def test_w8_c01_scrub_r24_far_quote_context() -> None:
+    r"""Audit W8-r24: the enclosing-quote scan is unbounded — an
+    opener >8KB back still quotes the header value."""
+    import rxycode_worker.drain as drain
+
+    p = 'curl -H "X-Api-Key: ' + " " * 8192
+    out = drain._scrub_inline_secrets(p + 'FIRST AUDIT_R24T"')
+    assert out == p + 'confined"'
+
+
+def test_w8_c01_scrub_r24_quoted_heredoc_linear() -> None:
+    r"""Audit W8-r24: repeated quoted heredocs no longer copy the
+    whole suffix per terminator lookup — scanning is linear."""
+    import time
+
+    import rxycode_worker.drain as drain
+
+    nl = chr(10)
+    n = 2000
+    src = ("cat <<'E'" + nl + "x" + nl + "E" + nl) * n
+    t0 = time.time()
+    out = drain._scrub_inline_secrets(src)
+    assert out == ("cat <<'E'" + nl + "confined" + nl + "E" + nl) * n
+    assert time.time() - t0 < 5.0

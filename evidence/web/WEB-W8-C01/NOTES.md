@@ -965,3 +965,27 @@ Suite: `109 passed, 3 skipped` (env skips unchanged), ruff clean. 6 new regressi
 
 Focused r23 regressions: 13 new unit tests in `tests/web/w8/test_w8_c01_unit.py`.
 Suite: `122 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.
+
+## Round 24 — escaped-boundary comments, body-context isolation for op rescan, comment-`\` joins, pass ordering, closer fidelity, ANSI-C `\U`/NUL, cap fail-closed, arrays, header argv values, far-quote context, linear terminator lookup
+
+`VERDICT: PROBLEMS_REMAIN` (14 findings) on `e805e586`; all fixed.
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| `srv --token a\ #SECRET` → `confined#SECRET` | `#` after an escaped boundary char was treated as comment | `_escaped()` helper (odd backslash run) consulted in `_comment_start`, `_heredoc_ops` and `_shell_word_end` — escaped whitespace/separators are literal word content, no comment opens |
+| `$(cat <<A\n'\nA\ncat <<B\nSECRET\nB\n)` — body B survived | the op scan walked BODY text as shell — the `'` inside body A faked a quote context that suppressed `<<B` | `_heredoc_ops` now returns per-op stack snapshots; after each eaten body the tail is RESCANNED on a context rebuilt from command text only (`op_stack` + the opener's line remainder), ops inside the body drop as literal text, and the rebuilt stack becomes the end-of-line carry |
+| `echo $(cat <<E # \` + nl + `SECRET` + nl + `E` + nl + `)` inserted `confined` after `SECRET` | the nested body anchor counted a `\` inside a COMMENT as a continuation join | nested-anchor join loop now asks `_comment_start` whether the trailing `\` sits inside the line's comment — if so it is comment text, not a join |
+| `cat <<E\nTOKEN="SECRET\nE\necho keep` → `cat <<E\nconfined\n` | assign pass read the BODY as an unterminated shell quote before the heredoc pass isolated it | pass order: `_heredoc_pass` runs FIRST — bodies are data, never syntax for other passes; terminator and following commands survive |
+| `srv "--token=a'"` → `srv "--token=confined` (lost the enclosing `"`) | `_trailing_closer` scanned the value without its enclosing context — the `'` faked an unpaired opener | `_trailing_closer` seeds the context stack with the enclosing quote: other-type quotes inside are literal; the first char that pops the seeded frame is the glued closer and is re-emitted |
+| `srv --api-$'\U0000006bey' K` / `--api-$'key\0junk' K` survived | `\U` (8-hex) not decoded; `\0` NUL not honoured | `_ansic_decode` handles `\U`+8 hex; a decoded NUL truncates the assembled name at exec semantics |
+| `"X"*4091+"_TOKEN=S"`, `--`+`x`*4219+`_token S`, `TOKEN[`+`0`*33+`]=S` all survived | flag tail cap (4096) re-landed mid-name; subscript `{0,32}` missed | flag tail scan unbounded (C-speed run); subscript widened to `{0,4096}`; `[]` joined the run charsets so over-cap constructs still fail closed |
+| `TOKEN=(SECRET)` / `TOKEN+=(S)` / `TOKEN[0]+=(S)` survived | `_shell_word_end` stops at `(` — array literals never scanned | `_array_end` balanced-paren scan (quote/escape aware); cred name redacts group contents as `(confined)`; unbalanced dies to EOF |
+| `headers: {X-Custom-Token: SECRET}` / `{password: SECRET}` survived | header-map dispatch consulted only `_HEADER_CRED_NAMES` | header-map children also check `_is_credential_key` on the normalized name |
+| `api-key: SECRET` survived standalone | hyphenated spellings never normalized for key checks | dict keys normalize `-`→`_` before indirection/credential checks (list items already did) |
+| `args: ["-H","Cookie: a=F; b=SECRET"]` → `Cookie: confined; b=SECRET`; AWS4 `Signature=` survived | `;`/`,` inside an argv element ended the header value | `_auth_pass` extends the value across `;`/`,`-joined pairs to the element end (a word that already absorbed a `,` continues the same); `&`/`|`/newline still end it; auth/digest passes moved BEFORE assign so an `Authorization:` lead owns its whole `k=v, k=v` list |
+| `curl -H "X-Amz-Security-Token: SECRET"` survived | header was map-only; `_AUTH_LEAD_RE` lacked it | `x-amz-security-token`/`x-goog-api-key` added to the inline lead table |
+| `P + 'FIRST SECRET"'` (opener >8KB back) → `confined SECRET"` | `_quote_state` 8KB lookback lost the enclosing `"` | `_Enclosing` incremental scanner (r23 perf) is unbounded — the opener is found at any distance; verified `confined"` output |
+| `"cat <<'E'\nx\nE\n" * n` — 27.99M chars copied at n=2000 (quadratic) | quoted-terminator search sliced `src[cursor:]` per opener | `_find_term` uses `pattern.search(src, cursor)` — no suffix copy; n=2000 now ~0.035s (linear) |
+
+Focused r24 regressions: 14 new unit tests in `tests/web/w8/test_w8_c01_unit.py`.
+Suite: `136 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.
