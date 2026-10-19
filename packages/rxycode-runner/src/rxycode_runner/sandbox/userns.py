@@ -222,7 +222,8 @@ def build_sandbox_argv(
     env: Mapping[str, str],
     ro_binds: Sequence[str] = _DEFAULT_RO_BINDS,
     rw_binds: Sequence[str] = (),
-    overlays: Sequence[tuple[str, str, str]] = (),
+    overlays: Sequence[tuple[str, ...]] = (),
+    chdir: str | None = None,
 ) -> list[str]:
     """Build the bwrap argv for one confined execution.
 
@@ -239,7 +240,12 @@ def build_sandbox_argv(
     filesystem — they live under the same state root). The network
     namespace is ALWAYS unshared — the confined process's only link to
     the outside is the parent's filtered egress socket mounted via
-    ``rw_binds``.
+    ``rw_binds``. ``chdir`` is the process cwd at exec — for
+    ``python -m`` entrypoints it MUST NOT be the writable workdir:
+    ``sys.path[0]`` resolves there first, so a project containing a
+    same-named package would shadow the trusted module and bypass the
+    approval/journal machinery (audit W8-r7). The private tmpfs ``/tmp``
+    is mounted before every bind — nothing can be pre-planted there.
     """
     bwrap = shutil.which("bwrap") or "bwrap"
     workdir = Path(workdir).resolve()
@@ -303,7 +309,7 @@ def build_sandbox_argv(
         str(workdir),
         str(workdir),
         "--chdir",
-        str(workdir),
+        str(chdir) if chdir else str(workdir),
     ]
     for key, value in env.items():
         out += ["--setenv", str(key), str(value)]
@@ -439,14 +445,18 @@ class UsernsSandboxProvider:
         env: Mapping[str, str],
         ro_binds: Sequence[str] = _DEFAULT_RO_BINDS,
         rw_binds: Sequence[str] = (),
-        overlays: Sequence[tuple[str, str, str]] = (),
+        overlays: Sequence[tuple[str, ...]] = (),
+        chdir: str | None = None,
     ) -> list[str]:
         """bwrap argv for one confined command — the async-spawn surface the
         drain uses. The sandbox record must exist and belong to the tenant.
         ``ro_binds`` extends the system mounts with this host's code paths;
         ``rw_binds`` mounts task-private writable dirs (home, control dir)
         at their own host paths; ``overlays`` carries the task-private
-        (upper, work, dest) system layers (apt/dpkg write domain)."""
+        (upper, work, dest[, lower_src]) system layers (apt/dpkg write
+        domain); ``chdir`` overrides the exec-time cwd — the drain spawns
+        the trusted worker with ``/tmp`` so ``python -m`` never resolves
+        modules from the writable project (audit W8-r7)."""
         record = self._load(sandbox_id, tenant_id)
         workdir = Path(str(record.get("workdir") or "")) or self._workdir(
             tenant_id, str(record.get("workspace_id") or "")
@@ -459,6 +469,7 @@ class UsernsSandboxProvider:
             ro_binds=ro_binds,
             rw_binds=rw_binds,
             overlays=overlays,
+            chdir=chdir,
         )
 
     def exec(

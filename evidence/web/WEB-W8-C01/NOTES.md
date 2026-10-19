@@ -374,3 +374,58 @@ scrub, `Error:` classification, dir_fd unlink, `overlay_dests` returning
   state_root.
 - `python -m ruff check` on drain.py / userns.py / tests/web/w8:
   clean.
+
+## Audit round 7 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 2 findings)
+
+r7 audited `71f88cf2`, re-ran the 19 targeted unit legs, and verified
+the r6 fixes (query-url scrub, seeded-overlay argv shape, claim-dir
+teardown preserving the run journal). Two new P1 findings, both
+remediated and re-verified:
+
+1. **[P1] Credentials inside opaque launcher strings reached the
+   sandbox** — `_scrub_credential_values` only understood whole-item
+   forms; `args: ["-c", "exec server --api-key K"]` kept the secret
+   verbatim in the mounted YAML, readable without ever running MCP.
+   `_scrub_inline_secrets` now performs the surgical pass on every
+   surviving string — ``--flag VALUE``, ``--flag=VALUE`` and
+   ``KEY=VALUE`` for credential names, and URL userinfo — replacing
+   only the secret span. Bare credential URLs are still redacted
+   whole (lead-anchored `_URL_CREDENTIAL_LEAD_RE`); composite strings
+   keep their syntax. Shell separators (`;|&()` etc.) are excluded
+   from the value charset so `export API_KEY=x; srv` keeps its `;`.
+   Two grammar bugs were caught and fixed while wiring this: the
+   separated-pair branch applied `_is_credential_key` to the WHOLE
+   item (a composite `run --token=x` ends in `_token` and ate the
+   NEXT item) — it now requires a pure `_ASSIGN_KEY_RE` flag item;
+   and the early `=`/pair checks could starve the inline pass.
+2. **[P1] Writable project dir could shadow the trusted worker
+   entrypoint** — `python -m rxycode_worker.drain` ran with
+   `--chdir <writable workdir>`; `sys.path[0]` resolved project-first,
+   so a planted `rxycode_worker/drain.py` executed instead of the
+   trusted module — still inside the sandbox, but bypassing
+   durable approval and call-reservation. `build_sandbox_argv` now
+   takes `chdir` (default workdir, exec callers unchanged); the
+   drain spawns the worker with `chdir="/tmp"` — the private tmpfs
+   mounted before every bind, nothing pre-plantable — plus `-P` on
+   >=3.11 and `PYTHONSAFEPATH=1` for every descendant python. The
+   child sets its real cwd itself via `set_working_directory`.
+   Container proof (python:3.12-slim, bwrap 0.12): the UNHARDENED
+   shape resolves `SHADOWED-PROJECT-COPY`
+   (`/state/proj/rxycode_worker/drain.py` — the planted file); the
+   hardened shape resolves
+   `/repo/packages/rxycode-worker/src/rxycode_worker/drain.py` in
+   both chdir modes.
+
+## Test evidence (r7)
+
+- `tests/web/w8`: 47 passed, 3 environment skips — new legs:
+  inline launcher-string scrub (`-c` payloads, `--flag=V`, `KEY=V`,
+  embedded userinfo, `==`/shell-separator negatives), spawn-chdir
+  hardening (`--chdir /tmp` + workdir still bound + `-P -m`), and
+  `PYTHONSAFEPATH=1` in the child env.
+- In-container shadowing proof: planted `rxycode_worker/drain.py`
+  inside the writable project wins UNHARDENED (`SHADOWED-PROJECT-COPY`
+  printed) and loses under `chdir=/tmp` + `-P` + `PYTHONSAFEPATH=1`
+  (trusted ro-bound module resolves).
+- `python -m ruff check` on drain.py / userns.py / tests/web/w8:
+  clean.

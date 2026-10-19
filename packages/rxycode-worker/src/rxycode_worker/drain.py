@@ -1253,6 +1253,11 @@ def _child_env(turn_env: Mapping[str, str]) -> dict[str, str]:
     per-turn RXYCODE_TURN_* contract. ``--clearenv`` drops everything else."""
     env = {key: os.environ[key] for key in _CHILD_ENV_PASS if key in os.environ}
     env.update({str(k): str(v) for k, v in turn_env.items()})
+    # Keep cwd out of sys.path for every python the turn spawns too —
+    # a writable project dir must never shadow trusted modules
+    # (audit W8-r7; inert below Python 3.11, where the spawn's /tmp
+    # chdir already closes the vector for the trusted entrypoint).
+    env["PYTHONSAFEPATH"] = "1"
     return env
 
 
@@ -1352,6 +1357,76 @@ def _has_url_secret(value: Any) -> bool:
     return isinstance(value, str) and bool(_URL_CREDENTIAL_RE.search(value))
 
 
+#: A credential URL at the START of an item — the item IS the secret
+#: (whole redaction); a URL appearing mid-string goes through the
+#: surgical pass instead.
+_URL_CREDENTIAL_LEAD_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@]{1,256}:[^@\s]{1,256}@"
+)
+#: ``--flag=VALUE`` and ``--flag VALUE`` inside an opaque string —
+#: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
+#: the value must not start with ``-`` — a following flag is not a
+#: value.
+_INLINE_FLAG_EQ_RE = re.compile(
+    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)=([^\s;|&<>'\"(){}]+)"
+)
+_INLINE_FLAG_SEP_RE = re.compile(
+    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)\s+(?!--)([^\s;|&<>'\"(){}]+)"
+)
+#: ``KEY=VALUE``/``KEY = value`` for a credential key inside an opaque
+#: string. The lookbehind keeps ``--flag=x`` out (the flag rule owns
+#: it); the lookaheads keep ``x == y`` and ``k = --v`` out; the value
+#: charset keeps shell separators (``;|&()``) outside the secret span.
+_INLINE_ASSIGN_RE = re.compile(
+    r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)(?!--)"
+    r"([^\s;|&<>'\"(){}]+)"
+)
+#: ``scheme://user:pass@`` inside a longer string — only the userinfo
+#: span is replaced, the URL shape survives.
+_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]{1,256}:[^@\s]{1,256}@")
+
+
+def _scrub_inline_secrets(text: str) -> str:
+    """Redact credential material EMBEDDED inside an opaque string —
+    ``args: ["-c", "exec server --api-key K"]`` or
+    ``export TOKEN=x; srv`` hides secrets from the whole-item grammar,
+    and the mounted config is readable whether or not MCP ever runs
+    (audit W8-r7). Only the secret span is replaced; the surrounding
+    syntax survives. Same name tables as the whole-item grammar."""
+
+    def _flag_eq(match: "re.Match[str]") -> str:
+        name = match.group(1).lstrip("-").lower().replace("-", "_")
+        if (
+            _is_credential_key(name)
+            or name in _CREDENTIAL_INDIRECTION_KEYS
+        ):
+            return f"{match.group(1)}=confined"
+        return match.group(0)
+
+    def _flag_sep(match: "re.Match[str]") -> str:
+        name = match.group(1).lstrip("-").lower().replace("-", "_")
+        if (
+            _is_credential_key(name)
+            or name in _CREDENTIAL_INDIRECTION_KEYS
+        ):
+            return f"{match.group(1)} confined"
+        return match.group(0)
+
+    def _assign(match: "re.Match[str]") -> str:
+        name = match.group(1).lower().replace("-", "_")
+        if (
+            _is_credential_key(name)
+            or name in _CREDENTIAL_INDIRECTION_KEYS
+        ):
+            return f"{match.group(1)}=confined"
+        return match.group(0)
+
+    text = _INLINE_FLAG_EQ_RE.sub(_flag_eq, text)
+    text = _INLINE_FLAG_SEP_RE.sub(_flag_sep, text)
+    text = _INLINE_ASSIGN_RE.sub(_assign, text)
+    return _URL_USERINFO_SUB_RE.sub(r"\g<1>confined:confined@", text)
+
+
 def _scrub_credential_values(node: Any) -> None:
     """Recursively redact credential-shaped scalars anywhere in a config
     tree — model entries, ``rag.embedding.api_key``, MCP-server ``env``
@@ -1372,7 +1447,17 @@ def _scrub_credential_values(node: Any) -> None:
             elif _is_credential_key(lowered):
                 node[key] = "confined"
             elif _has_url_secret(value):
-                node[key] = "confined"
+                # A BARE credential URL is a secret whole; a composite
+                # string carrying one (a launcher, a shell snippet)
+                # loses only the userinfo span (audit W8-r7).
+                if _URL_CREDENTIAL_LEAD_RE.match(str(value).strip()):
+                    node[key] = "confined"
+                else:
+                    node[key] = _scrub_inline_secrets(str(value))
+            elif isinstance(value, str):
+                # Opaque strings can still carry credential material —
+                # ``command: "sh -c 'srv --token K'"`` (audit W8-r7).
+                node[key] = _scrub_inline_secrets(value)
     elif isinstance(node, list):
         for idx, item in enumerate(node):
             if isinstance(item, str):
@@ -1397,21 +1482,38 @@ def _scrub_credential_values(node: Any) -> None:
                     # A positional arg carrying a credential URL — the
                     # ``=`` inside ``postgres://u:p@db/app?sslmode=require``
                     # is a QUERY parameter, not an assignment; the whole
-                    # item is a secret either way (audit W8-r4/r6).
-                    node[idx] = "confined"
+                    # item is a secret either way (audit W8-r4/r6). When
+                    # the URL is only PART of the item (a shell
+                    # fragment), only its userinfo dies (W8-r7).
+                    if _URL_CREDENTIAL_LEAD_RE.match(item.strip()):
+                        node[idx] = "confined"
+                    else:
+                        node[idx] = _scrub_inline_secrets(item)
                 elif (
-                    _is_credential_key(lowered_key)
-                    or lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                    not _eq
+                    and _ASSIGN_KEY_RE.match(item.strip())
+                    and (
+                        _is_credential_key(lowered_key)
+                        or lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                    )
                 ):
                     # Separated flag-value pairs —
                     # ``args: ["--api-key", "s3cr3t"]`` — keep the
                     # flag, redact the value that follows it (W8-r5).
                     # A following ``--`` item is a new flag, not a
-                    # value — nothing to redact.
+                    # value — nothing to redact. The item must be a
+                    # PURE flag spelling: a composite string like
+                    # ``run --token=x`` happens to end in ``_token``
+                    # and would otherwise eat the next item whole.
                     if idx + 1 < len(node) and isinstance(
                         node[idx + 1], str
                     ) and not str(node[idx + 1]).startswith("--"):
                         node[idx + 1] = "confined"
+                else:
+                    # Opaque strings — ``-c`` payloads and launcher
+                    # fragments — can carry flags/assignments/URLs the
+                    # whole-item grammar never sees (audit W8-r7).
+                    node[idx] = _scrub_inline_secrets(item)
                 continue
             _scrub_credential_values(item)
 
@@ -3675,11 +3777,24 @@ async def execute_run(
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
-            argv=[sys.executable, "-m", "rxycode_worker.drain"],
+            # ``python -m`` resolves sys.path[0] from the SPAWN cwd — a
+            # writable project dir containing ``rxycode_worker/`` would
+            # shadow this module and bypass approval/journal machinery
+            # (audit W8-r7). chdir=/tmp (a private tmpfs mounted before
+            # every bind — nothing can be pre-planted); ``-P`` removes
+            # cwd from sys.path as a second layer on >=3.11; the child
+            # sets its real cwd itself via set_working_directory.
+            argv=[
+                sys.executable,
+                *(["-P"] if sys.version_info >= (3, 11) else []),
+                "-m",
+                "rxycode_worker.drain",
+            ],
             env=child_env,
             ro_binds=ro_binds,
             rw_binds=rw_binds,
             overlays=overlays,
+            chdir="/tmp",
         )
         proc = await asyncio.create_subprocess_exec(
             *argv,

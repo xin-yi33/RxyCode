@@ -2356,3 +2356,84 @@ def test_w8_c01_safe_unlink_inside_real_dir(tmp_path: Path) -> None:
     assert not stale.exists()
     # Missing file is not an error.
     drain._safe_unlink_inside(data, "config.yaml")
+
+
+def test_w8_c01_scrub_inline_launcher_strings() -> None:
+    """Opaque strings carry credential material the whole-item grammar
+    never sees — ``args: ["-c", "exec srv --api-key K"]`` is ONE item,
+    and the mounted config is readable whether or not MCP ever runs
+    (audit W8-r7). The surgical pass removes only the secret span:
+    ``--flag VALUE``, ``--flag=VALUE``, ``KEY=VALUE`` for credential
+    names, and URL userinfo — while syntax survives."""
+    import rxycode_worker.drain as drain
+
+    cfg = {
+        "mcpServers": {
+            "sh": {
+                "command": "sh",
+                "args": [
+                    "-c",
+                    "exec server --api-key EXAMPLE_PLATFORM_KEY --verbose",
+                    "run --token=tok123 now",
+                    "export API_KEY=sk-live; srv --dsn postgres://u:p@h/x",
+                    "x == y --normal flag",
+                    "--api-key",  # flag at END of item list — no value
+                ],
+            }
+        },
+        "launcher": "sh -c 'srv postgres://u:p@db --password pw1'",
+        "doc": "the token = abc and mode == fast",  # prose, not creds
+        "bare_url": "postgres://u:p@db:5432/app",
+    }
+    drain._scrub_credential_values(cfg)
+
+    args = cfg["mcpServers"]["sh"]["args"]
+    assert args[1] == "exec server --api-key confined --verbose"
+    assert args[2] == "run --token=confined now"
+    # A credential URL as a flag's VALUE dies whole — fail-closed.
+    assert args[3] == "export API_KEY=confined; srv --dsn confined"
+    assert args[4] == "x == y --normal flag"          # == and --flag kept
+    assert args[5] == "--api-key"                     # nothing follows it
+    # dict scalar composite strings — surgical, not whole-redaction.
+    assert cfg["launcher"] == (
+        "sh -c 'srv postgres://confined:confined@db --password confined'"
+    )
+    # A bare credential URL value is still a secret whole.
+    assert cfg["bare_url"] == "confined"
+
+
+def test_w8_c01_child_spawn_chdir_and_safepath(tmp_path: Path) -> None:
+    """python -m resolves sys.path[0] from the SPAWN cwd: a writable
+    project containing ``rxycode_worker/`` would shadow the trusted
+    drain and bypass approval/journal machinery (audit W8-r7). The
+    drain therefore spawns with chdir=/tmp — the private tmpfs mounted
+    before every bind, nothing pre-plantable — and forces
+    PYTHONSAFEPATH=1 for every descendant python. The workspace is
+    still bound; the child sets its real cwd via set_working_directory."""
+    import rxycode_worker.drain as drain
+    from rxycode_runner.sandbox.userns import build_sandbox_argv
+
+    env = drain._child_env({"RXYCODE_TURN_RUN_ID": "r1"})
+    assert env["PYTHONSAFEPATH"] == "1"
+
+    workdir = tmp_path / "ws"
+    workdir.mkdir()
+    argv = build_sandbox_argv(
+        workdir=workdir,
+        argv=["/usr/bin/python3", "-P", "-m", "rxycode_worker.drain"],
+        env={},
+        ro_binds=[],
+        rw_binds=[],
+        chdir="/tmp",
+    )
+    assert argv[argv.index("--chdir") + 1] == "/tmp"
+    # The workspace remains mounted — only the spawn cwd moved.
+    bind_pairs = [
+        (argv[i + 1], argv[i + 2])
+        for i, part in enumerate(argv)
+        if part == "--bind"
+    ]
+    assert (str(workdir), str(workdir)) in bind_pairs
+    # The trusted entrypoint keeps interpreter hardening.
+    tail = argv[argv.index("--") + 1 :]
+    assert tail[:4] == ["/usr/bin/python3", "-P", "-m", "rxycode_worker.drain"]
