@@ -499,3 +499,17 @@ Round 15 (same session) found four ledger-recovery gaps:
 New legs: spool replay inserts a missing ledger; unjournaled pending
 spool journals before upserting; under-lock recompute raises the write
 to the fresh total (PG).
+
+
+## Audit r16 remediation (commit pending)
+
+Round 16 (same session) found one gap in the new under-lock path:
+
+- **Failed recompute silently passed the stale floor**: both ledger
+  writers caught every `recompute()` exception and proceeded with the
+  caller's snapshot — a transient read error could commit a short total
+  and terminalize (or let replay delete its pending file) with nothing
+  left to retry. Recompute failures now PROPAGATE: the session rolls
+  back and the caller's failure path retains the work. The finalize
+  path additionally parks a pending spool on ANY usage-write failure so
+  the metered spend still converges after the run terminalizes.

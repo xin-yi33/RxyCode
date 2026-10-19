@@ -296,3 +296,13 @@ Final verdict: `<filled by the Codex audit>` (session
   attempt's streamed spend actually journaled — an owed spend can no
   longer be marked journaled by a pending file.
 - Non-stack legs 26/26 green incl. three r15 legs; module stack re-run.
+
+
+## r16 remediation self-check
+
+- `recompute()` exceptions propagate out of `upsert_terminal_usage` and
+  `adjust_terminal_usage` — no `(0, None)` substitution. Callers retain
+  work: replay keeps the file, finalize/lost-lease park pending spools.
+- New PG leg: recompute raising RuntimeError -> upsert raises, ledger
+  unchanged (rolled back).
+- Non-stack legs 26/26 green; module stack re-running.

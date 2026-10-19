@@ -1962,5 +1962,32 @@ def test_w7_c05_upsert_recompute_under_lock(postgres_url: str) -> None:
                 ).all()
             )
         assert total == 130
+
+        # Audit r16: a FAILED recompute must propagate — silently keeping
+        # the stale floor would commit a short ledger with no retry.
+        import pytest
+
+        def _boom():
+            raise RuntimeError("transient read error")
+
+        with pytest.raises(RuntimeError):
+            upsert_terminal_usage(
+                postgres_url,
+                tenant_id=tenant,
+                run_id="run-rc",
+                model_id="m-a",
+                price_version="2026-10",
+                tokens=130,
+                event_id="evt-rc-3",
+                recompute=_boom,
+            )
+        with Session(engine) as db:
+            total = sum(
+                int(r.tokens)
+                for r in db.scalars(
+                    select(UsageRecord).where(UsageRecord.run_id == "run-rc")
+                ).all()
+            )
+        assert total == 130  # rolled back — nothing committed
     finally:
         engine.dispose()

@@ -166,10 +166,13 @@ def upsert_terminal_usage(
             if run is None:
                 raise UsageForbidden()
             if recompute is not None:
-                try:
-                    fresh_total, fresh_attr = recompute()
-                except Exception:
-                    fresh_total, fresh_attr = 0, None
+                # A failed recomputation must NOT silently substitute the
+                # caller's stale floor — the write would commit a short
+                # total and terminalize (or let spool replay delete its
+                # pending file) with nothing left to retry (audit r16).
+                # Propagate: the session rolls back and the caller's
+                # failure path retains the work.
+                fresh_total, fresh_attr = recompute()
                 if int(fresh_total or 0) > int(tokens):
                     tokens = int(fresh_total)
                 if fresh_attr:
@@ -284,10 +287,9 @@ def adjust_terminal_usage(
             if run is None:
                 raise UsageForbidden()
             if recompute is not None:
-                try:
-                    fresh_total, fresh_attr = recompute()
-                except Exception:
-                    fresh_total, fresh_attr = 0, None
+                # Same propagation contract as upsert (audit r16): a stale
+                # floor must not silently pass for fresh metering.
+                fresh_total, fresh_attr = recompute()
                 if int(fresh_total or 0) > int(tokens):
                     tokens = int(fresh_total)
                 if fresh_attr:

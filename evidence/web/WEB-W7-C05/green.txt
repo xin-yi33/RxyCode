@@ -235,3 +235,10 @@ ruff/py_compile: clean on drain.py + usage/service.py.
   recompute raises the ledger to the fresh total (real dev PG).
 1 passed in 316.83s — tests/web/w7/test_w7_c05_module.py (real stack
   on r15 code). ruff/py_compile clean; git diff --check clean.
+
+== audit r16 remediation (2026-10-19) ==
+26 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. new leg: recompute failure propagates out of upsert (ledger
+  rolled back unchanged on real dev PG).
+1 passed in 383.89s — tests/web/w7/test_w7_c05_module.py (real stack
+  on r16 code). ruff/py_compile clean; git diff --check clean.

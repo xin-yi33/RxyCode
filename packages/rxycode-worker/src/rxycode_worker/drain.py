@@ -2247,6 +2247,30 @@ async def execute_run(
     except Exception as exc:
         usage_error = f"terminal usage write failed: {type(exc).__name__}: {exc}"
         _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)
+        # The run is about to terminalize without a proven ledger — park a
+        # pending spool so a later drain pass converges it (the same
+        # retention the cancel path uses; audit r16 propagation contract).
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    _ensure_pending_reconcile_spool,
+                    cfg.workspaces_root,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    epoch=epoch,
+                    input_tokens=int(streamed.get("input_tokens") or 0),
+                    output_tokens=int(streamed.get("output_tokens") or 0),
+                    journaled=not metering_owed,
+                    model_id=ledger_model,
+                    price_version=_PRICE_VERSION,
+                ),
+                timeout=_LEASE_IO_BUDGET,
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: pending-usage spool write failed", run_id,
+                exc_info=True,
+            )
     # `upsert_terminal_usage` writes the RUN-LEVEL aggregate: an existing
     # shorter ledger (a prior attempt committed partial spend and crashed
     # before its terminal write — audit r12) is reconciled up to the
