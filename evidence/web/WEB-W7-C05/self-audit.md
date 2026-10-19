@@ -171,3 +171,17 @@ Final verdict: `<filled by the Codex audit>` (session
   heartbeat already covers it.
 - Unit legs green 13/13 (incl. done-grouping + flush-once); module stack
   test re-running.
+
+## r8 remediation self-check
+
+- `_lease_epochs`/`_epoch_at_seq` attribute untagged `usage.delta` and
+  `event/agent_done` rows to the lease epoch whose claim seq precedes the
+  row — legacy data can no longer form a phantom `attempt=""` bucket that
+  double-charges a tagged sibling (A=100 tagged + untagged done 100 + B=5
+  → 105, covered by a unit leg).
+- `_flush_streamed_usage` returns durable/not; the caller retries 3x then
+  `_spool_streamed_usage` writes `{run}.{epoch}.usage.json` under
+  `.sandboxes/.usage-spool/` (parent-owned). `drain_once` calls
+  `_replay_usage_spool` every pass — files delete only on a journaled row.
+- green.txt corrected: 14 non-contract legs; contract leg also passed when
+  run with the stack up (13/13 earlier run).

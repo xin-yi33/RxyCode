@@ -286,13 +286,46 @@ def _agent_done_row(database_url: str, run_id: str) -> tuple[str, int]:
     return str(row.event_id), tokens
 
 
+def _lease_epochs(conn: Any, run_id: str) -> list[tuple[int, str]]:
+    """``worker.lease`` rows ordered by seq — each claim opens a new lease
+    epoch, so an untagged row is attributed to the epoch that was active
+    when it committed (audit r8: pre-upgrade completions carry no
+    ``attempt`` key and must not fall into a separate summed bucket)."""
+    from sqlalchemy import text
+
+    rows = conn.execute(
+        text(
+            "SELECT seq, payload FROM run_events "
+            "WHERE run_id = :id AND type = 'worker.lease' ORDER BY seq"
+        ),
+        {"id": run_id},
+    ).all()
+    bounds: list[tuple[int, str]] = []
+    for seq, payload in rows:
+        if isinstance(payload, dict):
+            bounds.append((int(seq), str(payload.get("epoch") or "")))
+    return bounds
+
+
+def _epoch_at_seq(bounds: list[tuple[int, str]], seq: int) -> str:
+    """Latest lease epoch whose ``worker.lease`` seq precedes ``seq``;
+    ``""`` when the row predates every recorded claim."""
+    epoch = ""
+    for bound_seq, bound_epoch in bounds:
+        if bound_seq > seq:
+            break
+        epoch = bound_epoch or epoch
+    return epoch
+
+
 def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     """Per-attempt metering that survives a SIGKILLed turn.
 
     Each confined child heartbeats CUMULATIVE ``usage.delta`` rows tagged
     with its lease epoch; a retried run starts a fresh baseline per attempt.
-    Returns ``{attempt: last cumulative total}`` — the caller merges sources
-    within an attempt (max) and sums ACROSS attempts (audit r6)."""
+    Untagged legacy rows are anchored to the lease epoch active at their
+    seq. Returns ``{attempt: last cumulative total}`` — the caller merges
+    sources within an attempt (max) and sums ACROSS attempts (audit r6)."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -306,13 +339,14 @@ def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
                 ),
                 {"id": run_id},
             ).all()
+            bounds = _lease_epochs(conn, run_id)
     finally:
         engine.dispose()
     latest: dict[str, int] = {}
-    for _seq, payload in rows:
+    for seq, payload in rows:
         if not isinstance(payload, dict):
             continue
-        attempt = str(payload.get("attempt") or "")
+        attempt = str(payload.get("attempt") or "") or _epoch_at_seq(bounds, int(seq))
         latest[attempt] = int(payload.get("input_tokens") or 0) + int(
             payload.get("output_tokens") or 0
         )
@@ -321,8 +355,10 @@ def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
 
 def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     """``event/agent_done`` snapshots grouped by lease epoch — the RunJournal
-    tags each row with the attempt that produced it, so a prior attempt's
-    completion meter is never re-charged inside a retry's bucket (audit r7)."""
+    tags each row with the attempt that produced it; untagged legacy rows
+    are anchored to the lease epoch active at their seq, so a prior
+    attempt's completion meter is never re-charged inside a retry's bucket
+    (audit r7/r8)."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -336,16 +372,88 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
                 ),
                 {"id": run_id},
             ).all()
+            bounds = _lease_epochs(conn, run_id)
     finally:
         engine.dispose()
     latest: dict[str, int] = {}
-    for _seq, payload in rows:
+    for seq, payload in rows:
         if not isinstance(payload, dict):
             continue
-        attempt = str(payload.get("attempt") or "")
+        attempt = str(payload.get("attempt") or "") or _epoch_at_seq(bounds, int(seq))
         tokens = int(payload.get("tokens") or payload.get("tokens_used") or 0)
         latest[attempt] = tokens
     return latest
+
+
+def _usage_spool_dir(workspaces_root: str) -> Path:
+    return Path(workspaces_root) / ".sandboxes" / ".usage-spool"
+
+
+def _spool_streamed_usage(
+    spool_dir: Path,
+    *,
+    tenant_id: str,
+    run_id: str,
+    epoch: int,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    """Last-resort retention: when the DB cannot take the final
+    ``usage.delta`` row, drop the metering on parent-owned disk so a later
+    drain pass can replay it — known spend is never silently discarded
+    (audit r8)."""
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    path = spool_dir / f"{run_id}.{epoch}.usage.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(
+            {
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "attempt": str(epoch),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+        ),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
+    """Re-attempt every spooled metering write; each file deletes itself on
+    success and stays for the next pass on failure."""
+    from rxycode_server.events.store import append_event
+
+    spool_dir = _usage_spool_dir(workspaces_root)
+    try:
+        files = sorted(spool_dir.glob("*.usage.json"))
+    except OSError:
+        return
+    for path in files:
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            append_event(
+                database_url,
+                tenant_id=str(row["tenant_id"]),
+                run_id=str(row["run_id"]),
+                event_type="usage.delta",
+                payload={
+                    "input_tokens": int(row.get("input_tokens") or 0),
+                    "output_tokens": int(row.get("output_tokens") or 0),
+                    "cumulative": True,
+                    "attempt": str(row.get("attempt") or ""),
+                    "final": True,
+                    "spooled": True,
+                },
+            )
+        except Exception:
+            continue  # stays on disk for the next pass
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _flush_streamed_usage(
@@ -355,16 +463,17 @@ def _flush_streamed_usage(
     epoch: int,
     streamed: dict[str, int],
     deltas: dict[str, int],
-) -> None:
+) -> bool:
     """Persist metering that arrived over the stderr pipe but never made a
     heartbeat — a killed turn's last-known spend becomes one final durable
     ``usage.delta`` row tagged with THIS attempt's epoch. Runs on every exit
     path (including lost lease): it journals metering, not terminal state,
     so a retry can recover the spend even though this worker must not write
-    the terminal status (audit r7)."""
+    the terminal status (audit r7). Returns True when the row is durable —
+    the caller retries briefly then spools to disk (audit r8)."""
     total = int(streamed.get("tokens") or 0)
     if total <= 0 or total <= deltas.get(str(epoch), 0):
-        return
+        return True
     try:
         from rxycode_server.events.store import append_event
 
@@ -381,8 +490,10 @@ def _flush_streamed_usage(
                 "final": True,
             },
         )
+        return True
     except Exception:
         _LOG.warning("run %s: streamed-usage flush failed", run_id, exc_info=True)
+        return False
 
 
 class _RunCancelled(Exception):
@@ -1485,20 +1596,46 @@ async def execute_run(
         deltas = await asyncio.to_thread(_usage_deltas_by_attempt, cfg.database_url, run_id)
     except Exception:
         deltas = {}
-    try:
-        await asyncio.to_thread(
-            _flush_streamed_usage,
-            cfg.database_url,
-            tenant_id,
-            run_id,
-            epoch,
-            streamed,
-            deltas,
-        )
-        if int(streamed.get("tokens") or 0) > deltas.get(attempt_key, 0):
+    if int(streamed.get("tokens") or 0) > deltas.get(attempt_key, 0):
+        # Transient DB failures get a bounded retry; a persistent outage
+        # spools the metering to parent-owned disk for a later drain pass
+        # instead of silently discarding known spend (audit r8).
+        flushed = False
+        for _attempt_no in range(3):
+            try:
+                flushed = await asyncio.to_thread(
+                    _flush_streamed_usage,
+                    cfg.database_url,
+                    tenant_id,
+                    run_id,
+                    epoch,
+                    streamed,
+                    deltas,
+                )
+            except Exception:
+                flushed = False
+            if flushed:
+                break
+            await asyncio.sleep(0.5)
+        if flushed:
             deltas[attempt_key] = int(streamed["tokens"])
-    except Exception:
-        pass
+        else:
+            try:
+                await asyncio.to_thread(
+                    _spool_streamed_usage,
+                    _usage_spool_dir(cfg.workspaces_root),
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    epoch=epoch,
+                    input_tokens=int(streamed.get("input_tokens") or 0),
+                    output_tokens=int(streamed.get("output_tokens") or 0),
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: usage spool write failed; spend may be lost",
+                    run_id,
+                    exc_info=True,
+                )
 
     if lost_lease:
         _LOG.warning("run %s: lease lost mid-flight; new owner finishes", run_id)
@@ -1614,6 +1751,12 @@ async def execute_run(
 
 async def drain_once(cfg: WorkerConfig) -> bool:
     """Claim and execute at most one run. True means a run ran."""
+    # Retry any metering that survived on disk after a DB outage — a lost
+    # lease can never silently discard spend the pipe already delivered.
+    try:
+        await asyncio.to_thread(_replay_usage_spool, cfg.database_url, cfg.workspaces_root)
+    except Exception:
+        _LOG.warning("usage spool replay failed", exc_info=True)
     for run_id in claimable_run_ids(cfg.database_url, limit=3):
         if await execute_run(cfg, run_id):
             return True

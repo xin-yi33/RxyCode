@@ -291,3 +291,21 @@ Round 7 (same audit session) found the last two metering edges; fixed:
 - Regression coverage: `agent_done` epoch grouping, flush-once semantics
   (no duplicate row when cumulative already covers the pipe value), plus
   the existing watchdog/sandbox/projection suite — 13/13 unit legs green.
+
+## Audit r8 remediation (commit pending)
+
+Round 8 (same audit session) accepted the tagged aggregation and flush
+ordering; three refinements found, all fixed:
+
+- **Untagged rows anchor to lease epochs**: pre-upgrade `agent_done` /
+  `usage.delta` rows carry no `attempt` key. Both readers now attribute
+  them via `worker.lease` boundaries — the epoch whose claim seq precedes
+  the row's seq owns it. The audit counterexample (tagged heartbeat 100 +
+  untagged done 100 + retry 5) now records 105, not 205.
+- **Flush failure retains spend**: `_flush_streamed_usage` returns a
+  success flag; the caller retries 3x, then spools `{run}.{epoch}.usage`
+  to `<workspaces>/.sandboxes/.usage-spool/` (parent-owned, restart-
+  durable). `drain_once` replays the spool before every claim — a
+  transient DB outage can no longer discard pipe-delivered tokens.
+- **Evidence wording**: green.txt now states the real counts — 14
+  non-contract legs + the compose contract (which also passed when run).

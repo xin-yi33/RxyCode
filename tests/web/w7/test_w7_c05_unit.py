@@ -1072,6 +1072,115 @@ def test_w7_c05_agent_done_grouped_by_attempt(monkeypatch) -> None:
     assert drain._agent_done_by_attempt("db", "run-42") == {"1": 100, "2": 5}
 
 
+def test_w7_c05_untagged_rows_anchor_to_lease_epoch(monkeypatch) -> None:
+    """Audit r8: rows journaled before attempt-tagging carry no ``attempt``
+    key — they must be attributed to the lease epoch active at their seq,
+    not an empty bucket that would double-charge a tagged heartbeat."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            sql = str(stmt)
+
+            class _R:
+                def all(self):
+                    if "worker.lease" in sql:
+                        return [
+                            (1, {"worker_id": "w", "epoch": 1}),
+                            (20, {"worker_id": "w", "epoch": 2}),
+                        ]
+                    if "event/agent_done" in sql:
+                        # Untagged legacy done from epoch 1; tagged done in 2.
+                        return [(10, {"tokens": 100}), (25, {"tokens": 5, "attempt": "2"})]
+                    if "usage.delta" in sql:
+                        return [(5, {"input_tokens": 100, "output_tokens": 0, "attempt": "1"})]
+                    return []
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    dones = drain._agent_done_by_attempt("db", "run-42")
+    # The untagged 100-token done anchors to epoch 1 (seq 10 > lease seq 1,
+    # < lease seq 20); the tagged 5-token done stays in epoch 2.
+    assert dones == {"1": 100, "2": 5}
+    deltas = drain._usage_deltas_by_attempt("db", "run-42")
+    assert deltas == {"1": 100}
+    # max within attempt, sum across: (max(100,100)=100) + 5 = 105.
+    per_attempt = {a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)}
+    assert sum(per_attempt.values()) == 105
+
+
+def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
+    """Audit r8: a flush that cannot reach the DB retries, then spools the
+    metering to parent-owned disk; the next drain pass replays it."""
+    import rxycode_worker.drain as drain
+    import rxycode_server.events.store as store
+
+    calls = []
+
+    def fail_append(*_a, **_k):
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(store, "append_event", fail_append)
+    streamed = {"tokens": 73, "input_tokens": 40, "output_tokens": 33}
+    assert not drain._flush_streamed_usage("db", "t1", "r7", 3, streamed, deltas={})
+
+    spool_dir = drain._usage_spool_dir(str(tmp_path))
+    drain._spool_streamed_usage(
+        spool_dir,
+        tenant_id="t1",
+        run_id="r7",
+        epoch=3,
+        input_tokens=40,
+        output_tokens=33,
+    )
+    files = list(spool_dir.glob("*.usage.json"))
+    assert len(files) == 1
+
+    # Replay still fails while the DB is down — the file is retained.
+    drain._replay_usage_spool("db", str(tmp_path))
+    assert files[0].exists()
+
+    # DB recovers: replay journals the row and removes the spool file.
+    written = []
+
+    def ok_append(_dsn, *, tenant_id, run_id, event_type, payload):
+        written.append((tenant_id, run_id, event_type, dict(payload)))
+        return 1
+
+    monkeypatch.setattr(store, "append_event", ok_append)
+    drain._replay_usage_spool("db", str(tmp_path))
+    assert not files[0].exists()
+    assert written == [
+        (
+            "t1",
+            "r7",
+            "usage.delta",
+            {
+                "input_tokens": 40,
+                "output_tokens": 33,
+                "cumulative": True,
+                "attempt": "3",
+                "final": True,
+                "spooled": True,
+            },
+        )
+    ]
+
+
 def test_w7_c05_streamed_flush_writes_delta(monkeypatch) -> None:
     """Audit r7: stderr-delivered spend that never reached a heartbeat is
     flushed as a final usage.delta row for THIS attempt — even when the
