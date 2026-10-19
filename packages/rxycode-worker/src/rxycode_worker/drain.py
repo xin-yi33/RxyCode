@@ -1575,12 +1575,29 @@ def _shell_word_end(
             i += 1
             continue
         if c == "'":
+            if stop_at_unclosed_quote and not stack and (
+                i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
+            ):
+                # Quote at word level followed by a boundary — really
+                # the ENCLOSING word's closer, not an opener
+                # (``Bearer K" u`` ends at the ``"``; audit W8-r17).
+                # Inside ``$(``/``${`` a quote+space is still a real
+                # opener, so this checks word level only.
+                return i
             stack.append("'")
             qpos.append(i)
         elif c == '"':
+            if stop_at_unclosed_quote and not stack and (
+                i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
+            ):
+                return i
             stack.append('"')
             qpos.append(i)
         elif c == "`":
+            if stop_at_unclosed_quote and not stack and (
+                i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
+            ):
+                return i
             stack.append("`")
             qpos.append(i)
             word = ""
@@ -1588,9 +1605,14 @@ def _shell_word_end(
             word += c
         i += 1
     if stop_at_unclosed_quote and qpos:
-        # The outermost still-open quote is really the enclosing
-        # word's closer — the word ends there, not at EOS.
-        return qpos[0]
+        # A quote that never closed: at the word START it was a real
+        # opener and the word runs to EOS; MID-word with content glued
+        # after it (``abc"SECRET``) it was the enclosing closer and the
+        # word continues without it — rescan the glued tail for the
+        # real end (audit W8-r17).
+        if qpos[0] == start:
+            return i
+        return _shell_word_end(text, qpos[0] + 1, stop_at_unclosed_quote)
     return i
 
 
@@ -1746,6 +1768,42 @@ def _scrub_inline_secrets(
         whitespace; openers queued on one command line read their
         bodies in order (``3<<A 4<<B``); an unterminated body runs to
         EOF (audit W8-r14). Markers and terminator lines survive."""
+        def _comment_start(line: str) -> int:
+            """Offset of the first ``#`` that opens a shell comment —
+            word-boundary, unquoted, outside ``(``/``{`` contexts.
+            ``-1`` when the line has none."""
+            quote = ""
+            depth = 0
+            i = 0
+            while i < len(line):
+                c = line[i]
+                if quote:
+                    if quote == "'":
+                        if c == "'":
+                            quote = ""
+                    elif c == "\\" and quote != "'":
+                        i += 2
+                        continue
+                    elif c == quote[-1]:
+                        quote = ""
+                    i += 1
+                    continue
+                if c == "\\":
+                    i += 2
+                    continue
+                if c in "'\"`":
+                    quote = c if c != "$" else "$'"
+                elif c in "({":
+                    depth += 1
+                elif c in ")}":
+                    depth = max(0, depth - 1)
+                elif c == "#" and depth == 0 and (
+                    i == 0 or line[i - 1] in " \t"
+                ):
+                    return i
+                i += 1
+            return -1
+
         def _find_term(
             cursor: int, tag: str, lead: str, quoted: bool
         ) -> tuple[int, int] | None:
@@ -1764,17 +1822,30 @@ def _scrub_inline_secrets(
                 return cursor + term.start(), cursor + term.end()
             pat = re.compile(lead + re.escape(tag) + r"\r?")
             pos = cursor
-            continued = False
             while pos <= len(src):
                 nl = src.find("\n", pos)
-                line = src[pos:] if nl == -1 else src[pos:nl]
-                if not continued and pat.fullmatch(line):
-                    return pos, pos + len(line)
-                backslashes = len(line) - len(line.rstrip("\\"))
-                continued = backslashes % 2 == 1
                 if nl == -1:
-                    break
-                pos = nl + 1
+                    nl = len(src)
+                pline = src[pos:nl]
+                lend = nl
+                # ``\<newline>`` joins physical lines BEFORE the
+                # terminator compare — a joined ``E\``+``OF`` line IS
+                # the terminator (audit W8-r17), and a physical
+                # candidate line joined into its predecessor is not
+                # (audit W8-r16).
+                while lend < len(src):
+                    backslashes = len(pline) - len(pline.rstrip("\\"))
+                    if backslashes % 2 != 1:
+                        break
+                    nstart = lend + 1
+                    nnl = src.find("\n", nstart)
+                    if nnl == -1:
+                        nnl = len(src)
+                    pline = pline[:-1] + src[nstart:nnl]
+                    lend = nnl
+                if pat.fullmatch(pline):
+                    return pos, lend
+                pos = lend + 1
             return None
 
         out: list[str] = []
@@ -1791,9 +1862,16 @@ def _scrub_inline_secrets(
                 continue
             # A ``\<newline>`` at the end of the command line joins the
             # next physical line INTO it — the body begins after the
-            # logical command line, not after the first newline.
+            # logical command line, not after the first newline. A
+            # ``\`` inside a COMMENT is comment text, not a
+            # continuation (``cat <<EOF # \<newline>SECRET`` — audit
+            # W8-r17), so the trailing-backslash check runs on the
+            # segment before any unquoted ``#`` word.
             while True:
                 seg = src[m.start() : nl]
+                cpos = _comment_start(seg)
+                if cpos != -1:
+                    seg = seg[:cpos]
                 backslashes = len(seg) - len(seg.rstrip("\\"))
                 if backslashes % 2 != 1:
                     break
@@ -2070,7 +2148,11 @@ def _prepare_child_data_dir(conf_dir: Path) -> Path:
         conf_dir.joinpath("config.yaml").write_text(
             yaml.safe_dump(data), encoding="utf-8"
         )
-    except OSError:
+    except (OSError, RecursionError):
+        # OSError — disk failure; RecursionError — a pathologically
+        # deep YAML alias DAG can survive scrubbing (iterative) but
+        # still overflow the serializer. Either way the child gets no
+        # config rather than a crash or raw secrets (audit W8-r17).
         _LOG.warning("writing sanitized turn config failed", exc_info=True)
     return conf_dir
 

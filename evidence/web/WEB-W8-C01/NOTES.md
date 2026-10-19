@@ -797,3 +797,41 @@ Five new findings, all remediated:
   boundaries, heredoc ``\<newline>`` logical-line terminators,
   1200-deep alias chain.
 - ``python -m ruff check``: clean.
+
+## Audit round 17 (gpt-6.1-sol, session 01a15592 — VERDICT: PROBLEMS, 4 findings)
+
+r17 audited ``295b3d67``: all five r16 fixes re-verified (31 focused
+regressions green). Four new findings, all remediated:
+
+1. **[P1] Glued quote-closer words** — ``Bearer abc"SECRET``: a quote
+   that is really the enclosing word's closer followed by glued bare
+   text still forms ONE word — stopping at the quote left ``SECRET``
+   mounted. ``stop_at_unclosed_quote`` is now two-tier: a word-level
+   quote followed by a boundary/EOS returns the word end AT the
+   quote (``Bearer K" u`` preserves ``" u``, and a following quoted
+   arg like ``"https://example.org"`` is no longer eaten); a
+   still-open quote mid-word rescans the glued tail for the real end,
+   so ``abc"SECRET`` dies whole.
+2. **[P1] Comment backslash continued the command line** — ``cat
+   <<EOF # \<newline>SECRET``: the ``\`` inside a comment is not a
+   continuation; the extended "command line" had swallowed body text
+   verbatim. ``_comment_start`` locates the first unquoted
+   word-boundary ``#`` outside ``(``/``{`` contexts and the
+   continuation check only counts backslashes before it.
+3. **[P2] Joined heredoc terminators** — ``E\`` + ``OF`` forms the
+   logical line ``EOF``: a real terminator. ``_find_term`` now builds
+   logical lines by joining ``\<newline>`` pairs and fullmatches
+   those — joined terminators are recognized AND physical lines glued
+   into their predecessor are skipped as candidates.
+4. **[P2] ``yaml.safe_dump`` RecursionError** — a deep alias DAG can
+   survive iterative scrubbing yet overflow the serializer; the
+   write-side handler now catches ``RecursionError`` too — no config
+   is written rather than crashing the turn.
+
+## Test evidence (r17)
+
+- ``tests/web/w8``: 76 passed, 3 environment skips — new legs:
+  ``abc"SECRET`` glued word vs ``K" "url"`` boundary, comment
+  ``\<newline>`` non-continuation, ``E\``+``OF`` joined terminator,
+  deep-alias ``_prepare_child_data_dir`` fail-closed.
+- ``python -m ruff check``: clean.

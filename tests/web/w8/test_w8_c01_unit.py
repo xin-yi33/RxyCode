@@ -2870,3 +2870,73 @@ def test_w8_c01_scrub_deep_alias_chain() -> None:
         cur["k"].append(nxt)
         cur = {"k": nxt}
     drain._scrub_credential_values(node)  # no RecursionError
+
+
+def test_w8_c01_scrub_header_glued_closer_word() -> None:
+    r"""Audit W8-r17: ``Bearer abc"SECRET`` glues the enclosing
+    closer + bare text into ONE word — the whole word dies; but a
+    closer followed by whitespace is a real boundary and the next
+    quoted arg survives."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer abc"AUDIT_GK u'
+    )
+    assert "AUDIT_GK" not in out
+    assert out.endswith(" u")
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer AUDIT_GK" "https://example.org"'
+    )
+    assert out == (
+        'curl -H "Authorization: Bearer confined"'
+        ' "https://example.org"'
+    )
+
+
+def test_w8_c01_scrub_heredoc_comment_backslash() -> None:
+    r"""Audit W8-r17: a ``\`` inside a command-line comment is
+    comment text, not a line continuation — the body starts at the
+    real next line."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<EOF # " + chr(92) + chr(10) + "AUDIT_CBK" + chr(10)
+        + "EOF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_CBK" not in out
+    assert "echo keep" in out
+
+
+def test_w8_c01_scrub_heredoc_joined_terminator() -> None:
+    r"""Audit W8-r17: ``E\`` + ``OF`` joins to the logical line
+    ``EOF`` — a real terminator; the body ends there and following
+    commands survive."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<EOF" + chr(10) + "AUDIT_JK" + chr(10) + "E" + chr(92)
+        + chr(10) + "OF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_JK" not in out
+    assert "echo keep" in out
+
+
+def test_w8_c01_prepare_deep_alias_fails_closed() -> None:
+    """Audit W8-r17: a deep alias DAG that survives iterative
+    scrubbing still overflows ``yaml.safe_dump`` — the write must
+    fail closed (no config, no crash) instead of propagating
+    ``RecursionError``."""
+    import rxycode_worker.drain as drain
+    from pathlib import Path
+    from unittest.mock import patch
+
+    src = "a0: &a0 []" + chr(10)
+    for i in range(1, 1101):
+        src += "a" + str(i) + ": &a" + str(i) + " [*a" + str(i - 1) + "]" + chr(10)
+    src += "<<: {deep: *a1100}" + chr(10)
+    with patch.dict("os.environ", {"RXYCODE_DATA_DIR": "src-root"}),         patch.object(Path, "mkdir"),         patch.object(Path, "is_file", return_value=True),         patch.object(Path, "read_text", return_value=src),         patch.object(Path, "write_text") as mock_write:
+        result = drain._prepare_child_data_dir(Path("child-conf"))
+    assert result == Path("child-conf")
+    assert mock_write.call_count == 0
