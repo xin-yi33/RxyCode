@@ -21,3 +21,16 @@ Final verdict: `<filled by the Codex audit>` (session `01a140a7-2cc1-7f61-bdab-2
 - The anonymous-visitor cloud-run leg does not exist as a product feature; test asserts the refusal surface. Browser leg BLOCKED (no Playwright).
 - README matrix is English-consistent with the rest of the file; the product docs follow the repo's Chinese user-guide convention.
 - Case study demo-video cell is a script only — recording is BLOCKED per frozen rule (no fake scenes).
+
+
+## FINAL — audit r5 verdict (2026-10-19)
+
+Same Codex session `01a140a7-2cc1-7f61-bdab-2af627f08e80`, commit
+`d5af8602`:
+
+    VERDICT: NO_REMAINING_PROBLEMS
+
+Auditor-verified: ledger-failure states + fixed 12h TTL match the
+implementation; all 11 shipped rows reference real evidence dirs + test
+files; both blocked rows parsed; metric/citation checks hold; deploy
+commands and demo paths are executable as written.

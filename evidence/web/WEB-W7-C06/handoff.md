@@ -20,3 +20,16 @@ Audit: Codex session `01a140a7-2cc1-7f61-bdab-2af627f08e80`, model `gpt-6.1-sol`
 - 3/3 focused tests green; ruff + ruff-format clean on new files.
 - Browser E2E and hosted-demo legs: BLOCKED/planned — labeled, not claimed.
 - `.gitignore` negations (`docs/architecture`, `docs/portfolio`) per nested-plan ruling `34e5d92`.
+
+
+## FINAL — audit r5 verdict (2026-10-19)
+
+Same Codex session `01a140a7-2cc1-7f61-bdab-2af627f08e80`, commit
+`d5af8602`:
+
+    VERDICT: NO_REMAINING_PROBLEMS
+
+Auditor-verified: ledger-failure states + fixed 12h TTL match the
+implementation; all 11 shipped rows reference real evidence dirs + test
+files; both blocked rows parsed; metric/citation checks hold; deploy
+commands and demo paths are executable as written.

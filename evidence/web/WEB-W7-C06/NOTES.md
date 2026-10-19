@@ -95,3 +95,16 @@ Two findings, fixed in pending commit:
   Guide and design ADR now qualify both branches.
 - **Session TTL described as sliding**: it is a fixed 12h TTL from
   issuance (`AuthRecord.created`), no sliding renewal — guide corrected.
+
+
+## FINAL — audit r5 verdict (2026-10-19)
+
+Same Codex session `01a140a7-2cc1-7f61-bdab-2af627f08e80`, commit
+`d5af8602`:
+
+    VERDICT: NO_REMAINING_PROBLEMS
+
+Auditor-verified: ledger-failure states + fixed 12h TTL match the
+implementation; all 11 shipped rows reference real evidence dirs + test
+files; both blocked rows parsed; metric/citation checks hold; deploy
+commands and demo paths are executable as written.
