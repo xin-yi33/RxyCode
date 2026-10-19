@@ -12,7 +12,7 @@ RxyCode Web 是同一份 headless 核心（`Session`/`AgentV2`）上的多租户
 - **运行队列**：run 是 PostgreSQL 里的持久行；worker 以 fencing token 认领（lease + epoch），崩溃后由新 worker 在租约到期时接管——同一行永不被两个 owner 写终态。
 - **执行边界**：共享 worker 上每个 run 的 turn 整个跑在 per-run 沙箱里（Linux user/pid/IPC/UTS namespace + bubblewrap 最小只读根 + 仅该 run 工作区可写 + `--clearenv` 白名单环境）。沙箱不可用时 run 直接失败，**绝不回落到宿主机执行**。
 - **事件面**：`run_events` + outbox 是持久事件日志；SSE 端点按 seq 重放，断线重连不丢不重。
-- **费用**：每次 turn 的 token 实测写入 usage 账本（成功/失败/取消都写），账本写失败会让终态变 `failed`——不存在"成功但没记账"。
+- **费用**：每次 turn 的 token 实测写入 usage 账本（成功/失败/取消都写）。账本写失败绝不会让 run 停在 `succeeded`——普通终态落 `failed`；取消中的 run 走 `confirm_cancel(effects_known=False)` 落 `recovery_required`，并保留 pending 对账——不存在"成功但没记账"。
 
 ## 安装与启动（自托管）
 
@@ -60,7 +60,7 @@ RxyCode Web 是同一份 headless 核心（`Session`/`AgentV2`）上的多租户
 
 | 现象 | 真实原因 |
 |---|---|
-| `401 UNAUTHORIZED` | 无会话 cookie 或会话过期（TTL 滚动） |
+| `401 UNAUTHORIZED` | 无会话 cookie 或会话过期（固定 12h TTL，自签发时刻起算——活跃请求不滑动续期，到时仍需重新登录） |
 | `403 FORBIDDEN` | Origin 不在允许列表，或 CSRF cookie/header 不匹配 |
 | `429 RATE_LIMITED` | 触发应用层限流（`RXYCODE_WEB_RATE_LIMIT_RPM`，默认 240/分） |
 | run `failed` + "run timed out" | turn 超过 `RXYCODE_WORKER_RUN_TIMEOUT`（默认 900s）被 SIGKILL——`--die-with-parent` 保证整棵进程树回收 |

@@ -83,3 +83,15 @@ Two findings, fixed in pending commit:
   native run backend's real boundary is the ask/full approval profile.
   The table cell now says so explicitly and separates the shell-surface
   OS sandbox (`execution.os_sandbox` auto-toggle) from the run backend.
+
+
+## Audit r4 remediation (2026-10-19, same Codex session)
+
+Two findings, fixed in pending commit:
+
+- **Ledger-failure terminal state overstated**: cancelled runs with a
+  failed ledger write land `recovery_required` (confirm_cancel
+  effects_known=False) with pending reconciliation — not `failed`.
+  Guide and design ADR now qualify both branches.
+- **Session TTL described as sliding**: it is a fixed 12h TTL from
+  issuance (`AuthRecord.created`), no sliding renewal — guide corrected.

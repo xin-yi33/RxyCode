@@ -43,7 +43,7 @@ MinIO（工件签名 URL）/ Redis（命令队列）/ web-dist（静态前端）
 | W5-C02 | **禁止向容器内暴露 docker.sock** | 共享 worker 不能借宿主 docker 再造逃逸面 | compose 不变量（CI 校验） |
 | W7-C05 | 部署内云沙箱 = worker 容器内 per-run userns/bwrap | docker.sock 禁了就只能在容器内做内核隔离；seccomp=unconfined 仅 worker | userns.py + compose.yaml |
 | W7-C05 | 放置闸 `cloud-only`：仅 `cloud:{tenant}:*`，拒 `local:*`/`full*` | 公网共享 worker 上没有"本机 Full"这种东西；隔离不可静默降级 | drain.py `_execution_gate` |
-| W7-C05 | 账本失败 → `failed` | succeeded 不得站在缺失账本行上 | drain.py usage_error 路径 |
+| W7-C05 | 账本失败 → `failed`（取消中的 run 落 `recovery_required` + pending 对账） | succeeded 不得站在缺失账本行上 | drain.py usage_error / confirm_cancel 路径 |
 | W7-C05 | 升级 = 清卷重灌而非 overlay | overlay 会留下旧修订与已删文件 | web-runbook.md |
 
 ## 边界与残余风险（评审已接受的）
