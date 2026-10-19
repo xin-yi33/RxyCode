@@ -942,3 +942,26 @@ SECRET"` / `cat <<<\nSECRET` partially survived; final line with no trailing new
 | `a\`*16000 name scan ~7.4s (quadratic) | name-part alternation allowed per-char rescan | disjoint alternation + length caps; 32k chars scrub in ~0.13s |
 
 Suite: `109 passed, 3 skipped` (env skips unchanged), ruff clean. 6 new regressions appended.
+
+## Round 23 — enclosing-quote preload, nested heredoc anchoring, ANSI-C names, cap fail-closed, `+=`/`[i]` assigns, dash values, header maps, colonless userinfo, sep fidelity, linear joins
+
+`VERDICT: PROBLEMS_REMAIN` (13 findings) on `a4f32841`; all fixed.
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| `srv "--token=abc SECRET"` left ` SECRET` inside the outer quote | value scan treated the enclosing `"` as word-internal | `_shell_word_end` PRELOADS `_quote_state(text, start)` into the context stack — a value already inside quotes scans to the real closer |
+| `srv --token a" SECRET` left ` SECRET` | unterminated quote was treated as an enclosing closer | no enclosing context -> the quote is an OPENER; POSIX reads the remainder as quoted text, so the word dies to EOS. The stale r17-era assertion (`confined" u`) was corrected to the POSIX reading |
+| `echo $(cat <<E\nSECRET\nE\n)` kept the body and appended `confined` after `)` | heredoc pass anchored bodies at the OUTER command's line end | rewrite: per-op context depth from `_heredoc_ops`, body anchor starts after the logical line containing ITS OWN delimiter; absolute `(start,end,replacement)` events interleave with literal spans |
+| `srv --token"="SECRET` emitted `--token"=confined` (unbalanced) | `=` was unquoted in the emit path | flag pass detects an OPEN quote at the name's end via a bounded `_heredoc_ops` scan; the quoted `"="` separator is re-emitted verbatim with the value dead after it |
+| `srv --api-$'k\x65y' K` bypassed the name check | `$'…'` segments were quote-removed but not escape-decoded | `_ansic_decode` handles `\xHH`/`\uHHHH`/octal/`\cX`/simple escapes inside `_heredoc_delim`, used only for matching — output keeps the original spelling |
+| 129-char `…_token` name survived | `{0,128}` part cap silently missed over-long names | flag pass: a matched name still touching name-charset chars fails closed and swallows the tail (bounded 4096); assign regex gained a `{129,4096}` long-name branch that is always credential |
+| `TOKEN+=SECRET` / `export TOKEN[0]=SECRET` survived | `+=` and `[i]` were not assignment leads | `_ASSIGN_LEAD_RE` accepts `\+?=` and a `[…]` subscript; `_cred_name` strips the subscript before the key check |
+| `srv --token -SECRET` kept `-SECRET` | any `-`-led word was treated as the next flag | only a `--` long-flag word stays a flag for credential names; a single-dash word is a legal getopt value and dies |
+| `Authorization: Negotiate K` / `X-Api-Key: abc` survived | scheme list lacked `Negotiate`/`DPoP`/…; the 4-char naked floor applied to key-only headers | scheme list extended (`negotiate`, `dpop`, `hawk`, `aws4-hmac-sha256`, `signature`); `cookie`/`set-cookie` added as header names; the naked floor applies only to `authorization`/`proxy-authorization` — key-only header names die at any non-empty length |
+| `headers: {api-key: SECRET}` / `headers: {Authorization: "Negotiate K"}` survived | dict traversal had no header-map semantics | `headers`/`http_headers`/`request_headers`/`extra_headers` dicts get header-name dispatch: `_HEADER_CRED_NAMES` values die wholesale, other values still get the inline pass |
+| `https://SECRET@host` / `https://SECRET:@host` survived | userinfo regex required `user:pass@` | all three URL regexes accept colon-free and empty-password userinfo (`(?::…)?`); `@`-in-path URLs (`/@user`) still survive — no `://` before them |
+| `echo --mode\=fast` was normalised to `--mode=fast` | cred/non-cred paths re-emitted `=` instead of the matched separator | both paths re-emit `src[sep_start:vstart]` verbatim — `\=`, `"="`, continuations, and whitespace all keep their original spelling |
+| `cat <<E\n` + `x*100\<nl>`×16k ~5.03s (quadratic) | each join iteration rescanned the whole accumulated segment | incremental scan: each new physical line is scanned once with carried stack state; join cap absorbs the rest of the input fail-closed — 16k lines now ~0.28s |
+
+Focused r23 regressions: 13 new unit tests in `tests/web/w8/test_w8_c01_unit.py`.
+Suite: `122 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.

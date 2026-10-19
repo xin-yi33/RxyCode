@@ -3255,10 +3255,12 @@ def test_w8_c01_scrub_quoted_continuation_arg() -> None:
     out = drain._scrub_inline_secrets('srv --token abc" AUDIT_R22A"')
     assert "AUDIT_R22A" not in out
     assert out == "srv --token confined"
-    # r17 closer semantics preserved: no later partner -> real closer.
+    # r23-F2: an unterminated quote inside the value has NO enclosing
+    # quote context — POSIX reads the rest of the line as inside the
+    # quote, so `` u`` is part of the credential word and dies too.
     out = drain._scrub_inline_secrets('srv --token AUDIT_K" u')
     assert "AUDIT_K" not in out
-    assert out.endswith('" u')
+    assert out == "srv --token confined"
     # Inside a ''-quoted payload the quote is literal glued text.
     out = drain._scrub_inline_secrets(
         "srv -c 'x --token abc" + chr(34) + " AUDIT_R22B" + chr(34) + "'"
@@ -3342,3 +3344,179 @@ def test_w8_c01_scrub_assign_scan_linear() -> None:
     t0 = time.time()
     drain._scrub_inline_secrets(s)
     assert time.time() - t0 < 2.0
+
+
+def test_w8_c01_scrub_r23_quoted_flag_value_word() -> None:
+    r"""Audit W8-r23: ``--token=abc SECRET`` inside an enclosing ``"…"``
+    — the secret tail is INSIDE the outer quote, part of the value
+    word; it dies with it (``--token=confined``), it does not leak."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets('srv "--token=abc AUDIT_R23A"')
+    assert out == 'srv "--token=confined"'
+
+
+def test_w8_c01_scrub_r23_unterminated_quote_value() -> None:
+    r"""Audit W8-r23: ``a" SECRET`` — an unterminated quote inside the
+    value reads the REST of the input as quoted text (POSIX); the
+    whole word dies, nothing after the quote survives."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets('srv --token a" AUDIT_R23B')
+    assert "AUDIT_R23B" not in out
+    assert out == "srv --token confined"
+
+
+def test_w8_c01_scrub_r23_nested_heredoc_in_subst() -> None:
+    r"""Audit W8-r23: a heredoc inside ``$(…)`` has its BODY at the
+    physical line after its own delimiter line — the body is redacted
+    in place, the terminator survives, and no stray ``confined`` is
+    appended after the substitution."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        "echo $(cat <<E" + chr(10) + "AUDIT_R23C" + chr(10) + "E" + chr(10) + ")"
+    )
+    assert "AUDIT_R23C" not in out
+    assert out == (
+        "echo $(cat <<E" + chr(10) + "confined" + chr(10) + "E" + chr(10) + ")"
+    )
+
+
+def test_w8_c01_scrub_r23_quoted_equals_separator() -> None:
+    r"""Audit W8-r23: ``--token"="SECRET`` — the ``=`` itself is one
+    quoted token; the separator keeps its original spelling and the
+    bare value dies (``--token"="confined``)."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets('srv --token"="AUDIT_R23D')
+    assert out == 'srv --token"="confined'
+    out = drain._scrub_inline_secrets("srv --token'='AUDIT_R23E")
+    assert out == "srv --token'='confined"
+
+
+def test_w8_c01_scrub_r23_ansic_escape_name() -> None:
+    r"""Audit W8-r23: ANSI-C escapes decode during name normalisation —
+    ``--api-$'k\x65y'`` spells ``--api-key``."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        "srv --api-$'k" + chr(92) + "x65y' AUDIT_R23F"
+    )
+    assert "AUDIT_R23F" not in out
+    # The flag keeps its original spelling; decoding is match-only.
+    assert out == "srv --api-$'k" + chr(92) + "x65y' confined"
+
+
+def test_w8_c01_scrub_r23_name_cap_fails_closed() -> None:
+    r"""Audit W8-r23: a credential name that overfills the part cap
+    still dies — flag and assignment forms both fail closed instead of
+    silently surviving."""
+    import rxycode_worker.drain as drain
+
+    flag = "srv --" + "x" * 123 + "_token AUDIT_R23G"
+    assert "AUDIT_R23G" not in drain._scrub_inline_secrets(flag)
+    assign = "x" * 125 + "_token=AUDIT_R23H"
+    out = drain._scrub_inline_secrets(assign)
+    assert "AUDIT_R23H" not in out
+    assert out.endswith("=confined")
+
+
+def test_w8_c01_scrub_r23_append_and_indexed_assign() -> None:
+    r"""Audit W8-r23: ``TOKEN+=v`` append-assigns and ``TOKEN[0]=v``
+    indexed assigns carry the same credential key."""
+    import rxycode_worker.drain as drain
+
+    assert drain._scrub_inline_secrets("TOKEN+=AUDIT_R23I") == "TOKEN+=confined"
+    out = drain._scrub_inline_secrets("export TOKEN[0]=AUDIT_R23J")
+    assert "AUDIT_R23J" not in out
+    assert "TOKEN[0]=confined" in out
+
+
+def test_w8_c01_scrub_r23_dash_prefixed_value() -> None:
+    r"""Audit W8-r23: a single-dash word IS a legal value to a
+    credential flag (``--token -s3cr3t`` — getopt eats it); only a
+    ``--`` long-flag word stays the next flag."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("srv --token -AUDIT_R23K")
+    assert "AUDIT_R23K" not in out
+    out = drain._scrub_inline_secrets("srv --token --verbose")
+    assert "--verbose" in out
+    out = drain._scrub_inline_secrets("srv --mode -x")
+    assert "-x" in out
+
+
+def test_w8_c01_scrub_r23_negotiate_and_short_header() -> None:
+    r"""Audit W8-r23: ``Negotiate`` is a credential scheme, and
+    key-only header names (``X-Api-Key``/``Cookie``) carry credentials
+    at ANY non-empty length."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Negotiate AUDIT_R23L"'
+    )
+    assert "AUDIT_R23L" not in out
+    assert "Negotiate confined" in out
+    out = drain._scrub_inline_secrets('curl -H "X-Api-Key: abc"')
+    assert out == 'curl -H "X-Api-Key: confined"'
+    # The prose floor still protects ``authorization: no``.
+    out = drain._scrub_inline_secrets("authorization: no")
+    assert out == "authorization: no"
+
+
+def test_w8_c01_scrub_r23_headers_map() -> None:
+    r"""Audit W8-r23: ``headers`` maps — credential-named headers die
+    wholesale, other values still get the inline pass."""
+    import yaml
+
+    import rxycode_worker.drain as drain
+
+    node = yaml.safe_load(
+        "headers: {api-key: AUDIT_R23M, "
+        'Authorization: "Negotiate AUDIT_R23N", '
+        "content-type: application/json}"
+    )
+    drain._scrub_credential_values(node)
+    assert node["headers"]["api-key"] == "confined"
+    assert "AUDIT_R23N" not in str(node["headers"]["Authorization"])
+    assert node["headers"]["content-type"] == "application/json"
+
+
+def test_w8_c01_scrub_r23_colonless_userinfo() -> None:
+    r"""Audit W8-r23: userinfo IS credential material even with no
+    password — ``user@`` and ``user:@`` die like ``user:pass@``."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("https://AUDIT_R23O@host")
+    assert "AUDIT_R23O" not in out
+    out = drain._scrub_inline_secrets("https://AUDIT_R23P:@host")
+    assert "AUDIT_R23P" not in out
+    # An ``@`` in the PATH stays alive — no ``://`` before it.
+    out = drain._scrub_inline_secrets("https://example.org/@user")
+    assert out == "https://example.org/@user"
+
+
+def test_w8_c01_scrub_r23_escaped_separator_preserved() -> None:
+    r"""Audit W8-r23: a benign ``\=`` keeps its escaped spelling —
+    separators are re-emitted verbatim, not normalised to ``=``."""
+    import rxycode_worker.drain as drain
+
+    s = "echo --mode" + chr(92) + "=fast"
+    assert drain._scrub_inline_secrets(s) == s
+    s = "srv --token" + chr(92) + "=AUDIT_R23Q"
+    assert drain._scrub_inline_secrets(s) == "srv --token" + chr(92) + "=confined"
+
+
+def test_w8_c01_scrub_r23_heredoc_join_linear() -> None:
+    r"""Audit W8-r23: heredoc continuation scanning is linear — a
+    ``\<newline>`` chain 16k lines deep completes in bounded time and
+    fails closed."""
+    import time
+
+    import rxycode_worker.drain as drain
+
+    s = "cat <<E" + chr(10) + ("x" * 100 + chr(92) + chr(10)) * 16000 + chr(10) + "E" + chr(10)
+    t0 = time.time()
+    drain._scrub_inline_secrets(s)
+    assert time.time() - t0 < 5.0

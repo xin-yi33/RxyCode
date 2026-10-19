@@ -1354,16 +1354,18 @@ _CREDENTIAL_INDIRECTION_KEYS = frozenset(
 _CREDENTIAL_BARE_RE = re.compile(
     r"(?:password|passwd|pwd|secret|token|credentials?|dsn|privatekey)$"
 )
-# A URL with an embedded userinfo password is a credential wherever it
-# sits — ``database_url``/``dsn`` keys are not credential-NAMED but a
+# A URL with embedded userinfo is a credential wherever it sits —
+# ``database_url``/``dsn`` keys are not credential-NAMED but a
 # ``scheme://user:pass@host`` value still hands the child a live login.
 # No length ceiling — a 300-char password is still a password
 # (audit W8-r15). The password charset excludes ``/``/``?``/``#`` —
 # RFC 3986 ends the authority at each, and their exclusion keeps
 # port+path ``:443/@scope`` and query/fragment ``:443?x=@`` from
 # faking userinfo; the username side is ``*`` because ``:SECRET@`` —
-# an EMPTY user — is still a live password (audit W8-r16).
-_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@?#]*:[^@/\s?#]+@")
+# an EMPTY user — is still a live password (audit W8-r16), and
+# userinfo itself — ``user@``, ``user:@``, ``:p@`` — is credential
+# material even with no password present (audit W8-r23).
+_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@?#]*(?::[^@/\s?#]*)?@")
 #: ``KEY``/``--flag`` shape for the left of a ``=`` list item — a bare
 #: ``=`` inside a URL query (``?sslmode=require``) is NOT an assignment.
 _ASSIGN_KEY_RE = re.compile(r"^-{0,2}[A-Za-z_][A-Za-z0-9_.-]*$")
@@ -1386,7 +1388,7 @@ def _has_url_secret(value: Any) -> bool:
 #: (whole redaction); a URL appearing mid-string goes through the
 #: surgical pass instead.
 _URL_CREDENTIAL_LEAD_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@?#]*:[^@/\s?#]+@"
+    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@?#]*(?::[^@/\s?#]*)?@"
 )
 #: ``--flag=VALUE`` and ``--flag VALUE`` inside an opaque string —
 #: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
@@ -1415,11 +1417,22 @@ _FLAG_TOKEN_RE = re.compile(
 #: — the lookbehind keeps ``--flag=x`` out (the flag pass owns it);
 #: the lookaheads keep ``x == y`` and ``k = --v`` out. The VALUE is
 #: located by the word scanner, not a regex, so nested substitutions
-#: cannot strand secret remainders (audit W8-r10).
+#: cannot strand secret remainders (audit W8-r10). ``+=`` appends and
+#: ``NAME[i]=`` array subscripts carry the same key semantics, and a
+#: name that overfills the part cap still MATCHES via the long-name
+#: branch so its value fails closed instead of silently surviving
+#: (audit W8-r23).
+_NAME_CONT_CHARS = (
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789_.'\"$-\\"
+)
+_NAME_REALLY_LONG = r"[A-Za-z0-9_.'\"$\-]{129,4096}"
 _ASSIGN_LEAD_RE = re.compile(
-    r"(?<![-\w.])([A-Za-z_](?:"
+    r"(?<![-\w.])(?:([A-Za-z_](?:"
     + _NAME_PART
-    + r"){0,128})(\s*=\s*|\\=)(?!=)(?!--)"
+    + r"){0,128}(?:\[[^\]\n]{0,32}\])?)|("
+    + _NAME_REALLY_LONG
+    + r"))(\+?\s*=\s*|\\=)(?!=)(?!--)"
 )
 #: ``Authorization: Bearer K``-style header credentials inside opaque
 #: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9).
@@ -1429,10 +1442,16 @@ _ASSIGN_LEAD_RE = re.compile(
 #: because the VALUE must be located by the shell-word scanner:
 #: ``Bearer $(printf %s K)`` is one word, and a charset regex strands
 #: ``(printf %s K)`` mounted (audit W8-r15).
+#: ``cookie``/``set-cookie`` carry session credentials verbatim; the
+#: scheme list includes ``Negotiate``/``DPoP``/``AWS4-HMAC-SHA256`` —
+#: a scheme word with a key-only header (``X-Api-Key:``) needs no
+#: length floor since those names exist solely to carry credentials
+#: (audit W8-r23).
 _AUTH_LEAD_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token"
-    r"|api-key|apikey)(\s*[:=]\s*)"
-    r"(?:(bearer|basic|token|digest|oauth)[ \t]+)?"
+    r"|api-key|apikey|cookie|set-cookie)(\s*[:=]\s*)"
+    r"(?:(bearer|basic|token|digest|oauth|negotiate|dpop|hawk"
+    r"|aws4-hmac-sha256|signature)[ \t]+)?"
 )
 #: ``Digest`` authorization carries a comma-separated ``k=v`` list
 #: whose ENTIRE value is credential material — username/realm/nonce/
@@ -1447,10 +1466,35 @@ _AUTH_DIGEST_RE = re.compile(
 #: A bare auth scheme word with no header-name context —
 #: ``Bearer eyJ…``. The value follows as a shell word; whether it is
 #: credential-shaped is decided in the pass (audit W8-r15).
-_AUTH_BARE_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic|oauth)[ \t]+")
+_AUTH_BARE_SCHEME_RE = re.compile(
+    r"(?i)\b(bearer|basic|oauth|negotiate|dpop|aws4-hmac-sha256)[ \t]+"
+)
+#: Header names that exist solely to carry credentials — under a
+#: ``headers``/``http_headers`` map key each child's value is
+#: credential material wholesale (audit W8-r23).
+_HEADER_CRED_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "proxy-authenticate",
+        "www-authenticate",
+        "x-api-key",
+        "x-auth-token",
+        "x-amz-security-token",
+        "x-goog-api-key",
+        "api-key",
+        "apikey",
+        "cookie",
+        "set-cookie",
+    }
+)
+_HEADER_MAP_KEYS = frozenset(
+    {"headers", "http_headers", "request_headers", "extra_headers"}
+)
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
-#: span is replaced, the URL shape survives.
-_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@?#]*:[^@/\s?#]+@")
+#: span is replaced, the URL shape survives. Colon-free userinfo
+#: (``user@``) dies the same way (audit W8-r23).
+_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@?#]*(?::[^@/\s?#]*)?@")
 #: ``<<``/``<<-``/``<<~`` opener PREFIX inside an opaque string — the
 #: delimiter WORD after it is extracted by the shell-word scanner and
 #: quote removal, not a regex, so composed spellings resolve the way
@@ -1461,6 +1505,66 @@ _URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@?#]*:[^@/\s?#]+@")
 #: queued on one command line read bodies in order; an unterminated
 #: body runs to EOF (audit W8-r14).
 _HEREDOC_OPEN_RE = re.compile(r"<<([-~]?)[ \t]*")
+
+
+_ANSI_SIMPLE = {
+    "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f",
+    "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+    "\\": "\\", "'": "'", '"': '"', "?": "?",
+}
+
+
+def _ansic_decode(inner: str) -> str:
+    """``$'…'`` ANSI-C escape decoding — ``\\xHH``, ``\\uHHHH``,
+    ``\\0``–``\\777`` octal, ``\\cX`` control chars and the simple
+    letter escapes; an unrecognized ``\\x`` keeps the escaped char
+    literally. Bounded by ``len(inner)`` — used only for name
+    normalization, never for output text (audit W8-r23)."""
+    out: list[str] = []
+    i, n = 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c != "\\" or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        e = inner[i + 1]
+        if e == "x":
+            j = i + 2
+            while j < n and j - i - 2 < 2 and inner[j] in "0123456789abcdefABCDEF":
+                j += 1
+            if j > i + 2:
+                out.append(chr(int(inner[i + 2 : j], 16)))
+                i = j
+                continue
+            out.append("x")
+            i += 2
+            continue
+        if e == "u":
+            j = i + 2
+            while j < n and j - i - 2 < 4 and inner[j] in "0123456789abcdefABCDEF":
+                j += 1
+            if j > i + 2:
+                out.append(chr(int(inner[i + 2 : j], 16)))
+                i = j
+                continue
+            out.append("u")
+            i += 2
+            continue
+        if e in "01234567":
+            j = i + 1
+            while j < n and j - i - 1 < 3 and inner[j] in "01234567":
+                j += 1
+            out.append(chr(int(inner[i + 1 : j], 8) & 0xFF))
+            i = j
+            continue
+        if e == "c" and i + 2 < n:
+            out.append(chr(ord(inner[i + 2].upper()) & 0x1F))
+            i += 3
+            continue
+        out.append(_ANSI_SIMPLE.get(e, e))
+        i += 2
+    return "".join(out)
 
 
 def _heredoc_delim(word: str) -> tuple[str, bool]:
@@ -1489,14 +1593,24 @@ def _heredoc_delim(word: str) -> tuple[str, bool]:
             quoted = True
             qc = word[i + 1]
             i += 2
+            inner: list[str] = []
             while i < n and word[i] != qc:
                 if word[i] == "\\" and i + 1 < n:
-                    out.append(word[i + 1])
+                    inner.append(word[i])
+                    inner.append(word[i + 1])
                     i += 2
                     continue
-                out.append(word[i])
+                inner.append(word[i])
                 i += 1
             i += 1
+            if qc == "'":
+                # ANSI-C escapes DECODE — ``$'k\\x65y'`` spells ``key``
+                # (audit W8-r23).
+                out.append(_ansic_decode("".join(inner)))
+            else:
+                # ``$"…"`` — locale string; only ``\\``/``\"``/``\$``/
+                # ``\``` escapes matter, other ``\x`` stay literal.
+                out.append(re.sub(r"\\([\"$`\\])", r"\1", "".join(inner)))
             continue
         if c == "'":
             quoted = True
@@ -1525,7 +1639,9 @@ def _heredoc_delim(word: str) -> tuple[str, bool]:
     return "".join(out), quoted
 
 
-def _heredoc_ops(seg: str, stack: list[str]) -> list[tuple[int, str]]:
+def _heredoc_ops(
+    seg: str, stack: list[str]
+) -> list[tuple[int, str, int]]:
     """``(offset, kind)`` for each ``<<``/``<<<`` at command level in
     ``seg`` — outside quotes, ``${}``, arithmetic ``((…))``/``$((…))``
     and comments (``$((1 << 2))`` shifts bits, ``"a<<EOF"`` is literal
@@ -1690,11 +1806,11 @@ def _heredoc_ops(seg: str, stack: list[str]) -> list[tuple[int, str]]:
             i = n if j == -1 else j
             continue
         if seg.startswith("<<<", i):
-            out.append((i, "<<<"))
+            out.append((i, "<<<", len(stack)))
             i += 3
             continue
         if seg.startswith("<<", i):
-            out.append((i, "<<"))
+            out.append((i, "<<", len(stack)))
             i += 2
             continue
         if c == "$" and i + 1 < n:
@@ -1801,17 +1917,31 @@ def _shell_word_end(
     stack: list[str] = []
     qpos: list[int] = []  # push index of each still-open quote context
     word = ""  # innermost bare word — case/esac keyword detection
-    _enclosing: Any = ...  # lazy _quote_state cache — the source-level
-    # enclosing context is fixed for a whole scan, so compute it at
-    # most once per call (keeps quote-heavy inputs linear).
+    if stop_at_unclosed_quote:
+        # Value scans start mid-string: the source-level context may
+        # already sit INSIDE an open quote — ``"--token=abc SECRET"``
+        # has whitespace as word content until the closer (audit
+        # W8-r23), and ``abc" SECRET"`` inside a ``-c '…'`` payload
+        # keeps ``"`` literal under the ``'``. Pre-push that enclosing
+        # quote so a same-type quote mid-word is unambiguously its
+        # closer (``Bearer K" u`` — audit W8-r17). Deliberately not
+        # recorded in ``qpos``: an enclosing quote that never closes
+        # simply lets the word run to EOS — fail closed.
+        enclosing = _quote_state(text, start)
+        if enclosing is not None:
+            stack.append(enclosing)
+    encl = 1 if stack else 0  # stack[0] is the pre-pushed enclosing
+    # context — it owns no ``qpos`` slot, so a pop at depth ``encl``
+    # leaves ``qpos`` alone.
     while i < n:
         c = text[i]
         top = stack[-1] if stack else ""
         if top == "'":
             # Plain single quotes — ``\`` is literal, only ``'`` ends.
             if c == "'":
+                if len(stack) > encl:
+                    qpos.pop()
                 stack.pop()
-                qpos.pop()
             else:
                 word += c
             i += 1
@@ -1824,8 +1954,9 @@ def _shell_word_end(
                 i += 2
                 continue
             if c == top[-1]:
+                if len(stack) > encl:
+                    qpos.pop()
                 stack.pop()
-                qpos.pop()
             else:
                 word += c
             i += 1
@@ -1840,8 +1971,9 @@ def _shell_word_end(
             continue
         if top == '"':
             if c == '"':
+                if len(stack) > encl:
+                    qpos.pop()
                 stack.pop()
-                qpos.pop()
                 i += 1
                 continue
             # Substitutions still open inside ``"..."`` — their
@@ -1938,33 +2070,12 @@ def _shell_word_end(
             i += 1
             continue
         if c == "'" or c == '"':
-            if (
-                stop_at_unclosed_quote
-                and not stack
-                and i > start
-                and (i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}")
-            ):
-                # Quote mid-word followed by a boundary: decide from
-                # the ENCLOSING quote state at this source position —
-                #   * same quote open outside -> this is its closer
-                #     (``Bearer K" u`` ends at the ``"``; r17/r18);
-                #   * a DIFFERENT quote open (``'`` payload) -> the
-                #     char is literal text glued into the word
-                #     (``abc" SECRET"`` inside ``-c '…'`` — audit
-                #     W8-r22);
-                #   * bare context -> opener iff a later unescaped
-                #     partner exists, else the enclosing closer.
-                if _enclosing is ...:
-                    _enclosing = _quote_state(text, i)
-                enclosing = _enclosing
-                if enclosing == c:
-                    return i
-                if enclosing is not None:
-                    word += c
-                    i += 1
-                    continue
-                if _unescaped_pos(text, c, i + 1) == -1:
-                    return i
+            # At word level a quote is always an OPENER — the enclosing
+            # context is already on the stack (pre-pushed at scan
+            # start), so a quote reached here sits in a bare context
+            # where it can only open: ``abc" SECRET"`` is then ONE
+            # argument that dies whole, and an unterminated opener
+            # runs the word to EOS — fail closed (audit W8-r23).
             stack.append(c)
             qpos.append(i)
         elif c == "`":
@@ -1978,16 +2089,16 @@ def _shell_word_end(
             word += c
         i += 1
     if stop_at_unclosed_quote and qpos:
-        # A quote that never closed: at the word START it was a real
-        # opener and the word runs to EOS; MID-word with content glued
-        # after it (``abc"SECRET``) it was the enclosing closer and the
-        # word continues without it — rescan the glued tail for the
-        # real end (audit W8-r17). The rescan is bounded — chains of
+        # A quote that never closed: rescan FROM the quote so its
+        # content — whitespace included — keeps the word alive to EOS
+        # or a closer (``a" SECRET`` is one unterminated word; audit
+        # W8-r23). At the word START it was a plain opener and the
+        # word already runs to EOS. The rescan is bounded — chains of
         # unclosed quotes must not RecursionError (audit W8-r18).
         if qpos[0] == start or _qdepth >= 64:
             return i
         return _shell_word_end(
-            text, qpos[0] + 1, stop_at_unclosed_quote, _qdepth + 1
+            text, qpos[0], stop_at_unclosed_quote, _qdepth + 1
         )
     return i
 
@@ -2038,11 +2149,13 @@ def _scrub_inline_secrets(
 
     def _cred_name(name: str) -> bool:
         # Names are compared AFTER shell quote-removal —
-        # ``API_\<newline>KEY``, ``--api-''key``, ``--"api-key"`` and
-        # ``--api-\key`` all spell the credential ``api_key``
-        # (audit W8-r20/r21).
+        # ``API_\<newline>KEY``, ``--api-''key``, ``--"api-key"``,
+        # ``--api-\key`` and ANSI-C ``--api-$'k\x65y'`` all spell the
+        # credential ``api_key`` (audit W8-r20/r21/r23); a trailing
+        # ``[idx]`` is an array subscript — ``TOKEN[0]`` is ``TOKEN``.
         lowered, _ = _heredoc_delim(name)
         lowered = lowered.lstrip("-").lower().replace("-", "_")
+        lowered = re.sub(r"\[[^\]]*\]$", "", lowered)
         return (
             _is_credential_key(lowered)
             or lowered in _CREDENTIAL_INDIRECTION_KEYS
@@ -2077,14 +2190,52 @@ def _scrub_inline_secrets(
                 continue
             flag = match.group(1)
             j = match.end()
+            cred = _cred_name(flag)
+            if (
+                not cred
+                and len(flag) >= 128
+                and j < len(src)
+                and src[j] in _NAME_CONT_CHARS
+            ):
+                # The part cap truncated a name that keeps going — a
+                # >128-part assembled flag name is pathological; fail
+                # closed (audit W8-r23): swallow the rest of the name
+                # (bounded) and treat its value as a credential.
+                k2 = j
+                steps = 0
+                while (
+                    k2 < len(src)
+                    and src[k2] in _NAME_CONT_CHARS
+                    and steps < 4096
+                ):
+                    k2 += 1
+                    steps += 1
+                j = k2
+                cred = True
+            sep_start = j
             if j < len(src) and src[j] == "=":
-                eq, vstart = True, j + 1
+                if j + 1 < len(src) and src[j + 1] in "'\"":
+                    # ``--token"="SECRET`` — the ``=`` itself may be
+                    # quoted: when the matched name ends with an OPEN
+                    # quote of that type, ``="`` is one quoted ``=``
+                    # token and the value is bare (audit W8-r23).
+                    tmp3: list[str] = []
+                    _heredoc_ops(flag, tmp3)
+                    open_q = tmp3[-1] if tmp3 else None
+                    if open_q in ("'", '"', "$'") and (
+                        src[j + 1] == open_q[-1]
+                    ):
+                        sep_start = j - 1
+                        vstart = j + 2
+                    else:
+                        vstart = j + 1
+                else:
+                    vstart = j + 1
             elif src[j : j + 2] == "\\=":
                 # ``--api-key\=x`` — the escaped ``=`` still separates
                 # the flag from its value (audit W8-r21).
-                eq, vstart = True, j + 2
+                vstart = j + 2
             else:
-                eq = False
                 k = j
                 while k < len(src):
                     if src[k] in " \t":
@@ -2097,36 +2248,44 @@ def _scrub_inline_secrets(
                         k += 3
                     else:
                         break
-                # A separated value must exist and not be another flag
-                # or a bare separator (r5 pair semantics kept);
-                # ``<(``/``>(`` start process-substitution WORDS, not
-                # redirects (audit W8-r11).
+                # A separated value must exist and not be a bare
+                # separator (r5 pair semantics kept); ``<(``/``>(``
+                # start process-substitution WORDS, not redirects
+                # (audit W8-r11). A ``--`` word is the next long flag,
+                # but a SINGLE-dash word is a legal value to a
+                # credential flag (``--token -s3cr3t`` — getopt eats
+                # it; audit W8-r23).
                 if k == j or k >= len(src):
                     continue
-                if src[k] in "-;|&" or (
+                if src[k] in ";|&" or (
                     src[k] in "<>"
                     and not (
                         k + 1 < len(src) and src[k + 1] == "("
                     )
                 ):
                     continue
+                if src[k] == "-":
+                    if src[k + 1 : k + 2] == "-" or not cred:
+                        continue
                 vstart = k
             vend = _shell_word_end(src, vstart, stop_at_unclosed_quote=True)
             if vend <= vstart:
                 continue
             value = src[vstart:vend]
-            out.append(src[pos:j])
-            if _cred_name(flag):
-                # A glued enclosing-quote closer dies with the value —
-                # re-emit it so the output stays balanced (``--token
-                # abc"SECRET`` → ``confined"`` — audit W8-r21), the
-                # same way the auth pass does.
+            out.append(src[pos:sep_start])
+            if cred:
+                # The separator keeps its ORIGINAL spelling
+                # (``\=``/``"="``/continuations — audit W8-r23). A
+                # glued enclosing-quote closer dies with the value —
+                # re-emit it so the output stays balanced
+                # (``--token abc"SECRET`` → ``confined"`` — r21).
                 out.append(
-                    ("=confined" if eq else " confined")
-                    + _trailing_closer(value)
+                    src[sep_start:vstart]
+                    + "confined"
+                    + _trailing_closer(value, _quote_state(src, vstart))
                 )
             else:
-                out.append(("=" if eq else src[j:vstart]) + _rescan(value))
+                out.append(src[sep_start:vstart] + _rescan(value))
             pos = vend
         out.append(src[pos:])
         return "".join(out)
@@ -2143,8 +2302,12 @@ def _scrub_inline_secrets(
                 continue
             value = src[j:vend]
             out.append(src[pos:j])
-            if _cred_name(match.group(1)):
-                out.append("confined" + _trailing_closer(value))
+            # The long-name branch (group 2) is a name that overfilled
+            # the part cap — pathological, fail closed (audit W8-r23).
+            if match.group(2) or _cred_name(match.group(1)):
+                out.append(
+                    "confined" + _trailing_closer(value, _quote_state(src, j))
+                )
             else:
                 out.append(_rescan(value))
             pos = vend
@@ -2218,24 +2381,28 @@ def _scrub_inline_secrets(
                 nl = src.find("\n", pos)
                 if nl == -1:
                     nl = len(src)
-                pline = src[pos:nl]
+                parts = [src[pos:nl]]
                 lend = nl
                 # ``\<newline>`` joins physical lines BEFORE the
                 # terminator compare — a joined ``E\``+``OF`` line IS
                 # the terminator (audit W8-r17), and a physical
                 # candidate line joined into its predecessor is not
-                # (audit W8-r16).
+                # (audit W8-r16). Joined via a parts list — copying
+                # the accumulated line per join is quadratic (audit
+                # W8-r23).
                 while lend < len(src):
-                    backslashes = len(pline) - len(pline.rstrip("\\"))
+                    tail = parts[-1]
+                    backslashes = len(tail) - len(tail.rstrip("\\"))
                     if backslashes % 2 != 1:
                         break
+                    parts[-1] = tail[:-1]
                     nstart = lend + 1
                     nnl = src.find("\n", nstart)
                     if nnl == -1:
                         nnl = len(src)
-                    pline = pline[:-1] + src[nstart:nnl]
+                    parts.append(src[nstart:nnl])
                     lend = nnl
-                if pat.fullmatch(pline):
+                if pat.fullmatch("".join(parts)):
                     return pos, lend
                 pos = lend + 1
             return None
@@ -2302,29 +2469,42 @@ def _scrub_inline_secrets(
                 out.append(src[pos : nl + 1] if nl < n else seg)
                 pos = nl + 1
                 continue
-            # Every opener on the same command line queues a body —
-            # they read in order after the line ends (audit W8-r14).
-            # ``<<<`` here-strings carry no body — their OPERAND word
-            # is the secret and dies in place (audit W8-r20). Ops that
-            # fall INSIDE an already-consumed operand are skipped —
-            # except ``<<``, whose body still physically follows the
-            # line and must be eaten even when its opener died inside
-            # a dead here-string word (audit W8-r21).
-            fixed: list[str] = []
-            last = 0
-            queue: list[tuple[str, str, bool]] = []
-            for off, kind in ops:
+            # Every opener queues a body — they read in order (audit
+            # W8-r14). ``<<<`` here-strings carry no body — their
+            # OPERAND word is the secret and dies in place (audit
+            # W8-r20). Ops that fall INSIDE an already-consumed operand
+            # are skipped — except ``<<``, whose body still physically
+            # follows the line and must be eaten even when its opener
+            # died inside a dead here-string word (audit W8-r21). A
+            # ``<<`` inside a still-open ``$(``/``${``/quote anchors
+            # its body after the PHYSICAL line holding the operator —
+            # a substitution's own line structure (``$(cat <<E
+            # \nSECRET\nE\n)`` — audit W8-r23) — while a command-level
+            # ``<<`` anchors after the whole logical line. Emission is
+            # position-ordered: literal gaps + ``confined`` spans, so
+            # bodies eaten INSIDE the segment still die in place.
+            events: list[tuple[int, int, str]] = []
+            covered = -1  # seg offset already eaten by a ``<<<``
+            body_span: tuple[int, int] | None = None  # eaten body
+            # interval — ops physically inside it are literal text
+            cursor = -1  # floor for the NEXT body anchor — POSIX reads
+            # queued bodies in order, so a later ``<<`` body starts no
+            # earlier than the previous body's terminator line.
+            for off, kind, depth in ops:
+                aoff = pos + off
+                in_body = body_span is not None and (
+                    body_span[0] <= aoff < body_span[1]
+                )
                 if kind == "<<<":
-                    if off < last:
-                        continue  # inside a consumed operand word
+                    if off < covered or in_body:
+                        continue  # inside a consumed operand/body
                     ws = off + 3
                     while ws < len(seg) and seg[ws] in " \t":
                         ws += 1
                     wend = _shell_word_end(seg, ws)
                     if wend > ws:
-                        fixed.append(seg[last:ws])
-                        fixed.append("confined")
-                        last = wend
+                        events.append((pos + ws, pos + wend, "confined"))
+                        covered = wend
                     continue
                 pm = _HEREDOC_OPEN_RE.match(seg, off)
                 if pm is None:
@@ -2334,32 +2514,61 @@ def _scrub_inline_secrets(
                 if wend <= ws:
                     continue  # ``<<`` with no delimiter — syntax error
                 tag, quoted = _heredoc_delim(seg[ws:wend])
-                queue.append((pm.group(1), tag, quoted))
-            fixed.append(seg[last:])
-            out.append("".join(fixed))
-            if nl < n:
-                out.append("\n")
-            cursor = nl + 1
-            for flag, tag, quoted in queue:
-                lead = r"[ \t]*" if flag == "~" else (r"\t*" if flag == "-" else "")
-                tspan = _find_term(cursor, tag, lead, quoted)
+                if in_body:
+                    continue  # literal text inside an eaten body
+                if depth:
+                    # Operator inside an open context — its body
+                    # starts after the LOGICAL line containing the
+                    # delimiter word: walk physical lines with
+                    # continuation joins from the delimiter end.
+                    le = seg.find("\n", wend)
+                    while le != -1 and le < nl:
+                        k = le - 1
+                        bs = 0
+                        while k >= 0 and seg[k] == "\\":
+                            bs += 1
+                            k -= 1
+                        if bs % 2 != 1:
+                            break
+                        le = seg.find("\n", le + 1)
+                    anchor = pos + (le + 1 if le != -1 else len(seg) + 1)
+                else:
+                    anchor = nl + 1
+                anchor = max(anchor, cursor)
+                lead = (
+                    r"[ \t]*"
+                    if pm.group(1) == "~"
+                    else (r"\t*" if pm.group(1) == "-" else "")
+                )
+                tspan = _find_term(anchor, tag, lead, quoted)
                 if tspan is None:
-                    # No terminator — bash reads the body to EOF;
-                    # everything after the command line is body
+                    # No terminator — bash reads the body to EOF
                     # (audit W8-r14).
-                    out.append("confined\n")
+                    events.append((anchor, len(src), "confined\n"))
                     cursor = len(src)
                     break
                 body_end, term_end = tspan
                 line_end = src.find("\n", term_end)
-                if line_end == -1:
-                    line_end = len(src)
-                else:
-                    line_end += 1
-                out.append("confined\n")
-                out.append(src[body_end:line_end])  # keep terminator
-                cursor = line_end
-            pos = cursor
+                line_end = len(src) if line_end == -1 else line_end + 1
+                events.append((anchor, body_end, "confined\n"))
+                body_span = (anchor, line_end)  # terminator line is
+                cursor = line_end  # emitted literally as a gap
+            # Interleave literal text with ``confined`` spans by
+            # absolute position; bodies eaten inside ``seg`` keep their
+            # terminator lines as gaps.
+            events.sort(key=lambda ev: ev[0])
+            emit = pos
+            for s, e, repl in events:
+                if s < emit:
+                    continue
+                out.append(src[emit:s])
+                out.append(repl)
+                emit = e
+            far = max(nl + 1, cursor, emit)
+            far = min(far, len(src))
+            if emit < far:
+                out.append(src[emit:far])
+            pos = far
         return "".join(out)
 
     def _value_end(src: str, start: int) -> int:
@@ -2370,16 +2579,21 @@ def _scrub_inline_secrets(
         rest of the string (``Bearer K" u`` stops at ``"``)."""
         return _shell_word_end(src, start, stop_at_unclosed_quote=True)
 
-    def _trailing_closer(value: str) -> str:
+    def _trailing_closer(value: str, enclosing: str | None) -> str:
         """An unpaired ``"``/``'`` inside a consumed value was the
         enclosing word's closer glued mid-word — re-emit it after
         ``confined`` so the scrubbed string keeps balanced quotes
-        (``abc"SECRET`` → ``confined"``; audit W8-r18). A quote at
-        position 0 is an OPENER, not a closer — it emits nothing.
-        Tracked with the same context stack as the word scanner:
-        quotes inside ``$(...)``/``${...}``/``<(...)`` are balanced in
-        their own context and escaped ``\\"`` pairs never confuse the
-        pairing (audit W8-r19)."""
+        (``abc"SECRET`` → ``confined"``; audit W8-r18). Only a quote
+        matching the ENCLOSING context qualifies — an unmatched opener
+        that ate the rest of a word (``a" SECRET``) emits nothing
+        (audit W8-r23). A quote at position 0 is an OPENER, not a
+        closer — it emits nothing. Tracked with the same context stack
+        as the word scanner: quotes inside ``$(...)``/``${...}``/
+        ``<(...)`` are balanced in their own context and escaped
+        ``\\"`` pairs never confuse the pairing (audit W8-r19)."""
+        if enclosing is None:
+            return ""
+        closer = enclosing[-1]
         i, n = 0, len(value)
         stack: list[str] = []
         qpos: list[int] = []
@@ -2451,14 +2665,17 @@ def _scrub_inline_secrets(
                 stack.append("`")
                 qpos.append(i)
             i += 1
-        if qpos and qpos[0] > 0:
+        if qpos and qpos[0] > 0 and value[qpos[0]] == closer:
             return value[qpos[0]]
         return ""
 
     def _auth_pass(src: str) -> str:
         """Header-named credentials — scheme-led (``Bearer K``) and
-        naked (``X-Api-Key: RAWTOKEN``) values die as one shell word;
-        the 4-char naked floor keeps ``authorization: no`` alive."""
+        naked (``X-Api-Key: RAWTOKEN``) values die as one shell word.
+        The naked floor applies only to ``authorization``-named leads —
+        ``authorization: no`` is prose; a key-only header name
+        (``x-api-key``/``cookie``) exists to carry credentials, so ANY
+        non-empty value under it dies (audit W8-r23)."""
         out: list[str] = []
         pos = 0
         for match in _AUTH_LEAD_RE.finditer(src):
@@ -2468,10 +2685,22 @@ def _scrub_inline_secrets(
             vend = _value_end(src, vstart)
             if vend <= vstart:
                 continue  # header word with no value
-            if match.group(3) is None and vend - vstart < 4:
-                continue  # naked floor
+            if match.group(3) is None:
+                floor = (
+                    4
+                    if match.group(1).lower()
+                    in ("authorization", "proxy-authorization")
+                    else 1
+                )
+                if vend - vstart < floor:
+                    continue
             out.append(src[pos:vstart])
-            out.append("confined" + _trailing_closer(src[vstart:vend]))
+            out.append(
+                "confined"
+                + _trailing_closer(
+                    src[vstart:vend], _quote_state(src, vstart)
+                )
+            )
             pos = vend
         out.append(src[pos:])
         return "".join(out)
@@ -2494,7 +2723,12 @@ def _scrub_inline_secrets(
             ):
                 continue
             out.append(src[pos:vstart])
-            out.append("confined" + _trailing_closer(src[vstart:vend]))
+            out.append(
+                "confined"
+                + _trailing_closer(
+                    src[vstart:vend], _quote_state(src, vstart)
+                )
+            )
             pos = vend
         out.append(src[pos:])
         return "".join(out)
@@ -2538,6 +2772,23 @@ def _scrub_credential_values(node: Any, _seen: set[int] | None = None) -> None:
                 lowered = str(key).strip().lower()
                 if lowered in _CREDENTIAL_INDIRECTION_KEYS:
                     del cur[key]
+                elif lowered in _HEADER_MAP_KEYS and isinstance(value, dict):
+                    # ``headers: {api-key: SECRET}`` — children are
+                    # header-name → header-value pairs; credential-
+                    # named headers die wholesale, the rest still go
+                    # through the inline pass for embedded schemes
+                    # (``Authorization: "Negotiate K"`` — audit W8-r23).
+                    for hk, hv in list(value.items()):
+                        hname = (
+                            str(hk).strip().lower().replace("_", "-")
+                        )
+                        if hname in _HEADER_CRED_NAMES:
+                            value[hk] = "confined"
+                        elif isinstance(hv, str):
+                            value[hk] = _scrub_inline_secrets(hv)
+                        elif isinstance(hv, (dict, list)):
+                            stack.append(hv)
+                    continue
                 elif _is_credential_key(lowered):
                     # A credential name redacts its WHOLE value — a
                     # container under it (``api_key: [K]``,
