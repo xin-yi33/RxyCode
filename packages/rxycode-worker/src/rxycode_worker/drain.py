@@ -1395,14 +1395,19 @@ _URL_CREDENTIAL_LEAD_RE = re.compile(
 #: ``--flag``/``-f`` token start inside an opaque string — the
 #: lookbehind keeps glued words (``x--token``) from splitting
 #: mid-token.
-_FLAG_TOKEN_RE = re.compile(r"(?<![-\w.])(--?[A-Za-z_][A-Za-z0-9_.-]*)")
+#: A shell NAME can be ASSEMBLED from segments — ``API_\<newline>KEY``
+#: line-joins to ``API_KEY`` and ``--api-''key`` is one word spelling
+#: ``api-key`` (audit W8-r20). Name patterns allow joins and empty
+#: quote pairs; the credential check compares the JOINED spelling.
+_NAME_SEG = r"(?:[A-Za-z0-9_.-]+|''|\"\"|\\\r?\n)"
+_FLAG_TOKEN_RE = re.compile(r"(?<![-\w.])(--?" + _NAME_SEG + r"+)")
 #: ``KEY=``/``KEY =`` assignment lead inside an opaque string — the
 #: lookbehind keeps ``--flag=x`` out (the flag pass owns it); the
 #: lookaheads keep ``x == y`` and ``k = --v`` out. The VALUE is located
 #: by the word scanner, not a regex, so nested substitutions cannot
 #: strand secret remainders (audit W8-r10).
 _ASSIGN_LEAD_RE = re.compile(
-    r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?!=)(?!--)"
+    r"(?<![-\w.])([A-Za-z_]" + _NAME_SEG + r"*)(\s*=\s*)(?!=)(?!--)"
 )
 #: ``Authorization: Bearer K``-style header credentials inside opaque
 #: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9).
@@ -1434,16 +1439,187 @@ _AUTH_BARE_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic|oauth)[ \t]+")
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
 _URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@?#]*:[^@/\s?#]+@")
-#: ``<<TAG``/``<<-TAG``/``<<~TAG``/quoted heredoc openers inside an
-#: opaque string — the BODY that follows is data, not syntax, and
-#: carries credential material verbatim (``--api-key-file /dev/fd/3
-#: 3<<'TAG'\nKEY\nTAG`` — audit W8-r13). Delimiters may be arbitrary
-#: words (``RXY-KEY``), several heredocs queue on one command line
-#: (``3<<A 4<<B`` — bodies read in order), and an unterminated body
-#: runs to EOF (audit W8-r14).
-_HEREDOC_RE = re.compile(
-    r"<<([-~]?)\s*(?:'([^'\n]+)'|\"([^\"\n]+)\"|([^\s;|&<>()'\"]+))"
-)
+#: ``<<``/``<<-``/``<<~`` opener PREFIX inside an opaque string — the
+#: delimiter WORD after it is extracted by the shell-word scanner and
+#: quote removal, not a regex, so composed spellings resolve the way
+#: bash does: ``E"OF"``/``E'OF'`` → ``EOF``, ``<<E\<newline>OF`` →
+#: ``EOF``, ``''`` → empty delimiter, ``E\OF`` → ``EOF`` (audit
+#: W8-r19/r20). The BODY that follows is data, not syntax, and
+#: carries credential material verbatim (audit W8-r13); openers
+#: queued on one command line read bodies in order; an unterminated
+#: body runs to EOF (audit W8-r14).
+_HEREDOC_OPEN_RE = re.compile(r"<<([-~]?)[ \t]*")
+
+
+def _heredoc_delim(word: str) -> tuple[str, bool]:
+    """POSIX quote-removal on a heredoc delimiter word — returns
+    ``(delimiter, quoted)`` where ``quoted`` is true when ANY part of
+    the word was quoted (``'x'``/``"x"``/``\\x`` — quoting disables
+    expansion in the body per POSIX). ``\\<newline>`` is a line join,
+    not quoting — it is removed without setting ``quoted``."""
+    out: list[str] = []
+    quoted = False
+    i, n = 0, len(word)
+    while i < n:
+        c = word[i]
+        if c == "\\" and i + 1 < n:
+            nxt = word[i + 1]
+            if nxt == "\n" or nxt == "\r":
+                i += 2 if nxt == "\n" else 3
+                continue
+            out.append(nxt)
+            quoted = True
+            i += 2
+            continue
+        if c == "'":
+            quoted = True
+            j = word.find("'", i + 1)
+            if j == -1:
+                out.append(word[i + 1 :])
+                break
+            out.append(word[i + 1 : j])
+            i = j + 1
+            continue
+        if c == '"':
+            quoted = True
+            i += 1
+            while i < n and word[i] != '"':
+                if word[i] == "\\" and i + 1 < n and word[i + 1] in '$`"\\\n':
+                    if word[i + 1] != "\n":
+                        out.append(word[i + 1])
+                    i += 2
+                    continue
+                out.append(word[i])
+                i += 1
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out), quoted
+
+
+def _heredoc_ops(seg: str) -> list[tuple[int, str]]:
+    """``(offset, kind)`` for each ``<<``/``<<<`` at command level in
+    ``seg`` — outside quotes, ``${}``, arithmetic ``$((…))`` and
+    comments (``$((1 << 2))`` shifts bits, ``"a<<EOF"`` is literal
+    text — audit W8-r20). Inside ``$(…)``/subshells/backticks a
+    ``<<`` still counts — its body follows the logical command line."""
+    out: list[tuple[int, str]] = []
+    i, n = 0, len(seg)
+    stack: list[str] = []
+    while i < n:
+        c = seg[i]
+        top = stack[-1] if stack else ""
+        if top == "'":
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
+        if top == "$'":
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
+        if top == '"':
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                stack.pop()
+                i += 1
+                continue
+            if c == "$" and i + 1 < n and seg[i + 1] in "({'":
+                stack.append(
+                    "$'"
+                    if seg[i + 1] == "'"
+                    else ("${" if seg[i + 1] == "{" else "(")
+                )
+                i += 2
+                continue
+            if c == "`":
+                stack.append("`")
+            i += 1
+            continue
+        if top in ("${", "${d"):
+            if c == "{":
+                stack.append("${d")
+            elif c == "}":
+                stack.pop()
+            i += 1
+            continue
+        if top == "((" or top == "((i":
+            # Arithmetic ``$((…))`` — ``<<`` there is a bit-shift.
+            # Nested parens push ``((i``; the first ``)`` at depth 0
+            # ends the arithmetic context, the second ends ``$(``.
+            if c == "(":
+                stack.append("((i")
+            elif c == ")":
+                stack.pop()
+                i += 1
+                if top == "((" and i < n and seg[i] == ")":
+                    i += 1
+                continue
+            i += 1
+            continue
+        if top == "`" and c == "`":
+            stack.pop()
+            i += 1
+            continue
+        # Command level — word level, ``(``-contexts and the inside of
+        # backtick substitutions all allow real redirection operators.
+        if c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c == "#" and (i == 0 or seg[i - 1] in " \t\n;&|<>()"):
+            j = seg.find("\n", i)
+            i = n if j == -1 else j
+            continue
+        if seg.startswith("<<<", i):
+            out.append((i, "<<<"))
+            i += 3
+            continue
+        if seg.startswith("<<", i):
+            out.append((i, "<<"))
+            i += 2
+            continue
+        if c == "$" and i + 1 < n:
+            nxt = seg[i + 1]
+            if nxt == "(":
+                if i + 2 < n and seg[i + 2] == "(":
+                    stack.append("((")
+                    i += 3
+                else:
+                    stack.append("(")
+                    i += 2
+                continue
+            if nxt == "{":
+                stack.append("${")
+            elif nxt == "'":
+                stack.append("$'")
+            else:
+                i += 1
+                continue
+            i += 2
+            continue
+        if c in "<>" and i + 1 < n and seg[i + 1] == "(":
+            stack.append("(")
+            i += 2
+            continue
+        if c == "'":
+            stack.append("'")
+        elif c == '"':
+            stack.append('"')
+        elif c == "`":
+            stack.append("`")
+        elif c == "(":
+            stack.append("(")
+        elif c == ")" and top == "(":
+            stack.pop()
+        i += 1
+    return out
 
 
 def _shell_word_end(
@@ -1516,7 +1692,11 @@ def _shell_word_end(
             # Substitutions still open inside ``"..."`` — their
             # interior quotes are balanced THERE, not here.
             if c == "$" and i + 1 < n and text[i + 1] in "({'":
-                stack.append(("$" if text[i + 1] == "'" else "") + text[i + 1])
+                stack.append(
+                    "$'"
+                    if text[i + 1] == "'"
+                    else ("${" if text[i + 1] == "{" else "(")
+                )
                 if text[i + 1] == "'":
                     qpos.append(i + 1)
                 word = ""
@@ -1539,7 +1719,9 @@ def _shell_word_end(
         if c == "$" and i + 1 < n:
             nxt = text[i + 1]
             if nxt in "({'":
-                stack.append(("$" if nxt == "'" else "") + nxt)
+                stack.append(
+                    "$'" if nxt == "'" else ("${" if nxt == "{" else "(")
+                )
                 if nxt == "'":
                     qpos.append(i + 1)
                 word = ""
@@ -1556,6 +1738,20 @@ def _shell_word_end(
             word = ""
             i += 2
             continue
+        if c == "#" and top != "${" and (
+            i == start or text[i - 1] in " \t\n;&|<>()"
+        ):
+            # A ``#`` at a word boundary opens a comment inside
+            # COMMAND contexts (``$(``/``(``/backticks/brace groups) —
+            # a ``)`` on a comment line is comment text, not the
+            # substitution's closer (audit W8-r20). Inside ``${}`` the
+            # ``#`` is a pattern operator, not a comment. At word
+            # level a comment is never word content — the word ends.
+            if not stack:
+                break
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+            continue
         if c in " \t\n;|&<>(){}":
             if word:
                 if (
@@ -1567,14 +1763,27 @@ def _shell_word_end(
                 elif word == "esac" and stack and stack[-1] == "case":
                     stack.pop()
                 word = ""
-            if c == "(" or c == "{":
+            if c == "(" and stack:
+                stack.append(c)
+            elif c == "{" and stack:
                 stack.append(c)
             elif c == ")" and stack and stack[-1] == "(":
                 stack.pop()
-            elif c == "}" and stack and stack[-1] == "{":
+            elif c == "}" and stack and stack[-1] in ("{", "${"):
                 stack.pop()
-            elif not stack and c in " \t\n;|&<>":
-                break
+            elif not stack:
+                if c in "{}":
+                    # ``{``/``}`` inside a bare word are literal
+                    # brace-expansion text, not contexts — ``abc{``
+                    # must not swallow the rest of the string (audit
+                    # W8-r20).
+                    word += c
+                else:
+                    # Separators AND unmatched ``(``/``)`` end the
+                    # word — a ``)`` with nothing open is the
+                    # enclosing ``$(``'s closer and must NOT be
+                    # consumed (audit W8-r20).
+                    break
             i += 1
             continue
         if c == "'":
@@ -1667,7 +1876,11 @@ def _scrub_inline_secrets(
         return "confined"
 
     def _cred_name(name: str) -> bool:
-        lowered = name.lstrip("-").lower().replace("-", "_")
+        # Names are compared AFTER shell assembly — ``API_\<newline>KEY``
+        # and ``--api-''key`` both spell the credential ``api_key``
+        # (audit W8-r20).
+        lowered = re.sub(r"''|\"\"|\\\r?\n", "", name)
+        lowered = lowered.lstrip("-").lower().replace("-", "_")
         return (
             _is_credential_key(lowered)
             or lowered in _CREDENTIAL_INDIRECTION_KEYS
@@ -1856,16 +2069,11 @@ def _scrub_inline_secrets(
 
         out: list[str] = []
         pos = 0
-        matches = list(_HEREDOC_RE.finditer(src))
-        idx = 0
-        while idx < len(matches):
-            m = matches[idx]
-            idx += 1
-            if m.start() < pos:
-                continue
-            nl = src.find("\n", m.end())
+        n = len(src)
+        while pos < n:
+            nl = src.find("\n", pos)
             if nl == -1:
-                continue
+                nl = n
             # A ``\<newline>`` at the end of the command line joins the
             # next physical line INTO it — the body begins after the
             # logical command line, not after the first newline. A
@@ -1874,7 +2082,7 @@ def _scrub_inline_secrets(
             # W8-r17), so the trailing-backslash check runs on the
             # segment before any unquoted ``#`` word.
             while True:
-                seg = src[m.start() : nl]
+                seg = src[pos:nl]
                 cpos = _comment_start(seg)
                 if cpos != -1:
                     seg = seg[:cpos]
@@ -1885,29 +2093,45 @@ def _scrub_inline_secrets(
                 if nxt == -1:
                     break
                 nl = nxt
+            seg = src[pos:nl]
+            ops = _heredoc_ops(seg)
+            if not ops:
+                out.append(src[pos : nl + 1] if nl < n else seg)
+                pos = nl + 1
+                continue
             # Every opener on the same command line queues a body —
             # they read in order after the line ends (audit W8-r14).
-            queue = [m]
-            while idx < len(matches) and matches[idx].start() < nl:
-                queue.append(matches[idx])
-                idx += 1
-            out.append(src[pos : nl + 1])
-            cursor = nl + 1
-            for q in queue:
-                # Extract the delimiter from the LOGICAL command line —
-                # ``<<E\<newline>OF`` joins to delimiter ``EOF``, and
-                # the physical token would search the wrong terminator
-                # (audit W8-r19).
-                qseg = re.sub(r"\\\r?\n", "", src[q.start() : nl])
-                qm = _HEREDOC_RE.match(qseg)
-                if qm is None:
-                    out.append("confined\n")
+            # ``<<<`` here-strings carry no body — their OPERAND word
+            # is the secret and dies in place (audit W8-r20).
+            fixed: list[str] = []
+            last = 0
+            queue: list[tuple[str, str, bool]] = []
+            for off, kind in ops:
+                if kind == "<<<":
+                    ws = off + 3
+                    while ws < len(seg) and seg[ws] in " \t":
+                        ws += 1
+                    wend = _shell_word_end(seg, ws)
+                    if wend > ws:
+                        fixed.append(seg[last:ws])
+                        fixed.append("confined")
+                        last = wend
                     continue
-                flag = qm.group(1)
-                quoted = qm.group(2) is not None or qm.group(3) is not None
-                tag = next(
-                    g for g in qm.groups()[1:] if g is not None
-                )
+                pm = _HEREDOC_OPEN_RE.match(seg, off)
+                if pm is None:
+                    continue
+                ws = pm.end()
+                wend = _shell_word_end(seg, ws)
+                if wend <= ws:
+                    continue  # ``<<`` with no delimiter — syntax error
+                tag, quoted = _heredoc_delim(seg[ws:wend])
+                queue.append((pm.group(1), tag, quoted))
+            fixed.append(seg[last:])
+            out.append("".join(fixed))
+            if nl < n:
+                out.append("\n")
+            cursor = nl + 1
+            for flag, tag, quoted in queue:
                 lead = r"[ \t]*" if flag == "~" else (r"\t*" if flag == "-" else "")
                 tspan = _find_term(cursor, tag, lead, quoted)
                 if tspan is None:
@@ -1927,7 +2151,6 @@ def _scrub_inline_secrets(
                 out.append(src[body_end:line_end])  # keep terminator
                 cursor = line_end
             pos = cursor
-        out.append(src[pos:])
         return "".join(out)
 
     def _value_end(src: str, start: int) -> int:
@@ -2104,13 +2327,18 @@ def _scrub_credential_values(node: Any, _seen: set[int] | None = None) -> None:
         if isinstance(cur, dict):
             for key, value in list(cur.items()):
                 lowered = str(key).strip().lower()
-                if isinstance(value, (dict, list)):
-                    stack.append(value)
-                    continue
                 if lowered in _CREDENTIAL_INDIRECTION_KEYS:
                     del cur[key]
                 elif _is_credential_key(lowered):
+                    # A credential name redacts its WHOLE value — a
+                    # container under it (``api_key: [K]``,
+                    # ``credentials: {..}``) is credential material
+                    # too; dispatching it as a plain container first
+                    # would lose the key context (audit W8-r20).
                     cur[key] = "confined"
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+                    continue
                 elif _has_url_secret(value):
                     # A BARE credential URL is a secret whole; a composite
                     # string carrying one (a launcher, a shell snippet)

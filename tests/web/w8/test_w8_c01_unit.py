@@ -3053,3 +3053,113 @@ def test_w8_c01_scrub_heredoc_continued_delimiter() -> None:
     out = drain._scrub_inline_secrets(s)
     assert "AUDIT_DCK" not in out
     assert "echo keep" in out
+
+
+def test_w8_c01_scrub_herestring_operand() -> None:
+    r"""Audit W8-r20: a ``<<<`` here-string carries its operand word
+    as stdin — the operand is the secret, not a flag value."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        "srv --api-key-file /dev/fd/3 3<<<AUDIT_HSS"
+    )
+    assert out == "srv --api-key-file confined 3<<<confined"
+
+
+def test_w8_c01_scrub_composed_heredoc_delimiter() -> None:
+    r"""Audit W8-r20: ``E"OF"`` quote-removes to delimiter ``EOF`` —
+    a body line ``E`` must NOT terminate, and ``<<''`` names the
+    empty delimiter terminated by a blank line."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        'cat <<E"OF"' + chr(10) + "E" + chr(10) + "AUDIT_CDH"
+        + chr(10) + "EOF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_CDH" not in out
+    assert "EOF" + chr(10) + "echo keep" in out
+
+    s2 = "cat <<''" + chr(10) + "AUDIT_EMT" + chr(10) + chr(10) + "echo keep"
+    out2 = drain._scrub_inline_secrets(s2)
+    assert "AUDIT_EMT" not in out2
+    assert "echo keep" in out2
+
+
+def test_w8_c01_scrub_comment_inside_substitution() -> None:
+    r"""Audit W8-r20: ``#`` inside ``$(`` opens a comment — a ``)`` on
+    the comment line is text, and the substitution continues on the
+    next line."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "srv --api-key $(printf x # )" + chr(10)
+        + "printf %s AUDIT_CMT" + chr(10) + ") -v"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert out == "srv --api-key confined -v"
+
+
+def test_w8_c01_scrub_assembled_names() -> None:
+    r"""Audit W8-r20: names joined by ``\<newline>`` or empty quote
+    pairs still spell the credential — ``API_\<nl>KEY`` is
+    ``api_key`` and ``--api-''key`` is ``--api-key``."""
+    import rxycode_worker.drain as drain
+
+    s = "API_" + chr(92) + chr(10) + "KEY=AUDIT_JKN srv"
+    assert drain._scrub_inline_secrets(s) == (
+        "API_" + chr(92) + chr(10) + "KEY=confined srv"
+    )
+    out = drain._scrub_inline_secrets("srv --api-''key AUDIT_EQT")
+    assert "AUDIT_EQT" not in out
+
+
+def test_w8_c01_scrub_container_credential_fields() -> None:
+    r"""Audit W8-r20: a credential-named field redacts its WHOLE value
+    — a container under ``api_key``/``credentials`` is credential
+    material, not a plain subtree."""
+    import rxycode_worker.drain as drain
+
+    tree = {
+        "credentials": ["AUDIT_CV1"],
+        "env": {"API_KEY": ["AUDIT_CV2"]},
+        "plain": {"note": "safe"},
+    }
+    drain._scrub_credential_values(tree)
+    assert tree["credentials"] == "confined"
+    assert tree["env"]["API_KEY"] == "confined"
+    assert tree["plain"]["note"] == "safe"
+
+
+def test_w8_c01_scrub_nested_command_closer() -> None:
+    r"""Audit W8-r20: redacting inside ``$(...)`` keeps the enclosing
+    ``)`` and quote — the sanitized command must stay balanced."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'echo "$(srv --token AUDIT_NCC)"'
+    )
+    assert out == 'echo "$(srv --token confined)"'
+
+
+def test_w8_c01_scrub_arithmetic_and_quoted_redirs() -> None:
+    r"""Audit W8-r20: ``$((1 << 2))`` is arithmetic and ``"a<<EOF"``
+    is quoted text — neither opens a heredoc body."""
+    import rxycode_worker.drain as drain
+
+    s = "echo $((1 << 2))" + chr(10) + "echo keep"
+    assert drain._scrub_inline_secrets(s) == s
+    s2 = (
+        'printf "%s' + chr(92) + 'n" "a<<EOF"' + chr(10) + "echo keep"
+    )
+    assert drain._scrub_inline_secrets(s2) == s2
+
+
+def test_w8_c01_scrub_literal_brace_word() -> None:
+    r"""Audit W8-r20: a bare ``{`` inside a word is literal
+    brace-expansion text, not a context — the word must end at the
+    next boundary."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("srv --token abc{ --verbose")
+    assert out == "srv --token confined --verbose"

@@ -888,3 +888,23 @@ regressions green). Four new findings, all remediated:
 
 Focused r19 regressions: 4 new unit tests in `tests/web/w8/test_w8_c01_unit.py`.
 Suite: `84 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.
+
+
+## Round 20 — here-strings, composed delimiters, comments in substitutions, assembled names, container creds, paren/brace/quote edges
+
+`VERDICT: PROBLEMS_REMAIN` (8 findings: 5xP1, 3xP2) on `ec57e943`; all fixed.
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| `3<<<SECRET` here-string operand stayed mounted | `<<<` never handled | `_heredoc_ops` reports `<<<` at command level; operand word replaced with `confined` in-place |
+| `<<E"OF"`/`<<''` composed/empty delimiters | regex captured only `E`; quoted delimiter word not quote-removed | delimiter extracted via `_shell_word_end` + `_heredoc_delim` POSIX quote-removal (quoted flag preserved) |
+| `$(printf x # )
+SECRET
+)` — `)` inside a comment closed the substitution | `#` comments inside command contexts not tracked | `_shell_word_end` skips `#`-comment to newline inside `(`, `case`, brace contexts; `${x#y}` unaffected (operator) |
+| `API_\<nl>KEY=`/`--api-''key` assembled names | name regexes matched physical spelling only | `_NAME_SEG` allows `\<newline>`/`''`/`""` segments; `_cred_name` normalizes before checking |
+| `{"credentials": [...]}`/`env.API_KEY: [K]` container values | container dispatch ran before credential-key check | dict branch: indirection/cred checks first; credential key redacts whole value including containers |
+| `$(srv --token K)` lost the enclosing `)"` | word-level `)`/`(` were consumed as word chars | unmatched parens end the word at word level |
+| `$((1 << 2))`/`"a<<EOF"` treated as heredocs | opener regex matched without shell context | `_heredoc_ops` context-stack scan: `<<` suppressed in quotes/`${}`/`$((`/comments, allowed in `$(`/subshells/backticks |
+| `srv --token abc{ --verbose` ate `--verbose` | bare `{`/`}` pushed nesting context at word level | `{`/`}` are literal word chars at word level |
+
+Suite: `88 passed, 3 skipped` (env skips unchanged), ruff clean. 8 new regressions appended.
