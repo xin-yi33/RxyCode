@@ -713,3 +713,124 @@ def test_open_alias_routes_to_open_file():
     assert orch.get("open") is marker
     assert orch.get("browser") is marker
     assert orch.get("open_file") is marker
+
+
+class TestBashGateEscalation:
+    """Post-W7 ruling（track B）：写路径闸拦下的 bash 命令在普通模式转
+    人工审批（批准后仍走内核沙箱执行）；Full/Full-Auto 保持拦下即拒、
+    不弹审批。"""
+
+    OUTSIDE_CMD = "cmd /c echo x > C:/rxy-gate-outside.txt"
+
+    def _orch(self):
+        orch = ToolOrchestrator()
+        tool = _make_tool("bash")
+        orch.register("bash", tool)
+        return orch, tool
+
+    def _cfg(self, tmp_path, **safety):
+        base = {
+            "enabled": True,
+            "allowed_write_paths": [str(tmp_path)],
+        }
+        base.update(safety)
+        return {"safety": base}
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_blocked_bash_goes_to_approval(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        orch, tool = self._orch()
+        broker = SseApproval(timeout=5)
+        events = []
+        broker.set_event_sink(events.append)
+        set_approval_broker(broker)
+
+        async def respond():
+            await asyncio.sleep(0.02)
+            broker.resolve(events[0]["approval_id"], "approved")
+
+        result, _ = await asyncio.gather(
+            orch.execute_tool(
+                "bash", {"command": self.OUTSIDE_CMD},
+                config=self._cfg(tmp_path, permission_mode="confirm_all"),
+            ),
+            respond(),
+        )
+        # 升级而非静默拒绝：审批事件点名触发闸门的写目标。
+        assert events and events[0].get("gate_blocked_paths")
+        assert result == "done"
+        tool.invoke.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_user_reject_does_not_execute(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        orch, tool = self._orch()
+        broker = SseApproval(timeout=5)
+        events = []
+        broker.set_event_sink(events.append)
+        set_approval_broker(broker)
+
+        async def respond():
+            await asyncio.sleep(0.02)
+            broker.resolve(events[0]["approval_id"], "rejected")
+
+        result, _ = await asyncio.gather(
+            orch.execute_tool(
+                "bash", {"command": self.OUTSIDE_CMD},
+                config=self._cfg(tmp_path, permission_mode="auto_edit"),
+            ),
+            respond(),
+        )
+        assert "rejected" in result.lower()
+        tool.invoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_full_auto_blocked_bash_hard_reject_no_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        orch, tool = self._orch()
+        broker = SseApproval(timeout=5)
+        events = []
+        broker.set_event_sink(events.append)
+        set_approval_broker(broker)
+
+        result = await orch.execute_tool(
+            "bash", {"command": self.OUTSIDE_CMD},
+            config=self._cfg(tmp_path, permission_mode="full_auto"),
+        )
+        assert "blocked" in result.lower()
+        assert events == []  # Full 下不弹审批
+        tool.invoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gate_approval_never_enters_always_allow_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """闸门升级的审批即使被判 always_allow 也不得缓存到 risk 级别——
+        否则缓存命中会永久绕过写路径闸。"""
+        monkeypatch.chdir(tmp_path)
+        orch, tool = self._orch()
+        broker = SseApproval(timeout=5)
+        events = []
+        broker.set_event_sink(events.append)
+        set_approval_broker(broker)
+
+        async def respond():
+            await asyncio.sleep(0.02)
+            broker.resolve(events[0]["approval_id"], "always_allow_level")
+
+        await asyncio.gather(
+            orch.execute_tool(
+                "bash", {"command": self.OUTSIDE_CMD},
+                config=self._cfg(tmp_path, permission_mode="confirm_all"),
+            ),
+            respond(),
+        )
+        from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+
+        assert not broker.is_level_always_allowed(RiskLevel.DANGER)

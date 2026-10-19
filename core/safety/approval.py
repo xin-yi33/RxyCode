@@ -39,13 +39,17 @@ class ApprovalRequest:
     # 2026-10-12 不可信输入可见性：MCP 工具的 description 是外部输入，用户
     # 在审批界面复核时需要看到它的完整内容（投毒文本只攻击模型的时代结束了）。
     tool_description: str = ""
+    # Post-W7 ruling（track B）：写路径闸升级的审批必须点名列出触发闸
+    # 门的写目标，让人在完整上下文下决定；同时也标记本条审批不得落入
+    # risk 级别的 always-allow 缓存（缓存命中会永久绕过闸门）。
+    gate_blocked_paths: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         # Cap the summary size so prompts/SSE payloads stay small.
         self.args_summary = summarize_args(self.args_summary)
 
     def to_event(self) -> dict:
-        return {
+        event = {
             "type": "approval_request",
             "approval_id": self.approval_id,
             "tool": self.tool_name,
@@ -53,6 +57,9 @@ class ApprovalRequest:
             "args": self.args_summary,
             "description": self.tool_description,
         }
+        if self.gate_blocked_paths:
+            event["gate_blocked_paths"] = list(self.gate_blocked_paths)
+        return event
 
 
 class ApprovalBroker(ABC):
@@ -62,12 +69,16 @@ class ApprovalBroker(ABC):
         self._always_allowed: set[RiskLevel] = set()
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-        if request.risk in self._always_allowed:
+        # Gate-escalated requests (post-W7 track B) must not hit the
+        # risk-level always-allow cache in either direction — a cached
+        # "always allow DANGER" cannot silently lift the write-path gate.
+        gate_escalated = bool(request.gate_blocked_paths)
+        if request.risk in self._always_allowed and not gate_escalated:
             return ApprovalDecision.ALWAYS_ALLOW_LEVEL
         decision = await self._ask(request)
         # ALLOW_ONCE approves this single call without caching the risk level;
         # it behaves as APPROVED for the current request but is not remembered.
-        if decision == ApprovalDecision.ALWAYS_ALLOW_LEVEL:
+        if decision == ApprovalDecision.ALWAYS_ALLOW_LEVEL and not gate_escalated:
             self._always_allowed.add(request.risk)
         return decision
 

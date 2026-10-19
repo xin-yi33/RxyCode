@@ -1651,6 +1651,11 @@ class ToolOrchestrator:
 
         audit = self._get_audit_logger()
 
+        # Set when the bash write-path gate vetoed the command in a
+        # non-Full permission mode — §4 escalates it to a human approval
+        # instead of a hard reject.
+        gate_blocked_paths: list[str] | None = None
+
         # 2. write-path whitelist (only for tools that take a path arg and
         #    can write — i.e. WRITE/DANGER level)
         if risk >= RiskLevel.WRITE and isinstance(args, dict):
@@ -1675,15 +1680,28 @@ class ToolOrchestrator:
                     cmd, config, workdir=str(workdir) if workdir else None
                 )
                 if blocked_paths:
-                    preview = ", ".join(blocked_paths[:3])
-                    msg = (
-                        "[blocked: bash write path not allowed: "
-                        f"{preview}]"
-                    )
-                    return self._finish(
-                        name, args, msg, executed=False, approval="rejected",
-                        risk=risk, audit=audit,
-                    )
+                    permission = str(
+                        _permission_mode_override.get()
+                        or safety.get("permission_mode")
+                        or "confirm_all"
+                    ).strip().lower()
+                    if permission in {"full", "full_auto"}:
+                        # Full keeps the gate as a hard reject with no
+                        # approval prompt — entering Full was already the
+                        # user's confirmation (post-W7 ruling, track B).
+                        preview = ", ".join(blocked_paths[:3])
+                        msg = (
+                            "[blocked: bash write path not allowed: "
+                            f"{preview}]"
+                        )
+                        return self._finish(
+                            name, args, msg, executed=False, approval="rejected",
+                            risk=risk, audit=audit,
+                        )
+                    # Normal modes escalate the block to a human approval;
+                    # an approved command still executes inside the kernel
+                    # sandbox (the gate only decides who may authorize it).
+                    gate_blocked_paths = blocked_paths
 
         # 3. dry-run
         if risk >= RiskLevel.WRITE and is_dry_run(config):
@@ -1713,11 +1731,11 @@ class ToolOrchestrator:
             elif permission_mode == "auto_edit" and canonical in _AUTO_EDIT_TOOLS:
                 auto_levels.add(risk.name.lower())
 
-            if approval_source == "explicit_command":
+            if approval_source == "explicit_command" and not gate_blocked_paths:
                 # A literal CLI/API slash command is itself an explicit user
                 # authorization. It still passes policy, dry-run and audit.
                 approval_state = "explicit_command"
-            elif risk.name.lower() in auto_levels:
+            elif risk.name.lower() in auto_levels and not gate_blocked_paths:
                 approval_state = "auto"
             else:
                 broker = get_approval_broker()
@@ -1735,6 +1753,10 @@ class ToolOrchestrator:
                     args_summary=args,
                     risk=risk,
                     tool_description=tool_description,
+                    # Gate-escalated approval (post-W7 ruling, track B): the
+                    # dialog must name the write targets that tripped the
+                    # write-path gate so the human decides with full context.
+                    gate_blocked_paths=list(gate_blocked_paths or ()),
                 )
                 decision = await broker.request_approval(req)
                 if decision == ApprovalDecision.REJECTED:
