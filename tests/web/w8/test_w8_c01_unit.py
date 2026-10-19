@@ -2992,3 +2992,64 @@ def test_w8_c01_scrub_unclosed_quote_chain_bounded() -> None:
     v = "Authorization: Bearer " + ('x"$(' * 1100) + "AUDIT_UQ"
     out = drain._scrub_inline_secrets(v)  # no RecursionError
     assert "AUDIT_UQ" not in out
+
+
+def test_w8_c01_scrub_heredoc_comment_after_join() -> None:
+    r"""Audit W8-r19: ``<<EOF \<newline># comment \`` — the ``#`` on
+    the joined line still opens a comment (newline is a word
+    boundary), its ``\`` is not a continuation, and the body starts
+    at the next real line."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<EOF " + chr(92) + chr(10) + "# comment " + chr(92)
+        + chr(10) + "AUDIT_CJK" + chr(10) + "EOF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_CJK" not in out
+    assert "echo keep" in out
+
+
+def test_w8_c01_scrub_heredoc_brace_delimiter() -> None:
+    r"""Audit W8-r19: ``<<E{OF`` is a valid literal delimiter — the
+    ``{`` is not a nesting context, so the trailing ``# \`` comment
+    is still recognized."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<E{OF # " + chr(92) + chr(10) + "AUDIT_BDK" + chr(10)
+        + "E{OF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_BDK" not in out
+    assert "E{OF" in out and "echo keep" in out
+
+
+def test_w8_c01_scrub_closer_escaped_quote_pairs() -> None:
+    r"""Audit W8-r19: ``\"`` escapes and quotes inside ``$(...)`` are
+    balanced in their own context — ``_trailing_closer`` must not
+    emit a phantom closer for an already-balanced value."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        'curl -H "Authorization: Bearer $(printf %s AUDIT_EQ; : "x'
+        + chr(92) + '"y")" u'
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_EQ" not in out
+    assert out == 'curl -H "Authorization: Bearer confined" u'
+
+
+def test_w8_c01_scrub_heredoc_continued_delimiter() -> None:
+    r"""Audit W8-r19: ``<<E\<newline>OF`` joins to delimiter ``EOF`` —
+    extract tags from the logical line or the wrong terminator gets
+    searched."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<E" + chr(92) + chr(10) + "OF" + chr(10) + "AUDIT_DCK"
+        + chr(10) + "EOF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_DCK" not in out
+    assert "echo keep" in out

@@ -1776,10 +1776,14 @@ def _scrub_inline_secrets(
         EOF (audit W8-r14). Markers and terminator lines survive."""
         def _comment_start(line: str) -> int:
             """Offset of the first ``#`` that opens a shell comment —
-            word-boundary, unquoted, outside ``(``/``{`` contexts.
-            ``-1`` when the line has none."""
+            word-boundary and unquoted. ``-1`` when the line has none.
+            POSIX starts a comment at ANY word boundary — after
+            whitespace, separators, OR a physical newline inside the
+            segment (``<<EOF \\<newline># c`` — audit W8-r19); braces
+            inside delimiter words (``<<E{OF``) are literal chars, not
+            contexts, and a ``#`` inside ``$(...)``/parens is still a
+            comment — so no depth tracking."""
             quote = ""
-            depth = 0
             i = 0
             while i < len(line):
                 c = line[i]
@@ -1787,10 +1791,10 @@ def _scrub_inline_secrets(
                     if quote == "'":
                         if c == "'":
                             quote = ""
-                    elif c == "\\" and quote != "'":
+                    elif c == "\\":
                         i += 2
                         continue
-                    elif c == quote[-1]:
+                    elif c == quote:
                         quote = ""
                     i += 1
                     continue
@@ -1798,17 +1802,10 @@ def _scrub_inline_secrets(
                     i += 2
                     continue
                 if c in "'\"`":
-                    quote = c if c != "$" else "$'"
-                elif c in "({":
-                    depth += 1
-                elif c in ")}":
-                    depth = max(0, depth - 1)
-                elif c == "#" and depth == 0 and (
-                    i == 0 or line[i - 1] in " \t;&|<>()"
+                    quote = c
+                elif c == "#" and (
+                    i == 0 or line[i - 1] in " \t\n;&|<>()"
                 ):
-                    # ``#`` begins a comment at any word boundary —
-                    # including right after ``;``/``|``/``&`` —
-                    # not only after whitespace (audit W8-r18).
                     return i
                 i += 1
             return -1
@@ -1897,10 +1894,20 @@ def _scrub_inline_secrets(
             out.append(src[pos : nl + 1])
             cursor = nl + 1
             for q in queue:
-                flag, tag = q.group(1), next(
-                    g for g in q.groups()[1:] if g is not None
+                # Extract the delimiter from the LOGICAL command line —
+                # ``<<E\<newline>OF`` joins to delimiter ``EOF``, and
+                # the physical token would search the wrong terminator
+                # (audit W8-r19).
+                qseg = re.sub(r"\\\r?\n", "", src[q.start() : nl])
+                qm = _HEREDOC_RE.match(qseg)
+                if qm is None:
+                    out.append("confined\n")
+                    continue
+                flag = qm.group(1)
+                quoted = qm.group(2) is not None or qm.group(3) is not None
+                tag = next(
+                    g for g in qm.groups()[1:] if g is not None
                 )
-                quoted = q.group(2) is not None or q.group(3) is not None
                 lead = r"[ \t]*" if flag == "~" else (r"\t*" if flag == "-" else "")
                 tspan = _find_term(cursor, tag, lead, quoted)
                 if tspan is None:
@@ -1936,20 +1943,84 @@ def _scrub_inline_secrets(
         enclosing word's closer glued mid-word — re-emit it after
         ``confined`` so the scrubbed string keeps balanced quotes
         (``abc"SECRET`` → ``confined"``; audit W8-r18). A quote at
-        position 0 is an OPENER, not a closer — it emits nothing."""
+        position 0 is an OPENER, not a closer — it emits nothing.
+        Tracked with the same context stack as the word scanner:
+        quotes inside ``$(...)``/``${...}``/``<(...)`` are balanced in
+        their own context and escaped ``\\"`` pairs never confuse the
+        pairing (audit W8-r19)."""
         i, n = 0, len(value)
+        stack: list[str] = []
+        qpos: list[int] = []
         while i < n:
             c = value[i]
+            top = stack[-1] if stack else ""
+            if top == "'":
+                if c == "'":
+                    stack.pop()
+                    qpos.pop()
+                i += 1
+                continue
+            if top in ("$'", "`"):
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if c == top[-1]:
+                    stack.pop()
+                    qpos.pop()
+                i += 1
+                continue
             if c == "\\" and i + 1 < n:
                 i += 2
                 continue
-            if c in "\"'`":
-                partner = value.find(c, i + 1)
-                if partner == -1:
-                    return c if i > 0 else ""
-                i = partner + 1
+            if top == '"':
+                if c == '"':
+                    stack.pop()
+                    qpos.pop()
+                    i += 1
+                    continue
+                if c == "$" and i + 1 < n and value[i + 1] in "({'":
+                    stack.append(
+                        ("$" if value[i + 1] == "'" else "") + value[i + 1]
+                    )
+                    if value[i + 1] == "'":
+                        qpos.append(i + 1)
+                    i += 2
+                    continue
+                if c == "`":
+                    stack.append("`")
+                    qpos.append(i)
+                    i += 1
+                    continue
+                i += 1
                 continue
+            if c == "$" and i + 1 < n and value[i + 1] in "({'":
+                stack.append(("$" if value[i + 1] == "'" else "") + value[i + 1])
+                if value[i + 1] == "'":
+                    qpos.append(i + 1)
+                i += 2
+                continue
+            if c in "<>" and i + 1 < n and value[i + 1] == "(":
+                stack.append("(")
+                i += 2
+                continue
+            if c == "(" or c == "{":
+                stack.append(c)
+            elif c == ")" and top == "(":
+                stack.pop()
+            elif c == "}" and top == "{":
+                stack.pop()
+            elif c == "'":
+                stack.append("'")
+                qpos.append(i)
+            elif c == '"':
+                stack.append('"')
+                qpos.append(i)
+            elif c == "`":
+                stack.append("`")
+                qpos.append(i)
             i += 1
+        if qpos and qpos[0] > 0:
+            return value[qpos[0]]
         return ""
 
     def _auth_pass(src: str) -> str:

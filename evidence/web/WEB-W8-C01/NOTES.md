@@ -871,3 +871,20 @@ regressions green). Four new findings, all remediated:
   backtick+space substitution, ``;#`` operator comments, closer
   re-emission on glued words, 1100-deep unclosed-quote chain.
 - ``python -m ruff check``: clean.
+
+
+## Round 19 — comment/newline boundaries, literal-brace delimiters, context-aware closers, continued delimiters
+
+`VERDICT: PROBLEMS_REMAIN` (4 findings) on `fcb30b03`; all fixed.
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| `cat <<EOF \<nl># c \<nl>SECRET<nl>EOF` — comment after a continued line leaked the body | `_comment_start` did not treat `
+` inside the segment as a word boundary and counted `{`/`(` as depth, so the `#` comment went unnoticed | comment detection is quote/escape-only now; `
+` joins the boundary set and POSIX semantics are honoured (`#` inside `$(`/parens is still a comment) |
+| `<<E{OF # \` — literal `{` in a delimiter word defeated comment detection | `{` inside a word is a literal char, not a nesting context | same `_comment_start` rewrite — no depth tracking at all |
+| `Bearer $(printf %s K; : "x\"y")` dropped the outer closing quote | `_trailing_closer` paired quotes with naive `find`, mistaking `\"` and quotes inside `$(...)` for word-level closers | `_trailing_closer` reimplemented as a context-stack scanner (substitutions/ANSI-C/backticks/escapes) and emits the first truly unpaired quote |
+| `<<E\<nl>OF` — delimiter assembled across a line join searched the wrong terminator | `_HEREDOC_RE` captured the physical `E\` token before joining | queue items re-extract flag/quoted/tag from the logical command line (`\<newline>` removed) before terminator search |
+
+Focused r19 regressions: 4 new unit tests in `tests/web/w8/test_w8_c01_unit.py`.
+Suite: `84 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.
