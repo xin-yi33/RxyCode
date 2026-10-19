@@ -411,3 +411,37 @@ Round 12 (same session) found the last three ledger edges:
   row's seq) — deduped by `attribution_seq` so retries never pile up
   notes. The ledger stays deterministic; the uncertainty is on the
   record. Leg: `test_w7_c05_ambiguous_done_journaled_as_uncertain`.
+
+## Audit r13 remediation (commit pending)
+
+Round 13 (same session) found four deeper edges:
+
+- **Cancel-at-claim bypassed prior attempts**: a re-claimed run that was
+  `cancel_requested` confirmed `effects_known=True` unconditionally — a
+  dead attempt's spend vanished and uncertain in-flight effects were
+  marked clean. The fast path now calls `_has_prior_attempt_activity`
+  (any usage/agent/prior-lease event): a fresh run still confirms
+  `cancelled`; a re-claimed one aggregates prior spend via
+  `upsert_terminal_usage`, emits attribution notes, and confirms with
+  `effects_known=False` -> `recovery_required`.
+- **Cross-model retry double-charge**: `record_terminal_usage` is
+  insert-once per (model,price) — a retry on a different model would
+  insert a second whole-total row. The finalize path now calls new
+  `upsert_terminal_usage`: run-level aggregate semantics — insert when
+  empty, otherwise reconcile the aggregate up to the recomputed total
+  (largest-row absorb, never shrinks). The W2-C07 insert-once contract
+  stays untouched for API callers.
+- **Lost-lease handoff left committed ledgers short**: a successful flush
+  meant no spool file, so nothing reconciled a ledger a retry had already
+  committed. The `lost_lease` exit now runs `_reconcile_lost_lease_ledger`
+  — recompute the run total (deltas ∪ dones ∪ streamed) and
+  `adjust_terminal_usage` before returning; a missing ledger is fine —
+  the next owner's finalize reads our durable delta rows.
+- **Attribution writes are failure-honest**: `_emit_attribution_events`
+  no longer swallows per-row failures — inside spool replay a failed note
+  keeps the file (retried next pass, deduped), and `attribution` is also
+  embedded in the `usage.updated`/upsert event payload so a committed
+  ledger carries its uncertainty marker atomically.
+
+New legs: `_has_prior_attempt_activity` true/false, lost-lease reconcile
+(105 not 5), plus the r12 PG-backed upsert legs.

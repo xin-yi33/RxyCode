@@ -127,6 +127,93 @@ def record_terminal_usage(
         engine.dispose()
 
 
+def upsert_terminal_usage(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    model_id: str,
+    price_version: str,
+    tokens: int,
+    event_id: str,
+    attribution: list[dict] | None = None,
+) -> dict[str, object]:
+    """Run-level aggregate write for the worker finalize path.
+
+    The drain recomputes the WHOLE run's spend (sum over attempts) and must
+    land exactly that total — unlike ``record_terminal_usage``, which is
+    insert-once per (model, price) for API callers. A prior attempt can
+    commit a partial ledger and crash before the terminal write (audit
+    r12): with rows present, this reconciles the aggregate via the same
+    largest-row-absorb rule as ``adjust_terminal_usage`` (never shrinks);
+    with none, it inserts the single aggregate row."""
+    if tokens < 0 or not model_id or not price_version or not event_id:
+        raise UsageForbidden()
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            run = db.execute(
+                select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                raise UsageForbidden()
+            rows = db.scalars(
+                select(UsageRecord).where(UsageRecord.run_id == run.id)
+            ).all()
+            if not rows:
+                amount = _amount(tokens, price_version)
+                row = UsageRecord(
+                    id=uuid.uuid4().hex,
+                    run_id=run.id,
+                    model_id=model_id,
+                    price_version=price_version,
+                    tokens=tokens,
+                    currency="USD",
+                    amount=amount,
+                )
+                db.add(row)
+                _add_event(
+                    db,
+                    run,
+                    {
+                        "model_id": model_id,
+                        "price_version": price_version,
+                        "tokens": tokens,
+                        "currency": "USD",
+                        "amount": amount,
+                        "event_id": event_id,
+                        **({"attribution": attribution} if attribution else {}),
+                    },
+                )
+                db.commit()
+                return _public(row)
+            existing_total = sum(int(r.tokens) for r in rows)
+            target = max(rows, key=lambda r: int(r.tokens))
+            if int(tokens) > existing_total:
+                others = existing_total - int(target.tokens)
+                target.tokens = int(tokens) - others
+                target.amount = _amount(target.tokens, target.price_version)
+                _add_event(
+                    db,
+                    run,
+                    {
+                        "model_id": target.model_id,
+                        "price_version": target.price_version,
+                        "tokens": int(target.tokens),
+                        "currency": "USD",
+                        "amount": target.amount,
+                        "event_id": event_id,
+                        "reconciled": True,
+                        "run_total": int(tokens),
+                        **({"attribution": attribution} if attribution else {}),
+                    },
+                )
+                db.commit()
+            return _public(target)
+    finally:
+        engine.dispose()
+
+
 def adjust_terminal_usage(
     database_url: str,
     *,
@@ -134,6 +221,7 @@ def adjust_terminal_usage(
     run_id: str,
     tokens: int,
     event_id: str,
+    attribution: list[dict] | None = None,
 ) -> dict[str, object] | None:
     """Reconcile an already-committed ledger when late metering arrives.
 
@@ -181,6 +269,7 @@ def adjust_terminal_usage(
                     "event_id": event_id,
                     "reconciled": True,
                     "run_total": int(tokens),
+                    **({"attribution": attribution} if attribution else {}),
                 },
             )
             db.commit()

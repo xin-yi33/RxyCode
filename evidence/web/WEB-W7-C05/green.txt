@@ -214,3 +214,10 @@ ruff/py_compile: clean on drain.py + usage/service.py.
   reconcile on real dev PG.
 1 passed in 304.49s — tests/web/w7/test_w7_c05_module.py (real stack
   on r12 code). ruff/py_compile clean; git diff --check clean.
+
+== audit r13 remediation (2026-10-19) ==
+23 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. new legs: prior-activity cancel gate, lost-lease ledger
+  reconcile, upsert vs insert-once contract on real dev PG.
+1 passed in 288.35s — tests/web/w7/test_w7_c05_module.py (real stack
+  on r13 code). ruff/py_compile clean; git diff --check clean.

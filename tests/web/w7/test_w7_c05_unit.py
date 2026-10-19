@@ -1269,7 +1269,7 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         usage_service,
         "adjust_terminal_usage",
-        lambda _dsn, *, tenant_id, run_id, tokens, event_id: adjusted.append(
+        lambda _dsn, *, tenant_id, run_id, tokens, event_id, attribution=None: adjusted.append(
             (tenant_id, run_id, tokens)
         )
         or {"tokens": tokens},
@@ -1613,8 +1613,8 @@ def test_w7_c05_short_existing_ledger_reconciled_on_finalize(
         User,
     )
     from rxycode_server.usage.service import (
-        adjust_terminal_usage,
         record_terminal_usage,
+        upsert_terminal_usage,
     )
 
     upgrade_head(postgres_url)
@@ -1626,6 +1626,7 @@ def test_w7_c05_short_existing_ledger_reconciled_on_finalize(
             db.add(Organization(id=f"o-{tenant}", tenant_id=tenant))
             db.add(Project(id=f"p-{tenant}", tenant_id=tenant, name="t", repo_config={}))
             db.add(SessionRow(id=f"s2-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
+            db.add(SessionRow(id=f"s3-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
             db.add(Run(id="run-short", tenant_id=tenant, session_id=f"s2-{tenant}", status="running", request_id="r9"))
             db.commit()
 
@@ -1635,19 +1636,21 @@ def test_w7_c05_short_existing_ledger_reconciled_on_finalize(
             model_id="model-a", price_version="2026-10",
             tokens=100, event_id="evt-a",
         )
-        # Retry B recomputes 105 — insert-once returns the stale row.
-        second = record_terminal_usage(
+        # API replay semantics stay insert-once (W2-C07 contract).
+        inflated = record_terminal_usage(
             postgres_url, tenant_id=tenant, run_id="run-short",
             model_id="model-a", price_version="2026-10",
-            tokens=105, event_id="evt-b",
+            tokens=99999, event_id="evt-b",
         )
-        assert int(second["tokens"]) == 100  # insert-once contract holds
-        # The drain's reconcile step lifts the short ledger.
-        out = adjust_terminal_usage(
+        assert int(inflated["tokens"]) == 100
+        # The drain finalize path uses upsert_terminal_usage: retry B
+        # recomputes 105 and the aggregate lifts to it.
+        out = upsert_terminal_usage(
             postgres_url, tenant_id=tenant, run_id="run-short",
+            model_id="model-a", price_version="2026-10",
             tokens=105, event_id="evt-reconcile",
         )
-        assert out is not None and int(out["tokens"]) == 105
+        assert int(out["tokens"]) == 105
         with Session(engine) as db:
             total = db.scalar(
                 select(func.sum(UsageRecord.tokens)).where(
@@ -1655,5 +1658,94 @@ def test_w7_c05_short_existing_ledger_reconciled_on_finalize(
                 )
             )
         assert int(total) == 105
+        # A different-model prior row can't inflate the run total either —
+        # the upsert reconciles the aggregate, it does not add a second row.
+        with Session(engine) as db:
+            db.add(Run(id="run-mixed", tenant_id=tenant, session_id=f"s3-{tenant}", status="running", request_id="r10"))
+            db.add(UsageRecord(id="ur-x", run_id="run-mixed", model_id="model-x", price_version="2026-10", tokens=100))
+            db.commit()
+        out2 = upsert_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-mixed",
+            model_id="model-a", price_version="2026-10",
+            tokens=105, event_id="evt-mixed",
+        )
+        assert int(out2["tokens"]) == 105
+        with Session(engine) as db:
+            rows = db.scalars(
+                select(UsageRecord).where(UsageRecord.run_id == "run-mixed")
+            ).all()
+        assert len(rows) == 1 and int(rows[0].tokens) == 105
     finally:
         engine.dispose()
+
+
+def test_w7_c05_prior_activity_detected_on_cancel_claim(monkeypatch) -> None:
+    """Audit r13 F1: a re-claimed run cancelled before this worker ran still
+    had a prior attempt spend tokens — 'nothing ran' must not erase that.
+    `_has_prior_attempt_activity` sees prior metering/lease rows."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def __init__(self, n):
+            self.n = n
+
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            n = self.n
+
+            class _R:
+                def scalar(self):
+                    return n
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    import sqlalchemy
+
+    monkeypatch.setattr(
+        sqlalchemy, "create_engine", lambda *_a, **_k: _FakeEngine(2)
+    )
+    assert drain._has_prior_attempt_activity("db", "r1", 2) is True
+    monkeypatch.setattr(
+        sqlalchemy, "create_engine", lambda *_a, **_k: _FakeEngine(0)
+    )
+    assert drain._has_prior_attempt_activity("db", "r1", 2) is False
+
+
+def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
+    """Audit r13 F3: our flush journaled a usage.delta successfully (no
+    spool), but a retry already committed a smaller ledger — the lost-lease
+    handoff must reconcile the committed row up to the recovered total."""
+    import rxycode_worker.drain as drain
+
+    monkeypatch.setattr(
+        drain, "_usage_deltas_by_attempt", lambda *_a: {"1": 100, "2": 5}
+    )
+    monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
+    seen = []
+    monkeypatch.setattr(
+        "rxycode_server.usage.service.adjust_terminal_usage",
+        lambda _d, *, tenant_id, run_id, tokens, event_id, attribution=None: seen.append(
+            tokens
+        )
+        or {"tokens": tokens},
+    )
+    drain._reconcile_lost_lease_ledger(
+        "db", "t1", "r9", "2", {"tokens": 5}, {"1": 100, "2": 5}
+    )
+    assert seen == [105]
+    # Zero total -> no reconcile call at all.
+    seen.clear()
+    monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {})
+    drain._reconcile_lost_lease_ledger("db", "t1", "r9", "2", {"tokens": 0}, {})
+    assert seen == []

@@ -534,23 +534,21 @@ def _emit_attribution_events(
     for item in ambiguities:
         if int(item.get("seq") or -1) in seen:
             continue
-        try:
-            append_event(
-                database_url,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                event_type="usage.attribution",
-                payload={
-                    **item,
-                    "attribution_seq": int(item.get("seq") or -1),
-                    "ambiguous": True,
-                    "rule": "min-surplus-feasible",
-                },
-            )
-        except Exception:
-            _LOG.warning(
-                "run %s: usage.attribution note failed", run_id, exc_info=True
-            )
+        # Propagate failures: in spool replay the caller keeps the file so
+        # the note is retried next pass — a committed ledger must not lose
+        # its durable uncertainty marker to a transient error (audit r13).
+        append_event(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="usage.attribution",
+            payload={
+                **item,
+                "attribution_seq": int(item.get("seq") or -1),
+                "ambiguous": True,
+                "rule": "min-surplus-feasible",
+            },
+        )
 
 
 def _usage_spool_dir(workspaces_root: str) -> Path:
@@ -665,6 +663,7 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 run_id=run_id,
                 tokens=total,
                 event_id=uuid.uuid4().hex,
+                attribution=attributions,
             )
             _emit_attribution_events(
                 database_url, str(row["tenant_id"]), run_id, attributions
@@ -1606,6 +1605,71 @@ def _read_turn_result(workdir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _has_prior_attempt_activity(
+    database_url: str, run_id: str, epoch: int
+) -> bool:
+    """True when any event predates this worker's claim — a prior attempt's
+    lease, metering, or agent lifecycle rows mean 'cancel_requested before
+    WE ran' does NOT mean nothing ran (audit r13)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            n = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM run_events WHERE run_id = :id AND ("
+                    "  type IN ('usage.delta', 'event/agent_done', 'event/agent_started')"
+                    "  OR (type = 'worker.lease' AND "
+                    "      CAST(payload->>'epoch' AS INTEGER) <> :ep)"
+                    ")"
+                ),
+                {"id": run_id, "ep": int(epoch)},
+            ).scalar()
+        return int(n or 0) > 0
+    finally:
+        engine.dispose()
+
+
+def _reconcile_lost_lease_ledger(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    attempt_key: str,
+    streamed: dict[str, int],
+    deltas: dict[str, int],
+) -> None:
+    """After a lost lease, a successful flush only journaled a delta — a
+    retry that finalized before it landed keeps a short ledger unless we
+    reconcile here (audit r13). Recompute the full per-attempt total and
+    raise the committed ledger; ``None`` (no ledger yet) is fine — the new
+    owner's own finalize reads our durable delta rows."""
+    from rxycode_server.usage.service import adjust_terminal_usage
+
+    deltas = dict(deltas)
+    dones, _ = _agent_done_by_attempt(database_url, run_id)
+    per_attempt = {
+        a: max(deltas.get(a, 0), dones.get(a, 0))
+        for a in set(deltas) | set(dones)
+    }
+    per_attempt[attempt_key] = max(
+        per_attempt.get(attempt_key, 0), int(streamed.get("tokens") or 0)
+    )
+    total = sum(per_attempt.values())
+    if total <= 0:
+        return
+    adjust_terminal_usage(
+        database_url,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        tokens=total,
+        event_id=uuid.uuid4().hex,
+    )
+
+
+
+
 async def execute_run(
     cfg: WorkerConfig,
     run_id: str,
@@ -1635,16 +1699,77 @@ async def execute_run(
 
     from rxycode_server.events.store import append_event
     from rxycode_server.runs.service import load_run
-    from rxycode_server.usage.service import record_terminal_usage
-
-    # A run already cancel_requested at claim time never executes: nothing
-    # ran, so its effects are fully known -> 'cancelled', not recovery.
-    if await asyncio.to_thread(run_status, cfg.database_url, run_id) == "cancel_requested":
-        confirm_cancel(cfg.database_url, run_id, cfg.worker_id, epoch, effects_known=True)
-        return True
+    from rxycode_server.usage.service import upsert_terminal_usage
 
     identity = await asyncio.to_thread(_run_identity, cfg.database_url, run_id)
     tenant_id = identity["tenant_id"]
+
+    # A run cancel_requested at claim time never executes ON THIS worker —
+    # but a prior attempt may have run and died: its spend and in-flight
+    # effects are still real (audit r13). Only a genuinely fresh run
+    # confirms cleanly; otherwise recover prior spend onto the ledger and
+    # let confirm_cancel mark it recovery_required.
+    if await asyncio.to_thread(run_status, cfg.database_url, run_id) == "cancel_requested":
+        prior = await asyncio.to_thread(
+            _has_prior_attempt_activity, cfg.database_url, run_id, epoch
+        )
+        if prior:
+            deltas0 = await asyncio.to_thread(
+                _usage_deltas_by_attempt, cfg.database_url, run_id
+            )
+            dones0, attributions0 = await asyncio.to_thread(
+                _agent_done_by_attempt, cfg.database_url, run_id
+            )
+            total0 = sum(
+                max(deltas0.get(a, 0), dones0.get(a, 0))
+                for a in set(deltas0) | set(dones0)
+            )
+            if total0 > 0:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            upsert_terminal_usage,
+                            cfg.database_url,
+                            tenant_id=tenant_id,
+                            run_id=run_id,
+                            model_id=_ledger_model(cfg.model),
+                            price_version=_PRICE_VERSION,
+                            tokens=total0,
+                            event_id=uuid.uuid4().hex,
+                            attribution=attributions0,
+                        ),
+                        timeout=_LEASE_IO_BUDGET,
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "run %s: cancelled-run ledger write failed",
+                        run_id,
+                        exc_info=True,
+                    )
+            if attributions0:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _emit_attribution_events,
+                            cfg.database_url,
+                            tenant_id,
+                            run_id,
+                            attributions0,
+                        ),
+                        timeout=_LEASE_IO_BUDGET,
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "run %s: attribution notes failed", run_id, exc_info=True
+                    )
+        confirm_cancel(
+            cfg.database_url,
+            run_id,
+            cfg.worker_id,
+            epoch,
+            effects_known=not prior,
+        )
+        return True
 
     ledger_model = _ledger_model(cfg.model)
     turn_error = ""
@@ -1916,6 +2041,29 @@ async def execute_run(
                 )
 
     if lost_lease:
+        # Our flushed usage.delta is durable but a retry may already have
+        # committed a short ledger — reconcile before handing off (r13).
+        # None (no ledger yet) is fine: the new owner's finalize reads the
+        # journaled delta rows itself.
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    _reconcile_lost_lease_ledger,
+                    cfg.database_url,
+                    tenant_id,
+                    run_id,
+                    attempt_key,
+                    streamed,
+                    deltas,
+                ),
+                timeout=_LEASE_IO_BUDGET,
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: lost-lease ledger reconcile failed; delta rows stay durable",
+                run_id,
+                exc_info=True,
+            )
         _LOG.warning("run %s: lease lost mid-flight; new owner finishes", run_id)
         return False
 
@@ -1953,11 +2101,10 @@ async def execute_run(
     )
     tokens = sum(per_attempt.values())
     usage_error = ""
-    recorded: dict[str, Any] | None = None
     try:
-        recorded = await asyncio.wait_for(
+        await asyncio.wait_for(
             asyncio.to_thread(
-                record_terminal_usage,
+                upsert_terminal_usage,
                 cfg.database_url,
                 tenant_id=tenant_id,
                 run_id=run_id,
@@ -1965,40 +2112,17 @@ async def execute_run(
                 price_version=_PRICE_VERSION,
                 tokens=tokens,
                 event_id=agent_done_id,
+                attribution=attributions,
             ),
             timeout=_LEASE_IO_BUDGET,
         )
     except Exception as exc:
         usage_error = f"terminal usage write failed: {type(exc).__name__}: {exc}"
         _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)
-    # Insert-once may have returned an existing SHORTER ledger — a prior
-    # attempt committed its own usage and crashed before the terminal
-    # write (audit r12). Reconcile the aggregate up to the recomputed
-    # per-attempt total so the ledger never stays short.
-    if (
-        not usage_error
-        and recorded is not None
-        and int(recorded.get("tokens") or 0) < tokens
-    ):
-        from rxycode_server.usage.service import adjust_terminal_usage
-
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    adjust_terminal_usage,
-                    cfg.database_url,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    tokens=tokens,
-                    event_id=uuid.uuid4().hex,
-                ),
-                timeout=_LEASE_IO_BUDGET,
-            )
-        except Exception as exc:
-            usage_error = (
-                f"terminal usage reconcile failed: {type(exc).__name__}: {exc}"
-            )
-            _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)
+    # `upsert_terminal_usage` writes the RUN-LEVEL aggregate: an existing
+    # shorter ledger (a prior attempt committed partial spend and crashed
+    # before its terminal write — audit r12) is reconciled up to the
+    # recomputed total inside the same run lock; a fresh ledger inserts.
     if attributions:
         try:
             await asyncio.wait_for(

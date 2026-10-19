@@ -251,3 +251,18 @@ Final verdict: `<filled by the Codex audit>` (session
   heuristic still binds min-surplus, but the record is honest about the
   uncertainty instead of silently emitting an inferred confirmed total.
 - Non-stack legs 21/21 green; module stack test re-running.
+
+## r13 remediation self-check
+
+- Cancel-at-claim: `_has_prior_attempt_activity` gates
+  `effects_known`; prior spend is upserted onto the ledger before
+  confirm_cancel, and ambiguous rows journal usage.attribution.
+- `upsert_terminal_usage` (new service fn) gives the drain run-level
+  aggregate semantics — the cross-model second-row inflation can't
+  happen; `record_terminal_usage` keeps its pinned insert-once contract.
+- Lost-lease exit calls `_reconcile_lost_lease_ledger` — a committed
+  short ledger lifts to the recomputed total before handoff.
+- Attribution emit failures propagate inside replay (file retained,
+  retried, deduped by attribution_seq) and are embedded in the ledger
+  event payload for atomicity.
+- Non-stack legs 23/23 green; module stack test re-running.

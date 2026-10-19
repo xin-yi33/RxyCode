@@ -110,3 +110,25 @@ docker legs), `NOTES.md` (topology, deviations, honest labels).
 - Cancel/timeout mid-provider-call: usage must still land (usage.delta).
 - Default workspace root `/tmp/rxycode-runs` under bwrap (no compose
   override) — the /tmp shadowing regression is unit-covered.
+
+## Status at r12 audit submission (2026-10-19)
+
+- Commits on feat/rxycode-web: r10 `6e0403d9`, r11 `818a768d`.
+- r11 fixes verified green: 19 non-stack legs + module stack test (454s).
+- Attribution rule is now min-surplus among feasible buckets
+  (done >= owning epoch's metered); replay dead-letters only after a
+  terminal-status-observed second reconcile; spool flag writes atomic.
+- Remaining theoretical residual (documented, not solved): an untagged
+  legacy done is information-theoretically indistinguishable when a
+  crashed epoch's metered total nearly equals a later epoch's final
+  total — min-surplus picks the closer continuation, which can only
+  mis-bind in that narrow band. All new writes are attempt-tagged; the
+  ambiguity exists only for legacy untagged rows.
+
+## What the next auditor should probe
+
+- Spool replay interleavings where the ledger commits between the two
+  reconcile reads (now handled by the post-terminal re-adjust).
+- Multiple untagged dones in one run (filled-epoch exclusion).
+- `_usage_deltas_by_attempt` untagged-value compatibility vs the new
+  min-surplus done rule (they are independent streams).
