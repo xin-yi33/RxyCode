@@ -1,0 +1,6 @@
+
+tests\web\w7\test_w7_c06_unit.py:36: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/web/w7/test_w7_c06_unit.py::test_w7_c06_contract - AssertionErro...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.37s

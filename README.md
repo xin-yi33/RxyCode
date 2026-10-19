@@ -410,6 +410,43 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 ---
 
+## 🌐 RxyCode Web (multi-tenant cloud workspace — `feat/rxycode-web`)
+
+This branch adds a deployable multi-tenant web surface on top of the same
+headless core: PostgreSQL-backed durable runs, an SSE event spine, a
+React/Vite workbench, and a worker that executes each turn inside a real
+kernel boundary (Linux user/pid/IPC/UTS namespaces via bubblewrap). Status
+below is honest: `shipped` rows cite the evidence dir and test file on this
+checkout; `experimental` works but is not release-hardened; `planned` has
+no running code path; `blocked` names its blocker.
+
+| Capability | Status | Evidence | Verification |
+|---|---|---|---|
+| Tenant auth (local password / GitHub OAuth), CSRF+Origin write gate | shipped | evidence/web/WEB-W2-C02 | tests/web/w2/test_w2_c02_module.py |
+| Durable runs + fenced worker lease (crash-safe reclaim) | shipped | evidence/web/WEB-W2-C03 | tests/web/w2/test_w2_c03_module.py |
+| EventStore + Outbox + SSE replay/reconnect (seq exactly-once) | shipped | evidence/web/WEB-W7-C02 | tests/web/w7/test_w7_c02_module.py |
+| Persisted approvals/questions + cross-day resume | shipped | evidence/web/WEB-W2-C06 | tests/web/w2/test_w2_c06_unit.py |
+| React workbench: login, sessions, diff review, PTY, workbench | shipped | evidence/web/WEB-W3-C06 | tests/web/w3/test_w3_c06_module.py |
+| Local Full runner + device pairing + emergency stop | shipped | evidence/web/WEB-W4-C06 | tests/web/w4/test_w4_c06_module.py |
+| Cloud sandbox control plane + tenant fs/net isolation | shipped | evidence/web/WEB-W5-C02 | tests/web/w5/test_w5_c02_unit.py |
+| Reproducible agent evals + baseline compare | shipped | evidence/web/WEB-W7-C03 | tests/web/w7/test_w7_c03_unit.py |
+| OpenTelemetry spans + per-run cost ledger | shipped | evidence/web/WEB-W7-C04 | tests/web/w7/test_w7_c04_unit.py |
+| One-command compose deploy + HTTPS gateway + confined turns | shipped | evidence/web/WEB-W7-C05 | tests/web/w7/test_w7_c05_module.py |
+| Security review corpus (auth/injection/leak sweeps) | shipped | evidence/web/WEB-W7-C01 | tests/web/w7/test_w7_c01_unit.py |
+| Public demo full-stack browser E2E | blocked: apps/web carries no Playwright dependency | evidence/web/WEB-W7-C06 | tests/web/w7/test_w7_c06_module.py |
+| Anonymous visitor cloud run over HTTP | blocked: no anonymous run endpoint exists; unauthenticated access is refused 401/403 by design | evidence/web/WEB-W7-C06 | tests/web/w7/test_w7_c06_module.py |
+| Hosted public demo URL | planned | — | bring your own host via infra/compose |
+
+Deploy it yourself: `docs/deploy/web-runbook.md` (bring-up, migrations,
+upgrade/rollback, boundaries). User guide: `docs/product/web-user-guide.md`.
+Architecture + ADR chain: `docs/architecture/web-system-design.md`.
+
+> Scope note: the public worker executes only `cloud:{tenant}:{workspace}`
+> targets inside the per-turn sandbox — never a local Full run. Full
+> permission is a local-runner feature (W4), refused on the shared worker.
+
+---
+
 ## 📦 Requirements
 
 | Requirement | Recommended Version | Notes |
