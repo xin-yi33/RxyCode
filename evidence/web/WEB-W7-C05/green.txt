@@ -189,3 +189,14 @@ python -m pytest tests/web/w7/test_w7_c05_module.py -q
   compatible untagged delta attribution, spool replay ledger reconcile.
 1 passed in 414.08s — tests/web/w7/test_w7_c05_module.py (real stack).
 ruff check: clean on drain.py + usage/service.py.
+
+== audit r10 remediation (2026-10-19) ==
+18 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. new legs: exact-metered-match untagged done attribution
+  (audit counterexample → 105 not 200), PG-backed
+  adjust_terminal_usage multi-row reconcile (real dev PG), journaled-
+  spool retention + dead-letter shapes.
+1 passed in 356.07s — tests/web/w7/test_w7_c05_module.py (real stack
+  on r10 code: claim -> confined turn -> honest provider-boundary
+  failure -> terminal + usage ledger; stale-lease/restart legs green).
+ruff/py_compile: clean on drain.py + usage/service.py.

@@ -199,3 +199,24 @@ Final verdict: `<filled by the Codex audit>` (session
   untagged `usage.delta` → claimed epoch with the largest bucket <= its
   value. The r9 interleave (tagged delta 100 in e1 + claim e2 + delayed
   untagged done 100) records 105.
+
+## r10 remediation self-check
+
+- `_agent_done_by_attempt` now exact-matches an untagged `agent_done`
+  against metered `usage.delta` buckets BEFORE the earliest-open-epoch
+  fallback: e1 spends 5 and dies silently, e2 spends 100 and emits the
+  only (untagged) done — it binds to e2, total 105. Without the match it
+  would hit e1 and charge 200. Unit leg:
+  `test_w7_c05_untagged_done_exact_metered_match`.
+- `_replay_usage_spool` no longer deletes a file just because its delta
+  was journaled: a `journaled` flag inside the payload marks that state;
+  the file stays until a UsageRecord exists to reconcile. Terminal run +
+  no ledger even after replay → dead-lettered (renamed .dead, never
+  silently re-journaled, still logged).
+- `adjust_terminal_usage` locks every UsageRecord for the run, computes
+  `needed = recovered_total - sum(other rows)`, and assigns it to the
+  largest row — reconciling a (model,price)-split ledger raises the
+  aggregate to exactly the recovered total instead of double-counting
+  one row at the full value. PG-backed leg seeds real 60+60 / 5 / none
+  shapes on 127.0.0.1:55432.
+- Non-stack legs 18/18 green; module stack test re-running.

@@ -154,27 +154,36 @@ def adjust_terminal_usage(
             ).scalar_one_or_none()
             if run is None:
                 raise UsageForbidden()
-            existing = db.scalar(select(UsageRecord).where(UsageRecord.run_id == run.id))
-            if existing is None:
+            rows = db.scalars(
+                select(UsageRecord).where(UsageRecord.run_id == run.id)
+            ).all()
+            if not rows:
                 return None
-            if int(tokens) <= int(existing.tokens):
-                return _public(existing)
-            existing.tokens = int(tokens)
-            existing.amount = _amount(tokens, existing.price_version)
+            existing_total = sum(int(r.tokens) for r in rows)
+            if int(tokens) <= existing_total:
+                return _public(max(rows, key=lambda r: int(r.tokens)))
+            # 多 (model, price) 行场景：让最大行吸收「新总量 − 其余行之
+            # 和」，而不是把整量写进一行——否则其他行与整量并存会重复
+            # 计账（audit r10）。
+            target = max(rows, key=lambda r: int(r.tokens))
+            others = existing_total - int(target.tokens)
+            target.tokens = int(tokens) - others
+            target.amount = _amount(target.tokens, target.price_version)
             _add_event(
                 db,
                 run,
                 {
-                    "model_id": existing.model_id,
-                    "price_version": existing.price_version,
-                    "tokens": int(tokens),
+                    "model_id": target.model_id,
+                    "price_version": target.price_version,
+                    "tokens": int(target.tokens),
                     "currency": "USD",
-                    "amount": existing.amount,
+                    "amount": target.amount,
                     "event_id": event_id,
                     "reconciled": True,
+                    "run_total": int(tokens),
                 },
             )
             db.commit()
-            return _public(existing)
+            return _public(target)
     finally:
         engine.dispose()

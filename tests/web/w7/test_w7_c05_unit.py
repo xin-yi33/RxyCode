@@ -1346,3 +1346,122 @@ def test_w7_c05_streamed_flush_writes_delta(monkeypatch) -> None:
     written.clear()
     drain._flush_streamed_usage("db", "t1", "r7", 3, {"tokens": 73}, deltas={"3": 80})
     assert written == []
+
+
+def test_w7_c05_untagged_done_exact_metered_match(monkeypatch) -> None:
+    """Audit r10 counterexample: epoch 1 spends 5 and crashes WITHOUT a
+    done; epoch 2 spends 100 and emits the run's only (untagged, legacy)
+    done. Earliest-open-epoch attribution would charge it to epoch 1 →
+    200; exact metered-bucket matching binds it to epoch 2 → 105."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            sql = str(stmt)
+
+            class _R:
+                def all(self):
+                    if "worker.lease" in sql:
+                        return [
+                            (1, {"worker_id": "w", "epoch": 1}),
+                            (20, {"worker_id": "w", "epoch": 2}),
+                        ]
+                    if "event/agent_done" in sql:
+                        # Untagged — epoch 2's own legacy completion.
+                        return [(25, {"tokens": 100})]
+                    if "usage.delta" in sql:
+                        return [
+                            (5, {"input_tokens": 5, "output_tokens": 0, "attempt": "1"}),
+                            (22, {"input_tokens": 100, "output_tokens": 0, "attempt": "2"}),
+                        ]
+                    return []
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    dones = drain._agent_done_by_attempt("db", "run-42")
+    assert dones == {"2": 100}  # NOT {"1": 100} — value pins it to epoch 2
+    deltas = drain._usage_deltas_by_attempt("db", "run-42")
+    per_attempt = {
+        a: max(deltas.get(a, 0), dones.get(a, 0))
+        for a in set(deltas) | set(dones)
+    }
+    assert sum(per_attempt.values()) == 105
+
+
+def test_w7_c05_adjust_terminal_usage_multi_row(postgres_url: str) -> None:
+    """Audit r10: a run may hold several (model, price) UsageRecord rows —
+    reconciliation must raise the total across rows, not overwrite one row
+    with the whole-run total (60+60 → 130 becomes 70+60, never 130+60)."""
+    import rxycode_worker.drain as drain  # noqa: F401  (sys.path bootstrap)
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import (
+        Organization,
+        Project,
+        Run,
+        SessionRow,
+        UsageRecord,
+        User,
+    )
+    from rxycode_server.usage.service import adjust_terminal_usage
+
+    upgrade_head(postgres_url)
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            db.add(User(id=f"u-{tenant}", github_id=None, kind="local"))
+            db.add(Organization(id=f"o-{tenant}", tenant_id=tenant))
+            db.add(Project(id=f"p-{tenant}", tenant_id=tenant, name="t", repo_config={}))
+            db.add(SessionRow(id=f"s-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
+            db.add(Run(id="run-multi", tenant_id=tenant, session_id=f"s-{tenant}", status="succeeded", request_id="r1"))
+            db.add(Run(id="run-single", tenant_id=tenant, session_id=f"s-{tenant}", status="succeeded", request_id="r2"))
+            db.add(UsageRecord(id="ur-a", run_id="run-multi", model_id="m-a", price_version="2026-10", tokens=60))
+            db.add(UsageRecord(id="ur-b", run_id="run-multi", model_id="m-b", price_version="2026-10", tokens=60))
+            db.add(UsageRecord(id="ur-c", run_id="run-single", model_id="m-a", price_version="2026-10", tokens=5))
+            db.commit()
+
+        # Multi-row: recovered total 130 → largest row absorbs 130-60=70.
+        out = adjust_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-multi",
+            tokens=130, event_id="evt-adj-1",
+        )
+        assert out is not None
+        with Session(engine) as db:
+            rows = db.scalars(
+                select(UsageRecord).where(UsageRecord.run_id == "run-multi")
+            ).all()
+            total = sum(int(r.tokens) for r in rows)
+        assert total == 130
+        # Single-row short ledger → raised to recovered total.
+        out2 = adjust_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-single",
+            tokens=78, event_id="evt-adj-2",
+        )
+        assert out2 is not None and int(out2["tokens"]) == 78
+        # No ledger at all → None (caller's spool file stays for next pass).
+        with Session(engine) as db:
+            db.add(Run(id="run-none", tenant_id=tenant, session_id=f"s-{tenant}", status="failed", request_id="r3"))
+            db.commit()
+        assert adjust_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-none",
+            tokens=50, event_id="evt-adj-3",
+        ) is None
+    finally:
+        engine.dispose()

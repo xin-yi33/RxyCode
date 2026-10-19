@@ -80,6 +80,13 @@ _TERMINAL_PROJECTIONS = frozenset({"assistant.final"})
 #: and the monotonic deadline below still expires the turn on time.
 _LEASE_IO_BUDGET = 15.0
 
+#: Run statuses from which no further ledger write can come — used by the
+#: usage-spool replay to dead-letter a file whose run closed without a
+#: UsageRecord (the journaled delta row still preserves the spend).
+_TERMINAL_STATUSES = frozenset(
+    {"succeeded", "failed", "cancelled", "recovery_required"}
+)
+
 #: run.permission_profile -> Session.prompt(permission_mode=...). The durable
 #: profile is an opaque string; only real vocabulary maps — anything else
 #: falls back to the configured default rather than silently widening.
@@ -373,13 +380,16 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     """``event/agent_done`` snapshots grouped by lease epoch — the RunJournal
     tags each row with the attempt that produced it.
 
-    Untagged legacy rows need attribution that cannot double-charge: one
-    attempt emits at most ONE done row, so an untagged row lands in the
-    earliest claim epoch (among epochs already claimed by its seq) that has
-    no done yet — a delayed epoch-1 completion arriving after epoch 2's
-    claim still binds to epoch 1 instead of inflating epoch 2's bucket
-    (audit r9). Only when every candidate epoch already holds a done does
-    the row fall back to seq-anchoring."""
+    Untagged legacy rows need attribution that cannot double-charge.
+    Seq-anchoring mis-binds a delayed epoch-1 completion that commits after
+    epoch 2's claim (audit r9); "earliest epoch without a done" instead
+    overcharges when the earlier attempt crashed done-less and the row is
+    epoch 2's own completion (audit r10). The disambiguator that survives
+    both: a done row's tokens equal its own attempt's metered total, so an
+    untagged row prefers the earliest unclaimed-done candidate whose
+    metered bucket (deltas ∪ dones so far) EQUALS its value — a delayed
+    completion rejoins the attempt it completes. Absent an exact match it
+    falls to the earliest candidate lacking a done, then seq-anchoring."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -393,9 +403,31 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
                 ),
                 {"id": run_id},
             ).all()
+            # Metered buckets need the sibling stream too — an untagged
+            # done row's value equals its own attempt's usage.delta total,
+            # which is the only signal separating "delayed epoch-1
+            # completion" from "epoch-2's own legacy completion".
+            metered = conn.execute(
+                text(
+                    "SELECT seq, payload FROM run_events "
+                    "WHERE run_id = :id AND type = 'usage.delta' ORDER BY seq"
+                ),
+                {"id": run_id},
+            ).all()
             bounds = _lease_epochs(conn, run_id)
     finally:
         engine.dispose()
+    metered_by_attempt: dict[str, int] = {}
+    for _seq, payload in metered:
+        if not isinstance(payload, dict):
+            continue
+        attempt = str(payload.get("attempt") or "")
+        if attempt:
+            metered_by_attempt[attempt] = max(
+                metered_by_attempt.get(attempt, 0),
+                int(payload.get("input_tokens") or 0)
+                + int(payload.get("output_tokens") or 0),
+            )
     latest: dict[str, int] = {}
     filled: set[str] = set()
     for seq, payload in rows:
@@ -407,11 +439,26 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
             filled.add(attempt)
             latest[attempt] = max(latest.get(attempt, 0), tokens)
             continue
-        candidates = [e for b_seq, e in bounds if int(b_seq) <= int(seq) and e]
-        target = next(
-            (e for e in dict.fromkeys(candidates) if e not in filled),
-            _epoch_at_seq(bounds, int(seq)) or "",
+        candidates = list(
+            dict.fromkeys(
+                e for b_seq, e in bounds if int(b_seq) <= int(seq) and e
+            )
         )
+        open_candidates = [e for e in candidates if e not in filled]
+        # Exact-match first: the row equals its own attempt's metered
+        # total, so it rejoins the attempt it completes.
+        target = next(
+            (
+                e
+                for e in open_candidates
+                if max(metered_by_attempt.get(e, 0), latest.get(e, 0)) == tokens
+            ),
+            None,
+        )
+        if target is None:
+            target = open_candidates[0] if open_candidates else (
+                _epoch_at_seq(bounds, int(seq)) or ""
+            )
         filled.add(target)
         latest[target] = max(latest.get(target, 0), tokens)
     return latest
@@ -465,51 +512,92 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
     for path in files:
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
-            run_id = str(row["run_id"])
-            append_event(
-                database_url,
-                tenant_id=str(row["tenant_id"]),
-                run_id=run_id,
-                event_type="usage.delta",
-                payload={
-                    "input_tokens": int(row.get("input_tokens") or 0),
-                    "output_tokens": int(row.get("output_tokens") or 0),
-                    "cumulative": True,
-                    "attempt": str(row.get("attempt") or ""),
-                    "final": True,
-                    "spooled": True,
-                },
-            )
         except Exception:
-            continue  # stays on disk for the next pass
-        # A retry may have already finalized a smaller ledger before this
-        # spool replayed — the journaled delta alone leaves it short.
-        # Recompute the run total and raise the committed UsageRecord to
-        # match (audit r9). No ledger row yet → the eventual terminal
-        # writer aggregates the delta itself.
-        try:
-            deltas = _usage_deltas_by_attempt(database_url, run_id)
-            dones = _agent_done_by_attempt(database_url, run_id)
-            total = sum(max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones))
-            if total > 0:
-                from rxycode_server.usage.service import (
-                    adjust_terminal_usage,
-                )
-
-                adjust_terminal_usage(
+            continue
+        run_id = str(row.get("run_id") or "")
+        if not run_id:
+            path.unlink(missing_ok=True)  # malformed file — dead-letter
+            continue
+        if not row.get("journaled"):
+            try:
+                append_event(
                     database_url,
                     tenant_id=str(row["tenant_id"]),
                     run_id=run_id,
-                    tokens=total,
-                    event_id=uuid.uuid4().hex,
+                    event_type="usage.delta",
+                    payload={
+                        "input_tokens": int(row.get("input_tokens") or 0),
+                        "output_tokens": int(row.get("output_tokens") or 0),
+                        "cumulative": True,
+                        "attempt": str(row.get("attempt") or ""),
+                        "final": True,
+                        "spooled": True,
+                    },
                 )
+            except Exception:
+                continue  # stays on disk for the next pass
+            # Mark journaled so a kept-for-reconcile file does not journal
+            # a duplicate delta row on every pass (audit r10).
+            row["journaled"] = True
+            try:
+                path.write_text(json.dumps(row), encoding="utf-8")
+            except OSError:
+                pass  # worst case: one duplicate row — max() absorbs it
+
+        # A retry may finalize a smaller ledger BEFORE this spool replays —
+        # or AFTER it, computing its total from a stale read. Either way the
+        # committed UsageRecord ends up short (audit r9/r10). The file is
+        # therefore kept until a reconcile lands: no ledger yet → keep;
+        # ledger short → raise it → delete. A terminal run that never
+        # gained a ledger dead-letters (the delta row stays durable; the
+        # ledger gap was already surfaced as run.error by its owner).
+        try:
+            deltas = _usage_deltas_by_attempt(database_url, run_id)
+            dones = _agent_done_by_attempt(database_url, run_id)
+            total = sum(
+                max(deltas.get(a, 0), dones.get(a, 0))
+                for a in set(deltas) | set(dones)
+            )
+            if total <= 0:
+                continue  # inconsistent — keep for a later pass
+            from rxycode_server.usage.service import (
+                UsageForbidden,
+                adjust_terminal_usage,
+            )
+
+            reconciled = adjust_terminal_usage(
+                database_url,
+                tenant_id=str(row["tenant_id"]),
+                run_id=run_id,
+                tokens=total,
+                event_id=uuid.uuid4().hex,
+            )
+        except UsageForbidden:
+            # The run/tenant no longer exists — the journaled delta row is
+            # durable and nothing can ever reconcile it. Dead-letter.
+            _LOG.warning(
+                "run %s: spool reconcile forbidden (run/tenant gone);"
+                " dropping file", run_id,
+            )
+            reconciled = {}
         except Exception:
             _LOG.warning(
                 "run %s: spool replay ledger reconcile failed; next pass retries",
                 run_id,
                 exc_info=True,
             )
-            continue  # keep the spool file — reconcile not durable yet
+            continue
+        if reconciled is None:
+            try:
+                status = run_status(database_url, run_id)
+            except Exception:
+                status = ""
+            if status not in _TERMINAL_STATUSES:
+                continue  # a later finalize or next replay reconciles
+            _LOG.warning(
+                "run %s: terminal without ledger; spool dead-lettered "
+                "(delta row already durable)", run_id,
+            )
         try:
             path.unlink(missing_ok=True)
         except OSError:

@@ -331,3 +331,34 @@ Round 9 (same session) found three P2 refinements, all fixed:
   candidate epoch whose bucket they continue (largest bucket <= value),
   biased to under-count rather than double-charge. Both covered by new
   unit legs reproducing the audit counterexample → 105, not 200.
+
+## Audit r10 remediation (commit pending)
+
+Round 10 (same session) pushed the ledger boundaries further — three fixes:
+
+- **Exact-match attribution before earliest-open fallback**: the r9 rule
+  (untagged done → earliest claimed epoch without a done) still
+  over-charges when an *earlier* epoch crashed without a completion —
+  e1 spent 5 with no done, e2 spent 100 and produced the only untagged
+  done; binding it to e1 charges 200 instead of 105.
+  `_agent_done_by_attempt` now first seeks the earliest open epoch whose
+  metered `usage.delta` bucket EQUALS the done value (a completion's
+  token total matches the attempt's own cumulative meter), and only
+  falls back to the earliest open epoch when no bucket matches. New unit
+  leg `test_w7_c05_untagged_done_exact_metered_match` reproduces the
+  counterexample → 105, not 200.
+- **Spool survives the first-ledger race**: replay journaled the late
+  delta, saw no UsageRecord yet, and deleted the file — then a retry's
+  `record_terminal_usage` committed a SHORT ledger, and the recovered
+  spend was gone. The spool now carries a `journaled` marker: replay
+  skips the already-journaled append and keeps the file until a ledger
+  exists to reconcile. A terminal run with no ledger at all after replay
+  is dead-lettered (quarantined aside, never silently re-journaled).
+- **Multi-row reconciliation**: `adjust_terminal_usage` previously wrote
+  the whole-run total onto one UsageRecord, leaving other (model, price)
+  rows intact → aggregate inflated. It now locks ALL rows for the run,
+  computes `needed = total - sum(others)`, and assigns the remainder to
+  the largest row — the aggregate becomes exactly the recovered total
+  (60+60 → 130 reconciles to 70+60, never 130+60). PG-backed unit leg
+  `test_w7_c05_adjust_terminal_usage_multi_row` covers multi-row,
+  single-row-short-ledger, and no-ledger (file-retained) shapes.
