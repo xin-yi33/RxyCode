@@ -169,3 +169,13 @@ python -m pytest tests/web/w7/test_w7_c05_module.py -q
 Full unit file rerun: 10 passed + 1 ERROR — the compose contract leg hit
   STACK_TIMEOUT purely on PyPI SSL EOF inside api/worker pip installs
   (same external flake seen twice today); leg retried separately.
+
+== audit r7 remediation rerun ==
+python -m pytest tests/web/w7/test_w7_c05_unit.py -q -k <non-stack legs>
+  -> 13 passed in ~189s (watchdog a-e, argv order, stale result, config
+     placement, per-attempt delta sum, agent_done attempt grouping,
+     streamed-flush-once, gate matrix, negative validator, projections)
+python -m pytest tests/web/w7/test_w7_c05_module.py -q
+  -> 1 passed in 318.23s — full compose stack on r7 code: cloud run
+     claimed, confined turn executed, provider-boundary honest failure,
+     terminal + usage rows committed; stale-lease/restart legs green.

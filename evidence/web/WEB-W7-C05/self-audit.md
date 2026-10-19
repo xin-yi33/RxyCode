@@ -155,3 +155,19 @@ Final verdict: `<filled by the Codex audit>` (session
 - agent_done merges via max — never shrinks a larger measured count.
 - bwrap mounts --dev/--tmpfs before ALL binds — .sandboxes conf bind under
   a /tmp workspaces root stays visible (unit asserts ordering).
+
+## r7 remediation self-check
+
+- RunJournal stamps `attempt` (=RXYCODE_TURN_EPOCH, the lease epoch) into
+  every journaled payload — agent_done snapshots are attributable to the
+  attempt that produced them; non-web callers see one extra payload key.
+- `_agent_done_by_attempt` buckets `event/agent_done` by attempt; the
+  ledger now computes max(deltas, dones, streamed, result) per attempt
+  then SUMS across epochs — A's done(100) + B's heartbeat(5) = 105.
+- `_flush_streamed_usage` persists pipe-delivered spend as a final
+  attempt-tagged `usage.delta` BEFORE the lost-lease early return —
+  journaling not terminal state, so retries recover the spend and lease
+  ownership stays untouched. Idempotent: no row when the cumulative
+  heartbeat already covers it.
+- Unit legs green 13/13 (incl. done-grouping + flush-once); module stack
+  test re-running.

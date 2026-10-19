@@ -271,3 +271,23 @@ Round 6 (same session) refined three more edges; all fixed:
   child's final `__RXY_USAGE__` write is no longer dropped; CancelledError
   is caught explicitly (it's BaseException-derived, not Exception).
 - Verified: contract leg retry passed in 230s on the same stack definition.
+
+## Audit r7 remediation (commit pending)
+
+Round 7 (same audit session) found the last two metering edges; fixed:
+
+- **agent_done is now attempt-attributed**: `RunJournal.record` stamps every
+  journaled payload with `attempt` from `RXYCODE_TURN_EPOCH` (the child env
+  carries the lease epoch). `_agent_done_by_attempt` buckets
+  `event/agent_done` snapshots by epoch and the ledger merges
+  `max(deltas, dones)` per attempt then sums — attempt A's 100 + retry B's
+  5 records 105, never A's snapshot re-charged inside B's bucket (200).
+- **Lost-lease flush**: stderr-delivered spend that never made a heartbeat
+  is flushed as a final `usage.delta` row (`final: true`, attempt-tagged)
+  on EVERY exit path — including the lost-lease return that must not write
+  terminal state. The flush is journaling, not ownership, so a retry's
+  ledger recovers the spend (probe: 73 tokens after last heartbeat +
+  lease lost → now durable instead of discarded).
+- Regression coverage: `agent_done` epoch grouping, flush-once semantics
+  (no duplicate row when cumulative already covers the pipe value), plus
+  the existing watchdog/sandbox/projection suite — 13/13 unit legs green.

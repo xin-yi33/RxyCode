@@ -6,6 +6,7 @@ Plan changes are steer commands on the run. They are not written to EventStore.
 from __future__ import annotations
 
 import logging
+import os
 from contextvars import ContextVar
 from typing import Any, Mapping
 
@@ -44,15 +45,14 @@ _CLOSED_TOOL_SPANS_MAX = 4096
 #: ran, while a close is journaled from an asyncio context COPY — clearing
 #: a self-binding plus the still-open check at use time covers every
 #: cross-context case without ever touching another agent's binding.
-_BOUND_AGENT_SPAN: ContextVar[Any | None] = ContextVar(
-    "rxycode_bound_agent_span", default=None
-)
+_BOUND_AGENT_SPAN: ContextVar[Any | None] = ContextVar("rxycode_bound_agent_span", default=None)
 
 
 def _mark_tool_span_closed(key: tuple[str, str]) -> None:
     _CLOSED_TOOL_SPANS[key] = None
     while len(_CLOSED_TOOL_SPANS) > _CLOSED_TOOL_SPANS_MAX:
         _CLOSED_TOOL_SPANS.pop(next(iter(_CLOSED_TOOL_SPANS)), None)
+
 
 _AGENT_OPEN_METHODS = {"event/agent_started"}
 _AGENT_CLOSE_METHODS = {
@@ -147,10 +147,14 @@ def run_matches_session(run_id: str, root: str, child_id: str) -> bool:
     """True when this child tree belongs to the active web run."""
     if run_id in {root, child_id}:
         return True
-    return bool(root) and root == _CURRENT.get("session_id", "") and _CURRENT.get("run_id") == run_id
+    return (
+        bool(root) and root == _CURRENT.get("session_id", "") and _CURRENT.get("run_id") == run_id
+    )
 
 
-async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[str, Any]) -> dict[str, object]:
+async def deliver_persisted_command(
+    run_id: str, event_type: str, payload: dict[str, Any]
+) -> dict[str, object]:
     """Run a committed steer or child-cancel command on the bound worker."""
     slot = _BOUND.get(run_id, {})
     if event_type == "steer.accepted":
@@ -173,7 +177,11 @@ async def deliver_persisted_command(run_id: str, event_type: str, payload: dict[
             "nodes": [{"id": session_id, "parent_id": root, "status": "running", "role": ""}],
         }
         result = cancel_child(tree, session_id, manager=manager)
-        return {"delivered": str(result["outcome"]).startswith("cancelled"), "run_id": run_id, "outcome": result["outcome"]}
+        return {
+            "delivered": str(result["outcome"]).startswith("cancelled"),
+            "run_id": run_id,
+            "outcome": result["outcome"],
+        }
     return {"delivered": False, "reason": "unknown command", "run_id": run_id}
 
 
@@ -195,9 +203,7 @@ def default_parent_id() -> str:
     return _CURRENT.get("parent_id") or os.environ.get("RXYCODE_WEB_PARENT_ID", "")
 
 
-def tool_span_begin(
-    call_id: str, name: str, *, attrs: dict[str, Any] | None = None
-) -> None:
+def tool_span_begin(call_id: str, name: str, *, attrs: dict[str, Any] | None = None) -> None:
     """Best-effort ``tool.<name>`` span open for the REAL tool path.
 
     Production tool notifications flow ``ToolOrchestrator ->
@@ -217,9 +223,7 @@ def tool_span_begin(
         _LOG.warning("tool span begin failed", exc_info=True)
 
 
-def tool_span_end(
-    call_id: str, ok: bool, *, attrs: dict[str, Any] | None = None
-) -> None:
+def tool_span_end(call_id: str, ok: bool, *, attrs: dict[str, Any] | None = None) -> None:
     """Close the span ``tool_span_begin`` opened for ``call_id``.
 
     ``ok`` is ``status == "success"`` at the TUI layer — a non-success
@@ -333,7 +337,9 @@ class RunJournal:
         self.run_id = run_id
         self._tracer: Any | None = None
 
-    def record(self, method: str, agent_id: str, payload: dict[str, Any], *, parent_id: str = "") -> int:
+    def record(
+        self, method: str, agent_id: str, payload: dict[str, Any], *, parent_id: str = ""
+    ) -> int:
         from rxycode_server.events.store import append_event
 
         body = dict(payload)
@@ -342,6 +348,12 @@ class RunJournal:
             body["parent_id"] = parent_id
         if "tokens" not in body and "total_tokens" in body:
             body["tokens"] = body["total_tokens"]
+        # Lease-epoch tag: the drain attributes journaled metering
+        # (agent_done snapshots) to the attempt that produced them, so a
+        # retried run can never double-count an earlier attempt's spend.
+        attempt = os.environ.get("RXYCODE_TURN_EPOCH", "")
+        if attempt:
+            body["attempt"] = attempt
         seq = append_event(
             self.database_url,
             tenant_id=self.tenant_id,
@@ -427,10 +439,7 @@ class RunJournal:
         bound_span_id = getattr(_BOUND_AGENT_SPAN.get(), "span_id", "")
         if bound_span_id:
             for (run_id, _agent_id), (_tracer, span) in _OPEN_AGENT_SPANS.items():
-                if (
-                    run_id == self.run_id
-                    and span.context.span_id == bound_span_id
-                ):
+                if run_id == self.run_id and span.context.span_id == bound_span_id:
                     return span.context
             # Stale or foreign binding — fall through to the run parent.
         return self._remote_parent()
@@ -470,9 +479,7 @@ class RunJournal:
                         },
                     )
                 except Exception:
-                    _LOG.warning(
-                        "displaced agent span close failed", exc_info=True
-                    )
+                    _LOG.warning("displaced agent span close failed", exc_info=True)
             _OPEN_AGENT_SPANS[key] = (self._tracer, span)
             # Bind the EXECUTING context to this agent's span — the TUI
             # tool-span path carries no agent_id and resolves its parent
@@ -612,9 +619,7 @@ class RunJournal:
             _mark_tool_span_closed(key)
             attrs_map = dict(attrs or {})
             tracer = self._span_tracer()
-            name = str(
-                attrs_map.get("tool_name") or attrs_map.get("tool") or "call"
-            )
+            name = str(attrs_map.get("tool_name") or attrs_map.get("tool") or "call")
             span = tracer.start_span(
                 f"tool.{name}",
                 kind="tool",
@@ -668,20 +673,14 @@ def sweep_open_spans(
     if run_status:
         mark["run.terminal_status"] = run_status
     detail = (
-        f"unclosed at run terminal ({run_status})"
-        if run_status
-        else "unclosed at run terminal"
+        f"unclosed at run terminal ({run_status})" if run_status else "unclosed at run terminal"
     )
     closed = 0
 
     def _close(pair: tuple[Any, Any]) -> None:
         tracer, span = pair
-        payload = tracer.finalize_span(
-            span, status=status, detail=detail, attrs=dict(mark)
-        )
-        telemetry.export_span_payload(
-            getattr(tracer, "exporter", None), payload, conn=conn
-        )
+        payload = tracer.finalize_span(span, status=status, detail=detail, attrs=dict(mark))
+        telemetry.export_span_payload(getattr(tracer, "exporter", None), payload, conn=conn)
 
     for key in [key for key in _OPEN_TOOL_SPANS if key[0] == run_id]:
         pair = _OPEN_TOOL_SPANS.pop(key, None)
@@ -692,9 +691,7 @@ def sweep_open_spans(
             _close(pair)
             closed += 1
         except Exception:
-            _LOG.warning(
-                "terminal sweep: tool span close failed", exc_info=True
-            )
+            _LOG.warning("terminal sweep: tool span close failed", exc_info=True)
     for key in [key for key in _OPEN_AGENT_SPANS if key[0] == run_id]:
         pair = _OPEN_AGENT_SPANS.pop(key, None)
         if pair is None:
@@ -704,9 +701,7 @@ def sweep_open_spans(
             _close(pair)
             closed += 1
         except Exception:
-            _LOG.warning(
-                "terminal sweep: agent span close failed", exc_info=True
-            )
+            _LOG.warning("terminal sweep: agent span close failed", exc_info=True)
         bound = _BOUND_AGENT_SPAN.get()
         if getattr(bound, "span_id", "") == span.context.span_id:
             _BOUND_AGENT_SPAN.set(None)

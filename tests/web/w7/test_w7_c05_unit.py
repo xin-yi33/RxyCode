@@ -1037,3 +1037,71 @@ def test_w7_c05_usage_delta_reader(monkeypatch) -> None:
     deltas = drain._usage_deltas_by_attempt("db", "run-42")
     assert deltas == {"1": 100, "2": 5}
     assert seen["run_id"] == "run-42"
+
+
+def test_w7_c05_agent_done_grouped_by_attempt(monkeypatch) -> None:
+    """Audit r7: a prior attempt's agent_done meter is tagged with its epoch
+    and grouped per attempt — it can never be re-charged inside a retry's
+    bucket."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, _stmt, params):
+            class _R:
+                def all(self):
+                    return [
+                        (1, {"tokens": 100, "attempt": "1"}),
+                        (2, {"tokens": 5, "attempt": "2"}),
+                    ]
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    assert drain._agent_done_by_attempt("db", "run-42") == {"1": 100, "2": 5}
+
+
+def test_w7_c05_streamed_flush_writes_delta(monkeypatch) -> None:
+    """Audit r7: stderr-delivered spend that never reached a heartbeat is
+    flushed as a final usage.delta row for THIS attempt — even when the
+    worker lost the lease and must not write terminal state."""
+    import rxycode_worker.drain as drain
+
+    written = []
+
+    def fake_append(_dsn, *, tenant_id, run_id, event_type, payload):
+        written.append((event_type, dict(payload)))
+        return 1
+
+    import rxycode_server.events.store as store
+
+    monkeypatch.setattr(store, "append_event", fake_append)
+    streamed = {"tokens": 73, "input_tokens": 40, "output_tokens": 33}
+    drain._flush_streamed_usage("db", "t1", "r7", 3, streamed, deltas={"3": 20})
+    assert written == [
+        (
+            "usage.delta",
+            {
+                "input_tokens": 40,
+                "output_tokens": 33,
+                "cumulative": True,
+                "attempt": "3",
+                "final": True,
+            },
+        )
+    ]
+    # Nothing beyond the attempt's recorded cumulative => no duplicate row.
+    written.clear()
+    drain._flush_streamed_usage("db", "t1", "r7", 3, {"tokens": 73}, deltas={"3": 80})
+    assert written == []

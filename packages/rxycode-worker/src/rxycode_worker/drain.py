@@ -319,6 +319,72 @@ def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     return latest
 
 
+def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
+    """``event/agent_done`` snapshots grouped by lease epoch — the RunJournal
+    tags each row with the attempt that produced it, so a prior attempt's
+    completion meter is never re-charged inside a retry's bucket (audit r7)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT seq, payload FROM run_events "
+                    "WHERE run_id = :id AND type = 'event/agent_done' ORDER BY seq"
+                ),
+                {"id": run_id},
+            ).all()
+    finally:
+        engine.dispose()
+    latest: dict[str, int] = {}
+    for _seq, payload in rows:
+        if not isinstance(payload, dict):
+            continue
+        attempt = str(payload.get("attempt") or "")
+        tokens = int(payload.get("tokens") or payload.get("tokens_used") or 0)
+        latest[attempt] = tokens
+    return latest
+
+
+def _flush_streamed_usage(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    epoch: int,
+    streamed: dict[str, int],
+    deltas: dict[str, int],
+) -> None:
+    """Persist metering that arrived over the stderr pipe but never made a
+    heartbeat — a killed turn's last-known spend becomes one final durable
+    ``usage.delta`` row tagged with THIS attempt's epoch. Runs on every exit
+    path (including lost lease): it journals metering, not terminal state,
+    so a retry can recover the spend even though this worker must not write
+    the terminal status (audit r7)."""
+    total = int(streamed.get("tokens") or 0)
+    if total <= 0 or total <= deltas.get(str(epoch), 0):
+        return
+    try:
+        from rxycode_server.events.store import append_event
+
+        append_event(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="usage.delta",
+            payload={
+                "input_tokens": int(streamed.get("input_tokens") or 0),
+                "output_tokens": int(streamed.get("output_tokens") or 0),
+                "cumulative": True,
+                "attempt": str(epoch),
+                "final": True,
+            },
+        )
+    except Exception:
+        _LOG.warning("run %s: streamed-usage flush failed", run_id, exc_info=True)
+
+
 class _RunCancelled(Exception):
     """The run's status flipped to cancel_requested mid-flight."""
 
@@ -793,8 +859,12 @@ async def _wait_child(
                     continue
                 try:
                     row = json.loads(line[len(_USAGE_LINE) :].decode("utf-8"))
-                    total = int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0)
-                    usage_sink["tokens"] = max(usage_sink.get("tokens", 0), total)
+                    inp = int(row.get("input_tokens") or 0)
+                    outp = int(row.get("output_tokens") or 0)
+                    if inp + outp > usage_sink.get("tokens", 0):
+                        usage_sink["tokens"] = inp + outp
+                        usage_sink["input_tokens"] = inp
+                        usage_sink["output_tokens"] = outp
                 except Exception:
                     continue
 
@@ -1406,6 +1476,30 @@ async def execute_run(
             except Exception:
                 pass
 
+    # Non-terminal metering flush — runs on EVERY exit path including lost
+    # lease: spend the pipe already delivered becomes one durable
+    # usage.delta row for this attempt so a retry's ledger can recover it
+    # (audit r7). Journaling, not terminal state — ownership is untouched.
+    attempt_key = str(epoch)
+    try:
+        deltas = await asyncio.to_thread(_usage_deltas_by_attempt, cfg.database_url, run_id)
+    except Exception:
+        deltas = {}
+    try:
+        await asyncio.to_thread(
+            _flush_streamed_usage,
+            cfg.database_url,
+            tenant_id,
+            run_id,
+            epoch,
+            streamed,
+            deltas,
+        )
+        if int(streamed.get("tokens") or 0) > deltas.get(attempt_key, 0):
+            deltas[attempt_key] = int(streamed["tokens"])
+    except Exception:
+        pass
+
     if lost_lease:
         _LOG.warning("run %s: lease lost mid-flight; new owner finishes", run_id)
         return False
@@ -1414,7 +1508,6 @@ async def execute_run(
     # alike — the metered delta is the truth even when agent_done never
     # journaled (it only writes on success).
     agent_done_id = uuid.uuid4().hex
-    done_tokens = 0
     try:
         agent_done_id_found, done_tokens = await asyncio.to_thread(
             _agent_done_row, cfg.database_url, run_id
@@ -1423,23 +1516,23 @@ async def execute_run(
             agent_done_id = agent_done_id_found
     except Exception:
         pass
-    # Metering model: every source is a CUMULATIVE snapshot of its own
-    # attempt's spend, so merge WITHIN this attempt by max; attempts are
-    # disjoint spends, so sum ACROSS them (audit r6 — attempt A's 100 +
-    # retry B's 5 must record 105, not max(100,5)).
-    attempt_key = str(epoch)
+    # Metering model: every source is a CUMULATIVE snapshot of ITS OWN
+    # attempt's spend — merge within an attempt by max, sum across epochs
+    # (disjoint spends). agent_done rows are epoch-tagged by RunJournal, so
+    # a prior attempt's meter lands in ITS bucket, never double-counted.
     try:
-        deltas = await asyncio.to_thread(_usage_deltas_by_attempt, cfg.database_url, run_id)
+        dones = await asyncio.to_thread(_agent_done_by_attempt, cfg.database_url, run_id)
     except Exception:
-        deltas = {}
-    prior_attempts = sum(v for a, v in deltas.items() if a != attempt_key)
-    this_attempt = max(
+        dones = {}
+    per_attempt: dict[str, int] = {
+        a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)
+    }
+    per_attempt[attempt_key] = max(
+        per_attempt.get(attempt_key, 0),
         tokens,  # the result file (current attempt only)
-        int(streamed.get("tokens") or 0),  # __RXY_USAGE__ lines received live
-        deltas.get(attempt_key, 0),  # this attempt's durable heartbeats
-        done_tokens,  # agent_done meter for this turn
+        int(streamed.get("tokens") or 0),
     )
-    tokens = prior_attempts + this_attempt
+    tokens = sum(per_attempt.values())
     usage_error = ""
     try:
         await asyncio.to_thread(
