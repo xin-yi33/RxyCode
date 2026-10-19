@@ -755,3 +755,45 @@ remediated:
   password, :443/@scope port+path preservation, bare-scheme prose
   vs token, cyclic id() dedup, work-budget bound.
 - python -m ruff check: clean.
+
+## Audit round 16 (gpt-6.1-sol, session 01a15592 — VERDICT: PROBLEMS, 5 findings)
+
+r16 audited ``bd6aaacb``: all six r15 fixes re-verified against the
+original reproductions (rescan amplification 196,417 -> 1,061 calls).
+Five new findings, all remediated:
+
+1. **[P1] Prefixed substitutions in header values** — ``Bearer
+   prefix$(printf %s K)``: the value does not START with substitution
+   syntax but is still ONE shell word; the bounded scan stopped before
+   ``$(`` and left the command text mounted. ``_shell_word_end`` grew
+   ``stop_at_unclosed_quote`` — a mid-word quote context that never
+   closes is really the enclosing word's closer, so the word ends at
+   the quote. Every header/bare-scheme value now uses the full word
+   scanner with that flag: ``prefix$(…)`` dies whole while
+   ``Bearer K" u`` still stops at ``"``.
+2. **[P1] Empty-username credential URLs** — ``https://:SECRET@host``:
+   the ``+`` username bound required a nonempty user; ``:pass@`` is a
+   live password regardless. Username is now ``*``.
+3. **[P1] Heredoc ``\<newline>`` joins** — inside an UNQUOTED heredoc,
+   ``prefix\`` + newline joins with the next physical line before the
+   terminator compare, so a physical ``EOF`` continuation line is body
+   content. ``_find_term`` now scans logical lines for unquoted
+   delimiters (odd trailing-backslash continuation tracking); quoted
+   delimiters keep physical-line compare. Command lines ending in
+   ``\<newline>`` also extend before body start is located.
+4. **[P2] Query/fragment fake userinfo** — ``https://h:443?e=u@x`` and
+   ``:443#c@x``: ``?``/``#`` now also end the userinfo span (RFC 3986
+   authority boundary).
+5. **[P2] Deep acyclic alias chain RecursionError** — a 1101-link
+   ``*alias`` DAG is not a cycle, so id-dedup alone still overflowed;
+   ``_scrub_credential_values`` traversal is now ITERATIVE (explicit
+   stack) — cycles dedup by ``id()``, arbitrary depth cannot crash.
+
+## Test evidence (r16)
+
+- ``tests/web/w8``: 76 passed, 3 environment skips — new legs:
+  ``prefix$(…)``/``pre${…:-…}`` whole-word header values, glued-quote
+  value words, ``:SECRET@`` empty-user URLs, ``?``/``#`` authority
+  boundaries, heredoc ``\<newline>`` logical-line terminators,
+  1200-deep alias chain.
+- ``python -m ruff check``: clean.

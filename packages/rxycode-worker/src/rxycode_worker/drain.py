@@ -1358,10 +1358,12 @@ _CREDENTIAL_BARE_RE = re.compile(
 # sits — ``database_url``/``dsn`` keys are not credential-NAMED but a
 # ``scheme://user:pass@host`` value still hands the child a live login.
 # No length ceiling — a 300-char password is still a password
-# (audit W8-r15); ``/`` in the password charset is impossible
-# (RFC 3986 ends the authority at ``/``) and its exclusion keeps a
-# port+path ``:443/@scope`` from faking userinfo (audit W8-r15).
-_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@]+:[^@/\s]+@")
+# (audit W8-r15). The password charset excludes ``/``/``?``/``#`` —
+# RFC 3986 ends the authority at each, and their exclusion keeps
+# port+path ``:443/@scope`` and query/fragment ``:443?x=@`` from
+# faking userinfo; the username side is ``*`` because ``:SECRET@`` —
+# an EMPTY user — is still a live password (audit W8-r16).
+_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@?#]*:[^@/\s?#]+@")
 #: ``KEY``/``--flag`` shape for the left of a ``=`` list item — a bare
 #: ``=`` inside a URL query (``?sslmode=require``) is NOT an assignment.
 _ASSIGN_KEY_RE = re.compile(r"^-{0,2}[A-Za-z_][A-Za-z0-9_.-]*$")
@@ -1384,7 +1386,7 @@ def _has_url_secret(value: Any) -> bool:
 #: (whole redaction); a URL appearing mid-string goes through the
 #: surgical pass instead.
 _URL_CREDENTIAL_LEAD_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@]+:[^@/\s]+@"
+    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@?#]*:[^@/\s?#]+@"
 )
 #: ``--flag=VALUE`` and ``--flag VALUE`` inside an opaque string —
 #: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
@@ -1431,7 +1433,7 @@ _AUTH_DIGEST_RE = re.compile(
 _AUTH_BARE_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic|oauth)[ \t]+")
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
-_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]+:[^@/\s]+@")
+_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@?#]*:[^@/\s?#]+@")
 #: ``<<TAG``/``<<-TAG``/``<<~TAG``/quoted heredoc openers inside an
 #: opaque string — the BODY that follows is data, not syntax, and
 #: carries credential material verbatim (``--api-key-file /dev/fd/3
@@ -1444,7 +1446,9 @@ _HEREDOC_RE = re.compile(
 )
 
 
-def _shell_word_end(text: str, start: int) -> int:
+def _shell_word_end(
+    text: str, start: int, stop_at_unclosed_quote: bool = False
+) -> int:
     """End offset of the shell word starting at ``start`` — quoted
     spans (``'``, ``"``, ````, ANSI-C ``$'``), ``$(...)``/``${...}``
     (both nested), and ``<(...)``/``>(...)`` all count as part of the
@@ -1455,10 +1459,16 @@ def _shell_word_end(text: str, start: int) -> int:
     ``"$(printf "%s " K | tr -d ' ')"`` is ONE word and a naive
     quote-find strands ``K | tr -d ' ')"`` (audit W8-r13); ``${}``
     balances nested defaults (audit W8-r12); ``$(...)`` balances
-    nested parens (audit W8-r10)."""
+    nested parens (audit W8-r10). ``stop_at_unclosed_quote`` handles
+    values scanned inside an enclosing word — ``Bearer K" u``: the
+    ``"`` is really the enclosing quote's CLOSER, so a quote context
+    pushed mid-word that never closes ends the word at the quote
+    (audit W8-r16). Glued quote segments like ``pre'x'y`` still
+    balance and stay part of the word."""
     i = start
     n = len(text)
     stack: list[str] = []
+    qpos: list[int] = []  # push index of each still-open quote context
     word = ""  # innermost bare word — case/esac keyword detection
     while i < n:
         c = text[i]
@@ -1467,6 +1477,7 @@ def _shell_word_end(text: str, start: int) -> int:
             # Plain single quotes — ``\`` is literal, only ``'`` ends.
             if c == "'":
                 stack.pop()
+                qpos.pop()
             else:
                 word += c
             i += 1
@@ -1480,6 +1491,7 @@ def _shell_word_end(text: str, start: int) -> int:
                 continue
             if c == top[-1]:
                 stack.pop()
+                qpos.pop()
             else:
                 word += c
             i += 1
@@ -1495,17 +1507,21 @@ def _shell_word_end(text: str, start: int) -> int:
         if top == '"':
             if c == '"':
                 stack.pop()
+                qpos.pop()
                 i += 1
                 continue
             # Substitutions still open inside ``"..."`` — their
             # interior quotes are balanced THERE, not here.
             if c == "$" and i + 1 < n and text[i + 1] in "({'":
                 stack.append(("$" if text[i + 1] == "'" else "") + text[i + 1])
+                if text[i + 1] == "'":
+                    qpos.append(i + 1)
                 word = ""
                 i += 2
                 continue
             if c == "`":
                 stack.append("`")
+                qpos.append(i)
                 word = ""
                 i += 1
                 continue
@@ -1521,6 +1537,8 @@ def _shell_word_end(text: str, start: int) -> int:
             nxt = text[i + 1]
             if nxt in "({'":
                 stack.append(("$" if nxt == "'" else "") + nxt)
+                if nxt == "'":
+                    qpos.append(i + 1)
                 word = ""
                 i += 2
                 continue
@@ -1558,14 +1576,21 @@ def _shell_word_end(text: str, start: int) -> int:
             continue
         if c == "'":
             stack.append("'")
+            qpos.append(i)
         elif c == '"':
             stack.append('"')
+            qpos.append(i)
         elif c == "`":
             stack.append("`")
+            qpos.append(i)
             word = ""
         else:
             word += c
         i += 1
+    if stop_at_unclosed_quote and qpos:
+        # The outermost still-open quote is really the enclosing
+        # word's closer — the word ends there, not at EOS.
+        return qpos[0]
     return i
 
 
@@ -1721,6 +1746,37 @@ def _scrub_inline_secrets(
         whitespace; openers queued on one command line read their
         bodies in order (``3<<A 4<<B``); an unterminated body runs to
         EOF (audit W8-r14). Markers and terminator lines survive."""
+        def _find_term(
+            cursor: int, tag: str, lead: str, quoted: bool
+        ) -> tuple[int, int] | None:
+            r"""Terminator line span. A QUOTED delimiter compares
+            physical lines; an UNQUOTED one compares LOGICAL lines —
+            ``\<newline>`` joins inside the body first, so a physical
+            ``EOF`` line that continues the previous one is content,
+            not a terminator (audit W8-r16)."""
+            if quoted:
+                term = re.search(
+                    r"(?m)^" + lead + re.escape(tag) + r"\r?$",
+                    src[cursor:],
+                )
+                if term is None:
+                    return None
+                return cursor + term.start(), cursor + term.end()
+            pat = re.compile(lead + re.escape(tag) + r"\r?")
+            pos = cursor
+            continued = False
+            while pos <= len(src):
+                nl = src.find("\n", pos)
+                line = src[pos:] if nl == -1 else src[pos:nl]
+                if not continued and pat.fullmatch(line):
+                    return pos, pos + len(line)
+                backslashes = len(line) - len(line.rstrip("\\"))
+                continued = backslashes % 2 == 1
+                if nl == -1:
+                    break
+                pos = nl + 1
+            return None
+
         out: list[str] = []
         pos = 0
         matches = list(_HEREDOC_RE.finditer(src))
@@ -1733,6 +1789,18 @@ def _scrub_inline_secrets(
             nl = src.find("\n", m.end())
             if nl == -1:
                 continue
+            # A ``\<newline>`` at the end of the command line joins the
+            # next physical line INTO it — the body begins after the
+            # logical command line, not after the first newline.
+            while True:
+                seg = src[m.start() : nl]
+                backslashes = len(seg) - len(seg.rstrip("\\"))
+                if backslashes % 2 != 1:
+                    break
+                nxt = src.find("\n", nl + 1)
+                if nxt == -1:
+                    break
+                nl = nxt
             # Every opener on the same command line queues a body —
             # they read in order after the line ends (audit W8-r14).
             queue = [m]
@@ -1745,20 +1813,18 @@ def _scrub_inline_secrets(
                 flag, tag = q.group(1), next(
                     g for g in q.groups()[1:] if g is not None
                 )
+                quoted = q.group(2) is not None or q.group(3) is not None
                 lead = r"[ \t]*" if flag == "~" else (r"\t*" if flag == "-" else "")
-                term = re.search(
-                    r"(?m)^" + lead + re.escape(tag) + r"\r?$",
-                    src[cursor:],
-                )
-                if term is None:
+                tspan = _find_term(cursor, tag, lead, quoted)
+                if tspan is None:
                     # No terminator — bash reads the body to EOF;
                     # everything after the command line is body
                     # (audit W8-r14).
                     out.append("confined\n")
                     cursor = len(src)
                     break
-                body_end = cursor + term.start()
-                line_end = src.find("\n", cursor + term.end())
+                body_end, term_end = tspan
+                line_end = src.find("\n", term_end)
                 if line_end == -1:
                     line_end = len(src)
                 else:
@@ -1771,24 +1837,12 @@ def _scrub_inline_secrets(
         return "".join(out)
 
     def _value_end(src: str, start: int) -> int:
-        """End of a header/bare-scheme value. A value starting with a
-        substitution, quote or process substitution is a real shell
-        word (``Bearer $(printf %s K)`` — audit W8-r15) and gets the
-        full word scanner; a plain token is bounded so an unterminated
-        enclosing quote cannot swallow the rest of the string."""
-        if start < len(src) and (
-            src[start] in "$'\"`"
-            or (
-                src[start] in "<>"
-                and start + 1 < len(src)
-                and src[start + 1] == "("
-            )
-        ):
-            return _shell_word_end(src, start)
-        end = start
-        while end < len(src) and src[end] not in " \t\r\n;|&<>'\"(){}":
-            end += 1
-        return end
+        """End of a header/bare-scheme value — always a shell word, so
+        ``Bearer prefix$(printf %s K)`` dies whole (audit W8-r16).
+        ``stop_at_unclosed_quote`` keeps a trailing unterminated quote
+        — really the enclosing word's closer — from swallowing the
+        rest of the string (``Bearer K" u`` stops at ``"``)."""
+        return _shell_word_end(src, start, stop_at_unclosed_quote=True)
 
     def _auth_pass(src: str) -> str:
         """Header-named credentials — scheme-led (``Bearer K``) and
@@ -1855,95 +1909,100 @@ def _scrub_credential_values(node: Any, _seen: set[int] | None = None) -> None:
     ``"confined"``; indirection resolvers (``*_env``/``*_file``) are
     blanked (audit W8-r3). YAML aliases make the tree a DAG — and a
     self-referencing anchor (``&x [*x]``) a real cycle; the ``_seen``
-    id-set dedups shared nodes and breaks cycles so traversal cannot
-    RecursionError (audit W8-r15)."""
+    id-set dedups shared nodes and breaks cycles, and traversal is
+    ITERATIVE — an acyclic alias chain a thousand links deep must not
+    RecursionError either (audit W8-r15/r16)."""
     if _seen is None:
         _seen = set()
-    if isinstance(node, (dict, list)):
-        marker = id(node)
-        if marker in _seen:
-            return
-        _seen.add(marker)
-    if isinstance(node, dict):
-        for key, value in list(node.items()):
-            lowered = str(key).strip().lower()
-            if isinstance(value, (dict, list)):
-                _scrub_credential_values(value, _seen)
+    stack: list[Any] = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, (dict, list)):
+            marker = id(cur)
+            if marker in _seen:
                 continue
-            if lowered in _CREDENTIAL_INDIRECTION_KEYS:
-                del node[key]
-            elif _is_credential_key(lowered):
-                node[key] = "confined"
-            elif _has_url_secret(value):
-                # A BARE credential URL is a secret whole; a composite
-                # string carrying one (a launcher, a shell snippet)
-                # loses only the userinfo span (audit W8-r7).
-                if _URL_CREDENTIAL_LEAD_RE.match(str(value).strip()):
-                    node[key] = "confined"
-                else:
-                    node[key] = _scrub_inline_secrets(str(value))
-            elif isinstance(value, str):
-                # Opaque strings can still carry credential material —
-                # ``command: "sh -c 'srv --token K'"`` (audit W8-r7).
-                node[key] = _scrub_inline_secrets(value)
-    elif isinstance(node, list):
-        for idx, item in enumerate(node):
-            if isinstance(item, str):
-                key, _eq, value = item.partition("=")
-                lowered_key = (
-                    key.strip().lower().lstrip("-").replace("-", "_")
-                )
-                if (
-                    _eq
-                    and _ASSIGN_KEY_RE.match(key.strip())
-                    and (
-                        lowered_key in _CREDENTIAL_INDIRECTION_KEYS
-                        or _is_credential_key(lowered_key)
-                        or _has_url_secret(value)
-                    )
-                ):
-                    # ``KEY=VALUE`` env entries AND ``--flag=value`` args —
-                    # only when the part before ``=`` is a real key/flag
-                    # name (audit W8-r3/r4/r5).
-                    node[idx] = f"{key.strip()}=confined"
-                elif _has_url_secret(item):
-                    # A positional arg carrying a credential URL — the
-                    # ``=`` inside ``postgres://u:p@db/app?sslmode=require``
-                    # is a QUERY parameter, not an assignment; the whole
-                    # item is a secret either way (audit W8-r4/r6). When
-                    # the URL is only PART of the item (a shell
-                    # fragment), only its userinfo dies (W8-r7).
-                    if _URL_CREDENTIAL_LEAD_RE.match(item.strip()):
-                        node[idx] = "confined"
+            _seen.add(marker)
+        if isinstance(cur, dict):
+            for key, value in list(cur.items()):
+                lowered = str(key).strip().lower()
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+                    continue
+                if lowered in _CREDENTIAL_INDIRECTION_KEYS:
+                    del cur[key]
+                elif _is_credential_key(lowered):
+                    cur[key] = "confined"
+                elif _has_url_secret(value):
+                    # A BARE credential URL is a secret whole; a composite
+                    # string carrying one (a launcher, a shell snippet)
+                    # loses only the userinfo span (audit W8-r7).
+                    if _URL_CREDENTIAL_LEAD_RE.match(str(value).strip()):
+                        cur[key] = "confined"
                     else:
-                        node[idx] = _scrub_inline_secrets(item)
-                elif (
-                    not _eq
-                    and _ASSIGN_KEY_RE.match(item.strip())
-                    and (
-                        _is_credential_key(lowered_key)
-                        or lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                        cur[key] = _scrub_inline_secrets(str(value))
+                elif isinstance(value, str):
+                    # Opaque strings can still carry credential material —
+                    # ``command: "sh -c 'srv --token K'"`` (audit W8-r7).
+                    cur[key] = _scrub_inline_secrets(value)
+        elif isinstance(cur, list):
+            for idx, item in enumerate(cur):
+                if isinstance(item, str):
+                    key, _eq, value = item.partition("=")
+                    lowered_key = (
+                        key.strip().lower().lstrip("-").replace("-", "_")
                     )
-                ):
-                    # Separated flag-value pairs —
-                    # ``args: ["--api-key", "s3cr3t"]`` — keep the
-                    # flag, redact the value that follows it (W8-r5).
-                    # A following ``--`` item is a new flag, not a
-                    # value — nothing to redact. The item must be a
-                    # PURE flag spelling: a composite string like
-                    # ``run --token=x`` happens to end in ``_token``
-                    # and would otherwise eat the next item whole.
-                    if idx + 1 < len(node) and isinstance(
-                        node[idx + 1], str
-                    ) and not str(node[idx + 1]).startswith("--"):
-                        node[idx + 1] = "confined"
-                else:
-                    # Opaque strings — ``-c`` payloads and launcher
-                    # fragments — can carry flags/assignments/URLs the
-                    # whole-item grammar never sees (audit W8-r7).
-                    node[idx] = _scrub_inline_secrets(item)
-                continue
-            _scrub_credential_values(item, _seen)
+                    if (
+                        _eq
+                        and _ASSIGN_KEY_RE.match(key.strip())
+                        and (
+                            lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                            or _is_credential_key(lowered_key)
+                            or _has_url_secret(value)
+                        )
+                    ):
+                        # ``KEY=VALUE`` env entries AND ``--flag=value`` args —
+                        # only when the part before ``=`` is a real key/flag
+                        # name (audit W8-r3/r4/r5).
+                        cur[idx] = f"{key.strip()}=confined"
+                    elif _has_url_secret(item):
+                        # A positional arg carrying a credential URL — the
+                        # ``=`` inside ``postgres://u:p@db/app?sslmode=require``
+                        # is a QUERY parameter, not an assignment; the whole
+                        # item is a secret either way (audit W8-r4/r6). When
+                        # the URL is only PART of the item (a shell
+                        # fragment), only its userinfo dies (W8-r7).
+                        if _URL_CREDENTIAL_LEAD_RE.match(item.strip()):
+                            cur[idx] = "confined"
+                        else:
+                            cur[idx] = _scrub_inline_secrets(item)
+                    elif (
+                        not _eq
+                        and _ASSIGN_KEY_RE.match(item.strip())
+                        and (
+                            _is_credential_key(lowered_key)
+                            or lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                        )
+                    ):
+                        # Separated flag-value pairs —
+                        # ``args: ["--api-key", "s3cr3t"]`` — keep the
+                        # flag, redact the value that follows it (W8-r5).
+                        # A following ``--`` item is a new flag, not a
+                        # value — nothing to redact. The item must be a
+                        # PURE flag spelling: a composite string like
+                        # ``run --token=x`` happens to end in ``_token``
+                        # and would otherwise eat the next item whole.
+                        if idx + 1 < len(cur) and isinstance(
+                            cur[idx + 1], str
+                        ) and not str(cur[idx + 1]).startswith("--"):
+                            cur[idx + 1] = "confined"
+                    else:
+                        # Opaque strings — ``-c`` payloads and launcher
+                        # fragments — can carry flags/assignments/URLs the
+                        # whole-item grammar never sees (audit W8-r7).
+                        cur[idx] = _scrub_inline_secrets(item)
+                    continue
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
 
 
 def _scrub_model_credentials(

@@ -2796,3 +2796,77 @@ def test_w8_c01_scrub_rescan_work_budget() -> None:
         s = '--normal "$(X=$(echo ' + s + '))"'
     out = drain._scrub_inline_secrets(s)
     assert "confined" in out
+
+
+def test_w8_c01_scrub_header_prefixed_substitution() -> None:
+    """Audit W8-r16: Bearer prefix$(printf %s K) is ONE shell
+    word — a leading plain segment must not bound the redaction and
+    leave the substitution text mounted."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer prefix$(printf %s AUDIT_PK)" u'
+    )
+    assert "AUDIT_PK" not in out
+    assert out == 'curl -H "Authorization: Bearer confined" u'
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer pre${TOKEN:-AUDIT_PK}" u'
+    )
+    assert "AUDIT_PK" not in out
+    # Glued quote segments also stay one word.
+    out = drain._scrub_inline_secrets('Bearer pre' + chr(39) + 'AUDIT_PK' + chr(39) + 'x')
+    assert out == 'Bearer confined'
+
+
+def test_w8_c01_scrub_empty_username_url() -> None:
+    """Audit W8-r16: https://:SECRET@host has an EMPTY user — the
+    password is live either way and must still die."""
+    import rxycode_worker.drain as drain
+
+    cfg = {"endpoint": "https://:AUDIT_EUP@example.org/api"}
+    drain._scrub_credential_values(cfg)
+    assert "AUDIT_EUP" not in cfg["endpoint"]
+
+
+def test_w8_c01_scrub_url_query_fragment_not_userinfo() -> None:
+    """Audit W8-r16: ? and # end the authority — a query or
+    fragment @ is not a userinfo separator."""
+    import rxycode_worker.drain as drain
+
+    for url in (
+        "https://example.org:443?email=user@example.org",
+        "https://example.org:443#contact@example.org",
+    ):
+        cfg = {"endpoint": url}
+        drain._scrub_credential_values(cfg)
+        assert cfg["endpoint"] == url
+
+
+def test_w8_c01_scrub_heredoc_line_continuation() -> None:
+    r"""Audit W8-r16: inside an UNQUOTED heredoc, \<newline>
+    joins lines before the terminator compare — a physical EOF
+    that continues prefix\ is body content, and the real body
+    extends to the NEXT terminator."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<EOF" + chr(10) + "prefix" + chr(92) + chr(10) + "EOF"
+        + chr(10) + "AUDIT_HDKEY" + chr(10) + "EOF"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_HDKEY" not in out
+    assert out.endswith("EOF")
+
+
+def test_w8_c01_scrub_deep_alias_chain() -> None:
+    """Audit W8-r16: an acyclic alias chain a thousand links deep is
+    a DAG, not a cycle — id-dedup alone cannot stop a RecursionError;
+    traversal is iterative."""
+    import rxycode_worker.drain as drain
+
+    node = cur = {"k": []}
+    for _ in range(1200):
+        nxt = []
+        cur["k"].append(nxt)
+        cur = {"k": nxt}
+    drain._scrub_credential_values(node)  # no RecursionError
