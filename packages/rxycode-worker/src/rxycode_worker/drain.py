@@ -60,7 +60,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 _LOG = logging.getLogger(__name__)
 
@@ -1334,6 +1334,9 @@ _CREDENTIAL_BARE_RE = re.compile(
 # sits — ``database_url``/``dsn`` keys are not credential-NAMED but a
 # ``scheme://user:pass@host`` value still hands the child a live login.
 _URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@]{1,256}:[^@\s]{1,256}@")
+#: ``KEY``/``--flag`` shape for the left of a ``=`` list item — a bare
+#: ``=`` inside a URL query (``?sslmode=require``) is NOT an assignment.
+_ASSIGN_KEY_RE = re.compile(r"^-{0,2}[A-Za-z_][A-Za-z0-9_.-]*$")
 
 
 def _is_credential_key(name: str) -> bool:
@@ -1373,41 +1376,42 @@ def _scrub_credential_values(node: Any) -> None:
     elif isinstance(node, list):
         for idx, item in enumerate(node):
             if isinstance(item, str):
-                if "=" in item:
-                    # ``KEY=VALUE`` env entries AND ``--flag=value`` args —
-                    # MCP supports both spellings (audit W8-r3/r4).
-                    key, _eq, value = item.partition("=")
-                    lowered = (
-                        key.strip().lower().lstrip("-").replace("-", "_")
-                    )
-                    if (
-                        lowered in _CREDENTIAL_INDIRECTION_KEYS
-                        or _is_credential_key(lowered)
+                key, _eq, value = item.partition("=")
+                lowered_key = (
+                    key.strip().lower().lstrip("-").replace("-", "_")
+                )
+                if (
+                    _eq
+                    and _ASSIGN_KEY_RE.match(key.strip())
+                    and (
+                        lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                        or _is_credential_key(lowered_key)
                         or _has_url_secret(value)
-                    ):
-                        node[idx] = f"{key.strip()}=confined"
-                else:
-                    lowered = (
-                        item.strip().lower().lstrip("-").replace("-", "_")
                     )
-                    if _has_url_secret(item):
-                        # A positional arg carrying a credential URL —
-                        # ``args: ["--dsn", "postgres://u:p@db/app"]`` —
-                        # leaks just as much as an env entry (W8-r4).
-                        node[idx] = "confined"
-                    elif (
-                        _is_credential_key(lowered)
-                        or lowered in _CREDENTIAL_INDIRECTION_KEYS
-                    ):
-                        # Separated flag-value pairs —
-                        # ``args: ["--api-key", "s3cr3t"]`` — keep the
-                        # flag, redact the value that follows it (W8-r5).
-                        # A following ``--`` item is a new flag, not a
-                        # value — nothing to redact.
-                        if idx + 1 < len(node) and isinstance(
-                            node[idx + 1], str
-                        ) and not str(node[idx + 1]).startswith("--"):
-                            node[idx + 1] = "confined"
+                ):
+                    # ``KEY=VALUE`` env entries AND ``--flag=value`` args —
+                    # only when the part before ``=`` is a real key/flag
+                    # name (audit W8-r3/r4/r5).
+                    node[idx] = f"{key.strip()}=confined"
+                elif _has_url_secret(item):
+                    # A positional arg carrying a credential URL — the
+                    # ``=`` inside ``postgres://u:p@db/app?sslmode=require``
+                    # is a QUERY parameter, not an assignment; the whole
+                    # item is a secret either way (audit W8-r4/r6).
+                    node[idx] = "confined"
+                elif (
+                    _is_credential_key(lowered_key)
+                    or lowered_key in _CREDENTIAL_INDIRECTION_KEYS
+                ):
+                    # Separated flag-value pairs —
+                    # ``args: ["--api-key", "s3cr3t"]`` — keep the
+                    # flag, redact the value that follows it (W8-r5).
+                    # A following ``--`` item is a new flag, not a
+                    # value — nothing to redact.
+                    if idx + 1 < len(node) and isinstance(
+                        node[idx + 1], str
+                    ) and not str(node[idx + 1]).startswith("--"):
+                        node[idx + 1] = "confined"
                 continue
             _scrub_credential_values(item)
 
@@ -1910,6 +1914,21 @@ def _run_journal_dir(state_root: Path, tenant_id: str, run_id: str) -> Path:
     (audit W8-r2). Lives outside every writable mount; the child reaches
     it only through the journal_* ctl ops."""
     return Path(state_root) / "journals" / str(tenant_id) / str(run_id)
+
+
+def _remove_claim_dirs(claim_dirs: Iterable[Path]) -> None:
+    """Remove every per-claim state_root dir — conf copy, ctl sockets,
+    overlay upper/work/seed layers — after the child is dead and the
+    record destroyed (audit W8-r6: ``retain=False`` must retain
+    NOTHING). Best-effort: a busy or vanished dir is left for the next
+    sweeper, never escalated into a teardown failure. The run-keyed
+    journal dir is deliberately NOT in this list — it must survive the
+    claimant for at-most-once replay."""
+    for _dir in claim_dirs:
+        try:
+            shutil.rmtree(_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def _tool_call_failed(text: Any) -> bool:
@@ -3327,6 +3346,10 @@ async def execute_run(
     proc_identity: Any | None = None
     ctl_server: Any | None = None
     egress: Any | None = None
+    # Per-claim dirs under state_root — removed at teardown so completed
+    # runs cannot accumulate config copies, sockets or overlay layers
+    # (audit W8-r6: retain=False means retain NOTHING).
+    claim_dirs: list[Path] = []
     paused_evt = threading.Event()
     # The ctl op hands its approval_id back so the post-exit ``turn.paused``
     # marker names the exact ask this drain parked on (audit W8-r1).
@@ -3385,6 +3408,7 @@ async def execute_run(
         # turn could otherwise plant a symlinked config.yaml for the
         # unsandboxed parent to overwrite on the next run — audit r4).
         data_dir = _prepare_child_data_dir(provider.state_root / f"{sandbox_id}-conf")
+        claim_dirs.append(data_dir)
         # A stale result file from an earlier run in this workspace must
         # never be read as this run's outcome (audit r4-F3).
         (workdir / _TURN_RESULT).unlink(missing_ok=True)
@@ -3520,6 +3544,7 @@ async def execute_run(
         # confined child reaches the control plane ONLY through ctl.sock.
         ctl_dir = provider.state_root / f"{sandbox_id}-ctl"
         ctl_dir.mkdir(parents=True, exist_ok=True)
+        claim_dirs.append(ctl_dir)
         try:
             ctl_dir.chmod(0o700)
         except OSError:
@@ -3623,18 +3648,30 @@ async def execute_run(
         # --overlay requires) so installs survive across the task's turns.
         from rxycode_runner.sandbox.userns import overlay_dests
 
-        overlays: list[tuple[str, str, str]] = []
+        overlays: list[tuple[str, str, str, str]] = []
         ovl_root = provider.state_root / f"{sandbox_id}-ovl"
+        claim_dirs.append(ovl_root)
         # overlay_dests probes EVERY candidate with the real argv on the
-        # real state-root fs — a dest the kernel rejects (container /etc,
-        # Docker's injected file mounts) is simply skipped, not faked.
-        for root in overlay_dests(provider.state_root):
+        # real state-root fs — "direct" lowers use the system path; a
+        # "seed" verdict (container /etc, Docker's injected file mounts)
+        # gets a plain host copy as the lower so apt still gets a
+        # private writable /etc (audit W8-r6); dests failing BOTH probe
+        # shapes are skipped and stay honestly read-only.
+        for root, kind in overlay_dests(provider.state_root).items():
             tag = root.strip("/") or "root"
             upper = ovl_root / f"{tag}-upper"
             work = ovl_root / f"{tag}-work"
             upper.mkdir(parents=True, exist_ok=True)
             work.mkdir(parents=True, exist_ok=True)
-            overlays.append((str(upper), str(work), root))
+            lower = ""
+            if kind == "seed":
+                seed = ovl_root / f"{tag}-seed"
+                if not seed.is_dir():
+                    shutil.copytree(
+                        root, seed, symlinks=True, dirs_exist_ok=True
+                    )
+                lower = str(seed)
+            overlays.append((str(upper), str(work), root, lower))
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
@@ -3832,6 +3869,11 @@ async def execute_run(
                 provider.destroy(sandbox_id, tenant_id=tenant_id)
             except Exception:
                 pass
+        # Per-claim dirs go last — the child is dead, the sockets are
+        # closed and the record is destroyed; upper/work/seed layers and
+        # the scrubbed config must not pile up under state_root
+        # (audit W8-r6). run-keyed journal dir is deliberately kept.
+        _remove_claim_dirs(claim_dirs)
 
     # Non-terminal metering flush — runs on EVERY exit path including lost
     # lease: spend the pipe already delivered becomes one durable

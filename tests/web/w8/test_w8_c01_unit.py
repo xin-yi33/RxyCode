@@ -222,6 +222,82 @@ def test_w8_c01_sandbox_argv_isolation_shape(tmp_path: Path) -> None:
     assert argv[-3:] == ["python", "-m", "rxycode_worker.drain"]
 
 
+def test_w8_c01_sandbox_argv_seeded_overlay(tmp_path: Path) -> None:
+    """A seed-verdict overlay (container /etc — Docker's injected file
+    mounts make the kernel reject it as a lower) mounts a PLAIN COPY as
+    the lower, not the system path: the seed is ro-bound at its own
+    host path, --overlay-src names it, --overlay still lands on /etc
+    (audit W8-r6)."""
+    from rxycode_runner.sandbox.userns import build_sandbox_argv
+
+    workdir = tmp_path / "ws"
+    upper = tmp_path / "ovl" / "etc-upper"
+    work = tmp_path / "ovl" / "etc-work"
+    seed = tmp_path / "ovl" / "etc-seed"
+    workdir.mkdir()
+    upper.mkdir(parents=True)
+    work.mkdir(parents=True)
+    seed.mkdir()
+    argv = build_sandbox_argv(
+        workdir=workdir,
+        argv=["/bin/true"],
+        env={},
+        ro_binds=[],
+        rw_binds=[],
+        overlays=[(str(upper), str(work), "/etc", str(seed))],
+    )
+    idx = argv.index("--overlay")
+    assert argv[idx + 1 : idx + 4] == [str(upper), str(work), "/etc"]
+    src_idx = argv.index("--overlay-src")
+    assert argv[src_idx + 1] == str(seed) and src_idx < idx
+    # The seed is ro-bound at its own path so --overlay-src resolves it.
+    ro_pairs = [
+        (argv[i + 1], argv[i + 2])
+        for i, part in enumerate(argv)
+        if part == "--ro-bind"
+    ]
+    assert (str(seed), str(seed)) in ro_pairs
+    seed_idx = argv.index(str(seed))
+    assert argv[seed_idx - 1] == "--ro-bind" and seed_idx < src_idx
+
+
+def test_w8_c01_claim_dirs_removed_at_teardown(tmp_path: Path) -> None:
+    """retain=False must retain nothing: the per-claim conf copy, ctl
+    dir and overlay upper/work/seed layers are removed wholesale at
+    teardown (audit W8-r6) — while the run-keyed journal survives for
+    at-most-once replay and a vanished dir never escalates."""
+    import rxycode_worker.drain as drain
+
+    state_root = tmp_path / "sandboxes"
+    conf = state_root / "sbx-1-conf" / ".data"
+    conf.mkdir(parents=True)
+    (conf / "config.yaml").write_text("model: x", encoding="utf-8")
+    ctl = state_root / "sbx-1-ctl"
+    ctl.mkdir()
+    (ctl / "ctl.sock").write_text("", encoding="utf-8")
+    ovl = state_root / "sbx-1-ovl" / "etc-upper"
+    ovl.mkdir(parents=True)
+    (ovl / "marker").write_text("x", encoding="utf-8")
+    journal = state_root / "journals" / "ten" / "run-1"
+    journal.mkdir(parents=True)
+    (journal / "calls.log").write_text("reserved", encoding="utf-8")
+    gone = state_root / "already-vanished"
+
+    drain._remove_claim_dirs(
+        [
+            state_root / "sbx-1-conf",
+            ctl,
+            state_root / "sbx-1-ovl",
+            gone,
+        ]
+    )
+
+    assert not (state_root / "sbx-1-conf").exists()
+    assert not ctl.exists()
+    assert not (state_root / "sbx-1-ovl").exists()
+    assert journal.joinpath("calls.log").read_text() == "reserved"
+
+
 def test_w8_c01_sandbox_argv_env_allowlist(tmp_path: Path) -> None:
     """The drain's env contract: credentials never enter the passlist;
     the turn env carries only task-local identity + sockets + proxies."""
@@ -2101,10 +2177,12 @@ def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
                     "HOME=/data",
                 ],
                 # Positional args carry secrets too (audit W8-r4) — and
-                # separated flag-value pairs (W8-r5).
+                # separated flag-value pairs (W8-r5) and credential URLs
+                # whose query string contains "=" (W8-r6).
                 "args": [
                     "--dsn",
                     "postgres://u:p@db.internal:5432/app",
+                    "postgres://u:p@db.internal/app?sslmode=require",
                     "--api-key=flag_secret",
                     "--api-key",
                     "pair_secret",
@@ -2128,10 +2206,11 @@ def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
     assert "PATH=/usr/bin" in env and "HOME=/data" in env
     args = cfg["mcpServers"]["gh"]["args"]
     assert args[1] == "confined"                    # positional userinfo URL
-    assert args[2] == "--api-key=confined"          # --flag=value spelling
-    assert args[3] == "--api-key"                   # flag kept…
-    assert args[4] == "confined"                    # …its VALUE redacted (W8-r5)
-    assert args[0] == "--dsn" and args[5] == "--verbose"  # non-secret args kept
+    assert args[2] == "confined"  # userinfo URL whose query has '=' (W8-r6)
+    assert args[3] == "--api-key=confined"          # --flag=value spelling
+    assert args[4] == "--api-key"                   # flag kept…
+    assert args[5] == "confined"                    # …its VALUE redacted (W8-r5)
+    assert args[0] == "--dsn" and args[6] == "--verbose"  # non-secret args kept
     assert cfg["mcpServers"]["dictform"]["env"]["API_KEY"] == "confined"
     assert cfg["mcpServers"]["dictform"]["env"]["NORMAL"] == "ok"
     assert cfg["database"]["database_url"] == "confined"

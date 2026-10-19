@@ -320,3 +320,57 @@ gate on the deployed stack; all remediated:
   PASSED post-fix (405s real stack: worker.lease ->
   event/agent_started -> honest provider-boundary failed). Full W7
   suite re-run: 71 passed + this leg = no regressions.
+
+## Audit round 6 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 3 findings)
+
+r6 audited `e2121c18` and verified r1-r5 fixes end-to-end (separated-pair
+scrub, `Error:` classification, dir_fd unlink, `overlay_dests` returning
+`usr`+`var` live). Three findings, all remediated:
+
+1. **[P1] credential URL with a query-string `=` survived the scrub** —
+   a positional MCP arg like `postgres://audit:pw@db/app?sslmode=require`
+   took the `KEY=VALUE` branch (the `=` belongs to the query, not an
+   assignment) and leaked whole. The list-item scrub now partitions on
+   `=` and only treats it as an assignment when the left side is a real
+   KEY/`--flag` name (`_ASSIGN_KEY_RE`); otherwise the whole string is
+   checked for userinfo first. `DATABASE_URL=postgres://u:p@...` keeps
+   its key (`DATABASE_URL=confined`); the bare URL becomes `confined`.
+   First attempt regressed the env-entry case (key name lost); caught
+   by the same unit test and fixed via the key-shape gate.
+2. **[P1] `/etc` stayed read-only — apt development needs a writable
+   private /etc** — r5 honestly DROPPED the /etc overlay when the
+   kernel rejected Docker's injected file mounts as a lower; that left
+   `apt`/`update-ca-certificates` unable to write. `overlay_dests` now
+   returns `{dest: "direct" | "seed"}`: a dest that EINVALs as a direct
+   lower is retried SEEDED — a plain `copytree` of the tree (injected
+   mounts gone) — and `build_sandbox_argv` accepts
+   `(upper, work, dest, lower_src)` 4-tuples, ro-binding the seed at
+   its own path and naming it in `--overlay-src`. In-container proof
+   (python:3.12-slim, bwrap 0.12, named-volume state root):
+   `{/usr: direct, /var: direct, /etc: seed}` -> `seed-content-ok`,
+   `etc-write-ok`, `/usr-write-ok`, `/var-write-ok`. A state_root on
+   overlayfs (`/tmp` inside a container) still honestly returns `{}`.
+3. **[P2] per-sandbox overlay upper/work dirs persisted after
+   destroy** — `retain=False` removed the sandbox record but left
+   `{sandbox_id}-conf/-ctl/-ovl` trees under state_root forever.
+   `execute_run` now tracks every per-claim dir and
+   `_remove_claim_dirs` rmtree's them in teardown (after the child is
+   dead, sockets closed, record destroyed). The run-keyed journal dir
+   (`state_root/journals/<tenant>/<run>`) is deliberately NOT a claim
+   dir — at-most-once replay needs it across worker reclamation.
+
+## Test evidence (r6)
+
+- `tests/web/w8`: 45 passed, 3 environment skips (no bwrap/userns, no
+  AF_UNIX) — new legs: query-string credential URL scrub,
+  seeded-overlay argv shape (`--ro-bind seed` + `--overlay-src seed` +
+  `--overlay UPPER WORK /etc`), claim-dir teardown removal vs journal
+  survival.
+- In-container real-function verification (`python:3.12-slim` + bwrap
+  0.12.0, ext4-backed volume state root): `overlay_dests` ->
+  `{/usr: direct, /var: direct, /etc: seed}`; real
+  `build_sandbox_argv` + exec -> writes land on task-private layers for
+  all three dests; probe honestly returns `{}` on an overlayfs
+  state_root.
+- `python -m ruff check` on drain.py / userns.py / tests/web/w8:
+  clean.

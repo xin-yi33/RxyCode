@@ -58,8 +58,9 @@ _DEFAULT_RO_BINDS = ("/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64", "/
 
 #: Probe result cache — a real unshare probe costs ~50ms once per process.
 _AVAILABLE: bool | None = None
-#: Per-state_root cache of overlay-probe verdicts — ``state_root -> dests``.
-_OVERLAY_DESTS: dict[str, tuple[str, ...]] = {}
+#: Per-state_root cache of overlay-probe verdicts — ``state_root ->
+#: {dest: "direct"|"seed"}``.
+_OVERLAY_DESTS: dict[str, dict[str, str]] = {}
 
 #: System roots that MAY get a task-private persistent overlay (when the
 #: kernel permits userns overlayfs): apt/dpkg/pip installs then land on a
@@ -67,32 +68,61 @@ _OVERLAY_DESTS: dict[str, tuple[str, ...]] = {}
 _OVERLAY_CANDIDATES = ("/usr", "/var", "/etc")
 
 
-def overlay_dests(state_root: Path, *, force: bool = False) -> list[str]:
-    """The subset of ``_OVERLAY_CANDIDATES`` the kernel will REALLY mount
-    as a persistent task overlay on ``state_root``'s filesystem.
+def _overlay_probe_argv(
+    bwrap: str, upper: Path, work: Path, dest: str, lower_src: str
+) -> list[str]:
+    """One confined probe in the PRODUCTION argv shape."""
+    argv = [
+        bwrap,
+        "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid",
+        "--dev", "/dev", "--tmpfs", "/tmp",
+    ]
+    for path in _DEFAULT_RO_BINDS:
+        if Path(path).exists():
+            argv += ["--ro-bind", path, path]
+    argv += [
+        "--bind", str(upper), str(upper),
+        "--bind", str(work), str(work),
+    ]
+    if lower_src != dest:
+        argv += ["--ro-bind", lower_src, lower_src]
+    argv += [
+        "--overlay-src", lower_src,
+        "--overlay", str(upper), str(work), dest,
+        "--die-with-parent", "--new-session",
+        "--chdir", "/tmp", "/bin/true",
+    ]
+    return argv
+
+
+def overlay_dests(state_root: Path, *, force: bool = False) -> dict[str, str]:
+    """Candidate dests the kernel will REALLY overlay on ``state_root``'s
+    filesystem — ``{dest: "direct" | "seed"}``.
 
     Every candidate is probed with the PRODUCTION argv shape — real
     ``--overlay-src`` + ``--overlay UPPER WORK DEST`` on fresh dirs under
-    ``state_root``. The old ``--tmp-overlay`` probe only proved the
-    tmpfs-upper path and greenlit ``/etc``: inside a container, Docker's
-    injected file mounts (resolv.conf/hostname/hosts) make the kernel
-    EINVAL an ``/etc`` lower even though ``--tmp-overlay`` succeeds and
-    ``/usr``/``/var`` mount fine (W8-r5 deployed-stack failure). A dest
-    that fails its probe is simply dropped — it stays ro-bound and
-    writes fail read-only, which is honest, never silently widened."""
+    ``state_root``. ``"direct"`` means ``dest`` itself works as the
+    lower. A dest that EINVALs as a lower is retried SEEDED: a plain
+    host copy of the tree, free of injected mounts — inside a container,
+    Docker's file mounts on ``/etc/resolv.conf``/``hosts``/``hostname``
+    make the kernel reject ``/etc`` as an overlay lower while the copy
+    mounts fine (W8-r5/r6 deployed-stack findings). ``"seed"`` callers
+    must copy ``dest`` into a per-task dir and pass it as the lower.
+    A dest failing BOTH shapes is dropped — it stays ro-bound and
+    writes fail read-only, honest and never widened."""
     global _OVERLAY_DESTS
     key = str(state_root)
     if not force and key in _OVERLAY_DESTS:
-        return list(_OVERLAY_DESTS[key])
-    ok: list[str] = []
+        return dict(_OVERLAY_DESTS[key])
+    ok: dict[str, str] = {}
     bwrap = shutil.which("bwrap")
     if bwrap:
         probe_root = Path(state_root) / ".overlay-probe"
         try:
             probe_root.mkdir(parents=True, exist_ok=True)
         except OSError:
-            _OVERLAY_DESTS[key] = ()
-            return []
+            _OVERLAY_DESTS[key] = {}
+            return {}
         try:
             for dest in _OVERLAY_CANDIDATES:
                 if not Path(dest).is_dir():
@@ -100,40 +130,41 @@ def overlay_dests(state_root: Path, *, force: bool = False) -> list[str]:
                 tag = dest.strip("/") or "root"
                 upper = probe_root / f"{tag}-upper"
                 work = probe_root / f"{tag}-work"
+                seed = probe_root / f"{tag}-seed"
                 try:
                     upper.mkdir(parents=True, exist_ok=True)
                     work.mkdir(parents=True, exist_ok=True)
-                    argv = [
-                        bwrap,
-                        "--unshare-user", "--uid", "0", "--gid", "0",
-                        "--unshare-pid",
-                        "--dev", "/dev", "--tmpfs", "/tmp",
-                    ]
-                    for path in _DEFAULT_RO_BINDS:
-                        if Path(path).exists():
-                            argv += ["--ro-bind", path, path]
-                    argv += [
-                        "--bind", str(upper), str(upper),
-                        "--bind", str(work), str(work),
-                        "--overlay-src", dest,
-                        "--overlay", str(upper), str(work), dest,
-                        "--die-with-parent", "--new-session",
-                        "--chdir", "/tmp", "/bin/true",
-                    ]
                     done = subprocess.run(
-                        argv, capture_output=True, check=False, timeout=15
+                        _overlay_probe_argv(bwrap, upper, work, dest, dest),
+                        capture_output=True, check=False, timeout=15,
                     )
                     if done.returncode == 0:
-                        ok.append(dest)
+                        ok[dest] = "direct"
+                        continue
+                    # Direct lower rejected (e.g. container /etc carrying
+                    # injected file mounts) — retry on a clean host copy.
+                    try:
+                        shutil.copytree(
+                            dest, seed, symlinks=True, dirs_exist_ok=True
+                        )
+                    except OSError:
+                        continue
+                    done = subprocess.run(
+                        _overlay_probe_argv(bwrap, upper, work, dest, str(seed)),
+                        capture_output=True, check=False, timeout=15,
+                    )
+                    if done.returncode == 0:
+                        ok[dest] = "seed"
                 except Exception:
                     pass
                 finally:
                     shutil.rmtree(upper, ignore_errors=True)
                     shutil.rmtree(work, ignore_errors=True)
+                    shutil.rmtree(seed, ignore_errors=True)
         finally:
             shutil.rmtree(probe_root, ignore_errors=True)
-    _OVERLAY_DESTS[key] = tuple(ok)
-    return list(ok)
+    _OVERLAY_DESTS[key] = dict(ok)
+    return dict(ok)
 
 
 def overlay_available(state_root: Path | None = None, *, force: bool = False) -> bool:
@@ -199,13 +230,16 @@ def build_sandbox_argv(
     host. Writable mounts: ``workdir``, the task-private dirs in
     ``rw_binds`` (home / control-socket dir), a private tmpfs ``/tmp`` and
     the per-task persistent overlays in ``overlays`` — each ``(upper,
-    work, dest)`` triple binds the two task-private dirs writable and then
-    mounts ``--overlay UPPER WORK DEST`` (bwrap's three-operand form with
-    the preceding ``--overlay-src`` supplying the read-only lower; the
-    kernel requires upper/work on one filesystem — they live under the
-    same state root). The network namespace is ALWAYS unshared — the confined
-    process's only link to the outside is the parent's filtered egress
-    socket mounted via ``rw_binds``.
+    work, dest)`` or ``(upper, work, dest, lower_src)`` entry binds the
+    task-private dirs writable and mounts ``--overlay UPPER WORK DEST``
+    (bwrap's three-operand form; the preceding ``--overlay-src`` supplies
+    the read-only lower — ``lower_src`` when given, e.g. a seeded copy of
+    ``dest`` whose original carries injected mounts the kernel rejects,
+    else ``dest`` itself; the kernel requires upper/work on one
+    filesystem — they live under the same state root). The network
+    namespace is ALWAYS unshared — the confined process's only link to
+    the outside is the parent's filtered egress socket mounted via
+    ``rw_binds``.
     """
     bwrap = shutil.which("bwrap") or "bwrap"
     workdir = Path(workdir).resolve()
@@ -240,18 +274,25 @@ def build_sandbox_argv(
     # mount the overlay — apt/dpkg/pip writes land in the task's own layer
     # and persist across its turns; the host's /usr stays untouched.
     seen_dests: set[str] = set()
-    for upper, work, dest in overlays:
+    for entry in overlays:
+        upper, work, dest, *rest = entry
+        lower_src = str(rest[0]) if rest else ""
         upper_p, work_p, dest_s = Path(upper), Path(work), str(dest)
         if dest_s in seen_dests or not (upper_p.is_dir() and work_p.is_dir()):
             continue
         seen_dests.add(dest_s)
         # --overlay-src supplies the read-only lower layer — required by
-        # bwrap before every overlay op; it resolves DEST inside the new
-        # root, i.e. the system path already ro-bound above.
+        # bwrap before every overlay op; it resolves inside the new root,
+        # i.e. the system path already ro-bound above or the seeded copy
+        # bound read-only at its own host path.
         out += [
             "--bind", str(upper_p), str(upper_p),
             "--bind", str(work_p), str(work_p),
-            "--overlay-src", dest_s,
+        ]
+        if lower_src and lower_src != dest_s:
+            out += ["--ro-bind", lower_src, lower_src]
+        out += [
+            "--overlay-src", lower_src or dest_s,
             "--overlay", str(upper_p), str(work_p), dest_s,
         ]
     for path in dict.fromkeys(rw_binds):
