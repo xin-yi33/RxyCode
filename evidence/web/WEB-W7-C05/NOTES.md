@@ -256,3 +256,18 @@ Round 5 probed harder and found five refinements; all fixed:
 - **Mount order completed**: `--dev /dev` + `--tmpfs /tmp` now precede ALL
   binds — the `.sandboxes/<id>-conf` ro-bind lives under the workspaces
   root and was shadowed when that root sits under /tmp (default).
+
+## Audit r6 remediation
+
+Round 6 (same session) refined three more edges; all fixed:
+
+- **Claim anchor moved before the `claim()` call** — post-commit work inside
+  claim could otherwise let the watchdog deadline trail the real DB expiry.
+- **Per-attempt metering aggregation**: sources merge by max WITHIN the
+  attempt (result/streamed/heartbeat/agent_done are cumulative snapshots of
+  the same spend) then SUM across lease epochs — attempt A's durable 100 +
+  retry B's 5 commits 105, never 100 or 5.
+- **stderr collector drains to EOF before being cancelled** — a fast-exiting
+  child's final `__RXY_USAGE__` write is no longer dropped; CancelledError
+  is caught explicitly (it's BaseException-derived, not Exception).
+- Verified: contract leg retry passed in 230s on the same stack definition.

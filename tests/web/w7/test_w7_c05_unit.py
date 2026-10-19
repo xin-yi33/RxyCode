@@ -1034,5 +1034,6 @@ def test_w7_c05_usage_delta_reader(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    assert drain._usage_deltas_total("db", "run-42") == 105
+    deltas = drain._usage_deltas_by_attempt("db", "run-42")
+    assert deltas == {"1": 100, "2": 5}
     assert seen["run_id"] == "run-42"

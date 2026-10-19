@@ -286,14 +286,13 @@ def _agent_done_row(database_url: str, run_id: str) -> tuple[str, int]:
     return str(row.event_id), tokens
 
 
-def _usage_deltas_total(database_url: str, run_id: str) -> int:
-    """Metering that survives a SIGKILLed turn, summed across attempts.
+def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
+    """Per-attempt metering that survives a SIGKILLed turn.
 
     Each confined child heartbeats CUMULATIVE ``usage.delta`` rows tagged
     with its lease epoch; a retried run starts a fresh baseline per attempt.
-    The durable total is the sum of each attempt's LAST heartbeat — taking
-    only the newest row would discard a previous attempt's spend
-    (audit r5-F4)."""
+    Returns ``{attempt: last cumulative total}`` — the caller merges sources
+    within an attempt (max) and sums ACROSS attempts (audit r6)."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -317,7 +316,7 @@ def _usage_deltas_total(database_url: str, run_id: str) -> int:
         latest[attempt] = int(payload.get("input_tokens") or 0) + int(
             payload.get("output_tokens") or 0
         )
-    return sum(latest.values())
+    return latest
 
 
 class _RunCancelled(Exception):
@@ -813,11 +812,17 @@ async def _wait_child(
             pass
         raise
     finally:
-        collector.cancel()
+        # The pipe closes at process death — let the collector finish
+        # draining buffered usage lines instead of cancelling them away
+        # (a fast-exiting child can report spend in its final write).
         try:
-            await collector
-        except Exception:
-            pass
+            await asyncio.wait_for(collector, timeout=5)
+        except BaseException:
+            collector.cancel()
+            try:
+                await collector
+            except BaseException:
+                pass
 
 
 async def run_sandboxed_turn() -> int:
@@ -1170,14 +1175,15 @@ async def execute_run(
         confirm_cancel,
     )
 
+    # Anchor BEFORE the claim call: the store writes lease_until from its own
+    # clock inside the claim transaction, so post-commit latency would let
+    # our deadline trail the real expiry (audit r6).
+    claimed_at = time.monotonic()
     epoch = await asyncio.to_thread(
         claim, cfg.database_url, run_id, cfg.worker_id, ttl_seconds=cfg.lease_ttl
     )
     if epoch is None:
         return False
-    # Lease expiry is anchored at the claim instant, not at watchdog start —
-    # sandbox setup time counts against the first TTL.
-    claimed_at = time.monotonic()
 
     from rxycode_server.events.store import append_event
     from rxycode_server.runs.service import load_run
@@ -1408,29 +1414,32 @@ async def execute_run(
     # alike — the metered delta is the truth even when agent_done never
     # journaled (it only writes on success).
     agent_done_id = uuid.uuid4().hex
+    done_tokens = 0
     try:
         agent_done_id_found, done_tokens = await asyncio.to_thread(
             _agent_done_row, cfg.database_url, run_id
         )
         if agent_done_id_found:
             agent_done_id = agent_done_id_found
-        # agent_done is an independent meter — never REPLACE a larger result
-        # count with a smaller snapshot (audit r5).
-        tokens = max(tokens, done_tokens)
     except Exception:
         pass
-    # Metering for killed turns: __RXY_USAGE__ stderr lines are already in
-    # `streamed` (zero window — the pipe delivered before the kill), and the
-    # usage.delta rows are the durable per-attempt record. The result file
-    # only exists on a clean exit; take the honest maximum of every source.
-    tokens = max(tokens, int(streamed.get("tokens") or 0))
+    # Metering model: every source is a CUMULATIVE snapshot of its own
+    # attempt's spend, so merge WITHIN this attempt by max; attempts are
+    # disjoint spends, so sum ACROSS them (audit r6 — attempt A's 100 +
+    # retry B's 5 must record 105, not max(100,5)).
+    attempt_key = str(epoch)
     try:
-        tokens = max(
-            tokens,
-            await asyncio.to_thread(_usage_deltas_total, cfg.database_url, run_id),
-        )
+        deltas = await asyncio.to_thread(_usage_deltas_by_attempt, cfg.database_url, run_id)
     except Exception:
-        pass
+        deltas = {}
+    prior_attempts = sum(v for a, v in deltas.items() if a != attempt_key)
+    this_attempt = max(
+        tokens,  # the result file (current attempt only)
+        int(streamed.get("tokens") or 0),  # __RXY_USAGE__ lines received live
+        deltas.get(attempt_key, 0),  # this attempt's durable heartbeats
+        done_tokens,  # agent_done meter for this turn
+    )
+    tokens = prior_attempts + this_attempt
     usage_error = ""
     try:
         await asyncio.to_thread(
