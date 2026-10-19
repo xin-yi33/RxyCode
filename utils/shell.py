@@ -1174,7 +1174,22 @@ class ShellExecutor:
         from RxyCode.RxyCode1_1_0.core.sandbox.policy import from_config
 
         cfg = load_config()
-        policy = from_config(cfg, workspace_root=(cwd or Path.cwd()))
+        # Track C 自动开关：os_sandbox.enabled 未显式配置时按权限模式
+        # 决定——普通模式开内核沙箱，Full/Full-Auto 解除（回收/急停由
+        # reaping Job 保留）。运行时覆盖值（ContextVar）优先于文件值。
+        try:
+            from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
+                _permission_mode_override,
+            )
+
+            mode = _permission_mode_override.get()
+        except Exception:
+            mode = None
+        if mode is None:
+            mode = (cfg.get("safety") or {}).get("permission_mode")
+        policy = from_config(
+            cfg, workspace_root=(cwd or Path.cwd()), permission_mode=mode
+        )
         if not policy.enabled:
             return None
         wrapped = wrap_command(policy, list(argv), cwd or Path.cwd())

@@ -5,10 +5,18 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+# utils/shell.py 惰性导入 rxycode_runner（生产 supervisor）；测试环境未装
+# editable 包时补 packages src 路径（与 tests/web/w7 同一惯例）。
+_REPO = Path(__file__).resolve().parents[2]
+_runner_src = _REPO / "packages" / "rxycode-runner" / "src"
+if _runner_src.is_dir() and str(_runner_src) not in sys.path:
+    sys.path.insert(0, str(_runner_src))
 
 from RxyCode.RxyCode1_1_0.utils import shell as shell_module
 from RxyCode.RxyCode1_1_0.utils.shell import ShellExecutor
@@ -128,7 +136,13 @@ async def test_workspace_relative_workdir_is_resolved_beneath_root(
     nested.mkdir(parents=True)
     _configure(
         monkeypatch,
-        {"sandbox_mode": "workspace", "workspace_root": str(workspace)},
+        {
+            "sandbox_mode": "workspace",
+            "workspace_root": str(workspace),
+            # 本例测 workdir 解析层；post-W7 起 os_sandbox 默认随普通权限
+            # 模式开启，显式关闭保持被测面不变。
+            "os_sandbox": {"enabled": False},
+        },
     )
     process = _CompletedProcess()
     spawn = AsyncMock(return_value=process)
@@ -269,7 +283,12 @@ async def test_host_memory_limit_terminates_the_process_tree(
 ):
     _configure(
         monkeypatch,
-        {"sandbox_mode": "host", "max_memory_mb": 4, "max_processes": 0},
+        {
+            "sandbox_mode": "host",
+            "max_memory_mb": 4,
+            "max_processes": 0,
+            "os_sandbox": {"enabled": False},
+        },
     )
     process = _BlockingProcess()
     monkeypatch.setattr(
@@ -299,7 +318,12 @@ async def test_host_process_count_limit_includes_the_root_and_descendants(
 ):
     _configure(
         monkeypatch,
-        {"sandbox_mode": "host", "max_memory_mb": 0, "max_processes": 2},
+        {
+            "sandbox_mode": "host",
+            "max_memory_mb": 0,
+            "max_processes": 2,
+            "os_sandbox": {"enabled": False},
+        },
     )
     process = _BlockingProcess()
     monkeypatch.setattr(
@@ -335,7 +359,12 @@ async def test_zero_resource_limits_disable_psutil_monitoring(
 ):
     _configure(
         monkeypatch,
-        {"sandbox_mode": "host", "max_memory_mb": 0, "max_processes": 0},
+        {
+            "sandbox_mode": "host",
+            "max_memory_mb": 0,
+            "max_processes": 0,
+            "os_sandbox": {"enabled": False},
+        },
     )
     monkeypatch.setattr(
         asyncio,
