@@ -1509,7 +1509,14 @@ def _shell_word_end(text: str, start: int) -> int:
     return i
 
 
-def _scrub_inline_secrets(text: str) -> str:
+#: Bound on quoted/compound-value re-scrub depth — a pathological
+#: config could nest quotes/``$(`` thousands deep and kill the
+#: scrubber with a bare ``RecursionError``; beyond the cap the value
+#: is treated as wholesale suspicious and dies (audit W8-r11 stream).
+_SCRUB_RESCAN_DEPTH_CAP = 32
+
+
+def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
     """Redact credential material EMBEDDED inside an opaque string —
     ``args: ["-c", "exec server --api-key K"]`` or
     ``export TOKEN=x; srv`` hides secrets from the whole-item grammar,
@@ -1519,6 +1526,10 @@ def _scrub_inline_secrets(text: str) -> str:
     continuations count as one word — audit W8-r9/r10); non-credential
     names keep their value but it is recursively re-scrubbed inside.
     Same name tables as the whole-item grammar."""
+    if _depth >= _SCRUB_RESCAN_DEPTH_CAP:
+        # Pathological nesting — treat the residue as opaque credential
+        # material rather than recurse into a RecursionError.
+        return "confined"
 
     def _cred_name(name: str) -> bool:
         lowered = name.lstrip("-").lower().replace("-", "_")
@@ -1538,11 +1549,11 @@ def _scrub_inline_secrets(text: str) -> str:
         ):
             return (
                 f"{value[0]}"
-                f"{_scrub_inline_secrets(value[1:-1])}"
+                f"{_scrub_inline_secrets(value[1:-1], _depth + 1)}"
                 f"{value[0]}"
             )
         if any(c in value for c in ("'", '"', "$", "`")):
-            return _scrub_inline_secrets(value)
+            return _scrub_inline_secrets(value, _depth + 1)
         return value
 
     def _flag_pass(src: str) -> str:
