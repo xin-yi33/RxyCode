@@ -209,6 +209,26 @@ def upsert_terminal_usage(
                     },
                 )
                 db.commit()
+            elif attribution:
+                # No token increase needed — but the uncertainty marker must
+                # still ride the durable log atomically with the ledger state
+                # (audit r14).
+                _add_event(
+                    db,
+                    run,
+                    {
+                        "model_id": target.model_id,
+                        "price_version": target.price_version,
+                        "tokens": int(target.tokens),
+                        "currency": "USD",
+                        "amount": target.amount,
+                        "event_id": event_id,
+                        "reconciled": False,
+                        "run_total": int(existing_total),
+                        "attribution": attribution,
+                    },
+                )
+                db.commit()
             return _public(target)
     finally:
         engine.dispose()
@@ -249,7 +269,27 @@ def adjust_terminal_usage(
                 return None
             existing_total = sum(int(r.tokens) for r in rows)
             if int(tokens) <= existing_total:
-                return _public(max(rows, key=lambda r: int(r.tokens)))
+                target = max(rows, key=lambda r: int(r.tokens))
+                if attribution:
+                    # Ledger already covers the total — but ambiguous legacy
+                    # attribution still needs a durable atomic marker (r14).
+                    _add_event(
+                        db,
+                        run,
+                        {
+                            "model_id": target.model_id,
+                            "price_version": target.price_version,
+                            "tokens": int(target.tokens),
+                            "currency": "USD",
+                            "amount": target.amount,
+                            "event_id": event_id,
+                            "reconciled": False,
+                            "run_total": int(existing_total),
+                            "attribution": attribution,
+                        },
+                    )
+                    db.commit()
+                return _public(target)
             # 多 (model, price) 行场景：让最大行吸收「新总量 − 其余行之
             # 和」，而不是把整量写进一行——否则其他行与整量并存会重复
             # 计账（audit r10）。

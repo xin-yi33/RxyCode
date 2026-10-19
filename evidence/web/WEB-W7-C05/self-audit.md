@@ -266,3 +266,18 @@ Final verdict: `<filled by the Codex audit>` (session
   retried, deduped by attribution_seq) and are embedded in the ledger
   event payload for atomicity.
 - Non-stack legs 23/23 green; module stack test re-running.
+
+## r14 remediation self-check
+
+- `_reconcile_lost_lease_ledger` rereads deltas fresh + merges max; a
+  B-committed-5/A-flushed-100 interleave now reconciles to 105.
+- `lost_lease` exit parks `_ensure_pending_reconcile_spool` when the
+  reconcile is missing-or-failed — a retried short ledger can no longer
+  slip past; the pending file replays until the ledger exists.
+- Cancel fast-path upsert failure parks the same pending spool before
+  `confirm_cancel` — recovery_required never lands with unrecoverable
+  prior spend.
+- Attribution emit failure in finalize also parks a pending spool; and
+  both service fns embed `attribution` in the usage event even on a
+  no-increase reconcile — the marker is atomic with ledger state.
+- Non-stack legs 23/23 green; module stack test re-running.

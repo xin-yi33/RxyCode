@@ -221,3 +221,8 @@ ruff/py_compile: clean on drain.py + usage/service.py.
   reconcile, upsert vs insert-once contract on real dev PG.
 1 passed in 288.35s — tests/web/w7/test_w7_c05_module.py (real stack
   on r13 code). ruff/py_compile clean; git diff --check clean.
+
+== audit r14 remediation (2026-10-19) ==
+23 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. stale-snapshot lost-lease reconcile leg (fresh DB read merge).
+module stack test: re-running on r14 code.

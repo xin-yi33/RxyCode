@@ -445,3 +445,26 @@ Round 13 (same session) found four deeper edges:
 
 New legs: `_has_prior_attempt_activity` true/false, lost-lease reconcile
 (105 not 5), plus the r12 PG-backed upsert legs.
+
+## Audit r14 remediation (commit pending)
+
+Round 14 (same session) closed the last pending-reconcile gaps:
+
+- **Stale-snapshot reconcile**: `_reconcile_lost_lease_ledger` re-reads
+  `usage.delta` rows fresh and merges with the caller's copy by
+  max-per-attempt — the passed dict predates the other owner's commits.
+- **No-ledger reconcile is now durable**: a successful flush followed by
+  `adjust -> None` used to return silently; a later retry could still
+  commit a short ledger. The lost-lease exit now parks a journaled
+  spool via `_ensure_pending_reconcile_spool` (never clobbers an
+  unjournaled file that still owes its delta append) — replay reconciles
+  once the ledger lands.
+- **Cancel fast-path ledger loss**: a failed prior-spend upsert no longer
+  lets `confirm_cancel` terminalize with nothing pending — it parks the
+  same journaled spool first.
+- **Attribution durability**: emit failures in the finalize path park a
+  pending spool too; `upsert_terminal_usage`/`adjust_terminal_usage`
+  journal an `attribution`-carrying event even when no token increase is
+  needed, so the marker rides the ledger transaction atomically.
+- **Terminal zero-recompute pending spool** dead-letters instead of
+  lingering forever.

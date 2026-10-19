@@ -1744,6 +1744,14 @@ def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
         "db", "t1", "r9", "2", {"tokens": 5}, {"1": 100, "2": 5}
     )
     assert seen == [105]
+    # r14: the caller's deltas copy is stale — another attempt journaled
+    # rows after it was read. The reconcile MUST re-read, not trust the
+    # snapshot: fresh shows {"1": 100, "2": 5}, caller held {"1": 100}.
+    seen.clear()
+    drain._reconcile_lost_lease_ledger(
+        "db", "t1", "r9", "2", {"tokens": 5}, {"1": 100}
+    )
+    assert seen == [105]
     # Zero total -> no reconcile call at all.
     seen.clear()
     monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {})

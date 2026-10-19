@@ -563,6 +563,7 @@ def _spool_streamed_usage(
     epoch: int,
     input_tokens: int,
     output_tokens: int,
+    journaled: bool = False,
 ) -> None:
     """Last-resort retention: when the DB cannot take the final
     ``usage.delta`` row, drop the metering on parent-owned disk so a later
@@ -579,11 +580,41 @@ def _spool_streamed_usage(
                 "attempt": str(epoch),
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                **({"journaled": True} if journaled else {}),
             }
         ),
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+def _ensure_pending_reconcile_spool(
+    workspaces_root: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    epoch: int,
+    input_tokens: int,
+    output_tokens: int,
+) -> None:
+    """Drop a journaled spool so the next drain pass re-runs ledger
+    reconciliation — the delta rows are already durable; what may still be
+    missing is a ledger correction or an attribution note (audit r14).
+    Never overwrites an existing file: a non-journaled spool still owes its
+    delta append and must not be flipped to journaled."""
+    spool_dir = _usage_spool_dir(workspaces_root)
+    path = spool_dir / f"{run_id}.{epoch}.usage.json"
+    if path.exists():
+        return
+    _spool_streamed_usage(
+        spool_dir,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        epoch=epoch,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        journaled=True,
+    )
 
 
 def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
@@ -651,6 +682,20 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 for a in set(deltas) | set(dones)
             )
             if total <= 0:
+                # A journaled pending-reconcile spool on a TERMINAL run with
+                # a zero recompute has nothing left to converge — dead-letter
+                # instead of lingering forever. Non-terminal stays parked.
+                try:
+                    status = run_status(database_url, run_id)
+                except Exception:
+                    status = ""
+                if row.get("journaled") and status in _TERMINAL_STATUSES:
+                    _LOG.warning(
+                        "run %s: pending spool on terminal run with zero "
+                        "recompute; dead-lettered",
+                        run_id,
+                    )
+                    path.unlink(missing_ok=True)
                 continue  # inconsistent — keep for a later pass
             from rxycode_server.usage.service import (
                 UsageForbidden,
@@ -1639,32 +1684,43 @@ def _reconcile_lost_lease_ledger(
     attempt_key: str,
     streamed: dict[str, int],
     deltas: dict[str, int],
-) -> None:
+) -> bool:
     """After a lost lease, a successful flush only journaled a delta — a
     retry that finalized before it landed keeps a short ledger unless we
-    reconcile here (audit r13). Recompute the full per-attempt total and
-    raise the committed ledger; ``None`` (no ledger yet) is fine — the new
-    owner's own finalize reads our durable delta rows."""
+    reconcile here (audit r13/r14). Recompute the full per-attempt total
+    from a FRESH read of the durable deltas (our in-memory copy predates
+    the other owner's commits — audit r14), raise the committed ledger
+    when one exists. Returns False when no ledger exists YET — the caller
+    must retain a pending reconcile (journaled spool) instead of trusting
+    the new owner to have aggregated our late delta in time. Exceptions
+    propagate — they mean "unknown", not "safe"."""
     from rxycode_server.usage.service import adjust_terminal_usage
 
-    deltas = dict(deltas)
+    fresh = _usage_deltas_by_attempt(database_url, run_id)
+    merged = {
+        a: max(fresh.get(a, 0), deltas.get(a, 0))
+        for a in set(fresh) | set(deltas)
+    }
     dones, _ = _agent_done_by_attempt(database_url, run_id)
     per_attempt = {
-        a: max(deltas.get(a, 0), dones.get(a, 0))
-        for a in set(deltas) | set(dones)
+        a: max(merged.get(a, 0), dones.get(a, 0))
+        for a in set(merged) | set(dones)
     }
     per_attempt[attempt_key] = max(
         per_attempt.get(attempt_key, 0), int(streamed.get("tokens") or 0)
     )
     total = sum(per_attempt.values())
     if total <= 0:
-        return
-    adjust_terminal_usage(
-        database_url,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        tokens=total,
-        event_id=uuid.uuid4().hex,
+        return True
+    return (
+        adjust_terminal_usage(
+            database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            tokens=total,
+            event_id=uuid.uuid4().hex,
+        )
+        is not None
     )
 
 
@@ -1746,6 +1802,28 @@ async def execute_run(
                         run_id,
                         exc_info=True,
                     )
+                    # Terminalizing with the prior spend unledgured leaves
+                    # nothing pending — park a journaled spool so replay
+                    # reconciles the ledger once it exists (audit r14).
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _ensure_pending_reconcile_spool,
+                                cfg.workspaces_root,
+                                tenant_id=tenant_id,
+                                run_id=run_id,
+                                epoch=epoch,
+                                input_tokens=0,
+                                output_tokens=0,
+                            ),
+                            timeout=_LEASE_IO_BUDGET,
+                        )
+                    except Exception:
+                        _LOG.warning(
+                            "run %s: pending-reconcile spool failed",
+                            run_id,
+                            exc_info=True,
+                        )
             if attributions0:
                 try:
                     await asyncio.wait_for(
@@ -2043,10 +2121,12 @@ async def execute_run(
     if lost_lease:
         # Our flushed usage.delta is durable but a retry may already have
         # committed a short ledger — reconcile before handing off (r13).
-        # None (no ledger yet) is fine: the new owner's finalize reads the
-        # journaled delta rows itself.
+        # No ledger YET (or a failed reconcile) is NOT safe to drop: the
+        # other owner may commit its own short total next — park a journaled
+        # pending-reconcile spool so a later drain pass converges (r14).
+        pending = False
         try:
-            await asyncio.wait_for(
+            landed = await asyncio.wait_for(
                 asyncio.to_thread(
                     _reconcile_lost_lease_ledger,
                     cfg.database_url,
@@ -2058,13 +2138,37 @@ async def execute_run(
                 ),
                 timeout=_LEASE_IO_BUDGET,
             )
+            pending = not landed
         except Exception:
+            pending = True
+        if pending:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _ensure_pending_reconcile_spool,
+                        cfg.workspaces_root,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        epoch=epoch,
+                        input_tokens=int(streamed.get("input_tokens") or 0),
+                        output_tokens=int(streamed.get("output_tokens") or 0),
+                    ),
+                    timeout=_LEASE_IO_BUDGET,
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: pending-reconcile spool write failed",
+                    run_id,
+                    exc_info=True,
+                )
             _LOG.warning(
-                "run %s: lost-lease ledger reconcile failed; delta rows stay durable",
+                "run %s: lease lost mid-flight; reconcile parked on spool",
                 run_id,
-                exc_info=True,
             )
-        _LOG.warning("run %s: lease lost mid-flight; new owner finishes", run_id)
+        else:
+            _LOG.warning(
+                "run %s: lease lost mid-flight; new owner finishes", run_id
+            )
         return False
 
     # Real spend lands on the ledger for succeeded, failed AND cancelled runs
@@ -2139,6 +2243,28 @@ async def execute_run(
             _LOG.warning(
                 "run %s: attribution notes failed", run_id, exc_info=True
             )
+            # Durable uncertainty must not depend on one append: park a
+            # journaled spool so a later drain pass re-emits the deduped
+            # `usage.attribution` notes (audit r14).
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _ensure_pending_reconcile_spool,
+                        cfg.workspaces_root,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        epoch=epoch,
+                        input_tokens=int(streamed.get("input_tokens") or 0),
+                        output_tokens=int(streamed.get("output_tokens") or 0),
+                    ),
+                    timeout=_LEASE_IO_BUDGET,
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: pending-attribution spool write failed",
+                    run_id,
+                    exc_info=True,
+                )
 
     if cancelled_by_request:
         # A cancelled run is still committed cancelled — the cancel was real
