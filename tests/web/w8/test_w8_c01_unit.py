@@ -2708,3 +2708,91 @@ def test_w8_c01_scrub_unterminated_heredoc() -> None:
     out = drain._scrub_inline_secrets(s)
     assert "AUDIT_UNTERM_KEY" not in out
     assert "still body" not in out
+
+
+def test_w8_c01_scrub_auth_scheme_substitution_value() -> None:
+    """Audit W8-r15: a scheme value that IS a shell word —
+    Bearer $(printf %s K) — must die as ONE word; a charset
+    regex strands the command text mounted."""
+    import rxycode_worker.drain as drain
+
+    for s in (
+        'curl -H "Authorization: Bearer $(printf %s AUDIT_HKEY)" u',
+        'curl -H "Authorization: Bearer ${TOKEN:-AUDIT_HKEY}" u',
+        'X-Api-Key: $(printf %s AUDIT_HKEY)',
+    ):
+        out = drain._scrub_inline_secrets(s)
+        assert "AUDIT_HKEY" not in out, out
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer AUDIT_PLAIN" u'
+    )
+    assert out == 'curl -H "Authorization: Bearer confined" u'
+    # Header name + scheme + quoting survive.
+    assert '"Authorization: Bearer confined"' in out
+
+
+def test_w8_c01_scrub_long_url_password() -> None:
+    """Audit W8-r15: a userinfo password longer than 256 chars is
+    still a password — the charset bound must not be a bypass."""
+    import rxycode_worker.drain as drain
+
+    url = "https://user:" + "p" * 300 + "@example.org/api"
+    assert drain._has_url_secret(url)
+    cfg = {"endpoint": url}
+    drain._scrub_credential_values(cfg)
+    assert "p" * 300 not in cfg["endpoint"]
+
+
+def test_w8_c01_scrub_url_port_path_not_userinfo() -> None:
+    """Audit W8-r15: https://host:443/@scope/pkg has NO userinfo —
+    the @ belongs to the path. A / in the password charset let
+    the authority bleed into the path and redacted an innocent URL."""
+    import rxycode_worker.drain as drain
+
+    cfg = {"endpoint": "https://registry.npmjs.org:443/@scope/pkg"}
+    drain._scrub_credential_values(cfg)
+    assert cfg["endpoint"] == "https://registry.npmjs.org:443/@scope/pkg"
+
+
+def test_w8_c01_scrub_bare_scheme_prose_survives() -> None:
+    """Audit W8-r15: Basic configuration is prose — a bare scheme
+    word only redacts a value that LOOKS credential-shaped (digit,
+    symbol, or serious length)."""
+    import rxycode_worker.drain as drain
+
+    cfg = {"description": "Basic configuration for this server"}
+    drain._scrub_credential_values(cfg)
+    assert cfg["description"] == "Basic configuration for this server"
+    cfg = {"note": "the bearer of bad news"}
+    drain._scrub_credential_values(cfg)
+    assert cfg["note"] == "the bearer of bad news"
+    # Real token-shaped bare-scheme values still die.
+    out = drain._scrub_inline_secrets("Bearer eyJhbGciOiJIUzI1NiJ9.x.y")
+    assert out == "Bearer confined"
+
+
+def test_w8_c01_scrub_cyclic_yaml_alias() -> None:
+    """Audit W8-r15: yaml.safe_load turns &x [*x] into a real
+    object cycle — traversal must dedup by id, not RecursionError."""
+    import rxycode_worker.drain as drain
+
+    node = {"x": []}
+    node["x"].append(node)
+    drain._scrub_credential_values(node)  # no RecursionError
+    shared = ["token=K"]
+    node2 = {"a": shared, "b": shared}
+    drain._scrub_credential_values(node2)
+    assert node2["a"] is node2["b"]
+
+
+def test_w8_c01_scrub_rescan_work_budget() -> None:
+    """Audit W8-r15: nested compound values fan rescan calls out
+    exponentially — a 292-char input caused ~200k calls. The work
+    budget fails closed instead of amplifying."""
+    import rxycode_worker.drain as drain
+
+    s = "safe"
+    for _ in range(12):
+        s = '--normal "$(X=$(echo ' + s + '))"'
+    out = drain._scrub_inline_secrets(s)
+    assert "confined" in out

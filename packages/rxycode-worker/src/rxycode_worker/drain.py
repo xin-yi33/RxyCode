@@ -1357,7 +1357,11 @@ _CREDENTIAL_BARE_RE = re.compile(
 # A URL with an embedded userinfo password is a credential wherever it
 # sits — ``database_url``/``dsn`` keys are not credential-NAMED but a
 # ``scheme://user:pass@host`` value still hands the child a live login.
-_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@]{1,256}:[^@\s]{1,256}@")
+# No length ceiling — a 300-char password is still a password
+# (audit W8-r15); ``/`` in the password charset is impossible
+# (RFC 3986 ends the authority at ``/``) and its exclusion keeps a
+# port+path ``:443/@scope`` from faking userinfo (audit W8-r15).
+_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@]+:[^@/\s]+@")
 #: ``KEY``/``--flag`` shape for the left of a ``=`` list item — a bare
 #: ``=`` inside a URL query (``?sslmode=require``) is NOT an assignment.
 _ASSIGN_KEY_RE = re.compile(r"^-{0,2}[A-Za-z_][A-Za-z0-9_.-]*$")
@@ -1380,7 +1384,7 @@ def _has_url_secret(value: Any) -> bool:
 #: (whole redaction); a URL appearing mid-string goes through the
 #: surgical pass instead.
 _URL_CREDENTIAL_LEAD_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@]{1,256}:[^@\s]{1,256}@"
+    r"^[A-Za-z][A-Za-z0-9.+-]*://[^/\s:@]+:[^@/\s]+@"
 )
 #: ``--flag=VALUE`` and ``--flag VALUE`` inside an opaque string —
 #: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
@@ -1399,22 +1403,17 @@ _ASSIGN_LEAD_RE = re.compile(
     r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?!=)(?!--)"
 )
 #: ``Authorization: Bearer K``-style header credentials inside opaque
-#: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9). The
-#: scheme form keeps header name + scheme, drops the credential.
+#: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9).
 #: ``api-key`` is the Azure-style header the egress gateway itself
 #: understands (egress.py), so it is in the table too (audit W8-r10).
-_AUTH_HEADER_RE = re.compile(
+#: Only the LEAD is matched — header name, separator, optional scheme —
+#: because the VALUE must be located by the shell-word scanner:
+#: ``Bearer $(printf %s K)`` is one word, and a charset regex strands
+#: ``(printf %s K)`` mounted (audit W8-r15).
+_AUTH_LEAD_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token"
-    r"|api-key|apikey)(\s*[:=]\s*)(bearer|basic|token|digest|oauth)\s+"
-    r"([^\s;|&<>'\"(){}]+)"
-)
-#: A header value WITHOUT a scheme word — ``X-Api-Key: RAWTOKEN``.
-#: The lookahead skips scheme-led values (the scheme rule owns them)
-#: and a 4-char floor keeps prose like ``authorization: yes`` alive.
-_AUTH_HEADER_NAKED_RE = re.compile(
-    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token"
-    r"|api-key|apikey)(\s*[:=]\s*)(?!(?:bearer|basic|token|digest|oauth)"
-    r"\s)([^\s;|&<>'\"(){}]{4,})"
+    r"|api-key|apikey)(\s*[:=]\s*)"
+    r"(?:(bearer|basic|token|digest|oauth)[ \t]+)?"
 )
 #: ``Digest`` authorization carries a comma-separated ``k=v`` list
 #: whose ENTIRE value is credential material — username/realm/nonce/
@@ -1426,14 +1425,13 @@ _AUTH_DIGEST_RE = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_-]*\*?\s*=\s*"
     r"(?:\\?\"(?:\\.|[^\"\\])*\\?\"|[^,\s\"]+)\s*,?\s*)+"
 )
-#: A bare auth scheme + token-length value — ``Bearer eyJ...`` —
-#: entropy floor keeps prose ("the bearer of bad news") alive.
-_AUTH_SCHEME_RE = re.compile(
-    r"(?i)\b(bearer|basic|oauth)\s+([A-Za-z0-9._~+/=-]{8,})"
-)
+#: A bare auth scheme word with no header-name context —
+#: ``Bearer eyJ…``. The value follows as a shell word; whether it is
+#: credential-shaped is decided in the pass (audit W8-r15).
+_AUTH_BARE_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic|oauth)[ \t]+")
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
-_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]{1,256}:[^@\s]{1,256}@")
+_URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]+:[^@/\s]+@")
 #: ``<<TAG``/``<<-TAG``/``<<~TAG``/quoted heredoc openers inside an
 #: opaque string — the BODY that follows is data, not syntax, and
 #: carries credential material verbatim (``--api-key-file /dev/fd/3
@@ -1576,9 +1574,19 @@ def _shell_word_end(text: str, start: int) -> int:
 #: scrubber with a bare ``RecursionError``; beyond the cap the value
 #: is treated as wholesale suspicious and dies (audit W8-r11 stream).
 _SCRUB_RESCAN_DEPTH_CAP = 32
+#: Depth bounds RECURSION, not WORK — nested compound values make flag
+#: and assign passes revisit overlapping text and a 292-char input can
+#: fan out to ~200k rescan calls (audit W8-r15). A per-string budget —
+#: rescan call count AND total rescanned characters — fails closed
+#: long before the amplification hurts.
+_SCRUB_RESCAN_CALL_BUDGET = 2048
 
 
-def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
+def _scrub_inline_secrets(
+    text: str,
+    _depth: int = 0,
+    _budget: list[int] | None = None,
+) -> str:
     """Redact credential material EMBEDDED inside an opaque string —
     ``args: ["-c", "exec server --api-key K"]`` or
     ``export TOKEN=x; srv`` hides secrets from the whole-item grammar,
@@ -1588,9 +1596,21 @@ def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
     continuations count as one word — audit W8-r9/r10); non-credential
     names keep their value but it is recursively re-scrubbed inside.
     Same name tables as the whole-item grammar."""
-    if _depth >= _SCRUB_RESCAN_DEPTH_CAP:
-        # Pathological nesting — treat the residue as opaque credential
-        # material rather than recurse into a RecursionError.
+    if _budget is None:
+        _budget = [
+            _SCRUB_RESCAN_CALL_BUDGET,
+            max(1 << 16, len(text) * 8),
+        ]
+    _budget[0] -= 1
+    _budget[1] -= len(text)
+    if (
+        _depth >= _SCRUB_RESCAN_DEPTH_CAP
+        or _budget[0] < 0
+        or _budget[1] < 0
+    ):
+        # Pathological nesting or a work-budget overrun — treat the
+        # residue as opaque credential material rather than recurse
+        # into a RecursionError or spin on amplified input.
         return "confined"
 
     def _cred_name(name: str) -> bool:
@@ -1611,11 +1631,11 @@ def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
         ):
             return (
                 f"{value[0]}"
-                f"{_scrub_inline_secrets(value[1:-1], _depth + 1)}"
+                f"{_scrub_inline_secrets(value[1:-1], _depth + 1, _budget)}"
                 f"{value[0]}"
             )
         if any(c in value for c in ("'", '"', "$", "`")):
-            return _scrub_inline_secrets(value, _depth + 1)
+            return _scrub_inline_secrets(value, _depth + 1, _budget)
         return value
 
     def _flag_pass(src: str) -> str:
@@ -1750,23 +1770,82 @@ def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
         out.append(src[pos:])
         return "".join(out)
 
+    def _value_end(src: str, start: int) -> int:
+        """End of a header/bare-scheme value. A value starting with a
+        substitution, quote or process substitution is a real shell
+        word (``Bearer $(printf %s K)`` — audit W8-r15) and gets the
+        full word scanner; a plain token is bounded so an unterminated
+        enclosing quote cannot swallow the rest of the string."""
+        if start < len(src) and (
+            src[start] in "$'\"`"
+            or (
+                src[start] in "<>"
+                and start + 1 < len(src)
+                and src[start + 1] == "("
+            )
+        ):
+            return _shell_word_end(src, start)
+        end = start
+        while end < len(src) and src[end] not in " \t\r\n;|&<>'\"(){}":
+            end += 1
+        return end
+
+    def _auth_pass(src: str) -> str:
+        """Header-named credentials — scheme-led (``Bearer K``) and
+        naked (``X-Api-Key: RAWTOKEN``) values die as one shell word;
+        the 4-char naked floor keeps ``authorization: no`` alive."""
+        out: list[str] = []
+        pos = 0
+        for match in _AUTH_LEAD_RE.finditer(src):
+            if match.start() < pos:
+                continue
+            vstart = match.end()
+            vend = _value_end(src, vstart)
+            if vend <= vstart:
+                continue  # header word with no value
+            if match.group(3) is None and vend - vstart < 4:
+                continue  # naked floor
+            out.append(src[pos:vstart])
+            out.append("confined")
+            pos = vend
+        out.append(src[pos:])
+        return "".join(out)
+
+    def _bare_scheme_pass(src: str) -> str:
+        """Scheme word without a header name — ``Bearer eyJ…``. The
+        value must LOOK credential-shaped (a digit/symbol or serious
+        length): ``Basic configuration`` is prose, not a credential
+        (audit W8-r15)."""
+        out: list[str] = []
+        pos = 0
+        for match in _AUTH_BARE_SCHEME_RE.finditer(src):
+            if match.start() < pos:
+                continue
+            vstart = match.end()
+            vend = _value_end(src, vstart)
+            value = src[vstart:vend]
+            if len(value) < 8 or (
+                len(value) < 32 and not re.search(r"[^A-Za-z]", value)
+            ):
+                continue
+            out.append(src[pos:vstart])
+            out.append("confined")
+            pos = vend
+        out.append(src[pos:])
+        return "".join(out)
+
     text = _flag_pass(text)
     text = _assign_pass(text)
     text = _heredoc_pass(text)
     text = _AUTH_DIGEST_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}Digest confined", text
     )
-    text = _AUTH_HEADER_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)} confined", text
-    )
-    text = _AUTH_HEADER_NAKED_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}confined", text
-    )
-    text = _AUTH_SCHEME_RE.sub(lambda m: f"{m.group(1)} confined", text)
+    text = _auth_pass(text)
+    text = _bare_scheme_pass(text)
     return _URL_USERINFO_SUB_RE.sub(r"\g<1>confined:confined@", text)
 
 
-def _scrub_credential_values(node: Any) -> None:
+def _scrub_credential_values(node: Any, _seen: set[int] | None = None) -> None:
     """Recursively redact credential-shaped scalars anywhere in a config
     tree — model entries, ``rag.embedding.api_key``, MCP-server ``env``
     maps AND env lists (``["GITHUB_TOKEN=…"]`` is a supported MCP config
@@ -1774,12 +1853,22 @@ def _scrub_credential_values(node: Any) -> None:
     like ``PGPASSWORD``, and URLs carrying userinfo passwords under
     non-credential names (``database_url``). Values become
     ``"confined"``; indirection resolvers (``*_env``/``*_file``) are
-    blanked (audit W8-r3)."""
+    blanked (audit W8-r3). YAML aliases make the tree a DAG — and a
+    self-referencing anchor (``&x [*x]``) a real cycle; the ``_seen``
+    id-set dedups shared nodes and breaks cycles so traversal cannot
+    RecursionError (audit W8-r15)."""
+    if _seen is None:
+        _seen = set()
+    if isinstance(node, (dict, list)):
+        marker = id(node)
+        if marker in _seen:
+            return
+        _seen.add(marker)
     if isinstance(node, dict):
         for key, value in list(node.items()):
             lowered = str(key).strip().lower()
             if isinstance(value, (dict, list)):
-                _scrub_credential_values(value)
+                _scrub_credential_values(value, _seen)
                 continue
             if lowered in _CREDENTIAL_INDIRECTION_KEYS:
                 del node[key]
@@ -1854,7 +1943,7 @@ def _scrub_credential_values(node: Any) -> None:
                     # whole-item grammar never sees (audit W8-r7).
                     node[idx] = _scrub_inline_secrets(item)
                 continue
-            _scrub_credential_values(item)
+            _scrub_credential_values(item, _seen)
 
 
 def _scrub_model_credentials(

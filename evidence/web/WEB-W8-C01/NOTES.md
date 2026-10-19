@@ -707,3 +707,51 @@ fresh uuid per claim, so a crashed copytree can never be reused):
   ``$(case x in x) K;; esac)`` consumed, ``<<'RXY-KEY'`` hyphen
   delimiter, ``3<<A 4<<B`` queued bodies, unterminated body to EOF.
 - `python -m ruff check`: clean.
+
+## Audit round 15 (gpt-6.1-sol, session 01a15592 — VERDICT: PROBLEMS, 6 findings)
+
+r15 audited 16335bba. Session note: the accumulated r1–r14 context
+in codex session 01a140a7 began tripping the provider content
+filter mid-turn (twice — turn.failed before findings), so the
+audit continued in fresh session 01a15592 with identical
+model/effort/read-only settings; it re-verified the committed 20
+scrub regressions itself before reporting. Six findings, all
+remediated:
+
+1. **[P1] Compound auth-header values stranded** — Authorization:
+   Bearer $(printf %s K): the header value charset ate only $,
+   leaving the command text mounted. Header matching now finds only
+   the LEAD (name + separator + optional scheme); the value is a
+   shell word located by _shell_word_end — $(…)/quoted words
+   die whole; plain tokens use a bounded scan so an unterminated
+   enclosing quote cannot swallow the tail.
+2. **[P1] >256-char URL passwords bypassed redaction** — the
+   {1,256} bounds in all three userinfo regexes are removed
+   (unbounded charsets are linear; a 300-char password is still a
+   password).
+3. **[P2] Port+path faked userinfo** — https://host:443/@scope/pkg
+   was redacted whole: the password charset admitted /, letting
+   443/ pose as a password up to @scope. / now ends the
+   userinfo span (RFC 3986 ends authority at / anyway).
+4. **[P2] Bare-scheme prose destroyed** — Basic configuration
+   matched the 8-char floor. Bare-scheme values (no header-name
+   context) now require credential shape: a non-alpha char or >=32
+   chars; Bearer eyJ… still dies, the bearer of bad news
+   lives. Header-named forms keep their previous behavior — the
+   header name is itself credential context.
+5. **[P2] Cyclic YAML aliases RecursionError** — &x [*x] loads as
+   a real object cycle; _scrub_credential_values now dedups
+   containers by id() — shared DAG nodes are also processed once.
+6. **[P2] Exponential rescan amplification** — nested compound values
+   made flag/assign passes revisit overlapping text (292 chars →
+   ~196k calls, ~5.2s). A per-string work budget (2048 rescan calls,
+   max(64KiB, len*8) rescanned chars) fails closed: same input now
+   ~0.03s with the inner payload confined.
+
+## Test evidence (r15)
+
+- tests/web/w8: 65 passed, 3 environment skips — new legs:
+  Bearer $(…)/Bearer ${…:-…} whole-word, 300-char URL
+  password, :443/@scope port+path preservation, bare-scheme prose
+  vs token, cyclic id() dedup, work-budget bound.
+- python -m ruff check: clean.
