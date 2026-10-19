@@ -132,3 +132,31 @@ docker legs), `NOTES.md` (topology, deviations, honest labels).
 - Multiple untagged dones in one run (filled-epoch exclusion).
 - `_usage_deltas_by_attempt` untagged-value compatibility vs the new
   min-surplus done rule (they are independent streams).
+
+
+## Status at r15 audit submission (2026-10-19)
+
+- Commits on feat/rxycode-web: r13 `a0dcb2e5`, r14 `dbeaf69e` +
+  evidence `526fbe88`, r15 `1e85c499`.
+- r15 fixes verified green: 26 non-stack legs + module stack test
+  (316.83s real compose).
+- Replay is now insertion-capable: a terminal run whose owner crashed
+  before the first ledger write gets the recovered row inserted by the
+  spool pass (model/price carried in the payload), dead-lettering only
+  on UsageForbidden or a journaled zero-recompute terminal file.
+- Ledger writes recompute under the held run row lock (`recompute`
+  callback) — append_event serializes on that row, so the last writer
+  converges on disjoint-attempt spend; the passed total is a floor.
+- Pending spools carry an honest `journaled` flag: owed (unjournaled)
+  streamed spend replays as append-first; durable prior spend replays
+  as reconcile-only.
+
+## What the next auditor should probe
+
+- Two disjoint attempts racing finalize (recompute-under-lock is the
+  convergence point; verify the run lock truly serializes append_event).
+- Pending spool written journaled=False, then a crash before replay —
+  the file must still append on the NEXT pass.
+- Legacy spool files without model_id ("unknown" insert path).
+- `_run_metering_total` reads on a second connection while the ledger
+  txn holds the run lock — no deadlock (plain SELECTs, no row locks).
