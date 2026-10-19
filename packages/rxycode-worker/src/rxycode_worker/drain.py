@@ -1447,7 +1447,10 @@ _HEREDOC_RE = re.compile(
 
 
 def _shell_word_end(
-    text: str, start: int, stop_at_unclosed_quote: bool = False
+    text: str,
+    start: int,
+    stop_at_unclosed_quote: bool = False,
+    _qdepth: int = 0,
 ) -> int:
     """End offset of the shell word starting at ``start`` — quoted
     spans (``'``, ``"``, ````, ANSI-C ``$'``), ``$(...)``/``${...}``
@@ -1575,29 +1578,29 @@ def _shell_word_end(
             i += 1
             continue
         if c == "'":
-            if stop_at_unclosed_quote and not stack and (
+            if stop_at_unclosed_quote and not stack and i > start and (
                 i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
             ):
-                # Quote at word level followed by a boundary — really
-                # the ENCLOSING word's closer, not an opener
-                # (``Bearer K" u`` ends at the ``"``; audit W8-r17).
-                # Inside ``$(``/``${`` a quote+space is still a real
-                # opener, so this checks word level only.
+                # Quote mid-word followed by a boundary — really the
+                # ENCLOSING word's closer, not an opener (``Bearer
+                # K" u`` ends at the ``"``; audit W8-r17). At the word
+                # START a quote is always an opener; inside
+                # ``$(``/``${`` a quote+space is still a real opener —
+                # both keep normal push semantics (audit W8-r18).
                 return i
             stack.append("'")
             qpos.append(i)
         elif c == '"':
-            if stop_at_unclosed_quote and not stack and (
+            if stop_at_unclosed_quote and not stack and i > start and (
                 i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
             ):
                 return i
             stack.append('"')
             qpos.append(i)
         elif c == "`":
-            if stop_at_unclosed_quote and not stack and (
-                i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
-            ):
-                return i
+            # Backticks get no closer check — `` ` cmd `` with a space
+            # after the backtick is a valid substitution, never an
+            # enclosing-word closer (audit W8-r18).
             stack.append("`")
             qpos.append(i)
             word = ""
@@ -1609,10 +1612,13 @@ def _shell_word_end(
         # opener and the word runs to EOS; MID-word with content glued
         # after it (``abc"SECRET``) it was the enclosing closer and the
         # word continues without it — rescan the glued tail for the
-        # real end (audit W8-r17).
-        if qpos[0] == start:
+        # real end (audit W8-r17). The rescan is bounded — chains of
+        # unclosed quotes must not RecursionError (audit W8-r18).
+        if qpos[0] == start or _qdepth >= 64:
             return i
-        return _shell_word_end(text, qpos[0] + 1, stop_at_unclosed_quote)
+        return _shell_word_end(
+            text, qpos[0] + 1, stop_at_unclosed_quote, _qdepth + 1
+        )
     return i
 
 
@@ -1798,8 +1804,11 @@ def _scrub_inline_secrets(
                 elif c in ")}":
                     depth = max(0, depth - 1)
                 elif c == "#" and depth == 0 and (
-                    i == 0 or line[i - 1] in " \t"
+                    i == 0 or line[i - 1] in " \t;&|<>()"
                 ):
+                    # ``#`` begins a comment at any word boundary —
+                    # including right after ``;``/``|``/``&`` —
+                    # not only after whitespace (audit W8-r18).
                     return i
                 i += 1
             return -1
@@ -1922,6 +1931,27 @@ def _scrub_inline_secrets(
         rest of the string (``Bearer K" u`` stops at ``"``)."""
         return _shell_word_end(src, start, stop_at_unclosed_quote=True)
 
+    def _trailing_closer(value: str) -> str:
+        """An unpaired ``"``/``'`` inside a consumed value was the
+        enclosing word's closer glued mid-word — re-emit it after
+        ``confined`` so the scrubbed string keeps balanced quotes
+        (``abc"SECRET`` → ``confined"``; audit W8-r18). A quote at
+        position 0 is an OPENER, not a closer — it emits nothing."""
+        i, n = 0, len(value)
+        while i < n:
+            c = value[i]
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c in "\"'`":
+                partner = value.find(c, i + 1)
+                if partner == -1:
+                    return c if i > 0 else ""
+                i = partner + 1
+                continue
+            i += 1
+        return ""
+
     def _auth_pass(src: str) -> str:
         """Header-named credentials — scheme-led (``Bearer K``) and
         naked (``X-Api-Key: RAWTOKEN``) values die as one shell word;
@@ -1938,7 +1968,7 @@ def _scrub_inline_secrets(
             if match.group(3) is None and vend - vstart < 4:
                 continue  # naked floor
             out.append(src[pos:vstart])
-            out.append("confined")
+            out.append("confined" + _trailing_closer(src[vstart:vend]))
             pos = vend
         out.append(src[pos:])
         return "".join(out)
@@ -1961,7 +1991,7 @@ def _scrub_inline_secrets(
             ):
                 continue
             out.append(src[pos:vstart])
-            out.append("confined")
+            out.append("confined" + _trailing_closer(src[vstart:vend]))
             pos = vend
         out.append(src[pos:])
         return "".join(out)

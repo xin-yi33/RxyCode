@@ -2940,3 +2940,55 @@ def test_w8_c01_prepare_deep_alias_fails_closed() -> None:
         result = drain._prepare_child_data_dir(Path("child-conf"))
     assert result == Path("child-conf")
     assert mock_write.call_count == 0
+
+
+def test_w8_c01_scrub_backtick_space_substitution() -> None:
+    """Audit W8-r18: `` ` cmd `` with a space after the backtick is a
+    VALID command substitution, not an enclosing-quote closer — the
+    whole substitution is the value and must die."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer ` printf %s AUDIT_BK`" u'
+    )
+    assert "AUDIT_BK" not in out
+    assert out == 'curl -H "Authorization: Bearer confined" u'
+
+
+def test_w8_c01_scrub_heredoc_operator_comment() -> None:
+    r"""Audit W8-r18: ``#`` opens a comment after shell separators too
+    — ``<<EOF;# \<newline>`` — the backslash is comment text and the
+    body starts at the real next line."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "cat <<EOF;# " + chr(92) + chr(10) + "AUDIT_OCK" + chr(10)
+        + "EOF" + chr(10) + "echo keep"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_OCK" not in out
+    assert "echo keep" in out
+
+
+def test_w8_c01_scrub_glued_word_reemits_closer() -> None:
+    r"""Audit W8-r18: ``abc"SECRET`` dies whole, but the enclosing
+    closer consumed inside the word must be re-emitted — the
+    scrubbed output stays quote-balanced."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer abc"AUDIT_GK u'
+    )
+    assert "AUDIT_GK" not in out
+    assert out == 'curl -H "Authorization: Bearer confined" u'
+
+
+def test_w8_c01_scrub_unclosed_quote_chain_bounded() -> None:
+    """Audit W8-r18: chains of unclosed mid-word quotes recurse the
+    word scanner once per quote — the rescan is depth-bounded so a
+    1100-deep chain fails closed, never RecursionError."""
+    import rxycode_worker.drain as drain
+
+    v = "Authorization: Bearer " + ('x"$(' * 1100) + "AUDIT_UQ"
+    out = drain._scrub_inline_secrets(v)  # no RecursionError
+    assert "AUDIT_UQ" not in out

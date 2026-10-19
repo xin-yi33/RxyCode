@@ -835,3 +835,39 @@ regressions green). Four new findings, all remediated:
   ``\<newline>`` non-continuation, ``E\``+``OF`` joined terminator,
   deep-alias ``_prepare_child_data_dir`` fail-closed.
 - ``python -m ruff check``: clean.
+
+## Audit round 18 (gpt-6.1-sol, session 01a15592 — VERDICT: PROBLEMS, 4 findings)
+
+r18 audited ``292a9a78``: r17 fixes re-verified (35 focused
+regressions green). Four new findings, all remediated:
+
+1. **[P1] Backtick+space mistaken for a closer** — ``Bearer ` printf
+   %s K` ``: the word-level boundary shortcut treated a backtick
+   followed by space as the enclosing word's closer, but backticks
+   always OPEN a substitution (space is legal inside). Backticks are
+   removed from the closer check; the word-level check also gained an
+   ``i > start`` guard so a quote AT the value start is always an
+   opener.
+2. **[P1] ``#`` after operators starts comments too** — ``<<EOF;#
+   \<newline>SECRET``: ``#`` begins a comment at ANY word boundary
+   including ``;|&<>()`` — ``_comment_start``'s preceding-char set
+   widened from whitespace to the shell separator set.
+3. **[P2] Glued-word redaction dropped the enclosing closer** —
+   ``abc"SECRET`` died whole but the consumed ``"`` was the enclosing
+   word's closer, leaving the output quote-unbalanced
+   (``...confined u``). ``_trailing_closer`` re-emits an unpaired
+   ``"``/``'`` found past position 0 of the consumed value —
+   ``confined"`` keeps the string balanced.
+4. **[P2] Unclosed-quote rescan unbounded** — the
+   ``stop_at_unclosed_quote`` fallback recursed once per unclosed
+   quote, bypassing the rescan work guards (1100-deep →
+   RecursionError). The recursive call now carries ``_qdepth`` with a
+   64-frame cap — beyond it the tail is consumed as word content,
+   fail-closed.
+
+## Test evidence (r18)
+
+- ``tests/web/w8``: 76 passed, 3 environment skips — new legs:
+  backtick+space substitution, ``;#`` operator comments, closer
+  re-emission on glued words, 1100-deep unclosed-quote chain.
+- ``python -m ruff check``: clean.
