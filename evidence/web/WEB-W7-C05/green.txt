@@ -157,3 +157,15 @@ Debug-stack probes (rxydbg-r4): .data/config copy path verified —
 turn now reaches the real provider boundary (no EROFS on ro-bound
 config dir); healthcheck false-positive (sh-cmdline substring) fixed via
 /proc/1/comm == python requirement.
+
+== audit r5 remediation rerun ==
+python -m pytest tests/web/w7/test_w7_c05_unit.py -q -k <non-stack legs>
+  -> 10 passed in 19.67s (watchdog a-e, argv mount order, stale result,
+     config placement, per-attempt usage delta sum, gate matrix, ...)
+python -m pytest tests/web/w7/test_w7_c05_module.py -q
+  -> 1 passed in 628.86s — full compose stack on the r5 code: cloud run
+     claimed, confined turn + event/agent_started, honest provider-boundary
+     failure, terminal + usage rows; restart/stale-lease legs green.
+Full unit file rerun: 10 passed + 1 ERROR — the compose contract leg hit
+  STACK_TIMEOUT purely on PyPI SSL EOF inside api/worker pip installs
+  (same external flake seen twice today); leg retried separately.

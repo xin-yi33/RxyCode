@@ -115,19 +115,18 @@ def build_sandbox_argv(
         "--new-session",
         "--clearenv",
     ]
+    # Namespace-private mounts come FIRST: /dev and the private /tmp tmpfs
+    # must precede EVERY bind — a ro-bind or workdir under /tmp (the drain's
+    # default root puts workspaces AND the .sandboxes config dir there) would
+    # be shadowed by a later tmpfs and either break --chdir or hide the
+    # config source (audit r4/r5-F5).
+    out += ["--dev", "/dev", "--tmpfs", "/tmp"]
     # The base system root is always bound; `ro_binds` only ADDS code paths —
     # a caller can never accidentally drop the interpreter's own mount.
     for path in dict.fromkeys([*_DEFAULT_RO_BINDS, *ro_binds]):
         if Path(path).exists():
             out += ["--ro-bind", str(path), str(path)]
-    # The private tmpfs mounts BEFORE the workspace bind — otherwise a
-    # workdir under /tmp (the drain's default root) would be shadowed and
-    # --chdir would fail (audit r4-F5).
     out += [
-        "--dev",
-        "/dev",
-        "--tmpfs",
-        "/tmp",
         "--bind",
         str(workdir),
         str(workdir),

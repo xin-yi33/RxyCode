@@ -286,28 +286,38 @@ def _agent_done_row(database_url: str, run_id: str) -> tuple[str, int]:
     return str(row.event_id), tokens
 
 
-def _last_usage_delta(database_url: str, run_id: str) -> int:
-    """Sum of the most recent ``usage.delta`` heartbeat — the metering that
-    survives a SIGKILLed turn (the child writes it every few seconds)."""
+def _usage_deltas_total(database_url: str, run_id: str) -> int:
+    """Metering that survives a SIGKILLed turn, summed across attempts.
+
+    Each confined child heartbeats CUMULATIVE ``usage.delta`` rows tagged
+    with its lease epoch; a retried run starts a fresh baseline per attempt.
+    The durable total is the sum of each attempt's LAST heartbeat — taking
+    only the newest row would discard a previous attempt's spend
+    (audit r5-F4)."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with engine.connect() as conn:
-            payload = conn.execute(
+            rows = conn.execute(
                 text(
-                    "SELECT payload FROM run_events "
-                    "WHERE run_id = :id AND type = 'usage.delta' "
-                    "ORDER BY seq DESC LIMIT 1"
+                    "SELECT seq, payload FROM run_events "
+                    "WHERE run_id = :id AND type = 'usage.delta' ORDER BY seq"
                 ),
                 {"id": run_id},
-            ).scalar()
+            ).all()
     finally:
         engine.dispose()
-    if not isinstance(payload, dict):
-        return 0
-    return int(payload.get("input_tokens") or 0) + int(payload.get("output_tokens") or 0)
+    latest: dict[str, int] = {}
+    for _seq, payload in rows:
+        if not isinstance(payload, dict):
+            continue
+        attempt = str(payload.get("attempt") or "")
+        latest[attempt] = int(payload.get("input_tokens") or 0) + int(
+            payload.get("output_tokens") or 0
+        )
+    return sum(latest.values())
 
 
 class _RunCancelled(Exception):
@@ -613,6 +623,7 @@ async def _lease_watchdog(
             turn.cancel()
             raise _LeaseRenewalLost(run_id)
         try:
+            req_start = time.monotonic()
             await asyncio.wait_for(
                 asyncio.to_thread(
                     renew_lease,
@@ -622,9 +633,14 @@ async def _lease_watchdog(
                     epoch,
                     ttl_seconds=lease_ttl,
                 ),
-                timeout=max(0.5, min(_LEASE_IO_BUDGET, deadline - now)),
+                timeout=max(0.05, min(_LEASE_IO_BUDGET, deadline - now)),
             )
-            deadline = time.monotonic() + lease_ttl
+            # Anchor at request-START, not completion: the store computes
+            # lease_until from its own clock inside the transaction, so the
+            # DB expiry is ~req_start+ttl — extending from completion would
+            # let the turn outlive the real lease by the response latency
+            # (audit r5-F1).
+            deadline = req_start + lease_ttl
         except LeaseRejected:
             turn.cancel()
             raise
@@ -652,7 +668,7 @@ async def _lease_watchdog(
         try:
             status = await asyncio.wait_for(
                 asyncio.to_thread(run_status, database_url, run_id),
-                timeout=max(0.5, min(_LEASE_IO_BUDGET, deadline - now)),
+                timeout=max(0.05, min(_LEASE_IO_BUDGET, deadline - now)),
             )
         except Exception as exc:
             status = ""
@@ -744,19 +760,44 @@ def _prepare_child_data_dir(conf_dir: Path) -> Path:
     return conf_dir
 
 
-async def _wait_child(proc: "asyncio.subprocess.Process", stderr_tail: list[bytes]) -> None:
+_USAGE_LINE = "__RXY_USAGE__"
+
+
+async def _wait_child(
+    proc: "asyncio.subprocess.Process",
+    stderr_tail: list[bytes],
+    usage_sink: dict[str, int] | None = None,
+) -> None:
     """Wait for the confined turn; on cancellation SIGKILL the bwrap
-    supervisor — --die-with-parent then reaps the whole namespace tree."""
+    supervisor — --die-with-parent then reaps the whole namespace tree.
+
+    ``__RXY_USAGE__`` lines the child writes to stderr are parsed into
+    ``usage_sink`` (cumulative per attempt) as they arrive — a SIGKILL can
+    never erase spend the parent already received (audit r5-F4)."""
 
     async def _collect() -> None:
         if proc.stderr is None:
             return
+        pending = b""
         while True:
             chunk = await proc.stderr.read(4096)
             if not chunk:
                 return
             stderr_tail.append(chunk)
             del stderr_tail[:-16]  # bounded tail for the failure detail
+            if usage_sink is None:
+                continue
+            pending = (pending + chunk)[-65536:]
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                if not line.startswith(_USAGE_LINE.encode()):
+                    continue
+                try:
+                    row = json.loads(line[len(_USAGE_LINE) :].decode("utf-8"))
+                    total = int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0)
+                    usage_sink["tokens"] = max(usage_sink.get("tokens", 0), total)
+                except Exception:
+                    continue
 
     collector = asyncio.ensure_future(_collect())
     try:
@@ -901,13 +942,39 @@ async def run_sandboxed_turn() -> int:
             int(token_stats.input_tokens),
             int(token_stats.output_tokens),
         )
+        attempt_epoch = os.environ.get("RXYCODE_TURN_EPOCH", "")
+
+        # Zero-window metering (audit r5): wrap the single real-usage choke
+        # point so EVERY recorded provider response immediately emits a
+        # cumulative `__RXY_USAGE__` line on stderr — the parent's pipe
+        # reader holds it before a SIGKILL can land, so a killed turn keeps
+        # its spend up to the last completed response.
+        _orig_add_real_usage = token_stats.add_real_usage
+
+        def _metered(*args: Any, **kwargs: Any) -> Any:
+            out = _orig_add_real_usage(*args, **kwargs)
+            try:
+                inp = int(token_stats.input_tokens) - token0[0]
+                outp = int(token_stats.output_tokens) - token0[1]
+                sys.stderr.write(
+                    "__RXY_USAGE__"
+                    + json.dumps(
+                        {"input_tokens": inp, "output_tokens": outp, "attempt": attempt_epoch}
+                    )
+                    + "\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            return out
+
+        token_stats.add_real_usage = _metered  # type: ignore[assignment]
 
         async def _usage_heartbeat() -> None:
-            """Durable metering for a turn that may be SIGKILLed: snapshot the
+            """Durable metering that also survives a PARENT crash: snapshot the
             real token_stats delta every few seconds onto the run's own event
-            log. The parent recovers the last heartbeat when no result file
-            survives (audit r4-F4) — a paid response killed mid-turn still
-            writes its consumed spend."""
+            log, tagged with this attempt's lease epoch so retries accumulate
+            instead of overwriting (audit r5-F4)."""
             while True:
                 await asyncio.sleep(3.0)
                 try:
@@ -927,6 +994,7 @@ async def run_sandboxed_turn() -> int:
                             "input_tokens": inp,
                             "output_tokens": outp,
                             "cumulative": True,
+                            "attempt": attempt_epoch,
                         },
                     )
                 except asyncio.CancelledError:
@@ -1134,6 +1202,7 @@ async def execute_run(
     workdir: Path | None = None
     proc: "asyncio.subprocess.Process | None" = None
     stderr_tail: list[bytes] = []
+    streamed: dict[str, int] = {"tokens": 0}
 
     # Mark execution start on the durable log so a consumer can distinguish
     # "queued forever" from "a worker took it and is running the turn".
@@ -1209,6 +1278,7 @@ async def execute_run(
                 "RXYCODE_TURN_PERMISSION": permission_mode or "",
                 "RXYCODE_TURN_TRACEPARENT": identity["traceparent"],
                 "RXYCODE_TURN_WORKDIR": str(workdir),
+                "RXYCODE_TURN_EPOCH": str(epoch),
                 # Two distinct dirs: the config source is a parent-owned
                 # path that is only ro-bound into the sandbox (the child
                 # reads config.yaml FROM it), while RXYCODE_DATA_DIR points
@@ -1244,7 +1314,7 @@ async def execute_run(
         record["status"] = "running"
         provider._write(sandbox_id, record)
 
-        turn_task = asyncio.ensure_future(_wait_child(proc, stderr_tail))
+        turn_task = asyncio.ensure_future(_wait_child(proc, stderr_tail, streamed))
         lease_watcher = asyncio.create_task(
             _lease_watchdog(
                 cfg.database_url,
@@ -1344,17 +1414,20 @@ async def execute_run(
         )
         if agent_done_id_found:
             agent_done_id = agent_done_id_found
-        if done_tokens > 0:
-            tokens = done_tokens
+        # agent_done is an independent meter — never REPLACE a larger result
+        # count with a smaller snapshot (audit r5).
+        tokens = max(tokens, done_tokens)
     except Exception:
         pass
-    # The result file only exists when the child exited cleanly; a killed
-    # turn's spend survives in its usage.delta heartbeats (audit r4-F4).
-    # Take the max — the heartbeat is cumulative, never double-counted.
+    # Metering for killed turns: __RXY_USAGE__ stderr lines are already in
+    # `streamed` (zero window — the pipe delivered before the kill), and the
+    # usage.delta rows are the durable per-attempt record. The result file
+    # only exists on a clean exit; take the honest maximum of every source.
+    tokens = max(tokens, int(streamed.get("tokens") or 0))
     try:
         tokens = max(
             tokens,
-            await asyncio.to_thread(_last_usage_delta, cfg.database_url, run_id),
+            await asyncio.to_thread(_usage_deltas_total, cfg.database_url, run_id),
         )
     except Exception:
         pass

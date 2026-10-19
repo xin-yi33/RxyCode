@@ -142,3 +142,16 @@ Final verdict: `<filled by the Codex audit>` (session
   forces failed.
 - bwrap mounts private /tmp before the workspace bind; the documented
   default workspaces root works unmodified.
+
+## r5 remediation self-check
+
+- Renewal deadline extends from request-START (conservative vs the store's
+  in-transaction clock); probe timeouts are capped at remaining-0.05 — a
+  stalling renew can no longer push past expiry.
+- __RXY_USAGE__ stderr streaming: per-response cumulative metering reaches
+  the parent's pipe before any kill; verified parse logic on host.
+- usage.delta rows carry attempt=epoch; _usage_deltas_total sums the last
+  cumulative value per attempt — retry keeps prior spend (unit: 105).
+- agent_done merges via max — never shrinks a larger measured count.
+- bwrap mounts --dev/--tmpfs before ALL binds — .sandboxes conf bind under
+  a /tmp workspaces root stays visible (unit asserts ordering).

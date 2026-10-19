@@ -231,3 +231,28 @@ recovery, compose validators).
   `RXYCODE_DATA_DIR=<workspace>/.data` itself — discovered when the ro-bound
   data dir made `cache/precise_cache`'s mkdir fail with EROFS. The parent's
   only workspace interaction is `mkdir` + `.turn-result.json` cleanup.
+
+## Audit r5 remediation (commit pending)
+
+Round 5 probed harder and found five refinements; all fixed:
+
+- **Lease deadline now anchored at renewal REQUEST-START** — the store
+  computes `lease_until` from its own clock inside the transaction, so
+  extending from completion let the turn outlive the real expiry by the
+  response latency (probe: 15.2s alive on a 15.004s-expired lease). The
+  wait_for floor also dropped to 0.05s so a probe cannot overrun the
+  remaining TTL.
+- **Zero-window usage metering**: `token_stats.add_real_usage` is wrapped
+  in the child so every recorded provider response emits a cumulative
+  `__RXY_USAGE__` line on stderr; the parent's pipe reader keeps the total
+  in `streamed` — a SIGKILL cannot erase spend already delivered. The 3s
+  `usage.delta` heartbeat remains as the durable record (survives even a
+  parent crash).
+- **Aggregation fixed**: `agent_done` tokens now `max()`-merge instead of
+  replacing a larger result count.
+- **Cross-attempt usage**: `usage.delta` payloads carry the lease `epoch`;
+  `_usage_deltas_total` sums each attempt's last heartbeat, so a retried
+  run keeps the earlier attempt's spend (attempt A=100 + retry B=5 → 105).
+- **Mount order completed**: `--dev /dev` + `--tmpfs /tmp` now precede ALL
+  binds — the `.sandboxes/<id>-conf` ro-bind lives under the workspaces
+  root and was shadowed when that root sits under /tmp (default).

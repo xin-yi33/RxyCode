@@ -959,8 +959,10 @@ def test_w7_c05_tmpfs_before_workspace_bind(tmp_path: Path) -> None:
     argv = build_sandbox_argv(workdir=workdir, argv=["true"], env={})
     tmpfs_at = argv.index("/tmp")  # operand right after --tmpfs
     assert argv[tmpfs_at - 1] == "--tmpfs"
-    bind_at = argv.index("--bind")
-    assert tmpfs_at < bind_at, "tmpfs /tmp must mount before the workspace bind"
+    # tmpfs must precede EVERY bind — ro binds (the .sandboxes config source
+    # lives under the same workspaces root) and the workspace bind alike.
+    first_bind = min(i for i, t in enumerate(argv) if t in {"--bind", "--ro-bind"})
+    assert tmpfs_at < first_bind, "tmpfs /tmp must mount before all binds"
 
 
 def test_w7_c05_stale_result_rejected(tmp_path: Path) -> None:
@@ -996,8 +998,9 @@ def test_w7_c05_child_config_outside_workspace(tmp_path: Path, monkeypatch) -> N
 
 
 def test_w7_c05_usage_delta_reader(monkeypatch) -> None:
-    """Audit r4-F4: a killed turn's spend is recovered from the last
-    cumulative usage.delta row the child heartbeated onto the run log."""
+    """Audit r5-F4: killed turns keep spend via cumulative usage.delta rows,
+    summed PER ATTEMPT — a retried run's fresh baseline must not discard the
+    earlier attempt's recorded usage."""
     import rxycode_worker.drain as drain
 
     seen = {}
@@ -1016,8 +1019,14 @@ def test_w7_c05_usage_delta_reader(monkeypatch) -> None:
             seen["run_id"] = params["id"]
 
             class _R:
-                def scalar(self):
-                    return {"input_tokens": 40, "output_tokens": 33, "cumulative": True}
+                def all(self):
+                    # seq-ordered heartbeats: attempt "1" peaked at 100,
+                    # retry "2" only measured 5 — the durable total is 105.
+                    return [
+                        (1, {"input_tokens": 60, "output_tokens": 40, "attempt": "1"}),
+                        (2, {"input_tokens": 70, "output_tokens": 30, "attempt": "1"}),
+                        (3, {"input_tokens": 3, "output_tokens": 2, "attempt": "2"}),
+                    ]
 
             return _R()
 
@@ -1025,5 +1034,5 @@ def test_w7_c05_usage_delta_reader(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    assert drain._last_usage_delta("db", "run-42") == 73
+    assert drain._usage_deltas_total("db", "run-42") == 105
     assert seen["run_id"] == "run-42"
