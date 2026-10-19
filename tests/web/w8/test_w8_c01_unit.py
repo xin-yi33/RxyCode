@@ -2029,7 +2029,16 @@ def test_w8_c01_tool_call_outcome_classification() -> None:
         "failed to download artifact",
     ):
         assert drain._tool_call_failed(bad), bad
-    for ok in ("wrote 3 files", "pytest: 5 passed", "", "all good [error] later"):
+    for ok in (
+        "wrote 3 files",
+        "pytest: 5 passed",
+        "",
+        "all good [error] later",
+        # A successful tool may literally PRINT classifier content —
+        # only the prefix tables may classify tool output (audit W8-r4).
+        "echo output: circuit breaker tripped in stage 3",
+        "docs mention 模型调用已暂停 as a design note",
+    ):
         assert not drain._tool_call_failed(ok), ok
 
 
@@ -2086,6 +2095,13 @@ def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
                     "PATH=/usr/bin",
                     "HOME=/data",
                 ],
+                # Positional args carry secrets too (audit W8-r4).
+                "args": [
+                    "--dsn",
+                    "postgres://u:p@db.internal:5432/app",
+                    "--api-key=flag_secret",
+                    "--verbose",
+                ],
             },
             "dictform": {"env": {"API_KEY": "k-secret", "NORMAL": "ok"}},
         },
@@ -2102,6 +2118,10 @@ def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
     assert "PGPASSWORD=confined" in env
     assert "DATABASE_URL=confined" in env
     assert "PATH=/usr/bin" in env and "HOME=/data" in env
+    args = cfg["mcpServers"]["gh"]["args"]
+    assert args[1] == "confined"                    # positional userinfo URL
+    assert args[2] == "--api-key=confined"          # --flag=value spelling
+    assert args[0] == "--dsn" and args[3] == "--verbose"  # non-secret args kept
     assert cfg["mcpServers"]["dictform"]["env"]["API_KEY"] == "confined"
     assert cfg["mcpServers"]["dictform"]["env"]["NORMAL"] == "ok"
     assert cfg["database"]["database_url"] == "confined"

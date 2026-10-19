@@ -1372,15 +1372,25 @@ def _scrub_credential_values(node: Any) -> None:
                 node[key] = "confined"
     elif isinstance(node, list):
         for idx, item in enumerate(node):
-            if isinstance(item, str) and "=" in item:
-                key, _eq, value = item.partition("=")
-                lowered = key.strip().lower()
-                if (
-                    lowered in _CREDENTIAL_INDIRECTION_KEYS
-                    or _is_credential_key(lowered)
-                    or _has_url_secret(value)
-                ):
-                    node[idx] = f"{key.strip()}=confined"
+            if isinstance(item, str):
+                if "=" in item:
+                    # ``KEY=VALUE`` env entries AND ``--flag=value`` args —
+                    # MCP supports both spellings (audit W8-r3/r4).
+                    key, _eq, value = item.partition("=")
+                    lowered = (
+                        key.strip().lower().lstrip("-").replace("-", "_")
+                    )
+                    if (
+                        lowered in _CREDENTIAL_INDIRECTION_KEYS
+                        or _is_credential_key(lowered)
+                        or _has_url_secret(value)
+                    ):
+                        node[idx] = f"{key.strip()}=confined"
+                elif _has_url_secret(item):
+                    # A positional arg carrying a credential URL —
+                    # ``args: ["--dsn", "postgres://u:p@db/app"]`` —
+                    # leaks just as much as an env entry (audit W8-r4).
+                    node[idx] = "confined"
                 continue
             _scrub_credential_values(item)
 
@@ -1852,21 +1862,35 @@ def _tool_call_failed(text: Any) -> bool:
 
     Journal completion is replay safety, not success; the stored outcome
     is classified separately (audit W8-r2). The classification shares
-    the codebase's canonical result table (``log.log_helpers``) so
-    registered-tool formats like ``[workflow error:``/``Download
-    failed:`` cannot slip through as success (audit W8-r3). An EMPTY
-    stored result is not proof of failure — the call ran and printed
-    nothing."""
+    the codebase's canonical result PREFIX tables (``log.log_helpers``)
+    so registered-tool formats like ``[workflow error:``/``Download
+    failed:`` cannot slip through as success (audit W8-r3) — but only
+    the prefixes: content matches like "circuit breaker" are
+    agent-answer semantics and would falsely fail a successful tool that
+    merely PRINTED the phrase (audit W8-r4). An EMPTY stored result is
+    not proof of failure — the call ran and printed nothing."""
     stripped = str(text).strip()
     if not stripped:
         return False
     try:
-        from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
+        from RxyCode.RxyCode1_1_0.log.log_helpers import (
+            _CANCELLED_RESULT_PREFIXES,
+            _FAILED_RESULT_PREFIXES,
+            _TIMEOUT_RESULT_PREFIXES,
+        )
     except Exception:
-        from log.log_helpers import classify_agent_result  # type: ignore
+        from log.log_helpers import (  # type: ignore
+            _CANCELLED_RESULT_PREFIXES,
+            _FAILED_RESULT_PREFIXES,
+            _TIMEOUT_RESULT_PREFIXES,
+        )
 
-    status, _detail = classify_agent_result(stripped)
-    return status != "succeeded"
+    lowered = stripped.lower()
+    return lowered.startswith(
+        _CANCELLED_RESULT_PREFIXES
+        + _TIMEOUT_RESULT_PREFIXES
+        + _FAILED_RESULT_PREFIXES
+    )
 
 
 def _aware_dt(value: Any) -> datetime | None:
@@ -2658,22 +2682,13 @@ async def run_sandboxed_turn() -> int:
         except Exception:
             _LOG.warning("run %s: egress relay start failed", run_id, exc_info=True)
 
-    # Resume mode: a fresh confined process whose ONLY job is the stored,
-    # approved call — no agent loop, no second decision.
-    if os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1":
-        return await _resume_turn(
-            channel=channel,
-            run_id=run_id,
-            tenant_id=tenant_id,
-            workdir=workdir,
-            result_path=result_path,
-        )
-
     # Config lives in a parent-owned ro-bound dir; the writable data dir is
     # inside this workspace. The child copies config.yaml itself — the
     # parent NEVER writes into the workspace (a confined turn could plant a
     # destination symlink and make a later parent copy follow it onto host
-    # files — audit r4-F2).
+    # files — audit r4-F2). This runs BEFORE the resume branch too: the
+    # replayed call must resolve the same tool surface (MCP servers,
+    # subagent flag) the original turn saw (audit W8-r4).
     config_src = os.environ.get("RXYCODE_TURN_CONFIG_SRC", "").strip()
     if config_src:
         try:
@@ -2686,6 +2701,17 @@ async def run_sandboxed_turn() -> int:
                 _merge_turn_config(dst, workdir)
         except OSError:
             _LOG.warning("run %s: config copy into workspace failed", run_id, exc_info=True)
+
+    # Resume mode: a fresh confined process whose ONLY job is the stored,
+    # approved call — no agent loop, no second decision.
+    if os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1":
+        return await _resume_turn(
+            channel=channel,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            workdir=workdir,
+            result_path=result_path,
+        )
 
     emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
     remember_web_run(

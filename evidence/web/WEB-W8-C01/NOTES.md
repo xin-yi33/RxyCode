@@ -231,3 +231,32 @@ classification; 15 pure legs green). Eight new findings against
    the cancel sweep and the finally tail-kill verify
    `is_running()` before signalling — a reaped-and-reused pid is never
    our child.
+
+## Audit round 4 (gpt-6.1-sol, same session) — VERDICT: PROBLEMS
+
+r3 repairs verified (18 committed legs green; probe→recovery_required,
+marker-absent→unproven, CONNECT forwarding live). Three findings
+against `74f4c9c7`; all remediated:
+
+1. **[P1] MCP `args` lists still disclosed credentials** — the r3
+   list-item handling only inspected `KEY=VALUE` strings. Positional
+   args like `args: ["--dsn", "postgres://u:p@db/app"]` survived into
+   the mounted YAML. The scrubber now redacts ANY scalar list item
+   carrying URL userinfo, and `=`-form items additionally cover the
+   `--flag=value` spelling (dash-stripped name match).
+2. **[P2] resume never saw the MCP config** — the parent deletes
+   `.data/config.yaml` before spawn and the resume branch returned
+   BEFORE the child-side config copy, so `load_config()` inside
+   `_execute_approved_call` read defaults with empty `mcpServers` —
+   approved MCP tools still resolved "not found". The config
+   copy+merge now runs BEFORE the resume branch in
+   `run_sandboxed_turn`, so the replay registers the same tool surface
+   the original turn saw.
+3. **[P2] classifier false-positive on printed output** —
+   `classify_agent_result` treats any "circuit breaker"/"模型调用已暂停"
+   CONTENT as failure — agent-answer semantics that falsely
+   terminalize a successful tool that merely prints the phrase.
+   `_tool_call_failed` now uses only the canonical PREFIX tuples
+   (`_CANCELLED/_TIMEOUT/_FAILED_RESULT_PREFIXES`), keeping the r3
+   coverage of workflow/search/download error forms without the
+   content-match hazard.
