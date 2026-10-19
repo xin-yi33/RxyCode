@@ -635,3 +635,40 @@ the signal it fixes). Three new P1 findings, all remediated:
 - Audit repro through ``_prepare_child_data_dir``-equivalent
   ``_scrub_credential_values`` verified for all three.
 - `python -m ruff check`: clean.
+
+## Audit round 13 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 3 findings)
+
+r13 audited `ea4c4ac1` (+depth-cap `dbb83d7c`) and confirmed the r12
+fixes hold. Three new P1 findings, all remediated:
+
+1. **[P1] Quotes inside ``$(...)`` closed outer quotes early** —
+   ``--api-key "$(printf "%s " K | tr -d ' ')"`` is ONE argument: the
+   inner ``"`` before ``%s`` terminated the outer quoted span in the
+   escape-aware find, stranding ``K | tr -d ' ')"``. The
+   depth-counter model could not express quote-inside-substitution;
+   ``_shell_word_end`` is now a real context STACK — ``'``/``"``/
+   ``````/``$'`` quote contexts plus ``(``/``{`` substitution
+   contexts — where a ``"``/``$(``/``${``/```` `` inside ``"..."``
+   pushes its own context and only the outer ``"`` at stack-empty
+   ends the span.
+2. **[P1] Heredoc bodies mounted verbatim** —
+   ``--api-key-file /dev/fd/3 3<<'TAG'\nKEY\nTAG`` redacted the fd
+   path but left the body text. ``_heredoc_pass`` finds ``<<TAG`` /
+   ``<<-TAG`` / quoted-tag openers, locates the terminator line, and
+   replaces the body between with ``confined`` — marker and
+   terminator survive.
+3. **[P1] RFC 7616 ``username*`` ext parameters broke the Digest
+   pair grammar** — ``username*=UTF-8''J%C3%A4…``: the ``*`` was not
+   a valid key char and the ``charset'lang'value`` value matched no
+   alternative, so the pair list aborted before ``response=``. Key
+   charset now allows a trailing ``*``; the pair value accepts
+   ``[^,\s"]+`` covering ``'``-containing ext-values and quoted
+   forms.
+
+## Test evidence (r13)
+
+- `tests/web/w8`: 61 passed, 3 environment skips — new legs:
+  ``"$(printf "%s " K | tr -d ' ')"`` inner-quote word,
+  ``3<<'TAG'\nKEY\nTAG`` body redaction (terminator survives),
+  ``username*=UTF-8''J%…`` ext-value pair list fully consumed.
+- `python -m ruff check`: clean.

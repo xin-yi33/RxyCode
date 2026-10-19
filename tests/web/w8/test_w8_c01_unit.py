@@ -2603,3 +2603,53 @@ def test_w8_c01_scrub_digest_escaped_quote_pair() -> None:
     out = drain._scrub_inline_secrets(s)
     assert "AUDIT_RESP3" not in out
     assert "Digest confined" in out
+
+
+def test_w8_c01_scrub_inner_quotes_in_substitution() -> None:
+    """Audit W8-r13: ``"$(printf "%s " K | tr -d ' ')"`` is ONE word —
+    the ``"`` inside ``$(`` does not close the outer quote; a naive
+    quote-find stranded ``K | tr -d ' ')"`` mounted."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "exec server --api-key " + chr(34) + "$(printf "
+        + chr(34) + "%s " + chr(34) + " AUDIT_QUOTED_KEY | tr -d "
+        + chr(39) + " " + chr(39) + ")" + chr(34)
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_QUOTED_KEY" not in out
+    assert out == "exec server --api-key confined"
+
+
+def test_w8_c01_scrub_heredoc_body() -> None:
+    """Audit W8-r13: a heredoc body is data — ``3<<'TAG'`` redacts the
+    fd path but the body text must die too; the marker and terminator
+    survive."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "exec server --api-key-file /dev/fd/3 3<<" + chr(39)
+        + "RXY_KEY" + chr(39) + chr(10) + "AUDIT_HEREDOC_KEY"
+        + chr(10) + "RXY_KEY"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_HEREDOC_KEY" not in out
+    assert "RXY_KEY" in out  # terminator survives
+    assert "confined" in out
+
+
+def test_w8_c01_scrub_digest_ext_value_params() -> None:
+    """Audit W8-r13: RFC 7616 ``username*`` ext parameters —
+    ``username*=UTF-8''J%C3%A4…`` — must not break the pair grammar
+    and leave ``response=`` mounted."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "curl -H " + chr(34) + "Authorization: Digest username*=UTF-8"
+        + chr(39) + chr(39) + "J%C3%A4s%C3%B8n%20Doe" + chr(39)
+        + ", realm=" + chr(34) + "r" + chr(34) + ", response="
+        + chr(34) + "AUDIT_RESP5" + chr(34) + chr(34) + " x"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_RESP5" not in out
+    assert "Digest confined" in out

@@ -1423,8 +1423,8 @@ _AUTH_HEADER_NAKED_RE = re.compile(
 #: pair list is consumed wholesale; the scheme word survives.
 _AUTH_DIGEST_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization)(\s*[:=]\s*)digest\s+"
-    r"(?:[A-Za-z_][A-Za-z0-9_-]*\s*=\s*"
-    r"(?:\\?\"(?:\\.|[^\"\\])*\\?\"|'[^']*'|[^,\s'\"]+)\s*,?\s*)+"
+    r"(?:[A-Za-z_][A-Za-z0-9_-]*\*?\s*=\s*"
+    r"(?:\\?\"(?:\\.|[^\"\\])*\\?\"|[^,\s\"]+)\s*,?\s*)+"
 )
 #: A bare auth scheme + token-length value — ``Bearer eyJ...`` —
 #: entropy floor keeps prose ("the bearer of bad news") alive.
@@ -1434,89 +1434,99 @@ _AUTH_SCHEME_RE = re.compile(
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
 _URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]{1,256}:[^@\s]{1,256}@")
+#: ``<<TAG``/``<<-TAG``/``<<'TAG'`` heredoc opener inside an opaque
+#: string — the BODY that follows is data, not syntax, and carries
+#: credential material verbatim (``--api-key-file /dev/fd/3
+#: 3<<'TAG'\nKEY\nTAG`` — audit W8-r13). The marker and terminator
+#: survive; the body is replaced.
+_HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 
 
 def _shell_word_end(text: str, start: int) -> int:
     """End offset of the shell word starting at ``start`` — quoted
-    spans (``'`` ``"`` `````, ``$(...)`` (nested) and ``${...}`` all
-    count as part of the word; it ends at unquoted whitespace or a
-    shell separator. A regex cannot balance nested ``$(...)`` — a
-    credential name that stops at the first ``)`` strands the rest of
-    the word (``--api-key $(a $(b) KEY)`` leaked ``KEY)``) — so the
-    value is scanned with a real depth counter (audit W8-r10)."""
+    spans (``'``, ``"``, ````, ANSI-C ``$'``), ``$(...)``/``${...}``
+    (both nested), and ``<(...)``/``>(...)`` all count as part of the
+    word; it ends at unquoted whitespace or a shell separator.
+
+    Scanned with a real context stack, not a depth counter or a
+    regex: a ``"`` inside ``$(...)`` does NOT close the outer quote —
+    ``"$(printf "%s " K | tr -d ' ')"`` is ONE word and a naive
+    quote-find strands ``K | tr -d ' ')"`` (audit W8-r13); ``${}``
+    balances nested defaults (audit W8-r12); ``$(...)`` balances
+    nested parens (audit W8-r10)."""
     i = start
     n = len(text)
-    depth = 0   # ``$(``/``<(``/``>(`` paren substitution depth
-    bdepth = 0  # ``${`` parameter-expansion brace depth
+    stack: list[str] = []
     while i < n:
         c = text[i]
+        top = stack[-1] if stack else ""
+        if top == "'":
+            # Plain single quotes — ``\`` is literal, only ``'`` ends.
+            if c == "'":
+                stack.pop()
+            i += 1
+            continue
+        if top == "$'" or top == "`":
+            # ANSI-C ``$'...'`` and backticks — escapes apply, the
+            # same quote char ends them; nothing substitutes inside
+            # either (a ``$(`` inside ``$'`` is literal text).
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == top[-1]:
+                stack.pop()
+            i += 1
+            continue
         if c == "\\" and i + 1 < n:
             # Escaped char — ``\$`` starts no substitution, ``\ ``
             # stays inside the word, ``\<newline>`` is a shell line
             # continuation (audit W8-r11).
             i += 2
             continue
-        if c == "'" and (i == start or text[i - 1] != "$"):
-            # Plain single quotes end at the next ``'`` — ``\`` is
-            # literal inside them, never an escape. (``$'...'`` is
-            # ANSI-C quoting and falls through to the escape-aware
-            # scan below — audit W8-r12.)
-            j = text.find(c, i + 1)
-            i = (j + 1) if j != -1 else n
+        if top == '"':
+            if c == '"':
+                stack.pop()
+                i += 1
+                continue
+            # Substitutions still open inside ``"..."`` — their
+            # interior quotes are balanced THERE, not here.
+            if c == "$" and i + 1 < n and text[i + 1] in "({'":
+                stack.append(("$" if text[i + 1] == "'" else "") + text[i + 1])
+                i += 2
+                continue
+            if c == "`":
+                stack.append("`")
+            i += 1
             continue
-        if c in "'\"`":
-            # ``\"``/``\` ``/``$\'`` are ESCAPED quote chars — a
-            # ``find`` that ignores the backslash count closes the
-            # span early and strands the rest of a Digest/header or
-            # ANSI-C value (audit W8-r11/r12). Skip quotes preceded
-            # by an odd run of ``\``.
-            j = i + 1
-            while True:
-                j = text.find(c, j)
-                if j == -1:
-                    break
-                backslashes = 0
-                b = j - 1
-                while b >= 0 and text[b] == "\\":
-                    backslashes += 1
-                    b -= 1
-                if backslashes % 2 == 0:
-                    break
-                j += 1
-            i = (j + 1) if j != -1 else n
-            continue
-        if c == "$" and i + 1 < n and text[i + 1] == "(":
-            depth += 1
-            i += 2
-            continue
-        if c == "$" and i + 1 < n and text[i + 1] == "{":
-            # ``${...}`` nests too — ``${_A:-${_B:-} K}`` stops at the
-            # balanced close, not the first ``}`` (audit W8-r12).
-            bdepth += 1
-            i += 2
-            continue
+        # Word level or inside ``(``/``{`` — full shell syntax.
+        if c == "$" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt in "({'":
+                stack.append(("$" if nxt == "'" else "") + nxt)
+                i += 2
+                continue
         if c in "<>" and i + 1 < n and text[i + 1] == "(":
             # Process substitution ``<(cmd)``/``>(cmd)`` is a WORD,
-            # not a redirect — its interior can carry secrets
-            # (audit W8-r11).
-            depth += 1
+            # not a redirect (audit W8-r11).
+            stack.append("(")
             i += 2
             continue
-        if depth:
-            if c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-            i += 1
-            continue
-        if bdepth:
-            if c == "{":
-                bdepth += 1
-            elif c == "}":
-                bdepth -= 1
-            i += 1
-            continue
-        if c in " \t\n;|&<>":
+        if c == "'":
+            stack.append("'")
+        elif c == '"':
+            stack.append('"')
+        elif c == "`":
+            stack.append("`")
+        elif c == "(" or c == "{":
+            # Bare ``(``/``{`` push too — unbalanced opens keep
+            # consuming (fail-closed); ``${x/{a}/b}`` needs ``{`` to
+            # nest inside ``${`` (audit W8-r12).
+            stack.append(c)
+        elif c == ")" and top == "(":
+            stack.pop()
+        elif c == "}" and top == "{":
+            stack.pop()
+        elif not stack and c in " \t\n;|&<>":
             break
         i += 1
     return i
@@ -1643,8 +1653,38 @@ def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
         out.append(src[pos:])
         return "".join(out)
 
+    def _heredoc_pass(src: str) -> str:
+        """Redact heredoc BODIES — ``3<<'TAG'\nKEY\nTAG`` leaves the
+        fd path scrubbed but the body verbatim (audit W8-r13). The
+        ``<<TAG`` opener and the terminator line survive; the body
+        between them dies."""
+        out: list[str] = []
+        pos = 0
+        for match in _HEREDOC_RE.finditer(src):
+            if match.start() < pos:
+                continue
+            tag = match.group(1)
+            nl = src.find("\n", match.end())
+            if nl == -1:
+                continue
+            term = re.search(
+                r"(?m)^[ \t]*" + re.escape(tag) + r"[ \t]*\r?$",
+                src[nl + 1 :],
+            )
+            if term is None:
+                continue
+            body_start = nl + 1
+            body_end = nl + 1 + term.start()
+            out.append(src[pos:body_start])
+            if body_end > body_start:
+                out.append("confined\n")
+            pos = body_end
+        out.append(src[pos:])
+        return "".join(out)
+
     text = _flag_pass(text)
     text = _assign_pass(text)
+    text = _heredoc_pass(text)
     text = _AUTH_DIGEST_RE.sub(
         lambda m: f"{m.group(1)}{m.group(2)}Digest confined", text
     )
