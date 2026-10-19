@@ -1253,12 +1253,31 @@ def _child_env(turn_env: Mapping[str, str]) -> dict[str, str]:
     per-turn RXYCODE_TURN_* contract. ``--clearenv`` drops everything else."""
     env = {key: os.environ[key] for key in _CHILD_ENV_PASS if key in os.environ}
     env.update({str(k): str(v) for k, v in turn_env.items()})
-    # Keep cwd out of sys.path for every python the turn spawns too —
-    # a writable project dir must never shadow trusted modules
-    # (audit W8-r7; inert below Python 3.11, where the spawn's /tmp
-    # chdir already closes the vector for the trusted entrypoint).
-    env["PYTHONSAFEPATH"] = "1"
     return env
+
+
+def _trusted_child_argv() -> list[str]:
+    """The confined worker's interpreter argv — import hardening for
+    THIS entrypoint only (audit W8-r7/r8):
+
+    - ``-P`` (>=3.11) keeps the spawn cwd off ``sys.path``;
+    - ``-s`` skips the USER site — the task HOME is writable, so a
+      ``.pth`` hook planted under ``.home/.local/...`` would otherwise
+      execute before the trusted module and replace the approval
+      machinery. System/site paths on PYTHONPATH are ro-bound, so
+      user-site is the only writable startup hook.
+
+    Neither flag is inherited by descendants (no PYTHONSAFEPATH /
+    PYTHONNOUSERSITE env): a task's own ``python -c 'import
+    solution'`` must resolve the workspace normally — ordinary
+    sandbox code needs no bootstrap hardening."""
+    return [
+        sys.executable,
+        *(["-P"] if sys.version_info >= (3, 11) else []),
+        "-s",
+        "-m",
+        "rxycode_worker.drain",
+    ]
 
 
 # Credential-shaped config keys die at the sandbox boundary — matched
@@ -1367,19 +1386,23 @@ _URL_CREDENTIAL_LEAD_RE = re.compile(
 #: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
 #: the value must not start with ``-`` — a following flag is not a
 #: value.
+#: An inline credential VALUE — quoted spans (``--api-key 'a b'``,
+#: ``API_KEY="x"``) die with their quotes; unquoted spans stop at
+#: whitespace and shell separators (audit W8-r8).
+_INLINE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s;|&<>'\"(){}]+)"
 _INLINE_FLAG_EQ_RE = re.compile(
-    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)=([^\s;|&<>'\"(){}]+)"
+    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)=(" + _INLINE_VALUE_RE + r")"
 )
 _INLINE_FLAG_SEP_RE = re.compile(
-    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)\s+(?!--)([^\s;|&<>'\"(){}]+)"
+    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)(\s+)(?!--)(" + _INLINE_VALUE_RE + r")"
 )
 #: ``KEY=VALUE``/``KEY = value`` for a credential key inside an opaque
 #: string. The lookbehind keeps ``--flag=x`` out (the flag rule owns
 #: it); the lookaheads keep ``x == y`` and ``k = --v`` out; the value
 #: charset keeps shell separators (``;|&()``) outside the secret span.
 _INLINE_ASSIGN_RE = re.compile(
-    r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?!=)(?!--)"
-    r"([^\s;|&<>'\"(){}]+)"
+    r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?!=)(?!--)"
+    + "(" + _INLINE_VALUE_RE + r")"
 )
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
@@ -1394,31 +1417,49 @@ def _scrub_inline_secrets(text: str) -> str:
     (audit W8-r7). Only the secret span is replaced; the surrounding
     syntax survives. Same name tables as the whole-item grammar."""
 
-    def _flag_eq(match: "re.Match[str]") -> str:
-        name = match.group(1).lstrip("-").lower().replace("-", "_")
+    def _rescan_value(match: "re.Match[str]", value: str) -> str | None:
+        """A non-credential flag/key whose VALUE is a quoted span —
+        ``-c 'exec srv --password K'`` — keeps its name and quotes but
+        the payload is re-scrubbed inside; the quoted region is
+        otherwise opaque to every later pass (audit W8-r8)."""
         if (
+            len(value) > 1
+            and value[:1] in ("'", '"')
+            and value.endswith(value[0])
+        ):
+            inner = _scrub_inline_secrets(value[1:-1])
+            return f"{value[0]}{inner}{value[0]}"
+        return None
+
+    def _cred_name(flag: str) -> bool:
+        name = flag.lstrip("-").lower().replace("-", "_")
+        return (
             _is_credential_key(name)
             or name in _CREDENTIAL_INDIRECTION_KEYS
-        ):
+        )
+
+    def _flag_eq(match: "re.Match[str]") -> str:
+        if _cred_name(match.group(1)):
             return f"{match.group(1)}=confined"
+        inner = _rescan_value(match, match.group(2))
+        if inner is not None:
+            return f"{match.group(1)}={inner}"
         return match.group(0)
 
     def _flag_sep(match: "re.Match[str]") -> str:
-        name = match.group(1).lstrip("-").lower().replace("-", "_")
-        if (
-            _is_credential_key(name)
-            or name in _CREDENTIAL_INDIRECTION_KEYS
-        ):
+        if _cred_name(match.group(1)):
             return f"{match.group(1)} confined"
+        inner = _rescan_value(match, match.group(3))
+        if inner is not None:
+            return f"{match.group(1)}{match.group(2)}{inner}"
         return match.group(0)
 
     def _assign(match: "re.Match[str]") -> str:
-        name = match.group(1).lower().replace("-", "_")
-        if (
-            _is_credential_key(name)
-            or name in _CREDENTIAL_INDIRECTION_KEYS
-        ):
+        if _cred_name(match.group(1)):
             return f"{match.group(1)}=confined"
+        inner = _rescan_value(match, match.group(3))
+        if inner is not None:
+            return f"{match.group(1)}{match.group(2)}{inner}"
         return match.group(0)
 
     text = _INLINE_FLAG_EQ_RE.sub(_flag_eq, text)
@@ -3781,15 +3822,10 @@ async def execute_run(
             # writable project dir containing ``rxycode_worker/`` would
             # shadow this module and bypass approval/journal machinery
             # (audit W8-r7). chdir=/tmp (a private tmpfs mounted before
-            # every bind — nothing can be pre-planted); ``-P`` removes
-            # cwd from sys.path as a second layer on >=3.11; the child
-            # sets its real cwd itself via set_working_directory.
-            argv=[
-                sys.executable,
-                *(["-P"] if sys.version_info >= (3, 11) else []),
-                "-m",
-                "rxycode_worker.drain",
-            ],
+            # every bind — nothing can be pre-planted); the interpreter
+            # flags live in _trusted_child_argv (audit W8-r8); the
+            # child sets its real cwd itself via set_working_directory.
+            argv=_trusted_child_argv(),
             env=child_env,
             ro_binds=ro_binds,
             rw_binds=rw_binds,

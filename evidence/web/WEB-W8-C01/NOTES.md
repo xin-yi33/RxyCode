@@ -429,3 +429,51 @@ remediated and re-verified:
   (trusted ro-bound module resolves).
 - `python -m ruff check` on drain.py / userns.py / tests/web/w8:
   clean.
+
+## Audit round 8 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 3 findings)
+
+r8 audited `f7490c24`, re-ran 20 targeted legs, and confirmed both r7
+fixes (unquoted inline secrets, project-dir shadowing). Three new
+findings, all remediated and re-verified:
+
+1. **[P1] Quoted credential values survived the inline pass** —
+   ``--api-key 'AUDIT KEY WITH SPACES'`` and ``API_KEY="K"`` passed
+   verbatim because the value charset excluded quotes. The inline
+   value pattern is now an alternation: a quoted span dies whole with
+   its quotes for credential names, and a NON-credential flag/key with
+   a quoted payload (``-c 'srv --password K'``) keeps its name while
+   the quoted region is recursively re-scrubbed — quoted spans are
+   opaque to the regex engine and previously swallowed inner secrets
+   (``-c 'payload'`` matched `-c` and consumed the quote as its
+   "value").
+2. **[P1] Writable task HOME enabled a .pth startup hook** —
+   ``HOME=<workdir>/.home`` is task-writable; a planted
+   ``.local/lib/pythonX.Y/site-packages/*.pth`` executes at
+   interpreter startup, before ``-m`` resolution — ``-P`` does not
+   cover user-site. The trusted spawn now runs ``-s`` (all versions,
+   not just >=3.11): user-site is the ONLY writable site-packages
+   (system/PYTHONPATH dirs are ro-bound). Container proof: without
+   ``-s`` a planted .pth writes its marker (`hook-ran: True`); with
+   ``-s`` it never executes (`hook-ran: False`).
+3. **[P2] PYTHONSAFEPATH=1 contagion broke ordinary task python** —
+   forcing safe-path into every descendant meant a task's own
+   ``python -c 'import solution'`` could no longer import workspace
+   modules — normal development semantics destroyed for a protection
+   descendants never needed (sandbox code is untrusted anyway;
+   bootstrap hardening matters only for the trusted entrypoint).
+   `_child_env` no longer sets PYTHONSAFEPATH/PYTHONNOUSERSITE; the
+   hardening lives solely on `_trusted_child_argv()`: ``-P`` (>=3.11)
+   + ``-s`` + ``-m`` + ``chdir=/tmp``.
+
+## Test evidence (r8)
+
+- `tests/web/w8`: 47 passed, 3 environment skips — extended legs:
+  quoted flag/KEY values, quoted `-c` payload rescan (`-c 'srv
+  postgres://u:p@db --password pw1'` -> userinfo and flag value
+  die inside the quotes), ``_trusted_child_argv`` shape (``-s``
+  unconditional, ``-P`` on >=3.11), no safe-path env in child env.
+- In-container .pth-hook proof (python:3.12-slim, bwrap 0.12,
+  HOME=<workdir>/.home): planted site-packages .pth executes
+  UNHARDENED (`hook-ran: True`), never executes with `-s`
+  (`hook-ran: False`).
+- `python -m ruff check` on drain.py / tests/web/w8: clean.

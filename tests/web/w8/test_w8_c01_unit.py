@@ -2377,6 +2377,10 @@ def test_w8_c01_scrub_inline_launcher_strings() -> None:
                     "run --token=tok123 now",
                     "export API_KEY=sk-live; srv --dsn postgres://u:p@h/x",
                     "x == y --normal flag",
+                    # Quoted values with spaces (audit W8-r8): the
+                    # quote-wrapped secret dies with its quotes.
+                    "srv --api-key 'AUDIT KEY WITH SPACES' -v",
+                    'env API_KEY="AUDIT_QUOTED_KEY" run',
                     "--api-key",  # flag at END of item list — no value
                 ],
             }
@@ -2393,7 +2397,9 @@ def test_w8_c01_scrub_inline_launcher_strings() -> None:
     # A credential URL as a flag's VALUE dies whole — fail-closed.
     assert args[3] == "export API_KEY=confined; srv --dsn confined"
     assert args[4] == "x == y --normal flag"          # == and --flag kept
-    assert args[5] == "--api-key"                     # nothing follows it
+    assert args[5] == "srv --api-key confined -v"     # quoted secret dies
+    assert args[6] == 'env API_KEY=confined run'      # quoted KEY=V dies
+    assert args[7] == "--api-key"                     # nothing follows it
     # dict scalar composite strings — surgical, not whole-redaction.
     assert cfg["launcher"] == (
         "sh -c 'srv postgres://confined:confined@db --password confined'"
@@ -2407,20 +2413,33 @@ def test_w8_c01_child_spawn_chdir_and_safepath(tmp_path: Path) -> None:
     project containing ``rxycode_worker/`` would shadow the trusted
     drain and bypass approval/journal machinery (audit W8-r7). The
     drain therefore spawns with chdir=/tmp — the private tmpfs mounted
-    before every bind, nothing pre-plantable — and forces
-    PYTHONSAFEPATH=1 for every descendant python. The workspace is
-    still bound; the child sets its real cwd via set_working_directory."""
+    before every bind, nothing pre-plantable — plus ``-s`` so a ``.pth``
+    hook planted under the writable task HOME never runs before the
+    trusted module (audit W8-r8). The workspace is still bound; the
+    child sets its real cwd via set_working_directory. The hardening
+    lives ONLY on the spawn argv — no PYTHONSAFEPATH/PYTHONNOUSERSITE
+    env: task python keeps ordinary cwd-import semantics."""
     import rxycode_worker.drain as drain
     from rxycode_runner.sandbox.userns import build_sandbox_argv
 
     env = drain._child_env({"RXYCODE_TURN_RUN_ID": "r1"})
-    assert env["PYTHONSAFEPATH"] == "1"
+    # Bootstrap hardening must NOT leak into descendants (audit W8-r8):
+    # a task's own ``python -c 'import solution'`` resolves the
+    # workspace normally.
+    assert "PYTHONSAFEPATH" not in env
+    assert "PYTHONNOUSERSITE" not in env
+
+    child = drain._trusted_child_argv()
+    assert child[-2:] == ["-m", "rxycode_worker.drain"]
+    assert "-s" in child                       # user-site .pth closed
+    if sys.version_info >= (3, 11):
+        assert "-P" in child                 # cwd off sys.path
 
     workdir = tmp_path / "ws"
     workdir.mkdir()
     argv = build_sandbox_argv(
         workdir=workdir,
-        argv=["/usr/bin/python3", "-P", "-m", "rxycode_worker.drain"],
+        argv=child,
         env={},
         ro_binds=[],
         rw_binds=[],
@@ -2434,6 +2453,5 @@ def test_w8_c01_child_spawn_chdir_and_safepath(tmp_path: Path) -> None:
         if part == "--bind"
     ]
     assert (str(workdir), str(workdir)) in bind_pairs
-    # The trusted entrypoint keeps interpreter hardening.
     tail = argv[argv.index("--") + 1 :]
-    assert tail[:4] == ["/usr/bin/python3", "-P", "-m", "rxycode_worker.drain"]
+    assert tail == child
