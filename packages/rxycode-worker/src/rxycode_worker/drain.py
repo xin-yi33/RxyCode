@@ -1386,23 +1386,48 @@ _URL_CREDENTIAL_LEAD_RE = re.compile(
 #: ``-c 'exec srv --api-key K'`` (audit W8-r7). For the separated form
 #: the value must not start with ``-`` — a following flag is not a
 #: value.
-#: An inline credential VALUE — quoted spans (``--api-key 'a b'``,
-#: ``API_KEY="x"``) die with their quotes; unquoted spans stop at
-#: whitespace and shell separators (audit W8-r8).
-_INLINE_VALUE_RE = r"(?:'[^']*'|\"[^\"]*\"|[^\s;|&<>'\"(){}]+)"
+#: A shell WORD — the argument glued onto a credential flag/key can
+#: continue past the first token: ``""SECRET``, ``$(printf %s KEY)``,
+#: ``${VAR}`` are ONE word. A credential name must consume the whole
+#: word or the glued remainder leaks (audit W8-r9). Quoted spans,
+#: ``$(...)`` and ``${...}`` count as part of the word.
+_SHELL_WORD_RE = (
+    r"(?:'[^']*'|\"[^\"]*\"|\$\([^)]*\)|\$\{[^}]*\}|[^\s;|&<>'\"(){}$])+"
+)
 _INLINE_FLAG_EQ_RE = re.compile(
-    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)=(" + _INLINE_VALUE_RE + r")"
+    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)=(" + _SHELL_WORD_RE + r")"
 )
 _INLINE_FLAG_SEP_RE = re.compile(
-    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)(\s+)(?!--)(" + _INLINE_VALUE_RE + r")"
+    r"(--?[A-Za-z_][A-Za-z0-9_.-]*)(\s+)(?!--)(" + _SHELL_WORD_RE + r")"
 )
 #: ``KEY=VALUE``/``KEY = value`` for a credential key inside an opaque
 #: string. The lookbehind keeps ``--flag=x`` out (the flag rule owns
-#: it); the lookaheads keep ``x == y`` and ``k = --v`` out; the value
+#: it); the lookaheads keep ``x == y`` and ``k = --v`` out; the word
 #: charset keeps shell separators (``;|&()``) outside the secret span.
 _INLINE_ASSIGN_RE = re.compile(
     r"(?<![-\w.])([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?!=)(?!--)"
-    + "(" + _INLINE_VALUE_RE + r")"
+    + "(" + _SHELL_WORD_RE + r")"
+)
+#: ``Authorization: Bearer K``-style header credentials inside opaque
+#: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9). The
+#: scheme form keeps header name + scheme, drops the credential.
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token)"
+    r"(\s*[:=]\s*)(bearer|basic|token|digest|oauth)\s+"
+    r"([^\s;|&<>'\"(){}]+)"
+)
+#: A header value WITHOUT a scheme word — ``X-Api-Key: RAWTOKEN``.
+#: The lookahead skips scheme-led values (the scheme rule owns them)
+#: and a 4-char floor keeps prose like ``authorization: yes`` alive.
+_AUTH_HEADER_NAKED_RE = re.compile(
+    r"(?i)\b(authorization|proxy-authorization|x-api-key|x-auth-token)"
+    r"(\s*[:=]\s*)(?!(?:bearer|basic|token|digest|oauth)\s)"
+    r"([^\s;|&<>'\"(){}]{4,})"
+)
+#: A bare auth scheme + token-length value — ``Bearer eyJ...`` —
+#: entropy floor keeps prose ("the bearer of bad news") alive.
+_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(bearer|basic|oauth)\s+([A-Za-z0-9._~+/=-]{8,})"
 )
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
@@ -1418,10 +1443,12 @@ def _scrub_inline_secrets(text: str) -> str:
     syntax survives. Same name tables as the whole-item grammar."""
 
     def _rescan_value(match: "re.Match[str]", value: str) -> str | None:
-        """A non-credential flag/key whose VALUE is a quoted span —
-        ``-c 'exec srv --password K'`` — keeps its name and quotes but
-        the payload is re-scrubbed inside; the quoted region is
-        otherwise opaque to every later pass (audit W8-r8)."""
+        """A NON-credential flag/key whose VALUE wraps more payload —
+        ``-c 'exec srv --password K'``, ``--flag $(cmd --token K)`` —
+        keeps the name, and the value is recursively re-scrubbed
+        inside: quoted spans keep their quotes, compound words keep
+        their shape. Otherwise opaque regions would swallow inner
+        secrets (audit W8-r8/r9)."""
         if (
             len(value) > 1
             and value[:1] in ("'", '"')
@@ -1429,6 +1456,8 @@ def _scrub_inline_secrets(text: str) -> str:
         ):
             inner = _scrub_inline_secrets(value[1:-1])
             return f"{value[0]}{inner}{value[0]}"
+        if any(c in value for c in ("'", '"', "$")):
+            return _scrub_inline_secrets(value)
         return None
 
     def _cred_name(flag: str) -> bool:
@@ -1440,6 +1469,8 @@ def _scrub_inline_secrets(text: str) -> str:
 
     def _flag_eq(match: "re.Match[str]") -> str:
         if _cred_name(match.group(1)):
+            # Whole glued WORD dies — ``--api-key ""SECRET`` keeps
+            # nothing behind (audit W8-r9).
             return f"{match.group(1)}=confined"
         inner = _rescan_value(match, match.group(2))
         if inner is not None:
@@ -1465,6 +1496,15 @@ def _scrub_inline_secrets(text: str) -> str:
     text = _INLINE_FLAG_EQ_RE.sub(_flag_eq, text)
     text = _INLINE_FLAG_SEP_RE.sub(_flag_sep, text)
     text = _INLINE_ASSIGN_RE.sub(_assign, text)
+    text = _AUTH_HEADER_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)} confined", text
+    )
+    text = _AUTH_HEADER_NAKED_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}confined", text
+    )
+    text = _AUTH_SCHEME_RE.sub(
+        lambda m: f"{m.group(1)} confined", text
+    )
     return _URL_USERINFO_SUB_RE.sub(r"\g<1>confined:confined@", text)
 
 

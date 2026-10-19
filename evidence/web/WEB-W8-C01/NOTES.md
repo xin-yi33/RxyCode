@@ -477,3 +477,39 @@ findings, all remediated and re-verified:
   UNHARDENED (`hook-ran: True`), never executes with `-s`
   (`hook-ran: False`).
 - `python -m ruff check` on drain.py / tests/web/w8: clean.
+
+## Audit round 9 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 2 findings)
+
+r9 audited `f67c72be`, re-ran 20 targeted legs, and confirmed all r8
+fixes (quoted values, `-s` startup, descendant import semantics). Two
+new P1 findings, both remediated and re-verified:
+
+1. **[P1] Shell-expression values glued to credential flags leaked** —
+   ``--api-key $(printf %s KEY)`` left ``(printf %s KEY)`` readable
+   (the value charset stopped at ``(``); ``--api-key ""KEY`` left the
+   glued ``KEY`` after an empty quote pair. Credential names now
+   consume the whole shell WORD — quoted spans, ``$(...)``, ``${...}``
+   and glued continuations count as one word — so nothing behind the
+   flag survives. Non-credential flags/keys with compound values get
+   the value recursively re-scrubbed (``-c 'payload'``, ``--flag
+   $(cmd --token K)``), quoted spans keeping their quotes.
+2. **[P1] Authorization headers in MCP args stayed verbatim** —
+   ``--header "Authorization: Bearer KEY"`` hid the credential inside
+   a quoted string the name tables never flagged. `_AUTH_HEADER_RE`
+   / `_AUTH_HEADER_NAKED_RE` / `_AUTH_SCHEME_RE` now redact
+   ``Authorization``/``X-Api-Key``-style headers (name + scheme kept,
+   credential dropped) and bare ``Bearer|Basic|OAuth`` scheme values
+   with a token-length floor — prose like "the bearer of bad news"
+   survives.
+
+## Test evidence (r9)
+
+- `tests/web/w8`: 47 passed, 3 environment skips — extended legs:
+  ``$(...)`` whole-word consumption, ``""SECRET`` glued-word
+  consumption, ``Authorization: Bearer`` header redaction,
+  ``X-Api-Key:`` naked header redaction, prose survival.
+- Manual repro of every committed case via ``_scrub_inline_secrets``:
+  ``--api-key $(printf %s KEY)`` -> ``--api-key confined``;
+  ``--api-key ""KEY`` -> ``--api-key confined``;
+  ``--header "Authorization: Bearer K"`` -> ``...Bearer confined"``.
+- `python -m ruff check` on drain.py / tests/web/w8: clean.

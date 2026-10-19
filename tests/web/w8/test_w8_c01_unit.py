@@ -2381,12 +2381,21 @@ def test_w8_c01_scrub_inline_launcher_strings() -> None:
                     # quote-wrapped secret dies with its quotes.
                     "srv --api-key 'AUDIT KEY WITH SPACES' -v",
                     'env API_KEY="AUDIT_QUOTED_KEY" run',
+                    # Shell-expression values glued to a credential
+                    # flag (audit W8-r9): $(...) and ""X are ONE word —
+                    # the flag consumes the whole word, leaving no
+                    # secret remainder.
+                    "srv --api-key $(printf %s AUDIT_SUB_KEY) -v",
+                    'srv --api-key ""AUDIT_CONCAT_KEY -v',
+                    'curl --header "Authorization: Bearer AUDIT_H" u',
+                    'curl -H "X-Api-Key: RAWTOKEN123" u',
                     "--api-key",  # flag at END of item list — no value
                 ],
             }
         },
         "launcher": "sh -c 'srv postgres://u:p@db --password pw1'",
         "doc": "the token = abc and mode == fast",  # prose, not creds
+        "news": "the bearer of bad news",           # scheme prose lives
         "bare_url": "postgres://u:p@db:5432/app",
     }
     drain._scrub_credential_values(cfg)
@@ -2399,11 +2408,16 @@ def test_w8_c01_scrub_inline_launcher_strings() -> None:
     assert args[4] == "x == y --normal flag"          # == and --flag kept
     assert args[5] == "srv --api-key confined -v"     # quoted secret dies
     assert args[6] == 'env API_KEY=confined run'      # quoted KEY=V dies
-    assert args[7] == "--api-key"                     # nothing follows it
+    assert args[7] == "srv --api-key confined -v"     # $(...) word dies
+    assert args[8] == "srv --api-key confined -v"     # glued ""X dies
+    assert args[9] == 'curl --header "Authorization: Bearer confined" u'
+    assert args[10] == 'curl -H "X-Api-Key: confined" u'
+    assert args[11] == "--api-key"                    # nothing follows it
     # dict scalar composite strings — surgical, not whole-redaction.
     assert cfg["launcher"] == (
         "sh -c 'srv postgres://confined:confined@db --password confined'"
     )
+    assert cfg["news"] == "the bearer of bad news"
     # A bare credential URL value is still a secret whole.
     assert cfg["bare_url"] == "confined"
 
