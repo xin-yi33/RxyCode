@@ -376,7 +376,9 @@ def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     return latest
 
 
-def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
+def _agent_done_by_attempt(
+    database_url: str, run_id: str
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
     """``event/agent_done`` snapshots grouped by lease epoch — the RunJournal
     tags each row with the attempt that produced it.
 
@@ -392,6 +394,14 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     candidates whose bucket fits (``metered <= done``), pick the smallest
     surplus ``done - metered`` — the completion rejoins the attempt it
     least extends. No feasible bucket -> earliest open epoch -> seq-anchor.
+
+    When more than one bucket is feasible the binding is genuinely
+    ambiguous (a crashed epoch's lagged meter can sit arbitrarily close
+    to a later epoch's final total — audit r12). The choice is still
+    min-surplus, but the ambiguity is returned for the caller to journal
+    explicitly: a `usage.attribution` row carrying every feasible epoch
+    and its bucket, so the ledger never presents an inferred total as if
+    it were the only consistent one. Returns ``(buckets, ambiguities)``.
     """
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
@@ -433,6 +443,7 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
             )
     latest: dict[str, int] = {}
     filled: set[str] = set()
+    ambiguous: list[dict[str, Any]] = []
     for seq, payload in rows:
         if not isinstance(payload, dict):
             continue
@@ -467,9 +478,79 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
             target = open_candidates[0] if open_candidates else (
                 _epoch_at_seq(bounds, int(seq)) or ""
             )
+        if len(feasible) > 1 or (not feasible and len(candidates) > 1):
+            ambiguous.append(
+                {
+                    "seq": int(seq),
+                    "tokens": tokens,
+                    "chosen": target,
+                    "candidates": {
+                        e: max(metered_by_attempt.get(e, 0), latest.get(e, 0))
+                        for e in (feasible or candidates)
+                    },
+                }
+            )
         filled.add(target)
         latest[target] = max(latest.get(target, 0), tokens)
-    return latest
+    return latest, ambiguous
+
+
+def _emit_attribution_events(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    ambiguities: list[dict[str, Any]],
+) -> None:
+    """Journal a ``usage.attribution`` row for every ambiguous legacy
+    ``agent_done`` binding — explicit uncertainty on the durable log instead
+    of an inferred total presented as confirmed (audit r12). Dedupe on the
+    source row's seq so retries/replays never pile up duplicate notes."""
+    if not ambiguities:
+        return
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.events.store import append_event
+
+    seen: set[int] = set()
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT payload FROM run_events "
+                    "WHERE run_id = :id AND type = 'usage.attribution'"
+                ),
+                {"id": run_id},
+            ).all()
+        for (payload,) in rows:
+            if isinstance(payload, dict):
+                try:
+                    seen.add(int(payload.get("attribution_seq")))
+                except (TypeError, ValueError):
+                    continue
+    finally:
+        engine.dispose()
+    for item in ambiguities:
+        if int(item.get("seq") or -1) in seen:
+            continue
+        try:
+            append_event(
+                database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                event_type="usage.attribution",
+                payload={
+                    **item,
+                    "attribution_seq": int(item.get("seq") or -1),
+                    "ambiguous": True,
+                    "rule": "min-surplus-feasible",
+                },
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: usage.attribution note failed", run_id, exc_info=True
+            )
 
 
 def _usage_spool_dir(workspaces_root: str) -> Path:
@@ -566,7 +647,7 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
         # ledger gap was already surfaced as run.error by its owner).
         try:
             deltas = _usage_deltas_by_attempt(database_url, run_id)
-            dones = _agent_done_by_attempt(database_url, run_id)
+            dones, attributions = _agent_done_by_attempt(database_url, run_id)
             total = sum(
                 max(deltas.get(a, 0), dones.get(a, 0))
                 for a in set(deltas) | set(dones)
@@ -584,6 +665,9 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 run_id=run_id,
                 tokens=total,
                 event_id=uuid.uuid4().hex,
+            )
+            _emit_attribution_events(
+                database_url, str(row["tenant_id"]), run_id, attributions
             )
         except UsageForbidden:
             # The run/tenant no longer exists — the journaled delta row is
@@ -611,7 +695,8 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
             # status means any finalizer's UsageRecord is already committed
             # — it may simply have landed after our first read (audit r11).
             # Reconcile once more before dead-lettering; only a still-empty
-            # ledger on a terminal run is truly unrecoverable.
+            # ledger on a terminal run is truly unrecoverable. A FAILED
+            # re-read is not "confirmed absent" — keep the file (r12).
             try:
                 reconciled = adjust_terminal_usage(
                     database_url,
@@ -621,7 +706,7 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                     event_id=uuid.uuid4().hex,
                 )
             except Exception:
-                reconciled = None
+                continue
             if reconciled is not None:
                 try:
                     path.unlink(missing_ok=True)
@@ -1852,12 +1937,12 @@ async def execute_run(
     # (disjoint spends). agent_done rows are epoch-tagged by RunJournal, so
     # a prior attempt's meter lands in ITS bucket, never double-counted.
     try:
-        dones = await asyncio.wait_for(
+        dones, attributions = await asyncio.wait_for(
             asyncio.to_thread(_agent_done_by_attempt, cfg.database_url, run_id),
             timeout=_LEASE_IO_BUDGET,
         )
     except Exception:
-        dones = {}
+        dones, attributions = {}, []
     per_attempt: dict[str, int] = {
         a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)
     }
@@ -1868,8 +1953,9 @@ async def execute_run(
     )
     tokens = sum(per_attempt.values())
     usage_error = ""
+    recorded: dict[str, Any] | None = None
     try:
-        await asyncio.wait_for(
+        recorded = await asyncio.wait_for(
             asyncio.to_thread(
                 record_terminal_usage,
                 cfg.database_url,
@@ -1885,6 +1971,50 @@ async def execute_run(
     except Exception as exc:
         usage_error = f"terminal usage write failed: {type(exc).__name__}: {exc}"
         _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)
+    # Insert-once may have returned an existing SHORTER ledger — a prior
+    # attempt committed its own usage and crashed before the terminal
+    # write (audit r12). Reconcile the aggregate up to the recomputed
+    # per-attempt total so the ledger never stays short.
+    if (
+        not usage_error
+        and recorded is not None
+        and int(recorded.get("tokens") or 0) < tokens
+    ):
+        from rxycode_server.usage.service import adjust_terminal_usage
+
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    adjust_terminal_usage,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    tokens=tokens,
+                    event_id=uuid.uuid4().hex,
+                ),
+                timeout=_LEASE_IO_BUDGET,
+            )
+        except Exception as exc:
+            usage_error = (
+                f"terminal usage reconcile failed: {type(exc).__name__}: {exc}"
+            )
+            _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)
+    if attributions:
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    _emit_attribution_events,
+                    cfg.database_url,
+                    tenant_id,
+                    run_id,
+                    attributions,
+                ),
+                timeout=_LEASE_IO_BUDGET,
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: attribution notes failed", run_id, exc_info=True
+            )
 
     if cancelled_by_request:
         # A cancelled run is still committed cancelled — the cancel was real

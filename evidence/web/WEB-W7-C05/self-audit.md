@@ -235,3 +235,19 @@ Final verdict: `<filled by the Codex audit>` (session
 - The `journaled` flag is written via tmp+replace (atomic), closing the
   truncate-on-crash malformed-file window.
 - Non-stack legs 19/19 green; module stack test re-running.
+
+## r12 remediation self-check
+
+- Finalize captures `record_terminal_usage`'s return: an existing shorter
+  ledger (prior attempt committed 100, crashed before terminal; retry
+  recomputes 105) now triggers `adjust_terminal_usage` — the insert-once
+  W2-C07 contract is untouched, reconciliation is a separate explicit
+  step. PG-backed leg proves 100 -> 105.
+- Post-terminal re-adjust failure now `continue`s — a transient error
+  keeps the spool instead of dead-lettering on an unknown state.
+- `_agent_done_by_attempt` returns `(buckets, ambiguities)`; ambiguous
+  untagged done rows (multiple feasible epochs) journal a deduped
+  `usage.attribution` event with candidates + chosen + source seq. The
+  heuristic still binds min-surplus, but the record is honest about the
+  uncertainty instead of silently emitting an inferred confirmed total.
+- Non-stack legs 21/21 green; module stack test re-running.

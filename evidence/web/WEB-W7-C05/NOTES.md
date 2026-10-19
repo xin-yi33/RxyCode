@@ -385,3 +385,29 @@ Round 11 (same session) sharpened three edges further:
   could be truncated by a crash, leaving a malformed spool every later
   pass silently skipped. The flag now uses the same tmp+replace atomic
   rename as the initial spool write.
+
+## Audit r12 remediation (commit pending)
+
+Round 12 (same session) found the last three ledger edges:
+
+- **Short existing ledger on ordinary retry**: `record_terminal_usage` is
+  insert-once BY CONTRACT (W2-C07 pins `inflated["tokens"] == first`), so
+  a prior attempt's committed 100-token ledger could pin a retry's
+  recomputed 105. The finalize path now captures the returned row and,
+  when its tokens are short of the recomputed total, runs
+  `adjust_terminal_usage` — reconciliation lives in the worker finalize,
+  not the insert-once service. PG-backed leg:
+  `test_w7_c05_short_existing_ledger_reconciled_on_finalize`.
+- **Failed re-reconcile deleted the spool**: the post-terminal second
+  `adjust_terminal_usage` collapsed exceptions into `None`, reaching the
+  delete path. A transient DB error mid-race now keeps the file —
+  exceptions are "unknown", never "confirmed absent".
+- **Ambiguous legacy ownership is now explicit**: two feasible epochs
+  (e1 metered 5 dead + e2 metered 90 + untagged done 100) are
+  information-theoretically indistinguishable — r11 wanted e2, r12's
+  mirror wants e1, same event stream. Min-surplus still picks the
+  binding, but every ambiguous row now journals a `usage.attribution`
+  event (`ambiguous: true`, chosen epoch, all candidate buckets, the
+  row's seq) — deduped by `attribution_seq` so retries never pile up
+  notes. The ledger stays deterministic; the uncertainty is on the
+  record. Leg: `test_w7_c05_ambiguous_done_journaled_as_uncertain`.

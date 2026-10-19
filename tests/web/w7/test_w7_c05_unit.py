@@ -1069,7 +1069,8 @@ def test_w7_c05_agent_done_grouped_by_attempt(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    assert drain._agent_done_by_attempt("db", "run-42") == {"1": 100, "2": 5}
+    dones, _amb = drain._agent_done_by_attempt("db", "run-42")
+    assert dones == {"1": 100, "2": 5}
 
 
 def test_w7_c05_untagged_rows_anchor_to_lease_epoch(monkeypatch) -> None:
@@ -1111,7 +1112,7 @@ def test_w7_c05_untagged_rows_anchor_to_lease_epoch(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    dones = drain._agent_done_by_attempt("db", "run-42")
+    dones, _amb = drain._agent_done_by_attempt("db", "run-42")
     # The untagged 100-token done anchors to epoch 1 (seq 10 > lease seq 1,
     # < lease seq 20); the tagged 5-token done stays in epoch 2.
     assert dones == {"1": 100, "2": 5}
@@ -1167,7 +1168,7 @@ def test_w7_c05_interleaved_untagged_done_binds_earliest_open_epoch(
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    dones = drain._agent_done_by_attempt("db", "run-42")
+    dones, _amb = drain._agent_done_by_attempt("db", "run-42")
     assert dones == {"1": 100}  # epoch 2 stays open — no misattributed done
     deltas = drain._usage_deltas_by_attempt("db", "run-42")
     per_attempt = {a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)}
@@ -1261,7 +1262,7 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(store, "append_event", ok_append)
     monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {"3": 73})
-    monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: {})
+    monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
     import rxycode_server.usage.service as usage_service
 
     adjusted = []
@@ -1391,7 +1392,7 @@ def test_w7_c05_untagged_done_exact_metered_match(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    dones = drain._agent_done_by_attempt("db", "run-42")
+    dones, _amb = drain._agent_done_by_attempt("db", "run-42")
     assert dones == {"2": 100}  # NOT {"1": 100} — value pins it to epoch 2
     deltas = drain._usage_deltas_by_attempt("db", "run-42")
     per_attempt = {
@@ -1510,7 +1511,7 @@ def test_w7_c05_untagged_done_lagging_heartbeat_match(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
-    dones = drain._agent_done_by_attempt("db", "run-43")
+    dones, _amb = drain._agent_done_by_attempt("db", "run-43")
     assert dones == {"2": 100}  # lagged meter still pins e2 — not e1
     deltas = drain._usage_deltas_by_attempt("db", "run-43")
     per_attempt = {
@@ -1518,3 +1519,141 @@ def test_w7_c05_untagged_done_lagging_heartbeat_match(monkeypatch) -> None:
         for a in set(deltas) | set(dones)
     }
     assert sum(per_attempt.values()) == 105
+
+
+def test_w7_c05_ambiguous_done_journaled_as_uncertain(monkeypatch) -> None:
+    """Audit r12: when two epochs are both feasible owners of an untagged
+    done (e1 metered 5 dead, e2 metered 90, done 100), the binding is a
+    heuristic — the ambiguity must be journaled explicitly, not hidden
+    behind an inferred confirmed total."""
+    import rxycode_worker.drain as drain
+
+    written: list[dict] = []
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            sql = str(stmt)
+
+            class _R:
+                def all(self):
+                    if "worker.lease" in sql:
+                        return [
+                            (1, {"worker_id": "w", "epoch": 1}),
+                            (20, {"worker_id": "w", "epoch": 2}),
+                        ]
+                    if "event/agent_done" in sql:
+                        return [(25, {"tokens": 100})]
+                    if "usage.delta" in sql:
+                        return [
+                            (5, {"input_tokens": 5, "output_tokens": 0, "attempt": "1"}),
+                            (22, {"input_tokens": 90, "output_tokens": 0, "attempt": "2"}),
+                        ]
+                    if "usage.attribution" in sql:
+                        return [
+                            (w["payload"],)
+                            for w in written
+                            if w["event_type"] == "usage.attribution"
+                        ]
+                    return []
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    dones, ambiguities = drain._agent_done_by_attempt("db", "run-44")
+    assert dones == {"2": 100}
+    assert len(ambiguities) == 1
+    note = ambiguities[0]
+    assert note["seq"] == 25 and note["chosen"] == "2"
+    assert note["candidates"] == {"1": 5, "2": 90}
+
+    # The ambiguity note is journaled exactly once across replays.
+    monkeypatch.setattr(
+        "rxycode_server.events.store.append_event",
+        lambda _db, **kw: written.append(kw) or 1,
+    )
+    drain._emit_attribution_events("db", "t1", "run-44", ambiguities)
+    assert [w["event_type"] for w in written] == ["usage.attribution"]
+    assert written[0]["payload"]["ambiguous"] is True
+    assert written[0]["payload"]["attribution_seq"] == 25
+    drain._emit_attribution_events("db", "t1", "run-44", ambiguities)
+    assert len(written) == 1  # dedupe — the note is not re-journaled
+
+
+def test_w7_c05_short_existing_ledger_reconciled_on_finalize(
+    monkeypatch, postgres_url: str
+) -> None:
+    """Audit r12 F1: attempt A's ledger (100) committed before its crash;
+    retry B recomputes 105 and record_terminal_usage returns the existing
+    row unchanged (insert-once is the W2-C07 contract). The finalize path
+    must then adjust_terminal_usage up to 105."""
+    import rxycode_worker.drain as drain  # noqa: F401
+    from sqlalchemy import create_engine, func, select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import (
+        Organization,
+        Project,
+        Run,
+        SessionRow,
+        UsageRecord,
+        User,
+    )
+    from rxycode_server.usage.service import (
+        adjust_terminal_usage,
+        record_terminal_usage,
+    )
+
+    upgrade_head(postgres_url)
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            db.add(User(id=f"u-{tenant}", github_id=None, kind="local"))
+            db.add(Organization(id=f"o-{tenant}", tenant_id=tenant))
+            db.add(Project(id=f"p-{tenant}", tenant_id=tenant, name="t", repo_config={}))
+            db.add(SessionRow(id=f"s2-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
+            db.add(Run(id="run-short", tenant_id=tenant, session_id=f"s2-{tenant}", status="running", request_id="r9"))
+            db.commit()
+
+        # Attempt A's committed ledger (then it crashed before terminal).
+        record_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-short",
+            model_id="model-a", price_version="2026-10",
+            tokens=100, event_id="evt-a",
+        )
+        # Retry B recomputes 105 — insert-once returns the stale row.
+        second = record_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-short",
+            model_id="model-a", price_version="2026-10",
+            tokens=105, event_id="evt-b",
+        )
+        assert int(second["tokens"]) == 100  # insert-once contract holds
+        # The drain's reconcile step lifts the short ledger.
+        out = adjust_terminal_usage(
+            postgres_url, tenant_id=tenant, run_id="run-short",
+            tokens=105, event_id="evt-reconcile",
+        )
+        assert out is not None and int(out["tokens"]) == 105
+        with Session(engine) as db:
+            total = db.scalar(
+                select(func.sum(UsageRecord.tokens)).where(
+                    UsageRecord.run_id == "run-short"
+                )
+            )
+        assert int(total) == 105
+    finally:
+        engine.dispose()

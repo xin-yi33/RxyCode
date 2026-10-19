@@ -207,3 +207,10 @@ ruff/py_compile: clean on drain.py + usage/service.py.
   dead + e2 metered 90 + untagged done 100 -> 105, not 190).
 1 passed in 454.48s — tests/web/w7/test_w7_c05_module.py (real stack
   on r11 code; claim/confined-turn/ledger/reclaim legs all green).
+
+== audit r12 remediation (2026-10-19) ==
+21 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. new legs: ambiguity note journaling+dedupe, short-ledger retry
+  reconcile on real dev PG.
+1 passed in 304.49s — tests/web/w7/test_w7_c05_module.py (real stack
+  on r12 code). ruff/py_compile clean; git diff --check clean.
