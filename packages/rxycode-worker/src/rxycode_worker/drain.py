@@ -1396,23 +1396,30 @@ _URL_CREDENTIAL_LEAD_RE = re.compile(
 #: lookbehind keeps glued words (``x--token``) from splitting
 #: mid-token.
 #: A shell NAME can be ASSEMBLED from segments — ``API_\<newline>KEY``
-#: line-joins to ``API_KEY``, ``--api-''key``/``--"api-key"`` are one
-#: word spelling ``api-key``, and ``--api-\key`` escapes to the same
-#: (audit W8-r20/r21). The alternatives are DISJOINT — a ``\`` must
-#: take the two-char escape branch — so matching stays linear where
-#: quantified overlapping alternatives backtracked exponentially
-#: (audit W8-r21). ``\=`` is excluded from names so it can serve as
-#: the escaped separator; assembly is resolved by
-#: ``_heredoc_delim``-style quote removal before the key check.
-_NAME_PART = r"(?:[A-Za-z0-9_.'\"-]|\\[^=])"
-_FLAG_TOKEN_RE = re.compile(r"(?<![-\w.])(--?" + _NAME_PART + r"+)")
+#: line-joins to ``API_KEY``, ``--api-''key``/``--"api-key"``/
+#: ``--api-$'key'`` are one word spelling ``api-key``, and
+#: ``--api-\key`` escapes to the same (audit W8-r20/r21/r22). The
+#: alternatives are DISJOINT — a ``\`` must take the two-char escape
+#: branch — so matching stays linear where quantified overlapping
+#: alternatives backtracked exponentially (audit W8-r21); the explicit
+#: part cap keeps finditer retries linear too — matching retries per
+#: position times a bounded name length (audit W8-r22). ``\=`` is
+#: excluded from names so it can serve as the escaped separator;
+#: assembly is resolved by ``_heredoc_delim``-style quote removal
+#: before the key check.
+_NAME_PART = r"(?:[A-Za-z0-9_.'\"-]|\\[^=]|\$'[^'=]*'|\$\"[^\"=]*\")"
+_FLAG_TOKEN_RE = re.compile(
+    r"(?<![-\w.])(--?(?:" + _NAME_PART + r"){1,128})"
+)
 #: ``KEY=``/``KEY =``/``KEY\=`` assignment lead inside an opaque string
 #: — the lookbehind keeps ``--flag=x`` out (the flag pass owns it);
 #: the lookaheads keep ``x == y`` and ``k = --v`` out. The VALUE is
 #: located by the word scanner, not a regex, so nested substitutions
 #: cannot strand secret remainders (audit W8-r10).
 _ASSIGN_LEAD_RE = re.compile(
-    r"(?<![-\w.])([A-Za-z_]" + _NAME_PART + r"*)(\s*=\s*|\\=)(?!=)(?!--)"
+    r"(?<![-\w.])([A-Za-z_](?:"
+    + _NAME_PART
+    + r"){0,128})(\s*=\s*|\\=)(?!=)(?!--)"
 )
 #: ``Authorization: Bearer K``-style header credentials inside opaque
 #: args — ``--header 'Authorization: Bearer K'`` (audit W8-r9).
@@ -1475,6 +1482,21 @@ def _heredoc_delim(word: str) -> tuple[str, bool]:
             out.append(nxt)
             quoted = True
             i += 2
+            continue
+        if c == "$" and i + 1 < n and word[i + 1] in "'\"":
+            # ANSI-C ``$'…'`` / locale ``$"…"`` quotes assemble names
+            # too — ``--api-$'key'`` is ``--api-key`` (audit W8-r22).
+            quoted = True
+            qc = word[i + 1]
+            i += 2
+            while i < n and word[i] != qc:
+                if word[i] == "\\" and i + 1 < n:
+                    out.append(word[i + 1])
+                    i += 2
+                    continue
+                out.append(word[i])
+                i += 1
+            i += 1
             continue
         if c == "'":
             quoted = True
@@ -1540,7 +1562,9 @@ def _heredoc_ops(seg: str, stack: list[str]) -> list[tuple[int, str]]:
                 stack.pop()
                 i += 1
                 continue
-            if c == "$" and i + 1 < n and seg[i + 1] in "({'":
+            if c == "$" and i + 1 < n and seg[i + 1] in "({":
+                # ``$'`` is literal text inside ``"..."`` — ANSI-C
+                # quoting exists only at word level (audit W8-r22).
                 if seg[i + 1] == "(":
                     if i + 2 < n and seg[i + 2] == "(":
                         stack.append("((")
@@ -1549,7 +1573,7 @@ def _heredoc_ops(seg: str, stack: list[str]) -> list[tuple[int, str]]:
                         stack.append("(")
                         i += 2
                 else:
-                    stack.append("${" if seg[i + 1] == "{" else "$'")
+                    stack.append("${")
                     i += 2
                 continue
             if c == "`":
@@ -1605,18 +1629,51 @@ def _heredoc_ops(seg: str, stack: list[str]) -> list[tuple[int, str]]:
             i += 1
             continue
         if top == "((" or top == "((i":
-            # Arithmetic ``((…))`` — ``<<`` there is a bit-shift.
-            # Nested parens push ``((i``; a ``)`` at depth 0 ends the
-            # arithmetic context (and for ``$((`` the following ``)``
-            # ends the substitution).
-            if c == "(":
-                stack.append("((i")
-            elif c == ")":
+            # Arithmetic ``((…))`` — a bare ``<<`` there is a
+            # bit-shift, but a nested ``$(`` is a real command
+            # substitution whose redirs count (``$(( $(cat <<<K) ))``
+            # — audit W8-r22). ``((i`` marks an inner grouping paren.
+            if c == ")":
                 stack.pop()
                 i += 1
                 if top == "((" and i < n and seg[i] == ")":
                     i += 1
                 continue
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == "$" and i + 1 < n:
+                nxt = seg[i + 1]
+                if nxt == "(":
+                    if i + 2 < n and seg[i + 2] == "(":
+                        stack.append("((")
+                        i += 3
+                    else:
+                        stack.append("(")
+                        i += 2
+                    continue
+                if nxt == "{":
+                    stack.append("${")
+                    i += 2
+                    continue
+                if nxt == "'":
+                    stack.append("$'")
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if c in "<>" and i + 1 < n and seg[i + 1] == "(":
+                stack.append("(")
+                i += 2
+                continue
+            if c == "(":
+                stack.append("((i")
+            elif c == "'":
+                stack.append("'")
+            elif c == '"':
+                stack.append('"')
+            elif c == "`":
+                stack.append("`")
             i += 1
             continue
         if top == "`" and c == "`":
@@ -1683,6 +1740,40 @@ def _heredoc_ops(seg: str, stack: list[str]) -> list[tuple[int, str]]:
     return out
 
 
+def _quote_state(text: str, pos: int) -> str | None:
+    """Quote context enclosing ``text[pos]`` at SOURCE level —
+    ``'``/``"``/``$'``/```` ` ```` when inside that quote, else
+    ``None``. Used to decide whether a mid-word quote is an opener,
+    an enclosing closer, or a literal glued char (``abc" SECRET"``
+    inside a ``-c '…'`` payload — the payload's ``'`` makes ``"``
+    literal; audit W8-r22). Lookback is bounded so pathological
+    inputs stay linear."""
+    tmp: list[str] = []
+    _heredoc_ops(text[max(0, pos - 8192):pos], tmp)
+    top = tmp[-1] if tmp else None
+    if top in ("'", '"', "$'", "`"):
+        return top
+    return None
+
+
+def _unescaped_pos(text: str, c: str, start: int) -> int:
+    """First index ≥ ``start`` of ``c`` not preceded by an ODD run of
+    backslashes — ``\\\"`` pairs do not hide the quote."""
+    j = start
+    while True:
+        j = text.find(c, j)
+        if j == -1:
+            return -1
+        bs = 0
+        k = j - 1
+        while k >= 0 and text[k] == "\\":
+            bs += 1
+            k -= 1
+        if bs % 2 == 0:
+            return j
+        j += 1
+
+
 def _shell_word_end(
     text: str,
     start: int,
@@ -1710,6 +1801,9 @@ def _shell_word_end(
     stack: list[str] = []
     qpos: list[int] = []  # push index of each still-open quote context
     word = ""  # innermost bare word — case/esac keyword detection
+    _enclosing: Any = ...  # lazy _quote_state cache — the source-level
+    # enclosing context is fixed for a whole scan, so compute it at
+    # most once per call (keeps quote-heavy inputs linear).
     while i < n:
         c = text[i]
         top = stack[-1] if stack else ""
@@ -1751,15 +1845,11 @@ def _shell_word_end(
                 i += 1
                 continue
             # Substitutions still open inside ``"..."`` — their
-            # interior quotes are balanced THERE, not here.
-            if c == "$" and i + 1 < n and text[i + 1] in "({'":
-                stack.append(
-                    "$'"
-                    if text[i + 1] == "'"
-                    else ("${" if text[i + 1] == "{" else "(")
-                )
-                if text[i + 1] == "'":
-                    qpos.append(i + 1)
+            # interior quotes are balanced THERE, not here. ``$'``
+            # is LITERAL inside ``"..."`` — ANSI-C quoting only
+            # exists at word level (audit W8-r22).
+            if c == "$" and i + 1 < n and text[i + 1] in "({":
+                stack.append("${" if text[i + 1] == "{" else "(")
                 word = ""
                 i += 2
                 continue
@@ -1847,25 +1937,35 @@ def _shell_word_end(
                     break
             i += 1
             continue
-        if c == "'":
-            if stop_at_unclosed_quote and not stack and i > start and (
-                i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
+        if c == "'" or c == '"':
+            if (
+                stop_at_unclosed_quote
+                and not stack
+                and i > start
+                and (i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}")
             ):
-                # Quote mid-word followed by a boundary — really the
-                # ENCLOSING word's closer, not an opener (``Bearer
-                # K" u`` ends at the ``"``; audit W8-r17). At the word
-                # START a quote is always an opener; inside
-                # ``$(``/``${`` a quote+space is still a real opener —
-                # both keep normal push semantics (audit W8-r18).
-                return i
-            stack.append("'")
-            qpos.append(i)
-        elif c == '"':
-            if stop_at_unclosed_quote and not stack and i > start and (
-                i + 1 >= n or text[i + 1] in " \t\r\n;|&<>(){}"
-            ):
-                return i
-            stack.append('"')
+                # Quote mid-word followed by a boundary: decide from
+                # the ENCLOSING quote state at this source position —
+                #   * same quote open outside -> this is its closer
+                #     (``Bearer K" u`` ends at the ``"``; r17/r18);
+                #   * a DIFFERENT quote open (``'`` payload) -> the
+                #     char is literal text glued into the word
+                #     (``abc" SECRET"`` inside ``-c '…'`` — audit
+                #     W8-r22);
+                #   * bare context -> opener iff a later unescaped
+                #     partner exists, else the enclosing closer.
+                if _enclosing is ...:
+                    _enclosing = _quote_state(text, i)
+                enclosing = _enclosing
+                if enclosing == c:
+                    return i
+                if enclosing is not None:
+                    word += c
+                    i += 1
+                    continue
+                if _unescaped_pos(text, c, i + 1) == -1:
+                    return i
+            stack.append(c)
             qpos.append(i)
         elif c == "`":
             # Backticks get no closer check — `` ` cmd `` with a space
@@ -2156,20 +2256,46 @@ def _scrub_inline_secrets(
             # logical command line, not after the first newline. A
             # ``\`` inside a COMMENT is comment text, not a
             # continuation (``cat <<EOF # \<newline>SECRET`` — audit
-            # W8-r17), so the trailing-backslash check runs on the
-            # segment before any unquoted ``#`` word.
+            # W8-r17), so the trailing-backslash check runs on a line
+            # containing no unquoted ``#``. An OPEN context at
+            # end-of-line — a quote or substitution spanning physical
+            # lines (``<<<"a\nSECRET"`` — audit W8-r22) — joins the
+            # same way. The scan is INCREMENTAL: only the newest
+            # physical line is context-scanned per pass (state rides
+            # ``tmp``), keeping long chains linear. A final line with
+            # no trailing newline still joins (``nxt == -1`` -> nl=n).
+            # Bounded: pathological chains past 4096 joins absorb the
+            # rest of the input so a still-open operand dies whole.
+            joins = 0
+            tmp = list(stack)
+            scan_from = pos
             while True:
-                seg = src[pos:nl]
-                cpos = _comment_start(seg)
-                if cpos != -1:
-                    seg = seg[:cpos]
-                backslashes = len(seg) - len(seg.rstrip("\\"))
-                if backslashes % 2 != 1:
+                line = src[scan_from:nl]
+                _heredoc_ops(line, tmp)
+                if tmp:
+                    need_join = True
+                elif _comment_start(line) != -1:
+                    need_join = False  # trailing ``\`` is comment text
+                else:
+                    bs = 0
+                    k = nl - 1
+                    while k >= pos and src[k] == "\\":
+                        bs += 1
+                        k -= 1
+                    need_join = bs % 2 == 1
+                if not need_join or nl >= n:
                     break
-                nxt = src.find("\n", nl + 1)
-                if nxt == -1:
+                if joins >= 4096:
+                    # Fail closed: join the REST of the input into this
+                    # logical line so a still-open operand consumes it
+                    # whole instead of leaving free-standing secret
+                    # lines below the cap.
+                    nl = n
                     break
-                nl = nxt
+                scan_from = nl + 1
+                nxt = src.find("\n", scan_from)
+                nl = n if nxt == -1 else nxt
+                joins += 1
             seg = src[pos:nl]
             ops = _heredoc_ops(seg, stack)
             if not ops:

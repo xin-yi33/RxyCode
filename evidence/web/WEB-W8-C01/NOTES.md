@@ -925,3 +925,20 @@ Suite: `88 passed, 3 skipped` (env skips unchanged), ruff clean. 8 new regressio
 | `cat <<<$(cat <<<SECRET)` double-replaced into `confinedconfined)` | ops inside a consumed operand were reprocessed | `<<<` ops inside a consumed operand word are skipped; `<<` ops still queue bodies |
 
 Suite: `96 passed, 3 skipped`, ruff clean. 8 new regressions appended (name linearity is asserted via a 100k-char budget test).
+
+
+## Round 22 — quote-state disambiguation, arithmetic nesting, ANSI-C names, multiline operands, literal `$'` in `"…"`, linear name scan
+
+`VERDICT: PROBLEMS_REMAIN` (6 findings: 5xP1, 1xP2) on `42143a0f`; all fixed.
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| `srv --token abc" AUDIT_SECRET"` left `confined" AUDIT_SECRET"` | mid-word quote + boundary was always treated as the enclosing closer | `_quote_state` resolves the source-level enclosing quote via a bounded `_heredoc_ops` context scan: same quote open -> closer; a different quote open (`'` payload) -> literal glued char; bare -> opener iff an unescaped partner exists (keeps `K" u` closer semantics and the r18 next-arg case) |
+| `echo $(( $(cat <<<SECRET) ))` kept the operand | arithmetic `((`/`((i` skipped all contents | arithmetic contexts now recognize nested `$(`/`${`/`$'`/`<(`/`>(`/quotes — `<<`/`<<<` inside a nested `$(` still count; pure `$((1<<2))` untouched |
+| `srv --api-$'key' K` bypassed the name check | name segments lacked ANSI-C/`$"…"` forms | `_NAME_PART` accepts `$'…'`/`$"…"` segments; `{0,128}` caps bound the scan |
+| `cat <<<"a
+SECRET"` / `cat <<<\nSECRET` partially survived; final line with no trailing newline stayed OUTSIDE the logical line (`AUDIT_TAIL` survived); continuation/context joins were quadratic | logical-line join only covered `\<newline>`; `nxt == -1` broke before absorbing the last line; every iteration rescanned the growing segment | join loop scans each new physical line incrementally with carried state; `nxt == -1` joins the last line; a `#` comment line stops joins; >4096 joins absorb the rest of the input so a still-open operand dies whole — all linear |
+| `echo "$'"; cat <<<SECRET` suppressed the `<<<` | `$'` pushed an ANSI-C context inside `"…"` where it is literal | `_shell_word_end`/`_heredoc_ops` `"` branches treat only `$(`/`${` as substitutions; `$'` is literal text there |
+| `a\`*16000 name scan ~7.4s (quadratic) | name-part alternation allowed per-char rescan | disjoint alternation + length caps; 32k chars scrub in ~0.13s |
+
+Suite: `109 passed, 3 skipped` (env skips unchanged), ruff clean. 6 new regressions appended.

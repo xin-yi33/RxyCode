@@ -3244,3 +3244,101 @@ def test_w8_c01_scrub_nested_herestring_operand() -> None:
     s = "cat <<<$(cat <<<AUDIT_NHS)" + chr(10) + "echo keep"
     out = drain._scrub_inline_secrets(s)
     assert out == "cat <<<confined" + chr(10) + "echo keep"
+
+
+def test_w8_c01_scrub_quoted_continuation_arg() -> None:
+    r"""Audit W8-r22: ``abc" AUDIT_SECRET"`` is ONE argument (bare text
+    + quoted segment concatenation) — the whole word dies, not just
+    the ``abc"`` prefix."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets('srv --token abc" AUDIT_R22A"')
+    assert "AUDIT_R22A" not in out
+    assert out == "srv --token confined"
+    # r17 closer semantics preserved: no later partner -> real closer.
+    out = drain._scrub_inline_secrets('srv --token AUDIT_K" u')
+    assert "AUDIT_K" not in out
+    assert out.endswith('" u')
+    # Inside a ''-quoted payload the quote is literal glued text.
+    out = drain._scrub_inline_secrets(
+        "srv -c 'x --token abc" + chr(34) + " AUDIT_R22B" + chr(34) + "'"
+    )
+    assert "AUDIT_R22B" not in out
+    # r18: closer followed by a separate quoted arg stays alive.
+    out = drain._scrub_inline_secrets(
+        'curl -H "Authorization: Bearer AUDIT_GK" "https://example.org"'
+    )
+    assert "AUDIT_GK" not in out
+    assert "https://example.org" in out
+
+
+def test_w8_c01_scrub_arith_nested_subst_redir() -> None:
+    r"""Audit W8-r22: ``$(( $(cat <<<SECRET) ))`` — a nested command
+    substitution inside arithmetic is real code; its here-string
+    operand and heredoc bodies still scrub."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("echo $(( $(cat <<<AUDIT_R22C) ))")
+    assert "AUDIT_R22C" not in out
+    assert "$(" in out and "))" in out
+    out = drain._scrub_inline_secrets(
+        "echo $(( $(cat <<EOF) ))" + chr(10) + "AUDIT_R22D"
+        + chr(10) + "EOF" + chr(10) + "echo keep"
+    )
+    assert "AUDIT_R22D" not in out
+    assert "echo keep" in out
+    # Pure arithmetic shifts stay untouched.
+    s = "echo $((1 << 2))" + chr(10) + "echo keep"
+    assert drain._scrub_inline_secrets(s) == s
+
+
+def test_w8_c01_scrub_ansic_flag_name() -> None:
+    r"""Audit W8-r22: ``--api-$'key'`` resolves to ``--api-key`` —
+    ANSI-C name segments must be normalised before matching."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("srv --api-$'key' AUDIT_R22E")
+    assert "AUDIT_R22E" not in out
+    out = drain._scrub_inline_secrets("srv --api-$" + chr(34) + "key" + chr(34) + " AUDIT_R22F")
+    assert "AUDIT_R22F" not in out
+
+
+def test_w8_c01_scrub_multiline_herestring() -> None:
+    r"""Audit W8-r22: a here-string operand spanning physical lines —
+    quoted newline or ``\<newline>`` continuation — dies whole."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'cat <<<"a' + chr(10) + 'AUDIT_R22G"' + chr(10) + 'echo keep'
+    )
+    assert "AUDIT_R22G" not in out
+    assert "echo keep" in out
+    out = drain._scrub_inline_secrets(
+        "cat <<<" + chr(92) + chr(10) + "AUDIT_R22H" + chr(10) + "echo keep"
+    )
+    assert "AUDIT_R22H" not in out
+    assert "echo keep" in out
+
+
+def test_w8_c01_scrub_literal_dollar_squote_in_dquote() -> None:
+    r"""Audit W8-r22: ``$'`` inside ``"…"`` is literal text — it must
+    not open an ANSI-C context that hides a later ``<<<`` operand."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets(
+        'echo "$' + chr(39) + '"; cat <<<AUDIT_R22I'
+    )
+    assert "AUDIT_R22I" not in out
+    assert 'echo "$' + chr(39) + '"' in out
+
+
+def test_w8_c01_scrub_assign_scan_linear() -> None:
+    r"""Audit W8-r22: assignment-name scanning stays linear on
+    backslash-heavy nonmatching input."""
+    import rxycode_worker.drain as drain
+    import time
+
+    s = "a" + chr(92) + "a" + (chr(92) + "a") * 16000
+    t0 = time.time()
+    drain._scrub_inline_secrets(s)
+    assert time.time() - t0 < 2.0
