@@ -908,3 +908,20 @@ SECRET
 | `srv --token abc{ --verbose` ate `--verbose` | bare `{`/`}` pushed nesting context at word level | `{`/`}` are literal word chars at word level |
 
 Suite: `88 passed, 3 skipped` (env skips unchanged), ruff clean. 8 new regressions appended.
+
+
+## Round 21 — regex linearity, assembled names (quotes/escapes), nested redirs in ${}, enclosing-quote fidelity, arithmetic contexts, cross-line quote state, nested here-strings
+
+`VERDICT: PROBLEMS_REMAIN` (7 findings: 3xP1, 4xP2) on `ac00ef2a`; all fixed.
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| `_NAME_SEG+` exponential backtracking (24 chars ~0.43s, 32-char config value >3s) | quantified alternatives over overlapping charsets | disjoint alternation: a backslash forces the 2-char escape branch; 100k chars scrubs in ~60ms |
+| `--"api-key"` / `--api-\key` bypassed name check | name normalization covered only `''`/`""`/joins | `_cred_name` now applies `_heredoc_delim` POSIX quote-removal (`'x'`/`"x"`/`\x`/line-joins); flag pattern matches quoted name starts; `\=` accepted as escaped separator |
+| `${x:-$(cat <<<SECRET)}` kept executable redirs | `_heredoc_ops` suppressed all `${}` contents | `${}` branch now recognizes `$(`/`$((`/`<(`/`>(`/quotes — `<<`/`<<<` inside a nested `$(` still count |
+| `echo "srv --token K"` lost the closing `"` | flag/assign value scans ignored enclosing-quote context | value end uses `stop_at_unclosed_quote=True`; cred values re-emit `_trailing_closer` |
+| `"$((1 << 2))"` and bare `((1 << 2))` misread as heredocs | `$((`/`((` pushed ordinary `(` contexts | `((` arithmetic context pushed in `"` and command-level scans (bare `((` vs `( (` distinguished) |
+| `printf 'l1\na<<EOF\nl3'` false opener inside multi-line quote | `_heredoc_ops` scanned each line with fresh state | `stack` is carried across logical lines so an open quote still suppresses `<<` on the next |
+| `cat <<<$(cat <<<SECRET)` double-replaced into `confinedconfined)` | ops inside a consumed operand were reprocessed | `<<<` ops inside a consumed operand word are skipped; `<<` ops still queue bodies |
+
+Suite: `96 passed, 3 skipped`, ruff clean. 8 new regressions appended (name linearity is asserted via a 100k-char budget test).

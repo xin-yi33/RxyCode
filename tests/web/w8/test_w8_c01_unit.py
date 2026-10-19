@@ -3163,3 +3163,84 @@ def test_w8_c01_scrub_literal_brace_word() -> None:
 
     out = drain._scrub_inline_secrets("srv --token abc{ --verbose")
     assert out == "srv --token confined --verbose"
+
+
+def test_w8_c01_scrub_name_scan_linear() -> None:
+    r"""Audit W8-r21: a long non-matching name must not make the
+    assign lead backtrack — 100k chars scrubs in well under a
+    second."""
+    import time
+
+    import rxycode_worker.drain as drain
+
+    t0 = time.time()
+    out = drain._scrub_inline_secrets("a" * 100_000)
+    assert time.time() - t0 < 1.0
+    assert out == "a" * 100_000
+
+
+def test_w8_c01_scrub_quoted_and_escaped_flag_names() -> None:
+    r"""Audit W8-r21: ``--"api-key"`` and ``--api-\key`` both spell
+    ``--api-key`` after shell quote removal."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets('srv --"api-key" AUDIT_QFN')
+    assert "AUDIT_QFN" not in out and 'confined' in out
+    out = drain._scrub_inline_secrets(
+        "srv --api-" + chr(92) + "key AUDIT_EFN"
+    )
+    assert "AUDIT_EFN" not in out and "confined" in out
+
+
+def test_w8_c01_scrub_redir_inside_parameter_subst() -> None:
+    r"""Audit W8-r21: ``$(`` inside ``${...}`` is a real command
+    substitution — its ``<<<``/``<<`` still count."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets("echo ${x:-$(cat <<<AUDIT_NRS)}")
+    assert "AUDIT_NRS" not in out
+    assert "${x:-$(cat <<<confined)}" in out
+
+
+def test_w8_c01_scrub_value_keeps_enclosing_quote() -> None:
+    r"""Audit W8-r21: a flag/assign value ending at the enclosing
+    quote must leave the closer behind — balanced output."""
+    import rxycode_worker.drain as drain
+
+    out = drain._scrub_inline_secrets('echo "srv --token AUDIT_EQK"')
+    assert out == 'echo "srv --token confined"'
+    out = drain._scrub_inline_secrets("echo 'TOKEN=AUDIT_EQA'")
+    assert out == "echo 'TOKEN=confined'"
+
+
+def test_w8_c01_scrub_quoted_and_bare_arithmetic() -> None:
+    r"""Audit W8-r21: ``"$((1 << 2))"`` and bare ``((1 << 2))`` are
+    arithmetic, not heredoc openers."""
+    import rxycode_worker.drain as drain
+
+    s = 'echo "$((1 << 2))"' + chr(10) + "echo keep"
+    assert drain._scrub_inline_secrets(s) == s
+    s2 = "echo ((1 << 2))" + chr(10) + "echo keep"
+    assert drain._scrub_inline_secrets(s2) == s2
+
+
+def test_w8_c01_scrub_quote_state_across_lines() -> None:
+    r"""Audit W8-r21: a single-quoted string spanning physical lines
+    keeps its ``<<`` literal — context must carry across lines."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "printf 'line1" + chr(10) + "a<<EOF" + chr(10) + "line3'"
+        + chr(10) + "echo keep"
+    )
+    assert drain._scrub_inline_secrets(s) == s
+
+
+def test_w8_c01_scrub_nested_herestring_operand() -> None:
+    r"""Audit W8-r21: ``<<<$(cat <<<SECRET)`` — the outer operand dies
+    whole; the inner op inside the consumed word is not reprocessed."""
+    import rxycode_worker.drain as drain
+
+    s = "cat <<<$(cat <<<AUDIT_NHS)" + chr(10) + "echo keep"
+    out = drain._scrub_inline_secrets(s)
+    assert out == "cat <<<confined" + chr(10) + "echo keep"
