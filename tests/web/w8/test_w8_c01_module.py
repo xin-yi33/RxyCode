@@ -226,15 +226,25 @@ def test_w8_c01_chain_normal_dev_both_modes(
         install a dependency into the task-private tree, and execute a
         test — all real tool calls through the same orchestrator."""
         marker = tmp_path / f"{name}.txt"
+        marker.write_text("seed-content", encoding="utf-8")
         out = asyncio.run(
             orch.execute_tool(
                 "edit",
-                {"filePath": str(marker), "operation": "write", "content": name},
+                {
+                    # Committed EditInput: replace exact text — the unified
+                    # write/patch API only exists in a dirty worktree, so
+                    # this chain must prove itself on the SHIPPED contract
+                    # (audit W8-r3).
+                    "filePath": str(marker),
+                    "oldString": "seed-content",
+                    "newString": name,
+                },
                 cfg,
             )
         )
         assert marker.read_text() == name
         assert "blocked" not in str(out).lower()
+        assert "[error" not in str(out).lower()
         read_out = asyncio.run(
             orch.execute_tool("read", {"filePath": str(marker)}, cfg)
         )
@@ -583,8 +593,6 @@ def test_w8_c01_chain_boundary_denial(
         ApprovalDecision,
         set_approval_broker,
     )
-    from rxycode_worker.egress import evaluate
-
     _sandbox_data_dir(tmp_path, tmp_path, monkeypatch)
     orch = _orchestrator()
     outside = tmp_path.parent / f"outside-{uuid.uuid4().hex[:8]}.txt"
@@ -826,7 +834,12 @@ def test_w8_c01_chain_cancel_reaps_child(tmp_path: Path) -> None:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        waiter = asyncio.ensure_future(drain._wait_child(proc, []))
+        # Same as the spawn site: pin (pid, create_time) at spawn so the
+        # sweep can never target a reaped-and-reused pid (audit W8-r3).
+        identity = psutil.Process(proc.pid)
+        waiter = asyncio.ensure_future(
+            drain._wait_child(proc, [], None, identity)
+        )
         for _ in range(200):
             if pid_file.exists() and pid_file.read_text().strip():
                 break

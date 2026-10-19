@@ -34,7 +34,6 @@ import json
 import os
 import sys
 import threading
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -914,7 +913,6 @@ def test_w8_c01_approval_pause_decide_resume(postgres_url: str) -> None:
 
     from rxycode_server.approvals.service import (
         ApprovalStale,
-        cancel_approval,
         decide_approval,
         get_approval,
         request_approval,
@@ -1374,7 +1372,6 @@ def test_w8_c01_ctl_journal_ops_roundtrip(
 
     import rxycode_worker.drain as drain
     from rxycode_server.approvals.service import request_approval
-    from rxycode_server.events.store import append_event
 
     tenant = f"ten-{uuid.uuid4().hex[:8]}"
     run_id = f"run-{uuid.uuid4().hex[:8]}"
@@ -1719,7 +1716,6 @@ def test_w8_c01_child_emit_reserved_namespaces(postgres_url: str) -> None:
     from types import SimpleNamespace
 
     import rxycode_worker.drain as drain
-    from rxycode_server.events.store import append_event
 
     tenant = f"ten-{uuid.uuid4().hex[:8]}"
     run_id = f"run-{uuid.uuid4().hex[:8]}"
@@ -1806,15 +1802,16 @@ def test_w8_c01_old_namespace_alive_probe(tmp_path: Path) -> None:
 def test_w8_c01_pending_resume_teardown_barrier(
     postgres_url: str, tmp_path: Path
 ) -> None:
-    """Missing turn.paused marker is NOT a free pass (audit W8-r2): a
-    provably-dead old supervisor lets the claim proceed; a live or
-    unprobeable one returns teardown_unproven — the caller settles
-    recovery_required instead of replaying beside a live namespace."""
+    """The parent-authored turn.paused marker is the ONLY teardown proof
+    (audit W8-r3): without it the claim returns teardown_unproven even
+    when the recorded sandbox's ctl socket is absent — a live child can
+    unlink its own rw-bound ctl dir, and a foreign claimant may lack the
+    host-local path entirely. The socket probe only logs liveness."""
     import socket as _socket
-    from types import SimpleNamespace
 
     import rxycode_worker.drain as drain
     from rxycode_server.approvals.service import decide_approval, request_approval
+    from rxycode_server.events.store import append_event
 
     tenant = f"ten-{uuid.uuid4().hex[:8]}"
     run_id = f"run-{uuid.uuid4().hex[:8]}"
@@ -1843,14 +1840,57 @@ def test_w8_c01_pending_resume_teardown_barrier(
         decision="approved",
         expected_revision=0,
     )
+    def _approved_run(suffix: str) -> tuple[str, str]:
+        """Seed+lease+ask+approve a fresh run; returns (run_id, approval_id)."""
+        rid = f"run-{suffix}-{uuid.uuid4().hex[:6]}"
+        _seed_tenant_run(postgres_url, tenant=tenant, run_id=rid, status="leased")
+        _lease_run(postgres_url, rid, "wkr-1", 5)
+        a = request_approval(
+            postgres_url,
+            tenant_id=tenant,
+            run_id=rid,
+            call_id="call_" + uuid.uuid4().hex,
+            tool="bash",
+            permission_scope="danger",
+            arguments={"command": "x"},
+            deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+            worker_id="wkr-1",
+            epoch=5,
+            attempt_id="att_" + uuid.uuid4().hex,
+            command="x",
+            workdir=str(tmp_path),
+            sandbox_id=f"sbx-{suffix}",
+        )
+        decide_approval(
+            postgres_url,
+            tenant_id=tenant,
+            approval_id=a["approval_id"],
+            decision="approved",
+            expected_revision=0,
+        )
+        return rid, str(a["approval_id"])
+
     root = tmp_path / "state"
     root.mkdir()
-    # No marker, but the recorded sandbox's ctl dir is absent -> the old
-    # supervisor is provably gone: the claim proceeds with the record.
-    # (The marker wait would take _LEASE_IO_BUDGET — shrink it for the test.)
     monkey = pytest.MonkeyPatch()
     monkey.setattr(drain, "_LEASE_IO_BUDGET", 0.01)
     try:
+        # No marker AND an absent ctl dir: inconclusive, NOT death — the
+        # child owns its ctl dir and could have unlinked it while alive.
+        unproven = drain._pending_resume(
+            postgres_url, tenant, run_id, state_root=root
+        )
+        assert unproven is not None
+        assert unproven.get("teardown_unproven") is True
+
+        # The parent-authored marker is what lets the claim proceed.
+        append_event(
+            postgres_url,
+            tenant_id=tenant,
+            run_id=run_id,
+            event_type="turn.paused",
+            payload={"approval_id": str(asked["approval_id"])},
+        )
         record = drain._pending_resume(
             postgres_url, tenant, run_id, state_root=root
         )
@@ -1861,18 +1901,20 @@ def test_w8_c01_pending_resume_teardown_barrier(
 
         # An approval whose record names no sandbox cannot be probed at
         # all -> unprobeable -> unproven on every platform.
+        run2, aid2 = _approved_run("noid")
+
         def fake_noid(*_a: Any, **_k: Any) -> dict[str, Any]:
-            return {"sandbox_id": "", "run_id": run_id,
-                    "approval_id": asked["approval_id"],
+            return {"sandbox_id": "", "run_id": run2,
+                    "approval_id": aid2,
                     "call_id": "call_x", "attempt_id": "att_x",
                     "status": "approved"}
 
         monkey.setattr(_d, "_resume_state", fake_noid)
-        unproven = drain._pending_resume(
-            postgres_url, tenant, run_id, state_root=root
+        unproven2 = drain._pending_resume(
+            postgres_url, tenant, run2, state_root=root
         )
-        assert unproven is not None
-        assert unproven.get("teardown_unproven") is True
+        assert unproven2 is not None
+        assert unproven2.get("teardown_unproven") is True
         if hasattr(_socket, "AF_UNIX"):
             # A live listener on the recorded sandbox -> unproven.
             ctl = root / "live-ctl"
@@ -1881,15 +1923,17 @@ def test_w8_c01_pending_resume_teardown_barrier(
             srv.bind(str(ctl / "ctl.sock"))
             srv.listen(1)
             try:
+                run3, aid3 = _approved_run("live")
+
                 def fake_live(*_a: Any, **_k: Any) -> dict[str, Any]:
-                    return {"sandbox_id": "live", "run_id": run_id,
-                            "approval_id": asked["approval_id"],
+                    return {"sandbox_id": "live", "run_id": run3,
+                            "approval_id": aid3,
                             "call_id": "call_x", "attempt_id": "att_x",
                             "status": "approved"}
 
                 monkey.setattr(_d, "_resume_state", fake_live)
                 blocked = drain._pending_resume(
-                    postgres_url, tenant, run_id, state_root=root
+                    postgres_url, tenant, run3, state_root=root
                 )
                 assert blocked is not None
                 assert blocked.get("teardown_unproven") is True
@@ -1973,6 +2017,16 @@ def test_w8_c01_tool_call_outcome_classification() -> None:
         "[cancelled: tool 'bash']",
         "[dry-run] not executed: bash(x)",
         "  [error: leading whitespace]",
+        # Registered-tool formats the local table missed — the classifier
+        # is now the canonical log.log_helpers one (audit W8-r3).
+        "[workflow error: no name or script provided]",
+        "[workflow timeout: exceeded 30s]",
+        "[search error: backend unavailable]",
+        "[agent error: recursion]",
+        "[pipeline error: stage 2]",
+        "Download failed: connection reset",
+        "error: something failed",
+        "failed to download artifact",
     ):
         assert drain._tool_call_failed(bad), bad
     for ok in ("wrote 3 files", "pytest: 5 passed", "", "all good [error] later"):
@@ -2012,3 +2066,113 @@ def test_w8_c01_execute_approved_call_error_outcome(tmp_path: Path) -> None:
         drain._execute_approved_call(record, tmp_path, _Emit(), journal)
     )
     assert ok2 is False and text2 == text
+
+def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
+    """Whole-tree scrub must cover every SUPPORTED credential spelling
+    (audit W8-r3): MCP env lists (``KEY=VALUE`` items), run-together
+    names like ``PGPASSWORD``/``ACCESSTOKEN``, and URLs with embedded
+    userinfo passwords under innocent names like ``database_url`` —
+    while real budgets/identifiers survive."""
+    import rxycode_worker.drain as drain
+
+    cfg = {
+        "mcpServers": {
+            "gh": {
+                "command": "srv",
+                "env": [
+                    "GITHUB_TOKEN=ghp_secret",
+                    "PGPASSWORD=pw123",
+                    "DATABASE_URL=postgres://u:p@db.internal:5432/app",
+                    "PATH=/usr/bin",
+                    "HOME=/data",
+                ],
+            },
+            "dictform": {"env": {"API_KEY": "k-secret", "NORMAL": "ok"}},
+        },
+        "database": {"database_url": "postgres://u:p@db:5432/x", "dsn": "postgres://u:p@d/x"},
+        "plain_url": "postgres://db:5432/no-creds",
+        "embedding": {"rag": {"embedding": {"api_key": "emb-secret"}}},
+        "budgets": {"max_tokens": 4096, "token_budget": 99, "sort_key": "name"},
+        "identifiers": {"worker_id": "w1", "session_token_name": "field"},
+    }
+    drain._scrub_credential_values(cfg)
+
+    env = cfg["mcpServers"]["gh"]["env"]
+    assert "GITHUB_TOKEN=confined" in env
+    assert "PGPASSWORD=confined" in env
+    assert "DATABASE_URL=confined" in env
+    assert "PATH=/usr/bin" in env and "HOME=/data" in env
+    assert cfg["mcpServers"]["dictform"]["env"]["API_KEY"] == "confined"
+    assert cfg["mcpServers"]["dictform"]["env"]["NORMAL"] == "ok"
+    assert cfg["database"]["database_url"] == "confined"
+    assert cfg["database"]["dsn"] == "confined"
+    # No userinfo -> not a credential; stays.
+    assert cfg["plain_url"] == "postgres://db:5432/no-creds"
+    assert cfg["embedding"]["rag"]["embedding"]["api_key"] == "confined"
+    # Budgets/identifiers survive — word-boundary anchored.
+    assert cfg["budgets"]["max_tokens"] == 4096
+    assert cfg["budgets"]["token_budget"] == 99
+    assert cfg["budgets"]["sort_key"] == "name"
+    assert cfg["identifiers"]["session_token_name"] == "field"
+
+
+def test_w8_c01_wait_child_no_sweep_on_reused_pid(tmp_path: Path) -> None:
+    """A captured proc_identity that is no longer running means the pid
+    was reaped-and-reused: the descendant sweep must NOT fire, or the
+    replacement process's children get killed (audit W8-r3)."""
+    import rxycode_worker.drain as drain
+
+    class _Proc:
+        pid = 424242
+        returncode = None
+        stderr = None
+        killed = False
+
+        async def wait(self) -> None:
+            raise asyncio.CancelledError()
+
+        def kill(self) -> None:
+            type(self).killed = True
+
+    class _Identity:
+        """psutil handle semantics: is_running False == pid reused."""
+
+        def __init__(self, alive: bool) -> None:
+            self._alive = alive
+            self.children_called = False
+
+        def is_running(self) -> bool:
+            return self._alive
+
+        def children(self, recursive: bool = True) -> list[Any]:
+            self.children_called = True
+            return []
+
+    async def _go(identity: Any) -> _Proc:
+        proc = _Proc()
+        try:
+            await drain._wait_child(proc, [], None, identity)
+        except asyncio.CancelledError:
+            pass
+        return proc
+
+    dead = _Identity(alive=False)
+    proc = asyncio.run(_go(dead))
+    assert proc.killed is True          # proc.kill() still fires
+    assert dead.children_called is False  # ...but no reused-pid sweep
+    live = _Identity(alive=True)
+    asyncio.run(_go(live))
+    assert live.children_called is True
+
+
+def test_w8_c01_resume_settled_maps_to_terminal() -> None:
+    """_ResumeSettled carries the verdict into the shared finalize path —
+    a probe failure or teardown_unproven maps to recovery_required, a
+    stored error maps to failed, a clean stored result to succeeded
+    (audit W8-r3: no early settle_run return)."""
+    import rxycode_worker.drain as drain
+
+    err = drain._ResumeSettled("recovery_required", "unproven")
+    assert err.status == "recovery_required" and "unproven" in err.detail
+    ok = drain._ResumeSettled("succeeded")
+    assert ok.status == "succeeded" and ok.detail == ""

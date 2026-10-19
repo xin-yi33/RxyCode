@@ -170,3 +170,64 @@ committed). Seven new findings against `47ccfc91`; all remediated:
    import-resolution check (not a marker dir); the cancel test asserts
    the grandchild dies too — `_wait_child` now sweeps descendants via
    psutil wherever the pid-namespace guarantee doesn't apply.
+
+## Audit round 3 (gpt-6.1-sol, same session) — VERDICT: PROBLEMS
+
+r2 repairs verified (journal continuity, reserved events, cancelled-ask
+refusal, unbound/stale reservation refusal, overlay argv, missing-tool
+classification; 15 pure legs green). Eight new findings against
+`df18b514`; all remediated:
+
+1. **[P1] teardown-probe timeout fell through into a fresh agent turn** —
+   `execute_run` caught the `_pending_resume` wait_for exception as
+   `resume_record=None` and spawned the ORIGINAL turn beside a possibly
+   live namespace. The probe now raises `_ResumeSettled(
+   "recovery_required")`: an unknown handoff stops execution.
+2. **[P1] missing control socket was treated as death proof** — the ctl
+   dir is rw-bound into the sandbox (a live child can unlink its socket)
+   and a foreign claimant may lack the host-local path. The marker-only
+   rule is now honest: `_paused_marker_seen` is the ONLY pass condition;
+   `_old_namespace_alive` survives strictly as a positive-liveness log —
+   `False`/`None` are inconclusive, never a green light.
+3. **[P1] supported credential spellings survived the scrub** — MCP env
+   LISTS (`["GITHUB_TOKEN=…"]` is a supported form,
+   mcp/client.py:998-1006), run-together names (`PGPASSWORD`,
+   `ACCESSTOKEN`), and `database_url`-style keys whose values carry
+   `scheme://user:pass@` userinfo. `_scrub_credential_values` now
+   redacts `KEY=confined` inside lists, matches bare credential
+   suffixes (`password|passwd|pwd|secret|token|credential|dsn|
+   privatekey`) and scans every scalar for URL-userinfo — while
+   `max_tokens`/`sort_key`/credential-free URLs still survive.
+4. **[P2] early-resume settle bypassed terminal bookkeeping** —
+   `settle_run`+`return` skipped the metering flush, terminal usage
+   upsert, attribution notes, span close, quota release and notify that
+   `commit_terminal` performs. Early resume verdicts now raise
+   `_ResumeSettled(status, detail)` caught in the shared except path —
+   the SAME finalize runs (usage ledger, span, quota, notify,
+   lease-fenced `commit_terminal`).
+5. **[P2] error classification missed registered-tool formats** —
+   `[workflow error:`, `[workflow timeout:`, `Download failed:`,
+   `[search error`, `[agent error`, `[pipeline error`, `error:`,
+   `failed to ` all read as success. `_tool_call_failed` now delegates
+   to the codebase's canonical `log.log_helpers.classify_agent_result`
+   (failed|timed_out|cancelled ⇒ failed); empty output stays
+   unclassified-not-failed.
+6. **[P2] approved MCP calls could not resolve on resume** — the resume
+   orchestrator registered only builtins. `_execute_approved_call` now
+   mirrors the original turn's surface: `subagents_enabled` from the
+   real manager flag, `run_official_agent_enabled` from the merged
+   config, and `load_mcp_servers(mcpServers)` registered with the same
+   risk mapping + collision rules AgentV2 uses — clients disconnected
+   in finally so no stdio server outlives the replay.
+7. **[P2] normal-dev chain used an uncommitted tool API** — the module
+   test invoked `edit` with `operation="write"`/`content`, which exists
+   only in a dirty worktree. The leg now uses the SHIPPED contract
+   (`filePath`+`oldString`+`newString` on a pre-created file) so the
+   chain proves itself on the committed checkout.
+8. **[P2] descendant sweep could target a reused pid** —
+   `psutil.Process(proc.pid)` built lazily at kill time could enumerate
+   a REPLACEMENT process's children. The spawn site now pins
+   `psutil.Process(pid)` (pid+create_time) into `proc_identity` and both
+   the cancel sweep and the finally tail-kill verify
+   `is_running()` before signalling — a reaped-and-reused pid is never
+   our child.

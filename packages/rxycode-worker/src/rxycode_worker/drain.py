@@ -1320,22 +1320,44 @@ _CREDENTIAL_INDIRECTION_KEYS = frozenset(
         "credential_file",
         "private_key_file",
         "auth_file",
+        "passfile",
     }
 )
+# Run-together credential names the exact/suffix tables miss —
+# ``PGPASSWORD``, ``ACCESSTOKEN``, ``DATABASE_DSN``, ``AWSSECRET`` are
+# supported env/config spellings (audit W8-r3). Still suffix-anchored:
+# ``max_tokens``/``sort_key``/``token_budget`` survive.
+_CREDENTIAL_BARE_RE = re.compile(
+    r"(?:password|passwd|pwd|secret|token|credentials?|dsn|privatekey)$"
+)
+# A URL with an embedded userinfo password is a credential wherever it
+# sits — ``database_url``/``dsn`` keys are not credential-NAMED but a
+# ``scheme://user:pass@host`` value still hands the child a live login.
+_URL_CREDENTIAL_RE = re.compile(r"://[^/\s:@]{1,256}:[^@\s]{1,256}@")
 
 
 def _is_credential_key(name: str) -> bool:
     lowered = str(name).strip().lower()
-    return lowered in _CREDENTIAL_KEYS_EXACT or lowered.endswith(
-        _CREDENTIAL_KEY_SUFFIXES
+    return (
+        lowered in _CREDENTIAL_KEYS_EXACT
+        or lowered.endswith(_CREDENTIAL_KEY_SUFFIXES)
+        or bool(_CREDENTIAL_BARE_RE.search(lowered))
     )
+
+
+def _has_url_secret(value: Any) -> bool:
+    return isinstance(value, str) and bool(_URL_CREDENTIAL_RE.search(value))
 
 
 def _scrub_credential_values(node: Any) -> None:
     """Recursively redact credential-shaped scalars anywhere in a config
     tree — model entries, ``rag.embedding.api_key``, MCP-server ``env``
-    maps, telemetry keys. Values become ``"confined"``; indirection
-    resolvers (``*_env``/``*_file``) are blanked."""
+    maps AND env lists (``["GITHUB_TOKEN=…"]`` is a supported MCP config
+    form, mcp/client.py:_normalize_server_config), run-together names
+    like ``PGPASSWORD``, and URLs carrying userinfo passwords under
+    non-credential names (``database_url``). Values become
+    ``"confined"``; indirection resolvers (``*_env``/``*_file``) are
+    blanked (audit W8-r3)."""
     if isinstance(node, dict):
         for key, value in list(node.items()):
             lowered = str(key).strip().lower()
@@ -1346,8 +1368,20 @@ def _scrub_credential_values(node: Any) -> None:
                 del node[key]
             elif _is_credential_key(lowered):
                 node[key] = "confined"
+            elif _has_url_secret(value):
+                node[key] = "confined"
     elif isinstance(node, list):
-        for item in node:
+        for idx, item in enumerate(node):
+            if isinstance(item, str) and "=" in item:
+                key, _eq, value = item.partition("=")
+                lowered = key.strip().lower()
+                if (
+                    lowered in _CREDENTIAL_INDIRECTION_KEYS
+                    or _is_credential_key(lowered)
+                    or _has_url_secret(value)
+                ):
+                    node[idx] = f"{key.strip()}=confined"
+                continue
             _scrub_credential_values(item)
 
 
@@ -1428,6 +1462,7 @@ async def _wait_child(
     proc: "asyncio.subprocess.Process",
     stderr_tail: list[bytes],
     usage_sink: dict[str, int] | None = None,
+    proc_identity: Any | None = None,
 ) -> None:
     """Wait for the confined turn; on cancellation SIGKILL the bwrap
     supervisor — --die-with-parent then reaps the whole namespace tree.
@@ -1473,13 +1508,17 @@ async def _wait_child(
         # on a namespace-less host (Windows dev, degraded runners) a
         # spawned grandchild would otherwise survive as residue
         # (audit W8-r2: cancellation must leave nothing running).
+        # The sweep goes through the psutil handle captured AT SPAWN —
+        # it pins (pid, create_time), so a reaped-then-reused pid reads
+        # is_running()=False and we never enumerate or kill an unrelated
+        # replacement process's children (audit W8-r3).
         descendants: list[Any] = []
-        try:
-            import psutil
-
-            descendants = psutil.Process(proc.pid).children(recursive=True)
-        except Exception:
-            descendants = []
+        if proc.returncode is None and proc_identity is not None:
+            try:
+                if proc_identity.is_running():
+                    descendants = proc_identity.children(recursive=True)
+            except Exception:
+                descendants = []
         try:
             proc.kill()
         except ProcessLookupError:
@@ -1518,6 +1557,20 @@ class _RunPaused(BaseException):
     the lease already released by the parent-side ctl op. Raising through
     the whole agent stack unwinds the turn WITHOUT writing — BaseException
     so `except Exception` handlers in the runtime cannot swallow it."""
+
+
+class _ResumeSettled(Exception):
+    """A resume claim settled without spawning a child — raised inside
+    ``execute_run``'s try so the terminal verdict still flows through the
+    SHARED finalize path (metering flush, terminal usage upsert,
+    attribution notes, span close, quota release, notify,
+    commit_terminal). An early return would orphan the original turn's
+    real spend and skip the lease-fenced terminal write (audit W8-r3)."""
+
+    def __init__(self, status: str, detail: str = "") -> None:
+        super().__init__(detail or status)
+        self.status = status
+        self.detail = detail
 
 
 class _CtlApproval:
@@ -1745,15 +1798,16 @@ def _approval_call_binding(
 
 
 def _old_namespace_alive(state_root: Path | None, sandbox_id: str) -> bool | None:
-    """Is the PREVIOUS claim's drain still up? Decided by probing its
+    """Positive-liveness probe for the PREVIOUS claim's drain, via its
     per-run control socket on this host's state root.
 
-    ``False`` — the ctl dir or socket is gone, or the listener refuses:
-    the supervisor is dead and ``--die-with-parent`` already reaped its
-    confined child, so a new claim may proceed without the turn.paused
-    marker. ``True`` — the socket still answers: the old drain is alive
-    and its child may still run. ``None`` — cannot tell (missing id,
-    unprobeable transport): the caller must fail closed."""
+    ONLY ``True`` is meaningful — the socket still answers, so the old
+    drain is alive and its confined child may still run. ``False`` and
+    ``None`` are INCONCLUSIVE, never proof of death: the ctl dir is
+    rw-bound into the sandbox so a live child can unlink its own socket,
+    and a claimant on another host lacks the old host's local directory
+    while the old worker is still alive (audit W8-r3). The only trusted
+    teardown proof is the parent-authored ``turn.paused`` marker."""
     if not state_root or not sandbox_id:
         return None
     ctl_dir = Path(state_root) / f"{sandbox_id}-ctl"
@@ -1790,25 +1844,29 @@ def _run_journal_dir(state_root: Path, tenant_id: str, run_id: str) -> Path:
     return Path(state_root) / "journals" / str(tenant_id) / str(run_id)
 
 
-#: Tool-result prefixes that mean the call did NOT produce its intended
-#: effect — gate refusals, missing tools, timeouts, cancellations, user
-#: rejections and dry-run markers (audit W8-r2: journal completion is
-#: replay safety, not success; the outcome must be classified
-#: separately).
-_TOOL_CALL_FAIL_PREFIXES = (
-    "[error",
-    "[blocked:",
-    "[evidence failed:",
-    "[rejected",
-    "[cancelled:",
-    "[dry-run]",
-)
-
-
 def _tool_call_failed(text: Any) -> bool:
     """True when an orchestrator result string is a non-executed/error
-    marker rather than real tool output."""
-    return str(text).lstrip().startswith(_TOOL_CALL_FAIL_PREFIXES)
+    marker rather than real tool output — gate refusals, missing tools,
+    workflow/search/download errors, timeouts, cancellations, user
+    rejections and dry-run markers.
+
+    Journal completion is replay safety, not success; the stored outcome
+    is classified separately (audit W8-r2). The classification shares
+    the codebase's canonical result table (``log.log_helpers``) so
+    registered-tool formats like ``[workflow error:``/``Download
+    failed:`` cannot slip through as success (audit W8-r3). An EMPTY
+    stored result is not proof of failure — the call ran and printed
+    nothing."""
+    stripped = str(text).strip()
+    if not stripped:
+        return False
+    try:
+        from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
+    except Exception:
+        from log.log_helpers import classify_agent_result  # type: ignore
+
+    status, _detail = classify_agent_result(stripped)
+    return status != "succeeded"
 
 
 def _aware_dt(value: Any) -> datetime | None:
@@ -1873,13 +1931,14 @@ def _pending_resume(
     # the previous confined child is still unwinding. Wait (bounded) for
     # the old drain's post-exit ``turn.paused`` marker — child-mintable
     # namespaces are denied by _emit, so the marker is parent-authored
-    # teardown proof (audit W8-r2). A missing marker is NOT safe to
-    # proceed on: a live-but-slow drain may still have its child up.
-    # Probe the old sandbox's control socket instead — a dead listener
-    # means die-with-parent already reaped that child; anything else
-    # (alive, unprobeable, unknown sandbox) returns the unproven marker
-    # and the caller settles recovery_required rather than executing
-    # beside an unproven namespace.
+    # teardown proof (audit W8-r2) and the ONLY proof accepted: an absent
+    # or refused ctl socket proves nothing — the child owns its ctl dir
+    # and can unlink it while staying alive, and a foreign claimant may
+    # lack the host-local path entirely (audit W8-r3). The socket probe
+    # survives only to LOG a still-answering listener; on budget expiry
+    # without the marker the verdict is teardown_unproven and the caller
+    # settles recovery_required rather than executing beside an unproven
+    # namespace.
     import time as _time
 
     deadline = _time.monotonic() + _LEASE_IO_BUDGET
@@ -1888,20 +1947,15 @@ def _pending_resume(
             alive = _old_namespace_alive(
                 state_root, str(record.get("sandbox_id") or "")
             )
-            if alive is False:
-                _LOG.info(
-                    "run %s: no turn.paused marker for approval %s, but "
-                    "the old supervisor is provably gone — proceeding",
-                    run_id,
-                    approval_id,
-                )
-                break
             _LOG.warning(
-                "run %s: no turn.paused marker for approval %s and the "
-                "old namespace is %s — refusing to resume unproven",
+                "run %s: no turn.paused marker for approval %s (old "
+                "namespace probe: %s) — teardown unproven; refusing to "
+                "resume beside a possibly-live confined child",
                 run_id,
                 approval_id,
-                "still alive" if alive else "unprobeable",
+                "still alive"
+                if alive
+                else ("unprobeable" if alive is None else "socket absent"),
             )
             return {"teardown_unproven": True, **record}
         _time.sleep(0.5)
@@ -2391,57 +2445,125 @@ async def _execute_approved_call(
         async def _ask(self, request: Any) -> Any:  # noqa: ANN001
             return ApprovalDecision.APPROVED
 
+    registry = ToolRegistry()
     orchestrator = ToolOrchestrator()
+    # Mirror the ORIGINAL turn's tool surface or qualified names resolve
+    # differently on replay (audit W8-r3): `task` is the subagent dispatch
+    # only when the manager flag was on, and approved MCP calls must find
+    # the same qualified tool names the original agent registered.
+    live_cfg: dict[str, Any] = {}
+    try:
+        from RxyCode.RxyCode1_1_0.config.settings import load_config
+
+        live_cfg = load_config() or {}
+    except Exception:
+        live_cfg = {}
+    subagents_on = False
+    try:
+        from RxyCode.RxyCode1_1_0.core.subagents.registry_provider import (
+            get_manager_or_none,
+        )
+
+        mgr = get_manager_or_none()
+        if mgr is not None:
+            subagents_on = bool(mgr.config.flags.subagents_enabled)
+    except Exception:
+        subagents_on = False
     register_builtin_tools(
-        ToolRegistry(),
+        registry,
         orchestrator,
         rag_enabled=False,
-        subagents_enabled=False,
+        subagents_enabled=subagents_on,
+        run_official_agent_enabled=bool(
+            (live_cfg.get("execution") or {}).get(
+                "run_official_agent_enabled", False
+            )
+        ),
     )
+    mcp_clients: list[Any] = []
+    raw_mcp = live_cfg.get("mcpServers")
+    # Only inside a confined turn may we spawn MCP stdio servers — a bare
+    # call (unit tests) must not reach out and start host processes.
+    if (
+        isinstance(raw_mcp, dict)
+        and raw_mcp
+        and os.environ.get("RXYCODE_TURN_RUN_ID", "").strip()
+    ):
+        try:
+            from RxyCode.RxyCode1_1_0.mcp.client import load_mcp_servers
+
+            loaded = await asyncio.to_thread(load_mcp_servers, raw_mcp)
+            occupied = set(orchestrator.list_names())
+            for name, mcp_tool in loaded.tools.items():
+                if name in occupied:
+                    continue
+                metadata = getattr(mcp_tool, "metadata", None)
+                risk = (
+                    "danger"
+                    if isinstance(metadata, dict)
+                    and metadata.get("mcp_risk") == "danger"
+                    else "write"
+                )
+                orchestrator.register(name, mcp_tool, risk=risk)
+                occupied.add(name)
+            mcp_clients = list(loaded.clients.values())
+        except Exception:
+            _LOG.warning("approved-resume: MCP server load failed", exc_info=True)
     tool = str(record.get("tool") or "")
     call_id = str(record.get("call_id") or "")
     attempt_id = str(record.get("attempt_id") or "")
     args = _approval_args(record)
-    # At-most-once: reserve binds (attempt, call) BEFORE the side effect —
-    # a duplicate resume observes 'reuse'/'uncertain' and never re-runs.
-    reservation = await asyncio.to_thread(
-        journal.reserve,
-        attempt_id=attempt_id,
-        call_id=call_id,
-        tool=tool,
-        args=args,
-    )
-    if reservation.action == "reuse":
-        stored = str(reservation.result or "")
-        # The stored outcome decides — a completed call whose result was
-        # an error marker is a FAILED call, not a successful replay.
-        return (not _tool_call_failed(stored)), stored
-    if reservation.action != "execute":
-        raise RuntimeError(
-            f"resumed call {call_id} is journal-{reservation.action}; "
-            "refusing a side effect"
-        )
-    cfg = {
-        "safety": {
-            # Without enabled=True the orchestrator bypasses blacklist,
-            # write-path gate AND approval as `safety_disabled` — an
-            # approved call must still pass every gate but the prompt.
-            "enabled": True,
-            "permission_mode": "confirm_all",
-            "allowed_write_paths": _writable_domain(workdir),
-        },
-        "execution": {"workspace_root": str(workdir)},
-    }
-    set_approval_broker(_GrantBroker())
     try:
-        output = await orchestrator.execute_tool(
-            tool,
-            args,
-            cfg,
+        # At-most-once: reserve binds (attempt, call) BEFORE the side
+        # effect — a duplicate resume observes 'reuse'/'uncertain' and
+        # never re-runs.
+        reservation = await asyncio.to_thread(
+            journal.reserve,
+            attempt_id=attempt_id,
             call_id=call_id,
+            tool=tool,
+            args=args,
         )
+        if reservation.action == "reuse":
+            stored = str(reservation.result or "")
+            # The stored outcome decides — a completed call whose result
+            # was an error marker is a FAILED call, not a successful
+            # replay.
+            return (not _tool_call_failed(stored)), stored
+        if reservation.action != "execute":
+            raise RuntimeError(
+                f"resumed call {call_id} is journal-{reservation.action}; "
+                "refusing a side effect"
+            )
+        cfg = {
+            "safety": {
+                # Without enabled=True the orchestrator bypasses blacklist,
+                # write-path gate AND approval as `safety_disabled` — an
+                # approved call must still pass every gate but the prompt.
+                "enabled": True,
+                "permission_mode": "confirm_all",
+                "allowed_write_paths": _writable_domain(workdir),
+            },
+            "execution": {"workspace_root": str(workdir)},
+        }
+        set_approval_broker(_GrantBroker())
+        try:
+            output = await orchestrator.execute_tool(
+                tool,
+                args,
+                cfg,
+                call_id=call_id,
+            )
+        finally:
+            set_approval_broker(None)
     finally:
-        set_approval_broker(None)
+        # MCP stdio servers are confined-child processes too — disconnect
+        # every client so no server outlives the replayed call.
+        for client in mcp_clients:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
     # Completing is replay safety: whatever the orchestrator returned —
     # including an error marker — is now the durable outcome of THIS call.
     # A raise mid-side-effect instead leaves 'reserved' → recovery_required
@@ -3095,6 +3217,7 @@ async def execute_run(
     provider = None
     workdir: Path | None = None
     proc: "asyncio.subprocess.Process | None" = None
+    proc_identity: Any | None = None
     ctl_server: Any | None = None
     egress: Any | None = None
     paused_evt = threading.Event()
@@ -3179,6 +3302,11 @@ async def execute_run(
         # claimable status is decide_approval(... approved) -> pending — so
         # a claimed run whose newest durable approval is approved replays
         # the stored call in a fresh confined child, not a fresh turn.
+        # Resume cases that settle WITHOUT a child raise _ResumeSettled so
+        # the verdict still flows through the shared finalize (metering
+        # flush, terminal usage upsert, span close, quota release, notify)
+        # — an early settle_run here would orphan the original turn's real
+        # spend and skip the terminal hooks (audit W8-r3).
         try:
             resume_record = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -3190,8 +3318,15 @@ async def execute_run(
                 ),
                 timeout=_LEASE_IO_BUDGET,
             )
-        except Exception:
+        except Exception as exc:
+            # An UNKNOWN handoff must stop execution, never restart the
+            # original prompt beside a possibly-live namespace — that is
+            # how doubled side effects are born (audit W8-r3).
             _LOG.warning("run %s: pending-resume probe failed", run_id, exc_info=True)
+            raise _ResumeSettled(
+                "recovery_required",
+                f"pending-resume probe failed: {type(exc).__name__}: {exc}"[:1500],
+            ) from exc
         if resume_record is not None and resume_record.get("teardown_unproven"):
             # The old claim's namespace could NOT be proven stopped —
             # replaying the approved call beside it risks a doubled side
@@ -3216,18 +3351,11 @@ async def execute_run(
                 _LOG.warning(
                     "run %s: approval.resumed emit failed", run_id, exc_info=True
                 )
-            from rxycode_server.approvals.service import settle_run
-
-            await asyncio.to_thread(
-                settle_run,
-                cfg.database_url,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                worker_id=cfg.worker_id,
-                epoch=epoch,
-                status="recovery_required",
+            raise _ResumeSettled(
+                "recovery_required",
+                "old claim's confined teardown could not be proven; "
+                "refusing to replay beside an unproven namespace",
             )
-            return True
         if resume_record is not None:
             from rxycode_worker.interrupt_resume import _journal_state
 
@@ -3250,8 +3378,15 @@ async def execute_run(
                     terminal = (
                         "failed" if _tool_call_failed(stored) else "succeeded"
                     )
+                    detail = str(stored)[:400] if terminal == "failed" else ""
                 else:
                     terminal = "recovery_required"
+                    detail = (
+                        f"resumed call "
+                        f"{str(resume_record.get('call_id') or '')[:40]} "
+                        "has journal state 'unknown'; its effect is "
+                        "unprovable"
+                    )
                 try:
                     await asyncio.to_thread(
                         append_event,
@@ -3271,18 +3406,7 @@ async def execute_run(
                     _LOG.warning(
                         "run %s: approval.resumed emit failed", run_id, exc_info=True
                     )
-                from rxycode_server.approvals.service import settle_run
-
-                await asyncio.to_thread(
-                    settle_run,
-                    cfg.database_url,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    worker_id=cfg.worker_id,
-                    epoch=epoch,
-                    status=terminal,
-                )
-                return True
+                raise _ResumeSettled(terminal, detail)
 
         # Task-private control dir (parent-owned, rw-bound at the same
         # path): the per-run ctl socket + the filtered egress socket. The
@@ -3426,8 +3550,19 @@ async def execute_run(
         record["pid"] = proc.pid
         record["status"] = "running"
         provider._write(sandbox_id, record)
+        # Pin the child's (pid, create_time) NOW — later kill/sweep paths
+        # must never act on a pid that was reaped and reassigned to an
+        # unrelated process (audit W8-r3).
+        try:
+            import psutil
 
-        turn_task = asyncio.ensure_future(_wait_child(proc, stderr_tail, streamed))
+            proc_identity = psutil.Process(proc.pid)
+        except Exception:
+            proc_identity = None
+
+        turn_task = asyncio.ensure_future(
+            _wait_child(proc, stderr_tail, streamed, proc_identity)
+        )
         lease_watcher = asyncio.create_task(
             _lease_watchdog(
                 cfg.database_url,
@@ -3555,16 +3690,28 @@ async def execute_run(
                     f"resumed call {str(resume_record.get('call_id') or '')[:40]} "
                     f"did not complete (journal: {after})"
                 )
+    except _ResumeSettled as settled:
+        # The resume verdict was decided above — express it through the
+        # shared terminal machinery: "" is a clean success, a detail is a
+        # failed run (plus run.error), recovery maps to
+        # recovery_required. Usage/span/quota/notify still run below.
+        turn_error = settled.detail if settled.status != "succeeded" else ""
+        recovery = settled.status == "recovery_required"
     except LeaseRejected:
         lost_lease = True
     except Exception as exc:
         turn_error = f"{type(exc).__name__}: {exc}"
     finally:
         # A leftover confined child must not outlive the drain's decision.
+        # proc_identity.is_running() re-verifies (pid, create_time) — a
+        # reaped-and-reused pid is NOT ours to signal (audit W8-r3).
         if proc is not None and proc.returncode is None:
             try:
-                proc.kill()
+                if proc_identity is None or proc_identity.is_running():
+                    proc.kill()
             except ProcessLookupError:
+                pass
+            except Exception:
                 pass
         if ctl_server is not None:
             try:
