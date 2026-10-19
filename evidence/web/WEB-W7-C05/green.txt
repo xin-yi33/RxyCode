@@ -227,3 +227,11 @@ ruff/py_compile: clean on drain.py + usage/service.py.
   incl. stale-snapshot lost-lease reconcile leg (fresh DB read merge).
 1 passed in 312.63s — tests/web/w7/test_w7_c05_module.py (real stack
   on r14 code). ruff/py_compile clean; git diff --check clean.
+
+== audit r15 remediation (2026-10-19) ==
+26 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. new legs: spool replay inserts a missing ledger on a terminal
+  run; unjournaled pending spool journals before upserting; under-lock
+  recompute raises the ledger to the fresh total (real dev PG).
+1 passed in 316.83s — tests/web/w7/test_w7_c05_module.py (real stack
+  on r15 code). ruff/py_compile clean; git diff --check clean.

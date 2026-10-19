@@ -1252,7 +1252,7 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     drain._replay_usage_spool("db", str(tmp_path))
     assert files[0].exists()
 
-    # DB recovers: replay journals the row, reconciles the (absent) ledger,
+    # DB recovers: replay journals the row, upserts the (absent) ledger,
     # and removes the spool file.
     written = []
 
@@ -1268,8 +1268,9 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     adjusted = []
     monkeypatch.setattr(
         usage_service,
-        "adjust_terminal_usage",
-        lambda _dsn, *, tenant_id, run_id, tokens, event_id, attribution=None: adjusted.append(
+        "upsert_terminal_usage",
+        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens,
+        event_id, attribution=None, recompute=None: adjusted.append(
             (tenant_id, run_id, tokens)
         )
         or {"tokens": tokens},
@@ -1306,10 +1307,10 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     )
     files = list(spool_dir.glob("*.usage.json"))
 
-    def fail_adjust(*_a, **_k):
+    def fail_upsert(*_a, **_k):
         raise RuntimeError("ledger locked")
 
-    monkeypatch.setattr(usage_service, "adjust_terminal_usage", fail_adjust)
+    monkeypatch.setattr(usage_service, "upsert_terminal_usage", fail_upsert)
     drain._replay_usage_spool("db", str(tmp_path))
     assert files[0].exists()  # durable-spend file survives a failed reconcile
 
@@ -1735,10 +1736,8 @@ def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
     seen = []
     monkeypatch.setattr(
         "rxycode_server.usage.service.adjust_terminal_usage",
-        lambda _d, *, tenant_id, run_id, tokens, event_id, attribution=None: seen.append(
-            tokens
-        )
-        or {"tokens": tokens},
+        lambda _d, *, tenant_id, run_id, tokens, event_id, attribution=None,
+        recompute=None: seen.append(tokens) or {"tokens": tokens},
     )
     drain._reconcile_lost_lease_ledger(
         "db", "t1", "r9", "2", {"tokens": 5}, {"1": 100, "2": 5}
@@ -1757,3 +1756,211 @@ def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
     monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {})
     drain._reconcile_lost_lease_ledger("db", "t1", "r9", "2", {"tokens": 0}, {})
     assert seen == []
+
+
+def test_w7_c05_spool_replay_inserts_missing_ledger(
+    tmp_path, monkeypatch
+) -> None:
+    """Audit r15 F1: a journaled pending-reconcile spool on a run whose
+    first ledger write failed must let replay INSERT the recovered row —
+    dead-lettering a terminal run without a ledger would lose the spend."""
+    import rxycode_worker.drain as drain
+    import rxycode_server.usage.service as usage_service
+
+    drain._ensure_pending_reconcile_spool(
+        str(tmp_path),
+        tenant_id="t1",
+        run_id="r9",
+        epoch=2,
+        input_tokens=0,
+        output_tokens=0,
+        journaled=True,
+        model_id="m-ledger",
+        price_version="2026-10",
+    )
+    spool_dir = drain._usage_spool_dir(str(tmp_path))
+    files = list(spool_dir.glob("*.usage.json"))
+    assert len(files) == 1
+
+    monkeypatch.setattr(
+        drain, "_usage_deltas_by_attempt", lambda *_a: {"1": 100}
+    )
+    monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
+    monkeypatch.setattr(drain, "run_status", lambda *_a: "failed")
+    seen = []
+    monkeypatch.setattr(
+        usage_service,
+        "upsert_terminal_usage",
+        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens,
+        event_id, attribution=None, recompute=None: seen.append(
+            (run_id, model_id, tokens)
+        )
+        or {"tokens": tokens},
+    )
+    drain._replay_usage_spool("db", str(tmp_path))
+    assert not files[0].exists()
+    # The spool's stored model carried the insertion into the ledger write.
+    assert seen == [("r9", "m-ledger", 100)]
+
+
+def test_w7_c05_pending_spool_unjournaled_journals_first(
+    tmp_path, monkeypatch
+) -> None:
+    """Audit r15 F4: a pending reconcile written while the delta append was
+    still owed carries journaled=False — replay must journal the spend
+    before touching the ledger, then delete only after the upsert."""
+    import rxycode_worker.drain as drain
+    import rxycode_server.events.store as store
+    import rxycode_server.usage.service as usage_service
+
+    drain._ensure_pending_reconcile_spool(
+        str(tmp_path),
+        tenant_id="t1",
+        run_id="r10",
+        epoch=4,
+        input_tokens=40,
+        output_tokens=33,
+        journaled=False,
+        model_id="m",
+        price_version="2026-10",
+    )
+    spool_dir = drain._usage_spool_dir(str(tmp_path))
+    files = list(spool_dir.glob("*.usage.json"))
+    assert len(files) == 1
+
+    written = []
+    monkeypatch.setattr(
+        store,
+        "append_event",
+        lambda _dsn, *, tenant_id, run_id, event_type, payload: written.append(
+            (event_type, dict(payload))
+        )
+        or 1,
+    )
+    monkeypatch.setattr(
+        drain, "_usage_deltas_by_attempt", lambda *_a: {"4": 73}
+    )
+    monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
+    upserts = []
+    monkeypatch.setattr(
+        usage_service,
+        "upsert_terminal_usage",
+        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens,
+        event_id, attribution=None, recompute=None: upserts.append(
+            (run_id, tokens)
+        )
+        or {"tokens": tokens},
+    )
+    drain._replay_usage_spool("db", str(tmp_path))
+    assert written and written[0][0] == "usage.delta"
+    assert written[0][1]["attempt"] == "4"
+    assert upserts == [("r10", 73)]
+    assert not files[0].exists()
+
+
+def test_w7_c05_upsert_recompute_under_lock(postgres_url: str) -> None:
+    """Audit r15 F2: a caller's aggregate may lag a concurrent delta commit.
+    ``recompute`` runs while the ledger transaction holds the run row lock
+    (the same row append_event serializes on), so the writer folds in
+    metering that landed between its snapshot and the write."""
+    import rxycode_worker.drain as drain  # noqa: F401  (sys.path bootstrap)
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.persistence.migrate import upgrade_head
+    from rxycode_server.persistence.models import (
+        Organization,
+        Project,
+        Run,
+        SessionRow,
+        UsageRecord,
+        User,
+    )
+    from rxycode_server.usage.service import upsert_terminal_usage
+
+    upgrade_head(postgres_url)
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            db.add(User(id=f"u-{tenant}", github_id=None, kind="local"))
+            db.add(Organization(id=f"o-{tenant}", tenant_id=tenant))
+            db.add(
+                Project(
+                    id=f"p-{tenant}",
+                    tenant_id=tenant,
+                    name="t",
+                    repo_config={},
+                )
+            )
+            db.add(
+                SessionRow(
+                    id=f"s-{tenant}",
+                    tenant_id=tenant,
+                    project_id=f"p-{tenant}",
+                    title="t",
+                )
+            )
+            db.add(
+                Run(
+                    id="run-rc",
+                    tenant_id=tenant,
+                    session_id=f"s-{tenant}",
+                    status="succeeded",
+                    request_id="r1",
+                )
+            )
+            db.add(
+                UsageRecord(
+                    id="ur-rc",
+                    run_id="run-rc",
+                    model_id="m-a",
+                    price_version="2026-10",
+                    tokens=5,
+                )
+            )
+            db.commit()
+
+        # Stale snapshot says 5; the under-lock recompute sees 105.
+        out = upsert_terminal_usage(
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-rc",
+            model_id="m-a",
+            price_version="2026-10",
+            tokens=5,
+            event_id="evt-rc-1",
+            recompute=lambda: (105, [{"seq": 9, "detail": "amb"}]),
+        )
+        assert int(out["tokens"]) == 105
+        with Session(engine) as db:
+            total = sum(
+                int(r.tokens)
+                for r in db.scalars(
+                    select(UsageRecord).where(UsageRecord.run_id == "run-rc")
+                ).all()
+            )
+        assert total == 105
+
+        # A recompute smaller than the passed floor never shrinks the write.
+        upsert_terminal_usage(
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-rc",
+            model_id="m-a",
+            price_version="2026-10",
+            tokens=130,
+            event_id="evt-rc-2",
+            recompute=lambda: (105, None),
+        )
+        with Session(engine) as db:
+            total = sum(
+                int(r.tokens)
+                for r in db.scalars(
+                    select(UsageRecord).where(UsageRecord.run_id == "run-rc")
+                ).all()
+            )
+        assert total == 130
+    finally:
+        engine.dispose()

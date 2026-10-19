@@ -468,3 +468,34 @@ Round 14 (same session) closed the last pending-reconcile gaps:
   needed, so the marker rides the ledger transaction atomically.
 - **Terminal zero-recompute pending spool** dead-letters instead of
   lingering forever.
+
+
+## Audit r15 remediation (commit pending)
+
+Round 15 (same session) found four ledger-recovery gaps:
+
+- **Replay was reconcile-only**: a pending spool on a TERMINAL run whose
+  first ledger write failed hit `adjust -> None` and dead-lettered —
+  the recovered spend never reached a UsageRecord. Replay now calls
+  `upsert_terminal_usage` once (insert-when-absent, reconcile-when-short),
+  and spool payloads carry `model_id`/`price_version` so the insert is
+  complete ("unknown" fallback for legacy files).
+- **Aggregation raced the ledger write**: the pre-transaction snapshot
+  could miss a concurrent delta commit, so two disjoint attempts could
+  converge to a short total. `upsert_terminal_usage`/
+  `adjust_terminal_usage` accept a `recompute` callback invoked while the
+  run row lock is held — `append_event` serializes on the same row, so
+  the last ledger writer sees every committed metering row.
+- **Lost-lease reconcile dropped attribution**: `dones, _` discarded the
+  ambiguity list; it is now passed into `adjust_terminal_usage`
+  (embedded atomically in the usage event).
+- **Pending spool could lie journaled**: when the delta append AND the
+  first spool write both failed, `_ensure_pending_reconcile_spool` still
+  wrote `journaled=True` — replay would have recomputed from older rows
+  and deleted the file without ever journaling the spend. Callers now
+  pass `journaled=not metering_owed` where `metering_owed` is derived
+  from the post-flush delta snapshot.
+
+New legs: spool replay inserts a missing ledger; unjournaled pending
+spool journals before upserting; under-lock recompute raises the write
+to the fresh total (PG).

@@ -137,6 +137,7 @@ def upsert_terminal_usage(
     tokens: int,
     event_id: str,
     attribution: list[dict] | None = None,
+    recompute: object = None,
 ) -> dict[str, object]:
     """Run-level aggregate write for the worker finalize path.
 
@@ -146,7 +147,14 @@ def upsert_terminal_usage(
     commit a partial ledger and crash before the terminal write (audit
     r12): with rows present, this reconciles the aggregate via the same
     largest-row-absorb rule as ``adjust_terminal_usage`` (never shrinks);
-    with none, it inserts the single aggregate row."""
+    with none, it inserts the single aggregate row.
+
+    ``recompute`` is an optional ``() -> (tokens, attributions)`` callback
+    invoked while this transaction holds the run row lock. ``append_event``
+    serializes on that same row, so a metering read taken HERE cannot be
+    overtaken by an in-flight delta commit the way a pre-transaction
+    aggregate is (audit r15) — the last ledger writer converges. A fresh
+    total only ever raises the passed floor."""
     if tokens < 0 or not model_id or not price_version or not event_id:
         raise UsageForbidden()
     engine = create_engine(database_url, poolclass=NullPool)
@@ -157,6 +165,15 @@ def upsert_terminal_usage(
             ).scalar_one_or_none()
             if run is None:
                 raise UsageForbidden()
+            if recompute is not None:
+                try:
+                    fresh_total, fresh_attr = recompute()
+                except Exception:
+                    fresh_total, fresh_attr = 0, None
+                if int(fresh_total or 0) > int(tokens):
+                    tokens = int(fresh_total)
+                if fresh_attr:
+                    attribution = list(fresh_attr)
             rows = db.scalars(
                 select(UsageRecord).where(UsageRecord.run_id == run.id)
             ).all()
@@ -242,6 +259,7 @@ def adjust_terminal_usage(
     tokens: int,
     event_id: str,
     attribution: list[dict] | None = None,
+    recompute: object = None,
 ) -> dict[str, object] | None:
     """Reconcile an already-committed ledger when late metering arrives.
 
@@ -251,7 +269,10 @@ def adjust_terminal_usage(
     raises the ledger and journals ``usage.updated``; a smaller/equal total
     is a no-op so reconciliation never shrinks confirmed spend. Returns
     ``None`` when no ledger row exists yet (the eventual terminal writer
-    aggregates the journaled delta itself)."""
+    aggregates the journaled delta itself).
+
+    ``recompute`` has the same under-lock semantics as in
+    ``upsert_terminal_usage`` (audit r15)."""
     if tokens < 0 or not event_id:
         raise UsageForbidden()
     engine = create_engine(database_url, poolclass=NullPool)
@@ -262,6 +283,15 @@ def adjust_terminal_usage(
             ).scalar_one_or_none()
             if run is None:
                 raise UsageForbidden()
+            if recompute is not None:
+                try:
+                    fresh_total, fresh_attr = recompute()
+                except Exception:
+                    fresh_total, fresh_attr = 0, None
+                if int(fresh_total or 0) > int(tokens):
+                    tokens = int(fresh_total)
+                if fresh_attr:
+                    attribution = list(fresh_attr)
             rows = db.scalars(
                 select(UsageRecord).where(UsageRecord.run_id == run.id)
             ).all()

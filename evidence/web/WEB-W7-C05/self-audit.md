@@ -281,3 +281,18 @@ Final verdict: `<filled by the Codex audit>` (session
   both service fns embed `attribution` in the usage event even on a
   no-increase reconcile — the marker is atomic with ledger state.
 - Non-stack legs 23/23 green; module stack test re-running.
+
+
+## r15 remediation self-check
+
+- `_replay_usage_spool` now issues a single `upsert_terminal_usage` —
+  terminal run without a ledger gets an INSERT (model/price carried in
+  the spool payload) instead of a dead-lettered spend.
+- Both ledger writers take `recompute`: under the held run lock the drain
+  re-reads `_run_metering_total`, so a delta committed between snapshot
+  and write is folded in — last writer converges to the true sum.
+- `_reconcile_lost_lease_ledger` forwards `attributions` (was discarded).
+- `_ensure_pending_reconcile_spool(journaled=...)` mirrors whether the
+  attempt's streamed spend actually journaled — an owed spend can no
+  longer be marked journaled by a pending file.
+- Non-stack legs 26/26 green incl. three r15 legs; module stack re-run.

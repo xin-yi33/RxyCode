@@ -551,6 +551,25 @@ def _emit_attribution_events(
         )
 
 
+def _run_metering_total(
+    database_url: str, run_id: str
+) -> tuple[int, list[dict[str, Any]]]:
+    """Fresh committed metering view: per-attempt max of journaled
+    ``usage.delta`` and ``event/agent_done`` buckets, summed across
+    attempts, plus the ambiguity notes the fresh read produced. Passed as
+    the usage writer's under-lock ``recompute`` callback — ``append_event``
+    serializes on the same run row the ledger transaction holds, so this
+    read sees every metering row any committed writer can have produced
+    (audit r15)."""
+    deltas = _usage_deltas_by_attempt(database_url, run_id)
+    dones, attributions = _agent_done_by_attempt(database_url, run_id)
+    total = sum(
+        max(deltas.get(a, 0), dones.get(a, 0))
+        for a in set(deltas) | set(dones)
+    )
+    return total, attributions
+
+
 def _usage_spool_dir(workspaces_root: str) -> Path:
     return Path(workspaces_root) / ".sandboxes" / ".usage-spool"
 
@@ -564,11 +583,15 @@ def _spool_streamed_usage(
     input_tokens: int,
     output_tokens: int,
     journaled: bool = False,
+    model_id: str = "",
+    price_version: str = "",
 ) -> None:
     """Last-resort retention: when the DB cannot take the final
     ``usage.delta`` row, drop the metering on parent-owned disk so a later
     drain pass can replay it — known spend is never silently discarded
-    (audit r8)."""
+    (audit r8). ``model_id``/``price_version`` let replay INSERT a ledger
+    on a terminal run whose owner crashed before writing one (audit r15).
+    """
     spool_dir.mkdir(parents=True, exist_ok=True)
     path = spool_dir / f"{run_id}.{epoch}.usage.json"
     tmp = path.with_suffix(".tmp")
@@ -581,6 +604,8 @@ def _spool_streamed_usage(
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 **({"journaled": True} if journaled else {}),
+                **({"model_id": model_id} if model_id else {}),
+                **({"price_version": price_version} if price_version else {}),
             }
         ),
         encoding="utf-8",
@@ -596,12 +621,17 @@ def _ensure_pending_reconcile_spool(
     epoch: int,
     input_tokens: int,
     output_tokens: int,
+    journaled: bool = True,
+    model_id: str = "",
+    price_version: str = "",
 ) -> None:
-    """Drop a journaled spool so the next drain pass re-runs ledger
-    reconciliation — the delta rows are already durable; what may still be
-    missing is a ledger correction or an attribution note (audit r14).
-    Never overwrites an existing file: a non-journaled spool still owes its
-    delta append and must not be flipped to journaled."""
+    """Drop a pending-reconcile spool so the next drain pass re-runs ledger
+    reconciliation (audit r14). ``journaled`` is the caller's statement
+    that the metered tokens are already durable ``usage.delta`` rows —
+    when an earlier spool write ALSO failed, passing True here would let
+    replay recompute from older rows and delete the file without ever
+    journaling this spend (audit r15). Never overwrites an existing file:
+    a non-journaled spool still owes its delta append."""
     spool_dir = _usage_spool_dir(workspaces_root)
     path = spool_dir / f"{run_id}.{epoch}.usage.json"
     if path.exists():
@@ -613,7 +643,9 @@ def _ensure_pending_reconcile_spool(
         epoch=epoch,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        journaled=True,
+        journaled=journaled,
+        model_id=model_id,
+        price_version=price_version,
     )
 
 
@@ -668,19 +700,15 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 pass  # worst case: one duplicate row — max() absorbs it
 
         # A retry may finalize a smaller ledger BEFORE this spool replays —
-        # or AFTER it, computing its total from a stale read. Either way the
-        # committed UsageRecord ends up short (audit r9/r10). The file is
-        # therefore kept until a reconcile lands: no ledger yet → keep;
-        # ledger short → raise it → delete. A terminal run that never
-        # gained a ledger dead-letters (the delta row stays durable; the
-        # ledger gap was already surfaced as run.error by its owner).
+        # or AFTER it, computing its total from a stale read (audit r9/r10).
+        # ``upsert_terminal_usage`` covers both cases in one locked write:
+        # existing rows reconcile up to the recomputed total; a terminal run
+        # whose owner crashed BEFORE its first ledger write gets the row
+        # inserted here instead of dead-lettering the spend (audit r15).
+        # The under-lock recompute additionally folds in any delta that
+        # committed between this snapshot and the ledger transaction.
         try:
-            deltas = _usage_deltas_by_attempt(database_url, run_id)
-            dones, attributions = _agent_done_by_attempt(database_url, run_id)
-            total = sum(
-                max(deltas.get(a, 0), dones.get(a, 0))
-                for a in set(deltas) | set(dones)
-            )
+            total, attributions = _run_metering_total(database_url, run_id)
             if total <= 0:
                 # A journaled pending-reconcile spool on a TERMINAL run with
                 # a zero recompute has nothing left to converge — dead-letter
@@ -699,16 +727,21 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 continue  # inconsistent — keep for a later pass
             from rxycode_server.usage.service import (
                 UsageForbidden,
-                adjust_terminal_usage,
+                upsert_terminal_usage,
             )
 
-            reconciled = adjust_terminal_usage(
+            upsert_terminal_usage(
                 database_url,
                 tenant_id=str(row["tenant_id"]),
                 run_id=run_id,
+                model_id=str(row.get("model_id") or "unknown"),
+                price_version=str(row.get("price_version") or _PRICE_VERSION),
                 tokens=total,
                 event_id=uuid.uuid4().hex,
                 attribution=attributions,
+                recompute=lambda rid=run_id: _run_metering_total(
+                    database_url, rid
+                ),
             )
             _emit_attribution_events(
                 database_url, str(row["tenant_id"]), run_id, attributions
@@ -720,7 +753,6 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 "run %s: spool reconcile forbidden (run/tenant gone);"
                 " dropping file", run_id,
             )
-            reconciled = {}
         except Exception:
             _LOG.warning(
                 "run %s: spool replay ledger reconcile failed; next pass retries",
@@ -728,39 +760,6 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 exc_info=True,
             )
             continue
-        if reconciled is None:
-            try:
-                status = run_status(database_url, run_id)
-            except Exception:
-                status = ""
-            if status not in _TERMINAL_STATUSES:
-                continue  # a later finalize or next replay reconciles
-            # Commit order is ledger-first-then-status: observing a terminal
-            # status means any finalizer's UsageRecord is already committed
-            # — it may simply have landed after our first read (audit r11).
-            # Reconcile once more before dead-lettering; only a still-empty
-            # ledger on a terminal run is truly unrecoverable. A FAILED
-            # re-read is not "confirmed absent" — keep the file (r12).
-            try:
-                reconciled = adjust_terminal_usage(
-                    database_url,
-                    tenant_id=str(row["tenant_id"]),
-                    run_id=run_id,
-                    tokens=total,
-                    event_id=uuid.uuid4().hex,
-                )
-            except Exception:
-                continue
-            if reconciled is not None:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                continue
-            _LOG.warning(
-                "run %s: terminal without ledger; spool dead-lettered "
-                "(delta row already durable)", run_id,
-            )
         try:
             path.unlink(missing_ok=True)
         except OSError:
@@ -1701,7 +1700,7 @@ def _reconcile_lost_lease_ledger(
         a: max(fresh.get(a, 0), deltas.get(a, 0))
         for a in set(fresh) | set(deltas)
     }
-    dones, _ = _agent_done_by_attempt(database_url, run_id)
+    dones, attributions = _agent_done_by_attempt(database_url, run_id)
     per_attempt = {
         a: max(merged.get(a, 0), dones.get(a, 0))
         for a in set(merged) | set(dones)
@@ -1719,6 +1718,8 @@ def _reconcile_lost_lease_ledger(
             run_id=run_id,
             tokens=total,
             event_id=uuid.uuid4().hex,
+            attribution=attributions,
+            recompute=lambda: _run_metering_total(database_url, run_id),
         )
         is not None
     )
@@ -1793,6 +1794,9 @@ async def execute_run(
                             tokens=total0,
                             event_id=uuid.uuid4().hex,
                             attribution=attributions0,
+                            recompute=lambda: _run_metering_total(
+                                cfg.database_url, run_id
+                            ),
                         ),
                         timeout=_LEASE_IO_BUDGET,
                     )
@@ -1804,7 +1808,9 @@ async def execute_run(
                     )
                     # Terminalizing with the prior spend unledgured leaves
                     # nothing pending — park a journaled spool so replay
-                    # reconciles the ledger once it exists (audit r14).
+                    # inserts or reconciles the ledger (audit r14/r15). The
+                    # prior attempt's deltas are durable reads, so
+                    # journaled=True is honest here.
                     try:
                         await asyncio.wait_for(
                             asyncio.to_thread(
@@ -1815,6 +1821,9 @@ async def execute_run(
                                 epoch=epoch,
                                 input_tokens=0,
                                 output_tokens=0,
+                                journaled=True,
+                                model_id=_ledger_model(cfg.model),
+                                price_version=_PRICE_VERSION,
                             ),
                             timeout=_LEASE_IO_BUDGET,
                         )
@@ -2108,6 +2117,8 @@ async def execute_run(
                         epoch=epoch,
                         input_tokens=int(streamed.get("input_tokens") or 0),
                         output_tokens=int(streamed.get("output_tokens") or 0),
+                        model_id=ledger_model,
+                        price_version=_PRICE_VERSION,
                     ),
                     timeout=_LEASE_IO_BUDGET,
                 )
@@ -2117,6 +2128,13 @@ async def execute_run(
                     run_id,
                     exc_info=True,
                 )
+    # True when streamed spend is still NOT journaled — flush failed and the
+    # deltas snapshot never absorbed it. A pending-reconcile spool written
+    # now must carry journaled=False or replay could delete the file having
+    # never appended this attempt's spend (audit r15).
+    metering_owed = int(streamed.get("tokens") or 0) > deltas.get(
+        attempt_key, 0
+    )
 
     if lost_lease:
         # Our flushed usage.delta is durable but a retry may already have
@@ -2152,6 +2170,9 @@ async def execute_run(
                         epoch=epoch,
                         input_tokens=int(streamed.get("input_tokens") or 0),
                         output_tokens=int(streamed.get("output_tokens") or 0),
+                        journaled=not metering_owed,
+                        model_id=ledger_model,
+                        price_version=_PRICE_VERSION,
                     ),
                     timeout=_LEASE_IO_BUDGET,
                 )
@@ -2217,6 +2238,9 @@ async def execute_run(
                 tokens=tokens,
                 event_id=agent_done_id,
                 attribution=attributions,
+                recompute=lambda: _run_metering_total(
+                    cfg.database_url, run_id
+                ),
             ),
             timeout=_LEASE_IO_BUDGET,
         )
@@ -2244,8 +2268,9 @@ async def execute_run(
                 "run %s: attribution notes failed", run_id, exc_info=True
             )
             # Durable uncertainty must not depend on one append: park a
-            # journaled spool so a later drain pass re-emits the deduped
-            # `usage.attribution` notes (audit r14).
+            # spool so a later drain pass re-emits the deduped
+            # `usage.attribution` notes (audit r14); journaled mirrors
+            # whether this attempt's streamed spend is durable (r15).
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(
@@ -2256,6 +2281,9 @@ async def execute_run(
                         epoch=epoch,
                         input_tokens=int(streamed.get("input_tokens") or 0),
                         output_tokens=int(streamed.get("output_tokens") or 0),
+                        journaled=not metering_owed,
+                        model_id=ledger_model,
+                        price_version=_PRICE_VERSION,
                     ),
                     timeout=_LEASE_IO_BUDGET,
                 )
