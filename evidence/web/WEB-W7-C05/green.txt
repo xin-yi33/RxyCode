@@ -242,3 +242,9 @@ ruff/py_compile: clean on drain.py + usage/service.py.
   rolled back unchanged on real dev PG).
 1 passed in 383.89s — tests/web/w7/test_w7_c05_module.py (real stack
   on r16 code). ruff/py_compile clean; git diff --check clean.
+
+== audit r17 — FINAL (2026-10-19) ==
+VERDICT: NO_REMAINING_PROBLEMS on commit 3f87a02e.
+Card complete: durable runs, stale-lease reclaim, confined execution,
+crash-safe usage metering (spool replay + under-lock recompute),
+attribution honesty, emergency stop — all audit-verified.

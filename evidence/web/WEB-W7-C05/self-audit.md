@@ -306,3 +306,18 @@ Final verdict: `<filled by the Codex audit>` (session
 - New PG leg: recompute raising RuntimeError -> upsert raises, ledger
   unchanged (rolled back).
 - Non-stack legs 26/26 green; module stack re-running.
+
+
+## FINAL — audit r17 verdict (2026-10-19)
+
+Same Codex session `01a140a7-2cc1-7f61-bdab-2af627f08e80`, commit
+`3f87a02e` (+handoff `ec84b54f`):
+
+    VERDICT: NO_REMAINING_PROBLEMS
+
+Auditor-verified: both ledger writers propagate recompute failures
+(rollback); finalize failure branch retains a pending spool with the
+honest journaled flag + model/price; replay is insertion-capable;
+cancel/lost-lease recovery and attribution semantics consistent.
+15 committed unit legs passed inside the audit; setup-error legs were
+environmental (read-only temp dirs), not code.
