@@ -1434,12 +1434,16 @@ _AUTH_SCHEME_RE = re.compile(
 #: ``scheme://user:pass@`` inside a longer string — only the userinfo
 #: span is replaced, the URL shape survives.
 _URL_USERINFO_SUB_RE = re.compile(r"(://)[^/\s:@]{1,256}:[^@\s]{1,256}@")
-#: ``<<TAG``/``<<-TAG``/``<<'TAG'`` heredoc opener inside an opaque
-#: string — the BODY that follows is data, not syntax, and carries
-#: credential material verbatim (``--api-key-file /dev/fd/3
-#: 3<<'TAG'\nKEY\nTAG`` — audit W8-r13). The marker and terminator
-#: survive; the body is replaced.
-_HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+#: ``<<TAG``/``<<-TAG``/``<<~TAG``/quoted heredoc openers inside an
+#: opaque string — the BODY that follows is data, not syntax, and
+#: carries credential material verbatim (``--api-key-file /dev/fd/3
+#: 3<<'TAG'\nKEY\nTAG`` — audit W8-r13). Delimiters may be arbitrary
+#: words (``RXY-KEY``), several heredocs queue on one command line
+#: (``3<<A 4<<B`` — bodies read in order), and an unterminated body
+#: runs to EOF (audit W8-r14).
+_HEREDOC_RE = re.compile(
+    r"<<([-~]?)\s*(?:'([^'\n]+)'|\"([^\"\n]+)\"|([^\s;|&<>()'\"]+))"
+)
 
 
 def _shell_word_end(text: str, start: int) -> int:
@@ -1457,6 +1461,7 @@ def _shell_word_end(text: str, start: int) -> int:
     i = start
     n = len(text)
     stack: list[str] = []
+    word = ""  # innermost bare word — case/esac keyword detection
     while i < n:
         c = text[i]
         top = stack[-1] if stack else ""
@@ -1464,6 +1469,8 @@ def _shell_word_end(text: str, start: int) -> int:
             # Plain single quotes — ``\`` is literal, only ``'`` ends.
             if c == "'":
                 stack.pop()
+            else:
+                word += c
             i += 1
             continue
         if top == "$'" or top == "`":
@@ -1475,12 +1482,16 @@ def _shell_word_end(text: str, start: int) -> int:
                 continue
             if c == top[-1]:
                 stack.pop()
+            else:
+                word += c
             i += 1
             continue
         if c == "\\" and i + 1 < n:
             # Escaped char — ``\$`` starts no substitution, ``\ ``
             # stays inside the word, ``\<newline>`` is a shell line
-            # continuation (audit W8-r11).
+            # continuation (audit W8-r11). The escaped char is word
+            # content (``ca\se`` is the word ``case``).
+            word += text[i + 1]
             i += 2
             continue
         if top == '"':
@@ -1492,24 +1503,60 @@ def _shell_word_end(text: str, start: int) -> int:
             # interior quotes are balanced THERE, not here.
             if c == "$" and i + 1 < n and text[i + 1] in "({'":
                 stack.append(("$" if text[i + 1] == "'" else "") + text[i + 1])
+                word = ""
                 i += 2
                 continue
             if c == "`":
                 stack.append("`")
+                word = ""
+                i += 1
+                continue
+            word += c
             i += 1
             continue
-        # Word level or inside ``(``/``{`` — full shell syntax.
+        # Word level or inside ``(``/``{``/``case`` — full shell
+        # syntax. ``case``/``esac`` are tracked as contexts because a
+        # case pattern's ``)`` is NOT the substitution's closer —
+        # ``$(case x in x) K;; esac)`` would strand ``K;; esac)`` on a
+        # naive paren count (audit W8-r14).
         if c == "$" and i + 1 < n:
             nxt = text[i + 1]
             if nxt in "({'":
                 stack.append(("$" if nxt == "'" else "") + nxt)
+                word = ""
                 i += 2
                 continue
+            word += c
+            i += 1
+            continue
         if c in "<>" and i + 1 < n and text[i + 1] == "(":
             # Process substitution ``<(cmd)``/``>(cmd)`` is a WORD,
-            # not a redirect (audit W8-r11).
+            # not a redirect — it must be checked BEFORE the bare
+            # ``<``/``>`` separator break below (audit W8-r11).
             stack.append("(")
+            word = ""
             i += 2
+            continue
+        if c in " \t\n;|&<>(){}":
+            if word:
+                if (
+                    word == "case"
+                    and stack
+                    and stack[-1] in ("(", "case")
+                ):
+                    stack.append("case")
+                elif word == "esac" and stack and stack[-1] == "case":
+                    stack.pop()
+                word = ""
+            if c == "(" or c == "{":
+                stack.append(c)
+            elif c == ")" and stack and stack[-1] == "(":
+                stack.pop()
+            elif c == "}" and stack and stack[-1] == "{":
+                stack.pop()
+            elif not stack and c in " \t\n;|&<>":
+                break
+            i += 1
             continue
         if c == "'":
             stack.append("'")
@@ -1517,17 +1564,9 @@ def _shell_word_end(text: str, start: int) -> int:
             stack.append('"')
         elif c == "`":
             stack.append("`")
-        elif c == "(" or c == "{":
-            # Bare ``(``/``{`` push too — unbalanced opens keep
-            # consuming (fail-closed); ``${x/{a}/b}`` needs ``{`` to
-            # nest inside ``${`` (audit W8-r12).
-            stack.append(c)
-        elif c == ")" and top == "(":
-            stack.pop()
-        elif c == "}" and top == "{":
-            stack.pop()
-        elif not stack and c in " \t\n;|&<>":
-            break
+            word = ""
+        else:
+            word += c
         i += 1
     return i
 
@@ -1655,30 +1694,59 @@ def _scrub_inline_secrets(text: str, _depth: int = 0) -> str:
 
     def _heredoc_pass(src: str) -> str:
         """Redact heredoc BODIES — ``3<<'TAG'\nKEY\nTAG`` leaves the
-        fd path scrubbed but the body verbatim (audit W8-r13). The
-        ``<<TAG`` opener and the terminator line survive; the body
-        between them dies."""
+        fd path scrubbed but the body verbatim (audit W8-r13). POSIX
+        semantics honored: delimiters are arbitrary words
+        (``RXY-KEY``); ``<<`` requires an EXACT terminator line,
+        ``<<-`` strips leading tabs only, ``<<~`` strips leading
+        whitespace; openers queued on one command line read their
+        bodies in order (``3<<A 4<<B``); an unterminated body runs to
+        EOF (audit W8-r14). Markers and terminator lines survive."""
         out: list[str] = []
         pos = 0
-        for match in _HEREDOC_RE.finditer(src):
-            if match.start() < pos:
+        matches = list(_HEREDOC_RE.finditer(src))
+        idx = 0
+        while idx < len(matches):
+            m = matches[idx]
+            idx += 1
+            if m.start() < pos:
                 continue
-            tag = match.group(1)
-            nl = src.find("\n", match.end())
+            nl = src.find("\n", m.end())
             if nl == -1:
                 continue
-            term = re.search(
-                r"(?m)^[ \t]*" + re.escape(tag) + r"[ \t]*\r?$",
-                src[nl + 1 :],
-            )
-            if term is None:
-                continue
-            body_start = nl + 1
-            body_end = nl + 1 + term.start()
-            out.append(src[pos:body_start])
-            if body_end > body_start:
+            # Every opener on the same command line queues a body —
+            # they read in order after the line ends (audit W8-r14).
+            queue = [m]
+            while idx < len(matches) and matches[idx].start() < nl:
+                queue.append(matches[idx])
+                idx += 1
+            out.append(src[pos : nl + 1])
+            cursor = nl + 1
+            for q in queue:
+                flag, tag = q.group(1), next(
+                    g for g in q.groups()[1:] if g is not None
+                )
+                lead = r"[ \t]*" if flag == "~" else (r"\t*" if flag == "-" else "")
+                term = re.search(
+                    r"(?m)^" + lead + re.escape(tag) + r"\r?$",
+                    src[cursor:],
+                )
+                if term is None:
+                    # No terminator — bash reads the body to EOF;
+                    # everything after the command line is body
+                    # (audit W8-r14).
+                    out.append("confined\n")
+                    cursor = len(src)
+                    break
+                body_end = cursor + term.start()
+                line_end = src.find("\n", cursor + term.end())
+                if line_end == -1:
+                    line_end = len(src)
+                else:
+                    line_end += 1
                 out.append("confined\n")
-            pos = body_end
+                out.append(src[body_end:line_end])  # keep terminator
+                cursor = line_end
+            pos = cursor
         out.append(src[pos:])
         return "".join(out)
 

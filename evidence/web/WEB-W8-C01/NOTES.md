@@ -672,3 +672,38 @@ fixes hold. Three new P1 findings, all remediated:
   ``3<<'TAG'\nKEY\nTAG`` body redaction (terminator survives),
   ``username*=UTF-8''J%…`` ext-value pair list fully consumed.
 - `python -m ruff check`: clean.
+
+## Audit round 14 (gpt-6.1-sol, same session 01a140a7 — VERDICT: PROBLEMS, 3 findings)
+
+r14 audited `7c4a9b4e` and confirmed the r13 fixes hold. Three new P1
+findings, all remediated (also confirmed: no cross-claim partial-seed
+reuse — seed dirs are ``{sandbox_id}-ovl``-scoped and sandbox_id is a
+fresh uuid per claim, so a crashed copytree can never be reused):
+
+1. **[P1] ``case`` patterns terminated substitutions early** —
+   ``$(case x in x) K;; esac)``: the pattern's ``)`` was popped as the
+   substitution closer, stranding ``K;; esac)``. ``_shell_word_end``
+   now tracks bare words in word/substitution contexts — ``case``
+   inside a paren context pushes a ``case`` marker (pattern ``)``s
+   literal), ``esac`` pops it; word accumulation spans quoted
+   interiors (``cas'e'`` still detects the keyword).
+2. **[P1] Heredoc delimiter variants + unterminated bodies** —
+   ``<<'RXY-KEY'`` hyphenated delimiters missed the identifier-only
+   tag charset (body kept); the terminator regex ``^[ \t]*TAG``
+   over-accepted whitespace for plain ``<<`` (POSIX: exact line;
+   ``<<-`` strips tabs; ``<<~`` strips whitespace — implemented per
+   opener flag); unterminated bodies run to EOF in bash and are now
+   redacted to EOF. Delimiter regex accepts quoted/``-``/``~``
+   forms and arbitrary word chars.
+3. **[P1] Queued heredocs on one command line** — ``3<<A 4<<B`` reads
+   two bodies in order; the second opener fell inside the first
+   body's consumed span and was skipped, leaving body B mounted.
+   ``_heredoc_pass`` now collects every opener before the command
+   line's newline and consumes queued bodies sequentially.
+
+## Test evidence (r14)
+
+- `tests/web/w8`: 65 passed, 3 environment skips — new legs:
+  ``$(case x in x) K;; esac)`` consumed, ``<<'RXY-KEY'`` hyphen
+  delimiter, ``3<<A 4<<B`` queued bodies, unterminated body to EOF.
+- `python -m ruff check`: clean.

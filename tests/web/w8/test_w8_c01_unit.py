@@ -2653,3 +2653,58 @@ def test_w8_c01_scrub_digest_ext_value_params() -> None:
     out = drain._scrub_inline_secrets(s)
     assert "AUDIT_RESP5" not in out
     assert "Digest confined" in out
+
+
+def test_w8_c01_scrub_case_pattern_in_substitution() -> None:
+    """Audit W8-r14: ``$(case x in x) K;; esac)`` — a case pattern's
+    ``)`` is not the substitution closer; ``case``/``esac`` are
+    tracked as keyword contexts."""
+    import rxycode_worker.drain as drain
+
+    s = "exec server --api-key $(case x in x) printf %s AUDIT_CASE_KEY;; esac) -v"
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_CASE_KEY" not in out
+    assert out == "exec server --api-key confined -v"
+
+
+def test_w8_c01_scrub_heredoc_hyphen_delimiter() -> None:
+    """Audit W8-r14: ``<<'RXY-KEY'`` — delimiters are arbitrary words,
+    not identifiers; a hyphenated tag must still redact its body."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "exec server --api-key-file /dev/fd/3 3<<" + chr(39) + "RXY-KEY" + chr(39)
+        + chr(10) + "AUDIT_DELIMITER_KEY" + chr(10) + "RXY-KEY"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_DELIMITER_KEY" not in out
+    assert "RXY-KEY" in out  # terminator survives
+
+
+def test_w8_c01_scrub_multiple_heredocs_one_line() -> None:
+    """Audit W8-r14: ``3<<A 4<<B`` queues two bodies on one command
+    line — both must die, read in order."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "exec server --api-key-file /dev/fd/4 3<<" + chr(39) + "RXY_CFG" + chr(39)
+        + " 4<<" + chr(39) + "RXY_KEY" + chr(39) + chr(10) + "{}" + chr(10) + "RXY_CFG"
+        + chr(10) + "AUDIT_MULTI_KEY" + chr(10) + "RXY_KEY"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_MULTI_KEY" not in out
+    assert "RXY_CFG" in out and "RXY_KEY" in out
+
+
+def test_w8_c01_scrub_unterminated_heredoc() -> None:
+    """Audit W8-r14: an unterminated heredoc body runs to EOF in bash
+    — the whole tail is body and must die."""
+    import rxycode_worker.drain as drain
+
+    s = (
+        "exec --api-key-file /dev/fd/3 3<<" + chr(39) + "E" + chr(39) + chr(10)
+        + "AUDIT_UNTERM_KEY" + chr(10) + "still body"
+    )
+    out = drain._scrub_inline_secrets(s)
+    assert "AUDIT_UNTERM_KEY" not in out
+    assert "still body" not in out
