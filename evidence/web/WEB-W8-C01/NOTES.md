@@ -72,3 +72,48 @@ control-plane credential and network boundaries outside the sandbox.
    multicast/reserved/unspecified now refuse explicitly.
 5. `_CtlApproval` sent the raw call id as the durable key — a child
    could mint colliding keys; derivation moved to the trusted parent.
+
+## Audit round 1 (gpt-6.1-sol, same Codex session 01a140a7) — VERDICT: PROBLEMS
+
+Seven findings against `4771b01f`; all remediated:
+
+1. **[P1] ApprovalRequest.call_id/arguments existed only in the dirty
+   worktree** — `core/safety/approval.py` and
+   `execution/tool_orchestrator.py` are committed with this fix so the
+   committed approval chain is real, not worktree-only.
+2. **[P1] ro-mounted config disclosed the raw key** — an ro bind stops
+   modification, not reads: the worker's config.yaml (incl. any literal
+   `api_key`) was readable under `RXYCODE_TURN_CONFIG_SRC`.
+   `_prepare_child_data_dir` now sanitizes BEFORE the file is mounted
+   (`_scrub_model_credentials` shared with the child-side merge, which
+   re-scrubs idempotently); an unparseable source is dropped entirely.
+3. **[P1] resume lacked a current-lease/cancel fence** —
+   `resume_state` checked only the approval row. It now additionally
+   requires `_lease_fenced` (right owner+epoch, `leased`/`running`
+   status, unexpired lease): approve→claim→cancel refuses late
+   execution; a foreign/stale claim gets nothing.
+4. **[P1] journal lived in child-writable workspace** — a completed-
+   then-wiped `.journal` read back as `not_started` and re-executed.
+   The journal moved to parent-owned `state_root/{sandbox}-journal`,
+   reachable only through new `journal_state/reserve/complete` ctl ops
+   (`_ChannelJournal` child-side, same adapter semantics parent-side).
+   The module test now literally deletes the side-effect file and
+   proves the second resume still reuses, never re-runs.
+5. **[P1] `self._tunnel` didn't exist** — the method was indented
+   inside module-level `_gateway_head`; every successful
+   CONNECT/forward/gateway path raised AttributeError. Dedented into
+   `EgressProxy`; a real socketpair tunnel test now exercises it.
+6. **[P2] `--overlay SRC DEST` is not valid bwrap** — the three-operand
+   form `--overlay UPPER WORK DEST` is emitted now, with per-task
+   upper/work dirs under `state_root/{sandbox}-ovl` (same fs as
+   required; installs persist across the task's turns). The probe uses
+   `--tmp-overlay`, the same kernel path.
+7. **[P2] acceptance chains under-demonstrated** — module test now
+   covers dependency-install + test-run legs in BOTH modes, a strict
+   bash side-effect assert, boundary legs split into tool-layer
+   (write denial ×3 tool classes), egress-layer (metadata/private/
+   multicast/odd-port refusal incl. a real public pass) and a
+   bwrap-confined read/connect leg that honestly skips where the
+   kernel feature is absent; plus a real-child cancel-reap leg and a
+   stale-claim resume fence test. Misleading "in-container" header
+   claims corrected.

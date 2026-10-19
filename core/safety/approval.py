@@ -43,6 +43,12 @@ class ApprovalRequest:
     # 门的写目标，让人在完整上下文下决定；同时也标记本条审批不得落入
     # risk 级别的 always-allow 缓存（缓存命中会永久绕过闸门）。
     gate_blocked_paths: list[str] = field(default_factory=list)
+    # Web pause/resume（W7+）：审批绑定原始 tenant/run/call/attempt 与
+    # **未经摘要截断**的原始参数——恢复链路要按原样执行那一次调用，
+    # args_summary 可能被截断，不能用于恢复执行。只走审批通道，不进
+    # to_event 的 UI 载荷。
+    call_id: str = ""
+    arguments: dict | None = None
 
     def __post_init__(self):
         # Cap the summary size so prompts/SSE payloads stay small.

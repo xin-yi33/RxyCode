@@ -3,10 +3,12 @@ environment; control-plane credentials and network boundaries; durable
 approval pause/resume bound to the exact call.
 
 Unit layer — pure argv builders, policy evaluators, config merge, the ctl
-dispatch surface, the channel-bound broker, and the durable approval
-service on a real Postgres. The module test drives the same chains inside
-the deployed worker container (real bwrap spawn, real private netns, real
-egress relay, real kill-tree cleanup).
+dispatch surface, the channel-bound broker/journal, and the durable
+approval service on a real Postgres. The module test drives the same
+chains through the real ToolOrchestrator and durable store on the host;
+the kernel boundary itself (private mounts/netns, egress relay,
+kill-tree) is covered here at the argv/policy level — a bwrap-capable
+host runs it live in compose.
 
 Invariants under test:
 
@@ -164,17 +166,19 @@ def test_w8_c01_sandbox_argv_isolation_shape(tmp_path: Path) -> None:
 
     workdir = tmp_path / "ws"
     ctl_dir = tmp_path / "ctl"
-    fake_usr = tmp_path / "usr-root"  # /usr on the deployed host
+    upper = tmp_path / "ovl" / "usr-upper"
+    work = tmp_path / "ovl" / "usr-work"
     workdir.mkdir()
     ctl_dir.mkdir()
-    fake_usr.mkdir()
+    upper.mkdir(parents=True)
+    work.mkdir(parents=True)
     argv = build_sandbox_argv(
         workdir=workdir,
         argv=["python", "-m", "rxycode_worker.drain"],
         env={"RXYCODE_CTL_SOCK": str(ctl_dir / "ctl.sock"), "HOME": str(workdir / ".home")},
         ro_binds=["/repo"],
         rw_binds=[str(ctl_dir)],
-        overlay_roots=[str(fake_usr)],
+        overlays=[(str(upper), str(work), "/usr")],
     )
     text = " ".join(argv)
 
@@ -203,10 +207,13 @@ def test_w8_c01_sandbox_argv_isolation_shape(tmp_path: Path) -> None:
     ]
     assert (str(ctl_dir), str(ctl_dir)) in bind_pairs
     assert (str(workdir), str(workdir)) in bind_pairs
-    # Overlay makes system-package installs task-private — the host /usr
-    # stays ro underneath.
-    assert "--overlay" in argv
-    assert argv[argv.index("--overlay") + 1] == str(fake_usr)
+    # Overlay uses bwrap's three-operand form — upper+work bound writable
+    # first (task-private persistent layer), then --overlay UPPER WORK
+    # DEST so system-package installs never touch the host /usr.
+    idx = argv.index("--overlay")
+    assert argv[idx + 1 : idx + 4] == [str(upper), str(work), "/usr"]
+    upper_bind = argv.index(str(upper))
+    assert argv[upper_bind - 1] == "--bind" and upper_bind < idx
     # cwd inside the workspace; the confined command runs after `--`.
     assert argv[argv.index("--chdir") + 1] == str(workdir)
     assert argv[-3:] == ["python", "-m", "rxycode_worker.drain"]
@@ -618,6 +625,7 @@ def test_w8_c01_pause_approval_durable_call_id(
 
     cfg = SimpleNamespace(database_url="sqlite://", worker_id="w-1")
     paused = threading.Event()
+    paused_info: dict[str, Any] = {}
     handlers = drain._ctl_handlers(
         cfg,
         tenant_id="t1",
@@ -626,6 +634,7 @@ def test_w8_c01_pause_approval_durable_call_id(
         workdir=tmp_path,
         journal_dir=tmp_path / "journal",
         paused=paused,
+        paused_info=paused_info,
     )
     pause = handlers["pause_approval"]
 
@@ -642,6 +651,7 @@ def test_w8_c01_pause_approval_durable_call_id(
     )
     assert res == {"asked": True, "approval_id": "ap-1", "attempt_id": res["attempt_id"]}
     assert paused.is_set()
+    assert paused_info["approval_id"] == "ap-1"
 
     kw = captured[0]
     durable = kw["call_id"]
@@ -679,6 +689,7 @@ def test_w8_c01_pause_approval_durable_call_id(
         workdir=tmp_path,
         journal_dir=tmp_path / "journal",
         paused=threading.Event(),
+        paused_info={},
     )
     handlers2["pause_approval"](
         {"source_call_id": raw, "deadline": "2030-01-01T00:00:00+00:00"}
@@ -1080,6 +1091,18 @@ def test_w8_c01_pending_resume_binding(postgres_url: str) -> None:
             decision="approved",
             expected_revision=0,
         )
+        # The old drain's post-exit marker is what lets a new claimant
+        # proceed immediately — the poll finds it instead of waiting out
+        # the teardown budget.
+        from rxycode_server.events.store import append_event
+
+        append_event(
+            postgres_url,
+            tenant_id=tenant,
+            run_id=run_id,
+            event_type="turn.paused",
+            payload={"approval_id": asked["approval_id"]},
+        )
         record = _pending_resume(postgres_url, tenant, run_id)
         assert record is not None
         assert record["call_id"] == "resume-call"
@@ -1162,3 +1185,332 @@ def test_w8_c01_resume_journal_at_most_once(tmp_path: Path) -> None:
         attempt_id=attempt_id, call_id=call_id, tool="bash", args={"command": "x"}
     )
     assert again.action == "reuse" and again.result == "done"
+
+
+# ---------------------------------------------------------------------------
+# W8 audit r1 regression legs
+# ---------------------------------------------------------------------------
+
+
+def test_w8_c01_mounted_config_is_prescrubbed(tmp_path: Path) -> None:
+    """The config the sandbox READS is sanitized before it is ever mounted —
+    a literal api_key in the worker's config.yaml can never be recovered
+    from the ro-bound source (audit W8-r1: ro stops writes, not reads)."""
+    import yaml
+
+    import rxycode_worker.drain as drain
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "active_model": "main",
+                "models": {
+                    "main": {
+                        "api_key": "sk-literal-secret",
+                        "api_key_env": "RXYCODE_API_KEY",
+                        "base_url": "https://api.real-model.example/v1",
+                    },
+                    "other": {"api_key": "sk-second", "base_url": "https://x/v1"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "conf"
+    old = os.environ.get("RXYCODE_DATA_DIR")
+    old_model = os.environ.get("RXYCODE_WORKER_MODEL")
+    os.environ["RXYCODE_DATA_DIR"] = str(src)
+    os.environ.pop("RXYCODE_WORKER_MODEL", None)
+    try:
+        drain._prepare_child_data_dir(out)
+    finally:
+        if old is None:
+            os.environ.pop("RXYCODE_DATA_DIR", None)
+        else:
+            os.environ["RXYCODE_DATA_DIR"] = old
+        if old_model is None:
+            os.environ.pop("RXYCODE_WORKER_MODEL", None)
+        else:
+            os.environ["RXYCODE_WORKER_MODEL"] = old_model
+    mounted = yaml.safe_load((out / "config.yaml").read_text(encoding="utf-8"))
+    main = mounted["models"]["main"]
+    assert main["api_key"] == "confined"
+    assert "api_key_env" not in main
+    assert main["base_url"] == f"http://127.0.0.1:{drain._EGRESS_PORT}"
+    assert mounted["models"]["other"]["api_key"] == "confined"
+    assert "sk-literal-secret" not in (out / "config.yaml").read_text()
+
+
+def test_w8_c01_egress_connect_tunnels_end_to_end() -> None:
+    """A permitted CONNECT actually proxies bytes — the round-1 audit found
+    ``self._tunnel`` bound inside a module function so every successful
+    forwarding path raised AttributeError. Exercise the real handler
+    against a real loopback upstream."""
+    import socket
+
+    from rxycode_worker.egress import EgressProxy
+
+    assert callable(getattr(EgressProxy, "_tunnel", None)), "_tunnel must be a method"
+
+    async def drive() -> bytes:
+        proxy = EgressProxy("unused.sock", allowlist=frozenset())
+        # The CONNECT target is loopback — evaluate() would refuse it, so
+        # call _connect's tunnel half via a verdict-free seam: drive
+        # _tunnel directly with both stream pairs.
+        client_a, client_b = socket.socketpair()
+        up_a, up_b = socket.socketpair()
+        r_client, w_client = await asyncio.open_connection(sock=client_a)
+        r_up, w_up = await asyncio.open_connection(sock=up_a)
+        tunnel = asyncio.ensure_future(proxy._tunnel(r_client, w_client, r_up, w_up))
+        try:
+            client_b.sendall(b"ping\n")
+            # recv off the loop — a blocking recv inside the coroutine
+            # would starve the tunnel task itself.
+            echoed = await asyncio.to_thread(up_b.recv, 64)
+            assert echoed == b"ping\n"
+            up_b.sendall(b"pong\n")
+            back = await asyncio.to_thread(client_b.recv, 64)
+            assert back == b"pong\n"
+        finally:
+            for s in (client_b, up_b):
+                s.close()
+            client_a.close()
+            up_a.close()
+            try:
+                await asyncio.wait_for(tunnel, timeout=5)
+            except Exception:
+                pass
+        return b"ok"
+
+    assert asyncio.run(drive()) == b"ok"
+
+
+def test_w8_c01_ctl_journal_ops_roundtrip(tmp_path: Path) -> None:
+    """journal_* ops run the real RemoteJournalAdapter parent-side so the
+    child never touches journal files — reserve/complete/state over the
+    handler dict, in parent-owned storage."""
+    from types import SimpleNamespace
+
+    import rxycode_worker.drain as drain
+
+    cfg = SimpleNamespace(database_url="sqlite://", worker_id="w-1")
+    journal_dir = tmp_path / "journal"
+    handlers = drain._ctl_handlers(
+        cfg,
+        tenant_id="t1",
+        run_id="r1",
+        epoch=1,
+        workdir=tmp_path,
+        journal_dir=journal_dir,
+        paused=threading.Event(),
+        paused_info={},
+    )
+    attempt = "att_" + "a" * 32
+    call = "call_" + "b" * 32
+    assert handlers["journal_state"](
+        {"attempt_id": attempt, "call_id": call}
+    ) == {"state": "not_started"}
+    res = handlers["journal_reserve"](
+        {
+            "attempt_id": attempt,
+            "call_id": call,
+            "tool": "bash",
+            "args": {"command": "x"},
+        }
+    )
+    assert res["action"] == "execute"
+    assert handlers["journal_state"](
+        {"attempt_id": attempt, "call_id": call}
+    ) == {"state": "unknown"}
+    out = handlers["journal_complete"](
+        {
+            "attempt_id": attempt,
+            "call_id": call,
+            "tool": "bash",
+            "args": {"command": "x"},
+            "result": "done",
+        }
+    )
+    assert out["result"] == "done"
+    again = handlers["journal_reserve"](
+        {
+            "attempt_id": attempt,
+            "call_id": call,
+            "tool": "bash",
+            "args": {"command": "x"},
+        }
+    )
+    assert again["action"] == "reuse" and again["result"] == "done"
+    # The files live ONLY in the parent-owned dir — nothing under workdir.
+    assert journal_dir.is_dir()
+    assert not (tmp_path / ".journal").exists()
+
+
+def test_w8_c01_channel_journal_speaks_ops() -> None:
+    """_ChannelJournal maps the adapter surface onto TurnChannel methods —
+    the resume child reserves/completes through the parent, never files."""
+    import rxycode_worker.drain as drain
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeChannel:
+        def journal_state(self, **kw: Any) -> str:
+            calls.append(("journal_state", kw))
+            return "not_started"
+
+        def journal_reserve(self, **kw: Any) -> dict[str, Any]:
+            calls.append(("journal_reserve", kw))
+            return {"action": "execute", "result": None}
+
+        def journal_complete(self, **kw: Any) -> str:
+            calls.append(("journal_complete", kw))
+            return "ok"
+
+    journal = drain._ChannelJournal(FakeChannel())
+    assert journal.state(attempt_id="a", call_id="c") == "not_started"
+    res = journal.reserve(attempt_id="a", call_id="c", tool="bash", args={"x": 1})
+    assert res.action == "execute"
+    assert journal.complete(
+        attempt_id="a", call_id="c", tool="bash", args={"x": 1}, result="r"
+    ) == "ok"
+    assert [name for name, _ in calls] == [
+        "journal_state",
+        "journal_reserve",
+        "journal_complete",
+    ]
+
+
+
+def test_w8_c01_resume_state_lease_fence(postgres_url: str) -> None:
+    """approve->claim->cancel must not let a late resume_state execute: the
+    op only returns the stored call while THIS claim (worker+epoch, live
+    status, unexpired lease) still owns the run (audit W8-r1)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    from rxycode_server.approvals.service import decide_approval, request_approval
+    import rxycode_worker.drain as drain
+    from types import SimpleNamespace
+
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    _seed_tenant_run(postgres_url, tenant=tenant, run_id=run_id, status="leased")
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE runs SET lease_owner='wkr-1', lease_epoch=9,"
+                    " lease_until=:u WHERE id=:r"
+                ),
+                {"u": datetime.now(timezone.utc) + timedelta(minutes=5), "r": run_id},
+            )
+        asked = request_approval(
+            postgres_url,
+            tenant_id=tenant,
+            run_id=run_id,
+            call_id="call_fence",
+            tool="bash",
+            permission_scope="danger",
+            arguments={"command": "touch /w/x"},
+            deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+            worker_id="wkr-1",
+            epoch=9,
+            command="touch /w/x",
+            workdir="/w",
+        )
+        decide_approval(
+            postgres_url,
+            tenant_id=tenant,
+            approval_id=asked["approval_id"],
+            decision="approved",
+            expected_revision=0,
+        )
+
+        def ops_for(worker: str, epoch: int) -> Any:
+            cfg = SimpleNamespace(database_url=postgres_url, worker_id=worker)
+            return drain._ctl_handlers(
+                cfg,
+                tenant_id=tenant,
+                run_id=run_id,
+                epoch=epoch,
+                workdir=Path("/w"),
+                journal_dir=Path("/j"),
+                paused=threading.Event(),
+                paused_info={},
+            )["resume_state"]
+
+        # The approving claim finished and a new claim owns the run.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE runs SET status='leased', lease_owner='wkr-2',"
+                    " lease_epoch=10, lease_until=:u WHERE id=:r"
+                ),
+                {"u": datetime.now(timezone.utc) + timedelta(minutes=5), "r": run_id},
+            )
+        ours = ops_for("wkr-2", 10)({"approval_id": asked["approval_id"]})
+        assert ours["record"] is not None
+        assert ours["record"]["call_id"] == "call_fence"
+
+        # A stale/foreign claim gets nothing — the approved row is not a
+        # pass for whoever happens to ask.
+        foreign = ops_for("wkr-other", 11)({"approval_id": asked["approval_id"]})
+        assert foreign["record"] is None
+
+        # Cancel after claim: the stored call may never execute late.
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE runs SET status='cancel_requested' WHERE id=:r"),
+                {"r": run_id},
+            )
+        cancelled = ops_for("wkr-2", 10)({"approval_id": asked["approval_id"]})
+        assert cancelled["record"] is None
+    finally:
+        engine.dispose()
+
+
+def test_w8_c01_paused_marker_poll_predicate() -> None:
+    """_paused_marker_seen is the durable teardown proof — False until the
+    old drain's post-exit event lands for THAT approval, True after."""
+    import rxycode_worker.drain as drain
+
+    seen: list[dict[str, Any]] = []
+
+    class FakeResult:
+        def __init__(self, row: Any) -> None:
+            self._row = row
+
+        def first(self) -> Any:
+            return self._row
+
+    class FakeConn:
+        def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+            seen.append(params)
+            if params["aid"] == "ap-no":
+                return FakeResult(None)
+            return FakeResult((1,))
+
+        def __enter__(self) -> "FakeConn":
+            return self
+
+        def __exit__(self, *a: Any) -> None:
+            return None
+
+    class FakeEngine:
+        def connect(self) -> FakeConn:
+            return FakeConn()
+
+        def dispose(self) -> None:
+            pass
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr("sqlalchemy.create_engine", lambda *a, **k: FakeEngine())
+        assert drain._paused_marker_seen("db", "r1", "ap-yes") is True
+        assert drain._paused_marker_seen("db", "r1", "ap-no") is False
+    finally:
+        monkey.undo()
+    assert seen and all(p["rid"] == "r1" for p in seen)

@@ -251,3 +251,45 @@ class TurnChannel:
     def resume_state(self, approval_id: str) -> dict[str, Any]:
         """Fetch the stored call for an approved approval bound to THIS run."""
         return dict(self._call("resume_state", approval_id=str(approval_id)) or {})
+
+    # -- parent-owned journal ops ----------------------------------------
+    # The approval-resume journal lives in the drain's state dir — never
+    # in child-writable storage. These three ops are the child's only
+    # access; the parent runs the real RemoteJournalAdapter.
+
+    def journal_state(self, *, attempt_id: str, call_id: str) -> str:
+        result = self._call(
+            "journal_state", attempt_id=str(attempt_id), call_id=str(call_id)
+        )
+        return str((result or {}).get("state") or "unknown")
+
+    def journal_reserve(
+        self, *, attempt_id: str, call_id: str, tool: str, args: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        result = self._call(
+            "journal_reserve",
+            attempt_id=str(attempt_id),
+            call_id=str(call_id),
+            tool=str(tool),
+            args=dict(args or {}),
+        )
+        return dict(result or {})
+
+    def journal_complete(
+        self,
+        *,
+        attempt_id: str,
+        call_id: str,
+        tool: str,
+        args: Mapping[str, Any],
+        result: str,
+    ) -> str:
+        out = self._call(
+            "journal_complete",
+            attempt_id=str(attempt_id),
+            call_id=str(call_id),
+            tool=str(tool),
+            args=dict(args or {}),
+            result=str(result),
+        )
+        return str((out or {}).get("result") or "")

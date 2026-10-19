@@ -425,6 +425,24 @@ class EgressProxy:
         await upstream_w.drain()
         await self._tunnel(reader, writer, upstream_r, upstream_w)
 
+    async def _tunnel(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        upstream_r: asyncio.StreamReader,
+        upstream_w: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            await asyncio.gather(
+                _pipe(reader, upstream_w),
+                _pipe(upstream_r, writer),
+            )
+        finally:
+            try:
+                upstream_w.close()
+            except Exception:
+                pass
+
 
 def _gateway_head(
     gateway: ModelGateway,
@@ -464,24 +482,6 @@ def _gateway_head(
     head_lines.append("Connection: close")
     head_lines.extend(kept)
     return ("\r\n".join(head_lines) + "\r\n\r\n").encode("iso-8859-1")
-
-    async def _tunnel(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        upstream_r: asyncio.StreamReader,
-        upstream_w: asyncio.StreamWriter,
-    ) -> None:
-        try:
-            await asyncio.gather(
-                _pipe(reader, upstream_w),
-                _pipe(upstream_r, writer),
-            )
-        finally:
-            try:
-                upstream_w.close()
-            except Exception:
-                pass
 
 
 def _split_authority(authority: str) -> tuple[str, int]:

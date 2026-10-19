@@ -1256,21 +1256,74 @@ def _child_env(turn_env: Mapping[str, str]) -> dict[str, str]:
     return env
 
 
+def _scrub_model_credentials(
+    data: dict[str, Any], *, egress_port: int, env_model: str
+) -> None:
+    """Strip every credential-shaped field from a config's model entries
+    and point the used model at the loopback egress gateway — the parent
+    injects real auth on the upstream hop. Idempotent: safe to re-apply on
+    the already-scrubbed child copy."""
+    models = data.get("models")
+    if not isinstance(models, dict):
+        return
+    gateway_url = f"http://127.0.0.1:{egress_port}" if egress_port else ""
+    wanted = str(env_model or data.get("active_model") or "")
+    if wanted and wanted not in models:
+        # AgentV2 falls back to the active entry for an unknown name —
+        # the rewrite must follow the same fallback.
+        wanted = str(data.get("active_model") or "")
+    for name, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        # Every credential-shaped field dies at the boundary.
+        entry.pop("api_key_env", None)
+        entry.pop("api_key_secret", None)
+        entry["api_key"] = "confined"
+        if wanted and str(name) == wanted and gateway_url:
+            entry["base_url"] = gateway_url
+
+
 def _prepare_child_data_dir(conf_dir: Path) -> Path:
-    """Per-run config home under the drain-controlled state root — a copy of
-    the worker's config.yaml so model resolution reads a real file. It is
-    ro-bound into the sandbox; the confined turn can never write it (and can
-    never leave a destination symlink for the parent to follow).
-    """
+    """Per-run config home under the drain-controlled state root — a
+    SANITIZED copy of the worker's config.yaml so model resolution reads
+    a real file. It is ro-bound into the sandbox; the confined turn can
+    never write it (and can never leave a destination symlink for the
+    parent to follow).
+
+    Scrubbing happens HERE, before the file is ever mounted: an ro bind
+    stops modification, not disclosure — a literal ``api_key`` readable
+    under ``RXYCODE_TURN_CONFIG_SRC`` is still a leaked platform secret
+    (audit W8-r1). A config the scrubber cannot parse is dropped entirely
+    rather than mounted raw."""
     conf_dir.mkdir(parents=True, exist_ok=True)
     source_root = os.environ.get("RXYCODE_DATA_DIR", "").strip()
-    if source_root:
-        source = Path(source_root) / "config.yaml"
-        if source.is_file():
-            try:
-                shutil.copy2(source, conf_dir / "config.yaml")
-            except OSError:
-                _LOG.warning("copying config into the run sandbox failed", exc_info=True)
+    if not source_root:
+        return conf_dir
+    source = Path(source_root) / "config.yaml"
+    if not source.is_file():
+        return conf_dir
+    try:
+        import yaml
+
+        data = yaml.safe_load(source.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        _LOG.warning(
+            "turn config source unreadable; mounting an empty config", exc_info=True
+        )
+        data = {}
+    _scrub_model_credentials(
+        data,
+        egress_port=_EGRESS_PORT,
+        env_model=os.environ.get("RXYCODE_WORKER_MODEL", ""),
+    )
+    try:
+        conf_dir.joinpath("config.yaml").write_text(
+            yaml.safe_dump(data), encoding="utf-8"
+        )
+    except OSError:
+        _LOG.warning("writing sanitized turn config failed", exc_info=True)
     return conf_dir
 
 
@@ -1406,6 +1459,52 @@ class _CtlApproval:
         return self._broker
 
 
+class _ChannelJournal:
+    """RemoteJournalAdapter over the parent control channel.
+
+    The approval-resume reservation lives in parent-owned storage behind
+    ctl ops — a workspace wipe inside the sandbox can never erase it and
+    win a second side effect (audit W8-r1). Same method surface as
+    ``RemoteJournalAdapter`` so ``_execute_approved_call`` is journal-
+    location agnostic.
+    """
+
+    def __init__(self, channel: Any) -> None:
+        self._channel = channel
+
+    def state(self, *, attempt_id: str, call_id: str) -> str:
+        if not attempt_id or not call_id:
+            return "not_started"
+        return self._channel.journal_state(
+            attempt_id=str(attempt_id), call_id=str(call_id)
+        )
+
+    def reserve(self, *, attempt_id: str, call_id: str, tool: str, args: Any) -> Any:
+        from RxyCode.RxyCode1_1_0.execution.tool_journal import JournalReservation
+
+        result = self._channel.journal_reserve(
+            attempt_id=str(attempt_id),
+            call_id=str(call_id),
+            tool=str(tool),
+            args=dict(args or {}),
+        )
+        action = str(result.get("action") or "uncertain")
+        return JournalReservation(action=action, result=result.get("result"))  # type: ignore[arg-type]
+
+    def complete(
+        self, *, attempt_id: str, call_id: str, tool: str, args: Any, result: Any
+    ) -> str:
+        # The journal cleans to its own max_result_chars parent-side; cap
+        # the wire payload below the ctl frame limit first.
+        return self._channel.journal_complete(
+            attempt_id=str(attempt_id),
+            call_id=str(call_id),
+            tool=str(tool),
+            args=dict(args or {}),
+            result=str(result if result is not None else "")[:400_000],
+        )
+
+
 #: Approval asks die with the run; the deadline bounds how long a run may
 #: sit in waiting_approval before the service expires it.
 _APPROVAL_DEADLINE_S = 3600.0
@@ -1442,6 +1541,74 @@ def _writable_domain(workdir: Path) -> list[str]:
     return [str(workdir), str(workdir / ".home"), "/tmp"]
 
 
+def _lease_fenced(
+    database_url: str, run_id: str, worker_id: str, epoch: int
+) -> bool:
+    """True only while THIS claim still owns the run: right owner, right
+    epoch, a live (non-cancel-requested) status and an unexpired lease.
+    Approval rows stay ``approved`` across a cancel — the lease check is
+    what stops a late resume from executing (audit W8-r1)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT status, lease_owner, lease_epoch, lease_until "
+                    "FROM runs WHERE id = :rid"
+                ),
+                {"rid": run_id},
+            ).first()
+    finally:
+        engine.dispose()
+    if row is None:
+        return False
+    status, owner, lease_epoch, lease_until = row
+    if str(status or "") not in {"leased", "running"}:
+        return False
+    if str(owner or "") != str(worker_id) or int(lease_epoch or 0) != int(epoch):
+        return False
+    until = _aware_dt(lease_until)
+    return until is not None and until >= datetime.now(timezone.utc)
+
+
+def _aware_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _paused_marker_seen(database_url: str, run_id: str, approval_id: str) -> bool:
+    """The drain emits ``turn.paused`` only AFTER its confined child has
+    exited — the durable proof the old namespace stopped before a new
+    claimant may replay the approved call (audit W8-r1)."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT 1 FROM run_events WHERE run_id = :rid "
+                    "AND type = 'turn.paused' "
+                    "AND payload->>'approval_id' = :aid LIMIT 1"
+                ),
+                {"rid": run_id, "aid": approval_id},
+            ).first()
+    finally:
+        engine.dispose()
+    return row is not None
+
+
 def _pending_resume(
     database_url: str, tenant_id: str, run_id: str
 ) -> dict[str, Any] | None:
@@ -1455,6 +1622,24 @@ def _pending_resume(
     approval_id = _latest_requested_approval_id(database_url, run_id)
     if not approval_id:
         return None
+    # Old-worker/new-claim handoff: approve->pending can be claimed while
+    # the previous confined child is still unwinding. Wait (bounded) for
+    # the old drain's post-exit ``turn.paused`` marker — a dead drain can
+    # never produce it, but --die-with-parent already reaped that child,
+    # so proceeding after the budget is safe either way (audit W8-r1).
+    import time as _time
+
+    deadline = _time.monotonic() + 6.0
+    while not _paused_marker_seen(database_url, run_id, approval_id):
+        if _time.monotonic() >= deadline:
+            _LOG.warning(
+                "run %s: no turn.paused marker for approval %s within "
+                "budget; relying on namespace teardown guarantees",
+                run_id,
+                approval_id,
+            )
+            break
+        _time.sleep(0.5)
     return _resume_state(database_url, tenant_id, run_id, approval_id)
 
 
@@ -1502,6 +1687,7 @@ def _ctl_handlers(
     workdir: Path,
     journal_dir: Path,
     paused: Any,
+    paused_info: dict[str, Any],
 ) -> dict[str, Any]:
     """Parent-side ops for one run's control socket.
 
@@ -1596,6 +1782,7 @@ def _ctl_handlers(
         # The run is now waiting_approval and our lease is released — flag
         # it BEFORE telling the child so the drain's post-wait check can
         # never race the unwind into a spurious settle.
+        paused_info["approval_id"] = str(result.get("approval_id") or "")
         paused.set()
         return {
             "asked": True,
@@ -1612,6 +1799,12 @@ def _ctl_handlers(
         )
         if record is None:
             return {"record": None}
+        # Claim fence: the stored call may execute only while THIS claim
+        # still owns the run. approve→claim→cancel must not let a late
+        # resume_state fetch execute — the row stays "approved" but the
+        # lease is gone, so nothing is returned (audit W8-r1).
+        if not _lease_fenced(cfg.database_url, run_id, cfg.worker_id, epoch):
+            return {"record": None}
         # Bound copy for the confined resume child — never the raw row.
         return {
             "record": {
@@ -1627,12 +1820,53 @@ def _ctl_handlers(
             }
         }
 
+    def _journal_adapter() -> Any:
+        """The approval-resume journal lives in PARENT-OWNED state — never
+        inside the child's writable workspace, where an approved command
+        could erase the reservation and force a second side effect
+        (audit W8-r1)."""
+        from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+            RemoteJournalAdapter,
+            ToolExecutionJournal,
+        )
+
+        return RemoteJournalAdapter(ToolExecutionJournal(str(journal_dir)))
+
+    def _journal_state_op(args: dict[str, Any]) -> dict[str, Any]:
+        state = _journal_adapter().state(
+            attempt_id=str(args.get("attempt_id") or ""),
+            call_id=str(args.get("call_id") or ""),
+        )
+        return {"state": str(state)}
+
+    def _journal_reserve(args: dict[str, Any]) -> dict[str, Any]:
+        reservation = _journal_adapter().reserve(
+            attempt_id=str(args.get("attempt_id") or ""),
+            call_id=str(args.get("call_id") or ""),
+            tool=str(args.get("tool") or ""),
+            args=dict(args.get("args") or {}),
+        )
+        return {"action": str(reservation.action), "result": reservation.result}
+
+    def _journal_complete(args: dict[str, Any]) -> dict[str, Any]:
+        cleaned = _journal_adapter().complete(
+            attempt_id=str(args.get("attempt_id") or ""),
+            call_id=str(args.get("call_id") or ""),
+            tool=str(args.get("tool") or ""),
+            args=dict(args.get("args") or {}),
+            result=str(args.get("result") or ""),
+        )
+        return {"result": cleaned}
+
     return {
         "emit": _emit,
         "load_run": _load_run,
         "commands": _commands,
         "pause_approval": _pause_approval,
         "resume_state": _resume_state_op,
+        "journal_state": _journal_state_op,
+        "journal_reserve": _journal_reserve,
+        "journal_complete": _journal_complete,
     }
 
 
@@ -1678,28 +1912,13 @@ def _merge_turn_config(dst: Path, workdir: Path) -> None:
         os_sandbox = execution.setdefault("os_sandbox", {})
         if isinstance(os_sandbox, dict):
             os_sandbox["enabled"] = False
-    models = data.get("models")
-    if isinstance(models, dict):
-        egress_port = int(os.environ.get("RXYCODE_EGRESS_PORT", "0") or 0)
-        gateway_url = f"http://127.0.0.1:{egress_port}" if egress_port else ""
-        wanted = str(
-            os.environ.get("RXYCODE_WORKER_MODEL", "")
-            or data.get("active_model")
-            or ""
-        )
-        if wanted and wanted not in models:
-            # AgentV2 falls back to the active entry for an unknown name —
-            # the rewrite must follow the same fallback.
-            wanted = str(data.get("active_model") or "")
-        for name, entry in models.items():
-            if not isinstance(entry, dict):
-                continue
-            # Every credential-shaped field dies at the boundary.
-            entry.pop("api_key_env", None)
-            entry.pop("api_key_secret", None)
-            entry["api_key"] = "confined"
-            if wanted and str(name) == wanted and gateway_url:
-                entry["base_url"] = gateway_url
+    # Defense in depth: the mounted source was already sanitized by the
+    # parent — re-scrub so a missed path can never carry a key inside.
+    _scrub_model_credentials(
+        data,
+        egress_port=int(os.environ.get("RXYCODE_EGRESS_PORT", "0") or 0),
+        env_model=os.environ.get("RXYCODE_WORKER_MODEL", ""),
+    )
     try:
         dst.write_text(yaml.safe_dump(data), encoding="utf-8")
     except OSError:
@@ -1722,14 +1941,13 @@ async def _resume_turn(
     never anything the caller claimed. Journal state decides idempotence:
     a ``completed``/``unknown`` call is NOT re-run.
     """
-    from rxycode_worker.interrupt_resume import _journal_state
-
     result: dict[str, Any] = {
         "run_id": run_id,
         "status": "failed",
         "error": "",
         "tokens": 0,
     }
+    journal = _ChannelJournal(channel)
     try:
         approval_id = os.environ.get("RXYCODE_TURN_APPROVAL", "").strip()
         state = await asyncio.to_thread(channel.resume_state, approval_id)
@@ -1737,11 +1955,10 @@ async def _resume_turn(
         if not record or str(record.get("run_id") or "") != run_id:
             result["error"] = "approval not found, not approved, or not bound to this run"
         else:
-            journal_dir = str(workdir / ".journal")
             attempt_id = str(record.get("attempt_id") or "")
             call_id = str(record.get("call_id") or "")
             before = await asyncio.to_thread(
-                _journal_state, journal_dir, attempt_id, call_id
+                journal.state, attempt_id=attempt_id, call_id=call_id
             )
             if before in {"completed", "unknown"}:
                 # Already ran (or its output is unrecoverable): never
@@ -1766,9 +1983,11 @@ async def _resume_turn(
                         "resumed": True,
                     },
                 )
-                text_out = await _execute_approved_call(record, workdir, emit)
+                text_out = await _execute_approved_call(
+                    record, workdir, emit, journal
+                )
                 after = await asyncio.to_thread(
-                    _journal_state, journal_dir, attempt_id, call_id
+                    journal.state, attempt_id=attempt_id, call_id=call_id
                 )
                 if after == "completed":
                     result["status"] = "succeeded"
@@ -1797,11 +2016,15 @@ async def _resume_turn(
 
 
 async def _execute_approved_call(
-    record: dict[str, Any], workdir: Path, emit: Any
+    record: dict[str, Any], workdir: Path, emit: Any, journal: Any
 ) -> str:
     """Execute the stored call through the SAME ToolOrchestrator every
     surface uses — blacklist, write-path gate and audit intact; approval
-    was already granted (the grant broker answers prompts)."""
+    was already granted (the grant broker answers prompts).
+
+    ``journal`` is the at-most-once reservation — a ``_ChannelJournal``
+    in the confined child (parent-owned storage) or a file-backed
+    ``RemoteJournalAdapter`` in tests."""
     from RxyCode.RxyCode1_1_0.core.builtin_tool_registration import (
         register_builtin_tools,
     )
@@ -1812,10 +2035,6 @@ async def _execute_approved_call(
     )
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
         ToolOrchestrator,
-    )
-    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
-        RemoteJournalAdapter,
-        ToolExecutionJournal,
     )
     from RxyCode.RxyCode1_1_0.tools.registry import ToolRegistry
 
@@ -1833,9 +2052,6 @@ async def _execute_approved_call(
         orchestrator,
         rag_enabled=False,
         subagents_enabled=False,
-    )
-    journal = RemoteJournalAdapter(
-        ToolExecutionJournal(str(workdir / ".journal"))
     )
     tool = str(record.get("tool") or "")
     call_id = str(record.get("call_id") or "")
@@ -2530,6 +2746,9 @@ async def execute_run(
     ctl_server: Any | None = None
     egress: Any | None = None
     paused_evt = threading.Event()
+    # The ctl op hands its approval_id back so the post-exit ``turn.paused``
+    # marker names the exact ask this drain parked on (audit W8-r1).
+    paused_info: dict[str, str] = {}
     stderr_tail: list[bytes] = []
     streamed: dict[str, int] = {"tokens": 0}
 
@@ -2595,7 +2814,12 @@ async def execute_run(
         if ws_data.is_dir() and not ws_data.is_symlink():
             (ws_data / "config.yaml").unlink(missing_ok=True)
 
-        journal_dir = workdir / ".journal"
+        # Approval-resume journal: PARENT-OWNED, outside the sandbox's
+        # writable workspace and never mounted — a wiped workdir can no
+        # longer erase a reservation and win a second side effect (W8-r1).
+        # The child reaches it only through journal_* ctl ops.
+        journal_dir = provider.state_root / f"{sandbox_id}-journal"
+        journal_dir.mkdir(parents=True, exist_ok=True)
 
         # Resume detection: the ONLY way a run leaves waiting_approval for a
         # claimable status is decide_approval(... approved) -> pending — so
@@ -2683,6 +2907,7 @@ async def execute_run(
                 workdir=workdir,
                 journal_dir=journal_dir,
                 paused=paused_evt,
+                paused_info=paused_info,
             ),
         )
         await ctl_server.start()
@@ -2754,15 +2979,28 @@ async def execute_run(
         # Task-private writable mounts: the control dir only — HOME and the
         # package caches live inside the workspace mount itself.
         rw_binds = [str(ctl_dir)]
-        # System-package installs (apt/dpkg) write to a per-task tmpfs
-        # overlay — never the host's /usr — when the kernel allows
-        # userns overlayfs; otherwise the ro mounts honestly refuse.
+        # System-package installs (apt/dpkg) write to a per-task PERSISTENT
+        # overlay layer — never the host's /usr — when the kernel allows
+        # userns overlayfs; otherwise the ro mounts honestly refuse. Upper
+        # and work dirs live under the run's own state dir (same fs, as
+        # --overlay requires) so installs survive across the task's turns.
         from rxycode_runner.sandbox.userns import (
             _OVERLAY_CANDIDATES,
             overlay_available,
         )
 
-        overlay_roots = _OVERLAY_CANDIDATES if overlay_available() else ()
+        overlays: list[tuple[str, str, str]] = []
+        if overlay_available():
+            ovl_root = provider.state_root / f"{sandbox_id}-ovl"
+            for root in _OVERLAY_CANDIDATES:
+                if not Path(root).is_dir():
+                    continue
+                tag = root.strip("/") or "root"
+                upper = ovl_root / f"{tag}-upper"
+                work = ovl_root / f"{tag}-work"
+                upper.mkdir(parents=True, exist_ok=True)
+                work.mkdir(parents=True, exist_ok=True)
+                overlays.append((str(upper), str(work), root))
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
@@ -2770,7 +3008,7 @@ async def execute_run(
             env=child_env,
             ro_binds=ro_binds,
             rw_binds=rw_binds,
-            overlay_roots=overlay_roots,
+            overlays=overlays,
         )
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -3009,6 +3247,27 @@ async def execute_run(
     # is belt for a child killed in the pause-unwind window before writing
     # its result file.
     if paused_run or paused_evt.is_set():
+        # Teardown marker: the confined child is already dead (waited
+        # above) — this durable event is the proof a new claimant polls
+        # for before replaying the approved call, so the old namespace
+        # can never still be running beside the resume child (W8-r1).
+        try:
+            await asyncio.to_thread(
+                append_event,
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                event_type="turn.paused",
+                payload={
+                    "approval_id": str(paused_info.get("approval_id") or ""),
+                    "worker_id": cfg.worker_id,
+                    "epoch": int(epoch),
+                },
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: turn.paused marker emit failed", run_id, exc_info=True
+            )
         return True
     try:
         if (

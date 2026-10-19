@@ -11,8 +11,8 @@ user namespaces — inside a container that needs ``seccomp=unconfined`` for
   supervisor (or the namespace init dying) SIGKILLs the whole tree —
   ``--die-with-parent`` additionally reaps the child if the drain dies.
 * Only the mounts listed are visible: system paths read-only (with an
-  optional task-private tmpfs overlay over /usr, /var and /etc for
-  package-manager installs), the run's own workspace read-write, the
+  optional task-private writable overlay layer over /usr, /var and /etc
+  for package-manager installs), the run's own workspace read-write, the
   task-private home and control directories, a private tmpfs ``/tmp``.
   Sibling workspaces and the worker's data dir are simply not mounted.
 * ``--clearenv`` + an explicit ``--setenv`` passlist decides which
@@ -66,9 +66,10 @@ _OVERLAY_CANDIDATES = ("/usr", "/var", "/etc")
 
 
 def overlay_available(*, force: bool = False) -> bool:
-    """Probe a confined ``--overlay`` mount once. False = no task-private
-    system layer — callers drop the overlay roots (apt/dpkg then honestly
-    fail read-only) instead of widening anything else."""
+    """Probe a confined overlayfs mount once (``--tmp-overlay`` — the same
+    userns-overlayfs kernel path the persistent ``--overlay`` argv uses).
+    False = no task-private system layer — callers drop the overlays
+    (apt/dpkg then honestly fail read-only) instead of widening anything."""
     global _OVERLAY_OK
     if _OVERLAY_OK is not None and not force:
         return _OVERLAY_OK
@@ -87,8 +88,7 @@ def overlay_available(*, force: bool = False) -> bool:
         _OVERLAY_OK = False
         return False
     argv += [
-        "--overlay",
-        "/usr",
+        "--tmp-overlay",
         "/usr",
         "--die-with-parent",
         "--new-session",
@@ -150,16 +150,20 @@ def build_sandbox_argv(
     env: Mapping[str, str],
     ro_binds: Sequence[str] = _DEFAULT_RO_BINDS,
     rw_binds: Sequence[str] = (),
-    overlay_roots: Sequence[str] = (),
+    overlays: Sequence[tuple[str, str, str]] = (),
 ) -> list[str]:
     """Build the bwrap argv for one confined execution.
 
     Pure function — the shape is unit-testable without a namespace-capable
     host. Writable mounts: ``workdir``, the task-private dirs in
     ``rw_binds`` (home / control-socket dir), a private tmpfs ``/tmp`` and
-    the tmpfs overlays in ``overlay_roots``. The network namespace is
-    ALWAYS unshared — the confined process's only link to the outside is
-    the parent's filtered egress socket mounted via ``rw_binds``.
+    the per-task persistent overlays in ``overlays`` — each ``(upper,
+    work, dest)`` triple binds the two task-private dirs writable and then
+    mounts ``--overlay UPPER WORK DEST`` (bwrap's required three-operand
+    form; upper/work must share one filesystem — they live under the same
+    state root). The network namespace is ALWAYS unshared — the confined
+    process's only link to the outside is the parent's filtered egress
+    socket mounted via ``rw_binds``.
     """
     bwrap = shutil.which("bwrap") or "bwrap"
     workdir = Path(workdir).resolve()
@@ -189,12 +193,21 @@ def build_sandbox_argv(
     for path in dict.fromkeys([*_DEFAULT_RO_BINDS, *ro_binds]):
         if Path(path).exists():
             out += ["--ro-bind", str(path), str(path)]
-    # Task-private system layer: tmpfs-upper overlays make apt/dpkg/pip
-    # writes succeed *inside this task's filesystem view* and discard at
-    # exit — the host's /usr stays untouched underneath.
-    for root in dict.fromkeys(overlay_roots):
-        if Path(root).is_dir():
-            out += ["--overlay", str(root), str(root)]
+    # Task-private system layer: bind each overlay's upper+work dirs
+    # (parent-created, on the same state-root filesystem) writable, then
+    # mount the overlay — apt/dpkg/pip writes land in the task's own layer
+    # and persist across its turns; the host's /usr stays untouched.
+    seen_dests: set[str] = set()
+    for upper, work, dest in overlays:
+        upper_p, work_p, dest_s = Path(upper), Path(work), str(dest)
+        if dest_s in seen_dests or not (upper_p.is_dir() and work_p.is_dir()):
+            continue
+        seen_dests.add(dest_s)
+        out += [
+            "--bind", str(upper_p), str(upper_p),
+            "--bind", str(work_p), str(work_p),
+            "--overlay", str(upper_p), str(work_p), dest_s,
+        ]
     for path in dict.fromkeys(rw_binds):
         if Path(path).exists():
             out += ["--bind", str(path), str(path)]
@@ -339,14 +352,14 @@ class UsernsSandboxProvider:
         env: Mapping[str, str],
         ro_binds: Sequence[str] = _DEFAULT_RO_BINDS,
         rw_binds: Sequence[str] = (),
-        overlay_roots: Sequence[str] = (),
+        overlays: Sequence[tuple[str, str, str]] = (),
     ) -> list[str]:
         """bwrap argv for one confined command — the async-spawn surface the
         drain uses. The sandbox record must exist and belong to the tenant.
         ``ro_binds`` extends the system mounts with this host's code paths;
         ``rw_binds`` mounts task-private writable dirs (home, control dir)
-        at their own host paths; ``overlay_roots`` adds tmpfs-upper system
-        layers (apt/dpkg write domain)."""
+        at their own host paths; ``overlays`` carries the task-private
+        (upper, work, dest) system layers (apt/dpkg write domain)."""
         record = self._load(sandbox_id, tenant_id)
         workdir = Path(str(record.get("workdir") or "")) or self._workdir(
             tenant_id, str(record.get("workspace_id") or "")
@@ -358,7 +371,7 @@ class UsernsSandboxProvider:
             env=env,
             ro_binds=ro_binds,
             rw_binds=rw_binds,
-            overlay_roots=overlay_roots,
+            overlays=overlays,
         )
 
     def exec(

@@ -8,9 +8,11 @@ What is substituted and why:
   + ``_CtlApproval`` pair with the socket hop removed (Windows has no
   AF_UNIX; the socket transport itself is covered by unit tests and the
   Linux deployment). Everything a handler touches — Postgres, the lease
-  fence, the durable row — is real.
+  fence, the durable row, the parent-owned journal — is real.
 - bwrap is Linux-only; its argv shape (mounts, --unshare-net,
-  --die-with-parent, env) is asserted in the unit file.
+  --die-with-parent, env) is asserted in the unit file, and the kernel
+  boundary chain (confined read/connect denial) runs live here wherever
+  ``userns_available()`` is true — skipping honestly elsewhere.
 """
 
 from __future__ import annotations
@@ -217,9 +219,62 @@ def test_w8_c01_chain_normal_dev_both_modes(
     _sandbox_data_dir(tmp_path, tmp_path, monkeypatch)
 
     orch = _orchestrator()
-    target = tmp_path / "hello.txt"
 
-    # -- ordinary mode: one durable-style ask, approved -> executed.
+    def _dev_legs(cfg: dict[str, Any], name: str) -> None:
+        """The acceptance chain, identical for both modes: read/edit files,
+        install a dependency into the task-private tree, and execute a
+        test — all real tool calls through the same orchestrator."""
+        marker = tmp_path / f"{name}.txt"
+        out = asyncio.run(
+            orch.execute_tool(
+                "edit",
+                {"filePath": str(marker), "operation": "write", "content": name},
+                cfg,
+            )
+        )
+        assert marker.read_text() == name
+        assert "blocked" not in str(out).lower()
+        read_out = asyncio.run(
+            orch.execute_tool("read", {"filePath": str(marker)}, cfg)
+        )
+        assert name in str(read_out)
+        # Dependency install lands in the task-private tree — the same
+        # write domain a real pip/venv install occupies.
+        asyncio.run(
+            orch.execute_tool(
+                "bash",
+                {
+                    "command": (
+                        "python -c \"from pathlib import Path;"
+                        " Path('.deps/pkg').mkdir(parents=True, exist_ok=True);"
+                        " Path('.deps/pkg/installed.marker').write_text('v1')\""
+                    ),
+                    "workdir": str(tmp_path),
+                },
+                cfg,
+            )
+        )
+        assert (tmp_path / ".deps" / "pkg" / "installed.marker").read_text() == "v1"
+        # A real test execution: python runs the suite file; its exit
+        # code and its marker prove the run happened.
+        suite = tmp_path / f"test_{name}.py"
+        suite.write_text(
+            "from pathlib import Path\n"
+            f"assert '{name}' in Path('{name}.txt').read_text()\n"
+            "Path('test-ran.marker').write_text('passed')\n",
+            encoding="utf-8",
+        )
+        bash_out = asyncio.run(
+            orch.execute_tool(
+                "bash",
+                {"command": f"python test_{name}.py", "workdir": str(tmp_path)},
+                cfg,
+            )
+        )
+        assert (tmp_path / "test-ran.marker").exists(), str(bash_out)[:400]
+        (tmp_path / "test-ran.marker").unlink()
+
+    # -- ordinary mode: asks on each risk call, approved -> executed.
     asks: list[Any] = []
 
     class _Approve(ApprovalBroker):
@@ -230,56 +285,33 @@ def test_w8_c01_chain_normal_dev_both_modes(
     set_approval_broker(_Approve())
     try:
         cfg = _cfg(tmp_path, "confirm_all")
-        out = asyncio.run(
+        _dev_legs(cfg, "line-one")
+        # bash append — the side effect is verified, not just "not blocked"
+        # (python for the append: PowerShell `>>` writes a BOM-less
+        # UTF-16LE tail that no single decode reads reliably).
+        asyncio.run(
             orch.execute_tool(
-                "edit",
+                "bash",
                 {
-                    "filePath": str(target),
-                    "operation": "write",
-                    "content": "line-one",
+                    "command": (
+                        "python -c \"open('line-one.txt','a',"
+                        "encoding='utf-8').write('via-bash')\""
+                    ),
+                    "workdir": str(tmp_path),
                 },
                 cfg,
             )
         )
-        assert target.read_text() == "line-one"
-        assert "blocked" not in str(out).lower()
-        assert len(asks) == 1  # the write asked exactly once
-        read_out = asyncio.run(
-            orch.execute_tool("read", {"filePath": str(target)}, cfg)
-        )
-        assert "line-one" in str(read_out)
-        bash_out = asyncio.run(
-            orch.execute_tool(
-                "bash",
-                {"command": "echo via-bash >> hello.txt", "workdir": str(tmp_path)},
-                cfg,
-            )
-        )
-        assert "via-bash" in target.read_text() or "blocked" not in str(bash_out).lower()
+        assert "via-bash" in (tmp_path / "line-one.txt").read_text()
+        assert asks, "confirm_all must surface approval asks for risk calls"
     finally:
         set_approval_broker(None)
 
     # -- Full: same calls, ZERO asks (auto-grant), identical effects.
     asks.clear()
-    target2 = tmp_path / "full.txt"
     cfg_full = _cfg(tmp_path, "full_auto")
-    out = asyncio.run(
-        orch.execute_tool(
-            "edit",
-            {
-                "filePath": str(target2),
-                "operation": "write",
-                "content": "full-mode",
-            },
-            cfg_full,
-        )
-    )
-    assert target2.read_text() == "full-mode"
+    _dev_legs(cfg_full, "full-mode")
     assert not asks, "full_auto must never surface an approval prompt"
-    read_out = asyncio.run(
-        orch.execute_tool("read", {"filePath": str(target2)}, cfg_full)
-    )
-    assert "full-mode" in str(read_out)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +338,9 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
     _lease_run(postgres_url, run_id, "wkr-1", 7)
 
     paused = threading.Event()
+    paused_info: dict[str, Any] = {}
+    journal_dir = tmp_path / ".journal"
+    journal_dir.mkdir(parents=True, exist_ok=True)
     cfg = SimpleNamespace(database_url=postgres_url, worker_id="wkr-1")
     handlers = drain._ctl_handlers(
         cfg,
@@ -313,8 +348,9 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
         run_id=run_id,
         epoch=7,
         workdir=tmp_path,
-        journal_dir=tmp_path / ".journal",
+        journal_dir=journal_dir,
         paused=paused,
+        paused_info=paused_info,
     )
 
     # In-proc channel: the same kwargs the unix-socket hop would carry.
@@ -327,6 +363,15 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
 
         def emit(self, **kwargs: Any) -> dict[str, Any]:
             return handlers["emit"](kwargs)
+
+        def journal_state(self, **kwargs: Any) -> str:
+            return str(handlers["journal_state"](kwargs)["state"])
+
+        def journal_reserve(self, **kwargs: Any) -> dict[str, Any]:
+            return handlers["journal_reserve"](kwargs)
+
+        def journal_complete(self, **kwargs: Any) -> str:
+            return str(handlers["journal_complete"](kwargs)["result"])
 
     channel = _Channel()
     set_approval_broker(
@@ -375,6 +420,13 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
     )
     assert out["status"] == "approved"
     assert _run_status(postgres_url, run_id)[0] == "pending"
+    # The ctl op reported which ask it parked on.
+    assert paused_info["approval_id"] == approval_id
+
+    # A NEW claim owns the run before any resume executes — the op's
+    # lease fence only releases the stored call to the current owner.
+    _lease_run(postgres_url, run_id, "wkr-1", 7)
+    _set_status(postgres_url, run_id, "leased")
 
     # The resume child fetches the stored call THROUGH the channel and
     # executes it once — verbatim args, durable-shaped ids, real journal.
@@ -392,7 +444,9 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
             emitted.append({"kind": kind, **payload})
 
     result = asyncio.run(
-        drain._execute_approved_call(record, tmp_path, _Emit())
+        drain._execute_approved_call(
+            record, tmp_path, _Emit(), drain._ChannelJournal(channel)
+        )
     )
     # PowerShell echo emits UTF-16LE+BOM; cmd emits OEM — decode by BOM.
     raw = (tmp_path / "calls.log").read_bytes()
@@ -403,13 +457,17 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
     )
     assert body.strip() == "approved-mark"
 
-    # Replay again — the journal says completed -> reuse, NOT a second
-    # side effect. calls.log still has exactly one append's worth.
+    # Replay again — the PARENT-OWNED journal says completed -> reuse,
+    # NOT a second side effect. calls.log still has exactly one append's
+    # worth even though the workspace itself is child-writable.
+    (tmp_path / "calls.log").unlink()  # simulate a wiped workspace
     again = asyncio.run(
-        drain._execute_approved_call(record, tmp_path, _Emit())
+        drain._execute_approved_call(
+            record, tmp_path, _Emit(), drain._ChannelJournal(channel)
+        )
     )
     assert again == result
-    assert (tmp_path / "calls.log").read_bytes() == raw
+    assert not (tmp_path / "calls.log").exists()  # no second side effect
 
 
 def test_w8_c01_chain_approval_reject_never_executes(
@@ -547,6 +605,104 @@ def test_w8_c01_chain_boundary_denial(
     assert not any(".sandboxes" in p for p in domain)
 
 
+def test_w8_c01_chain_boundary_network_control_plane() -> None:
+    """Simulated control-plane/metadata/tenant endpoints are refused at
+    the egress evaluator — Bash/Python/MCP reach the network only through
+    this filter in deployment (private netns + loopback relay)."""
+    from rxycode_worker.egress import evaluate
+
+    async def _fake_private(*_a: Any, **_k: Any) -> list[Any]:
+        return [(None, None, None, None, ("10.0.0.9", 0))]
+
+    async def _fake_public(*_a: Any, **_k: Any) -> list[Any]:
+        return [(None, None, None, None, ("8.8.8.8", 0))]
+
+    blocked = [
+        # cloud metadata endpoint — the classic credential theft target
+        ("169.254.169.254", 80),
+        # in-cluster control plane services (resolved private addresses)
+        ("postgres.internal", 5432),
+        ("control-plane.local", 8080),
+        # host loopback/admin
+        ("127.0.0.1", 3000),
+        ("localhost", 22),
+        # other tenant private ranges
+        ("192.168.7.4", 443),
+        ("172.16.0.5", 443),
+        ("10.4.0.2", 443),
+        # multicast/link-local/unspecified categories
+        ("224.0.0.1", 443),
+        ("169.254.1.1", 443),
+        ("0.0.0.0", 443),
+    ]
+    for host, port in blocked:
+        verdict = asyncio.run(
+            evaluate(host, port, set(), resolve=_fake_private)
+        )
+        assert not verdict.allowed, f"{host}:{port} should be refused ({verdict.reason})"
+    # A real public endpoint on an allowed port still passes — dev work
+    # (pypi/model/git) is not crippled by the boundary.
+    ok = asyncio.run(evaluate("pypi.org", 443, set(), resolve=_fake_public))
+    assert ok.allowed
+    # ...but the same host on a non-web port is refused (no SMTP/SSH out).
+    odd = asyncio.run(evaluate("pypi.org", 25, set(), resolve=_fake_public))
+    assert not odd.allowed and odd.reason == "port_not_allowed"
+
+
+def test_w8_c01_chain_boundary_kernel_confined(tmp_path: Path) -> None:
+    """Where bwrap exists, prove the READ boundary end-to-end inside the
+    real sandbox: the file tool's unconfined absolute-path reads on the
+    host become impossible in the mount namespace — host markers and
+    sibling-tenant paths are simply not there, and the private netns has
+    no route to a simulated control-plane endpoint at all."""
+    pytest.importorskip("rxycode_runner.sandbox.userns")
+    from rxycode_runner.sandbox.userns import (
+        UsernsSandboxProvider,
+        userns_available,
+    )
+
+    if not userns_available():
+        pytest.skip("bwrap/userns unavailable on this host")
+
+    tenant = f"ten-{uuid.uuid4().hex[:8]}"
+    provider = UsernsSandboxProvider(tmp_path / "ws")
+    handle = provider.create(tenant_id=tenant, workspace_id="w1", retain=False)
+
+    # Host marker + sibling-tenant files that must be unreachable inside.
+    marker = tmp_path / "host-marker.txt"
+    marker.write_text("host-secret", encoding="utf-8")
+    sibling = tmp_path / "ws" / f"{tenant}-other" / "w9" / "tenant-secret.txt"
+    sibling.parent.mkdir(parents=True, exist_ok=True)
+    sibling.write_text("tenant-secret", encoding="utf-8")
+
+    import shutil
+
+    shell = shutil.which("bash") or shutil.which("sh") or "/bin/sh"
+    for attempt in (
+        # file-tool equivalent: cat a host path that exists outside
+        ["-c", f"cat {marker}"],
+        # sibling tenant's workspace — not mounted at all
+        ["-c", f"cat {sibling}"],
+        # python expresses the same read
+        ["-c", f"python3 -c \"open('{marker}')\""],
+        # simulated control-plane endpoint — private netns has no route
+        ["-c", "python3 -c \"import socket;socket.create_connection(('169.254.169.254',80),2)\""],
+        # host admin port
+        ["-c", "python3 -c \"import socket;socket.create_connection(('172.17.0.1',2375),2)\""],
+    ):
+        res = provider.exec(
+            handle.sandbox_id,
+            tenant_id=tenant,
+            argv=[shell, *attempt],
+            timeout=20,
+        )
+        assert res.exit_code != 0, (
+            f"confined read/connect unexpectedly succeeded: {attempt}\n"
+            f"stdout={res.stdout[:300]}"
+        )
+    provider.destroy(handle.sandbox_id, tenant_id=tenant)
+
+
 # ---------------------------------------------------------------------------
 # Chain D — cancellation & recovery: late approvals die, uncertain journals
 # refuse a second side effect, and the ask never strands a claim.
@@ -601,6 +757,36 @@ def test_w8_c01_chain_cancel_kills_late_approval(
     assert _run_status(postgres_url, run_id)[0] == "cancelled"
 
 
+def test_w8_c01_chain_cancel_reaps_child() -> None:
+    """A cancelled wait kills the spawned process — _wait_child SIGKILLs
+    on cancel and (with --die-with-parent in deployment) the whole
+    namespace tree goes with it. Prove the reap on a real child."""
+    import sys as _sys
+
+    import rxycode_worker.drain as drain
+
+    async def drive() -> None:
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable,
+            "-c",
+            "import subprocess,sys,time;"
+            " subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+            " time.sleep(60)",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        waiter = asyncio.ensure_future(drain._wait_child(proc, []))
+        await asyncio.sleep(0.3)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        # The direct child is dead — killed by the cancel path, not by
+        # the parent exiting.
+        assert proc.returncode is not None
+
+    asyncio.run(drive())
+
+
 def test_w8_c01_chain_journal_uncertain_refuses_second_effect(
     tmp_path: Path,
 ) -> None:
@@ -637,5 +823,5 @@ def test_w8_c01_chain_journal_uncertain_refuses_second_effect(
             return
 
     with pytest.raises(RuntimeError, match="journal-uncertain"):
-        asyncio.run(drain._execute_approved_call(record, tmp_path, _Emit()))
+        asyncio.run(drain._execute_approved_call(record, tmp_path, _Emit(), journal))
     assert not (tmp_path / "out.log").exists()

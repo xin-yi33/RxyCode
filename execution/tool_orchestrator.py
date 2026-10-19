@@ -1757,6 +1757,11 @@ class ToolOrchestrator:
                     # dialog must name the write targets that tripped the
                     # write-path gate so the human decides with full context.
                     gate_blocked_paths=list(gate_blocked_paths or ()),
+                    # Web pause/resume: the durable ask binds this exact
+                    # call — raw args so resume executes THE call that was
+                    # approved, not a summarized truncation of it.
+                    call_id=str(call_id or ""),
+                    arguments=dict(args) if isinstance(args, dict) else None,
                 )
                 decision = await broker.request_approval(req)
                 if decision == ApprovalDecision.REJECTED:
