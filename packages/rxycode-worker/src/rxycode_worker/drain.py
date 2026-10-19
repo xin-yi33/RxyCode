@@ -1,50 +1,63 @@
-"""Drain queued web runs: fenced claim -> real Session.prompt -> terminal commit.
+"""Drain queued web runs: fenced claim -> sandboxed child turn -> commit.
 
 The API writes a durable ``run.created`` row with status ``pending``; nothing
 executes it until a worker takes the fenced lease. This module is that worker
-for the deployed compose stack (``python -m rxycode_worker.drain``): it polls
-``runs`` for claimable rows, claims through ``supervisor.claim``, reads the
-persisted message back with ``runs.service.load_run``, then drives ONE real
-turn through ``appserver.agent_runtime.AgentRuntime`` -> ``Session.prompt`` —
-the same machinery an appserver session worker uses — with
-``agent_events.remember_web_run`` bound so journaling, telemetry spans and the
-usage ledger all land on the run's own event log.
+for the deployed compose stack (``python -m rxycode_worker.drain``). It runs
+in two halves:
 
-Persisted web commands are delivered too: a ``_DrainWorkerShim`` exposes the
-``_handle_steer``/``_steer_queue`` surface ``agent_events.accept_steer``
-expects, ``bind_run`` registers it, and a poll task feeds
-``consume_persisted_commands`` while the turn runs — the same channel the
-stdio worker's ``_watch_web_commands`` task provides. ``child.cancel``
-commands get an honest "no manager": the drain runs a single agent.
+* the DRAIN process (this file's normal entry) claims runs, enforces the
+  placement/permission gate, spawns the turn INSIDE a per-run kernel sandbox
+  (``rxycode_runner.sandbox.userns``: user/pid/ipc/uts namespaces + a minimal
+  read-only root + only the run workspace writable), renews the lease with
+  deadline-bounded probes, and commits the terminal state.
+* the TURN process (this same module re-entered with ``RXYCODE_TURN_RUN_ID``
+  set) runs the real ``Session.prompt``/AgentV2 machinery — journaling,
+  telemetry spans, the usage ledger inputs, persisted steer delivery — all
+  inside the sandbox, so tool execution can never touch the worker host's
+  filesystem or another tenant's workspace.
+
+Public-stack rule (the compose default ``RXYCODE_WORKER_EXECUTION=cloud-only``):
+only ``cloud:{tenant}:{workspace}`` targets execute, the tenant segment must
+equal the run's own tenant, and ``full``/``full_auto`` profiles are refused —
+Full authority means unsandboxed host execution, which does not exist here.
+``sandboxed-local`` is the development-host mode: ``local:*`` targets are
+accepted but STILL confined — a drain never runs a turn unconfined. A host
+without userns/bwrap makes the provider fail closed; nothing falls back to
+subprocess on the worker host.
 
 Terminal writes go through the fenced ``commit_terminal``/``confirm_cancel``;
-a lost lease (``LeaseRejected``) aborts honestly — the new owner finishes the
-run. Every durable write failure surfaces as a run failure, never silently.
+a lost lease (``LeaseRejected`` or renewals unproven past the TTL) aborts
+honestly — the new owner finishes the run.
 
-Environment (all read in ``main``/``worker_config_from_env``):
+Environment (read in ``worker_config_from_env``):
     RXYCODE_WEB_DATABASE_URL   required — the same DSN the API uses
     RXYCODE_WORKER_ID          default ``drain-<hostname>-<pid>``
     RXYCODE_WORKER_POLL_SECONDS      default 2
     RXYCODE_WORKER_LEASE_TTL         default 120 (renewed while a run executes)
     RXYCODE_WORKER_RUN_TIMEOUT       default 900 — a prompt past this is
                                    cancelled and the run commits ``failed``
-    RXYCODE_WORKER_WORKSPACES        default /tmp/rxycode-runs — per-session
+    RXYCODE_WORKER_WORKSPACES        default /tmp/rxycode-runs — per-tenant
                                    workspace dirs are created under it
     RXYCODE_WORKER_MODEL             optional model name for AgentV2
+    RXYCODE_WORKER_EXECUTION         ``cloud-only`` (default) or
+                                   ``sandboxed-local`` (dev host opt-in)
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shutil
 import socket
+import sys
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 _LOG = logging.getLogger(__name__)
 
@@ -58,6 +71,15 @@ _PRICE_VERSION = "2026-10"
 
 _JOURNAL_CAP = 500
 
+#: Projection rows that must survive the intermediate-event cap: a flooded
+#: run may lose deltas, but its terminal answer is never dropped (audit r3).
+_TERMINAL_PROJECTIONS = frozenset({"assistant.final"})
+
+#: Per-database-call bound inside the lease watchdog. A stalled store cannot
+#: stall the watchdog past the lease TTL: each probe is wrapped in wait_for
+#: and the monotonic deadline below still expires the turn on time.
+_LEASE_IO_BUDGET = 15.0
+
 #: run.permission_profile -> Session.prompt(permission_mode=...). The durable
 #: profile is an opaque string; only real vocabulary maps — anything else
 #: falls back to the configured default rather than silently widening.
@@ -67,6 +89,30 @@ _PERMISSION_MODE_MAP = {
     "auto_edit": "auto_edit",
     "confirm_all": "confirm_all",
 }
+
+_EXECUTION_MODES = ("cloud-only", "sandboxed-local")
+
+#: The confined turn reports its outcome here (inside the run workspace).
+_TURN_RESULT = ".turn-result.json"
+
+#: Environment the confined turn receives. Everything else is stripped by
+#: --clearenv — a run never inherits worker secrets it was not granted.
+_CHILD_ENV_PASS = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "PYTHONPATH",
+    "PYTHONIOENCODING",
+    "RXYCODE_UVLOOP",
+    "RXYCODE_WEB_DATABASE_URL",
+    "RXYCODE_WORKER_MODEL",
+    "RXYCODE_LLM_BASE_URL",
+    "RXYCODE_LLM_MODEL",
+    "RXYCODE_API_KEY",
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +124,7 @@ class WorkerConfig:
     run_timeout: float = 900.0
     workspaces_root: str = "/tmp/rxycode-runs"
     model: str = ""
+    execution_mode: str = "cloud-only"
 
 
 def worker_config_from_env() -> WorkerConfig:
@@ -89,6 +136,9 @@ def worker_config_from_env() -> WorkerConfig:
         os.environ.get("RXYCODE_WORKER_ID", "").strip()
         or f"drain-{socket.gethostname()}-{os.getpid()}"
     )
+    execution_mode = (
+        os.environ.get("RXYCODE_WORKER_EXECUTION", "cloud-only").strip().lower() or "cloud-only"
+    )
     return WorkerConfig(
         database_url=database_url,
         worker_id=worker_id,
@@ -97,6 +147,7 @@ def worker_config_from_env() -> WorkerConfig:
         run_timeout=max(30.0, float(os.environ.get("RXYCODE_WORKER_RUN_TIMEOUT", "900"))),
         workspaces_root=os.environ.get("RXYCODE_WORKER_WORKSPACES", "/tmp/rxycode-runs"),
         model=os.environ.get("RXYCODE_WORKER_MODEL", "").strip(),
+        execution_mode=execution_mode,
     )
 
 
@@ -164,6 +215,47 @@ def run_status(database_url: str, run_id: str) -> str:
     return str(value or "")
 
 
+def _run_identity(database_url: str, run_id: str) -> dict[str, str]:
+    """tenant + project + actor + traceparent for the claimed run.
+
+    The RunContext inside the turn is built from these persisted fields —
+    never minted fresh and never taken from client claims.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT r.tenant_id, COALESCE(s.project_id, '') "
+                    "FROM runs r LEFT JOIN sessions s "
+                    "ON s.tenant_id = r.tenant_id AND s.id = r.session_id "
+                    "WHERE r.id = :id"
+                ),
+                {"id": run_id},
+            ).one()
+            payload = conn.execute(
+                text(
+                    "SELECT payload FROM run_events "
+                    "WHERE run_id = :id AND type = 'run.created' "
+                    "ORDER BY seq LIMIT 1"
+                ),
+                {"id": run_id},
+            ).scalar()
+    finally:
+        engine.dispose()
+    payload = payload if isinstance(payload, dict) else {}
+    quota = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
+    return {
+        "tenant_id": str(row[0]),
+        "project_id": str(row[1] or ""),
+        "actor_id": str(quota.get("user_id") or ""),
+        "traceparent": str(payload.get("traceparent") or ""),
+    }
+
+
 def _agent_done_row(database_url: str, run_id: str) -> tuple[str, int]:
     """(event_id, tokens_used) of the journaled ``event/agent_done`` row.
 
@@ -199,22 +291,22 @@ class _RunCancelled(Exception):
 
 
 class _LeaseRenewalLost(Exception):
-    """Lease renewals failed past the TTL — the row's ownership is unknown.
+    """Lease renewals could not be proven before the TTL expired.
 
     Distinct from ``LeaseRejected`` (the fence itself said no): here the
-    store stopped answering, the lease has expired, and another worker may
-    already own the run. The turn is cancelled and the worker steps aside —
-    it never commits a terminal state it cannot prove it owns."""
+    store stopped answering long enough that the lease deadline passed —
+    another worker may already own the run. The turn is cancelled and this
+    worker steps aside; it never commits a terminal state it cannot prove
+    it owns."""
 
 
 class _UnsupportedTarget(Exception):
-    """The run's persisted target_id is not one this worker can execute.
+    """The run's persisted target_id/placement is refused by this worker.
 
-    Only ``local:*`` targets run inside the shared worker container (the
-    demo's declared mode — per-session workdirs, fenced queue, no
-    docker.sock). A ``sandbox:*``/cloud target would need the cloud sandbox
-    provider, which this stack deliberately does not ship; executing it
-    locally anyway would silently downgrade the run's isolation."""
+    The shared worker only executes what the deployment's execution mode
+    allows, always inside the per-run sandbox. A ``sandbox:``/unknown target
+    or a ``local:``/``full`` placement on the public stack is refused
+    honestly rather than silently executed without its requested isolation."""
 
 
 class _DrainWorkerShim:
@@ -274,8 +366,7 @@ def _projection_rows(
                 "assistant.delta",
                 {
                     "text": str(body.get("text") or ""),
-                    "intermediate": bool(body.get("intermediate"))
-                    or method == "event/progress",
+                    "intermediate": bool(body.get("intermediate")) or method == "event/progress",
                 },
             )
         )
@@ -303,9 +394,7 @@ def _projection_rows(
         # both buckets the reducer reads.
         request_id = str(body.get("request_id") or "")
         preview = str(body.get("preview") or "")
-        rows.append(
-            ("question.requested", {"question_id": request_id, "prompt": preview})
-        )
+        rows.append(("question.requested", {"question_id": request_id, "prompt": preview}))
         rows.append(
             (
                 "approval.requested",
@@ -355,9 +444,93 @@ def _projection_rows(
     return rows
 
 
-async def _command_watchdog(
-    database_url: str, run_id: str, turn: "asyncio.Task[Any]"
-) -> None:
+class _RunEmit:
+    """Per-run emit callback: journals protocol ``event/*`` notifications and
+    projects them into the reducer vocabulary on the run's own event log.
+
+    Both surfaces are capped against floods — except ``assistant.final``,
+    which is a terminal projection and always persisted: a run that floods
+    the channel must never lose its answer (audit r3-F4).
+    """
+
+    def __init__(self, database_url: str, tenant_id: str, run_id: str) -> None:
+        self.database_url = database_url
+        self.tenant_id = tenant_id
+        self.run_id = run_id
+        self.tool_names: dict[str, str] = {}
+        self.journaled = 0
+        self.projected = 0
+
+    @staticmethod
+    def _params(notification: Any) -> dict[str, Any]:
+        """Structured fields of a protocol notification (pydantic or dict)."""
+        dump = getattr(notification, "model_dump", None)
+        if callable(dump):
+            try:
+                data = dump(mode="json")
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                return data
+        if isinstance(notification, dict):
+            return dict(notification)
+        params = getattr(notification, "params", None)
+        return dict(params) if isinstance(params, dict) else {}
+
+    def project(self, event_type: str, body: dict[str, Any]) -> None:
+        """Write one UI-facing projection row — the event types the web
+        ``eventReducer`` consumes (``assistant.final``/``assistant.delta``/
+        ``tool.*``/``question.*``)."""
+        terminal = event_type in _TERMINAL_PROJECTIONS
+        if not terminal and self.projected >= _JOURNAL_CAP:
+            return
+        self.projected += 1
+        try:
+            from rxycode_server.events.store import append_event
+
+            append_event(
+                self.database_url,
+                tenant_id=self.tenant_id,
+                run_id=self.run_id,
+                event_type=event_type,
+                payload=body,
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: projection emit failed (%s)",
+                self.run_id,
+                event_type,
+                exc_info=True,
+            )
+
+    def __call__(self, notification: Any) -> None:
+        """Journal protocol ``event/`` notifications onto the run's own event
+        log — the same rows the SSE endpoint replays. Capped per run."""
+        method = getattr(notification, "method", None)
+        if not isinstance(method, str) or not method.startswith("event/"):
+            return
+        body = self._params(notification)
+        if self.journaled < _JOURNAL_CAP:
+            self.journaled += 1
+            try:
+                from rxycode_server.events.store import append_event
+
+                append_event(
+                    self.database_url,
+                    tenant_id=self.tenant_id,
+                    run_id=self.run_id,
+                    event_type=f"notify.{method}",
+                    payload={"text": str(notification)[:1500]},
+                )
+            except Exception:
+                _LOG.warning("run %s: journal emit failed", self.run_id, exc_info=True)
+        for event_type, payload in _projection_rows(
+            method, body, self.tool_names, run_id=self.run_id
+        ):
+            self.project(event_type, payload)
+
+
+async def _command_watchdog(database_url: str, run_id: str, turn: "asyncio.Task[Any]") -> None:
     """Deliver persisted steer/child-cancel commands while the turn runs —
     the drain equivalent of ``AgentWorker._watch_web_commands``."""
     from rxycode_worker.agent_events import consume_persisted_commands
@@ -382,42 +555,48 @@ async def _lease_watchdog(
     lease_ttl: int,
     turn: "asyncio.Task[Any]",
 ) -> None:
-    """Renew the lease while the prompt runs; cancel the turn on
-    ``cancel_requested``. ``LeaseRejected`` cancels the turn too — a fresher
-    worker owns the run now.
+    """Renew the lease while the turn runs; cancel it on ``cancel_requested``,
+    ``LeaseRejected``, or when renewals cannot be proven before expiry.
 
-    A transient store error must NOT kill the watchdog: it retries on the
-    next tick. But renewals cannot be trusted past the TTL — if they keep
-    failing past expiry the turn is cancelled and ``_LeaseRenewalLost``
-    reports it: the worker never lets a turn run on a lease it cannot
-    prove it still owns.
+    Every store call is bounded by ``wait_for(_LEASE_IO_BUDGET)`` — a stalled
+    database cannot stall the watchdog itself past the TTL. The monotonic
+    ``deadline`` is extended only by a *proven* renewal; once it passes, the
+    lease has expired, another worker may already own the row, and the turn
+    is cancelled with ``_LeaseRenewalLost`` instead of running unowned.
     """
     from rxycode_worker.supervisor import LeaseRejected, renew_lease
 
     interval = max(2.0, lease_ttl / 2.0)
-    # The lease is only owned until `deadline`: each successful renewal
-    # extends it. A transient store error retries on the next tick, but if
-    # renewals keep failing past the TTL the lease has expired — another
-    # worker may already own the row — so the turn is cancelled instead of
-    # running unowned, and the loop reports the lost lease.
     deadline = time.monotonic() + lease_ttl
     while not turn.done():
         await asyncio.sleep(interval)
         if turn.done():
             return
+        budget = max(1.0, min(_LEASE_IO_BUDGET, deadline - time.monotonic()))
         try:
-            await asyncio.to_thread(
-                renew_lease, database_url, run_id, worker_id, epoch,
-                ttl_seconds=lease_ttl,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    renew_lease,
+                    database_url,
+                    run_id,
+                    worker_id,
+                    epoch,
+                    ttl_seconds=lease_ttl,
+                ),
+                timeout=budget,
             )
             deadline = time.monotonic() + lease_ttl
         except LeaseRejected:
             turn.cancel()
             raise
         except Exception as exc:
+            # Covers both real store errors and wait_for timeouts. A timed-out
+            # renewal keeps running in its thread — if it lands late it only
+            # re-checks the fence; the conservative outcome (we step aside)
+            # stays correct.
             if time.monotonic() >= deadline:
                 _LOG.error(
-                    "run %s: lease renewals failed past TTL; cancelling turn",
+                    "run %s: lease renewals unproven past TTL; cancelling turn",
                     run_id,
                 )
                 turn.cancel()
@@ -428,193 +607,220 @@ async def _lease_watchdog(
                 exc_info=True,
             )
         try:
-            status = await asyncio.to_thread(run_status, database_url, run_id)
-        except Exception:
+            status = await asyncio.wait_for(
+                asyncio.to_thread(run_status, database_url, run_id),
+                timeout=max(1.0, min(_LEASE_IO_BUDGET, deadline - time.monotonic())),
+            )
+        except Exception as exc:
             status = ""
             _LOG.warning("run %s: status poll failed; retrying", run_id, exc_info=True)
+            if time.monotonic() >= deadline:
+                turn.cancel()
+                raise _LeaseRenewalLost(run_id) from exc
         if status == "cancel_requested":
             turn.cancel()
             raise _RunCancelled(run_id)
 
 
-async def execute_run(
-    cfg: WorkerConfig,
-    run_id: str,
-) -> bool:
-    """Claim and execute one run through the real turn path.
+def _execution_gate(
+    target_id: str,
+    permission_profile: str,
+    *,
+    execution_mode: str,
+    tenant_id: str,
+) -> str | None:
+    """Resolve placement + permission for a claimed run, or refuse closed.
 
-    Returns True when this worker owned the run end to end. A lost claim or a
-    lost lease returns False — the row is never half-written by two owners.
+    The public stack contract (``cloud-only``, the compose default): only
+    ``cloud:{tenant}:{workspace}`` targets execute — always inside the
+    per-run userns sandbox — and the tenant segment must equal the run's
+    own tenant, so a target can never bind another tenant's isolation
+    context. ``local:*``/``sandbox:*`` placements and ``full``/``full_auto``
+    profiles are refused: Full means unsandboxed host authority and that
+    does not exist on the public worker.
+
+    ``sandboxed-local`` is the development-host opt-in: ``local:*`` and
+    tenant-bound ``cloud:*`` targets execute — still confined; the drain
+    never runs a turn on the worker host.
+
+    Returns the Session ``permission_mode`` (None = configured default).
     """
-    from rxycode_worker.supervisor import (
-        LeaseRejected,
-        claim,
-        commit_terminal,
-        confirm_cancel,
-    )
+    target = str(target_id or "")
+    profile = str(permission_profile or "").strip().lower()
+    if execution_mode not in _EXECUTION_MODES:
+        raise _UnsupportedTarget(f"unknown execution mode {execution_mode!r}; refusing the run")
+    if target.startswith("cloud:"):
+        parts = target.split(":", 2)
+        cloud_tenant = parts[1] if len(parts) > 1 else ""
+        if not cloud_tenant or cloud_tenant != str(tenant_id):
+            raise _UnsupportedTarget(
+                f"target {target!r} binds tenant {cloud_tenant!r} but the run "
+                f"belongs to {tenant_id!r} — cross-tenant sandbox refused"
+            )
+    elif execution_mode == "cloud-only":
+        raise _UnsupportedTarget(
+            f"target {target!r} refused: the public worker executes only "
+            "cloud:{tenant}:{workspace} targets inside the per-run sandbox; "
+            "local/sandbox placements never reach this host"
+        )
+    elif not target.startswith("local:"):
+        raise _UnsupportedTarget(
+            f"target {target!r} is not local:*/cloud:*; refusing to execute "
+            "without a declared placement"
+        )
+    if execution_mode == "cloud-only" and profile in {"full", "full_auto"}:
+        raise _UnsupportedTarget(
+            f"profile {profile!r} requests unsandboxed host authority; refused on the public stack"
+        )
+    return _PERMISSION_MODE_MAP.get(profile)
 
-    epoch = await asyncio.to_thread(
-        claim, cfg.database_url, run_id, cfg.worker_id, ttl_seconds=cfg.lease_ttl
-    )
-    if epoch is None:
-        return False
 
+def _child_env(turn_env: Mapping[str, str]) -> dict[str, str]:
+    """The confined process's whole environment: the passlist plus the
+    per-turn RXYCODE_TURN_* contract. ``--clearenv`` drops everything else."""
+    env = {key: os.environ[key] for key in _CHILD_ENV_PASS if key in os.environ}
+    env.update({str(k): str(v) for k, v in turn_env.items()})
+    return env
+
+
+def _prepare_child_data_dir(workdir: Path) -> Path:
+    """Per-run config home inside the sandbox: a copy of the worker's own
+    config.yaml so model resolution reads a real file. The shared writable
+    data dir itself is never mounted into the boundary."""
+    data_dir = workdir / ".data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    source_root = os.environ.get("RXYCODE_DATA_DIR", "").strip()
+    if source_root:
+        source = Path(source_root) / "config.yaml"
+        if source.is_file():
+            try:
+                shutil.copy2(source, data_dir / "config.yaml")
+            except OSError:
+                _LOG.warning("copying config into the run sandbox failed", exc_info=True)
+    return data_dir
+
+
+async def _wait_child(proc: "asyncio.subprocess.Process", stderr_tail: list[bytes]) -> None:
+    """Wait for the confined turn; on cancellation SIGKILL the bwrap
+    supervisor — --die-with-parent then reaps the whole namespace tree."""
+
+    async def _collect() -> None:
+        if proc.stderr is None:
+            return
+        while True:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
+                return
+            stderr_tail.append(chunk)
+            del stderr_tail[:-16]  # bounded tail for the failure detail
+
+    collector = asyncio.ensure_future(_collect())
+    try:
+        await proc.wait()
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=10)
+        except Exception:
+            pass
+        raise
+    finally:
+        collector.cancel()
+        try:
+            await collector
+        except Exception:
+            pass
+
+
+async def run_sandboxed_turn() -> int:
+    """The confined half of a drained run — entered when this module is
+    executed with ``RXYCODE_TURN_RUN_ID`` set (inside the userns sandbox).
+
+    Everything the old direct path did happens here: remember_web_run +
+    publish_database_url, the _DrainWorkerShim steer channel, a REAL
+    ProtocolTui bound through bind_prompt_context (the production producer
+    of tool/stream notifications — audit r3-F3), the command watchdog, and
+    one Session.prompt turn through AgentRuntime. The result lands in
+    ``.turn-result.json`` for the drain parent; the process always exits 0
+    — errors live in the result file and the journaled events.
+    """
+    run_id = os.environ["RXYCODE_TURN_RUN_ID"].strip()
+    database_url = os.environ["RXYCODE_WEB_DATABASE_URL"].strip()
+    tenant_id = os.environ.get("RXYCODE_TURN_TENANT", "")
+    project_id = os.environ.get("RXYCODE_TURN_PROJECT", "")
+    actor_id = os.environ.get("RXYCODE_TURN_ACTOR", "")
+    session_id = os.environ.get("RXYCODE_TURN_SESSION", "") or run_id
+    target_id = os.environ.get("RXYCODE_TURN_TARGET", "")
+    traceparent = os.environ.get("RXYCODE_TURN_TRACEPARENT", "")
+    permission_profile = os.environ.get("RXYCODE_TURN_PROFILE", "")
+    permission_mode = os.environ.get("RXYCODE_TURN_PERMISSION", "").strip() or None
+    model = os.environ.get("RXYCODE_WORKER_MODEL", "").strip()
+    workdir = Path(os.environ.get("RXYCODE_TURN_WORKDIR", ".")).resolve()
+    result_path = workdir / _TURN_RESULT
+
+    from rxycode_server.runs.service import load_run
     from rxycode_worker.agent_events import (
         bind_run,
         clear_web_run,
         publish_database_url,
         remember_web_run,
     )
-    from rxycode_server.events.store import append_event
-    from rxycode_server.runs.service import load_run
-    from rxycode_server.usage.service import record_terminal_usage
 
-    # A run already cancel_requested at claim time never executes: nothing
-    # ran, so its effects are fully known -> 'cancelled', not recovery.
-    if await asyncio.to_thread(run_status, cfg.database_url, run_id) == "cancel_requested":
-        confirm_cancel(
-            cfg.database_url, run_id, cfg.worker_id, epoch, effects_known=True
-        )
-        return True
-
-    def _run_row() -> str:
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-
-        engine = create_engine(cfg.database_url, poolclass=NullPool)
-        try:
-            with engine.connect() as conn:
-                row = conn.execute(
-                    text("SELECT tenant_id FROM runs WHERE id = :id"),
-                    {"id": run_id},
-                ).one()
-        finally:
-            engine.dispose()
-        return str(row.tenant_id)
-
-    tenant_id = await asyncio.to_thread(_run_row)
-
-    publish_database_url(cfg.database_url)
-
-    journaled = {"count": 0}
-    projected = {"count": 0}
-    tool_names: dict[str, str] = {}
-    measured = {"tokens": 0}
-    message = ""
-    session_id = run_id
-
-    def _params(notification: Any) -> dict[str, Any]:
-        """Structured fields of a protocol notification (pydantic or dict)."""
-        dump = getattr(notification, "model_dump", None)
-        if callable(dump):
-            try:
-                data = dump(mode="json")
-            except Exception:
-                data = None
-            if isinstance(data, dict):
-                return data
-        if isinstance(notification, dict):
-            return dict(notification)
-        params = getattr(notification, "params", None)
-        return dict(params) if isinstance(params, dict) else {}
-
-    def _project(method: str, body: dict[str, Any]) -> None:
-        """Write the run's UI-facing projection rows — the event types the
-        web ``eventReducer`` consumes (``assistant.final``/``assistant.delta``/
-        ``tool.*``/``question.*``). Without these a drained run's answer would
-        exist only as an audit row and never reach the web projection."""
-        if projected["count"] >= _JOURNAL_CAP:
-            return
-        projected["count"] += 1
-        try:
-            append_event(
-                cfg.database_url,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                event_type=method,
-                payload=body,
-            )
-        except Exception:
-            _LOG.warning("run %s: projection emit failed", run_id, exc_info=True)
-
-    def _emit(notification: Any) -> None:
-        """Journal protocol ``event/`` notifications onto the run's own event
-        log — the same rows the SSE endpoint replays. Capped per run."""
-        method = getattr(notification, "method", None)
-        if (
-            not isinstance(method, str)
-            or not method.startswith("event/")
-        ):
-            return
-        body = _params(notification)
-        if journaled["count"] < _JOURNAL_CAP:
-            journaled["count"] += 1
-            try:
-                append_event(
-                    cfg.database_url,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    event_type=f"notify.{method}",
-                    payload={"text": str(notification)[:1500]},
-                )
-            except Exception:
-                _LOG.warning("run %s: journal emit failed", run_id, exc_info=True)
-        # Projection rows in the vocabulary apps/web's eventReducer maps:
-        # answers must land as assistant.final/delta with structured text.
-        for event_type, payload in _projection_rows(
-            method, body, tool_names, run_id=run_id
-        ):
-            _project(event_type, payload)
-
-    # Mark execution start on the durable log so a consumer can distinguish
-    # "queued forever" from "a worker took it and is running the turn".
-    try:
-        await asyncio.to_thread(
-            append_event,
-            cfg.database_url,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            event_type="worker.lease",
-            payload={"worker_id": cfg.worker_id, "epoch": int(epoch)},
-        )
-    except Exception:
-        _LOG.warning("run %s: worker.lease event failed", run_id, exc_info=True)
+    emit = _RunEmit(database_url, tenant_id, run_id)
+    publish_database_url(database_url)
+    remember_web_run(
+        database_url,
+        tenant_id,
+        run_id,
+        parent_id=session_id,
+        session_id=session_id,
+    )
 
     turn_error = ""
     cancelled_by_request = False
-    lost_lease = False
-    ledger_model = _ledger_model(cfg.model)
+    measured = {"tokens": 0}
+    message = ""
 
     try:
-        # Everything that can fail BEFORE the turn starts lives inside the
-        # failure path: a corrupt run row or an unwritable workspace must end
-        # in `commit_terminal("failed")`, not an orphaned lease that retries
-        # forever.
-        loaded = await asyncio.to_thread(load_run, cfg.database_url, run_id)
+        loaded = await asyncio.to_thread(load_run, database_url, run_id)
         message = loaded["message"]
-        session_id = loaded["session_id"] or run_id
-        target_id = str(loaded.get("target_id") or "")
-        # target_id is authoritative placement, not decoration: only local:*
-        # runs execute inside this shared worker container. Anything else
-        # (e.g. a sandbox/cloud target) is refused honestly rather than
-        # silently executed without its requested isolation.
-        if not target_id.startswith("local:"):
-            raise _UnsupportedTarget(
-                f"target {target_id!r} is not local:*; this drain only executes "
-                "local targets inside the worker container"
-            )
-        permission_mode = _PERMISSION_MODE_MAP.get(
-            str(loaded.get("permission_profile") or "").strip().lower()
-        )
-        remember_web_run(
-            cfg.database_url,
-            tenant_id,
-            run_id,
-            parent_id=session_id,
-            session_id=session_id,
-        )
-        workdir = Path(cfg.workspaces_root) / session_id
         workdir.mkdir(parents=True, exist_ok=True)
+
+        # The production producer of tool/stream notifications (audit r3-F3):
+        # a real ProtocolTui bound via bind_prompt_context so every TUI import
+        # path resolves to it through install_tui_context_hook.
+        from appserver.runtime import (
+            bind_prompt_context,
+            install_tui_context_hook,
+            reset_prompt_context,
+        )
+        from appserver.agent_worker import bind_worker_todo_sink
+        from appserver.tui import ProtocolTui
+        from rxycode_protocol.run_context import RunContext
+
+        install_tui_context_hook()
+
+        tui = ProtocolTui(session_id, emit, run_id=run_id)
+        deadline_at = datetime.now(timezone.utc).isoformat()
+        trace_id = ""
+        if traceparent.count("-") >= 2:
+            trace_id = traceparent.split("-")[2]
+        run_context = RunContext(
+            tenant_id=str(tenant_id),
+            actor_id=str(actor_id or "drain"),
+            project_id=str(project_id or session_id),
+            session_id=session_id,
+            run_id=run_id,
+            target_id=str(target_id or session_id),
+            permission_profile=str(permission_profile or "default"),
+            deadline_at=deadline_at,
+            trace_id=trace_id or uuid.uuid4().hex,
+        )
+        context_tokens = bind_prompt_context(session_id, tui, run_context=run_context)
+        bind_worker_todo_sink(emit)
 
         # Imports stay inside the executed run: module import of this file
         # must not drag the whole agent stack into a bare --help process.
@@ -634,9 +840,9 @@ async def execute_run(
         session = Session(
             session_id=session_id,
             workspace_root=workdir,
-            emit=_emit,
+            emit=emit,
         )
-        agent = AgentV2(model_name=cfg.model or None, session_id=session_id)
+        agent = AgentV2(model_name=model or None, session_id=session_id)
 
         runtime = AgentRuntime(
             EventBus(AppendOnlyLog()),
@@ -658,11 +864,10 @@ async def execute_run(
                     mode="build",
                     run_id=run_id,
                     permission_mode=permission_mode,
+                    run_context=run_context,
+                    tui=tui,
                 )
             finally:
-                # Mirror the eval driver: the real delta lands on the runtime
-                # counter so the journaled agent_done snapshot carries it —
-                # even when the turn was cancelled mid-prompt.
                 delta = max(
                     0,
                     int(token_stats.input_tokens)
@@ -670,9 +875,6 @@ async def execute_run(
                     - token0[0]
                     - token0[1],
                 )
-                # Keep the real delta for the ledger too: agent_done only
-                # journals on success, so a failed/cancelled turn would
-                # otherwise report zero spend.
                 measured["tokens"] = delta
                 try:
                     runtime.record_token_usage(agent_id, delta, run_id=run_id)
@@ -692,26 +894,12 @@ async def execute_run(
         session.drain_steers = shim._take_steers
         bind_run(run_id, worker=shim, tree_root=session_id)
 
-        agent_task = await runtime.spawn(
-            AgentConfig(agent_id=agent_id, model=cfg.model or "active")
-        )
+        agent_task = await runtime.spawn(AgentConfig(agent_id=agent_id, model=model or "active"))
         main_task = agent_task._main_task
         assert main_task is not None
         shim._turn = main_task
 
-        lease_watcher = asyncio.create_task(
-            _lease_watchdog(
-                cfg.database_url,
-                run_id,
-                cfg.worker_id,
-                epoch,
-                lease_ttl=cfg.lease_ttl,
-                turn=main_task,
-            )
-        )
-        command_watcher = asyncio.create_task(
-            _command_watchdog(cfg.database_url, run_id, main_task)
-        )
+        command_watcher = asyncio.create_task(_command_watchdog(database_url, run_id, main_task))
         # Session.prompt binds the session's own ContextVar; tool work that
         # escaped it (threads started off the loop) resolves "latest" — point
         # that alias at the run workspace too so strays land inside it.
@@ -721,15 +909,9 @@ async def execute_run(
         finally:
             reset_session_binding(latest_token)
         try:
-            await asyncio.wait_for(asyncio.shield(main_task), timeout=cfg.run_timeout)
-        except asyncio.TimeoutError:
-            turn_error = f"run timed out after {cfg.run_timeout}s"
-            try:
-                await agent_task.interrupt()
-            except Exception:
-                main_task.cancel()
+            await asyncio.shield(main_task)
         except asyncio.CancelledError:
-            pass
+            cancelled_by_request = True
         finally:
             command_watcher.cancel()
             try:
@@ -738,6 +920,223 @@ async def execute_run(
                 pass
             except Exception:
                 pass
+            reset_prompt_context(context_tokens)
+        if not turn_error and agent_task.state != LifecycleState.DONE:
+            last = getattr(agent_task, "_last_error", None)
+            if last is not None:
+                turn_error = f"{type(last).__name__}: {last}"
+            elif not cancelled_by_request:
+                turn_error = f"agent ended in state {agent_task.state}"
+    except asyncio.CancelledError:
+        cancelled_by_request = True
+    except Exception as exc:
+        turn_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            clear_web_run()
+        except Exception:
+            pass
+        try:
+            from rxycode_worker.agent_events import _BOUND
+
+            _BOUND.pop(run_id, None)
+        except Exception:
+            pass
+        # The result file is the parent's contract: status + real measured
+        # tokens + the honest error string, written best-effort — a missing
+        # file means the sandbox was killed and the parent reports that.
+        try:
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "status": (
+                            "cancelled"
+                            if cancelled_by_request
+                            else "succeeded"
+                            if not turn_error
+                            else "failed"
+                        ),
+                        "error": turn_error[:1500],
+                        "tokens": int(measured["tokens"]),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            _LOG.warning("run %s: turn result file write failed", run_id, exc_info=True)
+    return 0
+
+
+def _read_turn_result(workdir: Path) -> dict[str, Any]:
+    """The confined turn's report. Missing/corrupt => the caller decides —
+    a killed sandbox leaves no file and the drain reports its own cause."""
+    path = workdir / _TURN_RESULT
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def execute_run(
+    cfg: WorkerConfig,
+    run_id: str,
+) -> bool:
+    """Claim and execute one run: the turn itself runs inside the per-run
+    sandbox; this process only claims, watches and commits.
+
+    Returns True when this worker owned the run end to end. A lost claim or a
+    lost lease returns False — the row is never half-written by two owners.
+    """
+    from rxycode_worker.supervisor import (
+        LeaseRejected,
+        claim,
+        commit_terminal,
+        confirm_cancel,
+    )
+
+    epoch = await asyncio.to_thread(
+        claim, cfg.database_url, run_id, cfg.worker_id, ttl_seconds=cfg.lease_ttl
+    )
+    if epoch is None:
+        return False
+
+    from rxycode_server.events.store import append_event
+    from rxycode_server.runs.service import load_run
+    from rxycode_server.usage.service import record_terminal_usage
+
+    # A run already cancel_requested at claim time never executes: nothing
+    # ran, so its effects are fully known -> 'cancelled', not recovery.
+    if await asyncio.to_thread(run_status, cfg.database_url, run_id) == "cancel_requested":
+        confirm_cancel(cfg.database_url, run_id, cfg.worker_id, epoch, effects_known=True)
+        return True
+
+    identity = await asyncio.to_thread(_run_identity, cfg.database_url, run_id)
+    tenant_id = identity["tenant_id"]
+
+    ledger_model = _ledger_model(cfg.model)
+    turn_error = ""
+    cancelled_by_request = False
+    lost_lease = False
+    tokens = 0
+    sandbox_id = ""
+    provider = None
+    workdir: Path | None = None
+    proc: "asyncio.subprocess.Process | None" = None
+    stderr_tail: list[bytes] = []
+
+    # Mark execution start on the durable log so a consumer can distinguish
+    # "queued forever" from "a worker took it and is running the turn".
+    try:
+        await asyncio.to_thread(
+            append_event,
+            cfg.database_url,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            event_type="worker.lease",
+            payload={"worker_id": cfg.worker_id, "epoch": int(epoch)},
+        )
+    except Exception:
+        _LOG.warning("run %s: worker.lease event failed", run_id, exc_info=True)
+
+    turn_task: asyncio.Task[Any] | None = None
+    try:
+        # Everything that can fail BEFORE the turn starts lives inside the
+        # failure path: a corrupt run row, a refused placement, or a host
+        # without userns must end in `commit_terminal("failed")`, not an
+        # orphaned lease that retries forever.
+        loaded = await asyncio.to_thread(load_run, cfg.database_url, run_id)
+        session_id = loaded["session_id"] or run_id
+        target_id = str(loaded.get("target_id") or "")
+        permission_profile = str(loaded.get("permission_profile") or "")
+        permission_mode = _execution_gate(
+            target_id,
+            permission_profile,
+            execution_mode=cfg.execution_mode,
+            tenant_id=tenant_id,
+        )
+
+        from rxycode_runner.sandbox.userns import (
+            UsernsSandboxProvider,
+            userns_available,
+        )
+
+        if not userns_available():
+            raise _UnsupportedTarget(
+                "userns/bwrap isolation is unavailable on this host; "
+                "the run is refused instead of executing unconfined"
+            )
+        provider = UsernsSandboxProvider(Path(cfg.workspaces_root))
+        handle = provider.create(tenant_id=tenant_id, workspace_id=session_id, retain=False)
+        sandbox_id = handle.sandbox_id
+        # Per-tenant workspace: the sandbox's only writable path.
+        workdir = provider.workspaces_root / tenant_id / session_id
+        workdir.mkdir(parents=True, exist_ok=True)
+        data_dir = _prepare_child_data_dir(workdir)
+
+        child_env = _child_env(
+            {
+                "RXYCODE_TURN_RUN_ID": run_id,
+                "RXYCODE_TURN_TENANT": tenant_id,
+                "RXYCODE_TURN_PROJECT": identity["project_id"],
+                "RXYCODE_TURN_ACTOR": identity["actor_id"],
+                "RXYCODE_TURN_SESSION": session_id,
+                "RXYCODE_TURN_TARGET": target_id,
+                "RXYCODE_TURN_PROFILE": permission_profile,
+                "RXYCODE_TURN_PERMISSION": permission_mode or "",
+                "RXYCODE_TURN_TRACEPARENT": identity["traceparent"],
+                "RXYCODE_TURN_WORKDIR": str(workdir),
+                "RXYCODE_DATA_DIR": str(data_dir),
+            }
+        )
+        # The same module re-entered in turn mode — the sandbox sees the
+        # system paths plus every code path this host actually uses
+        # (container /repo, dev-host PYTHONPATH entries) read-only.
+        ro_binds = ["/repo"] + [
+            entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
+        ]
+        argv = provider.spawn_argv(
+            sandbox_id,
+            tenant_id=tenant_id,
+            argv=[sys.executable, "-m", "rxycode_worker.drain"],
+            env=child_env,
+            ro_binds=ro_binds,
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        record = provider._load(sandbox_id, tenant_id)
+        record["pid"] = proc.pid
+        record["status"] = "running"
+        provider._write(sandbox_id, record)
+
+        turn_task = asyncio.ensure_future(_wait_child(proc, stderr_tail))
+        lease_watcher = asyncio.create_task(
+            _lease_watchdog(
+                cfg.database_url,
+                run_id,
+                cfg.worker_id,
+                epoch,
+                lease_ttl=cfg.lease_ttl,
+                turn=turn_task,
+            )
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(turn_task), timeout=cfg.run_timeout)
+        except asyncio.TimeoutError:
+            turn_error = f"run timed out after {cfg.run_timeout}s"
+            turn_task.cancel()
+            try:
+                await turn_task
+            except asyncio.CancelledError:
+                pass
+        except asyncio.CancelledError:
+            pass
+        finally:
             lease_watcher.cancel()
             try:
                 await lease_watcher
@@ -747,29 +1146,49 @@ async def execute_run(
                 lost_lease = True
             except asyncio.CancelledError:
                 pass
-        if not turn_error and agent_task.state != LifecycleState.DONE:
-            last = getattr(agent_task, "_last_error", None)
-            if last is not None:
-                turn_error = f"{type(last).__name__}: {last}"
-            elif not cancelled_by_request and not lost_lease:
-                turn_error = f"agent ended in state {agent_task.state}"
+            try:
+                await turn_task
+            except asyncio.CancelledError:
+                pass
+
+        if not turn_error and not cancelled_by_request and not lost_lease:
+            result = _read_turn_result(workdir)
+            tokens = int(result.get("tokens") or 0)
+            status = str(result.get("status") or "")
+            if status == "succeeded":
+                pass
+            elif status == "cancelled":
+                cancelled_by_request = True
+            else:
+                detail = str(result.get("error") or "")
+                if proc.returncode not in (0, None):
+                    detail = detail or f"sandboxed turn exited rc={proc.returncode}"
+                if not detail:
+                    detail = (
+                        "sandboxed turn reported failure without detail"
+                        if status == "failed"
+                        else f"sandboxed turn produced no result (rc={proc.returncode})"
+                    )
+                tail = b"".join(stderr_tail)[-600:].decode("utf-8", "replace")
+                if tail.strip():
+                    detail = f"{detail} [stderr tail: {tail.strip()[-300:]}]"
+                turn_error = detail
     except LeaseRejected:
         lost_lease = True
     except Exception as exc:
         turn_error = f"{type(exc).__name__}: {exc}"
     finally:
-        try:
-            clear_web_run()
-        except Exception:
-            pass
-        try:
-            # The run's steer binding dies with its turn — a long-lived drain
-            # must not accumulate one slot per finished run.
-            from rxycode_worker.agent_events import _BOUND
-
-            _BOUND.pop(run_id, None)
-        except Exception:
-            pass
+        # A leftover confined child must not outlive the drain's decision.
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        if provider is not None and sandbox_id:
+            try:
+                provider.destroy(sandbox_id, tenant_id=tenant_id)
+            except Exception:
+                pass
 
     if lost_lease:
         _LOG.warning("run %s: lease lost mid-flight; new owner finishes", run_id)
@@ -778,7 +1197,6 @@ async def execute_run(
     # Real spend lands on the ledger for succeeded, failed AND cancelled runs
     # alike — the metered delta is the truth even when agent_done never
     # journaled (it only writes on success).
-    tokens = int(measured["tokens"])
     agent_done_id = uuid.uuid4().hex
     try:
         agent_done_id_found, done_tokens = await asyncio.to_thread(
@@ -825,7 +1243,8 @@ async def execute_run(
                 )
             except Exception:
                 _LOG.warning(
-                    "run %s: run.error for usage failure failed", run_id,
+                    "run %s: run.error for usage failure failed",
+                    run_id,
                     exc_info=True,
                 )
         try:
@@ -880,8 +1299,9 @@ async def run_forever(cfg: WorkerConfig) -> None:
     """Poll the durable queue forever. Per-iteration failures never kill the
     loop — a wedged run must not take down the only consumer."""
     _LOG.info(
-        "worker drain started: worker_id=%s poll=%.1fs lease_ttl=%ds timeout=%.0fs",
+        "worker drain started: worker_id=%s mode=%s poll=%.1fs lease_ttl=%ds timeout=%.0fs",
         cfg.worker_id,
+        cfg.execution_mode,
         cfg.poll_seconds,
         cfg.lease_ttl,
         cfg.run_timeout,
@@ -897,8 +1317,18 @@ async def run_forever(cfg: WorkerConfig) -> None:
 
 
 def main() -> None:
-    """``python -m rxycode_worker.drain`` / ``python -m rxycode_worker``."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    """``python -m rxycode_worker.drain`` / ``python -m rxycode_worker``.
+
+    With ``RXYCODE_TURN_RUN_ID`` set this process IS the confined turn —
+    spawned by the drain under the userns sandbox. Without it, this is the
+    drain loop itself.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    if os.environ.get("RXYCODE_TURN_RUN_ID", "").strip():
+        sys.exit(asyncio.run(run_sandboxed_turn()))
     cfg = worker_config_from_env()
     asyncio.run(run_forever(cfg))
 

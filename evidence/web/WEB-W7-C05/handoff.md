@@ -13,27 +13,44 @@ reasoning `high`.
 - `infra/compose/Caddyfile` — HTTPS gateway (internal CA), security headers,
   `/api/*` proxy incl. SSE+WS, SPA static, preview-auth seam.
 - `packages/rxycode-worker/src/rxycode_worker/drain.py` + `__main__.py` — the
-  real queue consumer the audit found missing: polls `runs`, fenced `claim`,
-  `load_run` reads back the persisted message, drives ONE real turn through
-  `AgentRuntime -> Session.prompt` with `remember_web_run` bound (journaled
-  agent_started/agent_done + telemetry spans land on the run's event log),
-  renews the lease and honors `cancel_requested` mid-turn, delivers persisted
-  `steer.accepted` commands into the turn, writes `record_terminal_usage` and
+  real queue consumer the audit found missing, now two-process: the drain
+  polls `runs`, fences the `claim`, enforces the placement gate, then spawns
+  the turn as a CONFINED child (`python -m rxycode_worker.drain` re-entered
+  with `RXYCODE_TURN_RUN_ID`). Inside the boundary the child binds
+  `remember_web_run`, a real `ProtocolTui` + `bind_prompt_context` with the
+  persisted `RunContext` (the audit-r3-required production producer for
+  tool/stream events), `bind_worker_todo_sink`, the steer shim, and drives
+  ONE real turn through `AgentRuntime -> Session.prompt`. The parent renews
+  the lease with deadline-bounded probes, honors `cancel_requested` (SIGKILL
+  to the bwrap supervisor reaps the whole tree), reads back
+  `.turn-result.json`, then writes `record_terminal_usage` and
   `commit_terminal` (or `confirm_cancel`). Failed/provider-less runs end
   `failed` — never fabricated.
-  - Enforces the persisted `target_id`: only `local:*` runs execute inside
-    the shared container; `sandbox:`/cloud/empty targets fail closed
-    (`_UnsupportedTarget` → `run.error` → `failed`, no `agent_started`).
-  - Lease watchdog: transient renewal errors retry; renewals broken past the
-    TTL cancel the turn and raise `_LeaseRenewalLost` (the row is left for a
-    healthy claimant — no terminal write on a lease it cannot prove).
+  - Public placement rule (`_execution_gate`, `RXYCODE_WORKER_EXECUTION`):
+    shipped `cloud-only` accepts ONLY `cloud:{tenant}:{workspace}` targets
+    whose tenant segment equals the run's own tenant, and refuses
+    `full`/`full_auto` profiles, `local:*`, `sandbox:*` and empty targets —
+    `run.error` → `failed`, no `agent_started`, nothing on the host.
+  - The boundary is real: `rxycode_runner.sandbox.userns` (bwrap userns +
+    pidns/ipc/uts + minimal ro root + rw per-tenant workspace + `--clearenv`
+    passlist + `--die-with-parent`); `userns_available()` is a live probe —
+    unavailable means `IsolationUnavailable` → `failed`, never a host
+    fallback. Worker's `seccomp=unconfined` is scoped to that one service
+    (validator enforces), no capabilities, no privileged, no docker.sock.
+  - Lease watchdog: every store call is `wait_for`-bounded; a monotonic
+    deadline extends only on a proven renewal — renewals unproven past the
+    TTL cancel the turn and raise `_LeaseRenewalLost` (no terminal write on
+    a lease it cannot prove).
   - `event/*` notifications land as `notify.*` audit rows AND structured
     reducer projections (`assistant.final`/`assistant.delta`/`tool.*`/
-    `plan.updated`/`todo.updated`/`question.requested`/`approval.requested`).
-  - Real token delta is metered in `_target`'s `finally` — failed and
-    cancelled turns write the ledger too; a ledger write failure forces the
-    commit to `failed` (a `succeeded` can never stand on a missing usage
-    row), and on the cancel path it is journaled as `run.error` first.
+    `plan.updated`/`todo.updated`/`question.requested`/`approval.requested`);
+    `assistant.final` is exempt from the intermediate-event cap so the
+    answer is never dropped.
+  - Real token delta is metered in the confined turn's `finally` and
+    reported via `.turn-result.json` — failed and cancelled turns write the
+    ledger too; a ledger write failure forces the commit to `failed` (a
+    `succeeded` can never stand on a missing usage row), and on the cancel
+    path it is journaled as `run.error` first.
 - `packages/rxycode-server/src/rxycode_server/api/ratelimit.py` +
   `main.py` — per-client-IP fixed-window ASGI limiter (429+Retry-After),
   installed when `RXYCODE_WEB_RATE_LIMIT_RPM>0` (compose default 240).
@@ -47,13 +64,15 @@ reasoning `high`.
   before the tar stream — deleted files and stale alembic revisions cannot
   survive; `.rxy-sync-done` stamps the new commit hash), boundaries.
 - `tests/web/w7/test_w7_c05_unit.py` / `test_w7_c05_module.py` — contract +
-  negative (incl. a literal `RXYCODE_API_KEY` refusal) + drain-internal unit
-  legs (watchdog outage semantics, reducer projection vocabulary) +
-  restart-durability; the module test asserts the DEPLOYED worker container
-  drains a queued run (`worker.lease` + `event/agent_started` +
-  `usage.updated` events), a planted stale lease is reclaimed at epoch+1,
-  a SIGKILLed+recreated worker claims a new run again, and a `sandbox:`
-  target fails closed without ever spawning the local agent.
+  negative (incl. a literal `RXYCODE_API_KEY` refusal, `cap_add`/
+  non-worker `security_opt` refusals) + drain-internal unit legs (watchdog
+  outage semantics, reducer projection vocabulary, execution-gate matrix,
+  sandbox argv shape, terminal-projection cap bypass) + restart-durability;
+  the module test asserts the DEPLOYED worker container drains a queued
+  tenant-bound `cloud:*` run INSIDE the per-run sandbox (`worker.lease` +
+  `event/agent_started` + `usage.updated` events), a planted stale lease is
+  reclaimed at epoch+1, a SIGKILLed+recreated worker claims a new run again,
+  and `local:*` + `sandbox:` targets both fail closed without spawning.
 
 ## Evidence
 
@@ -67,6 +86,12 @@ docker legs), `NOTES.md` (topology, deviations, honest labels).
 - ruff clean on all touched files; `docker compose config --quiet` OK;
   `git diff --check` clean on the card scope.
 - Browser E2E: BLOCKED (no Playwright dep in apps/web) — labeled, not claimed.
-- Provider-backed run success leg: exercised on host (real Session.prompt
-  turn → `succeeded`, usage.updated); in the compose test project runs end
-  `failed` honestly (no provider creds).
+- Provider-backed run-success leg: the pre-sandbox in-process drain reached
+  `succeeded` on host with a real provider; under the current sandboxed
+  drain this Windows host refuses (no userns) and the compose test project
+  ends `failed` honestly at the network boundary (no provider creds). A
+  real `RXYCODE_LLM_BASE_URL`+key on the shipped stack runs the same
+  confined path to completion — needs credentials, labeled not claimed.
+- Live-debug boundary fixes: probe loader binds (`/lib*`), `/usr/local`
+  interpreter mount, `ro_binds` union semantics — all found by running the
+  shipped container, all fixed in `userns.py`.

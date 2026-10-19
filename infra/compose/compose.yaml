@@ -240,14 +240,19 @@ services:
   # The run executor: `python -m rxycode_worker.drain` — the real durable
   # queue consumer. It polls `runs` for claimable rows (pending, or a dead
   # worker's expired lease), takes the fenced lease via supervisor.claim,
-  # reads the persisted message back, and drives one real turn through
-  # AgentRuntime -> Session.prompt (the same machinery an appserver session
-  # worker uses). Without this service an API-created run sits queued
-  # forever — the audit found that gap; this is the fix.
+  # then spawns the turn INSIDE a per-run kernel sandbox: this service is
+  # cloud-only — only `cloud:{tenant}:{workspace}` targets execute, each in
+  # a bubblewrap user/pid/ipc/uts namespace with a minimal read-only root
+  # and just that run's workspace writable. `seccomp=unconfined` is scoped
+  # to THIS service only: Docker's default profile forbids the
+  # unshare/mount syscalls userns isolation needs. No privileged flag, no
+  # capabilities, no docker.sock — the confinement is bwrap, not docker.
   worker:
     image: python:3.12-slim
     privileged: false
     restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
     volumes:
       - repo-src:/repo-src:ro
       - boot-state:/boot:ro
@@ -260,6 +265,9 @@ services:
       RXYCODE_WORKER_LEASE_TTL: ${RXYCODE_WORKER_LEASE_TTL:-120}
       RXYCODE_WORKER_RUN_TIMEOUT: ${RXYCODE_WORKER_RUN_TIMEOUT:-900}
       RXYCODE_WORKER_WORKSPACES: /work/runs
+      # Public-stack contract: only tenant-bound cloud:* targets execute,
+      # always confined; local:* placements and full* profiles are refused.
+      RXYCODE_WORKER_EXECUTION: ${RXYCODE_WORKER_EXECUTION:-cloud-only}
       RXYCODE_WORKER_MODEL: ${RXYCODE_WORKER_MODEL:-}
       # Deployed LLM endpoint: when RXYCODE_LLM_BASE_URL is set the worker
       # writes a real model entry into its config and executes turns against
@@ -311,6 +319,10 @@ services:
         PY
         python -m pip install --quiet --no-input \
           -r /repo/requirements.txt
+        # bubblewrap is the turn's kernel boundary (userns provider); absent
+        # it, the drain refuses every run instead of executing unconfined.
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends bubblewrap
         # Deployed model config: only written when the operator pointed the
         # worker at an LLM endpoint. api_key stays an env reference — the
         # key itself never lands in the config file. The check lives inside

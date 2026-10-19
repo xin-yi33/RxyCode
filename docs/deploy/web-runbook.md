@@ -12,7 +12,9 @@ browser --https(8443)--> gateway (caddy:2.11, TLS internal CA)
                           '-- /*      -> /srv/www  (vite dist from `webbuild`)
 api (python:3.12-slim, uvicorn on rxycode_server.main.serve(mode=cloud))
 worker (python:3.12-slim, `python -m rxycode_worker.drain` — durable queue
-        consumer: claim -> load_run -> real Session.prompt -> terminal commit)
+        consumer: claim -> placement gate -> per-run userns sandbox turn ->
+        terminal commit. Every executed turn runs INSIDE a bubblewrap
+        user/pid/ipc/uts namespace; the worker host never runs agent code)
 migrate (one-shot: rxycode_server.persistence.migrate.upgrade_head)
 webbuild (one-shot: node:22-slim, npm install + npm run build -> web-dist vol)
 postgres:16 | redis:7 | bitnamilegacy/minio:2025.7.23 (named volumes)
@@ -24,11 +26,29 @@ Honest notes:
   plus the `outbox` table, and the worker service is a real consumer:
   `rxycode_worker.drain` polls `runs` for claimable rows (`pending`, or a
   dead worker's expired lease), takes the fenced lease, reads the persisted
-  message with `load_run`, and drives the turn through
-  `AgentRuntime -> Session.prompt` — the same machinery an appserver session
-  worker uses. Journaling, telemetry spans and the usage ledger all land on
-  the run's own event log. Its healthcheck proves the drain is PID 1 *and*
-  can reach Postgres.
+  message with `load_run`, and spawns the turn as a confined child process.
+  Journaling, telemetry spans and the usage ledger all land on the run's own
+  event log. Its healthcheck proves the drain is PID 1 *and* can reach
+  Postgres.
+- **Turn isolation (public rule)**: `RXYCODE_WORKER_EXECUTION=cloud-only`
+  means only `cloud:{tenant}:{workspace}` targets execute — the tenant
+  segment must equal the run's own `tenant_id` (a cross-tenant target is
+  refused), and `full`/`full_auto` permission profiles are refused outright:
+  Full authority means unsandboxed host execution, which does not exist on
+  this stack. Accepted targets run inside `rxycode_runner.sandbox.userns`
+  (bubblewrap): `--unshare-user --unshare-pid --unshare-ipc --unshare-uts`,
+  `--clearenv` + an explicit setenv passlist, system paths and the checkout
+  read-only, only the per-tenant workspace writable, `--die-with-parent`
+  tree reaping on cancel/stop. The agent's tool calls happen inside that
+  namespace — sibling workspaces and the worker's own data dir are simply
+  not mounted. If bwrap/userns is missing the provider raises
+  `IsolationUnavailable` and the run fails honestly; there is no host
+  fallback. The worker's `security_opt: seccomp=unconfined` exists solely
+  because Docker's default seccomp profile forbids the `unshare`/`mount`
+  syscalls userns needs — it grants no capability, no privileged flag and
+  no docker.sock. When a real cloud sandbox broker (VM/gVisor provider)
+  lands, it replaces `userns` behind the same `SandboxProvider` contract —
+  the gate, lease and commit flow do not change.
 - The api/worker/migrate images are stock `python:3.12-slim`; the checkout is
   **not** bind-mounted — it is streamed as a tar into the shared `repo-src`
   volume through the `reposync` service (see Bring-up). That keeps the stack
@@ -58,6 +78,7 @@ No `.env` file is shipped. Export (or pass inline) per deploy:
 | `RXYCODE_PREVIEW_TOKEN` | no | empty | optional extra preview-token check at the gateway |
 | `RXYCODE_WEB_RATE_LIMIT_RPM` | no | `240` | public-demo throttle: requests/min per client IP at the app layer; `0` disables |
 | `RXYCODE_WORKER_ID` / `_POLL_SECONDS` / `_LEASE_TTL` / `_RUN_TIMEOUT` / `_MODEL` | no | hostname / `2` / `120` / `900` / active | drain worker tuning |
+| `RXYCODE_WORKER_EXECUTION` | no | `cloud-only` | placement gate: `cloud-only` accepts only tenant-bound `cloud:*` targets (the shipped public mode); `sandboxed-local` is the dev opt-in that also accepts `local:*` — still confined |
 | `RXYCODE_LLM_BASE_URL` / `RXYCODE_LLM_MODEL` | no | empty | when set, worker writes a real model entry (openai-compatible) into its config and executes turns against this endpoint |
 | `RXYCODE_API_KEY` | no | empty | credential for the deployed endpoint; referenced via `api_key_env`, never written into config.yaml |
 | `RXYCODE_PG_PORT` / `RXYCODE_HTTP_PORT` / `RXYCODE_HTTPS_PORT` | no | `54433` / `8080` / `8443` | loopback-published ports |
@@ -107,7 +128,7 @@ Healthcheck detail:
 - `postgres`: `pg_isready -U rxycode -d rxycode` inside the container
 - `api`: `GET /api/v1/auth/csrf` == 200 (app layer) **and** `SELECT 1`
   against `RXYCODE_WEB_DATABASE_URL` (durable layer)
-- `worker`: `/proc/1/cmdline` is `appserver` **and** `SELECT 1` on the same DSN
+- `worker`: `/proc/1/cmdline` is `rxycode_worker` **and** `SELECT 1` on the same DSN
 - `gateway`: Caddy admin API on loopback `:2019` answers
 
 ## Migrations
@@ -238,10 +259,13 @@ named revision via the same module when you only need one step back.)
 - **A cloud run that really executes** needs a real endpoint: set
   `RXYCODE_LLM_BASE_URL`/`RXYCODE_LLM_MODEL`/`RXYCODE_API_KEY` so the worker
   writes a real model entry and `Session.prompt` reaches your provider. The
-  drain worker claims the durable run and drives the turn itself — no stdio
-  client needed. Without a reachable endpoint the run still reaches a real
-  terminal state (`failed`, not a fabricated `succeeded`), recorded by
-  `test_w7_c05_module`.
+  drain worker claims the durable run and drives the turn inside the per-run
+  userns sandbox — no stdio client needed. Without a reachable endpoint the
+  run still reaches a real terminal state (`failed`, not a fabricated
+  `succeeded`), recorded by `test_w7_c05_module`. `local:*` targets and
+  `full`/`full_auto` profiles are refused on this stack by design; on a
+  development host set `RXYCODE_WORKER_EXECUTION=sandboxed-local` to let
+  `local:*` drain (still confined — the drain never executes unconfined).
 - The compose Postgres is for the web stack — the dev containers
   (`rxy-w2c01-pg` etc.) are untouched; use a distinct `-p` project name and
   the shipped loopback ports so nothing collides.

@@ -8,7 +8,8 @@
 | `infra/compose/Caddyfile` | HTTPS gateway (internal CA), security headers, `/api/*` reverse proxy (SSE+WS), SPA static + preview-auth seam |
 | `.github/workflows/web-ci.yml` | 4 lanes: ruff, pytest web contract subset (with real docker), apps/web typecheck+build, compose config + deploy invariants |
 | `docs/deploy/web-runbook.md` | bring-up/seed/migrations/certs/logs/upgrade/rollback/boundaries — commands verified on this checkout |
-| `packages/rxycode-worker/src/rxycode_worker/drain.py` | the deployed queue consumer: claim -> load_run -> real `Session.prompt` turn -> usage ledger -> terminal commit |
+| `packages/rxycode-worker/src/rxycode_worker/drain.py` | the deployed queue consumer: claim -> placement gate -> confined turn (spawned via the userns provider) -> usage ledger -> terminal commit; the same file re-enters in turn mode (`RXYCODE_TURN_RUN_ID`) inside the sandbox |
+| `packages/rxycode-runner/src/rxycode_runner/sandbox/userns.py` | the per-run kernel boundary: bwrap userns/pidns/ipc/uts + minimal ro root + rw workspace + env passlist; `UsernsSandboxProvider` implements the `SandboxProvider` contract; `userns_available()` is a real probe and fails closed |
 | `packages/rxycode-worker/src/rxycode_worker/__main__.py` | `python -m rxycode_worker` entry to the drain |
 | `packages/rxycode-server/src/rxycode_server/api/ratelimit.py` | per-client-IP fixed-window ASGI limiter (429 + Retry-After) |
 | `packages/rxycode-server/src/rxycode_server/main.py` | `create_app(..., rate_limit_rpm=)` wires the limiter; `serve()` is the guarded boot path |
@@ -20,38 +21,72 @@
 - **The worker service is `python -m rxycode_worker.drain`** — a real durable
   consumer, not an idle stdio appserver. It polls `runs` for claimable rows
   (`pending`, or a dead worker's expired lease), takes the fenced lease via
-  `supervisor.claim`, reads the persisted message with `runs.service.load_run`,
-  and drives ONE real turn through `AgentRuntime -> Session.prompt` —
+  `supervisor.claim`, and spawns the turn INSIDE a per-run kernel sandbox —
   journaled `event/agent_started`/`event/agent_done`, telemetry spans and the
-  `usage.updated` ledger row all land on the run's own event log.
-  - **`target_id` is enforced, not decoration**: only `local:*` runs execute
-    inside the shared worker container. `sandbox:`/cloud/empty targets raise
-    `_UnsupportedTarget` before spawn — the run commits `failed` with an
-    honest `run.error` and never journals `event/agent_started` (verified:
-    a `sandbox:` run on the host dev DB failed closed; the module test
-    asserts the same inside the compose stack).
-  - **Lease watchdog survives outages**: a transient renewal error retries
-    on the next tick; renewals broken past the TTL cancel the turn and
-    raise `_LeaseRenewalLost` (the run is left for a healthy claimant — the
-    worker never commits a terminal state it cannot prove it owns). Only
-    `LeaseRejected` and an explicit `cancel_requested` are normal exits.
+  `usage.updated` ledger row all land on the run's own event log from inside
+  the boundary.
+  - **Public rule in code (`_execution_gate` + `RXYCODE_WORKER_EXECUTION`)**:
+    the shipped `cloud-only` mode executes ONLY `cloud:{tenant}:{workspace}`
+    targets — the tenant segment must equal the run's `tenant_id`
+    (cross-tenant refused) — and refuses `local:*`/`sandbox:*`/empty
+    placements AND `full`/`full_auto` profiles (Full means unsandboxed host
+    authority, which does not exist on the public worker). `sandboxed-local`
+    is the dev-host opt-in: `local:*` runs are accepted but STILL confined.
+    Refusals commit `failed` with an honest `run.error` and never spawn —
+    no `event/agent_started` (module test asserts both legs).
+  - **The boundary is real**: `rxycode_runner.sandbox.userns` wraps the whole
+    turn process in bubblewrap — `--unshare-user --uid 0 --gid 0
+    --unshare-pid --unshare-ipc --unshare-uts`, `--clearenv` + explicit
+    setenv passlist, system paths + checkout read-only, only
+    `workspaces/<tenant>/<session>` writable, `--die-with-parent` tree reaping
+    on kill. `userns_available()` does a live probe; unavailable means the
+    run fails closed (`IsolationUnavailable`), never a host-subprocess
+    fallback. `security_opt: seccomp=unconfined` is scoped to the worker
+    only — Docker's default profile forbids `unshare`/`mount`; the validator
+    refuses it on every other service and refuses `cap_add` everywhere.
+  - **Boundary construction bugs found by live debugging** (all fixed):
+    the probe originally bound only `/usr` — a dynamically linked `true`
+    also needs `/lib*` (the ELF loader) so the probe failed closed while
+    the real boundary would have worked; the probe now uses the same
+    `_DEFAULT_RO_BINDS` the turn gets. `_DEFAULT_RO_BINDS` was missing
+    `/usr/local` — the Debian-slim interpreter lives there, so the first
+    confined spawn hit `execvp python: ENOENT`. And the drain's `ro_binds`
+    argument originally *replaced* the system mounts instead of adding to
+    them — `build_sandbox_argv` now unions defaults+caller binds so a
+    caller can never drop the interpreter's own mount. Verified in the
+    real stack: `worker.lease -> event/agent_started -> six real provider
+    retries -> run.timeout -> failed`, and `/proc` shows zero leftover
+    turn processes after the kill.
+  - **The production producer is wired (audit r3-F3)**: the turn child calls
+    `install_tui_context_hook()`, builds a real `ProtocolTui` +
+    `RunContext` from the persisted identity (tenant/project/actor/trace)
+    and binds them via `bind_prompt_context`, plus `bind_worker_todo_sink` —
+    the same calls an appserver session worker makes.
+  - **Terminal answer survives floods (audit r3-F4)**: `_RunEmit` caps
+    intermediate projections at `_JOURNAL_CAP` but `assistant.final` is
+    exempt and always persisted.
+  - **Lease watchdog is deadline-bounded (audit r3-F2)**: every renewal and
+    status probe runs under `asyncio.wait_for(_LEASE_IO_BUDGET)`; a
+    monotonic deadline extends only on a *proven* renewal. Renewals unproven
+    past the TTL cancel the turn and raise `_LeaseRenewalLost` — the worker
+    never executes past a lease it cannot prove.
   - **Structured UI projections**: every `event/*` notification still lands
     as a `notify.*` audit row, and `_projection_rows` additionally writes
     reducer-vocabulary events — `assistant.final` (text + token fields),
     `assistant.delta`, `tool.completed`/`tool.failed` (call_id + tool),
     `plan.updated`/`todo.updated` (incl. the V17 snapshot envelope), and
     `question.requested` + `approval.requested` for `event/agent_needs_input`.
-    Verified on the host dev DB: a real `local:` run ended `succeeded` with
-    `assistant.final {text:"pong", input_tokens:9165, output_tokens:1503}`.
   - **Metering survives failure and is terminal-checked**: the real token
-    delta is captured in `_target`'s `finally` (`runtime.record_token_usage`
-    + a local `measured` dict) so failed AND cancelled turns still write the
+    delta is captured inside the confined turn's `finally` and reported via
+    `.turn-result.json` so failed AND cancelled turns still write the
     ledger — a cancel never returns before `record_terminal_usage`. A ledger
     write failure is itself a durable-write failure: it appends to
     `run.error` and forces the commit to `failed`.
   - Persisted `steer.accepted` commands reach the turn through a bound
-    `_DrainWorkerShim` + `consume_persisted_commands`; `child.cancel` gets an
-    honest "no manager" (the drain is single-agent).
+    `_DrainWorkerShim` + `consume_persisted_commands` inside the sandbox;
+    `child.cancel` gets an honest "no manager" (the drain is single-agent).
+    The DB URL reaching the turn is scoped inside the boundary — the
+    residual is documented in the runbook.
 - **The worker's model comes from `RXYCODE_LLM_BASE_URL`/`_MODEL`/`RXYCODE_API_KEY`**
   — when the base URL is set, worker startup writes a real openai-compatible
   model entry into `RXYCODE_DATA_DIR/config.yaml` (the key stays an
@@ -118,19 +153,28 @@
 - `run.permission_profile` maps to `Session.prompt(permission_mode=)` only
   for real vocabulary (`full_auto`/`full`/`auto_edit`/`confirm_all`);
   anything else falls back to the configured default (`confirm_all`).
-  Approval-gated tools then emit requests nobody can answer in a deployed
-  drain (no stdin client) — the turn fails at `RXYCODE_WORKER_RUN_TIMEOUT`
-  instead of hanging forever. The in-process approval-answer channel
-  (`interrupt_resume`/`pause_for_approval`) is invoked by the caller that
-  owns the lease; a resume service is not part of this stack.
+  Approval-gated tools then hit "no approval broker" inside the confined
+  turn (no stdin client, no durable approval service on this stack) — the
+  tool call is refused honestly rather than blocking forever. The
+  in-process approval-answer channel (`interrupt_resume`/`pause_for_approval`)
+  is invoked by the caller that owns the lease; a resume service is not part
+  of this stack.
+- **Network inside the sandbox is inherited** (the turn must reach Postgres
+  for journaling/steer delivery and the configured LLM endpoint). The
+  boundary confines filesystem/process/credentials surface, not egress —
+  per-run egress policy is the `rxycode_runner.sandbox.egress` seam, not yet
+  wired here; documented in the runbook.
+- The turn child receives `RXYCODE_WEB_DATABASE_URL` inside the sandbox —
+  run code with the DSN could write run-events directly. That residual is
+  accepted for this stack (journal delivery needs it; an out-of-process
+  journal broker is future work) and recorded in the runbook.
 - E2E-DEPLOY-01 run leg: the deployed drain worker really claims and
-  executes queued runs — the module test asserts `worker.lease` +
-  `event/agent_started` + `usage.updated` inside the container, where the
-  configured model points at a loopback dead port so the provider call fails
-  honestly at the network boundary (verified live: `run.error` carries
-  "run timed out after 60s"). A run that *succeeds* needs a real
-  `RXYCODE_LLM_BASE_URL`+key; on the host dev DB the same drain drove a real
-  turn to `succeeded` (real model, `agent_done`+usage recorded).
+  executes queued runs inside the userns sandbox — the module test asserts
+  `worker.lease` + `event/agent_started` + `usage.updated` inside the
+  container, where the configured model points at a loopback dead port so
+  the provider call fails honestly at the network boundary. A run that
+  *succeeds* needs a real `RXYCODE_LLM_BASE_URL`+key; the same drain drove a
+  real turn to `succeeded` (real model, `agent_done`+usage recorded).
 
 ## Quick verify
 

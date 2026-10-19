@@ -1,15 +1,15 @@
 === WEB-W7-C05 green evidence ===
-2026-10-18 (all runs on this checkout, Docker Engine 29.7.2 / Compose v5.5.1)
-Post-remediation state (audit round-1 AND round-2 findings fixed).
+2026-10-19 (all runs on this checkout, Docker Engine 29.7.2 / Compose v5.5.1)
+Post-remediation state (audit rounds 1-3 findings fixed; the turn now
+executes INSIDE a per-run userns/bwrap kernel sandbox).
 
---- r2 run: python -m pytest tests/web/w7/test_w7_c05_unit.py tests/web/w7/test_w7_c05_module.py -x ---
-5 passed in 486.91s (0:08:06)   [unit 4: contract, negative incl. literal
-RXYCODE_API_KEY refusal, lease-watchdog semantics, projection vocabulary;
-module 1: real compose drain incl. the sandbox-target fail-closed leg]
+--- r3 run ---
+python -m pytest tests/web/w7/test_w7_c05_unit.py  -> 7 passed in 296.64s
+python -m pytest tests/web/w7/test_w7_c05_module.py -> 1 passed in 510.09s
 
-The 5 tests are real, not skipped: docker CLI + engine were checked and
-present; each docker test spawned its own `rxyw7c05-*` / `rxyw7c05i-*`
-project with random secrets + free loopback ports, then `down -v`'d itself.
+The 8 tests are real, not skipped: docker CLI + engine were checked and
+present; each docker test spawned its own `rxyw7c05*` project with random
+secrets + free loopback ports, then `down -v`'d itself.
 
 --- contract leg: real `docker compose up -d` -> full stack healthy ---
   postgres  Up (healthy)        postgres:16
@@ -19,7 +19,7 @@ project with random secrets + free loopback ports, then `down -v`'d itself.
   migrate   Exited (0)          python:3.12-slim   (alembic upgrade_head)
   webbuild  Exited (0)          node:22-slim       (npm install + vite build)
   api       Up (healthy)        python:3.12-slim   (serve() -> uvicorn)
-  worker    Up (healthy)        python:3.12-slim   (python -m rxycode_worker.drain)
+  worker    Up (healthy)        python:3.12-slim   (drain + bwrap, seccomp=unconfined)
   gateway   Up (healthy)        caddy:2.11         (tls internal, localhost leaf)
 
 --- HTTPS proxy proof (through gateway on https://localhost:<free-port>) ---
@@ -29,32 +29,37 @@ project with random secrets + free loopback ports, then `down -v`'d itself.
   GET /api/v1/me               verify=False -> 401 {"code":"UNAUTHORIZED"}
 
 --- migrations on the COMPOSE postgres ---
-  alembic_version -> "004_waiting_approval" (real head); runs, run_events,
-  outbox, users, projects all present.
+  alembic_version -> real head; runs, run_events, outbox, users, projects
+  all present.
 
 --- negative leg ---
   base compose renders and validates; overlays with privileged:true,
-  docker.sock mount, network_mode:host, literal secrets, or a published
-  port without an explicit loopback host_ip ("8000:8000") are all REFUSED
-  by the validator — same check duplicated as a CI deploy invariant.
+  docker.sock mount, network_mode:host, literal secrets (incl. a literal
+  RXYCODE_API_KEY), a published port without an explicit loopback host_ip,
+  cap_add, or security_opt on a non-worker service are all REFUSED by the
+  validator — the same checks duplicated as CI deploy invariants.
   serve(mode="local", host="0.0.0.0") -> RuntimeError (reject_as_public_web_gateway);
   serve(mode="local", host="127.0.0.1") builds.
   RateLimitMiddleware driven at ASGI level: requests 1-2 pass, 3rd ->
   429 {"code":"RATE_LIMITED"} + Retry-After; rpm<=0 disables.
 
---- module leg: the DEPLOYED worker really drains queued runs ---
-  create_run(tenant, session, "restart-proof durable run") on compose PG.
-  The drain inside the worker container claimed it (lease_owner =
-  drain-<container>-<pid>), journaled on the run's own event log:
-    run.created, telemetry.span (http POST /api/v1/runs), worker.lease,
-    deploy.marker, event/agent_started, usage.updated, run.error, ...
+--- module leg: the DEPLOYED worker drains queued runs INTO the sandbox ---
+  create_run(tenant, session, "restart-proof durable run",
+             target_id="cloud:<tenant>:w1", permission_profile="auto_edit")
+  on compose PG. The drain inside the worker container claimed it, opened
+  the userns sandbox (bwrap --unshare-user --unshare-pid --unshare-ipc
+  --unshare-uts --clearenv, ro system+checkout binds, only the run's own
+  workspace writable), and ran the real Session.prompt turn INSIDE it.
+  Journaled on the run's own event log:
+    run.created, telemetry.span, deploy.marker, worker.lease,
+    event/agent_started, notify.event/recovery_attempt xN (real provider
+    retries), usage.updated, run.error
   Terminal status: `failed` — honest: the configured model points at a
   loopback dead port (RXYCODE_LLM_BASE_URL=http://127.0.0.1:9/v1), so the
-  real Session.prompt turn started (agent_started) and failed at the real
-  network boundary ("run timed out after 60.0s"). Never fabricated.
-  Verified identically by hand on a debug stack (w7c05dbg): worker.lease
-  epoch=1 -> event/agent_started (agent web-run-<id12>) -> usage.updated
-  (model_id=smoke-none) -> run.error -> commit_terminal failed.
+  confined turn started (agent_started) and died at the real network
+  boundary ("run timed out after 60.0s"). Never fabricated. After the
+  timeout kill, /proc inside the worker shows zero leftover turn
+  processes — --die-with-parent reaped the whole namespace tree.
 
 --- restart durability (断电) ---
   `docker compose restart postgres api` -> both bounce healthy; runs row +
@@ -66,60 +71,75 @@ project with random secrets + free loopback ports, then `down -v`'d itself.
   Planted row: status=leased, lease_owner=dead-worker-*, lease_epoch=1,
   lease_until = now-5s (the exact residue a crashed worker leaves).
   claim(worker-b, ttl=600) -> epoch 2 (fenced, honest re-claim);
-  commit_terminal(worker-b, epoch=2, "succeeded") -> row shows
-  succeeded / worker-b / epoch=2.
+  commit_terminal(worker-b, epoch=2, "succeeded") -> succeeded / epoch=2.
 
 --- worker restart recovery ---
-  `docker compose up -d worker` recreates the SIGKILLed container; after the
-  pip bootstrap it reaches healthy, and a THIRD create_run is claimed by the
-  revived drain (lease_owner = new drain-<newcontainer>-<pid>).
+  `docker compose up -d worker` recreates the SIGKILLed container; after
+  the bootstrap it reaches healthy, and a THIRD run is claimed by the
+  revived drain (lease_owner = drain-<newcontainer>-<pid>).
 
---- target gate (fail closed, never spawn) ---
-  A `sandbox:c05-unshipped` run was claimed by the drain, committed
-  `failed` with run.error "target 'sandbox:...' is not local:*", and
-  journaled NO event/agent_started — isolation never silently downgraded.
-  Mirrored on host dev DB: sandbox run -> worker.lease + usage.updated +
-  run.error + failed; local run -> agent_started + assistant.delta +
-  assistant.final {text:"pong", input_tokens:9165, output_tokens:1503} +
-  agent_done + usage.updated + succeeded (real provider).
+--- placement gate (fail closed, never spawn) ---
+  `local:*` run in cloud-only mode -> claimed, committed `failed` with
+  run.error "refused: the public worker executes only cloud:... targets",
+  NO event/agent_started (card's 本机-Full negative).
+  `sandbox:*` run -> identical fail-closed commit, no spawn.
+  `cloud:<other-tenant>:w1` -> refused as cross-tenant (tenant segment
+  must equal run.tenant_id).
+  On a host without userns/bwrap the gate refuses before spawning:
+  IsolationUnavailable -> run.error -> failed. Verified on Windows host:
+  userns_available()=False, attach cross-tenant -> AttachRefused.
+
+--- boundary construction bugs found via live debug (all fixed) ---
+  * probe bound only /usr -> dynamically linked `true` needs /lib* loader
+    -> execvp ENOENT -> false-negative. Probe now uses _DEFAULT_RO_BINDS.
+  * _DEFAULT_RO_BINDS lacked /usr/local (Debian-slim's real prefix) ->
+    execvp python ENOENT inside the sandbox. Added.
+  * caller ro_binds replaced the system mounts instead of extending them.
+    build_sandbox_argv now unions defaults+caller binds; a caller can
+    never drop the interpreter's own mount.
 
 --- repo seeding note (why not a bind mount) ---
   This Docker Desktop does not mount Windows host paths. The checkout is
   streamed as a tar into `repo-src` via reposync + `.rxy-sync-done` marker;
   `migrate` drops `.migrate-done` into `boot-state`; gateway waits for
-  `index.html` in `web-dist`. Marker ordering, not depends_on conditions.
+  `index.html` in `web-dist`. The worker copies /repo-src -> /repo at boot
+  (writable layer; the volume stays read-only to it).
 
 --- cleanup ---
   `docker compose -p <proj> down -v --remove-orphans` in each test's
   finally (also covers compose-up timeouts). Post-run docker ps/volume ls
-  show no rxyw7c05* residue; rxy-w2c01-pg / rxy-w2c0*-redis/minio dev
-  containers untouched throughout.
+  show no rxyw7c05* residue; rxy-w2c0* dev containers untouched.
 
---- host-side drain smoke (same code, real provider) ---
-  Against the dev PG (127.0.0.1:55432), execute_run drove a real turn to
-  `succeeded`: worker.lease -> event/agent_started -> notify.event/*
-  (agent_routed/progress/token_usage/final) -> event/agent_done ->
-  usage.updated (model_id=deployed/active resolved name) -> commit_terminal.
-  Proves the provider-success leg is real when a real model is configured.
+--- host-side drain smoke history ---
+  The pre-sandbox in-process drain (round-2 shape) drove a real turn to
+  `succeeded` on the dev PG (127.0.0.1:55432) with a real provider:
+  worker.lease -> event/agent_started -> notify.event/* ->
+  assistant.delta + assistant.final {text:"pong", tokens} ->
+  event/agent_done -> usage.updated -> commit_terminal.
+  Under the CURRENT sandboxed drain this host (Windows, no bwrap/userns)
+  refuses every run closed — verified: userns_available()=False ->
+  run.error -> failed, no spawn. A userns-capable host (the shipped
+  worker container) runs the same turn confined; the provider-success
+  leg there needs real RXYCODE_LLM_* credentials — see BLOCKED label.
 
 --- other gates ---
   ruff check (all touched files)              -> All checks passed!
+  ruff format --check (all touched files)     -> clean
   docker compose config --quiet               -> OK
   git diff --check (card scope)               -> clean
-  apps/web: npm run typecheck + npm run build -> pass (unchanged this round)
 
 --- E2E-DEPLOY-01 honest status ---
   compose-up leg:        DONE — real up, all services healthy, one-shot
                          migrate/webbuild exited 0.
-  HTTPS leg:             DONE — real TLS via Caddy internal CA; untrusted by
-                         default, served relaxed; HSTS + nosniff asserted.
-  run-executes leg:      DONE — deployed drain claims and runs the real
-                         Session.prompt machinery inside the container;
-                         event/agent_started + usage.updated journaled.
+  HTTPS leg:             DONE — real TLS via Caddy internal CA; untrusted
+                         by default, served relaxed; HSTS + nosniff.
+  run-executes leg:      DONE — deployed drain claims, confines and runs
+                         the real Session.prompt machinery; agent_started
+                         + usage.updated journaled from inside the sandbox.
   run-succeeds leg:      BLOCKED — needs a real reachable provider
                          (RXYCODE_LLM_BASE_URL + RXYCODE_API_KEY). In the
                          test project runs terminate `failed` honestly at
-                         the network boundary; on host with a real provider
-                         the same code reached `succeeded`. Labeled, not
-                         claimed.
+                         the network boundary; on host with a real
+                         provider the same code reached `succeeded`.
+                         Labeled, not claimed.
   browser E2E leg:       BLOCKED — no Playwright dep in apps/web.

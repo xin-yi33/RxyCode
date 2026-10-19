@@ -340,6 +340,20 @@ def validate_compose_config(config: dict[str, Any]) -> None:
     for service_name, service in (config.get("services") or {}).items():
         if service.get("privileged"):
             raise ComposeRefused(f"{service_name}: privileged mode refused")
+        if service.get("cap_add"):
+            raise ComposeRefused(f"{service_name}: cap_add refused")
+        security_opt = [str(item) for item in (service.get("security_opt") or [])]
+        if service_name == "worker":
+            # The worker's per-run userns sandbox needs unshare/mount, which
+            # Docker's default seccomp profile forbids — `seccomp=unconfined`
+            # on THIS service is the documented trade. Anything beyond that
+            # one entry is refused.
+            if any(item != "seccomp=unconfined" for item in security_opt):
+                raise ComposeRefused(
+                    f"{service_name}: only seccomp=unconfined is allowed, got {security_opt!r}"
+                )
+        elif security_opt:
+            raise ComposeRefused(f"{service_name}: security_opt refused")
         network_mode = str(service.get("network_mode") or "")
         if network_mode.split(":")[0] == "host":
             raise ComposeRefused(f"{service_name}: host networking refused")
@@ -514,6 +528,29 @@ def test_w7_c05_negative(tmp_path: Path) -> None:
     with pytest.raises(ComposeRefused):
         validate_compose_config(merged_wild)
 
+    # (a3b) Kernel relaxations are scoped: `cap_add` is refused everywhere and
+    # `security_opt` is refused everywhere except the worker's one allowed
+    # `seccomp=unconfined` (needed for the per-run userns sandbox).
+    secopt_override = tmp_path / "secopt.override.yaml"
+    secopt_override.write_text(
+        "services:\n  api:\n    security_opt:\n      - seccomp=unconfined\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    merged_secopt = _config_no_interpolate(project, env, extra_files=(secopt_override,))
+    with pytest.raises(ComposeRefused):
+        validate_compose_config(merged_secopt)
+
+    capadd_override = tmp_path / "capadd.override.yaml"
+    capadd_override.write_text(
+        "services:\n  worker:\n    cap_add:\n      - SYS_ADMIN\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    merged_capadd = _config_no_interpolate(project, env, extra_files=(capadd_override,))
+    with pytest.raises(ComposeRefused):
+        validate_compose_config(merged_capadd)
+
     # (a4) Deployment wiring: the api command goes through the real serve()
     # guard (mode=local + non-loopback can never boot), the rate-limit env
     # is wired, and the worker service runs the drain — not an idle stdio
@@ -624,9 +661,7 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
         monkeypatch.setattr(supervisor, "renew_lease", broken)
         turn2 = asyncio.ensure_future(asyncio.sleep(60))
         with pytest.raises(drain._LeaseRenewalLost):
-            await drain._lease_watchdog(
-                "db", "r2", "w1", 1, lease_ttl=2, turn=turn2
-            )
+            await drain._lease_watchdog("db", "r2", "w1", 1, lease_ttl=2, turn=turn2)
         with pytest.raises(asyncio.CancelledError):
             await turn2
 
@@ -638,22 +673,16 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
         monkeypatch.setattr(supervisor, "renew_lease", rejected)
         turn3 = asyncio.ensure_future(asyncio.sleep(60))
         with pytest.raises(supervisor.LeaseRejected):
-            await drain._lease_watchdog(
-                "db", "r3", "w1", 1, lease_ttl=2, turn=turn3
-            )
+            await drain._lease_watchdog("db", "r3", "w1", 1, lease_ttl=2, turn=turn3)
         with pytest.raises(asyncio.CancelledError):
             await turn3
 
         # (d) An explicit cancel request cancels the turn too.
         monkeypatch.setattr(supervisor, "renew_lease", lambda *_a, **_k: None)
-        monkeypatch.setattr(
-            drain, "run_status", lambda *_a, **_k: "cancel_requested"
-        )
+        monkeypatch.setattr(drain, "run_status", lambda *_a, **_k: "cancel_requested")
         turn4 = asyncio.ensure_future(asyncio.sleep(60))
         with pytest.raises(drain._RunCancelled):
-            await drain._lease_watchdog(
-                "db", "r4", "w1", 1, lease_ttl=2, turn=turn4
-            )
+            await drain._lease_watchdog("db", "r4", "w1", 1, lease_ttl=2, turn=turn4)
         with pytest.raises(asyncio.CancelledError):
             await turn4
 
@@ -692,9 +721,7 @@ def test_w7_c05_projection_vocabulary() -> None:
         )
     ]
 
-    rows = drain._projection_rows(
-        "event/message_delta", {"text": "chunk"}, tool_names, run_id="r9"
-    )
+    rows = drain._projection_rows("event/message_delta", {"text": "chunk"}, tool_names, run_id="r9")
     assert rows == [("assistant.delta", {"text": "chunk", "intermediate": False})]
 
     drain._projection_rows(
@@ -726,13 +753,7 @@ def test_w7_c05_projection_vocabulary() -> None:
 
     rows = drain._projection_rows(
         "event/todo_updated",
-        {
-            "snapshot": {
-                "items": [
-                    {"id": "t1", "content": "build it", "status": "in_progress"}
-                ]
-            }
-        },
+        {"snapshot": {"items": [{"id": "t1", "content": "build it", "status": "in_progress"}]}},
         tool_names,
         run_id="r9",
     )
@@ -747,3 +768,153 @@ def test_w7_c05_projection_vocabulary() -> None:
         "event/plan", {"steps": ["scan", "patch"]}, tool_names, run_id="r9"
     )
     assert [kind for kind, _payload in rows] == ["plan.updated", "plan.updated"]
+
+
+def test_w7_c05_projection_terminal_survives_cap() -> None:
+    """Audit r3-F4: a flooded run may drop intermediate projections at the
+    cap, but the terminal assistant.final row is always persisted."""
+    from rxycode_worker import drain
+
+    emitter = drain._RunEmit("sqlite+pysqlite:///:memory:", "t1", "r-cap")
+    emitter.projected = drain._JOURNAL_CAP  # cap already exhausted
+    import rxycode_server.events.store as store
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+    original = store.append_event
+    try:
+        store.append_event = (
+            lambda _url, **kw: captured.append(  # type: ignore[assignment]
+                (str(kw.get("event_type")), dict(kw.get("payload") or {}))
+            )
+            or 0
+        )
+        emitter.project("assistant.delta", {"text": "intermediate"})
+        emitter.project("assistant.final", {"text": "the answer", "run_id": "r-cap"})
+    finally:
+        store.append_event = original  # type: ignore[assignment]
+    assert captured == [("assistant.final", {"text": "the answer", "run_id": "r-cap"})]
+
+
+def test_w7_c05_execution_gate() -> None:
+    """Audit r3-F1: the placement gate IS the public rule in code — the
+    shipped cloud-only mode executes only tenant-bound cloud:* targets and
+    refuses local:*, sandbox:*, cross-tenant and full* placements; the
+    dev opt-in keeps local:* confined rather than host-free."""
+    from rxycode_worker import drain
+
+    refuse = drain._UnsupportedTarget
+
+    # cloud-only (the shipped mode): tenant-bound cloud:* + non-full -> runs.
+    assert (
+        drain._execution_gate(
+            "cloud:t1:w1",
+            "auto_edit",
+            execution_mode="cloud-only",
+            tenant_id="t1",
+        )
+        == "auto_edit"
+    )
+    assert (
+        drain._execution_gate(
+            "cloud:t1:w1",
+            "confirm_all",
+            execution_mode="cloud-only",
+            tenant_id="t1",
+        )
+        == "confirm_all"
+    )
+    # An unknown profile falls back to the configured default, never widened.
+    assert (
+        drain._execution_gate(
+            "cloud:t1:w1",
+            "unlisted-profile",
+            execution_mode="cloud-only",
+            tenant_id="t1",
+        )
+        is None
+    )
+    # Refused on the public stack: local:*, empty, sandbox:*, cross-tenant.
+    for target in ("local:c05", "", "sandbox:ws", "cloud::w1", "cloud:other:w1"):
+        with pytest.raises(refuse):
+            drain._execution_gate(target, "auto_edit", execution_mode="cloud-only", tenant_id="t1")
+    # Full authority implies unsandboxed host execution — refused even on a
+    # well-formed tenant-bound cloud target.
+    for profile in ("full", "full_auto"):
+        with pytest.raises(refuse):
+            drain._execution_gate(
+                "cloud:t1:w1",
+                profile,
+                execution_mode="cloud-only",
+                tenant_id="t1",
+            )
+
+    # sandboxed-local (dev opt-in): local:* runs CONFINED, cloud:* tenant-bound
+    # runs too; cross-tenant and undeclared placements still refuse.
+    assert (
+        drain._execution_gate(
+            "local:c05",
+            "full_auto",
+            execution_mode="sandboxed-local",
+            tenant_id="t1",
+        )
+        == "full_auto"
+    )
+    with pytest.raises(refuse):
+        drain._execution_gate(
+            "cloud:other:w1",
+            "auto_edit",
+            execution_mode="sandboxed-local",
+            tenant_id="t1",
+        )
+    with pytest.raises(refuse):
+        drain._execution_gate(
+            "bogus:x",
+            "auto_edit",
+            execution_mode="sandboxed-local",
+            tenant_id="t1",
+        )
+    with pytest.raises(refuse):
+        drain._execution_gate("local:x", "auto_edit", execution_mode="bogus-mode", tenant_id="t1")
+
+
+def test_w7_c05_sandbox_argv_shape(tmp_path: Path) -> None:
+    """The bwrap argv really confines the turn: clearenv + userns/pidns +
+    die-with-parent + minimal ro root + only the run workspace writable."""
+    from rxycode_runner.sandbox.userns import build_sandbox_argv
+
+    ro_src = tmp_path / "ro-src"
+    ro_src.mkdir()
+    workdir = tmp_path / "run-ws"
+    argv = build_sandbox_argv(
+        workdir=workdir,
+        argv=["python", "-m", "rxycode_worker.drain"],
+        env={"RXYCODE_TURN_RUN_ID": "r9", "PYTHONPATH": "/repo"},
+        ro_binds=[str(ro_src)],
+    )
+    joined = " ".join(argv)
+    for flag in (
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--die-with-parent",
+        "--new-session",
+        "--clearenv",
+    ):
+        assert flag in argv, flag
+    sep = argv.index("--")
+    assert argv[sep + 1 :] == ["python", "-m", "rxycode_worker.drain"]
+    # Only the run workspace is writable; the extra ro bind is mounted ro.
+    workdir_resolved = str(workdir.resolve())
+    assert f"--bind {workdir_resolved} {workdir_resolved}" in joined
+    ro_resolved = str(ro_src.resolve())
+    assert f"--ro-bind {ro_resolved} {ro_resolved}" in joined
+    assert "--tmpfs /tmp" in joined
+    assert f"--chdir {workdir_resolved}" in joined
+    # The env passlist is explicit — two setenv entries, nothing else.
+    assert argv.count("--setenv") == 2
+    # A nonexistent bind path is skipped, not mounted blindly.
+    argv2 = build_sandbox_argv(
+        workdir=tmp_path, argv=["true"], env={}, ro_binds=["/definitely-absent-xyz"]
+    )
+    assert "/definitely-absent-xyz" not in " ".join(argv2)

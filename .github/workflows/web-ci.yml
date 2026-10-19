@@ -176,6 +176,12 @@ jobs:
                   problems.append(f"{name}: privileged")
               if str(service.get("network_mode") or "").split(":")[0] == "host":
                   problems.append(f"{name}: host networking")
+              if service.get("cap_add"):
+                  problems.append(f"{name}: cap_add escalation")
+              security_opt = [str(o) for o in service.get("security_opt") or []]
+              allowed_opt = {"seccomp=unconfined"} if name == "worker" else set()
+              if any(o not in allowed_opt for o in security_opt):
+                  problems.append(f"{name}: security_opt {security_opt}")
               for volume in service.get("volumes") or []:
                   source = (
                       str(volume.get("source") or "")
