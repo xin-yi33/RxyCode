@@ -125,3 +125,56 @@ def record_terminal_usage(
             return _public(row)
     finally:
         engine.dispose()
+
+
+def adjust_terminal_usage(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    tokens: int,
+    event_id: str,
+) -> dict[str, object] | None:
+    """Reconcile an already-committed ledger when late metering arrives.
+
+    ``record_terminal_usage`` is insert-once: a retried run can finalize a
+    small ledger before a crashed attempt's spooled ``usage.delta`` replays
+    (audit r9). This recomputes against the existing row — a larger total
+    raises the ledger and journals ``usage.updated``; a smaller/equal total
+    is a no-op so reconciliation never shrinks confirmed spend. Returns
+    ``None`` when no ledger row exists yet (the eventual terminal writer
+    aggregates the journaled delta itself)."""
+    if tokens < 0 or not event_id:
+        raise UsageForbidden()
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            run = db.execute(
+                select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                raise UsageForbidden()
+            existing = db.scalar(select(UsageRecord).where(UsageRecord.run_id == run.id))
+            if existing is None:
+                return None
+            if int(tokens) <= int(existing.tokens):
+                return _public(existing)
+            existing.tokens = int(tokens)
+            existing.amount = _amount(tokens, existing.price_version)
+            _add_event(
+                db,
+                run,
+                {
+                    "model_id": existing.model_id,
+                    "price_version": existing.price_version,
+                    "tokens": int(tokens),
+                    "currency": "USD",
+                    "amount": existing.amount,
+                    "event_id": event_id,
+                    "reconciled": True,
+                },
+            )
+            db.commit()
+            return _public(existing)
+    finally:
+        engine.dispose()

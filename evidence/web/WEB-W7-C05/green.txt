@@ -182,3 +182,10 @@ python -m pytest tests/web/w7/test_w7_c05_module.py -q
   -> 1 passed in 318.23s — full compose stack on r7 code: cloud run
      claimed, confined turn executed, provider-boundary honest failure,
      terminal + usage rows committed; stale-lease/restart legs green.
+
+== audit r9 remediation (2026-10-19) ==
+16 passed, 1 deselected (contract) — tests/web/w7/test_w7_c05_unit.py
+  incl. new legs: interleaved untagged done epoch binding, value-
+  compatible untagged delta attribution, spool replay ledger reconcile.
+1 passed in 414.08s — tests/web/w7/test_w7_c05_module.py (real stack).
+ruff check: clean on drain.py + usage/service.py.

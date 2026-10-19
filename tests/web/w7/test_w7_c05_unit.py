@@ -1122,6 +1122,103 @@ def test_w7_c05_untagged_rows_anchor_to_lease_epoch(monkeypatch) -> None:
     assert sum(per_attempt.values()) == 105
 
 
+def test_w7_c05_interleaved_untagged_done_binds_earliest_open_epoch(
+    monkeypatch,
+) -> None:
+    """Audit r9 counterexample: epoch-1 writes a TAGGED 100-token delta,
+    epoch 2 is claimed, THEN epoch 1's delayed untagged agent_done(100)
+    commits. Anchoring by seq would charge it to epoch 2 (200 total); the
+    earliest-open-epoch rule keeps it in epoch 1 → 105."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            sql = str(stmt)
+
+            class _R:
+                def all(self):
+                    if "worker.lease" in sql:
+                        return [
+                            (1, {"worker_id": "w", "epoch": 1}),
+                            (20, {"worker_id": "w", "epoch": 2}),
+                        ]
+                    if "event/agent_done" in sql:
+                        # Untagged done committed AFTER epoch 2's claim.
+                        return [(25, {"tokens": 100})]
+                    if "usage.delta" in sql:
+                        return [
+                            (5, {"input_tokens": 100, "output_tokens": 0, "attempt": "1"}),
+                            (30, {"input_tokens": 5, "output_tokens": 0, "attempt": "2"}),
+                        ]
+                    return []
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    dones = drain._agent_done_by_attempt("db", "run-42")
+    assert dones == {"1": 100}  # epoch 2 stays open — no misattributed done
+    deltas = drain._usage_deltas_by_attempt("db", "run-42")
+    per_attempt = {a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)}
+    assert sum(per_attempt.values()) == 105
+
+
+def test_w7_c05_untagged_delta_prefers_value_compatible_epoch(monkeypatch) -> None:
+    """Audit r9: an untagged cumulative delta committing after a newer
+    claim joins the attempt it continues (largest bucket <= value), not the
+    newest epoch — biased to under-count, never double-charge."""
+    import rxycode_worker.drain as drain
+
+    class _FakeEngine:
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            sql = str(stmt)
+
+            class _R:
+                def all(self):
+                    if "worker.lease" in sql:
+                        return [
+                            (1, {"worker_id": "w", "epoch": 1}),
+                            (20, {"worker_id": "w", "epoch": 2}),
+                        ]
+                    if "usage.delta" in sql:
+                        return [
+                            (5, {"input_tokens": 100, "output_tokens": 0, "attempt": "1"}),
+                            (30, {"input_tokens": 5, "output_tokens": 0, "attempt": "2"}),
+                            # delayed untagged epoch-1 snapshot == its tagged value
+                            (35, {"input_tokens": 100, "output_tokens": 0}),
+                        ]
+                    return []
+
+            return _R()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *_a, **_k: _FakeEngine())
+    deltas = drain._usage_deltas_by_attempt("db", "run-42")
+    assert deltas == {"1": 100, "2": 5}
+
+
 def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     """Audit r8: a flush that cannot reach the DB retries, then spools the
     metering to parent-owned disk; the next drain pass replays it."""
@@ -1154,7 +1251,8 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     drain._replay_usage_spool("db", str(tmp_path))
     assert files[0].exists()
 
-    # DB recovers: replay journals the row and removes the spool file.
+    # DB recovers: replay journals the row, reconciles the (absent) ledger,
+    # and removes the spool file.
     written = []
 
     def ok_append(_dsn, *, tenant_id, run_id, event_type, payload):
@@ -1162,6 +1260,19 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
         return 1
 
     monkeypatch.setattr(store, "append_event", ok_append)
+    monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {"3": 73})
+    monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: {})
+    import rxycode_server.usage.service as usage_service
+
+    adjusted = []
+    monkeypatch.setattr(
+        usage_service,
+        "adjust_terminal_usage",
+        lambda _dsn, *, tenant_id, run_id, tokens, event_id: adjusted.append(
+            (tenant_id, run_id, tokens)
+        )
+        or {"tokens": tokens},
+    )
     drain._replay_usage_spool("db", str(tmp_path))
     assert not files[0].exists()
     assert written == [
@@ -1179,6 +1290,27 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
             },
         )
     ]
+    # Audit r9: a committed-but-short ledger is reconciled to the recovered
+    # total instead of staying at the retry's partial amount.
+    assert adjusted == [("t1", "r7", 73)]
+
+    # A failed reconcile keeps the spool so the next pass retries.
+    drain._spool_streamed_usage(
+        spool_dir,
+        tenant_id="t1",
+        run_id="r7",
+        epoch=3,
+        input_tokens=40,
+        output_tokens=33,
+    )
+    files = list(spool_dir.glob("*.usage.json"))
+
+    def fail_adjust(*_a, **_k):
+        raise RuntimeError("ledger locked")
+
+    monkeypatch.setattr(usage_service, "adjust_terminal_usage", fail_adjust)
+    drain._replay_usage_spool("db", str(tmp_path))
+    assert files[0].exists()  # durable-spend file survives a failed reconcile
 
 
 def test_w7_c05_streamed_flush_writes_delta(monkeypatch) -> None:

@@ -323,9 +323,16 @@ def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
 
     Each confined child heartbeats CUMULATIVE ``usage.delta`` rows tagged
     with its lease epoch; a retried run starts a fresh baseline per attempt.
-    Untagged legacy rows are anchored to the lease epoch active at their
-    seq. Returns ``{attempt: last cumulative total}`` — the caller merges
-    sources within an attempt (max) and sums ACROSS attempts (audit r6)."""
+    Returns ``{attempt: last cumulative total}`` — the caller merges
+    sources within an attempt (max) and sums ACROSS attempts (audit r6).
+
+    Untagged legacy rows are ambiguous under interleaved commits (audit
+    r9): a delayed epoch-1 delta arriving after epoch 2's claim must not
+    inflate epoch 2. Cumulative snapshots are non-decreasing per attempt,
+    so an untagged row joins the latest-claimed candidate epoch whose
+    bucket it could extend (largest bucket <= the row's value); failing
+    that, the earliest claimed candidate — biased to under-count rather
+    than double-charge. Rows pre-dating every claim keep the ``""`` bucket."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -346,19 +353,33 @@ def _usage_deltas_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     for seq, payload in rows:
         if not isinstance(payload, dict):
             continue
-        attempt = str(payload.get("attempt") or "") or _epoch_at_seq(bounds, int(seq))
-        latest[attempt] = int(payload.get("input_tokens") or 0) + int(
-            payload.get("output_tokens") or 0
-        )
+        tokens = int(payload.get("input_tokens") or 0) + int(payload.get("output_tokens") or 0)
+        attempt = str(payload.get("attempt") or "")
+        if attempt:
+            latest[attempt] = max(latest.get(attempt, 0), tokens)
+            continue
+        candidates = [e for b_seq, e in bounds if int(b_seq) <= int(seq) and e]
+        if candidates:
+            ordered = list(dict.fromkeys(candidates))
+            eligible = [e for e in ordered if latest.get(e, 0) <= tokens]
+            target = max(eligible, key=lambda e: latest.get(e, 0)) if eligible else ordered[0]
+        else:
+            target = _epoch_at_seq(bounds, int(seq)) or ""
+        latest[target] = max(latest.get(target, 0), tokens)
     return latest
 
 
 def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     """``event/agent_done`` snapshots grouped by lease epoch — the RunJournal
-    tags each row with the attempt that produced it; untagged legacy rows
-    are anchored to the lease epoch active at their seq, so a prior
-    attempt's completion meter is never re-charged inside a retry's bucket
-    (audit r7/r8)."""
+    tags each row with the attempt that produced it.
+
+    Untagged legacy rows need attribution that cannot double-charge: one
+    attempt emits at most ONE done row, so an untagged row lands in the
+    earliest claim epoch (among epochs already claimed by its seq) that has
+    no done yet — a delayed epoch-1 completion arriving after epoch 2's
+    claim still binds to epoch 1 instead of inflating epoch 2's bucket
+    (audit r9). Only when every candidate epoch already holds a done does
+    the row fall back to seq-anchoring."""
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
@@ -376,12 +397,23 @@ def _agent_done_by_attempt(database_url: str, run_id: str) -> dict[str, int]:
     finally:
         engine.dispose()
     latest: dict[str, int] = {}
+    filled: set[str] = set()
     for seq, payload in rows:
         if not isinstance(payload, dict):
             continue
-        attempt = str(payload.get("attempt") or "") or _epoch_at_seq(bounds, int(seq))
         tokens = int(payload.get("tokens") or payload.get("tokens_used") or 0)
-        latest[attempt] = tokens
+        attempt = str(payload.get("attempt") or "")
+        if attempt:
+            filled.add(attempt)
+            latest[attempt] = max(latest.get(attempt, 0), tokens)
+            continue
+        candidates = [e for b_seq, e in bounds if int(b_seq) <= int(seq) and e]
+        target = next(
+            (e for e in dict.fromkeys(candidates) if e not in filled),
+            _epoch_at_seq(bounds, int(seq)) or "",
+        )
+        filled.add(target)
+        latest[target] = max(latest.get(target, 0), tokens)
     return latest
 
 
@@ -433,10 +465,11 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
     for path in files:
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
+            run_id = str(row["run_id"])
             append_event(
                 database_url,
                 tenant_id=str(row["tenant_id"]),
-                run_id=str(row["run_id"]),
+                run_id=run_id,
                 event_type="usage.delta",
                 payload={
                     "input_tokens": int(row.get("input_tokens") or 0),
@@ -449,11 +482,38 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
             )
         except Exception:
             continue  # stays on disk for the next pass
-        else:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        # A retry may have already finalized a smaller ledger before this
+        # spool replayed — the journaled delta alone leaves it short.
+        # Recompute the run total and raise the committed UsageRecord to
+        # match (audit r9). No ledger row yet → the eventual terminal
+        # writer aggregates the delta itself.
+        try:
+            deltas = _usage_deltas_by_attempt(database_url, run_id)
+            dones = _agent_done_by_attempt(database_url, run_id)
+            total = sum(max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones))
+            if total > 0:
+                from rxycode_server.usage.service import (
+                    adjust_terminal_usage,
+                )
+
+                adjust_terminal_usage(
+                    database_url,
+                    tenant_id=str(row["tenant_id"]),
+                    run_id=run_id,
+                    tokens=total,
+                    event_id=uuid.uuid4().hex,
+                )
+        except Exception:
+            _LOG.warning(
+                "run %s: spool replay ledger reconcile failed; next pass retries",
+                run_id,
+                exc_info=True,
+            )
+            continue  # keep the spool file — reconcile not durable yet
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _flush_streamed_usage(
@@ -1593,7 +1653,10 @@ async def execute_run(
     # (audit r7). Journaling, not terminal state — ownership is untouched.
     attempt_key = str(epoch)
     try:
-        deltas = await asyncio.to_thread(_usage_deltas_by_attempt, cfg.database_url, run_id)
+        deltas = await asyncio.wait_for(
+            asyncio.to_thread(_usage_deltas_by_attempt, cfg.database_url, run_id),
+            timeout=_LEASE_IO_BUDGET,
+        )
     except Exception:
         deltas = {}
     if int(streamed.get("tokens") or 0) > deltas.get(attempt_key, 0):
@@ -1603,14 +1666,19 @@ async def execute_run(
         flushed = False
         for _attempt_no in range(3):
             try:
-                flushed = await asyncio.to_thread(
-                    _flush_streamed_usage,
-                    cfg.database_url,
-                    tenant_id,
-                    run_id,
-                    epoch,
-                    streamed,
-                    deltas,
+                # Bounded: a stuck row lock must not pin the drain past the
+                # lease — the spool fallback keeps the spend (audit r9).
+                flushed = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _flush_streamed_usage,
+                        cfg.database_url,
+                        tenant_id,
+                        run_id,
+                        epoch,
+                        streamed,
+                        deltas,
+                    ),
+                    timeout=_LEASE_IO_BUDGET,
                 )
             except Exception:
                 flushed = False
@@ -1621,14 +1689,17 @@ async def execute_run(
             deltas[attempt_key] = int(streamed["tokens"])
         else:
             try:
-                await asyncio.to_thread(
-                    _spool_streamed_usage,
-                    _usage_spool_dir(cfg.workspaces_root),
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    epoch=epoch,
-                    input_tokens=int(streamed.get("input_tokens") or 0),
-                    output_tokens=int(streamed.get("output_tokens") or 0),
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _spool_streamed_usage,
+                        _usage_spool_dir(cfg.workspaces_root),
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        epoch=epoch,
+                        input_tokens=int(streamed.get("input_tokens") or 0),
+                        output_tokens=int(streamed.get("output_tokens") or 0),
+                    ),
+                    timeout=_LEASE_IO_BUDGET,
                 )
             except Exception:
                 _LOG.warning(
@@ -1646,8 +1717,9 @@ async def execute_run(
     # journaled (it only writes on success).
     agent_done_id = uuid.uuid4().hex
     try:
-        agent_done_id_found, done_tokens = await asyncio.to_thread(
-            _agent_done_row, cfg.database_url, run_id
+        agent_done_id_found, done_tokens = await asyncio.wait_for(
+            asyncio.to_thread(_agent_done_row, cfg.database_url, run_id),
+            timeout=_LEASE_IO_BUDGET,
         )
         if agent_done_id_found:
             agent_done_id = agent_done_id_found
@@ -1658,7 +1730,10 @@ async def execute_run(
     # (disjoint spends). agent_done rows are epoch-tagged by RunJournal, so
     # a prior attempt's meter lands in ITS bucket, never double-counted.
     try:
-        dones = await asyncio.to_thread(_agent_done_by_attempt, cfg.database_url, run_id)
+        dones = await asyncio.wait_for(
+            asyncio.to_thread(_agent_done_by_attempt, cfg.database_url, run_id),
+            timeout=_LEASE_IO_BUDGET,
+        )
     except Exception:
         dones = {}
     per_attempt: dict[str, int] = {
@@ -1672,15 +1747,18 @@ async def execute_run(
     tokens = sum(per_attempt.values())
     usage_error = ""
     try:
-        await asyncio.to_thread(
-            record_terminal_usage,
-            cfg.database_url,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            model_id=ledger_model,
-            price_version=_PRICE_VERSION,
-            tokens=tokens,
-            event_id=agent_done_id,
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                record_terminal_usage,
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                model_id=ledger_model,
+                price_version=_PRICE_VERSION,
+                tokens=tokens,
+                event_id=agent_done_id,
+            ),
+            timeout=_LEASE_IO_BUDGET,
         )
     except Exception as exc:
         usage_error = f"terminal usage write failed: {type(exc).__name__}: {exc}"
@@ -1692,16 +1770,19 @@ async def execute_run(
         # never dropped silently.
         if usage_error:
             try:
-                await asyncio.to_thread(
-                    append_event,
-                    cfg.database_url,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                    event_type="run.error",
-                    payload={
-                        "detail": usage_error[:1500],
-                        "worker_id": cfg.worker_id,
-                    },
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        append_event,
+                        cfg.database_url,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        event_type="run.error",
+                        payload={
+                            "detail": usage_error[:1500],
+                            "worker_id": cfg.worker_id,
+                        },
+                    ),
+                    timeout=_LEASE_IO_BUDGET,
                 )
             except Exception:
                 _LOG.warning(
@@ -1710,13 +1791,16 @@ async def execute_run(
                     exc_info=True,
                 )
         try:
-            await asyncio.to_thread(
-                confirm_cancel,
-                cfg.database_url,
-                run_id,
-                cfg.worker_id,
-                epoch,
-                effects_known=False,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    confirm_cancel,
+                    cfg.database_url,
+                    run_id,
+                    cfg.worker_id,
+                    epoch,
+                    effects_known=False,
+                ),
+                timeout=_LEASE_IO_BUDGET,
             )
         except LeaseRejected:
             return False
@@ -1730,19 +1814,33 @@ async def execute_run(
     terminal = "succeeded" if not turn_error else "failed"
     if turn_error:
         try:
-            await asyncio.to_thread(
-                append_event,
-                cfg.database_url,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                event_type="run.error",
-                payload={"detail": turn_error[:1500], "worker_id": cfg.worker_id},
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    append_event,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type="run.error",
+                    payload={
+                        "detail": turn_error[:1500],
+                        "worker_id": cfg.worker_id,
+                    },
+                ),
+                timeout=_LEASE_IO_BUDGET,
             )
         except Exception:
             _LOG.warning("run %s: run.error event failed", run_id, exc_info=True)
     try:
-        await asyncio.to_thread(
-            commit_terminal, cfg.database_url, run_id, cfg.worker_id, epoch, terminal
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                commit_terminal,
+                cfg.database_url,
+                run_id,
+                cfg.worker_id,
+                epoch,
+                terminal,
+            ),
+            timeout=_LEASE_IO_BUDGET,
         )
     except LeaseRejected:
         return False
@@ -1754,7 +1852,10 @@ async def drain_once(cfg: WorkerConfig) -> bool:
     # Retry any metering that survived on disk after a DB outage — a lost
     # lease can never silently discard spend the pipe already delivered.
     try:
-        await asyncio.to_thread(_replay_usage_spool, cfg.database_url, cfg.workspaces_root)
+        await asyncio.wait_for(
+            asyncio.to_thread(_replay_usage_spool, cfg.database_url, cfg.workspaces_root),
+            timeout=_LEASE_IO_BUDGET * 4,
+        )
     except Exception:
         _LOG.warning("usage spool replay failed", exc_info=True)
     for run_id in claimable_run_ids(cfg.database_url, limit=3):

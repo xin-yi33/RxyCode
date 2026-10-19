@@ -309,3 +309,25 @@ ordering; three refinements found, all fixed:
   transient DB outage can no longer discard pipe-delivered tokens.
 - **Evidence wording**: green.txt now states the real counts — 14
   non-contract legs + the compose contract (which also passed when run).
+
+## Audit r9 remediation (commit pending)
+
+Round 9 (same session) found three P2 refinements, all fixed:
+
+- **Bounded finalization IO**: every DB call in the terminal/flush path is
+  now wrapped in `wait_for(timeout=_LEASE_IO_BUDGET)` — a stuck row lock
+  can no longer pin the drain past its lease and starve the spool path.
+- **Spool replay reconciles a committed ledger**: `record_terminal_usage`
+  is insert-once, so a retry that finalized a small ledger before a late
+  spool replay would stay short. `usage/service.py::adjust_terminal_usage`
+  raises an existing UsageRecord to the recomputed per-attempt total and
+  journals `usage.updated`; replay keeps the spool file until both the
+  delta row AND the reconcile are durable (re-append is idempotent: same
+  attempt+value merges by max).
+- **Interleaved untagged rows**: seq-anchoring could mis-attribute a
+  delayed epoch-1 `agent_done` that commits after epoch 2's claim. Done
+  rows now bind to the earliest claimed epoch with no done yet (one done
+  per attempt — provably safe); untagged `usage.delta` rows join the
+  candidate epoch whose bucket they continue (largest bucket <= value),
+  biased to under-count rather than double-charge. Both covered by new
+  unit legs reproducing the audit counterexample → 105, not 200.

@@ -185,3 +185,17 @@ Final verdict: `<filled by the Codex audit>` (session
   `_replay_usage_spool` every pass — files delete only on a journaled row.
 - green.txt corrected: 14 non-contract legs; contract leg also passed when
   run with the stack up (13/13 earlier run).
+
+## r9 remediation self-check
+
+- All finalize-region `to_thread` DB calls bounded by `wait_for` with
+  `_LEASE_IO_BUDGET` — flush retries, spool write, delta/done reads,
+  ledger write, cancel confirm, terminal commit, spool replay.
+- `_replay_usage_spool` now recomputes per-attempt totals after a
+  journaled delta and calls `usage.service.adjust_terminal_usage` — a
+  committed 5-token ledger rises to 105 when the crashed attempt's spool
+  lands late. The file stays until reconcile succeeds.
+- Untagged `agent_done` → earliest claimed epoch lacking a done row;
+  untagged `usage.delta` → claimed epoch with the largest bucket <= its
+  value. The r9 interleave (tagged delta 100 in e1 + claim e2 + delayed
+  untagged done 100) records 105.
