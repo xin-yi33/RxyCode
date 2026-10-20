@@ -3,9 +3,11 @@
 > 变更管理约定：开发期随改随记；条目被撤回时同步删除/标注。发版时随版本号滚动为新文件。
 > 基线：v1.4.3。产品版本仍是 1.4.3。本文件从空记录开始。
 
-## 默认 Build 工作流合同（默认关闭）
+## 默认 Build 工作流合同（默认打开）
 
-确定性接线已经接在默认 Primary Build 上。`execution.build_workflow.enabled` 仍是 false。开关关闭时不启用这套合同，原安全层不变。没有操作者授权的真实模型抽样，所以 agentic 判断尚未验收，也没有默认启用。
+当前状态：`execution.build_workflow.enabled` 默认为 true。新的开发目标会进入一次模型判断，同一个目标的续写复用这份判断。澄清、设计、项目文档和文档同步按任务选择。开发任务不能跳过验证。权限、执行边界和证据真实性不能由模型关闭。
+
+下面「接线」里早期写成默认关闭的句子，是开关打开之前的历史记录，不代表现在的默认值。
 
 涉及文件：`core/build_workflow.py`、`core/project_instructions.py`、`core/agent_v2.py`、`core/checkpoints.py`、`config/settings.py`、`tests/test_core/test_build_workflow.py`。
 
@@ -24,6 +26,7 @@
 - 2026-10-15 双引号命令替换：PowerShell 和 bash 会执行双引号里的 `$()` 与反引号。这类展开不再被当成字面量，纯文档重定向例外也不再接受它。单引号内容仍视为字面量。`Write-Output "$(Remove-Item mod.py)" > README.md` 会删掉真实的 `mod.py`，完成门随后拒绝。`tests/test_core/test_build_workflow.py`、`tests/test_core/test_checkpoints.py`、`tests/test_core/test_lazy_import_budget.py`：48 passed。
 - 2026-10-15 默认打开 Build 合同。新目标走一次分类，同目标续写复用该判断。澄清、设计、项目文档和文档同步由模型按任务选择。开发任务不能把 `build_verify` 设成 skip，检查按这次改动选择，不要求每次跑全量 CI。权限、执行边界和证据真实性不接受模型关闭。`execution.build_workflow.enabled` 默认为 true。`python -m pytest tests/test_core/test_build_workflow.py -q`：35 passed。官网 `https://api.deepseek.com/v1` 不接受模型名 `deepseek-v4.1-flash`，本地 v4.1 配置实际使用的官方名是 `deepseek-flash`。用这个名字做了三次分类：开发任务把验证固定为 run，并选了 `pytest -k parse_line`；解释和只读查找分别判为 question / read_only，并跳过验证；“继续”没有再次调用模型。`rm -rf /` 仍到达执行入口，没有被合同自动放行。随后用同一官方模型在临时目录做了多轮工具循环：合同为 `development` / `build_verify=run`，检查是 `parse_line('')` 断言和 `pytest tests/test_parse_line.py`。文件最终写成返回空列表，两条回执为通过，完成门放行。第一次按片段替换没有落盘，证据层拒绝了那次 edit；模型改用整文件写入后测试通过。
 - 同轮回归：`tests/test_core/test_checkpoints.py`、`tests/test_core/test_routing_simple_queries.py`、`tests/test_core/test_request_routing.py`、`tests/test_core/test_status_band.py`、`tests/test_core/test_status_band_module.py`、`tests/test_core/test_approved_plan_implement.py`、`tests/test_agent_evidence_terminal_status.py`、`tests/test_safety_gate.py`、`tests/test_core/test_tool_message_protocol.py`、`tests/test_core/test_tool_journal.py`，135 passed。
+- 2026-10-15 合同升级后的完成检查改看当前合同，不再看回合开始时的旧标志。升级说明会追加进当前模型历史。设计等待标记为等待批准：不封 checkpoint，并通过现有 `write_plan` / `event/plan` 交给审批条。批准后按原合同继续实施和验证。
 - 未改产品版本，未改 JSON-RPC，未自动 commit 或 push。
 
 ## 子 Agent 独立提示词与协作原语（2026-10-14）
@@ -56,3 +59,56 @@
 - 子 Agent 仍然拿不到主会话全文。`ContextEnvelope` 继续只传任务和引用。
 - 同一来源标记不会被重复叠加。未知来源标记会被拒绝。`[FROM_SUBAGENT]` 只表示协作数据，不能冒充用户或主协调 Agent。
 - 异步取消不会留下仍在跑的后台 task。懒导入计数仍低于 181。
+## 新增 RxyCode Web（2026-10-20，feat/rxycode-web）
+
+在 CLI(OpenTUI)与 GUI(Desktop)之外新增第三条可执行入口：一个可 HTTPS 部署的 Web 面。它不做第二套 Agent 循环——Web 复用共享 `AgentV2`/Harness 循环、`ToolOrchestrator` 与安全门，只新增持久化队列、隔离 worker、租户模型和浏览器前端。
+
+涉及文件：`packages/rxycode-server/src/rxycode_server/`（api/approvals、api/questions、api/runs、api/sse、api/auth、persistence、events、runs、quotas、previews、devices）、`packages/rxycode-worker/src/rxycode_worker/`（drain、ctl、netrelay、supervisor、journal、sandbox）、`core/agent_v2.py`、`core/session.py`、`execution/tool_orchestrator.py`、`execution/evidence.py`、`apps/web/`、`infra/compose/`、`tests/web/`、`docs/architecture/web-rules-supplement-2026-10-20.md`、`evidence/web/`。
+
+### 1. 认证与会话（三条登录路径的边界）
+
+- Web 登录两路：GitHub OAuth（PKCE，state 10 分钟过期）和本地密钥登录。成功签发 `rxy_session` cookie——服务端会话表只存 token 的 HMAC 摘要，TTL 12 小时；`GET /api/v1/auth/csrf` 发 `rxy_csrf` cookie，所有写请求要求 Origin 在白名单且 header/cookie 双提交一致，否则 403。
+- 会话按租户隔离：User → Organization → Project → Session/Run，所有 API 按 membership 校验；`rxycode_server.main.serve(mode="local")` 在非回环绑定上直接拒绝启动（`reject_as_public_web_gateway`），公网部署必须 `mode="cloud"`。
+- 三条路径互不干扰是结构性结论：CLI/GUI 无账号制——`rxycode config add-model` 把密钥写进 `~/.RxyCode/config.yaml`（`atomic_write_text` 原子写），各自 spawn 自己的 `python -m appserver`（stdio，无端口）；Web 走自己的 Postgres、密钥、cookie 与端口（compose 默认仅绑 127.0.0.1），不读写 `~/.RxyCode`；受限 turn 的 `RXYCODE_DATA_DIR` 指向 run 工作区 `.data`，不指宿主目录。前端同样三分离：终端 / Electron 窗口 / 浏览器（HTTPS+SSE），传输互不相交。CLI 与 GUI 唯一共享的可变文件是 `config.yaml`，原子写保证不被撕成半份。
+
+### 2. Durable run 队列与恢复
+
+- run 是 Postgres 行：`pending → leased → waiting_approval → terminal(failed/succeeded/recovery_required)`。认领走 fenced lease（worker_id + 代次）；worker 崩溃或断连，租约过期后新 worker 重认领同一 run，续接而不是重放。
+- side effect 走父进程 journal（run+call 维度的 reservation/outcome）：重认领时 `completed` 直接复用结果、不再执行；`unknown`/`reserved` 一律结算 `recovery_required`，绝不盲放重试——at-most-once，失败关闭。
+- 断电验证在真实 compose 栈上做：`docker compose restart postgres api`、kill/recreate worker 后数据无损、过期租约被新 worker 正确重认领（`test_w7_c05_integration`）。
+
+### 3. 审批挂起与续接（共享 Harness checkpoint）
+
+- 需要人工的审批/提问把 `HarnessPaused` 连同原循环的检查点（消息序列含 reasoning 字段、被挂起的调用、后续调用、循环计数、已耗预算）经 `pause_approval` 持久化（`checkpoint_z` 压缩，8 MiB 解压上限）。worker 退出挂起态进程；批准后新 worker 用 `resume_harness_turn` 回到原循环继续走模型修正/测试/Final Answer——不新起一轮，不重放原始 prompt，不许"执行完那一步就算成功"。
+- 提问通道同一语义：durable 一问一答、一次性消费；多问批次由工具拒绝 `single_question_only`（每调用一问是已知边界）。
+
+### 4. 整回合预算
+
+- `AgentV2.run` 与 `resume_harness_turn` 统一在 `_under_turn_budget` 下：只计执行时间（挂起等待不计），超时由共享 `timeout_decision` 引擎裁决，`turn.max_extensions`/`turn.hard_cap_seconds` 封顶，拒绝即取消。drain 的 900 秒外层 `wait_for` 已删，`RXYCODE_WORKER_RUN_TIMEOUT` 不再被读取；租约存活本身不算进度。
+
+### 5. 沙箱与凭据边界
+
+- 每个受限 turn 在 bwrap 用户/pid/ipc/uts namespace + 私有 netns 中执行，只读最小根文件系统，仅该 run 工作区可写。egress 全部走子进程回环 relay → 父进程 allowlist 网关：CONNECT/绝对 URI/模型网关三态，真实凭据由父进程在上游注入，沙箱内不存在真 key。
+- relay 移到独立守护线程 + 自己的事件循环：根因是 `tiktoken` 在 agent 事件循环里同步下载词表，转发该请求的 relay 与循环共命运造成自死锁（run 永远 `leased`）。relay 是网络生命线，现在 agent 循环任意同步阻塞都不会冻结它。
+- 子进程配置改为 schema 派生构造（`_default_config()` 减去 `mcpServers`/`rag`/`appserver` 等宿主段），不再"复制后按正则擦洗"；凭据字段按 `_is_credential_key` 在任意深度剔除，`max_tokens`/`token_budget` 保留。r21–r25 安全审计的 Shell sanitizer 问题逐项处置并写入 `evidence/web/WEB-W8-C01/NOTES.md`。
+- 工具结果判定不再猜 stdout 前缀：`ToolEvidence` 带 `call_id`，orchestrator 按调用记录 `{status, executed, exit_code, approval}`，`AgentV2._tool_is_error` 以结构化记录为准（`failed` 为错；`rejected`/`dry_run` 非错；`not_found` 保持历史兼容为错），文本前缀只在无记录时回退。发给模型的结果原文不变。
+
+### 6. 部署面
+
+- `infra/compose/compose.yaml`：gateway(Caddy，HTTPS+内部 CA，只绑回环) → api(uvicorn `rxycode_server`) → postgres/redis/minio；worker=`python -m rxycode_worker.drain`；migrate/webbuild 为一次性任务，启动顺序靠 marker 文件（本机 Docker Desktop 不支持 Windows bind mount，工作树以 tar 流入 `repo-src` 卷）。
+- 三个 pip 装包服务透传 `PIP_INDEX_URL`（默认 `https://pypi.org/simple`，不设即不变）——本机容器到 pypi.org 全程 SSL EOF 时可用镜像完成 bootstrap。
+- secrets 全走环境变量，文件内无明文；`cloud:*` 目标才执行，Full=审批语义而非隔离级别。
+
+### 验证
+
+- `tests/web/w8` 全套件：168 passed, 4 skipped（AF_UNIX/bwrap 在 Windows 预期跳过）。
+- 三条复合验收链（真实 Postgres+Harness+journal：审批挂起→新实例续接→Final Answer；journal unknown→recovery_required；重复续接复用 journal 不重放副作用）：19 passed。
+- `test_w7_c05_integration` 真实 compose 栈重启/重认领：PASSED 584 s。
+- ruff/AST：触及模块清洁。
+
+### 已知限制（明示，非遗漏）
+
+- 每个挂起调用仅支持一个持久化提问。
+- 无 `call_id` 的外部工具结果仍走文本前缀回退。
+- `tests/web/w2`–`w6` 全量失败此前定性为本机环境/HEAD 既有问题，未逐条复验。
+- 产品版本仍为 1.4.3，JSON-RPC 未改，未自动 commit 或 push。

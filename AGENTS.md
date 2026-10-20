@@ -143,3 +143,8 @@ Transport
 4. **Backend changes**: Run the layered pytest suite (entry points in docs/modules/tests.md)
 5. **New features**: Add tests in tests/ and update the relevant README
 6. **Save location**: Files save to ~/.rxycode/output/ (configurable via RXYCODE_OUTPUT_DIR)
+7. **Changelog**: every change and addition must be recorded in the current
+   version file under `docs/release-notes/CHANGELOG_vX.Y.Z.md` (write during
+   development, in detail). Once the previous version's changelog is committed,
+   continue directly in the next version's file — after v1.4.4 is committed,
+   new entries go into `CHANGELOG_v1.4.5.md`.
