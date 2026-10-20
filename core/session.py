@@ -330,15 +330,19 @@ class Session:
                 agent._prompt_attachment_context = prepared_attachments
                 agent._prompt_attachment_active = prepared_attachments.has_attachments
                 agent._prompt_attachment_renderer = human_message_content
-                if harness_resume is not None:
-                    answer = await agent.resume_harness_turn(harness_resume)
-                elif permission_mode is None:
-                    answer = await self._dispatch_user_turn(agent, text, mode)
+                if permission_mode is None:
+                    if harness_resume is not None:
+                        answer = await agent.resume_harness_turn(harness_resume)
+                    else:
+                        answer = await self._dispatch_user_turn(agent, text, mode)
                 else:
                     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
 
                     with permission_mode_override(permission_mode):
-                        answer = await self._dispatch_user_turn(agent, text, mode)
+                        if harness_resume is not None:
+                            answer = await agent.resume_harness_turn(harness_resume)
+                        else:
+                            answer = await self._dispatch_user_turn(agent, text, mode)
             except BudgetExceeded as exc:
                 answer = str(exc) or "team budget exceeded"
             except Exception as exc:

@@ -81,6 +81,7 @@
 
 - 需要人工的审批/提问把 `HarnessPaused` 连同原循环的检查点（消息序列含 reasoning 字段、被挂起的调用、后续调用、循环计数、已耗预算）经 `pause_approval` 持久化（`checkpoint_z` 压缩，8 MiB 解压上限）。worker 退出挂起态进程；批准后新 worker 用 `resume_harness_turn` 回到原循环继续走模型修正/测试/Final Answer——不新起一轮，不重放原始 prompt，不许"执行完那一步就算成功"。
 - 提问通道同一语义：durable 一问一答、一次性消费；多问批次由工具拒绝 `single_question_only`（每调用一问是已知边界）。
+- 续接回合恢复权限模式：`Session.prompt` 的 `harness_resume` 分支此前忽略 `permission_mode`——续接后的原循环回落到 `confirm_all`，每次 `bash` 写操作都重新挂起（首轮 `full`→`full_auto` 无审批）。修复：续接同样套 `permission_mode_override`（contextvar 驱动所有门禁判定）。回归 `tests/test_core/test_session.py::test_session_prompt_resume_keeps_permission_mode_override`；部署栈内实测：批准一个挂起调用后原循环在 `full_auto` 下无新增审批地跑到 `succeeded`。
 
 ### 4. 整回合预算
 
