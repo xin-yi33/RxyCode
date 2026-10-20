@@ -2262,16 +2262,98 @@ def test_w8_c01_execute_approved_call_error_outcome(tmp_path: Path) -> None:
             return
 
     journal = RemoteJournalAdapter(ToolExecutionJournal(str(tmp_path / "j")))
-    ok, text = asyncio.run(
+    ok, text, outcome = asyncio.run(
         drain._execute_approved_call(record, tmp_path, _Emit(), journal)
     )
     assert ok is False
     assert "not found" in text
+    # The verdict rides on the orchestrator's structured outcome, not the
+    # result text: a tool that never executed is a rejection.
+    assert outcome is not None
+    assert outcome["status"] == "rejected" and outcome["executed"] is False
     # Second resume: journal completed -> reuse -> same error, no rerun.
-    ok2, text2 = asyncio.run(
+    ok2, text2, outcome2 = asyncio.run(
         drain._execute_approved_call(record, tmp_path, _Emit(), journal)
     )
     assert ok2 is False and text2 == text
+    # Journal-reused results carry text only — no structured outcome.
+    assert outcome2 is None
+
+def test_w8_c01_call_outcome_is_recorded_structurally() -> None:
+    """``execute_tool`` stamps the real verdict (status/executed) on the
+    outcome index keyed by call_id — the loop consumes THAT record rather
+    than re-parsing the model-facing text."""
+    from langchain_core.tools import StructuredTool
+
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
+        ToolOrchestrator,
+    )
+
+    orch = ToolOrchestrator()
+    orch.register(
+        "w8_probe",
+        StructuredTool.from_function(
+            lambda: "probe ok",
+            name="w8_probe",
+            description="test probe",
+        ),
+        risk="read",
+    )
+
+    async def go() -> None:
+        text = await orch.execute_tool("w8_probe", {}, {}, call_id="call_ok")
+        assert text == "probe ok"
+        missing = await orch.execute_tool(
+            "w8_no_such", {}, {}, call_id="call_bad"
+        )
+        assert missing.startswith("[error")
+
+    asyncio.run(go())
+
+    ok_ev = orch.call_outcome("call_ok")
+    assert ok_ev is not None
+    assert ok_ev.status == "succeeded" and ok_ev.executed is True
+    assert ok_ev.call_id == "call_ok"
+
+    bad_ev = orch.call_outcome("call_bad")
+    assert bad_ev is not None
+    # Refused before execution — the structured verdict, not a guess.
+    assert bad_ev.status == "rejected" and bad_ev.executed is False
+    assert bad_ev.approval == "not_found"
+
+    assert orch.call_outcome("call_never_seen") is None
+    assert orch.call_outcome(None) is None
+
+
+def test_w8_c01_tool_is_error_prefers_structured_status() -> None:
+    """The loop verdict maps the recorded outcome: failed is an error;
+    rejected/dry_run are not — except the not-found verdict, which is the
+    historical ``[error: tool ... not found]`` shape and stays an error.
+    Without a record the text prefix is only a fallback."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    class _Self:
+        pass
+
+    self = _Self()
+    self._tool_call_outcomes = {
+        "c1": {"status": "failed"},
+        "c2": {"status": "succeeded"},
+        "c3": {"status": "rejected", "approval": "rejected"},
+        "c4": {"status": "rejected", "approval": "not_found"},
+        "c5": {"status": "dry_run"},
+    }
+    self._tool_call_outcome = AgentV2._tool_call_outcome.__get__(self)
+    is_error = AgentV2._tool_is_error.__get__(self)
+    assert is_error("c1", "anything") is True
+    assert is_error("c2", "[error: text that lies]") is False
+    assert is_error("c3", "[error: also lying]") is False
+    assert is_error("c4", "whatever") is True
+    assert is_error("c5", "x") is False
+    # No record -> the text prefix is the only signal left.
+    assert is_error("absent", "[error: x]") is True
+    assert is_error("absent", "fine") is False
+
 
 def test_w8_c01_scrub_envlist_runtogether_and_dsn() -> None:
     """Whole-tree scrub must cover every SUPPORTED credential spelling

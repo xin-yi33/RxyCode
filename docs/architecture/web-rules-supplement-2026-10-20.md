@@ -37,8 +37,8 @@ Web 不另建执行器，不另建第二套 Agent 循环。
 | W8-S2 | 初始化接回共享入口：`appserver/agent_worker.py::assemble_surface_agent`（子代理管理器 → broker → `bootstrap_agent` → `configure_agent_workspace`），Web 子进程改用它 | 代码与单测完成；子进程实机验证待 Docker/bwrap 环境 |
 | W8-S3 | 共享 Harness 审批暂停点（检查点、续接、父进程持久化） | 已完成（`48a6005a`、本轮；见 NOTES Round 26） |
 | W8-S4 | 审批恢复回到原工具循环直至 Final Answer | 已完成（`resume_harness_turn`；复合主链 chain 1 通过） |
-| W8-S5 | 移除 drain 重复业务判断（时限交 Harness 预算；配置只构造所需字段；工具结果按实际状态判定） | 部分完成：预算与 900 秒外层超时已移除，配置改为构造；工具循环内的结构化执行状态未做 |
-| W8-S6 | 三条复合验收主链 | 部分完成：chain 1/2 在真实 Postgres + 真实 Harness + 真实 journal 上通过；部署态 compose 的 W7 用例仍有未解决的回归信号 |
+| W8-S5 | 移除 drain 重复业务判断（时限交 Harness 预算；配置只构造所需字段；工具结果按实际状态判定） | 已完成：预算与 900 秒外层超时已移除，配置改为构造；循环判定改为 `call_outcome` 结构化状态（status/exit_code/approval），文本前缀仅存于无记录回退 |
+| W8-S6 | 三条复合验收主链 | 已完成：复合主链 + 部署态 `test_w7_c05_integration` 在真实 compose 栈上通过（relay 独立线程修复后收敛） |
 
 登记只说明这些卡存在，**不证明其功能已获授权，也不证明已通过验收**。验收以 `evidence/web/` 中的实测结果为准。
 

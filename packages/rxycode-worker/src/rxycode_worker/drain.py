@@ -4406,8 +4406,11 @@ async def _prepare_resume(
 ) -> dict[str, Any]:
     """Resolve the resume input of a parked turn, through parent-owned state.
 
-    Returns ``{"checkpoint": <Harness state>, "result": <tool result text>}``
-    for the ORIGINAL tool loop to continue from. The prompt is never replayed.
+    Returns ``{"checkpoint": <Harness state>, "result": <tool result text>,
+    "outcome": {status, executed, exit_code} | None}`` for the ORIGINAL tool
+    loop to continue from. The prompt is never replayed. ``outcome`` is the
+    orchestrator-recorded verdict of the replayed call; ``None`` for the
+    question answer and for journal-reused results (which store text only).
 
     * approval: the approved call executes once through the journal
       (at-most-once); its outcome — success or error text — is the tool
@@ -4447,7 +4450,9 @@ async def _prepare_resume(
     )
     journal = _ChannelJournal(channel)
     try:
-        _ok, text_out = await _execute_approved_call(record, workdir, emit, journal)
+        _ok, text_out, outcome = await _execute_approved_call(
+            record, workdir, emit, journal
+        )
     except RuntimeError as exc:
         raise _ResumeSettled("recovery_required", str(exc)[:1500]) from exc
     emit._append(
@@ -4459,7 +4464,7 @@ async def _prepare_resume(
             "resumed": True,
         },
     )
-    return {"checkpoint": checkpoint, "result": str(text_out)}
+    return {"checkpoint": checkpoint, "result": str(text_out), "outcome": outcome}
 
 
 async def _park_for_human(channel: Any, pause: Any, workdir: Path) -> str:
@@ -4504,7 +4509,7 @@ async def _park_for_human(channel: Any, pause: Any, workdir: Path) -> str:
 
 async def _execute_approved_call(
     record: dict[str, Any], workdir: Path, emit: Any, journal: Any
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict[str, Any] | None]:
     """Execute the stored call through the SAME ToolOrchestrator every
     surface uses — blacklist, write-path gate and audit intact; approval
     was already granted (the grant broker answers prompts).
@@ -4622,8 +4627,9 @@ async def _execute_approved_call(
             stored = str(reservation.result or "")
             # The stored outcome decides — a completed call whose result
             # was an error marker is a FAILED call, not a successful
-            # replay.
-            return (not _tool_call_failed(stored)), stored
+            # replay. The journal stores the outcome text only, so this
+            # branch keeps the canonical prefix classification.
+            return (not _tool_call_failed(stored)), stored, None
         if reservation.action != "execute":
             raise RuntimeError(
                 f"resumed call {call_id} is journal-{reservation.action}; "
@@ -4671,7 +4677,22 @@ async def _execute_approved_call(
         args=args,
         result=text_out,
     )
-    return (not _tool_call_failed(text_out)), text_out
+    # Structured verdict: the orchestrator recorded the real status /
+    # executed flag / exit code for THIS call id — trust it, not the
+    # result text. Missing record (no call id bound) falls back to the
+    # canonical prefix classification.
+    evidence = None
+    if callable(getattr(orchestrator, "call_outcome", None)):
+        evidence = orchestrator.call_outcome(call_id)
+    if evidence is not None:
+        outcome = {
+            "status": str(evidence.status),
+            "executed": bool(evidence.executed),
+            "exit_code": evidence.exit_code,
+            "approval": str(evidence.approval or ""),
+        }
+        return (str(evidence.status) == "succeeded"), text_out, outcome
+    return (not _tool_call_failed(text_out)), text_out, None
 
 
 async def run_sandboxed_turn() -> int:

@@ -26,7 +26,7 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 import re as _re
 from urllib.parse import urlsplit
 
@@ -3070,6 +3070,11 @@ class AgentV2:
         self._seen_tool_fingerprints: dict[str, set[str]] = {}
         # B7: 本轮是否发生工具错误（缓存防护，luna R8-2）。
         self._tool_error_occurred = False
+        # Structured per-call outcomes recorded at the execution boundary
+        # (call_id -> evidence/status). The loop reads THESE instead of
+        # re-parsing model-facing result text; text classification remains
+        # only as the no-record fallback (empty ids, external producers).
+        self._tool_call_outcomes: dict[str, Any] = {}
         # B7: 死循环检测器（fast path 工具循环开始时重建；此处兜底占位）。
         from RxyCode.RxyCode1_1_0.core.stuck_detector import StuckDetector
 
@@ -4252,13 +4257,62 @@ class AgentV2:
         fingerprints.add(fingerprint)
         return content
 
-    def _error_feedback_message(self, tool_name: str, result_text: str) -> str:
+    def _remember_tool_outcome(self, call_id: Any, outcome: Any) -> None:
+        """Record the structured outcome of one call (evidence object or
+        a small dict) keyed by the model-visible call id."""
+        key = str(call_id or "")
+        if not key:
+            return
+        store = getattr(self, "_tool_call_outcomes", None)
+        if store is None:
+            store = self._tool_call_outcomes = {}
+        store[key] = outcome
+        if len(store) > 4096:
+            del store[next(iter(store))]
+
+    def _tool_call_outcome(self, call_id: Any) -> Any | None:
+        store = getattr(self, "_tool_call_outcomes", None) or {}
+        return store.get(str(call_id or ""))
+
+    def _tool_is_error(self, call_id: Any, result_text: str) -> bool:
+        """Loop bookkeeping verdict for one tool result.
+
+        Structured first: the recorded execution outcome (real status /
+        executed flag / exit code) decides. ``"failed"`` is an error;
+        ``"rejected"``/``"dry_run"``/``"succeeded"`` are not — matching
+        the historical ``[error``-prefix loop semantics. The text
+        prefix is only the fallback when no record exists (call sites
+        without a call id, results produced off the orchestrator path).
+        """
+        outcome = self._tool_call_outcome(call_id)
+        if outcome is None:
+            return _tool_output_is_error(result_text)
+        if isinstance(outcome, dict):
+            status = str(outcome.get("status") or "")
+            approval = str(outcome.get("approval") or "")
+        else:
+            status = str(getattr(outcome, "status", "") or "")
+            approval = str(getattr(outcome, "approval", "") or "")
+        if status == "failed":
+            return True
+        # A refused call is not an error — EXCEPT the not-found verdict,
+        # which historically arrives as an ``[error: ...]`` result and must
+        # keep counting as one. Rejection/dry-run/journal-refusal markers
+        # stay non-errors, matching the prefix semantics they replace.
+        return status == "rejected" and approval == "not_found"
+
+    def _error_feedback_message(
+        self, tool_name: str, result_text: str, *, is_error: bool | None = None
+    ) -> str:
         """B7: 错误回喂引导语（smolagents 语义："换一种完全不同的方法"）。
 
-        只对失败结果（_tool_output_is_error）生成；成功结果原样返回。
+        只对失败结果生成；成功结果原样返回。``is_error`` 传入结构化
+        判定结果；未传时退回文本前缀（无外部队件的调用方）。
         调用方把它作为独立 ToolMessage **追加在断点之后**（不碰前缀）。
         """
-        if not _tool_output_is_error(result_text):
+        if is_error is None:
+            is_error = _tool_output_is_error(result_text)
+        if not is_error:
             return result_text
         hint = _extract_error_hint(result_text)
         return (
@@ -4267,7 +4321,9 @@ class AgentV2:
             "不要重复刚才的操作。"
         )
 
-    def _tool_result_message_content(self, tool_name: str, result: str) -> str:
+    def _tool_result_message_content(
+        self, tool_name: str, result: str, *, is_error: bool | None = None
+    ) -> str:
         """Return one protocol-valid ToolMessage body for one tool call.
 
         A tool call id may have exactly one following ``tool`` message. Keep
@@ -4285,8 +4341,12 @@ class AgentV2:
         )
         if not _is_full_discovery_output(tool_name, raw) and not already_bounded:
             raw = self._truncate_tool_text(raw)
-        if _tool_output_is_error(str(result)):
-            raw = raw + "\n\n" + self._error_feedback_message(tool_name, str(result))
+        if is_error is None:
+            is_error = _tool_output_is_error(str(result))
+        if is_error:
+            raw = raw + "\n\n" + self._error_feedback_message(
+                tool_name, str(result), is_error=True
+            )
         body = (
             raw
             + "\n[对用户说：这个工具返回了什么、是否报错、下一步做什么。"
@@ -4420,13 +4480,16 @@ class AgentV2:
             tool_name = item.get("name", "") if isinstance(item, dict) else ""
             tool_id = item.get("id", "") if isinstance(item, dict) else ""
             result = item.get("result", "") if isinstance(item, dict) else ""
+            is_error = self._tool_is_error(tool_id, str(result))
             messages.append(
                 ToolMessage(
-                    content=self._tool_result_message_content(tool_name, str(result)),
+                    content=self._tool_result_message_content(
+                        tool_name, str(result), is_error=is_error
+                    ),
                     tool_call_id=tool_id or tool_name,
                 )
             )
-            if _tool_output_is_error(str(result)):
+            if is_error:
                 # luna R9-1: synthesis 阶段的工具错误也记录（缓存防护）。
                 self._tool_error_occurred = True
         parts: list[str] = []
@@ -7623,7 +7686,14 @@ class AgentV2:
                 research_sources[:] = [str(url) for url in state["research_sources"]]
                 paused = cp["paused"]
                 result_text = str(resume["result"])
-                is_error = _tool_output_is_error(result_text)
+                # The approved call executed through the real orchestrator —
+                # its structured outcome travels on the resume payload; the
+                # text prefix is only the no-record fallback (e.g. a reused
+                # journal entry, which stores outcome text only).
+                outcome = resume.get("outcome") if isinstance(resume, dict) else None
+                if isinstance(outcome, dict) and outcome.get("status"):
+                    self._remember_tool_outcome(paused["call_id"], outcome)
+                is_error = self._tool_is_error(paused["call_id"], result_text)
                 if not is_error and str(paused["tool"]).lower() in {"write", "edit"}:
                     file_write_succeeded = True
                 if is_error:
@@ -7634,7 +7704,9 @@ class AgentV2:
                     consecutive_error_count, failed=is_error
                 )
                 messages.append(ToolMessage(
-                    content=self._tool_result_message_content(str(paused["tool"]), result_text),
+                    content=self._tool_result_message_content(
+                        str(paused["tool"]), result_text, is_error=is_error
+                    ),
                     tool_call_id=str(paused["call_id"]),
                 ))
                 for remaining_id in cp["remaining"]:
@@ -8233,6 +8305,14 @@ class AgentV2:
                             "name": name, "args": args, "id": cid,
                             "result": f"[error: {exc}]",
                         })
+                        self._remember_tool_outcome(
+                            cid,
+                            {
+                                "status": "failed",
+                                "executed": True,
+                                "error_class": type(exc).__name__,
+                            },
+                        )
                 executed_by_id = {item["id"]: item for item in executed}
                 for tool_call in tool_calls:
                     tool_id = tool_call["id"]
@@ -8248,6 +8328,14 @@ class AgentV2:
                                 content=safe_error,
                                 tool_call_id=tool_id,
                             )
+                        )
+                        self._remember_tool_outcome(
+                            tool_id,
+                            {
+                                "status": "failed",
+                                "executed": False,
+                                "error_class": "parse",
+                            },
                         )
                         self._tool_error_occurred = True
                         consecutive_error_count = bump_consecutive_errors(
@@ -8271,6 +8359,10 @@ class AgentV2:
                             "id": tool_id,
                             "result": "[error: tool result missing]",
                         }
+                        self._remember_tool_outcome(
+                            tool_id,
+                            {"status": "failed", "executed": False},
+                        )
                     tool_name = item["name"]
                     tool_args = item["args"]
                     tool_id = item["id"]
@@ -8291,14 +8383,16 @@ class AgentV2:
                         if fetched_url and fetched_url not in research_sources:
                             research_sources.append(fetched_url)
 
-                    is_error = _tool_output_is_error(str(result))
+                    is_error = self._tool_is_error(tool_id, str(result))
                     if not is_error and str(tool_name).lower() in {"write", "edit"}:
                         file_write_succeeded = True
                     if tui is not None:
                         self._emit_tool_outcome_to_user(
                             tui, str(tool_name), str(result), is_error
                         )
-                    tool_content = self._tool_result_message_content(tool_name, str(result))
+                    tool_content = self._tool_result_message_content(
+                        tool_name, str(result), is_error=is_error
+                    )
                     if str(tool_name) == "todo_write" and not is_error:
                         tool_content += self._todo_snapshot_marker(result)
                     messages.append(
@@ -8682,17 +8776,26 @@ class AgentV2:
         """
         await self._upgrade_workflow_before_code_write(name, args)
         if self._workflow_blocks_mutation(name, args):
+            self._remember_tool_outcome(
+                call_id, {"status": "rejected", "executed": False}
+            )
             return (
                 "[blocked: code or test write needs a development contract "
                 "with a required check]"
             )
         if mode == "plan" and name not in PLAN_READONLY_TOOL_NAMES:
+            self._remember_tool_outcome(
+                call_id, {"status": "rejected", "executed": False}
+            )
             return (
                 f"[blocked: plan mode is read-only; "
                 f"{name} was not executed]"
             )
         role_allow = getattr(self, "_role_tool_allowlist", None)
         if role_allow is not None and name not in role_allow:
+            self._remember_tool_outcome(
+                call_id, {"status": "rejected", "executed": False}
+            )
             return f"[blocked: role tool {name} is not allowed]"
         orchestrator = getattr(self, "_tool_orchestrator", None)
         if orchestrator is None or not callable(
@@ -8704,6 +8807,9 @@ class AgentV2:
                 tracer.end_span(
                     span, status="error", error_msg="tool orchestrator unavailable"
                 )
+            self._remember_tool_outcome(
+                call_id, {"status": "failed", "executed": False}
+            )
             return f"[error: tool orchestrator unavailable for '{name}']"
         try:
 
@@ -8773,8 +8879,19 @@ class AgentV2:
                     _PARENT_WORKFLOW_GENERATION.reset(generation_token)
                 if event_token is not None and callable(reset_event_tui):
                     reset_event_tui(event_token)
+            outcome = None
+            if callable(getattr(orchestrator, "call_outcome", None)):
+                outcome = orchestrator.call_outcome(call_id)
+            if outcome is not None:
+                self._remember_tool_outcome(call_id, outcome)
             if fallback_span is not None:
-                span_status, detail = trace_status_for_result(result)
+                if outcome is not None:
+                    span_status = (
+                        "error" if str(outcome.status) == "failed" else "ok"
+                    )
+                    detail = str(outcome.detail or "")[:200]
+                else:
+                    span_status, detail = trace_status_for_result(result)
                 tracer.end_span(
                     fallback_span,
                     status=span_status,
@@ -8792,6 +8909,14 @@ class AgentV2:
                     status="error",
                     error_msg=str(e)[:200],
                 )
+            self._remember_tool_outcome(
+                call_id,
+                {
+                    "status": "failed",
+                    "executed": True,
+                    "error_class": type(e).__name__,
+                },
+            )
             return f"[error executing {name}: {e}]"
 
     # ------------------------------------------------------------------

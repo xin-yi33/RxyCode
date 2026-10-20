@@ -113,6 +113,13 @@ _permission_mode_override: ContextVar[str | None] = ContextVar(
     "request_permission_mode",
     default=None,
 )
+#: The resolved call id of the in-flight execution, bound by the gated
+#: entry points so ``_finish`` can stamp its evidence without threading a
+#: new parameter through every denial/timeout/exception return site.
+_current_call_id: ContextVar[str | None] = ContextVar(
+    "tool_current_call_id",
+    default=None,
+)
 
 
 @contextmanager
@@ -251,6 +258,11 @@ class ToolOrchestrator:
         self._risk_overrides: dict[str, Any] = {}
         self._selection_report: list[dict[str, str]] = []
         self._audit_logger: Any | None = None
+        # call_id -> ToolEvidence, bounded: the caller-facing structured
+        # outcome of each executed call. Consumers (agent loop, drain)
+        # read status/exit_code from HERE instead of re-parsing the
+        # model-facing result text.
+        self._outcome_index: dict[str, ToolEvidence] = {}
         # C2: bounded executor for sync tools so a burst of sync invocations
         # queues instead of spawning unbounded threads.  Bound = explicit
         # positive int > RXYCODE_TOOL_THREADS env (positive int) >
@@ -447,6 +459,18 @@ class ToolOrchestrator:
             sink.append(evidence)
         run_monitor.record_evidence(get_current_run_id(), evidence)
 
+    def call_outcome(self, call_id: str | None) -> ToolEvidence | None:
+        """The recorded execution outcome for one call.
+
+        ``status`` is ``succeeded``/``failed``/``rejected``/``dry_run`` with
+        ``exit_code`` when the tool reported one. ``None`` when the call
+        never reached the finish seam (or the caller did not pass a
+        call id) — consumers must fall back to their own classification
+        rather than assume success."""
+        if not call_id:
+            return None
+        return self._outcome_index.get(str(call_id))
+
     def _get_audit_logger(self):
         if self._audit_logger is None:
             self._audit_logger = get_audit_logger()
@@ -473,8 +497,13 @@ class ToolOrchestrator:
             executed=executed,
             approval=approval,
             risk=risk,
+            call_id=_current_call_id.get(),
         )
         self._record_evidence(evidence)
+        if evidence.call_id:
+            self._outcome_index[evidence.call_id] = evidence
+            while len(self._outcome_index) > 4096:
+                self._outcome_index.pop(next(iter(self._outcome_index)))
         artifact_issues = [
             issue
             for issue in deterministic_issues([evidence])
@@ -985,6 +1014,8 @@ class ToolOrchestrator:
         call_id: str | None = None,
     ) -> str:
         """Invoke once, applying the shared deadline and terminal recording."""
+        if call_id:
+            _current_call_id.set(str(call_id))
         timeout = self._tool_timeout_seconds(config, name)
         execution_cfg = (config or {}).get("execution", {})
         try:
@@ -1539,6 +1570,7 @@ class ToolOrchestrator:
         safety = (config.get("safety") or {})
         name = self._canonical_name(name)
         canonical = name
+        _current_call_id.set(str(call_id) if call_id else None)
 
         tool = self.get(name)
         if tool is None:

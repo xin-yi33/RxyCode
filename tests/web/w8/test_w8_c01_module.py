@@ -517,12 +517,15 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
         def _append(self, kind: str, payload: dict[str, Any]) -> None:
             emitted.append({"kind": kind, **payload})
 
-    ok, result = asyncio.run(
+    ok, result, outcome = asyncio.run(
         drain._execute_approved_call(
             record, tmp_path, _Emit(), drain._ChannelJournal(channel)
         )
     )
     assert ok, result[:400]
+    # The ok verdict is backed by the orchestrator's recorded evidence,
+    # not by parsing the result text.
+    assert outcome is not None and outcome["status"] == "succeeded"
     # PowerShell echo emits UTF-16LE+BOM; cmd emits OEM — decode by BOM.
     raw = (tmp_path / "calls.log").read_bytes()
     body = (
@@ -541,7 +544,7 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
             record, tmp_path, _Emit(), drain._ChannelJournal(channel)
         )
     )
-    assert again == (True, result)
+    assert again == (True, result, None)
     assert not (tmp_path / "calls.log").exists()  # no second side effect
 
 
