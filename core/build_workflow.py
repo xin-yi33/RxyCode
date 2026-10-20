@@ -357,13 +357,71 @@ GATE_READONLY_COMMANDS = frozenset(
 )
 
 #: Arguments that turn an allow-listed reader into a writer. The pattern is
-#: matched against the segment AND the raw command text so a quoted flag
-#: (``find . "-delete"``) cannot hide from the gate. Over-matching fails safe:
-#: the command keeps the old conservative verdict and bumps the generation.
+#: matched against the raw command text as an extra conservative check — the
+#: authoritative check is GATE_MUTATING_WORDS on the segment's real words.
+#: Over-matching fails safe: the command keeps the old conservative verdict.
 GATE_MUTATING_ARGS = {
-    "find": re.compile(r"-(?:delete|exec|execdir|ok|okdir|fprint\w*)\b", re.IGNORECASE),
+    "find": re.compile(
+        r"-(?:delete|exec|execdir|ok|okdir|fls|fprint\w*)\b", re.IGNORECASE
+    ),
     "sort": re.compile(r"(?:-o|--output)\b", re.IGNORECASE),
     "date": re.compile(r"(?:-s|--set)\b", re.IGNORECASE),
+    "file": re.compile(r"(?:-C\b|--compile\b)"),
+}
+
+
+def _gate_short_cluster(word: str, letter: str) -> bool:
+    """``-ro``/``-us`` style combined short flags containing ``letter``."""
+    return (
+        word.startswith("-")
+        and not word.startswith("--")
+        and letter in word[1:]
+    )
+
+
+_FIND_WRITE_FLAGS = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls"})
+
+
+def _gate_find_writes(args: list[str]) -> bool:
+    return any(a in _FIND_WRITE_FLAGS or a.startswith("-fprint") for a in args)
+
+
+def _gate_sort_writes(args: list[str]) -> bool:
+    # ``-o``/``--output`` write the result file; combined clusters like
+    # ``-ro``/``-uo`` hide the same flag inside one token.
+    return any(
+        a == "--output" or a.startswith("--output=") or _gate_short_cluster(a, "o")
+        for a in args
+    )
+
+
+def _gate_date_writes(args: list[str]) -> bool:
+    # ``date -s``/``--set`` sets the clock; ``-us`` hides it in a cluster.
+    return any(
+        a == "--set" or a.startswith("--set=") or _gate_short_cluster(a, "s")
+        for a in args
+    )
+
+
+def _gate_file_writes(args: list[str]) -> bool:
+    # ``file -C``/``--compile`` writes a compiled .mgc magic file.
+    return any(a == "--compile" or _gate_short_cluster(a, "C") for a in args)
+
+
+def _gate_uniq_writes(args: list[str]) -> bool:
+    # ``uniq INPUT OUTPUT`` — a second positional argument is the output file.
+    return sum(1 for a in args if not a.startswith("-")) >= 2
+
+
+#: Mutating-flag predicates evaluated on the segment's real ``shlex`` words —
+#: quoting cannot hide a flag (``sort "-ro"`` still yields ``-ro``). Keyed by
+#: command basename; each receives the argument list (command excluded).
+GATE_MUTATING_WORDS = {
+    "find": _gate_find_writes,
+    "sort": _gate_sort_writes,
+    "date": _gate_date_writes,
+    "file": _gate_file_writes,
+    "uniq": _gate_uniq_writes,
 }
 
 

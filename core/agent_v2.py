@@ -168,6 +168,7 @@ from RxyCode.RxyCode1_1_0.core.harness_checkpoint import (
 from RxyCode.RxyCode1_1_0.core.build_workflow import (
     CheckReceipt,
     GATE_MUTATING_ARGS,
+    GATE_MUTATING_WORDS,
     GATE_READONLY_COMMANDS,
     WorkflowContractError,
     check_completion,
@@ -1047,21 +1048,76 @@ def _shell_shape_is_unproven(command: str) -> bool:
 # ``&&``/``||`` are single separators; a bare ``&`` or ``|`` is one too. The
 # alternation (no ``+``) keeps adjacent separators from merging silently, so a
 # dangling pipe (``cat x |``) leaves an empty segment and fails conservative.
-_GATE_SEPARATOR_RE = re.compile(r"&&|\|\||[&;|\r\n]")
 # ``>/dev/null`` (and the ``nul``/``$null`` spellings _STDERR_REDIRECT_RE
 # already trusts for stderr) discard output — not workspace writes.
 _GATE_NULL_REDIRECT_RE = re.compile(r"(?i)\d?>\s*(?:/dev/null|nul|\$null)")
 
 
+def _gate_raw_segments(text: str) -> list[str] | None:
+    """Split RAW command text at outside-quote separators.
+
+    ``shlex`` words of these segments keep quoted flags visible, unlike the
+    quote-masked view used for redirect/substitution checks. ``&&``/``||`` are
+    single separators; a bare ``&`` or ``|`` is one too — except ``&``
+    immediately after ``>`` (the ``2>&1`` stderr redirect stays one token).
+    ``None`` on an unterminated quote.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    index = 0
+    size = len(text)
+    while index < size:
+        char = text[index]
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            buf.append(char)
+            index += 1
+            continue
+        if char in ";\r\n":
+            segments.append("".join(buf))
+            buf = []
+            index += 1
+            continue
+        if char == "&":
+            if buf and buf[-1] == ">":
+                # ``2>&1`` — the ``&`` belongs to the redirect token.
+                buf.append(char)
+                index += 1
+                continue
+            segments.append("".join(buf))
+            buf = []
+            index += 2 if text.startswith("&&", index) else 1
+            continue
+        if char == "|":
+            segments.append("".join(buf))
+            buf = []
+            index += 2 if text.startswith("||", index) else 1
+            continue
+        buf.append(char)
+        index += 1
+    if quote:
+        return None
+    segments.append("".join(buf))
+    return segments
+
+
 def _gate_command_is_readonly(command: str) -> bool:
     """True only when every segment of the command is provably read-only.
 
-    The split view is ``_shell_text_outside_quotes``: separators inside quotes
-    cannot split, and quoted arguments never reach the per-segment checks.
-    Command substitution and any file-writing redirection disqualify the whole
-    command. A guarded allow-listed command (``find``/``sort``/``date``) is
-    scanned for mutating flags against the RAW command text too, so a quoted
-    flag cannot slip through the quote-masked segment.
+    Redirect/substitution checks use the quote-masked view
+    (``_shell_text_outside_quotes``): separators inside quotes cannot split,
+    and a quoted ``>`` is a literal. Segment analysis uses raw text split at
+    outside-quote separators, so ``shlex`` words keep quoted flags visible —
+    ``sort "-ro"`` still yields ``-ro``. A guarded allow-listed command
+    (``find``/``sort``/``date``/``file``/``uniq``) is checked by word
+    predicates first, then a raw-text regex fallback for extra safety.
     """
     text = str(command or "").strip()
     if not text:
@@ -1077,11 +1133,8 @@ def _gate_command_is_readonly(command: str) -> bool:
     visible = _GATE_NULL_REDIRECT_RE.sub(" ", visible)
     if ">" in visible:
         return False
-    raw_segments = _GATE_SEPARATOR_RE.split(visible)
-    if any(not part.strip() for part in raw_segments):
-        return False
-    segments = [part.strip() for part in raw_segments]
-    if not segments:
+    segments = _gate_raw_segments(text)
+    if segments is None or any(not part.strip() for part in segments):
         return False
     for segment in segments:
         try:
@@ -1089,15 +1142,16 @@ def _gate_command_is_readonly(command: str) -> bool:
         except ValueError:
             return False
         if not words:
-            continue
+            return False
         base = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
         if base.endswith(".exe"):
             base = base[:-4]
         if base in GATE_READONLY_COMMANDS:
+            predicate = GATE_MUTATING_WORDS.get(base)
+            if predicate is not None and predicate(words[1:]):
+                return False
             guarded = GATE_MUTATING_ARGS.get(base)
-            if guarded is not None and (
-                guarded.search(segment) or guarded.search(text)
-            ):
+            if guarded is not None and guarded.search(text):
                 return False
             continue
         if classify_tool_risk("bash", {"command": segment}) < RiskLevel.WRITE:

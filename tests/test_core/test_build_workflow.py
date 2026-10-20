@@ -1798,6 +1798,12 @@ def test_h1_readonly_compounds_do_not_invalidate():
         'echo "a;b" && cat c',
         "test -f a.txt && wc -l a.txt",
         "[ -f a.txt ] && echo ok",
+        "sort -u a.txt",
+        "date -u",
+        "uniq a.txt",
+        "file a.txt",
+        "cat < a.txt",
+        "ls 2>&1 | wc -l",
     ):
         assert AgentV2._shell_invalidates_subject(host, command) is False, command
 
@@ -1820,8 +1826,20 @@ def test_h1_writes_substitutions_and_mutating_flags_still_invalidate():
         'ls -1 && python3 -c "print(1)"',
         "find . -delete",
         "find . -exec rm {} ;",
+        "find . -fls out.txt",
+        "find . -fprint out.txt",
         "sort -o out.txt a.txt",
+        "sort -ro out.txt a.txt",
+        "sort -uo out.txt a.txt",
+        "sort --output=out.txt a.txt",
+        'sort "-ro" out.txt a.txt',
         "date -s 2026-01-01",
+        "date -us 2026-01-01",
+        "date --set=2026-01-01",
+        "uniq in.txt out.txt",
+        'uniq "in.txt" "out.txt"',
+        "file -C -m magic.mgc",
+        "file --compile -m magic.mgc",
         'find . "-delete"',
     ):
         assert AgentV2._shell_invalidates_subject(host, command) is True, command
