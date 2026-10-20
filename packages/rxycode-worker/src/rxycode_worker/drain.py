@@ -5230,6 +5230,38 @@ def _has_prior_attempt_activity(
         engine.dispose()
 
 
+def _effects_settled_at_cancel(database_url: str, run_id: str) -> bool:
+    """True when every side effect is accounted for at cancel time — the
+    run's last attempt-lifecycle row is ``event/agent_done`` (attempt ran
+    and journaled its outcome) or ``turn.paused`` / ``run.status`` of
+    ``waiting_approval`` (cleanly parked with a journaled checkpoint). A
+    cancel of such a run settles as ``cancelled``; ``recovery_required``
+    stays reserved for attempts that could have executed with an
+    unproven outcome — ``agent_started`` with no matching done/park —
+    which is the actual intent of the audit-r13 conservatism."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT type, payload->>'status' FROM run_events"
+                    " WHERE run_id = :id AND ("
+                    "   type IN ('event/agent_started', 'event/agent_done', 'turn.paused')"
+                    "   OR (type = 'run.status' AND payload->>'status' = 'waiting_approval')"
+                    " ) ORDER BY seq DESC LIMIT 1"
+                ),
+                {"id": run_id},
+            ).first()
+        if row is None:
+            return False
+        return str(row[0]) in {"event/agent_done", "turn.paused", "run.status"}
+    finally:
+        engine.dispose()
+
+
 def _reconcile_lost_lease_ledger(
     database_url: str,
     tenant_id: str,
@@ -5403,12 +5435,28 @@ async def execute_run(
                     _LOG.warning(
                         "run %s: attribution notes failed", run_id, exc_info=True
                     )
+        effects_known = not prior
+        if not effects_known:
+            # Parked turns (checkpointed) and attempts that already reached
+            # agent_done have no unproven effects — cancelling settles as
+            # 'cancelled', not 'recovery_required'.
+            try:
+                effects_known = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _effects_settled_at_cancel, cfg.database_url, run_id
+                    ),
+                    timeout=_LEASE_IO_BUDGET,
+                )
+            except Exception:
+                _LOG.warning(
+                    "run %s: effects-settled check failed", run_id, exc_info=True
+                )
         confirm_cancel(
             cfg.database_url,
             run_id,
             cfg.worker_id,
             epoch,
-            effects_known=not prior,
+            effects_known=effects_known,
         )
         return True
 

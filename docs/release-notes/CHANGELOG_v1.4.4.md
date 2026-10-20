@@ -217,8 +217,17 @@
 - **修复**：opener 与 `_MUT_VERB_WORDS_RE` 统一加 `(?<![^\s/\\]\.)` lookbehind——`.` 前为任意非空白非斜杠字符（`a.py`/`*.py`/`?.php`/`x.{py}` 等所有文件名后缀与 glob）不再开事件；`./rm` 等路径执行体不受影响（`.` 前是 `/`）。
 - **回归**：`tests/test_safety_policy.py::test_bash_filename_extension_is_not_an_interp_verb`——良性面（`test -f`/`cat`/`grep`/`echo *.py`/原门禁命令全文/`python hello.py`/`py hello.py`）全放行，恶意面（`rm -rf /`、逃逸重定向、`sed -i` 越界、`xargs rm` 载具）仍拦截；分析器套件 139+1 全绿。
 
+### W9-Q1 端到端验收修复（产品侧：防探测螺旋 + 停泊取消语义）
+
+- **blocked 文案可操作化**（`policy.py::BASH_WRITE_BLOCKED_HINT` + `tool_orchestrator`）：bash 写路径闸的拒绝文案此前只有 `[blocked: …]`，模型不知道"换载具/引号/env/cd 都改变不了结论"（实测一个 run 探测 60+ 轮、烧 ~86 万 token 后向用户提问）；现附加"判定对命令形状是确定性的，内联解释器请改写脚本文件按路径执行"指引。复跑实证：模型首轮即自我纠偏"改成只做目录探查，不调用解释器"。
+- **契约提示词防 `-c`**（`agent_v2` 两处 required_checks 提示）：必检命令禁用 `python -c`/`node -e`/`bash -c` 内联载荷（沙箱对不可分析的 `-c` 一律 fail-closed，永远过不了闸），改用"先写小脚本文件、检查命令按路径执行"。复跑后契约命令已变为 `test -f hello.py` + `test "$(python3 hello.py)" = "hello"`。
+- **取消结案语义**（`drain.py::_effects_settled_at_cancel`）：`confirm_cancel` 此前对"有前置 attempt 活动"的取消一律 `recovery_required`——但两类结局其实已知：干净停泊的 turn（checkpoint+journal）与已 `agent_done` 收口的 attempt。现以"取消时最新 attempt 生命周期行"判定：`agent_done`/`turn.paused`/`waiting_approval` → `cancelled`；`agent_started` 后无收口（真"跑了但结局不明"）→ `recovery_required`。**待模型额度恢复后复验 E-5**。
+- **测试侧有界化**：E-3 批准 ≥2 次（审批+续接双次验证）后主动取消再等终态——confirm 档下啰嗦模型可把"批准→恢复→新审批"循环拖过 600s 死线，场景意图（审批卡出现+恢复可用+取消结案）不变；E-4 开头补 `ensure_idle`（E-3 残留停泊 run 占并发位导致 429）+ 审批上限 8 次后取消归 N/A。
+
 ### 已知限制（明示，非遗漏）
 
+- **Provider 错误被记为 `succeeded`**（W9 验收发现，未修）：模型上游 402/5xx 时 agent 把 `to_user_facing_error` 的错误文案当正常 final answer 走完回合，run 终态 `succeeded`——E-2/E-3 在欠费期间的表现（零工具行、零审批、"succeeded"）。正确语义应为 `failed`（可重试）或至少带错误标记，涉及 Harness 终态映射，留待额度恢复后一并处理。
+- **`/repo` Harness 源码在沙箱内可读**（W9 验收发现）：被拦的 agent 会 grep `/repo` 找绕过（`direct_python_c_argv`、sys.path 注入 import core）。bwrap 仍强制写边界所以只是"难看"不是逃逸，但建议后续把 Harness 源码移出 agent 可见挂载。
 - 每个挂起调用仅支持一个持久化提问。
 - 无 `call_id` 的外部工具结果仍走文本前缀回退。
 - `tests/web/w2`–`w6` 全量失败此前定性为本机环境/HEAD 既有问题，未逐条复验。
