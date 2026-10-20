@@ -162,6 +162,7 @@ from RxyCode.RxyCode1_1_0.core.build_workflow import (
     is_ordinary_text_save,
     assign_workflow_id,
     parse_decision_text,
+    promote_to_development,
     retarget_contract,
     tests_passed_nonempty,
     workflow_enabled,
@@ -505,6 +506,29 @@ def _ensure_plan_heading(text: str) -> str:
     if re.search(r"^#{1,3}\s+\S", body, re.M):
         return body
     return "# 计划\n\n" + body
+
+
+def _workflow_response_text(response) -> str:
+    """Public text from one classifier response. Thinking blocks stay out."""
+    content = getattr(response, "content", "")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        if isinstance(block, dict):
+            if str(block.get("type") or "") != "text":
+                continue
+            parts.append(str(block.get("text") or ""))
+            continue
+        if str(getattr(block, "type", "") or "") != "text":
+            continue
+        parts.append(str(getattr(block, "text", "") or ""))
+    return "\n".join(part for part in parts if part)
 
 
 def _clamp_stream_timeout(value: float, *, hi: float, lo: float = 1.0) -> float:
@@ -5555,7 +5579,7 @@ class AgentV2:
         if llm is None or not callable(getattr(llm, "ainvoke", None)):
             raise WorkflowContractError("classifier unavailable")
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        return str(getattr(response, "content", "") or "")
+        return _workflow_response_text(response)
 
     def _is_workflow_continuation_text(self, text: str) -> bool:
         current = getattr(self, "_build_workflow", None)
@@ -5602,6 +5626,9 @@ class AgentV2:
         self._workflow_touched_dirs = set()
         self._workflow_stage_progress = {}
         self._workflow_instruction_text = ""
+        self._workflow_dev_upgrade_attempted = False
+        self._workflow_awaiting_approval = False
+        self._workflow_pending_contract_note = ""
         if getattr(self, "_build_workflow", None) is None and self._restore_unfinished_workflow(goal):
             return
         prompt = (
@@ -5822,6 +5849,7 @@ class AgentV2:
         identity_ok = plan_revision == expected and (
             not wanted or goal in {wanted, getattr(decision, "workflow_id", "")}
         )
+        self._workflow_awaiting_approval = False
         if not identity_ok or not approved:
             self._workflow_plan_status = "rejected" if not approved else "pending"
             self._workflow_plan_bound_revision = None
@@ -5847,6 +5875,161 @@ class AgentV2:
             self.note_workflow_plan(approved=True, plan_revision=expected, goal=decision.goal)
         elif text.startswith(_PLAN_REJECT_PREFIXES):
             self.note_workflow_plan(approved=False, plan_revision=expected, goal=decision.goal)
+
+    def _workflow_development_ready(self, decision) -> bool:
+        if decision is None or decision.task_kind != "development":
+            return False
+        if decision.stage_actions.get("build_verify") != "run":
+            return False
+        return any(check.required for check in decision.required_checks)
+
+    def _workflow_mutation_needs_development(self, name: str, args: dict | None) -> bool:
+        """Code or test mutations stay on the development gate. Prose does not."""
+        tool = canonical_tool_name(name)
+        if tool not in _WORKFLOW_MUTATION_TOOLS:
+            return False
+        payload = args or {}
+        if tool in {"bash", "task"} and classify_tool_risk(tool, payload) < RiskLevel.WRITE:
+            return False
+        if tool == "git" and git_invocation_is_readonly(
+            str(payload.get("operation") or "status"),
+            str(payload.get("args") or ""),
+        ):
+            return False
+        if tool in {"write", "edit", "patch"}:
+            path = self._workflow_tool_path(payload)
+            content = str(payload.get("content") or payload.get("new_string") or "")
+            if is_ordinary_text_save(path, content) or is_documentation_path(path):
+                return False
+            return True
+        if tool == "bash" and _confirmed_single_doc_operation(
+            str(payload.get("command") or "")
+        ):
+            return False
+        return True
+
+    async def _workflow_ask_text(self, prompt: str) -> str:
+        ask = getattr(self, "_build_workflow_ask", None)
+        if callable(ask):
+            produced = ask(prompt)
+            if hasattr(produced, "__await__"):
+                produced = await produced
+            return str(produced)
+        return await self._workflow_model_text(prompt)
+
+    async def _upgrade_workflow_before_code_write(self, name: str, args: dict | None) -> None:
+        """One upgrade when a non-development contract meets a code write."""
+        if not self._build_workflow_enabled():
+            return
+        if not self._workflow_mutation_needs_development(name, args):
+            return
+        decision = getattr(self, "_build_workflow", None)
+        if self._workflow_development_ready(decision):
+            return
+        if getattr(self, "_workflow_dev_upgrade_attempted", False):
+            return
+        self._workflow_dev_upgrade_attempted = True
+        goal = str(getattr(decision, "goal", "") or "")
+        if not goal:
+            if decision is not None:
+                self._build_workflow = promote_to_development(decision)
+                self._build_workflow_receipts = {}
+                self._persist_build_workflow()
+                self._activate_upgraded_workflow()
+            return
+        prompt = (
+            "A code or test write arrived under a contract that does not "
+            "require development verification. Reply with one JSON object only. "
+            "Keep the same goal. task_kind must be development. "
+            "build_verify must be run. Include the relevant required checks, "
+            "not the repository's full CI. "
+            "You cannot turn off permissions, execution boundaries, or evidence. "
+            f"Goal:\n{goal}"
+        )
+        try:
+            parsed = parse_decision_text(
+                assign_workflow_id(await self._workflow_ask_text(prompt), goal),
+                goal=goal,
+            )
+            if decision is not None:
+                parsed = retarget_contract(decision, parsed)
+            if not self._workflow_development_ready(parsed):
+                parsed = promote_to_development(parsed)
+        except WorkflowContractError:
+            if decision is None:
+                return
+            parsed = promote_to_development(decision)
+        self._build_workflow = parsed
+        self._build_workflow_receipts = {}
+        self._persist_build_workflow()
+        self._activate_upgraded_workflow()
+
+    def _workflow_outer_gate_active(self) -> bool:
+        """Completion follows the contract now, not the flag captured at turn start."""
+        if not self._build_workflow_enabled():
+            return False
+        if getattr(self, "_workflow_active_mode", "build") == "plan":
+            return False
+        if getattr(self, "_workflow_awaiting_approval", False):
+            return False
+        decision = getattr(self, "_build_workflow", None)
+        return getattr(decision, "task_kind", "") == "development"
+
+    def _activate_upgraded_workflow(self) -> None:
+        self._workflow_gate_this_turn = self._workflow_outer_gate_active()
+        note = self._workflow_stage_note()
+        if note:
+            self._workflow_pending_contract_note = (
+                "[build-workflow] 合同已升级。按当前合同执行，完成前必须通过这些检查。\n"
+                + note
+            )
+        self._publish_workflow_context()
+
+    def _take_workflow_contract_note(self) -> str:
+        note = str(getattr(self, "_workflow_pending_contract_note", "") or "")
+        self._workflow_pending_contract_note = ""
+        return note
+
+    def _workflow_should_seal_checkpoint(self) -> bool:
+        """Waiting for design approval leaves the checkpoint resumable."""
+        return not bool(getattr(self, "_workflow_awaiting_approval", False))
+
+    def _emit_workflow_plan(self, body: str) -> None:
+        tui = get_tui()
+        writer = getattr(tui, "write_plan", None) if tui is not None else None
+        if not callable(writer):
+            return
+        lines = [line for line in str(body or "").splitlines() if line.strip()]
+        if lines:
+            writer(lines)
+
+    def _present_workflow_design(self, answer: str) -> str:
+        """Hand the design to the existing plan approval channel and stop."""
+        body = _ensure_plan_heading(answer)
+        try:
+            path = _session_plan_md_path(getattr(self, "_session_id", None))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+        except Exception:
+            pass
+        if getattr(self, "_workflow_plan_status", "") not in {"approved", "rejected"}:
+            self._workflow_plan_status = "pending"
+        self._workflow_awaiting_approval = True
+        if "是，实施此计划" not in body and "已批准计划" not in body:
+            body = body.rstrip() + (
+                "\n\n---\n"
+                "**下一步**：在计划文档下方选择 **是，实施此计划**"
+                "（或切换到 **Build** 模式后按计划执行）。"
+            )
+        self._emit_workflow_plan(body)
+        return body
+
+    def _workflow_design_hold(self, answer: str) -> str | None:
+        if not self._workflow_design_open():
+            return None
+        if not str(answer or "").strip():
+            return None
+        return self._present_workflow_design(answer)
 
     def _question_answer_resolved(self, result: str) -> bool:
         text = str(result or "").strip()
@@ -5879,9 +6062,13 @@ class AgentV2:
             self._workflow_tool_path(payload),
             str(payload.get("content") or payload.get("new_string") or ""),
         ):
-            if decision is None or decision.task_kind != "development":
+            if not (self._workflow_clarify_open() or self._workflow_design_open()):
                 return False
         if decision is None:
+            return True
+        if self._workflow_mutation_needs_development(name, payload) and (
+            not self._workflow_development_ready(decision)
+        ):
             return True
         if decision.task_kind != "development":
             return False
@@ -6945,12 +7132,7 @@ class AgentV2:
         if self._workflow_active_mode != "plan":
             await self._ensure_build_workflow(user_input)
             self._observe_workflow_plan_turn(user_input)
-        decision_now = getattr(self, "_build_workflow", None)
-        self._workflow_gate_this_turn = bool(
-            self._build_workflow_enabled()
-            and self._workflow_active_mode != "plan"
-            and getattr(decision_now, "task_kind", "") == "development"
-        )
+        self._workflow_gate_this_turn = self._workflow_outer_gate_active()
         stage_note = self._workflow_stage_note()
         if stage_note:
             role_instruction = f"{role_instruction.strip()}\n\n{stage_note}".strip() if role_instruction else stage_note
@@ -7662,6 +7844,10 @@ class AgentV2:
                     react_decision,
                     write_still_required=write_still_required,
                 ):
+                    held = self._workflow_design_hold(answer) if not tool_calls else None
+                    if held is not None:
+                        answer = held
+                        break
                     workflow_block = self._workflow_completion_feedback()
                     if workflow_block and not tool_calls:
                         messages.append(AIMessage(content=answer))
@@ -7672,6 +7858,10 @@ class AgentV2:
                     tool_calls = drop_tools_after_final_answer(tool_calls)
 
                 if not tool_calls:
+                    held = self._workflow_design_hold(answer)
+                    if held is not None:
+                        answer = held
+                        break
                     if (
                         _contains_dsml_tool_markup(answer)
                         and malformed_dsml_retried < 2
@@ -7793,6 +7983,10 @@ class AgentV2:
                     except Exception:
                         creation_intent = False
                     if answer.strip() and not creation_intent:
+                        held = self._workflow_design_hold(answer)
+                        if held is not None:
+                            answer = held
+                            break
                         workflow_block = self._workflow_completion_feedback()
                         if workflow_block:
                             messages.append(AIMessage(content=answer))
@@ -7950,6 +8144,9 @@ class AgentV2:
                             tool_call_id=tool_id or tool_name,
                         )
                     )
+                    contract_note = self._take_workflow_contract_note()
+                    if contract_note:
+                        messages.append(HumanMessage(content=contract_note))
 
                     # B7: 错误回喂。退出只认连续错误 >= ERROR_LIMIT（5），
                     # 一次成功清零；不是第一次 [error]，也不是会话累计。
@@ -7994,6 +8191,10 @@ class AgentV2:
                             self._stuck_detector.stuck_reason,
                         )
                 if final_answer_called:
+                    held = self._workflow_design_hold(answer)
+                    if held is not None:
+                        answer = held
+                        break
                     workflow_block = self._workflow_completion_feedback()
                     if workflow_block:
                         final_answer_called = False
@@ -8293,9 +8494,10 @@ class AgentV2:
         tool schema is frozen full (never cropped per turn), so denials
         live HERE, not in the API schema.
         """
+        await self._upgrade_workflow_before_code_write(name, args)
         if self._workflow_blocks_mutation(name, args):
             return (
-                "[blocked: development change needs a build-workflow contract "
+                "[blocked: code or test write needs a development contract "
                 "with a required check]"
             )
         if mode == "plan" and name not in PLAN_READONLY_TOOL_NAMES:
@@ -9759,7 +9961,7 @@ class AgentV2:
                         record_failure(failure_category)
             if (
                 status == "succeeded"
-                and getattr(self, "_workflow_gate_this_turn", False)
+                and self._workflow_outer_gate_active()
             ):
                 workflow_block = self._workflow_completion_feedback()
                 if workflow_block:
@@ -9814,7 +10016,7 @@ class AgentV2:
                 result = str(exhausted_notice)
                 status = "failed"
                 record_failure("orchestration_error")
-            else:
+            elif self._workflow_should_seal_checkpoint():
                 journal = getattr(self, "_tool_journal", None)
                 if journal is not None:
                     sealed = journal.mark_attempt_complete(attempt_id)

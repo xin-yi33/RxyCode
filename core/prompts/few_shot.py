@@ -31,17 +31,17 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
             "output": (
                 '[{"title": "设计数据库表结构", "description": "创建 users 表", '
                 '"requirement": "包含 id, username, password_hash, email", '
-                '"tools_hint": ["write"], "effect": "write", "depends_on_index": []}, '
+                '"tools_hint": ["edit"], "effect": "write", "depends_on_index": []}, '
                 '{"title": "实现注册 API", "description": "POST /register", '
                 '"requirement": "参数校验+密码哈希+写入数据库", '
-                '"tools_hint": ["write", "bash"], "effect": "write", "depends_on_index": [0]}]'
+                '"tools_hint": ["edit", "bash"], "effect": "write", "depends_on_index": [0]}]'
             ),
         },
     ],
     "executor": [
         {
             "input": "Task: 创建 hello.py 打印 Hello World",
-            "output": "print('Hello World')  # 使用 write 工具保存到 hello.py",
+            "output": "print('Hello World')  # 使用 edit(operation='write', content=...) 保存到 hello.py",
         },
     ],
     "validator": [
@@ -69,10 +69,10 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
             "output": (
                 '[{"title": "实现 JWT 签发函数", "description": "创建 generate_token(user_id)", '
                 '"requirement": "使用 PyJWT，过期时间 24h", '
-                '"tools_hint": ["write"], "effect": "write", "depends_on_index": []}, '
+                '"tools_hint": ["edit"], "effect": "write", "depends_on_index": []}, '
                 '{"title": "实现认证中间件", "description": "解析 Authorization header", '
                 '"requirement": "验证 Bearer token", '
-                '"tools_hint": ["write"], "effect": "write", "depends_on_index": [0]}]'
+                '"tools_hint": ["edit"], "effect": "write", "depends_on_index": [0]}]'
             ),
         },
     ],
@@ -92,13 +92,13 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
             "input": "Task: 实现一个博客系统，包含文章管理、用户认证、评论功能",
             "output": (
                 '[{{"task": "设计数据库表结构（articles, users, comments）", '
-                '"tools_hint": ["write"]}}, '
+                '"tools_hint": ["edit"]}}, '
                 '{{"task": "实现用户认证模块（注册/登录/JWT）", '
-                '"tools_hint": ["write", "bash"]}}, '
+                '"tools_hint": ["edit", "bash"]}}, '
                 '{{"task": "实现文章 CRUD API", '
-                '"tools_hint": ["write", "bash"]}}, '
+                '"tools_hint": ["edit", "bash"]}}, '
                 '{{"task": "实现评论功能模块", '
-                '"tools_hint": ["write", "bash"]}}]'
+                '"tools_hint": ["edit", "bash"]}}]'
             ),
         },
     ],
@@ -218,7 +218,7 @@ FEW_SHOT_EXAMPLES: dict[str, list[dict[str, str]]] = {
     ],
     "delegate_request": [
         {
-            "input": "goal: write tests/test_login.py | tools: write | refs: auth/routes.py",
+            "input": "goal: write tests/test_login.py | tools: edit | refs: auth/routes.py",
             "output": "Created tests/test_login.py covering 200 and 401. Did not edit auth/routes.py.",
         },
     ],

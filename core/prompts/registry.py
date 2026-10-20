@@ -117,7 +117,7 @@ class PromptRegistry:
         self._specs["system"] = {
             "default": PromptSpec(
                 name="system",
-                version="2026-10-01",
+                version="2026-10-13-file-tools",
                 template=SYSTEM_PROMPT_TEMPLATE,
             )
         }

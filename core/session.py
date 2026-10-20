@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from ..protocol.notifications import ErrorNotification, FinalAnswer, ProgressUpdate, TokenUsage
 
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import BudgetExceeded, Coordinator
+from RxyCode.RxyCode1_1_0.core.subagents.inbox import inbox_for
 from RxyCode.RxyCode1_1_0.core.agents.router import (
     ExecutionMode,
     get_default_router,
@@ -282,6 +283,7 @@ class Session:
         if hasattr(agent, "_workspace_root"):
             agent._workspace_root = workspace
         agent._drain_steers = self.drain_steers
+        agent._subagent_inbox = inbox_for(self.session_id)
 
         from RxyCode.RxyCode1_1_0.core.session_runtime import (
             bind_session,

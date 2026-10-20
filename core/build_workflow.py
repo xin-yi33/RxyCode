@@ -277,6 +277,23 @@ def check_completion(
     )
 
 
+def promote_to_development(decision: WorkflowDecision) -> WorkflowDecision:
+    """Keep the same task and require verification. Checks are not invented."""
+    stages = dict(decision.stage_actions)
+    stages["build_verify"] = "run"
+    revision = int(decision.contract_revision) + 1
+    checks = tuple(
+        replace(check, contract_revision=revision) for check in decision.required_checks
+    )
+    return replace(
+        decision,
+        task_kind="development",
+        stage_actions=stages,
+        contract_revision=revision,
+        required_checks=checks,
+    )
+
+
 def retarget_contract(previous: WorkflowDecision, new: WorkflowDecision) -> WorkflowDecision:
     """Keep the task identity and drop a stale revision when the goal changes."""
     revision = max(int(new.contract_revision), int(previous.contract_revision) + 1)

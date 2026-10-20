@@ -448,6 +448,32 @@ async def test_tool_free_fast_path_does_not_estimate_after_real_usage(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_plain_chat_reads_pending_child_report_and_skips_answer_cache(monkeypatch):
+    from RxyCode.RxyCode1_1_0.cache.precise_cache import precise_cache
+
+    from RxyCode.RxyCode1_1_0.cache.semantic_cache import semantic_cache
+
+    precise_get = MagicMock(return_value={"response": "stale cached answer"})
+    precise_put = MagicMock()
+    semantic_put = MagicMock()
+    monkeypatch.setattr(precise_cache, "get", precise_get)
+    monkeypatch.setattr(precise_cache, "put", precise_put)
+    monkeypatch.setattr(semantic_cache, "put", semantic_put)
+    agent, captured = make_agent("unused", answer="根据报告回复")
+    agent._subagent_inbox = ["[FROM_SUBAGENT]\nsender=ses_child_1\n认证在 auth.py"]
+
+    result = await agent._fast_reply("不要调用工具，只根据子代理给你的报告回复我。")
+
+    assert result == "根据报告回复"
+    precise_get.assert_not_called()
+    precise_put.assert_not_called()
+    semantic_put.assert_not_called()
+    assert agent._subagent_inbox == []
+    rendered = "\n".join(str(getattr(message, "content", "")) for message in captured)
+    assert "认证在 auth.py" in rendered
+
+
+@pytest.mark.asyncio
 async def test_tool_aware_fast_path_does_not_estimate_after_real_usage(monkeypatch):
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 

@@ -1550,3 +1550,233 @@ def test_restored_contract_reloads_project_rules_before_the_turn_note(tmp_path):
         assert marker in text
     reloaded = store.load(store.checkpoint_id("sess", goal, "build"))
     assert marker not in json.dumps(reloaded)
+
+
+def _read_only_decision():
+    return _decision(
+        workflow_id="wf-ro",
+        task_kind="read_only",
+        acceptance=["只解释行为，不改代码"],
+        required_checks=[],
+        stage_actions={
+            stage: "skip"
+            for stage in ("project_docs", "clarify", "design", "build_verify", "doc_sync")
+        },
+    )
+
+
+def test_read_only_code_edit_does_not_finish_without_a_development_check():
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision(
+            task_kind="read_only",
+            acceptance=["仍然只读"],
+            required_checks=[],
+            stage_actions={
+                stage: "skip"
+                for stage in ("project_docs", "clarify", "design", "build_verify", "doc_sync")
+            },
+        )
+
+    host = _host()
+    host._build_workflow = _read_only_decision()
+    host._build_workflow_ask = ask
+    host._tool_tracer = None
+    host._role_tool_allowlist = None
+    seen = []
+
+    async def execute_tool(_name, _args, **_kwargs):
+        seen.append(_name)
+        return "wrote"
+
+    host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
+    edit = {
+        "filePath": "parser.py",
+        "oldString": "x = 1\n",
+        "newString": "def parse():\n    return []\n",
+    }
+
+    import asyncio
+    blocked = asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    assert blocked.startswith("[blocked")
+    assert seen == []
+    assert calls["n"] == 1
+    assert host._build_workflow.workflow_id == "wf-ro"
+    assert host._build_workflow.task_kind == "development"
+    assert AgentV2._workflow_completion_feedback(host) is not None
+    asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    assert calls["n"] == 1
+    prose = asyncio.run(AgentV2._execute_tool(
+        host, "write", {"filePath": "notes.txt", "content": "hello\n"}
+    ))
+    assert prose == "wrote"
+    assert calls["n"] == 1
+
+
+def test_one_upgrade_supplies_checks_and_then_the_code_edit_runs():
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision()
+
+    host = _host()
+    host._build_workflow = _read_only_decision()
+    host._build_workflow_ask = ask
+    host._tool_tracer = None
+    host._role_tool_allowlist = None
+    seen = []
+
+    async def execute_tool(name, _args, **_kwargs):
+        seen.append(name)
+        return "wrote"
+
+    host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
+    edit = {
+        "filePath": "parser.py",
+        "oldString": "x = 1\n",
+        "newString": "def parse():\n    return []\n",
+    }
+
+    import asyncio
+    assert asyncio.run(AgentV2._execute_tool(host, "edit", edit)) == "wrote"
+    assert calls["n"] == 1
+    assert host._build_workflow.workflow_id == "wf-ro"
+    assert host._build_workflow.task_kind == "development"
+    assert host._build_workflow.stage_actions["build_verify"] == "run"
+    assert asyncio.run(AgentV2._execute_tool(host, "edit", edit)) == "wrote"
+    assert calls["n"] == 1
+    assert seen == ["edit", "edit"]
+
+
+def test_design_text_waits_on_the_existing_approval_channel(tmp_path, monkeypatch):
+    from RxyCode.RxyCode1_1_0.core import agent_v2 as agent_mod
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.utils.tui import get_tui, set_tui
+
+    monkeypatch.setattr(agent_mod, "_session_plan_md_path", lambda _sid: tmp_path / "plan.md")
+    plans = []
+
+    class _Tui:
+        def write_plan(self, steps):
+            plans.append(list(steps))
+
+    previous = get_tui()
+    set_tui(_Tui())
+    host = _loop_host(lambda _prompt: (_ for _ in ()).throw(AssertionError("reclassified")))
+    host._build_workflow = _decision(stage_actions={
+        "project_docs": "skip",
+        "clarify": "skip",
+        "design": "run",
+        "build_verify": "run",
+        "doc_sync": "skip",
+    })
+    host._workflow_plan_revision = 1
+    result, snapshots, seen = _run_scripted_loop(
+        host,
+        [{"content": "设计方案：保留两种格式。请批准后实施。"}],
+        [],
+        goal="fix parser",
+    )
+    assert len(snapshots) == 1
+    assert seen == []
+    assert "设计方案" in result
+    assert "是，实施此计划" in result
+    assert "完成门未通过" not in result
+    assert "stuck" not in result.lower()
+    assert host._workflow_plan_status == "pending"
+    assert host._build_workflow.contract_revision == 1
+    assert "设计方案" in (tmp_path / "plan.md").read_text(encoding="utf-8")
+    assert host._workflow_awaiting_approval is True
+    assert AgentV2._workflow_should_seal_checkpoint(host) is False
+    assert plans and plans[0][0].startswith("#")
+    AgentV2._observe_workflow_plan_turn(host, "已批准计划，开始实施")
+    assert host._workflow_plan_status == "approved"
+    assert host._workflow_awaiting_approval is False
+    assert AgentV2._workflow_should_seal_checkpoint(host) is True
+    assert host._build_workflow.contract_revision == 1
+    assert AgentV2._workflow_blocks_mutation(
+        host, "edit", {"filePath": "parser.py", "newString": "def parse():\n    return []\n"}
+    ) is False
+    set_tui(previous)
+
+
+def test_upgraded_contract_enters_the_outer_gate_and_the_model_history():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision()
+
+    host = _loop_host(ask)
+    host._build_workflow = _read_only_decision()
+    host._workflow_gate_this_turn = False
+    command = "python -m pytest tests/test_parser.py -q"
+    result, snapshots, _seen = _run_scripted_loop(
+        host,
+        [
+            {
+                "tool": "edit",
+                "id": "edit-1",
+                "args": {
+                    "filePath": "parser.py",
+                    "oldString": "x = 1\n",
+                    "newString": "def parse():\n    return []\n",
+                },
+            },
+            {"content": "任务完成\nclaimed-done"},
+            {"tool": "bash", "id": "bash-1", "args": {"command": command, "cwd": "."}},
+            {"content": "任务完成\naccepted-after-check"},
+        ],
+        ["wrote parser.py", "1 passed"],
+        goal="fix parser",
+    )
+    assert calls["n"] == 1
+    assert "accepted-after-check" in result
+    assert "claimed-done" not in result
+    assert host._build_workflow.task_kind == "development"
+    assert host._workflow_gate_this_turn is True
+    host._workflow_gate_this_turn = False
+    assert AgentV2._workflow_outer_gate_active(host) is True
+    history = "\n".join(
+        str(getattr(message, "content", ""))
+        for messages in snapshots
+        for message in messages
+    )
+    assert "合同已升级" in history
+    assert command in history
+
+
+def test_anthropic_text_block_is_the_contract_json():
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    class _LLM:
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(content=[
+                SimpleNamespace(type="thinking", thinking="hidden chain", text=""),
+                {"type": "text", "text": _json_decision(workflow_id="wf-anth")},
+            ])
+
+    host = _host()
+    host._llm = _LLM()
+    host._build_workflow_ask = None
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    assert host._build_workflow is not None
+    assert host._build_workflow.workflow_id == "wf-anth"
+    assert "hidden" not in host._build_workflow.reason

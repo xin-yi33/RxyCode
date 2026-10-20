@@ -58,8 +58,19 @@ class BackendOutputAdapter:
         self._safe_print(f"Done {num}/{total} {desc}")
 
     def write_tool_call(self, name: str, args: Any, call_id: str | None = None) -> str:
+        resolved_id = str(call_id or uuid.uuid4().hex)
+        arguments = args if isinstance(args, dict) else {"raw": str(args)}
+        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_tool_event
+
+        if claim_child_tool_event("child_session/tool_call", {
+            "call_id": resolved_id,
+            "tool": str(name),
+            "arguments": arguments,
+            "phase": "start",
+        }):
+            return resolved_id
         self._safe_print(f"{name}({args})")
-        return str(call_id or uuid.uuid4().hex)
+        return resolved_id
 
     def write_tool_result(
         self,
@@ -67,7 +78,16 @@ class BackendOutputAdapter:
         status: str = "success",
         call_id: str | None = None,
     ) -> None:
-        del call_id
+        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_tool_event
+
+        if claim_child_tool_event("child_session/tool_result", {
+            "call_id": str(call_id or ""),
+            "status": str(status),
+            "ok": status == "success",
+            "text": str(result),
+            "phase": "done",
+        }):
+            return
         self._safe_print(f"[{status}] {result}")
 
     def write_error(self, msg: str) -> None:
@@ -80,6 +100,10 @@ class BackendOutputAdapter:
         self._safe_print(msg)
 
     def write_progress(self, msg: str) -> None:
+        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_stream_progress
+
+        if claim_child_stream_progress(msg):
+            return
         self._safe_print(msg)
 
     def write_thinking(self, msg: str) -> None:
@@ -95,6 +119,10 @@ class BackendOutputAdapter:
 
     @staticmethod
     def stream_token(token: str) -> None:
+        from RxyCode.RxyCode1_1_0.core.subagents.runtime import claim_child_stream_text
+
+        if claim_child_stream_text(token):
+            return
         try:
             sys.stdout.write(token)
             sys.stdout.flush()
