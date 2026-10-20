@@ -18,7 +18,7 @@ PostgreSQL ── runs / run_events / outbox / usage / sessions
 worker (python -m rxycode_worker.drain)
    │ 1. claim（仅 pending/租约过期行）
    │ 2. 放置闸 _execution_gate：cloud-only 只接 cloud:{自身tenant}:*，
-   │    拒 local/sandbox/full*
+   │    拒 local/sandbox；full/full_auto 解析为沙箱内 full_auto（见 web-rules-supplement-2026-10-20.md §3）
    │ 3. spawn turn 子进程 ──► bwrap 沙箱：
    │      --unshare-user --unshare-pid --unshare-ipc --unshare-uts
    │      --clearenv + setenv 白名单；只读系统根+代码树；

@@ -4631,7 +4631,6 @@ async def run_sandboxed_turn() -> int:
 
         # Imports stay inside the executed run: module import of this file
         # must not drag the whole agent stack into a bare --help process.
-        from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
         from RxyCode.RxyCode1_1_0.core.session import Session
         from RxyCode.RxyCode1_1_0.core.session_runtime import (
             bind_session,
@@ -4710,18 +4709,22 @@ async def run_sandboxed_turn() -> int:
         # request_approval persists the exact call, parks the run and
         # releases the lease; this process then unwinds via _RunPaused.
         # full_auto never reaches the broker (the orchestrator auto-allows).
-        from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
+        from appserver.agent_worker import assemble_surface_agent
+        from RxyCode.RxyCode1_1_0.core.question import SseQuestionBroker
 
-        set_approval_broker(
-            _CtlApproval(channel, run_id=run_id, workdir=workdir).broker()
+        agent, _, _ = assemble_surface_agent(
+            session_id=session_id,
+            workspace_root=workdir,
+            model_name=model or None,
+            emit=lambda method, payload: emit._append(method, payload),
+            approval=_CtlApproval(channel, run_id=run_id, workdir=workdir).broker(),
+            question=SseQuestionBroker(timeout=0.0),
         )
-
         session = Session(
             session_id=session_id,
             workspace_root=workdir,
             emit=emit,
         )
-        agent = AgentV2(model_name=model or None, session_id=session_id)
 
         runtime = AgentRuntime(
             EventBus(AppendOnlyLog()),

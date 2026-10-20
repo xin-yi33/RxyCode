@@ -278,6 +278,34 @@ def bootstrap_subagent_manager(
     return manager, store
 
 
+def assemble_surface_agent(
+    *,
+    session_id: str,
+    workspace_root: Path,
+    model_name: str | None,
+    emit: Callable[[str, dict[str, Any]], None],
+    approval: Any,
+    question: Any,
+) -> tuple[Any, Any, Any]:
+    """Shared Agent / subagent-manager / broker assembly for every surface.
+
+    Same order as ``AgentWorker._handle_bootstrap``: subagent manager, then
+    the approval and question brokers, then ``bootstrap_agent`` (config,
+    i18n, memory hydrate) and ``configure_agent_workspace``. Only the broker
+    transports differ per surface (stdio pipe, control socket).
+    """
+    manager, store = bootstrap_subagent_manager(
+        session_id=session_id, workspace_root=workspace_root, emit=emit
+    )
+    set_approval_broker(approval)
+    set_question_broker(question)
+    agent = bootstrap_agent(model_name=model_name, session_id=session_id)
+    agent = configure_agent_workspace(
+        agent, session_id=session_id, workspace_root=workspace_root
+    )
+    return agent, manager, store
+
+
 def _subagents_enabled_from_env() -> bool | None:
     """Read the same validated master switch used to build the manager."""
     try:

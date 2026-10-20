@@ -3703,3 +3703,66 @@ def test_w8_c01_scrub_r24_quoted_heredoc_linear() -> None:
     out = drain._scrub_inline_secrets(src)
     assert out == ("cat <<'E'" + nl + "confined" + nl + "E" + nl) * n
     assert time.time() - t0 < 5.0
+
+
+def test_w8_s2_surface_assembly_installs_shared_brokers(tmp_path: Path, monkeypatch: Any) -> None:
+    """W8-S2: the confined turn assembles Agent, subagent manager and the
+    approval/question brokers through the same entry the CLI and desktop
+    worker use (``appserver.agent_worker.assemble_surface_agent``)."""
+    from appserver import agent_worker
+    from RxyCode.RxyCode1_1_0.core.question import (
+        SseQuestionBroker,
+        get_question_broker,
+        set_question_broker,
+    )
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        ApprovalBroker,
+        get_approval_broker,
+        set_approval_broker,
+    )
+
+    calls: dict[str, Any] = {}
+
+    class _Agent:
+        pass
+
+    def fake_subagents(*, session_id: str, workspace_root: Path, emit: Any) -> tuple[str, str]:
+        calls["subagents"] = (session_id, Path(workspace_root))
+        return "manager", "store"
+
+    def fake_bootstrap(*, model_name: Any = None, session_id: Any = None, **_: Any) -> _Agent:
+        calls["bootstrap"] = (model_name, session_id)
+        return _Agent()
+
+    def fake_configure(agent: Any, *, session_id: str, workspace_root: Path) -> Any:
+        calls["configure"] = (session_id, Path(workspace_root))
+        return agent
+
+    monkeypatch.setattr(agent_worker, "bootstrap_subagent_manager", fake_subagents)
+    monkeypatch.setattr(agent_worker, "bootstrap_agent", fake_bootstrap)
+    monkeypatch.setattr(agent_worker, "configure_agent_workspace", fake_configure)
+    class _Approval(ApprovalBroker):
+        async def _ask(self, request: Any) -> Any:
+            raise AssertionError("assembly must not ask")
+
+    approval = _Approval()
+    question = SseQuestionBroker(timeout=0.0)
+    try:
+        agent, manager, store = agent_worker.assemble_surface_agent(
+            session_id="sess-s2",
+            workspace_root=tmp_path,
+            model_name="model-s2",
+            emit=lambda method, payload: None,
+            approval=approval,
+            question=question,
+        )
+        assert isinstance(agent, _Agent)
+        assert (manager, store) == ("manager", "store")
+        assert calls["bootstrap"] == ("model-s2", "sess-s2")
+        assert calls["subagents"] == ("sess-s2", tmp_path.resolve())
+        assert calls["configure"] == ("sess-s2", tmp_path)
+        assert get_approval_broker() is approval
+        assert get_question_broker() is question
+    finally:
+        set_approval_broker(None)
+        set_question_broker(None)
