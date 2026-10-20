@@ -156,8 +156,13 @@ from RxyCode.RxyCode1_1_0.mcp import tool_manifest as _tool_manifest
 from RxyCode.RxyCode1_1_0.core.harness_checkpoint import (
     NOT_EXECUTED_NOTE,
     HarnessPaused,
+    TurnBudget,
+    TurnBudgetExhausted,
+    bind_turn_budget,
+    current_turn_budget,
     decode_messages,
     encode_messages,
+    reset_turn_budget,
 )
 from RxyCode.RxyCode1_1_0.core.build_workflow import (
     CheckReceipt,
@@ -3250,6 +3255,104 @@ class AgentV2:
             return False, float(grant.new_budget)
         self._last_timeout_note = decision.note
         return True, float(soft_budget)
+
+    def _new_turn_budget(self) -> TurnBudget:
+        cfg = getattr(self, "_cfg", None) or {}
+        return TurnBudget(
+            limit_seconds=max(1.0, resolve_timeout("turn.budget_seconds", cfg)),
+            max_extensions=max(0, int(resolve_timeout("turn.max_extensions", cfg))),
+            hard_cap_seconds=max(1.0, resolve_timeout("turn.hard_cap_seconds", cfg)),
+        )
+
+    async def _under_turn_budget(self, factory, budget: TurnBudget):
+        """Run one turn under its whole-turn execution budget.
+
+        Every surface's Build path enters here, so the fast tool loop and the
+        pipeline share one clock. The clock counts execution only: a parked
+        turn exits its process and its checkpoint carries the consumed time.
+        Exhaustion asks the shared timeout engine; a grant extends the budget
+        within its count and hard cap; a refusal cancels the work. The lease
+        is never treated as progress — this clock is the only bound.
+        """
+        token = bind_turn_budget(budget)
+        budget.start()
+        work = asyncio.ensure_future(factory())
+        session_id = str(getattr(self, "_session_id", "") or "turn")
+        run_id = str(get_current_run_id() or "").strip() or session_id
+        try:
+            while True:
+                remaining = budget.limit_seconds - budget.elapsed()
+                done, _ = await asyncio.wait({work}, timeout=max(0.05, min(1.0, remaining)))
+                if work in done:
+                    return work.result()
+                if not budget.exhausted():
+                    continue
+                if await self._decide_turn_budget(budget, session_id, run_id):
+                    continue
+                work.cancel()
+                await asyncio.wait({work})
+                raise TurnBudgetExhausted(
+                    f"turn budget {budget.limit_seconds:.0f}s exhausted; no extension granted"
+                )
+        finally:
+            budget.pause()
+            if not work.done():
+                work.cancel()
+            reset_turn_budget(token)
+
+    async def _decide_turn_budget(self, budget: TurnBudget, session_id: str, run_id: str) -> bool:
+        engine = getattr(self, "_timeout_engine", None)
+        if engine is None:
+            return False
+        evidence = TimeoutEvidence(
+            trigger_point="turn_budget",
+            session_id=session_id,
+            run_id=run_id,
+            subject_id=run_id,
+            task_hint="turn",
+            elapsed_seconds=float(budget.elapsed()),
+            budget_seconds=float(budget.limit_seconds),
+            extension_index=int(budget.extensions_used),
+            progress=todo_progress_for_session(session_id, root_session_id=session_id),
+            last_error="",
+        )
+        _bucket, token = begin_decision_events()
+        try:
+            decision = await engine.decide(evidence)
+            forward_decision_event(engine, get_tui())
+        finally:
+            end_decision_events(token)
+        self.note_status_event(timeout_event_text(decision.action, getattr(decision, "note", "")))
+        if decision.action not in ("continue", "steer"):
+            return False
+        grant = engine.last_grant((evidence.session_id, evidence.subject_id))
+        if grant is None:
+            return False
+        return budget.extend(float(grant.new_budget) - budget.limit_seconds)
+
+    async def resume_harness_turn(self, resume: dict) -> str:
+        """Continue a parked turn from its checkpoint.
+
+        The approved result (or the answer) is injected into the ORIGINAL tool
+        loop, which runs on to testing, correction and Final Answer. The
+        original prompt is never replayed, and routing is not re-decided: a
+        checkpoint only exists on the fast tool loop, so resume returns there.
+        """
+        checkpoint = resume["checkpoint"]
+        snapshot = checkpoint.get("budget")
+        budget = TurnBudget.restore(snapshot) if snapshot else self._new_turn_budget()
+        self._tool_error_occurred = False
+        allowed = checkpoint.get("allowed_tool_names")
+        return await self._under_turn_budget(
+            lambda: self._fast_reply_with_tools(
+                str(checkpoint["user_input"]),
+                mode=str(checkpoint.get("mode") or "build"),
+                allowed_tool_names=frozenset(allowed) if allowed is not None else None,
+                role_instruction=str(checkpoint.get("role_instruction") or ""),
+                resume=resume,
+            ),
+            budget,
+        )
 
     def register_hook(self, phase, callback, **kwargs) -> str:
         """Register a bounded lifecycle callback on this agent instance."""
@@ -9028,6 +9131,11 @@ class AgentV2:
             str(tc["id"]) for tc in valid_tool_calls
             if tc["id"] in pending_ids and tc["id"] != paused_call_id
         ]
+        budget = current_turn_budget()
+        budget_snapshot = None
+        if budget is not None:
+            budget.pause()
+            budget_snapshot = budget.snapshot()
         return {
             "version": 1,
             "user_input": user_input,
@@ -9040,6 +9148,7 @@ class AgentV2:
             "paused": {"call_id": paused_call_id, "tool": paused_tool},
             "remaining": remaining,
             "state": state,
+            "budget": budget_snapshot,
         }
 
     async def _execute_tools_parallel(
@@ -9726,10 +9835,16 @@ class AgentV2:
 
         bound_run_id = get_bound_run_id()
         if bound_run_id is not None:
-            result = await self._run_observed(user_input, mode, bound_run_id)
+            result = await self._under_turn_budget(
+                lambda: self._run_observed(user_input, mode, bound_run_id),
+                self._new_turn_budget(),
+            )
         else:
             with run_id_context() as run_id:
-                result = await self._run_observed(user_input, mode, run_id)
+                result = await self._under_turn_budget(
+                    lambda: self._run_observed(user_input, mode, run_id),
+                    self._new_turn_budget(),
+                )
         # B7: reviewer 重试（默认关闭，CB8）——开启且任务重要时独立打分，
         # 不达标重跑，同分取 API 调用最少者（SWE-agent 语义）。
         result = await self._maybe_reviewer_retry(user_input, result, mode)

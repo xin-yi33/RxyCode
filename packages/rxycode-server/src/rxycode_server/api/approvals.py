@@ -15,9 +15,12 @@ from rxycode_server.api.auth import current_record, require_write
 from rxycode_server.persistence.models import Outbox, RunEvent
 from rxycode_server.approvals.service import (
     ApprovalStale,
+    answer_question,
     decide_approval,
     get_approval,
     list_pending,
+    list_pending_questions_durable,
+    pending_question,
 )
 from rxycode_server.persistence.models import Run
 
@@ -147,7 +150,7 @@ def _resolve_broker(question_id: str, answer: str) -> None:
 
 
 @router.get("/api/v1/runs/{run_id}/questions")
-def get_questions(run_id: str, request: Request) -> dict[str, list[dict[str, str]]]:
+def get_questions(run_id: str, request: Request) -> dict[str, list[dict]]:
     record = current_record(request)
     database_url = request.app.state.database_url
     engine = create_engine(database_url, poolclass=NullPool)
@@ -163,7 +166,14 @@ def get_questions(run_id: str, request: Request) -> dict[str, list[dict[str, str
         from core.question import list_pending_questions
     except ModuleNotFoundError:
         from RxyCode.RxyCode1_1_0.core.question import list_pending_questions
-    return {"questions": list_pending_questions(session_id)}
+    durable = list_pending_questions_durable(
+        database_url, tenant_id=record.tenant_id, run_id=run_id
+    )
+    seen = {item["question_id"] for item in durable}
+    in_process = [
+        item for item in list_pending_questions(session_id) if item["question_id"] not in seen
+    ]
+    return {"questions": durable + in_process}
 
 
 def _append_resolution_once(
@@ -229,6 +239,28 @@ def post_question(run_id: str, payload: AnswerIn, request: Request) -> dict[str,
     session_id = _owned_run(database_url, record.tenant_id, run_id)
     if not payload.question_id.strip():
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    if pending_question(
+        database_url,
+        tenant_id=record.tenant_id,
+        run_id=run_id,
+        question_id=payload.question_id,
+    ) is not None:
+        # A parked turn's question: the durable answer is the resume. Only
+        # this run's own pending row can match, so a stale or foreign id
+        # falls through to the in-process channel and is refused there.
+        try:
+            answer_question(
+                database_url,
+                tenant_id=record.tenant_id,
+                run_id=run_id,
+                question_id=payload.question_id,
+                answer=payload.answer,
+            )
+        except ApprovalStale as exc:
+            raise HTTPException(status_code=409, detail="QUESTION_STALE") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="INVALID_INPUT") from exc
+        return {"status": "accepted"}
     requested, resolved = _question_flags(
         database_url,
         record.tenant_id,

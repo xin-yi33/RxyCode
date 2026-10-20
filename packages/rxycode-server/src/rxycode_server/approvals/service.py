@@ -95,8 +95,10 @@ def request_approval(
     workdir: str = "",
     source_call_id: str = "",
     sandbox_id: str = "",
+    checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist the ask, emit approval.requested, and release the worker lease."""
+    """Persist the ask with the Harness checkpoint, emit approval.requested,
+    and release the worker lease."""
     engine = _engine(database_url)
     approval_id = approval_id or uuid.uuid4().hex
     stored_attempt = attempt_id or f"att_{uuid.uuid4().hex}"
@@ -119,9 +121,11 @@ def request_approval(
                     tenant_id=tenant_id,
                     run_id=run_id,
                     call_id=call_id,
+                    kind="approval",
                     status="pending",
                     revision=0,
                     deadline=_aware(deadline),
+                    checkpoint=dict(checkpoint) if checkpoint is not None else None,
                 )
             )
             db.flush()
@@ -161,6 +165,248 @@ def request_approval(
     }
 
 
+def request_question(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    question_id: str,
+    question: str,
+    header: str,
+    options: list[dict[str, str]],
+    deadline: datetime,
+    worker_id: str,
+    epoch: int,
+    checkpoint: dict[str, Any],
+    sandbox_id: str = "",
+) -> dict[str, Any]:
+    """Park the run on one user question: store the checkpoint and the
+    question, emit question.requested, release the lease. Questions are not
+    side effects, so no journal entry is written for them."""
+    engine = _engine(database_url)
+    approval_id = uuid.uuid4().hex
+    try:
+        with Session(engine) as db:
+            run = _lock_run(db, tenant_id, run_id)
+            now = datetime.now(timezone.utc)
+            if not _lease_is_current(run, worker_id, epoch, now) or (
+                run.status == "cancel_requested"
+            ):
+                raise ApprovalStale(question_id)
+            db.add(
+                Approval(
+                    id=approval_id,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    call_id=question_id,
+                    kind="question",
+                    status="pending",
+                    revision=0,
+                    deadline=_aware(deadline),
+                    checkpoint=dict(checkpoint),
+                )
+            )
+            db.flush()
+            _append(
+                db,
+                run,
+                "question.requested",
+                {
+                    "approval_id": approval_id,
+                    "question_id": question_id,
+                    "question": question,
+                    "prompt": question,
+                    "header": header,
+                    "options": [dict(option) for option in options],
+                    "input_type": "choice" if options else "text",
+                    "sandbox_id": str(sandbox_id or ""),
+                    "revision": 0,
+                },
+            )
+            run.status = "waiting_approval"
+            run.lease_owner = None
+            run.lease_until = None
+            run.revision = int(run.revision or 0) + 1
+            db.commit()
+    finally:
+        engine.dispose()
+    return {"approval_id": approval_id, "question_id": question_id, "status": "pending"}
+
+
+def _question_row(db: Session, tenant_id: str, run_id: str, question_id: str) -> Approval | None:
+    return db.execute(
+        select(Approval)
+        .where(
+            Approval.tenant_id == tenant_id,
+            Approval.run_id == run_id,
+            Approval.kind == "question",
+            Approval.call_id == question_id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+
+
+def _question_payload(db: Session, approval_id: str) -> dict[str, Any]:
+    events = db.scalars(
+        select(RunEvent).where(RunEvent.type == "question.requested").order_by(RunEvent.seq)
+    ).all()
+    for event in events:
+        payload = event.payload or {}
+        if payload.get("approval_id") == approval_id:
+            return dict(payload)
+    return {}
+
+
+def pending_question(
+    database_url: str, *, tenant_id: str, run_id: str, question_id: str
+) -> dict[str, Any] | None:
+    """The durable question still awaiting an answer, or None."""
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            row = db.execute(
+                select(Approval).where(
+                    Approval.tenant_id == tenant_id,
+                    Approval.run_id == run_id,
+                    Approval.kind == "question",
+                    Approval.call_id == question_id,
+                )
+            ).scalar_one_or_none()
+            if row is None or row.status != "pending":
+                return None
+            payload = _question_payload(db, row.id)
+            return {
+                "approval_id": row.id,
+                "question_id": question_id,
+                "options": list(payload.get("options") or []),
+            }
+    finally:
+        engine.dispose()
+
+
+def list_pending_questions_durable(
+    database_url: str, *, tenant_id: str, run_id: str
+) -> list[dict[str, str]]:
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            rows = db.scalars(
+                select(Approval).where(
+                    Approval.tenant_id == tenant_id,
+                    Approval.run_id == run_id,
+                    Approval.kind == "question",
+                    Approval.status == "pending",
+                )
+            ).all()
+            found = []
+            for row in rows:
+                payload = _question_payload(db, row.id)
+                found.append(
+                    {
+                        "question_id": str(row.call_id),
+                        "prompt": str(payload.get("question") or ""),
+                        "header": str(payload.get("header") or ""),
+                        "options": list(payload.get("options") or []),
+                    }
+                )
+            return found
+    finally:
+        engine.dispose()
+
+
+def answer_question(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    question_id: str,
+    answer: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Record the user's answer and make the run claimable again. The answer
+    is validated against the offered option values, exactly as the in-process
+    question broker does. This never runs a tool."""
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            row = _question_row(db, tenant_id, run_id, question_id)
+            if row is None:
+                raise ApprovalStale(question_id)
+            current = datetime.now(timezone.utc) if now is None else _now(now)
+            if row.status != "pending":
+                raise ApprovalStale(question_id)
+            deadline = _aware(row.deadline)
+            if deadline is not None and deadline <= current:
+                raise ApprovalStale(question_id)
+            run = _lock_run(db, tenant_id, run_id)
+            if run.status != "waiting_approval":
+                raise ApprovalStale(question_id)
+            payload = _question_payload(db, row.id)
+            values = {str(o.get("value", o.get("label", ""))) for o in payload.get("options") or []}
+            if values and answer not in values:
+                raise ValueError("answer is not one of the offered option values")
+            row.status = "answered"
+            row.answer = answer
+            row.revision = int(row.revision or 0) + 1
+            _append(
+                db,
+                run,
+                "question.resolved",
+                {
+                    "approval_id": row.id,
+                    "question_id": question_id,
+                    "answer": answer,
+                    "revision": int(row.revision),
+                },
+            )
+            run.status = "pending"
+            run.lease_owner = None
+            run.lease_until = None
+            run.revision = int(run.revision or 0) + 1
+            db.commit()
+            return {"status": "answered", "revision": int(row.revision)}
+    finally:
+        engine.dispose()
+
+
+def consume_answered_question(
+    database_url: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    approval_id: str,
+    worker_id: str,
+    epoch: int,
+) -> dict[str, Any] | None:
+    """Hand the answer to exactly one claimant. ``answered`` becomes
+    ``consumed`` in the same transaction the lease is checked, so a second
+    claim can never resume the same parked turn twice."""
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            row = db.execute(
+                select(Approval)
+                .where(
+                    Approval.id == approval_id,
+                    Approval.tenant_id == tenant_id,
+                    Approval.run_id == run_id,
+                    Approval.kind == "question",
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None or row.status != "answered":
+                return None
+            run = _lock_run(db, tenant_id, run_id)
+            if not _lease_is_current(run, worker_id, epoch, datetime.now(timezone.utc)):
+                return None
+            row.status = "consumed"
+            row.revision = int(row.revision or 0) + 1
+            db.commit()
+            return {"approval_id": row.id, "question_id": str(row.call_id), "answer": str(row.answer or "")}
+    finally:
+        engine.dispose()
+
+
 def _requested_payload(db: Session, approval_id: str) -> dict[str, Any]:
     events = db.scalars(
         select(RunEvent).where(RunEvent.type == "approval.requested").order_by(RunEvent.seq)
@@ -188,6 +434,7 @@ def list_pending(
                 select(Approval).where(
                     Approval.tenant_id == tenant_id,
                     Approval.run_id == run_id,
+                    Approval.kind == "approval",
                     Approval.status == "pending",
                 )
             ).all()
@@ -227,6 +474,9 @@ def get_approval(database_url: str, *, tenant_id: str, approval_id: str) -> dict
                 "approval_id": row.id,
                 "run_id": row.run_id,
                 "call_id": row.call_id,
+                "kind": str(row.kind or "approval"),
+                "answer": row.answer,
+                "checkpoint": dict(row.checkpoint or {}),
                 "status": row.status,
                 "revision": int(row.revision or 0),
                 "attempt_id": str(payload.get("attempt_id") or ""),
@@ -295,6 +545,8 @@ def decide_approval(
                 .where(Approval.id == approval_id, Approval.tenant_id == tenant_id)
                 .with_for_update()
             ).scalar_one()
+            if row.kind != "approval":
+                raise ApprovalStale(row.id)
             current = datetime.now(timezone.utc) if now is None else _now(now)
             reason = _closed_reason(row, expected_revision, current)
             if reason == "expired":

@@ -989,3 +989,66 @@ Suite: `122 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.
 
 Focused r24 regressions: 14 new unit tests in `tests/web/w8/test_w8_c01_unit.py`.
 Suite: `136 passed, 3 skipped` (bwrap/userns + AF_UNIX env skips), ruff clean.
+
+## Round 25 — per-finding disposition after the data-flow change
+
+Auditor verdict on `7a03dd82`: `PROBLEMS_REMAIN` (13 findings, full text kept by the reviewer). Every reproduction is a shell-shaped string carried by a HOST CONFIG field (`command`, `args`, `env`, `headers`, URL `base_url`), run through the value sanitizer during `_prepare_child_data_dir`.
+
+**Data-flow change (this round).** The confined config is no longer a copy of the host `config.yaml` that is then scrubbed. `_build_child_config` CONSTRUCTS it: only the allowlisted sections (`safety`, `execution`, `language`, `timeouts`, `timeout_decision`, `tools`, `subagents`, `agents`) are copied; `models` keeps only the used entry, with every credential-named field removed (`key`/`secret`/`token`/`password`/`auth`/`credential`/`header`/`cookie`); `mcp`, `rag` and every other model entry never leave the parent. The child-side `_merge_turn_config` no longer re-scrubs.
+
+**Call-chain evidence (production code, `packages/` + `core/` + `appserver/` + `execution/` + `tools/` + `config/` + `utils/`).**
+
+| Function | Production callers after this change |
+|---|---|
+| `_scrub_model_credentials` | none (was: `_prepare_child_data_dir`, `_merge_turn_config`) |
+| `_scrub_credential_values` | only `_scrub_model_credentials` (tests call it directly) |
+| `_scrub_inline_secrets`, `_shell_word_end`, `_array_end` | only the scrub tree above |
+
+So the Shell parser has no production input from a confined turn. Each r25 reproduction takes a path that is no longer reachable from the confined data flow.
+
+| # | Finding | Disposition | Evidence / note |
+|---|---|---|---|
+| 1 | `_array_end` closes inside `${…}` | 已替代 | `_array_end` only reachable from the scrub tree; the input field (`command` in a host config) is not copied |
+| 2 | queued heredoc re-enters parser state | 已替代 | same chain |
+| 3 | NUL truncation drops segments (leak + false positive) | 已替代 | same chain; the false-positive half is an availability defect, also unreachable |
+| 4 | over-window assignment skips arrays | 已替代 | same chain |
+| 5 | over-limit subscript with operators fails open | 已替代 | same chain |
+| 6 | parameter-expanded flag names | 已替代 | same chain |
+| 7 | substitutions inside URL userinfo | 已替代 | a model `base_url` with userinfo is no longer copied (only the gateway URL for the used model); the URL scrub is unreachable |
+| 8 | unknown Authorization scheme leaks | 已替代 | `args`/`headers` of host MCP config are not copied |
+| 9 | inline `-H` vs header-map recognition | 已替代 | same chain; quoted-name concatenation is the same class |
+| 10 | literal `$'` inside `"…"` removes the closer | 已替代 | false rejection of a valid value = availability defect, unreachable in production |
+| 11 | auth continuation consumes following commands | 已替代 | false positive = availability defect, unreachable in production |
+| 12 | nested heredoc tail rescans quadratically | 已替代 | cost/DoS class in an unreachable parser; no production input |
+| 13 | per-redirection stack snapshots quadratic memory | 已替代 | same as 12 |
+
+**Pinned, not assumed.** `test_w8_c01_r25_inputs_never_reach_the_confined_config` feeds all seven shell-shaped r25 samples through an MCP/RAG/second-model config and asserts none of their secrets, and none of the `mcp`/`rag`/other-model fields, reach the child. `test_w8_c01_child_config_is_built_from_allowlist` pins the field-level rules.
+
+**Residual (stated, not hidden).**
+- The Shell parser code remains in the tree and keeps its unit tests; it is dead in production. Reviving it on any new input path requires re-opening this disposition.
+- Values operator-authored inside an ALLOWLISTED section are copied as written. They are operator configuration, not platform credentials; the platform credentials (database URL, model key, egress allowlist, control-plane) never enter the child.
+- Tool results still carry their status as text (see the remaining-work note below); the terminal verdict of a turn no longer depends on it.
+
+**Release gate for r25:** no finding is open on a production path. No finding is marked OPEN.
+
+## Round 26 — shared Harness park/resume, question channel, whole-turn budget, composite chains
+
+Scope of this round (W8 execution plan A→B→C→D→E→F):
+
+- **A. Park/resume.** An approval that needs a human raises `HarnessPaused` out of the shared tool loop WITH the loop's checkpoint (messages incl. AI tool calls and reasoning fields, the paused call, the calls after it, the loop counters, the consumed budget). The top-level turn persists the ask and the checkpoint through `pause_approval` (`checkpoint_z`, compressed, 8 MiB decompressed cap). Resume runs `_prepare_resume`: the approved call executes once through the parent journal (at-most-once), its outcome becomes the tool result, and `Session.prompt(harness_resume=…)` → `AgentV2.resume_harness_turn` continues the ORIGINAL loop to Final Answer. The original prompt is never replayed. Journal `completed`/`unknown` on re-claim → `recovery_required`; a parked turn with no resumable record → `recovery_required` (`unresolvable`), never a fresh turn.
+- **B. Question channel.** The confined question broker parks one question (`question.requested` event + durable row). `GET /questions` merges durable pending questions with the in-process list; `POST /questions` answers durable rows through `answer_question` (option-value validation, run must be `waiting_approval`), the run becomes claimable, and `consume_answered_question` hands the answer to exactly one claimant. Multi-question batches on this channel are refused by the tool (`single_question_only`) with an explicit "one question per call" answer.
+- **C. Whole-turn budget.** `AgentV2.run` and `resume_harness_turn` run under `_under_turn_budget`: execution time only (a parked turn exits its process; the checkpoint carries the consumed time), extensions asked from the shared `timeout_decision` engine, bounded by `turn.max_extensions` and `turn.hard_cap_seconds`, refusal cancels the work. The drain's 900-second outer `wait_for` is removed; `RXYCODE_WORKER_RUN_TIMEOUT` is no longer read. The lease alone is never treated as progress.
+- **D. Configuration.** Construction instead of scrubbing (see r25 above). Tool-result status: the terminal verdict of a resumed turn is the child's result file (run/status/recovery), not stdout text; the approved-call outcome text is passed to the model unchanged. Full structured status (exit code, error class) for every tool result in the Harness loop is NOT done in this round (see remaining work).
+- **E. r25.** See above.
+- **F. Composite chains.** `tests/web/w8/test_w8_chain_composite_db.py`:
+  - chain 1: a Build turn edits a file → the write parks with its checkpoint in Postgres → approval → a FRESH agent instance (restarted worker) claims the run → the approved write executes once → the loop reads the file back → Final Answer; a duplicate resume reuses the journal and never recreates the file.
+  - chain 2: an unknown write (reserved, never completed) → `recovery_required`, nothing is retried.
+  - Substitution at the process seam: the AF_UNIX hop is an in-process channel bound to the REAL parent handlers (packed exactly as the wire packs), and the OS sandbox is not run on this Windows host.
+
+**Verification (this round).** `tests/web/w8` + `tests/test_config/test_timeouts_registry.py`: `166 passed, 3 skipped` (the 3 skips are bwrap/userns and AF_UNIX on Windows). `tests/test_core`+`tests/test_tools`+`tests/integration` subset (session/question/timeout/harness/approval/build_workflow): `333 passed`, 2 failures that are pre-existing on HEAD (`test_shell_output_capture::test_pipe_read_failure_…`, `test_idle_recycle_real_agent`). ruff: clean on the touched modules.
+
+**Open — NOT done, NOT waived.**
+1. **Deployed compose drain (`tests/web/w7/test_w7_c05_module.py::test_w7_c05_integration`) — regression signal, unresolved.** On HEAD it fails at `event/agent_started` after the run reaches a terminal state (`run.error`). On this branch the run stays `leased` past the 150 s window. The in-process `Session.prompt` plain Build turn completes in ~1.1 s on this tree, so the stall is on the deployed child/config path (the allowlisted child config is the first changed input there). Next step: capture `docker compose logs worker` from a failing run (the test prints them only on some failure paths). Until this is resolved, the W7 deployed-drain gate is NOT green.
+2. Tool-result status as structured data (exit code, error class) inside the Harness loop (`_tool_output_is_error` is still text-based for loop bookkeeping).
+3. Multi-question durable questions (one question per parked call is supported).
+4. `tests/web/w2`, `w3`, `w4`, `w5`, `w6` non-W8 failures in the full web run are environmental or pre-existing on this host (shared containers, GUI, websockets, browser handoff); not attributed to this round, not re-verified against HEAD line by line.

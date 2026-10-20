@@ -449,7 +449,7 @@ def test_w7_c05_contract(compose_stack: dict[str, Any]) -> None:
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            assert revision == "004_waiting_approval", revision
+            assert revision == "005_harness_checkpoint", revision
             for table in ("runs", "run_events", "outbox", "users", "projects"):
                 found = conn.execute(
                     text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
@@ -1003,7 +1003,7 @@ def test_w7_c05_child_config_outside_workspace(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setenv("RXYCODE_DATA_DIR", "")
     state = tmp_path / ".sandboxes"
-    conf = drain._prepare_child_data_dir(state / "sb1-conf")
+    conf = drain._prepare_child_data_dir(state / "sb1-conf", workdir=tmp_path / "ws")
     assert conf.parent == state
     assert conf.name == "sb1-conf"
 

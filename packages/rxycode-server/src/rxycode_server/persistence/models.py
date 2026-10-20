@@ -15,6 +15,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -198,9 +199,12 @@ class Approval(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     run_id: Mapped[str] = mapped_column(String(64))
     call_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16), default="approval", server_default="approval")
     status: Mapped[str] = mapped_column(String(32))
     revision: Mapped[int] = mapped_column(Integer, default=0)
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    answer: Mapped[str | None] = mapped_column(Text)
+    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     organization: Mapped[Organization] = relationship(
         primaryjoin="Approval.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],

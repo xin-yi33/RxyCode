@@ -27,6 +27,18 @@ TIMEOUT_REGISTRY: dict[str, TimeoutSpec] = {
     "stream.connect_seconds": TimeoutSpec("stream.connect_seconds", 20.0),
     "stream.idle_seconds": TimeoutSpec("stream.idle_seconds", 180.0, cap=300.0),
     "stream.tool_argument_idle_seconds": TimeoutSpec("stream.tool_argument_idle_seconds", 60.0),
+    "turn.budget_seconds": TimeoutSpec(
+        "turn.budget_seconds", 3600.0,
+        cfg_path=("execution", "turn_budget_seconds"),
+    ),
+    "turn.hard_cap_seconds": TimeoutSpec(
+        "turn.hard_cap_seconds", 14400.0,
+        cfg_path=("execution", "turn_hard_cap_seconds"),
+    ),
+    "turn.max_extensions": TimeoutSpec(
+        "turn.max_extensions", 4.0,
+        cfg_path=("execution", "turn_max_extensions"),
+    ),
     "pipeline.soft_budget_seconds": TimeoutSpec(
         "pipeline.soft_budget_seconds", 3600.0,
         cfg_path=("execution", "pipeline_soft_budget_seconds"),

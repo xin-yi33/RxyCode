@@ -17,9 +17,11 @@ in two halves:
   filesystem or another tenant's workspace.
 
 Public-stack rule (the compose default ``RXYCODE_WORKER_EXECUTION=cloud-only``):
-only ``cloud:{tenant}:{workspace}`` targets execute, the tenant segment must
-equal the run's own tenant, and ``full``/``full_auto`` profiles are refused —
-Full authority means unsandboxed host execution, which does not exist here.
+only ``cloud:{tenant}:{workspace}`` targets execute, and the tenant segment
+must equal the run's own tenant. A Web ``full`` profile maps to ``full_auto``
+ONLY as an approval semantic inside the same userns sandbox: tool prompts are
+auto-allowed, while mounts, network, write domain and the kernel boundary are
+unchanged — isolation is never purchased through a permission level.
 ``sandboxed-local`` is the development-host mode: ``local:*`` targets are
 accepted but STILL confined — a drain never runs a turn unconfined. A host
 without userns/bwrap makes the provider fail closed; nothing falls back to
@@ -34,8 +36,6 @@ Environment (read in ``worker_config_from_env``):
     RXYCODE_WORKER_ID          default ``drain-<hostname>-<pid>``
     RXYCODE_WORKER_POLL_SECONDS      default 2
     RXYCODE_WORKER_LEASE_TTL         default 120 (renewed while a run executes)
-    RXYCODE_WORKER_RUN_TIMEOUT       default 900 — a prompt past this is
-                                   cancelled and the run commits ``failed``
     RXYCODE_WORKER_WORKSPACES        default /tmp/rxycode-runs — per-tenant
                                    workspace dirs are created under it
     RXYCODE_WORKER_MODEL             optional model name for AgentV2
@@ -46,6 +46,7 @@ Environment (read in ``worker_config_from_env``):
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -61,6 +62,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from rxycode_worker.ctl import pack_checkpoint, unpack_checkpoint
 
 _LOG = logging.getLogger(__name__)
 
@@ -138,7 +141,6 @@ class WorkerConfig:
     worker_id: str
     poll_seconds: float = 2.0
     lease_ttl: int = 120
-    run_timeout: float = 900.0
     workspaces_root: str = "/tmp/rxycode-runs"
     model: str = ""
     execution_mode: str = "cloud-only"
@@ -161,7 +163,6 @@ def worker_config_from_env() -> WorkerConfig:
         worker_id=worker_id,
         poll_seconds=max(0.2, float(os.environ.get("RXYCODE_WORKER_POLL_SECONDS", "2"))),
         lease_ttl=max(10, int(os.environ.get("RXYCODE_WORKER_LEASE_TTL", "120"))),
-        run_timeout=max(30.0, float(os.environ.get("RXYCODE_WORKER_RUN_TIMEOUT", "900"))),
         workspaces_root=os.environ.get("RXYCODE_WORKER_WORKSPACES", "/tmp/rxycode-runs"),
         model=os.environ.get("RXYCODE_WORKER_MODEL", "").strip(),
         execution_mode=execution_mode,
@@ -3206,18 +3207,78 @@ def _scrub_model_credentials(
             entry["base_url"] = gateway_url
 
 
-def _prepare_child_data_dir(conf_dir: Path) -> Path:
-    """Per-run config home under the drain-controlled state root — a
-    SANITIZED copy of the worker's config.yaml so model resolution reads
-    a real file. It is ro-bound into the sandbox; the confined turn can
-    never write it (and can never leave a destination symlink for the
-    parent to follow).
+#: Top-level config sections a confined turn is BUILT from. Everything else in
+#: the worker's config.yaml stays on the parent — platform credentials, tenant
+#: routing, egress and control-plane settings are never copied, so there is
+#: nothing to scrub out of the child. Missing sections take the child defaults.
+_CHILD_CONFIG_SECTIONS = (
+    "safety",
+    "execution",
+    "language",
+    "timeouts",
+    "timeout_decision",
+    "tools",
+    "subagents",
+    "agents",
+)
 
-    Scrubbing happens HERE, before the file is ever mounted: an ro bind
-    stops modification, not disclosure — a literal ``api_key`` readable
-    under ``RXYCODE_TURN_CONFIG_SRC`` is still a leaked platform secret
-    (audit W8-r1). A config the scrubber cannot parse is dropped entirely
-    rather than mounted raw."""
+#: Field names that carry credential material wherever they appear in a model
+#: entry (``api_key``, ``api_key_env``, ``api_key_secret``, ``auth_header``...).
+_CREDENTIAL_FIELD_MARKERS = ("key", "secret", "token", "password", "auth", "credential", "header", "cookie")
+
+
+def _build_child_config(
+    source: dict[str, Any], *, workdir: Path, egress_port: int, env_model: str
+) -> dict[str, Any]:
+    """The confined turn's config, constructed field by field.
+
+    Only the allowlisted sections are copied; the used model keeps its
+    non-credential fields and loses every credential-named field; the write
+    domain and workspace are this sandbox's own paths. No free-form shell
+    string or URL from the host config reaches the child, so no value-level
+    sanitizer runs on the data path (audit W8 r25 scope).
+    """
+    child: dict[str, Any] = {
+        key: copy.deepcopy(source[key]) for key in _CHILD_CONFIG_SECTIONS if key in source
+    }
+    models = source.get("models") if isinstance(source.get("models"), dict) else {}
+    wanted = str(env_model or "")
+    if wanted not in models:
+        wanted = str(source.get("active_model") or "")
+    entry = models.get(wanted) if isinstance(models.get(wanted), dict) else {}
+    model = {
+        str(key): copy.deepcopy(value)
+        for key, value in entry.items()
+        if not any(marker in str(key).lower() for marker in _CREDENTIAL_FIELD_MARKERS)
+    }
+    # The schema expects an api_key field: a placeholder, never a secret. The
+    # real credential is injected by the parent on the loopback gateway hop.
+    model["api_key"] = "confined"
+    if egress_port:
+        model["base_url"] = f"http://127.0.0.1:{egress_port}"
+    if wanted:
+        child["models"] = {wanted: model}
+        child["active_model"] = wanted
+    safety = child.setdefault("safety", {})
+    if isinstance(safety, dict):
+        safety["enabled"] = True
+        safety["allowed_write_paths"] = _writable_domain(workdir)
+    execution = child.setdefault("execution", {})
+    if isinstance(execution, dict):
+        execution["workspace_root"] = str(workdir)
+        os_sandbox = execution.setdefault("os_sandbox", {})
+        if isinstance(os_sandbox, dict):
+            os_sandbox["enabled"] = False
+    return child
+
+
+def _prepare_child_data_dir(conf_dir: Path, *, workdir: Path) -> Path:
+    """Per-run config home under the drain-controlled state root: the
+    turn's config as BUILT by ``_build_child_config`` from the worker's
+    config.yaml. It is ro-bound into the sandbox; the confined turn can
+    never write it (and can never leave a destination symlink for the
+    parent to follow). A config the builder cannot parse is dropped
+    entirely rather than mounted raw."""
     conf_dir.mkdir(parents=True, exist_ok=True)
     source_root = os.environ.get("RXYCODE_DATA_DIR", "").strip()
     if not source_root:
@@ -3236,11 +3297,18 @@ def _prepare_child_data_dir(conf_dir: Path) -> Path:
             "turn config source unreadable; mounting an empty config", exc_info=True
         )
         data = {}
-    _scrub_model_credentials(
-        data,
-        egress_port=_EGRESS_PORT,
-        env_model=os.environ.get("RXYCODE_WORKER_MODEL", ""),
-    )
+    try:
+        data = _build_child_config(
+            data,
+            workdir=workdir,
+            egress_port=_EGRESS_PORT,
+            env_model=os.environ.get("RXYCODE_WORKER_MODEL", ""),
+        )
+    except RecursionError:
+        # A pathologically deep alias DAG cannot be copied: fail closed (no
+        # config mounted) instead of crashing the drain.
+        _LOG.warning("turn config too deep to build; mounting no config")
+        return conf_dir
     try:
         conf_dir.joinpath("config.yaml").write_text(
             yaml.safe_dump(data), encoding="utf-8"
@@ -3351,13 +3419,6 @@ async def _wait_child(
                 pass
 
 
-class _RunPaused(BaseException):
-    """The run parked itself for a durable approval: the ask is persisted,
-    the lease already released by the parent-side ctl op. Raising through
-    the whole agent stack unwinds the turn WITHOUT writing — BaseException
-    so `except Exception` handlers in the runtime cannot swallow it."""
-
-
 class _ResumeSettled(Exception):
     """A resume claim settled without spawning a child — raised inside
     ``execute_run``'s try so the terminal verdict still flows through the
@@ -3373,13 +3434,14 @@ class _ResumeSettled(Exception):
 
 
 class _CtlApproval:
-    """ApprovalBroker over the parent control channel (confined turns only).
+    """ApprovalBroker for confined turns: a call that needs a human decision
+    PARKS the whole Harness loop instead of executing or persisting anything.
 
-    The durable ask lives on the parent: request_approval() persists the
-    exact call (tenant/run/call/attempt + raw arguments), flips the run to
-    ``waiting_approval`` and releases the lease. The child then unwinds
-    via ``_RunPaused``; a fresh confined process executes exactly the
-    stored call after a human approval re-queues the run.
+    ``_ask`` raises ``HarnessPaused`` carrying the ask details. The shared
+    tool loop attaches its message checkpoint and the top-level turn persists
+    the ask WITH that checkpoint through the parent control channel. Nothing
+    is written before the checkpoint exists, so a resumed turn always has the
+    full Harness state to continue from (audit W8 shared-harness pause).
     """
 
     def __init__(self, channel: Any, *, run_id: str, workdir: Path) -> None:
@@ -3387,44 +3449,58 @@ class _CtlApproval:
 
         class _Broker(ApprovalBroker):
             async def _ask(inner_self, request: Any) -> Any:  # noqa: ANN001
-                from RxyCode.RxyCode1_1_0.core.safety.approval import (
-                    ApprovalDecision,
-                )
+                from RxyCode.RxyCode1_1_0.core.harness_checkpoint import HarnessPaused
 
                 args = dict(request.arguments or {})
                 command = str(args.get("command") or args.get("cmd") or "")
                 scope = str(request.risk.name.lower())
                 if request.gate_blocked_paths:
                     scope = f"{scope}:write-path-gate"
-                deadline = (
-                    datetime.now(timezone.utc).timestamp() + _APPROVAL_DEADLINE_S
+                raise HarnessPaused(
+                    request={
+                        "kind": "approval",
+                        "tool": str(request.tool_name),
+                        "scope": scope,
+                        "arguments": args,
+                        "command": command,
+                        "source_call_id": str(request.call_id or request.approval_id),
+                        "workdir": str(workdir),
+                    }
                 )
-                result = await asyncio.to_thread(
-                    channel.pause_approval,
-                    source_call_id=str(request.call_id or request.approval_id),
-                    tool=str(request.tool_name),
-                    permission_scope=scope,
-                    arguments=args,
-                    deadline=datetime.fromtimestamp(
-                        deadline, tz=timezone.utc
-                    ).isoformat(),
-                    workdir=str(workdir),
-                    command=command,
-                )
-                if result.get("asked"):
-                    raise _RunPaused()
-                reason = str(result.get("reason") or "")
-                if reason == "already_authorized":
-                    return ApprovalDecision.APPROVED
-                # no_broker / stale / any refused ask: fail closed — the
-                # call simply never executes inside the sandbox.
-                return ApprovalDecision.REJECTED
 
         self._broker = _Broker()
         self._run_id = run_id
 
     def broker(self) -> Any:
         return self._broker
+
+
+def _make_ctl_question() -> Any:
+    """Question broker for confined turns: one question parks the turn.
+
+    The answer comes back through the Web question endpoint and the resumed
+    turn receives it as the question tool's result. This channel asks one
+    question per call; a multi-question batch is refused by the tool before
+    it reaches here (``single_question_only``).
+    """
+    from RxyCode.RxyCode1_1_0.core.harness_checkpoint import HarnessPaused
+    from RxyCode.RxyCode1_1_0.core.question import SseQuestionBroker
+
+    class _CtlQuestion(SseQuestionBroker):
+        single_question_only = True
+
+        async def ask(self, request: Any) -> Any:  # noqa: ANN001
+            raise HarnessPaused(
+                request={
+                    "kind": "question",
+                    "question_id": str(request.question_id),
+                    "question": str(request.question),
+                    "header": str(request.header),
+                    "options": [option.to_event() for option in request.options],
+                }
+            )
+
+    return _CtlQuestion(timeout=0.0)
 
 
 class _ChannelJournal:
@@ -3818,7 +3894,11 @@ def _pending_resume(
         return None
     record = _resume_state(database_url, tenant_id, run_id, approval_id)
     if record is None:
-        return None
+        # The run parked before and is claimable again, yet its newest park
+        # is no longer resumable (its answer or approval was consumed by an
+        # earlier claim). Restarting the original prompt here would be a
+        # silent second turn — the caller settles recovery_required instead.
+        return {"unresolvable": True, "approval_id": approval_id}
     # Old-worker/new-claim handoff: approve->pending can be claimed while
     # the previous confined child is still unwinding. Wait (bounded) for
     # the old drain's post-exit ``turn.paused`` marker — child-mintable
@@ -3864,7 +3944,8 @@ def _resume_state(
     record = get_approval(database_url, tenant_id=tenant_id, approval_id=approval_id)
     if record is None or record["run_id"] != run_id:
         return None
-    if record["status"] != "approved":
+    expected = "answered" if record.get("kind") == "question" else "approved"
+    if record["status"] != expected:
         return None
     return record
 
@@ -3879,7 +3960,7 @@ def _latest_requested_approval_id(database_url: str, run_id: str) -> str:
             row = conn.execute(
                 text(
                     "SELECT payload->>'approval_id' AS aid FROM run_events "
-                    "WHERE run_id = :rid AND type = 'approval.requested' "
+                    "WHERE run_id = :rid AND type IN ('approval.requested', 'question.requested') "
                     "ORDER BY seq DESC LIMIT 1"
                 ),
                 {"rid": run_id},
@@ -3949,16 +4030,52 @@ def _ctl_handlers(
         )
         return {"events": events}
 
+    def _park_deadline(args: dict[str, Any]) -> datetime:
+        try:
+            deadline = datetime.fromisoformat(str(args.get("deadline") or ""))
+        except ValueError:
+            return datetime.now(timezone.utc)
+        return deadline if deadline.tzinfo else deadline.replace(tzinfo=timezone.utc)
+
+    def _pause_question(args: dict[str, Any]) -> dict[str, Any]:
+        from rxycode_server.approvals.service import request_question
+
+        checkpoint = unpack_checkpoint(str(args.get("checkpoint_z") or ""))
+        if not checkpoint:
+            return {"asked": False, "reason": "no_checkpoint"}
+        options = [
+            {"label": str(o.get("label", "")), "value": str(o.get("value", o.get("label", "")))}
+            for o in list(args.get("options") or [])[:100]
+            if isinstance(o, dict)
+        ]
+        try:
+            result = request_question(
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                question_id=str(args.get("question_id") or "")[:80],
+                question=str(args.get("question") or "")[:4000],
+                header=str(args.get("header") or "")[:200],
+                options=options,
+                deadline=_park_deadline(args),
+                worker_id=cfg.worker_id,
+                epoch=epoch,
+                checkpoint=checkpoint,
+                sandbox_id=sandbox_id,
+            )
+        except Exception as exc:
+            return {"asked": False, "reason": f"refused:{type(exc).__name__}"}
+        paused_info["approval_id"] = str(result.get("approval_id") or "")
+        paused.set()
+        return {"asked": True, "approval_id": paused_info["approval_id"]}
+
     def _pause_approval(args: dict[str, Any]) -> dict[str, Any]:
         from rxycode_server.approvals.service import request_approval
 
-        try:
-            deadline_raw = str(args.get("deadline") or "")
-            deadline = datetime.fromisoformat(deadline_raw)
-            if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=timezone.utc)
-        except ValueError:
-            deadline = datetime.now(timezone.utc)
+        checkpoint = unpack_checkpoint(str(args.get("checkpoint_z") or ""))
+        if not checkpoint:
+            return {"asked": False, "reason": "no_checkpoint"}
+        deadline = _park_deadline(args)
         # Must match the journal's ``att_[0-9a-f]{32}`` attempt-id contract —
         # a shorter id would make every resume fail closed at reserve().
         attempt_id = f"att_{uuid.uuid4().hex}"
@@ -3994,6 +4111,7 @@ def _ctl_handlers(
                 workdir=str(workdir),
                 source_call_id=source_call_id,
                 sandbox_id=sandbox_id,
+                checkpoint=checkpoint,
             )
         except Exception as exc:
             # Stale lease / already-decided: the ask did NOT park the run.
@@ -4013,6 +4131,8 @@ def _ctl_handlers(
         }
 
     def _resume_state_op(args: dict[str, Any]) -> dict[str, Any]:
+        from rxycode_server.approvals.service import consume_answered_question
+
         record = _resume_state(
             cfg.database_url,
             tenant_id,
@@ -4027,9 +4147,24 @@ def _ctl_handlers(
         # lease is gone, so nothing is returned (audit W8-r1).
         if not _lease_fenced(cfg.database_url, run_id, cfg.worker_id, epoch):
             return {"record": None}
+        kind = str(record.get("kind") or "approval")
+        if kind == "question":
+            # An answer is handed out exactly once: answered -> consumed
+            # happens in the same transaction as the lease check.
+            consumed = consume_answered_question(
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                approval_id=str(record.get("approval_id") or ""),
+                worker_id=cfg.worker_id,
+                epoch=epoch,
+            )
+            if consumed is None:
+                return {"record": None}
         # Bound copy for the confined resume child — never the raw row.
         return {
             "record": {
+                "kind": kind,
                 "approval_id": str(record.get("approval_id") or ""),
                 "run_id": str(record.get("run_id") or ""),
                 "call_id": str(record.get("call_id") or ""),
@@ -4039,6 +4174,8 @@ def _ctl_handlers(
                 "workdir": str(record.get("workdir") or ""),
                 "source_call_id": str(record.get("source_call_id") or ""),
                 "arguments": dict(record.get("arguments") or {}),
+                "answer": str(record.get("answer") or ""),
+                "checkpoint_z": pack_checkpoint(dict(record.get("checkpoint") or {})),
             }
         }
 
@@ -4126,6 +4263,7 @@ def _ctl_handlers(
         "load_run": _load_run,
         "commands": _commands,
         "pause_approval": _pause_approval,
+        "pause_question": _pause_question,
         "resume_state": _resume_state_op,
         "journal_state": _journal_state_op,
         "journal_reserve": _journal_reserve,
@@ -4177,10 +4315,10 @@ def _merge_turn_config(dst: Path, workdir: Path) -> None:
     /tmp — never host rules. ``execution.os_sandbox`` is forced off: this
     process IS the sandbox; a nested wrap would only double-mount or fail.
 
-    Model credentials are scrubbed for every entry (api_key/api_key_env/
-    api_key_secret): the platform key must not exist inside the sandbox —
-    the used model's base_url is rewritten to the loopback egress port and
-    the parent injects real auth on the upstream hop.
+    The parent BUILT this config from an allowlist (``_build_child_config``):
+    no credential field exists inside the sandbox, and the used model's
+    base_url already points at the loopback egress port where the parent
+    injects real auth on the upstream hop.
     """
     try:
         import yaml
@@ -4211,93 +4349,115 @@ def _merge_turn_config(dst: Path, workdir: Path) -> None:
         os_sandbox = execution.setdefault("os_sandbox", {})
         if isinstance(os_sandbox, dict):
             os_sandbox["enabled"] = False
-    # Defense in depth: the mounted source was already sanitized by the
-    # parent — re-scrub so a missed path can never carry a key inside.
-    _scrub_model_credentials(
-        data,
-        egress_port=int(os.environ.get("RXYCODE_EGRESS_PORT", "0") or 0),
-        env_model=os.environ.get("RXYCODE_WORKER_MODEL", ""),
-    )
     try:
         dst.write_text(yaml.safe_dump(data), encoding="utf-8")
     except OSError:
         _LOG.warning("turn config merge failed", exc_info=True)
 
 
-async def _resume_turn(
+async def _prepare_resume(
     *,
     channel: Any,
     run_id: str,
     tenant_id: str,
     workdir: Path,
-    result_path: Path,
-) -> int:
-    """Confined resume child: replay EXACTLY the stored approved call.
+) -> dict[str, Any]:
+    """Resolve the resume input of a parked turn, through parent-owned state.
 
-    The parent already verified the approval row (tenant-bound, status
-    ``approved``) and re-fetched the stored state; this process reads it
-    again through the channel so the executed call is the persisted one —
-    never anything the caller claimed. Journal state decides idempotence:
-    a ``completed``/``unknown`` call is NOT re-run.
+    Returns ``{"checkpoint": <Harness state>, "result": <tool result text>}``
+    for the ORIGINAL tool loop to continue from. The prompt is never replayed.
+
+    * approval: the approved call executes once through the journal
+      (at-most-once); its outcome — success or error text — is the tool
+      result the model sees next, so the model can correct and test.
+    * question: the stored answer is the question tool's result.
+
+    Refusals raise ``_ResumeSettled`` so the verdict flows through the shared
+    finalize path. A checkpoint-less or journal-unprovable resume is
+    ``recovery_required``: it never restarts the task.
     """
-    result: dict[str, Any] = {
-        "run_id": run_id,
-        "status": "failed",
-        "error": "",
-        "tokens": 0,
-    }
+    approval_id = os.environ.get("RXYCODE_TURN_APPROVAL", "").strip()
+    state = await asyncio.to_thread(channel.resume_state, approval_id)
+    record = dict(state.get("record") or {})
+    if not record or str(record.get("run_id") or "") != run_id:
+        raise _ResumeSettled(
+            "failed", "approval not found, not resumable, or not bound to this run"
+        )
+    checkpoint = unpack_checkpoint(str(record.get("checkpoint_z") or ""))
+    if not checkpoint:
+        raise _ResumeSettled(
+            "recovery_required",
+            "parked turn has no Harness checkpoint; refusing to restart the prompt",
+        )
+    if str(record.get("kind") or "approval") == "question":
+        return {"checkpoint": checkpoint, "result": f"A1: {record.get('answer') or ''}"}
+    call_id = str(record.get("call_id") or "")
+    attempt_id = str(record.get("attempt_id") or "")
+    emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
+    emit._append(
+        "tool.call",
+        {
+            "call_id": call_id,
+            "attempt_id": attempt_id,
+            "tool": str(record.get("tool") or ""),
+            "resumed": True,
+        },
+    )
     journal = _ChannelJournal(channel)
     try:
-        approval_id = os.environ.get("RXYCODE_TURN_APPROVAL", "").strip()
-        state = await asyncio.to_thread(channel.resume_state, approval_id)
-        record = dict(state.get("record") or {})
-        if not record or str(record.get("run_id") or "") != run_id:
-            result["error"] = "approval not found, not approved, or not bound to this run"
-        else:
-            attempt_id = str(record.get("attempt_id") or "")
-            call_id = str(record.get("call_id") or "")
-            # The already-approved call replays through the same
-            # orchestrator under a grant broker (installed inside
-            # _execute_approved_call): the human decided — re-asking
-            # would deadlock — while every real gate and the kernel
-            # boundary stay in force. reserve() decides idempotence:
-            # completed -> reuse the STORED outcome (success or error);
-            # anything else unresolvable -> refuse, never re-execute.
-            emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
-            emit._append(
-                "tool.call",
-                {
-                    "call_id": call_id,
-                    "attempt_id": attempt_id,
-                    "tool": str(record.get("tool") or ""),
-                    "resumed": True,
-                },
-            )
-            ok, text_out = await _execute_approved_call(
-                record, workdir, emit, journal
-            )
-            result["status"] = "succeeded" if ok else "failed"
-            if not ok:
-                result["error"] = str(text_out)[:1500]
-            if text_out:
-                emit._append(
-                    "tool.result",
-                    {
-                        "call_id": call_id,
-                        "attempt_id": attempt_id,
-                        "preview": str(text_out)[:2000],
-                        "resumed": True,
-                    },
-                )
-    except Exception as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"[:1500]
-    try:
-        result_path.write_text(
-            json.dumps(result) + "\n", encoding="utf-8"
+        _ok, text_out = await _execute_approved_call(record, workdir, emit, journal)
+    except RuntimeError as exc:
+        raise _ResumeSettled("recovery_required", str(exc)[:1500]) from exc
+    emit._append(
+        "tool.result",
+        {
+            "call_id": call_id,
+            "attempt_id": attempt_id,
+            "preview": str(text_out)[:2000],
+            "resumed": True,
+        },
+    )
+    return {"checkpoint": checkpoint, "result": str(text_out)}
+
+
+async def _park_for_human(channel: Any, pause: Any, workdir: Path) -> str:
+    """Persist a parked Harness turn on the parent. ``""`` when parked; any
+    other return is the refusal that fails the turn closed."""
+    checkpoint = dict(pause.checkpoint or {})
+    if not checkpoint:
+        return (
+            "turn paused on a path without a Harness checkpoint; this path "
+            "cannot resume after a human decision"
         )
-    except Exception:
-        _LOG.warning("run %s: resume result write failed", run_id, exc_info=True)
-    return 0
+    request = dict(pause.request or {})
+    deadline = datetime.fromtimestamp(
+        time.time() + _APPROVAL_DEADLINE_S, tz=timezone.utc
+    ).isoformat()
+    if request.get("kind") == "question":
+        result = await asyncio.to_thread(
+            channel.pause_question,
+            question_id=str(request.get("question_id") or ""),
+            question=str(request.get("question") or ""),
+            header=str(request.get("header") or ""),
+            options=list(request.get("options") or []),
+            deadline=deadline,
+            checkpoint=checkpoint,
+        )
+    else:
+        result = await asyncio.to_thread(
+            channel.pause_approval,
+            source_call_id=str(request.get("source_call_id") or pause.call_id or ""),
+            tool=str(request.get("tool") or ""),
+            permission_scope=str(request.get("scope") or ""),
+            arguments=dict(request.get("arguments") or {}),
+            deadline=deadline,
+            workdir=str(request.get("workdir") or workdir),
+            command=str(request.get("command") or ""),
+            checkpoint=checkpoint,
+        )
+    if result.get("asked"):
+        return ""
+    return f"park refused: {result.get('reason') or 'unknown'}"
 
 
 async def _execute_approved_call(
@@ -4502,8 +4662,11 @@ async def run_sandboxed_turn() -> int:
     turn_error = ""
     cancelled_by_request = False
     paused_by_approval = False
+    harness_pause: HarnessPaused | None = None
+    recovery_flag = False
     measured = {"tokens": 0}
     message = ""
+    harness_resume: dict[str, Any] | None = None
 
     if not ctl_sock:
         # Fail closed: a confined turn without its control channel cannot
@@ -4533,6 +4696,7 @@ async def run_sandboxed_turn() -> int:
         remember_web_run,
     )
     from rxycode_worker.ctl import TurnChannel
+    from RxyCode.RxyCode1_1_0.core.harness_checkpoint import HarnessPaused
 
     channel = TurnChannel(ctl_sock)
 
@@ -4569,17 +4733,6 @@ async def run_sandboxed_turn() -> int:
                 _merge_turn_config(dst, workdir)
         except OSError:
             _LOG.warning("run %s: config copy into workspace failed", run_id, exc_info=True)
-
-    # Resume mode: a fresh confined process whose ONLY job is the stored,
-    # approved call — no agent loop, no second decision.
-    if os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1":
-        return await _resume_turn(
-            channel=channel,
-            run_id=run_id,
-            tenant_id=tenant_id,
-            workdir=workdir,
-            result_path=result_path,
-        )
 
     emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
     remember_web_run(
@@ -4628,6 +4781,14 @@ async def run_sandboxed_turn() -> int:
         )
         context_tokens = bind_prompt_context(session_id, tui, run_context=run_context)
         bind_worker_todo_sink(emit)
+        if os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1":
+            # The parked turn continues from its own checkpoint: the approved
+            # call (or the answer) becomes the tool result the ORIGINAL loop
+            # receives. The original prompt is restored from the checkpoint.
+            harness_resume = await _prepare_resume(
+                channel=channel, run_id=run_id, tenant_id=tenant_id, workdir=workdir
+            )
+            message = str(harness_resume["checkpoint"].get("user_input") or message)
 
         # Imports stay inside the executed run: module import of this file
         # must not drag the whole agent stack into a bare --help process.
@@ -4705,12 +4866,12 @@ async def run_sandboxed_turn() -> int:
 
         usage_heartbeat = asyncio.ensure_future(_usage_heartbeat())
 
-        # Non-Full approvals ride the durable service through the parent:
-        # request_approval persists the exact call, parks the run and
-        # releases the lease; this process then unwinds via _RunPaused.
-        # full_auto never reaches the broker (the orchestrator auto-allows).
+        # Non-Full approvals and user questions park the Harness loop: the
+        # broker raises HarnessPaused, the loop attaches its checkpoint, and
+        # this turn persists the ask WITH that checkpoint via the parent.
+        # full_auto never reaches the approval broker (the orchestrator
+        # auto-allows inside the same sandbox).
         from appserver.agent_worker import assemble_surface_agent
-        from RxyCode.RxyCode1_1_0.core.question import SseQuestionBroker
 
         agent, _, _ = assemble_surface_agent(
             session_id=session_id,
@@ -4718,7 +4879,7 @@ async def run_sandboxed_turn() -> int:
             model_name=model or None,
             emit=lambda method, payload: emit._append(method, payload),
             approval=_CtlApproval(channel, run_id=run_id, workdir=workdir).broker(),
-            question=SseQuestionBroker(timeout=0.0),
+            question=_make_ctl_question(),
         )
         session = Session(
             session_id=session_id,
@@ -4744,6 +4905,7 @@ async def run_sandboxed_turn() -> int:
                     permission_mode=permission_mode,
                     run_context=run_context,
                     tui=tui,
+                    harness_resume=harness_resume,
                 )
             finally:
                 delta = max(
@@ -4794,11 +4956,10 @@ async def run_sandboxed_turn() -> int:
             reset_session_binding(latest_token)
         try:
             await asyncio.shield(main_task)
-        except _RunPaused:
-            # The durable ask is already persisted and the lease released
-            # by the ctl op — this process's only remaining job is to say
-            # so and die. Nothing else may write terminal state.
-            paused_by_approval = True
+        except HarnessPaused as pause:
+            # The loop parked with its checkpoint attached; the outer finally
+            # persists it through the parent before this process exits.
+            harness_pause = pause
         except asyncio.CancelledError:
             cancelled_by_request = True
         finally:
@@ -4819,7 +4980,7 @@ async def run_sandboxed_turn() -> int:
             reset_prompt_context(context_tokens)
         if (
             not turn_error
-            and not paused_by_approval
+            and harness_pause is None
             and agent_task.state != LifecycleState.DONE
         ):
             last = getattr(agent_task, "_last_error", None)
@@ -4827,13 +4988,28 @@ async def run_sandboxed_turn() -> int:
                 turn_error = f"{type(last).__name__}: {last}"
             elif not cancelled_by_request:
                 turn_error = f"agent ended in state {agent_task.state}"
-    except _RunPaused:
-        paused_by_approval = True
+    except HarnessPaused as pause:
+        harness_pause = pause
     except asyncio.CancelledError:
         cancelled_by_request = True
+    except _ResumeSettled as settled:
+        turn_error = settled.detail or settled.status
+        recovery_flag = settled.status == "recovery_required"
     except Exception as exc:
         turn_error = f"{type(exc).__name__}: {exc}"
     finally:
+        if harness_pause is not None:
+            # Persist the parked turn WITH its checkpoint through the parent
+            # before this process exits. A refusal fails the turn closed:
+            # nothing is parked, nothing executed, nothing resumes.
+            try:
+                refusal = await _park_for_human(channel, harness_pause, workdir)
+            except Exception as exc:
+                refusal = f"park failed: {type(exc).__name__}: {exc}"[:1500]
+            if refusal:
+                turn_error = refusal
+            else:
+                paused_by_approval = True
         try:
             clear_web_run()
         except Exception:
@@ -4871,6 +5047,7 @@ async def run_sandboxed_turn() -> int:
                             else "failed"
                         ),
                         "error": turn_error[:1500],
+                        "recovery": bool(recovery_flag and not paused_by_approval),
                         "tokens": int(measured["tokens"]),
                     }
                 )
@@ -5178,7 +5355,9 @@ async def execute_run(
         # The config home lives OUTSIDE the writable workspace (a confined
         # turn could otherwise plant a symlinked config.yaml for the
         # unsandboxed parent to overwrite on the next run — audit r4).
-        data_dir = _prepare_child_data_dir(provider.state_root / f"{sandbox_id}-conf")
+        data_dir = _prepare_child_data_dir(
+            provider.state_root / f"{sandbox_id}-conf", workdir=workdir
+        )
         claim_dirs.append(data_dir)
         # A stale result file from an earlier run in this workspace must
         # never be read as this run's outcome (audit r4-F3).
@@ -5222,6 +5401,12 @@ async def execute_run(
                 "recovery_required",
                 f"pending-resume probe failed: {type(exc).__name__}: {exc}"[:1500],
             ) from exc
+        if resume_record is not None and resume_record.get("unresolvable"):
+            raise _ResumeSettled(
+                "recovery_required",
+                "the parked turn's approval or answer was already consumed by an "
+                "earlier claim; refusing to restart the original prompt",
+            )
         if resume_record is not None and resume_record.get("teardown_unproven"):
             # The old claim's namespace could NOT be proven stopped —
             # replaying the approved call beside it risks a doubled side
@@ -5251,7 +5436,7 @@ async def execute_run(
                 "old claim's confined teardown could not be proven; "
                 "refusing to replay beside an unproven namespace",
             )
-        if resume_record is not None:
+        if resume_record is not None and str(resume_record.get("kind") or "approval") == "approval":
             from rxycode_worker.interrupt_resume import _journal_state
 
             before = await asyncio.to_thread(
@@ -5261,27 +5446,17 @@ async def execute_run(
                 str(resume_record.get("call_id") or ""),
             )
             if before in {"completed", "unknown"}:
-                # The stored call already ran (or its outcome is
-                # unrecoverable) — never execute twice; settle the claim.
-                # For completed, success is the STORED result's verdict,
-                # not the journal state alone: an error marker stored as
-                # the result is a failed call (W8-r2).
-                if before == "completed":
-                    stored = await asyncio.to_thread(
-                        _journal_result, journal_dir, resume_record
-                    )
-                    terminal = (
-                        "failed" if _tool_call_failed(stored) else "succeeded"
-                    )
-                    detail = str(stored)[:400] if terminal == "failed" else ""
-                else:
-                    terminal = "recovery_required"
-                    detail = (
-                        f"resumed call "
-                        f"{str(resume_record.get('call_id') or '')[:40]} "
-                        "has journal state 'unknown'; its effect is "
-                        "unprovable"
-                    )
+                # The approved call already reached the journal in an earlier
+                # claim: it must never run again. Its effect is recorded but
+                # the parked Harness loop cannot be rebuilt from one tool
+                # result, so the turn settles recovery_required. No verdict is
+                # guessed from the stored text.
+                terminal = "recovery_required"
+                detail = (
+                    f"resumed call {str(resume_record.get('call_id') or '')[:40]} "
+                    f"has journal state {before!r}; the parked turn cannot be "
+                    "continued from that effect alone"
+                )
                 try:
                     await asyncio.to_thread(
                         append_event,
@@ -5494,15 +5669,13 @@ async def execute_run(
                 turn=turn_task,
             )
         )
+        # No outer wall clock here: the whole-turn execution budget lives in
+        # the shared Harness (agent_v2._under_turn_budget), which accrues only
+        # while the turn executes and asks the timeout engine before stopping.
+        # Lease ownership is not progress — the lease watchdog below still
+        # ends the child when the claim is lost or the run is cancelled.
         try:
-            await asyncio.wait_for(asyncio.shield(turn_task), timeout=cfg.run_timeout)
-        except asyncio.TimeoutError:
-            turn_error = f"run timed out after {cfg.run_timeout}s"
-            turn_task.cancel()
-            try:
-                await turn_task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.shield(turn_task)
         except asyncio.CancelledError:
             pass
         finally:
@@ -5545,6 +5718,7 @@ async def execute_run(
             elif status == "cancelled":
                 cancelled_by_request = True
             else:
+                recovery = recovery or bool(result.get("recovery"))
                 detail = str(result.get("error") or "")
                 if proc.returncode not in (0, None):
                     detail = detail or f"sandboxed turn exited rc={proc.returncode}"
@@ -5559,10 +5733,17 @@ async def execute_run(
                     detail = f"{detail} [stderr tail: {tail.strip()[-300:]}]"
                 turn_error = detail
 
-        if resume_record is not None and not paused_run and not lost_lease:
-            # Resume truth is the durable journal, not the child's
-            # self-report: the stored call "succeeded" only when the
-            # journal marked it completed.
+        if (
+            resume_record is not None
+            and str(resume_record.get("kind") or "approval") == "approval"
+            and not paused_run
+            and not lost_lease
+        ):
+            # The verdict is the child's: its loop ran the Harness on to a
+            # Final Answer or a failure. The durable journal only has to
+            # PROVE the approved call's effect state — a turn that reports
+            # success while its approved call never reached the journal as
+            # completed is refused, never trusted on the child's word.
             from rxycode_worker.interrupt_resume import _journal_state
 
             try:
@@ -5592,20 +5773,8 @@ async def execute_run(
                 _LOG.warning(
                     "run %s: approval.resumed emit failed", run_id, exc_info=True
                 )
-            if after == "completed":
-                # completed = replay safety, not success (W8-r2): read
-                # the stored result and classify — an error marker the
-                # call produced is a failed run, not a silent success.
-                stored = await asyncio.to_thread(
-                    _journal_result, journal_dir, resume_record
-                )
-                turn_error = stored[:400] if _tool_call_failed(stored) else ""
-            elif not cancelled_by_request:
-                if after == "unknown":
-                    # The call may or may not have run — the journal cannot
-                    # prove either way; label it recovery_required, not a
-                    # clean failure (same contract resume_approved had).
-                    recovery = True
+            if after != "completed" and not cancelled_by_request and not turn_error:
+                recovery = recovery or after == "unknown"
                 turn_error = (
                     f"resumed call {str(resume_record.get('call_id') or '')[:40]} "
                     f"did not complete (journal: {after})"
@@ -6057,12 +6226,11 @@ async def run_forever(cfg: WorkerConfig) -> None:
     """Poll the durable queue forever. Per-iteration failures never kill the
     loop — a wedged run must not take down the only consumer."""
     _LOG.info(
-        "worker drain started: worker_id=%s mode=%s poll=%.1fs lease_ttl=%ds timeout=%.0fs",
+        "worker drain started: worker_id=%s mode=%s poll=%.1fs lease_ttl=%ds",
         cfg.worker_id,
         cfg.execution_mode,
         cfg.poll_seconds,
         cfg.lease_ttl,
-        cfg.run_timeout,
     )
     while True:
         did = False

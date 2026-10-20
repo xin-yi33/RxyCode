@@ -10,12 +10,17 @@ module only bounds how far a granted extension can move the limit.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+
+
+class TurnBudgetExhausted(Exception):
+    """The whole-turn execution budget ran out and no extension was granted."""
 
 
 class HarnessPaused(BaseException):
@@ -163,3 +168,23 @@ class TurnBudget:
             extensions_used=int(data.get("extensions_used") or 0),
             clock=clock,
         )
+
+
+#: The budget of the turn currently executing in this task tree. Set by the
+#: shared turn entry; read by the checkpoint writer so a pause carries the
+#: consumed execution time forward instead of resetting it.
+_TURN_BUDGET: contextvars.ContextVar[TurnBudget | None] = contextvars.ContextVar(
+    "rxycode_turn_budget", default=None
+)
+
+
+def bind_turn_budget(budget: TurnBudget | None) -> contextvars.Token:
+    return _TURN_BUDGET.set(budget)
+
+
+def reset_turn_budget(token: contextvars.Token) -> None:
+    _TURN_BUDGET.reset(token)
+
+
+def current_turn_budget() -> TurnBudget | None:
+    return _TURN_BUDGET.get()

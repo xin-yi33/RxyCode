@@ -31,10 +31,12 @@ already had.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import socket
+import zlib
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,10 @@ _LOG = logging.getLogger(__name__)
 #: One request is one JSON object; bigger payloads are refused whole.
 _MAX_REQUEST_BYTES = 512 * 1024
 
+#: A Harness checkpoint travels compressed; the decompressed form is capped
+#: so a crafted frame cannot expand past what the parent is willing to store.
+_MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024
+
 
 class CtlError(RuntimeError):
     """Raised on the child side when the parent reports a failure."""
@@ -51,6 +57,34 @@ class CtlError(RuntimeError):
     def __init__(self, err_type: str, message: str) -> None:
         super().__init__(f"{err_type}: {message}")
         self.err_type = err_type
+
+
+def pack_checkpoint(checkpoint: Mapping[str, Any]) -> str:
+    """Harness checkpoint -> compressed base64 text for one control frame."""
+    raw = json.dumps(dict(checkpoint), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(raw) > _MAX_CHECKPOINT_BYTES:
+        raise CtlError("checkpoint_too_large", f"checkpoint is {len(raw)} bytes")
+    packed = base64.b64encode(zlib.compress(raw, 6)).decode("ascii")
+    if len(packed) > _MAX_REQUEST_BYTES // 2:
+        raise CtlError("checkpoint_too_large", f"compressed checkpoint is {len(packed)} bytes")
+    return packed
+
+
+def unpack_checkpoint(packed: str) -> dict[str, Any]:
+    """Inverse of :func:`pack_checkpoint`; refuses oversize or non-object input."""
+    if not packed:
+        return {}
+    try:
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(base64.b64decode(packed), _MAX_CHECKPOINT_BYTES + 1)
+    except (ValueError, zlib.error) as exc:
+        raise CtlError("bad_checkpoint", f"checkpoint is not valid: {exc}") from exc
+    if len(raw) > _MAX_CHECKPOINT_BYTES:
+        raise CtlError("checkpoint_too_large", "checkpoint exceeds the decompressed cap")
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise CtlError("bad_checkpoint", "checkpoint is not an object")
+    return value
 
 
 def ctl_call(sock_path: str | os.PathLike[str], op: str, *, timeout: float = 30.0, **args: Any) -> Any:
@@ -235,18 +269,21 @@ class TurnChannel:
         deadline: str,
         workdir: str,
         command: str,
+        checkpoint: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Persist a durable approval request and park the run.
+        """Persist a durable approval request WITH the Harness checkpoint and
+        park the run.
 
         ``source_call_id`` is the raw orchestrator/model call id — the
         parent derives the journal-keyed durable ``call_id`` so a confined
-        child cannot pick a key that collides across runs.
+        child cannot pick a key that collides across runs. The checkpoint
+        is stored on the approval row so the resume child continues the
+        original tool loop instead of replaying one call.
 
         ``{"asked": True}`` means the run is now ``waiting_approval`` and
         the lease is released — the caller must unwind without writing.
-        ``{"asked": False, "reason": ...}`` means the ask resolved
-        synchronously (already authorized in this mode / approvals off) and
-        the call may proceed or must be refused per ``reason``.
+        ``{"asked": False, "reason": ...}`` means the parent refused the
+        park; the caller fails the turn closed.
         """
         return dict(
             self._call(
@@ -258,12 +295,39 @@ class TurnChannel:
                 deadline=str(deadline),
                 workdir=str(workdir),
                 command=str(command),
+                checkpoint_z=pack_checkpoint(checkpoint),
+            )
+            or {}
+        )
+
+    def pause_question(
+        self,
+        *,
+        question_id: str,
+        question: str,
+        header: str,
+        options: list[dict[str, str]],
+        deadline: str,
+        checkpoint: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one user question with the Harness checkpoint and park the
+        run. The answer arrives through the Web question endpoint and the
+        resumed turn receives it as the question tool's result."""
+        return dict(
+            self._call(
+                "pause_question",
+                question_id=str(question_id),
+                question=str(question),
+                header=str(header),
+                options=[dict(option) for option in options],
+                deadline=str(deadline),
+                checkpoint_z=pack_checkpoint(checkpoint),
             )
             or {}
         )
 
     def resume_state(self, approval_id: str) -> dict[str, Any]:
-        """Fetch the stored call for an approved approval bound to THIS run."""
+        """Fetch the stored call (approval) or answer (question) bound to THIS run."""
         return dict(self._call("resume_state", approval_id=str(approval_id)) or {})
 
     # -- parent-owned journal ops ----------------------------------------

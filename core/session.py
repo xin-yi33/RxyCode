@@ -229,8 +229,13 @@ class Session:
         permission_mode: str | None = None,
         attachments: list[Any] | None = None,
         run_context: Any | None = None,
+        harness_resume: dict | None = None,
     ) -> PromptResult:
-        """Run one user turn through AgentV2 and emit terminal protocol events."""
+        """Run one user turn through AgentV2 and emit terminal protocol events.
+
+        ``harness_resume`` continues a parked turn from its checkpoint instead
+        of routing ``text`` again (the text is then only the original prompt).
+        """
         bound_run = None
         if run_context is not None:
             if getattr(run_context, "session_id", None) != self.session_id:
@@ -325,7 +330,9 @@ class Session:
                 agent._prompt_attachment_context = prepared_attachments
                 agent._prompt_attachment_active = prepared_attachments.has_attachments
                 agent._prompt_attachment_renderer = human_message_content
-                if permission_mode is None:
+                if harness_resume is not None:
+                    answer = await agent.resume_harness_turn(harness_resume)
+                elif permission_mode is None:
                     answer = await self._dispatch_user_turn(agent, text, mode)
                 else:
                     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override

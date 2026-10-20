@@ -357,10 +357,10 @@ def test_w8_c01_task_private_dev_environment(tmp_path: Path) -> None:
 
 
 def test_w8_c01_merge_turn_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The copied config is rewritten for the confined process: write
+    """The child's config is rewritten for the confined process: write
     domain = sandbox-real paths, os_sandbox forced off (this process IS
-    the boundary), EVERY model entry's credential fields die, and the
-    used model's base_url points at the loopback egress gateway."""
+    the boundary). Credential exclusion is by construction in the parent
+    (test_w8_c01_child_config_is_built_from_allowlist)."""
     import yaml
 
     import rxycode_worker.drain as drain
@@ -425,25 +425,79 @@ def test_w8_c01_merge_turn_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert data["execution"]["workspace_root"] == str(workdir)
     assert data["execution"]["os_sandbox"]["enabled"] is False
 
+
+
+def test_w8_c01_child_config_is_built_from_allowlist(tmp_path: Path) -> None:
+    """The confined config is CONSTRUCTED, not scrubbed: only allowlisted
+    sections are copied, the used model keeps no credential-named field,
+    sections outside the allowlist (rag, mcp, every other model) never reach
+    the child, and non-credential scalars inside allowed sections survive."""
+    import yaml
+
+    import rxycode_worker.drain as drain
+
+    workdir = tmp_path / "ws"
+    source = {
+        "active_model": "deployed",
+        "models": {
+            "deployed": {
+                "provider_id": "openai",
+                "base_url": "https://api.real.example/v1",
+                "model_name": "smoke",
+                "api_key_env": "RXYCODE_API_KEY",
+                "api_key_secret": "cred:abc",
+            },
+            "other": {"base_url": "https://other.example/v1", "api_key": "sk-literal-secret"},
+        },
+        "rag": {"embedding": {"api_key": "sk-embed-secret", "base_url": "https://api.real.example"}},
+        "mcp": {"servers": {"github": {"command": "mcp-github", "env": {"GITHUB_TOKEN": "ghp_secret"}}}},
+        "agents": {"budget": {"max_tokens": 4096}},
+    }
+    data = drain._build_child_config(source, workdir=workdir, egress_port=18881, env_model="deployed")
+    assert "rag" not in data and "mcp" not in data
+    assert set(data["models"]) == {"deployed"}
     deployed = data["models"]["deployed"]
     assert deployed["base_url"] == "http://127.0.0.1:18881"
-    assert "api_key_env" not in deployed
-    assert "api_key_secret" not in deployed
     assert deployed["api_key"] == "confined"
-    # Non-used entries keep their endpoint but lose every credential —
-    # calls to them fail honestly at the egress filter anyway.
-    other = data["models"]["other"]
-    assert other["base_url"] == "https://other.example/v1"
-    assert other["api_key"] == "confined"
-    # Credential-shaped scalars die ANYWHERE in the tree; non-credential
-    # keys with similar names (token budgets, log levels) survive.
-    assert data["rag"]["embedding"]["api_key"] == "confined"
-    assert data["rag"]["embedding"]["base_url"] == "https://api.real.example"
-    mcp_env = data["mcp"]["servers"]["github"]["env"]
-    assert mcp_env["GITHUB_TOKEN"] == "confined"
-    assert mcp_env["OPENAI_API_KEY"] == "confined"
-    assert mcp_env["LOG_LEVEL"] == "debug"
+    assert "api_key_env" not in deployed and "api_key_secret" not in deployed
     assert data["agents"]["budget"]["max_tokens"] == 4096
+    assert data["safety"]["allowed_write_paths"] == drain._writable_domain(workdir)
+    text = yaml.safe_dump(data)
+    for secret in ("sk-literal-secret", "sk-embed-secret", "ghp_secret", "cred:abc"):
+        assert secret not in text
+
+
+def test_w8_c01_r25_inputs_never_reach_the_confined_config(tmp_path: Path) -> None:
+    """Round-25 disposition pin. Every r25 reproduction is a shell-shaped
+    string carried by a host config field (MCP command/args/env, rag, headers,
+    other model endpoints). The confined config is built from an allowlist
+    that omits those fields, so the shell parser has no production input.
+    The parser remains covered directly by the unit tests above."""
+    import rxycode_worker.drain as drain
+
+    shell_shaped = [
+        "TOKEN=(${x:-a)SECRET})",
+        "srv --api-$'k\0'ey SECRET",
+        "srv --api-${x:-key} SECRET",
+        "curl https://u:$(printf SECRET)@host",
+        "curl -H \"X-Custom-Token: SECRET\"",
+        "curl -H \"Authorization: Bearer SECRET\"; ls",
+        "srv \"--token=a$'\"",
+    ]
+    source = {
+        "active_model": "m",
+        "models": {
+            "m": {"base_url": "https://api.real.example/v1", "api_key": "sk-m"},
+            "other": {"base_url": "https://u:SECRET@other.example/v1"},
+        },
+        "mcp": {"servers": {f"s{i}": {"command": line, "args": [line], "env": {"T": line}, "headers": {"Authorization": line}} for i, line in enumerate(shell_shaped)}},
+        "rag": {"embedding": {"base_url": "https://u:SECRET@rag.example"}},
+    }
+    data = drain._build_child_config(source, workdir=tmp_path / "ws", egress_port=18881, env_model="m")
+    text = repr(data)
+    assert "mcp" not in data and "rag" not in data
+    assert "other" not in data["models"]
+    assert "SECRET" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -627,29 +681,23 @@ def test_w8_c01_ctl_roundtrip(tmp_path: Path) -> None:
 
 
 def test_w8_c01_ctl_approval_broker(tmp_path: Path) -> None:
-    """The confined broker asks ONCE through the channel with the exact
-    call identity + raw arguments: asked -> _RunPaused unwinds (the run
-    is parked, lease released — nothing executes); refused -> REJECTED;
-    already_authorized -> APPROVED. The broker never touches a database."""
+    """The confined broker never persists and never executes: a call that
+    needs a human decision raises HarnessPaused with the exact call identity
+    and raw arguments. The shared loop attaches its checkpoint; only then does
+    the turn park through the parent. The broker never touches a database or
+    the channel, so no ask can exist without its checkpoint."""
     import rxycode_worker.drain as drain
-    from RxyCode.RxyCode1_1_0.core.safety.approval import (
-        ApprovalDecision,
-        ApprovalRequest,
-    )
+    from RxyCode.RxyCode1_1_0.core.harness_checkpoint import HarnessPaused
+    from RxyCode.RxyCode1_1_0.core.safety.approval import ApprovalRequest
     from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
-
-    sent: list[dict[str, Any]] = []
 
     class _Channel:
         def pause_approval(self, **kwargs: Any) -> dict[str, Any]:
-            sent.append(kwargs)
-            return {"asked": True, "approval_id": "ap-1", "attempt_id": "att-1"}
+            raise AssertionError("broker must not persist before the checkpoint exists")
 
-    broker = drain._CtlApproval(
-        _Channel(), run_id="r1", workdir=tmp_path
-    ).broker()
+    broker = drain._CtlApproval(_Channel(), run_id="r1", workdir=tmp_path).broker()
 
-    async def drive() -> None:
+    async def drive() -> HarnessPaused:
         request = ApprovalRequest(
             tool_name="bash",
             args_summary={"command": "rm -rf /tmp/x"},
@@ -657,60 +705,22 @@ def test_w8_c01_ctl_approval_broker(tmp_path: Path) -> None:
             call_id="call-42",
             arguments={"command": "rm -rf /tmp/x", "workdir": "/w"},
         )
-        with pytest.raises(drain._RunPaused):
+        with pytest.raises(HarnessPaused) as info:
             await broker.request_approval(request)
+        return info.value
 
-    asyncio.run(drive())
-    ask = sent[0]
+    pause = asyncio.run(drive())
+    assert pause.checkpoint is None
+    ask = pause.request
     # The ask carries the raw source call id; the trusted parent derives the
     # journal-keyed durable call_id (tested separately below).
+    assert ask["kind"] == "approval"
     assert ask["source_call_id"] == "call-42"
     assert ask["tool"] == "bash"
     assert ask["arguments"] == {"command": "rm -rf /tmp/x", "workdir": "/w"}
     assert ask["command"] == "rm -rf /tmp/x"
     assert ask["workdir"] == str(tmp_path)
-    assert "danger" in ask["permission_scope"]
-
-    class _Refused:
-        def pause_approval(self, **kwargs: Any) -> dict[str, Any]:
-            return {"asked": False, "reason": "refused:ApprovalStale"}
-
-    refused = drain._CtlApproval(_Refused(), run_id="r1", workdir=tmp_path).broker()
-
-    async def drive2() -> ApprovalDecision:
-        return await refused.request_approval(
-            ApprovalRequest(
-                tool_name="bash",
-                args_summary={},
-                risk=RiskLevel.DANGER,
-                call_id="c",
-                arguments={},
-            )
-        )
-
-    assert asyncio.run(drive2()) is ApprovalDecision.REJECTED
-
-    class _Authorized:
-        def pause_approval(self, **kwargs: Any) -> dict[str, Any]:
-            return {"asked": False, "reason": "already_authorized"}
-
-    granted = drain._CtlApproval(_Authorized(), run_id="r1", workdir=tmp_path).broker()
-
-    async def drive3() -> ApprovalDecision:
-        from RxyCode.RxyCode1_1_0.core.safety.approval import ApprovalRequest
-        from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
-
-        return await granted.request_approval(
-            ApprovalRequest(
-                tool_name="bash",
-                args_summary={},
-                risk=RiskLevel.DANGER,
-                call_id="c",
-                arguments={},
-            )
-        )
-
-    assert asyncio.run(drive3()) is ApprovalDecision.APPROVED
+    assert "danger" in ask["scope"]
 
 
 def test_w8_c01_pause_approval_durable_call_id(
@@ -723,6 +733,7 @@ def test_w8_c01_pause_approval_durable_call_id(
     from types import SimpleNamespace
 
     import rxycode_worker.drain as drain
+    from rxycode_worker.ctl import pack_checkpoint
     from RxyCode.RxyCode1_1_0.execution.tool_journal import remote_call_key
 
     captured: list[dict[str, Any]] = []
@@ -751,6 +762,7 @@ def test_w8_c01_pause_approval_durable_call_id(
     pause = handlers["pause_approval"]
 
     raw = "call_OpenAIStyleXyz9"  # provider id — not durable-shaped
+    checkpoint_z = pack_checkpoint({"version": 1, "messages": []})
     res = pause(
         {
             "source_call_id": raw,
@@ -759,6 +771,7 @@ def test_w8_c01_pause_approval_durable_call_id(
             "arguments": {"command": "rm x"},
             "deadline": "2030-01-01T00:00:00+00:00",
             "command": "rm x",
+            "checkpoint_z": checkpoint_z,
         }
     )
     assert res == {"asked": True, "approval_id": "ap-1", "attempt_id": res["attempt_id"]}
@@ -782,6 +795,7 @@ def test_w8_c01_pause_approval_durable_call_id(
             "arguments": {"command": "rm x"},
             "deadline": "2030-01-01T00:00:00+00:00",
             "command": "rm x",
+            "checkpoint_z": checkpoint_z,
         }
     )
     assert captured[1]["call_id"] == durable
@@ -790,7 +804,13 @@ def test_w8_c01_pause_approval_durable_call_id(
     # A source already in durable shape passes through untouched; a different
     # run binds a different key for the same raw id.
     already = "call_" + "a" * 32
-    pause({"source_call_id": already, "deadline": "2030-01-01T00:00:00+00:00"})
+    pause(
+        {
+            "source_call_id": already,
+            "deadline": "2030-01-01T00:00:00+00:00",
+            "checkpoint_z": checkpoint_z,
+        }
+    )
     assert captured[2]["call_id"] == already
 
     handlers2 = drain._ctl_handlers(
@@ -804,7 +824,11 @@ def test_w8_c01_pause_approval_durable_call_id(
         paused_info={},
     )
     handlers2["pause_approval"](
-        {"source_call_id": raw, "deadline": "2030-01-01T00:00:00+00:00"}
+        {
+            "source_call_id": raw,
+            "deadline": "2030-01-01T00:00:00+00:00",
+            "checkpoint_z": checkpoint_z,
+        }
     )
     assert captured[3]["call_id"] != durable
 
@@ -1231,8 +1255,12 @@ def test_w8_c01_pending_resume_binding(postgres_url: str) -> None:
             command="touch /w/yes",
             workdir="/w",
         )
-        # Pending (not yet decided) → no resume.
-        assert _pending_resume(postgres_url, tenant, run_id) is None
+        # Pending (not yet decided) → never a resume with a stored call. A
+        # claimed run whose newest park is unresolved is inconsistent, so the
+        # probe fails closed (unresolvable) instead of restarting the prompt.
+        pending = _pending_resume(postgres_url, tenant, run_id)
+        assert pending is not None and pending.get("unresolvable") is True
+        assert "call_id" not in pending and "arguments" not in pending
         decide_approval(
             postgres_url,
             tenant_id=tenant,
@@ -1293,7 +1321,11 @@ def test_w8_c01_pending_resume_binding(postgres_url: str) -> None:
             decision="rejected",
             expected_revision=0,
         )
-        assert _pending_resume(postgres_url, tenant, run_rej) is None
+        # A rejected ask is never a resume with a stored call: the probe is
+        # either absent or fails closed as unresolvable.
+        rejected_probe = _pending_resume(postgres_url, tenant, run_rej)
+        assert rejected_probe is None or rejected_probe.get("unresolvable") is True
+        assert rejected_probe is None or "call_id" not in rejected_probe
     finally:
         engine.dispose()
 
@@ -1373,7 +1405,7 @@ def test_w8_c01_mounted_config_is_prescrubbed(tmp_path: Path) -> None:
     os.environ["RXYCODE_DATA_DIR"] = str(src)
     os.environ.pop("RXYCODE_WORKER_MODEL", None)
     try:
-        drain._prepare_child_data_dir(out)
+        drain._prepare_child_data_dir(out, workdir=tmp_path / "ws")
     finally:
         if old is None:
             os.environ.pop("RXYCODE_DATA_DIR", None)
@@ -1388,7 +1420,8 @@ def test_w8_c01_mounted_config_is_prescrubbed(tmp_path: Path) -> None:
     assert main["api_key"] == "confined"
     assert "api_key_env" not in main
     assert main["base_url"] == f"http://127.0.0.1:{drain._EGRESS_PORT}"
-    assert mounted["models"]["other"]["api_key"] == "confined"
+    # Only the used model is mounted; the other entry never leaves the parent.
+    assert "other" not in mounted["models"]
     assert "sk-literal-secret" not in (out / "config.yaml").read_text()
 
 
@@ -2937,9 +2970,12 @@ def test_w8_c01_prepare_deep_alias_fails_closed() -> None:
         src += "a" + str(i) + ": &a" + str(i) + " [*a" + str(i - 1) + "]" + chr(10)
     src += "<<: {deep: *a1100}" + chr(10)
     with patch.dict("os.environ", {"RXYCODE_DATA_DIR": "src-root"}),         patch.object(Path, "mkdir"),         patch.object(Path, "is_file", return_value=True),         patch.object(Path, "read_text", return_value=src),         patch.object(Path, "write_text") as mock_write:
-        result = drain._prepare_child_data_dir(Path("child-conf"))
+        result = drain._prepare_child_data_dir(Path("child-conf"), workdir=Path("ws"))
     assert result == Path("child-conf")
-    assert mock_write.call_count == 0
+    # The alias DAG sits outside the allowlisted sections, so it is never
+    # copied: whatever is mounted is the constructed config, not the DAG.
+    written = "".join(str(call.args[0]) for call in mock_write.call_args_list)
+    assert "a1100" not in written and "a1099" not in written
 
 
 def test_w8_c01_scrub_backtick_space_substitution() -> None:

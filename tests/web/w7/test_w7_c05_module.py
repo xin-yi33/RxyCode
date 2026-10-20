@@ -192,10 +192,10 @@ def _stack_env(pg_port: int, https_port: int, http_port: int) -> dict[str, str]:
             "RXYCODE_GITHUB_CLIENT_SECRET": "",
             "RXYCODE_GITHUB_REDIRECT_URI": "",
             # Short drain cycles so the deployed worker claims quickly; the
-            # provider-less turn is bounded by the run timeout.
+            # provider-less turn fails at the network boundary well inside
+            # the shared whole-turn execution budget.
             "RXYCODE_WORKER_POLL_SECONDS": "1",
             "RXYCODE_WORKER_LEASE_TTL": "30",
-            "RXYCODE_WORKER_RUN_TIMEOUT": "60",
             # Give the worker a real configured model pointed at a loopback
             # dead port: the HTTPS-when-credentialed rule exempts loopback,
             # the turn genuinely starts (event/agent_started is journaled),

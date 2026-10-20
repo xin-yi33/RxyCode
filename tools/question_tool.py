@@ -69,6 +69,11 @@ async def _ask_via_question_broker(questions: list[dict]) -> str | None:
     broker = get_question_broker()
     if broker is None:
         return None
+    if getattr(broker, "single_question_only", False) and len(questions) > 1:
+        return _unavailable_answers(questions).replace(
+            "[no input: question channel unavailable]",
+            "[no input: this channel asks one question per call]",
+        )
 
     answers = []
     for raw_question in questions:

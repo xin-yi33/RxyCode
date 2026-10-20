@@ -35,10 +35,10 @@ Web 不另建执行器，不另建第二套 Agent 循环。
 | WEB-W8-C01 | 云端执行语义与沙箱安全：Full=沙箱内自动批准，控制面凭据留在父进程，网络在执行环境层约束，配置清洗 | 进行中（本地提交至 `7a03dd82`） |
 | W8-S1 | 统一规则（本文） | 完成 |
 | W8-S2 | 初始化接回共享入口：`appserver/agent_worker.py::assemble_surface_agent`（子代理管理器 → broker → `bootstrap_agent` → `configure_agent_workspace`），Web 子进程改用它 | 代码与单测完成；子进程实机验证待 Docker/bwrap 环境 |
-| W8-S3 | 共享 Harness 审批暂停点 | 未开始（需改 `core/agent_v2.py`） |
-| W8-S4 | 审批恢复回到原工具循环直至 Final Answer | 未开始 |
-| W8-S5 | 移除 drain 重复业务判断（时限交 Harness 预算；配置只构造所需字段；工具结果按实际状态判定） | 未开始 |
-| W8-S6 | 三条复合验收主链 | 未开始 |
+| W8-S3 | 共享 Harness 审批暂停点（检查点、续接、父进程持久化） | 已完成（`48a6005a`、本轮；见 NOTES Round 26） |
+| W8-S4 | 审批恢复回到原工具循环直至 Final Answer | 已完成（`resume_harness_turn`；复合主链 chain 1 通过） |
+| W8-S5 | 移除 drain 重复业务判断（时限交 Harness 预算；配置只构造所需字段；工具结果按实际状态判定） | 部分完成：预算与 900 秒外层超时已移除，配置改为构造；工具循环内的结构化执行状态未做 |
+| W8-S6 | 三条复合验收主链 | 部分完成：chain 1/2 在真实 Postgres + 真实 Harness + 真实 journal 上通过；部署态 compose 的 W7 用例仍有未解决的回归信号 |
 
 登记只说明这些卡存在，**不证明其功能已获授权，也不证明已通过验收**。验收以 `evidence/web/` 中的实测结果为准。
 
@@ -62,7 +62,9 @@ Web 不另建执行器，不另建第二套 Agent 循环。
 
 ## 8. 当前已知缺口（截至本文）
 
-- 审批恢复仍是单工具回放：`_resume_turn` 只执行获批工具后直接写 run 终态，没有回到原 Harness 循环。
-- 已收口（S2）：Web 子进程原先直接构造 `AgentV2`，未经 `bootstrap_agent`，也未安装子代理管理器与提问 broker；现经 `assemble_surface_agent` 装配。Web 没有提问通道，提问 broker 为 `SseQuestionBroker(timeout=0)`，无 sink 时立即返回 unavailable，不挂起。
-- drain 仍保留 `run_timeout`（默认 900 秒）的整任务硬超时，待 S5 移除。
-- r25 正则草稿（`_array_end`）已撤回工作树，补丁保存在 `%TEMP%/r25-array-end-draft.patch`，未提交。正则补丁不再作为主要手段，配置清洗转向数据传递（S5）。
+- 已收口（S3/S4）：审批与提问挂起时携带共享 Harness 检查点，持久化在父进程（`approvals.checkpoint`，迁移 005）；续接回到原工具循环，直至 Final Answer。
+- 已收口（B）：隔离 worker 的提问经控制通道写入 `question.requested` 与持久化行，`GET/POST /questions` 接入 `ApprovalCard` 同一接口；回答一次性消费。多问题批次在此通道上明确返回「每次只问一个问题」。
+- 已收口（C）：整回合预算在共享 `AgentV2.run/resume` 入口执行，等待不计时，续期复用 `timeout_decision`；drain 的 900 秒外层超时与 `RXYCODE_WORKER_RUN_TIMEOUT` 已移除。
+- 未收口：部署态 compose 的 W7 用例（`test_w7_c05_integration`）在本分支停在 `leased`，HEAD 在同一断言前进入终态；原因未定位，需要 `docker compose logs worker`。
+- 未收口：工具循环内的结构化执行状态（退出码、错误类别）未替换 `_tool_output_is_error` 的文本判定；终态判定已不依赖输出文字。
+- r25 十三条已逐项处置为「已替代」，证据见 NOTES Round 25（配置由构造产生，清洗树在生产路径上已无调用方）。

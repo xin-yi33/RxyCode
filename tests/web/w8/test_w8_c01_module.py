@@ -379,6 +379,7 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
     orchestrator + journal — and a second resume never re-runs the side
     effect."""
     import rxycode_worker.drain as drain
+    from RxyCode.RxyCode1_1_0.core.harness_checkpoint import HarnessPaused
     from RxyCode.RxyCode1_1_0.core.safety.approval import set_approval_broker
     from rxycode_server.approvals.service import decide_approval
 
@@ -404,9 +405,13 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
         paused_info=paused_info,
     )
 
-    # In-proc channel: the same kwargs the unix-socket hop would carry.
+    # In-proc channel: the same kwargs the unix-socket hop would carry, with
+    # the checkpoint packed exactly as TurnChannel packs it on the wire.
     class _Channel:
         def pause_approval(self, **kwargs: Any) -> dict[str, Any]:
+            from rxycode_worker.ctl import pack_checkpoint
+
+            kwargs["checkpoint_z"] = pack_checkpoint(kwargs.pop("checkpoint"))
             return handlers["pause_approval"](kwargs)
 
         def resume_state(self, approval_id: str) -> dict[str, Any]:
@@ -433,7 +438,7 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
     )
     orch = _orchestrator()
     try:
-        with pytest.raises(drain._RunPaused):
+        with pytest.raises(HarnessPaused) as info:
             asyncio.run(
                 orch.execute_tool(
                     "bash",
@@ -447,6 +452,19 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
             )
     finally:
         set_approval_broker(None)
+    # The shared loop attaches its checkpoint before the pause leaves the
+    # turn; this test stands in for that loop with a Harness-shaped state.
+    info.value.checkpoint = {
+        "version": 1,
+        "user_input": "run the approved mark",
+        "mode": "build",
+        "messages": [{"kind": "human", "content": "run the approved mark"}],
+        "paused": {"call_id": "call-77", "tool": "bash"},
+        "remaining": [],
+        "state": {},
+        "budget": None,
+    }
+    assert asyncio.run(drain._park_for_human(channel, info.value, tmp_path)) == ""
 
     # The run is parked: waiting_approval, lease released — waiting for a
     # human is NOT no-progress, and no other worker can claim it meanwhile.
@@ -490,6 +508,8 @@ def test_w8_c01_chain_approval_executes_the_stored_call_once(
     assert drain._DURABLE_CALL_ID_RE.fullmatch(record["call_id"])
     assert record["source_call_id"] == "call-77"
     assert record["arguments"]["command"] == "echo approved-mark >> calls.log"
+    # The parked Harness state comes back intact for the resumed loop.
+    assert drain.unpack_checkpoint(record["checkpoint_z"])["paused"]["call_id"] == "call-77"
 
     emitted: list[dict[str, Any]] = []
 
